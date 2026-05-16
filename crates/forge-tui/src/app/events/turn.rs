@@ -1,5 +1,5 @@
 use super::super::{
-    App, AppStatus, CancelOrigin, ChatMessage, FocusTarget, InlinePermission, InlineQuestion,
+    App, AppStatus, ChatMessage, FocusTarget, InlinePermission, InlineQuestion,
     InvalidationLevel, MessageBlock, MessageRole, NoticeStage, SystemSeverity, TextBlock,
 };
 use super::clear_compaction_state;
@@ -24,7 +24,7 @@ const AUTH_REQUIRED_NEXT_STEPS_HINT: &str =
 struct TurnExitState {
     tail_assistant_idx: Option<usize>,
     turn_was_active: bool,
-    cancelled_requested: Option<CancelOrigin>,
+    cancelled_requested: bool,
     show_interrupted_hint: bool,
 }
 
@@ -861,13 +861,10 @@ pub(super) fn apply_session_update_turn_cancelled(app: &mut App, key: &SessionKe
 
 fn apply_turn_cancelled_presentation(app: &mut App, session_key: &SessionKey) {
     if app.active_session_key.as_ref() == Some(session_key) {
-        if app.pending_cancel_origin().is_none() {
-            app.set_pending_cancel_origin(Some(CancelOrigin::Manual));
+        if !app.pending_cancel() {
+            app.set_pending_cancel(true);
         }
-        app.set_cancelled_turn_pending_hint(matches!(
-            app.pending_cancel_origin(),
-            Some(CancelOrigin::Manual)
-        ));
+        app.set_cancelled_turn_pending_hint(app.pending_cancel());
         let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
         // Lifecycle: cancellation accepted — return active session
         // to Idle. (Steady-state TurnComplete fires shortly after,
@@ -890,11 +887,11 @@ fn apply_turn_cancelled_presentation(app: &mut App, session_key: &SessionKey) {
         );
         return;
     };
-    if session.pending_cancel_origin.is_none() {
-        session.pending_cancel_origin = Some(CancelOrigin::Manual);
+    if !session.pending_cancel {
+        session.pending_cancel = true;
     }
     session.cancelled_turn_pending_hint =
-        matches!(session.pending_cancel_origin, Some(CancelOrigin::Manual));
+        session.pending_cancel;
     finalize_background_tool_calls(session, model::ToolCallStatus::Failed);
     // Drop the `session` mut borrow before reaching for the workspace.
     let _ = session;
@@ -941,11 +938,11 @@ fn begin_turn_exit(app: &mut App, emit_manual_compaction_success: bool) -> TurnE
             .iter()
             .rposition(|m| matches!(m.role, MessageRole::Assistant)),
         turn_was_active: matches!(app.status, AppStatus::Thinking | AppStatus::Running),
-        cancelled_requested: app.pending_cancel_origin(),
-        show_interrupted_hint: matches!(app.pending_cancel_origin(), Some(CancelOrigin::Manual)),
+        cancelled_requested: app.pending_cancel(),
+        show_interrupted_hint: app.pending_cancel(),
     };
     clear_compaction_state(app, emit_manual_compaction_success);
-    app.set_pending_cancel_origin(None);
+    app.set_pending_cancel(false);
     app.set_cancelled_turn_pending_hint(false);
     state
 }
@@ -960,7 +957,7 @@ fn finish_ready_turn_exit(app: &mut App, exit: TurnExitState, tool_status: model
         push_interrupted_hint(app);
     }
     if removed_tail_assistant.is_none()
-        && (exit.turn_was_active || exit.cancelled_requested.is_some())
+        && (exit.turn_was_active || exit.cancelled_requested)
     {
         mark_turn_exit_assistant_layout_dirty(app, exit.tail_assistant_idx);
     }
@@ -1021,14 +1018,14 @@ fn apply_turn_complete_presentation(
             );
             return;
         };
-        let cancelled_requested = session.pending_cancel_origin;
-        let tool_status = if cancelled_requested.is_some() {
+        let cancelled_requested = session.pending_cancel;
+        let tool_status = if cancelled_requested {
             model::ToolCallStatus::Failed
         } else {
             model::ToolCallStatus::Completed
         };
         finalize_background_tool_calls(session, tool_status);
-        session.pending_cancel_origin = None;
+        session.pending_cancel = false;
         session.cancelled_turn_pending_hint = false;
         session.active_turn_assistant_message_idx = None;
         session.turn_notice_refs.clear();
@@ -1064,7 +1061,7 @@ fn apply_turn_complete_presentation(
             terminal_reason = reason.as_stored(),
         );
     }
-    let tool_status = if exit.cancelled_requested.is_some() {
+    let tool_status = if exit.cancelled_requested {
         model::ToolCallStatus::Failed
     } else {
         model::ToolCallStatus::Completed
@@ -1219,9 +1216,9 @@ fn apply_turn_error_presentation(
         // turn-tracking flags and finalize tool calls; skip all
         // user-visible UI side effects (notifications, exit_error,
         // chat message inserts). The bucket is logically failed.
-        let cancelled_requested = session.pending_cancel_origin;
+        let cancelled_requested = session.pending_cancel;
         finalize_background_tool_calls(session, model::ToolCallStatus::Failed);
-        session.pending_cancel_origin = None;
+        session.pending_cancel = false;
         session.cancelled_turn_pending_hint = false;
         session.active_turn_assistant_message_idx = None;
         session.turn_notice_refs.clear();
@@ -1234,7 +1231,7 @@ fn apply_turn_error_presentation(
             bucket.turn_state = forge_primitives::runtime::SessionTurnState::default();
         }
         let summary = summarize_internal_error(msg);
-        if cancelled_requested.is_some() {
+        if cancelled_requested {
             tracing::warn!(
                 target: crate::logging::targets::APP_SESSION,
                 event_name = "turn_error_suppressed_background",
@@ -1261,7 +1258,7 @@ fn apply_turn_error_presentation(
     }
     let exit = begin_turn_exit(app, true);
 
-    if exit.cancelled_requested.is_some() {
+    if exit.cancelled_requested {
         let summary = summarize_internal_error(msg);
         tracing::warn!(
             target: crate::logging::targets::APP_SESSION,
@@ -1504,7 +1501,7 @@ mod tests {
     fn cancelled_turn_error_removes_empty_tail_assistant_before_hint() {
         let mut app = App::test_default();
         app.status = AppStatus::Thinking;
-        app.set_pending_cancel_origin(Some(CancelOrigin::Manual));
+        app.set_pending_cancel(true);
         app.active_messages_mut().push(user_message("hello"));
         app.active_messages_mut().push(empty_assistant_message());
 
@@ -1567,16 +1564,16 @@ mod tests {
         app.sessions.insert(bg_key.clone(), bg_session);
 
         // Active session has no pending cancel origin set.
-        assert!(app.pending_cancel_origin().is_none());
+        assert!(!app.pending_cancel());
 
         apply_session_update_turn_cancelled(&mut app, &bg_key);
 
         // Background bucket got the cancel marker.
         let bg = app.sessions.get(&bg_key).expect("bg present");
-        assert!(matches!(bg.pending_cancel_origin, Some(CancelOrigin::Manual)));
+        assert!(bg.pending_cancel);
         assert!(bg.cancelled_turn_pending_hint);
         // Active session's cancel state untouched.
-        assert!(app.pending_cancel_origin().is_none());
+        assert!(!app.pending_cancel());
     }
 
     #[test]

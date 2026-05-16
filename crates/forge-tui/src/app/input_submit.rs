@@ -1,4 +1,4 @@
-use super::{App, AppStatus, CancelOrigin, ChatMessage, MessageBlock, MessageRole, TextBlock};
+use super::{App, AppStatus, ChatMessage, MessageBlock, MessageRole, TextBlock};
 use crate::agent::model;
 use crate::app::slash;
 
@@ -93,18 +93,18 @@ pub(super) fn dispatch_diff_comment_bundle(app: &mut App, text: String) {
 /// (mid-turn path).
 fn is_turn_busy(app: &App) -> bool {
     matches!(app.status, AppStatus::Thinking | AppStatus::Running)
-        || app.pending_cancel_origin().is_some()
+        || app.pending_cancel()
         || app.is_compacting()
 }
 
 /// Cancel the in-flight turn. The only routine caller is Escape;
 /// submit dispatches immediately and claude internally buffers
 /// mid-turn writes, so there are no auto-induced cancels.
-pub(super) fn request_cancel(app: &mut App, origin: CancelOrigin) -> Result<(), String> {
+pub(super) fn request_cancel(app: &mut App) -> Result<(), String> {
     if !matches!(app.status, AppStatus::Thinking | AppStatus::Running) {
         return Ok(());
     }
-    if app.pending_cancel_origin().is_some() {
+    if app.pending_cancel() {
         // Already cancelling — second Escape is a no-op.
         return Ok(());
     }
@@ -119,8 +119,8 @@ pub(super) fn request_cancel(app: &mut App, origin: CancelOrigin) -> Result<(), 
     let session_id = sid.to_string();
     app.dispatch_command(|key| forge_workspace::Command::Cancel { key })
         .map_err(|e| e.to_string())?;
-    app.set_pending_cancel_origin(Some(origin));
-    app.set_cancelled_turn_pending_hint(matches!(origin, CancelOrigin::Manual));
+    app.set_pending_cancel(true);
+    app.set_cancelled_turn_pending_hint(true);
     let session_key = forge_workspace::SessionKey::from_session_id(session_id.clone());
     let _ = app.update_tx.send(forge_workspace::SessionUpdate::TurnCancelled { key: session_key });
     tracing::info!(
@@ -129,7 +129,6 @@ pub(super) fn request_cancel(app: &mut App, origin: CancelOrigin) -> Result<(), 
         message = "turn cancel requested",
         outcome = "success",
         session_id = %session_id,
-        origin = ?origin,
     );
     Ok(())
 }
@@ -319,7 +318,7 @@ mod tests {
             Some(1),
             "active asst idx reparented onto the new placeholder at tail",
         );
-        assert!(app.pending_cancel_origin().is_none(), "no cancel fired");
+        assert!(!app.pending_cancel(), "no cancel fired");
         let prompt = rx.try_recv().expect("prompt dispatched immediately");
         assert!(matches!(
             prompt,
@@ -413,10 +412,10 @@ mod tests {
         let (mut app, mut rx) = app_with_connection();
         app.status = AppStatus::Thinking;
 
-        request_cancel(&mut app, CancelOrigin::Manual).expect("first manual cancel");
-        request_cancel(&mut app, CancelOrigin::Manual).expect("second manual cancel");
+        request_cancel(&mut app).expect("first manual cancel");
+        request_cancel(&mut app).expect("second manual cancel");
 
-        assert_eq!(app.pending_cancel_origin(), Some(CancelOrigin::Manual));
+        assert!(app.pending_cancel());
         let envelope = rx.try_recv().expect("single cancel command should be sent");
         assert!(matches!(
             envelope,
@@ -454,7 +453,7 @@ mod tests {
 
         assert_eq!(app.active_view, ActiveView::Config);
         assert!(app.input().text().is_empty());
-        assert!(app.pending_cancel_origin().is_none());
+        assert!(!app.pending_cancel());
         assert!(rx.try_recv().is_err());
     }
 }

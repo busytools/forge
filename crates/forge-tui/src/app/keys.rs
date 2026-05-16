@@ -1,7 +1,7 @@
 use super::dialog::DialogState;
 use super::paste_burst::CharAction;
 use super::{
-    App, AppStatus, CancelOrigin, FocusOwner, FocusTarget, HelpView, InvalidationLevel, ModeInfo,
+    App, AppStatus, FocusOwner, FocusTarget, HelpView, InvalidationLevel, ModeInfo,
     ModeState,
 };
 #[cfg(not(test))]
@@ -483,7 +483,7 @@ fn handle_turn_control_key(app: &mut App, key: KeyEvent) -> bool {
         return true;
     }
     if matches!(app.status, AppStatus::Thinking | AppStatus::Running)
-        && let Err(message) = super::input_submit::request_cancel(app, CancelOrigin::Manual)
+        && let Err(message) = super::input_submit::request_cancel(app)
     {
         tracing::error!(
             target: crate::logging::targets::APP_INPUT,

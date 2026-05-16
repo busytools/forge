@@ -246,7 +246,7 @@ pub(super) fn handle_auth_required_event(
         session.session_usage = crate::app::state::SessionUsageState::default();
         session.last_rate_limit_update = None;
         session.cancelled_turn_pending_hint = false;
-        session.pending_cancel_origin = None;
+        session.pending_cancel = false;
         session.mcp = super::super::McpState::default();
         super::turn::finalize_background_tool_calls(session, model::ToolCallStatus::Failed);
         session.active_turn_assistant_message_idx = None;
@@ -282,7 +282,7 @@ pub(super) fn handle_auth_required_event(
     super::clear_compaction_state(app, false);
     app.set_last_rate_limit_update(None);
     app.set_cancelled_turn_pending_hint(false);
-    app.set_pending_cancel_origin(None);
+    app.set_pending_cancel(false);
     app.set_account_info(None);
     *app.mcp_mut() = super::super::McpState::default();
     app.config.pending_session_title_change = None;
@@ -341,7 +341,7 @@ pub(super) fn handle_connection_failed_event(app: &mut App, session_key: &Sessio
         session.fast_mode_state = model::FastModeState::Off;
         session.session_usage = crate::app::state::SessionUsageState::default();
         session.cancelled_turn_pending_hint = false;
-        session.pending_cancel_origin = None;
+        session.pending_cancel = false;
         session.last_rate_limit_update = None;
         session.mcp = super::super::McpState::default();
         super::turn::finalize_background_tool_calls(session, model::ToolCallStatus::Failed);
@@ -402,7 +402,7 @@ pub(super) fn handle_connection_failed_event(app: &mut App, session_key: &Sessio
     app.clear_session_runtime_identity();
     super::clear_compaction_state(app, false);
     app.set_cancelled_turn_pending_hint(false);
-    app.set_pending_cancel_origin(None);
+    app.set_pending_cancel(false);
     app.set_last_rate_limit_update(None);
     app.set_account_info(None);
     *app.mcp_mut() = super::super::McpState::default();
@@ -685,7 +685,7 @@ pub(super) fn handle_session_replaced_event(
     let history_message_count = history_messages.len();
     let available_model_count = available_models.len();
     super::clear_compaction_state(app, false);
-    app.set_pending_cancel_origin(None);
+    app.set_pending_cancel(false);
 
     // Capture the outgoing bucket's key BEFORE `reset_for_new_session`
     // runs — that call goes through `set_session_id`, which inserts a

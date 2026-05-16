@@ -21,7 +21,7 @@ pub use tool_call_info::{
     InlinePermission, InlineQuestion, TerminalSnapshotMode, ToolCallInfo, is_execute_tool_name,
 };
 pub use types::{
-    AppStatus, CancelOrigin, ExtraUsage, HelpView, HistoryRetentionPolicy, HistoryRetentionStats,
+    AppStatus, ExtraUsage, HelpView, HistoryRetentionPolicy, HistoryRetentionStats,
     LoginHint, McpState, MessageUsage, ModeInfo, ModeState, PasteSessionState, PendingCommandAck,
     RecentSessionInfo, RenderCacheBudget, ScrollbarDragState, SelectionKind, SelectionPoint,
     SelectionState, SessionPickerState, SessionTurnState, SessionUsageState, TodoItem, TodoStatus,
@@ -961,13 +961,13 @@ impl App {
     }
 
     /// Active session's pending cancel origin.
-    pub fn pending_cancel_origin(&self) -> Option<CancelOrigin> {
-        self.active_session().and_then(|s| s.pending_cancel_origin)
+    pub fn pending_cancel(&self) -> bool {
+        self.active_session().is_some_and(|s| s.pending_cancel)
     }
 
     /// Set the active session's pending cancel origin.
-    pub fn set_pending_cancel_origin(&mut self, value: Option<CancelOrigin>) {
-        self.active_bucket_mut().pending_cancel_origin = value;
+    pub fn set_pending_cancel(&mut self, value: bool) {
+        self.active_bucket_mut().pending_cancel = value;
     }
 
     /// Borrow the active session's prompt suggestion.

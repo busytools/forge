@@ -48,7 +48,7 @@ fn reset_session_identity_state(
     app.should_quit = false;
     app.set_files_accessed(0);
     app.set_cancelled_turn_pending_hint(false);
-    app.set_pending_cancel_origin(None);
+    app.set_pending_cancel(false);
     app.set_account_info(None);
 }
 

@@ -189,22 +189,6 @@ pub enum ToolCallScope {
     SubagentChild { parent_tool_use_id: String },
 }
 
-/// Why the user-visible cancel was requested. As of issue #85 the
-/// only routine caller is the Escape keybinding ([`Self::Manual`]).
-/// The historical `AutoQueue` variant (set by submit-during-busy to
-/// distinguish auto-induced cancels for the post-cancel auto-submit
-/// path) was removed alongside the rest of the local-queue machinery
-/// — submit now dispatches immediately and claude internally queues
-/// in-flight inputs as `queued_command` content blocks.
-///
-/// The enum is kept as a single-variant for forward-extensibility
-/// (future cancel origins like "rate-limit" or "external API" can
-/// land without rewriting every match site).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CancelOrigin {
-    Manual,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SelectionKind {
     Chat,

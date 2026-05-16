@@ -25,7 +25,7 @@ use crate::app::state::cache_metrics::CacheMetrics;
 use crate::app::state::messages::ChatMessage;
 use crate::app::state::render_budget::{RenderCacheEvictionKey, RenderCacheSlotState};
 use crate::app::state::types::{
-    CancelOrigin, HistoryRetentionPolicy, HistoryRetentionStats, LoginHint, McpState, ModeState,
+    HistoryRetentionPolicy, HistoryRetentionStats, LoginHint, McpState, ModeState,
     PasteSessionState, PendingCommandAck, RecentSessionInfo, SelectionState, SessionUsageState,
     TodoItem, ToolCallScope, UsageState,
 };
@@ -119,7 +119,7 @@ pub struct UiSession {
     /// `TurnComplete` to render a red interruption hint in chat.
     pub cancelled_turn_pending_hint: bool,
     /// Origin of the in-flight cancellation request, if any.
-    pub pending_cancel_origin: Option<CancelOrigin>,
+    pub pending_cancel: bool,
     /// Latest prompt suggestion from the SDK, shown in the input
     /// hint band.
     pub prompt_suggestion: Option<String>,
@@ -403,7 +403,7 @@ impl Default for UiSession {
             pending_compact_clear: bool::default(),
             pending_interaction_ids: Vec::default(),
             cancelled_turn_pending_hint: bool::default(),
-            pending_cancel_origin: Option::default(),
+            pending_cancel: false,
             prompt_suggestion: Option::default(),
             last_rate_limit_update: Option::default(),
             turn_notice_refs: Vec::default(),

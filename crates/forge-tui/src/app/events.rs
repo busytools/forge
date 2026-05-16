@@ -313,7 +313,7 @@ pub(super) fn handle_runtime_session_state_update(
         model::RuntimeSessionState::Idle => {
             if matches!(app.status, AppStatus::Thinking | AppStatus::Running)
                 && !app.is_compacting()
-                && app.pending_cancel_origin().is_none()
+                && !app.pending_cancel()
             {
                 app.status = AppStatus::Ready;
             }
@@ -394,7 +394,7 @@ mod tests {
     use super::*;
     use crate::app::slash::{SlashCandidate, SlashContext, SlashState};
     use crate::app::{
-        ActiveView, BlockCache, CancelOrigin, FocusOwner, FocusTarget, HelpView, InlinePermission,
+        ActiveView, BlockCache, FocusOwner, FocusTarget, HelpView, InlinePermission,
         InlineQuestion, SelectionKind, SelectionPoint, SelectionState, TextBlockSpacing, TodoItem,
         TodoStatus, ToolCallInfo, ToolCallScope, UsageSnapshot, UsageSourceKind, mention,
     };
@@ -1469,7 +1469,7 @@ mod tests {
         app.active_messages_mut().push(assistant_msg(vec![MessageBlock::Text(
             TextBlock::from_complete("partial output"),
         )]));
-        app.set_pending_cancel_origin(Some(CancelOrigin::Manual));
+        app.set_pending_cancel(true);
 
         let session_key = active_session_key(&app);
         apply_session_update(
@@ -4518,14 +4518,14 @@ mod tests {
         };
         assert_eq!(selected.option_id.clone(), "deny");
         assert!(app.pending_interaction_ids().is_empty());
-        assert_eq!(app.pending_cancel_origin(), None);
+        assert!(!app.pending_cancel());
 
         handle_terminal_event(
             &mut app,
             Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
         );
 
-        assert_eq!(app.pending_cancel_origin(), Some(CancelOrigin::Manual));
+        assert_eq!(app.pending_cancel(), true);
         let envelope = rx.try_recv().expect("second Esc should send turn cancel");
         assert!(matches!(
             envelope,
