@@ -19,6 +19,22 @@ use crate::protocol::SessionUpdate;
 use crate::workspace::Workspace;
 use crate::{SessionKey, SessionTarget};
 
+/// Emit a `SessionUpdate` and log at debug when the receiver is gone
+/// (TUI is shutting down or has crashed). The send is logically
+/// best-effort — no caller can act on the failure — but visibility
+/// in the log distinguishes "TUI dropped the channel" from "the
+/// emit never happened" during diagnosis.
+fn try_emit(workspace: &Workspace, label: &'static str, update: SessionUpdate) {
+    if let Err(err) = workspace.update_tx().send(update) {
+        tracing::debug!(
+            target: "forge_workspace::spawn",
+            label,
+            error = %err,
+            "SessionUpdate dropped — receiver is gone (likely TUI shutdown)"
+        );
+    }
+}
+
 /// Synthesize a `__spawn_<project_name>__` placeholder bucket key
 /// (matches the legacy TUI spawn flow), emit `SessionUpdate::Spawning`,
 /// then spawn the agent. The first `Connected` event from the
@@ -44,12 +60,16 @@ pub(crate) async fn handle_spawn_project(
     };
 
     let synth_key = SessionKey::from_session_id(format!("__spawn_{project_name}__"));
-    let _ = workspace.update_tx().send(SessionUpdate::Spawning {
-        key: synth_key.clone(),
-        project_name: project_name.clone(),
-        cwd: project.path.to_string_lossy().to_string(),
-        display_name: project.display_path.clone(),
-    });
+    try_emit(
+        &workspace,
+        "spawn_project::Spawning",
+        SessionUpdate::Spawning {
+            key: synth_key.clone(),
+            project_name: project_name.clone(),
+            cwd: project.path.to_string_lossy().to_string(),
+            display_name: project.display_path.clone(),
+        },
+    );
 
     match workspace.get_agent_handle_with_spawn_key(
         SessionTarget::Named(project_name.clone()),
@@ -71,11 +91,15 @@ pub(crate) async fn handle_spawn_project(
                 error = %err,
                 "spawn_project: get_agent_handle failed"
             );
-            let _ = workspace.update_tx().send(SessionUpdate::ConnectionFailed {
-                key: synth_key,
-                message: format!("agent spawn failed: {err}"),
-                fatal: false,
-            });
+            try_emit(
+                &workspace,
+                "spawn_project::ConnectionFailed",
+                SessionUpdate::ConnectionFailed {
+                    key: synth_key,
+                    message: format!("agent spawn failed: {err}"),
+                    fatal: false,
+                },
+            );
         }
     }
 }
@@ -106,12 +130,16 @@ pub(crate) async fn handle_spawn_session(
     let cwd = parent.path.to_string_lossy().to_string();
     let display_name = parent.display_path.clone();
 
-    let _ = workspace.update_tx().send(SessionUpdate::Spawning {
-        key: synth_key.clone(),
-        project_name: display_name.clone(),
-        cwd,
-        display_name,
-    });
+    try_emit(
+        &workspace,
+        "spawn_session::Spawning",
+        SessionUpdate::Spawning {
+            key: synth_key.clone(),
+            project_name: display_name.clone(),
+            cwd,
+            display_name,
+        },
+    );
 
     match workspace.get_agent_handle_with_spawn_key(
         SessionTarget::Session(session_key),
@@ -133,11 +161,15 @@ pub(crate) async fn handle_spawn_session(
                 error = %err,
                 "spawn_session: get_agent_handle failed"
             );
-            let _ = workspace.update_tx().send(SessionUpdate::ConnectionFailed {
-                key: synth_key,
-                message: format!("agent spawn failed: {err}"),
-                fatal: false,
-            });
+            try_emit(
+                &workspace,
+                "spawn_session::ConnectionFailed",
+                SessionUpdate::ConnectionFailed {
+                    key: synth_key,
+                    message: format!("agent spawn failed: {err}"),
+                    fatal: false,
+                },
+            );
         }
     }
 }
@@ -176,14 +208,20 @@ pub(crate) async fn handle_start_default(
                 error = %err,
                 "start_default: get_agent_handle failed"
             );
-            let _ = workspace.update_tx().send(SessionUpdate::ConnectionFailed {
-                key: synth_key,
-                message: format!("agent spawn failed: {err}"),
-                fatal: true,
-            });
-            let _ = workspace.update_tx().send(SessionUpdate::FatalError(
-                forge_primitives::error::AppError::ConnectionFailed,
-            ));
+            try_emit(
+                &workspace,
+                "start_default::ConnectionFailed",
+                SessionUpdate::ConnectionFailed {
+                    key: synth_key,
+                    message: format!("agent spawn failed: {err}"),
+                    fatal: true,
+                },
+            );
+            try_emit(
+                &workspace,
+                "start_default::FatalError",
+                SessionUpdate::FatalError(forge_primitives::error::AppError::ConnectionFailed),
+            );
         }
     }
 }
