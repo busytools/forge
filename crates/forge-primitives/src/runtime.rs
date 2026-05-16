@@ -127,6 +127,51 @@ pub struct AvailableModel {
     pub supports_auto_mode: Option<bool>,
 }
 
+impl AvailableModel {
+    pub fn new(id: impl Into<String>, display_name: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            display_name: display_name.into(),
+            description: None,
+            supports_effort: false,
+            supported_effort_levels: Vec::new(),
+            supports_adaptive_thinking: None,
+            supports_fast_mode: None,
+            supports_auto_mode: None,
+        }
+    }
+
+    pub fn description(mut self, description: impl Into<String>) -> Self {
+        self.description = Some(description.into());
+        self
+    }
+
+    pub fn supports_effort(mut self, supports_effort: bool) -> Self {
+        self.supports_effort = supports_effort;
+        self
+    }
+
+    pub fn supported_effort_levels(mut self, supported_effort_levels: Vec<EffortLevel>) -> Self {
+        self.supported_effort_levels = supported_effort_levels;
+        self
+    }
+
+    pub fn supports_adaptive_thinking(mut self, supports_adaptive_thinking: Option<bool>) -> Self {
+        self.supports_adaptive_thinking = supports_adaptive_thinking;
+        self
+    }
+
+    pub fn supports_fast_mode(mut self, supports_fast_mode: Option<bool>) -> Self {
+        self.supports_fast_mode = supports_fast_mode;
+        self
+    }
+
+    pub fn supports_auto_mode(mut self, supports_auto_mode: Option<bool>) -> Self {
+        self.supports_auto_mode = supports_auto_mode;
+        self
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CurrentModel {
     pub requested_id: Option<String>,
@@ -141,6 +186,68 @@ pub struct CurrentModel {
     pub supports_auto_mode: Option<bool>,
     pub supports_adaptive_thinking: Option<bool>,
     pub is_authoritative: bool,
+}
+
+impl CurrentModel {
+    pub fn new(
+        resolved_id: impl Into<String>,
+        display_name_short: impl Into<String>,
+        display_name_long: impl Into<String>,
+    ) -> Self {
+        Self {
+            requested_id: None,
+            resolved_id: resolved_id.into(),
+            display_name_short: display_name_short.into(),
+            display_name_long: display_name_long.into(),
+            catalog_id: None,
+            supports_effort: false,
+            supported_effort_levels: Vec::new(),
+            supports_fast_mode: None,
+            supports_auto_mode: None,
+            supports_adaptive_thinking: None,
+            is_authoritative: false,
+        }
+    }
+
+    pub fn requested_id(mut self, requested_id: impl Into<String>) -> Self {
+        self.requested_id = Some(requested_id.into());
+        self
+    }
+
+    pub fn catalog_id(mut self, catalog_id: impl Into<String>) -> Self {
+        self.catalog_id = Some(catalog_id.into());
+        self
+    }
+
+    pub fn supports_effort(mut self, supports_effort: bool) -> Self {
+        self.supports_effort = supports_effort;
+        self
+    }
+
+    pub fn supported_effort_levels(mut self, supported_effort_levels: Vec<EffortLevel>) -> Self {
+        self.supported_effort_levels = supported_effort_levels;
+        self
+    }
+
+    pub fn supports_adaptive_thinking(mut self, supports_adaptive_thinking: Option<bool>) -> Self {
+        self.supports_adaptive_thinking = supports_adaptive_thinking;
+        self
+    }
+
+    pub fn supports_fast_mode(mut self, supports_fast_mode: Option<bool>) -> Self {
+        self.supports_fast_mode = supports_fast_mode;
+        self
+    }
+
+    pub fn supports_auto_mode(mut self, supports_auto_mode: Option<bool>) -> Self {
+        self.supports_auto_mode = supports_auto_mode;
+        self
+    }
+
+    pub fn authoritative(mut self, is_authoritative: bool) -> Self {
+        self.is_authoritative = is_authoritative;
+        self
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
