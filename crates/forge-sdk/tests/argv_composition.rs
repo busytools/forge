@@ -14,7 +14,7 @@
 )]
 
 use forge_sdk::argv::build_args;
-use forge_sdk::subagents::{EffortLevel, EffortPreset};
+use forge_sdk::subagents::{EffortPreset, SubagentEffort};
 use forge_sdk::{
     OptionsBuilder, PermissionMode, SdkPluginConfig, SystemPromptKind, ThinkingConfig, ToolsPreset,
 };
@@ -206,13 +206,13 @@ fn max_thinking_tokens_fallback_when_no_thinking_config() {
 
 #[test]
 fn effort_preset_serialises_as_string() {
-    let argv = argv_of(OptionsBuilder::new().effort(EffortLevel::Preset(EffortPreset::High)));
+    let argv = argv_of(OptionsBuilder::new().effort(SubagentEffort::Preset(EffortPreset::High)));
     assert_eq!(find_flag(&argv, "--effort"), Some(Some("high")));
 }
 
 #[test]
 fn effort_numeric_serialises_as_integer() {
-    let argv = argv_of(OptionsBuilder::new().effort(EffortLevel::Numeric(7)));
+    let argv = argv_of(OptionsBuilder::new().effort(SubagentEffort::Numeric(7)));
     assert_eq!(find_flag(&argv, "--effort"), Some(Some("7")));
 }
 

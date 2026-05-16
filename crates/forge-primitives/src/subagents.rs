@@ -50,7 +50,7 @@ pub struct SubagentDefinition {
     pub background: Option<bool>,
     /// Reasoning-effort hint.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub effort: Option<EffortLevel>,
+    pub effort: Option<SubagentEffort>,
     /// Override permission-mode for this subagent only. Wire key is
     /// `permissionMode`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -134,17 +134,19 @@ mod inline_mcp_server {
 }
 
 /// Reasoning-effort hint on a subagent. Wire shape:
-/// `Literal["low","medium","high","max"] | int`.
+/// `Literal["low","medium","high","max"] | int`. Named
+/// `SubagentEffort` to disambiguate from the runtime model effort
+/// in `forge_primitives::runtime::EffortLevel`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
-pub enum EffortLevel {
+pub enum SubagentEffort {
     /// One of the named presets.
     Preset(EffortPreset),
     /// Numeric override (CLI-defined semantics).
     Numeric(i64),
 }
 
-impl EffortLevel {
+impl SubagentEffort {
     /// String form suitable for passing via `--effort <value>` or
     /// any other CLI surface that expects a literal-or-int.
     pub fn as_cli_arg(&self) -> String {

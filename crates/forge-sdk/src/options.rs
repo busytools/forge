@@ -14,7 +14,7 @@ use crate::mcp::McpServer;
 use crate::permissions::CanUseToolCallback;
 // Pure-data option enums (PermissionMode, SystemPromptKind, ToolsPreset,
 // ThinkingConfig, SdkPluginConfig) live in forge-primitives now.
-use forge_primitives::subagents::EffortLevel;
+use forge_primitives::subagents::SubagentEffort;
 pub use forge_primitives::{
     PermissionMode, SdkPluginConfig, SubagentDefinition, SystemPromptKind, ThinkingConfig,
     ToolsPreset,
@@ -133,9 +133,11 @@ pub struct Options {
     /// Arbitrary forward flags — `{"flag": Some("v")}` emits
     /// `--flag v`, `{"flag": None}` emits a bare `--flag`.
     pub extra_args: HashMap<String, Option<String>>,
-    /// Reasoning-effort hint. `--effort <level>` — the CLI's `effort` is a
-    /// literal or integer; forge-sdk reuses [`EffortLevel`].
-    pub effort: Option<EffortLevel>,
+    /// Reasoning-effort hint. `--effort <level>` — the CLI's `effort`
+    /// is a literal-or-integer carried via [`SubagentEffort`] (named
+    /// for its origin on the subagent declaration shape, but the
+    /// session-level effort uses the same wire enum).
+    pub effort: Option<SubagentEffort>,
     /// Extended-thinking configuration. Takes precedence over
     /// `max_thinking_tokens`.
     pub thinking: Option<ThinkingConfig>,
@@ -672,7 +674,7 @@ impl OptionsBuilder {
     }
 
     /// Set the reasoning-effort hint.
-    pub fn effort(mut self, e: EffortLevel) -> Self {
+    pub fn effort(mut self, e: SubagentEffort) -> Self {
         self.inner.effort = Some(e);
         self
     }
