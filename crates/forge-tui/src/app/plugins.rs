@@ -10,6 +10,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use forge_workspace::SessionUpdate;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
+use tracing::{Instrument, info_span};
 
 const INVENTORY_REFRESH_TTL: Duration = Duration::from_secs(5);
 
@@ -254,23 +255,31 @@ pub(crate) fn request_inventory_refresh(app: &mut App) {
     let cwd_context = app.cwd_raw();
     let cwd_raw = app.cwd_raw();
     let cached_claude_path = app.plugins.claude_path.clone();
-    tokio::task::spawn_local(async move {
-        match cli::refresh_inventory(cwd_raw, cached_claude_path).await {
-            Ok((snapshot, claude_path)) => {
-                let _ = event_tx.send(SessionUpdate::PluginsInventoryUpdated {
-                    cwd_raw: cwd_context,
-                    snapshot,
-                    claude_path,
-                });
-            }
-            Err(message) => {
-                let _ = event_tx.send(SessionUpdate::PluginsInventoryRefreshFailed {
-                    cwd_raw: cwd_context,
-                    message,
-                });
+    let span = info_span!(
+        target: crate::logging::targets::APP_CONFIG,
+        "plugin_inventory_refresh",
+        cwd = %cwd_raw,
+    );
+    tokio::task::spawn_local(
+        async move {
+            match cli::refresh_inventory(cwd_raw, cached_claude_path).await {
+                Ok((snapshot, claude_path)) => {
+                    let _ = event_tx.send(SessionUpdate::PluginsInventoryUpdated {
+                        cwd_raw: cwd_context,
+                        snapshot,
+                        claude_path,
+                    });
+                }
+                Err(message) => {
+                    let _ = event_tx.send(SessionUpdate::PluginsInventoryRefreshFailed {
+                        cwd_raw: cwd_context,
+                        message,
+                    });
+                }
             }
         }
-    });
+        .instrument(span),
+    );
 }
 
 pub(crate) fn apply_inventory_refresh_success(
@@ -613,22 +622,32 @@ fn execute_selected_installed_overlay_action(app: &mut App) {
     let event_tx = app.update_tx.clone();
     let cwd_context = app.cwd_raw();
     let cached_claude_path = app.plugins.claude_path.clone();
-    tokio::task::spawn_local(async move {
-        match cli::run_cli_command_and_refresh(cwd_raw, cached_claude_path, args).await {
-            Ok((snapshot, claude_path)) => {
-                let message =
-                    installed_action_success_message(action, &overlay.title, &overlay.scope);
-                let _ = event_tx.send(SessionUpdate::PluginsCliActionSucceeded {
-                    cwd_raw: cwd_context,
-                    result: PluginsCliActionSuccess { snapshot, message, claude_path },
-                });
-            }
-            Err(message) => {
-                let _ = event_tx
-                    .send(SessionUpdate::PluginsCliActionFailed { cwd_raw: cwd_context, message });
+    let span = info_span!(
+        target: crate::logging::targets::APP_CONFIG,
+        "plugin_cli_action_installed",
+        cwd = %cwd_raw,
+    );
+    tokio::task::spawn_local(
+        async move {
+            match cli::run_cli_command_and_refresh(cwd_raw, cached_claude_path, args).await {
+                Ok((snapshot, claude_path)) => {
+                    let message =
+                        installed_action_success_message(action, &overlay.title, &overlay.scope);
+                    let _ = event_tx.send(SessionUpdate::PluginsCliActionSucceeded {
+                        cwd_raw: cwd_context,
+                        result: PluginsCliActionSuccess { snapshot, message, claude_path },
+                    });
+                }
+                Err(message) => {
+                    let _ = event_tx.send(SessionUpdate::PluginsCliActionFailed {
+                        cwd_raw: cwd_context,
+                        message,
+                    });
+                }
             }
         }
-    });
+        .instrument(span),
+    );
 }
 
 fn execute_selected_plugin_install_action(app: &mut App) {
@@ -674,21 +693,31 @@ fn execute_selected_plugin_install_action(app: &mut App) {
     let cwd_raw = app.cwd_raw();
     let cwd_context = app.cwd_raw();
     let cached_claude_path = app.plugins.claude_path.clone();
-    tokio::task::spawn_local(async move {
-        match cli::run_cli_command_and_refresh(cwd_raw, cached_claude_path, args).await {
-            Ok((snapshot, claude_path)) => {
-                let message = plugin_install_success_message(action, &overlay.title);
-                let _ = event_tx.send(SessionUpdate::PluginsCliActionSucceeded {
-                    cwd_raw: cwd_context,
-                    result: PluginsCliActionSuccess { snapshot, message, claude_path },
-                });
-            }
-            Err(message) => {
-                let _ = event_tx
-                    .send(SessionUpdate::PluginsCliActionFailed { cwd_raw: cwd_context, message });
+    let span = info_span!(
+        target: crate::logging::targets::APP_CONFIG,
+        "plugin_cli_action_install",
+        cwd = %cwd_raw,
+    );
+    tokio::task::spawn_local(
+        async move {
+            match cli::run_cli_command_and_refresh(cwd_raw, cached_claude_path, args).await {
+                Ok((snapshot, claude_path)) => {
+                    let message = plugin_install_success_message(action, &overlay.title);
+                    let _ = event_tx.send(SessionUpdate::PluginsCliActionSucceeded {
+                        cwd_raw: cwd_context,
+                        result: PluginsCliActionSuccess { snapshot, message, claude_path },
+                    });
+                }
+                Err(message) => {
+                    let _ = event_tx.send(SessionUpdate::PluginsCliActionFailed {
+                        cwd_raw: cwd_context,
+                        message,
+                    });
+                }
             }
         }
-    });
+        .instrument(span),
+    );
 }
 
 fn execute_selected_marketplace_action(app: &mut App) {
@@ -719,21 +748,31 @@ fn execute_selected_marketplace_action(app: &mut App) {
     let cwd_raw = app.cwd_raw();
     let cwd_context = app.cwd_raw();
     let cached_claude_path = app.plugins.claude_path.clone();
-    tokio::task::spawn_local(async move {
-        match cli::run_cli_command_and_refresh(cwd_raw, cached_claude_path, args).await {
-            Ok((snapshot, claude_path)) => {
-                let message = marketplace_action_success_message(&overlay.title, action);
-                let _ = event_tx.send(SessionUpdate::PluginsCliActionSucceeded {
-                    cwd_raw: cwd_context,
-                    result: PluginsCliActionSuccess { snapshot, message, claude_path },
-                });
-            }
-            Err(message) => {
-                let _ = event_tx
-                    .send(SessionUpdate::PluginsCliActionFailed { cwd_raw: cwd_context, message });
+    let span = info_span!(
+        target: crate::logging::targets::APP_CONFIG,
+        "plugin_cli_action_marketplace",
+        cwd = %cwd_raw,
+    );
+    tokio::task::spawn_local(
+        async move {
+            match cli::run_cli_command_and_refresh(cwd_raw, cached_claude_path, args).await {
+                Ok((snapshot, claude_path)) => {
+                    let message = marketplace_action_success_message(&overlay.title, action);
+                    let _ = event_tx.send(SessionUpdate::PluginsCliActionSucceeded {
+                        cwd_raw: cwd_context,
+                        result: PluginsCliActionSuccess { snapshot, message, claude_path },
+                    });
+                }
+                Err(message) => {
+                    let _ = event_tx.send(SessionUpdate::PluginsCliActionFailed {
+                        cwd_raw: cwd_context,
+                        message,
+                    });
+                }
             }
         }
-    });
+        .instrument(span),
+    );
 }
 
 fn confirm_add_marketplace_overlay(app: &mut App) {
@@ -772,24 +811,35 @@ fn confirm_add_marketplace_overlay(app: &mut App) {
     let cwd_raw = app.cwd_raw();
     let cwd_context = app.cwd_raw();
     let cached_claude_path = app.plugins.claude_path.clone();
-    tokio::task::spawn_local(async move {
-        match cli::run_cli_command_and_refresh(cwd_raw, cached_claude_path, args).await {
-            Ok((snapshot, claude_path)) => {
-                let _ = event_tx.send(SessionUpdate::PluginsCliActionSucceeded {
-                    cwd_raw: cwd_context,
-                    result: PluginsCliActionSuccess {
-                        snapshot,
-                        message: format!("Added marketplace {source}"),
-                        claude_path,
-                    },
-                });
-            }
-            Err(message) => {
-                let _ = event_tx
-                    .send(SessionUpdate::PluginsCliActionFailed { cwd_raw: cwd_context, message });
+    let span = info_span!(
+        target: crate::logging::targets::APP_CONFIG,
+        "plugin_cli_action_add_marketplace",
+        cwd = %cwd_raw,
+        source = %source,
+    );
+    tokio::task::spawn_local(
+        async move {
+            match cli::run_cli_command_and_refresh(cwd_raw, cached_claude_path, args).await {
+                Ok((snapshot, claude_path)) => {
+                    let _ = event_tx.send(SessionUpdate::PluginsCliActionSucceeded {
+                        cwd_raw: cwd_context,
+                        result: PluginsCliActionSuccess {
+                            snapshot,
+                            message: format!("Added marketplace {source}"),
+                            claude_path,
+                        },
+                    });
+                }
+                Err(message) => {
+                    let _ = event_tx.send(SessionUpdate::PluginsCliActionFailed {
+                        cwd_raw: cwd_context,
+                        message,
+                    });
+                }
             }
         }
-    });
+        .instrument(span),
+    );
 }
 
 pub(crate) fn apply_cli_action_success(app: &mut App, result: PluginsCliActionSuccess) {
