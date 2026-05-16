@@ -146,11 +146,9 @@ impl SessionTask {
                 // `Command::Prompt` falls off `dispatch`'s key lookup
                 // with `UnknownSession`.
                 if self.connected_once {
-                    // Second-Connected emits SessionReplaced — match the
-                    // explicit SessionReplaced arm and drop oneshots from
-                    // the previous identity so parked forwarder tasks
-                    // exit instead of waiting on tool_call_ids the new
-                    // session will never produce.
+                    // Drop oneshots from the previous identity so parked
+                    // forwarder tasks exit instead of waiting on
+                    // tool_call_ids the new session will never produce.
                     self.domain.lock().pending_interactions.clear();
                     self.rekey_to(&real_key);
                     self.emit(SessionUpdate::SessionReplaced {

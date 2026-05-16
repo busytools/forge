@@ -231,7 +231,7 @@ async fn emit_connected(
     // async worker doesn't park a tokio worker thread for the
     // duration. account_info_from_init is in-memory, no I/O.
     let account = if let Some(account) = client.account_info_from_init() {
-        account
+        Some(account)
     } else {
         let config_dir_owned = config_dir.to_owned();
         match tokio::task::spawn_blocking(move || {
@@ -239,32 +239,34 @@ async fn emit_connected(
         })
         .await
         {
-            Ok(opt) => opt.unwrap_or_default(),
+            Ok(opt) => opt,
             Err(join_err) => {
                 tracing::warn!(
                     target: crate::logging::targets::BRIDGE_LIFECYCLE,
                     error = %join_err,
                     "account_info_from_shell spawn_blocking task panicked"
                 );
-                forge_primitives::AccountInfo::default()
+                None
             }
         }
     };
-    let forge_account =
-        display_name.map(|d| forge_primitives::ForgeAccountIdentity::new(d.to_owned()));
-    if event_tx
-        .send(AgentEvent::StatusSnapshot {
-            session_id: session_id.to_owned(),
-            account,
-            forge_account,
-        })
-        .is_err()
-    {
-        tracing::warn!(
-            target: crate::logging::targets::BRIDGE_LIFECYCLE,
-            session_id,
-            "StatusSnapshot event channel closed before emit"
-        );
+    if let Some(account) = account {
+        let forge_account =
+            display_name.map(|d| forge_primitives::ForgeAccountIdentity::new(d.to_owned()));
+        if event_tx
+            .send(AgentEvent::StatusSnapshot {
+                session_id: session_id.to_owned(),
+                account,
+                forge_account,
+            })
+            .is_err()
+        {
+            tracing::warn!(
+                target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                session_id,
+                "StatusSnapshot event channel closed before emit"
+            );
+        }
     }
 
     if event_tx
