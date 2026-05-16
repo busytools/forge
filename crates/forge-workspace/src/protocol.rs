@@ -2,9 +2,27 @@
 //! forge-workspace. TUI dispatches Commands; workspace per-session
 //! tasks emit SessionUpdates back via a fan-in channel.
 //!
-//! Wire shapes are FINAL as of Phase 1 of the MVVM refactor (#102).
-//! Phases 3a-d migrate emitters/consumers but the variant shapes
-//! themselves don't change.
+//! ## Dual Command shape (deliberate)
+//!
+//! Two `Command` enums exist in the workspace: this one, keyed by
+//! [`SessionKey`], and [`forge_primitives::Command`], keyed by
+//! `session_id: String`. They overlap on variant names (Prompt,
+//! Cancel, SetMode, …) but serve different boundary layers:
+//!
+//! - **`forge_workspace::protocol::Command`** is the TUI ↔ workspace
+//!   envelope. SessionKey routing, App-level variants
+//!   (SpawnProject / SpawnSession / StartDefault), the
+//!   workspace-internal Respond* + MCP cluster.
+//! - **`forge_primitives::Command`** is the workspace ↔ agent
+//!   envelope. session_id-keyed, raw shapes the AgentHandle
+//!   dispatcher recognises.
+//!
+//! Collapsing them would force the AgentHandle dispatcher to handle
+//! App-level variants it has no business in (SpawnProject is a
+//! workspace concern; SessionKey is a routing concern; neither
+//! belongs in the agent layer). The current split keeps each
+//! envelope minimal at its respective boundary. The translation
+//! happens in `session_task::execute_command_via_handle`.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
