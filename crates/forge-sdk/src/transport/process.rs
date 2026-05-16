@@ -398,6 +398,16 @@ impl Subprocess {
         drop(closed_rx);
         if let Some(handle) = self.writer_task.take() {
             handle.abort();
+            // Symmetric drain with the stderr task below. abort() then
+            // await — the future returns JoinError::Cancelled which is
+            // expected; surface panic JoinErrors at debug so the
+            // tokio default panic handler isn't the only path that
+            // notices.
+            if let Err(e) = handle.await
+                && !e.is_cancelled()
+            {
+                debug!(error = %e, "writer task ended abnormally");
+            }
         }
 
         // Wait for child exit, with a SIGKILL timeout so a stuck CLI

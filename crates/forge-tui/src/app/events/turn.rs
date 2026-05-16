@@ -694,15 +694,10 @@ pub(crate) fn dispatch_permission_outcome(
     tool_id: &str,
     outcome: forge_primitives::PermissionOutcome,
 ) {
-    // Under the `testing` Cargo feature we always capture the outcome
-    // into the App's test-capture field, regardless of whether the
-    // workspace is set. The legacy permission unit tests assert via
-    // this capture; Phase 5 wired `App::test_default()` to a workspace
-    // stub, so the workspace path now also fires but produces no
-    // observable side-effect (no `SessionTask` registered for the test
-    // key — the dispatch returns an `UnknownSession` error which we
-    // silence below). Production builds always set the workspace and
-    // never compile this capture branch in.
+    // Tests assert via this capture; the workspace path below also
+    // fires but produces no observable side-effect (the stub has no
+    // session task for the test key — UnknownSession is silenced
+    // below).
     #[cfg(feature = "testing")]
     app.test_dispatched_permission_outcomes
         .borrow_mut()

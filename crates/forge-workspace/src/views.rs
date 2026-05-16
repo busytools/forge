@@ -47,10 +47,7 @@ impl ProjectView {
     /// the session lands under at the moment of spawn; this is just a
     /// visual cue for the user.
     ///
-    /// Returns `"unknown"` when the accounts vec is empty, which
-    /// shouldn't happen in production (loader enforces non-empty) but
-    /// can occur in test fixtures built via `ProjectView::new_for_test`
-    /// without an explicit accounts arg.
+    /// Empty accounts → `"unknown"`.
     pub fn primary_account_hint(&self) -> String {
         self.accounts.first().map_or_else(|| "unknown".to_owned(), |a| a.to_lowercase())
     }

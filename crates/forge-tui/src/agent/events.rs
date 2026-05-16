@@ -1,21 +1,21 @@
-//! Terminal process tracking for spawned shell commands.
-//!
-//! Phase 4 deleted the `ClientEvent` enum (replaced by direct
-//! `forge_workspace::SessionUpdate` consumption). The remaining
-//! types live here for the existing `app::terminal` integration.
+//! Terminal process tracking for spawned shell commands. Used by
+//! `app::terminal` to snapshot accumulated stdout/stderr into the
+//! associated tool call's render state.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
 
 /// Shared handle to all spawned terminal processes.
 pub type TerminalMap = Rc<RefCell<HashMap<String, TerminalProcess>>>;
 
 /// Minimal terminal process state used by UI snapshot rendering.
+/// Single-threaded by construction — the whole `TerminalMap` is
+/// `Rc<RefCell<…>>`, so the inner buffer doesn't need cross-thread
+/// synchronisation either.
 pub struct TerminalProcess {
-    /// Accumulated stdout+stderr - append-only, never cleared.
-    pub output_buffer: Arc<Mutex<Vec<u8>>>,
+    /// Accumulated stdout+stderr — append-only, never cleared.
+    pub output_buffer: Rc<RefCell<Vec<u8>>>,
     /// The shell command that was executed.
     pub command: String,
 }

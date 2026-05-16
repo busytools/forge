@@ -162,14 +162,12 @@ fn dispatch_mouse_by_view(app: &mut App, mouse: crossterm::event::MouseEvent) {
         ActiveView::Diff => {
             super::diff_overlay::handle_mouse(app, mouse);
         }
+        // Launchpad / config / etc. stay keyboard-only — mouse
+        // events are intentionally dropped.
         ActiveView::Config
         | ActiveView::Trusted
         | ActiveView::SessionPicker
-        | ActiveView::Launchpad => {
-            // Mouse input is ignored on these views in v1 —
-            // launchpad / config / etc. stay keyboard-only.
-            let _ = mouse;
-        }
+        | ActiveView::Launchpad => {}
     }
 }
 

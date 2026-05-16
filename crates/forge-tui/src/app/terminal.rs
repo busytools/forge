@@ -51,14 +51,14 @@ fn apply_terminal_payload(tc: &mut ToolCallInfo, payload: TerminalUpdatePayload)
 /// invariants are broken (truncate/reset/replace mode).
 pub(super) fn update_terminal_outputs(app: &mut App) -> bool {
     let _t = app.perf.as_ref().map(|p| p.start("terminal::update"));
-    // Snapshot terminal refs + per-id Arc<Mutex<...>> output buffer handle
-    // so we can release the terminals borrow before mutating `app.messages`
-    // (the messages accessor borrows the whole App, which would conflict
-    // with the live `app.terminals` borrow).
+    // Snapshot terminal refs + per-id Rc<RefCell<...>> output buffer
+    // handle so we can release the terminals borrow before mutating
+    // `app.messages` (the messages accessor borrows the whole App,
+    // which would conflict with the live `app.terminals` borrow).
     let log_session_id = app.session_id().map_or_else(String::new, |s| s.to_string());
     let pending_updates: Vec<(
         super::state::TerminalToolCallRef,
-        std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+        std::rc::Rc<std::cell::RefCell<Vec<u8>>>,
     )> = {
         let Some(terminals_rc) = app.terminals() else {
             return false;
@@ -99,12 +99,10 @@ pub(super) fn update_terminal_outputs(app: &mut App) -> bool {
             continue;
         }
 
-        // Copy only the required bytes under lock, then decode outside the
-        // critical section to avoid blocking output writers.
+        // Copy only the required bytes, then decode outside the
+        // borrow to keep the slice borrow short.
         let payload = {
-            let Ok(buf) = output_buffer.lock() else {
-                continue;
-            };
+            let buf = output_buffer.borrow();
             let current_len = buf.len();
             let force_replace =
                 matches!(tc.terminal_snapshot_mode, TerminalSnapshotMode::ReplaceSnapshot);
@@ -166,7 +164,8 @@ mod tests {
         App, BlockCache, ChatMessage, MessageBlock, MessageRole, TerminalSnapshotMode, TextBlock,
         ToolCallInfo,
     };
-    use std::sync::{Arc, Mutex};
+    use std::cell::RefCell;
+    use std::rc::Rc;
 
     fn bash_tool_message(id: &str, terminal_id: &str) -> ChatMessage {
         ChatMessage::new(
@@ -225,14 +224,14 @@ mod tests {
         app.terminals_mut().borrow_mut().insert(
             "term-1".to_owned(),
             TerminalProcess {
-                output_buffer: Arc::new(Mutex::new(b"alpha\n".to_vec())),
+                output_buffer: Rc::new(RefCell::new(b"alpha\n".to_vec())),
                 command: "echo alpha".to_owned(),
             },
         );
         app.terminals_mut().borrow_mut().insert(
             "term-2".to_owned(),
             TerminalProcess {
-                output_buffer: Arc::new(Mutex::new(b"beta\n".to_vec())),
+                output_buffer: Rc::new(RefCell::new(b"beta\n".to_vec())),
                 command: "echo beta".to_owned(),
             },
         );

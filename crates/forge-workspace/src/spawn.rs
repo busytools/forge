@@ -35,11 +35,11 @@ fn try_emit(workspace: &Workspace, label: &'static str, update: SessionUpdate) {
     }
 }
 
-/// Synthesize a `__spawn_<project_name>__` placeholder bucket key
-/// (matches the legacy TUI spawn flow), emit `SessionUpdate::Spawning`,
-/// then spawn the agent. The first `Connected` event from the
-/// resulting `SessionTask` emits `KeyRenamed` + `Connected` to
-/// migrate the synthetic bucket onto the real claude session UUID.
+/// Synthesize a `__spawn_<project_name>__` placeholder bucket key,
+/// emit `SessionUpdate::Spawning`, then spawn the agent. The first
+/// `Connected` event from the resulting `SessionTask` emits
+/// `KeyRenamed` + `Connected` to migrate the synthetic bucket onto
+/// the real claude session UUID.
 pub(crate) fn handle_spawn_project(
     workspace: &Arc<Workspace>,
     project_name: &str,
