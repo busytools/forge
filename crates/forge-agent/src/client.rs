@@ -65,15 +65,6 @@ pub enum AgentEvent {
         session_id: String,
         message: String,
     },
-    SessionReplaced {
-        session_id: String,
-        cwd: String,
-        current_model: types::CurrentModel,
-        #[serde(default)]
-        available_models: Vec<types::AvailableModel>,
-        mode: Option<types::ModeState>,
-        history_updates: Option<Vec<types::Message>>,
-    },
     SessionsListed {
         sessions: Vec<types::SessionListEntry>,
     },
@@ -149,7 +140,6 @@ impl AgentEvent {
             Self::SlashError { .. } => "slash_error",
             Self::RuntimeReloadCompleted { .. } => "runtime_reload_completed",
             Self::RuntimeReloadFailed { .. } => "runtime_reload_failed",
-            Self::SessionReplaced { .. } => "session_replaced",
             Self::SessionsListed { .. } => "sessions_listed",
             Self::StatusSnapshot { .. } => "status_snapshot",
             Self::OauthCredentialsSnapshot { .. } => "oauth_credentials_snapshot",
@@ -170,7 +160,6 @@ impl AgentEvent {
             | Self::SlashError { session_id, .. }
             | Self::RuntimeReloadCompleted { session_id, .. }
             | Self::RuntimeReloadFailed { session_id, .. }
-            | Self::SessionReplaced { session_id, .. }
             | Self::StatusSnapshot { session_id, .. }
             | Self::OauthCredentialsSnapshot { session_id, .. }
             | Self::ContextUsage { session_id, .. }
@@ -198,7 +187,6 @@ impl AgentEvent {
             | Self::SlashError { .. }
             | Self::RuntimeReloadCompleted { .. }
             | Self::RuntimeReloadFailed { .. }
-            | Self::SessionReplaced { .. }
             | Self::SessionsListed { .. }
             | Self::StatusSnapshot { .. }
             | Self::OauthCredentialsSnapshot { .. }

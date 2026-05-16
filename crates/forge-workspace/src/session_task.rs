@@ -111,11 +111,10 @@ impl SessionTask {
             apply_event_to_domain(&mut guard, &event);
         }
 
-        // Mirror Connected/SessionReplaced into the project catalog
-        // so the Projects pane's drilldown reflects newly-spawned
-        // sessions without forcing a full disk re-scan.
-        if let AgentEvent::Connected { session_id, cwd, .. }
-        | AgentEvent::SessionReplaced { session_id, cwd, .. } = &event
+        // Mirror Connected into the project catalog so the Projects
+        // pane's drilldown reflects newly-spawned sessions without
+        // forcing a full disk re-scan.
+        if let AgentEvent::Connected { session_id, cwd, .. } = &event
             && !cwd.is_empty()
             && let Some(workspace) = self.workspace.upgrade()
         {
@@ -185,32 +184,6 @@ impl SessionTask {
                         history,
                     });
                 }
-            }
-            AgentEvent::SessionReplaced {
-                session_id,
-                cwd,
-                current_model,
-                available_models,
-                mode,
-                history_updates,
-            } => {
-                let history = history_updates.unwrap_or_default();
-                let real_key = SessionKey::from_session_id(session_id.clone());
-                // /new, /resume, /login replace the session identity:
-                // tool_call_ids from the old session will never resolve
-                // against the new one, so drop the oneshots to let parked
-                // forwarder tasks exit instead of waiting forever.
-                self.domain.lock().pending_interactions.clear();
-                self.rekey_to(&real_key);
-                self.emit(SessionUpdate::SessionReplaced {
-                    key: real_key,
-                    session_id: SessionId::new(session_id),
-                    cwd,
-                    current_model,
-                    available_models,
-                    mode,
-                    history,
-                });
             }
             AgentEvent::AuthRequired { method_name, method_description } => {
                 let key = self.spawn_key.clone().unwrap_or_else(|| self.key.clone());
@@ -699,15 +672,10 @@ fn warn_no_session(key: &SessionKey, command: &'static str) {
 /// account info) lives on the TUI's `UiSession`, populated via the
 /// `SessionUpdate` envelopes the task emits.
 pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEvent) {
-    // Both events authoritatively carry the current session_id —
-    // always overwrite so /new / /login / /logout don't leave the
-    // mirror stale.
-    match event {
-        AgentEvent::Connected { session_id, .. }
-        | AgentEvent::SessionReplaced { session_id, .. } => {
-            domain.session_id = Some(SessionId::new(session_id.clone()));
-        }
-        _ => {}
+    // Always overwrite so /new / /login / /logout don't leave the
+    // mirror stale on the second-Connected emission.
+    if let AgentEvent::Connected { session_id, .. } = event {
+        domain.session_id = Some(SessionId::new(session_id.clone()));
     }
 }
 
@@ -870,44 +838,6 @@ mod tests {
         );
     }
 
-    /// `SessionReplaced` (e.g., `/new`, login, logout) overwrites the
-    /// session_id mirror; the new session_id is what subsequent
-    /// `AgentHandle` calls dispatch with.
-    #[test]
-    fn translate_session_replaced_replaces_session_id() {
-        let mut domain = empty_domain();
-        domain.session_id = Some(SessionId::new("old-uuid"));
-
-        apply_event_to_domain(
-            &mut domain,
-            &AgentEvent::SessionReplaced {
-                session_id: "new-uuid".to_owned(),
-                cwd: "/new-proj".to_owned(),
-                current_model: forge_primitives::CurrentModel {
-                    resolved_id: "claude".to_owned(),
-                    display_name_short: "claude".to_owned(),
-                    display_name_long: "claude".to_owned(),
-                    requested_id: None,
-                    catalog_id: None,
-                    supports_effort: false,
-                    supported_effort_levels: Vec::new(),
-                    supports_fast_mode: None,
-                    supports_auto_mode: None,
-                    supports_adaptive_thinking: None,
-                    is_authoritative: true,
-                },
-                available_models: Vec::new(),
-                mode: None,
-                history_updates: None,
-            },
-        );
-
-        assert_eq!(
-            domain.session_id.as_ref().map(std::string::ToString::to_string),
-            Some("new-uuid".to_owned())
-        );
-    }
-
     /// A second `Connected` (`/new`, `/login`, `/logout`) overwrites
     /// the session_id mirror so subsequent user commands route to the
     /// new identity.
@@ -1001,63 +931,6 @@ mod tests {
         assert!(
             domain.lock().pending_interactions.is_empty(),
             "second Connected must clear stale pending_interactions",
-        );
-    }
-
-    /// `SessionTask::translate_event` on `AgentEvent::SessionReplaced`
-    /// (the explicit `/resume`/`/login` path) drains
-    /// `pending_interactions` symmetrically with the
-    /// second-`Connected` case.
-    #[test]
-    fn translate_session_replaced_drains_pending_interactions() {
-        use tokio::sync::oneshot;
-
-        let (handle, _commands_rx) = Agent::testing_stub();
-        let (_cmd_tx, command_rx) = tokio::sync::mpsc::unbounded_channel::<crate::protocol::Command>();
-        let (update_tx, _update_rx) = tokio::sync::mpsc::unbounded_channel::<SessionUpdate>();
-        let domain = Arc::new(parking_lot::Mutex::new(empty_domain()));
-        {
-            let (response_tx, _response_rx) = oneshot::channel::<forge_primitives::PermissionOutcome>();
-            domain
-                .lock()
-                .pending_interactions
-                .insert("stale_tool_id".to_owned(), PendingInteractionSlot::Permission(response_tx));
-        }
-        let mut task = SessionTask {
-            key: SessionKey::from_str_for_test("old-uuid"),
-            handle: Arc::new(handle),
-            command_rx,
-            domain: Arc::clone(&domain),
-            update_tx,
-            spawn_key: None,
-            connected_once: true,
-            workspace: std::sync::Weak::new(),
-        };
-
-        task.translate_event(AgentEvent::SessionReplaced {
-            session_id: "new-uuid".to_owned(),
-            cwd: "/proj".to_owned(),
-            current_model: forge_primitives::CurrentModel {
-                resolved_id: "claude".to_owned(),
-                display_name_short: "claude".to_owned(),
-                display_name_long: "claude".to_owned(),
-                requested_id: None,
-                catalog_id: None,
-                supports_effort: false,
-                supported_effort_levels: Vec::new(),
-                supports_fast_mode: None,
-                supports_auto_mode: None,
-                supports_adaptive_thinking: None,
-                is_authoritative: true,
-            },
-            available_models: Vec::new(),
-            mode: None,
-            history_updates: None,
-        });
-
-        assert!(
-            domain.lock().pending_interactions.is_empty(),
-            "SessionReplaced must clear stale pending_interactions",
         );
     }
 
