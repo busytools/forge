@@ -569,13 +569,7 @@ pub struct ConfigOptionUpdate {
 
 pub use forge_primitives::runtime::FastModeState;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RateLimitStatus {
-    Allowed,
-    AllowedWarning,
-    Rejected,
-}
+pub use forge_primitives::RateLimitStatus;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ApiRetryError {
@@ -590,18 +584,7 @@ pub enum ApiRetryError {
 
 pub use forge_primitives::runtime::RuntimeSessionState;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct RateLimitUpdate {
-    pub status: RateLimitStatus,
-    pub resets_at: Option<f64>,
-    pub utilization: Option<f64>,
-    pub rate_limit_type: Option<String>,
-    pub overage_status: Option<RateLimitStatus>,
-    pub overage_resets_at: Option<f64>,
-    pub overage_disabled_reason: Option<String>,
-    pub is_using_overage: Option<bool>,
-    pub surpassed_threshold: Option<f64>,
-}
+pub use forge_primitives::runtime::RateLimitUpdate;
 
 pub use forge_primitives::runtime::{CompactionTrigger, SessionStatus};
 
