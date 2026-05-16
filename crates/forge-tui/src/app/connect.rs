@@ -109,14 +109,13 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
                 outcome = "failure",
                 telemetry_channel = "perf_sidecar",
                 perf_schema = "forge-perf/v1",
-                perf_append = cli.perf_append,
                 error = %err,
             );
             None
         }
     };
     let perf = perf_path.as_deref().and_then(|path| {
-        let logger = crate::perf::PerfLogger::open(path, cli.perf_append);
+        let logger = crate::perf::PerfLogger::open(path);
         if logger.is_some() {
             tracing::info!(
                 target: crate::logging::targets::APP_PERF,
@@ -125,8 +124,7 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
                 outcome = "success",
                 telemetry_channel = "perf_sidecar",
                 perf_schema = "forge-perf/v1",
-                perf_log = %path.display(),
-                perf_append = cli.perf_append,
+                perf_log = %path.display()
             );
         } else {
             tracing::warn!(
@@ -136,8 +134,7 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
                 outcome = "failure",
                 telemetry_channel = "perf_sidecar",
                 perf_schema = "forge-perf/v1",
-                perf_log = %path.display(),
-                perf_append = cli.perf_append,
+                perf_log = %path.display()
             );
         }
         logger
@@ -405,13 +402,10 @@ mod tests {
         Cli {
             project: project.map(str::to_owned),
             generate_completion: None,
-            enable_logs: false,
             diagnostics_preset: None,
             log_file: None,
             log_filter: None,
-            enable_perf: false,
             perf_log: None,
-            perf_append: false,
         }
     }
 

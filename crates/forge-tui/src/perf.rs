@@ -106,7 +106,6 @@ mod enabled {
         ts_ms: u128,
         pid: u32,
         version: &'a str,
-        append: bool,
     }
 
     fn unix_ms() -> u128 {
@@ -210,16 +209,12 @@ mod enabled {
     #[allow(clippy::unused_self)]
     impl PerfLogger {
         /// Open (or create) the log file. Returns `None` on I/O error
-        /// after logging the failure at warn level.
-        pub fn open(path: &Path, append: bool) -> Option<Self> {
-            let mut options = OpenOptions::new();
-            options.create(true).write(true);
-            if append {
-                options.append(true);
-            } else {
-                options.truncate(true);
-            }
-            let file = match options.open(path) {
+        /// after logging the failure at warn level. Always appends —
+        /// matches the standard log rolling behaviour so a forge
+        /// restart immediately after a perf-relevant bug doesn't
+        /// erase the evidence.
+        pub fn open(path: &Path) -> Option<Self> {
+            let file = match OpenOptions::new().create(true).append(true).open(path) {
                 Ok(f) => f,
                 Err(err) => {
                     tracing::warn!(
@@ -241,7 +236,6 @@ mod enabled {
                 ts_ms,
                 pid: std::process::id(),
                 version: crate::FORGE_VERSION,
-                append,
             };
             write_json_line(&mut writer, &started);
             let _ = writer.flush();
@@ -326,7 +320,7 @@ mod disabled {
     #[allow(clippy::unused_self)]
     impl PerfLogger {
         #[inline]
-        pub fn open(_path: &Path, _append: bool) -> Option<Self> {
+        pub fn open(_path: &Path) -> Option<Self> {
             None
         }
         #[inline]

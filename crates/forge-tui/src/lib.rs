@@ -54,11 +54,6 @@ impl DiagnosticsPreset {
 
 #[derive(Parser, Debug)]
 #[command(name = "forge", about = "Native Rust terminal for Claude Code")]
-#[command(
-    after_help = "Examples:\n  forge --enable-logs --diagnostics-preset session\n  forge --enable-logs --diagnostics-preset render\n  forge --features perf --enable-logs --enable-perf --diagnostics-preset full"
-)]
-// Each bool maps 1:1 to a CLI flag — clap-derive needs them as struct fields.
-#[allow(clippy::struct_excessive_bools)]
 pub struct Cli {
     /// Project name to open. When omitted, opens the project marked
     /// `default = true` in forge.toml. Must match a project's `name`
@@ -71,10 +66,6 @@ pub struct Cli {
     #[arg(long, value_name = "SHELL", hide = true)]
     pub generate_completion: Option<clap_complete::Shell>,
 
-    /// Enable runtime diagnostics using a default log path when `--log-file` is omitted.
-    #[arg(long)]
-    pub enable_logs: bool,
-
     /// Named diagnostics preset for common logging workflows.
     /// Ignored when `--log-filter` is provided explicitly.
     #[arg(long, value_enum)]
@@ -82,7 +73,7 @@ pub struct Cli {
 
     /// Write tracing diagnostics to a file.
     ///
-    /// When omitted but logging is otherwise enabled via `--enable-logs`,
+    /// When omitted but logging is otherwise enabled via
     /// `--diagnostics-preset`, `--log-filter`, or `RUST_LOG`, a
     /// default log path is used.
     #[arg(long, value_name = "PATH")]
@@ -93,18 +84,9 @@ pub struct Cli {
     #[arg(long, value_name = "FILTER")]
     pub log_filter: Option<String>,
 
-    /// Enable perf telemetry using a default sidecar path when `--perf-log` is omitted.
-    /// Requires a binary built with `--features perf`.
-    #[arg(long)]
-    pub enable_perf: bool,
-
     /// Write high-frequency perf telemetry to a sidecar JSON file (requires `--features perf` build).
     #[arg(long, value_name = "PATH")]
     pub perf_log: Option<std::path::PathBuf>,
-
-    /// Append to `--perf-log` instead of truncating on startup.
-    #[arg(long)]
-    pub perf_append: bool,
 }
 
 #[cfg(test)]
@@ -117,13 +99,10 @@ mod tests {
         let cli = Cli::try_parse_from(["forge"]).expect("parse");
         assert!(cli.project.is_none());
         assert!(cli.generate_completion.is_none());
-        assert!(!cli.enable_logs);
         assert!(cli.diagnostics_preset.is_none());
         assert!(cli.log_file.is_none());
         assert!(cli.log_filter.is_none());
-        assert!(!cli.enable_perf);
         assert!(cli.perf_log.is_none());
-        assert!(!cli.perf_append);
     }
 
     #[test]
