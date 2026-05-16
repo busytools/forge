@@ -107,11 +107,12 @@ impl Hooks {
         registry
     }
 
-    /// Render the `hooks` key of the `initialize` `control_request` payload
-    /// exactly as the Client will send it. Test-only surface — production
-    /// code uses this indirectly through the Client's initialize path.
-    #[doc(hidden)]
-    pub fn to_initialize_payload_for_test(&self) -> serde_json::Value {
+    /// Render the `hooks` key of the `initialize` `control_request`
+    /// payload exactly as the Client will send it. Test-only —
+    /// production code uses this indirectly via the Client's
+    /// initialize path.
+    #[cfg(test)]
+    pub(crate) fn to_initialize_payload_for_test(&self) -> serde_json::Value {
         self.mint_registry().to_initialize_payload()
     }
 }
