@@ -955,7 +955,7 @@ mod tests {
         if let Some(ws) = app.workspace.as_ref() {
             for k in [&key_a, &key_b] {
                 let (h, _) = forge_workspace::Workspace::testing_stub_handle();
-                let dom = ws.register_domain_session_for_test(k.clone(), std::sync::Arc::new(h));
+                let dom = ws.register_domain_session(k.clone(), Some(std::sync::Arc::new(h)));
                 dom.lock().session_id = Some(forge_primitives::SessionId::new(k.as_str()));
             }
         }
@@ -1053,7 +1053,7 @@ mod tests {
         app.sessions.insert(key_a.clone(), UiSession::new(key_a.clone()));
         if let Some(ws) = app.workspace.as_ref() {
             let (h, _) = forge_workspace::Workspace::testing_stub_handle();
-            let dom = ws.register_domain_session_for_test(key_a.clone(), std::sync::Arc::new(h));
+            let dom = ws.register_domain_session(key_a.clone(), Some(std::sync::Arc::new(h)));
             dom.lock().session_id = Some(forge_primitives::SessionId::new("a"));
         }
         app.active_session_key = Some(key_a.clone());
@@ -1295,9 +1295,9 @@ mod tests {
         {
             let ws = app.workspace.as_ref().expect("workspace stub present in test_default");
             let (stub_handle, _) = forge_workspace::Workspace::testing_stub_handle();
-            ws.register_domain_session_for_test(
+            ws.register_domain_session(
                 synth_key.clone(),
-                std::sync::Arc::new(stub_handle),
+                Some(std::sync::Arc::new(stub_handle)),
             );
         }
 

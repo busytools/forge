@@ -2625,7 +2625,7 @@ mod tests {
         let _dest_outbox = if let Some(workspace) = app.workspace.as_ref() {
             let (handle, outbox) = forge_workspace::Workspace::testing_stub_handle();
             let domain = workspace
-                .register_domain_session_for_test(dest_key.clone(), std::sync::Arc::new(handle));
+                .register_domain_session(dest_key.clone(), Some(std::sync::Arc::new(handle)));
             domain.lock().session_id =
                 Some(forge_primitives::SessionId::new(dest_key.as_str().to_owned()));
             Some(outbox)

@@ -1435,29 +1435,11 @@ impl Workspace {
         rx
     }
 
-    /// Convenience alias for [`Self::register_domain_session`] used
-    /// by tests that previously named it `_for_test`. Always wraps
-    /// the handle in `Some(...)`; production callers that need
-    /// `None` (pre-spawn) use [`Self::register_domain_session`]
-    /// directly.
-    pub fn register_domain_session_for_test(
-        &self,
-        key: SessionKey,
-        handle: Arc<forge_agent::AgentHandle>,
-    ) -> Arc<Mutex<DomainSession>> {
-        self.register_domain_session(key, Some(handle))
-    }
-
-    /// Convenience alias for [`Self::rekey_domain_session`].
-    pub fn rekey_domain_session_for_test(&self, from: &SessionKey, to: SessionKey) {
-        self.rekey_domain_session(from, to);
-    }
-
     /// Construct an empty `Workspace` for use in unit tests. Skips
     /// the on-disk `forge.toml` load + catalog scan that
     /// [`Workspace::new`] performs; the returned workspace carries an
     /// empty project list and an empty pool. Tests register a domain
-    /// session via [`Self::register_domain_session_for_test`] before
+    /// session via [`Self::register_domain_session`] before
     /// exercising any code path that needs one.
     ///
     /// Returns the workspace alongside the `SessionUpdate` receiver
