@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::ids::{MessageId, SessionId, ToolUseId};
+use crate::ids::{SessionId, ToolUseId};
 use crate::image::ImageAttachment;
 use crate::{ElicitationAction, McpServerConfig, PermissionOutcome, QuestionOutcome};
 
@@ -77,10 +77,6 @@ pub enum Command {
     RenameSession {
         session_id: SessionId,
         title: String,
-    },
-    RewindFiles {
-        session_id: SessionId,
-        user_message_id: MessageId,
     },
 
     // --- Snapshots requested by UI ---

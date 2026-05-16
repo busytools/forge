@@ -454,15 +454,6 @@ fn dispatch(cmd: Command, bridge: &ForgeSdkBridge) -> anyhow::Result<()> {
         C::RenameSession { session_id, title } => {
             bridge.rename_session(session_id.into_string(), title)
         }
-        C::RewindFiles { session_id, user_message_id } => {
-            tracing::warn!(
-                target: crate::logging::targets::BRIDGE_LIFECYCLE,
-                session_id = %session_id,
-                user_message_id = %user_message_id,
-                "Command::RewindFiles dispatched but bridge surface not yet wired; dropping",
-            );
-            Ok(())
-        }
         C::GetStatusSnapshot { session_id } => bridge.get_status_snapshot(session_id.into_string()),
         C::GetOauthCredentialsSnapshot { session_id } => {
             bridge.get_oauth_credentials_snapshot(session_id.into_string())
