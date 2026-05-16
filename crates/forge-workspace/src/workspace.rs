@@ -1207,21 +1207,18 @@ impl Workspace {
     /// is expected to call this from a `tokio::task::spawn_blocking`
     /// to keep the runtime responsive — the workspace exposes the
     /// raw function rather than wrapping it in spawn_blocking so
-    /// callers stay in control of their concurrency model (mirrors
-    /// how `scan_git_diff` exposes the async function directly).
-    #[allow(clippy::unused_self)] // Mirror of `scan_git_diff` — kept as an
-    // instance method so the call site reads `workspace.scan_processes(...)`
-    // alongside the other env scanners, even though it doesn't need to
-    // touch workspace state.
-    pub fn scan_processes(&self, claude_pid: u32) -> forge_agent::env::processes::ProcessSnapshot {
+    /// callers stay in control of their concurrency model.
+    ///
+    /// Associated function (no `self`): nothing here needs workspace
+    /// state, and call sites read `Workspace::scan_processes(pid)`.
+    pub fn scan_processes(claude_pid: u32) -> forge_agent::env::processes::ProcessSnapshot {
         forge_agent::env::processes::scan(claude_pid)
     }
 
     /// Spawn the OS-native URL handler for `url`. Thin facade over
     /// `forge_agent::env::browser::open_url` so forge-tui doesn't
     /// reach for `std::process::Command` directly.
-    #[allow(clippy::unused_self)] // mirrors other env wrappers above
-    pub fn open_url_in_browser(&self, url: &str) -> Result<(), String> {
+    pub fn open_url_in_browser(url: &str) -> Result<(), String> {
         forge_agent::env::browser::open_url(url)
     }
 

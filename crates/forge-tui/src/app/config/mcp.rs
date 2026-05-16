@@ -552,12 +552,9 @@ pub(crate) fn present_mcp_elicitation_request(
         if matches!(request.mode, forge_primitives::ElicitationMode::Url) {
             request.url.as_deref().map_or(
                 (false, Some("SDK did not provide an auth URL".to_owned())),
-                |url| match app.workspace.as_ref() {
-                    Some(ws) => match ws.open_url_in_browser(url) {
-                        Ok(()) => (true, None),
-                        Err(error) => (false, Some(error)),
-                    },
-                    None => (false, Some("workspace not initialised".to_owned())),
+                |url| match forge_workspace::Workspace::open_url_in_browser(url) {
+                    Ok(()) => (true, None),
+                    Err(error) => (false, Some(error)),
                 },
             )
         } else {
@@ -592,13 +589,11 @@ pub(crate) fn present_mcp_auth_redirect(
     view::set_active_view(app, ActiveView::Config);
     app.config.active_tab = ConfigTab::Mcp;
     refresh_mcp_snapshot(app);
-    let (browser_opened, browser_open_error) = match app.workspace.as_ref() {
-        Some(ws) => match ws.open_url_in_browser(&redirect.auth_url) {
+    let (browser_opened, browser_open_error) =
+        match forge_workspace::Workspace::open_url_in_browser(&redirect.auth_url) {
             Ok(()) => (true, None),
             Err(error) => (false, Some(error)),
-        },
-        None => (false, Some("workspace not initialised".to_owned())),
-    };
+        };
     app.config.overlay = Some(ConfigOverlayState::McpAuthRedirect(McpAuthRedirectOverlayState {
         redirect,
         selected_index: 0,
