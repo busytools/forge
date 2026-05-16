@@ -14,20 +14,13 @@ pub type TerminalMap = Rc<RefCell<HashMap<String, TerminalProcess>>>;
 
 /// Minimal terminal process state used by UI snapshot rendering.
 pub struct TerminalProcess {
-    pub child: Option<tokio::process::Child>,
     /// Accumulated stdout+stderr - append-only, never cleared.
     pub output_buffer: Arc<Mutex<Vec<u8>>>,
     /// The shell command that was executed.
     pub command: String,
 }
 
-/// Kill all spawned terminal child processes. Call on app exit.
+/// Clear the terminal map. Call on app exit.
 pub fn kill_all_terminals(terminals: &TerminalMap) {
-    let mut map = terminals.borrow_mut();
-    for (_, terminal) in map.iter_mut() {
-        if let Some(child) = terminal.child.as_mut() {
-            let _ = child.start_kill();
-        }
-    }
-    map.clear();
+    terminals.borrow_mut().clear();
 }

@@ -225,7 +225,6 @@ mod tests {
         app.terminals_mut().borrow_mut().insert(
             "term-1".to_owned(),
             TerminalProcess {
-                child: None,
                 output_buffer: Arc::new(Mutex::new(b"alpha\n".to_vec())),
                 command: "echo alpha".to_owned(),
             },
@@ -233,7 +232,6 @@ mod tests {
         app.terminals_mut().borrow_mut().insert(
             "term-2".to_owned(),
             TerminalProcess {
-                child: None,
                 output_buffer: Arc::new(Mutex::new(b"beta\n".to_vec())),
                 command: "echo beta".to_owned(),
             },
