@@ -36,6 +36,7 @@ use forge_primitives::{ElicitationAction, McpServerConfig, PermissionOutcome, Qu
 /// exercise the path. Production code constructs the bridge with a
 /// real account `config_dir`; tests that don't drive a session use
 /// this path so the typed field stays non-optional.
+#[cfg(any(test, feature = "testing"))]
 const TESTING_STUB_CONFIG_DIR: &str = "/tmp/forge-testing-stub";
 
 /// Pending permission responses keyed by `tool_use_id`. The
@@ -208,6 +209,7 @@ impl ForgeSdkBridge {
     }
 }
 
+#[cfg(any(test, feature = "testing"))]
 impl Default for ForgeSdkBridge {
     fn default() -> Self {
         Self::new(PathBuf::from(TESTING_STUB_CONFIG_DIR), None)

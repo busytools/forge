@@ -326,6 +326,7 @@ impl Agent {
     /// don't drive sessions never see events anyway. The bridge is
     /// bound to a synthetic `/tmp/forge-testing-stub` config_dir;
     /// since no session is driven, no I/O hits this path.
+    #[cfg(any(test, feature = "testing"))]
     pub fn testing_stub() -> (AgentHandle, mpsc::UnboundedReceiver<Command>) {
         let bridge = ForgeSdkBridge::default();
         // Drop the bridge's events receiver immediately — tests don't
