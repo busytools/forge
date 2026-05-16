@@ -179,17 +179,17 @@ pub fn visible_candidates(
 }
 
 pub fn rank_and_truncate_candidates(candidates: &mut Vec<FileCandidate>, query_lower: &str) {
-    let tiers: Vec<Option<u8>> = candidates.iter().map(|c| match_tier(c, query_lower)).collect();
-    let mut indices: Vec<usize> = (0..candidates.len()).collect();
-    indices.sort_by(|&i, &j| {
-        tiers[i]
-            .cmp(&tiers[j])
-            .then_with(|| candidates[i].depth.cmp(&candidates[j].depth))
-            .then_with(|| candidates[i].rel_path.cmp(&candidates[j].rel_path))
+    // Sort in place by (tier, depth, rel_path). match_tier is a
+    // cheap string operation; calling it O(n log n) inside the
+    // comparator is fine at MAX_CANDIDATES = 50 and avoids the
+    // two extra Vec allocations the index-decorated sort needed.
+    candidates.sort_unstable_by(|a, b| {
+        match_tier(a, query_lower)
+            .cmp(&match_tier(b, query_lower))
+            .then_with(|| a.depth.cmp(&b.depth))
+            .then_with(|| a.rel_path.cmp(&b.rel_path))
     });
-
-    indices.truncate(MAX_CANDIDATES);
-    *candidates = indices.into_iter().map(|i| candidates[i].clone()).collect();
+    candidates.truncate(MAX_CANDIDATES);
 }
 
 fn match_tier(candidate: &FileCandidate, query_lower: &str) -> Option<u8> {
