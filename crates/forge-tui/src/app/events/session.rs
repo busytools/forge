@@ -1,5 +1,3 @@
-#![allow(clippy::needless_pass_by_value)]
-
 use super::super::connect::{SessionStartReason, start_new_session};
 use super::super::state::RecentSessionInfo;
 use super::super::view::{self, ActiveView};
@@ -43,7 +41,7 @@ fn bump_bucket_session_scope_epoch(app: &mut App, key: &SessionKey) {
 #[allow(clippy::too_many_arguments)]
 fn apply_connected_presentation(
     app: &mut App,
-    session_key: SessionKey,
+    session_key: &SessionKey,
     session_id: model::SessionId,
     cwd: String,
     current_model: model::CurrentModel,
@@ -92,7 +90,7 @@ fn apply_connected_presentation(
         // disturbed.
         let display = shorten_cwd_display(&cwd);
         let session_id_for_domain = session_id.clone();
-        if let Some(bucket) = app.sessions.get_mut(&session_key) {
+        if let Some(bucket) = app.sessions.get_mut(session_key) {
             bucket.cwd = display;
             bucket.cwd_raw = cwd;
             bucket.session_id =
@@ -107,7 +105,7 @@ fn apply_connected_presentation(
         // UUID) can resolve this bucket.
         if let Some(workspace) = app.workspace.as_ref() {
             workspace.set_session_id_in_domain(
-                &session_key,
+                session_key,
                 Some(forge_primitives::SessionId::new(session_id_for_domain.to_string())),
             );
         }
@@ -923,13 +921,13 @@ fn maybe_open_startup_session_picker(app: &mut App) {
 #[allow(clippy::too_many_arguments)]
 pub(super) fn apply_session_update_connected(
     app: &mut App,
-    key: SessionKey,
+    key: &SessionKey,
     session_id: forge_primitives::SessionId,
     cwd: String,
     current_model: forge_primitives::CurrentModel,
     available_models: Vec<forge_primitives::AvailableModel>,
     mode: Option<forge_primitives::ModeState>,
-    history: Vec<forge_primitives::Message>,
+    history: &[forge_primitives::Message],
 ) {
     use super::super::connect::type_converters::{
         map_available_models,
@@ -941,7 +939,7 @@ pub(super) fn apply_session_update_connected(
     // legacy single-session bridges still rely on this reducer to
     // do the migration when the active key is a synthetic
     // placeholder.
-    let synthetic_to_migrate = if !app.sessions.contains_key(&key)
+    let synthetic_to_migrate = if !app.sessions.contains_key(key)
         && let Some(active_key) = app.active_session_key.clone()
         && is_synthetic_key(&active_key)
     {
@@ -971,21 +969,21 @@ pub(super) fn apply_session_update_connected(
         // synthesize `SessionUpdate::Connected` directly and the
         // legacy single-session SessionReplaced shape.
         if let Some(workspace) = app.workspace.as_ref()
-            && workspace.domain_session_for(&key).is_none()
+            && workspace.domain_session_for(key).is_none()
         {
             workspace.register_domain_session(key.clone(), None);
         }
     }
-    set_bucket_lifecycle_state(app, &key, crate::app::session::SessionLifecycleState::Idle);
+    set_bucket_lifecycle_state(app, key, crate::app::session::SessionLifecycleState::Idle);
     // Clear any captured connection error on a successful reconnect —
     // the launchpad picker stops surfacing the stale `✗` row tail.
-    if let Some(session) = app.session_mut(&key) {
+    if let Some(session) = app.session_mut(key) {
         session.last_connection_error = None;
     }
     // Connected applies welcome/model snapshots to active-session UI
     // only when the key already matches `active_session_key`. Focus
     // routing lives in the `KeyRenamed` reducer, not here.
-    let was_active = app.active_session_key.as_ref() == Some(&key);
+    let was_active = app.active_session_key.as_ref() == Some(key);
     apply_connected_presentation(
         app,
         key,
@@ -994,7 +992,7 @@ pub(super) fn apply_session_update_connected(
         current_model,
         map_available_models(available_models),
         mode,
-        &history,
+        history,
         was_active,
     );
 }
@@ -1011,13 +1009,13 @@ fn is_synthetic_key(key: &SessionKey) -> bool {
 #[allow(clippy::too_many_arguments)]
 pub(super) fn apply_session_update_session_replaced(
     app: &mut App,
-    _key: SessionKey,
+    _key: &SessionKey,
     session_id: forge_primitives::SessionId,
     cwd: String,
     current_model: forge_primitives::CurrentModel,
     available_models: Vec<forge_primitives::AvailableModel>,
     mode: Option<forge_primitives::ModeState>,
-    history: Vec<forge_primitives::Message>,
+    history: &[forge_primitives::Message],
 ) {
     use super::super::connect::type_converters::{
         map_available_models,
@@ -1029,7 +1027,7 @@ pub(super) fn apply_session_update_session_replaced(
         current_model,
         map_available_models(available_models),
         mode,
-        &history,
+        history,
     );
 }
 
@@ -1043,44 +1041,44 @@ pub(super) fn apply_session_update_sessions_listed(
 
 pub(super) fn apply_session_update_auth_required(
     app: &mut App,
-    key: SessionKey,
+    key: &SessionKey,
     method_name: String,
     method_description: String,
 ) {
-    handle_auth_required_event(app, &key, method_name, method_description);
+    handle_auth_required_event(app, key, method_name, method_description);
 }
 
 pub(super) fn apply_session_update_connection_failed(
     app: &mut App,
-    key: SessionKey,
-    message: String,
+    key: &SessionKey,
+    message: &str,
     _fatal: bool,
 ) {
-    handle_connection_failed_event(app, &key, &message);
+    handle_connection_failed_event(app, key, message);
 }
 
 pub(super) fn apply_session_update_slash_command_error(
     app: &mut App,
-    key: SessionKey,
-    message: String,
+    key: &SessionKey,
+    message: &str,
 ) {
-    handle_slash_command_error_event(app, &key, &message);
+    handle_slash_command_error_event(app, key, message);
 }
 
-pub(super) fn apply_session_update_auth_completed(app: &mut App, key: SessionKey) {
-    handle_auth_completed_event(app, &key);
+pub(super) fn apply_session_update_auth_completed(app: &mut App, key: &SessionKey) {
+    handle_auth_completed_event(app, key);
 }
 
-pub(super) fn apply_session_update_logout_completed(app: &mut App, key: SessionKey) {
-    handle_logout_completed_event(app, &key);
+pub(super) fn apply_session_update_logout_completed(app: &mut App, key: &SessionKey) {
+    handle_logout_completed_event(app, key);
 }
 
 pub(super) fn apply_session_update_service_status(
     app: &mut App,
     severity: forge_primitives::cloud::service_status::ServiceSeverity,
-    message: String,
+    message: &str,
 ) {
-    present_service_status(app, severity, &message);
+    present_service_status(app, severity, message);
 }
 
 pub(super) fn apply_session_update_fatal_error(app: &mut App, error: AppError) {

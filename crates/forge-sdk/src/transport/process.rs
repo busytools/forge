@@ -485,45 +485,50 @@ fn spawn_reader_task(
     tee: Option<WireTee>,
     tx: mpsc::UnboundedSender<Result<Option<String>, Error>>,
 ) {
-    tokio::spawn(async move {
-        let mut reader = match buf_capacity {
-            Some(n) => BufReader::with_capacity(n, stdout),
-            None => BufReader::new(stdout),
-        };
-        let mut buf = String::new();
-        loop {
-            buf.clear();
-            match reader.read_line(&mut buf).await {
-                Ok(0) => {
-                    // EOF — signal end-of-stream and exit.
-                    let _ = tx.send(Ok(None));
-                    break;
-                }
-                Ok(_) => {
-                    let mut line = std::mem::take(&mut buf);
-                    while matches!(line.chars().last(), Some('\n' | '\r')) {
-                        line.pop();
+    use tracing::Instrument;
+    let span = tracing::info_span!("forge_sdk::stdout_reader");
+    tokio::spawn(
+        async move {
+            let mut reader = match buf_capacity {
+                Some(n) => BufReader::with_capacity(n, stdout),
+                None => BufReader::new(stdout),
+            };
+            let mut buf = String::new();
+            loop {
+                buf.clear();
+                match reader.read_line(&mut buf).await {
+                    Ok(0) => {
+                        // EOF — signal end-of-stream and exit.
+                        let _ = tx.send(Ok(None));
+                        break;
                     }
-                    if let Some(cb) = tee.as_ref() {
-                        cb(&line);
+                    Ok(_) => {
+                        let mut line = std::mem::take(&mut buf);
+                        while matches!(line.chars().last(), Some('\n' | '\r')) {
+                            line.pop();
+                        }
+                        if let Some(cb) = tee.as_ref() {
+                            cb(&line);
+                        }
+                        if tx.send(Ok(Some(line))).is_err() {
+                            // Receiver gone — caller dropped the transport.
+                            break;
+                        }
                     }
-                    if tx.send(Ok(Some(line))).is_err() {
-                        // Receiver gone — caller dropped the transport.
+                    Err(e) => {
+                        if tx.send(Err(Error::Io(e))).is_err() {
+                            tracing::warn!(
+                                target: "forge_sdk::transport",
+                                "subprocess stdout I/O error after caller dropped reader"
+                            );
+                        }
                         break;
                     }
                 }
-                Err(e) => {
-                    if tx.send(Err(Error::Io(e))).is_err() {
-                        tracing::warn!(
-                            target: "forge_sdk::transport",
-                            "subprocess stdout I/O error after caller dropped reader"
-                        );
-                    }
-                    break;
-                }
             }
         }
-    });
+        .instrument(span),
+    );
 }
 
 fn spawn_writer_task(

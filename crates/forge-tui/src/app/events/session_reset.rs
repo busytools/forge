@@ -392,9 +392,9 @@ mod tests {
         app.sessions.get_mut(&key).expect("bucket").lifecycle_state = SessionLifecycleState::Idle;
 
         // A modest replay tail — multiple assistant messages, as a
-        // long-lived session would have. Pre-fix: each one flipped
-        // lifecycle to Running with no balancing Result, so the bucket
-        // ended on Running.
+        // long-lived session would have. Replay must leave the bucket
+        // at Idle, not stuck at Running, regardless of how many
+        // assistant messages the history carried.
         let history = vec![
             historical_assistant("prior turn 1"),
             historical_assistant("prior turn 2"),

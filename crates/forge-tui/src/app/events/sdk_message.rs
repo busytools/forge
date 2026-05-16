@@ -879,22 +879,28 @@ fn apply_elicitation_request(app: &mut App, data: &Value) {
 }
 
 /// Drain a System(elicitation_complete) record and call the App's
-/// MCP elicitation-completed handler (notice + overlay state).
+/// MCP elicitation-completed handler. Accepts either `request_id`
+/// (mandatory on the request side) or `elicitation_id` (optional)
+/// as the correlator — the wire may carry either depending on the
+/// MCP server.
 fn apply_elicitation_complete(app: &mut App, data: &Value) {
     let Some(record) = data.as_object() else { return };
-    let Some(elicitation_id) =
-        record.get("elicitation_id").and_then(Value::as_str).filter(|s| !s.is_empty())
-    else {
+    let correlator = record
+        .get("request_id")
+        .and_then(Value::as_str)
+        .or_else(|| record.get("elicitation_id").and_then(Value::as_str))
+        .filter(|s| !s.is_empty());
+    let Some(correlator) = correlator else {
         tracing::debug!(
             target: crate::logging::targets::APP_PERMISSION,
             event_name = "elicitation_complete_dropped",
-            message = "elicitation_complete event missing elicitation_id",
+            message = "elicitation_complete event missing both request_id and elicitation_id",
             outcome = "drop",
         );
         return;
     };
     let server_name = record.get("mcp_server_name").and_then(Value::as_str).map(str::to_owned);
-    crate::app::config::handle_mcp_elicitation_completed(app, elicitation_id, server_name);
+    crate::app::config::handle_mcp_elicitation_completed(app, correlator, server_name);
 }
 
 fn apply_settings_parse_errors(app: &mut App, data: &Value) {

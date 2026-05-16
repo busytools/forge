@@ -613,15 +613,13 @@ pub(crate) fn present_mcp_auth_redirect(
 
 pub(crate) fn handle_mcp_elicitation_completed(
     app: &mut App,
-    elicitation_id: &str,
+    correlator: &str,
     _server_name: Option<String>,
 ) {
-    let should_clear = app
-        .mcp()
-        .pending_elicitation
-        .as_ref()
-        .and_then(|request| request.elicitation_id.as_deref())
-        .is_some_and(|current| current == elicitation_id);
+    let should_clear = app.mcp().pending_elicitation.as_ref().is_some_and(|request| {
+        request.request_id == correlator
+            || request.elicitation_id.as_deref() == Some(correlator)
+    });
     if should_clear {
         app.mcp_mut().pending_elicitation = None;
         if matches!(app.config.overlay, Some(ConfigOverlayState::McpElicitation(_))) {
@@ -633,7 +631,7 @@ pub(crate) fn handle_mcp_elicitation_completed(
             event_name = "elicitation_completed_applied",
             message = "elicitation completion applied",
             outcome = "success",
-            request_id = %elicitation_id,
+            correlator = %correlator,
         );
     }
 }

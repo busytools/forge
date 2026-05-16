@@ -564,7 +564,7 @@ impl App {
         // (`forge <project>`). That path lands the user in a fully
         // wired session via `apply_connected_presentation`'s active
         // branch — file index restart, chat focus rebuild, runtime
-        // tabs refresh, post-Connected per-session refreshes. The
+        // tabs refresh, the same per-session refresh chain. The
         // launchpad-pick path spawns the project in the BACKGROUND
         // branch (because `__conn_pending__` is still active at
         // Connected time) and then relies on `switch_active_session`
@@ -2537,14 +2537,10 @@ mod tests {
         assert!(app.session_mut(&key).is_some());
     }
 
-    /// Regression: clicking a launchpad-auto_started project must
-    /// trigger the per-session refresh chain (status / oauth /
-    /// context-usage / 5h+7d) so the bottom panel's bars populate.
-    /// Pre-fix, `switch_active_session` only flipped the active key —
-    /// nothing fired when the user picked a project, and the
-    /// post-Connected refreshes in `events/client.rs` had already
-    /// early-exited because they're gated on the (then pre-Connect)
-    /// active session_id.
+    /// Clicking a launchpad-auto_started project triggers the
+    /// per-session refresh chain (status / oauth / context-usage /
+    /// 5h+7d) so the bottom panel's bars populate on the destination
+    /// session, not just on connect.
     ///
     /// `request_context_usage_refresh` flips
     /// `session_usage.context_usage_in_flight = true` when it

@@ -848,51 +848,34 @@ impl Workspace {
                 Err(DispatchError::UnknownSession(key))
             }
         } else {
-            // App-level commands: route into `spawn::*` handlers on
-            // a tokio task so the dispatch loop returns promptly.
-            // The handlers themselves are sync; the spawn just
-            // detaches them from this thread.
-            let workspace = Arc::clone(self);
+            // App-level commands. The `spawn::*` handlers are sync —
+            // they emit one event, kick off `get_agent_handle_with_spawn_key`
+            // (which internally tokio::spawns the agent), and return.
+            // Run them inline under the span; no detach needed.
             match cmd {
                 Command::SpawnProject { project_name, launch_settings } => {
                     let span = tracing::info_span!(
                         "spawn_project",
                         project = %project_name,
                     );
-                    tokio::spawn(
-                        async move {
-                            spawn::handle_spawn_project(
-                                &workspace,
-                                &project_name,
-                                launch_settings,
-                            );
-                        }
-                        .instrument(span),
-                    );
+                    let _enter = span.enter();
+                    spawn::handle_spawn_project(self, &project_name, launch_settings);
                 }
                 Command::SpawnSession { session_id, launch_settings } => {
                     let span = tracing::info_span!(
                         "spawn_session",
                         session_id = %session_id,
                     );
-                    tokio::spawn(
-                        async move {
-                            spawn::handle_spawn_session(&workspace, &session_id, launch_settings);
-                        }
-                        .instrument(span),
-                    );
+                    let _enter = span.enter();
+                    spawn::handle_spawn_session(self, &session_id, launch_settings);
                 }
                 Command::StartDefault { project_name, launch_settings } => {
                     let span = tracing::info_span!(
                         "start_default",
                         project = ?project_name,
                     );
-                    tokio::spawn(
-                        async move {
-                            spawn::handle_start_default(&workspace, project_name, launch_settings);
-                        }
-                        .instrument(span),
-                    );
+                    let _enter = span.enter();
+                    spawn::handle_start_default(self, project_name, launch_settings);
                 }
                 other => {
                     tracing::warn!(

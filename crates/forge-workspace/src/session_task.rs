@@ -191,9 +191,11 @@ impl SessionTask {
             } => {
                 let history = history_updates.unwrap_or_default();
                 let real_key = SessionKey::from_session_id(session_id.clone());
-                // Same rekey rationale as the `Connected` arm — the
-                // `/new` / `/resume` / `/login` flows hit this path
-                // and need the workspace's routing maps to catch up.
+                // /new, /resume, /login replace the session identity:
+                // tool_call_ids from the old session will never resolve
+                // against the new one, so drop the oneshots to let parked
+                // forwarder tasks exit instead of waiting forever.
+                self.domain.lock().pending_interactions.clear();
                 self.rekey_to(&real_key);
                 self.emit(SessionUpdate::SessionReplaced {
                     key: real_key,

@@ -1,5 +1,3 @@
-#![allow(clippy::needless_pass_by_value)]
-
 use super::{App, session, turn};
 use forge_workspace::{SessionKey, SessionUpdate};
 
@@ -99,13 +97,13 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         } => {
             session::apply_session_update_connected(
                 app,
-                key,
+                &key,
                 session_id,
                 cwd,
                 current_model,
                 available_models,
                 mode,
-                history,
+                &history,
             );
             post_connect_refreshes(app);
         }
@@ -120,13 +118,13 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         } => {
             session::apply_session_update_session_replaced(
                 app,
-                key,
+                &key,
                 session_id,
                 cwd,
                 current_model,
                 available_models,
                 mode,
-                history,
+                &history,
             );
             post_connect_refreshes(app);
         }
@@ -134,43 +132,43 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
             session::apply_session_update_sessions_listed(app, &key, sessions);
         }
         SessionUpdate::AuthRequired { key, method_name, method_description } => {
-            session::apply_session_update_auth_required(app, key, method_name, method_description);
+            session::apply_session_update_auth_required(app, &key, method_name, method_description);
         }
         SessionUpdate::ConnectionFailed { key, message, fatal } => {
-            session::apply_session_update_connection_failed(app, key, message, fatal);
+            session::apply_session_update_connection_failed(app, &key, &message, fatal);
         }
         SessionUpdate::SlashCommandError { key, message } => {
-            session::apply_session_update_slash_command_error(app, key, message);
+            session::apply_session_update_slash_command_error(app, &key, &message);
         }
         SessionUpdate::AuthCompleted { key } => {
-            session::apply_session_update_auth_completed(app, key);
+            session::apply_session_update_auth_completed(app, &key);
         }
         SessionUpdate::LogoutCompleted { key } => {
-            session::apply_session_update_logout_completed(app, key);
+            session::apply_session_update_logout_completed(app, &key);
         }
         SessionUpdate::ServiceStatus { severity, message } => {
-            session::apply_session_update_service_status(app, severity, message);
+            session::apply_session_update_service_status(app, severity, &message);
         }
         SessionUpdate::FatalError(error) => {
             session::apply_session_update_fatal_error(app, error);
         }
         SessionUpdate::ForgeAccountIdentity { key, display_name } => {
-            apply_session_update_forge_account_identity(app, key, display_name);
+            apply_session_update_forge_account_identity(app, &key, display_name);
         }
         SessionUpdate::StatusSnapshot { session_id, account, forge_account } => {
-            apply_session_update_status_snapshot(app, session_id, account, forge_account);
+            apply_session_update_status_snapshot(app, &session_id, account, forge_account);
         }
         SessionUpdate::OauthCredentialsSnapshot { session_id, credentials } => {
-            apply_session_update_oauth_credentials_snapshot(app, session_id, credentials);
+            apply_session_update_oauth_credentials_snapshot(app, &session_id, credentials);
         }
         SessionUpdate::ContextUsageSnapshot { session_id, percentage } => {
-            apply_session_update_context_usage_snapshot(app, session_id, percentage);
+            apply_session_update_context_usage_snapshot(app, &session_id, percentage);
         }
         SessionUpdate::McpSnapshot { session_id, servers, error } => {
-            apply_session_update_mcp_snapshot(app, session_id, servers, error);
+            apply_session_update_mcp_snapshot(app, &session_id, servers, error);
         }
         SessionUpdate::ChatAppended { session_id, msg } => {
-            apply_session_update_chat_appended(app, session_id, msg);
+            apply_session_update_chat_appended(app, &session_id, msg);
         }
         SessionUpdate::HookObservation {
             session_id,
@@ -182,19 +180,19 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         } => {
             apply_session_update_hook_observation(
                 app,
-                session_id,
-                tool_use_id,
-                permission_mode,
-                effort,
-                agent_id,
-                agent_type,
+                &session_id,
+                tool_use_id.as_deref(),
+                permission_mode.as_deref(),
+                effort.as_deref(),
+                agent_id.as_deref(),
+                agent_type.as_deref(),
             );
         }
         SessionUpdate::RuntimeReloadCompleted { session_id } => {
-            apply_session_update_runtime_reload_completed(app, session_id);
+            apply_session_update_runtime_reload_completed(app, &session_id);
         }
         SessionUpdate::RuntimeReloadFailed { session_id, message } => {
-            apply_session_update_runtime_reload_failed(app, session_id, message);
+            apply_session_update_runtime_reload_failed(app, &session_id, &message);
         }
         SessionUpdate::PermissionRequest { key, tool_id, request } => {
             turn::apply_session_update_permission_request(app, &key, &tool_id, request);
@@ -340,10 +338,10 @@ fn shorten_cwd_display_path(cwd: &str) -> String {
 /// active-session welcome snapshot.
 pub(super) fn apply_session_update_forge_account_identity(
     app: &mut App,
-    key: SessionKey,
+    key: &SessionKey,
     display_name: String,
 ) {
-    apply_forge_account_identity_presentation(app, &key, display_name);
+    apply_forge_account_identity_presentation(app, key, display_name);
 }
 
 fn apply_forge_account_identity_presentation(
@@ -379,11 +377,11 @@ fn apply_forge_account_identity_presentation(
 /// state silently.
 pub(super) fn apply_session_update_status_snapshot(
     app: &mut App,
-    session_id: String,
+    session_id: &str,
     account: forge_primitives::AccountInfo,
     forge_account: Option<forge_primitives::ForgeAccountIdentity>,
 ) {
-    apply_status_snapshot_presentation(app, &session_id, account, forge_account);
+    apply_status_snapshot_presentation(app, session_id, account, forge_account);
 }
 
 fn apply_status_snapshot_presentation(
@@ -443,10 +441,10 @@ fn apply_status_snapshot_presentation(
 /// background-session targeting writes directly into the bucket.
 pub(super) fn apply_session_update_oauth_credentials_snapshot(
     app: &mut App,
-    session_id: String,
+    session_id: &str,
     credentials: Option<forge_primitives::cloud::oauth_credentials::OauthCredentials>,
 ) {
-    apply_oauth_credentials_snapshot_presentation(app, &session_id, credentials);
+    apply_oauth_credentials_snapshot_presentation(app, session_id, credentials);
 }
 
 fn apply_oauth_credentials_snapshot_presentation(
@@ -494,10 +492,10 @@ fn apply_oauth_credentials_snapshot_presentation(
 /// chain (a background session re-requests on next active switch).
 pub(super) fn apply_session_update_context_usage_snapshot(
     app: &mut App,
-    session_id: String,
+    session_id: &str,
     percentage: Option<u8>,
 ) {
-    apply_context_usage_snapshot_presentation(app, &session_id, percentage);
+    apply_context_usage_snapshot_presentation(app, session_id, percentage);
 }
 
 fn apply_context_usage_snapshot_presentation(
@@ -536,11 +534,11 @@ fn apply_context_usage_snapshot_presentation(
 /// inherently active-session UI.
 pub(super) fn apply_session_update_mcp_snapshot(
     app: &mut App,
-    session_id: String,
+    session_id: &str,
     servers: Vec<forge_primitives::McpServerStatus>,
     error: Option<String>,
 ) {
-    apply_mcp_snapshot_presentation(app, &session_id, servers, error);
+    apply_mcp_snapshot_presentation(app, session_id, servers, error);
 }
 
 fn apply_mcp_snapshot_presentation(
@@ -614,10 +612,10 @@ fn apply_mcp_snapshot_presentation(
 /// same path.
 pub(super) fn apply_session_update_chat_appended(
     app: &mut App,
-    session_id: String,
+    session_id: &str,
     msg: forge_primitives::Message,
 ) {
-    apply_sdk_message_presentation(app, &session_id, msg);
+    apply_sdk_message_presentation(app, session_id, msg);
 }
 
 fn apply_sdk_message_presentation(app: &mut App, session_id: &str, msg: forge_primitives::Message) {
@@ -706,21 +704,21 @@ fn apply_sdk_message_presentation(app: &mut App, session_id: &str, msg: forge_pr
 /// shared presentation helper.
 pub(super) fn apply_session_update_hook_observation(
     app: &mut App,
-    session_id: String,
-    tool_use_id: Option<String>,
-    permission_mode: Option<String>,
-    effort: Option<String>,
-    agent_id: Option<String>,
-    agent_type: Option<String>,
+    session_id: &str,
+    tool_use_id: Option<&str>,
+    permission_mode: Option<&str>,
+    effort: Option<&str>,
+    agent_id: Option<&str>,
+    agent_type: Option<&str>,
 ) {
     apply_hook_observation_presentation(
         app,
-        &session_id,
-        tool_use_id.as_deref(),
-        permission_mode.as_deref(),
-        effort.as_deref(),
-        agent_id.as_deref(),
-        agent_type.as_deref(),
+        session_id,
+        tool_use_id,
+        permission_mode,
+        effort,
+        agent_id,
+        agent_type,
     );
 }
 
@@ -798,8 +796,8 @@ fn apply_hook_observation_presentation(
 /// reload that completes silently is a no-op on the UI but logged
 /// so the operator can confirm the bridge dispatched it. Unknown-
 /// session events log a warn-level breadcrumb.
-pub(super) fn apply_session_update_runtime_reload_completed(app: &mut App, session_id: String) {
-    apply_runtime_reload_completed_presentation(app, &session_id);
+pub(super) fn apply_session_update_runtime_reload_completed(app: &mut App, session_id: &str) {
+    apply_runtime_reload_completed_presentation(app, session_id);
 }
 
 fn apply_runtime_reload_completed_presentation(app: &mut App, session_id: &str) {
@@ -832,10 +830,10 @@ fn apply_runtime_reload_completed_presentation(app: &mut App, session_id: &str) 
 /// [`apply_session_update_runtime_reload_completed`].
 pub(super) fn apply_session_update_runtime_reload_failed(
     app: &mut App,
-    session_id: String,
-    message: String,
+    session_id: &str,
+    message: &str,
 ) {
-    apply_runtime_reload_failed_presentation(app, &session_id, &message);
+    apply_runtime_reload_failed_presentation(app, session_id, message);
 }
 
 fn apply_runtime_reload_failed_presentation(app: &mut App, session_id: &str, message: &str) {
@@ -1307,11 +1305,9 @@ mod tests {
         );
     }
 
-    /// User-visible bug fix verification: after the spawning reducer
-    /// runs, `is_animating` (the render-loop probe) sees a session in
-    /// `Spawning` lifecycle and keeps the spinner ticking. Pre-fix,
-    /// the lifecycle state lived on `DomainSession` and a synth-key
-    /// race left it stuck at `Idle`, freezing the spinner on wake-up.
+    /// After the spawning reducer runs, `is_animating` (the
+    /// render-loop probe) sees the session in `Spawning` lifecycle and
+    /// keeps the spinner ticking.
     #[test]
     fn spinner_animates_during_spawning() {
         let mut app = App::test_default();
