@@ -689,9 +689,20 @@ async fn run_ask_user_question(
                 answers.insert(prompt.question.clone(), serde_json::Value::String(answer));
                 if let Some(annotation) =
                     bridge_user_interaction::derive_annotation(&selected, annotation.as_ref())
-                    && let Ok(v) = serde_json::to_value(&annotation)
                 {
-                    annotations.insert(prompt.question.clone(), v);
+                    match serde_json::to_value(&annotation) {
+                        Ok(v) => {
+                            annotations.insert(prompt.question.clone(), v);
+                        }
+                        Err(err) => {
+                            tracing::warn!(
+                                target: "forge_agent::forge_sdk_worker",
+                                question = %prompt.question,
+                                error = %err,
+                                "failed to serialise question annotation; dropping"
+                            );
+                        }
+                    }
                 }
             }
             QuestionOutcome::Cancelled => {
