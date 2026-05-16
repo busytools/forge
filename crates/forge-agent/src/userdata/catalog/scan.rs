@@ -27,6 +27,27 @@ use crate::userdata::catalog::mutations::is_valid_uuid;
 
 const MAX_SANITIZED_LENGTH: usize = 200;
 
+/// Open `dir` for directory iteration. NotFound is the expected case
+/// for the catalog's projects/ tree on a fresh forge install and is
+/// silent; real I/O failures (perm denied, broken FS) log at warn
+/// so the user gets a triage signal rather than silently empty
+/// catalog reads.
+fn try_read_dir(dir: &Path) -> Option<fs::ReadDir> {
+    match fs::read_dir(dir) {
+        Ok(iter) => Some(iter),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => {
+            tracing::warn!(
+                target: "forge_agent::userdata::catalog",
+                path = %dir.display(),
+                error = %e,
+                "failed to read catalog directory"
+            );
+            None
+        }
+    }
+}
+
 /// Size of the head / tail byte buffer for lite metadata reads.
 /// the CLI constant — match exactly so
 /// the two implementations slice transcripts at the same boundary.
@@ -142,7 +163,7 @@ fn collect_agent_files(base_dir: &Path) -> Vec<(String, PathBuf)> {
 }
 
 fn walk_agent_files(dir: &Path, out: &mut Vec<(String, PathBuf)>) {
-    let Ok(iter) = fs::read_dir(dir) else {
+    let Some(iter) = try_read_dir(dir) else {
         return;
     };
     let mut entries: Vec<_> = iter.flatten().collect();
@@ -180,7 +201,7 @@ fn resolve_subagents_dir(
     let project_dir = if let Some(dir) = directory {
         project_dir_for(config_dir, dir)
     } else {
-        let iter = fs::read_dir(projects_dir_for(config_dir)).ok()?;
+        let iter = try_read_dir(&projects_dir_for(config_dir))?;
         iter.flatten()
             .map(|e| e.path())
             .find(|p| p.join(format!("{session_id}.jsonl")).is_file())?
@@ -348,7 +369,7 @@ pub async fn list_sessions(
     let search_dirs: Vec<PathBuf> = if let Some(dir) = directory {
         vec![project_dir_for(config_dir, &dir)]
     } else {
-        fs::read_dir(projects_dir_for(config_dir))
+        try_read_dir(&projects_dir_for(config_dir))
             .map(|iter| {
                 iter.flatten()
                     .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
@@ -363,7 +384,7 @@ pub async fn list_sessions(
     // which we hand off to spawn_blocking below.
     let mut candidates: Vec<PathBuf> = Vec::new();
     for project_dir in search_dirs {
-        let Ok(iter) = fs::read_dir(&project_dir) else {
+        let Some(iter) = try_read_dir(&project_dir) else {
             continue;
         };
         for entry in iter.flatten() {
@@ -421,7 +442,7 @@ pub fn get_session_info(
         return read_session_info(&project_dir_for(config_dir, &dir).join(&file_name));
     }
     let projects = projects_dir_for(config_dir);
-    let iter = fs::read_dir(projects).ok()?;
+    let iter = try_read_dir(&projects)?;
     for entry in iter.flatten() {
         let candidate = entry.path().join(&file_name);
         if candidate.is_file() {
@@ -448,7 +469,7 @@ pub fn get_session_messages(
     let candidate = if let Some(dir) = directory {
         Some(project_dir_for(config_dir, &dir).join(&file_name))
     } else {
-        fs::read_dir(projects_dir_for(config_dir)).ok().and_then(|iter| {
+        try_read_dir(&projects_dir_for(config_dir)).and_then(|iter| {
             iter.flatten().map(|e| e.path().join(&file_name)).find(|p| p.is_file())
         })
     };
