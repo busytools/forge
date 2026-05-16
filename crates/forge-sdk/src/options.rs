@@ -858,7 +858,7 @@ mod tests_options_build {
 
     #[test]
     fn builder_stores_can_use_tool_callback() {
-        use crate::{PermissionDecision, ToolPermissionContext};
+        use forge_primitives::{PermissionDecision, ToolPermissionContext};
 
         let opts = OptionsBuilder::new()
             .can_use_tool(|_ctx: ToolPermissionContext| async move { PermissionDecision::allow() })

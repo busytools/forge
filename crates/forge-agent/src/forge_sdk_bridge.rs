@@ -44,7 +44,7 @@ const TESTING_STUB_CONFIG_DIR: &str = "/tmp/forge-testing-stub";
 /// dispatch drains it when the matching `permission_response` arrives
 /// from the App.
 pub(crate) type PendingResponses =
-    Arc<Mutex<HashMap<String, oneshot::Sender<forge_sdk::PermissionDecision>>>>;
+    Arc<Mutex<HashMap<String, oneshot::Sender<forge_primitives::PermissionDecision>>>>;
 
 /// Pending question outcomes keyed by `tool_use_id`. The
 /// `AskUserQuestion` driver in the `can_use_tool` callback parks a

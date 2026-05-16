@@ -28,7 +28,8 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use forge_sdk::{Client, Message, OptionsBuilder};
+use forge_primitives::Message;
+use forge_sdk::{Client, OptionsBuilder};
 use forge_test_harness::sdk_wire::{TraceLog, attach_recording, decode_all_inbound};
 
 fn timestamp_tag() -> String {

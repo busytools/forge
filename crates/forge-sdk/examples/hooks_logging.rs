@@ -9,7 +9,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use anyhow::Result;
-use forge_sdk::Message;
+use forge_primitives::Message;
 use forge_sdk::{
     Client, HookContext, HookDecision, HooksBuilder, OptionsBuilder, PermissionMode,
     PostToolUseInput, PreToolUseInput,

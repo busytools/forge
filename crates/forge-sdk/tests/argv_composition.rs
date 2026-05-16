@@ -255,19 +255,19 @@ fn sandbox_all_fields_wire_as_python_camel_case() {
     // Verifies the field names land on the wire exactly as Python emits
     // them (types.py:782-856). Regression guard against the fabricated
     // names forge-sdk carried before 2026-04-22.
-    let sandbox = forge_sdk::SandboxSettings {
+    let sandbox = forge_primitives::SandboxSettings {
         enabled: Some(true),
         auto_allow_bash_if_sandboxed: Some(true),
         excluded_commands: Some(vec!["git".into(), "docker".into()]),
         allow_unsandboxed_commands: Some(false),
-        network: Some(forge_sdk::SandboxNetworkConfig {
+        network: Some(forge_primitives::SandboxNetworkConfig {
             allow_unix_sockets: Some(vec!["/var/run/docker.sock".into()]),
             allow_all_unix_sockets: Some(false),
             allow_local_binding: Some(true),
             http_proxy_port: Some(3128),
             socks_proxy_port: Some(1080),
         }),
-        ignore_violations: Some(forge_sdk::SandboxIgnoreViolations {
+        ignore_violations: Some(forge_primitives::SandboxIgnoreViolations {
             file: Some(vec!["/tmp".into()]),
             network: Some(vec!["metrics.example".into()]),
         }),
@@ -291,7 +291,7 @@ fn sandbox_all_fields_wire_as_python_camel_case() {
 #[test]
 fn sandbox_alone_merges_into_settings_json() {
     let sandbox =
-        forge_sdk::SandboxSettings { enabled: Some(true), ..forge_sdk::SandboxSettings::default() };
+        forge_primitives::SandboxSettings { enabled: Some(true), ..forge_primitives::SandboxSettings::default() };
     let argv = argv_of(OptionsBuilder::new().sandbox(sandbox));
     let value = find_flag(&argv, "--settings").expect("flag present").expect("value present");
     let parsed: serde_json::Value = serde_json::from_str(value).expect("json");
@@ -301,7 +301,7 @@ fn sandbox_alone_merges_into_settings_json() {
 #[test]
 fn settings_inline_json_merges_with_sandbox() {
     let sandbox =
-        forge_sdk::SandboxSettings { enabled: Some(true), ..forge_sdk::SandboxSettings::default() };
+        forge_primitives::SandboxSettings { enabled: Some(true), ..forge_primitives::SandboxSettings::default() };
     let argv = argv_of(OptionsBuilder::new().settings(r#"{"theme":"dark"}"#).sandbox(sandbox));
     let value = find_flag(&argv, "--settings").expect("flag present").expect("value present");
     let parsed: serde_json::Value = serde_json::from_str(value).expect("json");

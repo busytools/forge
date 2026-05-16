@@ -11,9 +11,10 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use forge_primitives::{PermissionDecision, ToolPermissionContext};
 use forge_sdk::{
-    Client, HookContext, HookDecision, HooksBuilder, Options, OptionsBuilder, PermissionDecision,
-    PermissionMode, PreToolUseInput, ToolPermissionContext, UserPromptSubmitInput,
+    Client, HookContext, HookDecision, HooksBuilder, Options, OptionsBuilder, PermissionMode,
+    PreToolUseInput, UserPromptSubmitInput,
 };
 use tokio::sync::{mpsc, oneshot};
 
@@ -875,7 +876,7 @@ mod tests {
     };
     use crate::client::AgentEvent;
     use forge_primitives::{ElicitationAction, PermissionOutcome, QuestionOutcome};
-    use forge_sdk::ToolPermissionContext;
+    use forge_primitives::ToolPermissionContext;
     use parking_lot::Mutex;
     use serde_json::json;
     use std::collections::HashMap;
@@ -893,7 +894,7 @@ mod tests {
     fn park(
         pending: &PendingResponses,
         id: &str,
-    ) -> oneshot::Receiver<forge_sdk::PermissionDecision> {
+    ) -> oneshot::Receiver<forge_primitives::PermissionDecision> {
         let (tx, rx) = oneshot::channel();
         pending.lock().insert(id.to_owned(), tx);
         rx

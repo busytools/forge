@@ -21,7 +21,8 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 use unicode_normalization::UnicodeNormalization;
 
-use forge_sdk::{SDKSessionInfo, SessionMessage, SessionMessageKind, projects_dir_for};
+use forge_primitives::{SDKSessionInfo, SessionMessage, SessionMessageKind};
+use forge_sdk::projects_dir_for;
 
 use crate::userdata::catalog::mutations::is_valid_uuid;
 

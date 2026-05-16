@@ -102,12 +102,12 @@ async fn wire_capture_rewind_files() {
         let mut rewind_id: Option<String> = None;
         loop {
             match events.recv().await {
-                Some(Ok(forge_sdk::Message::User { uuid: Some(id), .. }))
+                Some(Ok(forge_primitives::Message::User { uuid: Some(id), .. }))
                     if rewind_id.is_none() =>
                 {
                     rewind_id = Some(id);
                 }
-                Some(Ok(forge_sdk::Message::Result { .. })) | None => break,
+                Some(Ok(forge_primitives::Message::Result { .. })) | None => break,
                 Some(Ok(_)) => {}
                 Some(Err(e)) => return Err(e),
             }
@@ -146,11 +146,11 @@ async fn wire_capture_stop_task() {
         let mut task_id: Option<String> = None;
         while task_id.is_none() {
             match events.recv().await {
-                Some(Ok(forge_sdk::Message::TaskStarted { task_id: id, .. })) => {
+                Some(Ok(forge_primitives::Message::TaskStarted { task_id: id, .. })) => {
                     task_id = Some(id);
                     break;
                 }
-                Some(Ok(forge_sdk::Message::Result { .. })) | None => break,
+                Some(Ok(forge_primitives::Message::Result { .. })) | None => break,
                 Some(Ok(_)) => {}
                 Some(Err(e)) => return Err(e),
             }

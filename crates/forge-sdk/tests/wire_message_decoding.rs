@@ -12,8 +12,8 @@
 #[cfg(test)]
 mod tests_rate_limit_frames {
 
+    use forge_primitives::{Message, RateLimitInfo, RateLimitStatus, RateLimitType};
     use forge_sdk::transport::codec::{DecodedLine, decode_dispatch, decode_line};
-    use forge_sdk::{Message, RateLimitInfo, RateLimitStatus, RateLimitType};
     use serde_json::json;
 
     #[test]
@@ -92,8 +92,8 @@ mod tests_rate_limit_frames {
 #[cfg(test)]
 mod tests_task_lifecycle_frames {
 
+    use forge_primitives::{Message, TaskNotificationStatus, TaskUsage};
     use forge_sdk::transport::codec::{DecodedLine, decode_dispatch, decode_line};
-    use forge_sdk::{Message, TaskNotificationStatus, TaskUsage};
     use serde_json::json;
 
     #[test]
@@ -290,7 +290,7 @@ mod tests_task_lifecycle_frames {
 #[cfg(test)]
 mod tests_stream_event_and_error_frames {
 
-    use forge_sdk::Message;
+    use forge_primitives::Message;
     use forge_sdk::transport::codec::{DecodedLine, decode_dispatch, decode_line};
     use serde_json::json;
 

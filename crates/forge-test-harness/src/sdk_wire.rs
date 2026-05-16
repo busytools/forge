@@ -303,7 +303,7 @@ where
     loop {
         match tokio::time::timeout(read_timeout, events.recv()).await {
             Ok(Some(Ok(msg))) => {
-                if let forge_sdk::Message::Result {
+                if let forge_primitives::Message::Result {
                     num_turns, total_cost_usd, duration_ms, ..
                 } = &msg
                 {
