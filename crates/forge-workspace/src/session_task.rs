@@ -63,7 +63,7 @@ impl SessionTask {
                 "AgentHandle::take_events returned None; session task aborting"
             );
             let fail_key = self.spawn_key.clone().unwrap_or_else(|| self.key.clone());
-            let _ = self.update_tx.send(SessionUpdate::ConnectionFailed {
+            self.emit(SessionUpdate::ConnectionFailed {
                 key: fail_key,
                 message: "agent event receiver unavailable".to_owned(),
                 fatal: false,
@@ -76,9 +76,7 @@ impl SessionTask {
         // rendering shows the right label from the first frame.
         if let Some(display_name) = self.handle.display_name() {
             let id_key = self.spawn_key.clone().unwrap_or_else(|| self.key.clone());
-            let _ = self
-                .update_tx
-                .send(SessionUpdate::ForgeAccountIdentity { key: id_key, display_name });
+            self.emit(SessionUpdate::ForgeAccountIdentity { key: id_key, display_name });
         }
 
         loop {
@@ -150,7 +148,7 @@ impl SessionTask {
                 // with `UnknownSession`.
                 self.rekey_to(&real_key);
                 if self.connected_once {
-                    let _ = self.update_tx.send(SessionUpdate::SessionReplaced {
+                    self.emit(SessionUpdate::SessionReplaced {
                         key: real_key,
                         session_id: SessionId::new(session_id),
                         cwd,
@@ -168,12 +166,12 @@ impl SessionTask {
                     if let Some(spawn_key) = self.spawn_key.take()
                         && spawn_key.as_str() != real_key.as_str()
                     {
-                        let _ = self.update_tx.send(SessionUpdate::KeyRenamed {
+                        self.emit(SessionUpdate::KeyRenamed {
                             from: spawn_key,
                             to: real_key.clone(),
                         });
                     }
-                    let _ = self.update_tx.send(SessionUpdate::Connected {
+                    self.emit(SessionUpdate::Connected {
                         key: real_key,
                         session_id: SessionId::new(session_id),
                         cwd,
@@ -198,7 +196,7 @@ impl SessionTask {
                 // `/new` / `/resume` / `/login` flows hit this path
                 // and need the workspace's routing maps to catch up.
                 self.rekey_to(&real_key);
-                let _ = self.update_tx.send(SessionUpdate::SessionReplaced {
+                self.emit(SessionUpdate::SessionReplaced {
                     key: real_key,
                     session_id: SessionId::new(session_id),
                     cwd,
@@ -210,7 +208,7 @@ impl SessionTask {
             }
             AgentEvent::AuthRequired { method_name, method_description } => {
                 let key = self.spawn_key.clone().unwrap_or_else(|| self.key.clone());
-                let _ = self.update_tx.send(SessionUpdate::AuthRequired {
+                self.emit(SessionUpdate::AuthRequired {
                     key,
                     method_name,
                     method_description,
@@ -218,7 +216,7 @@ impl SessionTask {
             }
             AgentEvent::ConnectionFailed { message } => {
                 let key = self.spawn_key.clone().unwrap_or_else(|| self.key.clone());
-                let _ = self.update_tx.send(SessionUpdate::ConnectionFailed {
+                self.emit(SessionUpdate::ConnectionFailed {
                     key,
                     message,
                     fatal: false,
@@ -252,6 +250,23 @@ impl SessionTask {
                         session_id,
                         tool_call_id,
                     );
+                } else {
+                    // TUI channel closed between the insert and the
+                    // send. Resolve the orphaned oneshot with Cancelled
+                    // so the SDK callback unblocks rather than hanging
+                    // the `claude` subprocess turn forever.
+                    if let Some(slot) =
+                        self.domain.lock().pending_interactions.remove(&tool_call_id)
+                        && let PendingInteractionSlot::Permission(tx) = slot
+                    {
+                        let _ = tx.send(forge_primitives::PermissionOutcome::Cancelled);
+                    }
+                    tracing::warn!(
+                        target: "forge_workspace::session_task",
+                        key = %self.key.as_str(),
+                        tool_id = %tool_call_id,
+                        "PermissionRequest send failed; orphaned oneshot cancelled"
+                    );
                 }
             }
             AgentEvent::QuestionRequest { session_id, request } => {
@@ -282,12 +297,35 @@ impl SessionTask {
                         session_id,
                         tool_call_id,
                     );
+                } else {
+                    // TUI channel closed between insert and send —
+                    // resolve the orphan with Cancelled so the SDK
+                    // callback unblocks.
+                    if let Some(slot) =
+                        self.domain.lock().pending_interactions.remove(&tool_call_id)
+                        && let PendingInteractionSlot::Question(tx) = slot
+                    {
+                        let _ = tx.send(forge_primitives::QuestionOutcome::Cancelled);
+                    }
+                    tracing::warn!(
+                        target: "forge_workspace::session_task",
+                        key = %self.key.as_str(),
+                        tool_id = %tool_call_id,
+                        "QuestionRequest send failed; orphaned oneshot cancelled"
+                    );
                 }
             }
             AgentEvent::ElicitationRequest { session_id, request } => {
                 let session_key = SessionKey::from_session_id(session_id);
-                let elicitation_id = request.elicitation_id.clone().unwrap_or_default();
-                let _ = self.update_tx.send(SessionUpdate::McpElicitationRequest {
+                // When the CLI omits an elicitation_id, synthesize a
+                // local UUID so concurrent None-id requests don't
+                // collapse onto the empty-string correlation key and
+                // become indistinguishable to the TUI.
+                let elicitation_id = request
+                    .elicitation_id
+                    .clone()
+                    .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                self.emit(SessionUpdate::McpElicitationRequest {
                     key: session_key,
                     elicitation_id,
                     request,
@@ -295,7 +333,7 @@ impl SessionTask {
             }
             AgentEvent::ElicitationComplete { session_id, elicitation_id, server_name } => {
                 let session_key = SessionKey::from_session_id(session_id);
-                let _ = self.update_tx.send(SessionUpdate::McpElicitationCompleted {
+                self.emit(SessionUpdate::McpElicitationCompleted {
                     key: session_key,
                     elicitation_id,
                     server_name,
@@ -303,28 +341,21 @@ impl SessionTask {
             }
             AgentEvent::McpAuthRedirect { session_id, redirect } => {
                 let session_key = SessionKey::from_session_id(session_id);
-                let _ = self
-                    .update_tx
-                    .send(SessionUpdate::McpAuthRedirect { key: session_key, redirect });
+                self.emit(SessionUpdate::McpAuthRedirect { key: session_key, redirect });
             }
             AgentEvent::McpOperationError { session_id, error } => {
                 let session_key = SessionKey::from_session_id(session_id);
-                let _ = self
-                    .update_tx
-                    .send(SessionUpdate::McpOperationError { key: session_key, error });
+                self.emit(SessionUpdate::McpOperationError { key: session_key, error });
             }
             AgentEvent::SlashError { session_id, message } => {
                 let session_key = SessionKey::from_session_id(session_id);
-                let _ = self
-                    .update_tx
-                    .send(SessionUpdate::SlashCommandError { key: session_key, message });
+                self.emit(SessionUpdate::SlashCommandError { key: session_key, message });
             }
             AgentEvent::RuntimeReloadCompleted { session_id } => {
-                let _ = self.update_tx.send(SessionUpdate::RuntimeReloadCompleted { session_id });
+                self.emit(SessionUpdate::RuntimeReloadCompleted { session_id });
             }
             AgentEvent::RuntimeReloadFailed { session_id, message } => {
-                let _ =
-                    self.update_tx.send(SessionUpdate::RuntimeReloadFailed { session_id, message });
+                self.emit(SessionUpdate::RuntimeReloadFailed { session_id, message });
             }
             AgentEvent::SessionsListed { sessions } => {
                 // Route via `spawn_key` while the pre-Connect bucket
@@ -335,31 +366,26 @@ impl SessionTask {
                 // land via `self.key` directly because `spawn_key` is
                 // cleared in the Connected arm.
                 let key = self.spawn_key.clone().unwrap_or_else(|| self.key.clone());
-                let _ = self.update_tx.send(SessionUpdate::SessionsListed { key, sessions });
+                self.emit(SessionUpdate::SessionsListed { key, sessions });
             }
             AgentEvent::StatusSnapshot { session_id, account, forge_account } => {
-                let _ = self.update_tx.send(SessionUpdate::StatusSnapshot {
+                self.emit(SessionUpdate::StatusSnapshot {
                     session_id,
                     account,
                     forge_account,
                 });
             }
             AgentEvent::OauthCredentialsSnapshot { session_id, credentials } => {
-                let _ = self
-                    .update_tx
-                    .send(SessionUpdate::OauthCredentialsSnapshot { session_id, credentials });
+                self.emit(SessionUpdate::OauthCredentialsSnapshot { session_id, credentials });
             }
             AgentEvent::ContextUsage { session_id, percentage } => {
-                let _ = self
-                    .update_tx
-                    .send(SessionUpdate::ContextUsageSnapshot { session_id, percentage });
+                self.emit(SessionUpdate::ContextUsageSnapshot { session_id, percentage });
             }
             AgentEvent::McpSnapshot { session_id, servers, error } => {
-                let _ =
-                    self.update_tx.send(SessionUpdate::McpSnapshot { session_id, servers, error });
+                self.emit(SessionUpdate::McpSnapshot { session_id, servers, error });
             }
             AgentEvent::SdkMessage { session_id, msg } => {
-                let _ = self.update_tx.send(SessionUpdate::ChatAppended { session_id, msg });
+                self.emit(SessionUpdate::ChatAppended { session_id, msg });
             }
             AgentEvent::HookObservation {
                 session_id,
@@ -369,7 +395,7 @@ impl SessionTask {
                 agent_id,
                 agent_type,
             } => {
-                let _ = self.update_tx.send(SessionUpdate::HookObservation {
+                self.emit(SessionUpdate::HookObservation {
                     session_id,
                     tool_use_id,
                     permission_mode,
@@ -449,7 +475,16 @@ impl SessionTask {
             }
             other => {
                 let sid = self.session_id_string();
-                let _ = execute_command_via_handle(&self.handle, &self.key, sid.as_deref(), other);
+                if let Err(err) =
+                    execute_command_via_handle(&self.handle, &self.key, sid.as_deref(), other)
+                {
+                    tracing::warn!(
+                        target: "forge_workspace::session_task",
+                        key = %self.key.as_str(),
+                        error = %err,
+                        "agent command dispatch failed; bridge channel closed?"
+                    );
+                }
             }
         }
     }
@@ -460,6 +495,19 @@ impl SessionTask {
     /// `Connected` yet.
     fn session_id_string(&self) -> Option<String> {
         self.domain.lock().session_id.as_ref().map(std::string::ToString::to_string)
+    }
+
+    /// Send `update` to the workspace fan-in; log on send failure so a
+    /// closed-channel regression leaves a trail rather than silently
+    /// dropping events.
+    fn emit(&self, update: SessionUpdate) {
+        if self.update_tx.send(update).is_err() {
+            tracing::warn!(
+                target: "forge_workspace::session_task",
+                key = %self.key.as_str(),
+                "SessionUpdate channel closed; dropping event"
+            );
+        }
     }
 
     /// Migrate this task's workspace-side registrations from the
