@@ -8,16 +8,12 @@ use std::sync::Arc;
 use crate::hooks::Hooks;
 use std::collections::HashMap;
 
-use serde_json::Value;
-
 use crate::mcp::McpServer;
 use crate::permissions::CanUseToolCallback;
-// Pure-data option enums (PermissionMode, SystemPromptKind, ToolsPreset,
-// ThinkingConfig, SdkPluginConfig) live in forge-primitives now.
+// Pure-data option enums live in forge-primitives.
 use forge_primitives::subagents::SubagentEffort;
 pub use forge_primitives::{
-    PermissionMode, SdkPluginConfig, SubagentDefinition, SystemPromptKind, ThinkingConfig,
-    ToolsPreset,
+    PermissionMode, SdkPluginConfig, SubagentDefinition, SystemPromptKind,
 };
 
 /// Per-line callback used by [`Options::tee_inbound`] and
@@ -58,23 +54,9 @@ pub struct Options {
     /// Tool names the model is allowed to invoke. Passed to the CLI as
     /// `--allowedTools <comma,list>`. Empty means "no explicit allowlist".
     pub allowed_tools: Vec<String>,
-    /// Skills to enable. the CLI supports `"all"` plus concrete names.
-    /// Three-channel delivery:
-    /// 1. Injected into `--allowedTools` as `Skill` (for `"all"`) or
-    ///    `Skill(<name>)`.
-    /// 2. If `setting_sources` is unset, defaulted to `user,project` and
-    ///    emitted as `--setting-sources=user,project`.
-    /// 3. Concrete (non-`"all"`) skills also populate the `skills` field
-    ///    in the `initialize` `control_request` (deferred until C2.9 lands).
-    pub skills: Vec<String>,
-    /// CLI `--setting-sources` value. When `None`, the default derives
-    /// from whether `skills` is set.
+    /// CLI `--setting-sources` value. When `None`, the CLI uses its own
+    /// default.
     pub setting_sources: Option<Vec<String>>,
-    /// Whether to exclude dynamic sections from the system prompt. Wire
-    /// shape: `excludeDynamicSections` field in the `initialize`
-    /// `control_request` (NOT a CLI flag — the CLI delivers this via
-    /// the control channel).
-    pub exclude_dynamic_sections: Option<bool>,
     /// Orthogonal permission-prompt tool. When set, passed as
     /// `--permission-prompt-tool <name>`.
     pub permission_prompt_tool_name: Option<String>,
@@ -95,34 +77,11 @@ pub struct Options {
     /// `Some` emits `--system-prompt`, `--system-prompt-file`, or
     /// `--append-system-prompt` depending on variant.
     pub system_prompt: Option<SystemPromptKind>,
-    /// Base tool set. `None` = CLI default. `Some(ToolsPreset::Default)`
-    /// emits `--tools default`; `Some(List(...))` emits `--tools <csv>`.
-    pub tools: Option<ToolsPreset>,
-    /// Denylist passed via `--disallowedTools`. Empty = no flag.
-    pub disallowed_tools: Vec<String>,
     /// Turn limit. `--max-turns <n>`.
     pub max_turns: Option<u64>,
-    /// USD budget. `--max-budget-usd <n>`.
-    pub max_budget_usd: Option<f64>,
-    /// Backup model when the primary is unavailable. `--fallback-model`.
-    pub fallback_model: Option<String>,
-    /// Experimental beta flags. `--betas <csv>`.
-    pub betas: Vec<String>,
-    /// Resume the most recent conversation. `--continue`.
-    pub continue_conversation: bool,
     /// Explicit session id for a new session (distinct from `resume`).
     /// `--session-id <id>`.
     pub session_id: Option<String>,
-    /// Surface streaming chunks rather than coalesced turns.
-    /// `--include-partial-messages`.
-    pub include_partial_messages: bool,
-    /// Spawn-time fork — duplicate `resume`'s session on the first turn.
-    /// `--fork-session` (distinct from the offline JSONL-level
-    /// `fork_session` helper in `forge_agent::userdata::catalog::mutations`;
-    /// has no runtime `fork_session` `control_request`).
-    pub fork_session: bool,
-    /// Extra directories surfaced to the CLI via repeated `--add-dir`.
-    pub add_dirs: Vec<std::path::PathBuf>,
     /// Local plugins. Wire shape: `list[SdkPluginConfig]`.
     pub plugins: Vec<SdkPluginConfig>,
     /// Environment variables added to the subprocess env.
@@ -137,18 +96,6 @@ pub struct Options {
     /// for its origin on the subagent declaration shape, but the
     /// session-level effort uses the same wire enum).
     pub effort: Option<SubagentEffort>,
-    /// Extended-thinking configuration. Takes precedence over
-    /// `max_thinking_tokens`.
-    pub thinking: Option<ThinkingConfig>,
-    /// Deprecated. Use `thinking` instead. `--max-thinking-tokens <n>`
-    /// when `thinking` is None.
-    pub max_thinking_tokens: Option<u64>,
-    /// Task budget: total sub-agent token budget per turn. `--task-budget`.
-    pub task_budget: Option<u64>,
-    /// Structured output schema. the CLI's `output_format` accepts
-    /// `{"type": "json_schema", "schema": {...}}`; forge-sdk accepts the
-    /// schema JSON directly for simplicity.
-    pub output_format: Option<Value>,
     /// Internal stdout buffer upper bound. `None` = default 1 MiB.
     pub max_buffer_size: Option<usize>,
     /// Stderr line callback. When set, each line from the subprocess
@@ -169,11 +116,6 @@ pub struct Options {
     /// lines without a trailing newline (the SDK strips it before
     /// invoking).
     pub tee_outbound: Option<WireTee>,
-    /// Enable file-checkpoint tracking (required for
-    /// [`Client::rewind_files`](crate::Client::rewind_files)).
-    /// Delivered via the `CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING`
-    /// env var (NOT a CLI flag).
-    pub enable_file_checkpointing: bool,
     /// Settings: either a file path or an inline JSON string. When
     /// combined with [`sandbox`](Self::sandbox), forge-sdk parses
     /// the JSON (or reads the file) and merges
@@ -198,39 +140,23 @@ impl Default for Options {
             external_mcp_servers: HashMap::new(),
             hooks: Hooks::default(),
             allowed_tools: Vec::new(),
-            skills: Vec::new(),
             setting_sources: None,
-            exclude_dynamic_sections: None,
             permission_prompt_tool_name: None,
             minimum_cli_version: Some("2.0.0".into()),
             projects_dir: None,
             subagents: HashMap::new(),
             system_prompt: None,
-            tools: None,
-            disallowed_tools: Vec::new(),
             max_turns: None,
-            max_budget_usd: None,
-            fallback_model: None,
-            betas: Vec::new(),
-            continue_conversation: false,
             session_id: None,
-            include_partial_messages: false,
-            fork_session: false,
-            add_dirs: Vec::new(),
             plugins: Vec::new(),
             env: HashMap::new(),
             user: None,
             extra_args: HashMap::new(),
             effort: None,
-            thinking: None,
-            max_thinking_tokens: None,
-            task_budget: None,
-            output_format: None,
             max_buffer_size: None,
             stderr: None,
             tee_inbound: None,
             tee_outbound: None,
-            enable_file_checkpointing: false,
             settings: None,
             sandbox: None,
         }
@@ -238,17 +164,6 @@ impl Default for Options {
 }
 
 impl Options {
-    /// Return the inner schema JSON of a
-    /// `{"type":"json_schema","schema":...}` `output_format` entry,
-    /// if present.
-    pub(crate) fn output_format_json_schema(&self) -> Option<String> {
-        let format = self.output_format.as_ref()?;
-        if format.get("type")?.as_str()? != "json_schema" {
-            return None;
-        }
-        serde_json::to_string(format.get("schema")?).ok()
-    }
-
     /// Resolve `settings` + `sandbox` into the single string passed via
     /// `--settings`. Surfaces sandbox serialisation failures rather
     /// than silently dropping the sandbox config. Parse failures on
@@ -353,39 +268,23 @@ impl std::fmt::Debug for Options {
             )
             .field("hooks", &self.hooks)
             .field("allowed_tools", &self.allowed_tools)
-            .field("skills", &self.skills)
             .field("setting_sources", &self.setting_sources)
-            .field("exclude_dynamic_sections", &self.exclude_dynamic_sections)
             .field("permission_prompt_tool_name", &self.permission_prompt_tool_name)
             .field("minimum_cli_version", &self.minimum_cli_version)
             .field("projects_dir", &self.projects_dir)
             .field("subagents", &format!("<{} subagents>", self.subagents.len()))
             .field("system_prompt", &self.system_prompt)
-            .field("tools", &self.tools)
-            .field("disallowed_tools", &self.disallowed_tools)
             .field("max_turns", &self.max_turns)
-            .field("max_budget_usd", &self.max_budget_usd)
-            .field("fallback_model", &self.fallback_model)
-            .field("betas", &self.betas)
-            .field("continue_conversation", &self.continue_conversation)
             .field("session_id", &self.session_id)
-            .field("include_partial_messages", &self.include_partial_messages)
-            .field("fork_session", &self.fork_session)
-            .field("add_dirs", &self.add_dirs)
             .field("plugins", &self.plugins)
             .field("env", &format!("<{} vars>", self.env.len()))
             .field("user", &self.user)
             .field("extra_args", &format!("<{} flags>", self.extra_args.len()))
             .field("effort", &self.effort)
-            .field("thinking", &self.thinking)
-            .field("max_thinking_tokens", &self.max_thinking_tokens)
-            .field("task_budget", &self.task_budget)
-            .field("output_format", &self.output_format)
             .field("max_buffer_size", &self.max_buffer_size)
             .field("stderr", &self.stderr.as_ref().map(|_| "<callback>"))
             .field("tee_inbound", &self.tee_inbound.as_ref().map(|_| "<callback>"))
             .field("tee_outbound", &self.tee_outbound.as_ref().map(|_| "<callback>"))
-            .field("enable_file_checkpointing", &self.enable_file_checkpointing)
             .field("settings", &self.settings)
             .field("sandbox", &self.sandbox)
             .finish()
@@ -477,25 +376,6 @@ impl OptionsBuilder {
         self
     }
 
-    /// Enable skills. Use `"all"` to enable all skills, or list names.
-    /// the CLI defaults `setting_sources` to `["user", "project"]` when
-    /// this is set and `setting_sources` is not explicitly provided.
-    pub fn skills<I, S>(mut self, skills: I) -> Self
-    where
-        I: IntoIterator<Item = S>,
-        S: Into<String>,
-    {
-        self.inner.skills = skills.into_iter().map(Into::into).collect();
-        self
-    }
-
-    /// Exclude dynamic sections from the system prompt. Delivered via
-    /// the `initialize` `control_request`, not a CLI flag.
-    pub fn exclude_dynamic_sections(mut self, yes: bool) -> Self {
-        self.inner.exclude_dynamic_sections = Some(yes);
-        self
-    }
-
     /// Set an orthogonal permission-prompt tool name (CLI flag
     /// `--permission-prompt-tool`). Alternative to `can_use_tool` — the
     /// CLI invokes the named tool (typically via MCP) instead of routing
@@ -518,69 +398,15 @@ impl OptionsBuilder {
         self
     }
 
-    /// Set the base tool preset / list.
-    pub fn tools(mut self, tools: ToolsPreset) -> Self {
-        self.inner.tools = Some(tools);
-        self
-    }
-
-    /// Override the disallowed-tools list.
-    pub fn disallowed_tools(mut self, tools: Vec<String>) -> Self {
-        self.inner.disallowed_tools = tools;
-        self
-    }
-
     /// Cap the turn count.
     pub fn max_turns(mut self, n: u64) -> Self {
         self.inner.max_turns = Some(n);
         self
     }
 
-    /// Cap total USD spend.
-    pub fn max_budget_usd(mut self, usd: f64) -> Self {
-        self.inner.max_budget_usd = Some(usd);
-        self
-    }
-
-    /// Specify the fallback model.
-    pub fn fallback_model(mut self, m: impl Into<String>) -> Self {
-        self.inner.fallback_model = Some(m.into());
-        self
-    }
-
-    /// Set experimental beta flags.
-    pub fn betas(mut self, betas: Vec<String>) -> Self {
-        self.inner.betas = betas;
-        self
-    }
-
-    /// Resume the most recent conversation (`--continue`).
-    pub fn continue_conversation(mut self, yes: bool) -> Self {
-        self.inner.continue_conversation = yes;
-        self
-    }
-
     /// Set an explicit session id for a new session (distinct from `resume`).
     pub fn session_id(mut self, id: impl Into<String>) -> Self {
         self.inner.session_id = Some(id.into());
-        self
-    }
-
-    /// Toggle `--include-partial-messages`.
-    pub fn include_partial_messages(mut self, yes: bool) -> Self {
-        self.inner.include_partial_messages = yes;
-        self
-    }
-
-    /// Toggle `--fork-session` (spawn-time).
-    pub fn fork_session(mut self, yes: bool) -> Self {
-        self.inner.fork_session = yes;
-        self
-    }
-
-    /// Append a directory to `--add-dir` list.
-    pub fn add_dir(mut self, dir: impl Into<std::path::PathBuf>) -> Self {
-        self.inner.add_dirs.push(dir.into());
         self
     }
 
@@ -608,31 +434,6 @@ impl OptionsBuilder {
         self
     }
 
-    /// Configure extended thinking.
-    pub fn thinking(mut self, t: ThinkingConfig) -> Self {
-        self.inner.thinking = Some(t);
-        self
-    }
-
-    /// Deprecated — prefer `thinking(ThinkingConfig::Enabled{..})`.
-    pub fn max_thinking_tokens(mut self, n: u64) -> Self {
-        self.inner.max_thinking_tokens = Some(n);
-        self
-    }
-
-    /// Cap total sub-agent token budget per turn.
-    pub fn task_budget(mut self, n: u64) -> Self {
-        self.inner.task_budget = Some(n);
-        self
-    }
-
-    /// Attach a structured-output schema. Wire form:
-    /// `{"type":"json_schema","schema":{...}}`.
-    pub fn output_format(mut self, value: Value) -> Self {
-        self.inner.output_format = Some(value);
-        self
-    }
-
     /// Attach a stderr line callback.
     pub fn stderr(mut self, cb: impl Fn(String) + Send + Sync + 'static) -> Self {
         self.inner.stderr = Some(Arc::new(cb));
@@ -654,14 +455,6 @@ impl OptionsBuilder {
     /// [`tee_inbound`](Self::tee_inbound).
     pub fn tee_outbound(mut self, cb: impl Fn(&str) + Send + Sync + 'static) -> Self {
         self.inner.tee_outbound = Some(Arc::new(cb));
-        self
-    }
-
-    /// Enable file-checkpoint tracking. Delivered via the
-    /// `CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING` env var (NOT a
-    /// CLI flag).
-    pub fn enable_file_checkpointing(mut self, yes: bool) -> Self {
-        self.inner.enable_file_checkpointing = yes;
         self
     }
 
@@ -694,38 +487,9 @@ mod tests_skills_option {
     use crate::OptionsBuilder;
 
     #[test]
-    fn skills_default_empty() {
-        let opts = OptionsBuilder::new().build();
-        assert!(opts.skills.is_empty());
-        assert!(opts.allowed_tools.is_empty());
-        assert!(opts.setting_sources.is_none());
-        // Default omits the field; the caller must opt in via the
-        // builder.
-        assert!(opts.exclude_dynamic_sections.is_none());
-    }
-
-    #[test]
-    fn skills_with_all_marker() {
-        let opts = OptionsBuilder::new().skills(["all"]).build();
-        assert_eq!(opts.skills, vec!["all".to_string()]);
-    }
-
-    #[test]
-    fn skills_with_concrete_names() {
-        let opts = OptionsBuilder::new().skills(["create-story", "another-skill"]).build();
-        assert_eq!(opts.skills.len(), 2);
-    }
-
-    #[test]
     fn allowed_tools_round_trip() {
         let opts = OptionsBuilder::new().allowed_tools(["Read", "Grep"]).build();
         assert_eq!(opts.allowed_tools, vec!["Read".to_string(), "Grep".into()]);
-    }
-
-    #[test]
-    fn exclude_dynamic_sections_toggles() {
-        let opts = OptionsBuilder::new().exclude_dynamic_sections(true).build();
-        assert_eq!(opts.exclude_dynamic_sections, Some(true));
     }
 }
 

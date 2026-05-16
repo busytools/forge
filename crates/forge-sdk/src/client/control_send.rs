@@ -57,18 +57,6 @@ impl Client {
         Ok(())
     }
 
-    /// Ask the CLI to revert file edits made since the given user message.
-    /// Required field shape: `{"subtype": "rewind_files", "user_message_id": "..."}`.
-    ///
-    /// # Errors
-    ///
-    /// See the outbound control error cases.
-    pub async fn rewind_files(&self, user_message_id: &str) -> Result<(), Error> {
-        self.send_control("rewind_files", serde_json::json!({"user_message_id": user_message_id}))
-            .await?;
-        Ok(())
-    }
-
     /// Reconnect a named MCP server (asks the CLI to drop + re-establish
     /// its connection to the named server). Wire shape uses camelCase
     /// `serverName`.

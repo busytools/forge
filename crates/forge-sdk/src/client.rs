@@ -158,15 +158,12 @@ impl Client {
                     .map_err(|e| Error::encode("subagents map", e))?,
             )
         };
-        let skills_payload: Vec<String> =
-            options.skills.iter().filter(|s| s.as_str() != "all").cloned().collect();
-        let skills_payload = if skills_payload.is_empty() { None } else { Some(skills_payload) };
         let exclude_dynamic_sections = match &options.system_prompt {
             Some(crate::options::SystemPromptKind::Preset {
                 exclude_dynamic_sections: Some(v),
                 ..
             }) => Some(*v),
-            _ => options.exclude_dynamic_sections,
+            _ => None,
         };
         let hooks_field = if hook_payload.as_object().is_some_and(serde_json::Map::is_empty) {
             serde_json::Value::Null
@@ -181,12 +178,6 @@ impl Client {
         }
         if let Some(flag) = exclude_dynamic_sections {
             init_body.insert("excludeDynamicSections".into(), serde_json::Value::Bool(flag));
-        }
-        if let Some(list) = skills_payload {
-            init_body.insert(
-                "skills".into(),
-                serde_json::Value::Array(list.into_iter().map(Into::into).collect()),
-            );
         }
         let init_request_id = crate::request_id::next();
         let init_envelope = serde_json::json!({

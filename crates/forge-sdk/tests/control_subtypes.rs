@@ -34,13 +34,6 @@ async fn set_permission_mode_round_trip() {
 }
 
 #[tokio::test]
-async fn rewind_files_round_trip() {
-    let client = spawn_client().await;
-    client.rewind_files("msg_user_01").await.expect("rewind_files");
-    client.disconnect().await.expect("disconnect");
-}
-
-#[tokio::test]
 async fn mcp_reconnect_round_trip() {
     let client = spawn_client().await;
     client.mcp_reconnect("my-server").await.expect("mcp_reconnect");

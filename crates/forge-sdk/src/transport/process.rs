@@ -202,18 +202,13 @@ impl Subprocess {
         //    otherwise default, EXCEPT `CLAUDE_AGENT_SDK_VERSION` —
         //    that one the SDK always stamps last.
         // 4. Stamp `CLAUDE_AGENT_SDK_VERSION` as the final write.
-        // 5. Gate `CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING=true` on
-        //    `enable_file_checkpointing` (NOT a CLI flag — env var).
-        // 6. Set `PWD` to the chosen cwd when present.
+        // 5. Set `PWD` to the chosen cwd when present.
         cmd.env_remove("CLAUDECODE");
         cmd.env("CLAUDE_CODE_ENTRYPOINT", "sdk-rs");
         for (k, v) in &options.env {
             cmd.env(k, v);
         }
         cmd.env("CLAUDE_AGENT_SDK_VERSION", env!("CARGO_PKG_VERSION"));
-        if options.enable_file_checkpointing {
-            cmd.env("CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING", "true");
-        }
         if let Some(cwd) = &options.cwd {
             cmd.env("PWD", cwd);
         }

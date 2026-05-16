@@ -68,22 +68,6 @@ async fn spawn_sets_entrypoint_and_version_envs() {
 }
 
 #[tokio::test]
-async fn spawn_sets_file_checkpointing_env_when_enabled() {
-    let on = spawn_and_capture_env(|b| b.enable_file_checkpointing(true)).await;
-    assert_eq!(
-        on.get("CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING").map(String::as_str),
-        Some("true"),
-        "enable_file_checkpointing must surface as env var (NOT a CLI flag)"
-    );
-
-    let off = spawn_and_capture_env(|b| b).await;
-    assert!(
-        !off.contains_key("CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING"),
-        "env var must NOT be stamped when enable_file_checkpointing is false"
-    );
-}
-
-#[tokio::test]
 async fn spawn_sets_pwd_to_cwd_when_present() {
     let tmp = tempfile::tempdir().unwrap();
     let cwd = tmp.path().to_path_buf();

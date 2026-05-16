@@ -25,8 +25,7 @@
 //!   `ToolPermissionContext`, `PermissionUpdate*`, `Permission*`).
 //! - [`options`] — option-config enums shared between the SDK's
 //!   `Options` builder and consumers (`PermissionMode`,
-//!   `SystemPromptKind`, `ToolsPreset`, `ThinkingConfig`,
-//!   `SdkPluginConfig`).
+//!   `SystemPromptKind`, `SdkPluginConfig`).
 //! - [`subagents`] — `SubagentDefinition` + nested types.
 //! - [`runtime`] — live runtime state: mode/model state, available
 //!   commands/agents/models, rate-limit views, retry classification,
@@ -99,7 +98,7 @@ pub use messages::{
     AssistantEnvelope, AssistantMessageError, Message, RateLimitInfo, RateLimitStatus,
     RateLimitType, StopReason, TaskNotificationStatus, TaskUsage, Usage, UserEnvelope,
 };
-pub use options::{SdkPluginConfig, SystemPromptKind, ThinkingConfig, ToolsPreset};
+pub use options::{SdkPluginConfig, SystemPromptKind};
 pub use permission::PermissionMode;
 pub use permission_ui::{
     PermissionDisplay, PermissionOption, PermissionOutcome, PermissionRequest,

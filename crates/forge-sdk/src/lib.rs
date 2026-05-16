@@ -75,8 +75,7 @@ pub use hooks::{
     UserPromptSubmitHookSpecificOutput, UserPromptSubmitInput,
 };
 pub use options::{
-    Options, OptionsBuilder, PermissionMode, SdkPluginConfig, SystemPromptKind, ThinkingConfig,
-    ToolsPreset,
+    Options, OptionsBuilder, PermissionMode, SdkPluginConfig, SystemPromptKind,
 };
 pub use permissions::CanUseToolCallback;
 

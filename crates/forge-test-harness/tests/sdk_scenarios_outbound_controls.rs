@@ -81,52 +81,6 @@ async fn wire_capture_mcp_toggle() {
 
 #[tokio::test]
 #[ignore = "burns real Anthropic API tokens; opt-in via FORGE_WIRE_CAPTURE=1"]
-async fn wire_capture_rewind_files() {
-    // `rewind_files` takes a user_message_id which the CLI only emits
-    // when the `replay-user-messages` CLI flag is on (docs:
-    // `UserMessage.uuid` is `None` unless the CLI is configured via
-    // `extra_args={"replay-user-messages": None}`). Combined with
-    // `enable_file_checkpointing(true)` to actually make checkpointing
-    // available on the backend.
-    let opts = OptionsBuilder::new()
-        .max_turns(1)
-        .permission_mode(PermissionMode::AcceptEdits)
-        .enable_file_checkpointing(true)
-        .extra_arg("replay-user-messages", None)
-        .build();
-
-    run_live_scenario("rewind_files", opts, |client, mut events| async move {
-        client.send_user_message("Reply with only the word OK.").await?;
-
-        // Drain until Result, capturing the first user_message uuid.
-        let mut rewind_id: Option<String> = None;
-        loop {
-            match events.recv().await {
-                Some(Ok(forge_primitives::Message::User { uuid: Some(id), .. }))
-                    if rewind_id.is_none() =>
-                {
-                    rewind_id = Some(id);
-                }
-                Some(Ok(forge_primitives::Message::Result { .. })) | None => break,
-                Some(Ok(_)) => {}
-                Some(Err(e)) => return Err(e),
-            }
-        }
-        if let Some(id) = rewind_id {
-            if let Err(e) = client.rewind_files(&id).await {
-                eprintln!("rewind_files({id}): {e}");
-            }
-        } else {
-            eprintln!("rewind_files: no user_message_id captured; outbound control skipped");
-        }
-        Ok((client, events))
-    })
-    .await
-    .expect("scenario run");
-}
-
-#[tokio::test]
-#[ignore = "burns real Anthropic API tokens; opt-in via FORGE_WIRE_CAPTURE=1"]
 async fn wire_capture_stop_task() {
     let opts = OptionsBuilder::new()
         .max_turns(6)
