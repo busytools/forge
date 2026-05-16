@@ -59,7 +59,6 @@ macro_rules! tool {
     };
 }
 
-#[doc(hidden)]
 pub mod __private {
     pub use async_trait::async_trait;
 }

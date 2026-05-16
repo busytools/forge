@@ -38,10 +38,14 @@ pub struct FileIndexState {
 }
 
 /// Cancel guard wrapping the agent's `ScanCancel`. Drop to abort.
-pub struct FileIndexScanHandle(#[allow(dead_code)] env::ScanCancel);
+pub struct FileIndexScanHandle {
+    _drop_guard: env::ScanCancel,
+}
 
 /// Cancel guard wrapping the agent's `WatchCancel`. Drop to abort.
-pub struct FileIndexWatchHandle(#[allow(dead_code)] env::WatchCancel);
+pub struct FileIndexWatchHandle {
+    _drop_guard: env::WatchCancel,
+}
 
 pub enum FileIndexEvent {
     /// Each variant carries `key` so the workspace-wide
@@ -310,7 +314,7 @@ fn spawn_scan(
             }
         }
     });
-    FileIndexScanHandle(cancel)
+    FileIndexScanHandle { _drop_guard: cancel }
 }
 
 /// Spawn the agent-side watcher and a forwarding thread that wraps
@@ -339,7 +343,7 @@ fn spawn_watch(
             }
         }
     });
-    FileIndexWatchHandle(cancel)
+    FileIndexWatchHandle { _drop_guard: cancel }
 }
 
 impl ScanOverrides {

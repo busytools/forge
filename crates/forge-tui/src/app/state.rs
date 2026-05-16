@@ -2164,7 +2164,6 @@ impl App {
     /// are silently dropped. Behind the `testing` Cargo feature so
     /// production builds don't pull in the stub helpers.
     #[cfg(feature = "testing")]
-    #[doc(hidden)]
     pub fn test_default() -> Self {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<forge_workspace::SessionUpdate>();
         let (file_index_tx, file_index_rx) = std_mpsc::channel();

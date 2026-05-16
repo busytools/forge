@@ -60,7 +60,6 @@ pub(crate) mod request_id;
 pub mod subagents;
 pub mod transport;
 
-#[doc(hidden)]
 pub use crate::mcp::macros::__private;
 pub use client::{Client, ClientEvents};
 pub use error::Error;

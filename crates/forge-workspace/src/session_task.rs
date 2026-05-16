@@ -14,6 +14,7 @@ use forge_agent::AgentHandle;
 use forge_agent::client::AgentEvent;
 use forge_primitives::SessionId;
 use parking_lot::Mutex;
+use tracing::Instrument;
 use tokio::sync::mpsc;
 
 use crate::SessionKey;
@@ -742,6 +743,11 @@ fn spawn_permission_response_forwarder(
     session_id: String,
     tool_call_id: String,
 ) {
+    let span = tracing::info_span!(
+        "permission_response_forwarder",
+        session_id = %session_id,
+        tool_call_id = %tool_call_id,
+    );
     tokio::task::spawn(async move {
         let Ok(outcome) = response_rx.await else {
             tracing::warn!(
@@ -779,7 +785,7 @@ fn spawn_permission_response_forwarder(
                 );
             }
         }
-    });
+    }.instrument(span));
 }
 
 /// Forward an awaited question outcome to the agent so the bridge
@@ -790,6 +796,11 @@ fn spawn_question_response_forwarder(
     session_id: String,
     tool_call_id: String,
 ) {
+    let span = tracing::info_span!(
+        "question_response_forwarder",
+        session_id = %session_id,
+        tool_call_id = %tool_call_id,
+    );
     tokio::task::spawn(async move {
         let Ok(outcome) = response_rx.await else {
             tracing::warn!(
@@ -829,7 +840,7 @@ fn spawn_question_response_forwarder(
                 );
             }
         }
-    });
+    }.instrument(span));
 }
 
 #[cfg(test)]
