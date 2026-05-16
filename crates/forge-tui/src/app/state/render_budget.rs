@@ -297,9 +297,10 @@ impl super::App {
         self.ensure_render_cache_accounting();
         self.render_cache_evictable_mut().clear();
 
-        // Phase 1: snapshot every slot's new state into a Vec so we never
-        // have an immutable borrow on `self.messages()` while mutating
-        // `self.render_cache_slots` / `self.render_cache_evictable`.
+        // Snapshot every slot's new state into a Vec so we never
+        // have an immutable borrow on `self.messages()` while
+        // mutating `self.render_cache_slots` /
+        // `self.render_cache_evictable`.
         let mut updates: Vec<SlotUpdate> = Vec::new();
         let msg_count = self.messages().len();
         let mut block_protections: Vec<Vec<bool>> = Vec::with_capacity(msg_count);

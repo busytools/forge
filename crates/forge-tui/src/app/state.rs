@@ -2147,12 +2147,12 @@ impl App {
     /// All fields get sensible defaults; the `mpsc` channel is wired up internally.
     ///
     /// Wires a `Workspace::testing_stub()` so any code path that
-    /// reaches `Workspace::dispatch` / `Workspace::refresh_*` finds a
-    /// registered [`forge_workspace::DomainSession`] keyed by
-    /// [`Self::PRE_CONNECT_KEY`]. The underlying `AgentHandle` is the
-    /// `Agent::testing_stub` no-op bridge; commands sent through it
-    /// are silently dropped. Behind the `testing` Cargo feature so
-    /// production builds don't pull in the stub helpers.
+    /// reaches `Workspace::dispatch` / `Workspace::refresh_*` finds
+    /// a registered `forge_workspace::DomainSession` keyed by the
+    /// `__conn_pending__` synthetic. The underlying `AgentHandle`
+    /// is the `Agent::testing_stub` no-op bridge; commands sent
+    /// through it are silently dropped. Behind the `testing` Cargo
+    /// feature so production builds don't pull in the stub helpers.
     #[cfg(feature = "testing")]
     pub fn test_default() -> Self {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<forge_workspace::SessionUpdate>();

@@ -4,9 +4,9 @@
 //! enum itself lives here so neither crate has to re-state it.
 
 /// Coarse classification of a turn-level error message. The
-/// classifier itself lives in
-/// [`forge_agent::translate::error_handling`]; this enum is the wire
-/// shape it produces.
+/// classifier itself lives in forge-agent's
+/// `translate::error_handling`; this enum is the wire shape it
+/// produces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TurnErrorClass {
     PlanLimit,

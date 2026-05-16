@@ -395,7 +395,7 @@ impl Client {
 
     /// Read the bare `apiKeySource` field from the cached
     /// `system/init` payload, returning a partial
-    /// [`AccountInfo`](crate::AccountInfo) (auth source only — no
+    /// [`forge_primitives::AccountInfo`] (auth source only — no
     /// email/org/subscription). Returns `None` when the payload is
     /// absent (init not yet arrived), the field is missing, or the
     /// value is empty / `"none"`.

@@ -314,10 +314,10 @@ fn walk_user_tool_results(app: &mut App, content: &[forge_primitives::ContentBlo
                 apply_tool_result_block(app, tool_use_id, is_error, raw_content, Some(raw));
             }
             ContentBlock::QueuedCommand { prompt, .. } => {
-                // Issue #85: claude bundled a user-typed-while-busy
-                // message as a `queued_command` content block here.
-                // Match against a pending dimmed bubble (live) or
-                // push a fresh user bubble (replay).
+                // Claude bundled a user-typed-while-busy message as
+                // a `queued_command` content block — match against
+                // a pending dimmed bubble (live) or push a fresh
+                // user bubble (replay).
                 let prompt_text = extract_queued_command_text(prompt);
                 handle_queued_command_echo(app, &prompt_text);
             }
@@ -364,12 +364,11 @@ pub(super) fn extract_queued_command_text(prompt: &Value) -> String {
     parts.join("\n")
 }
 
-/// Issue #85: process a `queued_command` content-block.
+/// Process a `queued_command` content-block.
 ///
-/// **Reachability (verified by live wire capture 2026-05-13)**:
-/// claude does NOT emit `queued_command` on stream-json stdout — it
-/// only persists those messages to the session JSONL as
-/// `type:"attachment"` rows. The replay scanner in
+/// **Reachability**: claude does NOT emit `queued_command` on
+/// stream-json stdout — it only persists those messages to the
+/// session JSONL as `type:"attachment"` rows. The replay scanner in
 /// `forge_agent::userdata::catalog::scan` hoists those rows into
 /// synthetic user envelopes carrying a single `queued_command`
 /// content block each. So in practice this walker only runs during

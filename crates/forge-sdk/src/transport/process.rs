@@ -14,13 +14,8 @@
 //! - **Concurrent writes.** Cloning the writer-side mpsc is cheap
 //!   and `Send + 'static`. The `Subprocess::clone_writer` helper
 //!   hands out a clonable writer backed by the same writer task,
-//!   so detached control-request dispatch (the daemon's actor
-//!   pattern) can write concurrently with the reader without
-//!   serialising on `&mut self`.
-//!
-//! Closes audit 2026-04-26 G1 directly inside the SDK — every
-//! spawned [`Client`](crate::Client) gets cancel-safe reads +
-//! concurrent writes for free.
+//!   so detached control-request dispatch can write concurrently
+//!   with the reader without serialising on `&mut self`.
 
 use std::process::Stdio;
 use std::sync::Arc;
@@ -131,7 +126,7 @@ enum WriterCmd {
 /// gives a graceful exit path with a 5s timeout before SIGKILL.
 pub struct Subprocess {
     /// Outbound channel into the writer task. Cloned by
-    /// [`try_clone_writer`](Self::try_clone_writer) so external
+    /// [`clone_writer`](Self::clone_writer) so external
     /// dispatchers can write without contending on `&mut self`.
     writer_tx: mpsc::UnboundedSender<WriterCmd>,
     /// Inbound channel from the reader task. Single-consumer.
@@ -359,11 +354,9 @@ impl Subprocess {
 
     /// Hand out a clonable [`AsyncWriter`] backed by the same writer
     /// task. Multiple clones can write concurrently; the writer task
-    /// serialises onto the child's stdin in arrival order.
-    ///
-    /// Used by detached control-request dispatch (the daemon's actor
-    /// pattern) so a slow callback can't block the reader / command
-    /// loop.
+    /// serialises onto the child's stdin in arrival order. Used by
+    /// detached control-request dispatch so a slow callback can't
+    /// block the reader / command loop.
     pub(crate) fn clone_writer(&self) -> Arc<dyn AsyncWriter> {
         Arc::new(SharedWriter { writer_tx: self.writer_tx.clone() })
     }
@@ -384,7 +377,7 @@ impl Subprocess {
 
         // Drop our held writer_tx and abort the writer task. The abort
         // forces stdin closure even if external `SharedWriter` clones
-        // (handed out via `try_clone_writer`) still hold writer_tx
+        // (handed out via `clone_writer`) still hold writer_tx
         // clones — without the abort the writer task would wait for
         // every clone to drop. In-flight write_line acks on cloned
         // writers will resolve with the ack-channel-dropped error,
@@ -450,9 +443,8 @@ impl Subprocess {
 /// task's mpsc. Multiple clones can write concurrently; the writer
 /// task serialises onto the child's stdin in arrival order.
 ///
-/// Returned by [`Subprocess::try_clone_writer`]. Used by the daemon's
-/// session actor for detached `control_request` dispatch (closes
-/// audit 2026-04-26 G1).
+/// Returned by [`Subprocess::clone_writer`]. Used by detached
+/// `control_request` dispatch.
 #[derive(Debug, Clone)]
 struct SharedWriter {
     writer_tx: mpsc::UnboundedSender<WriterCmd>,

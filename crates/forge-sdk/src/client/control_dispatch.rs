@@ -5,10 +5,10 @@
 //!
 //! Internal: built once during [`Client::spawn`], cloned and moved
 //! into a `tokio::spawn`'d task per inbound `control_request` by the
-//! reader task in [`crate::client::runtime`]. The clonable writer + the
-//! `tokio::spawn` together close audit 2026-04-26 G1 — a slow callback
-//! cannot block the read loop, and the actor's `select!` cancellation
-//! cannot drop a `control_response` write mid-flight.
+//! reader task in [`crate::client::runtime`]. The clonable writer +
+//! the `tokio::spawn` mean a slow callback cannot block the read
+//! loop, and cancellation of the actor's `select!` cannot drop a
+//! `control_response` write mid-flight.
 //!
 //! Used the same way during the synchronous init handshake — the
 //! init loop calls [`ControlDispatchHandle::dispatch`] directly for
@@ -33,19 +33,16 @@ use forge_primitives::hooks::outputs::encode_updated_input_wrapper;
 use forge_primitives::{PermissionDecision, ToolPermissionContext};
 
 // =============================================================================
-// Detached dispatch — closes audit 2026-04-26 G1 hazard.
-//
-// Inbound `control_request`s go through `dispatch`, which writes the
-// matching `control_response` via a clonable [`AsyncWriter`]. The
-// reader task in [`crate::client::runtime`] `tokio::spawn`s a fresh
-// task per inbound request so a slow callback can't block the read
-// loop AND cancellation of the actor's `select!` over a command
-// channel + `next_event` cannot drop the response write mid-flight.
+// Detached dispatch — inbound `control_request`s go through
+// `dispatch`, which writes the matching `control_response` via a
+// clonable [`AsyncWriter`]. The reader task in
+// [`crate::client::runtime`] `tokio::spawn`s a fresh task per
+// inbound request so a slow callback can't block the read loop AND
+// cancellation of the actor's `select!` over a command channel +
+// `next_event` cannot drop the response write mid-flight.
 //
 // Available on any transport that overrides
-// [`Transport::try_clone_writer`]. The shipped Subprocess does — its
-// writer task accepts mpsc clones — so any client built via
-// [`Client::spawn`] gets the cancel-safe behaviour out of the box.
+// [`Transport::clone_writer`]. The shipped Subprocess does.
 // =============================================================================
 
 /// Clonable bundle of state + writer that dispatches a single

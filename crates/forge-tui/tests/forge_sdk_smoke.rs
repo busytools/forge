@@ -340,7 +340,7 @@ async fn forge_sdk_e2e_mcp_snapshot() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "needs a real `claude` binary on PATH; burns API budget"]
 async fn forge_sdk_e2e_resume_session() {
-    // Phase 1: spawn a fresh session, drive one prompt, capture sid.
+    // Spawn a fresh session, drive one prompt, capture sid.
     let session_id = {
         let agent_handle = Agent::spawn(smoke_config_dir(), None);
         let mut event_rx = agent_handle.take_events().expect("fresh handle has events");
@@ -353,20 +353,20 @@ async fn forge_sdk_e2e_resume_session() {
             )
             .expect("new_session queued");
         let sid = await_connected(&mut event_rx, Duration::from_secs(30)).await;
-        eprintln!("e2e resume: phase 1 session {sid}");
+        eprintln!("e2e resume: fresh session {sid}");
 
         agent
             .prompt_text(sid.clone(), "Reply with the word PERSIST.".to_owned())
-            .expect("phase 1 prompt queued");
+            .expect("first prompt queued");
         let _ = await_turn(&mut event_rx, Duration::from_secs(60)).await;
 
-        // Tear phase 1 down so the underlying CLI subprocess exits and
-        // its session state lands on disk.
+        // Tear down so the underlying CLI subprocess exits and its
+        // session state lands on disk.
         drop(agent);
         sid
     };
 
-    // Phase 2: resume by id on a fresh worker.
+    // Resume by id on a fresh worker.
     let agent_handle = Agent::spawn(smoke_config_dir(), None);
     let mut event_rx = agent_handle.take_events().expect("fresh handle has events");
     let agent: Arc<forge_workspace::AgentHandle> = Arc::new(agent_handle);
