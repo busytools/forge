@@ -1,11 +1,10 @@
 //! Session-launcher + reader-pump helpers for the bridge layer.
 //!
-//! Plays the role of the upstream Node `bridge.ts`'s spawn dance and
-//! reader subtask: build `forge_sdk::Options` from the TUI's launch
-//! settings (with the `can_use_tool` callback wired in), spawn the
-//! `Client`, emit a synthetic `Connected` event, and pump the events
-//! stream from `forge_sdk::Client::spawn` into `AgentEvent::SdkMessage`.
-//! The bridge owns the resulting `Client`; this module exposes the
+//! Builds `forge_sdk::Options` from the TUI's launch settings (with
+//! the `can_use_tool` callback wired in), spawns the `Client`, emits a
+//! synthetic `Connected`, and pumps the event stream from
+//! `forge_sdk::Client::spawn` into `AgentEvent::SdkMessage`. The
+//! bridge owns the resulting `Client`; this module exposes the
 //! helpers it calls.
 
 use std::path::{Path, PathBuf};
@@ -390,8 +389,11 @@ pub(crate) async fn send_prompt(
     chunks: Vec<forge_primitives::PromptChunk>,
 ) -> anyhow::Result<()> {
     if chunks.iter().all(|c| c.kind == "text") {
-        let prompt: String =
-            chunks.iter().filter_map(|c| c.value.as_str()).collect::<Vec<_>>().join("\n");
+        let prompt: String = chunks
+            .iter()
+            .map(|c| c.value.as_str().unwrap_or(""))
+            .collect::<Vec<_>>()
+            .join("\n");
         client.send_user_message(&prompt).await?;
     } else {
         let content: Vec<serde_json::Value> = chunks
@@ -871,7 +873,7 @@ mod tests {
         synth_permission_request, take_pending,
     };
     use crate::client::AgentEvent;
-    use forge_primitives::{ElicitationAction, PermissionOutcome, QuestionOutcome};
+    use forge_primitives::{PermissionOutcome, QuestionOutcome};
     use forge_primitives::ToolPermissionContext;
     use parking_lot::Mutex;
     use serde_json::json;
@@ -1051,10 +1053,4 @@ mod tests {
         assert!(take_pending(&pending, "tu_x").is_none());
     }
 
-    #[test]
-    fn elicitation_action_wire_strings() {
-        assert_eq!(ElicitationAction::Accept.as_wire_str(), "accept");
-        assert_eq!(ElicitationAction::Decline.as_wire_str(), "decline");
-        assert_eq!(ElicitationAction::Cancel.as_wire_str(), "cancel");
-    }
 }

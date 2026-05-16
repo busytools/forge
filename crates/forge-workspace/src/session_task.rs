@@ -910,12 +910,9 @@ mod tests {
         );
     }
 
-    /// Regression: a second `Connected` (the bridge emits these on
-    /// /new / /login / /logout, NOT SessionReplaced) must overwrite
-    /// the session_id mirror. Before the fix, the `is_none()` guard
-    /// kept the OLD uuid in `domain.session_id` while the bridge's
-    /// slot moved to the NEW uuid — every subsequent user command
-    /// routed to OLD and was silently dropped by `check_session_id`.
+    /// A second `Connected` (`/new`, `/login`, `/logout`) overwrites
+    /// the session_id mirror so subsequent user commands route to the
+    /// new identity.
     #[test]
     fn translate_second_connected_overwrites_session_id() {
         let mut domain = empty_domain();
@@ -949,6 +946,63 @@ mod tests {
             domain.session_id.as_ref().map(std::string::ToString::to_string),
             Some("new-uuid".to_owned()),
             "second Connected must overwrite session_id mirror",
+        );
+    }
+
+    /// `SessionTask::translate_event` on a second `Connected`
+    /// (`connected_once = true`) drains `pending_interactions` so
+    /// forwarder tasks parked on the previous identity's
+    /// tool_call_ids exit instead of waiting forever.
+    #[test]
+    fn translate_second_connected_drains_pending_interactions() {
+        use tokio::sync::oneshot;
+
+        let (handle, _commands_rx) = Agent::testing_stub();
+        let (_cmd_tx, command_rx) = tokio::sync::mpsc::unbounded_channel::<crate::protocol::Command>();
+        let (update_tx, _update_rx) = tokio::sync::mpsc::unbounded_channel::<SessionUpdate>();
+        let domain = Arc::new(parking_lot::Mutex::new(empty_domain()));
+        {
+            let (response_tx, _response_rx) = oneshot::channel::<forge_primitives::PermissionOutcome>();
+            domain
+                .lock()
+                .pending_interactions
+                .insert("stale_tool_id".to_owned(), PendingInteractionSlot::Permission(response_tx));
+        }
+        let mut task = SessionTask {
+            key: SessionKey::from_str_for_test("old-uuid"),
+            handle: Arc::new(handle),
+            command_rx,
+            domain: Arc::clone(&domain),
+            update_tx,
+            spawn_key: None,
+            connected_once: true,
+            workspace: std::sync::Weak::new(),
+        };
+
+        task.translate_event(AgentEvent::Connected {
+            session_id: "new-uuid".to_owned(),
+            cwd: "/proj".to_owned(),
+            current_model: forge_primitives::CurrentModel {
+                resolved_id: "claude".to_owned(),
+                display_name_short: "claude".to_owned(),
+                display_name_long: "claude".to_owned(),
+                requested_id: None,
+                catalog_id: None,
+                supports_effort: false,
+                supported_effort_levels: Vec::new(),
+                supports_fast_mode: None,
+                supports_auto_mode: None,
+                supports_adaptive_thinking: None,
+                is_authoritative: true,
+            },
+            available_models: Vec::new(),
+            mode: None,
+            history_updates: None,
+        });
+
+        assert!(
+            domain.lock().pending_interactions.is_empty(),
+            "second Connected must clear stale pending_interactions",
         );
     }
 

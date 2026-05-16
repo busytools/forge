@@ -45,3 +45,15 @@ pub struct ElicitationResponse {
     pub action: ElicitationAction,
     pub content: Option<serde_json::Value>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn elicitation_action_wire_strings() {
+        assert_eq!(ElicitationAction::Accept.as_wire_str(), "accept");
+        assert_eq!(ElicitationAction::Decline.as_wire_str(), "decline");
+        assert_eq!(ElicitationAction::Cancel.as_wire_str(), "cancel");
+    }
+}
