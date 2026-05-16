@@ -365,7 +365,7 @@ impl ForgeSdkBridge {
         // bypass observable.
         self.trace_session_id_bypass(&session_id, "generate_session_title");
         self.dispatch("generate_session_title", move |client| async move {
-            let _ = client.generate_session_title(&description).await?;
+            client.generate_session_title(&description).await?;
             Ok(())
         })
     }

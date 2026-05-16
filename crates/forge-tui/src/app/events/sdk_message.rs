@@ -713,19 +713,16 @@ fn apply_available_commands_from_init(app: &mut App, data: &Value) {
     super::apply_available_commands_update(app, model_update);
 }
 
-/// Build `AvailableAgentsUpdate` from System(init).agents with
-/// last-signature change detection (so identical re-emits are no-ops).
+/// Build `AvailableAgentsUpdate` from the first `system/init` of a turn.
+/// Subsequent re-fires within the same turn are dropped.
 fn apply_available_agents_from_init(app: &mut App, data: &Value) {
     let Some(record) = data.as_object() else { return };
-    if app.with_turn_state(|ts| ts.last_agents_signature.is_some()) {
-        // Only emit on first init — subsequent inits with the same
-        // agent set are silent no-ops.
+    if app.with_turn_state(|ts| ts.agents_emitted_this_turn) {
         return;
     }
     let Some(agents_value) = record.get("agents") else { return };
     let agents = forge_workspace::translate::agents::map_available_agents_from_names(Some(agents_value));
-    let signature = serde_json::to_string(&agents).unwrap_or_default();
-    let _: () = app.with_turn_state_mut(|ts| ts.last_agents_signature = Some(signature));
+    let _: () = app.with_turn_state_mut(|ts| ts.agents_emitted_this_turn = true);
     let model_update = crate::app::connect::type_converters::map_available_agents_update(agents);
     super::apply_available_agents_update(app, model_update);
 }
@@ -744,7 +741,7 @@ fn apply_available_agents_from_init(app: &mut App, data: &Value) {
 /// first turn lands.
 fn apply_current_model_from_init(app: &mut App, data: &Value) {
     use forge_workspace::session_lifecycle::resolve_current_model_from_inputs;
-        use forge_primitives as wire;
+    use forge_primitives as wire;
 
     let Some(record) = data.as_object() else { return };
     let model_id = record.get("model").and_then(Value::as_str).unwrap_or("");
@@ -788,11 +785,10 @@ fn apply_current_model_from_init(app: &mut App, data: &Value) {
 
     let next_wire =
         resolve_current_model_from_inputs(model_id, requested, resolved_runtime, &available_models);
-    let next_model = next_wire;
-    if app.current_model() == Some(&next_model) {
+    if app.current_model() == Some(&next_wire) {
         return;
     }
-    super::apply_current_model_update(app, next_model);
+    super::apply_current_model_update(app, next_wire);
 }
 
 /// Resolve `mode_state` from System(init) data and apply via the
@@ -835,8 +831,7 @@ fn apply_mode_state_from_init(app: &mut App, data: &Value) {
     let _: () = app.with_turn_state_mut(|ts| ts.supported_mode_ids.clone_from(&supported));
 
     let wire_mode_state = build_mode_state_from_supported(mode, &supported);
-    let model_mode_state = wire_mode_state;
-    super::apply_mode_state_update(app, model_mode_state);
+    super::apply_mode_state_update(app, wire_mode_state);
 }
 
 /// When the SDK fires a System(local_command_output), forward the
@@ -922,14 +917,13 @@ fn apply_api_retry_update(app: &mut App, data: &Value) {
     else {
         return;
     };
-    let model_error = error;
     super::api_retry::handle_api_retry_update(
         app,
         attempt,
         max_retries,
         retry_delay_ms,
         error_status,
-        model_error,
+        error,
     );
 }
 
@@ -1151,12 +1145,9 @@ fn handle_rate_limit_event(app: &mut App, msg: Message) {
         session_id = app.session_id().map(|s| s.to_string()).as_deref().unwrap_or(""),
         rate_limit_info = %value,
     );
-    let Some(wire) = build_rate_limit_update(Some(&value)) else {
+    let Some(update) = build_rate_limit_update(Some(&value)) else {
         return;
     };
-    // Convert wire-side types::RateLimitUpdate → model::RateLimitUpdate
-    // via the existing converter, then call the App-side handler.
-    let update = wire;
     super::rate_limit::handle_rate_limit_update(app, &update);
 }
 

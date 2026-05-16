@@ -1096,17 +1096,6 @@ mod tests {
         assert_eq!(tc.terminal_output.as_deref(), Some("line 1\nline 2"));
     }
 
-    // Two SessionUpdate-only tests removed in the dispatcher collapse:
-    // `tool_call_update_with_same_terminal_content_still_invalidates_command_changes`
-    // and `repeated_tool_call_updates_existing_execute_snapshot_state`
-    // both exercised the typed `model::ToolCallContent::Terminal` content
-    // variant which has no wire-side equivalent — terminal_id binding via
-    // explicit Terminal content is being deleted along with the typed
-    // dispatcher in the next commits. Coverage for execute-tool output
-    // capture lives in `execute_tool_update_uses_raw_output_fallback` (Bash
-    // tool through the wire path) and the integration tests under
-    // `tests/integration/tool_lifecycle.rs`.
-
     #[test]
     fn late_tool_update_for_removed_tool_does_not_corrupt_active_task_set() {
         let mut app = make_test_app();
@@ -2631,12 +2620,6 @@ mod tests {
         assert!(app.pending_command_ack().is_none());
     }
 
-    // `non_matching_config_option_update_keeps_pending` removed in the
-    // dispatcher collapse: SessionUpdate::ConfigOptionUpdate has no
-    // wire-side equivalent today (no `apply_config_option` handler in
-    // events::sdk_message), so the typed-dispatch-only path it
-    // exercised is going away with the dispatcher itself.
-
     #[test]
     fn resume_does_not_add_confirmation_system_message() {
         let mut app = make_test_app();
@@ -3570,12 +3553,11 @@ mod tests {
         );
         assert_eq!(app.turn_notice_refs().len(), 1);
 
-        // `SessionReplaced` is the post-MVVM session-reset event
-        // (fired by /new, /login, /resume on the active bucket).
-        // Connected-for-a-different-key is no longer a session
-        // reset — it's a background project's connection — so the
-        // notice-clearing assertion must target SessionReplaced for
-        // the ACTIVE session key.
+        // `SessionReplaced` fires on /new, /login, /resume against the
+        // active bucket; a Connected event for a different key is a
+        // background project's connection, not a session reset. The
+        // notice-clearing assertion targets SessionReplaced on the
+        // active key.
         let active_key = active_session_key(&app);
         apply_session_update(
             &mut app,

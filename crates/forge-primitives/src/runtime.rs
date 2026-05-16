@@ -436,9 +436,10 @@ pub struct SessionTurnState {
     /// Current mode resolution alongside the human-readable label.
     pub mode_state: Option<ModeState>,
 
-    /// Sha-style fingerprint of the `available_agents` list — used to
-    /// emit `AvailableAgentsUpdate` only when the catalogue changes.
-    pub last_agents_signature: Option<String>,
+    /// Whether an `AvailableAgentsUpdate` has been emitted for this
+    /// turn. The first `system/init` of a turn carries the catalogue;
+    /// subsequent re-fires within the same turn are no-ops.
+    pub agents_emitted_this_turn: bool,
 
     /// True once an `AuthRequired` event has been emitted for this
     /// session; suppresses re-emits on subsequent stream events.
