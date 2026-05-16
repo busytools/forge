@@ -18,7 +18,9 @@ fn post_connect_refreshes(app: &mut App) {
 /// cwd-scoped and stale ones from a previous project must not affect
 /// the active project's inventory.
 fn dispatch_if_cwd_matches(app: &mut App, cwd_raw: &str, event_name: &str, f: impl FnOnce(&mut App)) {
-    if app.cwd_raw() != cwd_raw {
+    if app.cwd_raw() == cwd_raw {
+        f(app);
+    } else {
         tracing::debug!(
             target: crate::logging::targets::APP_CONFIG,
             event_name,
@@ -26,8 +28,6 @@ fn dispatch_if_cwd_matches(app: &mut App, cwd_raw: &str, event_name: &str, f: im
             received_cwd = %cwd_raw,
             "stale-cwd plugin event dropped"
         );
-    } else {
-        f(app);
     }
 }
 

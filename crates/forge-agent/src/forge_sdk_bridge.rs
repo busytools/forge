@@ -386,13 +386,21 @@ impl ForgeSdkBridge {
                 account
             } else {
                 let cd = config_dir.clone();
-                tokio::task::spawn_blocking(move || {
+                match tokio::task::spawn_blocking(move || {
                     crate::cloud::auth_status::account_info_from_shell(&cd)
                 })
                 .await
-                .ok()
-                .flatten()
-                .unwrap_or_default()
+                {
+                    Ok(opt) => opt.unwrap_or_default(),
+                    Err(join_err) => {
+                        tracing::warn!(
+                            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                            error = %join_err,
+                            "get_status_snapshot account probe spawn_blocking task panicked"
+                        );
+                        forge_primitives::AccountInfo::default()
+                    }
+                }
             };
             let forge_account = display_name.map(forge_primitives::ForgeAccountIdentity::new);
             let _ =
@@ -409,12 +417,21 @@ impl ForgeSdkBridge {
             // find-generic-password`; wrap in spawn_blocking so the
             // 30s usage-poller doesn't park N tokio workers per
             // account during keychain access.
-            let credentials = tokio::task::spawn_blocking(move || {
+            let credentials = match tokio::task::spawn_blocking(move || {
                 crate::cloud::oauth_credentials::load_oauth_credentials(&config_dir)
             })
             .await
-            .ok()
-            .flatten();
+            {
+                Ok(opt) => opt,
+                Err(join_err) => {
+                    tracing::warn!(
+                        target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                        error = %join_err,
+                        "load_oauth_credentials spawn_blocking task panicked"
+                    );
+                    None
+                }
+            };
             let _ = event_tx.send(AgentEvent::OauthCredentialsSnapshot { session_id, credentials });
             Ok(())
         })

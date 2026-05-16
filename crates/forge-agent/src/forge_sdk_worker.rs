@@ -230,12 +230,21 @@ async fn emit_connected(
         Some(account)
     } else {
         let config_dir_owned = config_dir.to_owned();
-        tokio::task::spawn_blocking(move || {
+        match tokio::task::spawn_blocking(move || {
             crate::cloud::auth_status::account_info_from_shell(&config_dir_owned)
         })
         .await
-        .ok()
-        .flatten()
+        {
+            Ok(opt) => opt,
+            Err(join_err) => {
+                tracing::warn!(
+                    target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                    error = %join_err,
+                    "account_info_from_shell spawn_blocking task panicked"
+                );
+                None
+            }
+        }
     };
     if let Some(account) = account {
         let forge_account =

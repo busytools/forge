@@ -134,11 +134,16 @@ async fn handle_line(
             let inflight_clone = Arc::clone(inflight);
             let request_id = req.request_id.clone();
             let request_id_for_task = request_id.clone();
+            // Park the task on a oneshot before doing work so the
+            // parent can register the JoinHandle in `inflight` before
+            // the task races ahead and removes itself from a still-
+            // empty map (which would leak a completed handle
+            // permanently). Once the parent releases the gate, the
+            // task drains it and runs.
+            let (gate_tx, gate_rx) = oneshot::channel::<()>();
             let handle = tokio::spawn(async move {
+                let _ = gate_rx.await;
                 let result = dispatch_clone.dispatch(req).await;
-                // Always drop our entry on normal completion so the
-                // map doesn't grow indefinitely with terminated
-                // handles.
                 inflight_clone.lock().await.remove(&request_id_for_task);
                 if let Err(e) = result {
                     tracing::warn!(
@@ -149,6 +154,8 @@ async fn handle_line(
                 }
             });
             inflight.lock().await.insert(request_id, handle);
+            // Release the gate after the registration is visible.
+            let _ = gate_tx.send(());
             true
         }
         Ok(DecodedLine::ControlCancel { request_id }) => {
