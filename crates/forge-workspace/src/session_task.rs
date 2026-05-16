@@ -410,67 +410,82 @@ impl SessionTask {
     fn execute_command(&self, cmd: Command) {
         match cmd {
             Command::RespondPermission { key: _, tool_id, outcome } => {
+                // Peek the slot kind FIRST. Previous shape called
+                // .remove() unconditionally and warned-then-dropped on
+                // kind mismatch — that destroyed a legitimate
+                // concurrent Question waiter, auto-denying it with
+                // "response channel closed" while the user's permission
+                // outcome silently disappeared. Now mismatched kinds
+                // leave both slots intact.
                 let mut guard = self.domain.lock();
-                match guard.pending_interactions.remove(&tool_id) {
-                    Some(PendingInteractionSlot::Permission(tx)) => {
-                        if tx.send(outcome).is_err() {
-                            tracing::warn!(
-                                target: "forge_workspace::session_task",
-                                key = %self.key.as_str(),
-                                tool_id = %tool_id,
-                                "permission oneshot receiver dropped before response could be sent"
-                            );
-                        }
-                    }
-                    Some(other) => {
+                let kind_matches = matches!(
+                    guard.pending_interactions.get(&tool_id),
+                    Some(PendingInteractionSlot::Permission(_)),
+                );
+                if kind_matches
+                    && let Some(PendingInteractionSlot::Permission(tx)) =
+                        guard.pending_interactions.remove(&tool_id)
+                {
+                    if tx.send(outcome).is_err() {
                         tracing::warn!(
                             target: "forge_workspace::session_task",
                             key = %self.key.as_str(),
                             tool_id = %tool_id,
-                            slot = ?other,
-                            "RespondPermission expected Permission slot; got different kind. Dropping."
+                            "permission oneshot receiver dropped before response could be sent"
                         );
                     }
-                    None => {
-                        tracing::warn!(
-                            target: "forge_workspace::session_task",
-                            key = %self.key.as_str(),
-                            tool_id = %tool_id,
-                            "RespondPermission found no pending interaction (already responded or expired)"
-                        );
-                    }
+                } else if let Some(other) = guard.pending_interactions.get(&tool_id) {
+                    tracing::warn!(
+                        target: "forge_workspace::session_task",
+                        key = %self.key.as_str(),
+                        tool_id = %tool_id,
+                        slot = ?other,
+                        "RespondPermission expected Permission slot; got different kind. Outcome dropped, slot preserved."
+                    );
+                } else {
+                    tracing::warn!(
+                        target: "forge_workspace::session_task",
+                        key = %self.key.as_str(),
+                        tool_id = %tool_id,
+                        "RespondPermission found no pending interaction (already responded or expired)"
+                    );
                 }
             }
             Command::RespondQuestion { key: _, tool_id, outcome } => {
+                // Same peek-before-remove discipline as
+                // RespondPermission above.
                 let mut guard = self.domain.lock();
-                match guard.pending_interactions.remove(&tool_id) {
-                    Some(PendingInteractionSlot::Question(tx)) => {
-                        if tx.send(outcome).is_err() {
-                            tracing::warn!(
-                                target: "forge_workspace::session_task",
-                                key = %self.key.as_str(),
-                                tool_id = %tool_id,
-                                "question oneshot receiver dropped"
-                            );
-                        }
-                    }
-                    Some(other) => {
+                let kind_matches = matches!(
+                    guard.pending_interactions.get(&tool_id),
+                    Some(PendingInteractionSlot::Question(_)),
+                );
+                if kind_matches
+                    && let Some(PendingInteractionSlot::Question(tx)) =
+                        guard.pending_interactions.remove(&tool_id)
+                {
+                    if tx.send(outcome).is_err() {
                         tracing::warn!(
                             target: "forge_workspace::session_task",
                             key = %self.key.as_str(),
                             tool_id = %tool_id,
-                            slot = ?other,
-                            "RespondQuestion got non-Question slot. Dropping."
+                            "question oneshot receiver dropped"
                         );
                     }
-                    None => {
-                        tracing::warn!(
-                            target: "forge_workspace::session_task",
-                            key = %self.key.as_str(),
-                            tool_id = %tool_id,
-                            "RespondQuestion found no pending interaction"
-                        );
-                    }
+                } else if let Some(other) = guard.pending_interactions.get(&tool_id) {
+                    tracing::warn!(
+                        target: "forge_workspace::session_task",
+                        key = %self.key.as_str(),
+                        tool_id = %tool_id,
+                        slot = ?other,
+                        "RespondQuestion got non-Question slot. Outcome dropped, slot preserved."
+                    );
+                } else {
+                    tracing::warn!(
+                        target: "forge_workspace::session_task",
+                        key = %self.key.as_str(),
+                        tool_id = %tool_id,
+                        "RespondQuestion found no pending interaction"
+                    );
                 }
             }
             other => {
