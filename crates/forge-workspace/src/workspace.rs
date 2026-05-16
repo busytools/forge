@@ -891,8 +891,8 @@ impl Workspace {
 
     /// Park an oneshot in
     /// `DomainSession.pending_interactions[tool_id]`. Called from
-    /// `bridge_lifecycle` when an `AgentEvent::PermissionRequest` /
-    /// `QuestionRequest` / `ElicitationRequest` arrives.
+    /// `SessionTask::run` when an `AgentEvent::PermissionRequest` /
+    /// `QuestionRequest` arrives.
     ///
     /// No-op when no `SessionTask` is registered for `key` (e.g.,
     /// the session was just closed) — the oneshot is dropped and the
@@ -1342,9 +1342,9 @@ impl Workspace {
     /// `active_session_key` has flipped to the new one.
     ///
     /// No-op when `from == to` or when `from` is not registered.
-    pub fn migrate_session_task(&self, from: &SessionKey, to: &SessionKey) {
+    pub fn migrate_session_task(&self, from: &SessionKey, to: &SessionKey) -> bool {
         if from == to {
-            return;
+            return true;
         }
         // Lock order matches `get_agent_handle`'s insertion order:
         // pool → command_senders → domain_handles.
@@ -1363,7 +1363,7 @@ impl Workspace {
                 to = %to.as_str(),
                 "migrate_session_task: target key already registered; migration skipped"
             );
-            return;
+            return false;
         }
         if let Some(pooled) = pool.remove(from) {
             pool.insert(to.clone(), pooled);
@@ -1375,6 +1375,7 @@ impl Workspace {
             domain.lock().key = to.clone();
             handles.insert(to.clone(), domain);
         }
+        true
     }
 }
 

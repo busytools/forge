@@ -923,6 +923,32 @@ mod tests {
     }
 
     #[test]
+    fn permission_response_reject_once_drains_with_deny() {
+        let pending = fresh_pending();
+        let rx = park(&pending, "tu_r1");
+        deliver_permission_response(
+            &pending,
+            "tu_r1",
+            PermissionOutcome::Selected { option_id: "reject_once".to_owned() },
+        );
+        let decision = rx.blocking_recv().expect("oneshot resolved");
+        assert!(!decision.is_allow());
+    }
+
+    #[test]
+    fn permission_response_reject_always_drains_with_deny() {
+        let pending = fresh_pending();
+        let rx = park(&pending, "tu_r2");
+        deliver_permission_response(
+            &pending,
+            "tu_r2",
+            PermissionOutcome::Selected { option_id: "reject_always".to_owned() },
+        );
+        let decision = rx.blocking_recv().expect("oneshot resolved");
+        assert!(!decision.is_allow());
+    }
+
+    #[test]
     fn permission_response_cancel_drains_with_deny() {
         let pending = fresh_pending();
         let rx = park(&pending, "tu_3");

@@ -514,8 +514,16 @@ impl SessionTask {
         if self.key.as_str() == real_key.as_str() {
             return;
         }
-        if let Some(workspace) = self.workspace.upgrade() {
-            workspace.migrate_session_task(&self.key, real_key);
+        let migrated = self
+            .workspace
+            .upgrade()
+            .is_some_and(|workspace| workspace.migrate_session_task(&self.key, real_key));
+        if !migrated {
+            // Workspace refused the migration (collision or no workspace
+            // upgrade). Keep `self.key` pointing at the old slot so
+            // commands continue to flow through the live channel; the
+            // session can't be re-keyed, but it still works.
+            return;
         }
         tracing::info!(
             target: "forge_workspace::session_task",
