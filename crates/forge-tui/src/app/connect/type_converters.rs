@@ -13,26 +13,12 @@ use crate::agent::model;
 use crate::app::{ModeInfo, ModeState};
 use forge_primitives as types;
 
-pub(super) fn map_rate_limit_status(status: types::RateLimitStatus) -> model::RateLimitStatus {
-    match status {
-        types::RateLimitStatus::Allowed => model::RateLimitStatus::Allowed,
-        types::RateLimitStatus::AllowedWarning => model::RateLimitStatus::AllowedWarning,
-        types::RateLimitStatus::Rejected => model::RateLimitStatus::Rejected,
-    }
-}
-
+// model::RateLimitStatus and model::RateLimitUpdate now alias the
+// primitives types directly — no conversion needed. Kept as an
+// inline pass-through so the call sites read uniformly with the
+// other map_* helpers.
 pub(crate) fn map_rate_limit_update(update: types::RateLimitUpdate) -> model::RateLimitUpdate {
-    model::RateLimitUpdate {
-        status: map_rate_limit_status(update.status),
-        resets_at: update.resets_at,
-        utilization: update.utilization,
-        rate_limit_type: update.rate_limit_type,
-        overage_status: update.overage_status.map(map_rate_limit_status),
-        overage_resets_at: update.overage_resets_at,
-        overage_disabled_reason: update.overage_disabled_reason,
-        is_using_overage: update.is_using_overage,
-        surpassed_threshold: update.surpassed_threshold,
-    }
+    update
 }
 
 pub(crate) fn map_api_retry_error(error: types::ApiRetryError) -> model::ApiRetryError {
@@ -50,17 +36,16 @@ pub(crate) fn map_api_retry_error(error: types::ApiRetryError) -> model::ApiRetr
 pub(crate) fn map_available_commands_update(
     commands: Vec<types::AvailableCommand>,
 ) -> model::AvailableCommandsUpdate {
+    // model::AvailableCommand == primitives::AvailableCommand now.
+    // Drop empty input_hint strings on the boundary; keep the rest.
     model::AvailableCommandsUpdate::new(
         commands
             .into_iter()
-            .map(|cmd| {
-                let mut mapped = model::AvailableCommand::new(cmd.name, cmd.description);
-                if let Some(input_hint) = cmd.input_hint
-                    && !input_hint.trim().is_empty()
-                {
-                    mapped = mapped.input_hint(input_hint);
+            .map(|mut cmd| {
+                if cmd.input_hint.as_deref().is_some_and(|h| h.trim().is_empty()) {
+                    cmd.input_hint = None;
                 }
-                mapped
+                cmd
             })
             .collect(),
     )
@@ -69,17 +54,16 @@ pub(crate) fn map_available_commands_update(
 pub(crate) fn map_available_agents_update(
     agents: Vec<types::AvailableAgent>,
 ) -> model::AvailableAgentsUpdate {
+    // model::AvailableAgent == primitives::AvailableAgent now. Drop
+    // empty model strings on the boundary.
     model::AvailableAgentsUpdate::new(
         agents
             .into_iter()
-            .map(|agent| {
-                let mut mapped = model::AvailableAgent::new(agent.name, agent.description);
-                if let Some(model_name) = agent.model
-                    && !model_name.trim().is_empty()
-                {
-                    mapped = mapped.model(model_name);
+            .map(|mut agent| {
+                if agent.model.as_deref().is_some_and(|m| m.trim().is_empty()) {
+                    agent.model = None;
                 }
-                mapped
+                agent
             })
             .collect(),
     )
@@ -88,35 +72,15 @@ pub(crate) fn map_available_agents_update(
 pub(crate) fn map_available_models(
     models: Vec<types::AvailableModel>,
 ) -> Vec<model::AvailableModel> {
+    // model::AvailableModel == primitives::AvailableModel. Strip empty
+    // description strings; everything else passes through unchanged.
     models
         .into_iter()
-        .map(|model_info| {
-            let mut mapped = model::AvailableModel::new(model_info.id, model_info.display_name);
-            if let Some(description) = model_info.description
-                && !description.trim().is_empty()
-            {
-                mapped = mapped.description(description);
+        .map(|mut m| {
+            if m.description.as_deref().is_some_and(|d| d.trim().is_empty()) {
+                m.description = None;
             }
-            mapped = mapped.supports_effort(model_info.supports_effort);
-            mapped = mapped.supports_adaptive_thinking(model_info.supports_adaptive_thinking);
-            mapped = mapped.supports_fast_mode(model_info.supports_fast_mode);
-            mapped = mapped.supports_auto_mode(model_info.supports_auto_mode);
-            if !model_info.supported_effort_levels.is_empty() {
-                mapped = mapped.supported_effort_levels(
-                    model_info
-                        .supported_effort_levels
-                        .into_iter()
-                        .map(|level| match level {
-                            types::EffortLevel::Low => model::EffortLevel::Low,
-                            types::EffortLevel::Medium => model::EffortLevel::Medium,
-                            types::EffortLevel::High => model::EffortLevel::High,
-                            types::EffortLevel::Xhigh => model::EffortLevel::Xhigh,
-                            types::EffortLevel::Max => model::EffortLevel::Max,
-                        })
-                        .collect(),
-                );
-            }
-            mapped
+            m
         })
         .collect()
 }
