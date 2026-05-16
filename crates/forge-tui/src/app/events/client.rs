@@ -1,6 +1,18 @@
 use super::{App, session, turn};
 use forge_workspace::{SessionKey, SessionUpdate};
 
+/// Side-effects shared by `Connected` and `SessionReplaced`: refresh
+/// MCP + status + oauth-credentials + context-usage snapshots, and
+/// kick a usage poll so the Projects pane's 5h/7d bars land within
+/// seconds of session start instead of staying on placeholder `—%`.
+fn post_connect_refreshes(app: &mut App) {
+    crate::app::config::refresh_mcp_snapshot(app);
+    crate::app::session_runtime::request_status_snapshot_refresh(app);
+    crate::app::session_runtime::request_oauth_credentials_snapshot_refresh(app);
+    crate::app::session_runtime::request_context_usage_refresh(app);
+    crate::app::usage::request_refresh_if_needed(app);
+}
+
 /// Compact discriminant name for a wire `Message`. Used by the
 /// `sdk_message_dropped` error log so a triage grep can see whether
 /// the dropped envelope was a Result (TurnComplete carrier),
@@ -78,17 +90,7 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
                 mode,
                 history,
             );
-            crate::app::config::refresh_mcp_snapshot(app);
-            crate::app::session_runtime::request_status_snapshot_refresh(app);
-            crate::app::session_runtime::request_oauth_credentials_snapshot_refresh(app);
-            crate::app::session_runtime::request_context_usage_refresh(app);
-            // The account / status panel at the Projects pane bottom
-            // renders 5h + 7d usage bars on every frame. Before, usage
-            // only fetched when the user opened the /usage config tab;
-            // now we kick the fetch on every Connected so the bars
-            // land within seconds of session start instead of staying
-            // on placeholder `—%` until the user opens /usage.
-            crate::app::usage::request_refresh_if_needed(app);
+            post_connect_refreshes(app);
         }
         SessionUpdate::SessionReplaced {
             key,
@@ -109,14 +111,7 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
                 mode,
                 history,
             );
-            crate::app::config::refresh_mcp_snapshot(app);
-            crate::app::session_runtime::request_status_snapshot_refresh(app);
-            crate::app::session_runtime::request_oauth_credentials_snapshot_refresh(app);
-            crate::app::session_runtime::request_context_usage_refresh(app);
-            // Same reason as the Connected arm above — keep the
-            // pane-footer 5h/7d bars fresh when the session is
-            // replaced (`/new` / `/resume` / `/login` flows).
-            crate::app::usage::request_refresh_if_needed(app);
+            post_connect_refreshes(app);
         }
         SessionUpdate::SessionsListed { key, sessions } => {
             session::apply_session_update_sessions_listed(app, &key, sessions);
