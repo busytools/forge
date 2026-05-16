@@ -1293,13 +1293,6 @@ fn classify_oauth_usage_error(
     }
 }
 
-#[cfg(test)]
-impl Workspace {
-    pub fn pool_accounts_for_test(&self) -> Vec<String> {
-        self.pool.lock().values().map(|p| p.account.0.clone()).collect()
-    }
-}
-
 impl Workspace {
     /// Register a fresh `DomainSession` for `key` under this workspace.
     /// `handle` is `None` for pre-spawn / pre-Connect domains (filled
@@ -1681,7 +1674,7 @@ config_dir = "~/.claude-granite"
         let _ = workspace
             .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
             .expect("default");
-        let bound = workspace.pool_accounts_for_test();
+        let bound = workspace.pool.lock().values().map(|p| p.account.0.clone()).collect::<Vec<_>>();
         assert_eq!(bound.len(), 1);
         // Cold cache → unknown-first tie-break is the project's
         // `accounts = ["Subspace", "Granite"]` order. Subspace wins.
@@ -1707,7 +1700,7 @@ config_dir = "~/.claude-granite"
             .get_agent_handle(SessionTarget::Session(other), SessionLaunchSettings::default())
             .expect("second");
 
-        let bound = workspace.pool_accounts_for_test();
+        let bound = workspace.pool.lock().values().map(|p| p.account.0.clone()).collect::<Vec<_>>();
         assert_eq!(bound.len(), 2);
         // Both spawns picked Subspace (first in accounts list, no
         // usage data to differentiate).
@@ -1756,7 +1749,7 @@ config_dir = "~/.claude-personal"
             .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
             .expect("default spawn");
 
-        let bound = workspace.pool_accounts_for_test();
+        let bound = workspace.pool.lock().values().map(|p| p.account.0.clone()).collect::<Vec<_>>();
         assert_eq!(bound.len(), 1);
         assert!(
             bound[0] == "Subspace" || bound[0] == "Granite",

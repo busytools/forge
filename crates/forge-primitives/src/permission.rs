@@ -2,12 +2,6 @@
 //!  - `forge_sdk::Options` builder for `--permission-mode` CLI argv.
 //!  - `forge_agent::state` for runtime mode tracking.
 //!  - `forge_tui` for permission-mode UI / settings.
-//!
-//! Unified in Phase 0 of the MVVM refactor (#102). Previously there
-//! were two enums — one in `forge_primitives::options` with `Ask` /
-//! `DenyPermissions` variant names, and one in `forge_agent::state`
-//! with `Default` / `DontAsk` variant names. They mapped to the same
-//! wire strings; the variant names diverged for historical reasons.
 
 use serde::{Deserialize, Serialize};
 

@@ -331,7 +331,7 @@ fn convert_tool_call_content(
             let block = convert_content_block(content)?;
             Some(model::ToolCallContent::Content(model::Content::new(block)))
         }
-        types::ToolCallContent::Diff { old_path: _, new_path, old, new, repository } => {
+        types::ToolCallContent::Diff { new_path, old, new, repository } => {
             Some(model::ToolCallContent::Diff(
                 model::Diff::new(new_path, new).old_text(Some(old)).repository(repository),
             ))
@@ -653,7 +653,6 @@ mod tests {
             kind: "edit".to_owned(),
             status: "completed".to_owned(),
             content: vec![types::ToolCallContent::Diff {
-                old_path: "src/main.rs".to_owned(),
                 new_path: "src/main.rs".to_owned(),
                 old: "old".to_owned(),
                 new: "new".to_owned(),

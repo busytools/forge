@@ -462,13 +462,9 @@ impl App {
         self.sessions.get_mut(key)
     }
 
-    /// Find a session bucket whose `cwd_raw` matches `path`.
-    ///
-    /// Used by the launchpad-click and projects-pane-click handlers
-    /// to land the user on the resumed bucket for a project. The
-    /// pre-connect bucket cannot collide because its `cwd_raw` is
-    /// sourced from `forge.toml` (or empty in launchpad mode), not
-    /// from `std::env::current_dir()` — see `connect::create_app`.
+    /// Find a session bucket whose `cwd_raw` matches `path`. Used
+    /// by the launchpad-click and projects-pane-click handlers to
+    /// land the user on the resumed bucket for a project.
     pub fn find_running_bucket_for_path(&self, path: &str) -> Option<forge_workspace::SessionKey> {
         self.sessions.iter().find(|(_, s)| s.cwd_raw.as_str() == path).map(|(k, _)| k.clone())
     }

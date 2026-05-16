@@ -1,11 +1,7 @@
-//! Plugin inventory + CLI-action wire shapes. Promoted from
-//! `forge_agent::userdata::plugins` and `forge_tui::app::plugins`
-//! in Phase 0 of the MVVM refactor (#102) so `SessionUpdate`
-//! variants can carry the real types without dependency cycles.
-//!
-//! Loaders (`refresh_inventory`, the `claude plugin` shell-out,
-//! etc.) stay in `forge_agent::userdata::plugins`. Only data
-//! shapes move here.
+//! Plugin inventory + CLI-action wire shapes. `SessionUpdate`
+//! variants carry these directly; loaders (`refresh_inventory`,
+//! the `claude plugin` shell-out, etc.) live in
+//! `forge_agent::userdata::plugins`.
 
 use std::path::PathBuf;
 

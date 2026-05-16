@@ -236,7 +236,6 @@ pub enum ToolCallContent {
         content: ChunkContent,
     },
     Diff {
-        old_path: String,
         new_path: String,
         old: String,
         new: String,

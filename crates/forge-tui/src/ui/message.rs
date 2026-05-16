@@ -26,8 +26,6 @@ const FERRIS_SAYS: &[&str] = &[
     r"          / '-----' \ ",
 ];
 
-// Prepared for future randomized welcome-tip selection. Intentionally unused
-// until the welcome UI is switched from a single hard-coded tip.
 const WELCOME_TIPS: &[&str] = &[
     "Use /mode plan before larger changes, then switch back to code once the plan is clear",
     "Use /mcp to connect live tools and docs instead of pasting stale context into chat",
@@ -1115,8 +1113,6 @@ fn welcome_lines(block: &WelcomeBlock, _width: u16) -> Vec<Line<'static>> {
     )));
 
     lines.push(Line::default());
-    // TODO: Replace the hard-coded tip text with a small array of welcome tips
-    // and randomized selection once this becomes a first-class surface.
     lines.push(Line::from(Span::styled(
         format!("{pad}Tips: {}", selected_welcome_tip(block)),
         Style::default().fg(theme::DIM),

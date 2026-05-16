@@ -151,10 +151,7 @@ fn build_picker_rows(app: &App) -> Vec<PickerRow> {
 /// 2. Catalog session UUIDs — the lead recorded on disk, if pooled.
 /// 3. `cwd_raw` match — covers the post-KeyRenamed window when the
 ///    synthetic has migrated to the real session UUID but the
-///    catalog scan hasn't refreshed yet. The pre-connect bucket
-///    cannot collide here: its `cwd_raw` is sourced from
-///    `forge.toml` (or empty in launchpad mode), not
-///    `std::env::current_dir()` — see `connect::create_app`.
+///    catalog scan hasn't refreshed yet.
 fn find_live_bucket<'app>(
     app: &'app App,
     project: &ProjectView,
@@ -636,10 +633,7 @@ fn switch_to_project_and_focus(app: &mut App, project_name: &str) {
     }
 
     // Running bucket match by cwd — matches an auto_start project
-    // whose session UUID has already arrived via KeyRenamed. The
-    // pre-connect bucket cannot collide because its `cwd_raw` is
-    // sourced from `forge.toml` (or empty in launchpad mode), not
-    // `std::env::current_dir()` — see `connect::create_app`.
+    // whose session UUID has already arrived via KeyRenamed.
     let path_str = project_path.to_string_lossy();
     if let Some(key) = app.find_running_bucket_for_path(path_str.as_ref()) {
         app.switch_active_session(key);

@@ -64,17 +64,6 @@ pub enum ContentBlock {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Content {
-    pub content: ContentBlock,
-}
-
-impl Content {
-    pub fn new(content: ContentBlock) -> Self {
-        Self { content }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContentChunk {
     pub content: ContentBlock,
 }
@@ -84,6 +73,10 @@ impl ContentChunk {
         Self { content }
     }
 }
+
+/// Alias retained for the `ToolCallContent::Content(...)` variant
+/// payload — same shape as `ContentChunk`.
+pub type Content = ContentChunk;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

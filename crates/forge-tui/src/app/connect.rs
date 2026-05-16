@@ -52,18 +52,10 @@ pub(crate) fn session_launch_settings_for_resume(
     )
 }
 
-/// Create the `App` struct in `Connecting` state and load shared settings state.
-///
-/// `cwd_raw` / `cwd` source — `forge.toml` is the single source of
-/// truth for project paths. `std::env::current_dir()` is intentionally
-/// NOT consulted: when forge is launched from inside a project's
-/// directory, using `current_dir()` as the pre-Connect bucket's
-/// `cwd_raw` makes it collide with that project's `path` in
-/// `forge.toml`, and every `cwd_raw`-keyed lookup (`find_live_bucket`,
-/// `find_running_bucket_for_path`, …) becomes a non-deterministic
-/// `HashMap` walk. The right answer is to source the seed from
-/// `forge.toml` when we know which project (chat-direct mode) and
-/// leave it empty otherwise (launchpad mode — no project picked yet).
+/// Create the `App` struct in `Connecting` state and load shared
+/// settings state. `cwd_raw` is sourced from `forge.toml` (per
+/// Hard Rule #15) — chat-direct mode picks up `project.path`,
+/// launchpad mode leaves it empty.
 pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App {
     // Resolve the pre-Connect seed cwd from `forge.toml`:
     //

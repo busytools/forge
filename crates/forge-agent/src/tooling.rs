@@ -142,7 +142,6 @@ fn edit_diff_content(name: &str, input: &Value) -> Vec<ToolCallContent> {
             return Vec::new();
         }
         return vec![ToolCallContent::Diff {
-            old_path: file_path.to_owned(),
             new_path: file_path.to_owned(),
             old: old_text.to_owned(),
             new: new_text.to_owned(),
@@ -155,7 +154,6 @@ fn edit_diff_content(name: &str, input: &Value) -> Vec<ToolCallContent> {
             return Vec::new();
         }
         return vec![ToolCallContent::Diff {
-            old_path: file_path.to_owned(),
             new_path: file_path.to_owned(),
             old: String::new(),
             new: new_text.to_owned(),
@@ -444,7 +442,6 @@ fn write_diff_from_input(raw_input: Option<&Value>) -> Vec<ToolCallContent> {
         return Vec::new();
     }
     vec![ToolCallContent::Diff {
-        old_path: file_path.to_owned(),
         new_path: file_path.to_owned(),
         old: String::new(),
         new: content.to_owned(),
@@ -471,7 +468,6 @@ fn edit_diff_from_input(raw_input: Option<&Value>) -> Vec<ToolCallContent> {
         return Vec::new();
     }
     vec![ToolCallContent::Diff {
-        old_path: file_path.to_owned(),
         new_path: file_path.to_owned(),
         old: old_text.to_owned(),
         new: new_text.to_owned(),
@@ -508,7 +504,6 @@ fn write_diff_from_result(raw_content: Option<&Value>) -> Vec<ToolCallContent> {
         }
         let original = original_raw.and_then(Value::as_str).map_or_else(String::new, str::to_owned);
         return vec![ToolCallContent::Diff {
-            old_path: file_path.to_owned(),
             new_path: file_path.to_owned(),
             old: original,
             new: content.to_owned(),
@@ -559,7 +554,6 @@ fn edit_diff_from_result(
             .filter(|s| !s.is_empty())
             .map(str::to_owned);
         return vec![ToolCallContent::Diff {
-            old_path: file_path.to_owned(),
             new_path: file_path.to_owned(),
             old: old_text.to_owned(),
             new: new_text.to_owned(),

@@ -362,10 +362,8 @@ impl TerminalReason {
 }
 
 /// Lifecycle state of a session, used by the Projects pane to render
-/// the right state glyph and (in later phases) by the multiplexer to
-/// decide redraw semantics. Promoted from `forge_tui::app::session`
-/// in Phase 2 of the MVVM refactor (#102) so both `forge-tui` and
-/// `forge-workspace` can project this state.
+/// the right state glyph. Shared between `forge-tui` and
+/// `forge-workspace` so both crates project the same state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SessionLifecycleState {
     /// No subprocess yet; lead exists conceptually but has never
@@ -396,10 +394,8 @@ pub enum SessionLifecycleState {
 
 /// Per-session SDK turn state — model-resolution cache, mode
 /// capability state, MCP per-server cooldowns, and the auth/error
-/// flags that survive across messages. Promoted from
-/// `forge_tui::app::state::types` in Phase 2 of the MVVM refactor
-/// (#102) so `forge-workspace` can hold an authoritative copy
-/// alongside the existing forge-tui projection.
+/// flags that survive across messages. Held authoritatively by
+/// `forge-workspace`; `forge-tui` projects from there.
 #[derive(Debug, Default)]
 pub struct SessionTurnState {
     /// Live tool-call store keyed by `tool_use_id` for cross-message
