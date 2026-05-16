@@ -551,7 +551,7 @@ pub(crate) fn execute_command_via_handle(
     key: &SessionKey,
     session_id: Option<&str>,
     cmd: Command,
-) -> anyhow::Result<()> {
+) -> Result<(), forge_agent::AgentError> {
     match cmd {
         Command::RespondElicitation { key: _, elicitation_id, action, content } => {
             // MCP elicitation responses bypass `pending_interactions`

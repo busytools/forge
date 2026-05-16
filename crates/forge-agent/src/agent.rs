@@ -113,26 +113,24 @@ impl AgentHandle {
     //
     // Each method builds the matching `Command` variant and pushes it
     // onto `commands`. Returns `Err` only if the dispatcher task has
-    // shut down (channel closed). Errors from the underlying
-    // forge_sdk::Client surface asynchronously via the events stream.
+    // shut down (channel closed) or `launch_settings` serialisation
+    // fails. Errors from the underlying forge_sdk::Client surface
+    // asynchronously via the events stream.
 
-    fn send(&self, cmd: Command) -> anyhow::Result<()> {
-        self.commands.send(cmd).map_err(|_| anyhow::anyhow!("agent dispatcher shut down"))
+    fn send(&self, cmd: Command) -> Result<(), AgentError> {
+        self.commands.send(cmd).map_err(|_| AgentError::DispatcherShutDown)
     }
 
     pub fn new_session(
         &self,
         cwd: String,
         launch_settings: crate::client::SessionLaunchSettings,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), AgentError> {
         // Propagate serialise failure instead of silently launching
         // with `Value::Null` (which the dispatcher then deserialises
         // to default settings, losing the user's configured model /
-        // permission_mode / effort with no breadcrumb). The struct
-        // is `Default`able so a real serialise miss is unlikely;
-        // making it explicit catches forward-compat breakage early.
-        let launch_settings = serde_json::to_value(launch_settings)
-            .map_err(|e| anyhow::anyhow!("failed to encode launch settings: {e}"))?;
+        // permission_mode / effort with no breadcrumb).
+        let launch_settings = serde_json::to_value(launch_settings)?;
         self.send(Command::NewSession { cwd, launch_settings })
     }
 
@@ -141,9 +139,8 @@ impl AgentHandle {
         session_id: String,
         cwd: String,
         launch_settings: crate::client::SessionLaunchSettings,
-    ) -> anyhow::Result<()> {
-        let launch_settings = serde_json::to_value(launch_settings)
-            .map_err(|e| anyhow::anyhow!("failed to encode launch settings: {e}"))?;
+    ) -> Result<(), AgentError> {
+        let launch_settings = serde_json::to_value(launch_settings)?;
         self.send(Command::ResumeSession { session_id: session_id.into(), cwd, launch_settings })
     }
 
@@ -156,9 +153,8 @@ impl AgentHandle {
         session_id: String,
         cwd: String,
         launch_settings: crate::client::SessionLaunchSettings,
-    ) -> anyhow::Result<()> {
-        let launch_settings = serde_json::to_value(launch_settings)
-            .map_err(|e| anyhow::anyhow!("failed to encode launch settings: {e}"))?;
+    ) -> Result<(), AgentError> {
+        let launch_settings = serde_json::to_value(launch_settings)?;
         self.send(Command::ResumeOrNewSession {
             session_id: session_id.into(),
             cwd,
@@ -166,7 +162,7 @@ impl AgentHandle {
         })
     }
 
-    pub fn prompt_text(&self, session_id: String, text: String) -> anyhow::Result<()> {
+    pub fn prompt_text(&self, session_id: String, text: String) -> Result<(), AgentError> {
         self.send(Command::Prompt { session_id: session_id.into(), text })
     }
 
@@ -175,19 +171,19 @@ impl AgentHandle {
         session_id: String,
         text: String,
         images: Vec<forge_primitives::ImageAttachment>,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), AgentError> {
         self.send(Command::PromptWithImages { session_id: session_id.into(), text, images })
     }
 
-    pub fn cancel(&self, session_id: String) -> anyhow::Result<()> {
+    pub fn cancel(&self, session_id: String) -> Result<(), AgentError> {
         self.send(Command::Cancel { session_id: session_id.into() })
     }
 
-    pub fn set_mode(&self, session_id: String, mode: String) -> anyhow::Result<()> {
+    pub fn set_mode(&self, session_id: String, mode: String) -> Result<(), AgentError> {
         self.send(Command::SetMode { session_id: session_id.into(), mode })
     }
 
-    pub fn set_model(&self, session_id: String, model: String) -> anyhow::Result<()> {
+    pub fn set_model(&self, session_id: String, model: String) -> Result<(), AgentError> {
         self.send(Command::SetModel { session_id: session_id.into(), model })
     }
 
@@ -195,31 +191,31 @@ impl AgentHandle {
         &self,
         session_id: String,
         description: String,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), AgentError> {
         self.send(Command::GenerateSessionTitle { session_id: session_id.into(), description })
     }
 
-    pub fn rename_session(&self, session_id: String, title: String) -> anyhow::Result<()> {
+    pub fn rename_session(&self, session_id: String, title: String) -> Result<(), AgentError> {
         self.send(Command::RenameSession { session_id: session_id.into(), title })
     }
 
-    pub fn get_status_snapshot(&self, session_id: String) -> anyhow::Result<()> {
+    pub fn get_status_snapshot(&self, session_id: String) -> Result<(), AgentError> {
         self.send(Command::GetStatusSnapshot { session_id: session_id.into() })
     }
 
-    pub fn get_oauth_credentials_snapshot(&self, session_id: String) -> anyhow::Result<()> {
+    pub fn get_oauth_credentials_snapshot(&self, session_id: String) -> Result<(), AgentError> {
         self.send(Command::GetOauthCredentialsSnapshot { session_id: session_id.into() })
     }
 
-    pub fn get_context_usage(&self, session_id: String) -> anyhow::Result<()> {
+    pub fn get_context_usage(&self, session_id: String) -> Result<(), AgentError> {
         self.send(Command::GetContextUsage { session_id: session_id.into() })
     }
 
-    pub fn reload_plugins(&self, session_id: String) -> anyhow::Result<()> {
+    pub fn reload_plugins(&self, session_id: String) -> Result<(), AgentError> {
         self.send(Command::ReloadPlugins { session_id: session_id.into() })
     }
 
-    pub fn get_mcp_snapshot(&self, session_id: String) -> anyhow::Result<()> {
+    pub fn get_mcp_snapshot(&self, session_id: String) -> Result<(), AgentError> {
         self.send(Command::GetMcpSnapshot { session_id: session_id.into() })
     }
 
@@ -229,7 +225,7 @@ impl AgentHandle {
         elicitation_request_id: String,
         action: forge_primitives::ElicitationAction,
         content: Option<serde_json::Value>,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), AgentError> {
         self.send(Command::RespondToElicitation {
             session_id: session_id.into(),
             elicitation_request_id,
@@ -242,7 +238,7 @@ impl AgentHandle {
         &self,
         session_id: String,
         server_name: String,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), AgentError> {
         self.send(Command::ReconnectMcpServer { session_id: session_id.into(), server_name })
     }
 
@@ -251,7 +247,7 @@ impl AgentHandle {
         session_id: String,
         server_name: String,
         enabled: bool,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), AgentError> {
         self.send(Command::ToggleMcpServer { session_id: session_id.into(), server_name, enabled })
     }
 
@@ -259,7 +255,7 @@ impl AgentHandle {
         &self,
         session_id: String,
         servers: std::collections::BTreeMap<String, forge_primitives::McpServerConfig>,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), AgentError> {
         self.send(Command::SetMcpServers { session_id: session_id.into(), servers })
     }
 
@@ -267,11 +263,11 @@ impl AgentHandle {
         &self,
         session_id: String,
         server_name: String,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), AgentError> {
         self.send(Command::AuthenticateMcpServer { session_id: session_id.into(), server_name })
     }
 
-    pub fn clear_mcp_auth(&self, session_id: String, server_name: String) -> anyhow::Result<()> {
+    pub fn clear_mcp_auth(&self, session_id: String, server_name: String) -> Result<(), AgentError> {
         self.send(Command::ClearMcpAuth { session_id: session_id.into(), server_name })
     }
 
@@ -280,7 +276,7 @@ impl AgentHandle {
         session_id: String,
         server_name: String,
         callback_url: String,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), AgentError> {
         self.send(Command::SubmitMcpOauthCallbackUrl {
             session_id: session_id.into(),
             server_name,
@@ -293,7 +289,7 @@ impl AgentHandle {
         session_id: String,
         tool_call_id: String,
         outcome: forge_primitives::PermissionOutcome,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), AgentError> {
         self.send(Command::PermissionResponse {
             session_id: session_id.into(),
             tool_call_id: tool_call_id.into(),
@@ -306,13 +302,29 @@ impl AgentHandle {
         session_id: String,
         tool_call_id: String,
         outcome: forge_primitives::QuestionOutcome,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), AgentError> {
         self.send(Command::QuestionResponse {
             session_id: session_id.into(),
             tool_call_id: tool_call_id.into(),
             outcome,
         })
     }
+}
+
+/// Errors surfaced from `AgentHandle`'s fire-and-forget command
+/// methods. The underlying `claude` subprocess work flows back
+/// asynchronously via the events stream — these are dispatch-time
+/// failures only.
+#[derive(Debug, thiserror::Error)]
+pub enum AgentError {
+    /// The command dispatcher task has shut down; the channel is
+    /// closed and no further commands will be processed.
+    #[error("agent dispatcher shut down")]
+    DispatcherShutDown,
+    /// Serialising `SessionLaunchSettings` to JSON failed before the
+    /// command could be dispatched.
+    #[error("failed to encode launch settings: {0}")]
+    EncodeFailed(#[from] serde_json::Error),
 }
 
 /// Agent factory — wraps a private `ForgeSdkBridge` behind a channel API.
@@ -394,6 +406,10 @@ async fn dispatch_commands(
 }
 
 /// Dispatch one `Command` to the matching `ForgeSdkBridge` method.
+/// Internal — kept on `anyhow` because the bridge surface itself
+/// returns `anyhow::Result` and the dispatcher task only logs the
+/// error before continuing. The public AgentHandle surface above
+/// uses the typed `AgentError`.
 fn dispatch(cmd: Command, bridge: &ForgeSdkBridge) -> anyhow::Result<()> {
     use forge_primitives::Command as C;
 

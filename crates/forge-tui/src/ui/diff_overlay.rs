@@ -796,10 +796,10 @@ fn render_active_input(
     let inner_width = box_width.saturating_sub(2); // `│ … │`
     let editor_lines = input.editor.lines();
     let body_rows: Vec<String> =
-        if editor_lines.is_empty() || editor_lines.iter().all(|l| l.is_empty()) {
+        if editor_lines.is_empty() || editor_lines.iter().all(String::is_empty) {
             vec!["(type your comment)".to_owned()]
         } else {
-            editor_lines.iter().map(|l| l.clone()).collect()
+            editor_lines.to_vec()
         };
     for body_row in &body_rows {
         let placeholder = body_rows.len() == 1 && body_row == "(type your comment)";

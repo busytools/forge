@@ -37,6 +37,6 @@ pub mod translate;
 pub mod user_interaction;
 pub mod userdata;
 
-pub use agent::{Agent, AgentHandle};
+pub use agent::{Agent, AgentError, AgentHandle};
 pub use client::{AgentEvent, SessionLaunchSettings};
 pub use state::PermissionMode;

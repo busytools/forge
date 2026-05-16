@@ -91,6 +91,8 @@ unimplemented = "deny"
 # Pedantic exemptions: not load-bearing for personal-use scope.
 module_name_repetitions = "allow"   # Rust-idiomatic; not actually repetition.
 must_use_candidate = "allow"        # Most fns don't need the marker.
+return_self_not_must_use = "allow"  # Pair with must_use_candidate; builder
+                                    # setters returning Self don't need it.
 missing_errors_doc = "allow"        # thiserror covers public-error docs.
 missing_panics_doc = "allow"        # `panic` is denied above; noise is minimal.
 doc_markdown = "allow"              # Bare crate paths in prose are fine.

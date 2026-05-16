@@ -745,15 +745,14 @@ impl Workspace {
     /// envelopes directly (Phase 4 retired the legacy `ClientEvent`
     /// channel; this is now the only event source the App consumes).
     pub fn subscribe(&self) -> Option<mpsc::UnboundedReceiver<SessionUpdate>> {
-        match self.update_rx_slot.lock().take() {
-            Some(rx) => Some(rx),
-            None => {
-                tracing::error!(
-                    target: "forge_workspace::workspace",
-                    "Workspace::subscribe called after the receiver was already taken — second subscriber would silently receive nothing"
-                );
-                None
-            }
+        if let Some(rx) = self.update_rx_slot.lock().take() {
+            Some(rx)
+        } else {
+            tracing::error!(
+                target: "forge_workspace::workspace",
+                "Workspace::subscribe called after the receiver was already taken — second subscriber would silently receive nothing"
+            );
+            None
         }
     }
 
