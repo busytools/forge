@@ -16,6 +16,7 @@ use std::sync::Arc;
 use forge_primitives::AgentCommand;
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
+use tracing::Instrument;
 
 use crate::forge_sdk_bridge::ForgeSdkBridge;
 
@@ -366,7 +367,13 @@ impl Agent {
 
         // AgentCommand dispatcher task.
         let dispatch_bridge = Arc::new(bridge);
-        tokio::spawn(dispatch_commands(commands_rx, Arc::clone(&dispatch_bridge)));
+        let span = tracing::info_span!(
+            "agent_dispatch",
+            config_dir = %dispatch_bridge.config_dir().display(),
+        );
+        tokio::spawn(
+            dispatch_commands(commands_rx, Arc::clone(&dispatch_bridge)).instrument(span),
+        );
 
         AgentHandle {
             commands: commands_tx,

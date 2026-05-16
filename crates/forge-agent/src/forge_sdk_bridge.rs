@@ -27,6 +27,7 @@ use forge_sdk::Client;
 use parking_lot::Mutex;
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
+use tracing::Instrument;
 
 use crate::client::{AgentEvent, SessionLaunchSettings};
 use crate::forge_sdk_worker;
@@ -195,16 +196,20 @@ impl ForgeSdkBridge {
         let Some(client) = self.client() else {
             return Err(anyhow::anyhow!("forge-sdk bridge: {label} called before active session"));
         };
-        tokio::spawn(async move {
-            if let Err(err) = f(client).await {
-                tracing::warn!(
-                    target: crate::logging::targets::BRIDGE_LIFECYCLE,
-                    label,
-                    error = %err,
-                    "forge-sdk bridge: dispatch failed",
-                );
+        let span = tracing::info_span!("bridge_dispatch", label);
+        tokio::spawn(
+            async move {
+                if let Err(err) = f(client).await {
+                    tracing::warn!(
+                        target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                        label,
+                        error = %err,
+                        "forge-sdk bridge: dispatch failed",
+                    );
+                }
             }
-        });
+            .instrument(span),
+        );
         Ok(())
     }
 }
@@ -710,24 +715,28 @@ impl ForgeSdkBridge {
         launch_settings: SessionLaunchSettings,
     ) -> anyhow::Result<()> {
         let bridge = self.clone();
-        tokio::spawn(async move {
-            if let Err(err) =
-                forge_sdk_worker::spawn_session(&bridge, &cwd, None, &launch_settings).await
-            {
-                let msg = format!("forge-sdk session spawn failed: {err}");
-                if bridge
-                    .event_tx()
-                    .send(AgentEvent::ConnectionFailed { message: msg.clone() })
-                    .is_err()
+        let span = tracing::info_span!("bridge_new_session", cwd = %cwd);
+        tokio::spawn(
+            async move {
+                if let Err(err) =
+                    forge_sdk_worker::spawn_session(&bridge, &cwd, None, &launch_settings).await
                 {
-                    tracing::warn!(
-                        target: crate::logging::targets::BRIDGE_LIFECYCLE,
-                        error = %msg,
-                        "event channel closed; ConnectionFailed dropped",
-                    );
+                    let msg = format!("forge-sdk session spawn failed: {err}");
+                    if bridge
+                        .event_tx()
+                        .send(AgentEvent::ConnectionFailed { message: msg.clone() })
+                        .is_err()
+                    {
+                        tracing::warn!(
+                            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                            error = %msg,
+                            "event channel closed; ConnectionFailed dropped",
+                        );
+                    }
                 }
             }
-        });
+            .instrument(span),
+        );
         Ok(())
     }
 
@@ -738,25 +747,37 @@ impl ForgeSdkBridge {
         launch_settings: SessionLaunchSettings,
     ) -> anyhow::Result<()> {
         let bridge = self.clone();
-        tokio::spawn(async move {
-            if let Err(err) =
-                forge_sdk_worker::spawn_session(&bridge, &cwd, Some(&session_id), &launch_settings)
-                    .await
-            {
-                let msg = format!("forge-sdk session resume failed: {err}");
-                if bridge
-                    .event_tx()
-                    .send(AgentEvent::ConnectionFailed { message: msg.clone() })
-                    .is_err()
+        let span = tracing::info_span!(
+            "bridge_resume_session",
+            session_id = %session_id,
+            cwd = %cwd,
+        );
+        tokio::spawn(
+            async move {
+                if let Err(err) = forge_sdk_worker::spawn_session(
+                    &bridge,
+                    &cwd,
+                    Some(&session_id),
+                    &launch_settings,
+                )
+                .await
                 {
-                    tracing::warn!(
-                        target: crate::logging::targets::BRIDGE_LIFECYCLE,
-                        error = %msg,
-                        "event channel closed; ConnectionFailed dropped",
-                    );
+                    let msg = format!("forge-sdk session resume failed: {err}");
+                    if bridge
+                        .event_tx()
+                        .send(AgentEvent::ConnectionFailed { message: msg.clone() })
+                        .is_err()
+                    {
+                        tracing::warn!(
+                            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                            error = %msg,
+                            "event channel closed; ConnectionFailed dropped",
+                        );
+                    }
                 }
             }
-        });
+            .instrument(span),
+        );
         Ok(())
     }
 
@@ -781,6 +802,11 @@ impl ForgeSdkBridge {
         launch_settings: SessionLaunchSettings,
     ) -> anyhow::Result<()> {
         let bridge = self.clone();
+        let span = tracing::info_span!(
+            "bridge_resume_or_new_session",
+            session_id = %session_id,
+            cwd = %cwd,
+        );
         tokio::spawn(async move {
             if let Err(resume_err) =
                 forge_sdk_worker::spawn_session(&bridge, &cwd, Some(&session_id), &launch_settings)
@@ -811,7 +837,7 @@ impl ForgeSdkBridge {
                     }
                 }
             }
-        });
+        }.instrument(span));
         Ok(())
     }
 
