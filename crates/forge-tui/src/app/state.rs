@@ -1207,14 +1207,12 @@ impl App {
 
     /// Active session's runtime session state.
     pub fn runtime_session_state(&self) -> Option<model::RuntimeSessionState> {
-        let raw = self.active_session().and_then(|s| s.runtime_session_state)?;
-        Some(convert_runtime_session_state_from_primitives(raw))
+        self.active_session().and_then(|s| s.runtime_session_state)
     }
 
     /// Set the active session's runtime session state.
     pub fn set_runtime_session_state(&mut self, value: Option<model::RuntimeSessionState>) {
-        self.active_bucket_mut().runtime_session_state =
-            value.map(convert_runtime_session_state_to_primitives);
+        self.active_bucket_mut().runtime_session_state = value;
     }
 
     /// Active session's fast-mode state.
@@ -2507,37 +2505,6 @@ impl App {
     }
 }
 
-/// Bridge between the workspace-side
-/// [`forge_primitives::RuntimeSessionState`] (what `DomainSession`
-/// stores) and the TUI-side `model::RuntimeSessionState` (what
-/// reducers / renderers expect). The two enums share a shape but
-/// live in different crates — this helper exists because the
-/// `model::*` namespace predates Phase 5's promotion of runtime
-/// shapes to forge-primitives. Future cleanup: collapse the parallel
-/// definition.
-fn convert_runtime_session_state_from_primitives(
-    wire: forge_primitives::RuntimeSessionState,
-) -> model::RuntimeSessionState {
-    use forge_primitives::RuntimeSessionState as Wire;
-    use model::RuntimeSessionState as Model;
-    match wire {
-        Wire::Idle => Model::Idle,
-        Wire::Running => Model::Running,
-        Wire::RequiresAction => Model::RequiresAction,
-    }
-}
-
-fn convert_runtime_session_state_to_primitives(
-    ui: model::RuntimeSessionState,
-) -> forge_primitives::RuntimeSessionState {
-    use forge_primitives::RuntimeSessionState as Wire;
-    use model::RuntimeSessionState as Model;
-    match ui {
-        Model::Idle => Wire::Idle,
-        Model::Running => Wire::Running,
-        Model::RequiresAction => Wire::RequiresAction,
-    }
-}
 
 #[cfg(test)]
 mod tests {
