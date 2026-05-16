@@ -126,6 +126,9 @@ pub mod env {
     pub mod cli_version {
         pub use forge_agent::env::cli_version::*;
     }
+    pub mod file_index {
+        pub use forge_agent::env::file_index::*;
+    }
     pub mod git_diff {
         pub use forge_agent::env::git_diff::*;
     }

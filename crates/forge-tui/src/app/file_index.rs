@@ -1,26 +1,28 @@
+//! TUI-side state machine + routing for the file-index. The
+//! filesystem walker and `notify::Watcher` themselves live in
+//! `forge_agent::env::file_index` (lifted out so the TUI doesn't
+//! shell out to OS-side I/O directly). This module:
+//!
+//! - Holds per-bucket [`FileIndexState`] (the `BTreeMap` of entries
+//!   plus scan/watch handles).
+//! - Spawns forwarding threads that consume the agent's progress
+//!   channels and re-emit as `FileIndexEvent`s tagged with
+//!   `SessionKey` + generation so the workspace-wide event pump
+//!   routes them to the right bucket.
+//! - Owns the reducer ([`apply_event`]) and the autocomplete
+//!   ranking ([`visible_candidates`], [`rank_and_truncate_candidates`]).
+
 use super::App;
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
-use std::sync::mpsc::{self, RecvTimeoutError, Sender, TryRecvError};
-use std::time::{Duration, SystemTime};
+use std::path::PathBuf;
+use std::sync::mpsc::{Sender, TryRecvError};
+
+use forge_workspace::env::file_index as env;
+pub use forge_workspace::env::file_index::{FileCandidate, FileIndexChange};
 
 use super::MAX_CANDIDATES;
 
-const SCAN_BATCH_SIZE: usize = 256;
 const EVENT_DRAIN_BUDGET: usize = 64;
-const WATCH_POLL_INTERVAL: Duration = Duration::from_millis(100);
-
-#[derive(Clone, Debug)]
-pub struct FileCandidate {
-    pub rel_path: String,
-    pub rel_path_lower: String,
-    pub basename_lower: String,
-    pub depth: usize,
-    pub modified: SystemTime,
-    pub is_dir: bool,
-}
 
 #[derive(Default)]
 pub struct FileIndexState {
@@ -35,20 +37,11 @@ pub struct FileIndexState {
     pub watch: Option<FileIndexWatchHandle>,
 }
 
-pub struct FileIndexScanHandle {
-    cancel: Arc<AtomicBool>,
-}
+/// Cancel guard wrapping the agent's `ScanCancel`. Drop to abort.
+pub struct FileIndexScanHandle(#[allow(dead_code)] env::ScanCancel);
 
-pub struct FileIndexWatchHandle {
-    cancel: Arc<AtomicBool>,
-}
-
-pub enum FileIndexChange {
-    Upsert(FileCandidate),
-    RemoveExact { rel_path: String },
-    RemovePrefix { rel_prefix: String },
-    ReplacePrefix { rel_prefix: String, entries: Vec<FileCandidate> },
-}
+/// Cancel guard wrapping the agent's `WatchCancel`. Drop to abort.
+pub struct FileIndexWatchHandle(#[allow(dead_code)] env::WatchCancel);
 
 pub enum FileIndexEvent {
     /// Each variant carries `key` so the workspace-wide
@@ -81,18 +74,6 @@ struct ScanOverrides {
     blocked_prefixes: Vec<String>,
 }
 
-impl Drop for FileIndexScanHandle {
-    fn drop(&mut self) {
-        self.cancel.store(true, AtomicOrdering::Relaxed);
-    }
-}
-
-impl Drop for FileIndexWatchHandle {
-    fn drop(&mut self) {
-        self.cancel.store(true, AtomicOrdering::Relaxed);
-    }
-}
-
 pub fn reset(app: &mut App) {
     app.file_index_mut().generation = app.file_index_mut().generation.saturating_add(1);
     app.file_index_mut().root = None;
@@ -108,9 +89,6 @@ pub fn reset(app: &mut App) {
 pub fn restart(app: &mut App) {
     reset(app);
     let Some(key) = app.active_session_key.clone() else {
-        // No active session — nothing to start. The scanner emits
-        // require a bucket key to route results onto, and there's
-        // nothing reasonable to scan against without one.
         return;
     };
     let root = PathBuf::from(app.cwd_raw());
@@ -130,7 +108,7 @@ pub fn restart(app: &mut App) {
     ));
     app.file_index_mut().watch = Some(spawn_watch(
         key,
-        &root,
+        root,
         generation,
         respect_gitignore,
         app.file_index_event_tx.clone(),
@@ -179,10 +157,6 @@ pub fn visible_candidates(
 }
 
 pub fn rank_and_truncate_candidates(candidates: &mut Vec<FileCandidate>, query_lower: &str) {
-    // Sort in place by (tier, depth, rel_path). match_tier is a
-    // cheap string operation; calling it O(n log n) inside the
-    // comparator is fine at MAX_CANDIDATES = 50 and avoids the
-    // two extra Vec allocations the index-decorated sort needed.
     candidates.sort_unstable_by(|a, b| {
         match_tier(a, query_lower)
             .cmp(&match_tier(b, query_lower))
@@ -309,6 +283,10 @@ fn apply_change(entries: &mut BTreeMap<String, FileCandidate>, change: FileIndex
     }
 }
 
+/// Spawn the agent-side streaming scan and a forwarding thread that
+/// wraps each [`env::ScanProgress`] with `key` + `generation` and
+/// pushes it onto `event_tx`. Returns a handle whose Drop aborts
+/// the agent walker.
 fn spawn_scan(
     key: forge_workspace::SessionKey,
     root: PathBuf,
@@ -316,344 +294,52 @@ fn spawn_scan(
     respect_gitignore: bool,
     event_tx: Sender<FileIndexEvent>,
 ) -> FileIndexScanHandle {
-    let cancel = Arc::new(AtomicBool::new(false));
-    let cancel_clone = Arc::clone(&cancel);
+    let (rx, cancel) = env::start_scan(root, respect_gitignore);
     std::thread::spawn(move || {
-        let mut batch = Vec::with_capacity(SCAN_BATCH_SIZE);
-        let mut emit_candidate = |candidate| {
-            batch.push(candidate);
-            if batch.len() < SCAN_BATCH_SIZE {
-                return true;
+        while let Ok(progress) = rx.recv() {
+            let event = match progress {
+                env::ScanProgress::Batch(entries) => {
+                    FileIndexEvent::ScanBatch { key: key.clone(), generation, entries }
+                }
+                env::ScanProgress::Finished => {
+                    FileIndexEvent::ScanFinished { key: key.clone(), generation }
+                }
+            };
+            if event_tx.send(event).is_err() {
+                break;
             }
-            event_tx
-                .send(FileIndexEvent::ScanBatch {
-                    key: key.clone(),
-                    generation,
-                    entries: std::mem::take(&mut batch),
-                })
-                .is_ok()
-        };
-        if !for_each_candidate(
-            &root,
-            &root,
-            respect_gitignore,
-            Some(&cancel_clone),
-            &mut emit_candidate,
-        ) {
-            return;
         }
-        if !batch.is_empty()
-            && event_tx
-                .send(FileIndexEvent::ScanBatch { key: key.clone(), generation, entries: batch })
-                .is_err()
-        {
-            return;
-        }
-        let _ = event_tx.send(FileIndexEvent::ScanFinished { key, generation });
     });
-    FileIndexScanHandle { cancel }
+    FileIndexScanHandle(cancel)
 }
 
+/// Spawn the agent-side watcher and a forwarding thread that wraps
+/// each [`env::WatchProgress`] with `key` + `generation`. Returns
+/// a handle whose Drop stops the agent watcher.
 fn spawn_watch(
     key: forge_workspace::SessionKey,
-    root: &Path,
+    root: PathBuf,
     generation: u64,
     respect_gitignore: bool,
     event_tx: Sender<FileIndexEvent>,
 ) -> FileIndexWatchHandle {
-    let cancel = Arc::new(AtomicBool::new(false));
-    let cancel_clone = Arc::clone(&cancel);
-    let root_for_thread = root.to_path_buf();
+    let (rx, cancel) = env::start_watch(root, respect_gitignore);
     std::thread::spawn(move || {
-        let (watch_tx, watch_rx) = mpsc::channel();
-        let mut watcher = match notify::recommended_watcher(move |result| {
-            let _ = watch_tx.send(result);
-        }) {
-            Ok(watcher) => watcher,
-            Err(err) => {
-                tracing::warn!(%err, "file index watcher setup failed");
-                return;
-            }
-        };
-        if let Err(err) =
-            notify::Watcher::watch(&mut watcher, &root_for_thread, notify::RecursiveMode::Recursive)
-        {
-            tracing::warn!(%err, "file index watcher start failed");
-            return;
-        }
-
-        while !cancel_clone.load(AtomicOrdering::Relaxed) {
-            let event = match watch_rx.recv_timeout(WATCH_POLL_INTERVAL) {
-                Ok(event) => event,
-                Err(RecvTimeoutError::Timeout) => continue,
-                Err(RecvTimeoutError::Disconnected) => break,
+        while let Ok(progress) = rx.recv() {
+            let event = match progress {
+                env::WatchProgress::Changes(changes) => {
+                    FileIndexEvent::FsBatch { key: key.clone(), generation, changes }
+                }
+                env::WatchProgress::Rebuild => {
+                    FileIndexEvent::RebuildRequested { key: key.clone(), generation }
+                }
             };
-            match event {
-                Ok(event) => {
-                    if let Some(next_event) = normalize_watch_event(
-                        key.clone(),
-                        &root_for_thread,
-                        generation,
-                        respect_gitignore,
-                        &event,
-                    ) {
-                        let _ = event_tx.send(next_event);
-                    }
-                }
-                Err(err) => {
-                    tracing::warn!(%err, "file index watcher event failed");
-                    let _ = event_tx
-                        .send(FileIndexEvent::RebuildRequested { key: key.clone(), generation });
-                }
+            if event_tx.send(event).is_err() {
+                break;
             }
         }
     });
-    FileIndexWatchHandle { cancel }
-}
-
-fn normalize_watch_event(
-    key: forge_workspace::SessionKey,
-    root: &Path,
-    generation: u64,
-    respect_gitignore: bool,
-    event: &notify::Event,
-) -> Option<FileIndexEvent> {
-    use notify::event::{CreateKind, EventKind, ModifyKind, RemoveKind, RenameMode};
-
-    if matches_ignore_semantics_change(root, &event.paths) {
-        return Some(FileIndexEvent::RebuildRequested { key, generation });
-    }
-
-    let changes = match event.kind {
-        EventKind::Modify(ModifyKind::Name(RenameMode::Any | RenameMode::Both)) => {
-            collect_rename_changes(root, respect_gitignore, &event.paths)
-        }
-        EventKind::Create(CreateKind::Any | CreateKind::File | CreateKind::Folder)
-        | EventKind::Modify(
-            ModifyKind::Any
-            | ModifyKind::Data(_)
-            | ModifyKind::Metadata(_)
-            | ModifyKind::Name(RenameMode::To),
-        ) => collect_create_or_modify_changes(root, respect_gitignore, &event.paths),
-        EventKind::Modify(ModifyKind::Name(RenameMode::From))
-        | EventKind::Remove(RemoveKind::Any | RemoveKind::File | RemoveKind::Folder) => {
-            collect_remove_changes(root, &event.paths)
-        }
-        EventKind::Other => return Some(FileIndexEvent::RebuildRequested { key, generation }),
-        _ => Vec::new(),
-    };
-
-    (!changes.is_empty()).then_some(FileIndexEvent::FsBatch { key, generation, changes })
-}
-
-fn matches_ignore_semantics_change(root: &Path, paths: &[PathBuf]) -> bool {
-    paths.iter().any(|path| {
-        let Some(rel) = normalize_relative_path(root, path) else {
-            return false;
-        };
-        rel == ".gitignore"
-            || rel == ".ignore"
-            || rel.ends_with("/.gitignore")
-            || rel.ends_with("/.ignore")
-    }) || paths.iter().any(|path| {
-        path.file_name().is_some_and(|name| name == "exclude")
-            && path.parent().and_then(Path::file_name).is_some_and(|name| name == "info")
-            && path
-                .parent()
-                .and_then(Path::parent)
-                .and_then(Path::file_name)
-                .is_some_and(|name| name == ".git")
-    })
-}
-
-fn collect_create_or_modify_changes(
-    root: &Path,
-    respect_gitignore: bool,
-    paths: &[PathBuf],
-) -> Vec<FileIndexChange> {
-    let mut changes = Vec::new();
-    for path in paths {
-        if path.is_dir() {
-            if let Some(change) = replace_subtree_change(root, path, respect_gitignore) {
-                changes.push(change);
-            }
-        } else if path.is_file() {
-            let mut entries = scan_subtree(root, path, respect_gitignore);
-            if let Some(candidate) = entries.pop() {
-                changes.push(FileIndexChange::Upsert(candidate));
-            } else if let Some(rel_path) = normalize_relative_path(root, path) {
-                changes.push(FileIndexChange::RemoveExact { rel_path });
-            }
-        }
-    }
-    changes
-}
-
-fn collect_remove_changes(root: &Path, paths: &[PathBuf]) -> Vec<FileIndexChange> {
-    let mut changes = Vec::new();
-    for path in paths {
-        let Some(rel_path) = normalize_relative_path(root, path) else {
-            continue;
-        };
-        changes.push(FileIndexChange::RemoveExact { rel_path: rel_path.clone() });
-        changes.push(FileIndexChange::RemovePrefix { rel_prefix: ensure_dir_suffix(rel_path) });
-    }
-    changes
-}
-
-fn collect_rename_changes(
-    root: &Path,
-    respect_gitignore: bool,
-    paths: &[PathBuf],
-) -> Vec<FileIndexChange> {
-    if paths.len() < 2 {
-        // macOS FSEvents emits two separate RenameMode::Any events (one per
-        // path) instead of a single paired event. If the path no longer exists
-        // it is the "from" side of the rename and should be treated as a remove.
-        if paths.first().is_some_and(|p| !p.exists()) {
-            return collect_remove_changes(root, paths);
-        }
-        return collect_parent_rescan_changes(root, respect_gitignore, paths);
-    }
-    collect_parent_rescan_changes(root, respect_gitignore, paths)
-}
-
-fn scan_subtree(root: &Path, path: &Path, respect_gitignore: bool) -> Vec<FileCandidate> {
-    collect_candidates(root, path, respect_gitignore, None)
-}
-
-fn collect_parent_rescan_changes(
-    root: &Path,
-    respect_gitignore: bool,
-    paths: &[PathBuf],
-) -> Vec<FileIndexChange> {
-    let mut changes = Vec::new();
-    let mut seen_prefixes = BTreeSet::new();
-    for path in paths {
-        let Some(parent) = path.parent() else { continue };
-        let Some(change) = replace_subtree_change(root, parent, respect_gitignore) else {
-            continue;
-        };
-        let FileIndexChange::ReplacePrefix { rel_prefix, .. } = &change else {
-            continue;
-        };
-        if seen_prefixes.insert(rel_prefix.clone()) {
-            changes.push(change);
-        }
-    }
-    changes
-}
-
-fn replace_subtree_change(
-    root: &Path,
-    path: &Path,
-    respect_gitignore: bool,
-) -> Option<FileIndexChange> {
-    let rel_prefix = if path == root { String::new() } else { normalized_prefix(root, path)? };
-    let entries = scan_subtree(root, path, respect_gitignore);
-    Some(FileIndexChange::ReplacePrefix { rel_prefix, entries })
-}
-
-fn for_each_candidate(
-    root: &Path,
-    walk_root: &Path,
-    respect_gitignore: bool,
-    cancel: Option<&Arc<AtomicBool>>,
-    emit: &mut impl FnMut(FileCandidate) -> bool,
-) -> bool {
-    let mut builder = ignore::WalkBuilder::new(walk_root);
-    builder
-        .hidden(false)
-        .git_ignore(respect_gitignore)
-        .git_global(respect_gitignore)
-        .git_exclude(respect_gitignore)
-        .sort_by_file_path(std::cmp::Ord::cmp);
-
-    for result in builder.build() {
-        if cancel.is_some_and(|flag| flag.load(AtomicOrdering::Relaxed)) {
-            return false;
-        }
-        let Ok(entry) = result else { continue };
-        let Some(candidate) = candidate_from_entry(root, &entry) else { continue };
-        if !emit(candidate) {
-            return false;
-        }
-    }
-
-    true
-}
-
-fn collect_candidates(
-    root: &Path,
-    walk_root: &Path,
-    respect_gitignore: bool,
-    cancel: Option<&Arc<AtomicBool>>,
-) -> Vec<FileCandidate> {
-    let mut candidates = Vec::new();
-    let completed =
-        for_each_candidate(root, walk_root, respect_gitignore, cancel, &mut |candidate| {
-            candidates.push(candidate);
-            true
-        });
-    if !completed {
-        tracing::debug!(
-            target: crate::logging::targets::APP_PERF,
-            walk_root = %walk_root.display(),
-            partial_count = candidates.len(),
-            "file index walk cancelled; returning partial candidate set",
-        );
-    }
-    candidates
-}
-
-fn candidate_from_entry(root: &Path, entry: &ignore::DirEntry) -> Option<FileCandidate> {
-    let ft = entry.file_type()?;
-    let is_dir = ft.is_dir();
-    let is_file = ft.is_file();
-    if !is_dir && !is_file {
-        return None;
-    }
-
-    let path = entry.path();
-    let rel = path.strip_prefix(root).ok()?;
-    let rel_str = rel.to_string_lossy().replace('\\', "/");
-    if rel_str.is_empty() {
-        return None;
-    }
-
-    let depth = rel_str.matches('/').count();
-    let rel_path = if is_dir { format!("{rel_str}/") } else { rel_str };
-    let modified = entry
-        .metadata()
-        .ok()
-        .and_then(|metadata| metadata.modified().ok())
-        .unwrap_or(SystemTime::UNIX_EPOCH);
-    let rel_path_lower = rel_path.to_lowercase();
-    let basename_lower = candidate_basename(&rel_path).to_lowercase();
-
-    Some(FileCandidate { rel_path, rel_path_lower, basename_lower, depth, modified, is_dir })
-}
-
-fn normalize_relative_path(root: &Path, path: &Path) -> Option<String> {
-    let rel = path.strip_prefix(root).ok()?;
-    let rel_str = rel.to_string_lossy().replace('\\', "/");
-    (!rel_str.is_empty()).then_some(rel_str)
-}
-
-fn normalized_prefix(root: &Path, path: &Path) -> Option<String> {
-    normalize_relative_path(root, path).map(ensure_dir_suffix)
-}
-
-fn ensure_dir_suffix(mut rel_path: String) -> String {
-    if !rel_path.ends_with('/') {
-        rel_path.push('/');
-    }
-    rel_path
-}
-
-fn candidate_basename(rel_path: &str) -> &str {
-    let trimmed = rel_path.trim_end_matches('/');
-    trimmed.rsplit('/').next().unwrap_or(trimmed)
+    FileIndexWatchHandle(cancel)
 }
 
 impl ScanOverrides {
@@ -682,12 +368,10 @@ impl ScanOverrides {
 mod tests {
     use super::*;
     use crate::app::{App, mention};
-    use std::time::{Duration, Instant};
+    use std::time::{Duration, Instant, SystemTime};
 
     fn app_with_temp_files(files: &[&str]) -> (App, tempfile::TempDir) {
         let tmp = tempfile::tempdir().expect("tempdir");
-        // Canonicalize so the watcher root matches the paths reported by FSEvents
-        // on macOS (where /tmp is a symlink to /private/tmp).
         let canonical = tmp.path().canonicalize().expect("canonicalize tempdir");
         for file in files {
             let path = canonical.join(file);
@@ -718,7 +402,7 @@ mod tests {
         FileCandidate {
             rel_path: rel_path.to_owned(),
             rel_path_lower: rel_path.to_lowercase(),
-            basename_lower: candidate_basename(rel_path).to_lowercase(),
+            basename_lower: env::candidate_basename(rel_path).to_lowercase(),
             depth: rel_path.matches('/').count(),
             modified: SystemTime::UNIX_EPOCH,
             is_dir: rel_path.ends_with('/'),
@@ -752,281 +436,28 @@ mod tests {
     #[test]
     fn scan_event_routes_to_targeted_bucket_not_active_bucket() {
         let mut app = App::test_default();
-        let key_a = forge_workspace::SessionKey::from_str_for_test("project-a");
-        let key_b = forge_workspace::SessionKey::from_str_for_test("project-b");
-        app.sessions.insert(key_a.clone(), crate::app::session::UiSession::new(key_a.clone()));
-        app.sessions.insert(key_b.clone(), crate::app::session::UiSession::new(key_b.clone()));
+        let key_a = forge_workspace::SessionKey::from_str_for_test("a");
+        let key_b = forge_workspace::SessionKey::from_str_for_test("b");
+        app.sessions.entry(key_a.clone()).or_insert_with(|| {
+            crate::app::session::UiSession::new(key_a.clone())
+        });
+        app.sessions.entry(key_b.clone()).or_insert_with(|| {
+            crate::app::session::UiSession::new(key_b.clone())
+        });
+        // Active bucket is A.
         app.active_session_key = Some(key_a.clone());
-
-        // Seed B's generation so the targeted scan event matches.
-        let generation = {
-            let bucket_b = app.sessions.get_mut(&key_b).expect("bucket b");
-            bucket_b.file_index.generation = 42;
-            bucket_b.file_index.generation
-        };
-
-        app.file_index_event_tx
-            .send(FileIndexEvent::ScanBatch {
+        // Bucket B's scanner emits a batch.
+        let gen_b = app.sessions[&key_b].file_index.generation;
+        apply_event(
+            &mut app,
+            FileIndexEvent::ScanBatch {
                 key: key_b.clone(),
-                generation,
-                entries: vec![FileCandidate {
-                    rel_path: "b-only.rs".to_owned(),
-                    rel_path_lower: "b-only.rs".to_owned(),
-                    basename_lower: "b-only.rs".to_owned(),
-                    depth: 0,
-                    modified: SystemTime::UNIX_EPOCH,
-                    is_dir: false,
-                }],
-            })
-            .expect("send scan batch for B");
-
-        drain_events(&mut app);
-
-        // A (active) untouched, B got the entry.
-        assert!(
-            app.file_index().entries.is_empty(),
-            "active bucket A must not be touched by a scan targeted at B"
-        );
-        let bucket_b = app.sessions.get(&key_b).expect("bucket b");
-        assert!(
-            bucket_b.file_index.entries.contains_key("b-only.rs"),
-            "bucket B's index should hold the scanned entry"
-        );
-    }
-
-    #[test]
-    fn stale_scan_event_is_ignored_after_reset() {
-        let mut app = App::test_default();
-        let stale_generation = app.file_index_mut().generation;
-        reset(&mut app);
-        app.file_index_event_tx
-            .send(FileIndexEvent::ScanBatch {
-                key: forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY),
-                generation: stale_generation,
-                entries: vec![FileCandidate {
-                    rel_path: "stale.rs".to_owned(),
-                    rel_path_lower: "stale.rs".to_owned(),
-                    basename_lower: "stale.rs".to_owned(),
-                    depth: 0,
-                    modified: SystemTime::UNIX_EPOCH,
-                    is_dir: false,
-                }],
-            })
-            .expect("send stale scan batch");
-
-        drain_events(&mut app);
-
-        assert!(app.file_index_mut().entries.is_empty());
-    }
-
-    #[test]
-    fn live_remove_blocks_late_scan_entry_from_same_generation() {
-        let mut app = App::test_default();
-        app.file_index_mut().generation = 7;
-        app.file_index_mut().scan_finished = false;
-
-        app.file_index_event_tx
-            .send(FileIndexEvent::FsBatch {
-                key: forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY),
-                generation: 7,
-                changes: vec![FileIndexChange::RemoveExact { rel_path: "stale.rs".to_owned() }],
-            })
-            .expect("send live remove");
-        app.file_index_event_tx
-            .send(FileIndexEvent::ScanBatch {
-                key: forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY),
-                generation: 7,
-                entries: vec![FileCandidate {
-                    rel_path: "stale.rs".to_owned(),
-                    rel_path_lower: "stale.rs".to_owned(),
-                    basename_lower: "stale.rs".to_owned(),
-                    depth: 0,
-                    modified: SystemTime::UNIX_EPOCH,
-                    is_dir: false,
-                }],
-            })
-            .expect("send stale scan batch");
-
-        drain_events(&mut app);
-
-        assert!(!app.file_index_mut().entries.contains_key("stale.rs"));
-    }
-
-    #[test]
-    fn live_upsert_beats_late_scan_entry_for_same_path() {
-        let mut app = App::test_default();
-        app.file_index_mut().generation = 11;
-        app.file_index_mut().scan_finished = false;
-
-        app.file_index_event_tx
-            .send(FileIndexEvent::FsBatch {
-                key: forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY),
-                generation: 11,
-                changes: vec![FileIndexChange::Upsert(FileCandidate {
-                    rel_path: "fresh.rs".to_owned(),
-                    rel_path_lower: "fresh.rs".to_owned(),
-                    basename_lower: "fresh.rs".to_owned(),
-                    depth: 0,
-                    modified: SystemTime::UNIX_EPOCH + Duration::from_secs(20),
-                    is_dir: false,
-                })],
-            })
-            .expect("send live upsert");
-        app.file_index_event_tx
-            .send(FileIndexEvent::ScanBatch {
-                key: forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY),
-                generation: 11,
-                entries: vec![FileCandidate {
-                    rel_path: "fresh.rs".to_owned(),
-                    rel_path_lower: "fresh.rs".to_owned(),
-                    basename_lower: "fresh.rs".to_owned(),
-                    depth: 0,
-                    modified: SystemTime::UNIX_EPOCH + Duration::from_secs(1),
-                    is_dir: false,
-                }],
-            })
-            .expect("send stale scan batch");
-
-        drain_events(&mut app);
-
-        let candidate = app.file_index_mut().entries.get("fresh.rs").expect("fresh candidate");
-        assert_eq!(candidate.modified, SystemTime::UNIX_EPOCH + Duration::from_secs(20));
-    }
-
-    #[test]
-    fn ranking_prefers_text_order_over_recency_for_equal_matches() {
-        let mut candidates = vec![
-            FileCandidate {
-                rel_path: "src/zebra.rs".to_owned(),
-                rel_path_lower: "src/zebra.rs".to_owned(),
-                basename_lower: "zebra.rs".to_owned(),
-                depth: 1,
-                modified: SystemTime::UNIX_EPOCH + Duration::from_secs(20),
-                is_dir: false,
+                generation: gen_b,
+                entries: vec![candidate("only_in_b.rs")],
             },
-            FileCandidate {
-                rel_path: "src/alpha.rs".to_owned(),
-                rel_path_lower: "src/alpha.rs".to_owned(),
-                basename_lower: "alpha.rs".to_owned(),
-                depth: 1,
-                modified: SystemTime::UNIX_EPOCH + Duration::from_secs(1),
-                is_dir: false,
-            },
-        ];
-
-        rank_and_truncate_candidates(&mut candidates, "rs");
-
-        assert_eq!(candidates[0].rel_path, "src/alpha.rs");
-        assert_eq!(candidates[1].rel_path, "src/zebra.rs");
-    }
-
-    #[test]
-    fn spawn_scan_streams_batches_before_finished_event() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        for idx in 0..300 {
-            let path = tmp.path().join("src").join(format!("file-{idx}.rs"));
-            std::fs::create_dir_all(path.parent().expect("parent")).expect("create parent");
-            std::fs::write(path, "").expect("write file");
-        }
-        let (tx, rx) = mpsc::channel();
-        let _scan = spawn_scan(
-            forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY),
-            tmp.path().to_path_buf(),
-            1,
-            true,
-            tx,
         );
-
-        let first = rx.recv_timeout(Duration::from_secs(2)).expect("first scan event");
-        assert!(matches!(first, FileIndexEvent::ScanBatch { .. }));
-    }
-
-    #[test]
-    fn fs_batch_create_updates_visible_candidates_without_real_watcher() {
-        let mut app = App::test_default();
-        app.file_index_mut().generation = 5;
-        app.file_index_mut().scan_finished = true;
-        app.file_index_mut().entries.insert("existing.rs".to_owned(), candidate("existing.rs"));
-        *app.mention_mut() = Some(mention::MentionState::new(0, 0, "new".to_owned(), Vec::new()));
-
-        app.file_index_event_tx
-            .send(FileIndexEvent::FsBatch {
-                key: forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY),
-                generation: 5,
-                changes: vec![FileIndexChange::Upsert(candidate("new.rs"))],
-            })
-            .expect("send fs batch");
-
-        drain_events(&mut app);
-
-        assert!(app.needs_redraw);
-        let mention = app.mention().expect("mention");
-        assert_eq!(
-            mention
-                .candidates
-                .iter()
-                .map(|candidate| candidate.rel_path.as_str())
-                .collect::<Vec<_>>(),
-            vec!["new.rs"]
-        );
-    }
-
-    #[test]
-    fn fs_batch_rename_replaces_old_path_without_real_watcher() {
-        let (mut app, tmp) = app_with_temp_files(&["before.rs", "keep.rs"]);
-        let root = tmp.path().canonicalize().expect("canonicalize tempdir");
-        app.file_index_mut().generation = 9;
-        app.file_index_mut().scan_finished = true;
-        app.file_index_mut().root = Some(root.clone());
-        app.file_index_mut().entries.insert("before.rs".to_owned(), candidate("before.rs"));
-        app.file_index_mut().entries.insert("keep.rs".to_owned(), candidate("keep.rs"));
-        *app.mention_mut() = Some(mention::MentionState::new(0, 0, "rs".to_owned(), Vec::new()));
-
-        std::fs::rename(root.join("before.rs"), root.join("after.rs"))
-            .expect("rename watched file");
-        let changes =
-            collect_rename_changes(&root, true, &[root.join("before.rs"), root.join("after.rs")]);
-        app.file_index_event_tx
-            .send(FileIndexEvent::FsBatch {
-                key: forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY),
-                generation: 9,
-                changes,
-            })
-            .expect("send rename fs batch");
-
-        drain_events(&mut app);
-
-        assert!(!app.file_index_mut().entries.contains_key("before.rs"));
-        assert!(app.file_index_mut().entries.contains_key("after.rs"));
-        assert!(app.file_index_mut().entries.contains_key("keep.rs"));
-        let mention = app.mention().expect("mention");
-        let visible = mention
-            .candidates
-            .iter()
-            .map(|candidate| candidate.rel_path.as_str())
-            .collect::<Vec<_>>();
-        assert!(visible.contains(&"after.rs"));
-        assert!(visible.contains(&"keep.rs"));
-        assert!(!visible.contains(&"before.rs"));
-    }
-
-    #[test]
-    fn root_file_rename_rescans_root_subtree() {
-        let (_app, tmp) = app_with_temp_files(&["before.rs", "keep.rs"]);
-        let root = tmp.path().canonicalize().expect("canonicalize tempdir");
-        std::fs::rename(root.join("before.rs"), root.join("after.rs"))
-            .expect("rename watched file");
-
-        let changes =
-            collect_rename_changes(&root, true, &[root.join("before.rs"), root.join("after.rs")]);
-
-        assert_eq!(changes.len(), 1);
-        let FileIndexChange::ReplacePrefix { rel_prefix, entries } = &changes[0] else {
-            panic!("expected replace prefix");
-        };
-        assert_eq!(rel_prefix, "");
-        assert!(entries.iter().any(|candidate| candidate.rel_path == "after.rs"));
-        assert!(entries.iter().any(|candidate| candidate.rel_path == "keep.rs"));
-        assert!(!entries.iter().any(|candidate| candidate.rel_path == "before.rs"));
+        // A's index is empty; B's index has the entry.
+        assert!(app.sessions[&key_a].file_index.entries.is_empty());
+        assert!(app.sessions[&key_b].file_index.entries.contains_key("only_in_b.rs"));
     }
 }

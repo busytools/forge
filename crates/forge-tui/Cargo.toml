@@ -28,8 +28,6 @@ clap = { workspace = true }
 clap_complete = { workspace = true }
 crossterm = { workspace = true, features = ["event-stream"] }
 ansi-to-tui = { workspace = true }
-ignore = { workspace = true }
-notify = { workspace = true }
 notify-rust = { workspace = true }
 pulldown-cmark = { workspace = true }
 ratatui = { workspace = true }
