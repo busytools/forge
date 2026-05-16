@@ -380,12 +380,26 @@ fn push_section_rule(lines: &mut Vec<Line<'static>>, width: u16) {
     ]));
 }
 
-/// Append the GIT section to `lines`. Always renders header + path.
-/// Branch (with right-justified aggregate totals when the snapshot
-/// carries a diff) + file tree are gated on the active session's
-/// `git_diff_snapshot` — `None` (no scan yet) stops after the path
-/// row.
+/// Append the GIT section to `lines`. Hidden entirely when the
+/// active session's cwd is not inside a git repository (clean
+/// `NoRepo` view + `scanner_ok = true`). For real repos the section
+/// renders header + path + branch + diff + file tree as usual; for
+/// scanner failures inside a real repo the unhealthy banner still
+/// surfaces so the operator gets a triage signal.
 fn append_git_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
+    // Suppress the whole section when there's no git repo at the
+    // active session's cwd. Without this the user sees an empty
+    // `GIT` header + path in every non-git project. We only know
+    // it's a non-repo once the first scan has landed; pre-scan
+    // (`snapshot.is_none()`) keep rendering the header so the row
+    // animates in once the scanner answers.
+    if let Some(snapshot) = app.active_session().and_then(|s| s.git_diff_snapshot.as_ref())
+        && snapshot.scanner_ok
+        && matches!(snapshot.view, GitDiffView::NoRepo)
+    {
+        return;
+    }
+
     // Section header — DIM bold, flush against the rule above
     // (mirrors `TASKS`). When the snapshot has a diff to surface
     // (Worktree / BranchVsDefault), append the `🦉` glyph at the
