@@ -711,7 +711,13 @@ pub(crate) fn dispatch_permission_outcome(
         .borrow_mut()
         .push((tool_id.to_owned(), outcome.clone()));
     let Some(workspace) = app.workspace.as_ref() else {
-        let _ = (tool_id, outcome);
+        tracing::error!(
+            target: crate::logging::targets::APP_PERMISSION,
+            event_name = "permission_dispatch_no_workspace",
+            session_key = %session_key.as_str(),
+            tool_id = %tool_id,
+            "permission outcome dropped: app.workspace is None — this should never happen in production",
+        );
         return;
     };
     let cmd = forge_workspace::Command::RespondPermission {
@@ -807,7 +813,13 @@ pub(crate) fn dispatch_question_outcome(
     #[cfg(feature = "testing")]
     app.test_dispatched_question_outcomes.borrow_mut().push((tool_id.to_owned(), outcome.clone()));
     let Some(workspace) = app.workspace.as_ref() else {
-        let _ = (tool_id, outcome);
+        tracing::error!(
+            target: crate::logging::targets::APP_PERMISSION,
+            event_name = "question_dispatch_no_workspace",
+            session_key = %session_key.as_str(),
+            tool_id = %tool_id,
+            "question outcome dropped: app.workspace is None — this should never happen in production",
+        );
         return;
     };
     let cmd = forge_workspace::Command::RespondQuestion {

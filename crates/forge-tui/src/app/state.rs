@@ -750,8 +750,7 @@ impl App {
                             session_id = %id,
                             reason = "real_bucket_present",
                         );
-                        // existing (synthetic) is dropped at end of branch.
-                        let _ = existing;
+                        drop(existing);
                     } else {
                         existing.key = Some(key.clone());
                         existing.session_id = Some(primitive_id.clone());
