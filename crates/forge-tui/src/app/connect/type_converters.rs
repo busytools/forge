@@ -1,13 +1,8 @@
 //! Wire-shape conversions from `forge_primitives::*` (the
 //! serde-derived envelope structs) into `crate::agent::model::*`
 //! (the App's runtime model). Consumed by the App-side `sdk_message`
-//! reducer and slash-command executors that build model values from
-//! wire envelopes captured in tool-call payloads. Pre-MVVM-#102
-//! these conversions were also driven by `bridge_lifecycle`'s
-//! `AgentEvent` translation; that role moved to
-//! `forge_workspace::SessionTask::translate_event` in Phase 4, which
-//! produces `SessionUpdate`s carrying values already in
-//! `forge_primitives` shapes.
+//! reducer and slash-command executors that build model values
+//! from wire envelopes captured in tool-call payloads.
 
 use crate::agent::model;
 use forge_primitives as types;
@@ -107,7 +102,7 @@ pub(crate) fn map_permission_request(
             model::SessionId::new(session_id),
             tool_call_update,
             options,
-            convert_permission_display(request.display),
+            request.display.filter(|d| !d.is_empty()),
         ),
         tool_call_id,
     )
@@ -161,7 +156,7 @@ pub(super) fn convert_content_block(content: types::ChunkContent) -> Option<mode
         types::ChunkContent::Image { mime_type, uri: _, data } => {
             let mime = mime_type.unwrap_or_else(|| "image/png".to_owned());
             let image_data = data.unwrap_or_default();
-            if !crate::app::clipboard_image::is_supported_image_type(&mime) {
+            if !forge_primitives::image::is_supported_image_type(&mime) {
                 tracing::warn!(mime_type = %mime, "convert_content_block: skipping unsupported image type");
                 return None;
             }
@@ -214,10 +209,10 @@ pub(crate) fn convert_tool_call(tool_call: types::ToolCall) -> model::ToolCall {
         tc = tc.raw_output(serde_json::Value::String(raw_output));
     }
     if let Some(output_metadata) = output_metadata {
-        tc = tc.output_metadata(convert_tool_output_metadata(output_metadata));
+        tc = tc.output_metadata(output_metadata);
     }
     if let Some(task_metadata) = task_metadata {
-        tc = tc.task_metadata(convert_task_metadata(task_metadata));
+        tc = tc.task_metadata(task_metadata);
     }
     if let Some(meta) = meta {
         tc = tc.meta(meta);
@@ -270,10 +265,10 @@ pub(super) fn convert_tool_call_to_fields(
         fields = fields.raw_output(serde_json::Value::String(raw_output));
     }
     if let Some(output_metadata) = tool_call.output_metadata {
-        fields = fields.output_metadata(convert_tool_output_metadata(output_metadata));
+        fields = fields.output_metadata(output_metadata);
     }
     if let Some(task_metadata) = tool_call.task_metadata {
-        fields = fields.task_metadata(convert_task_metadata(task_metadata));
+        fields = fields.task_metadata(task_metadata);
     }
 
     fields
@@ -304,10 +299,10 @@ pub(super) fn convert_tool_call_update_fields(
         out = out.raw_output(serde_json::Value::String(raw_output));
     }
     if let Some(output_metadata) = fields.output_metadata {
-        out = out.output_metadata(convert_tool_output_metadata(output_metadata));
+        out = out.output_metadata(output_metadata);
     }
     if let Some(task_metadata) = fields.task_metadata {
-        out = out.task_metadata(convert_task_metadata(task_metadata));
+        out = out.task_metadata(task_metadata);
     }
     if let Some(locations) = fields.locations {
         out = out.locations(
@@ -327,38 +322,6 @@ pub(super) fn convert_tool_call_update_fields(
     out
 }
 
-fn convert_tool_output_metadata(
-    output_metadata: types::ToolOutputMetadata,
-) -> model::ToolOutputMetadata {
-    model::ToolOutputMetadata::new()
-        .bash(output_metadata.bash.map(|bash| {
-            model::BashOutputMetadata::new()
-                .assistant_auto_backgrounded(bash.assistant_auto_backgrounded)
-        }))
-        .todo_write(output_metadata.todo_write.map(|todo_write| {
-            model::TodoWriteOutputMetadata::new()
-                .verification_nudge_needed(todo_write.verification_nudge_needed)
-        }))
-}
-
-fn convert_permission_display(
-    display: Option<types::PermissionDisplay>,
-) -> Option<model::PermissionDisplay> {
-    let display = display?;
-    let mapped = model::PermissionDisplay::new()
-        .title(display.title)
-        .display_name(display.display_name)
-        .description(display.description);
-    (!mapped.is_empty()).then_some(mapped)
-}
-
-fn convert_task_metadata(task_metadata: types::TaskMetadata) -> model::TaskMetadata {
-    model::TaskMetadata::new()
-        .end_time(task_metadata.end_time)
-        .total_paused_ms(task_metadata.total_paused_ms)
-        .error(task_metadata.error)
-        .backgrounded(task_metadata.is_backgrounded)
-}
 
 fn convert_tool_call_content(
     tool_content: types::ToolCallContent,

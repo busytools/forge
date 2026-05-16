@@ -460,17 +460,6 @@ impl OptionsBuilder {
         self
     }
 
-    /// Register an external (stdio / SSE / HTTP) MCP server under the
-    /// given name. Non-SDK variants of the CLI's `mcp_servers` dict.
-    pub fn external_mcp_server(
-        mut self,
-        name: impl Into<String>,
-        config: forge_primitives::McpServerConfig,
-    ) -> Self {
-        self.inner.external_mcp_servers.insert(name.into(), config);
-        self
-    }
-
     /// Attach hooks.
     pub fn hooks(mut self, hooks: Hooks) -> Self {
         self.inner.hooks = hooks;
@@ -499,16 +488,6 @@ impl OptionsBuilder {
         self
     }
 
-    /// Override the `--setting-sources` list.
-    pub fn setting_sources<I, S>(mut self, sources: I) -> Self
-    where
-        I: IntoIterator<Item = S>,
-        S: Into<String>,
-    {
-        self.inner.setting_sources = Some(sources.into_iter().map(Into::into).collect());
-        self
-    }
-
     /// Exclude dynamic sections from the system prompt. Delivered via
     /// the `initialize` `control_request`, not a CLI flag.
     pub fn exclude_dynamic_sections(mut self, yes: bool) -> Self {
@@ -525,30 +504,10 @@ impl OptionsBuilder {
         self
     }
 
-    /// Override the minimum `claude` binary version check. Pass `None` to
-    /// disable the check entirely.
-    pub fn minimum_cli_version(mut self, version: Option<String>) -> Self {
-        self.inner.minimum_cli_version = version;
-        self
-    }
-
-    /// Override the projects directory used to resolve project keys.
-    /// When unset, defaults to `<config_dir>/projects`.
-    pub fn projects_dir(mut self, path: impl Into<PathBuf>) -> Self {
-        self.inner.projects_dir = Some(path.into());
-        self
-    }
-
     /// Register a subagent under `name`. Forwards to the CLI via the
     /// `initialize` `control_request`'s `agents` field.
     pub fn subagent(mut self, name: impl Into<String>, def: SubagentDefinition) -> Self {
         self.inner.subagents.insert(name.into(), def);
-        self
-    }
-
-    /// Replace the whole subagent map in one go.
-    pub fn subagents(mut self, subagents: HashMap<String, SubagentDefinition>) -> Self {
-        self.inner.subagents = subagents;
         self
     }
 
@@ -624,18 +583,6 @@ impl OptionsBuilder {
         self
     }
 
-    /// Replace the whole `--add-dir` list.
-    pub fn add_dirs(mut self, dirs: Vec<std::path::PathBuf>) -> Self {
-        self.inner.add_dirs = dirs;
-        self
-    }
-
-    /// Register a local plugin directory.
-    pub fn plugin_dir(mut self, path: impl Into<std::path::PathBuf>) -> Self {
-        self.inner.plugins.push(SdkPluginConfig::Local { path: path.into() });
-        self
-    }
-
     /// Replace the whole plugin list.
     pub fn plugins(mut self, plugins: Vec<SdkPluginConfig>) -> Self {
         self.inner.plugins = plugins;
@@ -648,27 +595,9 @@ impl OptionsBuilder {
         self
     }
 
-    /// Replace the whole env map.
-    pub fn envs(mut self, env: HashMap<String, String>) -> Self {
-        self.inner.env = env;
-        self
-    }
-
-    /// Override `$USER` in the subprocess env.
-    pub fn user(mut self, u: impl Into<String>) -> Self {
-        self.inner.user = Some(u.into());
-        self
-    }
-
     /// Add one extra argv flag (pass `None` for bare flags).
     pub fn extra_arg(mut self, flag: impl Into<String>, value: Option<String>) -> Self {
         self.inner.extra_args.insert(flag.into(), value);
-        self
-    }
-
-    /// Replace the whole extra-args map.
-    pub fn extra_args(mut self, args: HashMap<String, Option<String>>) -> Self {
-        self.inner.extra_args = args;
         self
     }
 
@@ -700,12 +629,6 @@ impl OptionsBuilder {
     /// `{"type":"json_schema","schema":{...}}`.
     pub fn output_format(mut self, value: Value) -> Self {
         self.inner.output_format = Some(value);
-        self
-    }
-
-    /// Cap the stdout buffer size (bytes). `None` = default 1 MiB.
-    pub fn max_buffer_size(mut self, n: usize) -> Self {
-        self.inner.max_buffer_size = Some(n);
         self
     }
 
@@ -790,13 +713,6 @@ mod tests_skills_option {
     fn skills_with_concrete_names() {
         let opts = OptionsBuilder::new().skills(["create-story", "another-skill"]).build();
         assert_eq!(opts.skills.len(), 2);
-    }
-
-    #[test]
-    fn explicit_setting_sources_override_default() {
-        let opts =
-            OptionsBuilder::new().skills(["create-story"]).setting_sources(["local"]).build();
-        assert_eq!(opts.setting_sources, Some(vec!["local".to_string()]));
     }
 
     #[test]
