@@ -933,13 +933,12 @@ impl Workspace {
     /// `forge_sdk::Client` kills its `claude` subprocess via its
     /// existing `Drop` impl when the last reference goes away.
     ///
-    /// In 1a forge-tui drops its handle reference before calling
-    /// shutdown, so Workspace is the sole owner of every pool entry
-    /// and dropping it triggers the subprocess shutdown chain (sender
-    /// drop -> dispatcher exit -> Client drop -> subprocess
-    /// kill_on_drop). Callers that hold cloned handles across
-    /// shutdown will need to release them for the kill-chain to
-    /// fire promptly.
+    /// forge-tui releases its handle reference before calling shutdown,
+    /// so Workspace is the sole owner of every pool entry and dropping
+    /// it triggers the subprocess shutdown chain (sender drop ->
+    /// dispatcher exit -> Client drop -> subprocess kill_on_drop).
+    /// Callers that hold cloned handles across shutdown will need to
+    /// release them for the kill-chain to fire promptly.
     pub fn shutdown(&self) {
         // Drop command senders first so every SessionTask sees its
         // command channel close and exits cleanly.

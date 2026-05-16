@@ -146,6 +146,19 @@ impl ForgeSdkBridge {
     }
 
     pub(crate) fn clear_client(&self) -> Option<Client> {
+        // Drain in-flight permission / question oneshots before the
+        // client goes away. The SDK's detached `can_use_tool` /
+        // `question` callback tasks are awaiting these receivers; if
+        // we drop the client without resolving them they leak the
+        // closure (which holds `Arc<event_tx>`, `Arc<PendingResponses>`,
+        // …) and the matching workspace forwarders exit on a closed
+        // channel without notifying the awaiter.
+        for (_, tx) in self.inner.pending.lock().drain() {
+            let _ = tx.send(forge_primitives::PermissionDecision::deny("session replaced"));
+        }
+        for (_, tx) in self.inner.pending_questions.lock().drain() {
+            let _ = tx.send(forge_primitives::QuestionOutcome::Cancelled);
+        }
         self.inner.client.lock().take()
     }
 
