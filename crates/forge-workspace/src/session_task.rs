@@ -489,9 +489,11 @@ impl SessionTask {
             .is_some_and(|workspace| workspace.migrate_session_task(&self.key, real_key));
         if !migrated {
             // Workspace refused the migration (collision or no workspace
-            // upgrade). Keep `self.key` pointing at the old slot so
-            // commands continue to flow through the live channel; the
-            // session can't be re-keyed, but it still works.
+            // upgrade). Keep `self.key` at the old slot so events
+            // continue flowing through this task's existing channel.
+            // Command dispatch against `real_key` will miss until the
+            // TUI reconnects — single-user scope makes the collision
+            // effectively impossible.
             return;
         }
         tracing::info!(

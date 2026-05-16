@@ -381,6 +381,7 @@ pub(crate) async fn send_prompt(
     client: &Client,
     chunks: Vec<forge_primitives::PromptChunk>,
 ) -> anyhow::Result<()> {
+    debug_assert!(!chunks.is_empty(), "send_prompt called with empty chunks");
     if chunks.iter().all(|c| c.kind == "text") {
         let prompt: String =
             chunks.iter().filter_map(|c| c.value.as_str()).collect::<Vec<_>>().join("\n");
