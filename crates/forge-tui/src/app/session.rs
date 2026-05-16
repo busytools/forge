@@ -473,13 +473,6 @@ impl Default for UiSession {
     }
 }
 
-// Phase 4 deleted the `pub type Session = UiSession;` back-compat
-// alias; the ~250 call sites that used `UiSession::new(...)` etc.
-// were migrated to `UiSession::new(...)`. `UiSession` owns the
-// operational state TUI renders; workspace's `DomainSession` holds
-// only the routing metadata (`AgentHandle` slot, `session_id`,
-// pending interactions).
-
 #[cfg(test)]
 mod tests {
     #![allow(clippy::expect_used, clippy::unwrap_used)]

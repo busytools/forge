@@ -990,21 +990,9 @@ pub(super) fn apply_session_update_connected(
     if let Some(session) = app.session_mut(&key) {
         session.last_connection_error = None;
     }
-    // `was_active` drives whether the welcome / model snapshots get
-    // applied to the active-session UI. The rule is now simple:
-    // this Connected is for the active session only when its key
-    // already matches `active_session_key`. Active migration is
-    // owned by the synthetic_to_migrate branch above (legacy/test
-    // paths that skip KeyRenamed) and by the `KeyRenamed` reducer
-    // itself — Connected never steals focus on its own.
-    //
-    // Why the auto-steal was wrong: with multi-project auto_start,
-    // every project's Connected used to make itself active, so the
-    // LAST Connected won the focused tab regardless of which
-    // project actually owned `focus = true`. The fix routes focus
-    // through KeyRenamed (which is what fires for the
-    // `__conn_pending__` → real-key migration of the focus winner)
-    // and leaves background Connecteds untouched.
+    // Connected applies welcome/model snapshots to active-session UI
+    // only when the key already matches `active_session_key`. Focus
+    // routing lives in the `KeyRenamed` reducer, not here.
     let was_active = app.active_session_key.as_ref() == Some(&key);
     apply_connected_presentation(
         app,
