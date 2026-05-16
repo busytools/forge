@@ -333,29 +333,6 @@ pub(super) fn apply_session_update_question_request(
     apply_question_request_presentation(app, &key, &tool_id, model_request);
 }
 
-/// `SessionUpdate::McpElicitationRequest` reducer. The
-/// elicitation dialogue is an App-global UI overlay that's only
-/// meaningful for the active session; background-session requests
-/// are dropped at the routing layer. `elicitation_id` rides on the
-/// envelope for routing-side correlation but the presentation
-/// helper consumes only `request` — the id is already embedded in
-/// [`forge_primitives::ElicitationRequest`].
-pub(super) fn apply_session_update_mcp_elicitation_request(
-    app: &mut App,
-    key: SessionKey,
-    _elicitation_id: String,
-    request: forge_primitives::ElicitationRequest,
-) {
-    // `_elicitation_id` is part of the wire envelope for future
-    // correlation but the reducer holds the single-in-flight
-    // invariant via the App overlay surface — no per-id tracking
-    // needed today.
-    if app.active_session_key.as_ref() != Some(&key) {
-        return;
-    }
-    crate::app::config::present_mcp_elicitation_request(app, request);
-}
-
 /// Look up the target bucket by `key` and apply the question
 /// request directly — no temp-swap.
 fn apply_question_request_presentation(

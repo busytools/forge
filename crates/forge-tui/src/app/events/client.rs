@@ -202,18 +202,6 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         SessionUpdate::QuestionRequest { key, tool_id, request } => {
             turn::apply_session_update_question_request(app, key, tool_id, request);
         }
-        SessionUpdate::McpElicitationRequest { key, elicitation_id, request } => {
-            turn::apply_session_update_mcp_elicitation_request(app, key, elicitation_id, request);
-        }
-        SessionUpdate::McpElicitationCompleted { elicitation_id, server_name, .. } => {
-            if is_active_or_global {
-                crate::app::config::handle_mcp_elicitation_completed(
-                    app,
-                    &elicitation_id,
-                    server_name,
-                );
-            }
-        }
         SessionUpdate::McpAuthRedirect { redirect, .. } => {
             if is_active_or_global {
                 crate::app::config::present_mcp_auth_redirect(app, redirect);

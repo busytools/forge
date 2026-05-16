@@ -885,6 +885,12 @@ fn apply_elicitation_complete(app: &mut App, data: &Value) {
     let Some(elicitation_id) =
         record.get("elicitation_id").and_then(Value::as_str).filter(|s| !s.is_empty())
     else {
+        tracing::debug!(
+            target: crate::logging::targets::APP_PERMISSION,
+            event_name = "elicitation_complete_dropped",
+            message = "elicitation_complete event missing elicitation_id",
+            outcome = "drop",
+        );
         return;
     };
     let server_name = record.get("mcp_server_name").and_then(Value::as_str).map(str::to_owned);

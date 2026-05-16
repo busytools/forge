@@ -46,15 +46,6 @@ pub enum AgentEvent {
         session_id: String,
         request: types::QuestionRequest,
     },
-    ElicitationRequest {
-        session_id: String,
-        request: types::ElicitationRequest,
-    },
-    ElicitationComplete {
-        session_id: String,
-        elicitation_id: String,
-        server_name: Option<String>,
-    },
     McpAuthRedirect {
         session_id: String,
         redirect: types::McpAuthRedirect,
@@ -153,8 +144,6 @@ impl AgentEvent {
             Self::ConnectionFailed { .. } => "connection_failed",
             Self::PermissionRequest { .. } => "permission_request",
             Self::QuestionRequest { .. } => "question_request",
-            Self::ElicitationRequest { .. } => "elicitation_request",
-            Self::ElicitationComplete { .. } => "elicitation_complete",
             Self::McpAuthRedirect { .. } => "mcp_auth_redirect",
             Self::McpOperationError { .. } => "mcp_operation_error",
             Self::SlashError { .. } => "slash_error",
@@ -176,8 +165,6 @@ impl AgentEvent {
             Self::Connected { session_id, .. }
             | Self::PermissionRequest { session_id, .. }
             | Self::QuestionRequest { session_id, .. }
-            | Self::ElicitationRequest { session_id, .. }
-            | Self::ElicitationComplete { session_id, .. }
             | Self::McpAuthRedirect { session_id, .. }
             | Self::McpOperationError { session_id, .. }
             | Self::SlashError { session_id, .. }
@@ -206,8 +193,6 @@ impl AgentEvent {
             Self::Connected { .. }
             | Self::AuthRequired { .. }
             | Self::ConnectionFailed { .. }
-            | Self::ElicitationRequest { .. }
-            | Self::ElicitationComplete { .. }
             | Self::McpAuthRedirect { .. }
             | Self::McpOperationError { .. }
             | Self::SlashError { .. }

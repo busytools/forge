@@ -314,30 +314,6 @@ impl SessionTask {
                     );
                 }
             }
-            AgentEvent::ElicitationRequest { session_id, request } => {
-                let session_key = SessionKey::from_session_id(session_id);
-                // When the CLI omits an elicitation_id, synthesize a
-                // local UUID so concurrent None-id requests don't
-                // collapse onto the empty-string correlation key and
-                // become indistinguishable to the TUI.
-                let elicitation_id = request
-                    .elicitation_id
-                    .clone()
-                    .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-                self.emit(SessionUpdate::McpElicitationRequest {
-                    key: session_key,
-                    elicitation_id,
-                    request,
-                });
-            }
-            AgentEvent::ElicitationComplete { session_id, elicitation_id, server_name } => {
-                let session_key = SessionKey::from_session_id(session_id);
-                self.emit(SessionUpdate::McpElicitationCompleted {
-                    key: session_key,
-                    elicitation_id,
-                    server_name,
-                });
-            }
             AgentEvent::McpAuthRedirect { session_id, redirect } => {
                 let session_key = SessionKey::from_session_id(session_id);
                 self.emit(SessionUpdate::McpAuthRedirect { key: session_key, redirect });
@@ -563,10 +539,8 @@ pub(crate) fn execute_command_via_handle(
 ) -> Result<(), forge_agent::AgentError> {
     match cmd {
         Command::RespondElicitation { key: _, elicitation_id, action, content } => {
-            // MCP elicitation responses bypass `pending_interactions`
-            // entirely — the bridge emits `AgentEvent::ElicitationRequest`
-            // without registering a workspace-side oneshot, and the TUI
-            // replies out of band with optional `content`. Forward
+            // MCP elicitation runs through the SDK message stream rather
+            // than the workspace oneshot mailbox; forward the response
             // straight to the agent.
             let Some(sid) = session_id else {
                 warn_no_session(key, "RespondElicitation");

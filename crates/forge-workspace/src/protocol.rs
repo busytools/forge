@@ -38,7 +38,7 @@ use forge_primitives::question::{QuestionOutcome, QuestionRequest};
 use forge_primitives::runtime::{AvailableModel, CurrentModel, ModeState, TerminalReason};
 use forge_primitives::usage::{UsageSnapshot, UsageSourceKind};
 use forge_primitives::{
-    AccountInfo, ElicitationAction, ElicitationRequest, ForgeAccountIdentity, ImageAttachment,
+    AccountInfo, ElicitationAction, ForgeAccountIdentity, ImageAttachment,
     McpAuthRedirect, McpOperationError, McpServerConfig, McpServerStatus, Message, SessionId,
     SessionListEntry,
 };
@@ -330,18 +330,6 @@ pub enum SessionUpdate {
         tool_id: String,
         request: QuestionRequest,
     },
-    /// MCP elicitation. Reply via
-    /// `Command::RespondElicitation { elicitation_id, action }`.
-    McpElicitationRequest {
-        key: SessionKey,
-        elicitation_id: String,
-        request: ElicitationRequest,
-    },
-    McpElicitationCompleted {
-        key: SessionKey,
-        elicitation_id: String,
-        server_name: Option<String>,
-    },
     McpAuthRedirect {
         key: SessionKey,
         redirect: McpAuthRedirect,
@@ -464,8 +452,6 @@ impl SessionUpdate {
             | Self::SlashCommandError { key, .. }
             | Self::PermissionRequest { key, .. }
             | Self::QuestionRequest { key, .. }
-            | Self::McpElicitationRequest { key, .. }
-            | Self::McpElicitationCompleted { key, .. }
             | Self::McpAuthRedirect { key, .. }
             | Self::McpOperationError { key, .. }
             | Self::TurnComplete { key, .. }
@@ -548,16 +534,6 @@ impl std::fmt::Debug for SessionUpdate {
                 .debug_struct("QuestionRequest")
                 .field("key", key)
                 .field("tool_id", tool_id)
-                .finish_non_exhaustive(),
-            Self::McpElicitationRequest { key, elicitation_id, .. } => f
-                .debug_struct("McpElicitationRequest")
-                .field("key", key)
-                .field("elicitation_id", elicitation_id)
-                .finish_non_exhaustive(),
-            Self::McpElicitationCompleted { key, elicitation_id, .. } => f
-                .debug_struct("McpElicitationCompleted")
-                .field("key", key)
-                .field("elicitation_id", elicitation_id)
                 .finish_non_exhaustive(),
             Self::McpAuthRedirect { key, .. } => {
                 f.debug_struct("McpAuthRedirect").field("key", key).finish_non_exhaustive()
