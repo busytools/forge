@@ -842,22 +842,17 @@ impl ConfigState {
     }
 
     pub fn thinking_effort_effective(&self) -> EffortLevel {
-        // Forge defaults to `max` effort when the user hasn't set an
-        // explicit value — matches the "default forge to --effort max"
-        // intent landed in PR #91. The worker's `default_max` fallback
-        // covered the case where launch_settings carries no effort,
-        // but forge-tui always populates effortLevel from this method,
-        // so the default has to live here too.
+        // Forge defaults to `max` effort when unset. The worker has
+        // a default_max fallback for missing-from-launch_settings;
+        // this method covers the read path that populates
+        // launch_settings, so both ends agree.
         store::thinking_effort_level(&self.committed_settings_document).unwrap_or(EffortLevel::Max)
     }
 
     pub fn default_permission_mode_effective(&self) -> DefaultPermissionMode {
-        // Forge defaults to `Auto` permission mode when the user
-        // hasn't set an explicit value — mirrors the effort=max
-        // default landed in PR #91. The CLI itself defaults to
-        // `default`, so without this override every fresh forge
-        // session would ship `permissions.defaultMode = "default"`
-        // even though the personal-use scope wants auto.
+        // Forge defaults to `Auto` permission mode; the CLI defaults
+        // to `default`, so without this override every fresh forge
+        // session would ship `permissions.defaultMode = "default"`.
         store::default_permission_mode(&self.committed_settings_document)
             .unwrap_or(DefaultPermissionMode::Auto)
     }

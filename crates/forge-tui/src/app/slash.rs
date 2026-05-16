@@ -496,7 +496,12 @@ mod tests {
                 assert_eq!(app.resuming_session_id(), Some("abc-123"));
 
                 tokio::task::yield_now().await;
-                assert!(rx.try_recv().is_ok());
+                let cmd = rx.try_recv().expect("resume command dispatched");
+                assert!(matches!(
+                    cmd,
+                    forge_primitives::AgentCommand::ResumeSession { session_id, .. }
+                        if session_id == "abc-123"
+                ));
             })
             .await;
     }

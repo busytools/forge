@@ -110,13 +110,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         help::render(frame, areas.help, app);
     }
 
-    // Chat footer (mode/model/fast/cwd/branch/usage) used to render
-    // here; it moved to the bottom of the Projects pane in PR #108.
-    // See `projects_pane::render_account_status_footer`. The todo
-    // panel that used to sit above the input is gone too — todos
-    // now render in the Inspector pane (right side) via
-    // `inspector_pane::render`.
-
+    // Chat footer renders at the bottom of the Projects pane
+    // (`projects_pane::render_account_status_footer`); todos render
+    // in the Inspector pane (`inspector_pane::render`).
     render_perf_fps_overlay(frame, frame_area, frame_area.y, app);
 }
 

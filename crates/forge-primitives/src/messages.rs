@@ -639,7 +639,7 @@ enum SystemRepr {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "subtype", rename_all = "snake_case")]
-// Wire-shape enum — variants share the `System` prefix because that's the CLI's wire-tag scheme.
+// Wire-shape enum — variants share the `Task` prefix to match the CLI's wire-tag scheme.
 #[allow(clippy::enum_variant_names)]
 enum TypedSystemRepr {
     TaskStarted {

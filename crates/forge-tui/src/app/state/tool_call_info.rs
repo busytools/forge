@@ -192,14 +192,12 @@ pub fn is_cron_create_tool_name(tool_name: &str) -> bool {
     tool_name.eq_ignore_ascii_case("croncreate")
 }
 
-/// Permission state stored inline on a `ToolCallInfo`, so the permission
-/// controls render inside the tool call block (unified edit/permission UX).
-///
-/// Phase 1+: the `response_tx` field has been replaced by `tool_id`.
-/// Workspace owns the oneshot in `DomainSession.pending_interactions`;
-/// the picker site dispatches `Command::RespondPermission { key,
-/// tool_id, outcome }` via `Workspace::dispatch` instead of fulfilling
-/// a local sender.
+/// Permission state stored inline on a `ToolCallInfo`, so the
+/// permission controls render inside the tool call block (unified
+/// edit/permission UX). Workspace owns the oneshot in
+/// `DomainSession.pending_interactions`; the picker dispatches
+/// `Command::RespondPermission { key, tool_id, outcome }` via
+/// `Workspace::dispatch`.
 pub struct InlinePermission {
     pub options: Vec<model::PermissionOption>,
     pub display: Option<model::PermissionDisplay>,

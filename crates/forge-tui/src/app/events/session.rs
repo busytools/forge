@@ -452,8 +452,7 @@ pub(super) fn handle_connection_failed_event(app: &mut App, session_key: &Sessio
     );
 }
 
-/// Spec text for the rate-limit fallback chat message. See
-/// `~/.claude-subspace/plans/2026-05-10-forge-tui-projects-pane-wide-design.md`.
+/// Chat message rendered when all accounts are rate-limited.
 const RATE_LIMIT_FALLBACK_MESSAGE: &str =
     "Waiting for account reset; click another project or wait.";
 
@@ -528,12 +527,9 @@ pub(super) fn handle_slash_command_error_event(app: &mut App, session_key: &Sess
 
 pub(super) fn handle_auth_completed_event(app: &mut App, session_key: &SessionKey) {
     if app.active_session_key.as_ref() != Some(session_key) {
-        // Auth completed for a non-active session is a degenerate case
-        // — the user must have triggered /login from a session that's
-        // since been backgrounded. Restarting a session targets the
-        // active bucket by definition; the safest thing is to log and
-        // drop. Once Phase 2b ships proper multi-bridge auth flows the
-        // bridge will deliver this only to the active path.
+        // Auth completed for a non-active session is a degenerate
+        // case — the user must have triggered /login from a session
+        // that's since been backgrounded. Log and drop.
         tracing::warn!(
             target: crate::logging::targets::APP_AUTH,
             event_name = "auth_completed_background_dropped",
@@ -732,14 +728,11 @@ pub(super) fn handle_session_replaced_event(
         app.sessions.remove(&prev);
     }
 
-    // Reset the DomainSession's `lifecycle_state` to `Idle`. The
-    // replacement session reuses the same `DomainSession` (Phase 5
-    // stamps the new AgentHandle onto it), which means a previously-
-    // set `Attention` from a pending permission on the outgoing
-    // session would otherwise carry forward and leave the Projects
-    // pane glyph stale until the next lifecycle event. The active-
-    // session Connected path does the same reset explicitly; this
-    // mirrors it for the SessionReplaced path.
+    // Reset lifecycle_state to Idle — the replacement session
+    // reuses the same DomainSession, so a previously-set Attention
+    // from a pending permission on the outgoing session would
+    // otherwise carry forward and leave the Projects pane glyph
+    // stale until the next lifecycle event.
     super::set_bucket_lifecycle_state(
         app,
         &session_key,
@@ -924,11 +917,10 @@ fn maybe_open_startup_session_picker(app: &mut App) {
 // presentation helper.
 // ─────────────────────────────────────────────────────────────────
 
-// Each reducer below receives owned values from the SessionUpdate
-// destructure in `events::client::apply_workspace_update`. Several
-// of them merely forward references into the underlying handler;
-// `#[allow(clippy::needless_pass_by_value)]` is the standard escape
-// for that "I own this but only pass it by reference" pattern.
+// Reducers below receive owned values from the SessionUpdate
+// destructure in `events::client::apply_workspace_update`. The
+// module-level `needless_pass_by_value` allow at the top of this
+// file covers the "I own this but only pass it by reference" arms.
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn apply_session_update_connected(

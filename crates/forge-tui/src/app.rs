@@ -208,11 +208,10 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
         // so the actual fetch only fires once per TTL window.
         crate::app::usage::request_refresh_if_needed(app);
 
-        // Issue #85 (revised 2026-05-13): no timer-based drain.
-        // Submit dispatches `Command::Prompt` immediately on every
-        // Tick the burst detector: flush any held/buffered content that
-        // has timed out. EmitChar re-inserts a single held character;
-        // EmitPaste feeds the accumulated burst into the paste queue.
+        // Tick the burst detector: flush any held/buffered content
+        // that has timed out. EmitChar re-inserts a single held
+        // character; EmitPaste feeds the accumulated burst into the
+        // paste queue.
         if app.active_view == ActiveView::Chat
             && let Some(action) = app.paste_burst.tick(Instant::now())
         {
@@ -320,10 +319,9 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
     // --- Graceful shutdown ---
 
     // Dismiss all pending inline permissions / questions (reject via
-    // last option / cancelled). Phase 1+: route the outcome through
-    // `Workspace::dispatch` instead of an inline oneshot; the
-    // workspace-side `SessionTask` pops the matching slot and the
-    // bridge forwards it to the agent.
+    // last option / cancelled). Outcomes route through
+    // `Workspace::dispatch` — the workspace-side `SessionTask` pops
+    // the matching slot and the bridge forwards it to the agent.
     let active_session_key = app.active_session_key.clone();
     for tool_id in std::mem::take(app.pending_interaction_ids_mut()) {
         let (perm_last_option_id, question_was_pending) = if let Some((mi, bi)) =

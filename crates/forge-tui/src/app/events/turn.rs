@@ -1272,9 +1272,6 @@ fn apply_turn_error_presentation(
             );
         }
         crate::app::session_runtime::request_context_usage_refresh(app);
-        if app.active_view == super::super::ActiveView::Chat {
-            // Issue #85 (revised): no drain — claude handles queueing.
-        }
         return;
     }
 

@@ -2,41 +2,14 @@ use super::{App, AppStatus, ChatMessage, MessageBlock, MessageRole, TextBlock};
 use crate::agent::model;
 use crate::app::slash;
 
-/// Handle Enter on the input editor.
-///
-/// Issue #85 (revised 2026-05-14): forge holds no local queue, and
-/// every submit dispatches `Command::Prompt` to claude immediately.
-/// The mid-turn fix from this round is in the receive-path
-/// placement, not the dispatch path: every submit (idle OR mid-turn)
-/// pushes both a user bubble AND a fresh empty assistant placeholder
-/// at the tail, reparenting `active_turn_assistant_idx` onto that
-/// new placeholder. Claude's continuing wire tokens then land in
-/// the new bubble — below the user's new message — instead of
-/// pinning in the prior turn's assistant bubble above it.
-///
-/// Claude's CLI internally queues the mid-turn prompt (the bundled
-/// JS `queuedCommands` array, flushed into the next user→model
-/// envelope at the next tool cycle or turn boundary). The model's
-/// reply then covers both turn-1's continuation and the queued
-/// prompt's answer in a single assistant message; forge folds the
-/// whole thing into the reparented placeholder so geometry stays
-/// append-only.
-///
-/// Pure-text turns produce a small artifact: any turn-1 tokens that
-/// arrive between the user's submit and claude's `result` event
-/// land in the new placeholder rather than the prior asst bubble.
-/// If claude emits nothing in that window, `remove_empty_tail_assistant`
-/// strips the empty stub on TurnComplete. If it emits a few
-/// trailing tokens, they appear as a thin stub below the new user
-/// bubble — known cost of the always-reparent design.
-///
-/// The previous dim → un-dim handshake was a pre-investigation
-/// artefact already removed in PR #117. This revision keeps the
-/// no-dim outcome and fixes the ordering issue PR #117 left behind.
-///
-/// Session resume reconstructs queued submits from JSONL
-/// `type:"attachment"` rows via the catalog/scan layer in
-/// `forge-agent` (see `userdata::catalog::scan`).
+/// Handle Enter on the input editor. Dispatches `Command::Prompt`
+/// immediately and pushes both a user bubble and a fresh empty
+/// assistant placeholder at the tail, reparenting the active turn
+/// onto the new placeholder so claude's continuing wire tokens land
+/// below the user's submission rather than pinning to the prior
+/// assistant bubble. Mid-turn queuing happens inside the CLI; the
+/// resume path reconstructs queued submits from JSONL `attachment`
+/// rows via `forge_agent::userdata::catalog::scan`.
 pub(super) fn submit_input(app: &mut App) {
     if matches!(app.status, AppStatus::Connecting | AppStatus::CommandPending | AppStatus::Error) {
         return;
@@ -358,8 +331,18 @@ mod tests {
             Some(2),
             "active asst idx tracks the surviving tail placeholder",
         );
-        assert!(rx.try_recv().is_ok());
-        assert!(rx.try_recv().is_ok());
+        let first = rx.try_recv().expect("first prompt dispatched");
+        assert!(matches!(
+            first,
+            forge_primitives::AgentCommand::PromptWithImages { session_id, text, .. }
+                if session_id == "session-1" && text == "first"
+        ));
+        let second = rx.try_recv().expect("second prompt dispatched");
+        assert!(matches!(
+            second,
+            forge_primitives::AgentCommand::PromptWithImages { session_id, text, .. }
+                if session_id == "session-1" && text == "second"
+        ));
         assert!(rx.try_recv().is_err(), "exactly two prompts dispatched");
     }
 

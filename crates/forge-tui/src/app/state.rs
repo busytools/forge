@@ -95,8 +95,8 @@ pub struct TurnNoticeRef {
 
 /// A click-targetable row in the Projects pane, stamped by
 /// [`crate::ui::projects_pane::render`] during paint and read by the
-/// mouse handler on click. Render-time-stamp pattern from PR #83
-/// (the same approach the per-tool-call expand/collapse uses).
+/// mouse handler on click. Same render-time-stamp pattern as the
+/// per-tool-call expand/collapse.
 ///
 /// `ProjectHeader` and `SessionRow` are y-only — they span the full
 /// pane width, so an x-coord doesn't add information. `TopBarIcon`
@@ -326,7 +326,7 @@ pub struct App {
     /// Click hit-targets stamped by
     /// [`crate::ui::projects_pane::render`]. Cleared on each render
     /// and refilled. The mouse handler iterates this to find what
-    /// was clicked. Render-time-stamp pattern from PR #83.
+    /// was clicked.
     pub pane_hit_targets: Vec<PaneHitTarget>,
     /// Last computed `AppLayout`, captured each frame so the mouse
     /// handler has rect coordinates available for click math. The
@@ -2507,8 +2507,6 @@ mod tests {
     use pretty_assertions::assert_eq;
     use ratatui::style::{Color, Style};
     use ratatui::text::{Line, Span};
-
-    // Phase 2a foundation
 
     #[test]
     fn test_default_seeds_pre_connect_bucket_so_accessors_are_infallible() {

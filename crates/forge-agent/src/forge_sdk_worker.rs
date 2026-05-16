@@ -17,6 +17,7 @@ use forge_sdk::{
     PreToolUseInput, UserPromptSubmitInput,
 };
 use tokio::sync::{mpsc, oneshot};
+use tracing::Instrument;
 
 use crate::client::AgentEvent;
 use crate::forge_sdk_bridge::{ForgeSdkBridge, PendingQuestions, PendingResponses};
@@ -124,7 +125,11 @@ pub(crate) async fn spawn_session(
     // handle (Arc-backed, Clone) and stays on the bridge.
     let reader_event_tx = bridge.event_tx().clone();
     let reader_session_id = session_id.clone();
-    tokio::spawn(reader_loop(events, reader_event_tx, reader_session_id));
+    let span = tracing::info_span!("sdk_reader", session_id = %reader_session_id);
+    tokio::spawn(
+        reader_loop(events, reader_event_tx, reader_session_id)
+            .instrument(span),
+    );
     Ok(())
 }
 

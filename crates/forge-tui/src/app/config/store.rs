@@ -180,9 +180,7 @@ pub fn set_always_thinking_enabled(document: &mut Value, enabled: bool) {
 
 pub fn thinking_effort_level(document: &Value) -> Result<EffortLevel, ()> {
     match read_persisted_setting(document, setting_spec(SettingId::ThinkingEffort))? {
-        // Forge defaults to `max` effort when the user hasn't set an
-        // explicit value — matches PR #91's "default forge to --effort
-        // max" intent.
+        // Forge defaults to `max` effort when unset.
         PersistedSettingValue::Missing => Ok(EffortLevel::Max),
         PersistedSettingValue::Bool(_) => Err(()),
         PersistedSettingValue::String(value) => EffortLevel::from_stored(&value).ok_or(()),
@@ -279,13 +277,10 @@ pub fn model(document: &Value) -> Result<Option<String>, ()> {
 
 pub fn default_permission_mode(document: &Value) -> Result<DefaultPermissionMode, ()> {
     match read_persisted_setting(document, setting_spec(SettingId::DefaultPermissionMode))? {
-        // Forge defaults to `Auto` permission mode when the user
-        // hasn't set an explicit value — mirrors `thinking_effort_level`'s
-        // PR #91 default of `Max`. The CLI itself defaults to
-        // `default`; the override happens here so every site that
-        // reads the persisted setting picks up the forge-flavoured
-        // default consistently (launch settings, settings UI cycle,
-        // resolve layer for picker rendering).
+        // Forge defaults to `Auto` permission mode when unset (the
+        // CLI itself defaults to `default`). The override lives
+        // here so launch_settings / settings UI / picker render
+        // all pick up the same forge-flavoured default.
         PersistedSettingValue::Missing => Ok(DefaultPermissionMode::Auto),
         PersistedSettingValue::Bool(_) => Err(()),
         PersistedSettingValue::String(value) => {
@@ -585,8 +580,7 @@ mod tests {
     fn persisted_setting_readers_apply_defaults() {
         let document = Value::Object(Map::new());
 
-        // Forge defaults `defaultMode` to `Auto` when missing (mirrors
-        // the effort=Max default landed in PR #91).
+        // Forge defaults `defaultMode` to `Auto` when missing.
         assert_eq!(default_permission_mode(&document), Ok(DefaultPermissionMode::Auto));
         assert_eq!(respect_gitignore(&document), Ok(true));
         assert_eq!(terminal_progress_bar_enabled(&document), Ok(true));

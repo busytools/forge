@@ -122,11 +122,10 @@ pub enum Command {
         tool_id: String,
         outcome: QuestionOutcome,
     },
-    /// MCP elicitation response. Currently routed directly to
-    /// `AgentHandle::respond_to_elicitation` — the workspace never
-    /// stores a `PendingInteractionSlot::Elicitation` slot for
-    /// inbound `ElicitationRequest`s, so the oneshot path used by
-    /// permission/question round-trips doesn't apply here.
+    /// MCP elicitation response. Routed directly to
+    /// `AgentHandle::respond_to_elicitation` — there's no
+    /// pending-interaction slot for elicitations, so the oneshot
+    /// path used by permission/question round-trips doesn't apply.
     RespondElicitation {
         key: SessionKey,
         elicitation_id: String,

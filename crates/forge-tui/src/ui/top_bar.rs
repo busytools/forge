@@ -14,10 +14,6 @@
 //! trailing `▦` icon (or pressing `Ctrl+E`) toggles the Inspector
 //! overlay. Both icons are stamped as their own hit-target variants
 //! for the mouse handler.
-//!
-//! See spec at
-//! `~/.claude-subspace/plans/2026-05-10-forge-tui-projects-pane-narrow-design.md`
-//! and `brief_inspector_pane_v1.md`.
 
 use forge_workspace::ProjectView;
 use ratatui::Frame;

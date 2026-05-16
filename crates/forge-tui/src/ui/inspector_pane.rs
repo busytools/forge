@@ -29,8 +29,8 @@
 //!   tool call's `raw_input` + status; the renderer chooses glyphs
 //!   + colours per `ProcessKind`.
 //!
-//! Reads from per-session state on `UiSession.todos` (post PR #109)
-//! and `UiSession.git_diff_snapshot`. The
+//! Reads from per-session state on `UiSession.todos` and
+//! `UiSession.git_diff_snapshot`. The
 //! `TodoWriteOutputMetadata.verification_nudge_needed` flag surfaces
 //! as a dim-yellow notice above the `TASKS` header until the next
 //! `TodoWrite` clears it.

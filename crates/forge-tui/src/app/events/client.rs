@@ -618,12 +618,12 @@ fn apply_mcp_snapshot_presentation(
     );
 }
 
-/// `SessionUpdate::ChatAppended` reducer for the session
-/// bucket addressed by `session_id`. The SDK message dispatcher is
-/// deeply intertwined with active-session UI accessors (chat buffer,
-/// tool-call indices, viewport) so the active-session temp-swap
-/// inside [`apply_sdk_message_presentation`] is the Phase 4 cleanup
-/// target, not this phase's.
+/// `SessionUpdate::ChatAppended` reducer for the session bucket
+/// addressed by `session_id`. The SDK message dispatcher uses
+/// active-session UI accessors (chat buffer, tool-call indices,
+/// viewport); [`apply_sdk_message_presentation`] temp-swaps
+/// `active_session_key` to route background sessions through the
+/// same path.
 pub(super) fn apply_session_update_chat_appended(
     app: &mut App,
     session_id: String,

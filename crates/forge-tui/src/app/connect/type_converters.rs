@@ -79,6 +79,7 @@ pub(crate) fn map_permission_request(
                 "allow_session" => model::PermissionOptionKind::AllowSession,
                 "allow_always" => model::PermissionOptionKind::AllowAlways,
                 "reject_once" => model::PermissionOptionKind::RejectOnce,
+                "reject_always" => model::PermissionOptionKind::RejectAlways,
                 "question_choice" => model::PermissionOptionKind::QuestionChoice,
                 "plan_approve" => model::PermissionOptionKind::PlanApprove,
                 "plan_reject" => model::PermissionOptionKind::PlanReject,

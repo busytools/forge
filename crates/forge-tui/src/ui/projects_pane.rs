@@ -13,10 +13,6 @@
 //! routine. Hit-target stamps always carry the *un-truncated*
 //! identifier so click routing keeps working regardless of
 //! truncation.
-//!
-//! Render-time-stamp pattern from PR #83. See specs at
-//! `~/.claude-subspace/plans/2026-05-10-forge-tui-projects-pane-wide-design.md`
-//! and `~/.claude-subspace/plans/2026-05-10-forge-tui-projects-pane-medium-design.md`.
 
 use std::time::SystemTime;
 
@@ -423,7 +419,6 @@ const SPINNER_FRAMES: &[char] = &[
 /// running = `RUST_ORANGE`, background + running = terminal default).
 /// `spinner_frame` indexes into `SPINNER_FRAMES` so the spinner
 /// actually animates instead of sitting on `⠋`.
-/// See `~/.claude-subspace/plans/2026-05-10-forge-tui-projects-pane-wide-design.md`.
 fn glyph_for_lifecycle(
     lifecycle: SessionLifecycleState,
     session_is_active: bool,

@@ -54,9 +54,9 @@ fn run() -> anyhow::Result<()> {
     let local_set = tokio::task::LocalSet::new();
 
     rt.block_on(local_set.run_until(async move {
-        // Phase 0: build the workspace orchestrator. Surface its
-        // load errors to stderr (TUI hasn't started yet, no tty
-        // restoration needed) and exit non-zero.
+        // Build the workspace orchestrator. Surface load errors to
+        // stderr (TUI hasn't started yet, no tty restoration needed)
+        // and exit non-zero.
         let config_dir = match resolve_config_dir() {
             Ok(p) => p,
             Err(err) => return Err(anyhow::anyhow!("forge: {err}")),

@@ -397,11 +397,8 @@ mod tests {
     }
 
     /// Test-only wrapper that mimics `oneshot::Receiver` shape for
-    /// permission outcomes. Phase 1+: the workspace owns the real
-    /// oneshot; tests read the dispatched outcome via the test
-    /// capture surface exposed under the `testing` Cargo feature.
-    /// Keeps the legacy `rx.try_recv(&app)` assertion shape working
-    /// with minimal per-site diff.
+    /// permission outcomes. Tests read the dispatched outcome via
+    /// the test capture surface under the `testing` Cargo feature.
     pub(super) struct TestPermissionRx {
         pub tool_id: String,
     }
