@@ -1264,8 +1264,9 @@ fn classify_oauth_usage_error(
     use account::UsageFetchStatus;
     use forge_primitives::usage::oauth::OauthUsageError;
     match err {
-        OauthUsageError::RateLimited { .. } => UsageFetchStatus::RateLimited,
-        OauthUsageError::HttpStatus(429, _) => UsageFetchStatus::RateLimited,
+        OauthUsageError::RateLimited { .. } | OauthUsageError::HttpStatus(429, _) => {
+            UsageFetchStatus::RateLimited
+        }
         OauthUsageError::Unauthorized(_) => UsageFetchStatus::Unauthorized,
         OauthUsageError::NoCredentials | OauthUsageError::Expired => UsageFetchStatus::Expired,
         OauthUsageError::Network(_) => UsageFetchStatus::NetworkFailed,
