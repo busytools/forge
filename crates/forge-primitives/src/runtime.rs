@@ -49,6 +49,49 @@ pub enum EffortLevel {
     Max,
 }
 
+impl EffortLevel {
+    pub const fn as_stored(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Xhigh => "xhigh",
+            Self::Max => "max",
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Low => "Low",
+            Self::Medium => "Medium",
+            Self::High => "High",
+            Self::Xhigh => "Extra High",
+            Self::Max => "Max",
+        }
+    }
+
+    pub const fn description(self) -> &'static str {
+        match self {
+            Self::Low => "Fastest responses",
+            Self::Medium => "Balanced speed and depth",
+            Self::High => "Deeper reasoning",
+            Self::Xhigh => "Extra-high reasoning",
+            Self::Max => "Maximum reasoning",
+        }
+    }
+
+    pub fn from_stored(value: &str) -> Option<Self> {
+        match value {
+            "low" => Some(Self::Low),
+            "medium" => Some(Self::Medium),
+            "high" => Some(Self::High),
+            "xhigh" | "extra_high" => Some(Self::Xhigh),
+            "max" => Some(Self::Max),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AvailableModel {
     pub id: String,
