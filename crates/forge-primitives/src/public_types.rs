@@ -375,10 +375,9 @@ pub enum McpServerConfig {
 /// value via the CLI's `_build_settings_value`. Fields are
 /// camelCase on the wire.
 ///
-/// **Note:** Filesystem read/write restrictions and network
-/// restrictions are NOT configured here — they travel through the
-/// permission-rules surface (`Read`, `Edit`, `WebFetch`). Sandbox
-/// settings control the *bash-command* sandbox specifically.
+/// Filesystem read/write and network restrictions travel through the
+/// permission-rules surface (`Read`, `Edit`, `WebFetch`); these
+/// settings control the bash-command sandbox only.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SandboxSettings {

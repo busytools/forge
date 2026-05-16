@@ -145,8 +145,14 @@ impl SessionTask {
                 // `Connected` / `SessionReplaced` and every subsequent
                 // `Command::Prompt` falls off `dispatch`'s key lookup
                 // with `UnknownSession`.
-                self.rekey_to(&real_key);
                 if self.connected_once {
+                    // Second-Connected emits SessionReplaced — match the
+                    // explicit SessionReplaced arm and drop oneshots from
+                    // the previous identity so parked forwarder tasks
+                    // exit instead of waiting on tool_call_ids the new
+                    // session will never produce.
+                    self.domain.lock().pending_interactions.clear();
+                    self.rekey_to(&real_key);
                     self.emit(SessionUpdate::SessionReplaced {
                         key: real_key,
                         session_id: SessionId::new(session_id),
@@ -157,6 +163,7 @@ impl SessionTask {
                         history,
                     });
                 } else {
+                    self.rekey_to(&real_key);
                     self.connected_once = true;
                     // First Connected: emit KeyRenamed { from:
                     // spawn_key, to: real_key } so the TUI migrates

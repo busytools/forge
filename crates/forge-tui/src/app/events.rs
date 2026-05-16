@@ -32,10 +32,7 @@ pub use client::apply_session_update;
 ///
 /// Emits a `tracing::debug!` on every transition (including no-op
 /// same-state writes) so the "Projects-pane spinner stops mid-turn"
-/// flake has a trail when it next reproduces. Note: direct
-/// `bucket.lifecycle_state = ...` writes in
-/// `events/{session,client,turn}.rs` bypass this helper — funnelling
-/// them through here is a separate refactor.
+/// flake has a trail when it next reproduces.
 pub(crate) fn set_bucket_lifecycle_state(
     app: &mut App,
     key: &forge_workspace::SessionKey,
