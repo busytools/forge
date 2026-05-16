@@ -738,12 +738,23 @@ impl Workspace {
     }
 
     /// Single-take fan-in receiver for [`SessionUpdate`]s. Returns
-    /// `None` on subsequent calls. forge-tui's main event loop owns
-    /// the returned `mpsc::UnboundedReceiver` and reads `SessionUpdate`
+    /// `None` on subsequent calls (and logs at error level so a
+    /// second-subscriber programming error doesn't disappear into
+    /// silent data loss). forge-tui's main event loop owns the
+    /// returned `mpsc::UnboundedReceiver` and reads `SessionUpdate`
     /// envelopes directly (Phase 4 retired the legacy `ClientEvent`
     /// channel; this is now the only event source the App consumes).
     pub fn subscribe(&self) -> Option<mpsc::UnboundedReceiver<SessionUpdate>> {
-        self.update_rx_slot.lock().take()
+        match self.update_rx_slot.lock().take() {
+            Some(rx) => Some(rx),
+            None => {
+                tracing::error!(
+                    target: "forge_workspace::workspace",
+                    "Workspace::subscribe called after the receiver was already taken — second subscriber would silently receive nothing"
+                );
+                None
+            }
+        }
     }
 
     /// Clone the [`SessionUpdate`] sender. TUI-side async tasks
@@ -1285,7 +1296,21 @@ impl Workspace {
         handle: Option<Arc<forge_agent::AgentHandle>>,
     ) -> Arc<Mutex<DomainSession>> {
         let domain = Arc::new(Mutex::new(DomainSession::new(key.clone(), handle)));
-        self.domain_handles.lock().insert(key, Arc::clone(&domain));
+        let mut handles = self.domain_handles.lock();
+        if handles.contains_key(&key) {
+            // Overwriting silently drops the previous DomainSession
+            // along with any pending_interactions oneshots — pending
+            // permission/question round-trips would then deny with
+            // "response channel closed" instead of completing. Log
+            // loudly so a future programming error doesn't manifest
+            // as a stale-deny that's hard to trace.
+            tracing::error!(
+                target: "forge_workspace::workspace",
+                key = %key.as_str(),
+                "register_domain_session overwriting existing entry — pending interactions lost"
+            );
+        }
+        handles.insert(key, Arc::clone(&domain));
         domain
     }
 
@@ -1327,6 +1352,20 @@ impl Workspace {
         let mut pool = self.pool.lock();
         let mut senders = self.command_senders.lock();
         let mut handles = self.domain_handles.lock();
+        // Refuse the migration if `to` is already registered — moving
+        // would silently replace a live SessionTask's entries and
+        // orphan its pending interactions. This is a hint that a
+        // duplicate Connected event arrived for two SessionTasks
+        // pointing at the same target.
+        if pool.contains_key(to) || senders.contains_key(to) || handles.contains_key(to) {
+            tracing::error!(
+                target: "forge_workspace::workspace",
+                from = %from.as_str(),
+                to = %to.as_str(),
+                "migrate_session_task: target key already registered; migration skipped"
+            );
+            return;
+        }
         if let Some(pooled) = pool.remove(from) {
             pool.insert(to.clone(), pooled);
         }

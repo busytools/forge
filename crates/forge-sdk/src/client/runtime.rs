@@ -38,6 +38,12 @@ pub(crate) type ControlOutcome = Result<serde_json::Value, Error>;
 /// In-flight outbound `control_request`s waiting on responses.
 pub(crate) type PendingControls = Arc<Mutex<HashMap<String, oneshot::Sender<ControlOutcome>>>>;
 
+/// In-flight inbound `control_request` dispatch tasks. Keyed by
+/// `request_id` so a subsequent `control_cancel_request` can abort
+/// the matching task instead of letting the slow callback finish and
+/// write back a `control_response` the CLI has already moved past.
+pub(crate) type InflightDispatches = Arc<Mutex<HashMap<String, JoinHandle<()>>>>;
+
 /// Spawn the post-init reader task.
 ///
 /// Pre-pumps `pre_init_messages` into `events_tx` first, then runs the
@@ -52,6 +58,7 @@ pub(crate) fn spawn_reader_task(
     pre_init_messages: Vec<Message>,
     mut shutdown_rx: oneshot::Receiver<()>,
 ) -> JoinHandle<()> {
+    let inflight: InflightDispatches = Arc::new(Mutex::new(HashMap::new()));
     tokio::spawn(async move {
         // Drain anything captured during init.
         for msg in pre_init_messages {
@@ -75,6 +82,7 @@ pub(crate) fn spawn_reader_task(
                             if !handle_line(
                                 &dispatch,
                                 &pending_controls,
+                                &inflight,
                                 &events_tx,
                                 line_number,
                                 &line,
@@ -111,6 +119,7 @@ pub(crate) fn spawn_reader_task(
 async fn handle_line(
     dispatch: &ControlDispatchHandle,
     pending_controls: &PendingControls,
+    inflight: &InflightDispatches,
     events_tx: &mpsc::UnboundedSender<Result<Message, Error>>,
     line_number: u64,
     line: &str,
@@ -121,9 +130,17 @@ async fn handle_line(
             events_tx.send(Ok(msg)).is_ok()
         }
         Ok(DecodedLine::Control(req)) => {
-            let dispatch = dispatch.clone();
-            tokio::spawn(async move {
-                if let Err(e) = dispatch.dispatch(req).await {
+            let dispatch_clone = dispatch.clone();
+            let inflight_clone = Arc::clone(inflight);
+            let request_id = req.request_id.clone();
+            let request_id_for_task = request_id.clone();
+            let handle = tokio::spawn(async move {
+                let result = dispatch_clone.dispatch(req).await;
+                // Always drop our entry on normal completion so the
+                // map doesn't grow indefinitely with terminated
+                // handles.
+                inflight_clone.lock().await.remove(&request_id_for_task);
+                if let Err(e) = result {
                     tracing::warn!(
                         target: crate::logging::targets::SDK_READER,
                         error = %e,
@@ -131,14 +148,24 @@ async fn handle_line(
                     );
                 }
             });
+            inflight.lock().await.insert(request_id, handle);
             true
         }
         Ok(DecodedLine::ControlCancel { request_id }) => {
-            tracing::debug!(
-                target: crate::logging::targets::SDK_READER,
-                %request_id,
-                "control_cancel_request received; nothing to cancel",
-            );
+            if let Some(handle) = inflight.lock().await.remove(&request_id) {
+                handle.abort();
+                tracing::debug!(
+                    target: crate::logging::targets::SDK_READER,
+                    %request_id,
+                    "control_cancel_request: dispatch task aborted",
+                );
+            } else {
+                tracing::debug!(
+                    target: crate::logging::targets::SDK_READER,
+                    %request_id,
+                    "control_cancel_request: no in-flight dispatch (already completed)",
+                );
+            }
             true
         }
         Ok(DecodedLine::ControlResponse { request_id, raw: value }) => {

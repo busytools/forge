@@ -67,8 +67,9 @@ pub fn query_cli_version(binary: &str) -> Result<String, Error> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-/// Check that the reported `claude` version is at least `min_version`
-/// (semver-style major.minor.patch, only major component compared).
+/// Check that the reported `claude` version is at least `min_version`.
+/// Compares all three semver components (major.minor.patch)
+/// lexicographically.
 ///
 /// # Errors
 ///
@@ -82,21 +83,31 @@ pub fn check_cli_version(reported: &str, min_version: &str) -> Result<(), Error>
         .ok_or_else(|| Error::Connection {
             reason: format!("could not parse claude version from: {reported}"),
         })?;
-    let major: u32 = token.split('.').next().and_then(|s| s.parse().ok()).ok_or_else(|| {
-        Error::Connection { reason: format!("could not parse major version from: {token}") }
+    let reported_triple = parse_semver_triple(token).ok_or_else(|| Error::Connection {
+        reason: format!("could not parse semver triple from: {token}"),
     })?;
-    let min_major: u32 =
-        min_version.split('.').next().and_then(|s| s.parse().ok()).ok_or_else(|| {
-            Error::Connection {
-                reason: format!("could not parse minimum major from: {min_version}"),
-            }
-        })?;
-    if major < min_major {
+    let min_triple = parse_semver_triple(min_version).ok_or_else(|| Error::Connection {
+        reason: format!("could not parse minimum semver triple from: {min_version}"),
+    })?;
+    if reported_triple < min_triple {
         return Err(Error::Connection {
             reason: format!("claude CLI version {reported} below minimum required {min_version}"),
         });
     }
     Ok(())
+}
+
+/// Parse `"<major>.<minor>.<patch>"` (any trailing non-numeric suffix
+/// ignored). Missing minor/patch default to 0.
+fn parse_semver_triple(s: &str) -> Option<(u32, u32, u32)> {
+    let mut parts = s.split('.');
+    let major: u32 = parts.next()?.parse().ok()?;
+    let minor: u32 = parts.next().and_then(|p| p.parse().ok()).unwrap_or(0);
+    let patch_str = parts.next().unwrap_or("0");
+    // Strip any non-digit suffix (e.g. "117-rc1" or "117 (build)").
+    let patch_digits: String = patch_str.chars().take_while(char::is_ascii_digit).collect();
+    let patch: u32 = if patch_digits.is_empty() { 0 } else { patch_digits.parse().ok()? };
+    Some((major, minor, patch))
 }
 
 /// Outcome of one writer-task operation. Sent back over a oneshot the
@@ -371,8 +382,13 @@ impl Subprocess {
         // every clone to drop. In-flight write_line acks on cloned
         // writers will resolve with the ack-channel-dropped error,
         // which is correct semantics for a closed transport.
-        let (closed_tx, _closed_rx) = mpsc::unbounded_channel();
+        let (closed_tx, closed_rx) = mpsc::unbounded_channel();
         self.writer_tx = closed_tx;
+        // Drop the placeholder receiver immediately so any concurrent
+        // SharedWriter clone trying to send on `writer_tx` fails fast
+        // with BrokenPipe rather than queuing into a dead channel and
+        // hanging for the duration of the close grace period.
+        drop(closed_rx);
         if let Some(handle) = self.writer_task.take() {
             handle.abort();
         }

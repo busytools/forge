@@ -575,7 +575,23 @@ async fn run_permission_request(
     pending: &PendingResponses,
 ) -> PermissionDecision {
     let (tx, rx) = oneshot::channel();
-    pending.lock().insert(ctx.tool_use_id.clone(), tx);
+    {
+        let mut guard = pending.lock();
+        // Guard against duplicate tool_use_id from upstream (CLI retry
+        // bug, protocol drift). Without this, the second insert
+        // silently drops the first oneshot and the original
+        // `run_permission_request` hangs until the channel is dropped.
+        if let Some(prev) = guard.insert(ctx.tool_use_id.clone(), tx) {
+            tracing::warn!(
+                target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                tool_use_id = %ctx.tool_use_id,
+                "duplicate tool_use_id on permission request; cancelling prior oneshot"
+            );
+            // Best-effort resolve the displaced sender so the prior
+            // run_permission_request future doesn't hang.
+            let _ = prev.send(PermissionDecision::deny("displaced by duplicate tool_use_id"));
+        }
+    }
     let event = synth_permission_request(&session_id, &ctx);
     if event_tx.send(event).is_err() {
         return PermissionDecision::deny("event channel closed");
@@ -612,7 +628,17 @@ async fn run_ask_user_question(
             total,
         );
         let (tx, rx) = oneshot::channel();
-        pending_questions.lock().insert(ctx.tool_use_id.clone(), tx);
+        {
+            let mut guard = pending_questions.lock();
+            if let Some(prev) = guard.insert(ctx.tool_use_id.clone(), tx) {
+                tracing::warn!(
+                    target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                    tool_use_id = %ctx.tool_use_id,
+                    "duplicate tool_use_id on question request; cancelling prior oneshot"
+                );
+                let _ = prev.send(QuestionOutcome::Cancelled);
+            }
+        }
         if event_tx
             .send(AgentEvent::QuestionRequest {
                 session_id: session_id.clone(),
