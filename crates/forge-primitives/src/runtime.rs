@@ -121,9 +121,10 @@ pub struct CurrentModel {
     pub is_authoritative: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FastModeState {
+    #[default]
     Off,
     Cooldown,
     On,

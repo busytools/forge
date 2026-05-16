@@ -731,14 +731,7 @@ pub struct ConfigOptionUpdate {
     pub value: serde_json::Value,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum FastModeState {
-    #[default]
-    Off,
-    Cooldown,
-    On,
-}
+pub use forge_primitives::runtime::FastModeState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -759,12 +752,7 @@ pub enum ApiRetryError {
     Unknown,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum RuntimeSessionState {
-    Idle,
-    Running,
-    RequiresAction,
-}
+pub use forge_primitives::runtime::RuntimeSessionState;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RateLimitUpdate {
