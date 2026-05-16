@@ -140,9 +140,8 @@ impl SessionTask {
                 // project with no on-disk sessions, or the previous
                 // session's id on a `/new` flow. Without this, the
                 // TUI's `active_session_key` flips to `real_key` after
-                // `Connected` / `SessionReplaced` and every subsequent
-                // `Command::Prompt` falls off `dispatch`'s key lookup
-                // with `UnknownSession`.
+                // `Connected` and every subsequent `Command::Prompt`
+                // falls off `dispatch`'s key lookup with `UnknownSession`.
                 if self.connected_once {
                     // Drop oneshots from the previous identity so parked
                     // forwarder tasks exit instead of waiting on
