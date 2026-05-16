@@ -246,17 +246,12 @@ impl Workspace {
     ///
     /// Workspace does not track which handle the caller is "using" —
     /// that's the caller's concern.
-    ///
-    /// `async` is mandated by the spec contract — Phase 2+ work
-    /// (live-account refresh, oauth probing) will need to await
-    /// before the picker decision lands. Phase 1b's body is
-    /// synchronous; the `unused_async` allow keeps the contract.
-    pub async fn get_agent_handle(
+    pub fn get_agent_handle(
         self: &Arc<Self>,
         target: SessionTarget,
         settings: SessionLaunchSettings,
     ) -> Result<Arc<AgentHandle>> {
-        self.get_agent_handle_with_spawn_key(target, settings, None).await
+        self.get_agent_handle_with_spawn_key(target, settings, None)
     }
 
     /// Like [`Self::get_agent_handle`] but threads a synthetic
@@ -266,8 +261,7 @@ impl Workspace {
     /// emit before the matching `Connected` so TUI re-keys its
     /// `UiSession` map atomically. `None` for re-entrant callers (the
     /// pooled handle path) where no key migration is needed.
-    #[allow(clippy::unused_async)]
-    pub async fn get_agent_handle_with_spawn_key(
+    pub fn get_agent_handle_with_spawn_key(
         self: &Arc<Self>,
         target: SessionTarget,
         settings: SessionLaunchSettings,
@@ -316,7 +310,7 @@ impl Workspace {
         // catalog) consistent with the running session id when a
         // resume happens — no more stale lead-id pool entries for a
         // freshly spawned session.
-        match &target {
+        match target {
             SessionTarget::Default => {
                 let project = self.config.default_project();
                 let cwd = project.path.to_string_lossy().to_string();
@@ -327,7 +321,7 @@ impl Workspace {
                 }
             }
             SessionTarget::Named(name) => {
-                let project = self.find_project_by_name(name)?;
+                let project = self.find_project_by_name(&name)?;
                 let cwd = project.path.to_string_lossy().to_string();
                 if let Some(lead) = self.try_lead_session_id_for(project) {
                     handle.resume_or_new_session(lead.as_str().to_owned(), cwd, settings)?;
@@ -342,7 +336,7 @@ impl Workspace {
                 // catalog has no record (or no cwd) the session can't
                 // be resumed cleanly anyway — pass through and let the
                 // bridge surface ConnectionFailed.
-                let cwd = self.session_cwd_for(key).unwrap_or_default();
+                let cwd = self.session_cwd_for(&key).unwrap_or_default();
                 handle.resume_session(key.as_str().to_owned(), cwd, settings)?;
             }
         }
@@ -938,14 +932,10 @@ impl Workspace {
     /// shutdown, so Workspace is the sole owner of every pool entry
     /// and dropping it triggers the subprocess shutdown chain (sender
     /// drop -> dispatcher exit -> Client drop -> subprocess
-    /// kill_on_drop). Phase 2+ callers that hold cloned handles
-    /// across shutdown will need to release them for the kill-chain
-    /// to fire promptly. Synchronous and fast in 1a; the async
-    /// signature is preserved so a future "send shutdown signal,
-    /// await acknowledgement" body can slot in without restructuring
-    /// the call sites.
-    #[allow(clippy::unused_async)]
-    pub async fn shutdown(&self) {
+    /// kill_on_drop). Callers that hold cloned handles across
+    /// shutdown will need to release them for the kill-chain to
+    /// fire promptly.
+    pub fn shutdown(&self) {
         // Drop command senders first so every SessionTask sees its
         // command channel close and exits cleanly.
         let _ = self.command_senders.lock().drain().collect::<Vec<_>>();
@@ -1513,10 +1503,9 @@ config_dir = "~/.claude-subspace"
 
         let handle1 = workspace
             .get_agent_handle(SessionTarget::Default, settings.clone())
-            .await
             .expect("first");
         let handle2 =
-            workspace.get_agent_handle(SessionTarget::Default, settings).await.expect("second");
+            workspace.get_agent_handle(SessionTarget::Default, settings).expect("second");
 
         assert!(Arc::ptr_eq(&handle1, &handle2), "expected pool hit for repeated Default target");
         assert_eq!(workspace.pool.lock().len(), 1);
@@ -1530,18 +1519,15 @@ config_dir = "~/.claude-subspace"
 
         let _ = workspace
             .get_agent_handle(SessionTarget::Default, settings.clone())
-            .await
             .expect("default");
         let _ = workspace
             .get_agent_handle(SessionTarget::Default, settings.clone())
-            .await
             .expect("default again");
         assert_eq!(workspace.pool.lock().len(), 1, "Default is idempotent");
 
         let other = SessionKey::from_str_for_test("dual-test-other");
         let _ = workspace
             .get_agent_handle(SessionTarget::Session(other), settings)
-            .await
             .expect("session");
         assert_eq!(workspace.pool.lock().len(), 2, "distinct target adds a pool entry");
     }
@@ -1552,7 +1538,6 @@ config_dir = "~/.claude-subspace"
         let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
         let handle = workspace
             .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
-            .await
             .expect("default");
 
         // Pool has one entry going in.
@@ -1566,7 +1551,7 @@ config_dir = "~/.claude-subspace"
         // Shutdown consumes self and must return. Drops `command_senders`,
         // which closes each `SessionTask`'s command channel; the spawned
         // task then exits and drops its `handle` clone.
-        workspace.shutdown().await;
+        workspace.shutdown();
 
         // The spawned `SessionTask` exits asynchronously after its
         // command channel closes; yield to let it run to completion
@@ -1609,14 +1594,12 @@ config_dir = "~/.claude-subspace"
         let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
         let _ = workspace
             .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
-            .await
             .expect("default");
         let _ = workspace
             .get_agent_handle(
                 SessionTarget::Named("dotfiles".to_owned()),
                 SessionLaunchSettings::default(),
             )
-            .await
             .expect("named");
         assert_eq!(workspace.pool.lock().len(), 2);
     }
@@ -1644,12 +1627,10 @@ config_dir = "~/.claude-subspace"
         .expect("write forge.toml");
 
         let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
-        let result = workspace
-            .get_agent_handle(
-                SessionTarget::Named("nonexistent".to_owned()),
-                SessionLaunchSettings::default(),
-            )
-            .await;
+        let result = workspace.get_agent_handle(
+            SessionTarget::Named("nonexistent".to_owned()),
+            SessionLaunchSettings::default(),
+        );
         let Err(err) = result else { panic!("unknown project name should error") };
         let err_string = format!("{err}");
         assert!(
@@ -1691,7 +1672,6 @@ config_dir = "~/.claude-granite"
         let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
         let _ = workspace
             .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
-            .await
             .expect("default");
         let bound = workspace.pool_accounts_for_test();
         assert_eq!(bound.len(), 1);
@@ -1712,13 +1692,11 @@ config_dir = "~/.claude-granite"
 
         let _ = workspace
             .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
-            .await
             .expect("first");
 
         let other = SessionKey::from_str_for_test("dual-account-test-other");
         let _ = workspace
             .get_agent_handle(SessionTarget::Session(other), SessionLaunchSettings::default())
-            .await
             .expect("second");
 
         let bound = workspace.pool_accounts_for_test();
@@ -1768,7 +1746,6 @@ config_dir = "~/.claude-personal"
         let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
         let _ = workspace
             .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
-            .await
             .expect("default spawn");
 
         let bound = workspace.pool_accounts_for_test();

@@ -76,14 +76,11 @@ fn run() -> anyhow::Result<()> {
             return Err(anyhow::anyhow!("forge: {err}"));
         }
 
-        // Phase 1: create app in Connecting state (instant, no I/O).
-        // App holds an Rc clone; main retains the original so we can
-        // reclaim ownership and call `shutdown().await` after the
-        // event loop returns.
+        // Create the app (instant, no I/O). The TUI holds an
+        // `Arc<Workspace>` clone; main keeps the original so it
+        // can drain the pool after the event loop returns.
         let mut app = forge_tui::app::create_app(&cli, Arc::clone(&workspace));
 
-        // Phase 2: start non-session startup work + TUI.
-        // The bridge itself is started from the TUI loop only after trust is accepted.
         forge_tui::app::start_service_status_check(&app);
         let result = forge_tui::app::run_tui(&mut app).await;
 
@@ -94,14 +91,12 @@ fn run() -> anyhow::Result<()> {
 
         let exit_error = app.exit_error.take();
 
-        // Phase 3: drop the App so its `Arc<Workspace>` clone is
-        // released, then drain the agent pool gracefully. Phase 4
-        // changed `Workspace::shutdown` to `&self` — background
-        // tasks holding Arc clones no longer block shutdown; they
+        // Drop the App so its `Arc<Workspace>` clone releases, then
+        // drain the agent pool. Background tasks holding Arc clones
         // observe their command channel closing and exit on their
-        // own.
+        // own — `shutdown` is synchronous.
         drop(app);
-        workspace.shutdown().await;
+        workspace.shutdown();
 
         if let Some(app_error) = exit_error {
             return Err(anyhow::Error::new(app_error));

@@ -24,6 +24,11 @@ use crate::{SessionKey, SessionTarget};
 /// then spawn the agent. The first `Connected` event from the
 /// resulting `SessionTask` emits `KeyRenamed` + `Connected` to
 /// migrate the synthetic bucket onto the real claude session UUID.
+// `async` is required: workspace.rs dispatches this via `tokio::spawn`,
+// which needs a future. The body is currently synchronous after the
+// `get_agent_handle` simplification but the future shape is part of
+// the dispatch contract.
+#[allow(clippy::unused_async)]
 pub(crate) async fn handle_spawn_project(
     workspace: Arc<Workspace>,
     project_name: String,
@@ -46,14 +51,11 @@ pub(crate) async fn handle_spawn_project(
         display_name: project.display_path.clone(),
     });
 
-    match workspace
-        .get_agent_handle_with_spawn_key(
-            SessionTarget::Named(project_name.clone()),
-            launch_settings,
-            Some(synth_key.clone()),
-        )
-        .await
-    {
+    match workspace.get_agent_handle_with_spawn_key(
+        SessionTarget::Named(project_name.clone()),
+        launch_settings,
+        Some(synth_key.clone()),
+    ) {
         Ok(_handle) => {
             tracing::info!(
                 target: "forge_workspace::spawn",
@@ -81,6 +83,9 @@ pub(crate) async fn handle_spawn_project(
 /// Spawn for a non-lead session row. Synthesizes
 /// `__resume_<session_id>__` and resumes via
 /// `SessionTarget::Session`.
+// `async` required for `tokio::spawn` dispatch — see comment on
+// `handle_spawn_project`.
+#[allow(clippy::unused_async)]
 pub(crate) async fn handle_spawn_session(
     workspace: Arc<Workspace>,
     session_id: String,
@@ -108,14 +113,11 @@ pub(crate) async fn handle_spawn_session(
         display_name,
     });
 
-    match workspace
-        .get_agent_handle_with_spawn_key(
-            SessionTarget::Session(session_key),
-            launch_settings,
-            Some(synth_key.clone()),
-        )
-        .await
-    {
+    match workspace.get_agent_handle_with_spawn_key(
+        SessionTarget::Session(session_key),
+        launch_settings,
+        Some(synth_key.clone()),
+    ) {
         Ok(_handle) => {
             tracing::info!(
                 target: "forge_workspace::spawn",
@@ -144,6 +146,9 @@ pub(crate) async fn handle_spawn_session(
 /// passed on argv) and spawns under the `__conn_pending__` synthetic
 /// key. Failure before the first Connected emits
 /// `SessionUpdate::FatalError` so TUI exits cleanly.
+// `async` required for `tokio::spawn` dispatch — see comment on
+// `handle_spawn_project`.
+#[allow(clippy::unused_async)]
 pub(crate) async fn handle_start_default(
     workspace: Arc<Workspace>,
     project_name: Option<String>,
@@ -157,7 +162,6 @@ pub(crate) async fn handle_start_default(
 
     match workspace
         .get_agent_handle_with_spawn_key(target, launch_settings, Some(synth_key.clone()))
-        .await
     {
         Ok(_handle) => {
             tracing::info!(

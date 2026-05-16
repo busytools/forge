@@ -52,7 +52,6 @@ config_dir = "/tmp/forge-test-granite"
 
     let h1 = workspace
         .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
-        .await
         .expect("first spawn");
     assert_eq!(
         h1.config_dir(),
@@ -65,7 +64,6 @@ config_dir = "/tmp/forge-test-granite"
     let other = SessionKey::from_str_for_test("dual-account-other");
     let h2 = workspace
         .get_agent_handle(SessionTarget::Session(other), SessionLaunchSettings::default())
-        .await
         .expect("second spawn");
     assert_eq!(
         h2.config_dir(),
@@ -107,7 +105,6 @@ config_dir = "/tmp/forge-test-display-granite"
     // a display_name through to the AgentHandle.
     let h1 = workspace
         .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
-        .await
         .expect("first spawn");
     assert_eq!(
         h1.display_name().as_deref(),
@@ -118,7 +115,6 @@ config_dir = "/tmp/forge-test-display-granite"
     let other = SessionKey::from_str_for_test("display-name-other");
     let h2 = workspace
         .get_agent_handle(SessionTarget::Session(other), SessionLaunchSettings::default())
-        .await
         .expect("second spawn");
     assert_eq!(
         h2.display_name().as_deref(),
