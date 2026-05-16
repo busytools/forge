@@ -552,9 +552,12 @@ pub(crate) fn present_mcp_elicitation_request(
         if matches!(request.mode, forge_primitives::ElicitationMode::Url) {
             request.url.as_deref().map_or(
                 (false, Some("SDK did not provide an auth URL".to_owned())),
-                |url| match open_url_in_browser(url) {
-                    Ok(()) => (true, None),
-                    Err(error) => (false, Some(error)),
+                |url| match app.workspace.as_ref() {
+                    Some(ws) => match ws.open_url_in_browser(url) {
+                        Ok(()) => (true, None),
+                        Err(error) => (false, Some(error)),
+                    },
+                    None => (false, Some("workspace not initialised".to_owned())),
                 },
             )
         } else {
@@ -589,9 +592,12 @@ pub(crate) fn present_mcp_auth_redirect(
     view::set_active_view(app, ActiveView::Config);
     app.config.active_tab = ConfigTab::Mcp;
     refresh_mcp_snapshot(app);
-    let (browser_opened, browser_open_error) = match open_url_in_browser(&redirect.auth_url) {
-        Ok(()) => (true, None),
-        Err(error) => (false, Some(error)),
+    let (browser_opened, browser_open_error) = match app.workspace.as_ref() {
+        Some(ws) => match ws.open_url_in_browser(&redirect.auth_url) {
+            Ok(()) => (true, None),
+            Err(error) => (false, Some(error)),
+        },
+        None => (false, Some("workspace not initialised".to_owned())),
     };
     app.config.overlay = Some(ConfigOverlayState::McpAuthRedirect(McpAuthRedirectOverlayState {
         redirect,
@@ -674,31 +680,6 @@ fn format_mcp_operation_error(error: &forge_primitives::McpOperationError) -> St
     }
 }
 
-fn open_url_in_browser(url: &str) -> Result<(), String> {
-    #[cfg(target_os = "windows")]
-    let mut command = {
-        let mut cmd = std::process::Command::new("rundll32.exe");
-        cmd.args(["url.dll,FileProtocolHandler", url]);
-        cmd
-    };
-    #[cfg(target_os = "macos")]
-    let mut command = {
-        let mut cmd = std::process::Command::new("open");
-        cmd.arg(url);
-        cmd
-    };
-    #[cfg(all(unix, not(target_os = "macos")))]
-    let mut command = {
-        let mut cmd = std::process::Command::new("xdg-open");
-        cmd.arg(url);
-        cmd
-    };
-
-    command
-        .spawn()
-        .map(|_| ())
-        .map_err(|error| format!("Failed to open browser automatically: {error}"))
-}
 
 pub(crate) fn copy_text_to_clipboard(text: &str) -> Result<(), String> {
     let mut clipboard = arboard::Clipboard::new()

@@ -1213,6 +1213,14 @@ impl Workspace {
         forge_agent::env::processes::scan(claude_pid)
     }
 
+    /// Spawn the OS-native URL handler for `url`. Thin facade over
+    /// `forge_agent::env::browser::open_url` so forge-tui doesn't
+    /// reach for `std::process::Command` directly.
+    #[allow(clippy::unused_self)] // mirrors other env wrappers above
+    pub fn open_url_in_browser(&self, url: &str) -> Result<(), String> {
+        forge_agent::env::browser::open_url(url)
+    }
+
     /// Borrow the [`Arc<AgentHandle>`] registered against `key`.
     /// Workspace-internal helper — surfaces a sometimes-`None` to keep
     /// the early-init / disconnected branches explicit.
