@@ -479,8 +479,14 @@ impl Client {
         if let Some(tx) = self.inner.shutdown_tx.lock().await.take() {
             let _ = tx.send(());
         }
-        if let Some(handle) = self.inner.reader_task.lock().await.take() {
-            let _ = handle.await;
+        if let Some(handle) = self.inner.reader_task.lock().await.take()
+            && let Err(join_err) = handle.await
+        {
+            tracing::error!(
+                target: "forge_sdk",
+                error = %join_err,
+                "reader task panicked during disconnect"
+            );
         }
         Ok(())
     }

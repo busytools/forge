@@ -114,8 +114,20 @@ mod enabled {
     }
 
     fn write_json_line<T: Serialize>(file: &mut BufWriter<File>, value: &T) {
-        if serde_json::to_writer(&mut *file, value).is_ok() {
-            let _ = writeln!(file);
+        if let Err(err) = serde_json::to_writer(&mut *file, value) {
+            tracing::debug!(
+                target: "forge_tui::perf",
+                error = %err,
+                "perf JSON serialize failed"
+            );
+            return;
+        }
+        if let Err(err) = writeln!(file) {
+            tracing::debug!(
+                target: "forge_tui::perf",
+                error = %err,
+                "perf log newline write failed; JSONL stream may be corrupted from this point"
+            );
         }
     }
 
@@ -197,7 +209,8 @@ mod enabled {
     // doesn't read fields off self directly.
     #[allow(clippy::unused_self)]
     impl PerfLogger {
-        /// Open (or create) the log file. Returns `None` on I/O error.
+        /// Open (or create) the log file. Returns `None` on I/O error
+        /// after logging the failure at warn level.
         pub fn open(path: &Path, append: bool) -> Option<Self> {
             let mut options = OpenOptions::new();
             options.create(true).write(true);
@@ -206,7 +219,18 @@ mod enabled {
             } else {
                 options.truncate(true);
             }
-            let file = options.open(path).ok()?;
+            let file = match options.open(path) {
+                Ok(f) => f,
+                Err(err) => {
+                    tracing::warn!(
+                        target: "forge_tui::perf",
+                        path = %path.display(),
+                        error = %err,
+                        "failed to open perf log; perf telemetry disabled"
+                    );
+                    return None;
+                }
+            };
             let mut writer = BufWriter::new(file);
             let run_id = uuid::Uuid::new_v4().to_string();
             let ts_ms = unix_ms();

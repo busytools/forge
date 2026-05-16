@@ -88,15 +88,43 @@ pub fn account_info_from_shell(config_dir: &Path) -> Option<AccountInfo> {
     let mut cmd = std::process::Command::new("claude");
     cmd.args(["auth", "status"]);
     cmd.env("CLAUDE_CONFIG_DIR", config_dir);
-    let output = cmd.output().ok()?;
+    let output = match cmd.output() {
+        Ok(o) => o,
+        Err(err) => {
+            tracing::warn!(
+                target: "forge_agent::cloud::auth_status",
+                error = %err,
+                config_dir = %config_dir.display(),
+                "claude auth status spawn failed"
+            );
+            return None;
+        }
+    };
     if !output.status.success() {
+        tracing::warn!(
+            target: "forge_agent::cloud::auth_status",
+            exit_code = ?output.status.code(),
+            stderr = %String::from_utf8_lossy(&output.stderr),
+            "claude auth status exited non-zero"
+        );
         return None;
     }
     parse_auth_status(&output.stdout)
 }
 
 fn parse_auth_status(stdout: &[u8]) -> Option<AccountInfo> {
-    let parsed: ClaudeAuthStatus = serde_json::from_slice(stdout).ok()?;
+    let parsed: ClaudeAuthStatus = match serde_json::from_slice(stdout) {
+        Ok(p) => p,
+        Err(err) => {
+            tracing::warn!(
+                target: "forge_agent::cloud::auth_status",
+                error = %err,
+                stdout_prefix = %String::from_utf8_lossy(&stdout[..stdout.len().min(160)]),
+                "claude auth status JSON parse failed"
+            );
+            return None;
+        }
+    };
     if !parsed.logged_in {
         return None;
     }

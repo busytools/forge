@@ -202,8 +202,18 @@ fn same_os_path_key(left: &str, right: &str) -> bool {
 }
 
 fn canonical_project_key(project_root: &Path) -> Option<String> {
-    let canonical = project_root.canonicalize().ok()?;
-    Some(normalize_project_key_string(&canonical.to_string_lossy()))
+    match project_root.canonicalize() {
+        Ok(canonical) => Some(normalize_project_key_string(&canonical.to_string_lossy())),
+        Err(err) => {
+            tracing::warn!(
+                target: "forge_agent::userdata::trust",
+                path = %project_root.display(),
+                error = %err,
+                "canonicalize for trust key failed; trust lookup will miss"
+            );
+            None
+        }
+    }
 }
 
 fn trust_value(value: &Value) -> Option<bool> {

@@ -204,14 +204,23 @@ async fn emit_connected(
         if messages.is_empty() { None } else { Some(messages) }
     });
 
-    let _ = event_tx.send(AgentEvent::Connected {
-        session_id: session_id.to_owned(),
-        cwd: cwd.to_owned(),
-        current_model,
-        available_models,
-        mode,
-        history_updates,
-    });
+    if event_tx
+        .send(AgentEvent::Connected {
+            session_id: session_id.to_owned(),
+            cwd: cwd.to_owned(),
+            current_model,
+            available_models,
+            mode,
+            history_updates,
+        })
+        .is_err()
+    {
+        tracing::warn!(
+            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+            session_id,
+            "Connected event channel closed before emit; session stuck on Connecting"
+        );
+    }
 
     if let Some(account) = client
         .account_info_from_init()
@@ -219,15 +228,32 @@ async fn emit_connected(
     {
         let forge_account =
             display_name.map(|d| forge_primitives::ForgeAccountIdentity::new(d.to_owned()));
-        let _ = event_tx.send(AgentEvent::StatusSnapshot {
-            session_id: session_id.to_owned(),
-            account,
-            forge_account,
-        });
+        if event_tx
+            .send(AgentEvent::StatusSnapshot {
+                session_id: session_id.to_owned(),
+                account,
+                forge_account,
+            })
+            .is_err()
+        {
+            tracing::warn!(
+                target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                session_id,
+                "StatusSnapshot event channel closed before emit"
+            );
+        }
     }
 
-    let _ = event_tx
-        .send(AgentEvent::SessionsListed { sessions: list_recent_sessions(config_dir, cwd).await });
+    if event_tx
+        .send(AgentEvent::SessionsListed { sessions: list_recent_sessions(config_dir, cwd).await })
+        .is_err()
+    {
+        tracing::warn!(
+            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+            session_id,
+            "SessionsListed event channel closed before emit"
+        );
+    }
 }
 
 fn load_history_messages(

@@ -488,7 +488,12 @@ fn spawn_reader_task(
                     }
                 }
                 Err(e) => {
-                    let _ = tx.send(Err(Error::Io(e)));
+                    if tx.send(Err(Error::Io(e))).is_err() {
+                        tracing::warn!(
+                            target: "forge_sdk::transport",
+                            "subprocess stdout I/O error after caller dropped reader"
+                        );
+                    }
                     break;
                 }
             }

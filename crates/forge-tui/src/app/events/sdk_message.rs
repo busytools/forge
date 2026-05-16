@@ -194,7 +194,7 @@ fn walk_assistant_content(
                 if tool_use_id.is_empty() {
                     continue;
                 }
-                let raw_block = serde_json::to_value(block).ok();
+                let raw_block = serde_json::to_value(block).map_err(|err| { tracing::warn!(target: "forge_tui::sdk_message", error = %err, "ContentBlock failed to serialize to Value"); err }).ok();
                 apply_tool_result_block(
                     app,
                     tool_use_id,
@@ -306,7 +306,7 @@ fn walk_user_tool_results(app: &mut App, content: &[forge_primitives::ContentBlo
                 if tool_use_id.is_empty() {
                     continue;
                 }
-                let raw_block = serde_json::to_value(block).ok();
+                let raw_block = serde_json::to_value(block).map_err(|err| { tracing::warn!(target: "forge_tui::sdk_message", error = %err, "ContentBlock failed to serialize to Value"); err }).ok();
                 apply_tool_result_block(
                     app,
                     tool_use_id,
