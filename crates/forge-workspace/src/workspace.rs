@@ -1892,7 +1892,7 @@ config_dir = "~/.claude-personal"
     /// dispatched against the new key must route through the
     /// migrated `command_senders` entry, not fall off with
     /// `UnknownSession`. Mirrors what happens inside the SessionTask
-    /// after `AgentEvent::SessionReplaced`.
+    /// after the second `AgentEvent::Connected` (the `/new` path).
     #[test]
     fn dispatch_after_migrate_routes_to_new_key() {
         let (workspace, _update_rx) = Workspace::testing_stub();

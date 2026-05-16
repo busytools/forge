@@ -38,8 +38,8 @@ pub(crate) struct SessionTask {
     /// login, logout flows).
     pub(crate) connected_once: bool,
     /// Weak reference to the parent [`crate::Workspace`]. Used inside
-    /// [`Self::translate_event`]'s `Connected` / `SessionReplaced`
-    /// arms to call back into `Workspace::record_connected_session`
+    /// [`Self::translate_event`]'s `Connected` arm to call back into
+    /// `Workspace::record_connected_session`
     /// so the project catalog stays current as freshly-spawned
     /// sessions reach Connected. `Weak` avoids the Workspace<->Task
     /// reference cycle (Workspace holds Task's command_tx; Task

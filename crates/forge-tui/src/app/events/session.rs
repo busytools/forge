@@ -735,11 +735,6 @@ pub(super) fn handle_session_replaced_event(
         crate::app::session::SessionLifecycleState::Idle,
     );
 
-    // Workspace catalog is now updated by
-    // `Workspace::record_event_for_domain` on the
-    // `AgentEvent::SessionReplaced` arm ; no TUI-side
-    // write is needed here.
-
     tracing::info!(
         target: crate::logging::targets::APP_SESSION,
         event_name = "session_replaced",
