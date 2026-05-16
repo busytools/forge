@@ -101,9 +101,8 @@ impl SessionTask {
 
     /// Translate one `AgentEvent` into the matching `SessionUpdate`
     /// (or pair of updates for `Connected`, which also emits
-    /// `KeyRenamed` if a synthetic spawn key is pending). Mutates
-    /// `DomainSession` inline before the emit so workspace-side
-    /// projections stay current.
+    /// `KeyRenamed` if a synthetic spawn key is pending). Updates
+    /// `DomainSession` in-place before each emit.
     fn translate_event(&mut self, event: AgentEvent) {
         // First, update DomainSession in-place.
         {

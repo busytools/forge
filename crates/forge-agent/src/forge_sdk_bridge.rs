@@ -964,6 +964,32 @@ mod tests {
     }
 
     #[test]
+    fn clear_client_drains_pending_permission_map() {
+        let bridge = test_bridge();
+        let (tx, rx) = tokio::sync::oneshot::channel::<forge_primitives::PermissionDecision>();
+        bridge.inner.pending.lock().insert("tool-id-1".to_owned(), tx);
+
+        bridge.clear_client();
+
+        assert!(bridge.inner.pending.lock().is_empty());
+        let decision = rx.blocking_recv().expect("oneshot resolved by clear_client drain");
+        assert!(!decision.is_allow(), "drain must resolve with deny");
+    }
+
+    #[test]
+    fn clear_client_drains_pending_question_map() {
+        let bridge = test_bridge();
+        let (tx, rx) = tokio::sync::oneshot::channel::<forge_primitives::QuestionOutcome>();
+        bridge.inner.pending_questions.lock().insert("tool-id-q1".to_owned(), tx);
+
+        bridge.clear_client();
+
+        assert!(bridge.inner.pending_questions.lock().is_empty());
+        let outcome = rx.blocking_recv().expect("oneshot resolved by clear_client drain");
+        assert!(matches!(outcome, forge_primitives::QuestionOutcome::Cancelled));
+    }
+
+    #[test]
     fn dispatch_without_client_returns_error() {
         let bridge = test_bridge();
         let err = bridge.cancel("session-1".to_owned()).unwrap_err();
