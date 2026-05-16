@@ -11,6 +11,7 @@ use forge_agent::client::SessionLaunchSettings;
 use forge_primitives::SDKSessionInfo;
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
+use tracing::Instrument;
 
 use crate::account::{self, AccountKey, AccountStateMap};
 use crate::config::{LoadedConfig, LoadedProject, load_from_dir};
@@ -411,7 +412,11 @@ impl Workspace {
                 connected_once: false,
                 workspace: Arc::downgrade(self),
             };
-            tokio::spawn(task.run());
+            let span = tracing::info_span!(
+                "session_task",
+                key = %task.key.as_str(),
+            );
+            tokio::spawn(task.run().instrument(span));
         }
 
         Ok(arc)
@@ -431,6 +436,7 @@ impl Workspace {
     /// explicitly when they need a cache-warm path.
     pub fn start_usage_poller(self: &Arc<Self>) {
         let weak = Arc::downgrade(self);
+        let span = tracing::info_span!("usage_poller");
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(USAGE_POLL_INTERVAL);
             // First tick fires immediately — keep it so the cache
@@ -445,7 +451,7 @@ impl Workspace {
                 };
                 workspace.refresh_account_usage_once().await;
             }
-        });
+        }.instrument(span));
     }
 
     /// One pass of the usage poller: fetch OAuth usage for every
@@ -845,25 +851,34 @@ impl Workspace {
             let workspace = Arc::clone(self);
             match cmd {
                 Command::SpawnProject { project_name, launch_settings } => {
-                    tokio::spawn(spawn::handle_spawn_project(
-                        workspace,
-                        project_name,
-                        launch_settings,
-                    ));
+                    let span = tracing::info_span!(
+                        "spawn_project",
+                        project = %project_name,
+                    );
+                    tokio::spawn(
+                        spawn::handle_spawn_project(workspace, project_name, launch_settings)
+                            .instrument(span),
+                    );
                 }
                 Command::SpawnSession { session_id, launch_settings } => {
-                    tokio::spawn(spawn::handle_spawn_session(
-                        workspace,
-                        session_id,
-                        launch_settings,
-                    ));
+                    let span = tracing::info_span!(
+                        "spawn_session",
+                        session_id = %session_id,
+                    );
+                    tokio::spawn(
+                        spawn::handle_spawn_session(workspace, session_id, launch_settings)
+                            .instrument(span),
+                    );
                 }
                 Command::StartDefault { project_name, launch_settings } => {
-                    tokio::spawn(spawn::handle_start_default(
-                        workspace,
-                        project_name,
-                        launch_settings,
-                    ));
+                    let span = tracing::info_span!(
+                        "start_default",
+                        project = ?project_name,
+                    );
+                    tokio::spawn(
+                        spawn::handle_start_default(workspace, project_name, launch_settings)
+                            .instrument(span),
+                    );
                 }
                 other => {
                     tracing::warn!(
