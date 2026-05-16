@@ -40,20 +40,15 @@ fn try_emit(workspace: &Workspace, label: &'static str, update: SessionUpdate) {
 /// then spawn the agent. The first `Connected` event from the
 /// resulting `SessionTask` emits `KeyRenamed` + `Connected` to
 /// migrate the synthetic bucket onto the real claude session UUID.
-// `async` is required: workspace.rs dispatches this via `tokio::spawn`,
-// which needs a future. The body is currently synchronous after the
-// `get_agent_handle` simplification but the future shape is part of
-// the dispatch contract.
-#[allow(clippy::unused_async)]
-pub(crate) async fn handle_spawn_project(
-    workspace: Arc<Workspace>,
-    project_name: String,
+pub(crate) fn handle_spawn_project(
+    workspace: &Arc<Workspace>,
+    project_name: &str,
     launch_settings: SessionLaunchSettings,
 ) {
-    let Some(project) = workspace.find_project_view_by_name(&project_name) else {
+    let Some(project) = workspace.find_project_view_by_name(project_name) else {
         tracing::warn!(
             target: "forge_workspace::spawn",
-            project = %project_name,
+            project = project_name,
             "Command::SpawnProject for unknown project; ignoring"
         );
         return;
@@ -61,25 +56,25 @@ pub(crate) async fn handle_spawn_project(
 
     let synth_key = SessionKey::from_session_id(format!("__spawn_{project_name}__"));
     try_emit(
-        &workspace,
+        workspace,
         "spawn_project::Spawning",
         SessionUpdate::Spawning {
             key: synth_key.clone(),
-            project_name: project_name.clone(),
+            project_name: project_name.to_owned(),
             cwd: project.path.to_string_lossy().to_string(),
             display_name: project.display_path.clone(),
         },
     );
 
     match workspace.get_agent_handle_with_spawn_key(
-        SessionTarget::Named(project_name.clone()),
+        SessionTarget::Named(project_name.to_owned()),
         launch_settings,
         Some(synth_key.clone()),
     ) {
         Ok(_handle) => {
             tracing::info!(
                 target: "forge_workspace::spawn",
-                project = %project_name,
+                project = project_name,
                 spawn_key = %synth_key.as_str(),
                 "spawn task started for project"
             );
@@ -87,12 +82,12 @@ pub(crate) async fn handle_spawn_project(
         Err(err) => {
             tracing::error!(
                 target: "forge_workspace::spawn",
-                project = %project_name,
+                project = project_name,
                 error = %err,
                 "spawn_project: get_agent_handle failed"
             );
             try_emit(
-                &workspace,
+                workspace,
                 "spawn_project::ConnectionFailed",
                 SessionUpdate::ConnectionFailed {
                     key: synth_key,
@@ -107,22 +102,19 @@ pub(crate) async fn handle_spawn_project(
 /// Spawn for a non-lead session row. Synthesizes
 /// `__resume_<session_id>__` and resumes via
 /// `SessionTarget::Session`.
-// `async` required for `tokio::spawn` dispatch — see comment on
-// `handle_spawn_project`.
-#[allow(clippy::unused_async)]
-pub(crate) async fn handle_spawn_session(
-    workspace: Arc<Workspace>,
-    session_id: String,
+pub(crate) fn handle_spawn_session(
+    workspace: &Arc<Workspace>,
+    session_id: &str,
     launch_settings: SessionLaunchSettings,
 ) {
     let synth_key = SessionKey::from_session_id(format!("__resume_{session_id}__"));
 
     // Locate parent project so we can seed Spawning with the cwd.
-    let session_key = SessionKey::from_session_id(session_id.clone());
+    let session_key = SessionKey::from_session_id(session_id.to_owned());
     let Some(parent) = workspace.find_project_for_session(&session_key) else {
         tracing::warn!(
             target: "forge_workspace::spawn",
-            session_id = %session_id,
+            session_id,
             "Command::SpawnSession for unknown session; ignoring"
         );
         return;
@@ -131,7 +123,7 @@ pub(crate) async fn handle_spawn_session(
     let display_name = parent.display_path.clone();
 
     try_emit(
-        &workspace,
+        workspace,
         "spawn_session::Spawning",
         SessionUpdate::Spawning {
             key: synth_key.clone(),
@@ -149,7 +141,7 @@ pub(crate) async fn handle_spawn_session(
         Ok(_handle) => {
             tracing::info!(
                 target: "forge_workspace::spawn",
-                session_id = %session_id,
+                session_id,
                 spawn_key = %synth_key.as_str(),
                 "spawn task started for session resume"
             );
@@ -157,12 +149,12 @@ pub(crate) async fn handle_spawn_session(
         Err(err) => {
             tracing::error!(
                 target: "forge_workspace::spawn",
-                session_id = %session_id,
+                session_id,
                 error = %err,
                 "spawn_session: get_agent_handle failed"
             );
             try_emit(
-                &workspace,
+                workspace,
                 "spawn_session::ConnectionFailed",
                 SessionUpdate::ConnectionFailed {
                     key: synth_key,
@@ -178,11 +170,8 @@ pub(crate) async fn handle_spawn_session(
 /// passed on argv) and spawns under the `__conn_pending__` synthetic
 /// key. Failure before the first Connected emits
 /// `SessionUpdate::FatalError` so TUI exits cleanly.
-// `async` required for `tokio::spawn` dispatch — see comment on
-// `handle_spawn_project`.
-#[allow(clippy::unused_async)]
-pub(crate) async fn handle_start_default(
-    workspace: Arc<Workspace>,
+pub(crate) fn handle_start_default(
+    workspace: &Arc<Workspace>,
     project_name: Option<String>,
     launch_settings: SessionLaunchSettings,
 ) {
@@ -209,7 +198,7 @@ pub(crate) async fn handle_start_default(
                 "start_default: get_agent_handle failed"
             );
             try_emit(
-                &workspace,
+                workspace,
                 "start_default::ConnectionFailed",
                 SessionUpdate::ConnectionFailed {
                     key: synth_key,
@@ -218,7 +207,7 @@ pub(crate) async fn handle_start_default(
                 },
             );
             try_emit(
-                &workspace,
+                workspace,
                 "start_default::FatalError",
                 SessionUpdate::FatalError(forge_primitives::error::AppError::ConnectionFailed),
             );
@@ -267,11 +256,10 @@ config_dir = "~/.claude-subspace"
         let mut rx = workspace.subscribe().expect("subscribe");
 
         handle_spawn_project(
-            Arc::clone(&workspace),
-            "no-such-project".to_owned(),
+            &workspace,
+            "no-such-project",
             SessionLaunchSettings::default(),
-        )
-        .await;
+        );
 
         // No SessionUpdate should have been emitted.
         assert!(rx.try_recv().is_err(), "no SessionUpdate emitted for unknown project");
@@ -289,11 +277,10 @@ config_dir = "~/.claude-subspace"
         let mut rx = workspace.subscribe().expect("subscribe");
 
         handle_spawn_project(
-            Arc::clone(&workspace),
-            "forge".to_owned(),
+            &workspace,
+            "forge",
             SessionLaunchSettings::default(),
-        )
-        .await;
+        );
 
         let update = rx.try_recv().expect("Spawning emit");
         match update {
@@ -323,11 +310,10 @@ config_dir = "~/.claude-subspace"
         // Drive a failure by passing a project name that doesn't
         // exist in forge.toml.
         handle_start_default(
-            Arc::clone(&workspace),
+            &workspace,
             Some("nonexistent".to_owned()),
             SessionLaunchSettings::default(),
-        )
-        .await;
+        );
 
         // Expect ConnectionFailed { fatal: true } then FatalError.
         let first = rx.try_recv().expect("first update");
@@ -361,11 +347,10 @@ config_dir = "~/.claude-subspace"
         let mut rx = workspace.subscribe().expect("subscribe");
 
         handle_spawn_session(
-            Arc::clone(&workspace),
-            "no-such-session-id".to_owned(),
+            &workspace,
+            "no-such-session-id",
             SessionLaunchSettings::default(),
-        )
-        .await;
+        );
 
         // The handler should not emit a Fatal envelope. (For the
         // unknown-session path it doesn't emit anything; the

@@ -860,8 +860,14 @@ impl Workspace {
                         project = %project_name,
                     );
                     tokio::spawn(
-                        spawn::handle_spawn_project(workspace, project_name, launch_settings)
-                            .instrument(span),
+                        async move {
+                            spawn::handle_spawn_project(
+                                &workspace,
+                                &project_name,
+                                launch_settings,
+                            );
+                        }
+                        .instrument(span),
                     );
                 }
                 Command::SpawnSession { session_id, launch_settings } => {
@@ -870,8 +876,10 @@ impl Workspace {
                         session_id = %session_id,
                     );
                     tokio::spawn(
-                        spawn::handle_spawn_session(workspace, session_id, launch_settings)
-                            .instrument(span),
+                        async move {
+                            spawn::handle_spawn_session(&workspace, &session_id, launch_settings);
+                        }
+                        .instrument(span),
                     );
                 }
                 Command::StartDefault { project_name, launch_settings } => {
@@ -880,8 +888,10 @@ impl Workspace {
                         project = ?project_name,
                     );
                     tokio::spawn(
-                        spawn::handle_start_default(workspace, project_name, launch_settings)
-                            .instrument(span),
+                        async move {
+                            spawn::handle_start_default(&workspace, project_name, launch_settings);
+                        }
+                        .instrument(span),
                     );
                 }
                 other => {
