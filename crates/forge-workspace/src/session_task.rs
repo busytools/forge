@@ -411,13 +411,9 @@ impl SessionTask {
     fn execute_command(&self, cmd: Command) {
         match cmd {
             Command::RespondPermission { key: _, tool_id, outcome } => {
-                // Peek the slot kind FIRST. Previous shape called
-                // .remove() unconditionally and warned-then-dropped on
-                // kind mismatch — that destroyed a legitimate
-                // concurrent Question waiter, auto-denying it with
-                // "response channel closed" while the user's permission
-                // outcome silently disappeared. Now mismatched kinds
-                // leave both slots intact.
+                // Peek the slot kind first; only remove on a kind
+                // match so a mismatched response leaves the real
+                // waiter intact.
                 let mut guard = self.domain.lock();
                 let kind_matches = matches!(
                     guard.pending_interactions.get(&tool_id),
@@ -453,8 +449,7 @@ impl SessionTask {
                 }
             }
             Command::RespondQuestion { key: _, tool_id, outcome } => {
-                // Same peek-before-remove discipline as
-                // RespondPermission above.
+                // Peek-before-remove — mirror of RespondPermission.
                 let mut guard = self.domain.lock();
                 let kind_matches = matches!(
                     guard.pending_interactions.get(&tool_id),
@@ -717,15 +712,9 @@ fn warn_no_session(key: &SessionKey, command: &'static str) {
 /// account info) lives on the TUI's `UiSession`, populated via the
 /// `SessionUpdate` envelopes the task emits.
 pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEvent) {
-    // Both Connected and SessionReplaced authoritatively carry the
-    // current session_id. The earlier `is_none()` guard on Connected
-    // skipped the second-and-later Connecteds — but the bridge always
-    // emits `AgentEvent::Connected` (it doesn't synthesize
-    // SessionReplaced), so /new / /login / /logout would leave
-    // domain.session_id pointing at the OLD uuid while the bridge's
-    // session_id_slot moved to the NEW one. Subsequent user
-    // dispatches routed to OLD and got silently dropped by
-    // `check_session_id`. Always overwrite.
+    // Both events authoritatively carry the current session_id —
+    // always overwrite so /new / /login / /logout don't leave the
+    // mirror stale.
     match event {
         AgentEvent::Connected { session_id, .. }
         | AgentEvent::SessionReplaced { session_id, .. } => {

@@ -113,9 +113,9 @@ pub struct McpState {
 }
 
 // Per-session SDK turn state lives in
-// [`forge_primitives::runtime::SessionTurnState`] as of Phase 2 of
-// the MVVM refactor (#102). Re-export keeps existing import paths
-// (`crate::app::state::types::SessionTurnState`) resolving.
+// `forge_primitives::runtime::SessionTurnState`. Re-exported here
+// so the existing `crate::app::state::types::SessionTurnState`
+// import path resolves.
 pub use forge_primitives::runtime::SessionTurnState;
 
 pub const DEFAULT_RENDER_CACHE_BUDGET_BYTES: usize = 24 * 1024 * 1024;

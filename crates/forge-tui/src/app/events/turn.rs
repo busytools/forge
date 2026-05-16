@@ -1,3 +1,5 @@
+#![allow(clippy::needless_pass_by_value)]
+
 use super::super::{
     App, AppStatus, ChatMessage, FocusTarget, InlinePermission, InlineQuestion,
     InvalidationLevel, MessageBlock, MessageRole, NoticeStage, SystemSeverity, TextBlock,
@@ -31,7 +33,6 @@ struct TurnExitState {
 /// Test-only entry that drives the presentation pipeline with a
 /// model-side request, skipping the wire-to-model conversion.
 #[cfg(feature = "testing")]
-#[allow(clippy::needless_pass_by_value)]
 pub fn handle_permission_request_event(
     app: &mut App,
     session_key: SessionKey,
@@ -41,11 +42,10 @@ pub fn handle_permission_request_event(
     apply_permission_request_presentation(app, &session_key, &tool_id, request);
 }
 
-/// Phase 3c — `SessionUpdate::PermissionRequest` reducer. Converts
+/// `SessionUpdate::PermissionRequest` reducer. Converts
 /// the workspace's wire-shape `PermissionRequest` into the
 /// model-side `RequestPermissionRequest` and delegates to the
 /// shared presentation helper.
-#[allow(clippy::needless_pass_by_value)]
 pub(super) fn apply_session_update_permission_request(
     app: &mut App,
     key: SessionKey,
@@ -309,7 +309,6 @@ fn apply_permission_request_to_background_bucket(
 
 /// Test-only entry. See `handle_permission_request_event`.
 #[cfg(feature = "testing")]
-#[allow(clippy::needless_pass_by_value)]
 pub fn handle_question_request_event(
     app: &mut App,
     session_key: SessionKey,
@@ -319,11 +318,10 @@ pub fn handle_question_request_event(
     apply_question_request_presentation(app, &session_key, &tool_id, request);
 }
 
-/// Phase 3c — `SessionUpdate::QuestionRequest` reducer. Converts the
+/// `SessionUpdate::QuestionRequest` reducer. Converts the
 /// workspace's wire-shape `QuestionRequest` into the model-side
 /// `RequestQuestionRequest` and delegates to the shared presentation
 /// helper.
-#[allow(clippy::needless_pass_by_value)]
 pub(super) fn apply_session_update_question_request(
     app: &mut App,
     key: SessionKey,
@@ -336,7 +334,7 @@ pub(super) fn apply_session_update_question_request(
     apply_question_request_presentation(app, &key, &tool_id, model_request);
 }
 
-/// Phase 3c — `SessionUpdate::McpElicitationRequest` reducer. The
+/// `SessionUpdate::McpElicitationRequest` reducer. The
 /// elicitation dialogue is an App-global UI overlay that's only
 /// meaningful for the active session; background-session requests
 /// are dropped at the routing layer (matching the legacy ClientEvent
@@ -344,7 +342,6 @@ pub(super) fn apply_session_update_question_request(
 /// routing-side correlation but the presentation helper consumes
 /// only `request` — the id is already embedded in
 /// [`forge_primitives::ElicitationRequest`].
-#[allow(clippy::needless_pass_by_value)]
 pub(super) fn apply_session_update_mcp_elicitation_request(
     app: &mut App,
     key: SessionKey,
@@ -850,7 +847,7 @@ pub(crate) fn dispatch_question_outcome(
     }
 }
 
-/// Phase 3c — `SessionUpdate::TurnCancelled` reducer. The workspace
+/// `SessionUpdate::TurnCancelled` reducer. The workspace
 /// already finalized the DomainSession via the synthesized turn event
 /// in the SDK message flow upstream; this reducer is the TUI-side
 /// projection. (For the direct call from `sdk_message.rs` the
@@ -976,13 +973,12 @@ pub(super) fn handle_turn_complete_event(
     apply_turn_complete_presentation(app, session_key, terminal_reason);
 }
 
-/// Phase 3c — `SessionUpdate::TurnComplete` reducer. The workspace
+/// `SessionUpdate::TurnComplete` reducer. The workspace
 /// already updated DomainSession via the synthesized turn event in
 /// the SDK message flow; this reducer is for the dispatcher path
 /// only. (The active-session path from `sdk_message.rs` calls
 /// [`handle_turn_complete_event`] directly to run the operational
 /// hook.)
-#[allow(clippy::needless_pass_by_value)]
 pub(super) fn apply_session_update_turn_complete(
     app: &mut App,
     key: SessionKey,
@@ -1165,14 +1161,13 @@ pub(super) fn handle_turn_error_event(
     apply_turn_error_presentation(app, session_key, msg, classified, terminal_reason);
 }
 
-/// Phase 3c — `SessionUpdate::TurnError` reducer. The workspace
+/// `SessionUpdate::TurnError` reducer. The workspace
 /// already updated DomainSession via the synthesized turn event in
 /// the SDK message flow; this reducer is for the dispatcher path
 /// only. Maps the workspace-side
 /// [`forge_workspace::TurnErrorClass`] to the local
 /// [`TurnErrorClass`] so the presentation helper sees the same enum
 /// it has consumed since before the protocol layer existed.
-#[allow(clippy::needless_pass_by_value)]
 pub(super) fn apply_session_update_turn_error(
     app: &mut App,
     key: SessionKey,

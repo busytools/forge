@@ -4146,10 +4146,8 @@ mod tests {
         assert_eq!(app.focus_owner(), FocusOwner::Input);
     }
 
-    /// Phase 1+ test fixture: legacy `oneshot::Receiver` shape was
-    /// retired when workspace took ownership of pending interaction
-    /// oneshots. Tests now read outcomes from `App`'s test-capture
-    /// fields via `try_recv(&app)`.
+    /// Test fixture: tests read permission outcomes from `App`'s
+    /// test-capture fields via `try_recv(&app)`.
     pub(super) struct TestPermissionRxLocal {
         pub tool_id: String,
     }

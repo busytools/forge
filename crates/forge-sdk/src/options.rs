@@ -30,7 +30,6 @@ pub type WireTee = Arc<dyn Fn(&str) + Send + Sync>;
 ///
 /// Construct via [`OptionsBuilder`] rather than populating directly.
 #[derive(Clone)]
-#[allow(clippy::struct_excessive_bools)] // mirrors the CLI's `ClaudeAgentOptions` verbatim
 pub struct Options {
     /// Path or name of the `claude` binary to spawn.
     pub binary: String,

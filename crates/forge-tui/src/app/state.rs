@@ -201,7 +201,6 @@ pub struct ChatRenderTraceState {
 }
 
 // `App` is the god struct — bools are independent UI flags (autoscroll, paste-detected, dirty-rerender). Bundling defeats clarity at call sites.
-#[allow(clippy::struct_excessive_bools)]
 pub struct App {
     pub active_view: ActiveView,
     pub config: ConfigState,
@@ -231,8 +230,7 @@ pub struct App {
     #[rustfmt::skip] #[cfg(feature = "testing")] pub test_dispatched_permission_outcomes: std::cell::RefCell<Vec<(String, forge_primitives::PermissionOutcome)>>,
     #[rustfmt::skip] #[cfg(feature = "testing")] pub test_dispatched_question_outcomes: std::cell::RefCell<Vec<(String, forge_primitives::QuestionOutcome)>>,
     /// Per-session state buckets, keyed by claude session UUID.
-    /// Phase 2a moves per-session fields off `App` into the
-    /// [`super::session::UiSession`] value type one bucket at a time.
+        /// [`super::session::UiSession`] value type one bucket at a time.
     pub sessions: std::collections::HashMap<forge_workspace::SessionKey, super::session::UiSession>,
     /// Which entry of [`Self::sessions`] the renderer reads from.
     /// `None` only in the brief pre-Connect window where no session
@@ -433,7 +431,7 @@ pub struct App {
 }
 
 impl App {
-    // ---- Multi-session accessors (Phase 2a) ----
+    // ---- Multi-session accessors ----
 
     /// Synthetic session key used during the pre-Connect window
     /// (test contexts and the brief startup interval before the
@@ -475,10 +473,9 @@ impl App {
         self.sessions.iter().find(|(_, s)| s.cwd_raw.as_str() == path).map(|(k, _)| k.clone())
     }
 
-    /// Read access to the active session's input editor. Lifted from
-    /// `App.input` onto `UiSession.input` in Phase 6 of the MVVM
-    /// refactor (#102); each session owns its own editor so switching
-    /// the active session naturally swaps the visible input.
+    /// Read access to the active session's input editor. Each session
+    /// owns its own editor so switching the active session naturally
+    /// swaps the visible input.
     pub fn input(&self) -> &super::input::InputState {
         // Fallback to a static default for the brief pre-Connect
         // window where no bucket has landed yet; in practice the
@@ -721,12 +718,9 @@ impl App {
     /// migrates that bucket's contents to the real key so the conn
     /// + session_id end up on the same bucket.
     ///
-    /// Phase 1b leak guard: when `active_session_key` was previously
-    /// `None` (Connect-after-failure path), sweeps stale buckets
-    /// from earlier disconnect cycles. The SessionReplaced and other
-    /// end-of-life paths still leak their previous bucket — Phase
-    /// 2b will tighten those once background-session reachability
-    /// rules are nailed down.
+    /// Leak guard: when `active_session_key` was previously `None`
+    /// (Connect-after-failure path), sweeps stale buckets from
+    /// earlier disconnect cycles.
     pub fn set_session_id(&mut self, id: Option<model::SessionId>) {
         if let Some(id) = id {
             {

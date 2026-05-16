@@ -1,3 +1,5 @@
+#![allow(clippy::needless_pass_by_value)]
+
 use super::super::connect::{SessionStartReason, start_new_session};
 use super::super::state::RecentSessionInfo;
 use super::super::view::{self, ActiveView};
@@ -38,7 +40,7 @@ fn bump_bucket_session_scope_epoch(app: &mut App, key: &SessionKey) {
 /// `was_active` indicates whether the user is watching this session
 /// (active path: full apply chain) or whether it completed in the
 /// background (background path: write into the bucket directly).
-#[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
+#[allow(clippy::too_many_arguments)]
 fn apply_connected_presentation(
     app: &mut App,
     session_key: SessionKey,
@@ -746,7 +748,7 @@ pub(super) fn handle_session_replaced_event(
 
     // Workspace catalog is now updated by
     // `Workspace::record_event_for_domain` on the
-    // `AgentEvent::SessionReplaced` arm (Phase 3a); no TUI-side
+    // `AgentEvent::SessionReplaced` arm ; no TUI-side
     // write is needed here.
 
     tracing::info!(
@@ -928,7 +930,7 @@ fn maybe_open_startup_session_picker(app: &mut App) {
 // `#[allow(clippy::needless_pass_by_value)]` is the standard escape
 // for that "I own this but only pass it by reference" pattern.
 
-#[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
+#[allow(clippy::too_many_arguments)]
 pub(super) fn apply_session_update_connected(
     app: &mut App,
     key: SessionKey,
@@ -1016,7 +1018,7 @@ fn is_synthetic_key(key: &SessionKey) -> bool {
     s.len() >= 4 && s.starts_with("__") && s.ends_with("__")
 }
 
-#[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
+#[allow(clippy::too_many_arguments)]
 pub(super) fn apply_session_update_session_replaced(
     app: &mut App,
     _key: SessionKey,
@@ -1049,7 +1051,6 @@ pub(super) fn apply_session_update_sessions_listed(
     handle_sessions_listed_event(app, key, sessions);
 }
 
-#[allow(clippy::needless_pass_by_value)]
 pub(super) fn apply_session_update_auth_required(
     app: &mut App,
     key: SessionKey,
@@ -1059,7 +1060,6 @@ pub(super) fn apply_session_update_auth_required(
     handle_auth_required_event(app, &key, method_name, method_description);
 }
 
-#[allow(clippy::needless_pass_by_value)]
 pub(super) fn apply_session_update_connection_failed(
     app: &mut App,
     key: SessionKey,
@@ -1069,7 +1069,6 @@ pub(super) fn apply_session_update_connection_failed(
     handle_connection_failed_event(app, &key, &message);
 }
 
-#[allow(clippy::needless_pass_by_value)]
 pub(super) fn apply_session_update_slash_command_error(
     app: &mut App,
     key: SessionKey,
@@ -1078,17 +1077,14 @@ pub(super) fn apply_session_update_slash_command_error(
     handle_slash_command_error_event(app, &key, &message);
 }
 
-#[allow(clippy::needless_pass_by_value)]
 pub(super) fn apply_session_update_auth_completed(app: &mut App, key: SessionKey) {
     handle_auth_completed_event(app, &key);
 }
 
-#[allow(clippy::needless_pass_by_value)]
 pub(super) fn apply_session_update_logout_completed(app: &mut App, key: SessionKey) {
     handle_logout_completed_event(app, &key);
 }
 
-#[allow(clippy::needless_pass_by_value)]
 pub(super) fn apply_session_update_service_status(
     app: &mut App,
     severity: forge_primitives::cloud::service_status::ServiceSeverity,

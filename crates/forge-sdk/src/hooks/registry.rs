@@ -107,14 +107,6 @@ impl Hooks {
         registry
     }
 
-    /// Render the `hooks` key of the `initialize` `control_request`
-    /// payload exactly as the Client will send it. Test-only —
-    /// production code uses this indirectly via the Client's
-    /// initialize path.
-    #[cfg(test)]
-    pub(crate) fn to_initialize_payload_for_test(&self) -> serde_json::Value {
-        self.mint_registry().to_initialize_payload()
-    }
 }
 
 /// Internal bundle mapping opaque ids to erased callbacks, with parallel
@@ -443,7 +435,7 @@ mod tests_hooks_registration {
             })
             .build();
 
-        let payload = hooks.to_initialize_payload_for_test();
+        let payload = hooks.mint_registry().to_initialize_payload();
         for key in [
             "PreToolUse",
             "PostToolUseFailure",

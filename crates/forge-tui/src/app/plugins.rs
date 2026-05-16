@@ -50,9 +50,8 @@ impl PluginsViewTab {
     }
 }
 
-// Plugin registry types lifted to forge_primitives::plugins (Phase 0
-// of the MVVM refactor, 2026-05-11). Re-exported here so existing
-// forge-tui imports keep resolving.
+// Plugin registry types defined in forge_primitives::plugins;
+// re-exported here so the existing forge-tui import paths resolve.
 pub use forge_primitives::plugins::{
     InstalledPluginEntry, MarketplaceEntry, MarketplaceSourceEntry, PluginCapability,
     PluginsCliActionSuccess, PluginsInventorySnapshot,

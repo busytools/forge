@@ -1,3 +1,5 @@
+#![allow(clippy::needless_pass_by_value)]
+
 use super::{App, session, turn};
 use forge_workspace::{SessionKey, SessionUpdate};
 
@@ -340,7 +342,7 @@ fn shorten_cwd_display_path(cwd: &str) -> String {
     cwd.to_owned()
 }
 
-/// Phase 3b — `SessionUpdate::ForgeAccountIdentity` reducer for the
+/// `SessionUpdate::ForgeAccountIdentity` reducer for the
 /// session bucket addressed by `key`. Active-session targeting goes
 /// through the existing
 /// [`crate::app::App::set_active_account_display_name`] accessor +
@@ -348,7 +350,6 @@ fn shorten_cwd_display_path(cwd: &str) -> String {
 /// updates promptly. Background-session targeting writes the
 /// display name directly into the bucket without touching the
 /// active-session welcome snapshot.
-#[allow(clippy::needless_pass_by_value)]
 pub(super) fn apply_session_update_forge_account_identity(
     app: &mut App,
     key: SessionKey,
@@ -382,13 +383,12 @@ fn apply_forge_account_identity_presentation(
     }
 }
 
-/// Phase 3b — `SessionUpdate::StatusSnapshot` reducer for the
+/// `SessionUpdate::StatusSnapshot` reducer for the
 /// session bucket addressed by `session_id`. Routes through the
 /// active-session accessors when targeting the rendered session
 /// (so welcome + Status panel rerender promptly); writes directly
 /// into the bucket otherwise so background sessions accumulate
 /// state silently.
-#[allow(clippy::needless_pass_by_value)]
 pub(super) fn apply_session_update_status_snapshot(
     app: &mut App,
     session_id: String,
@@ -449,11 +449,10 @@ fn apply_status_snapshot_presentation(
     );
 }
 
-/// Phase 3b — `SessionUpdate::OauthCredentialsSnapshot` reducer for
+/// `SessionUpdate::OauthCredentialsSnapshot` reducer for
 /// the session bucket addressed by `session_id`. Active-session
 /// targeting goes through [`crate::app::App::set_oauth_credentials`];
 /// background-session targeting writes directly into the bucket.
-#[allow(clippy::needless_pass_by_value)]
 pub(super) fn apply_session_update_oauth_credentials_snapshot(
     app: &mut App,
     session_id: String,
@@ -498,14 +497,13 @@ fn apply_oauth_credentials_snapshot_presentation(
     );
 }
 
-/// Phase 3b — `SessionUpdate::ContextUsageSnapshot` reducer for the
+/// `SessionUpdate::ContextUsageSnapshot` reducer for the
 /// session bucket addressed by `session_id`. Active-session
 /// targeting goes through
 /// [`crate::app::session_runtime::apply_context_usage_snapshot`] so
 /// the in-flight refresh chaining still kicks in. Background-session
 /// targeting writes directly into the bucket and skips the refresh
 /// chain (a background session re-requests on next active switch).
-#[allow(clippy::needless_pass_by_value)]
 pub(super) fn apply_session_update_context_usage_snapshot(
     app: &mut App,
     session_id: String,
@@ -542,13 +540,12 @@ fn apply_context_usage_snapshot_presentation(
     }
 }
 
-/// Phase 3b — `SessionUpdate::McpSnapshot` reducer for the session
+/// `SessionUpdate::McpSnapshot` reducer for the session
 /// bucket addressed by `session_id`. Active-session targeting also
 /// reconciles the App-global MCP auth-redirect overlay and selection
 /// index. Background-session targeting only writes the per-session
 /// MCP state into the bucket — the overlay reconciliation is
 /// inherently active-session UI.
-#[allow(clippy::needless_pass_by_value)]
 pub(super) fn apply_session_update_mcp_snapshot(
     app: &mut App,
     session_id: String,
@@ -621,13 +618,12 @@ fn apply_mcp_snapshot_presentation(
     );
 }
 
-/// Phase 3b — `SessionUpdate::ChatAppended` reducer for the session
+/// `SessionUpdate::ChatAppended` reducer for the session
 /// bucket addressed by `session_id`. The SDK message dispatcher is
 /// deeply intertwined with active-session UI accessors (chat buffer,
 /// tool-call indices, viewport) so the active-session temp-swap
 /// inside [`apply_sdk_message_presentation`] is the Phase 4 cleanup
 /// target, not this phase's.
-#[allow(clippy::needless_pass_by_value)]
 pub(super) fn apply_session_update_chat_appended(
     app: &mut App,
     session_id: String,
@@ -712,7 +708,7 @@ fn apply_sdk_message_presentation(app: &mut App, session_id: &str, msg: forge_pr
     super::sdk_message::handle_sdk_message(app, msg);
 }
 
-/// Phase 3b — `SessionUpdate::HookObservation` reducer for the
+/// `SessionUpdate::HookObservation` reducer for the
 /// session bucket addressed by `session_id`. Active-session
 /// targeting goes through the App accessors so the mode/effort
 /// chips update promptly. Background-session targeting writes
@@ -720,7 +716,6 @@ fn apply_sdk_message_presentation(app: &mut App, session_id: &str, msg: forge_pr
 /// for a future switch. Wraps the `String` fields from the
 /// workspace payload into `&str` borrows before delegating to the
 /// shared presentation helper.
-#[allow(clippy::needless_pass_by_value)]
 pub(super) fn apply_session_update_hook_observation(
     app: &mut App,
     session_id: String,
@@ -809,13 +804,12 @@ fn apply_hook_observation_presentation(
     }
 }
 
-/// Phase 3b — `SessionUpdate::RuntimeReloadCompleted` reducer for the
+/// `SessionUpdate::RuntimeReloadCompleted` reducer for the
 /// session bucket addressed by `session_id`. The plugins config tab
 /// is App-global UI scoped to the active session — a background
 /// reload that completes silently is a no-op on the UI but logged
 /// so the operator can confirm the bridge dispatched it. Unknown-
 /// session events log a warn-level breadcrumb.
-#[allow(clippy::needless_pass_by_value)]
 pub(super) fn apply_session_update_runtime_reload_completed(app: &mut App, session_id: String) {
     apply_runtime_reload_completed_presentation(app, &session_id);
 }
@@ -845,10 +839,9 @@ fn apply_runtime_reload_completed_presentation(app: &mut App, session_id: &str) 
     }
 }
 
-/// Phase 3b — `SessionUpdate::RuntimeReloadFailed` reducer for the
+/// `SessionUpdate::RuntimeReloadFailed` reducer for the
 /// session bucket addressed by `session_id`. Same routing shape as
 /// [`apply_session_update_runtime_reload_completed`].
-#[allow(clippy::needless_pass_by_value)]
 pub(super) fn apply_session_update_runtime_reload_failed(
     app: &mut App,
     session_id: String,
@@ -883,7 +876,7 @@ fn apply_runtime_reload_failed_presentation(app: &mut App, session_id: &str, mes
     }
 }
 
-/// Phase 3a — migrate the bucket at `from` over to `to` when the
+/// migrate the bucket at `from` over to `to` when the
 /// workspace renames a synthetic spawn key onto the real claude
 /// session UUID. Updates `active_session_key` only when it
 /// currently points at `from` (background-spawn case must NOT

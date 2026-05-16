@@ -1,15 +1,5 @@
 //! Per-session state bucket.
 //!
-//! Phase 2a moves ~50 fields off `App` into this struct. Commit 1
-//! (this commit) ships the struct empty — subsequent bucket-migration
-//! commits add field groups one bucket at a time, each leaving the
-//! tree compiling + tests passing.
-//!
-//! `App.sessions: HashMap<SessionKey, Session>` holds N sessions;
-//! `App.active_session_key` points at the rendered one. Background
-//! sessions accumulate state silently while the user is elsewhere
-//! (Phase 2 of the side-panes feature; backend prerequisite for the
-//! Projects pane UI).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::time::Instant;
@@ -50,7 +40,6 @@ use forge_primitives::{AccountInfo, SessionId};
 /// senders, pending interactions) but never duplicates these
 /// fields. TUI reducers in `app::events::*` update them from
 /// `SessionUpdate` payloads as events arrive.
-#[allow(clippy::struct_excessive_bools)]
 pub struct UiSession {
     /// The claude-issued session UUID, also used as the map key.
     /// Stored here for symmetry; the map lookup uses the same value.

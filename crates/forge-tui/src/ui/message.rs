@@ -56,7 +56,6 @@ const WELCOME_TIPS: &[&str] = &[
 /// the message loop so we don't need `&App` (which conflicts with `&mut msg`).
 #[derive(Clone, Copy)]
 // Spinner state — bools track frame ticks, blink flag, halted, idle, etc. — separate flags read better than a packed bitmask at call sites.
-#[allow(clippy::struct_excessive_bools)]
 pub struct SpinnerState {
     pub frame: usize,
     /// True when this message owns the currently active assistant turn.

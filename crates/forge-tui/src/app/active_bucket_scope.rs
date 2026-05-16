@@ -19,9 +19,9 @@ use crate::app::App;
 /// Run `body` against `app` with `active_session_key` temporarily
 /// pivoted to `target_key`. Restores the user-visible UI state
 /// (`active_session_key`, status) after `body` returns. Input lives
-/// on each `UiSession` (Phase 6 of the MVVM refactor #102), so the
-/// pivot naturally swaps which bucket's input editor is active for
-/// the duration of `body` — no manual snapshot/restore needed.
+/// on each `UiSession`, so the pivot naturally swaps which bucket's
+/// input editor is active for the duration of `body` — no manual
+/// snapshot/restore needed.
 pub(crate) fn with_pivoted<F, R>(app: &mut App, target_key: SessionKey, body: F) -> R
 where
     F: FnOnce(&mut App) -> R,

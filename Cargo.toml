@@ -96,6 +96,8 @@ doc_markdown = "allow"              # Bare crate paths in prose are fine.
 too_many_lines = "allow"            # Translators + dispatchers naturally large.
 unnecessary_wraps = "allow"         # Symmetry across translate-fn returns.
 struct_field_names = "allow"        # Wire-shape structs share prefixes by API contract.
+struct_excessive_bools = "allow"    # Many UI state structs are flag bags by nature
+                                    # (Cli flags, RenderState, SpinnerState, etc.).
 # CLI surface (forge-tui binary) legitimately prints to stdout/stderr.
 print_stdout = "allow"
 print_stderr = "allow"
