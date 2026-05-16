@@ -342,17 +342,6 @@ async fn list_recent_sessions(
         .collect()
 }
 
-fn msg_session_id(msg: &forge_primitives::Message) -> Option<String> {
-    use forge_primitives::Message;
-    match msg {
-        Message::Assistant { session_id, .. }
-        | Message::User { session_id, .. }
-        | Message::Result { session_id, .. } => Some(session_id.clone()),
-        Message::System { session_id, .. } => session_id.clone(),
-        _ => None,
-    }
-}
-
 async fn reader_loop(
     mut events: forge_sdk::ClientEvents,
     event_tx: mpsc::UnboundedSender<AgentEvent>,
@@ -361,8 +350,10 @@ async fn reader_loop(
     while let Some(item) = events.recv().await {
         match item {
             Ok(msg) => {
-                let session_id_for_sdk_msg =
-                    msg_session_id(&msg).unwrap_or_else(|| session_id.clone());
+                let session_id_for_sdk_msg = match msg.session_id() {
+                    Some(sid) => sid.to_owned(),
+                    None => session_id.clone(),
+                };
                 if event_tx
                     .send(AgentEvent::SdkMessage { session_id: session_id_for_sdk_msg, msg })
                     .is_err()

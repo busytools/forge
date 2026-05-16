@@ -359,20 +359,20 @@ impl Workspace {
 
         // Spawn the per-session `SessionTask` actor. Idempotent —
         // a second `get_agent_handle` call for the same key reuses
-        // the existing task. Insert under the command_senders lock
-        // so a concurrent caller that lost the pool race also loses
-        // this race (and drops its `cmd_tx` at end-of-scope).
-        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<Command>();
-        let needs_spawn = {
+        // the existing task. The command channel is created only
+        // on the cold path (no existing sender), held by the
+        // workspace until the task takes its receiver.
+        let cmd_rx = {
             let mut senders = self.command_senders.lock();
             if senders.contains_key(&session_key) {
-                false
+                None
             } else {
+                let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<Command>();
                 senders.insert(session_key.clone(), cmd_tx);
-                true
+                Some(cmd_rx)
             }
         };
-        if needs_spawn {
+        if let Some(cmd_rx) = cmd_rx {
             // If the workspace already holds a pre-spawn domain
             // handle for this key (e.g. registered by
             // `connect::create_app` for the pre-Connect bucket), reuse
