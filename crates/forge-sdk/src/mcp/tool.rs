@@ -21,32 +21,30 @@ pub struct ToolOutput {
 impl ToolOutput {
     /// Build a text-only successful output.
     pub fn text(s: impl Into<String>) -> Self {
-        Self { blocks: vec![ToolOutputBlock::Text { text: s.into() }], is_error: false }
+        Self { blocks: vec![ToolOutputBlock { text: s.into() }], is_error: false }
     }
 
     /// Serialise to the JSON shape MCP expects.
     pub(crate) fn to_mcp_content(&self) -> Vec<Value> {
         self.blocks
             .iter()
-            .map(|b| match b {
-                ToolOutputBlock::Text { text } => serde_json::json!({
+            .map(|b| {
+                serde_json::json!({
                     "type": "text",
-                    "text": text,
-                }),
+                    "text": b.text,
+                })
             })
             .collect()
     }
 }
 
-/// Output block kinds. Currently only text; MCP supports images and
-/// resources which we can add later if the binary ever asks for them.
+/// A single text content block returned from a tool. MCP supports
+/// images and resources too; add separate types here when the
+/// binary actually asks for them.
 #[derive(Debug, Clone)]
-pub enum ToolOutputBlock {
-    /// Plain text content.
-    Text {
-        /// The text payload.
-        text: String,
-    },
+pub struct ToolOutputBlock {
+    /// The text payload.
+    pub text: String,
 }
 
 /// A registered MCP tool. Implementations describe themselves (name,
