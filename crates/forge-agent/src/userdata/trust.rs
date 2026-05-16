@@ -25,15 +25,7 @@ pub fn read_status(document: &Value, project_root: &Path) -> TrustLookup {
 pub fn set_trusted(document: &mut Value, project_root: &Path) -> String {
     let project_key = normalize_project_key(project_root);
     let root = ensure_object_mut(document);
-    let projects =
-        root.entry(PROJECTS_FIELD.to_owned()).or_insert_with(|| Value::Object(Map::new()));
-    if !projects.is_object() {
-        *projects = Value::Object(Map::new());
-    }
-
-    let Value::Object(projects) = projects else {
-        unreachable!("projects must be an object after normalization");
-    };
+    let projects = ensure_object_entry(root, PROJECTS_FIELD);
 
     let matching_keys = projects
         .keys()
@@ -42,31 +34,14 @@ pub fn set_trusted(document: &mut Value, project_root: &Path) -> String {
         .collect::<Vec<_>>();
 
     if matching_keys.is_empty() {
-        let entry =
-            projects.entry(project_key.clone()).or_insert_with(|| Value::Object(Map::new()));
-        if !entry.is_object() {
-            *entry = Value::Object(Map::new());
-        }
-        match entry {
-            Value::Object(project) => {
-                project.insert(TRUST_FIELD.to_owned(), Value::Bool(true));
-            }
-            _ => unreachable!("project entry must be an object after normalization"),
-        }
+        let project = ensure_object_entry(projects, &project_key);
+        project.insert(TRUST_FIELD.to_owned(), Value::Bool(true));
         return project_key;
     }
 
     for key in matching_keys {
-        let entry = projects.entry(key).or_insert_with(|| Value::Object(Map::new()));
-        if !entry.is_object() {
-            *entry = Value::Object(Map::new());
-        }
-        match entry {
-            Value::Object(project) => {
-                project.insert(TRUST_FIELD.to_owned(), Value::Bool(true));
-            }
-            _ => unreachable!("project entry must be an object after normalization"),
-        }
+        let project = ensure_object_entry(projects, &key);
+        project.insert(TRUST_FIELD.to_owned(), Value::Bool(true));
     }
 
     project_key
@@ -226,6 +201,20 @@ fn ensure_object_mut(document: &mut Value) -> &mut Map<String, Value> {
     match document {
         Value::Object(object) => object,
         _ => unreachable!("document must be an object after normalization"),
+    }
+}
+
+fn ensure_object_entry<'a>(
+    map: &'a mut Map<String, Value>,
+    key: &str,
+) -> &'a mut Map<String, Value> {
+    let entry = map.entry(key.to_owned()).or_insert_with(|| Value::Object(Map::new()));
+    if !entry.is_object() {
+        *entry = Value::Object(Map::new());
+    }
+    match entry {
+        Value::Object(object) => object,
+        _ => unreachable!("entry must be an object after normalization"),
     }
 }
 

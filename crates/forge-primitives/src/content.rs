@@ -130,7 +130,7 @@ pub enum ContentBlock {
     /// Forge surfaces this so resumed sessions render the queued
     /// inputs as user bubbles in the chat. Without it, a session
     /// that had mid-turn queued inputs would replay missing those
-    /// user messages — see issue #85.
+    /// user messages.
     QueuedCommand {
         /// The queued user text (or content-block array — kept as
         /// `Value` so list-of-blocks variants pass through cleanly).

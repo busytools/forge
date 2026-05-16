@@ -440,16 +440,10 @@ fn build_options_with_callback(
     session_id_slot: Arc<parking_lot::Mutex<String>>,
     config_dir: &Path,
 ) -> Options {
-    // Observation hooks: passthrough callbacks that read CLI runtime
-    // state out of every PreToolUse and UserPromptSubmit hook input
-    // and emit `AgentEvent::HookObservation` upward without altering
-    // the dispatch outcome. Higher-fidelity than `system/status` for
-    // mode / effort drift detection (see #88, #89). PreToolUse also
-    // carries subagent attribution (`agent_id` + `agent_type`) so the
-    // TUI can label sub-agent tool calls with their type (#84
-    // partial). The callbacks own clones of `event_tx` and the
-    // `session_id` slot; the same slot the can_use_tool callback
-    // reads, kept in sync via the parking_lot mutex.
+    // Passthrough hooks emit `AgentEvent::HookObservation` for every
+    // PreToolUse / UserPromptSubmit input without altering the dispatch
+    // outcome. PreToolUse carries subagent attribution (`agent_id` +
+    // `agent_type`) — see #84.
     let pre_tool_observe_tx = event_tx.clone();
     let pre_tool_observe_sid = Arc::clone(&session_id_slot);
     let user_prompt_observe_tx = event_tx.clone();

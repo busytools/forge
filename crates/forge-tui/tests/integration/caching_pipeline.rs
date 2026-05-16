@@ -5,11 +5,6 @@
 // Caching pipeline integration tests.
 // Validates the full pipeline: streaming -> block splitting -> cache storage ->
 // budget enforcement -> viewport invalidation -> height measurement -> prefix sums.
-//
-// Covers Phase 5 test groups from notes/caching.md:
-//   Group 2: Streaming + budget behavior
-//   Group 3: History retention + estimator validation
-//   Group 5: Regression / full pipeline
 
 use forge_tui::app::{
     App, AppStatus, BlockCache, ChatMessage, DEFAULT_CACHE_SPLIT_HARD_LIMIT_BYTES,
