@@ -28,11 +28,33 @@ pub struct AvailableCommand {
     pub input_hint: Option<String>,
 }
 
+impl AvailableCommand {
+    pub fn new(name: impl Into<String>, description: impl Into<String>) -> Self {
+        Self { name: name.into(), description: description.into(), input_hint: None }
+    }
+
+    pub fn input_hint(mut self, input_hint: impl Into<String>) -> Self {
+        self.input_hint = Some(input_hint.into());
+        self
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AvailableAgent {
     pub name: String,
     pub description: String,
     pub model: Option<String>,
+}
+
+impl AvailableAgent {
+    pub fn new(name: impl Into<String>, description: impl Into<String>) -> Self {
+        Self { name: name.into(), description: description.into(), model: None }
+    }
+
+    pub fn model(mut self, model: impl Into<String>) -> Self {
+        self.model = Some(model.into());
+        self
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

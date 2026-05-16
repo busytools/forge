@@ -507,23 +507,7 @@ impl Plan {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AvailableCommand {
-    pub name: String,
-    pub description: String,
-    pub input_hint: Option<String>,
-}
-
-impl AvailableCommand {
-    pub fn new(name: impl Into<String>, description: impl Into<String>) -> Self {
-        Self { name: name.into(), description: description.into(), input_hint: None }
-    }
-
-    pub fn input_hint(mut self, input_hint: impl Into<String>) -> Self {
-        self.input_hint = Some(input_hint.into());
-        self
-    }
-}
+pub use forge_primitives::runtime::AvailableCommand;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AvailableCommandsUpdate {
@@ -536,23 +520,7 @@ impl AvailableCommandsUpdate {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AvailableAgent {
-    pub name: String,
-    pub description: String,
-    pub model: Option<String>,
-}
-
-impl AvailableAgent {
-    pub fn new(name: impl Into<String>, description: impl Into<String>) -> Self {
-        Self { name: name.into(), description: description.into(), model: None }
-    }
-
-    pub fn model(mut self, model: impl Into<String>) -> Self {
-        self.model = Some(model.into());
-        self
-    }
-}
+pub use forge_primitives::runtime::AvailableAgent;
 
 // EffortLevel + its UI helpers (label/description/as_stored/from_stored)
 // live in forge-primitives::runtime now.
