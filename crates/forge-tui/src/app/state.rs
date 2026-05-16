@@ -61,7 +61,6 @@ pub struct TerminalToolCallRef {
 }
 
 impl TerminalToolCallRef {
-    #[must_use]
     pub fn new(terminal_id: String, msg_idx: usize, block_idx: usize) -> Self {
         Self { terminal_id, msg_idx, block_idx }
     }
@@ -148,7 +147,6 @@ impl PaneHitTarget {
     /// hit-tester needs; for x+y-bounded targets (`TopBarIcon`,
     /// `OverlayClose`) call [`Self::contains`] instead so the column
     /// constraint also applies.
-    #[must_use]
     pub fn contains_y(&self, y: u16) -> bool {
         let (start, height) = match self {
             Self::ProjectHeader { y, height, .. }
@@ -166,7 +164,6 @@ impl PaneHitTarget {
     /// component is unconstrained; for x+y-bounded targets (top-bar
     /// icon, overlay close, per-row close) the click must fall within
     /// the recorded `[x_start, x_end)` range.
-    #[must_use]
     pub fn contains(&self, x: u16, y: u16) -> bool {
         if !self.contains_y(y) {
             return false;
@@ -454,7 +451,6 @@ impl App {
     /// Returns a reference to the currently-active session bucket,
     /// or `None` in the brief pre-Connect window before any session
     /// has landed in [`Self::sessions`].
-    #[must_use]
     pub fn active_session(&self) -> Option<&super::session::UiSession> {
         self.active_session_key.as_ref().and_then(|key| self.sessions.get(key))
     }
@@ -481,7 +477,6 @@ impl App {
     /// pre-connect bucket cannot collide because its `cwd_raw` is
     /// sourced from `forge.toml` (or empty in launchpad mode), not
     /// from `std::env::current_dir()` — see `connect::create_app`.
-    #[must_use]
     pub fn find_running_bucket_for_path(&self, path: &str) -> Option<forge_workspace::SessionKey> {
         self.sessions.iter().find(|(_, s)| s.cwd_raw.as_str() == path).map(|(k, _)| k.clone())
     }
@@ -490,7 +485,6 @@ impl App {
     /// `App.input` onto `UiSession.input` in Phase 6 of the MVVM
     /// refactor (#102); each session owns its own editor so switching
     /// the active session naturally swaps the visible input.
-    #[must_use]
     pub fn input(&self) -> &super::input::InputState {
         // Fallback to a static default for the brief pre-Connect
         // window where no bucket has landed yet; in practice the
@@ -610,7 +604,6 @@ impl App {
     /// pre-Connect bucket so the active session is always populated.
     /// On the off chance the invariant is violated we log and return
     /// a static empty slice so call sites stay infallible.
-    #[must_use]
     pub fn messages(&self) -> &[ChatMessage] {
         self.active_session().map_or(&[], |s| s.messages.as_slice())
     }
@@ -620,31 +613,26 @@ impl App {
     /// Returns a mutable reference to the active bucket's `messages`
     /// vector. Auto-creates the pre-Connect bucket if the active
     /// session is missing, so call sites don't need to guard.
-    #[must_use]
     pub fn active_messages_mut(&mut self) -> &mut Vec<ChatMessage> {
         &mut self.active_bucket_mut().messages
     }
 
     /// Borrow the parallel `message_retained_bytes` cache.
-    #[must_use]
     pub fn message_retained_bytes(&self) -> &[usize] {
         self.active_session().map_or(&[], |s| s.message_retained_bytes.as_slice())
     }
 
     /// Mutable borrow of the `message_retained_bytes` cache.
-    #[must_use]
     pub fn message_retained_bytes_mut(&mut self) -> &mut Vec<usize> {
         &mut self.active_bucket_mut().message_retained_bytes
     }
 
     /// Active session's rolling retained-history byte total.
-    #[must_use]
     pub fn retained_history_bytes(&self) -> usize {
         self.active_session().map_or(0, |s| s.retained_history_bytes)
     }
 
     /// Mutable accessor for the rolling retained-history byte total.
-    #[must_use]
     pub fn retained_history_bytes_mut(&mut self) -> &mut usize {
         &mut self.active_bucket_mut().retained_history_bytes
     }
@@ -654,7 +642,6 @@ impl App {
     /// Falls back to a leaked default viewport if the active bucket
     /// is missing — the production startup path always seeds one,
     /// so the fallback is a safety net rather than a hot path.
-    #[must_use]
     pub fn viewport(&self) -> &ChatViewport {
         static FALLBACK: std::sync::OnceLock<ChatViewport> = std::sync::OnceLock::new();
         match self.active_session() {
@@ -665,13 +652,11 @@ impl App {
 
     /// Mutable accessor for the active session's chat viewport.
     /// Auto-creates the pre-Connect bucket if missing.
-    #[must_use]
     pub fn active_viewport_mut(&mut self) -> &mut ChatViewport {
         &mut self.active_bucket_mut().viewport
     }
 
     /// Active session's main-assistant turn message index.
-    #[must_use]
     pub fn active_turn_assistant_message_idx(&self) -> Option<usize> {
         self.active_session().and_then(|s| s.active_turn_assistant_message_idx)
     }
@@ -717,7 +702,6 @@ impl App {
     /// for `AgentHandle` dispatch; TUI mirrors that id onto the
     /// active bucket via `set_session_id`. This accessor reads the
     /// TUI mirror so render code doesn't need to lock the workspace.
-    #[must_use]
     pub fn session_id(&self) -> Option<model::SessionId> {
         self.active_session()
             .and_then(|s| s.session_id.as_ref())
@@ -846,7 +830,6 @@ impl App {
     /// this rather than holding an `Arc<AgentHandle>` directly —
     /// outbound traffic flows through `Workspace::dispatch` /
     /// `Workspace::refresh_*` calls.
-    #[must_use]
     pub fn has_active_agent(&self) -> bool {
         let Some(workspace) = self.workspace.as_ref() else { return false };
         let Some(key) = self.active_session_key.as_ref() else { return false };
@@ -916,7 +899,6 @@ impl App {
     }
 
     /// Active session's monotonic scope epoch.
-    #[must_use]
     pub fn session_scope_epoch(&self) -> u64 {
         self.active_session().map_or(0, |s| s.session_scope_epoch)
     }
@@ -932,7 +914,6 @@ impl App {
     /// Run `f` with read-only access to the active session's
     /// turn state. Falls through to a fresh `SessionTurnState::default()`
     /// when no active bucket exists (pre-Connect window).
-    #[must_use]
     pub fn with_turn_state<R>(&self, f: impl FnOnce(&SessionTurnState) -> R) -> R {
         match self.active_session() {
             Some(s) => f(&s.turn_state),
@@ -947,7 +928,6 @@ impl App {
     }
 
     /// Active session's `is_compacting` flag.
-    #[must_use]
     pub fn is_compacting(&self) -> bool {
         self.active_session().is_some_and(|s| s.is_compacting)
     }
@@ -958,7 +938,6 @@ impl App {
     }
 
     /// Active session's `pending_compact_clear` flag.
-    #[must_use]
     pub fn pending_compact_clear(&self) -> bool {
         self.active_session().is_some_and(|s| s.pending_compact_clear)
     }
@@ -969,19 +948,16 @@ impl App {
     }
 
     /// Borrow the active session's pending interaction id list.
-    #[must_use]
     pub fn pending_interaction_ids(&self) -> &[String] {
         self.active_session().map_or(&[], |s| s.pending_interaction_ids.as_slice())
     }
 
     /// Mutable borrow of the pending interaction id list.
-    #[must_use]
     pub fn pending_interaction_ids_mut(&mut self) -> &mut Vec<String> {
         &mut self.active_bucket_mut().pending_interaction_ids
     }
 
     /// Active session's cancelled-turn pending hint flag.
-    #[must_use]
     pub fn cancelled_turn_pending_hint(&self) -> bool {
         self.active_session().is_some_and(|s| s.cancelled_turn_pending_hint)
     }
@@ -992,7 +968,6 @@ impl App {
     }
 
     /// Active session's pending cancel origin.
-    #[must_use]
     pub fn pending_cancel_origin(&self) -> Option<CancelOrigin> {
         self.active_session().and_then(|s| s.pending_cancel_origin)
     }
@@ -1003,7 +978,6 @@ impl App {
     }
 
     /// Borrow the active session's prompt suggestion.
-    #[must_use]
     pub fn prompt_suggestion(&self) -> Option<&str> {
         self.active_session().and_then(|s| s.prompt_suggestion.as_deref())
     }
@@ -1014,7 +988,6 @@ impl App {
     }
 
     /// Borrow the active session's last rate-limit update.
-    #[must_use]
     pub fn last_rate_limit_update(&self) -> Option<&model::RateLimitUpdate> {
         self.active_session().and_then(|s| s.last_rate_limit_update.as_ref())
     }
@@ -1025,13 +998,11 @@ impl App {
     }
 
     /// Borrow the active session's turn notice ref list.
-    #[must_use]
     pub fn turn_notice_refs(&self) -> &[TurnNoticeRef] {
         self.active_session().map_or(&[], |s| s.turn_notice_refs.as_slice())
     }
 
     /// Mutable borrow of the turn notice ref list.
-    #[must_use]
     pub fn turn_notice_refs_mut(&mut self) -> &mut Vec<TurnNoticeRef> {
         &mut self.active_bucket_mut().turn_notice_refs
     }
@@ -1043,7 +1014,6 @@ impl App {
     /// Falls back to a leaked empty set when the active bucket is
     /// missing — matches the existing infallible-reader pattern
     /// (`viewport()`, `turn_state()`, …).
-    #[must_use]
     pub fn active_task_ids(&self) -> &HashSet<String> {
         static FALLBACK: std::sync::OnceLock<HashSet<String>> = std::sync::OnceLock::new();
         match self.active_session() {
@@ -1053,13 +1023,11 @@ impl App {
     }
 
     /// Mutable borrow of the active task id set.
-    #[must_use]
     pub fn active_task_ids_mut(&mut self) -> &mut HashSet<String> {
         &mut self.active_bucket_mut().active_task_ids
     }
 
     /// Borrow the active session's tool call scope map.
-    #[must_use]
     pub fn tool_call_scopes(&self) -> &HashMap<String, ToolCallScope> {
         static FALLBACK: std::sync::OnceLock<HashMap<String, ToolCallScope>> =
             std::sync::OnceLock::new();
@@ -1070,13 +1038,11 @@ impl App {
     }
 
     /// Mutable borrow of the tool call scope map.
-    #[must_use]
     pub fn tool_call_scopes_mut(&mut self) -> &mut HashMap<String, ToolCallScope> {
         &mut self.active_bucket_mut().tool_call_scopes
     }
 
     /// Borrow the active session's tool call index.
-    #[must_use]
     pub fn tool_call_index(&self) -> &HashMap<String, (usize, usize)> {
         static FALLBACK: std::sync::OnceLock<HashMap<String, (usize, usize)>> =
             std::sync::OnceLock::new();
@@ -1087,7 +1053,6 @@ impl App {
     }
 
     /// Mutable borrow of the tool call index.
-    #[must_use]
     pub fn active_tool_call_index_mut(&mut self) -> &mut HashMap<String, (usize, usize)> {
         &mut self.active_bucket_mut().tool_call_index
     }
@@ -1102,33 +1067,28 @@ impl App {
     /// won't compile. Both `App::test_default()` and `connect()`
     /// seed a bucket up front so production callers can treat this
     /// as effectively always-`Some`.
-    #[must_use]
     pub fn terminals(&self) -> Option<&crate::agent::events::TerminalMap> {
         self.active_session().map(|s| &s.terminals)
     }
 
     /// Mutable borrow of the active session's terminal map.
     /// Auto-creates the pre-Connect bucket if missing.
-    #[must_use]
     pub fn terminals_mut(&mut self) -> &mut crate::agent::events::TerminalMap {
         &mut self.active_bucket_mut().terminals
     }
 
     /// Borrow the active session's terminal tool call list.
-    #[must_use]
     pub fn terminal_tool_calls(&self) -> &[TerminalToolCallRef] {
         self.active_session().map_or(&[], |s| s.terminal_tool_calls.as_slice())
     }
 
     /// Mutable borrow of the terminal tool call list.
-    #[must_use]
     pub fn terminal_tool_calls_mut(&mut self) -> &mut Vec<TerminalToolCallRef> {
         &mut self.active_bucket_mut().terminal_tool_calls
     }
 
     /// Borrow the active session's terminal tool call membership
     /// set.
-    #[must_use]
     pub fn terminal_tool_call_membership(&self) -> &HashSet<TerminalToolCallRef> {
         static FALLBACK: std::sync::OnceLock<HashSet<TerminalToolCallRef>> =
             std::sync::OnceLock::new();
@@ -1139,13 +1099,11 @@ impl App {
     }
 
     /// Mutable borrow of the terminal tool call membership set.
-    #[must_use]
     pub fn terminal_tool_call_membership_mut(&mut self) -> &mut HashSet<TerminalToolCallRef> {
         &mut self.active_bucket_mut().terminal_tool_call_membership
     }
 
     /// Borrow the active session's subagent attribution map.
-    #[must_use]
     pub fn subagent_attribution(&self) -> &HashMap<String, String> {
         static FALLBACK: std::sync::OnceLock<HashMap<String, String>> = std::sync::OnceLock::new();
         match self.active_session() {
@@ -1155,7 +1113,6 @@ impl App {
     }
 
     /// Mutable borrow of the subagent attribution map.
-    #[must_use]
     pub fn subagent_attribution_mut(&mut self) -> &mut HashMap<String, String> {
         &mut self.active_bucket_mut().subagent_attribution
     }
@@ -1163,7 +1120,6 @@ impl App {
     // ---- Runtime + model accessors ----
 
     /// Borrow the active session's current model resolution.
-    #[must_use]
     pub fn current_model(&self) -> Option<&model::CurrentModel> {
         self.active_session().and_then(|s| s.current_model.as_ref())
     }
@@ -1174,49 +1130,41 @@ impl App {
     }
 
     /// Mutable borrow of the active session's current model.
-    #[must_use]
     pub fn current_model_mut(&mut self) -> Option<&mut model::CurrentModel> {
         self.active_bucket_mut().current_model.as_mut()
     }
 
     /// Borrow the active session's available-models list.
-    #[must_use]
     pub fn available_models(&self) -> &[model::AvailableModel] {
         self.active_session().map_or(&[], |s| s.available_models.as_slice())
     }
 
     /// Mutable borrow of the available-models list.
-    #[must_use]
     pub fn available_models_mut(&mut self) -> &mut Vec<model::AvailableModel> {
         &mut self.active_bucket_mut().available_models
     }
 
     /// Borrow the active session's available-commands list.
-    #[must_use]
     pub fn available_commands(&self) -> &[model::AvailableCommand] {
         self.active_session().map_or(&[], |s| s.available_commands.as_slice())
     }
 
     /// Mutable borrow of the available-commands list.
-    #[must_use]
     pub fn available_commands_mut(&mut self) -> &mut Vec<model::AvailableCommand> {
         &mut self.active_bucket_mut().available_commands
     }
 
     /// Borrow the active session's available-agents list.
-    #[must_use]
     pub fn available_agents(&self) -> &[model::AvailableAgent] {
         self.active_session().map_or(&[], |s| s.available_agents.as_slice())
     }
 
     /// Mutable borrow of the available-agents list.
-    #[must_use]
     pub fn available_agents_mut(&mut self) -> &mut Vec<model::AvailableAgent> {
         &mut self.active_bucket_mut().available_agents
     }
 
     /// Borrow the active session's mode snapshot.
-    #[must_use]
     pub fn mode(&self) -> Option<&ModeState> {
         self.active_session().and_then(|s| s.mode.as_ref())
     }
@@ -1227,13 +1175,11 @@ impl App {
     }
 
     /// Mutable borrow of the active session's mode snapshot.
-    #[must_use]
     pub fn mode_mut(&mut self) -> Option<&mut ModeState> {
         self.active_bucket_mut().mode.as_mut()
     }
 
     /// Active session's hook-observed permission mode.
-    #[must_use]
     pub fn observed_permission_mode(&self) -> Option<crate::agent::state::PermissionMode> {
         self.active_session().and_then(|s| s.observed_permission_mode)
     }
@@ -1247,7 +1193,6 @@ impl App {
     }
 
     /// Active session's hook-observed effort level.
-    #[must_use]
     pub fn observed_effort(&self) -> Option<model::EffortLevel> {
         self.active_session().and_then(|s| s.observed_effort)
     }
@@ -1258,7 +1203,6 @@ impl App {
     }
 
     /// Borrow the active session's observed assistant model id.
-    #[must_use]
     pub fn observed_assistant_model(&self) -> Option<&str> {
         self.active_session().and_then(|s| s.observed_assistant_model.as_deref())
     }
@@ -1269,7 +1213,6 @@ impl App {
     }
 
     /// Active session's runtime session state.
-    #[must_use]
     pub fn runtime_session_state(&self) -> Option<model::RuntimeSessionState> {
         let raw = self.active_session().and_then(|s| s.runtime_session_state)?;
         Some(convert_runtime_session_state_from_primitives(raw))
@@ -1282,7 +1225,6 @@ impl App {
     }
 
     /// Active session's fast-mode state.
-    #[must_use]
     pub fn fast_mode_state(&self) -> model::FastModeState {
         self.active_session().map_or(model::FastModeState::Off, |s| s.fast_mode_state)
     }
@@ -1293,7 +1235,6 @@ impl App {
     }
 
     /// Borrow the active session's config-options map.
-    #[must_use]
     pub fn config_options(&self) -> &BTreeMap<String, serde_json::Value> {
         static FALLBACK: std::sync::OnceLock<BTreeMap<String, serde_json::Value>> =
             std::sync::OnceLock::new();
@@ -1304,13 +1245,11 @@ impl App {
     }
 
     /// Mutable borrow of the config-options map.
-    #[must_use]
     pub fn config_options_mut(&mut self) -> &mut BTreeMap<String, serde_json::Value> {
         &mut self.active_bucket_mut().config_options
     }
 
     /// Borrow the active session's session-usage telemetry.
-    #[must_use]
     pub fn session_usage(&self) -> &SessionUsageState {
         static FALLBACK: std::sync::OnceLock<SessionUsageState> = std::sync::OnceLock::new();
         match self.active_session() {
@@ -1320,7 +1259,6 @@ impl App {
     }
 
     /// Mutable borrow of the session-usage telemetry.
-    #[must_use]
     pub fn session_usage_mut(&mut self) -> &mut SessionUsageState {
         &mut self.active_bucket_mut().session_usage
     }
@@ -1329,7 +1267,6 @@ impl App {
     /// pane footer's `5h` / `7d` bars read this. Returns a static
     /// empty state during the brief pre-Connect window where no
     /// session bucket exists yet.
-    #[must_use]
     pub fn usage(&self) -> &UsageState {
         static FALLBACK: std::sync::OnceLock<UsageState> = std::sync::OnceLock::new();
         match self.active_session() {
@@ -1341,7 +1278,6 @@ impl App {
     /// Mutable borrow of the active session's usage state. Used by
     /// `app::usage::request_refresh` to flip the in-flight flag
     /// before spawning the fetch task.
-    #[must_use]
     pub fn usage_mut(&mut self) -> &mut UsageState {
         &mut self.active_bucket_mut().usage
     }
@@ -1352,7 +1288,6 @@ impl App {
     /// the user has switched active session mid-fetch. Returns
     /// `None` when the target bucket no longer exists (session
     /// closed before the result landed — drop the result silently).
-    #[must_use]
     pub fn usage_mut_for(&mut self, key: &forge_workspace::SessionKey) -> Option<&mut UsageState> {
         self.sessions.get_mut(key).map(|s| &mut s.usage)
     }
@@ -1361,14 +1296,12 @@ impl App {
     /// `/resume <id>` autocomplete and startup picker read from
     /// this list. Returns an empty slice in the brief pre-Connect
     /// window where no bucket exists.
-    #[must_use]
     pub fn recent_sessions(&self) -> &[RecentSessionInfo] {
         self.active_session().map_or(&[], |s| s.recent_sessions.as_slice())
     }
 
     /// Mutable borrow of the active session's recent-sessions list.
     /// Used by tests + the SDK-side bridge polling path.
-    #[must_use]
     pub fn recent_sessions_mut(&mut self) -> &mut Vec<RecentSessionInfo> {
         &mut self.active_bucket_mut().recent_sessions
     }
@@ -1376,7 +1309,6 @@ impl App {
     /// Mutable borrow of a specific bucket's recent-sessions list.
     /// Used by `handle_sessions_listed_event` to route the wire
     /// payload onto the bucket that requested the scan.
-    #[must_use]
     pub fn recent_sessions_mut_for(
         &mut self,
         key: &forge_workspace::SessionKey,
@@ -1391,38 +1323,30 @@ impl App {
     // The mut accessor auto-creates the active bucket via
     // `active_bucket_mut`, so call sites can always write.
 
-    #[must_use]
     pub fn login_hint(&self) -> Option<&LoginHint> {
         self.active_session().and_then(|s| s.login_hint.as_ref())
     }
-    #[must_use]
     pub fn login_hint_mut(&mut self) -> &mut Option<LoginHint> {
         &mut self.active_bucket_mut().login_hint
     }
 
-    #[must_use]
     pub fn resuming_session_id(&self) -> Option<&str> {
         self.active_session().and_then(|s| s.resuming_session_id.as_deref())
     }
-    #[must_use]
     pub fn resuming_session_id_mut(&mut self) -> &mut Option<String> {
         &mut self.active_bucket_mut().resuming_session_id
     }
 
-    #[must_use]
     pub fn pending_command_label(&self) -> Option<&str> {
         self.active_session().and_then(|s| s.pending_command_label.as_deref())
     }
-    #[must_use]
     pub fn pending_command_label_mut(&mut self) -> &mut Option<String> {
         &mut self.active_bucket_mut().pending_command_label
     }
 
-    #[must_use]
     pub fn pending_command_ack(&self) -> Option<&PendingCommandAck> {
         self.active_session().and_then(|s| s.pending_command_ack.as_ref())
     }
-    #[must_use]
     pub fn pending_command_ack_mut(&mut self) -> &mut Option<PendingCommandAck> {
         &mut self.active_bucket_mut().pending_command_ack
     }
@@ -1431,52 +1355,41 @@ impl App {
     // 2026-05-13 along with the underlying field — submit dispatches
     // immediately now. See `UiSession::pending_echo_bubbles`.
 
-    #[must_use]
     pub fn selection(&self) -> Option<&SelectionState> {
         self.active_session().and_then(|s| s.selection.as_ref())
     }
-    #[must_use]
     pub fn selection_mut(&mut self) -> &mut Option<SelectionState> {
         &mut self.active_bucket_mut().selection
     }
 
-    #[must_use]
     pub fn pending_submit(&self) -> Option<&InputSnapshot> {
         self.active_session().and_then(|s| s.pending_submit.as_ref())
     }
-    #[must_use]
     pub fn pending_submit_mut(&mut self) -> &mut Option<InputSnapshot> {
         &mut self.active_bucket_mut().pending_submit
     }
 
-    #[must_use]
     pub fn pending_paste_text(&self) -> &str {
         self.active_session().map_or("", |s| s.pending_paste_text.as_str())
     }
-    #[must_use]
     pub fn pending_paste_text_mut(&mut self) -> &mut String {
         &mut self.active_bucket_mut().pending_paste_text
     }
 
-    #[must_use]
     pub fn pending_paste_session(&self) -> Option<&PasteSessionState> {
         self.active_session().and_then(|s| s.pending_paste_session.as_ref())
     }
-    #[must_use]
     pub fn pending_paste_session_mut(&mut self) -> &mut Option<PasteSessionState> {
         &mut self.active_bucket_mut().pending_paste_session
     }
 
-    #[must_use]
     pub fn active_paste_session(&self) -> Option<&PasteSessionState> {
         self.active_session().and_then(|s| s.active_paste_session.as_ref())
     }
-    #[must_use]
     pub fn active_paste_session_mut(&mut self) -> &mut Option<PasteSessionState> {
         &mut self.active_bucket_mut().active_paste_session
     }
 
-    #[must_use]
     pub fn next_paste_session_id(&self) -> u64 {
         self.active_session().map_or(1, |s| s.next_paste_session_id)
     }
@@ -1487,38 +1400,30 @@ impl App {
         id
     }
 
-    #[must_use]
     pub fn pending_images(&self) -> &[crate::app::clipboard_image::ImageAttachment] {
         self.active_session().map_or(&[], |s| s.pending_images.as_slice())
     }
-    #[must_use]
     pub fn pending_images_mut(&mut self) -> &mut Vec<crate::app::clipboard_image::ImageAttachment> {
         &mut self.active_bucket_mut().pending_images
     }
 
-    #[must_use]
     pub fn mention(&self) -> Option<&mention::MentionState> {
         self.active_session().and_then(|s| s.mention.as_ref())
     }
-    #[must_use]
     pub fn mention_mut(&mut self) -> &mut Option<mention::MentionState> {
         &mut self.active_bucket_mut().mention
     }
 
-    #[must_use]
     pub fn slash(&self) -> Option<&slash::SlashState> {
         self.active_session().and_then(|s| s.slash.as_ref())
     }
-    #[must_use]
     pub fn slash_mut(&mut self) -> &mut Option<slash::SlashState> {
         &mut self.active_bucket_mut().slash
     }
 
-    #[must_use]
     pub fn subagent(&self) -> Option<&subagent::SubagentState> {
         self.active_session().and_then(|s| s.subagent.as_ref())
     }
-    #[must_use]
     pub fn subagent_mut(&mut self) -> &mut Option<subagent::SubagentState> {
         &mut self.active_bucket_mut().subagent
     }
@@ -1526,7 +1431,6 @@ impl App {
     /// Active session's file-index state for `@`-mention autocomplete.
     /// Returns an empty default state when no active session exists
     /// (test paths, brief pre-Connect window).
-    #[must_use]
     pub fn file_index(&self) -> &super::file_index::FileIndexState {
         static FALLBACK: std::sync::OnceLock<super::file_index::FileIndexState> =
             std::sync::OnceLock::new();
@@ -1539,7 +1443,6 @@ impl App {
     /// Mutable borrow of the active session's file index. Used by
     /// the scanner + watcher lifecycle in `app::file_index` and the
     /// `@`-mention reducer in `app::mention`.
-    #[must_use]
     pub fn file_index_mut(&mut self) -> &mut super::file_index::FileIndexState {
         &mut self.active_bucket_mut().file_index
     }
@@ -1547,7 +1450,6 @@ impl App {
     // ---- Account / auth accessors ----
 
     /// Active session's account-info snapshot.
-    #[must_use]
     pub fn account_info(&self) -> Option<forge_primitives::AccountInfo> {
         self.active_session().and_then(|s| s.account_info.clone())
     }
@@ -1558,7 +1460,6 @@ impl App {
     }
 
     /// Active session's forge-side account display name.
-    #[must_use]
     pub fn active_account_display_name(&self) -> Option<String> {
         self.active_session().and_then(|s| s.active_account_display_name.clone())
     }
@@ -1569,7 +1470,6 @@ impl App {
     }
 
     /// Borrow the active session's OAuth credentials snapshot.
-    #[must_use]
     pub fn oauth_credentials(
         &self,
     ) -> Option<&forge_primitives::cloud::oauth_credentials::OauthCredentials> {
@@ -1591,7 +1491,6 @@ impl App {
     /// Returns an empty string only in the brief pre-Connect window
     /// before any session bucket exists; production startup and
     /// `App::test_default()` both seed a bucket up front.
-    #[must_use]
     pub fn cwd(&self) -> &str {
         self.active_session().map_or("", |s| s.cwd.as_str())
     }
@@ -1602,7 +1501,6 @@ impl App {
     }
 
     /// Active session's raw filesystem cwd.
-    #[must_use]
     pub fn cwd_raw(&self) -> String {
         self.active_session().map_or_else(String::new, |s| s.cwd_raw.clone())
     }
@@ -1613,7 +1511,6 @@ impl App {
     }
 
     /// Active session's files-accessed counter.
-    #[must_use]
     pub fn files_accessed(&self) -> usize {
         self.active_session().map_or(0, |s| s.files_accessed)
     }
@@ -1634,7 +1531,6 @@ impl App {
     /// Falls back to a leaked default for the brief pre-Connect
     /// window. Production startup seeds a synthetic bucket up front,
     /// so the fallback is a safety net rather than a hot path.
-    #[must_use]
     pub fn mcp(&self) -> &McpState {
         static FALLBACK: std::sync::OnceLock<McpState> = std::sync::OnceLock::new();
         match self.active_session() {
@@ -1645,7 +1541,6 @@ impl App {
 
     /// Mutable borrow of the active session's MCP state snapshot.
     /// Auto-creates the pre-Connect bucket if missing.
-    #[must_use]
     pub fn mcp_mut(&mut self) -> &mut McpState {
         &mut self.active_bucket_mut().mcp
     }
@@ -1653,19 +1548,16 @@ impl App {
     // ---- Todos accessors ----
 
     /// Borrow the active session's todo list.
-    #[must_use]
     pub fn todos(&self) -> &[TodoItem] {
         self.active_session().map_or(&[], |s| s.todos.as_slice())
     }
 
     /// Mutable borrow of the active session's todo list.
-    #[must_use]
     pub fn todos_mut(&mut self) -> &mut Vec<TodoItem> {
         &mut self.active_bucket_mut().todos
     }
 
     /// Active session's TodoWrite-verification-nudge flag.
-    #[must_use]
     pub fn todo_verification_nudge(&self) -> bool {
         self.active_session().is_some_and(|s| s.todo_verification_nudge)
     }
@@ -1681,14 +1573,12 @@ impl App {
     // ---- Render cache + history retention accessors ----
 
     /// Borrow the active session's render-cache slot grid.
-    #[must_use]
     pub(crate) fn render_cache_slots(&self) -> &[Vec<render_budget::RenderCacheSlotState>] {
         self.active_session().map_or(&[], |s| s.render_cache_slots.as_slice())
     }
 
     /// Mutable borrow of the active session's render-cache slot grid.
     /// Auto-creates the pre-Connect bucket if missing.
-    #[must_use]
     pub(crate) fn render_cache_slots_mut(
         &mut self,
     ) -> &mut Vec<Vec<render_budget::RenderCacheSlotState>> {
@@ -1696,31 +1586,26 @@ impl App {
     }
 
     /// Active session's rolling render-cache total bytes.
-    #[must_use]
     pub(crate) fn render_cache_total_bytes(&self) -> usize {
         self.active_session().map_or(0, |s| s.render_cache_total_bytes)
     }
 
     /// Mutable accessor for the rolling render-cache total bytes.
-    #[must_use]
     pub(crate) fn render_cache_total_bytes_mut(&mut self) -> &mut usize {
         &mut self.active_bucket_mut().render_cache_total_bytes
     }
 
     /// Active session's rolling render-cache protected bytes.
-    #[must_use]
     pub(crate) fn render_cache_protected_bytes(&self) -> usize {
         self.active_session().map_or(0, |s| s.render_cache_protected_bytes)
     }
 
     /// Mutable accessor for the rolling render-cache protected bytes.
-    #[must_use]
     pub(crate) fn render_cache_protected_bytes_mut(&mut self) -> &mut usize {
         &mut self.active_bucket_mut().render_cache_protected_bytes
     }
 
     /// Borrow the active session's evictable render-cache key set.
-    #[must_use]
     pub(crate) fn render_cache_evictable(
         &self,
     ) -> Option<&BTreeSet<render_budget::RenderCacheEvictionKey>> {
@@ -1728,7 +1613,6 @@ impl App {
     }
 
     /// Mutable borrow of the evictable render-cache key set.
-    #[must_use]
     pub(crate) fn render_cache_evictable_mut(
         &mut self,
     ) -> &mut BTreeSet<render_budget::RenderCacheEvictionKey> {
@@ -1736,7 +1620,6 @@ impl App {
     }
 
     /// Active session's protected streaming-tail message index, if any.
-    #[must_use]
     pub(crate) fn render_cache_tail_msg_idx(&self) -> Option<usize> {
         self.active_session().and_then(|s| s.render_cache_tail_msg_idx)
     }
@@ -1747,20 +1630,17 @@ impl App {
     }
 
     /// Borrow the active session's history-retention policy.
-    #[must_use]
     pub fn history_retention(&self) -> HistoryRetentionPolicy {
         self.active_session().map_or_else(HistoryRetentionPolicy::default, |s| s.history_retention)
     }
 
     /// Mutable accessor for the history-retention policy.
-    #[must_use]
     pub fn history_retention_mut(&mut self) -> &mut HistoryRetentionPolicy {
         &mut self.active_bucket_mut().history_retention
     }
 
     /// Borrow the active session's history-retention enforcement
     /// statistics.
-    #[must_use]
     pub fn history_retention_stats(&self) -> &HistoryRetentionStats {
         static FALLBACK: std::sync::OnceLock<HistoryRetentionStats> = std::sync::OnceLock::new();
         match self.active_session() {
@@ -1771,13 +1651,11 @@ impl App {
 
     /// Mutable accessor for the history-retention enforcement
     /// statistics.
-    #[must_use]
     pub fn history_retention_stats_mut(&mut self) -> &mut HistoryRetentionStats {
         &mut self.active_bucket_mut().history_retention_stats
     }
 
     /// Borrow the active session's cache-metrics accumulator.
-    #[must_use]
     pub fn cache_metrics(&self) -> &CacheMetrics {
         static FALLBACK: std::sync::OnceLock<CacheMetrics> = std::sync::OnceLock::new();
         match self.active_session() {
@@ -1787,13 +1665,11 @@ impl App {
     }
 
     /// Mutable accessor for the cache-metrics accumulator.
-    #[must_use]
     pub fn cache_metrics_mut(&mut self) -> &mut CacheMetrics {
         &mut self.active_bucket_mut().cache_metrics
     }
 
     /// Active session's previous-frame active-turn height state.
-    #[must_use]
     pub(crate) fn last_active_turn_height_state(&self) -> Option<(usize, bool, bool)> {
         self.active_session().and_then(|s| s.last_active_turn_height_state)
     }
@@ -1804,7 +1680,6 @@ impl App {
     }
 
     /// Borrow the active session's last chat-render trace snapshot.
-    #[must_use]
     pub fn last_chat_render_trace_state(&self) -> Option<ChatRenderTraceState> {
         self.active_session().and_then(|s| s.last_chat_render_trace_state)
     }
@@ -1885,12 +1760,10 @@ impl App {
         });
     }
 
-    #[must_use]
     pub fn is_project_trusted(&self) -> bool {
         self.trust.is_trusted()
     }
 
-    #[must_use]
     pub fn frame_fps(&self) -> Option<f32> {
         self.fps_ema
     }
@@ -1915,7 +1788,6 @@ impl App {
     /// - Workspace mode + partial/no data → `"Account: …"` skeleton.
     /// - Legacy mode (no workspace) + tier only → `"Subscription: tier"`.
     /// - Legacy mode + no data → empty (renderer hides line).
-    #[must_use]
     fn welcome_account_display(&self) -> (String, String) {
         // Both accessors return owned values from the bucket; trim +
         // clone into owned form to avoid binding to temporaries.
@@ -1938,13 +1810,11 @@ impl App {
         }
     }
 
-    #[must_use]
     fn welcome_cwd_display(&self) -> &str {
         let cwd = self.cwd().trim();
         if cwd.is_empty() { "-" } else { cwd }
     }
 
-    #[must_use]
     fn welcome_session_id_display(&self) -> String {
         self.session_id()
             .map(|s| s.to_string())
@@ -1953,7 +1823,6 @@ impl App {
             .unwrap_or_else(|| "-".to_owned())
     }
 
-    #[must_use]
     pub(crate) fn build_welcome_message(&self) -> ChatMessage {
         let (label, value) = self.welcome_account_display();
         let session_id = self.welcome_session_id_display();
@@ -1971,7 +1840,6 @@ impl App {
         message
     }
 
-    #[must_use]
     pub(crate) fn current_welcome_tip_seed(&self) -> Option<u64> {
         let first = self.messages().first()?;
         let MessageBlock::Welcome(welcome) = first.blocks.first()? else {
@@ -2041,12 +1909,10 @@ impl App {
         self.tool_call_scopes_mut().insert(id, scope);
     }
 
-    #[must_use]
     pub fn tool_call_scope(&self, id: &str) -> Option<ToolCallScope> {
         self.tool_call_scopes().get(id).cloned()
     }
 
-    #[must_use]
     pub(crate) fn tracked_terminal_id_for_tool(tc: &ToolCallInfo) -> Option<String> {
         (tc.is_execute_tool()
             && matches!(
@@ -2063,7 +1929,6 @@ impl App {
     }
 
     /// Look up the (`message_index`, `block_index`) for a tool call ID.
-    #[must_use]
     pub fn lookup_tool_call(&self, id: &str) -> Option<(usize, usize)> {
         self.tool_call_index().get(id).copied()
     }
@@ -2313,7 +2178,6 @@ impl App {
     /// production builds don't pull in the stub helpers.
     #[cfg(feature = "testing")]
     #[doc(hidden)]
-    #[must_use]
     pub fn test_default() -> Self {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<forge_workspace::SessionUpdate>();
         let (file_index_tx, file_index_rx) = std_mpsc::channel();
@@ -2421,12 +2285,10 @@ impl App {
     }
 
     /// Resolve the effective focus owner for Up/Down and other directional keys.
-    #[must_use]
     pub fn focus_owner(&self) -> FocusOwner {
         self.focus.owner(self.focus_context())
     }
 
-    #[must_use]
     pub fn active_turn_assistant_idx(&self) -> Option<usize> {
         self.active_turn_assistant_message_idx().filter(|&idx| {
             self.messages().get(idx).is_some_and(|msg| matches!(msg.role, MessageRole::Assistant))
@@ -2554,7 +2416,6 @@ impl App {
         self.set_active_turn_assistant_message_idx(next);
     }
 
-    #[must_use]
     pub fn active_autocomplete_kind(&self) -> Option<AutocompleteKind> {
         if self.mention().is_some() {
             Some(AutocompleteKind::Mention)
@@ -2567,7 +2428,6 @@ impl App {
         }
     }
 
-    #[must_use]
     pub fn is_help_active(&self) -> bool {
         self.help_open
     }
@@ -2579,14 +2439,12 @@ impl App {
         }
     }
 
-    #[must_use]
     pub fn autocomplete_focus_available(&self) -> bool {
         self.mention().is_some_and(mention::MentionState::has_selectable_candidates)
             || self.slash().is_some()
             || self.subagent().is_some()
     }
 
-    #[must_use]
     pub fn has_draft_input_for_focus(&self) -> bool {
         !self.input().is_empty()
     }
@@ -2644,7 +2502,6 @@ impl App {
         self.focus.normalize(context);
     }
 
-    #[must_use]
     fn focus_context(&self) -> FocusContext {
         FocusContext::new(
             // Todo list focus is gone — the bottom todo panel was

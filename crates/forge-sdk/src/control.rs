@@ -361,7 +361,6 @@ impl ControlRequest {
     /// `input` JSON. Used to echo the original input back in an allow
     /// response when the callback supplied no override (the CLI always
     /// populates `updatedInput`).
-    #[must_use]
     pub fn original_tool_input(&self) -> Option<&Value> {
         match &self.request {
             ControlRequestKind::CanUseTool { input, .. } => Some(input),

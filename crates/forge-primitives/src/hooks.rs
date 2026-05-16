@@ -60,7 +60,6 @@ pub enum HookKind {
 
 impl HookKind {
     /// Wire-name used by the `claude` binary.
-    #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
             Self::PreToolUse => "PreToolUse",
@@ -80,7 +79,6 @@ impl HookKind {
     /// Parse a wire-name back into the enum. Unknown strings fall through
     /// to `HookKind::Unknown` — forge-sdk is forward-compatible with new
     /// hook types Anthropic introduces between our parity checks.
-    #[must_use]
     pub fn from_wire(s: &str) -> Self {
         match s {
             "PreToolUse" => Self::PreToolUse,

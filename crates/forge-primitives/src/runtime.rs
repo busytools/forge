@@ -170,7 +170,6 @@ pub enum TerminalReason {
 }
 
 impl TerminalReason {
-    #[must_use]
     pub const fn as_stored(self) -> &'static str {
         match self {
             Self::BlockingLimit => "blocking_limit",

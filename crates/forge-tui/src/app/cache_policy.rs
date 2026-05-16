@@ -19,7 +19,6 @@ impl Default for CacheSplitPolicy {
     }
 }
 
-#[must_use]
 pub fn default_cache_split_policy() -> &'static CacheSplitPolicy {
     static POLICY: CacheSplitPolicy = CacheSplitPolicy {
         soft_limit_bytes: DEFAULT_CACHE_SPLIT_SOFT_LIMIT_BYTES,
@@ -29,7 +28,6 @@ pub fn default_cache_split_policy() -> &'static CacheSplitPolicy {
     &POLICY
 }
 
-#[must_use]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TextSplitKind {
     Generic,
@@ -42,7 +40,6 @@ pub struct TextSplitDecision {
     pub kind: TextSplitKind,
 }
 
-#[must_use]
 pub fn find_text_split(text: &str, policy: CacheSplitPolicy) -> Option<TextSplitDecision> {
     let bytes = text.as_bytes();
     let mut in_fence = false;
@@ -113,7 +110,6 @@ pub fn find_text_split(text: &str, policy: CacheSplitPolicy) -> Option<TextSplit
     None
 }
 
-#[must_use]
 pub fn find_text_split_index(text: &str, policy: CacheSplitPolicy) -> Option<usize> {
     find_text_split(text, policy).map(|decision| decision.split_at)
 }

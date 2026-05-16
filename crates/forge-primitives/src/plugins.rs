@@ -18,7 +18,6 @@ pub enum PluginCapability {
 }
 
 impl PluginCapability {
-    #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
             Self::Skill => "SKILL",

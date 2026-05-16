@@ -7,7 +7,6 @@ use std::path::PathBuf;
 pub struct SessionId(String);
 
 impl SessionId {
-    #[must_use]
     pub fn new(id: impl Into<String>) -> Self {
         Self(id.into())
     }
@@ -36,7 +35,6 @@ impl fmt::Display for SessionId {
 pub struct SessionModeId(String);
 
 impl SessionModeId {
-    #[must_use]
     pub fn new(id: impl Into<String>) -> Self {
         Self(id.into())
     }
@@ -66,7 +64,6 @@ pub struct TextContent {
 }
 
 impl TextContent {
-    #[must_use]
     pub fn new(text: impl Into<String>) -> Self {
         Self { text: text.into() }
     }
@@ -79,7 +76,6 @@ pub struct ImageContent {
 }
 
 impl ImageContent {
-    #[must_use]
     pub fn new(data: impl Into<String>, mime_type: impl Into<String>) -> Self {
         Self { data: data.into(), mime_type: mime_type.into() }
     }
@@ -97,7 +93,6 @@ pub struct Content {
 }
 
 impl Content {
-    #[must_use]
     pub fn new(content: ContentBlock) -> Self {
         Self { content }
     }
@@ -109,7 +104,6 @@ pub struct ContentChunk {
 }
 
 impl ContentChunk {
-    #[must_use]
     pub fn new(content: ContentBlock) -> Self {
         Self { content }
     }
@@ -147,12 +141,10 @@ pub struct ToolCallLocation {
 }
 
 impl ToolCallLocation {
-    #[must_use]
     pub fn new(path: impl Into<PathBuf>) -> Self {
         Self { path: path.into(), line: None }
     }
 
-    #[must_use]
     pub fn line(mut self, line: u32) -> Self {
         self.line = Some(line);
         self
@@ -165,7 +157,6 @@ pub struct TerminalToolCallContent {
 }
 
 impl TerminalToolCallContent {
-    #[must_use]
     pub fn new(terminal_id: impl Into<String>) -> Self {
         Self { terminal_id: terminal_id.into() }
     }
@@ -180,18 +171,15 @@ pub struct Diff {
 }
 
 impl Diff {
-    #[must_use]
     pub fn new(path: impl Into<PathBuf>, new_text: impl Into<String>) -> Self {
         Self { path: path.into(), old_text: None, new_text: new_text.into(), repository: None }
     }
 
-    #[must_use]
     pub fn old_text<T: Into<String>>(mut self, old_text: Option<T>) -> Self {
         self.old_text = old_text.map(Into::into);
         self
     }
 
-    #[must_use]
     pub fn repository(mut self, repository: Option<String>) -> Self {
         self.repository = repository.filter(|repository| !repository.trim().is_empty());
         self
@@ -207,24 +195,20 @@ pub struct McpResource {
 }
 
 impl McpResource {
-    #[must_use]
     pub fn new(uri: impl Into<String>) -> Self {
         Self { uri: uri.into(), mime_type: None, text: None, blob_saved_to: None }
     }
 
-    #[must_use]
     pub fn mime_type(mut self, mime_type: Option<String>) -> Self {
         self.mime_type = mime_type.filter(|mime_type| !mime_type.trim().is_empty());
         self
     }
 
-    #[must_use]
     pub fn text(mut self, text: Option<String>) -> Self {
         self.text = text.filter(|text| !text.trim().is_empty());
         self
     }
 
-    #[must_use]
     pub fn blob_saved_to(mut self, blob_saved_to: Option<String>) -> Self {
         self.blob_saved_to =
             blob_saved_to.filter(|path| !path.trim().is_empty()).map(PathBuf::from);
@@ -268,7 +252,6 @@ pub struct ToolCall {
 }
 
 impl ToolCall {
-    #[must_use]
     pub fn new(tool_call_id: impl Into<String>, title: impl Into<String>) -> Self {
         Self {
             tool_call_id: tool_call_id.into(),
@@ -285,55 +268,46 @@ impl ToolCall {
         }
     }
 
-    #[must_use]
     pub fn kind(mut self, kind: ToolKind) -> Self {
         self.kind = kind;
         self
     }
 
-    #[must_use]
     pub fn status(mut self, status: ToolCallStatus) -> Self {
         self.status = status;
         self
     }
 
-    #[must_use]
     pub fn content(mut self, content: Vec<ToolCallContent>) -> Self {
         self.content = content;
         self
     }
 
-    #[must_use]
     pub fn raw_input(mut self, raw_input: serde_json::Value) -> Self {
         self.raw_input = Some(raw_input);
         self
     }
 
-    #[must_use]
     pub fn raw_output(mut self, raw_output: serde_json::Value) -> Self {
         self.raw_output = Some(raw_output);
         self
     }
 
-    #[must_use]
     pub fn output_metadata(mut self, output_metadata: ToolOutputMetadata) -> Self {
         self.output_metadata = Some(output_metadata);
         self
     }
 
-    #[must_use]
     pub fn task_metadata(mut self, task_metadata: TaskMetadata) -> Self {
         self.task_metadata = Some(task_metadata);
         self
     }
 
-    #[must_use]
     pub fn locations(mut self, locations: Vec<ToolCallLocation>) -> Self {
         self.locations = locations;
         self
     }
 
-    #[must_use]
     pub fn meta(mut self, meta: impl Into<serde_json::Value>) -> Self {
         self.meta = Some(meta.into());
         self
@@ -354,60 +328,50 @@ pub struct ToolCallUpdateFields {
 }
 
 impl ToolCallUpdateFields {
-    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    #[must_use]
     pub fn title(mut self, title: impl Into<String>) -> Self {
         self.title = Some(title.into());
         self
     }
 
-    #[must_use]
     pub fn kind(mut self, kind: ToolKind) -> Self {
         self.kind = Some(kind);
         self
     }
 
-    #[must_use]
     pub fn status(mut self, status: ToolCallStatus) -> Self {
         self.status = Some(status);
         self
     }
 
-    #[must_use]
     pub fn content(mut self, content: Vec<ToolCallContent>) -> Self {
         self.content = Some(content);
         self
     }
 
-    #[must_use]
     pub fn raw_input(mut self, raw_input: serde_json::Value) -> Self {
         self.raw_input = Some(raw_input);
         self
     }
 
-    #[must_use]
     pub fn raw_output(mut self, raw_output: serde_json::Value) -> Self {
         self.raw_output = Some(raw_output);
         self
     }
 
-    #[must_use]
     pub fn output_metadata(mut self, output_metadata: ToolOutputMetadata) -> Self {
         self.output_metadata = Some(output_metadata);
         self
     }
 
-    #[must_use]
     pub fn task_metadata(mut self, task_metadata: TaskMetadata) -> Self {
         self.task_metadata = Some(task_metadata);
         self
     }
 
-    #[must_use]
     pub fn locations(mut self, locations: Vec<ToolCallLocation>) -> Self {
         self.locations = Some(locations);
         self
@@ -422,12 +386,10 @@ pub struct ToolCallUpdate {
 }
 
 impl ToolCallUpdate {
-    #[must_use]
     pub fn new(tool_call_id: impl Into<String>, fields: ToolCallUpdateFields) -> Self {
         Self { tool_call_id: tool_call_id.into(), fields, meta: None }
     }
 
-    #[must_use]
     pub fn meta(mut self, meta: impl Into<serde_json::Value>) -> Self {
         self.meta = Some(meta.into());
         self
@@ -440,12 +402,10 @@ pub struct TodoWriteOutputMetadata {
 }
 
 impl TodoWriteOutputMetadata {
-    #[must_use]
     pub fn new() -> Self {
         Self { verification_nudge_needed: None }
     }
 
-    #[must_use]
     pub fn verification_nudge_needed(mut self, verification_nudge_needed: Option<bool>) -> Self {
         self.verification_nudge_needed = verification_nudge_needed;
         self
@@ -458,12 +418,10 @@ pub struct BashOutputMetadata {
 }
 
 impl BashOutputMetadata {
-    #[must_use]
     pub fn new() -> Self {
         Self { assistant_auto_backgrounded: None }
     }
 
-    #[must_use]
     pub fn assistant_auto_backgrounded(
         mut self,
         assistant_auto_backgrounded: Option<bool>,
@@ -488,30 +446,25 @@ pub struct TaskMetadata {
 }
 
 impl TaskMetadata {
-    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    #[must_use]
     pub fn end_time(mut self, end_time: Option<u64>) -> Self {
         self.end_time = end_time;
         self
     }
 
-    #[must_use]
     pub fn total_paused_ms(mut self, total_paused_ms: Option<u64>) -> Self {
         self.total_paused_ms = total_paused_ms;
         self
     }
 
-    #[must_use]
     pub fn error(mut self, error: Option<String>) -> Self {
         self.error = error;
         self
     }
 
-    #[must_use]
     pub fn backgrounded(mut self, is_backgrounded: Option<bool>) -> Self {
         self.is_backgrounded = is_backgrounded;
         self
@@ -519,18 +472,15 @@ impl TaskMetadata {
 }
 
 impl ToolOutputMetadata {
-    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    #[must_use]
     pub fn bash(mut self, bash: Option<BashOutputMetadata>) -> Self {
         self.bash = bash;
         self
     }
 
-    #[must_use]
     pub fn todo_write(mut self, todo_write: Option<TodoWriteOutputMetadata>) -> Self {
         self.todo_write = todo_write;
         self
@@ -561,7 +511,6 @@ pub struct PlanEntry {
 }
 
 impl PlanEntry {
-    #[must_use]
     pub fn new(
         content: impl Into<String>,
         priority: PlanEntryPriority,
@@ -577,7 +526,6 @@ pub struct Plan {
 }
 
 impl Plan {
-    #[must_use]
     pub fn new(entries: Vec<PlanEntry>) -> Self {
         Self { entries }
     }
@@ -591,12 +539,10 @@ pub struct AvailableCommand {
 }
 
 impl AvailableCommand {
-    #[must_use]
     pub fn new(name: impl Into<String>, description: impl Into<String>) -> Self {
         Self { name: name.into(), description: description.into(), input_hint: None }
     }
 
-    #[must_use]
     pub fn input_hint(mut self, input_hint: impl Into<String>) -> Self {
         self.input_hint = Some(input_hint.into());
         self
@@ -609,7 +555,6 @@ pub struct AvailableCommandsUpdate {
 }
 
 impl AvailableCommandsUpdate {
-    #[must_use]
     pub fn new(available_commands: Vec<AvailableCommand>) -> Self {
         Self { available_commands }
     }
@@ -623,12 +568,10 @@ pub struct AvailableAgent {
 }
 
 impl AvailableAgent {
-    #[must_use]
     pub fn new(name: impl Into<String>, description: impl Into<String>) -> Self {
         Self { name: name.into(), description: description.into(), model: None }
     }
 
-    #[must_use]
     pub fn model(mut self, model: impl Into<String>) -> Self {
         self.model = Some(model.into());
         self
@@ -650,7 +593,6 @@ pub enum EffortLevel {
 }
 
 impl EffortLevel {
-    #[must_use]
     pub const fn as_stored(self) -> &'static str {
         match self {
             Self::Low => "low",
@@ -661,7 +603,6 @@ impl EffortLevel {
         }
     }
 
-    #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
             Self::Low => "Low",
@@ -672,7 +613,6 @@ impl EffortLevel {
         }
     }
 
-    #[must_use]
     pub const fn description(self) -> &'static str {
         match self {
             Self::Low => "Fastest responses",
@@ -683,7 +623,6 @@ impl EffortLevel {
         }
     }
 
-    #[must_use]
     pub fn from_stored(value: &str) -> Option<Self> {
         match value {
             "low" => Some(Self::Low),
@@ -709,7 +648,6 @@ pub struct AvailableModel {
 }
 
 impl AvailableModel {
-    #[must_use]
     pub fn new(id: impl Into<String>, display_name: impl Into<String>) -> Self {
         Self {
             id: id.into(),
@@ -723,37 +661,31 @@ impl AvailableModel {
         }
     }
 
-    #[must_use]
     pub fn description(mut self, description: impl Into<String>) -> Self {
         self.description = Some(description.into());
         self
     }
 
-    #[must_use]
     pub fn supports_effort(mut self, supports_effort: bool) -> Self {
         self.supports_effort = supports_effort;
         self
     }
 
-    #[must_use]
     pub fn supported_effort_levels(mut self, supported_effort_levels: Vec<EffortLevel>) -> Self {
         self.supported_effort_levels = supported_effort_levels;
         self
     }
 
-    #[must_use]
     pub fn supports_adaptive_thinking(mut self, supports_adaptive_thinking: Option<bool>) -> Self {
         self.supports_adaptive_thinking = supports_adaptive_thinking;
         self
     }
 
-    #[must_use]
     pub fn supports_fast_mode(mut self, supports_fast_mode: Option<bool>) -> Self {
         self.supports_fast_mode = supports_fast_mode;
         self
     }
 
-    #[must_use]
     pub fn supports_auto_mode(mut self, supports_auto_mode: Option<bool>) -> Self {
         self.supports_auto_mode = supports_auto_mode;
         self
@@ -776,7 +708,6 @@ pub struct CurrentModel {
 }
 
 impl CurrentModel {
-    #[must_use]
     pub fn new(
         resolved_id: impl Into<String>,
         display_name_short: impl Into<String>,
@@ -797,49 +728,41 @@ impl CurrentModel {
         }
     }
 
-    #[must_use]
     pub fn requested_id(mut self, requested_id: impl Into<String>) -> Self {
         self.requested_id = Some(requested_id.into());
         self
     }
 
-    #[must_use]
     pub fn catalog_id(mut self, catalog_id: impl Into<String>) -> Self {
         self.catalog_id = Some(catalog_id.into());
         self
     }
 
-    #[must_use]
     pub fn supports_effort(mut self, supports_effort: bool) -> Self {
         self.supports_effort = supports_effort;
         self
     }
 
-    #[must_use]
     pub fn supported_effort_levels(mut self, supported_effort_levels: Vec<EffortLevel>) -> Self {
         self.supported_effort_levels = supported_effort_levels;
         self
     }
 
-    #[must_use]
     pub fn supports_adaptive_thinking(mut self, supports_adaptive_thinking: Option<bool>) -> Self {
         self.supports_adaptive_thinking = supports_adaptive_thinking;
         self
     }
 
-    #[must_use]
     pub fn supports_fast_mode(mut self, supports_fast_mode: Option<bool>) -> Self {
         self.supports_fast_mode = supports_fast_mode;
         self
     }
 
-    #[must_use]
     pub fn supports_auto_mode(mut self, supports_auto_mode: Option<bool>) -> Self {
         self.supports_auto_mode = supports_auto_mode;
         self
     }
 
-    #[must_use]
     pub fn authoritative(mut self, is_authoritative: bool) -> Self {
         self.is_authoritative = is_authoritative;
         self
@@ -852,7 +775,6 @@ pub struct AvailableAgentsUpdate {
 }
 
 impl AvailableAgentsUpdate {
-    #[must_use]
     pub fn new(available_agents: Vec<AvailableAgent>) -> Self {
         Self { available_agents }
     }
@@ -864,7 +786,6 @@ pub struct CurrentModeUpdate {
 }
 
 impl CurrentModeUpdate {
-    #[must_use]
     pub fn new(current_mode_id: impl Into<SessionModeId>) -> Self {
         Self { current_mode_id: current_mode_id.into() }
     }
@@ -876,7 +797,6 @@ pub struct CurrentModelUpdate {
 }
 
 impl CurrentModelUpdate {
-    #[must_use]
     pub fn new(current_model: CurrentModel) -> Self {
         Self { current_model }
     }
@@ -978,7 +898,6 @@ pub struct PermissionOption {
 }
 
 impl PermissionOption {
-    #[must_use]
     pub fn new(
         option_id: impl Into<String>,
         name: impl Into<String>,
@@ -987,7 +906,6 @@ impl PermissionOption {
         Self { option_id: option_id.into(), name: name.into(), description: None, kind }
     }
 
-    #[must_use]
     pub fn description(mut self, description: Option<String>) -> Self {
         self.description = description;
         self
@@ -1003,18 +921,15 @@ pub struct QuestionOption {
 }
 
 impl QuestionOption {
-    #[must_use]
     pub fn new(option_id: impl Into<String>, label: impl Into<String>) -> Self {
         Self { option_id: option_id.into(), label: label.into(), description: None, preview: None }
     }
 
-    #[must_use]
     pub fn description(mut self, description: Option<String>) -> Self {
         self.description = description;
         self
     }
 
-    #[must_use]
     pub fn preview(mut self, preview: Option<String>) -> Self {
         self.preview = preview;
         self
@@ -1030,7 +945,6 @@ pub struct QuestionPrompt {
 }
 
 impl QuestionPrompt {
-    #[must_use]
     pub fn new(
         question: impl Into<String>,
         header: impl Into<String>,
@@ -1048,18 +962,15 @@ pub struct QuestionAnnotation {
 }
 
 impl QuestionAnnotation {
-    #[must_use]
     pub fn new() -> Self {
         Self { preview: None, notes: None }
     }
 
-    #[must_use]
     pub fn preview(mut self, preview: Option<String>) -> Self {
         self.preview = preview;
         self
     }
 
-    #[must_use]
     pub fn notes(mut self, notes: Option<String>) -> Self {
         self.notes = notes;
         self
@@ -1078,7 +989,6 @@ pub struct SelectedPermissionOutcome {
 }
 
 impl SelectedPermissionOutcome {
-    #[must_use]
     pub fn new(option_id: impl Into<String>) -> Self {
         Self { option_id: option_id.into() }
     }
@@ -1097,12 +1007,10 @@ pub struct AnsweredQuestionOutcome {
 }
 
 impl AnsweredQuestionOutcome {
-    #[must_use]
     pub fn new(selected_option_ids: Vec<String>) -> Self {
         Self { selected_option_ids, annotation: None }
     }
 
-    #[must_use]
     pub fn annotation(mut self, annotation: Option<QuestionAnnotation>) -> Self {
         self.annotation = annotation;
         self
@@ -1121,7 +1029,6 @@ pub struct RequestPermissionResponse {
 }
 
 impl RequestPermissionResponse {
-    #[must_use]
     pub fn new(outcome: RequestPermissionOutcome) -> Self {
         Self { outcome }
     }
@@ -1133,7 +1040,6 @@ pub struct RequestQuestionResponse {
 }
 
 impl RequestQuestionResponse {
-    #[must_use]
     pub fn new(outcome: RequestQuestionOutcome) -> Self {
         Self { outcome }
     }
@@ -1148,7 +1054,6 @@ pub struct RequestPermissionRequest {
 }
 
 impl RequestPermissionRequest {
-    #[must_use]
     pub fn new(
         session_id: impl Into<SessionId>,
         tool_call: ToolCallUpdate,
@@ -1167,30 +1072,25 @@ pub struct PermissionDisplay {
 }
 
 impl PermissionDisplay {
-    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    #[must_use]
     pub fn title(mut self, title: Option<String>) -> Self {
         self.title = title;
         self
     }
 
-    #[must_use]
     pub fn display_name(mut self, display_name: Option<String>) -> Self {
         self.display_name = display_name;
         self
     }
 
-    #[must_use]
     pub fn description(mut self, description: Option<String>) -> Self {
         self.description = description;
         self
     }
 
-    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.title.as_ref().is_none_or(|value| value.trim().is_empty())
             && self.display_name.as_ref().is_none_or(|value| value.trim().is_empty())
@@ -1208,7 +1108,6 @@ pub struct RequestQuestionRequest {
 }
 
 impl RequestQuestionRequest {
-    #[must_use]
     pub fn new(
         session_id: impl Into<SessionId>,
         tool_call: ToolCallUpdate,

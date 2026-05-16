@@ -12,7 +12,6 @@ pub struct SessionLaunchSettings {
 }
 
 impl SessionLaunchSettings {
-    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.language.is_none()
             && self.settings.is_none()
@@ -147,7 +146,6 @@ pub enum AgentEvent {
 }
 
 impl AgentEvent {
-    #[must_use]
     pub fn event_name(&self) -> &'static str {
         match self {
             Self::Connected { .. } => "connected",
@@ -173,7 +171,6 @@ impl AgentEvent {
         }
     }
 
-    #[must_use]
     pub fn session_id(&self) -> Option<&str> {
         match self {
             Self::Connected { session_id, .. }
@@ -199,7 +196,6 @@ impl AgentEvent {
         }
     }
 
-    #[must_use]
     pub fn tool_call_id(&self) -> Option<&str> {
         match self {
             Self::PermissionRequest { request, .. } => {

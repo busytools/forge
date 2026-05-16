@@ -84,7 +84,6 @@ fn map_auth_method_to_api_key_source(auth_method: &str) -> &str {
 ///
 /// Synchronous; runs the subprocess inline. ~50ms first call, faster
 /// thereafter (claude warms up its keychain reads in-process).
-#[must_use]
 pub fn account_info_from_shell(config_dir: &Path) -> Option<AccountInfo> {
     let mut cmd = std::process::Command::new("claude");
     cmd.args(["auth", "status"]);

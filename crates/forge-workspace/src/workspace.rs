@@ -155,7 +155,6 @@ impl Workspace {
     /// Return the names of all orgs in declaration order, paired
     /// with their pinned account list. The Projects pane uses this
     /// to drive the org-grouped tree render.
-    #[must_use]
     pub fn list_orgs(&self) -> Vec<(String, Vec<String>)> {
         self.config.orgs.iter().map(|org| (org.name.clone(), org.accounts.clone())).collect()
     }
@@ -164,7 +163,6 @@ impl Workspace {
     /// have defaults so callers can use the result without worrying
     /// about whether the section was present in the config file.
     /// Cheap clone — the struct is shallow.
-    #[must_use]
     pub fn ui_settings(&self) -> crate::ui::UiSettings {
         self.config.ui.clone()
     }
@@ -173,14 +171,12 @@ impl Workspace {
     /// launch (`auto_start = true`). Order is declaration order from
     /// forge.toml — the launchpad picker uses its own row sort, so
     /// no further ordering is imposed here.
-    #[must_use]
     pub fn auto_start_project_names(&self) -> Vec<String> {
         self.config.auto_start_projects().map(|p| p.name.clone()).collect()
     }
 
     /// the lead. Empty `sessions` means the project has nothing on disk
     /// yet; the project still surfaces in the returned Vec.
-    #[must_use]
     pub fn list_projects(&self) -> Vec<ProjectView> {
         let open_sessions: std::collections::HashSet<SessionKey> =
             self.pool.lock().keys().cloned().collect();
@@ -542,7 +538,6 @@ impl Workspace {
     /// name. `None` when the poller hasn't yet succeeded (cold
     /// cache, no credentials, network blip). The TUI bottom panel
     /// renders the 5h / 7d bars from this snapshot.
-    #[must_use]
     pub fn usage_for(&self, display_name: &str) -> Option<forge_primitives::usage::UsageSnapshot> {
         self.accounts.lock().usage(&AccountKey(display_name.to_owned())).cloned()
     }
@@ -554,7 +549,6 @@ impl Workspace {
     /// user can tell an empty bar from an upstream failure (the
     /// HTTP 429 case is especially common when multiple forge
     /// instances poll the same Anthropic account).
-    #[must_use]
     pub fn usage_error_for(&self, display_name: &str) -> Option<crate::account::UsageFetchStatus> {
         self.accounts.lock().usage_error(&AccountKey(display_name.to_owned()))
     }
@@ -702,7 +696,6 @@ impl Workspace {
     /// resume hits "No conversation found with session ID …" even
     /// when the `.jsonl` exists. Returns `None` when the catalog has
     /// no entry for `session_id` or the entry lacks a cwd.
-    #[must_use]
     pub fn session_cwd_for(&self, session_id: &SessionKey) -> Option<String> {
         self.catalog
             .lock()
@@ -759,7 +752,6 @@ impl Workspace {
     /// a clone so they can forward state into the App's event loop
     /// the same way the workspace's `SessionTask`s do. Cloned at App
     /// construction time and stored on `App.update_tx`.
-    #[must_use]
     pub fn update_sender(&self) -> mpsc::UnboundedSender<SessionUpdate> {
         self.update_tx.clone()
     }
@@ -774,7 +766,6 @@ impl Workspace {
     /// Callers should hold the lock for the shortest scope possible
     /// — concurrent reducers and the per-session `SessionTask`
     /// share this mutex.
-    #[must_use]
     pub fn domain_session_for(&self, key: &SessionKey) -> Option<Arc<Mutex<DomainSession>>> {
         self.domain_handles.lock().get(key).cloned()
     }
@@ -784,7 +775,6 @@ impl Workspace {
     /// presence check so callers don't need to peek at
     /// `DomainSession.conn` directly — the field layout is a
     /// workspace internal.
-    #[must_use]
     pub fn has_agent_for(&self, key: &SessionKey) -> bool {
         self.domain_session_for(key).is_some_and(|d| d.lock().conn.is_some())
     }
@@ -1045,7 +1035,6 @@ impl Workspace {
     /// Resolve the auto-memory path the bridge would consult for
     /// `cwd`, scoped to `key`'s configured account. Returns `None`
     /// when no agent is registered for `key`.
-    #[must_use]
     pub fn project_memory_path(&self, key: &SessionKey, cwd: &std::path::Path) -> Option<PathBuf> {
         let handle = self.agent_handle_for(key)?;
         Some(handle.project_memory_path(cwd))
@@ -1053,7 +1042,6 @@ impl Workspace {
 
     /// Snapshot the bridge's settings documents for `key` at `cwd`.
     /// Returns `None` when no agent is registered for `key`.
-    #[must_use]
     pub fn settings_documents(
         &self,
         key: &SessionKey,
@@ -1083,7 +1071,6 @@ impl Workspace {
 
     /// Resolve the agent's configured config_dir for `key`. Returns
     /// `None` when no agent is registered for `key`.
-    #[must_use]
     pub fn config_dir_for(&self, key: &SessionKey) -> Option<PathBuf> {
         let handle = self.agent_handle_for(key)?;
         Some(handle.config_dir())
@@ -1184,7 +1171,6 @@ impl Workspace {
     /// for the lifetime of the subprocess, so consumers (e.g. the
     /// Inspector pane's PROCESSES OS walk) can cache snapshots
     /// keyed off this value.
-    #[must_use]
     pub fn claude_pid(&self, key: &SessionKey) -> Option<u32> {
         self.agent_handle_for(key).and_then(|handle| handle.claude_pid())
     }
@@ -1208,7 +1194,6 @@ impl Workspace {
     /// raw function rather than wrapping it in spawn_blocking so
     /// callers stay in control of their concurrency model (mirrors
     /// how `scan_git_diff` exposes the async function directly).
-    #[must_use]
     #[allow(clippy::unused_self)] // Mirror of `scan_git_diff` — kept as an
     // instance method so the call site reads `workspace.scan_processes(...)`
     // alongside the other env scanners, even though it doesn't need to
@@ -1370,7 +1355,6 @@ impl Workspace {
     /// distinct from [`crate::protocol::Command`] (the workspace's
     /// outer envelope) that wraps these primitives under a
     /// `SessionKey`.
-    #[must_use]
     pub fn testing_stub_handle()
     -> (forge_agent::AgentHandle, mpsc::UnboundedReceiver<forge_primitives::Command>) {
         forge_agent::Agent::testing_stub()
@@ -1387,7 +1371,6 @@ impl Workspace {
     /// Auto-creates a `DomainSession` for `key` when none is
     /// registered yet; otherwise overwrites the existing
     /// `DomainSession.conn` slot.
-    #[must_use]
     pub fn install_testing_stub(
         &self,
         key: &SessionKey,
@@ -1429,7 +1412,6 @@ impl Workspace {
     /// Returns the workspace alongside the `SessionUpdate` receiver
     /// (single-take slot — subsequent `subscribe()` calls on the
     /// returned workspace will return `None`).
-    #[must_use]
     pub fn testing_stub() -> (Arc<Self>, mpsc::UnboundedReceiver<SessionUpdate>) {
         let (update_tx, update_rx) = mpsc::unbounded_channel::<SessionUpdate>();
         let workspace = Self {

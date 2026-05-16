@@ -66,7 +66,6 @@ pub enum SettingsTarget {
 /// `cwd` is the project root used to locate
 /// `<cwd>/.claude/settings.local.json`. Pass `std::env::current_dir()`
 /// to match the CLI's default behaviour for the project-local path.
-#[must_use]
 pub fn settings_documents(config_dir: &Path, cwd: &Path) -> SettingsDocuments {
     SettingsDocuments {
         user: read_json_file(&config_dir.join("settings.json")),

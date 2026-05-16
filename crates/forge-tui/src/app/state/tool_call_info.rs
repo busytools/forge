@@ -72,22 +72,18 @@ impl ToolCallInfo {
         serde_json::to_string(value).map_or(0, |json| json.len())
     }
 
-    #[must_use]
     pub fn is_execute_tool(&self) -> bool {
         is_execute_tool_name(&self.sdk_tool_name)
     }
 
-    #[must_use]
     pub fn is_ask_question_tool(&self) -> bool {
         is_ask_question_tool_name(&self.sdk_tool_name)
     }
 
-    #[must_use]
     pub fn is_exit_plan_mode_tool(&self) -> bool {
         is_exit_plan_mode_tool_name(&self.sdk_tool_name)
     }
 
-    #[must_use]
     pub fn assistant_auto_backgrounded(&self) -> bool {
         self.output_metadata
             .as_ref()
@@ -96,7 +92,6 @@ impl ToolCallInfo {
             .unwrap_or(false)
     }
 
-    #[must_use]
     pub fn verification_nudge_needed(&self) -> bool {
         self.output_metadata
             .as_ref()
@@ -105,26 +100,22 @@ impl ToolCallInfo {
             .unwrap_or(false)
     }
 
-    #[must_use]
     pub fn task_is_backgrounded(&self) -> bool {
         self.task_metadata.as_ref().and_then(|metadata| metadata.is_backgrounded).unwrap_or(false)
     }
 
-    #[must_use]
     pub fn hidden_unless_focused_interaction(&self) -> bool {
         self.hidden
             && !self.pending_permission.as_ref().is_some_and(|permission| permission.focused)
             && !self.pending_question.as_ref().is_some_and(|question| question.focused)
     }
 
-    #[must_use]
     pub fn is_hidden_focused_interaction(&self) -> bool {
         self.hidden
             && (self.pending_permission.as_ref().is_some_and(|permission| permission.focused)
                 || self.pending_question.as_ref().is_some_and(|question| question.focused))
     }
 
-    #[must_use]
     pub fn is_subagent_root_tool(&self) -> bool {
         !self.hidden && matches!(self.sdk_tool_name.as_str(), "Task" | "Agent")
     }
@@ -148,7 +139,6 @@ impl ToolCallInfo {
         self.mark_tool_call_render_dirty();
     }
 
-    #[must_use]
     pub fn cache_measurement_key_matches(&self, width: u16, layout_generation: u64) -> bool {
         self.last_measured_width == width
             && self.last_measured_layout_epoch == self.layout_epoch
@@ -172,17 +162,14 @@ impl ToolCallInfo {
     }
 }
 
-#[must_use]
 pub fn is_execute_tool_name(tool_name: &str) -> bool {
     tool_name.eq_ignore_ascii_case("bash")
 }
 
-#[must_use]
 pub fn is_ask_question_tool_name(tool_name: &str) -> bool {
     tool_name.eq_ignore_ascii_case("askuserquestion")
 }
 
-#[must_use]
 pub fn is_exit_plan_mode_tool_name(tool_name: &str) -> bool {
     tool_name.eq_ignore_ascii_case("exitplanmode")
 }
@@ -192,7 +179,6 @@ pub fn is_exit_plan_mode_tool_name(tool_name: &str) -> bool {
 /// bounded). Used by the Inspector PROCESSES section to identify
 /// in-flight monitors regardless of how the CLI happens to capitalise
 /// the name (matches `is_execute_tool_name`'s style).
-#[must_use]
 pub fn is_monitor_tool_name(tool_name: &str) -> bool {
     tool_name.eq_ignore_ascii_case("monitor")
 }
@@ -202,7 +188,6 @@ pub fn is_monitor_tool_name(tool_name: &str) -> bool {
 /// (see `forge_test_harness` captures + claude CLI binary trace).
 /// Used by PROCESSES to surface scheduled jobs alongside live
 /// backgrounded tasks.
-#[must_use]
 pub fn is_cron_create_tool_name(tool_name: &str) -> bool {
     tool_name.eq_ignore_ascii_case("croncreate")
 }

@@ -295,7 +295,6 @@ impl Message {
     /// Returns `None` for the two variants that aren't session-scoped
     /// (`Error` and `RateLimitEvent`, which carries no session id of its
     /// own).
-    #[must_use]
     pub fn session_id(&self) -> Option<&str> {
         match self {
             Message::Assistant { session_id, .. }

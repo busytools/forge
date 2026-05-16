@@ -247,7 +247,6 @@ impl Command {
     /// to its app-level handler (which synthesizes the new session
     /// key and spawns the agent); `Some(key)` commands route to the
     /// matching SessionTask.
-    #[must_use]
     pub fn key(&self) -> Option<&SessionKey> {
         match self {
             Self::Prompt { key, .. }
@@ -497,7 +496,6 @@ impl SessionUpdate {
     /// updates that target App-level state (`SessionsListed`,
     /// `ServiceStatus`, usage, plugin, key-rename, fatal-error).
     /// Variants carrying a raw `session_id` synthesize a key from it.
-    #[must_use]
     pub fn session_key(&self) -> Option<SessionKey> {
         match self {
             Self::Spawning { key, .. }

@@ -38,7 +38,6 @@ pub struct FrameGeometryChange {
 }
 
 impl FrameGeometryChange {
-    #[must_use]
     pub fn resized(self) -> bool {
         self.width_changed || self.height_changed
     }
@@ -53,13 +52,11 @@ pub struct ScrollbarGeometry {
 }
 
 impl ScrollbarGeometry {
-    #[must_use]
     pub fn viewport_height(self) -> usize {
         self.thumb_size.saturating_add(self.track_space)
     }
 }
 
-#[must_use]
 pub fn compute_scrollbar_geometry(
     content_height: usize,
     viewport_height: usize,
@@ -215,7 +212,6 @@ pub struct ChatViewport {
 
 impl ChatViewport {
     /// Create a new viewport with default scroll state (auto-scroll enabled).
-    #[must_use]
     pub fn new() -> Self {
         Self {
             scroll_offset: 0,
@@ -243,7 +239,6 @@ impl ChatViewport {
     ///
     /// Width and height are tracked through the same entry point, but only width
     /// changes invalidate message layout. Height changes are viewport-only.
-    #[must_use]
     pub fn on_frame(&mut self, width: u16, height: u16) -> FrameGeometryChange {
         let change = FrameGeometryChange {
             width_changed: self.width != 0 && self.width != width,
@@ -303,31 +298,26 @@ impl ChatViewport {
     // --- Per-message height ---
 
     /// Get the cached visual height for message `idx`. Returns 0 if not yet computed.
-    #[must_use]
     pub fn message_height(&self, idx: usize) -> usize {
         self.message_heights.get(idx).copied().unwrap_or(0)
     }
 
     /// Return the number of stale messages awaiting remeasurement.
-    #[must_use]
     pub fn stale_message_count(&self) -> usize {
         self.stale_message_heights.iter().filter(|stale| **stale).count()
     }
 
     /// Return the oldest stale message index, if any.
-    #[must_use]
     pub fn oldest_stale_index(&self) -> Option<usize> {
         self.stale_message_heights.iter().position(|stale| *stale)
     }
 
     /// Return the oldest prefix index whose cumulative values still need repair.
-    #[must_use]
     pub fn prefix_dirty_from(&self) -> Option<usize> {
         self.prefix_dirty_from
     }
 
     /// Return the active queued remeasurement reason, if any.
-    #[must_use]
     pub fn remeasure_reason(&self) -> Option<LayoutRemeasureReason> {
         self.remeasure_plan.map(|plan| plan.reason)
     }
@@ -408,7 +398,6 @@ impl ChatViewport {
     }
 
     /// Return whether a message height is exact at the current width.
-    #[must_use]
     pub fn message_height_is_current(&self, idx: usize) -> bool {
         if self.stale_message_heights.get(idx).copied().unwrap_or(false) {
             return false;
@@ -420,13 +409,11 @@ impl ChatViewport {
     }
 
     /// Return whether any queued remeasurement is still active.
-    #[must_use]
     pub fn remeasure_active(&self) -> bool {
         self.remeasure_plan.is_some()
     }
 
     /// Return whether any message height is still stale.
-    #[must_use]
     pub fn has_stale_message_heights(&self) -> bool {
         self.stale_message_heights.iter().any(|stale| *stale)
     }
@@ -512,7 +499,6 @@ impl ChatViewport {
     }
 
     /// Capture the current message-local scroll anchor when manual scrolling is active.
-    #[must_use]
     pub fn capture_manual_scroll_anchor(&self) -> Option<(usize, usize)> {
         (!self.auto_scroll && !self.message_heights.is_empty())
             .then(|| self.current_scroll_anchor())
@@ -617,7 +603,6 @@ impl ChatViewport {
 
     /// Return the preserved scroll anchor that should be restored while remeasure
     /// remains in flight.
-    #[must_use]
     pub fn scroll_anchor_to_restore(&self) -> Option<(usize, usize)> {
         self.remeasure_plan.and_then(|plan| {
             plan.preserved_scroll_anchor.map(|anchor| (anchor.index, anchor.offset))
@@ -625,7 +610,6 @@ impl ChatViewport {
     }
 
     /// Return the preserved scroll anchor only once rows above it are exact.
-    #[must_use]
     pub fn ready_scroll_anchor_to_restore(&self) -> Option<(usize, usize)> {
         self.remeasure_plan.and_then(|plan| {
             plan.preserved_scroll_anchor.and_then(|anchor| {
@@ -635,7 +619,6 @@ impl ChatViewport {
     }
 
     /// Return the preserved pre-width-resize scroll anchor.
-    #[must_use]
     pub fn resize_scroll_anchor(&self) -> Option<(usize, usize)> {
         self.remeasure_plan.and_then(|plan| {
             plan.preserved_scroll_anchor.and_then(|anchor| {
@@ -646,7 +629,6 @@ impl ChatViewport {
     }
 
     /// Derive the priority window from the preserved scroll anchor using current estimates.
-    #[must_use]
     pub fn remeasure_anchor_window(&self, viewport_height: usize) -> Option<(usize, usize)> {
         let plan = self.remeasure_plan?;
         if self.message_heights.is_empty() {
@@ -704,7 +686,6 @@ impl ChatViewport {
     }
 
     /// Compatibility helper for tests and metrics.
-    #[must_use]
     pub fn resize_remeasure_active(&self) -> bool {
         self.remeasure_active()
     }
@@ -759,19 +740,16 @@ impl ChatViewport {
     }
 
     /// Total height of all messages (O(1) via prefix sums).
-    #[must_use]
     pub fn total_message_height(&self) -> usize {
         self.height_prefix_sums.last().copied().unwrap_or(0)
     }
 
     /// Cumulative height of messages `0..idx` (O(1) via prefix sums).
-    #[must_use]
     pub fn cumulative_height_before(&self, idx: usize) -> usize {
         if idx == 0 { 0 } else { self.height_prefix_sums.get(idx - 1).copied().unwrap_or(0) }
     }
 
     /// Binary search for the first message whose cumulative range overlaps `scroll_offset`.
-    #[must_use]
     pub fn find_first_visible(&self, scroll_offset: usize) -> usize {
         if self.height_prefix_sums.is_empty() {
             return 0;
@@ -782,7 +760,6 @@ impl ChatViewport {
     }
 
     /// Binary search for the last message whose cumulative range overlaps the viewport.
-    #[must_use]
     pub fn find_last_visible(&self, scroll_offset: usize, viewport_height: usize) -> usize {
         if self.height_prefix_sums.is_empty() {
             return 0;
@@ -794,7 +771,6 @@ impl ChatViewport {
     }
 
     /// Derive the current visible window from the latest estimated prefix sums.
-    #[must_use]
     pub fn current_visible_window(&self, viewport_height: usize) -> Option<(usize, usize)> {
         if self.message_heights.is_empty() {
             return None;

@@ -147,7 +147,6 @@ pub enum EffortLevel {
 impl EffortLevel {
     /// String form suitable for passing via `--effort <value>` or
     /// any other CLI surface that expects a literal-or-int.
-    #[must_use]
     pub fn as_cli_arg(&self) -> String {
         match self {
             Self::Preset(p) => match p {

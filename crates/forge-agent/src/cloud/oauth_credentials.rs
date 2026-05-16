@@ -42,7 +42,6 @@ pub use forge_primitives::cloud::oauth_credentials::OauthCredentials;
 /// payload omits an expiry field; otherwise it is the parsed
 /// [`std::time::SystemTime`] of the `expiresAt` numeric or stringified-numeric
 /// epoch.
-#[must_use]
 pub fn load_oauth_credentials(config_dir: &Path) -> Option<OauthCredentials> {
     let path = config_dir.join(".credentials.json");
     if let Some(creds) = load_oauth_credentials_at(&path) {

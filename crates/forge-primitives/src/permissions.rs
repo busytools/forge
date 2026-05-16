@@ -53,7 +53,6 @@ impl ToolPermissionContext {
     /// Construct a context. `suggestions` defaults to empty; use
     /// [`with_suggestions`](Self::with_suggestions) to attach parsed
     /// permission-rule hints.
-    #[must_use]
     pub fn new(
         tool_name: impl Into<String>,
         tool_input: Value,
@@ -76,7 +75,6 @@ impl ToolPermissionContext {
 
     /// Attach permission-rule suggestions parsed from the control
     /// request's `permission_suggestions` field.
-    #[must_use]
     pub fn with_suggestions(mut self, suggestions: Vec<PermissionUpdate>) -> Self {
         self.suggestions = suggestions;
         self
@@ -87,7 +85,6 @@ impl ToolPermissionContext {
     /// prompts ("Claude wants to `<title>`: `<description>`"). Each field
     /// is independently optional; callers pass `None` for ones the CLI
     /// didn't populate.
-    #[must_use]
     pub fn with_display(
         mut self,
         blocked_path: Option<String>,
@@ -122,7 +119,6 @@ enum DecisionKind {
 
 impl PermissionDecision {
     /// Approve the tool call as-is.
-    #[must_use]
     pub fn allow() -> Self {
         Self { inner: DecisionKind::Allow { updated_input: None, updated_permissions: Vec::new() } }
     }
@@ -130,7 +126,6 @@ impl PermissionDecision {
     /// Approve the tool call with a modified input payload. The `claude`
     /// binary will receive the modified input in place of the model's
     /// original.
-    #[must_use]
     pub fn allow_with_input(updated_input: Value) -> Self {
         Self {
             inner: DecisionKind::Allow {
@@ -141,7 +136,6 @@ impl PermissionDecision {
     }
 
     /// Deny the tool call. `reason` is forwarded to the model as feedback.
-    #[must_use]
     pub fn deny(reason: impl Into<String>) -> Self {
         Self { inner: DecisionKind::Deny { reason: reason.into() } }
     }
@@ -151,7 +145,6 @@ impl PermissionDecision {
     /// wire and applied to the session's permission state. No-op on a
     /// deny decision — the CLI's `PermissionResultDeny` has no equivalent
     /// channel.
-    #[must_use]
     pub fn with_updated_permissions(mut self, updates: Vec<PermissionUpdate>) -> Self {
         if let DecisionKind::Allow { updated_permissions, .. } = &mut self.inner {
             *updated_permissions = updates;
@@ -160,13 +153,11 @@ impl PermissionDecision {
     }
 
     /// True if this is an allow decision.
-    #[must_use]
     pub fn is_allow(&self) -> bool {
         matches!(self.inner, DecisionKind::Allow { .. })
     }
 
     /// For an allow decision with modified input, returns the modified input.
-    #[must_use]
     pub fn updated_input(&self) -> Option<&Value> {
         match &self.inner {
             DecisionKind::Allow { updated_input, .. } => updated_input.as_ref(),
@@ -176,7 +167,6 @@ impl PermissionDecision {
 
     /// Permission updates attached to an allow decision. Empty slice for
     /// deny, or for an allow that carries no updates.
-    #[must_use]
     pub fn updated_permissions(&self) -> &[PermissionUpdate] {
         match &self.inner {
             DecisionKind::Allow { updated_permissions, .. } => updated_permissions,
@@ -185,7 +175,6 @@ impl PermissionDecision {
     }
 
     /// For a deny decision, returns the reason string.
-    #[must_use]
     pub fn reason(&self) -> Option<&str> {
         match &self.inner {
             DecisionKind::Deny { reason } => Some(reason.as_str()),

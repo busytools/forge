@@ -22,7 +22,6 @@ use forge_primitives::{
 // user-visible text, so a flat const suffices.
 const CACHE_PREVIEW_LIMIT_BYTES: usize = 2048;
 
-#[must_use]
 fn preview_kilobyte_label() -> String {
     let whole_kb = CACHE_PREVIEW_LIMIT_BYTES / 1024;
     let remainder = CACHE_PREVIEW_LIMIT_BYTES % 1024;
@@ -49,19 +48,16 @@ pub const TOOL_RESULT_TYPES: &[&str] = &[
     "mcp_tool_result",
 ];
 
-#[must_use]
 pub fn is_tool_result_block_type(block_type: &str) -> bool {
     TOOL_RESULT_TYPES.contains(&block_type)
 }
 
-#[must_use]
 pub fn is_tool_use_block_type(block_type: &str) -> bool {
     matches!(block_type, "tool_use" | "server_tool_use" | "mcp_tool_use")
 }
 
 /// Mirrors `normalizeToolKind`. Maps tool name → kind string consumed
 /// by the TUI's tool-card renderer.
-#[must_use]
 fn normalize_tool_kind(name: &str) -> &'static str {
     match name {
         "Bash" => "execute",
@@ -81,7 +77,6 @@ fn normalize_tool_kind(name: &str) -> &'static str {
 /// Mirrors `toolTitle(name, input)`. Produces the human-friendly
 /// title shown on the tool card header (e.g. Bash → command, Glob →
 /// pattern + path, etc.).
-#[must_use]
 fn tool_title(name: &str, input: &Value) -> String {
     let record = input.as_object();
     let s =
@@ -130,7 +125,6 @@ fn tool_title(name: &str, input: &Value) -> String {
 /// Mirrors `editDiffContent(name, input)` — initial diff content for
 /// Edit / Write tool cards (before the result lands). Empty Vec for
 /// other tools.
-#[must_use]
 fn edit_diff_content(name: &str, input: &Value) -> Vec<ToolCallContent> {
     let Some(record) = input.as_object() else {
         return Vec::new();
@@ -174,7 +168,6 @@ fn edit_diff_content(name: &str, input: &Value) -> Vec<ToolCallContent> {
 /// Mirrors `createToolCall(toolUseId, name, input, parentToolUseId)`.
 /// Builds the rich `ToolCall` envelope upstream emits when the
 /// assistant first invokes a tool.
-#[must_use]
 pub fn create_tool_call(
     tool_use_id: &str,
     name: &str,
@@ -212,7 +205,6 @@ pub fn create_tool_call(
 /// Mirrors `extractText(value)` — flattens a `tool_result` content
 /// payload into a single `String`. Accepts string, array of
 /// `{ type: "text", text }` blocks, or single `{ text }` object.
-#[must_use]
 fn extract_text(value: &Value) -> String {
     if let Some(s) = value.as_str() {
         return s.to_owned();
@@ -293,7 +285,6 @@ fn sanitize_sdk_rejection_text(text: &str) -> String {
     text.to_owned()
 }
 
-#[must_use]
 fn normalize_tool_result_text(value: &Value, is_error: bool) -> String {
     let text = extract_text(value);
     if text.is_empty() {
@@ -733,7 +724,6 @@ fn resolve_tool_name(base: Option<&ToolCall>) -> String {
 /// Mirrors `buildToolResultFields(isError, rawContent, base?, rawResult?)`.
 /// The high-level entry that turns an arbitrary `tool_result` block into
 /// the structured `ToolCallUpdateFields` upstream's TUI consumes.
-#[must_use]
 pub fn build_tool_result_fields(
     is_error: bool,
     raw_content: Option<&Value>,
@@ -842,7 +832,6 @@ pub struct UnwrappedToolResult {
     pub content: Value,
 }
 
-#[must_use]
 pub fn unwrap_tool_use_result(raw_result: &Value) -> UnwrappedToolResult {
     let Some(record) = raw_result.as_object() else {
         return UnwrappedToolResult { is_error: false, content: raw_result.clone() };

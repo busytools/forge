@@ -359,7 +359,6 @@ impl Client {
     /// the CLI's server capabilities, available commands, and output
     /// styles. Returns `None` when the CLI didn't attach a body to its
     /// initialize response.
-    #[must_use]
     pub fn get_server_info(&self) -> Option<&serde_json::Value> {
         self.inner.initialization_result.as_ref()
     }
@@ -374,7 +373,6 @@ impl Client {
     /// at spawn — never happens for a real subprocess on supported
     /// platforms, but the `Option` keeps the test-stub path
     /// expressible.
-    #[must_use]
     pub fn claude_pid(&self) -> Option<u32> {
         self.inner.claude_pid
     }
@@ -385,14 +383,12 @@ impl Client {
     /// stream during init; cached here for callers that need the
     /// initial session context (e.g. forge-agent's status snapshot +
     /// slash autocomplete).
-    #[must_use]
     pub fn initial_session_data(&self) -> Option<&serde_json::Value> {
         self.inner.cached_init_data.as_ref()
     }
 
     /// The session id captured from the init message. Returns an empty
     /// string until the first session-scoped frame arrives.
-    #[must_use]
     pub fn session_id(&self) -> String {
         self.inner.session_id.read().clone()
     }
@@ -410,7 +406,6 @@ impl Client {
     /// (`forge_agent::cloud::auth_status`), not SDK-side, because it
     /// spawns a fresh subprocess outside the long-lived stream-json
     /// session.
-    #[must_use]
     pub fn account_info_from_init(&self) -> Option<forge_primitives::AccountInfo> {
         let data = self.inner.cached_init_data.as_ref()?;
         let api_key_source = data

@@ -51,7 +51,6 @@ impl ProjectView {
     /// shouldn't happen in production (loader enforces non-empty) but
     /// can occur in test fixtures built via `ProjectView::new_for_test`
     /// without an explicit accounts arg.
-    #[must_use]
     pub fn primary_account_hint(&self) -> String {
         self.accounts.first().map_or_else(|| "unknown".to_owned(), |a| a.to_lowercase())
     }
@@ -63,7 +62,6 @@ impl ProjectView {
     /// Projects pane snapshot tests). Behind the `test-helpers`
     /// Cargo feature to keep test-only construction out of the
     /// production API.
-    #[must_use]
     pub fn new_for_test(
         key: ProjectKey,
         name: impl Into<String>,
@@ -86,7 +84,6 @@ impl ProjectView {
     /// supply an org + accounts list — needed for launchpad picker
     /// snapshot tests where the account hint column reads from
     /// `accounts[0]`.
-    #[must_use]
     pub fn new_for_test_with_org(
         key: ProjectKey,
         name: impl Into<String>,
@@ -126,7 +123,6 @@ pub struct SessionView {
 #[cfg(feature = "test-helpers")]
 impl SessionView {
     /// Test-only constructor for cross-crate fixtures.
-    #[must_use]
     pub fn new_for_test(
         session: SessionKey,
         label: impl Into<String>,

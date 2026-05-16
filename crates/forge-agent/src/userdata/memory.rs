@@ -16,7 +16,6 @@ use std::path::{Path, PathBuf};
 ///
 /// Always returns a resolved path; the caller decides whether the
 /// file exists.
-#[must_use]
 pub fn project_memory_path(config_dir: &Path, cwd: &Path) -> PathBuf {
     let key =
         crate::userdata::catalog::scan::project_key_for_directory(Some(&cwd.to_string_lossy()));

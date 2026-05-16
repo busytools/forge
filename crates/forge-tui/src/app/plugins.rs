@@ -24,7 +24,6 @@ pub enum PluginsViewTab {
 impl PluginsViewTab {
     pub const ALL: [Self; 3] = [Self::Installed, Self::Plugins, Self::Marketplace];
 
-    #[must_use]
     pub const fn title(self) -> &'static str {
         match self {
             Self::Installed => "Installed",
@@ -33,7 +32,6 @@ impl PluginsViewTab {
         }
     }
 
-    #[must_use]
     pub const fn next(self) -> Self {
         match self {
             Self::Installed => Self::Plugins,
@@ -42,7 +40,6 @@ impl PluginsViewTab {
         }
     }
 
-    #[must_use]
     pub const fn prev(self) -> Self {
         match self {
             Self::Installed => Self::Marketplace,
@@ -82,7 +79,6 @@ pub struct PluginsState {
 }
 
 impl PluginsState {
-    #[must_use]
     pub fn selected_index_for(&self, tab: PluginsViewTab) -> usize {
         match tab {
             PluginsViewTab::Installed => self.installed_selected_index,
@@ -104,7 +100,6 @@ impl PluginsState {
         self.last_error = None;
     }
 
-    #[must_use]
     pub fn search_query_for(&self, tab: PluginsViewTab) -> &str {
         match tab {
             PluginsViewTab::Installed => &self.installed_search_query,
@@ -335,7 +330,6 @@ pub(crate) fn clamp_selection(app: &mut App) {
         clamp_index(app.plugins.marketplace_selected_index, marketplace_len);
 }
 
-#[must_use]
 pub(crate) fn filtered_installed(state: &PluginsState) -> Vec<&InstalledPluginEntry> {
     state
         .installed
@@ -346,7 +340,6 @@ pub(crate) fn filtered_installed(state: &PluginsState) -> Vec<&InstalledPluginEn
         .collect()
 }
 
-#[must_use]
 pub(crate) fn ordered_installed<'a>(
     state: &'a PluginsState,
     current_project_raw: &str,
@@ -367,7 +360,6 @@ pub(crate) fn ordered_installed<'a>(
     relevant
 }
 
-#[must_use]
 pub(crate) fn relevant_installed_count(state: &PluginsState, current_project_raw: &str) -> usize {
     let current_project = normalize_project_path(current_project_raw);
     filtered_installed(state)
@@ -376,7 +368,6 @@ pub(crate) fn relevant_installed_count(state: &PluginsState, current_project_raw
         .count()
 }
 
-#[must_use]
 pub(crate) fn filtered_marketplace_plugins(state: &PluginsState) -> Vec<&MarketplaceEntry> {
     state
         .marketplace
@@ -387,12 +378,10 @@ pub(crate) fn filtered_marketplace_plugins(state: &PluginsState) -> Vec<&Marketp
         .collect()
 }
 
-#[must_use]
 pub(crate) fn visible_marketplaces(state: &PluginsState) -> Vec<&MarketplaceSourceEntry> {
     state.marketplaces.iter().collect()
 }
 
-#[must_use]
 pub(crate) fn display_label(raw: &str) -> String {
     let normalized = raw.replace('@', " from ").replace('-', " ");
     let mut result = String::with_capacity(normalized.len());
@@ -1235,7 +1224,6 @@ fn marketplace_plugin_matches(entry: &MarketplaceEntry, query: &str) -> bool {
             .is_some_and(|version| version.to_ascii_lowercase().contains(&query))
 }
 
-#[must_use]
 pub(crate) const fn search_enabled(tab: PluginsViewTab) -> bool {
     !matches!(tab, PluginsViewTab::Marketplace)
 }

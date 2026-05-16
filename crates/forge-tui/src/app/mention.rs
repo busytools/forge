@@ -27,7 +27,6 @@ enum MentionSearchStatus {
 }
 
 impl MentionState {
-    #[must_use]
     pub fn new(
         trigger_row: usize,
         trigger_col: usize,
@@ -49,7 +48,6 @@ impl MentionState {
         }
     }
 
-    #[must_use]
     pub fn placeholder_message(&self) -> Option<String> {
         if !self.candidates.is_empty() {
             return None;
@@ -63,7 +61,6 @@ impl MentionState {
         }
     }
 
-    #[must_use]
     pub fn has_selectable_candidates(&self) -> bool {
         !self.candidates.is_empty()
     }

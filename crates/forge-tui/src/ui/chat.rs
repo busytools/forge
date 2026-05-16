@@ -554,12 +554,10 @@ pub(super) fn refresh_selection_snapshot(app: &mut App) {
         render_lines_from_paragraph(&render_data.paragraph, area, render_data.stats.local_scroll);
 }
 
-#[must_use]
 fn chat_selection_snapshot_needed(selection: Option<SelectionState>) -> bool {
     selection.is_some_and(|selection| selection.kind == SelectionKind::Chat)
 }
 
-#[must_use]
 fn paragraph_scroll_offset(scroll_offset: usize) -> u16 {
     u16::try_from(scroll_offset).unwrap_or_else(|_| {
         tracing::warn!(

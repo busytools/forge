@@ -24,7 +24,6 @@ pub enum GitBranch {
 impl GitBranch {
     /// `Some(name)` for `Named`, `None` for everything else. Useful
     /// for chip-style display where only named branches surface.
-    #[must_use]
     pub fn as_deref(&self) -> Option<&str> {
         match self {
             Self::Named(name) => Some(name.as_str()),

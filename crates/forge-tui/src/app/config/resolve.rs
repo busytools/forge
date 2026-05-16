@@ -149,7 +149,6 @@ fn option_exists(spec: &SettingSpec, value: &str) -> bool {
     }
 }
 
-#[must_use]
 pub(crate) fn language_input_validation_message(value: &str) -> Option<&'static str> {
     let value = normalized_language_value(value)?;
     let length = value.chars().count();

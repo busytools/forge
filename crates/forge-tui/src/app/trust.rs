@@ -27,7 +27,6 @@ pub struct TrustState {
 }
 
 impl TrustState {
-    #[must_use]
     pub fn is_trusted(&self) -> bool {
         matches!(self.status, TrustStatus::Trusted)
     }

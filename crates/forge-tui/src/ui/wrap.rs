@@ -22,17 +22,14 @@ enum WrapToken {
     Newline,
 }
 
-#[must_use]
 pub(crate) fn display_width(text: &str) -> usize {
     UnicodeWidthStr::width(text)
 }
 
-#[must_use]
 pub(crate) fn line_display_width(line: &Line<'_>) -> usize {
     line.spans.iter().map(|span| display_width(span.content.as_ref())).sum()
 }
 
-#[must_use]
 pub(crate) fn truncate_to_width(text: &str, width: usize) -> String {
     if width == 0 {
         return String::new();
@@ -54,7 +51,6 @@ pub(crate) fn truncate_to_width(text: &str, width: usize) -> String {
     out
 }
 
-#[must_use]
 pub(crate) fn take_prefix_by_width(text: &str, width: usize) -> (String, String) {
     if width == 0 || text.is_empty() {
         return (String::new(), text.to_owned());
@@ -78,7 +74,6 @@ pub(crate) fn take_prefix_by_width(text: &str, width: usize) -> (String, String)
     (text[..split_at].to_owned(), text[split_at..].to_owned())
 }
 
-#[must_use]
 pub(crate) fn wrap_plain(text: &str, width: usize) -> Vec<String> {
     wrap_styled_chunks(&[StyledChunk { text: text.to_owned(), style: Style::default() }], width)
         .into_iter()
@@ -86,12 +81,10 @@ pub(crate) fn wrap_plain(text: &str, width: usize) -> Vec<String> {
         .collect()
 }
 
-#[must_use]
 pub(crate) fn wrapped_line_count(text: &str, width: usize) -> usize {
     wrap_plain(text, width).len().max(1)
 }
 
-#[must_use]
 pub(crate) fn wrap_styled_chunks(chunks: &[StyledChunk], width: usize) -> Vec<Line<'static>> {
     if width == 0 || chunks.is_empty() {
         return vec![Line::default()];
@@ -146,7 +139,6 @@ pub(crate) fn wrap_styled_chunks(chunks: &[StyledChunk], width: usize) -> Vec<Li
     lines
 }
 
-#[must_use]
 pub(crate) fn pad_line_to_width(
     mut line: Line<'static>,
     width: usize,
@@ -159,7 +151,6 @@ pub(crate) fn pad_line_to_width(
     line
 }
 
-#[must_use]
 pub(crate) fn blank_line(width: usize, style: Style) -> Line<'static> {
     Line::from(Span::styled(" ".repeat(width), style))
 }

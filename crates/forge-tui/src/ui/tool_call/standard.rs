@@ -93,12 +93,10 @@ pub(super) fn render_tool_call_body(tc: &ToolCallInfo, width: u16) -> Vec<Line<'
     lines
 }
 
-#[must_use]
 pub(super) fn tool_call_body_depends_on_width(tc: &ToolCallInfo) -> bool {
     tc.content.iter().any(|content| matches!(content, model::ToolCallContent::Diff(_)))
 }
 
-#[must_use]
 pub(super) fn tool_call_effectively_collapsed(tc: &ToolCallInfo, tools_collapsed: bool) -> bool {
     let has_permission = tc.pending_permission.is_some();
     let has_question = tc.pending_question.is_some();

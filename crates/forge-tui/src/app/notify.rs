@@ -49,7 +49,6 @@ struct TerminalCapabilities {
 }
 
 impl NotificationManager {
-    #[must_use]
     pub const fn new() -> Self {
         // Default to `true` (focused) so that terminals which do not support
         // DECSET 1004 never fire spurious notifications.
@@ -67,7 +66,6 @@ impl NotificationManager {
     }
 
     /// Whether the terminal window currently has OS focus.
-    #[must_use]
     pub const fn is_focused(&self) -> bool {
         self.terminal_focused
     }

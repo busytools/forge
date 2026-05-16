@@ -45,7 +45,6 @@ pub enum PermissionMode {
 impl PermissionMode {
     /// The string the `claude` binary expects via `--permission-mode`
     /// and the JSON wire string.
-    #[must_use]
     pub fn as_wire(self) -> &'static str {
         match self {
             Self::Ask => "default",
@@ -59,7 +58,6 @@ impl PermissionMode {
 
     /// Alias for [`Self::as_wire`]. The SDK options builder calls
     /// this to drive `--permission-mode <arg>` on the CLI.
-    #[must_use]
     pub fn as_cli_arg(self) -> &'static str {
         self.as_wire()
     }
@@ -69,7 +67,6 @@ impl PermissionMode {
     /// `"bypassPermissions"`) and the snake_case + legacy aliases
     /// (`"accept_edits"`, `"dont_ask"`, `"bypass_permissions"`,
     /// `"ask"` -> Ask, `"deny"` -> DontAsk).
-    #[must_use]
     pub fn from_wire(s: &str) -> Option<Self> {
         Some(match s {
             "default" | "ask" => Self::Ask,
@@ -84,7 +81,6 @@ impl PermissionMode {
 
     /// Human-readable display name (used by forge-tui's mode chip
     /// + settings UI).
-    #[must_use]
     pub fn display_name(self) -> &'static str {
         match self {
             Self::Ask => "Ask",

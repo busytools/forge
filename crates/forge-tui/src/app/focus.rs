@@ -28,7 +28,6 @@ pub struct FocusContext {
 }
 
 impl FocusContext {
-    #[must_use]
     pub const fn new(
         todo_focus_available: bool,
         mention_active: bool,
@@ -37,13 +36,11 @@ impl FocusContext {
         Self { todo_focus_available, mention_active, permission_active, help_active: false }
     }
 
-    #[must_use]
     pub const fn with_help(mut self, help_active: bool) -> Self {
         self.help_active = help_active;
         self
     }
 
-    #[must_use]
     pub const fn supports(self, target: FocusTarget) -> bool {
         match target {
             FocusTarget::TodoList => self.todo_focus_available,
@@ -74,7 +71,6 @@ pub struct FocusManager {
 
 impl FocusManager {
     /// Resolve the current focus owner for key routing.
-    #[must_use]
     pub fn owner(&self, context: FocusContext) -> FocusOwner {
         for target in self.stack.iter().rev().copied() {
             if context.supports(target) {

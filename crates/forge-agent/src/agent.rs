@@ -44,7 +44,6 @@ impl AgentHandle {
     }
 
     /// Direct-accessor passthrough — delegates to `ForgeSdkBridge::config_dir`.
-    #[must_use]
     pub fn config_dir(&self) -> PathBuf {
         self.bridge.config_dir()
     }
@@ -52,25 +51,21 @@ impl AgentHandle {
     /// OS PID of the bound `claude` child, when one is currently
     /// attached. Surfaces to forge-workspace for the Inspector
     /// pane's PROCESSES OS-walk.
-    #[must_use]
     pub fn claude_pid(&self) -> Option<u32> {
         self.bridge.claude_pid()
     }
 
     /// Direct-accessor passthrough.
-    #[must_use]
     pub fn project_memory_path(&self, cwd: &Path) -> PathBuf {
         self.bridge.project_memory_path(cwd)
     }
 
     /// Direct-accessor passthrough.
-    #[must_use]
     pub fn oauth_credentials(&self) -> Option<crate::cloud::oauth_credentials::OauthCredentials> {
         self.bridge.oauth_credentials()
     }
 
     /// Direct-accessor passthrough.
-    #[must_use]
     pub fn settings_documents(&self, cwd: &Path) -> crate::userdata::settings::SettingsDocuments {
         self.bridge.settings_documents(cwd)
     }
@@ -100,7 +95,6 @@ impl AgentHandle {
     /// (Rust's `#[cfg(test)]` items aren't visible across crate
     /// boundaries).
     #[doc(hidden)]
-    #[must_use]
     pub fn config_dir_for_test(&self) -> PathBuf {
         self.bridge.config_dir()
     }
@@ -111,7 +105,6 @@ impl AgentHandle {
     /// event right after spawn — eliminates the welcome-message
     /// flicker that would otherwise wait for the slow status
     /// snapshot to arrive from the CLI.
-    #[must_use]
     pub fn display_name(&self) -> Option<String> {
         self.bridge.display_name()
     }
@@ -336,7 +329,6 @@ impl Agent {
     /// don't drive sessions never see events anyway. The bridge is
     /// bound to a synthetic `/tmp/forge-testing-stub` config_dir;
     /// since no session is driven, no I/O hits this path.
-    #[must_use]
     pub fn testing_stub() -> (AgentHandle, mpsc::UnboundedReceiver<Command>) {
         let bridge = ForgeSdkBridge::default();
         // Drop the bridge's events receiver immediately — tests don't
@@ -368,7 +360,6 @@ impl Agent {
     /// renders which forge-account the bridge is bound to. Returns a handle
     /// holding the command sender + events receiver + direct-
     /// accessor passthroughs.
-    #[must_use]
     pub fn spawn(config_dir: PathBuf, display_name: Option<String>) -> AgentHandle {
         let bridge = ForgeSdkBridge::new(config_dir, display_name);
         let agent_event_rx = bridge.take_events().unwrap_or_else(|| mpsc::unbounded_channel().1);

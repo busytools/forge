@@ -12,7 +12,6 @@ pub(crate) struct TwoColumnItem {
     pub right_style: Style,
 }
 
-#[must_use]
 pub(crate) fn visible_item_count(
     items: &[TwoColumnItem],
     start: usize,
@@ -38,7 +37,6 @@ pub(crate) fn visible_item_count(
     count.max(1)
 }
 
-#[must_use]
 pub(crate) fn wrapped_item_height(
     item: &TwoColumnItem,
     left_width: usize,
@@ -49,7 +47,6 @@ pub(crate) fn wrapped_item_height(
         .max(1)
 }
 
-#[must_use]
 pub(crate) fn render_lines(
     items: &[TwoColumnItem],
     left_width: usize,
@@ -83,7 +80,6 @@ pub(crate) fn render_lines(
     lines
 }
 
-#[must_use]
 pub(crate) fn join_column_lines(
     mut left_lines: Vec<Line<'static>>,
     mut right_lines: Vec<Line<'static>>,

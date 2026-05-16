@@ -31,7 +31,6 @@ pub enum DiagnosticsPreset {
 }
 
 impl DiagnosticsPreset {
-    #[must_use]
     pub fn filter_directives(&self) -> &'static str {
         match self {
             Self::Runtime => {

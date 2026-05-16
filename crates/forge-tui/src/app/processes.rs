@@ -121,7 +121,6 @@ pub struct ProcessCollection {
 }
 
 impl ProcessCollection {
-    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.rows.is_empty()
     }
@@ -140,7 +139,6 @@ impl ProcessCollection {
 /// supervisor + its descendants in PID-asc sibling order, matched
 /// supervisors pinned first); Cron rows appended at the end. Final
 /// list is capped at [`PROCESSES_MAX`] for sanity.
-#[must_use]
 pub fn collect_active_processes(app: &App) -> ProcessCollection {
     let Some(session) = app.active_session() else {
         return ProcessCollection { rows: Vec::new() };
@@ -515,7 +513,6 @@ fn cron_row(tc: &ToolCallInfo) -> ProcessRow {
 /// Format a byte count compactly for the metadata suffix:
 /// `< 1 KB` → `b`, `< 1 MB` → `K`, etc. Two significant digits in
 /// the fractional range, integer above 99.
-#[must_use]
 pub fn format_memory_short(bytes: u64) -> String {
     const KB: u64 = 1024;
     const MB: u64 = 1024 * KB;

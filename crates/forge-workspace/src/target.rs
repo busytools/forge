@@ -10,7 +10,6 @@ impl SessionKey {
     }
 
     /// Borrow the inner id as a `&str`.
-    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -29,7 +28,6 @@ impl ProjectKey {
         Self(key.into())
     }
 
-    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -39,7 +37,6 @@ impl ProjectKey {
     /// Cargo feature so the production constructor stays
     /// crate-private.
     #[cfg(feature = "test-helpers")]
-    #[must_use]
     pub fn new_for_test(key: impl Into<String>) -> Self {
         Self(key.into())
     }
@@ -68,7 +65,6 @@ impl SessionKey {
     /// (Rust's `#[cfg(test)]` items aren't visible across crate
     /// boundaries).
     #[doc(hidden)]
-    #[must_use]
     pub fn from_str_for_test(s: &str) -> Self {
         Self(s.to_owned())
     }
@@ -77,7 +73,6 @@ impl SessionKey {
     /// Production-side constructor used by forge-tui's event
     /// multiplexer to tag incoming events with the bound session's
     /// key.
-    #[must_use]
     pub fn from_session_id(id: impl Into<String>) -> Self {
         Self(id.into())
     }

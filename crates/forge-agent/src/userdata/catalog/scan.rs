@@ -36,7 +36,6 @@ const LITE_READ_BUF_SIZE: u64 = 65_536;
 /// it to derive the same on-disk project-key layout the CLI uses. Not
 /// part of the public API; downstream consumers should call
 /// [`project_key_for_directory`] instead.
-#[must_use]
 pub(crate) fn sanitize_path_public(name: &str) -> String {
     sanitize_path(name)
 }
@@ -45,7 +44,6 @@ pub(crate) fn sanitize_path_public(name: &str) -> String {
 /// the path first and then applies the CLI's JS-style sanitisation
 /// hash. `None` defaults to `"."` (the process's current working
 /// directory).
-#[must_use]
 pub fn project_key_for_directory(path: Option<&str>) -> String {
     sanitize_path(&canonicalize_path(path.unwrap_or(".")))
 }
@@ -74,7 +72,6 @@ fn canonicalize_path(path: &str) -> String {
 /// Returns an empty Vec when `session_id` is not a valid UUID, the
 /// session has no subagents directory, or no `agent-*.jsonl` files are
 /// present.
-#[must_use]
 // Owned `String` matches the call-site shape (cwd arg from std::env).
 // Switching to `&str` would force every caller to materialise a temporary.
 #[allow(clippy::needless_pass_by_value)]
@@ -102,7 +99,6 @@ pub fn list_subagents(
 /// Returns an empty Vec when `session_id` is not a valid UUID,
 /// `agent_id` is empty, the transcript can't be found, or the file
 /// contains no user/assistant entries.
-#[must_use]
 // Owned `String` matches the call-site shape (cwd arg from std::env).
 // Switching to `&str` would force every caller to materialise a temporary.
 #[allow(clippy::needless_pass_by_value)]
@@ -340,7 +336,6 @@ const LIST_SESSIONS_MAX_CONCURRENT: usize = 16;
 /// # Panics
 ///
 /// Never — filesystem errors fall through and produce an empty Vec.
-#[must_use]
 // Owned `String` matches the call-site shape (cwd arg from std::env).
 // Switching to `&str` would force every caller to materialise a temporary.
 #[allow(clippy::needless_pass_by_value)]
@@ -410,7 +405,6 @@ pub async fn list_sessions(
 /// Read metadata for one session. When `directory` is `None`, every
 /// project directory under `<config_dir>/projects/` is searched for
 /// a matching `<session_id>.jsonl`.
-#[must_use]
 // Owned `String` matches the call-site shape (cwd arg from std::env).
 // Switching to `&str` would force every caller to materialise a temporary.
 #[allow(clippy::needless_pass_by_value)]
@@ -439,7 +433,6 @@ pub fn get_session_info(
 
 /// Read the full transcript for one session. Returns an empty Vec when
 /// the session file can't be found or parsed.
-#[must_use]
 // Owned `String` matches the call-site shape (cwd arg from std::env).
 // Switching to `&str` would force every caller to materialise a temporary.
 #[allow(clippy::needless_pass_by_value)]

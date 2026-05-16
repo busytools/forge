@@ -17,7 +17,6 @@ static COUNTER: AtomicU64 = AtomicU64::new(0);
 /// sandboxed runtime where the entropy source is unreachable
 /// (chroot without `/dev/urandom`, seccomp filter, etc.) is visible
 /// to log readers without breaking ID generation.
-#[must_use]
 pub fn next() -> String {
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
     let mut bytes = [0_u8; 4];

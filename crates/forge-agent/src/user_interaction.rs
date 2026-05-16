@@ -34,7 +34,6 @@ pub struct AskUserQuestionPrompt {
 /// `input.questions` JSON array, dropping malformed entries and
 /// requiring at least 2 options per question (matches upstream's
 /// validity rule).
-#[must_use]
 pub fn parse_ask_user_question_prompts(input: &Value) -> Vec<AskUserQuestionPrompt> {
     let Some(questions) =
         input.as_object().and_then(|r| r.get("questions")).and_then(Value::as_array)
@@ -89,7 +88,6 @@ pub fn parse_ask_user_question_prompts(input: &Value) -> Vec<AskUserQuestionProm
 /// Mirrors `askUserQuestionOptions(prompt)` — synthesises wire
 /// `option_id` slugs as `question_<index>` so the TUI can map back
 /// to the upstream label list when responding.
-#[must_use]
 fn ask_user_question_wire_options(prompt: &AskUserQuestionPrompt) -> Vec<TuiQuestionOption> {
     prompt
         .options
@@ -109,7 +107,6 @@ fn ask_user_question_wire_options(prompt: &AskUserQuestionPrompt) -> Vec<TuiQues
 }
 
 /// Mirrors `buildQuestionRequest(promptToolCall, prompt, index, total)`.
-#[must_use]
 pub fn build_question_request(
     base_tool_call: &ToolCall,
     prompt: &AskUserQuestionPrompt,
@@ -147,7 +144,6 @@ pub fn build_question_request(
 /// Mirrors `deriveAnnotation`. Joins option previews with a blank
 /// line separator when no caller-supplied annotation preview is
 /// present.
-#[must_use]
 pub fn derive_annotation(
     selected: &[TuiQuestionOption],
     incoming: Option<&QuestionAnnotation>,
@@ -179,7 +175,6 @@ pub fn derive_annotation(
 /// Helper used by the worker's loop driver: build the final
 /// `updatedInput` payload after every question has been answered.
 /// Mirrors the tail of `requestAskUserQuestionAnswers` upstream.
-#[must_use]
 pub fn build_updated_input(
     original_input: &Value,
     answers: Map<String, Value>,

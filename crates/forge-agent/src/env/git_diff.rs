@@ -122,7 +122,6 @@ pub struct GitDiffFile {
 /// newly-resolved branch (same `Named(name)`), the prior
 /// `pr` / `closes` carry over without re-running `gh`. Pass `None`
 /// for cold starts.
-#[must_use]
 pub async fn scan(cwd: &Path, prev: Option<&GitDiffSnapshot>) -> GitDiffSnapshot {
     let raw_branch = match run_git(cwd, &["rev-parse", "--abbrev-ref", "HEAD"]).await {
         GitOutput::Ok(s) => s.trim().to_owned(),

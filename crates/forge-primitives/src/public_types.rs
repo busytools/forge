@@ -29,7 +29,6 @@ pub enum SettingSource {
 
 impl SettingSource {
     /// String form for `--setting-sources=<csv>`.
-    #[must_use]
     pub fn as_cli_arg(self) -> &'static str {
         match self {
             Self::User => "user",
@@ -86,7 +85,6 @@ pub struct ForgeAccountIdentity {
 
 impl ForgeAccountIdentity {
     /// Convenience constructor.
-    #[must_use]
     pub fn new(display_name: String) -> Self {
         Self { display_name }
     }

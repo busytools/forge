@@ -61,7 +61,6 @@ impl InputState {
         }
     }
 
-    #[must_use]
     pub fn editor(&self) -> &TextArea<'static> {
         &self.editor
     }
@@ -70,22 +69,18 @@ impl InputState {
         &mut self.editor
     }
 
-    #[must_use]
     pub fn lines(&self) -> &[String] {
         self.editor.lines()
     }
 
-    #[must_use]
     pub fn cursor(&self) -> (usize, usize) {
         self.editor.cursor()
     }
 
-    #[must_use]
     pub fn cursor_row(&self) -> usize {
         self.cursor().0
     }
 
-    #[must_use]
     pub fn cursor_col(&self) -> usize {
         self.cursor().1
     }
@@ -127,7 +122,6 @@ impl InputState {
         self.replace_lines_and_cursor(lines, row, col);
     }
 
-    #[must_use]
     pub fn text(&self) -> String {
         if self.paste_blocks.is_empty() {
             return self.lines().join("\n");
@@ -143,7 +137,6 @@ impl InputState {
         result
     }
 
-    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.lines().len() == 1 && self.lines()[0].is_empty()
     }
@@ -153,7 +146,6 @@ impl InputState {
         self.replace_lines_and_cursor(vec![String::new()], 0, 0);
     }
 
-    #[must_use]
     pub fn snapshot(&self) -> InputSnapshot {
         let (cursor_row, cursor_col) = self.cursor();
         InputSnapshot {
@@ -436,7 +428,6 @@ impl InputState {
         result
     }
 
-    #[must_use]
     pub fn line_count(&self) -> u16 {
         u16::try_from(self.lines().len()).unwrap_or(u16::MAX)
     }
@@ -555,7 +546,6 @@ fn normalize_line_endings(text: &str) -> String {
 
 /// Count logical lines for text containing mixed `\n`, `\r`, and `\r\n` endings.
 #[cfg(test)]
-#[must_use]
 fn count_text_lines(text: &str) -> usize {
     // Count universal newlines (\n, \r, and \r\n as a single break).
     let mut lines = 1;
@@ -578,7 +568,6 @@ fn count_text_lines(text: &str) -> usize {
 }
 
 /// Count Unicode scalar characters in a text payload.
-#[must_use]
 pub fn count_text_chars(text: &str) -> usize {
     text.chars().count()
 }
@@ -674,7 +663,6 @@ pub fn parse_paste_placeholder_before_cursor(line: &str, cursor_col: usize) -> O
 }
 
 /// Return all placeholder highlight ranges in a line as `(start_col, end_col)`.
-#[must_use]
 pub fn parse_paste_placeholder_ranges(line: &str) -> Vec<(usize, usize)> {
     let mut ranges = Vec::new();
     let mut search_from = 0usize;

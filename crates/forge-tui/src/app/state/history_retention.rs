@@ -74,7 +74,6 @@ impl super::App {
         self.invalidate_layout(InvalidationLevel::MessagesFrom(start_idx));
     }
 
-    #[must_use]
     pub(super) fn is_history_hidden_marker_message(msg: &ChatMessage) -> bool {
         if !matches!(msg.role, MessageRole::System(_)) {
             return false;
@@ -85,7 +84,6 @@ impl super::App {
         block.text.starts_with(HISTORY_HIDDEN_MARKER_PREFIX)
     }
 
-    #[must_use]
     pub(super) fn is_history_protected_message(msg: &ChatMessage) -> bool {
         if matches!(msg.role, MessageRole::Welcome) {
             return true;
@@ -104,7 +102,6 @@ impl super::App {
         })
     }
 
-    #[must_use]
     fn measure_tool_content_bytes(content: &model::ToolCallContent) -> usize {
         match content {
             model::ToolCallContent::Content(inner) => match &inner.content {
@@ -130,7 +127,6 @@ impl super::App {
         }
     }
 
-    #[must_use]
     fn measure_tool_call_bytes(tc: &ToolCallInfo) -> usize {
         let mut total = size_of::<ToolCallInfo>()
             .saturating_add(tc.id.capacity())
@@ -187,7 +183,6 @@ impl super::App {
     ///
     /// Uses `String::capacity()` and `std::mem::size_of` for actual heap
     /// allocation sizes rather than content-length heuristics.
-    #[must_use]
     pub fn measure_message_bytes(msg: &ChatMessage) -> usize {
         let mut total = size_of::<ChatMessage>()
             .saturating_add(msg.blocks.capacity().saturating_mul(size_of::<MessageBlock>()));
@@ -238,7 +233,6 @@ impl super::App {
     }
 
     /// Measure the total in-memory byte footprint of all retained messages.
-    #[must_use]
     pub fn measure_history_bytes(&self) -> usize {
         self.messages().iter().map(Self::measure_message_bytes).sum()
     }
@@ -458,14 +452,12 @@ impl super::App {
         self.normalize_focus_stack();
     }
 
-    #[must_use]
     fn format_mib_tenths(bytes: usize) -> String {
         let tenths =
             (u128::try_from(bytes).unwrap_or(u128::MAX).saturating_mul(10) + 524_288) / 1_048_576;
         format!("{}.{}", tenths / 10, tenths % 10)
     }
 
-    #[must_use]
     fn history_hidden_marker_text(
         total_dropped_messages: usize,
         total_dropped_bytes: usize,

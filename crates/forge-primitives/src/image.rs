@@ -20,14 +20,12 @@ pub struct ImageAttachment {
 }
 
 /// Returns `true` if `mime_type` is a supported image MIME type.
-#[must_use]
 pub fn is_supported_image_type(mime_type: &str) -> bool {
     SUPPORTED_IMAGE_MIME_TYPES.contains(&mime_type)
 }
 
 /// Returns `true` if `data` is non-empty, correctly padded, and decodes
 /// as valid standard base64.
-#[must_use]
 pub fn is_valid_base64(data: &str) -> bool {
     use base64::Engine as _;
     if data.is_empty() {

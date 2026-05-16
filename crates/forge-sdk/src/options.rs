@@ -391,7 +391,9 @@ impl std::fmt::Debug for Options {
     }
 }
 
-/// Builder for [`Options`].
+/// Builder for [`Options`]. `#[must_use]` at the type level catches
+/// "constructed a builder, dropped it without `.build()`" — every
+/// setter returns `Self` and inherits the marker.
 #[derive(Clone, Default)]
 pub struct OptionsBuilder {
     inner: Options,
@@ -405,41 +407,35 @@ impl std::fmt::Debug for OptionsBuilder {
 
 impl OptionsBuilder {
     /// Start from defaults.
-    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Override the `claude` binary path or name.
-    #[must_use]
     pub fn binary(mut self, binary: impl Into<String>) -> Self {
         self.inner.binary = binary.into();
         self
     }
 
     /// Set the working directory for the subprocess.
-    #[must_use]
     pub fn cwd(mut self, cwd: impl Into<PathBuf>) -> Self {
         self.inner.cwd = Some(cwd.into());
         self
     }
 
     /// Resume an existing session.
-    #[must_use]
     pub fn resume(mut self, session_id: impl Into<String>) -> Self {
         self.inner.resume = Some(session_id.into());
         self
     }
 
     /// Override the model.
-    #[must_use]
     pub fn model(mut self, model: impl Into<String>) -> Self {
         self.inner.model = Some(model.into());
         self
     }
 
     /// Set the permission mode.
-    #[must_use]
     pub fn permission_mode(mut self, mode: PermissionMode) -> Self {
         self.inner.permission_mode = mode;
         self
@@ -448,7 +444,6 @@ impl OptionsBuilder {
     /// Register a permission callback. Any type implementing
     /// [`CanUseToolCallback`] works — including plain async functions
     /// via the blanket impl.
-    #[must_use]
     pub fn can_use_tool<C>(mut self, callback: C) -> Self
     where
         C: CanUseToolCallback + 'static,
@@ -459,7 +454,6 @@ impl OptionsBuilder {
 
     /// Register an in-process MCP server under the given name. The model
     /// sees tools as `mcp__<name>__<tool>`.
-    #[must_use]
     pub fn mcp_server(mut self, name: impl Into<String>, server: McpServer) -> Self {
         self.inner.mcp_servers.push((name.into(), server));
         self
@@ -467,7 +461,6 @@ impl OptionsBuilder {
 
     /// Register an external (stdio / SSE / HTTP) MCP server under the
     /// given name. Non-SDK variants of the CLI's `mcp_servers` dict.
-    #[must_use]
     pub fn external_mcp_server(
         mut self,
         name: impl Into<String>,
@@ -478,14 +471,12 @@ impl OptionsBuilder {
     }
 
     /// Attach hooks.
-    #[must_use]
     pub fn hooks(mut self, hooks: Hooks) -> Self {
         self.inner.hooks = hooks;
         self
     }
 
     /// Set the `--allowedTools` list explicitly.
-    #[must_use]
     pub fn allowed_tools<I, S>(mut self, tools: I) -> Self
     where
         I: IntoIterator<Item = S>,
@@ -498,7 +489,6 @@ impl OptionsBuilder {
     /// Enable skills. Use `"all"` to enable all skills, or list names.
     /// the CLI defaults `setting_sources` to `["user", "project"]` when
     /// this is set and `setting_sources` is not explicitly provided.
-    #[must_use]
     pub fn skills<I, S>(mut self, skills: I) -> Self
     where
         I: IntoIterator<Item = S>,
@@ -509,7 +499,6 @@ impl OptionsBuilder {
     }
 
     /// Override the `--setting-sources` list.
-    #[must_use]
     pub fn setting_sources<I, S>(mut self, sources: I) -> Self
     where
         I: IntoIterator<Item = S>,
@@ -521,7 +510,6 @@ impl OptionsBuilder {
 
     /// Exclude dynamic sections from the system prompt. Delivered via
     /// the `initialize` `control_request`, not a CLI flag.
-    #[must_use]
     pub fn exclude_dynamic_sections(mut self, yes: bool) -> Self {
         self.inner.exclude_dynamic_sections = Some(yes);
         self
@@ -531,7 +519,6 @@ impl OptionsBuilder {
     /// `--permission-prompt-tool`). Alternative to `can_use_tool` — the
     /// CLI invokes the named tool (typically via MCP) instead of routing
     /// permission requests to the SDK callback.
-    #[must_use]
     pub fn permission_prompt_tool_name(mut self, name: impl Into<String>) -> Self {
         self.inner.permission_prompt_tool_name = Some(name.into());
         self
@@ -539,7 +526,6 @@ impl OptionsBuilder {
 
     /// Override the minimum `claude` binary version check. Pass `None` to
     /// disable the check entirely.
-    #[must_use]
     pub fn minimum_cli_version(mut self, version: Option<String>) -> Self {
         self.inner.minimum_cli_version = version;
         self
@@ -547,7 +533,6 @@ impl OptionsBuilder {
 
     /// Override the projects directory used to resolve project keys.
     /// When unset, defaults to `<config_dir>/projects`.
-    #[must_use]
     pub fn projects_dir(mut self, path: impl Into<PathBuf>) -> Self {
         self.inner.projects_dir = Some(path.into());
         self
@@ -555,182 +540,156 @@ impl OptionsBuilder {
 
     /// Register a subagent under `name`. Forwards to the CLI via the
     /// `initialize` `control_request`'s `agents` field.
-    #[must_use]
     pub fn subagent(mut self, name: impl Into<String>, def: SubagentDefinition) -> Self {
         self.inner.subagents.insert(name.into(), def);
         self
     }
 
     /// Replace the whole subagent map in one go.
-    #[must_use]
     pub fn subagents(mut self, subagents: HashMap<String, SubagentDefinition>) -> Self {
         self.inner.subagents = subagents;
         self
     }
 
     /// Set the system prompt.
-    #[must_use]
     pub fn system_prompt(mut self, sp: SystemPromptKind) -> Self {
         self.inner.system_prompt = Some(sp);
         self
     }
 
     /// Set the base tool preset / list.
-    #[must_use]
     pub fn tools(mut self, tools: ToolsPreset) -> Self {
         self.inner.tools = Some(tools);
         self
     }
 
     /// Override the disallowed-tools list.
-    #[must_use]
     pub fn disallowed_tools(mut self, tools: Vec<String>) -> Self {
         self.inner.disallowed_tools = tools;
         self
     }
 
     /// Cap the turn count.
-    #[must_use]
     pub fn max_turns(mut self, n: u64) -> Self {
         self.inner.max_turns = Some(n);
         self
     }
 
     /// Cap total USD spend.
-    #[must_use]
     pub fn max_budget_usd(mut self, usd: f64) -> Self {
         self.inner.max_budget_usd = Some(usd);
         self
     }
 
     /// Specify the fallback model.
-    #[must_use]
     pub fn fallback_model(mut self, m: impl Into<String>) -> Self {
         self.inner.fallback_model = Some(m.into());
         self
     }
 
     /// Set experimental beta flags.
-    #[must_use]
     pub fn betas(mut self, betas: Vec<String>) -> Self {
         self.inner.betas = betas;
         self
     }
 
     /// Resume the most recent conversation (`--continue`).
-    #[must_use]
     pub fn continue_conversation(mut self, yes: bool) -> Self {
         self.inner.continue_conversation = yes;
         self
     }
 
     /// Set an explicit session id for a new session (distinct from `resume`).
-    #[must_use]
     pub fn session_id(mut self, id: impl Into<String>) -> Self {
         self.inner.session_id = Some(id.into());
         self
     }
 
     /// Toggle `--include-partial-messages`.
-    #[must_use]
     pub fn include_partial_messages(mut self, yes: bool) -> Self {
         self.inner.include_partial_messages = yes;
         self
     }
 
     /// Toggle `--fork-session` (spawn-time).
-    #[must_use]
     pub fn fork_session(mut self, yes: bool) -> Self {
         self.inner.fork_session = yes;
         self
     }
 
     /// Append a directory to `--add-dir` list.
-    #[must_use]
     pub fn add_dir(mut self, dir: impl Into<std::path::PathBuf>) -> Self {
         self.inner.add_dirs.push(dir.into());
         self
     }
 
     /// Replace the whole `--add-dir` list.
-    #[must_use]
     pub fn add_dirs(mut self, dirs: Vec<std::path::PathBuf>) -> Self {
         self.inner.add_dirs = dirs;
         self
     }
 
     /// Register a local plugin directory.
-    #[must_use]
     pub fn plugin_dir(mut self, path: impl Into<std::path::PathBuf>) -> Self {
         self.inner.plugins.push(SdkPluginConfig::Local { path: path.into() });
         self
     }
 
     /// Replace the whole plugin list.
-    #[must_use]
     pub fn plugins(mut self, plugins: Vec<SdkPluginConfig>) -> Self {
         self.inner.plugins = plugins;
         self
     }
 
     /// Add one env var to the subprocess environment.
-    #[must_use]
     pub fn env(mut self, k: impl Into<String>, v: impl Into<String>) -> Self {
         self.inner.env.insert(k.into(), v.into());
         self
     }
 
     /// Replace the whole env map.
-    #[must_use]
     pub fn envs(mut self, env: HashMap<String, String>) -> Self {
         self.inner.env = env;
         self
     }
 
     /// Override `$USER` in the subprocess env.
-    #[must_use]
     pub fn user(mut self, u: impl Into<String>) -> Self {
         self.inner.user = Some(u.into());
         self
     }
 
     /// Add one extra argv flag (pass `None` for bare flags).
-    #[must_use]
     pub fn extra_arg(mut self, flag: impl Into<String>, value: Option<String>) -> Self {
         self.inner.extra_args.insert(flag.into(), value);
         self
     }
 
     /// Replace the whole extra-args map.
-    #[must_use]
     pub fn extra_args(mut self, args: HashMap<String, Option<String>>) -> Self {
         self.inner.extra_args = args;
         self
     }
 
     /// Set the reasoning-effort hint.
-    #[must_use]
     pub fn effort(mut self, e: EffortLevel) -> Self {
         self.inner.effort = Some(e);
         self
     }
 
     /// Configure extended thinking.
-    #[must_use]
     pub fn thinking(mut self, t: ThinkingConfig) -> Self {
         self.inner.thinking = Some(t);
         self
     }
 
     /// Deprecated — prefer `thinking(ThinkingConfig::Enabled{..})`.
-    #[must_use]
     pub fn max_thinking_tokens(mut self, n: u64) -> Self {
         self.inner.max_thinking_tokens = Some(n);
         self
     }
 
     /// Cap total sub-agent token budget per turn.
-    #[must_use]
     pub fn task_budget(mut self, n: u64) -> Self {
         self.inner.task_budget = Some(n);
         self
@@ -738,21 +697,18 @@ impl OptionsBuilder {
 
     /// Attach a structured-output schema. Wire form:
     /// `{"type":"json_schema","schema":{...}}`.
-    #[must_use]
     pub fn output_format(mut self, value: Value) -> Self {
         self.inner.output_format = Some(value);
         self
     }
 
     /// Cap the stdout buffer size (bytes). `None` = default 1 MiB.
-    #[must_use]
     pub fn max_buffer_size(mut self, n: usize) -> Self {
         self.inner.max_buffer_size = Some(n);
         self
     }
 
     /// Attach a stderr line callback.
-    #[must_use]
     pub fn stderr(mut self, cb: impl Fn(String) + Send + Sync + 'static) -> Self {
         self.inner.stderr = Some(Arc::new(cb));
         self
@@ -762,7 +718,6 @@ impl OptionsBuilder {
     /// stream-json line read from the subprocess stdout (without
     /// trailing newline) before the SDK decodes it. Used by
     /// `forge-test-harness` to capture conformance baselines.
-    #[must_use]
     pub fn tee_inbound(mut self, cb: impl Fn(&str) + Send + Sync + 'static) -> Self {
         self.inner.tee_inbound = Some(Arc::new(cb));
         self
@@ -772,7 +727,6 @@ impl OptionsBuilder {
     /// stream-json line about to be written to the subprocess stdin
     /// (without trailing newline). Counterpart to
     /// [`tee_inbound`](Self::tee_inbound).
-    #[must_use]
     pub fn tee_outbound(mut self, cb: impl Fn(&str) + Send + Sync + 'static) -> Self {
         self.inner.tee_outbound = Some(Arc::new(cb));
         self
@@ -781,7 +735,6 @@ impl OptionsBuilder {
     /// Enable file-checkpoint tracking. Delivered via the
     /// `CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING` env var (NOT a
     /// CLI flag).
-    #[must_use]
     pub fn enable_file_checkpointing(mut self, yes: bool) -> Self {
         self.inner.enable_file_checkpointing = yes;
         self
@@ -789,7 +742,6 @@ impl OptionsBuilder {
 
     /// Set `--settings` value — either a file path or an inline JSON
     /// string. Combined with [`sandbox`](Self::sandbox) if both are set.
-    #[must_use]
     pub fn settings(mut self, s: impl Into<String>) -> Self {
         self.inner.settings = Some(s.into());
         self
@@ -797,14 +749,12 @@ impl OptionsBuilder {
 
     /// Attach sandbox settings. Merged into `--settings` JSON if
     /// `settings` is also set.
-    #[must_use]
     pub fn sandbox(mut self, sandbox: forge_primitives::SandboxSettings) -> Self {
         self.inner.sandbox = Some(sandbox);
         self
     }
 
     /// Finalise and return the `Options`.
-    #[must_use]
     pub fn build(self) -> Options {
         self.inner
     }

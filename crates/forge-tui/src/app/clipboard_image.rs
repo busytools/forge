@@ -25,7 +25,6 @@ pub enum ClipboardImageError {
 }
 
 impl ClipboardImageError {
-    #[must_use]
     pub fn user_message(self) -> &'static str {
         match self {
             ClipboardImageError::InvalidDimensions | ClipboardImageError::InvalidPixelBuffer => {

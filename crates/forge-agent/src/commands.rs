@@ -38,7 +38,6 @@ fn unique_mode_ids(modes: Vec<PermissionMode>) -> Vec<PermissionMode> {
 /// Mirrors the upstream rules: BASE + Auto (if model supports it) +
 /// `BypassPermissions` (if session allows) + the current mode itself
 /// (so the active mode never disappears mid-session).
-#[must_use]
 fn computed_supported_mode_ids_from_inputs(
     current_model_supports_auto_mode: bool,
     supports_bypass_permissions_mode: bool,
@@ -59,7 +58,6 @@ fn computed_supported_mode_ids_from_inputs(
 
 /// Returns the supported-mode list filtered by the runtime-unavailable
 /// list (but keeping the current mode if it's still set).
-#[must_use]
 pub fn supported_mode_ids_filtered(
     current_model_supports_auto_mode: bool,
     supports_bypass_permissions_mode: bool,
@@ -87,7 +85,6 @@ fn mode_info_for_id(mode: PermissionMode) -> ModeInfo {
 
 /// Maps a supported-mode list into `ModeInfo` records ready for
 /// `ModeState.available_modes`.
-#[must_use]
 fn available_modes_from_supported(supported_mode_ids: &[PermissionMode]) -> Vec<ModeInfo> {
     supported_mode_ids.iter().copied().map(mode_info_for_id).collect()
 }
@@ -95,7 +92,6 @@ fn available_modes_from_supported(supported_mode_ids: &[PermissionMode]) -> Vec<
 /// Composes a `ModeState` from the active mode + the resolved
 /// supported-mode list. Used by App-side `apply_mode_state_from_init`
 /// + `apply_optimistic_mode_change` + `apply_optimistic_model_change`.
-#[must_use]
 pub fn build_mode_state_from_supported(
     mode: PermissionMode,
     supported_mode_ids: &[PermissionMode],

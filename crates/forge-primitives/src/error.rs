@@ -24,7 +24,6 @@ impl AppError {
     pub const SESSION_NOT_FOUND_EXIT_CODE: i32 = 23;
     pub const AUTH_REQUIRED_EXIT_CODE: i32 = 24;
 
-    #[must_use]
     pub fn exit_code(&self) -> i32 {
         match self {
             Self::NodeNotFound => Self::NODE_NOT_FOUND_EXIT_CODE,
@@ -35,7 +34,6 @@ impl AppError {
         }
     }
 
-    #[must_use]
     pub fn user_message(&self) -> &'static str {
         match self {
             Self::NodeNotFound => {

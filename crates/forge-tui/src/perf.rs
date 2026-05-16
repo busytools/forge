@@ -250,13 +250,11 @@ mod enabled {
         }
 
         /// Start a named timer. Logs duration on drop.
-        #[must_use]
         pub fn start(&self, name: &'static str) -> Timer {
             Timer { name, start: Instant::now(), extra: None }
         }
 
         /// Start a named timer with an extra numeric field (e.g. message count).
-        #[must_use]
         pub fn start_with(
             &self,
             name: &'static str,
@@ -320,12 +318,10 @@ mod disabled {
         #[inline]
         pub fn next_frame(&mut self) {}
         #[inline]
-        #[must_use]
         pub fn start(&self, _name: &'static str) -> Timer {
             Timer
         }
         #[inline]
-        #[must_use]
         pub fn start_with(
             &self,
             _name: &'static str,
@@ -355,7 +351,6 @@ mod disabled {
 /// Uses the thread-local log file directly. Returns `None` (and is a no-op)
 /// when the `perf` feature is disabled or no logger has been opened.
 #[cfg(feature = "perf")]
-#[must_use]
 #[inline]
 pub fn start(name: &'static str) -> Option<Timer> {
     // Only create a timer if the log file is actually open
@@ -369,7 +364,6 @@ pub fn start(name: &'static str) -> Option<Timer> {
 }
 
 #[cfg(feature = "perf")]
-#[must_use]
 #[inline]
 pub fn start_with(name: &'static str, extra_name: &'static str, extra_val: usize) -> Option<Timer> {
     enabled::LOG_FILE.with(|f| {
@@ -386,14 +380,12 @@ pub fn start_with(name: &'static str, extra_name: &'static str, extra_val: usize
 }
 
 #[cfg(not(feature = "perf"))]
-#[must_use]
 #[inline]
 pub fn start(_name: &'static str) -> Option<Timer> {
     None
 }
 
 #[cfg(not(feature = "perf"))]
-#[must_use]
 #[inline]
 pub fn start_with(
     _name: &'static str,

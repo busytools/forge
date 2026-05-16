@@ -126,7 +126,6 @@ fn format_humanized(key: &NormalizedModelKey) -> String {
     format!("{family_lbl}{version_lbl}{context_lbl}")
 }
 
-#[must_use]
 fn humanize_model_id(id: &str) -> String {
     format_humanized(&normalize_model_key(id))
 }
@@ -231,7 +230,6 @@ fn resolve_catalog_model<'a>(
 /// session's resolved/runtime/requested model strings + the
 /// `available_models` catalogue. Primitive-arg form — callers pass
 /// what they have; no session struct dependency.
-#[must_use]
 pub fn resolve_current_model_from_inputs(
     model_id: &str,
     requested_model_id: Option<&str>,
@@ -289,7 +287,6 @@ pub fn resolve_current_model_from_inputs(
 /// Mirrors `mapAvailableModels(models)` — initialize-response `models`
 /// array → typed `AvailableModel`. Drops entries lacking a non-empty
 /// `value` or `displayName`.
-#[must_use]
 pub fn map_available_models(models: Option<&Value>) -> Vec<AvailableModel> {
     let Some(arr) = models.and_then(Value::as_array) else {
         return Vec::new();

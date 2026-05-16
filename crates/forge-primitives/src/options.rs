@@ -34,7 +34,6 @@ impl SystemPromptKind {
     /// Convenience constructor for the `claude_code` preset with an
     /// append string. Wire shape:
     /// `{"type": "preset", "preset": "claude_code", "append": ...}`.
-    #[must_use]
     pub fn preset_append(append: impl Into<String>) -> Self {
         Self::Preset { append: Some(append.into()), exclude_dynamic_sections: None }
     }

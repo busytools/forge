@@ -369,7 +369,6 @@ pub struct UiSession {
 }
 
 impl UiSession {
-    #[must_use]
     pub fn new(key: SessionKey) -> Self {
         Self { key: Some(key), last_activity_at: Instant::now(), ..Self::default() }
     }

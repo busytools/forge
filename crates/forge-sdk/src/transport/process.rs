@@ -278,7 +278,6 @@ impl Subprocess {
     /// types). The PID is stable for the lifetime of the subprocess
     /// so the scanner can cache its snapshot across polls keyed off
     /// this value.
-    #[must_use]
     pub fn child_pid(&self) -> Option<u32> {
         self.child.as_ref().and_then(tokio::process::Child::id)
     }
@@ -347,7 +346,6 @@ impl Subprocess {
     /// Used by detached control-request dispatch (the daemon's actor
     /// pattern) so a slow callback can't block the reader / command
     /// loop.
-    #[must_use]
     pub(crate) fn clone_writer(&self) -> Arc<dyn AsyncWriter> {
         Arc::new(SharedWriter { writer_tx: self.writer_tx.clone() })
     }

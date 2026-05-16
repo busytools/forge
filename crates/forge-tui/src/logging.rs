@@ -95,7 +95,6 @@ impl LoggingRuntime {
     }
 }
 
-#[must_use]
 pub fn bridge_diagnostics_enabled() -> bool {
     BRIDGE_DIAGNOSTICS_ENABLED.load(Ordering::Relaxed)
 }

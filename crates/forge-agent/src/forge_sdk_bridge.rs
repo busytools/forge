@@ -103,7 +103,6 @@ impl ForgeSdkBridge {
     /// [`AgentEvent::StatusSnapshot`]. The internal event channel
     /// is created here; consumers grab the receiver once via
     /// [`ForgeSdkBridge::take_events`].
-    #[must_use]
     pub(crate) fn new(config_dir: PathBuf, display_name: Option<String>) -> Self {
         let (event_tx, events_rx) = mpsc::unbounded_channel();
         Self {

@@ -131,7 +131,6 @@ pub enum FallbackPolicy {
 }
 
 impl FallbackPolicy {
-    #[must_use]
     pub const fn short_label(self) -> &'static str {
         match self {
             Self::None => "current value",
@@ -184,7 +183,6 @@ pub enum DefaultPermissionMode {
 }
 
 impl DefaultPermissionMode {
-    #[must_use]
     pub const fn as_stored(self) -> &'static str {
         match self {
             Self::Default => "default",
@@ -196,7 +194,6 @@ impl DefaultPermissionMode {
         }
     }
 
-    #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
             Self::Default => "Default",
@@ -208,7 +205,6 @@ impl DefaultPermissionMode {
         }
     }
 
-    #[must_use]
     pub fn from_stored(value: &str) -> Option<Self> {
         match value {
             "default" => Some(Self::Default),
@@ -221,7 +217,6 @@ impl DefaultPermissionMode {
         }
     }
 
-    #[must_use]
     pub const fn next(self) -> Self {
         match self {
             Self::Default => Self::Auto,
@@ -233,7 +228,6 @@ impl DefaultPermissionMode {
         }
     }
 
-    #[must_use]
     pub const fn prev(self) -> Self {
         match self {
             Self::Default => Self::BypassPermissions,
@@ -257,7 +251,6 @@ pub enum PreferredNotifChannel {
 }
 
 impl PreferredNotifChannel {
-    #[must_use]
     pub const fn as_stored(self) -> &'static str {
         match self {
             Self::Iterm2 => "iterm2",
@@ -268,7 +261,6 @@ impl PreferredNotifChannel {
         }
     }
 
-    #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
             Self::Iterm2 => "Auto / iTerm2",
@@ -279,7 +271,6 @@ impl PreferredNotifChannel {
         }
     }
 
-    #[must_use]
     pub fn from_stored(value: &str) -> Option<Self> {
         match value {
             "iterm2" => Some(Self::Iterm2),
@@ -303,7 +294,6 @@ pub enum OutputStyle {
 impl OutputStyle {
     pub const ALL: [Self; 3] = [Self::Default, Self::Explanatory, Self::Learning];
 
-    #[must_use]
     pub const fn as_stored(self) -> &'static str {
         match self {
             Self::Default => "Default",
@@ -312,12 +302,10 @@ impl OutputStyle {
         }
     }
 
-    #[must_use]
     pub const fn label(self) -> &'static str {
         self.as_stored()
     }
 
-    #[must_use]
     pub const fn description(self) -> &'static str {
         match self {
             Self::Default => {
@@ -330,7 +318,6 @@ impl OutputStyle {
         }
     }
 
-    #[must_use]
     pub fn from_stored(value: &str) -> Option<Self> {
         match value {
             "Default" => Some(Self::Default),
@@ -602,7 +589,6 @@ pub enum SettingValidation {
 }
 
 impl SettingValidation {
-    #[must_use]
     pub const fn is_invalid(self) -> bool {
         !matches!(self, Self::Valid)
     }
@@ -664,7 +650,6 @@ pub enum MarketplaceActionKind {
 }
 
 impl MarketplaceActionKind {
-    #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
             Self::Update => "Update",
@@ -683,7 +668,6 @@ pub enum InstalledPluginActionKind {
 }
 
 impl InstalledPluginActionKind {
-    #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
             Self::Enable => "Enable",
@@ -703,7 +687,6 @@ pub enum PluginInstallActionKind {
 }
 
 impl PluginInstallActionKind {
-    #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
             Self::User => "Install for user",
@@ -712,7 +695,6 @@ impl PluginInstallActionKind {
         }
     }
 
-    #[must_use]
     pub const fn scope(self) -> &'static str {
         match self {
             Self::User => "user",
@@ -825,7 +807,6 @@ impl Default for ConfigState {
 }
 
 impl ConfigState {
-    #[must_use]
     pub fn fast_mode_effective(&self) -> bool {
         match resolve_setting_document(&self.committed_settings_document, SettingId::FastMode, &[])
             .value
@@ -835,7 +816,6 @@ impl ConfigState {
         }
     }
 
-    #[must_use]
     pub fn always_thinking_effective(&self) -> bool {
         match resolve_setting_document(
             &self.committed_settings_document,
@@ -849,7 +829,6 @@ impl ConfigState {
         }
     }
 
-    #[must_use]
     pub fn model_effective(&self) -> Option<String> {
         match resolve_setting_document(&self.committed_settings_document, SettingId::Model, &[])
             .value
@@ -862,7 +841,6 @@ impl ConfigState {
         }
     }
 
-    #[must_use]
     pub fn thinking_effort_effective(&self) -> EffortLevel {
         // Forge defaults to `max` effort when the user hasn't set an
         // explicit value — matches the "default forge to --effort max"
@@ -873,7 +851,6 @@ impl ConfigState {
         store::thinking_effort_level(&self.committed_settings_document).unwrap_or(EffortLevel::Max)
     }
 
-    #[must_use]
     pub fn default_permission_mode_effective(&self) -> DefaultPermissionMode {
         // Forge defaults to `Auto` permission mode when the user
         // hasn't set an explicit value — mirrors the effort=max
@@ -885,33 +862,27 @@ impl ConfigState {
             .unwrap_or(DefaultPermissionMode::Auto)
     }
 
-    #[must_use]
     pub fn respect_gitignore_effective(&self) -> bool {
         store::respect_gitignore(&self.committed_preferences_document).unwrap_or(true)
     }
 
-    #[must_use]
     pub fn preferred_notification_channel_effective(&self) -> PreferredNotifChannel {
         store::preferred_notification_channel(&self.committed_preferences_document)
             .unwrap_or_default()
     }
 
-    #[must_use]
     pub fn prefers_reduced_motion_effective(&self) -> bool {
         store::prefers_reduced_motion(&self.committed_local_settings_document).unwrap_or(false)
     }
 
-    #[must_use]
     pub fn output_style_effective(&self) -> OutputStyle {
         store::output_style(&self.committed_local_settings_document).unwrap_or_default()
     }
 
-    #[must_use]
     pub fn selected_setting_spec(&self) -> Option<&'static SettingSpec> {
         setting_specs().get(self.selected_setting_index)
     }
 
-    #[must_use]
     pub fn model_and_effort_overlay(&self) -> Option<&ModelAndEffortOverlayState> {
         match &self.overlay {
             Some(ConfigOverlayState::ModelAndEffort(overlay)) => Some(overlay),
@@ -952,7 +923,6 @@ impl ConfigState {
         }
     }
 
-    #[must_use]
     pub fn output_style_overlay(&self) -> Option<&OutputStyleOverlayState> {
         match &self.overlay {
             Some(ConfigOverlayState::OutputStyle(overlay)) => Some(overlay),
@@ -993,7 +963,6 @@ impl ConfigState {
         }
     }
 
-    #[must_use]
     pub fn language_overlay(&self) -> Option<&LanguageOverlayState> {
         match &self.overlay {
             Some(ConfigOverlayState::Language(overlay)) => Some(overlay),
@@ -1034,7 +1003,6 @@ impl ConfigState {
         }
     }
 
-    #[must_use]
     pub fn session_rename_overlay(&self) -> Option<&SessionRenameOverlayState> {
         match &self.overlay {
             Some(ConfigOverlayState::SessionRename(overlay)) => Some(overlay),
@@ -1075,7 +1043,6 @@ impl ConfigState {
         }
     }
 
-    #[must_use]
     pub fn installed_plugin_actions_overlay(&self) -> Option<&InstalledPluginActionOverlayState> {
         match &self.overlay {
             Some(ConfigOverlayState::InstalledPluginActions(overlay)) => Some(overlay),
@@ -1118,7 +1085,6 @@ impl ConfigState {
         }
     }
 
-    #[must_use]
     pub fn plugin_install_overlay(&self) -> Option<&PluginInstallOverlayState> {
         match &self.overlay {
             Some(ConfigOverlayState::PluginInstallActions(overlay)) => Some(overlay),
@@ -1159,7 +1125,6 @@ impl ConfigState {
         }
     }
 
-    #[must_use]
     pub fn marketplace_actions_overlay(&self) -> Option<&MarketplaceActionsOverlayState> {
         match &self.overlay {
             Some(ConfigOverlayState::MarketplaceActions(overlay)) => Some(overlay),
@@ -1202,7 +1167,6 @@ impl ConfigState {
         }
     }
 
-    #[must_use]
     pub fn add_marketplace_overlay(&self) -> Option<&AddMarketplaceOverlayState> {
         match &self.overlay {
             Some(ConfigOverlayState::AddMarketplace(overlay)) => Some(overlay),
@@ -1243,7 +1207,6 @@ impl ConfigState {
         }
     }
 
-    #[must_use]
     pub fn path_for(&self, file: SettingFile) -> Option<&PathBuf> {
         match file {
             SettingFile::Settings => self.settings_path.as_ref(),
@@ -1252,7 +1215,6 @@ impl ConfigState {
         }
     }
 
-    #[must_use]
     pub fn document_for(&self, file: SettingFile) -> &Value {
         match file {
             SettingFile::Settings => &self.committed_settings_document,
@@ -1288,23 +1250,19 @@ impl ConfigState {
     }
 }
 
-#[must_use]
 pub const fn setting_specs() -> &'static [SettingSpec] {
     &CONFIG_SETTINGS
 }
 
-#[must_use]
 pub fn setting_spec(id: SettingId) -> &'static SettingSpec {
     &CONFIG_SETTINGS[id as usize]
 }
 
-#[must_use]
 pub fn resolved_setting(app: &App, spec: &SettingSpec) -> ResolvedSetting {
     let document = app.config.document_for(spec.file);
     resolve_setting_document(document, spec.id, app.available_models())
 }
 
-#[must_use]
 pub fn setting_display_value(app: &App, spec: &SettingSpec, resolved: &ResolvedSetting) -> String {
     match (&resolved.value, spec.id) {
         (ResolvedSettingValue::Bool(value), _) => {
@@ -1338,7 +1296,6 @@ pub fn setting_display_value(app: &App, spec: &SettingSpec, resolved: &ResolvedS
     }
 }
 
-#[must_use]
 pub fn setting_invalid_hint(spec: &SettingSpec, validation: SettingValidation) -> Option<String> {
     match validation {
         SettingValidation::Valid => None,
@@ -1354,7 +1311,6 @@ pub fn setting_invalid_hint(spec: &SettingSpec, validation: SettingValidation) -
     }
 }
 
-#[must_use]
 pub fn setting_detail_options(app: &App, spec: &SettingSpec) -> Vec<String> {
     match spec.kind {
         SettingKind::Bool => vec!["Off".to_owned(), "On".to_owned()],
