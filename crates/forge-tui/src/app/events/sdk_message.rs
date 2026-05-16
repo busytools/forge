@@ -807,8 +807,7 @@ fn apply_current_model_from_init(app: &mut App, data: &Value) {
 fn apply_mode_state_from_init(app: &mut App, data: &Value) {
     use forge_workspace::commands::{build_mode_state_from_supported, supported_mode_ids_filtered};
     use forge_workspace::PermissionMode;
-    use crate::app::connect::type_converters::convert_mode_state;
-
+    
     let Some(record) = data.as_object() else { return };
     let Some(mode_str) = record.get("permissionMode").and_then(Value::as_str) else { return };
     let Some(mode) = PermissionMode::from_wire(mode_str) else { return };
@@ -838,7 +837,7 @@ fn apply_mode_state_from_init(app: &mut App, data: &Value) {
     let _: () = app.with_turn_state_mut(|ts| ts.supported_mode_ids.clone_from(&supported));
 
     let wire_mode_state = build_mode_state_from_supported(mode, &supported);
-    let model_mode_state = convert_mode_state(wire_mode_state);
+    let model_mode_state = wire_mode_state;
     super::apply_mode_state_update(app, model_mode_state);
 }
 

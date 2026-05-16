@@ -690,7 +690,7 @@ fn handle_mode_cycle_key(app: &mut App, key: KeyEvent) -> bool {
     let modes = mode
         .available_modes
         .iter()
-        .map(|m| ModeInfo { id: m.id.clone(), name: m.name.clone() })
+        .map(|m| ModeInfo { id: m.id.clone(), name: m.name.clone(), description: None })
         .collect();
 
     if app.has_active_agent()

@@ -295,7 +295,7 @@ async fn turn_complete_does_not_affect_mode() {
     app.set_mode(Some(forge_tui::app::ModeState {
         current_mode_id: "plan".into(),
         current_mode_name: "Plan".into(),
-        available_modes: vec![forge_tui::app::ModeInfo { id: "plan".into(), name: "Plan".into() }],
+        available_modes: vec![forge_tui::app::ModeInfo { id: "plan".into(), name: "Plan".into(), description: None }],
     }));
 
     let session_key = active_session_key(&app);

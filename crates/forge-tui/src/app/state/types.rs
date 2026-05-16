@@ -1,17 +1,6 @@
 use crate::agent::model;
-use serde::{Deserialize, Serialize};
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ModeInfo {
-    pub id: String,
-    pub name: String,
-}
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ModeState {
-    pub current_mode_id: String,
-    pub current_mode_name: String,
-    pub available_modes: Vec<ModeInfo>,
-}
+pub use forge_primitives::runtime::{ModeInfo, ModeState};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum HelpView {

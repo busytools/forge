@@ -255,8 +255,7 @@ fn handle_mode_submit(app: &mut App, args: &[&str]) -> bool {
 fn apply_optimistic_mode_change(app: &mut App, requested_mode: &str) {
     use forge_workspace::commands::{build_mode_state_from_supported, supported_mode_ids_filtered};
     use forge_workspace::PermissionMode;
-    use crate::app::connect::type_converters::convert_mode_state;
-
+    
     let Some(parsed) = PermissionMode::from_wire(requested_mode) else { return };
     let _: () = app.with_turn_state_mut(|ts| ts.mode = Some(parsed));
     let supports_auto_mode =
@@ -276,7 +275,7 @@ fn apply_optimistic_mode_change(app: &mut App, requested_mode: &str) {
     crate::app::events::apply_current_mode_update(app, &current_mode_update);
 
     let wire_mode_state = build_mode_state_from_supported(parsed, &supported);
-    let model_mode_state = convert_mode_state(wire_mode_state);
+    let model_mode_state = wire_mode_state;
     crate::app::events::apply_mode_state_update(app, model_mode_state);
 }
 
@@ -327,7 +326,7 @@ fn handle_model_submit(app: &mut App, args: &[&str]) -> bool {
 fn apply_optimistic_model_change(app: &mut App, model_name: &str) {
     use forge_workspace::commands::{build_mode_state_from_supported, supported_mode_ids_filtered};
     use forge_workspace::session_lifecycle::resolve_current_model_from_inputs;
-    use crate::app::connect::type_converters::{convert_current_model, convert_mode_state};
+    use crate::app::connect::type_converters::{convert_current_model};
 
     let _: () = app.with_turn_state_mut(|ts| ts.requested_model_id = Some(model_name.to_owned()));
     let (model_id, resolved_runtime) =
@@ -356,7 +355,7 @@ fn apply_optimistic_model_change(app: &mut App, model_name: &str) {
         );
         let _: () = app.with_turn_state_mut(|ts| ts.supported_mode_ids.clone_from(&supported));
         let wire_mode_state = build_mode_state_from_supported(mode, &supported);
-        let model_mode_state = convert_mode_state(wire_mode_state);
+        let model_mode_state = wire_mode_state;
         crate::app::events::apply_mode_state_update(app, model_mode_state);
     }
 }

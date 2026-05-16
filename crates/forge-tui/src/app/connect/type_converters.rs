@@ -10,7 +10,6 @@
 //! `forge_primitives` shapes.
 
 use crate::agent::model;
-use crate::app::{ModeInfo, ModeState};
 use forge_primitives as types;
 
 // model::RateLimitStatus and model::RateLimitUpdate now alias the
@@ -425,16 +424,6 @@ pub(super) fn convert_tool_status(status: &str) -> model::ToolCallStatus {
         "failed" => model::ToolCallStatus::Failed,
         "killed" => model::ToolCallStatus::Killed,
         _ => model::ToolCallStatus::Pending,
-    }
-}
-
-pub(crate) fn convert_mode_state(mode: types::ModeState) -> ModeState {
-    let available_modes: Vec<ModeInfo> =
-        mode.available_modes.into_iter().map(|m| ModeInfo { id: m.id, name: m.name }).collect();
-    ModeState {
-        current_mode_id: mode.current_mode_id,
-        current_mode_name: mode.current_mode_name,
-        available_modes,
     }
 }
 

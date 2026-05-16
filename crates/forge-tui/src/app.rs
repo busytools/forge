@@ -846,8 +846,8 @@ mod tests {
             current_mode_id: "code".to_owned(),
             current_mode_name: "Code".to_owned(),
             available_modes: vec![
-                ModeInfo { id: "plan".to_owned(), name: "Plan".to_owned() },
-                ModeInfo { id: "code".to_owned(), name: "Code".to_owned() },
+                ModeInfo { id: "plan".to_owned(), name: "Plan".to_owned(), description: None },
+                ModeInfo { id: "code".to_owned(), name: "Code".to_owned(), description: None },
             ],
         }));
         app.input_mut().set_text("/mode pl");
