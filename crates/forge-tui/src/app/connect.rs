@@ -204,7 +204,6 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
         should_quit: false,
         exit_error: None,
         workspace: Some(workspace),
-        workspace_update_count: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         #[rustfmt::skip] #[cfg(feature = "testing")] test_dispatched_permission_outcomes: std::cell::RefCell::new(Vec::new()),
         #[rustfmt::skip] #[cfg(feature = "testing")] test_dispatched_question_outcomes: std::cell::RefCell::new(Vec::new()),
         sessions,

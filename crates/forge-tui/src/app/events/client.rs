@@ -79,9 +79,6 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
     {
         session.last_activity_at = std::time::Instant::now();
     }
-    // Smoke counter retained from Phase 1 to make the dispatcher hit
-    // count observable to integration tests.
-    app.workspace_update_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     match update {
         SessionUpdate::Spawning { key, project_name, cwd, display_name } => {
             apply_session_update_spawning(app, key, &project_name, &cwd, &display_name);

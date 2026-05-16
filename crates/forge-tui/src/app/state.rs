@@ -216,12 +216,6 @@ pub struct App {
     /// `None` only in test contexts (`App::test_default`); production
     /// startup always populates this before construction.
     pub workspace: Option<Arc<forge_workspace::Workspace>>,
-    /// Phase 1 smoke counter — incremented every time the dispatcher
-    /// observes a `ClientEvent::WorkspaceUpdate`. Real per-variant
-    /// reducers land in Phase 3a; this counter exists purely to
-    /// verify the forwarder task wired by `connect::create_app` is
-    /// actually delivering updates.
-    pub workspace_update_count: std::sync::Arc<std::sync::atomic::AtomicU64>,
     /// Test-only capture for dispatched permission/question outcomes
     /// while the App has no `workspace`. Lets the legacy permission
     /// / question unit + integration tests assert "the user-pick
@@ -2220,7 +2214,6 @@ impl App {
             should_quit: false,
             exit_error: None,
             workspace: Some(workspace),
-            workspace_update_count: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             #[rustfmt::skip] #[cfg(feature = "testing")] test_dispatched_permission_outcomes: std::cell::RefCell::new(Vec::new()),
             #[rustfmt::skip] #[cfg(feature = "testing")] test_dispatched_question_outcomes: std::cell::RefCell::new(Vec::new()),
             sessions,
