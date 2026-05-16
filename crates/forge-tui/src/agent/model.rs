@@ -550,37 +550,11 @@ impl CurrentModeUpdate {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CurrentModelUpdate {
-    pub current_model: CurrentModel,
-}
-
-impl CurrentModelUpdate {
-    pub fn new(current_model: CurrentModel) -> Self {
-        Self { current_model }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ConfigOptionUpdate {
-    pub option_id: String,
-    pub value: serde_json::Value,
-}
-
 pub use forge_primitives::runtime::FastModeState;
 
 pub use forge_primitives::RateLimitStatus;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ApiRetryError {
-    AuthenticationFailed,
-    BillingError,
-    RateLimit,
-    InvalidRequest,
-    ServerError,
-    MaxOutputTokens,
-    Unknown,
-}
+pub use forge_primitives::runtime::ApiRetryError;
 
 pub use forge_primitives::runtime::RuntimeSessionState;
 
@@ -630,76 +604,7 @@ impl PermissionOption {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct QuestionOption {
-    pub option_id: String,
-    pub label: String,
-    pub description: Option<String>,
-    pub preview: Option<String>,
-}
-
-impl QuestionOption {
-    pub fn new(option_id: impl Into<String>, label: impl Into<String>) -> Self {
-        Self { option_id: option_id.into(), label: label.into(), description: None, preview: None }
-    }
-
-    pub fn description(mut self, description: Option<String>) -> Self {
-        self.description = description;
-        self
-    }
-
-    pub fn preview(mut self, preview: Option<String>) -> Self {
-        self.preview = preview;
-        self
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct QuestionPrompt {
-    pub question: String,
-    pub header: String,
-    pub multi_select: bool,
-    pub options: Vec<QuestionOption>,
-}
-
-impl QuestionPrompt {
-    pub fn new(
-        question: impl Into<String>,
-        header: impl Into<String>,
-        multi_select: bool,
-        options: Vec<QuestionOption>,
-    ) -> Self {
-        Self { question: question.into(), header: header.into(), multi_select, options }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct QuestionAnnotation {
-    pub preview: Option<String>,
-    pub notes: Option<String>,
-}
-
-impl QuestionAnnotation {
-    pub fn new() -> Self {
-        Self { preview: None, notes: None }
-    }
-
-    pub fn preview(mut self, preview: Option<String>) -> Self {
-        self.preview = preview;
-        self
-    }
-
-    pub fn notes(mut self, notes: Option<String>) -> Self {
-        self.notes = notes;
-        self
-    }
-}
-
-impl Default for QuestionAnnotation {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+pub use forge_primitives::question::{QuestionAnnotation, QuestionOption, QuestionPrompt};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SelectedPermissionOutcome {

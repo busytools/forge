@@ -21,16 +21,9 @@ pub(crate) fn map_rate_limit_update(update: types::RateLimitUpdate) -> model::Ra
     update
 }
 
+// model::ApiRetryError == primitives::ApiRetryError — identity pass-through.
 pub(crate) fn map_api_retry_error(error: types::ApiRetryError) -> model::ApiRetryError {
-    match error {
-        types::ApiRetryError::AuthenticationFailed => model::ApiRetryError::AuthenticationFailed,
-        types::ApiRetryError::BillingError => model::ApiRetryError::BillingError,
-        types::ApiRetryError::RateLimit => model::ApiRetryError::RateLimit,
-        types::ApiRetryError::InvalidRequest => model::ApiRetryError::InvalidRequest,
-        types::ApiRetryError::ServerError => model::ApiRetryError::ServerError,
-        types::ApiRetryError::MaxOutputTokens => model::ApiRetryError::MaxOutputTokens,
-        types::ApiRetryError::Unknown => model::ApiRetryError::Unknown,
-    }
+    error
 }
 
 pub(crate) fn map_available_commands_update(
@@ -85,37 +78,9 @@ pub(crate) fn map_available_models(
         .collect()
 }
 
+// model::CurrentModel == primitives::CurrentModel. Identity transform.
 pub(crate) fn convert_current_model(current_model: types::CurrentModel) -> model::CurrentModel {
-    let mut mapped = model::CurrentModel::new(
-        current_model.resolved_id,
-        current_model.display_name_short,
-        current_model.display_name_long,
-    )
-    .supports_effort(current_model.supports_effort)
-    .supported_effort_levels(
-        current_model
-            .supported_effort_levels
-            .into_iter()
-            .map(|level| match level {
-                types::EffortLevel::Low => model::EffortLevel::Low,
-                types::EffortLevel::Medium => model::EffortLevel::Medium,
-                types::EffortLevel::High => model::EffortLevel::High,
-                types::EffortLevel::Xhigh => model::EffortLevel::Xhigh,
-                types::EffortLevel::Max => model::EffortLevel::Max,
-            })
-            .collect(),
-    )
-    .supports_fast_mode(current_model.supports_fast_mode)
-    .supports_auto_mode(current_model.supports_auto_mode)
-    .supports_adaptive_thinking(current_model.supports_adaptive_thinking)
-    .authoritative(current_model.is_authoritative);
-    if let Some(requested_id) = current_model.requested_id {
-        mapped = mapped.requested_id(requested_id);
-    }
-    if let Some(catalog_id) = current_model.catalog_id {
-        mapped = mapped.catalog_id(catalog_id);
-    }
-    mapped
+    current_model
 }
 
 pub(crate) fn map_permission_request(
