@@ -69,6 +69,7 @@ pub mod session_key;
 pub mod session_meta;
 pub mod session_update;
 pub mod subagents;
+pub mod turn_error;
 pub mod usage;
 
 pub use command::Command;
@@ -88,6 +89,7 @@ pub use hooks::{
 };
 pub use ids::{MessageId, SessionId, ToolUseId};
 pub use session_key::SessionKey;
+pub use turn_error::TurnErrorClass;
 pub use image::{
     ImageAttachment, SUPPORTED_IMAGE_MIME_TYPES, is_supported_image_type, is_valid_base64,
     validate_image,

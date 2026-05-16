@@ -46,33 +46,11 @@ use tokio::sync::oneshot;
 
 use crate::SessionKey;
 
-/// Turn-error classification. The full surface (including the
-/// `Internal` / `Other` matrix) lives in
-/// `forge_agent::translate::error_handling`; this slimmer enum is
-/// re-stated here so the protocol module doesn't fan an
-/// implementation-detail crate dependency through every consumer of
-/// `SessionUpdate`. The two enums agree on variant names; the
-/// [`From`] impl below maps between them so future variant divergence
-/// becomes a compile error rather than a silent drop.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TurnErrorClass {
-    PlanLimit,
-    AuthRequired,
-    Internal,
-    Other,
-}
-
-impl From<forge_agent::translate::error_handling::TurnErrorClass> for TurnErrorClass {
-    fn from(value: forge_agent::translate::error_handling::TurnErrorClass) -> Self {
-        use forge_agent::translate::error_handling::TurnErrorClass as Src;
-        match value {
-            Src::PlanLimit => Self::PlanLimit,
-            Src::AuthRequired => Self::AuthRequired,
-            Src::Internal => Self::Internal,
-            Src::Other => Self::Other,
-        }
-    }
-}
+// `TurnErrorClass` lives in forge-primitives so the classifier (in
+// forge-agent) and consumers (in forge-tui, via this protocol module)
+// share one enum. Re-exported here so existing call sites keep
+// resolving via `forge_workspace::protocol::TurnErrorClass`.
+pub use forge_primitives::TurnErrorClass;
 
 /// One pending interaction response slot. Workspace stores these
 /// keyed by `tool_id` in `DomainSession.pending_interactions`.
