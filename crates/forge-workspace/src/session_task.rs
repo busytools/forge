@@ -667,27 +667,6 @@ pub(crate) fn execute_command_via_handle(
             );
             Ok(())
         }
-        // The remaining variants (CloseSession, the four Request*
-        // refresh commands, RuntimeReload, UpdatePermissions)
-        // aren't wired through `dispatch` yet — they predate the
-        // Phase 6 strict-wiring pass and remain stubs. Refresh
-        // commands flow via `Workspace::refresh_*` direct methods
-        // instead.
-        stub @ (Command::CloseSession { .. }
-        | Command::RequestStatusSnapshot { .. }
-        | Command::RequestMcpSnapshot { .. }
-        | Command::RequestContextUsage { .. }
-        | Command::RequestOauthCredentials { .. }
-        | Command::RuntimeReload { .. }
-        | Command::UpdatePermissions { .. }) => {
-            tracing::trace!(
-                target: "forge_workspace::session_task",
-                key = %key.as_str(),
-                command = ?stub,
-                "command received but not yet wired to AgentHandle"
-            );
-            Ok(())
-        }
         // App-level commands are caught in Workspace::dispatch's
         // app-level branch; they never reach this helper.
         misrouted @ (Command::SpawnProject { .. }

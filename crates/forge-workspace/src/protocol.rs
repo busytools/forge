@@ -15,7 +15,6 @@ use forge_primitives::cloud::service_status::ServiceSeverity;
 use forge_primitives::error::AppError;
 use forge_primitives::permission::PermissionMode;
 use forge_primitives::permission_ui::{PermissionOutcome, PermissionRequest};
-use forge_primitives::permissions::PermissionUpdate;
 use forge_primitives::plugins::{PluginsCliActionSuccess, PluginsInventorySnapshot};
 use forge_primitives::question::{QuestionOutcome, QuestionRequest};
 use forge_primitives::runtime::{AvailableModel, CurrentModel, ModeState, TerminalReason};
@@ -59,13 +58,13 @@ impl From<forge_agent::translate::error_handling::TurnErrorClass> for TurnErrorC
 
 /// One pending interaction response slot. Workspace stores these
 /// keyed by `tool_id` in `DomainSession.pending_interactions`.
-/// `Command::RespondPermission` / `RespondQuestion` /
-/// `RespondElicitation` look up the matching slot and send the
-/// outcome down the oneshot.
+/// `Command::RespondPermission` / `RespondQuestion` look up the
+/// matching slot and send the outcome down the oneshot.
+/// `RespondElicitation` bypasses this map and dispatches directly
+/// to `AgentHandle::respond_to_elicitation`.
 pub enum PendingInteractionSlot {
     Permission(oneshot::Sender<PermissionOutcome>),
     Question(oneshot::Sender<QuestionOutcome>),
-    Elicitation(oneshot::Sender<ElicitationAction>),
 }
 
 impl std::fmt::Debug for PendingInteractionSlot {
@@ -73,7 +72,6 @@ impl std::fmt::Debug for PendingInteractionSlot {
         match self {
             Self::Permission(_) => f.write_str("PendingInteractionSlot::Permission"),
             Self::Question(_) => f.write_str("PendingInteractionSlot::Question"),
-            Self::Elicitation(_) => f.write_str("PendingInteractionSlot::Elicitation"),
         }
     }
 }
@@ -183,34 +181,6 @@ pub enum Command {
         server_name: String,
         callback_url: String,
     },
-    CloseSession {
-        key: SessionKey,
-    },
-    RequestStatusSnapshot {
-        key: SessionKey,
-        session_id: String,
-    },
-    RequestMcpSnapshot {
-        key: SessionKey,
-        session_id: String,
-    },
-    RequestContextUsage {
-        key: SessionKey,
-        session_id: String,
-    },
-    RequestOauthCredentials {
-        key: SessionKey,
-        session_id: String,
-    },
-    RuntimeReload {
-        key: SessionKey,
-        session_id: String,
-    },
-    UpdatePermissions {
-        key: SessionKey,
-        session_id: String,
-        update: PermissionUpdate,
-    },
     /// User clicked an inactive project to wake it. No `key` — the
     /// session doesn't exist yet; workspace synthesizes a key and
     /// emits `SessionUpdate::Spawning` then `::Connected` with the
@@ -266,14 +236,7 @@ impl Command {
             | Self::SetMcpServers { key, .. }
             | Self::AuthenticateMcpServer { key, .. }
             | Self::ClearMcpAuth { key, .. }
-            | Self::SubmitMcpOauthCallbackUrl { key, .. }
-            | Self::CloseSession { key }
-            | Self::RequestStatusSnapshot { key, .. }
-            | Self::RequestMcpSnapshot { key, .. }
-            | Self::RequestContextUsage { key, .. }
-            | Self::RequestOauthCredentials { key, .. }
-            | Self::RuntimeReload { key, .. }
-            | Self::UpdatePermissions { key, .. } => Some(key),
+            | Self::SubmitMcpOauthCallbackUrl { key, .. } => Some(key),
             Self::SpawnProject { .. } | Self::SpawnSession { .. } | Self::StartDefault { .. } => {
                 None
             }
