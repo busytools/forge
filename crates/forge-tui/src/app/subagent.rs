@@ -2,7 +2,7 @@ use super::{App, FocusTarget, dialog::DialogState};
 
 /// Maximum candidates shown in the dropdown.
 pub const MAX_VISIBLE: usize = 8;
-const MAX_CANDIDATES: usize = 50;
+use super::MAX_CANDIDATES;
 
 #[derive(Debug, Clone)]
 pub struct SubagentCandidate {

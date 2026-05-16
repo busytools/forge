@@ -5,6 +5,7 @@ mod config;
 mod diff;
 mod diff_overlay;
 mod document_table;
+pub(crate) mod format;
 pub(crate) mod help;
 mod highlight;
 mod input;

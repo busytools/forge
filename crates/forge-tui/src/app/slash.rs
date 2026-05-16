@@ -15,7 +15,7 @@ use super::{
 use crate::agent::model;
 
 pub const MAX_VISIBLE: usize = 8;
-const MAX_CANDIDATES: usize = 50;
+use super::MAX_CANDIDATES;
 
 // Re-export public API
 pub use executors::try_handle_submit;

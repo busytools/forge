@@ -84,6 +84,11 @@ use std::time::{Duration, Instant};
 const SPINNER_FRAME_INTERVAL_NORMAL: Duration = Duration::from_millis(30);
 const SPINNER_FRAME_INTERVAL_REDUCED: Duration = Duration::from_millis(120);
 
+/// Hard cap on candidates shown in autocomplete dropdowns
+/// (file_index, slash, subagent). Same value across the three so a
+/// single change here covers every dropdown.
+pub(crate) const MAX_CANDIDATES: usize = 50;
+
 // ---------------------------------------------------------------------------
 // Terminal suspend / resume helpers (reused by /login, /logout)
 // ---------------------------------------------------------------------------

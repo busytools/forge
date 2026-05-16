@@ -6,10 +6,11 @@ use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender, TryRecvError};
 use std::time::{Duration, SystemTime};
 
+use super::MAX_CANDIDATES;
+
 const SCAN_BATCH_SIZE: usize = 256;
 const EVENT_DRAIN_BUDGET: usize = 64;
 const WATCH_POLL_INTERVAL: Duration = Duration::from_millis(100);
-const MAX_CANDIDATES: usize = 50;
 
 #[derive(Clone, Debug)]
 pub struct FileCandidate {

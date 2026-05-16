@@ -358,25 +358,12 @@ fn name_budget_org_row(area_width: u16) -> usize {
 }
 
 /// Format `activity` as a short relative-time string anchored at
-/// `now` (`now` / `Xm` / `Xh` / `Xd` / `Xw`), padded/truncated to a
-/// stable 3-char column.
+/// `now`, padded/truncated to a stable 3-char column. None → 3 spaces.
 fn format_relative_time(activity: Option<SystemTime>, now: SystemTime) -> String {
     let Some(activity) = activity else {
         return "   ".to_owned();
     };
-    let elapsed = now.duration_since(activity).unwrap_or_default();
-    let secs = elapsed.as_secs();
-    let raw = if secs < 60 {
-        "now".to_owned()
-    } else if secs < 3600 {
-        format!("{}m", secs / 60)
-    } else if secs < 86_400 {
-        format!("{}h", secs / 3600)
-    } else if secs < 604_800 {
-        format!("{}d", secs / 86_400)
-    } else {
-        format!("{}w", (secs / 604_800).min(99))
-    };
+    let raw = super::format::relative_time(activity, now);
     if raw.chars().count() > 3 { raw.chars().take(3).collect() } else { format!("{raw:>3}") }
 }
 
