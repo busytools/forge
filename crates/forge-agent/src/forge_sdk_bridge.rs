@@ -162,6 +162,9 @@ impl ForgeSdkBridge {
         server_name: Option<String>,
         error_msg: String,
     ) {
+        let session_id_for_log = session_id.clone();
+        let server_name_for_log = server_name.clone();
+        let error_msg_for_log = error_msg.clone();
         let event = AgentEvent::McpOperationError {
             session_id,
             error: forge_primitives::McpOperationError {
@@ -170,19 +173,13 @@ impl ForgeSdkBridge {
                 message: error_msg,
             },
         };
-        if let Err(send_err) = event_tx.send(event) {
-            // Unreachable in practice — we just constructed
-            // McpOperationError on the line above and the SendError
-            // wraps the unsent event verbatim.
-            let AgentEvent::McpOperationError { session_id, error } = send_err.0 else {
-                unreachable!("McpOperationError just constructed above")
-            };
+        if event_tx.send(event).is_err() {
             tracing::warn!(
                 target: crate::logging::targets::BRIDGE_LIFECYCLE,
-                session_id = %session_id,
+                session_id = %session_id_for_log,
                 operation,
-                server_name = ?error.server_name,
-                error_msg = %error.message,
+                server_name = ?server_name_for_log,
+                error_msg = %error_msg_for_log,
                 "event channel closed; McpOperationError dropped",
             );
         }
