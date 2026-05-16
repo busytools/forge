@@ -139,12 +139,9 @@ fn render_pane_separator(frame: &mut Frame, area: Rect) {
 }
 
 /// Render the live FPS indicator at the top-right of `frame_area`.
-/// Always on in default builds — the FPS counter itself is computed
-/// unconditionally (`App::mark_frame_presented` / `App::frame_fps`)
-/// and the overlay is cheap (one styled `Line`, one rect). The
-/// `#[cfg(feature = "perf")]` gate that used to guard this was
-/// dropped so the user can see render rate live without a special
-/// build.
+/// Always on — the FPS counter is computed unconditionally
+/// (`App::mark_frame_presented` / `App::frame_fps`) and the overlay
+/// is cheap (one styled `Line`, one rect).
 fn render_perf_fps_overlay(frame: &mut Frame, frame_area: Rect, y: u16, app: &App) {
     if frame_area.height == 0 || y >= frame_area.y + frame_area.height {
         return;

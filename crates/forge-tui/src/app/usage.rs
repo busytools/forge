@@ -8,11 +8,6 @@ use forge_workspace::SessionKey;
 /// `UsageState` on the active session. The pool is refreshed every
 /// 30 s by the workspace's background poller; this function is
 /// purely a sync read-and-copy — no fetch task, no TTL logic.
-///
-/// Historical note: this used to spawn a per-session OAuth fetch on
-/// a 120 s TTL. That path is retired — the workspace now owns the
-/// usage cache as the single source of truth and polls all
-/// configured accounts on a shared cadence. See `Workspace::start_usage_poller`.
 pub(crate) fn request_refresh_if_needed(app: &mut App) {
     let Some(workspace) = app.workspace.as_ref() else { return };
     let Some(name) = app.active_account_display_name() else { return };

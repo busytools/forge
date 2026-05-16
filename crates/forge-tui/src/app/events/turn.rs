@@ -633,9 +633,8 @@ fn apply_question_request_to_background_bucket(
     }
 }
 
-/// Auto-reject a permission via the workspace channel. The chosen
-/// option mirrors the pre-Phase-1 inline behaviour: pick the last
-/// option (typically "reject_once"). The workspace pops the
+/// Auto-reject a permission via the workspace channel. Picks the
+/// last option (typically "reject_once") — the workspace pops the
 /// matching oneshot and the bridge forwards the response.
 fn auto_reject_permission_via_workspace(
     app: &App,
@@ -753,14 +752,9 @@ pub(crate) mod test_capture {
     use super::App;
 
     /// Test-only: pop the first captured permission outcome whose
-    /// `tool_id` matches. Mirrors the legacy
-    /// `oneshot::Receiver::try_recv()` shape that the pre-Phase-1
-    /// permission tests used to assert "the user-pick handler fired
-    /// outcome X for tool_id Y" without needing a live workspace.
-    ///
-    /// Returns the captured outcome on hit; returns
-    /// `Err(TryRecvError::Empty)` on miss so tests can still match
-    /// on the oneshot error shape.
+    /// `tool_id` matches. Returns the captured outcome on hit;
+    /// returns `Err(TryRecvError::Empty)` on miss so tests can
+    /// still match on the oneshot error shape.
     pub fn try_take_dispatched_permission_outcome(
         app: &App,
         tool_id: &str,

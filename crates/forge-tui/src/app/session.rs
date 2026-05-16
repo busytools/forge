@@ -350,10 +350,8 @@ pub struct UiSession {
     pub last_chat_render_trace_state: Option<ChatRenderTraceState>,
 
     /// Per-session input editor. Each session owns its own input
-    /// state; switching the active session naturally swaps the editor
-    /// because the accessor reads from this bucket. Replaces the
-    /// pre-Phase-6 App-level `input` field plus the per-bucket
-    /// `draft_input` snapshot/restore dance in `switch_active_session`.
+    /// state; switching the active session naturally swaps the
+    /// editor because the accessor reads from this bucket.
     pub input: InputState,
 }
 

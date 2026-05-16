@@ -1,9 +1,7 @@
 //! Helper that pivots `App.active_session_key` to a target bucket
-//! around a closure, then restores the App-level UI state. The
-//! pre-Phase-4 ad-hoc snapshot-restore pattern (a manual sequence of
-//! `let prior_* = ...;` saves followed by manual restore) is
-//! encapsulated here in a single safe abstraction so callers don't
-//! reimplement it and the boundary is auditable.
+//! around a closure, then restores the App-level UI state. Wraps
+//! the snapshot-restore dance so callers don't reimplement it and
+//! the boundary is auditable.
 //!
 //! Used by the background-session SDK message dispatcher and the
 //! background-Connected welcome/history-replay path: both need to

@@ -113,9 +113,7 @@ impl SessionTask {
 
         // Mirror Connected/SessionReplaced into the project catalog
         // so the Projects pane's drilldown reflects newly-spawned
-        // sessions without forcing a full disk re-scan. Pre-Phase-4
-        // this was done by `Workspace::record_event_for_domain`; now
-        // it's inlined here since `SessionTask` owns the event drain.
+        // sessions without forcing a full disk re-scan.
         if let AgentEvent::Connected { session_id, cwd, .. }
         | AgentEvent::SessionReplaced { session_id, cwd, .. } = &event
             && !cwd.is_empty()
