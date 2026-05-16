@@ -779,19 +779,7 @@ pub struct RateLimitUpdate {
     pub surpassed_threshold: Option<f64>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SessionStatus {
-    Compacting,
-    Idle,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CompactionTrigger {
-    Manual,
-    Auto,
-}
+pub use forge_primitives::runtime::{CompactionTrigger, SessionStatus};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompactionBoundary {
