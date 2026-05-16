@@ -305,16 +305,6 @@ mod enabled {
         pub(crate) extra: Option<(&'static str, usize)>,
     }
 
-    // `stop` consumes self but the actual logging happens via `Drop`.
-    // The receiver is part of the API contract (call site `timer.stop()`).
-    #[allow(clippy::unused_self)]
-    impl Timer {
-        /// Manually stop and log. Useful when you need to end timing before scope exit.
-        pub fn stop(self) {
-            // Drop impl handles logging
-        }
-    }
-
     impl Drop for Timer {
         fn drop(&mut self) {
             let ms = self.start.elapsed().as_secs_f64() * 1000.0;
@@ -361,14 +351,6 @@ mod disabled {
         }
     }
 
-    // Stub impl for the `!perf` feature path — methods are no-ops.
-    // The receiver shape matches the `feature = "perf"` impl so call
-    // sites compile under both feature flags without an `if` ladder.
-    #[allow(clippy::unused_self)]
-    impl Timer {
-        #[inline]
-        pub fn stop(self) {}
-    }
 }
 
 /// Start a timer without needing a `PerfLogger` reference.
