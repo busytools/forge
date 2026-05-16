@@ -600,39 +600,7 @@ impl RequestPermissionRequest {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct PermissionDisplay {
-    pub title: Option<String>,
-    pub display_name: Option<String>,
-    pub description: Option<String>,
-}
-
-impl PermissionDisplay {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn title(mut self, title: Option<String>) -> Self {
-        self.title = title;
-        self
-    }
-
-    pub fn display_name(mut self, display_name: Option<String>) -> Self {
-        self.display_name = display_name;
-        self
-    }
-
-    pub fn description(mut self, description: Option<String>) -> Self {
-        self.description = description;
-        self
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.title.as_ref().is_none_or(|value| value.trim().is_empty())
-            && self.display_name.as_ref().is_none_or(|value| value.trim().is_empty())
-            && self.description.as_ref().is_none_or(|value| value.trim().is_empty())
-    }
-}
+pub use forge_primitives::permission_ui::PermissionDisplay;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RequestQuestionRequest {

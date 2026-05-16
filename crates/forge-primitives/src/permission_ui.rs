@@ -30,6 +30,34 @@ pub struct PermissionDisplay {
     pub description: Option<String>,
 }
 
+impl PermissionDisplay {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn title(mut self, title: Option<String>) -> Self {
+        self.title = title;
+        self
+    }
+
+    pub fn display_name(mut self, display_name: Option<String>) -> Self {
+        self.display_name = display_name;
+        self
+    }
+
+    pub fn description(mut self, description: Option<String>) -> Self {
+        self.description = description;
+        self
+    }
+
+    /// `true` iff every field is None or contains only whitespace.
+    pub fn is_empty(&self) -> bool {
+        self.title.as_ref().is_none_or(|value| value.trim().is_empty())
+            && self.display_name.as_ref().is_none_or(|value| value.trim().is_empty())
+            && self.description.as_ref().is_none_or(|value| value.trim().is_empty())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum PermissionOutcome {
