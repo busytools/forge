@@ -848,10 +848,10 @@ impl Workspace {
                 Err(DispatchError::UnknownSession(key))
             }
         } else {
-            // App-level commands: route into `spawn::*` handlers. The
-            // spawn handlers run on a tokio task because they await
-            // `get_agent_handle_with_spawn_key` (which blocks the
-            // sender if we ran it inline).
+            // App-level commands: route into `spawn::*` handlers on
+            // a tokio task so the dispatch loop returns promptly.
+            // The handlers themselves are sync; the spawn just
+            // detaches them from this thread.
             let workspace = Arc::clone(self);
             match cmd {
                 Command::SpawnProject { project_name, launch_settings } => {

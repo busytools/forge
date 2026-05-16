@@ -343,19 +343,21 @@ pub(super) fn apply_session_update_question_request(
 pub(super) fn apply_session_update_mcp_elicitation_request(
     app: &mut App,
     key: SessionKey,
-    elicitation_id: String,
+    _elicitation_id: String,
     request: forge_primitives::ElicitationRequest,
 ) {
-    let _ = elicitation_id;
+    // `_elicitation_id` is part of the wire envelope for future
+    // correlation but the reducer holds the single-in-flight
+    // invariant via the App overlay surface — no per-id tracking
+    // needed today.
     if app.active_session_key.as_ref() != Some(&key) {
         return;
     }
     crate::app::config::present_mcp_elicitation_request(app, request);
 }
 
-/// Shared body for the legacy ClientEvent path and the new
-/// SessionUpdate reducer. Looks up the target bucket by `key` and
-/// applies the question request to it directly — no temp-swap.
+/// Look up the target bucket by `key` and apply the question
+/// request directly — no temp-swap.
 fn apply_question_request_presentation(
     app: &mut App,
     session_key: &SessionKey,

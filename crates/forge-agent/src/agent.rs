@@ -336,9 +336,9 @@ impl Agent {
 
         let (commands_tx, commands_rx) = mpsc::unbounded_channel::<AgentCommand>();
         // Hand a fresh empty channel as the agent_events receiver so
-        // the AgentHandle shape matches production. Nothing will ever
-        // push to it; `take_events()` returns the dead receiver and
-        // `recv()` parks forever.
+        // the AgentHandle shape matches production. The `_dead_tx`
+        // drops at end of scope; `take_events()` returns the
+        // receiver and its first `recv()` then returns `None`.
         let (_dead_tx, dead_rx) = mpsc::unbounded_channel::<crate::client::AgentEvent>();
 
         let handle = AgentHandle {

@@ -356,6 +356,10 @@ mod tests {
                 return;
             }
         }
+        // Bound exhausted — surface a clear timeout failure instead
+        // of letting downstream assertions fail against a still-
+        // Searching mention state.
+        panic!("mention search did not settle within 1s (200 × 5ms)");
     }
 
     #[test]

@@ -194,13 +194,20 @@ async fn forge_sdk_e2e_cancel_mid_turn() {
         )
         .expect("prompt queued");
 
-    // Give the CLI a beat to start the turn, then cancel. We don't
-    // gate on receiving a chunk first — a long task may emit thinking
-    // chunks (which the translator drops today) or no chunk at all
-    // before the interrupt lands. The contract under test is: the
-    // worker forwards `cancel` to the CLI and a terminal frame
-    // (TurnComplete or TurnError) reaches us.
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    // Wait for the first non-init event from the CLI before sending
+    // cancel — a 2s fixed sleep races on loaded CI runners where the
+    // turn hasn't started yet. We don't strictly require a chunk
+    // (long tasks may emit only thinking chunks the translator
+    // drops, or no chunk before the interrupt lands) — receiving
+    // ANY event from the CLI after prompt is sufficient evidence
+    // the turn is in flight. Bounded by 5s so a hung CLI still
+    // fails cleanly rather than hanging the test.
+    let pre_cancel_deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while tokio::time::Instant::now() < pre_cancel_deadline
+        && tokio::time::timeout(Duration::from_millis(500), event_rx.recv())
+            .await
+            .is_err()
+    {}
     agent.cancel(session_id).expect("cancel queued");
     eprintln!("e2e cancel: interrupt sent");
 
