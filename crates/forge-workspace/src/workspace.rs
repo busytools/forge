@@ -86,17 +86,13 @@ pub struct Workspace {
     domain_handles: Mutex<HashMap<SessionKey, Arc<Mutex<DomainSession>>>>,
 }
 
-/// Pool entry wrapping the live `Arc<AgentHandle>` together with
-/// the account it was spawned against. The account binding is
-/// retained so Phase 4+ can surface "which credential pool is this
-/// session running on" in the UI, and so tests can verify the
-/// picker's choice round-trips through the pool.
+/// Pool entry wrapping the live `Arc<AgentHandle>`. Tests assert
+/// which account each spawn was bound to; that binding lives behind
+/// `cfg(test)` so production carries no dead field.
 #[derive(Clone)]
 pub(crate) struct PooledAgent {
     pub handle: Arc<AgentHandle>,
-    /// Which account this session is bound to. Phase 1b uses this
-    /// for test-only inspection; Phase 4+ surfaces it.
-    #[allow(dead_code)] // surfaced in Phase 4+; tests read via pool_accounts_for_test
+    #[cfg(test)]
     pub account: AccountKey,
 }
 
@@ -369,7 +365,11 @@ impl Workspace {
             }
             pool.insert(
                 session_key.clone(),
-                PooledAgent { handle: Arc::clone(&arc), account: account_key },
+                PooledAgent {
+                    handle: Arc::clone(&arc),
+                    #[cfg(test)]
+                    account: account_key,
+                },
             );
         }
 
@@ -1276,10 +1276,6 @@ fn classify_oauth_usage_error(
 
 #[cfg(test)]
 impl Workspace {
-    pub fn pool_len_for_test(&self) -> usize {
-        self.pool.lock().len()
-    }
-
     pub fn pool_accounts_for_test(&self) -> Vec<String> {
         self.pool.lock().values().map(|p| p.account.0.clone()).collect()
     }
@@ -1864,7 +1860,11 @@ config_dir = "~/.claude-personal"
         let arc = Arc::new(handle);
         workspace.pool.lock().insert(
             key.clone(),
-            PooledAgent { handle: Arc::clone(&arc), account: AccountKey("test".to_owned()) },
+            PooledAgent {
+                handle: Arc::clone(&arc),
+                #[cfg(test)]
+                account: AccountKey("test".to_owned()),
+            },
         );
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<Command>();
         workspace.command_senders.lock().insert(key.clone(), cmd_tx);

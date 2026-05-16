@@ -1,8 +1,7 @@
 //! Anthropic plan-usage snapshot data shapes.
 //!
-//! Type-only — the fetcher impls (HTTP via `oauth_usage.rs`, shell-out
-//! via `cli.rs`) live in `forge_agent::cloud::*`. These are the wire
-//! shapes consumers see.
+//! Type-only — the fetcher impl (HTTP via `oauth_usage.rs`) lives in
+//! `forge_agent::cloud::*`. These are the wire shapes consumers see.
 
 pub mod oauth;
 
@@ -10,15 +9,12 @@ pub mod oauth;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UsageSourceKind {
     Oauth,
-    Cli,
 }
 
 impl UsageSourceKind {
-    #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
             Self::Oauth => "oauth",
-            Self::Cli => "cli",
         }
     }
 }
@@ -43,8 +39,8 @@ pub struct ExtraUsage {
 }
 
 /// Snapshot of the user's Anthropic plan utilization at a point in time.
-/// Composed by the cloud module's `oauth` / `cli` fetchers and
-/// rendered by forge-tui's usage view.
+/// Composed by the cloud module's `oauth` fetcher and rendered by
+/// forge-tui's usage view.
 #[derive(Debug, Clone, PartialEq)]
 pub struct UsageSnapshot {
     pub source: UsageSourceKind,
