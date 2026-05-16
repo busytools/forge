@@ -25,7 +25,6 @@ sha2 = "0.10"
 uuid = { version = "1", features = ["v4"] }
 time = { version = "0.3", features = ["parsing", "formatting"] }
 unicode-normalization = "0.1"
-tokio-stream = "0.1"
 regex = "1"
 parking_lot = "0.12"
 clap = { version = "4", features = ["derive"] }
@@ -61,8 +60,6 @@ forge-agent = { path = "crates/forge-agent", version = "=0.15.1" }
 forge-workspace = { path = "crates/forge-workspace", version = "=0.15.1" }
 
 # Dev-only
-proptest = "1"
-insta = { version = "1", features = ["yaml"] }
 pretty_assertions = "1"
 tempfile = "3"
 
