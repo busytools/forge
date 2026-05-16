@@ -13,6 +13,24 @@ fn post_connect_refreshes(app: &mut App) {
     crate::app::usage::request_refresh_if_needed(app);
 }
 
+/// Apply `f` only when `cwd_raw` matches the app's current cwd; log
+/// and drop the event otherwise. Plugin lifecycle events are
+/// cwd-scoped and stale ones from a previous project must not affect
+/// the active project's inventory.
+fn dispatch_if_cwd_matches(app: &mut App, cwd_raw: &str, event_name: &str, f: impl FnOnce(&mut App)) {
+    if app.cwd_raw() != cwd_raw {
+        tracing::debug!(
+            target: crate::logging::targets::APP_CONFIG,
+            event_name,
+            expected_cwd = %app.cwd_raw(),
+            received_cwd = %cwd_raw,
+            "stale-cwd plugin event dropped"
+        );
+    } else {
+        f(app);
+    }
+}
+
 /// Compact discriminant name for a wire `Message`. Used by the
 /// `sdk_message_dropped` error log so a triage grep can see whether
 /// the dropped envelope was a Result (TurnComplete carrier),
@@ -226,56 +244,24 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
             crate::app::usage::apply_refresh_failure_for(app, &key, message, source);
         }
         SessionUpdate::PluginsInventoryUpdated { cwd_raw, snapshot, claude_path } => {
-            if app.cwd_raw() != cwd_raw {
-                tracing::debug!(
-                    target: crate::logging::targets::APP_CONFIG,
-                    event_name = "plugins_inventory_dropped",
-                    expected_cwd = %app.cwd_raw(),
-                    received_cwd = %cwd_raw,
-                    "plugins inventory for stale cwd dropped"
-                );
-            } else {
+            dispatch_if_cwd_matches(app, &cwd_raw, "plugins_inventory_dropped", |app| {
                 crate::app::plugins::apply_inventory_refresh_success(app, snapshot, claude_path);
-            }
+            });
         }
         SessionUpdate::PluginsInventoryRefreshFailed { cwd_raw, message } => {
-            if app.cwd_raw() != cwd_raw {
-                tracing::debug!(
-                    target: crate::logging::targets::APP_CONFIG,
-                    event_name = "plugins_inventory_failure_dropped",
-                    expected_cwd = %app.cwd_raw(),
-                    received_cwd = %cwd_raw,
-                    "plugins inventory failure for stale cwd dropped"
-                );
-            } else {
+            dispatch_if_cwd_matches(app, &cwd_raw, "plugins_inventory_failure_dropped", |app| {
                 crate::app::plugins::apply_inventory_refresh_failure(app, message);
-            }
+            });
         }
         SessionUpdate::PluginsCliActionSucceeded { cwd_raw, result } => {
-            if app.cwd_raw() != cwd_raw {
-                tracing::debug!(
-                    target: crate::logging::targets::APP_CONFIG,
-                    event_name = "plugins_cli_success_dropped",
-                    expected_cwd = %app.cwd_raw(),
-                    received_cwd = %cwd_raw,
-                    "plugins cli success for stale cwd dropped"
-                );
-            } else {
+            dispatch_if_cwd_matches(app, &cwd_raw, "plugins_cli_success_dropped", |app| {
                 crate::app::plugins::apply_cli_action_success(app, result);
-            }
+            });
         }
         SessionUpdate::PluginsCliActionFailed { cwd_raw, message } => {
-            if app.cwd_raw() != cwd_raw {
-                tracing::debug!(
-                    target: crate::logging::targets::APP_CONFIG,
-                    event_name = "plugins_cli_failure_dropped",
-                    expected_cwd = %app.cwd_raw(),
-                    received_cwd = %cwd_raw,
-                    "plugins cli failure for stale cwd dropped"
-                );
-            } else {
+            dispatch_if_cwd_matches(app, &cwd_raw, "plugins_cli_failure_dropped", |app| {
                 crate::app::plugins::apply_cli_action_failure(app, message);
-            }
+            });
         }
     }
     if is_active_or_global {
