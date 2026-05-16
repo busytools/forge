@@ -434,7 +434,15 @@ impl ForgeSdkBridge {
                     None
                 }
             };
-            let _ = event_tx.send(AgentEvent::OauthCredentialsSnapshot { session_id, credentials });
+            if event_tx
+                .send(AgentEvent::OauthCredentialsSnapshot { session_id, credentials })
+                .is_err()
+            {
+                tracing::warn!(
+                    target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                    "event channel closed; OauthCredentialsSnapshot dropped",
+                );
+            }
             Ok(())
         })
     }
@@ -444,8 +452,15 @@ impl ForgeSdkBridge {
         self.dispatch("get_context_usage", move |client| async move {
             let usage = client.get_context_usage().await?;
             let percentage = forge_sdk_worker::clamp_percentage_to_u8(usage.percentage);
-            let _ = event_tx
-                .send(AgentEvent::ContextUsage { session_id, percentage: Some(percentage) });
+            if event_tx
+                .send(AgentEvent::ContextUsage { session_id, percentage: Some(percentage) })
+                .is_err()
+            {
+                tracing::warn!(
+                    target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                    "event channel closed; ContextUsage dropped",
+                );
+            }
             Ok(())
         })
     }
@@ -455,7 +470,15 @@ impl ForgeSdkBridge {
         self.dispatch("reload_plugins", move |client| async move {
             match client.reload_plugins().await {
                 Ok(_) => {
-                    let _ = event_tx.send(AgentEvent::RuntimeReloadCompleted { session_id });
+                    if event_tx
+                        .send(AgentEvent::RuntimeReloadCompleted { session_id })
+                        .is_err()
+                    {
+                        tracing::warn!(
+                            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                            "event channel closed; RuntimeReloadCompleted dropped",
+                        );
+                    }
                 }
                 Err(e) => {
                     let msg = format!("reload_plugins failed: {e}");
@@ -479,11 +502,19 @@ impl ForgeSdkBridge {
         let event_tx = self.inner.event_tx.clone();
         self.dispatch("get_mcp_snapshot", move |client| async move {
             let response = client.mcp_status().await?;
-            let _ = event_tx.send(AgentEvent::McpSnapshot {
-                session_id,
-                servers: response.mcp_servers,
-                error: None,
-            });
+            if event_tx
+                .send(AgentEvent::McpSnapshot {
+                    session_id,
+                    servers: response.mcp_servers,
+                    error: None,
+                })
+                .is_err()
+            {
+                tracing::warn!(
+                    target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                    "event channel closed; McpSnapshot dropped",
+                );
+            }
             Ok(())
         })
     }
@@ -589,14 +620,22 @@ impl ForgeSdkBridge {
                         .and_then(serde_json::Value::as_str)
                         .map(str::to_owned);
                     if let Some(auth_url) = url {
-                        let _ = event_tx.send(AgentEvent::McpAuthRedirect {
-                            session_id,
-                            redirect: forge_primitives::McpAuthRedirect {
-                                server_name,
-                                auth_url,
-                                requires_user_action: true,
-                            },
-                        });
+                        if event_tx
+                            .send(AgentEvent::McpAuthRedirect {
+                                session_id,
+                                redirect: forge_primitives::McpAuthRedirect {
+                                    server_name,
+                                    auth_url,
+                                    requires_user_action: true,
+                                },
+                            })
+                            .is_err()
+                        {
+                            tracing::warn!(
+                                target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                                "event channel closed; McpAuthRedirect dropped",
+                            );
+                        }
                     } else {
                         // Without a redirect URL the TUI's authenticating
                         // overlay would hang forever — surface as an

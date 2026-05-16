@@ -58,10 +58,9 @@ pub(super) fn apply_session_update_permission_request(
     apply_permission_request_presentation(app, &key, &tool_id, model_request);
 }
 
-/// Shared body for the legacy ClientEvent path and the new
-/// SessionUpdate reducer. Looks up the target bucket by `key` and
-/// applies the permission request to it directly — no temp-swap on
-/// `active_session_key`. Active vs background routing happens inside
+/// Look up the target bucket by `key` and apply the permission
+/// request directly — no temp-swap on `active_session_key`. Active
+/// vs background routing happens inside
 /// [`apply_permission_request_to_bucket`].
 fn apply_permission_request_presentation(
     app: &mut App,
@@ -337,10 +336,9 @@ pub(super) fn apply_session_update_question_request(
 /// `SessionUpdate::McpElicitationRequest` reducer. The
 /// elicitation dialogue is an App-global UI overlay that's only
 /// meaningful for the active session; background-session requests
-/// are dropped at the routing layer (matching the legacy ClientEvent
-/// path's behaviour). `elicitation_id` rides on the envelope for
-/// routing-side correlation but the presentation helper consumes
-/// only `request` — the id is already embedded in
+/// are dropped at the routing layer. `elicitation_id` rides on the
+/// envelope for routing-side correlation but the presentation
+/// helper consumes only `request` — the id is already embedded in
 /// [`forge_primitives::ElicitationRequest`].
 pub(super) fn apply_session_update_mcp_elicitation_request(
     app: &mut App,
