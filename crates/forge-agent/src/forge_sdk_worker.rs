@@ -1028,19 +1028,9 @@ mod tests {
     }
 
     #[test]
-    fn elicitation_action_variants_match_expected_wire_strings() {
-        let cases = [
-            (ElicitationAction::Accept, "accept"),
-            (ElicitationAction::Decline, "decline"),
-            (ElicitationAction::Cancel, "cancel"),
-        ];
-        for (action, expected) in cases {
-            let actual = match action {
-                ElicitationAction::Accept => "accept",
-                ElicitationAction::Decline => "decline",
-                ElicitationAction::Cancel => "cancel",
-            };
-            assert_eq!(actual, expected);
-        }
+    fn elicitation_action_wire_strings() {
+        assert_eq!(ElicitationAction::Accept.as_wire_str(), "accept");
+        assert_eq!(ElicitationAction::Decline.as_wire_str(), "decline");
+        assert_eq!(ElicitationAction::Cancel.as_wire_str(), "cancel");
     }
 }

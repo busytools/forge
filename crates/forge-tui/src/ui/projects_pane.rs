@@ -999,10 +999,9 @@ fn fast_mode_label_and_color(app: &App) -> (&'static str, Color) {
 /// `…` — there's no room for content + ellipsis at those budgets.
 ///
 /// Counts Unicode chars, not bytes, so multibyte labels truncate at
-/// a sane visual position. Note that non-ASCII chars with display
-/// width > 1 (CJK, some emoji) may still overflow visually; the
-/// pane's content is project + session names which are overwhelmingly
-/// ASCII or near-ASCII in practice.
+/// a sane visual position. CJK / wide-emoji chars (display width > 1)
+/// may still overflow visually; project + session names are
+/// near-ASCII in practice.
 ///
 /// Exposed as `pub(super)` so `top_bar` can reuse the same routine
 /// for the active-context label without duplicating the logic.

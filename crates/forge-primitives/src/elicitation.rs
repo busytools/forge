@@ -18,6 +18,17 @@ pub enum ElicitationAction {
     Cancel,
 }
 
+impl ElicitationAction {
+    /// String the `claude` CLI expects on the wire for this action.
+    pub const fn as_wire_str(self) -> &'static str {
+        match self {
+            Self::Accept => "accept",
+            Self::Decline => "decline",
+            Self::Cancel => "cancel",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ElicitationRequest {
     pub request_id: String,

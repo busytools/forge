@@ -410,8 +410,15 @@ impl ForgeSdkBridge {
                 }
             };
             let forge_account = display_name.map(forge_primitives::ForgeAccountIdentity::new);
-            let _ =
-                event_tx.send(AgentEvent::StatusSnapshot { session_id, account, forge_account });
+            if event_tx
+                .send(AgentEvent::StatusSnapshot { session_id, account, forge_account })
+                .is_err()
+            {
+                tracing::warn!(
+                    target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                    "event channel closed; StatusSnapshot dropped",
+                );
+            }
             Ok(())
         })
     }
@@ -536,11 +543,7 @@ impl ForgeSdkBridge {
         // stale-session drop would leave the agent waiting forever
         // for a response that no longer comes.
         self.trace_session_id_bypass(&session_id, "respond_to_elicitation");
-        let action_str = match action {
-            ElicitationAction::Accept => "accept",
-            ElicitationAction::Decline => "decline",
-            ElicitationAction::Cancel => "cancel",
-        };
+        let action_str = action.as_wire_str();
         self.dispatch("respond_to_elicitation", move |client| async move {
             client.respond_to_elicitation(&elicitation_request_id, action_str, content).await?;
             Ok(())

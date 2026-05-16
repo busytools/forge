@@ -145,7 +145,7 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
     loop {
         start_connection(app);
 
-        // Phase 1: wait for at least one event or the next frame tick
+        // Wait for an event or the next frame tick.
         let time_to_next = tick_duration.saturating_sub(last_render.elapsed());
         tokio::select! {
             Some(Ok(event)) = events.next() => {
@@ -169,7 +169,7 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
             () = tokio::time::sleep(time_to_next) => {}
         }
 
-        // Phase 2: drain all remaining queued events (non-blocking)
+        // Drain any remaining queued events without blocking.
         loop {
             // Try terminal events first (keeps typing responsive)
             if let Some(Some(Ok(event))) = events.next().now_or_never() {
@@ -239,12 +239,10 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
             break;
         }
 
-        // Phase 3: render once (only when something changed)
-        //
-        // Extra is_animating clause: any background session in
-        // Running / Spawning keeps the spinner ticking so the Projects
-        // pane's per-row spinners actually animate (the active session
-        // already drives ticks via `app.status` above).
+        // Render once, only when something changed. The extra
+        // is_animating clause keeps the per-row spinners on background
+        // Running / Spawning sessions animating; the active session
+        // already drives ticks via `app.status` above.
         let any_background_running = app.sessions.values().any(|s| {
             matches!(
                 s.lifecycle_state,
