@@ -13,7 +13,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::{Duration, SystemTime};
 
 const SCAN_BATCH_SIZE: usize = 256;
@@ -395,10 +395,3 @@ fn replace_subtree_change(
     Some(FileIndexChange::ReplacePrefix { rel_prefix, entries })
 }
 
-// Silence the `Sender` unused warning in non-test builds — the
-// `tx.send` calls in the spawn closures consume the sender's clone.
-#[allow(dead_code)]
-fn _phantom_sender_hint() -> Sender<ScanProgress> {
-    let (tx, _rx) = mpsc::channel();
-    tx
-}
