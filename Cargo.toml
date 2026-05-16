@@ -51,6 +51,9 @@ unicode-segmentation = "1.12"
 unicode-width = "0.2"
 base64 = "0.22"
 sysinfo = { version = "0.32", default-features = false, features = ["system"] }
+futures = "0.3.31"
+arboard = { version = "3.6.1", features = ["image-data"] }
+which = "8.0.2"
 
 # Workspace-internal crates
 forge-primitives = { path = "crates/forge-primitives", version = "=0.15.1" }
