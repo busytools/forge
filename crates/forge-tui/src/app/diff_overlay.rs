@@ -811,13 +811,19 @@ fn save_active_input(app: &mut App) {
 /// `Paragraph::scroll`.
 const SCROLL_LINES_PER_NOTCH: u16 = 3;
 
-/// Wide-tier FILES rail width. Shared with the renderer.
-pub(crate) const RAIL_WIDTH_WIDE: u16 = 40;
-/// Medium-tier FILES rail width.
-pub(crate) const RAIL_WIDTH_MEDIUM: u16 = 30;
-/// Wide-tier terminal width threshold (≥ this → Wide).
-pub(crate) const WIDE_MIN: u16 = 160;
-/// Medium-tier terminal width threshold (≥ this → Medium).
+/// Maximum FILES rail width. The rail tops out here regardless of
+/// terminal width; beyond ~30 columns the extra space goes to waste
+/// because file paths are usually short.
+pub(crate) const RAIL_WIDTH_MAX: u16 = 30;
+/// Minimum FILES rail width when the rail is shown. Below this the
+/// file list becomes unreadably narrow; we hide the rail entirely.
+pub(crate) const RAIL_WIDTH_MIN: u16 = 20;
+/// Fraction of the terminal width the rail aims for: ~22%. Picked so
+/// a 120-col terminal lands at 26 (below max) and a 160-col terminal
+/// lands at the max 30.
+pub(crate) const RAIL_WIDTH_NUMER: u16 = 22;
+pub(crate) const RAIL_WIDTH_DENOM: u16 = 100;
+/// Medium-tier terminal width threshold (≥ this → rail visible).
 pub(crate) const MEDIUM_MIN: u16 = 120;
 
 /// First file row in the FILES rail. Rows above this are:
@@ -838,13 +844,11 @@ pub(crate) const BODY_HEAD_ROWS: usize = 3;
 /// renderer at `crate::ui::diff_overlay::render` so the rail's
 /// width and the click-handler's column threshold never drift.
 pub(crate) fn rail_width_for(terminal_width: u16) -> u16 {
-    if terminal_width >= WIDE_MIN {
-        RAIL_WIDTH_WIDE
-    } else if terminal_width >= MEDIUM_MIN {
-        RAIL_WIDTH_MEDIUM
-    } else {
-        0
+    if terminal_width < MEDIUM_MIN {
+        return 0;
     }
+    let proportional = terminal_width.saturating_mul(RAIL_WIDTH_NUMER) / RAIL_WIDTH_DENOM;
+    proportional.clamp(RAIL_WIDTH_MIN, RAIL_WIDTH_MAX)
 }
 
 /// Outcome of a mouse interaction. Some interactions need access
@@ -1873,19 +1877,22 @@ mod tests {
     }
 
     #[test]
-    fn rail_width_picks_wide_at_160() {
-        assert_eq!(rail_width_for(160), RAIL_WIDTH_WIDE);
-        assert_eq!(rail_width_for(200), RAIL_WIDTH_WIDE);
+    fn rail_width_caps_at_max_on_wide_terminals() {
+        assert_eq!(rail_width_for(160), RAIL_WIDTH_MAX);
+        assert_eq!(rail_width_for(300), RAIL_WIDTH_MAX);
     }
 
     #[test]
-    fn rail_width_picks_medium_between_120_and_160() {
-        assert_eq!(rail_width_for(120), RAIL_WIDTH_MEDIUM);
-        assert_eq!(rail_width_for(159), RAIL_WIDTH_MEDIUM);
+    fn rail_width_scales_proportionally_in_medium_band() {
+        // 120 × 22 / 100 = 26 (under MAX, over MIN → clamped to 26).
+        assert_eq!(rail_width_for(120), 26);
+        // 145 × 22 / 100 = 31, clamped down to MAX (30).
+        assert_eq!(rail_width_for(145), RAIL_WIDTH_MAX);
     }
 
     #[test]
-    fn rail_width_collapses_at_narrow_tier() {
+    fn rail_width_clamps_to_min_on_borderline_terminals() {
+        // Anything below MEDIUM_MIN hides the rail entirely.
         assert_eq!(rail_width_for(119), 0);
         assert_eq!(rail_width_for(80), 0);
     }
