@@ -1,7 +1,8 @@
 //! Slash command executors: dispatching parsed commands to their handler functions.
 
 use super::{
-    parse, push_system_message, push_user_message, require_active_session, require_connection,
+    parse, push_system_info, push_system_message, push_user_message, require_active_session,
+    require_connection,
     set_command_pending,
 };
 use crate::app::App;
@@ -172,16 +173,16 @@ fn handle_mode_submit(app: &mut App, args: &[&str]) -> bool {
                 }
             },
         );
-        push_system_message(app, format!("Mode: {label}"));
+        push_system_info(app, format!("Mode: {label}"));
         return true;
     }
     let [requested_mode_arg] = args else {
-        push_system_message(app, "Usage: /mode [id]");
+        push_system_info(app, "Usage: /mode [id]");
         return true;
     };
     let requested_mode = requested_mode_arg.trim();
     if requested_mode.is_empty() {
-        push_system_message(app, "Usage: /mode [id]");
+        push_system_info(app, "Usage: /mode [id]");
         return true;
     }
 
@@ -267,16 +268,16 @@ fn handle_model_submit(app: &mut App, args: &[&str]) -> bool {
                 }
             },
         );
-        push_system_message(app, format!("Model: {label}"));
+        push_system_info(app, format!("Model: {label}"));
         return true;
     }
     let [model_name_arg] = args else {
-        push_system_message(app, "Usage: /model [id]");
+        push_system_info(app, "Usage: /model [id]");
         return true;
     };
     let model_name = model_name_arg.trim();
     if model_name.is_empty() {
-        push_system_message(app, "Usage: /model [id]");
+        push_system_info(app, "Usage: /model [id]");
         return true;
     }
 
@@ -359,16 +360,16 @@ fn handle_effort_submit(app: &mut App, args: &[&str]) -> bool {
 
     if args.is_empty() {
         let level = app.config.thinking_effort_effective();
-        push_system_message(app, format!("Effort: {} ({})", level.label(), level.as_stored()));
+        push_system_info(app, format!("Effort: {} ({})", level.label(), level.as_stored()));
         return true;
     }
     let [requested_arg] = args else {
-        push_system_message(app, "Usage: /effort [low|medium|high|xhigh|max]");
+        push_system_info(app, "Usage: /effort [low|medium|high|xhigh|max]");
         return true;
     };
     let requested = requested_arg.trim();
     if requested.is_empty() {
-        push_system_message(app, "Usage: /effort [low|medium|high|xhigh|max]");
+        push_system_info(app, "Usage: /effort [low|medium|high|xhigh|max]");
         return true;
     }
     let Some(level) = EffortLevel::from_stored(requested) else {
@@ -385,7 +386,7 @@ fn handle_effort_submit(app: &mut App, args: &[&str]) -> bool {
     match crate::app::config::store::save(&path, &next_document) {
         Ok(()) => {
             app.config.committed_settings_document = next_document;
-            push_system_message(
+            push_system_info(
                 app,
                 format!("Effort: {} (takes effect next session)", level.label()),
             );

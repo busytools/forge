@@ -226,16 +226,24 @@ pub(super) fn supported_command_candidates(app: &App) -> Vec<SlashCandidate> {
         claude.insert(name, cmd.description.clone());
     }
 
-    let mut out: Vec<SlashCandidate> = Vec::with_capacity(forge.len() + 1 + claude.len());
+    let mut out: Vec<SlashCandidate> =
+        Vec::with_capacity(1 + forge.len() + 1 + claude.len());
+    // Empty `insert_value` flags a non-selectable group divider —
+    // the dropdown renders these as a DIM rule + label and
+    // navigation skips them.
+    if !forge.is_empty() {
+        out.push(SlashCandidate {
+            insert_value: String::new(),
+            primary: "forge".into(),
+            secondary: None,
+        });
+    }
     out.extend(forge.into_iter().map(|(name, description)| SlashCandidate {
         insert_value: name.clone(),
         primary: name,
         secondary: if description.trim().is_empty() { None } else { Some(description) },
     }));
     if !claude.is_empty() {
-        // Empty `insert_value` flags this as a non-selectable group
-        // divider; the dropdown renders it as a DIM rule with the
-        // `claude` label, and selection navigation skips it.
         out.push(SlashCandidate {
             insert_value: String::new(),
             primary: "claude".into(),

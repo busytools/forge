@@ -1,11 +1,13 @@
 use super::{App, FocusTarget, dialog::DialogState, file_index};
 
-/// Maximum candidates shown in the dropdown. Bumped from 8 to 16
-/// so the slash command list (which can carry 30-50 entries when
-/// the claude CLI advertises many) is browsable without typing —
-/// the user can press `/` and arrow through ~16 entries on screen,
-/// scrolling past that via the standard `DialogState::move_*` slide.
-pub const MAX_VISIBLE: usize = 16;
+/// Maximum candidates shown in the dropdown. Picked tall enough
+/// that the full forge group (~10 entries) + the `── claude ──`
+/// divider + most of the claude advertised set (~20) is visible
+/// at a glance when the user presses `/` — no scrolling required
+/// for typical pane heights. `choose_dropdown_y` will silently
+/// clip if the terminal is too short; the standard
+/// `DialogState::move_*` slide handles scrolling past the clip.
+pub const MAX_VISIBLE: usize = 32;
 /// Minimum query length before scanning the filesystem for matches.
 pub const MIN_QUERY_CHARS: usize = 1;
 

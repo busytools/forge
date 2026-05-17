@@ -680,27 +680,28 @@ fn render_account_status_footer(frame: &mut Frame, area: Rect, app: &mut App) ->
     height
 }
 
-/// Stamp the click target for the Session row's trailing `⎘` glyph.
-/// Row layout: row 0 rule, row 1 Profile, row 2 Org, row 3 Session.
-/// The glyph sits at `panel_area.x + panel_width - PANEL_RIGHT_GUTTER
-/// - 1` (1 cell wide). Only stamped when the active session has
-///   an id — no point copying an empty string.
+/// Stamp the click target for the Session row's trailing ` ⎘ `
+/// 3-cell button. Row layout: row 0 rule, row 1 Profile, row 2 Org,
+/// row 3 Session. The button occupies the rightmost 3 cells before
+/// the 1-col right gutter (matches the project-row close button's
+/// shape + position). Hit band has 1 cell of tolerance on the left
+/// — same as the close button at `[row_right - 5, row_right - 1)` —
+/// so a near-miss still registers. Only stamped when the active
+/// session has an id.
 fn stamp_session_copy_hit_target(app: &mut App, panel_area: Rect) {
     let Some(session_id) = app.session_id().map(|sid| sid.to_string()) else {
         return;
     };
-    let glyph_x = panel_area
-        .x
-        .saturating_add(panel_area.width)
-        .saturating_sub(u16::try_from(PANEL_RIGHT_GUTTER).unwrap_or(1))
-        .saturating_sub(1);
+    let panel_right = panel_area.x.saturating_add(panel_area.width);
+    let x_start = panel_right.saturating_sub(5);
+    let x_end = panel_right.saturating_sub(1);
     let y = panel_area.y.saturating_add(3); // rule + Profile + Org + Session
     app.pane_hit_targets.push(PaneHitTarget::CopySessionId {
         session_id,
         y,
         height: 1,
-        x_start: glyph_x,
-        x_end: glyph_x.saturating_add(1),
+        x_start,
+        x_end,
     });
 }
 
@@ -798,35 +799,44 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         Span::raw(org_fitted),
     ]));
 
-    // Session. First 8 chars of the session id when known; trailing
-    // ⎘ copies the full id to the clipboard (click target stamped in
-    // `stamp_session_copy_hit_target` against the panel's row 2).
-    // The glyph sits flush at the panel's right gutter regardless of
-    // value length so its hit-test column is independent of pane
-    // width.
+    // ID. First 8 chars of the active session's UUID when known
+    // (labelled `ID` rather than `Session` so the short hex string
+    // reads as an identifier, not a name). Trailing ` ⎘ ` 3-cell
+    // button — same shape + slate background as the project-row
+    // close button — copies the FULL session id to the OS clipboard.
+    // Button sits flush at the right gutter regardless of value
+    // length so its hit column doesn't shift with pane width.
+    // Click target stamped in `stamp_session_copy_hit_target`.
     let session_value = app.session_id().map_or_else(
         || "—".to_owned(),
         |sid| sid.to_string().chars().take(8).collect::<String>(),
     );
-    // Reserve 2 cells for the trailing ` ⎘` so the short id can't
-    // bleed into the glyph column at narrow widths.
-    let session_value_budget = value_budget.saturating_sub(2);
+    // Reserve 4 cells at the right end of the value area: 3 for the
+    // ` ⎘ ` button + 1 for the right gutter (matches the close
+    // button's right edge on project rows).
+    let session_value_budget = value_budget.saturating_sub(4);
     let session_fitted = truncate_with_ellipsis(&session_value, session_value_budget);
-    let glyph_pad_cells = value_budget
-        .saturating_sub(session_fitted.chars().count())
-        .saturating_sub(1);
+    let pad_cells =
+        value_budget.saturating_sub(session_fitted.chars().count()).saturating_sub(4);
     let mut session_spans = vec![
         Span::raw(" "),
-        label_span("Session", ACCOUNT_PANEL_ID_LABEL_WIDTH),
+        label_span("ID", ACCOUNT_PANEL_ID_LABEL_WIDTH),
         Span::raw("  "),
         Span::styled(session_fitted, Style::default().fg(theme::DIM)),
-        Span::raw(" ".repeat(glyph_pad_cells)),
+        Span::raw(" ".repeat(pad_cells)),
     ];
     if app.session_id().is_some() {
-        session_spans.push(Span::styled("⎘", Style::default().fg(theme::DIM)));
+        session_spans.push(Span::styled(
+            " \u{2398} ".to_owned(),
+            Style::default()
+                .fg(Color::Gray)
+                .bg(theme::USER_MSG_BG)
+                .add_modifier(Modifier::BOLD),
+        ));
     } else {
-        session_spans.push(Span::raw(" "));
+        session_spans.push(Span::raw("   "));
     }
+    session_spans.push(Span::raw(" "));
     lines.push(Line::from(session_spans));
 
     // Mode.

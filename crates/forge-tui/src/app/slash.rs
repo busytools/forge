@@ -90,6 +90,22 @@ pub(super) fn push_system_message(app: &mut App, text: impl Into<String>) {
     app.active_viewport_mut().engage_auto_scroll();
 }
 
+/// Push an info-severity system message — the success / status
+/// variant. `push_system_message` (severity `None`) renders as
+/// red Error per `system_severity_from_role`; use this for non-
+/// error feedback like `/mode` / `/model` / `/effort` no-arg
+/// getters and successful "Set X to Y" confirmations.
+pub(super) fn push_system_info(app: &mut App, text: impl Into<String>) {
+    let text = text.into();
+    app.push_message_tracked(ChatMessage::new(
+        MessageRole::System(Some(super::SystemSeverity::Info)),
+        vec![MessageBlock::Text(TextBlock::from_complete(&text))],
+        None,
+    ));
+    app.enforce_history_retention_tracked();
+    app.active_viewport_mut().engage_auto_scroll();
+}
+
 fn push_user_message(app: &mut App, text: impl Into<String>) {
     let text = text.into();
     app.push_message_tracked(ChatMessage::new(
