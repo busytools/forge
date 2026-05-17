@@ -680,9 +680,9 @@ fn render_account_status_footer(frame: &mut Frame, area: Rect, app: &mut App) ->
     height
 }
 
-/// Stamp the click target for the ID row's trailing 5-cell copy
+/// Stamp the click target for the ID row's trailing 4-cell copy
 /// button. Row layout: row 0 rule, row 1 Profile, row 2 Org, row 3
-/// ID. The button occupies the rightmost 5 cells before the 1-col
+/// ID. The button occupies the rightmost 4 cells before the 1-col
 /// right gutter. Hit band has 1 cell of tolerance on the left so a
 /// near-miss still registers. Only stamped when the active session
 /// has an id.
@@ -691,7 +691,7 @@ fn stamp_session_copy_hit_target(app: &mut App, panel_area: Rect) {
         return;
     };
     let panel_right = panel_area.x.saturating_add(panel_area.width);
-    let x_start = panel_right.saturating_sub(7);
+    let x_start = panel_right.saturating_sub(6);
     let x_end = panel_right.saturating_sub(1);
     let y = panel_area.y.saturating_add(3); // rule + Profile + Org + ID
     app.pane_hit_targets.push(PaneHitTarget::CopySessionId {
@@ -799,7 +799,7 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
 
     // ID. First 8 chars of the active session's UUID when known
     // (labelled `ID` rather than `Session` so the short hex string
-    // reads as an identifier, not a name). Trailing 5-cell button
+    // reads as an identifier, not a name). Trailing 4-cell button
     // with slate background — copies the FULL session id to the OS
     // clipboard. Button sits flush at the right gutter regardless of
     // value length so its hit column doesn't shift with pane width.
@@ -807,12 +807,11 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let session_value = app
         .session_id()
         .map_or_else(|| "—".to_owned(), |sid| sid.to_string().chars().take(8).collect::<String>());
-    // Reserve 6 cells at the right end of the value area: 5 for the
-    // button + 1 for the right gutter (matches the close button's
-    // right edge on project rows).
-    let session_value_budget = value_budget.saturating_sub(6);
+    // Reserve 5 cells at the right end of the value area: 4 for the
+    // button + 1 for the right gutter.
+    let session_value_budget = value_budget.saturating_sub(5);
     let session_fitted = truncate_with_ellipsis(&session_value, session_value_budget);
-    let pad_cells = value_budget.saturating_sub(session_fitted.chars().count()).saturating_sub(6);
+    let pad_cells = value_budget.saturating_sub(session_fitted.chars().count()).saturating_sub(5);
     let mut session_spans = vec![
         Span::raw(" "),
         label_span("ID", ACCOUNT_PANEL_ID_LABEL_WIDTH),
@@ -822,11 +821,11 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     ];
     if app.session_id().is_some() {
         session_spans.push(Span::styled(
-            "  \u{29C9}  ".to_owned(),
+            " \u{29C9}  ".to_owned(),
             Style::default().fg(Color::Gray).bg(theme::USER_MSG_BG).add_modifier(Modifier::BOLD),
         ));
     } else {
-        session_spans.push(Span::raw("     "));
+        session_spans.push(Span::raw("    "));
     }
     session_spans.push(Span::raw(" "));
     lines.push(Line::from(session_spans));
