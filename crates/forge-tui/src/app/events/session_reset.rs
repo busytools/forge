@@ -86,7 +86,6 @@ fn reset_interaction_state_for_new_session(app: &mut App) {
     app.available_commands_mut().clear();
     app.available_agents_mut().clear();
     app.config.overlay = None;
-    app.config.pending_session_title_change = None;
 }
 
 fn reset_render_state_for_new_session(app: &mut App) {

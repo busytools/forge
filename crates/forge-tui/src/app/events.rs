@@ -1503,7 +1503,7 @@ mod tests {
     #[test]
     fn connected_requests_mcp_snapshot_even_outside_mcp_tab() {
         let (mut app, mut rx) = app_with_bridge_connection();
-        app.config.active_tab = crate::app::config::ConfigTab::Status;
+        app.config.active_tab = crate::app::config::ConfigTab::Settings;
         app.mcp_mut().servers.push(forge_primitives::McpServerStatus {
             name: "supabase".into(),
             status: forge_primitives::McpServerConnectionStatus::Connected,
@@ -1658,11 +1658,6 @@ mod tests {
             capability: crate::app::plugins::PluginCapability::Skill,
         });
         app.plugins.last_inventory_refresh_at = Some(Instant::now());
-        app.config.pending_session_title_change =
-            Some(crate::app::config::PendingSessionTitleChangeState {
-                session_id: "old-session".into(),
-                kind: crate::app::config::PendingSessionTitleChangeKind::Generate,
-            });
 
         apply_session_update(&mut app, connected_event("claude-updated"));
 
@@ -1674,7 +1669,6 @@ mod tests {
         assert!(app.account_info().is_none());
         assert!(app.plugins.installed.is_empty());
         assert!(app.plugins.last_inventory_refresh_at.is_none());
-        assert!(app.config.pending_session_title_change.is_none());
     }
 
     #[test]
@@ -1852,7 +1846,7 @@ mod tests {
     #[test]
     fn session_replaced_requests_mcp_snapshot_even_outside_mcp_tab() {
         let (mut app, mut rx) = app_with_bridge_connection();
-        app.config.active_tab = crate::app::config::ConfigTab::Status;
+        app.config.active_tab = crate::app::config::ConfigTab::Settings;
         app.mcp_mut().servers.push(forge_primitives::McpServerStatus {
             name: "supabase".into(),
             status: forge_primitives::McpServerConnectionStatus::Connected,
@@ -2249,69 +2243,6 @@ mod tests {
     }
 
     #[test]
-    fn sessions_listed_completes_pending_session_rename() {
-        let mut app = make_test_app();
-        app.config.pending_session_title_change =
-            Some(crate::app::config::PendingSessionTitleChangeState {
-                session_id: "session-1".to_owned(),
-                kind: crate::app::config::PendingSessionTitleChangeKind::Rename {
-                    requested_title: Some("Renamed session".to_owned()),
-                },
-            });
-
-        apply_session_update(
-            &mut app,
-            SessionUpdate::SessionsListed {
-                key: forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY),
-                sessions: vec![forge_primitives::SessionListEntry {
-                    session_id: "session-1".to_owned(),
-                    summary: "Renamed session".to_owned(),
-                    last_modified_ms: 1,
-                    file_size_bytes: 2,
-                    cwd: Some("/test".to_owned()),
-                    git_branch: None,
-                    custom_title: Some("Renamed session".to_owned()),
-                    first_prompt: Some("prompt".to_owned()),
-                }],
-            },
-        );
-
-        assert!(app.config.pending_session_title_change.is_none());
-        assert_eq!(
-            app.config.status_message.as_deref(),
-            Some("Renamed session to Renamed session")
-        );
-        assert!(app.config.last_error.is_none());
-        assert_eq!(app.recent_sessions().len(), 1);
-    }
-
-    #[test]
-    fn slash_command_error_for_pending_session_rename_stays_in_config_feedback() {
-        let mut app = make_test_app();
-        app.config.pending_session_title_change =
-            Some(crate::app::config::PendingSessionTitleChangeState {
-                session_id: "session-1".to_owned(),
-                kind: crate::app::config::PendingSessionTitleChangeKind::Rename {
-                    requested_title: Some("Renamed session".to_owned()),
-                },
-            });
-
-        let session_key = active_session_key(&app);
-        apply_session_update(
-            &mut app,
-            SessionUpdate::SlashCommandError {
-                key: session_key,
-                message: "failed to rename session: boom".into(),
-            },
-        );
-
-        assert!(app.config.pending_session_title_change.is_none());
-        assert_eq!(app.config.last_error.as_deref(), Some("failed to rename session: boom"));
-        assert!(app.config.status_message.is_none());
-        assert!(app.messages().is_empty());
-    }
-
-    #[test]
     fn mcp_operation_error_stays_in_mcp_feedback_and_out_of_chat() {
         let mut app = make_test_app();
         app.config.active_tab = crate::app::config::ConfigTab::Mcp;
@@ -2343,37 +2274,6 @@ mod tests {
         assert!(app.config.status_message.is_none());
         assert!(!app.mcp().in_flight);
         assert!(app.messages().is_empty());
-    }
-
-    #[test]
-    fn sessions_listed_completes_pending_session_title_generation() {
-        let mut app = make_test_app();
-        app.config.pending_session_title_change =
-            Some(crate::app::config::PendingSessionTitleChangeState {
-                session_id: "session-1".to_owned(),
-                kind: crate::app::config::PendingSessionTitleChangeKind::Generate,
-            });
-
-        apply_session_update(
-            &mut app,
-            SessionUpdate::SessionsListed {
-                key: forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY),
-                sessions: vec![forge_primitives::SessionListEntry {
-                    session_id: "session-1".to_owned(),
-                    summary: "Generated session".to_owned(),
-                    last_modified_ms: 1,
-                    file_size_bytes: 2,
-                    cwd: Some("/test".to_owned()),
-                    git_branch: None,
-                    custom_title: Some("Generated session".to_owned()),
-                    first_prompt: Some("prompt".to_owned()),
-                }],
-            },
-        );
-
-        assert!(app.config.pending_session_title_change.is_none());
-        assert_eq!(app.config.status_message.as_deref(), Some("Generated session title"));
-        assert!(app.config.last_error.is_none());
     }
 
     #[test]

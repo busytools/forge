@@ -17,11 +17,10 @@ const SUBAGENT_NAME_MAX_WIDTH: usize = 28;
 const SUBAGENT_NAME_MAX_SHARE_NUM: usize = 2;
 const SUBAGENT_NAME_MAX_SHARE_DEN: usize = 5;
 const HELP_PANEL_HEIGHT: u16 = 14;
-const HELP_BUILTIN_SLASH_COMMANDS: [(&str, &str); 4] = [
+const HELP_BUILTIN_SLASH_COMMANDS: [(&str, &str); 3] = [
     ("/config", "Open settings"),
     ("/mcp", "Open MCP"),
     ("/plugins", "Open plugins"),
-    ("/status", "Show session status"),
 ];
 
 // Platform-aware key labels: macOS uses Cmd for app-level shortcuts,
@@ -634,7 +633,7 @@ mod tests {
         app.help_view = HelpView::SlashCommands;
 
         let items = build_help_items(&app);
-        for command in ["/config", "/mcp", "/plugins", "/status"] {
+        for command in ["/config", "/mcp", "/plugins"] {
             assert!(has_key(&items, command), "missing builtin command: {command}");
         }
         assert!(!has_item(

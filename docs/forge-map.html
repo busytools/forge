@@ -1272,44 +1272,6 @@ chat continues here…
 
 <div class="surface">
   <div class="surface-head">
-    <h4>Status tab</h4>
-    <div class="when">visible: when the Status tab is active</div>
-  </div>
-  <div class="surface-body">
-    <p>Plain key-value layout in the body area (no nested boxes). Section headers are RUST_ORANGE bold; key labels are DIM (with 2-space indent + trailing colon); values are white. Sections that appear in order: <strong>Session</strong> (Version, Session name, Session ID, cwd, Git branch when known), <strong>Account</strong> (Login method, API provider, Organization, Email, Profile, Subscription — only the fields that are non-empty; Profile is the forge-side <code>display_name</code> from <code>forge.toml</code>'s <code>[[accounts]]</code>, present only when forge-workspace picked an account), <strong>Model</strong> (Model display, Resolved model ID, Requested model when different), then more downstream (rate limits, etc.), ending with <strong>Settings</strong> (Memory path, Setting sources).</p>
-    <div class="term">
-      <pre class="indent">
-  <span class="accent-bold">Session</span>
-    <span class="dim">Version: </span>0.14.2
-    <span class="dim">Session name: </span>forge polish
-    <span class="dim">Session ID: </span>550e8400-e29b-41d4-a716-446655440000
-    <span class="dim">cwd: </span>~/Projects/forge
-    <span class="dim">Git branch: </span>main
-
-  <span class="accent-bold">Account</span>
-    <span class="dim">Login method: </span>Claude Max Account
-    <span class="dim">API provider: </span>First party
-    <span class="dim">Organization: </span>Autonomys
-    <span class="dim">Email: </span>ved@subspace.network
-    <span class="dim">Profile: </span>Subspace
-    <span class="dim">Subscription: </span>team
-
-  <span class="accent-bold">Model</span>
-    <span class="dim">Model: </span>Claude Sonnet 4.5
-    <span class="dim">Resolved model ID: </span>claude-sonnet-4-5-20250101
-
-  <span class="accent-bold">Settings</span>
-    <span class="dim">Memory: </span>~/.claude/CLAUDE.md
-    <span class="dim">Setting sources: </span>user, project, local</pre>
-    </div>
-    <dl>
-      <dt>code</dt><dd><code>crates/forge-tui/src/ui/config/status.rs::status_lines</code> · <code>section_header</code> + <code>kv_line</code></dd>
-    </dl>
-  </div>
-</div>
-
-<div class="surface">
-  <div class="surface-head">
     <h4>Plugins tab</h4>
     <div class="when">visible: when the Plugins tab is active</div>
   </div>
@@ -1333,11 +1295,11 @@ chat continues here…
 
 <div class="surface">
   <div class="surface-head">
-    <h4>Config overlays (model picker, output style, language, session rename, …)</h4>
+    <h4>Config overlays (model picker, output style, language, …)</h4>
     <div class="when">visible: stacked atop the Config screen when triggered</div>
   </div>
   <div class="surface-body">
-    <p>Modal overlays that draw above the Config screen content. Used for picking model + effort, output style, language, renaming a session, and various plugin/MCP install/auth flows. Each is a bordered box with its own internal layout (see <code>config.rs:62–79</code> for the dispatch chain).</p>
+    <p>Modal overlays that draw above the Config screen content. Used for picking model + effort, output style, language, and various plugin/MCP install/auth flows. Each is a bordered box with its own internal layout (see <code>config.rs:62–79</code> for the dispatch chain).</p>
   </div>
 </div>
 

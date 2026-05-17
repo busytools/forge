@@ -2,10 +2,9 @@ use super::resolve::{language_input_validation_message, normalized_language_valu
 use super::{
     AddMarketplaceOverlayState, ConfigOverlayState, DEFAULT_EFFORT_LEVELS, DefaultPermissionMode,
     LanguageOverlayState, ModelAndEffortOverlayState, OPUS_MODEL_ALIAS_ID, OutputStyle,
-    OutputStyleOverlayState, OverlayFocus, PendingSessionTitleChangeKind,
-    PendingSessionTitleChangeState, PreferredNotifChannel, ResolvedChoice, ResolvedSettingValue,
-    SessionRenameOverlayState, SettingFile, SettingId, SettingOptions, SettingSpec,
-    resolved_setting, setting_display_value, setting_spec, store,
+    OutputStyleOverlayState, OverlayFocus, PreferredNotifChannel, ResolvedChoice,
+    ResolvedSettingValue, SettingFile, SettingId, SettingOptions, SettingSpec, resolved_setting,
+    setting_display_value, setting_spec, store,
 };
 use crate::agent::model::EffortLevel;
 use crate::app::App;
@@ -172,7 +171,6 @@ pub(super) fn handle_overlay_key(app: &mut App, key: KeyEvent) {
         )
         | None => {}
         Some(ConfigOverlayState::Language(_)) => handle_language_overlay_key(app, key),
-        Some(ConfigOverlayState::SessionRename(_)) => handle_session_rename_overlay_key(app, key),
     }
 }
 
@@ -183,10 +181,6 @@ pub(super) fn handle_overlay_paste(app: &mut App, text: &str) -> bool {
     match app.config.overlay {
         Some(ConfigOverlayState::Language(_)) => {
             insert_text_str(app.config.language_overlay_mut(), text);
-            true
-        }
-        Some(ConfigOverlayState::SessionRename(_)) => {
-            insert_text_str(app.config.session_rename_overlay_mut(), text);
             true
         }
         Some(ConfigOverlayState::AddMarketplace(_)) => {
@@ -422,58 +416,6 @@ fn open_language_overlay(app: &mut App) {
     app.config.last_error = None;
 }
 
-pub(super) fn open_session_rename_overlay(app: &mut App) {
-    let Some(session_id) = app.session_id() else {
-        return;
-    };
-    let session_id = session_id.to_string();
-    let draft = app
-        .recent_sessions()
-        .iter()
-        .find(|session| session.session_id == session_id)
-        .and_then(|session| session.custom_title.clone())
-        .unwrap_or_default();
-    app.config.overlay = Some(ConfigOverlayState::SessionRename(text_input_overlay_state(
-        draft,
-        SessionRenameOverlayState::from_text_input,
-    )));
-    app.config.last_error = None;
-}
-
-pub(super) fn generate_session_title(app: &mut App) {
-    let Some(session_id) = app.session_id().map(|s| s.to_string()) else {
-        return;
-    };
-    if !app.has_active_agent() {
-        app.config.last_error = Some("No active bridge connection".to_owned());
-        app.config.status_message = None;
-        return;
-    }
-    let Some(description) = session_title_generation_description(app, &session_id) else {
-        app.config.last_error =
-            Some("No session summary is available to generate a title".to_owned());
-        app.config.status_message = None;
-        return;
-    };
-
-    match app
-        .dispatch_command(|key| forge_workspace::Command::GenerateSessionTitle { key, description })
-    {
-        Ok(()) => {
-            app.config.pending_session_title_change = Some(PendingSessionTitleChangeState {
-                session_id,
-                kind: PendingSessionTitleChangeKind::Generate,
-            });
-            app.config.last_error = None;
-            app.config.status_message = Some("Generating session title...".to_owned());
-        }
-        Err(err) => {
-            app.config.last_error = Some(format!("Failed to generate session title: {err}"));
-            app.config.status_message = None;
-        }
-    }
-}
-
 fn toggle_model_and_effort_focus(app: &mut App) {
     let Some(overlay) = app.config.model_and_effort_overlay_mut() else {
         return;
@@ -611,76 +553,6 @@ fn confirm_language_overlay(app: &mut App) {
     }
 }
 
-fn handle_session_rename_overlay_key(app: &mut App, key: KeyEvent) {
-    match (key.code, key.modifiers) {
-        (KeyCode::Enter, KeyModifiers::NONE) => confirm_session_rename_overlay(app),
-        (KeyCode::Esc, KeyModifiers::NONE) => app.config.overlay = None,
-        (KeyCode::Left, KeyModifiers::NONE) => {
-            move_text_cursor_left(app.config.session_rename_overlay_mut());
-        }
-        (KeyCode::Right, KeyModifiers::NONE) => {
-            move_text_cursor_right(app.config.session_rename_overlay_mut());
-        }
-        (KeyCode::Home, KeyModifiers::NONE) => {
-            set_text_cursor(app.config.session_rename_overlay_mut(), 0);
-        }
-        (KeyCode::End, KeyModifiers::NONE) => {
-            move_text_cursor_to_end(app.config.session_rename_overlay_mut());
-        }
-        (KeyCode::Backspace, KeyModifiers::NONE) => {
-            delete_text_before_cursor(app.config.session_rename_overlay_mut());
-        }
-        (KeyCode::Delete, KeyModifiers::NONE) => {
-            delete_text_at_cursor(app.config.session_rename_overlay_mut());
-        }
-        (KeyCode::Char(ch), modifiers) if accepts_text_input(modifiers) => {
-            insert_text_char(app.config.session_rename_overlay_mut(), ch);
-        }
-        _ => {}
-    }
-}
-
-fn confirm_session_rename_overlay(app: &mut App) {
-    let Some(session_id) = app.session_id().map(|s| s.to_string()) else {
-        app.config.overlay = None;
-        return;
-    };
-    if !app.has_active_agent() {
-        app.config.last_error = Some("No active bridge connection".to_owned());
-        app.config.status_message = None;
-        return;
-    }
-    let Some(overlay) = app.config.session_rename_overlay().cloned() else {
-        return;
-    };
-
-    let trimmed = overlay.draft.trim().to_owned();
-    let requested_title = (!trimmed.is_empty()).then_some(trimmed.clone());
-    match app
-        .dispatch_command(|key| forge_workspace::Command::RenameSession { key, title: trimmed })
-    {
-        Ok(()) => {
-            app.config.pending_session_title_change = Some(PendingSessionTitleChangeState {
-                session_id,
-                kind: PendingSessionTitleChangeKind::Rename {
-                    requested_title: requested_title.clone(),
-                },
-            });
-            app.config.overlay = None;
-            app.config.last_error = None;
-            app.config.status_message = Some(if requested_title.is_some() {
-                "Renaming session...".to_owned()
-            } else {
-                "Clearing session name...".to_owned()
-            });
-        }
-        Err(err) => {
-            app.config.last_error = Some(format!("Failed to rename session: {err}"));
-            app.config.status_message = None;
-        }
-    }
-}
-
 fn persist_model_and_effort_change(app: &mut App, model: &str, effort: EffortLevel) -> bool {
     let Some(path) = app.config.path_for(SettingFile::Settings).cloned() else {
         app.config.last_error = Some("Settings paths are not available".to_owned());
@@ -744,20 +616,6 @@ fn step_index_wrapped(current: usize, delta: isize, len: usize) -> usize {
 
 fn char_to_byte_index(text: &str, char_index: usize) -> usize {
     text.char_indices().nth(char_index).map_or(text.len(), |(idx, _)| idx)
-}
-
-fn session_title_generation_description(app: &App, session_id: &str) -> Option<String> {
-    let session = app.recent_sessions().iter().find(|session| session.session_id == session_id)?;
-    [
-        session.custom_title.as_deref(),
-        Some(session.summary.as_str()),
-        session.first_prompt.as_deref(),
-    ]
-    .into_iter()
-    .flatten()
-    .map(str::trim)
-    .find(|value| !value.is_empty())
-    .map(str::to_owned)
 }
 
 pub(super) fn text_input_overlay_state<T>(
@@ -868,30 +726,6 @@ impl TextInputOverlay for LanguageOverlayState {
 }
 
 impl LanguageOverlayState {
-    fn from_text_input(draft: String, cursor: usize) -> Self {
-        Self { draft, cursor }
-    }
-}
-
-impl TextInputOverlay for SessionRenameOverlayState {
-    fn draft(&self) -> &str {
-        &self.draft
-    }
-
-    fn draft_mut(&mut self) -> &mut String {
-        &mut self.draft
-    }
-
-    fn cursor(&self) -> usize {
-        self.cursor
-    }
-
-    fn cursor_mut(&mut self) -> &mut usize {
-        &mut self.cursor
-    }
-}
-
-impl SessionRenameOverlayState {
     fn from_text_input(draft: String, cursor: usize) -> Self {
         Self { draft, cursor }
     }

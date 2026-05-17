@@ -139,8 +139,6 @@ pub(super) fn handle_sessions_listed_event(
     sessions: Vec<forge_primitives::SessionListEntry>,
 ) {
     let session_count = sessions.len();
-    let pending_title_change = app.config.pending_session_title_change.take();
-    let had_pending_title_change = pending_title_change.is_some();
     let mapped: Vec<RecentSessionInfo> = sessions
         .into_iter()
         .map(|entry| RecentSessionInfo {
@@ -167,36 +165,12 @@ pub(super) fn handle_sessions_listed_event(
         return;
     };
     *slot = mapped;
-    let mut pending_title_change_resolved = false;
-    if let Some(pending_title_change) = pending_title_change {
-        let renamed_session_present = app
-            .recent_sessions()
-            .iter()
-            .any(|session| session.session_id == pending_title_change.session_id);
-        pending_title_change_resolved = renamed_session_present;
-        if renamed_session_present {
-            app.config.last_error = None;
-            app.config.status_message = Some(match pending_title_change.kind {
-                crate::app::config::PendingSessionTitleChangeKind::Rename { requested_title } => {
-                    match requested_title {
-                        Some(title) => format!("Renamed session to {title}"),
-                        None => "Cleared session name".to_owned(),
-                    }
-                }
-                crate::app::config::PendingSessionTitleChangeKind::Generate => {
-                    "Generated session title".to_owned()
-                }
-            });
-        }
-    }
     tracing::info!(
         target: crate::logging::targets::APP_SESSION,
         event_name = "sessions_list_updated",
         message = "sessions list applied",
         outcome = "success",
         session_count,
-        had_pending_title_change,
-        pending_title_change_resolved,
     );
 }
 
@@ -270,7 +244,6 @@ pub(super) fn handle_auth_required_event(
     app.set_pending_cancel(false);
     app.set_account_info(None);
     *app.mcp_mut() = super::super::McpState::default();
-    app.config.pending_session_title_change = None;
     crate::app::usage::reset_for_session_change(app);
     app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
     app.clear_active_turn_assistant();
@@ -391,7 +364,6 @@ pub(super) fn handle_connection_failed_event(app: &mut App, session_key: &Sessio
     app.set_last_rate_limit_update(None);
     app.set_account_info(None);
     *app.mcp_mut() = super::super::McpState::default();
-    app.config.pending_session_title_change = None;
     crate::app::usage::reset_for_session_change(app);
     *app.resuming_session_id_mut() = None;
     *app.pending_command_label_mut() = None;
@@ -489,12 +461,6 @@ pub(super) fn handle_slash_command_error_event(app: &mut App, session_key: &Sess
             session_key = %session_key.as_str(),
             error_message = %msg,
         );
-        return;
-    }
-    if app.config.pending_session_title_change.take().is_some() {
-        app.config.last_error = Some(msg.to_owned());
-        app.config.status_message = None;
-        app.needs_redraw = true;
         return;
     }
     app.push_message_tracked(ChatMessage::new(
@@ -606,7 +572,6 @@ pub(super) fn handle_logout_completed_event(app: &mut App, session_key: &Session
     app.set_account_info(None);
     app.set_oauth_credentials(None);
     *app.mcp_mut() = super::super::McpState::default();
-    app.config.pending_session_title_change = None;
     crate::app::usage::reset_for_session_change(app);
     app.force_redraw = true;
     tracing::info!(

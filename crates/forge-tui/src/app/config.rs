@@ -27,18 +27,16 @@ use serde_json::Value;
 pub enum ConfigTab {
     Settings,
     Plugins,
-    Status,
     Mcp,
 }
 
 impl ConfigTab {
-    pub const ALL: [Self; 4] = [Self::Settings, Self::Plugins, Self::Status, Self::Mcp];
+    pub const ALL: [Self; 3] = [Self::Settings, Self::Plugins, Self::Mcp];
 
     pub const fn title(self) -> &'static str {
         match self {
             Self::Settings => "Settings",
             Self::Plugins => "Plugins",
-            Self::Status => "Status",
             Self::Mcp => "MCP",
         }
     }
@@ -46,8 +44,7 @@ impl ConfigTab {
     const fn next(self) -> Self {
         match self {
             Self::Settings => Self::Plugins,
-            Self::Plugins => Self::Status,
-            Self::Status => Self::Mcp,
+            Self::Plugins => Self::Mcp,
             Self::Mcp => Self::Settings,
         }
     }
@@ -56,8 +53,7 @@ impl ConfigTab {
         match self {
             Self::Settings => Self::Mcp,
             Self::Plugins => Self::Settings,
-            Self::Status => Self::Plugins,
-            Self::Mcp => Self::Status,
+            Self::Mcp => Self::Plugins,
         }
     }
 }
@@ -632,12 +628,6 @@ pub struct LanguageOverlayState {
     pub cursor: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SessionRenameOverlayState {
-    pub draft: String,
-    pub cursor: usize,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MarketplaceActionKind {
     Update,
@@ -739,7 +729,6 @@ pub enum ConfigOverlayState {
     ModelAndEffort(ModelAndEffortOverlayState),
     OutputStyle(OutputStyleOverlayState),
     Language(LanguageOverlayState),
-    SessionRename(SessionRenameOverlayState),
     InstalledPluginActions(InstalledPluginActionOverlayState),
     PluginInstallActions(PluginInstallOverlayState),
     MarketplaceActions(MarketplaceActionsOverlayState),
@@ -748,18 +737,6 @@ pub enum ConfigOverlayState {
     McpCallbackUrl(McpCallbackUrlOverlayState),
     McpElicitation(McpElicitationOverlayState),
     McpAuthRedirect(McpAuthRedirectOverlayState),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PendingSessionTitleChangeKind {
-    Rename { requested_title: Option<String> },
-    Generate,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PendingSessionTitleChangeState {
-    pub session_id: String,
-    pub kind: PendingSessionTitleChangeKind,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -777,7 +754,6 @@ pub struct ConfigState {
     pub preferences_path: Option<PathBuf>,
     pub status_message: Option<String>,
     pub last_error: Option<String>,
-    pub pending_session_title_change: Option<PendingSessionTitleChangeState>,
 }
 
 impl Default for ConfigState {
@@ -796,7 +772,6 @@ impl Default for ConfigState {
             preferences_path: None,
             status_message: None,
             last_error: None,
-            pending_session_title_change: None,
         }
     }
 }
@@ -879,7 +854,6 @@ impl ConfigState {
             Some(
                 ConfigOverlayState::OutputStyle(_)
                 | ConfigOverlayState::Language(_)
-                | ConfigOverlayState::SessionRename(_)
                 | ConfigOverlayState::InstalledPluginActions(_)
                 | ConfigOverlayState::PluginInstallActions(_)
                 | ConfigOverlayState::MarketplaceActions(_)
@@ -899,7 +873,6 @@ impl ConfigState {
             Some(
                 ConfigOverlayState::OutputStyle(_)
                 | ConfigOverlayState::Language(_)
-                | ConfigOverlayState::SessionRename(_)
                 | ConfigOverlayState::InstalledPluginActions(_)
                 | ConfigOverlayState::PluginInstallActions(_)
                 | ConfigOverlayState::MarketplaceActions(_)
@@ -919,7 +892,6 @@ impl ConfigState {
             Some(
                 ConfigOverlayState::ModelAndEffort(_)
                 | ConfigOverlayState::Language(_)
-                | ConfigOverlayState::SessionRename(_)
                 | ConfigOverlayState::InstalledPluginActions(_)
                 | ConfigOverlayState::PluginInstallActions(_)
                 | ConfigOverlayState::MarketplaceActions(_)
@@ -939,7 +911,6 @@ impl ConfigState {
             Some(
                 ConfigOverlayState::ModelAndEffort(_)
                 | ConfigOverlayState::Language(_)
-                | ConfigOverlayState::SessionRename(_)
                 | ConfigOverlayState::InstalledPluginActions(_)
                 | ConfigOverlayState::PluginInstallActions(_)
                 | ConfigOverlayState::MarketplaceActions(_)
@@ -959,7 +930,6 @@ impl ConfigState {
             Some(
                 ConfigOverlayState::ModelAndEffort(_)
                 | ConfigOverlayState::OutputStyle(_)
-                | ConfigOverlayState::SessionRename(_)
                 | ConfigOverlayState::InstalledPluginActions(_)
                 | ConfigOverlayState::PluginInstallActions(_)
                 | ConfigOverlayState::MarketplaceActions(_)
@@ -979,47 +949,6 @@ impl ConfigState {
             Some(
                 ConfigOverlayState::ModelAndEffort(_)
                 | ConfigOverlayState::OutputStyle(_)
-                | ConfigOverlayState::SessionRename(_)
-                | ConfigOverlayState::InstalledPluginActions(_)
-                | ConfigOverlayState::PluginInstallActions(_)
-                | ConfigOverlayState::MarketplaceActions(_)
-                | ConfigOverlayState::AddMarketplace(_)
-                | ConfigOverlayState::McpDetails(_)
-                | ConfigOverlayState::McpCallbackUrl(_)
-                | ConfigOverlayState::McpElicitation(_)
-                | ConfigOverlayState::McpAuthRedirect(_),
-            )
-            | None => None,
-        }
-    }
-
-    pub fn session_rename_overlay(&self) -> Option<&SessionRenameOverlayState> {
-        match &self.overlay {
-            Some(ConfigOverlayState::SessionRename(overlay)) => Some(overlay),
-            Some(
-                ConfigOverlayState::ModelAndEffort(_)
-                | ConfigOverlayState::OutputStyle(_)
-                | ConfigOverlayState::Language(_)
-                | ConfigOverlayState::InstalledPluginActions(_)
-                | ConfigOverlayState::PluginInstallActions(_)
-                | ConfigOverlayState::MarketplaceActions(_)
-                | ConfigOverlayState::AddMarketplace(_)
-                | ConfigOverlayState::McpDetails(_)
-                | ConfigOverlayState::McpCallbackUrl(_)
-                | ConfigOverlayState::McpElicitation(_)
-                | ConfigOverlayState::McpAuthRedirect(_),
-            )
-            | None => None,
-        }
-    }
-
-    pub fn session_rename_overlay_mut(&mut self) -> Option<&mut SessionRenameOverlayState> {
-        match &mut self.overlay {
-            Some(ConfigOverlayState::SessionRename(overlay)) => Some(overlay),
-            Some(
-                ConfigOverlayState::ModelAndEffort(_)
-                | ConfigOverlayState::OutputStyle(_)
-                | ConfigOverlayState::Language(_)
                 | ConfigOverlayState::InstalledPluginActions(_)
                 | ConfigOverlayState::PluginInstallActions(_)
                 | ConfigOverlayState::MarketplaceActions(_)
@@ -1040,7 +969,6 @@ impl ConfigState {
                 ConfigOverlayState::ModelAndEffort(_)
                 | ConfigOverlayState::OutputStyle(_)
                 | ConfigOverlayState::Language(_)
-                | ConfigOverlayState::SessionRename(_)
                 | ConfigOverlayState::PluginInstallActions(_)
                 | ConfigOverlayState::MarketplaceActions(_)
                 | ConfigOverlayState::AddMarketplace(_)
@@ -1062,7 +990,6 @@ impl ConfigState {
                 ConfigOverlayState::ModelAndEffort(_)
                 | ConfigOverlayState::OutputStyle(_)
                 | ConfigOverlayState::Language(_)
-                | ConfigOverlayState::SessionRename(_)
                 | ConfigOverlayState::PluginInstallActions(_)
                 | ConfigOverlayState::MarketplaceActions(_)
                 | ConfigOverlayState::AddMarketplace(_)
@@ -1082,7 +1009,6 @@ impl ConfigState {
                 ConfigOverlayState::ModelAndEffort(_)
                 | ConfigOverlayState::OutputStyle(_)
                 | ConfigOverlayState::Language(_)
-                | ConfigOverlayState::SessionRename(_)
                 | ConfigOverlayState::InstalledPluginActions(_)
                 | ConfigOverlayState::MarketplaceActions(_)
                 | ConfigOverlayState::AddMarketplace(_)
@@ -1102,7 +1028,6 @@ impl ConfigState {
                 ConfigOverlayState::ModelAndEffort(_)
                 | ConfigOverlayState::OutputStyle(_)
                 | ConfigOverlayState::Language(_)
-                | ConfigOverlayState::SessionRename(_)
                 | ConfigOverlayState::InstalledPluginActions(_)
                 | ConfigOverlayState::MarketplaceActions(_)
                 | ConfigOverlayState::AddMarketplace(_)
@@ -1122,7 +1047,6 @@ impl ConfigState {
                 ConfigOverlayState::ModelAndEffort(_)
                 | ConfigOverlayState::OutputStyle(_)
                 | ConfigOverlayState::Language(_)
-                | ConfigOverlayState::SessionRename(_)
                 | ConfigOverlayState::InstalledPluginActions(_)
                 | ConfigOverlayState::PluginInstallActions(_)
                 | ConfigOverlayState::AddMarketplace(_)
@@ -1144,7 +1068,6 @@ impl ConfigState {
                 ConfigOverlayState::ModelAndEffort(_)
                 | ConfigOverlayState::OutputStyle(_)
                 | ConfigOverlayState::Language(_)
-                | ConfigOverlayState::SessionRename(_)
                 | ConfigOverlayState::InstalledPluginActions(_)
                 | ConfigOverlayState::PluginInstallActions(_)
                 | ConfigOverlayState::AddMarketplace(_)
@@ -1164,7 +1087,6 @@ impl ConfigState {
                 ConfigOverlayState::ModelAndEffort(_)
                 | ConfigOverlayState::OutputStyle(_)
                 | ConfigOverlayState::Language(_)
-                | ConfigOverlayState::SessionRename(_)
                 | ConfigOverlayState::InstalledPluginActions(_)
                 | ConfigOverlayState::PluginInstallActions(_)
                 | ConfigOverlayState::MarketplaceActions(_)
@@ -1184,7 +1106,6 @@ impl ConfigState {
                 ConfigOverlayState::ModelAndEffort(_)
                 | ConfigOverlayState::OutputStyle(_)
                 | ConfigOverlayState::Language(_)
-                | ConfigOverlayState::SessionRename(_)
                 | ConfigOverlayState::InstalledPluginActions(_)
                 | ConfigOverlayState::PluginInstallActions(_)
                 | ConfigOverlayState::MarketplaceActions(_)
@@ -1358,7 +1279,6 @@ pub(crate) fn refresh_runtime_tabs_for_session_change(app: &mut App) {
     if app.active_view != ActiveView::Config {
         return;
     }
-    request_status_snapshot_if_needed(app);
     if app.config.active_tab == ConfigTab::Plugins {
         crate::app::plugins::request_inventory_refresh_if_needed(app);
     }
@@ -1411,20 +1331,6 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                 edit::step_setting(app, spec, 1);
             }
         }
-        (KeyCode::Char(ch), modifiers)
-            if app.config.active_tab == ConfigTab::Status
-                && matches!(ch, 'r' | 'R')
-                && (modifiers.is_empty() || modifiers == KeyModifiers::SHIFT) =>
-        {
-            edit::open_session_rename_overlay(app);
-        }
-        (KeyCode::Char(ch), modifiers)
-            if app.config.active_tab == ConfigTab::Status
-                && matches!(ch, 'g' | 'G')
-                && (modifiers.is_empty() || modifiers == KeyModifiers::SHIFT) =>
-        {
-            edit::generate_session_title(app);
-        }
         (KeyCode::Enter | KeyCode::Esc, KeyModifiers::NONE) => {
             close(app);
         }
@@ -1457,7 +1363,6 @@ pub fn handle_paste(app: &mut App, text: &str) -> bool {
 }
 
 fn request_active_tab_side_effects(app: &mut App) {
-    request_status_snapshot_if_needed(app);
     mcp::refresh_mcp_snapshot_if_needed(app);
     if app.config.active_tab == ConfigTab::Plugins {
         crate::app::plugins::request_inventory_refresh_if_needed(app);
@@ -1467,36 +1372,6 @@ fn request_active_tab_side_effects(app: &mut App) {
 fn is_ctrl_shortcut(key: KeyEvent, ch: char) -> bool {
     matches!(key.code, KeyCode::Char(candidate) if candidate == ch)
         && key.modifiers == KeyModifiers::CONTROL
-}
-
-/// Send a `get_status_snapshot` command when the Status tab is active.
-pub fn request_status_snapshot_if_needed(app: &App) {
-    if app.config.active_tab != ConfigTab::Status {
-        return;
-    }
-    let Some(workspace) = app.workspace.as_ref() else { return };
-    let Some(key) = app.active_session_key.as_ref() else { return };
-    let Some(session_id) = app.session_id() else {
-        return;
-    };
-    let session_id = session_id.to_string();
-    match workspace.refresh_status_snapshot(key) {
-        Ok(()) => tracing::debug!(
-            target: crate::logging::targets::APP_AUTH,
-            event_name = "status_snapshot_requested",
-            message = "status snapshot requested",
-            outcome = "start",
-            session_id = %session_id,
-        ),
-        Err(error) => tracing::warn!(
-            target: crate::logging::targets::APP_AUTH,
-            event_name = "status_snapshot_request_failed",
-            message = "failed to request status snapshot",
-            outcome = "failure",
-            session_id = %session_id,
-            error_message = %error,
-        ),
-    }
 }
 
 /// Build a `WorkspaceBridge` for the active session, or `None`

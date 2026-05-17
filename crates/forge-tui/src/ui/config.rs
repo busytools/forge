@@ -3,7 +3,6 @@ mod mcp;
 mod overlay;
 mod plugins;
 mod settings;
-mod status;
 
 use crate::app::config::{
     OutputStyle, OverlayFocus, language_input_validation_message, model_overlay_options,
@@ -53,7 +52,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     match app.config.active_tab {
         ConfigTab::Settings => settings::render(frame, chunks[1], app),
         ConfigTab::Plugins => plugins::render(frame, chunks[1], app),
-        ConfigTab::Status => status::render(frame, chunks[1], app),
         ConfigTab::Mcp => mcp::render(frame, chunks[1], app),
     }
 
@@ -63,8 +61,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         render_output_style_overlay(frame, frame_area, app);
     } else if app.config.language_overlay().is_some() {
         render_language_overlay(frame, frame_area, app);
-    } else if app.config.session_rename_overlay().is_some() {
-        render_session_rename_overlay(frame, frame_area, app);
     } else if app.config.installed_plugin_actions_overlay().is_some() {
         render_installed_plugin_actions_overlay(frame, frame_area, app);
     } else if app.config.plugin_install_overlay().is_some() {
@@ -140,14 +136,6 @@ fn config_help_text(app: &App) -> String {
         ConfigTab::Mcp => {
             "Up/Down select | Enter actions | r refresh | Tab next tab | Shift+Tab prev tab | Esc close"
                 .to_owned()
-        }
-        ConfigTab::Status => {
-            if app.session_id().is_some() {
-                "g generate | r rename | Tab next tab | Shift+Tab prev tab | Enter close | Esc close"
-                    .to_owned()
-            } else {
-                "Tab next tab | Shift+Tab prev tab | Enter close | Esc close".to_owned()
-            }
         }
     }
 }
@@ -344,49 +332,6 @@ fn render_language_overlay(frame: &mut Frame, area: Rect, app: &App) {
         ),
     };
     frame.render_widget(Paragraph::new(Line::from(Span::styled(message, style))), sections[1]);
-}
-
-fn render_session_rename_overlay(frame: &mut Frame, area: Rect, app: &App) {
-    let Some(overlay) = app.config.session_rename_overlay() else {
-        return;
-    };
-    let rendered = render_overlay_shell(
-        frame,
-        area,
-        OverlayLayoutSpec {
-            min_width: 56,
-            min_height: 8,
-            width_percent: 72,
-            height_percent: 48,
-            preferred_height: 10,
-            fullscreen_below: Some((56, 14)),
-            inner_margin: Margin { vertical: 1, horizontal: 2 },
-        },
-        OverlayChrome {
-            title: "Rename session",
-            subtitle: Some("Set a custom title for the current session"),
-            help: Some("Enter confirm | Esc cancel"),
-        },
-    );
-    let sections = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Min(1)])
-        .split(rendered.body_area);
-
-    render_text_input_field(
-        frame,
-        sections[0],
-        &overlay.draft,
-        overlay.cursor,
-        "Custom session name",
-    );
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            "Leave the field empty to clear the custom session name.",
-            Style::default().fg(theme::DIM),
-        ))),
-        sections[1],
-    );
 }
 
 fn render_installed_plugin_actions_overlay(frame: &mut Frame, area: Rect, app: &App) {
@@ -1148,13 +1093,6 @@ mod tests {
     }
 
     #[test]
-    fn session_rename_overlay_input_uses_placeholder_when_empty() {
-        let line = super::input::text_input_line("", 0, "Custom session name").to_string();
-
-        assert!(line.contains("Custom session name"));
-    }
-
-    #[test]
     fn language_overlay_renders_inline_validation_message() {
         fn buffer_text(buffer: &Buffer) -> String {
             let width = usize::from(buffer.area.width);
@@ -1366,66 +1304,6 @@ mod tests {
         );
         assert_eq!(super::settings::settings_hint_height(0), 0);
         assert!(SETTINGS_LIMITATION_HINT.contains("not all settings are supported"));
-    }
-
-    #[test]
-    fn status_tab_renders_session_info() {
-        fn buffer_text(buffer: &Buffer) -> String {
-            let width = usize::from(buffer.area.width);
-            buffer
-                .content
-                .chunks(width)
-                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
-                .collect::<Vec<_>>()
-                .join("\n")
-        }
-
-        let backend = TestBackend::new(100, 24);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        let mut app = App::test_default();
-        app.active_view = crate::app::ActiveView::Config;
-        app.config.active_tab = crate::app::ConfigTab::Status;
-
-        terminal
-            .draw(|frame| {
-                super::render(frame, &mut app);
-            })
-            .expect("draw");
-
-        let rendered = buffer_text(terminal.backend().buffer());
-        assert!(rendered.contains("Version"), "missing Version");
-        assert!(rendered.contains("cwd"), "missing cwd");
-        assert!(rendered.contains("Model"), "missing Model");
-    }
-
-    #[test]
-    fn status_tab_help_omits_space_edit() {
-        fn buffer_text(buffer: &Buffer) -> String {
-            let width = usize::from(buffer.area.width);
-            buffer
-                .content
-                .chunks(width)
-                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
-                .collect::<Vec<_>>()
-                .join("\n")
-        }
-
-        let backend = TestBackend::new(100, 24);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        let mut app = App::test_default();
-        app.active_view = crate::app::ActiveView::Config;
-        app.config.active_tab = crate::app::ConfigTab::Status;
-
-        terminal
-            .draw(|frame| {
-                super::render(frame, &mut app);
-            })
-            .expect("draw");
-
-        let rendered = buffer_text(terminal.backend().buffer());
-        assert!(!rendered.contains("Space edit"), "Status tab should not show Space edit");
-        assert!(rendered.contains("Tab next tab"), "missing tab navigation hint");
-        assert!(rendered.contains("Enter close"), "missing Enter close");
     }
 
     #[test]
@@ -1923,36 +1801,6 @@ mod tests {
         assert!(rendered.contains("Reconnect server"));
         assert!(rendered.contains("Disable server"));
         assert!(rendered.contains("Enter run"));
-    }
-
-    #[test]
-    fn status_tab_help_shows_generate_and_rename_when_session_is_active() {
-        fn buffer_text(buffer: &Buffer) -> String {
-            let width = usize::from(buffer.area.width);
-            buffer
-                .content
-                .chunks(width)
-                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
-                .collect::<Vec<_>>()
-                .join("\n")
-        }
-
-        let backend = TestBackend::new(100, 24);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        let mut app = App::test_default();
-        app.active_view = crate::app::ActiveView::Config;
-        app.config.active_tab = crate::app::ConfigTab::Status;
-        app.set_session_id(Some(crate::agent::model::SessionId::new("session-1")));
-
-        terminal
-            .draw(|frame| {
-                super::render(frame, &mut app);
-            })
-            .expect("draw");
-
-        let rendered = buffer_text(terminal.backend().buffer());
-        assert!(rendered.contains("g generate"));
-        assert!(rendered.contains("r rename"));
     }
 
     #[test]

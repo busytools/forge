@@ -38,7 +38,6 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
         "/launchpad" => handle_launchpad_submit(app, &parsed.args),
         "/mcp" => handle_mcp_submit(app, &parsed.args),
         "/plugins" => handle_plugins_submit(app, &parsed.args),
-        "/status" => handle_status_submit(app, &parsed.args),
         "/mode" => handle_mode_submit(app, &parsed.args),
         "/model" => handle_model_submit(app, &parsed.args),
         "/new" => handle_new_session_submit(app, &parsed.args),
@@ -171,20 +170,6 @@ fn handle_mcp_submit(app: &mut App, args: &[&str]) -> bool {
         return true;
     }
     crate::app::config::activate_tab(app, crate::app::ConfigTab::Mcp);
-    true
-}
-
-fn handle_status_submit(app: &mut App, args: &[&str]) -> bool {
-    if !args.is_empty() {
-        push_system_message(app, "Usage: /status");
-        return true;
-    }
-
-    if let Err(err) = crate::app::config::open(app) {
-        push_system_message(app, format!("Failed to open status: {err}"));
-        return true;
-    }
-    crate::app::config::activate_tab(app, crate::app::ConfigTab::Status);
     true
 }
 
