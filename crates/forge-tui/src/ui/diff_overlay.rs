@@ -9,27 +9,47 @@
 //! y-position so the `│` separator interrupts what visually reads
 //! as one continuous line.
 //!
+//! The body itself renders a GitHub-style split (side-by-side) view:
+//! left column is the OLD file (context + removed), right column is
+//! the NEW file (context + added). Per-line syntax highlighting
+//! attaches via [`crate::ui::highlight::LineHighlighter`], one
+//! instance per (file, side) so multi-line constructs (strings,
+//! block comments) carry state across hunk lines on the same side.
+//!
 //! Click-to-comment lands here: `body_keys` is the parallel
 //! per-rendered-row index the click handler reads to resolve
-//! `mouse.row` → `BodyRowKey`. Comment chips (💬 `L<line>`) render
-//! one row each after their anchor line; the active editor's
-//! TextArea expands inline below its anchor.
+//! `mouse.row` → `BodyRowKey`. The split-row variant carries both
+//! column keys; the click handler picks left/right by comparing
+//! the click column against the pane midpoint. Comment chips (💬
+//! `L<line>`) render one row each after their anchor line; the
+//! active editor's TextArea expands inline below its anchor.
 
-use forge_workspace::env::git_diff::hunks::{DiffLine, DiffLineKind, FileHunks, FileStatus, Hunk};
+mod pairing;
+
+use forge_workspace::env::git_diff::hunks::{DiffLineKind, FileHunks, FileStatus, Hunk};
 
 use crate::app::diff_overlay::{
     ActiveCommentInput, BODY_HEAD_ROWS, BodyRowKey, HunkComment, LineKey, RailRowKey,
     rail_width_for,
 };
+use pairing::{PairedDiffRow, pair_hunk_lines};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::App;
 use crate::app::diff_overlay::DiffOverlayState;
+use crate::ui::highlight::LineHighlighter;
 use crate::ui::theme;
+
+/// Minimum terminal width to render the split view. Below this we
+/// show a "resize" notice — the body needs room for the rail plus
+/// two columns of readable code, and squeezing harder loses more
+/// than it saves.
+const MIN_WIDTH_FOR_SPLIT: u16 = 100;
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
@@ -40,12 +60,16 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         return;
     };
 
+    if area.width < MIN_WIDTH_FOR_SPLIT {
+        render_too_narrow_notice(frame, area, app);
+        return;
+    }
     let rail_width = rail_width_for(area.width);
     if rail_width == 0 {
-        // Need a mut borrow for the narrow-tier writeback (pane
-        // geometry + body_keys). Re-borrow via app.diff_overlay
-        // after the immutable peek above.
-        render_narrow(frame, area, app);
+        // Defensive: `rail_width_for` returning 0 implies the area is
+        // narrower than MIN_WIDTH_FOR_SPLIT would already have caught,
+        // but keep the bail for safety.
+        render_too_narrow_notice(frame, area, app);
         return;
     }
 
@@ -87,8 +111,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             o.body_keys.clear();
             o.body_head_rows = 0;
             o.banner_close_col_range = None;
-            o.narrow_header_row_y = None;
-            o.narrow_arrow_cols = None;
         }
         return;
     }
@@ -115,11 +137,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         overlay_mut.pane_origin_col = pane_area.x;
         overlay_mut.pane_width = pane_area.width;
         overlay_mut.banner_close_col_range = banner_close_range;
-        // Wide tier is mutually exclusive with narrow tier; clear
-        // narrow-tier-only fields so a click on the wide layout
-        // can't hit-test against stale narrow header coords.
-        overlay_mut.narrow_header_row_y = None;
-        overlay_mut.narrow_arrow_cols = None;
         clamped
     } else {
         0
@@ -567,6 +584,11 @@ fn build_pane_lines(
             // is O(1) per line instead of O(comments) per line. Net
             // win once comments > 4 or so; harmless at 0.
             let comments_by_key = index_comments_by_key(&overlay.comments);
+            // One highlighter per side so multi-line constructs
+            // (strings, block comments) carry state correctly within
+            // each column independently of the other.
+            let mut left_hl = LineHighlighter::for_path(&file.path);
+            let mut right_hl = LineHighlighter::for_path(&file.path);
             for (hunk_idx, hunk) in file.hunks.iter().enumerate() {
                 if hunk_idx > 0 {
                     lines.push(Line::default());
@@ -574,42 +596,61 @@ fn build_pane_lines(
                 }
                 lines.push(hunk_header_row(hunk));
                 keys.push(BodyRowKey::HunkHeader { file_idx, hunk_idx });
-                for (line_idx, diff_line) in hunk.lines.iter().enumerate() {
-                    let line_key = LineKey { file_idx, hunk_idx, line_idx };
-                    lines.push(diff_line_row(diff_line, gutter_width));
-                    keys.push(BodyRowKey::HunkLine(line_key));
-                    // After this line: render any saved comment chip
-                    // for it, then the active editor if it's anchored
-                    // here. Both happen on the SAME line key so the
-                    // chip is what the user sees as the saved-and-
-                    // closed view.
-                    if let Some(c) = comments_by_key.get(&line_key) {
-                        render_comment_chip(
-                            c,
-                            line_key,
-                            gutter_width,
-                            area.width,
-                            &mut lines,
-                            &mut keys,
-                        );
+                let pairs = pair_hunk_lines(file_idx, hunk_idx, &hunk.lines);
+                for pair in pairs {
+                    let row = split_diff_row(
+                        file,
+                        pair,
+                        gutter_width,
+                        area.width,
+                        &mut left_hl,
+                        &mut right_hl,
+                    );
+                    lines.push(row);
+                    keys.push(BodyRowKey::HunkRow { left: pair.left, right: pair.right });
+                    // Emit chip + active editor for each side that
+                    // has one anchored on it. Context lines point
+                    // both halves at the same LineKey, so dedupe
+                    // before iterating to avoid duplicate chips.
+                    let mut sides: Vec<LineKey> = Vec::new();
+                    if let Some(k) = pair.left {
+                        sides.push(k);
                     }
-                    if let Some(input) = overlay.active_input.as_ref()
-                        && input.key == line_key
+                    if let Some(k) = pair.right
+                        && Some(k) != pair.left
                     {
-                        let anchor_line = match diff_line.kind {
-                            DiffLineKind::Removed => diff_line.old_line.unwrap_or(0),
-                            DiffLineKind::Added | DiffLineKind::Context => {
-                                diff_line.new_line.unwrap_or(0)
-                            }
-                        };
-                        render_active_input(
-                            input,
-                            gutter_width,
-                            anchor_line,
-                            area.width,
-                            &mut lines,
-                            &mut keys,
-                        );
+                        sides.push(k);
+                    }
+                    for side_key in sides {
+                        if let Some(c) = comments_by_key.get(&side_key) {
+                            render_comment_chip(
+                                c,
+                                side_key,
+                                gutter_width,
+                                area.width,
+                                &mut lines,
+                                &mut keys,
+                            );
+                        }
+                        if let Some(input) = overlay.active_input.as_ref()
+                            && input.key == side_key
+                        {
+                            let diff_line = &file.hunks[side_key.hunk_idx].lines[side_key.line_idx];
+                            let anchor_line = match diff_line.kind {
+                                DiffLineKind::Removed => diff_line.old_line.unwrap_or(0),
+                                DiffLineKind::Added | DiffLineKind::Context => {
+                                    diff_line.new_line.unwrap_or(0)
+                                }
+                            };
+                            render_active_input(
+                                input,
+                                gutter_width,
+                                anchor_line,
+                                area.width,
+                                &mut lines,
+                                &mut keys,
+                            );
+                        }
                     }
                 }
             }
@@ -884,12 +925,56 @@ const ADDED_BG: Color = Color::Rgb(3, 58, 22);
 /// dark-mode removed-line surface.
 const REMOVED_BG: Color = Color::Rgb(103, 6, 12);
 
-fn diff_line_row(line: &DiffLine, gutter_width: usize) -> Line<'static> {
-    let (marker, marker_color, line_bg) = match line.kind {
-        DiffLineKind::Added => ("+", Color::Green, Some(ADDED_BG)),
-        DiffLineKind::Removed => ("-", Color::Red, Some(REMOVED_BG)),
-        DiffLineKind::Context => (" ", theme::DIM, None),
+/// Build one split-view body row: left column + divider + right
+/// column. Each column carries `[gutter] [+/-] [highlighted text]`,
+/// truncated to fit. Empty sides (unbalanced rows) render as blank
+/// fillers so the divider position stays consistent down the body.
+fn split_diff_row(
+    file: &FileHunks,
+    pair: PairedDiffRow,
+    gutter_width: usize,
+    pane_width: u16,
+    left_hl: &mut LineHighlighter,
+    right_hl: &mut LineHighlighter,
+) -> Line<'static> {
+    // Per-side body width: pane minus 2-col leading indent minus the
+    // 3-col divider zone (space + '│' + space), then halved.
+    let indent_cols: usize = 2;
+    let divider_cols: usize = 3;
+    let usable = usize::from(pane_width).saturating_sub(indent_cols).saturating_sub(divider_cols);
+    let per_side_width = usable / 2;
+
+    let left = build_split_half(file, pair.left, gutter_width, per_side_width, left_hl);
+    let right = build_split_half(file, pair.right, gutter_width, per_side_width, right_hl);
+
+    let mut spans: Vec<Span<'static>> = Vec::with_capacity(left.len() + right.len() + 4);
+    spans.push(Span::raw("  "));
+    spans.extend(left);
+    spans.push(Span::raw(" "));
+    spans.push(Span::styled("│", Style::default().fg(theme::DIM)));
+    spans.push(Span::raw(" "));
+    spans.extend(right);
+    Line::from(spans)
+}
+
+/// Build one half (left or right) of a split row. `key` of `None`
+/// means this side is blank — fill with spaces sized to match the
+/// other side so columns stay aligned.
+fn build_split_half(
+    file: &FileHunks,
+    key: Option<LineKey>,
+    gutter_width: usize,
+    text_width: usize,
+    highlighter: &mut LineHighlighter,
+) -> Vec<Span<'static>> {
+    let Some(key) = key else {
+        // Blank side: gutter padding + space + marker padding + space
+        // + text padding. Total = gutter_width + 3 + text_width.
+        let pad_width = gutter_width.saturating_add(3).saturating_add(text_width);
+        return vec![Span::raw(" ".repeat(pad_width))];
     };
+    let line = &file.hunks[key.hunk_idx].lines[key.line_idx];
+    let (marker, marker_color, bg) = marker_for_kind(line.kind);
     let line_num = match line.kind {
         DiffLineKind::Added | DiffLineKind::Context => line.new_line,
         DiffLineKind::Removed => line.old_line,
@@ -898,29 +983,87 @@ fn diff_line_row(line: &DiffLine, gutter_width: usize) -> Line<'static> {
         Some(n) => format!("{n:>gutter_width$}"),
         None => " ".repeat(gutter_width),
     };
-    // Per-line background tint mimics GitHub's added/removed surfaces.
-    // The whole text-side of the row carries the tint (including the
-    // marker and a trailing space); the leading indent + gutter stay
-    // on the default background so the eye sees the change boundary
-    // start exactly where the marker does.
-    // `line.text.clone()` is a per-frame cost flagged but acceptable
-    // — bounded by hunk size and dominated by per-frame layout cost.
-    let marker_style = match line_bg {
+    let marker_style = match bg {
         Some(bg) => Style::default().fg(marker_color).bg(bg),
         None => Style::default().fg(marker_color),
     };
-    let text_style = match line_bg {
+    let raw_spans = highlighter.highlight(&line.text);
+    let mut text_spans = truncate_spans_to_width(raw_spans, text_width);
+    // Pad text up to text_width so the right-side column starts at a
+    // consistent x-coordinate. With per-line background tint, the
+    // pad fills the tinted area to the full column width.
+    let consumed: usize = text_spans.iter().map(Span::width).sum();
+    if consumed < text_width {
+        let pad_style = match bg {
+            Some(bg) => Style::default().bg(bg),
+            None => Style::default(),
+        };
+        text_spans.push(Span::styled(" ".repeat(text_width - consumed), pad_style));
+    }
+    // Apply bg to existing spans so the tint covers the whole text
+    // area, not just the literal characters. Skip if there's no bg.
+    if let Some(bg) = bg {
+        for span in &mut text_spans {
+            if span.style.bg.is_none() {
+                span.style = span.style.bg(bg);
+            }
+        }
+    }
+    let mut spans = Vec::with_capacity(text_spans.len() + 4);
+    spans.push(Span::styled(gutter, Style::default().fg(theme::DIM)));
+    spans.push(Span::raw(" "));
+    spans.push(Span::styled(marker, marker_style));
+    let space_style = match bg {
         Some(bg) => Style::default().bg(bg),
         None => Style::default(),
     };
-    Line::from(vec![
-        Span::raw("  "),
-        Span::styled(gutter, Style::default().fg(theme::DIM)),
-        Span::raw(" "),
-        Span::styled(marker, marker_style),
-        Span::styled(" ", text_style),
-        Span::styled(line.text.clone(), text_style),
-    ])
+    spans.push(Span::styled(" ", space_style));
+    spans.extend(text_spans);
+    spans
+}
+
+fn marker_for_kind(kind: DiffLineKind) -> (&'static str, Color, Option<Color>) {
+    match kind {
+        DiffLineKind::Added => ("+", Color::Green, Some(ADDED_BG)),
+        DiffLineKind::Removed => ("-", Color::Red, Some(REMOVED_BG)),
+        DiffLineKind::Context => (" ", theme::DIM, None),
+    }
+}
+
+/// Truncate a span list to `max_width` display columns. Splits the
+/// last span mid-token if necessary using `unicode-width` per
+/// character. Returns an empty vec when `max_width == 0`.
+fn truncate_spans_to_width(spans: Vec<Span<'static>>, max_width: usize) -> Vec<Span<'static>> {
+    if max_width == 0 {
+        return Vec::new();
+    }
+    let mut out: Vec<Span<'static>> = Vec::with_capacity(spans.len());
+    let mut consumed: usize = 0;
+    for span in spans {
+        let span_width = span.content.width();
+        if consumed.saturating_add(span_width) <= max_width {
+            consumed = consumed.saturating_add(span_width);
+            out.push(span);
+            continue;
+        }
+        // Need to split this span at the column boundary.
+        let remaining = max_width - consumed;
+        let mut buf = String::with_capacity(span.content.len());
+        let mut span_consumed = 0usize;
+        for c in span.content.chars() {
+            let cw = UnicodeWidthChar::width(c).unwrap_or(0);
+            if span_consumed + cw > remaining {
+                break;
+            }
+            buf.push(c);
+            span_consumed += cw;
+        }
+        if !buf.is_empty() {
+            out.push(Span::styled(buf, span.style));
+        }
+        break;
+    }
+    out
 }
 
 /// Narrow-tier renderer (terminal width < 120): drops the rail and
@@ -935,134 +1078,25 @@ fn diff_line_row(line: &DiffLine, gutter_width: usize) -> Line<'static> {
 /// (`pane_origin_*`, `pane_width`) and the parallel `body_keys`
 /// index back to overlay state — without this writeback, the
 /// click hit-tester finds an empty `body_keys` and silently no-ops.
-fn render_narrow(frame: &mut Frame, area: Rect, app: &mut App) {
-    if area.height < 3 {
-        // Too small even for the narrow header; render a notice and
-        // bail. Clear body_keys + geometry so a click during this
-        // state can't hit-test against stale wide-tier values.
-        frame.render_widget(
-            Paragraph::new("Terminal too small — resize and re-open /diff.")
-                .style(Style::default().fg(theme::STATUS_WARNING)),
-            area,
-        );
-        if let Some(o) = app.diff_overlay.as_mut() {
-            o.body_keys.clear();
-            o.pane_origin_row = area.y;
-            o.pane_origin_col = area.x;
-            o.pane_width = area.width;
-            // Clear all geometry-stamped fields so a click at the
-            // prior arrow / banner / chip coordinates can't advance
-            // state against a "Terminal too small" notice.
-            o.narrow_header_row_y = None;
-            o.narrow_arrow_cols = None;
-            o.banner_close_col_range = None;
-        }
-        return;
-    }
-    let header_rect = Rect { x: area.x, y: area.y, width: area.width, height: 1 };
-    let rule_rect = Rect { x: area.x, y: area.y + 1, width: area.width, height: 1 };
-    let body_rect =
-        Rect { x: area.x, y: area.y + 2, width: area.width, height: area.height.saturating_sub(3) };
-
-    // Build the header and stash arrow column positions so the
-    // click handler can hit-test them. Done before any other
-    // rendering because the writeback needs the same `&mut App`.
-    let Some(overlay_ref) = app.diff_overlay.as_ref() else { return };
-    let (header_line, arrow_cols) = narrow_header_row(overlay_ref, area.x);
-    // Narrow tier has no wide-style banner ✕, so build_pane_lines'
-    // banner_close_range is unused — the narrow header has its own
-    // close affordance (none in v1; users press Esc).
-    let (mut body_lines, mut body_keys, _) = build_pane_lines(overlay_ref, body_rect);
-
-    // Strip the banner + rule + blank rows (the first 3 entries) so
-    // the narrow body doesn't re-paint headers the narrow_header
-    // already covered. Body keys must drop in lockstep. `drain` is
-    // O(1) shift compared to repeated `remove(0)` which is O(n)
-    // per call.
-    let skip = body_lines.len().min(3);
-    body_lines.drain(0..skip);
-    body_keys.drain(0..skip);
-
-    // Writeback geometry + body_keys + arrow positions. Body origin
-    // is body_rect (not area) so click rows align with the body
-    // line index after the stripped header. Clear wide-tier-only
-    // `banner_close_col_range` so a click on the narrow layout
-    // can't trigger close against stale wide-tier coords.
+/// Render the "terminal too narrow" notice in place of the body.
+/// The split view needs both columns of readable code plus the rail;
+/// below `MIN_WIDTH_FOR_SPLIT` we tell the user to resize rather
+/// than squeeze the rendering harder. Clears every geometry field
+/// the click handler reads so a click during this state can't
+/// hit-test against stale wide-tier values.
+fn render_too_narrow_notice(frame: &mut Frame, area: Rect, app: &mut App) {
+    let msg =
+        format!("Terminal too narrow — resize to ≥ {MIN_WIDTH_FOR_SPLIT} cols and re-open /diff.");
+    frame
+        .render_widget(Paragraph::new(msg).style(Style::default().fg(theme::STATUS_WARNING)), area);
     if let Some(o) = app.diff_overlay.as_mut() {
-        o.body_keys = body_keys;
-        // Narrow stripped the banner+rule+blank head rows from
-        // body_keys; every remaining row scrolls with body_scroll.
+        o.body_keys.clear();
         o.body_head_rows = 0;
-        o.pane_origin_row = body_rect.y;
-        o.pane_origin_col = body_rect.x;
-        o.pane_width = body_rect.width;
-        o.narrow_header_row_y = Some(header_rect.y);
-        o.narrow_arrow_cols = arrow_cols;
+        o.pane_origin_row = area.y;
+        o.pane_origin_col = area.x;
+        o.pane_width = area.width;
         o.banner_close_col_range = None;
     }
-
-    frame.render_widget(Paragraph::new(header_line), header_rect);
-    frame.render_widget(Paragraph::new(rule_row(area.width)), rule_rect);
-    frame.render_widget(Paragraph::new(body_lines), body_rect);
-    let Some(overlay_after) = app.diff_overlay.as_ref() else { return };
-    render_footer(frame, area, overlay_after);
-}
-
-/// Build the narrow-tier header line and return the screen-column
-/// positions of the `◀` and `▶` glyphs so the mouse handler can
-/// hit-test clicks on them. Columns are absolute screen coordinates
-/// (taking `area.x` into account). Returns `None` when no files
-/// exist; the arrows still render but are no-op so positions aren't
-/// exposed.
-fn narrow_header_row(
-    overlay: &DiffOverlayState,
-    origin_col: u16,
-) -> (Line<'static>, Option<(u16, u16)>) {
-    let dim = Style::default().fg(theme::DIM);
-    let total = overlay.files.len();
-    let current = if total == 0 { 0 } else { overlay.current_file_idx + 1 };
-    let path = overlay.current_file().map_or_else(|| "(no file)".to_owned(), |f| f.path.clone());
-    // Track running column width so we know where ◀ and ▶ land.
-    let prefix = "  DIFF · ";
-    let prefix_width = u16::try_from(prefix.chars().count()).unwrap_or(u16::MAX);
-    let path_width = u16::try_from(path.chars().count()).unwrap_or(u16::MAX);
-    let gap_width: u16 = 2; // "  " between path and arrows
-    let left_arrow_col = origin_col
-        .saturating_add(prefix_width)
-        .saturating_add(path_width)
-        .saturating_add(gap_width);
-    let counter = format!(" {current}/{total} ");
-    let counter_width = u16::try_from(counter.chars().count()).unwrap_or(u16::MAX);
-    let right_arrow_col = left_arrow_col.saturating_add(1).saturating_add(counter_width);
-    let mut spans = vec![
-        Span::raw("  "),
-        Span::styled("DIFF", Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)),
-        Span::styled(" · ", dim),
-        Span::styled(path, dim),
-        Span::raw("  "),
-        Span::styled("◀", Style::default().fg(theme::RUST_ORANGE)),
-        Span::styled(counter, dim),
-        Span::styled("▶", Style::default().fg(theme::RUST_ORANGE)),
-    ];
-    if let Some(f) = overlay.current_file() {
-        let added = f.added_count();
-        let removed = f.removed_count();
-        if added > 0 {
-            spans.push(Span::raw("  "));
-            spans.push(Span::styled(format!("+{added}"), Style::default().fg(Color::Green)));
-        }
-        if removed > 0 {
-            spans.push(Span::raw(" "));
-            spans.push(Span::styled(format!("-{removed}"), Style::default().fg(Color::Red)));
-        }
-        if added > 0 || removed > 0 {
-            // 1-cell trailing pad so totals don't touch the right
-            // edge — matches the Inspector GIT panel convention.
-            spans.push(Span::raw(" "));
-        }
-    }
-    let arrow_cols = if total > 0 { Some((left_arrow_col, right_arrow_col)) } else { None };
-    (Line::from(spans), arrow_cols)
 }
 
 fn banner_row(label: &'static str) -> Line<'static> {

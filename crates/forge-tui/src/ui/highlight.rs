@@ -78,6 +78,69 @@ pub(crate) fn highlight_code(text: &str, language: Option<&str>) -> Vec<Line<'st
     highlight_with_syntax(text, syntax)
 }
 
+/// Stateful per-side syntax highlighter — used by the split-view diff
+/// renderer to highlight one column's worth of lines while preserving
+/// multi-line construct state (strings spanning lines, block comments,
+/// etc.) across calls. One instance per (file, side).
+pub(crate) struct LineHighlighter {
+    inner: HighlightLines<'static>,
+}
+
+impl LineHighlighter {
+    /// Resolve the syntax by file extension. Falls back to plain text
+    /// when the extension is unknown or the path has no extension.
+    pub(crate) fn for_path(path: &str) -> Self {
+        let syntax = syntax_for_path(path).unwrap_or_else(|| SYNTAX_SET.find_syntax_plain_text());
+        Self { inner: HighlightLines::new(syntax, highlight_theme()) }
+    }
+
+    /// Highlight a single line and return the spans. The trailing
+    /// newline (if any) is stripped from the input before highlighting
+    /// so the spans don't carry control characters into ratatui's
+    /// layout. Empty input yields an empty span vec.
+    pub(crate) fn highlight(&mut self, line: &str) -> Vec<Span<'static>> {
+        let trimmed = line.strip_suffix('\n').unwrap_or(line);
+        if trimmed.is_empty() {
+            return Vec::new();
+        }
+        // syntect's `highlight_line` wants the trailing newline to
+        // close any open line-scoped scopes. Re-add it for the call,
+        // then drop empty segments from the output.
+        let with_nl = format!("{trimmed}\n");
+        match self.inner.highlight_line(&with_nl, &SYNTAX_SET) {
+            Ok(ranges) => ranges
+                .into_iter()
+                .filter_map(|(style, segment)| {
+                    let content = segment.strip_suffix('\n').unwrap_or(segment);
+                    if content.is_empty() {
+                        None
+                    } else {
+                        Some(Span::styled(
+                            content.to_owned(),
+                            ratatui_style(style.foreground, style.font_style),
+                        ))
+                    }
+                })
+                .collect(),
+            Err(err) => {
+                tracing::warn!(
+                    target: crate::logging::targets::APP_RENDER,
+                    event_name = "syntax_highlight_failed",
+                    message = "syntax highlighting failed; falling back to plain text",
+                    outcome = "fallback",
+                    error_message = %err,
+                );
+                vec![Span::raw(trimmed.to_owned())]
+            }
+        }
+    }
+}
+
+fn syntax_for_path(path: &str) -> Option<&'static SyntaxReference> {
+    let extension = std::path::Path::new(path).extension().and_then(|ext| ext.to_str())?;
+    SYNTAX_SET.find_syntax_by_extension(extension)
+}
+
 fn highlight_with_syntax(text: &str, syntax: &SyntaxReference) -> Vec<Line<'static>> {
     if text.is_empty() {
         return vec![Line::default()];
@@ -213,5 +276,31 @@ mod tests {
         assert_eq!(rendered[0].spans[0].content.as_ref(), "red");
         assert_eq!(rendered[0].spans[0].style.fg, Some(Color::Red));
         assert_eq!(rendered[0].spans[1].content.as_ref(), " plain");
+    }
+
+    #[test]
+    fn line_highlighter_returns_styled_spans_for_known_extension() {
+        let mut highlighter = LineHighlighter::for_path("src/foo.rs");
+        let spans = highlighter.highlight("fn main() {}");
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "fn main() {}");
+        // At least one span should carry a fg color (the `fn` keyword,
+        // or `main`, etc.). Plain-text fallback wouldn't.
+        assert!(spans.iter().any(|s| s.style.fg.is_some()));
+    }
+
+    #[test]
+    fn line_highlighter_unknown_extension_falls_back_to_plain() {
+        let mut highlighter = LineHighlighter::for_path("nope.weirdext");
+        let spans = highlighter.highlight("anything goes here");
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "anything goes here");
+    }
+
+    #[test]
+    fn line_highlighter_empty_line_returns_empty_spans() {
+        let mut highlighter = LineHighlighter::for_path("src/foo.rs");
+        assert!(highlighter.highlight("").is_empty());
+        assert!(highlighter.highlight("\n").is_empty());
     }
 }
