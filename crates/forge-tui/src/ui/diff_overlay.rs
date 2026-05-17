@@ -1034,17 +1034,28 @@ fn truncate_spans_to_width(spans: Vec<Span<'static>>, max_width: usize) -> Vec<S
     if max_width == 0 {
         return Vec::new();
     }
-    let mut out: Vec<Span<'static>> = Vec::with_capacity(spans.len());
+    // Total content width so we know whether we actually need to
+    // truncate; if it already fits, return as-is.
+    let total_width: usize = spans.iter().map(|s| s.content.width()).sum();
+    if total_width <= max_width {
+        return spans;
+    }
+    // Reserve 1 col for the trailing `…` marker so the user can see
+    // where content was clipped. When max_width is 1 we skip the
+    // marker and just truncate hard.
+    let body_width = max_width.saturating_sub(1);
+    let mut out: Vec<Span<'static>> = Vec::with_capacity(spans.len() + 1);
     let mut consumed: usize = 0;
+    let mut last_style = Style::default();
     for span in spans {
+        last_style = span.style;
         let span_width = span.content.width();
-        if consumed.saturating_add(span_width) <= max_width {
+        if consumed.saturating_add(span_width) <= body_width {
             consumed = consumed.saturating_add(span_width);
             out.push(span);
             continue;
         }
-        // Need to split this span at the column boundary.
-        let remaining = max_width - consumed;
+        let remaining = body_width - consumed;
         let mut buf = String::with_capacity(span.content.len());
         let mut span_consumed = 0usize;
         for c in span.content.chars() {
@@ -1060,6 +1071,14 @@ fn truncate_spans_to_width(spans: Vec<Span<'static>>, max_width: usize) -> Vec<S
         }
         break;
     }
+    // Append the `…` marker carrying the trailing span's bg so the
+    // tint stays unbroken across the truncation cell.
+    let marker_style = Style::default().fg(theme::DIM);
+    let marker_style = match last_style.bg {
+        Some(bg) => marker_style.bg(bg),
+        None => marker_style,
+    };
+    out.push(Span::styled("\u{2026}", marker_style));
     out
 }
 
