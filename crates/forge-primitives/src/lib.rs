@@ -87,8 +87,6 @@ pub use hooks::{
     UserPromptSubmitHookSpecificOutput, UserPromptSubmitInput,
 };
 pub use ids::{MessageId, SessionId, ToolUseId};
-pub use session_key::SessionKey;
-pub use turn_error::TurnErrorClass;
 pub use image::{
     ImageAttachment, SUPPORTED_IMAGE_MIME_TYPES, is_supported_image_type, is_valid_base64,
     validate_image,
@@ -122,9 +120,11 @@ pub use runtime::{
     RateLimitUpdate, RuntimeSessionState, SessionLifecycleState, SessionStatus, SessionTurnState,
     SettingsParseErrorUpdate, TerminalReason,
 };
+pub use session_key::SessionKey;
 pub use session_meta::{PromptChunk, SessionListEntry};
 pub use session_update::{
     BashOutputMetadata, ChunkContent, PlanEntry, TaskMetadata, TodoWriteOutputMetadata, ToolCall,
     ToolCallContent, ToolCallUpdate, ToolCallUpdateFields, ToolLocation, ToolOutputMetadata,
 };
 pub use subagents::{EffortPreset, SubagentDefinition, SubagentMcpServerRef, SubagentMemory};
+pub use turn_error::TurnErrorClass;

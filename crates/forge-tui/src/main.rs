@@ -125,9 +125,9 @@ fn resolve_config_dir() -> anyhow::Result<PathBuf> {
             return Ok(PathBuf::from(trimmed));
         }
     }
-    dirs::home_dir()
-        .map(|h| h.join(".claude"))
-        .ok_or_else(|| anyhow::anyhow!("$CLAUDE_CONFIG_DIR unset and could not resolve home directory"))
+    dirs::home_dir().map(|h| h.join(".claude")).ok_or_else(|| {
+        anyhow::anyhow!("$CLAUDE_CONFIG_DIR unset and could not resolve home directory")
+    })
 }
 
 fn extract_app_error(err: &anyhow::Error) -> Option<AppError> {

@@ -72,10 +72,7 @@ impl Drop for WatchCancel {
 /// receiver of [`ScanProgress`] batches (`Batch` until the walker
 /// finishes, then one terminal `Finished`) and a cancel handle.
 /// Dropping the cancel handle aborts the walker.
-pub fn start_scan(
-    root: PathBuf,
-    respect_gitignore: bool,
-) -> (Receiver<ScanProgress>, ScanCancel) {
+pub fn start_scan(root: PathBuf, respect_gitignore: bool) -> (Receiver<ScanProgress>, ScanCancel) {
     let cancel = Arc::new(AtomicBool::new(false));
     let cancel_clone = Arc::clone(&cancel);
     let (tx, rx) = mpsc::channel::<ScanProgress>();
@@ -394,4 +391,3 @@ fn replace_subtree_change(
     let entries = scan_subtree(root, path, respect_gitignore);
     Some(FileIndexChange::ReplacePrefix { rel_prefix, entries })
 }
-

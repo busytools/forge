@@ -47,4 +47,3 @@ pub enum SessionTarget {
     /// in the Projects pane and by `Workspace::spawn_session`.
     Session(SessionKey),
 }
-

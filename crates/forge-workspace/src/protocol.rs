@@ -38,9 +38,8 @@ use forge_primitives::question::{QuestionOutcome, QuestionRequest};
 use forge_primitives::runtime::{AvailableModel, CurrentModel, ModeState, TerminalReason};
 use forge_primitives::usage::{UsageSnapshot, UsageSourceKind};
 use forge_primitives::{
-    AccountInfo, ElicitationAction, ForgeAccountIdentity, ImageAttachment,
-    McpAuthRedirect, McpOperationError, McpServerConfig, McpServerStatus, Message, SessionId,
-    SessionListEntry,
+    AccountInfo, ElicitationAction, ForgeAccountIdentity, ImageAttachment, McpAuthRedirect,
+    McpOperationError, McpServerConfig, McpServerStatus, Message, SessionId, SessionListEntry,
 };
 use tokio::sync::oneshot;
 

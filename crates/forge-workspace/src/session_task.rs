@@ -185,19 +185,11 @@ impl SessionTask {
             }
             AgentEvent::AuthRequired { method_name, method_description } => {
                 let key = self.spawn_key.clone().unwrap_or_else(|| self.key.clone());
-                self.emit(SessionUpdate::AuthRequired {
-                    key,
-                    method_name,
-                    method_description,
-                });
+                self.emit(SessionUpdate::AuthRequired { key, method_name, method_description });
             }
             AgentEvent::ConnectionFailed { message } => {
                 let key = self.spawn_key.clone().unwrap_or_else(|| self.key.clone());
-                self.emit(SessionUpdate::ConnectionFailed {
-                    key,
-                    message,
-                    fatal: false,
-                });
+                self.emit(SessionUpdate::ConnectionFailed { key, message, fatal: false });
             }
             AgentEvent::PermissionRequest { session_id, request } => {
                 let session_key = SessionKey::from_session_id(session_id.clone());
@@ -322,11 +314,7 @@ impl SessionTask {
                 self.emit(SessionUpdate::SessionsListed { key, sessions });
             }
             AgentEvent::StatusSnapshot { session_id, account, forge_account } => {
-                self.emit(SessionUpdate::StatusSnapshot {
-                    session_id,
-                    account,
-                    forge_account,
-                });
+                self.emit(SessionUpdate::StatusSnapshot { session_id, account, forge_account });
             }
             AgentEvent::OauthCredentialsSnapshot { session_id, credentials } => {
                 self.emit(SessionUpdate::OauthCredentialsSnapshot { session_id, credentials });
@@ -692,44 +680,47 @@ fn spawn_permission_response_forwarder(
         session_id = %session_id,
         tool_call_id = %tool_call_id,
     );
-    tokio::task::spawn(async move {
-        let Ok(outcome) = response_rx.await else {
-            tracing::warn!(
-                target: "forge_workspace::session_task",
-                session_id = %session_id,
-                tool_call_id = %tool_call_id,
-                "permission response channel closed before forwarding"
-            );
-            return;
-        };
-        let selected_option = match &outcome {
-            forge_primitives::PermissionOutcome::Selected { option_id } => option_id.clone(),
-            forge_primitives::PermissionOutcome::Cancelled => "cancelled".to_owned(),
-        };
-        let session_id_for_log = session_id.clone();
-        let tool_call_id_for_log = tool_call_id.clone();
-        match agent.permission_response(session_id, tool_call_id, outcome) {
-            Ok(()) => {
-                tracing::info!(
+    tokio::task::spawn(
+        async move {
+            let Ok(outcome) = response_rx.await else {
+                tracing::warn!(
                     target: "forge_workspace::session_task",
-                    session_id = %session_id_for_log,
-                    tool_call_id = %tool_call_id_for_log,
-                    selected_option = %selected_option,
-                    "permission response forwarded to bridge"
+                    session_id = %session_id,
+                    tool_call_id = %tool_call_id,
+                    "permission response channel closed before forwarding"
                 );
-            }
-            Err(err) => {
-                tracing::error!(
-                    target: "forge_workspace::session_task",
-                    session_id = %session_id_for_log,
-                    tool_call_id = %tool_call_id_for_log,
-                    selected_option = %selected_option,
-                    error = %err,
-                    "failed to forward permission response to bridge"
-                );
+                return;
+            };
+            let selected_option = match &outcome {
+                forge_primitives::PermissionOutcome::Selected { option_id } => option_id.clone(),
+                forge_primitives::PermissionOutcome::Cancelled => "cancelled".to_owned(),
+            };
+            let session_id_for_log = session_id.clone();
+            let tool_call_id_for_log = tool_call_id.clone();
+            match agent.permission_response(session_id, tool_call_id, outcome) {
+                Ok(()) => {
+                    tracing::info!(
+                        target: "forge_workspace::session_task",
+                        session_id = %session_id_for_log,
+                        tool_call_id = %tool_call_id_for_log,
+                        selected_option = %selected_option,
+                        "permission response forwarded to bridge"
+                    );
+                }
+                Err(err) => {
+                    tracing::error!(
+                        target: "forge_workspace::session_task",
+                        session_id = %session_id_for_log,
+                        tool_call_id = %tool_call_id_for_log,
+                        selected_option = %selected_option,
+                        error = %err,
+                        "failed to forward permission response to bridge"
+                    );
+                }
             }
         }
-    }.instrument(span));
+        .instrument(span),
+    );
 }
 
 /// Forward an awaited question outcome to the agent so the bridge
@@ -745,46 +736,49 @@ fn spawn_question_response_forwarder(
         session_id = %session_id,
         tool_call_id = %tool_call_id,
     );
-    tokio::task::spawn(async move {
-        let Ok(outcome) = response_rx.await else {
-            tracing::warn!(
-                target: "forge_workspace::session_task",
-                session_id = %session_id,
-                tool_call_id = %tool_call_id,
-                "question response channel closed before forwarding"
-            );
-            return;
-        };
-        let selected_option_count = match &outcome {
-            forge_primitives::QuestionOutcome::Answered { selected_option_ids, .. } => {
-                selected_option_ids.len()
-            }
-            forge_primitives::QuestionOutcome::Cancelled => 0,
-        };
-        let session_id_for_log = session_id.clone();
-        let tool_call_id_for_log = tool_call_id.clone();
-        match agent.question_response(session_id, tool_call_id, outcome) {
-            Ok(()) => {
-                tracing::info!(
+    tokio::task::spawn(
+        async move {
+            let Ok(outcome) = response_rx.await else {
+                tracing::warn!(
                     target: "forge_workspace::session_task",
-                    session_id = %session_id_for_log,
-                    tool_call_id = %tool_call_id_for_log,
-                    selected_option_count,
-                    "question response forwarded to bridge"
+                    session_id = %session_id,
+                    tool_call_id = %tool_call_id,
+                    "question response channel closed before forwarding"
                 );
-            }
-            Err(err) => {
-                tracing::error!(
-                    target: "forge_workspace::session_task",
-                    session_id = %session_id_for_log,
-                    tool_call_id = %tool_call_id_for_log,
-                    selected_option_count,
-                    error = %err,
-                    "failed to forward question response to bridge"
-                );
+                return;
+            };
+            let selected_option_count = match &outcome {
+                forge_primitives::QuestionOutcome::Answered { selected_option_ids, .. } => {
+                    selected_option_ids.len()
+                }
+                forge_primitives::QuestionOutcome::Cancelled => 0,
+            };
+            let session_id_for_log = session_id.clone();
+            let tool_call_id_for_log = tool_call_id.clone();
+            match agent.question_response(session_id, tool_call_id, outcome) {
+                Ok(()) => {
+                    tracing::info!(
+                        target: "forge_workspace::session_task",
+                        session_id = %session_id_for_log,
+                        tool_call_id = %tool_call_id_for_log,
+                        selected_option_count,
+                        "question response forwarded to bridge"
+                    );
+                }
+                Err(err) => {
+                    tracing::error!(
+                        target: "forge_workspace::session_task",
+                        session_id = %session_id_for_log,
+                        tool_call_id = %tool_call_id_for_log,
+                        selected_option_count,
+                        error = %err,
+                        "failed to forward question response to bridge"
+                    );
+                }
             }
         }
-    }.instrument(span));
+        .instrument(span),
+    );
 }
 
 #[cfg(test)]
@@ -886,7 +880,8 @@ mod tests {
         use tokio::sync::oneshot;
 
         let (handle, _commands_rx) = Agent::testing_stub();
-        let (_cmd_tx, command_rx) = tokio::sync::mpsc::unbounded_channel::<crate::protocol::Command>();
+        let (_cmd_tx, command_rx) =
+            tokio::sync::mpsc::unbounded_channel::<crate::protocol::Command>();
         let (update_tx, _update_rx) = tokio::sync::mpsc::unbounded_channel::<SessionUpdate>();
         let domain = Arc::new(parking_lot::Mutex::new(empty_domain()));
         let (response_tx, mut response_rx) =
@@ -932,7 +927,10 @@ mod tests {
             "second Connected must clear stale pending_interactions",
         );
         assert!(
-            matches!(response_rx.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Closed)),
+            matches!(
+                response_rx.try_recv(),
+                Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+            ),
             "forwarder receiver must observe Closed after the sender was dropped"
         );
     }
@@ -940,7 +938,8 @@ mod tests {
     /// Common harness for the `execute_command_via_handle` tests
     /// below: build a fresh stub handle + drain channel, return both.
     fn stub_handle_with_rx()
-    -> (Arc<AgentHandle>, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::AgentCommand>) {
+    -> (Arc<AgentHandle>, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::AgentCommand>)
+    {
         let (handle, rx) = Agent::testing_stub();
         (Arc::new(handle), rx)
     }

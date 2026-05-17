@@ -17,7 +17,12 @@ fn post_connect_refreshes(app: &mut App) {
 /// and drop the event otherwise. Plugin lifecycle events are
 /// cwd-scoped and stale ones from a previous project must not affect
 /// the active project's inventory.
-fn dispatch_if_cwd_matches(app: &mut App, cwd_raw: &str, event_name: &str, f: impl FnOnce(&mut App)) {
+fn dispatch_if_cwd_matches(
+    app: &mut App,
+    cwd_raw: &str,
+    event_name: &str,
+    f: impl FnOnce(&mut App),
+) {
     if app.cwd_raw() == cwd_raw {
         f(app);
     } else {
@@ -1269,10 +1274,7 @@ mod tests {
         {
             let ws = app.workspace.as_ref().expect("workspace stub present in test_default");
             let (stub_handle, _) = forge_workspace::Workspace::testing_stub_handle();
-            ws.register_domain_session(
-                synth_key.clone(),
-                Some(std::sync::Arc::new(stub_handle)),
-            );
+            ws.register_domain_session(synth_key.clone(), Some(std::sync::Arc::new(stub_handle)));
         }
 
         apply_session_update(

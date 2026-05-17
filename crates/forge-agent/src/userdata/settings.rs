@@ -108,9 +108,11 @@ fn target_path(config_dir: &Path, target: &SettingsTarget) -> Result<PathBuf, Er
     match target {
         SettingsTarget::User => Ok(config_dir.join("settings.json")),
         SettingsTarget::ProjectLocal { cwd } => Ok(cwd.join(".claude").join("settings.local.json")),
-        SettingsTarget::Preferences => home_dir()
-            .map(|h| h.join(".claude.json"))
-            .ok_or_else(|| Error::Io(io::Error::other("$HOME unset; cannot resolve preferences path"))),
+        SettingsTarget::Preferences => {
+            home_dir().map(|h| h.join(".claude.json")).ok_or_else(|| {
+                Error::Io(io::Error::other("$HOME unset; cannot resolve preferences path"))
+            })
+        }
     }
 }
 

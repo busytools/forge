@@ -45,7 +45,6 @@ pub(crate) fn set_todos(app: &mut App, todos: Vec<TodoItem>) {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -185,10 +184,8 @@ mod tests {
     #[test]
     fn set_todos_clears_when_all_completed() {
         let mut app = App::test_default();
-        let active = vec![
-            todo("pending", TodoStatus::Pending),
-            todo("running", TodoStatus::InProgress),
-        ];
+        let active =
+            vec![todo("pending", TodoStatus::Pending), todo("running", TodoStatus::InProgress)];
         set_todos(&mut app, active);
         assert_eq!(app.todos().len(), 2);
         assert_eq!(app.todos()[0].status, TodoStatus::Pending);

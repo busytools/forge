@@ -124,10 +124,7 @@ pub(crate) async fn spawn_session(
     let reader_event_tx = bridge.event_tx().clone();
     let reader_session_id = session_id.clone();
     let span = tracing::info_span!("sdk_reader", session_id = %reader_session_id);
-    tokio::spawn(
-        reader_loop(events, reader_event_tx, reader_session_id)
-            .instrument(span),
-    );
+    tokio::spawn(reader_loop(events, reader_event_tx, reader_session_id).instrument(span));
     Ok(())
 }
 
@@ -853,8 +850,8 @@ mod tests {
         synth_permission_request, take_pending,
     };
     use crate::client::AgentEvent;
-    use forge_primitives::{PermissionOutcome, QuestionOutcome};
     use forge_primitives::ToolPermissionContext;
+    use forge_primitives::{PermissionOutcome, QuestionOutcome};
     use parking_lot::Mutex;
     use serde_json::json;
     use std::collections::HashMap;
@@ -1032,5 +1029,4 @@ mod tests {
         assert!(take_pending(&pending, "tu_x").is_some());
         assert!(take_pending(&pending, "tu_x").is_none());
     }
-
 }

@@ -181,9 +181,11 @@ pub(crate) fn handle_start_default(
         None => SessionTarget::Default,
     };
 
-    match workspace
-        .get_agent_handle_with_spawn_key(target, launch_settings, Some(synth_key.clone()))
-    {
+    match workspace.get_agent_handle_with_spawn_key(
+        target,
+        launch_settings,
+        Some(synth_key.clone()),
+    ) {
         Ok(_handle) => {
             tracing::info!(
                 target: "forge_workspace::spawn",
@@ -255,11 +257,7 @@ config_dir = "~/.claude-subspace"
         let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
         let mut rx = workspace.subscribe().expect("subscribe");
 
-        handle_spawn_project(
-            &workspace,
-            "no-such-project",
-            SessionLaunchSettings::default(),
-        );
+        handle_spawn_project(&workspace, "no-such-project", SessionLaunchSettings::default());
 
         // No SessionUpdate should have been emitted.
         assert!(rx.try_recv().is_err(), "no SessionUpdate emitted for unknown project");
@@ -276,11 +274,7 @@ config_dir = "~/.claude-subspace"
         let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
         let mut rx = workspace.subscribe().expect("subscribe");
 
-        handle_spawn_project(
-            &workspace,
-            "forge",
-            SessionLaunchSettings::default(),
-        );
+        handle_spawn_project(&workspace, "forge", SessionLaunchSettings::default());
 
         let update = rx.try_recv().expect("Spawning emit");
         match update {
@@ -346,11 +340,7 @@ config_dir = "~/.claude-subspace"
         let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
         let mut rx = workspace.subscribe().expect("subscribe");
 
-        handle_spawn_session(
-            &workspace,
-            "no-such-session-id",
-            SessionLaunchSettings::default(),
-        );
+        handle_spawn_session(&workspace, "no-such-session-id", SessionLaunchSettings::default());
 
         // The handler should not emit a Fatal envelope. (For the
         // unknown-session path it doesn't emit anything; the

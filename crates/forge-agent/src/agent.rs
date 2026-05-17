@@ -127,7 +127,11 @@ impl AgentHandle {
         launch_settings: crate::client::SessionLaunchSettings,
     ) -> Result<(), AgentError> {
         let launch_settings = serde_json::to_value(launch_settings)?;
-        self.send(AgentCommand::ResumeSession { session_id: session_id.into(), cwd, launch_settings })
+        self.send(AgentCommand::ResumeSession {
+            session_id: session_id.into(),
+            cwd,
+            launch_settings,
+        })
     }
 
     /// Resume the recorded `session_id`; if resume fails (stale
@@ -234,7 +238,11 @@ impl AgentHandle {
         server_name: String,
         enabled: bool,
     ) -> Result<(), AgentError> {
-        self.send(AgentCommand::ToggleMcpServer { session_id: session_id.into(), server_name, enabled })
+        self.send(AgentCommand::ToggleMcpServer {
+            session_id: session_id.into(),
+            server_name,
+            enabled,
+        })
     }
 
     pub fn set_mcp_servers(
@@ -250,10 +258,17 @@ impl AgentHandle {
         session_id: String,
         server_name: String,
     ) -> Result<(), AgentError> {
-        self.send(AgentCommand::AuthenticateMcpServer { session_id: session_id.into(), server_name })
+        self.send(AgentCommand::AuthenticateMcpServer {
+            session_id: session_id.into(),
+            server_name,
+        })
     }
 
-    pub fn clear_mcp_auth(&self, session_id: String, server_name: String) -> Result<(), AgentError> {
+    pub fn clear_mcp_auth(
+        &self,
+        session_id: String,
+        server_name: String,
+    ) -> Result<(), AgentError> {
         self.send(AgentCommand::ClearMcpAuth { session_id: session_id.into(), server_name })
     }
 
@@ -371,9 +386,7 @@ impl Agent {
             "agent_dispatch",
             config_dir = %dispatch_bridge.config_dir().display(),
         );
-        tokio::spawn(
-            dispatch_commands(commands_rx, Arc::clone(&dispatch_bridge)).instrument(span),
-        );
+        tokio::spawn(dispatch_commands(commands_rx, Arc::clone(&dispatch_bridge)).instrument(span));
 
         AgentHandle {
             commands: commands_tx,

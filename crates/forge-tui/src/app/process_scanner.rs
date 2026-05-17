@@ -134,25 +134,24 @@ pub fn request_refresh(
         // `sysinfo` refresh is CPU-bound — offload to the blocking
         // pool so the per-second ticker on this runtime doesn't
         // stall behind the ~50–100 ms scan.
-        let snapshot =
-            match tokio::task::spawn_blocking(move || {
-                forge_workspace::Workspace::scan_processes(claude_pid)
-            })
-            .await
-            {
-                Ok(snap) => snap,
-                Err(err) => {
-                    tracing::warn!(
-                        target: crate::logging::targets::APP_SESSION,
-                        event_name = "process_scan_join_failed",
-                        message = "process scan blocking task panicked or was cancelled",
-                        outcome = "failure",
-                        error = %err,
-                        key = %key.as_str(),
-                    );
-                    return;
-                }
-            };
+        let snapshot = match tokio::task::spawn_blocking(move || {
+            forge_workspace::Workspace::scan_processes(claude_pid)
+        })
+        .await
+        {
+            Ok(snap) => snap,
+            Err(err) => {
+                tracing::warn!(
+                    target: crate::logging::targets::APP_SESSION,
+                    event_name = "process_scan_join_failed",
+                    message = "process scan blocking task panicked or was cancelled",
+                    outcome = "failure",
+                    error = %err,
+                    key = %key.as_str(),
+                );
+                return;
+            }
+        };
         let _ = tx.send(ProcessScanEvent::SnapshotReady { key, generation, snapshot });
     });
 }

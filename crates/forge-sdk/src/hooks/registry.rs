@@ -106,7 +106,6 @@ impl Hooks {
 
         registry
     }
-
 }
 
 /// Internal bundle mapping opaque ids to erased callbacks, with parallel

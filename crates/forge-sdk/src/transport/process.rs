@@ -643,7 +643,10 @@ mod tests {
         // CI-load tolerance — flagging a one-time-blip scheduler
         // delay as a regression would be noise.
         assert!(elapsed <= Duration::from_secs(30), "close() took {elapsed:?}, expected <= 30s");
-        assert!(elapsed >= Duration::from_secs(5), "close() returned in {elapsed:?}, expected >= 5s (close timeout fired)");
+        assert!(
+            elapsed >= Duration::from_secs(5),
+            "close() returned in {elapsed:?}, expected >= 5s (close timeout fired)"
+        );
         match result {
             Err(Error::Process { stderr, .. }) => {
                 assert!(

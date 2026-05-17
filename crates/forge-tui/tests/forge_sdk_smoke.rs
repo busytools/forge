@@ -204,9 +204,7 @@ async fn forge_sdk_e2e_cancel_mid_turn() {
     // fails cleanly rather than hanging the test.
     let pre_cancel_deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     while tokio::time::Instant::now() < pre_cancel_deadline
-        && tokio::time::timeout(Duration::from_millis(500), event_rx.recv())
-            .await
-            .is_err()
+        && tokio::time::timeout(Duration::from_millis(500), event_rx.recv()).await.is_err()
     {}
     agent.cancel(session_id).expect("cancel queued");
     eprintln!("e2e cancel: interrupt sent");

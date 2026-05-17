@@ -495,10 +495,7 @@ impl ForgeSdkBridge {
         self.dispatch("reload_plugins", move |client| async move {
             match client.reload_plugins().await {
                 Ok(_) => {
-                    if event_tx
-                        .send(AgentEvent::RuntimeReloadCompleted { session_id })
-                        .is_err()
-                    {
+                    if event_tx.send(AgentEvent::RuntimeReloadCompleted { session_id }).is_err() {
                         tracing::warn!(
                             target: crate::logging::targets::BRIDGE_LIFECYCLE,
                             "event channel closed; RuntimeReloadCompleted dropped",

@@ -33,4 +33,3 @@ impl SessionKey {
         Self(s.to_owned())
     }
 }
-

@@ -297,8 +297,16 @@ mod tests {
             current_mode_id: "plan".to_owned(),
             current_mode_name: "Plan".to_owned(),
             available_modes: vec![
-                super::super::ModeInfo { id: "plan".to_owned(), name: "Plan".to_owned(), description: None },
-                super::super::ModeInfo { id: "code".to_owned(), name: "Code".to_owned(), description: None },
+                super::super::ModeInfo {
+                    id: "plan".to_owned(),
+                    name: "Plan".to_owned(),
+                    description: None,
+                },
+                super::super::ModeInfo {
+                    id: "code".to_owned(),
+                    name: "Code".to_owned(),
+                    description: None,
+                },
             ],
         }));
 
@@ -520,8 +528,16 @@ mod tests {
                     current_mode_id: "code".to_owned(),
                     current_mode_name: "Code".to_owned(),
                     available_modes: vec![
-                        super::super::ModeInfo { id: "plan".to_owned(), name: "Plan".to_owned(), description: None },
-                        super::super::ModeInfo { id: "code".to_owned(), name: "Code".to_owned(), description: None },
+                        super::super::ModeInfo {
+                            id: "plan".to_owned(),
+                            name: "Plan".to_owned(),
+                            description: None,
+                        },
+                        super::super::ModeInfo {
+                            id: "code".to_owned(),
+                            name: "Code".to_owned(),
+                            description: None,
+                        },
                     ],
                 }));
 

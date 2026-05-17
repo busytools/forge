@@ -323,7 +323,6 @@ pub(super) fn convert_tool_call_update_fields(
     out
 }
 
-
 fn convert_tool_call_content(
     tool_content: types::ToolCallContent,
 ) -> Option<model::ToolCallContent> {

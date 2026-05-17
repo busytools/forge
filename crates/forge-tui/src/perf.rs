@@ -344,7 +344,6 @@ mod disabled {
         pub fn mark_with(&self, _name: &'static str, _extra_name: &'static str, _extra_val: usize) {
         }
     }
-
 }
 
 /// Start a timer without needing a `PerfLogger` reference.

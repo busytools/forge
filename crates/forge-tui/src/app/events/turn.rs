@@ -1,12 +1,14 @@
 use super::super::{
-    App, AppStatus, ChatMessage, FocusTarget, InlinePermission, InlineQuestion,
-    InvalidationLevel, MessageBlock, MessageRole, NoticeStage, SystemSeverity, TextBlock,
+    App, AppStatus, ChatMessage, FocusTarget, InlinePermission, InlineQuestion, InvalidationLevel,
+    MessageBlock, MessageRole, NoticeStage, SystemSeverity, TextBlock,
 };
 use super::clear_compaction_state;
 use super::rate_limit::{format_rate_limit_summary, rate_limit_notice_key};
-use forge_workspace::translate::error_handling::{TurnErrorClass, classify_turn_error, summarize_internal_error};
 use crate::agent::model;
 use forge_workspace::SessionKey;
+use forge_workspace::translate::error_handling::{
+    TurnErrorClass, classify_turn_error, summarize_internal_error,
+};
 use std::collections::BTreeSet;
 
 const CONVERSATION_INTERRUPTED_HINT: &str =
@@ -851,8 +853,7 @@ fn apply_turn_cancelled_presentation(app: &mut App, session_key: &SessionKey) {
     if !session.pending_cancel {
         session.pending_cancel = true;
     }
-    session.cancelled_turn_pending_hint =
-        session.pending_cancel;
+    session.cancelled_turn_pending_hint = session.pending_cancel;
     finalize_background_tool_calls(session, model::ToolCallStatus::Failed);
     // Drop the `session` mut borrow before reaching for the workspace.
     let _ = session;
@@ -917,9 +918,7 @@ fn finish_ready_turn_exit(app: &mut App, exit: TurnExitState, tool_status: model
     if exit.show_interrupted_hint {
         push_interrupted_hint(app);
     }
-    if removed_tail_assistant.is_none()
-        && (exit.turn_was_active || exit.cancelled_requested)
-    {
+    if removed_tail_assistant.is_none() && (exit.turn_was_active || exit.cancelled_requested) {
         mark_turn_exit_assistant_layout_dirty(app, exit.tail_assistant_idx);
     }
     app.clear_active_turn_assistant();

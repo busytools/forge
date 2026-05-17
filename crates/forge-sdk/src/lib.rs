@@ -63,7 +63,6 @@ pub mod transport;
 pub use crate::mcp::macros::__private;
 pub use client::{Client, ClientEvents};
 pub use error::Error;
-pub use paths::{claude_config_dir_from_env, projects_dir_for};
 pub use hooks::{
     BaseHookInput, HookCallback, HookContext, HookDecision, HookKind, HookSpecificOutput, Hooks,
     HooksBuilder, NotificationHookSpecificOutput, NotificationInput,
@@ -74,9 +73,8 @@ pub use hooks::{
     SubagentStartHookSpecificOutput, SubagentStartInput, SubagentStopInput,
     UserPromptSubmitHookSpecificOutput, UserPromptSubmitInput,
 };
-pub use options::{
-    Options, OptionsBuilder, PermissionMode, SdkPluginConfig, SystemPromptKind,
-};
+pub use options::{Options, OptionsBuilder, PermissionMode, SdkPluginConfig, SystemPromptKind};
+pub use paths::{claude_config_dir_from_env, projects_dir_for};
 pub use permissions::CanUseToolCallback;
 
 /// Convenient alias for `Result<T, forge_sdk::Error>`.

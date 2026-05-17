@@ -924,9 +924,7 @@ pub(super) fn apply_session_update_connected(
     mode: Option<forge_primitives::ModeState>,
     history: &[forge_primitives::Message],
 ) {
-    use super::super::connect::type_converters::{
-        map_available_models,
-    };
+    use super::super::connect::type_converters::map_available_models;
     // Defensive synthetic→real migration: in production, the
     // `SessionTask` emits `SessionUpdate::KeyRenamed` ahead of
     // `Connected` so the bucket already lives at `key`. Tests that
@@ -1012,9 +1010,7 @@ pub(super) fn apply_session_update_session_replaced(
     mode: Option<forge_primitives::ModeState>,
     history: &[forge_primitives::Message],
 ) {
-    use super::super::connect::type_converters::{
-        map_available_models,
-    };
+    use super::super::connect::type_converters::map_available_models;
     handle_session_replaced_event(
         app,
         model::SessionId::new(session_id.into_string()),

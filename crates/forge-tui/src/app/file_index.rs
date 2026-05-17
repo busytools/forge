@@ -441,12 +441,12 @@ mod tests {
         let mut app = App::test_default();
         let key_a = forge_workspace::SessionKey::from_str_for_test("a");
         let key_b = forge_workspace::SessionKey::from_str_for_test("b");
-        app.sessions.entry(key_a.clone()).or_insert_with(|| {
-            crate::app::session::UiSession::new(key_a.clone())
-        });
-        app.sessions.entry(key_b.clone()).or_insert_with(|| {
-            crate::app::session::UiSession::new(key_b.clone())
-        });
+        app.sessions
+            .entry(key_a.clone())
+            .or_insert_with(|| crate::app::session::UiSession::new(key_a.clone()));
+        app.sessions
+            .entry(key_b.clone())
+            .or_insert_with(|| crate::app::session::UiSession::new(key_b.clone()));
         // Active bucket is A.
         app.active_session_key = Some(key_a.clone());
         // Bucket B's scanner emits a batch.

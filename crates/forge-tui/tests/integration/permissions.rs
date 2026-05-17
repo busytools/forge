@@ -87,12 +87,7 @@ async fn permission_for_unknown_tool_call_auto_rejects() {
     let options = allow_deny_options();
     let request =
         model::RequestPermissionRequest::new("test-session", tool_call_update, options, None);
-    forge_tui::app::handle_permission_request_event(
-        &mut app,
-        &session_key,
-        &tool_id,
-        request,
-    );
+    forge_tui::app::handle_permission_request_event(&mut app, &session_key, &tool_id, request);
 
     // Should NOT be in pending queue
     assert!(app.pending_interaction_ids().is_empty());
@@ -147,12 +142,7 @@ async fn duplicate_permission_request_is_rejected_without_duplicate_queue_entry(
         allow_deny_options(),
         None,
     );
-    forge_tui::app::handle_permission_request_event(
-        &mut app,
-        &session_key,
-        "tc-dup",
-        request,
-    );
+    forge_tui::app::handle_permission_request_event(&mut app, &session_key, "tc-dup", request);
 
     assert_eq!(app.pending_interaction_ids(), vec!["tc-dup"]);
     // The duplicate should have auto-rejected via workspace dispatch.
@@ -295,7 +285,11 @@ async fn turn_complete_does_not_affect_mode() {
     app.set_mode(Some(forge_tui::app::ModeState {
         current_mode_id: "plan".into(),
         current_mode_name: "Plan".into(),
-        available_modes: vec![forge_tui::app::ModeInfo { id: "plan".into(), name: "Plan".into(), description: None }],
+        available_modes: vec![forge_tui::app::ModeInfo {
+            id: "plan".into(),
+            name: "Plan".into(),
+            description: None,
+        }],
     }));
 
     let session_key = active_session_key(&app);

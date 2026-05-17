@@ -427,10 +427,7 @@ impl Workspace {
     /// return without spawning so a forge-tui programming error
     /// can't multiply the poll rate.
     pub fn start_usage_poller(self: &Arc<Self>) {
-        if self
-            .usage_poller_started
-            .swap(true, std::sync::atomic::Ordering::AcqRel)
-        {
+        if self.usage_poller_started.swap(true, std::sync::atomic::Ordering::AcqRel) {
             tracing::debug!(
                 target: "forge_workspace::workspace",
                 "start_usage_poller called more than once; ignoring",
@@ -439,21 +436,24 @@ impl Workspace {
         }
         let weak = Arc::downgrade(self);
         let span = tracing::info_span!("usage_poller");
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(USAGE_POLL_INTERVAL);
-            // First tick fires immediately — keep it so the cache
-            // warms within seconds of startup. Subsequent ticks
-            // honour `MissedTickBehavior::Skip` so a stalled fetch
-            // can't pile up backlogged refreshes.
-            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            loop {
-                interval.tick().await;
-                let Some(workspace) = weak.upgrade() else {
-                    return; // Workspace dropped; exit cleanly.
-                };
-                workspace.refresh_account_usage_once().await;
+        tokio::spawn(
+            async move {
+                let mut interval = tokio::time::interval(USAGE_POLL_INTERVAL);
+                // First tick fires immediately — keep it so the cache
+                // warms within seconds of startup. Subsequent ticks
+                // honour `MissedTickBehavior::Skip` so a stalled fetch
+                // can't pile up backlogged refreshes.
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    interval.tick().await;
+                    let Some(workspace) = weak.upgrade() else {
+                        return; // Workspace dropped; exit cleanly.
+                    };
+                    workspace.refresh_account_usage_once().await;
+                }
             }
-        }.instrument(span));
+            .instrument(span),
+        );
     }
 
     /// One pass of the usage poller: fetch OAuth usage for every
@@ -623,8 +623,9 @@ impl Workspace {
             ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
                 &project.path.to_string_lossy(),
             )));
-        self.try_lead_session_id_for(project)
-            .unwrap_or_else(|| SessionKey::from_session_id(format!("__fresh__:{}", project_key.as_str())))
+        self.try_lead_session_id_for(project).unwrap_or_else(|| {
+            SessionKey::from_session_id(format!("__fresh__:{}", project_key.as_str()))
+        })
     }
 
     /// Return the project's lead (most-recent) session id when the
@@ -1478,11 +1479,9 @@ config_dir = "~/.claude-subspace"
         let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
         let settings = SessionLaunchSettings::default();
 
-        let handle1 = workspace
-            .get_agent_handle(SessionTarget::Default, settings.clone())
-            .expect("first");
-        let handle2 =
-            workspace.get_agent_handle(SessionTarget::Default, settings).expect("second");
+        let handle1 =
+            workspace.get_agent_handle(SessionTarget::Default, settings.clone()).expect("first");
+        let handle2 = workspace.get_agent_handle(SessionTarget::Default, settings).expect("second");
 
         assert!(Arc::ptr_eq(&handle1, &handle2), "expected pool hit for repeated Default target");
         assert_eq!(workspace.pool.lock().len(), 1);
@@ -1494,18 +1493,16 @@ config_dir = "~/.claude-subspace"
         let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
         let settings = SessionLaunchSettings::default();
 
-        let _ = workspace
-            .get_agent_handle(SessionTarget::Default, settings.clone())
-            .expect("default");
+        let _ =
+            workspace.get_agent_handle(SessionTarget::Default, settings.clone()).expect("default");
         let _ = workspace
             .get_agent_handle(SessionTarget::Default, settings.clone())
             .expect("default again");
         assert_eq!(workspace.pool.lock().len(), 1, "Default is idempotent");
 
         let other = SessionKey::from_str_for_test("dual-test-other");
-        let _ = workspace
-            .get_agent_handle(SessionTarget::Session(other), settings)
-            .expect("session");
+        let _ =
+            workspace.get_agent_handle(SessionTarget::Session(other), settings).expect("session");
         assert_eq!(workspace.pool.lock().len(), 2, "distinct target adds a pool entry");
     }
 

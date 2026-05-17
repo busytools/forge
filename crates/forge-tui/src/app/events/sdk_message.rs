@@ -20,11 +20,11 @@
 use forge_primitives::Message;
 use serde_json::Value;
 
+use crate::app::App;
 use forge_workspace::translate::state_parsing::{
     build_api_retry_update, build_rate_limit_update, normalize_settings_parse_errors,
     parse_runtime_session_state,
 };
-use crate::app::App;
 
 /// Top-level entry point. Called from `events::client` after the
 /// session-id check on `SessionUpdate::ChatAppended`. Dispatches
@@ -72,9 +72,9 @@ fn apply_fast_mode_state(app: &mut App, wire_state: forge_primitives::FastModeSt
 /// generic system envelope). Drops silently when the field is absent
 /// or doesn't deserialize to a known variant.
 fn apply_fast_mode_state_from_value(app: &mut App, data: &Value) {
-    let Some(wire_state) =
-        forge_workspace::translate::state_parsing::parse_fast_mode_state(data.get("fast_mode_state"))
-    else {
+    let Some(wire_state) = forge_workspace::translate::state_parsing::parse_fast_mode_state(
+        data.get("fast_mode_state"),
+    ) else {
         return;
     };
     apply_fast_mode_state(app, wire_state);
@@ -421,9 +421,9 @@ fn apply_tool_use_block(
     input: &Value,
     parent_tool_use_id: Option<&str>,
 ) {
-    use forge_workspace::tooling::create_tool_call;
     use crate::app::connect::type_converters::convert_tool_call;
     use forge_primitives::ToolCallUpdateFields;
+    use forge_workspace::tooling::create_tool_call;
 
     let existing = app.with_turn_state(|ts| ts.tool_calls.get(tool_use_id).cloned());
     let resolved_parent = parent_tool_use_id
@@ -721,7 +721,8 @@ fn apply_available_agents_from_init(app: &mut App, data: &Value) {
         return;
     }
     let Some(agents_value) = record.get("agents") else { return };
-    let agents = forge_workspace::translate::agents::map_available_agents_from_names(Some(agents_value));
+    let agents =
+        forge_workspace::translate::agents::map_available_agents_from_names(Some(agents_value));
     let _: () = app.with_turn_state_mut(|ts| ts.agents_emitted_this_turn = true);
     let model_update = crate::app::connect::type_converters::map_available_agents_update(agents);
     super::apply_available_agents_update(app, model_update);
@@ -740,8 +741,8 @@ fn apply_available_agents_from_init(app: &mut App, data: &Value) {
 /// the footer's effort chip and adaptive-thinking flags after the
 /// first turn lands.
 fn apply_current_model_from_init(app: &mut App, data: &Value) {
-    use forge_workspace::session_lifecycle::resolve_current_model_from_inputs;
     use forge_primitives as wire;
+    use forge_workspace::session_lifecycle::resolve_current_model_from_inputs;
 
     let Some(record) = data.as_object() else { return };
     let model_id = record.get("model").and_then(Value::as_str).unwrap_or("");
@@ -799,9 +800,9 @@ fn apply_current_model_from_init(app: &mut App, data: &Value) {
 /// `supported_mode_ids` (using the App's current_model auto-mode
 /// support + the bypass flag), then builds a `ModeState` and applies.
 fn apply_mode_state_from_init(app: &mut App, data: &Value) {
-    use forge_workspace::commands::{build_mode_state_from_supported, supported_mode_ids_filtered};
     use forge_workspace::PermissionMode;
-    
+    use forge_workspace::commands::{build_mode_state_from_supported, supported_mode_ids_filtered};
+
     let Some(record) = data.as_object() else { return };
     let Some(mode_str) = record.get("permissionMode").and_then(Value::as_str) else { return };
     let Some(mode) = PermissionMode::from_wire(mode_str) else { return };
@@ -1243,7 +1244,9 @@ fn classify_turn_error_kind(
         return TurnErrorClass::AuthRequired;
     }
     if errors.iter().any(|e| {
-        forge_workspace::translate::error_handling::looks_like_auth_required_error_lower(&e.to_ascii_lowercase())
+        forge_workspace::translate::error_handling::looks_like_auth_required_error_lower(
+            &e.to_ascii_lowercase(),
+        )
     }) {
         return TurnErrorClass::AuthRequired;
     }

@@ -21,8 +21,8 @@ pub use tool_call_info::{
     InlinePermission, InlineQuestion, TerminalSnapshotMode, ToolCallInfo, is_execute_tool_name,
 };
 pub use types::{
-    AppStatus, ExtraUsage, HelpView, HistoryRetentionPolicy, HistoryRetentionStats,
-    LoginHint, McpState, MessageUsage, ModeInfo, ModeState, PasteSessionState, PendingCommandAck,
+    AppStatus, ExtraUsage, HelpView, HistoryRetentionPolicy, HistoryRetentionStats, LoginHint,
+    McpState, MessageUsage, ModeInfo, ModeState, PasteSessionState, PendingCommandAck,
     RecentSessionInfo, RenderCacheBudget, ScrollbarDragState, SelectionKind, SelectionPoint,
     SelectionState, SessionPickerState, SessionTurnState, SessionUsageState, TodoItem, TodoStatus,
     ToolCallScope, UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState, UsageWindow,
@@ -230,7 +230,7 @@ pub struct App {
     #[rustfmt::skip] #[cfg(feature = "testing")] pub test_dispatched_permission_outcomes: std::cell::RefCell<Vec<(String, forge_primitives::PermissionOutcome)>>,
     #[rustfmt::skip] #[cfg(feature = "testing")] pub test_dispatched_question_outcomes: std::cell::RefCell<Vec<(String, forge_primitives::QuestionOutcome)>>,
     /// Per-session state buckets, keyed by claude session UUID.
-        /// [`super::session::UiSession`] value type one bucket at a time.
+    /// [`super::session::UiSession`] value type one bucket at a time.
     pub sessions: std::collections::HashMap<forge_workspace::SessionKey, super::session::UiSession>,
     /// Which entry of [`Self::sessions`] the renderer reads from.
     /// `None` only in the brief pre-Connect window where no session
@@ -1168,10 +1168,7 @@ impl App {
     }
 
     /// Set the active session's hook-observed permission mode.
-    pub fn set_observed_permission_mode(
-        &mut self,
-        value: Option<forge_workspace::PermissionMode>,
-    ) {
+    pub fn set_observed_permission_mode(&mut self, value: Option<forge_workspace::PermissionMode>) {
         self.active_bucket_mut().observed_permission_mode = value;
     }
 
@@ -2493,7 +2490,6 @@ impl App {
         ctx
     }
 }
-
 
 #[cfg(test)]
 mod tests {

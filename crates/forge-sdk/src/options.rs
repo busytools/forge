@@ -12,9 +12,7 @@ use crate::mcp::McpServer;
 use crate::permissions::CanUseToolCallback;
 // Pure-data option enums live in forge-primitives.
 use forge_primitives::subagents::SubagentEffort;
-pub use forge_primitives::{
-    PermissionMode, SdkPluginConfig, SubagentDefinition, SystemPromptKind,
-};
+pub use forge_primitives::{PermissionMode, SdkPluginConfig, SubagentDefinition, SystemPromptKind};
 
 /// Per-line callback used by [`Options::tee_inbound`] and
 /// [`Options::tee_outbound`] to capture the wire bytes the SDK

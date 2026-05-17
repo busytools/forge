@@ -94,16 +94,11 @@ fn canonicalize_path(path: &str) -> String {
 /// Returns an empty Vec when `session_id` is not a valid UUID, the
 /// session has no subagents directory, or no `agent-*.jsonl` files are
 /// present.
-pub fn list_subagents(
-    config_dir: &Path,
-    session_id: &str,
-    directory: Option<&str>,
-) -> Vec<String> {
+pub fn list_subagents(config_dir: &Path, session_id: &str, directory: Option<&str>) -> Vec<String> {
     if !is_valid_uuid(session_id) {
         return Vec::new();
     }
-    let Some(subagents_dir) = resolve_subagents_dir(config_dir, session_id, directory)
-    else {
+    let Some(subagents_dir) = resolve_subagents_dir(config_dir, session_id, directory) else {
         return Vec::new();
     };
     collect_agent_files(&subagents_dir).into_iter().map(|(agent_id, _)| agent_id).collect()
@@ -129,8 +124,7 @@ pub fn get_subagent_messages(
     if !is_valid_uuid(session_id) || agent_id.is_empty() {
         return Vec::new();
     }
-    let Some(subagents_dir) = resolve_subagents_dir(config_dir, session_id, directory)
-    else {
+    let Some(subagents_dir) = resolve_subagents_dir(config_dir, session_id, directory) else {
         return Vec::new();
     };
     // Walk the tree — the file may live directly under subagents/ or

@@ -1,6 +1,6 @@
-use forge_workspace::SessionLaunchSettings;
 use crate::app::App;
 use crate::app::config::{language_input_validation_message, store};
+use forge_workspace::SessionLaunchSettings;
 use serde_json::{Map, Value, json};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -188,10 +188,10 @@ pub(crate) fn begin_resume_session(app: &mut App, session_id: String) -> anyhow:
 #[cfg(test)]
 mod tests {
     use super::{SessionStartReason, session_launch_settings_for_reason};
-    use forge_workspace::SessionLaunchSettings;
     use crate::agent::model::EffortLevel;
     use crate::app::App;
     use crate::app::config::{DefaultPermissionMode, store};
+    use forge_workspace::SessionLaunchSettings;
     use serde_json::{Map, Value};
 
     #[test]

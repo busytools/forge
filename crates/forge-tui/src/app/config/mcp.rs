@@ -617,8 +617,7 @@ pub(crate) fn handle_mcp_elicitation_completed(
     _server_name: Option<String>,
 ) {
     let should_clear = app.mcp().pending_elicitation.as_ref().is_some_and(|request| {
-        request.request_id == correlator
-            || request.elicitation_id.as_deref() == Some(correlator)
+        request.request_id == correlator || request.elicitation_id.as_deref() == Some(correlator)
     });
     if should_clear {
         app.mcp_mut().pending_elicitation = None;
@@ -672,7 +671,6 @@ fn format_mcp_operation_error(error: &forge_primitives::McpOperationError) -> St
         None => format!("MCP operation failed ({action}): {}", error.message),
     }
 }
-
 
 pub(crate) fn copy_text_to_clipboard(text: &str) -> Result<(), String> {
     let mut clipboard = arboard::Clipboard::new()

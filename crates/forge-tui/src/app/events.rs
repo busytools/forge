@@ -2557,8 +2557,16 @@ mod tests {
             current_mode_id: "code".to_owned(),
             current_mode_name: "Code".to_owned(),
             available_modes: vec![
-                crate::app::ModeInfo { id: "code".to_owned(), name: "Code".to_owned(), description: None },
-                crate::app::ModeInfo { id: "plan".to_owned(), name: "Plan".to_owned(), description: None },
+                crate::app::ModeInfo {
+                    id: "code".to_owned(),
+                    name: "Code".to_owned(),
+                    description: None,
+                },
+                crate::app::ModeInfo {
+                    id: "plan".to_owned(),
+                    name: "Plan".to_owned(),
+                    description: None,
+                },
             ],
         }));
         app.active_messages_mut().push(user_msg("seed"));
@@ -2585,8 +2593,16 @@ mod tests {
             current_mode_id: "code".to_owned(),
             current_mode_name: "Code".to_owned(),
             available_modes: vec![
-                crate::app::ModeInfo { id: "code".to_owned(), name: "Code".to_owned(), description: None },
-                crate::app::ModeInfo { id: "plan".to_owned(), name: "Plan".to_owned(), description: None },
+                crate::app::ModeInfo {
+                    id: "code".to_owned(),
+                    name: "Code".to_owned(),
+                    description: None,
+                },
+                crate::app::ModeInfo {
+                    id: "plan".to_owned(),
+                    name: "Plan".to_owned(),
+                    description: None,
+                },
             ],
         }));
         app.active_messages_mut().push(user_msg("seed"));
@@ -3165,7 +3181,11 @@ mod tests {
         app.set_mode(Some(crate::app::ModeState {
             current_mode_id: "plan".into(),
             current_mode_name: "Plan".into(),
-            available_modes: vec![crate::app::ModeInfo { id: "plan".into(), name: "Plan".into(), description: None }],
+            available_modes: vec![crate::app::ModeInfo {
+                id: "plan".into(),
+                name: "Plan".into(),
+                description: None,
+            }],
         }));
         app.set_fast_mode_state(model::FastModeState::On);
         app.active_messages_mut().push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(
@@ -3209,7 +3229,11 @@ mod tests {
         app.set_mode(Some(crate::app::ModeState {
             current_mode_id: "plan".into(),
             current_mode_name: "Plan".into(),
-            available_modes: vec![crate::app::ModeInfo { id: "plan".into(), name: "Plan".into(), description: None }],
+            available_modes: vec![crate::app::ModeInfo {
+                id: "plan".into(),
+                name: "Plan".into(),
+                description: None,
+            }],
         }));
         app.set_fast_mode_state(model::FastModeState::On);
 

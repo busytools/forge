@@ -1,8 +1,7 @@
 use super::dialog::DialogState;
 use super::paste_burst::CharAction;
 use super::{
-    App, AppStatus, FocusOwner, FocusTarget, HelpView, InvalidationLevel, ModeInfo,
-    ModeState,
+    App, AppStatus, FocusOwner, FocusTarget, HelpView, InvalidationLevel, ModeInfo, ModeState,
 };
 #[cfg(not(test))]
 use crate::app::SystemSeverity;

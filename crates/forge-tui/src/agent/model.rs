@@ -366,7 +366,7 @@ impl ToolCallUpdate {
 }
 
 pub use forge_primitives::session_update::{
-    BashOutputMetadata, TaskMetadata, ToolOutputMetadata, TodoWriteOutputMetadata,
+    BashOutputMetadata, TaskMetadata, TodoWriteOutputMetadata, ToolOutputMetadata,
 };
 
 pub use forge_primitives::runtime::AvailableCommand;

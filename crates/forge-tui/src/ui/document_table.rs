@@ -77,11 +77,8 @@ impl DocumentTable {
             return Vec::new();
         }
 
-        let policy = TableRenderPolicy {
-            preferred_spacing: 3,
-            min_spacing: 1,
-            min_column_width: 4,
-        };
+        let policy =
+            TableRenderPolicy { preferred_spacing: 3, min_spacing: 1, min_column_width: 4 };
         let layout = resolve_layout(self, usize::from(width), policy);
         match layout.mode {
             TableLayoutMode::Grid | TableLayoutMode::DenseGrid => {
