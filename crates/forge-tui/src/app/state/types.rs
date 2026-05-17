@@ -85,6 +85,12 @@ pub struct SessionUsageState {
     pub last_compaction_trigger: Option<model::CompactionTrigger>,
     pub last_compaction_pre_tokens: Option<u64>,
     pub context_usage_percent: Option<u8>,
+    /// Raw model context-window size in tokens (e.g. 200_000 for
+    /// Sonnet's base cap, 1_000_000 for the 1M variant). Read by
+    /// the projects-pane footer to render `200K` / `1M` beneath
+    /// the Ctx bar. `None` until the first ContextUsage poll
+    /// returns a snapshot for this session.
+    pub context_max_tokens: Option<u64>,
     pub context_usage_in_flight: bool,
     pub context_usage_refresh_pending: bool,
 }

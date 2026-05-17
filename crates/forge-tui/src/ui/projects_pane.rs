@@ -486,11 +486,11 @@ fn glyph_for_lifecycle(
 /// Constant by design — values flip but shape stays put (see the
 /// "account chrome, not status row" intent in the design brief).
 ///
-/// 18 rows: rule + 6 identity (Profile/Org/Session/Mode/Model/Effort) +
-/// 1 blank + 1 Ctx + 1 blank + 2 (5h bar + ETA row) + 1 blank +
-/// 2 (7d bar + ETA row) + 1 blank + 2 (forge + claude version
+/// 19 rows: rule + 6 identity (Profile/Org/Session/Mode/Model/Effort) +
+/// 1 blank + 2 (Ctx bar + size row) + 1 blank + 2 (5h bar + ETA row) +
+/// 1 blank + 2 (7d bar + ETA row) + 1 blank + 2 (forge + claude version
 /// rows).
-const ACCOUNT_PANEL_HEIGHT: u16 = 18;
+const ACCOUNT_PANEL_HEIGHT: u16 = 19;
 
 /// Width (columns) the rule and content extend up to from the
 /// pane's right edge. Matches the project-row right gutter so the
@@ -747,7 +747,12 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     // Row 6: blank separating identity from usage.
     lines.push(Line::default());
 
-    // Row 7: Ctx bar. No ETA row — context has no reset window.
+    // Rows 7-8: Ctx bar + size row. Size mirrors the 5h/7d ETA
+    // pattern — DIM, right-justified to the panel's content right
+    // edge — but reads the model's raw context-window size
+    // (`SessionUsageState.context_max_tokens`) instead of a reset
+    // duration. `—` when the upstream probe hasn't reported a size
+    // yet so the panel's row count stays constant.
     let bar_cells = bar_cells_for(width);
     let ctx_pct = app.session_usage().context_usage_percent.map_or(0.0, f64::from);
     let ctx_pct_str = format!("{:>3}%", app.session_usage().context_usage_percent.unwrap_or(0));
@@ -756,6 +761,18 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     ctx_line.push(Span::raw("  "));
     ctx_line.push(Span::raw(ctx_pct_str));
     lines.push(Line::from(ctx_line));
+
+    let ctx_size_text = app
+        .session_usage()
+        .context_max_tokens
+        .map_or_else(|| "—".to_owned(), format_token_count);
+    let ctx_size_chars = ctx_size_text.chars().count();
+    let ctx_size_budget = usize::from(width).saturating_sub(PANEL_RIGHT_GUTTER);
+    let ctx_size_fill = ctx_size_budget.saturating_sub(ctx_size_chars);
+    lines.push(Line::from(vec![
+        Span::raw(" ".repeat(ctx_size_fill)),
+        Span::styled(ctx_size_text, Style::default().fg(theme::DIM)),
+    ]));
 
     // Row 8: blank between Ctx and 5h.
     lines.push(Line::default());
@@ -1068,6 +1085,39 @@ pub(super) fn truncate_with_ellipsis(s: &str, max_chars: usize) -> String {
     let mut out: String = s.chars().take(max_chars - 1).collect();
     out.push('…');
     out
+}
+
+/// Format a token count for the Ctx size row. Picks the largest
+/// unit that produces a value ≥ 1: `1_000_000` → `1M`, `200_000` →
+/// `200K`, anything under 1K returns the raw number. Exact multiples
+/// of the unit drop the decimal (`1_000_000` → `1M`, not `1.0M`);
+/// non-exact values round to one decimal (`1_200_000` → `1.2M`).
+fn format_token_count(tokens: u64) -> String {
+    const MILLION: u64 = 1_000_000;
+    const THOUSAND: u64 = 1_000;
+    if tokens >= MILLION {
+        let whole = tokens / MILLION;
+        let remainder = tokens % MILLION;
+        if remainder == 0 {
+            format!("{whole}M")
+        } else {
+            #[allow(clippy::cast_precision_loss)]
+            let scaled = tokens as f64 / MILLION as f64;
+            format!("{scaled:.1}M")
+        }
+    } else if tokens >= THOUSAND {
+        let whole = tokens / THOUSAND;
+        let remainder = tokens % THOUSAND;
+        if remainder == 0 {
+            format!("{whole}K")
+        } else {
+            #[allow(clippy::cast_precision_loss)]
+            let scaled = tokens as f64 / THOUSAND as f64;
+            format!("{scaled:.1}K")
+        }
+    } else {
+        tokens.to_string()
+    }
 }
 
 #[cfg(test)]

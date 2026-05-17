@@ -166,8 +166,13 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         SessionUpdate::OauthCredentialsSnapshot { session_id, credentials } => {
             apply_session_update_oauth_credentials_snapshot(app, &session_id, credentials);
         }
-        SessionUpdate::ContextUsageSnapshot { session_id, percentage } => {
-            apply_session_update_context_usage_snapshot(app, &session_id, percentage);
+        SessionUpdate::ContextUsageSnapshot { session_id, percentage, max_tokens } => {
+            apply_session_update_context_usage_snapshot(
+                app,
+                &session_id,
+                percentage,
+                max_tokens,
+            );
         }
         SessionUpdate::McpSnapshot { session_id, servers, error } => {
             apply_session_update_mcp_snapshot(app, &session_id, servers, error);
@@ -497,21 +502,24 @@ pub(super) fn apply_session_update_context_usage_snapshot(
     app: &mut App,
     session_id: &str,
     percentage: Option<u8>,
+    max_tokens: Option<u64>,
 ) {
-    apply_context_usage_snapshot_presentation(app, session_id, percentage);
+    apply_context_usage_snapshot_presentation(app, session_id, percentage, max_tokens);
 }
 
 fn apply_context_usage_snapshot_presentation(
     app: &mut App,
     session_id: &str,
     percentage: Option<u8>,
+    max_tokens: Option<u64>,
 ) {
     let session_key = SessionKey::from_session_id(session_id.to_owned());
     let is_active = app.active_session_key.as_ref() == Some(&session_key);
     if is_active {
-        crate::app::session_runtime::apply_context_usage_snapshot(app, percentage);
+        crate::app::session_runtime::apply_context_usage_snapshot(app, percentage, max_tokens);
     } else if let Some(session) = app.session_mut(&session_key) {
         session.session_usage.context_usage_percent = percentage;
+        session.session_usage.context_max_tokens = max_tokens;
         session.session_usage.context_usage_in_flight = false;
         // Drop the refresh-pending flag too — once a fresh value
         // landed, queueing another refresh is wasteful for a
@@ -1097,6 +1105,7 @@ mod tests {
             forge_workspace::SessionUpdate::ContextUsageSnapshot {
                 session_id: key_b.as_str().to_owned(),
                 percentage: Some(42),
+                max_tokens: Some(200_000),
             },
         );
         assert_eq!(
@@ -1116,6 +1125,7 @@ mod tests {
             forge_workspace::SessionUpdate::ContextUsageSnapshot {
                 session_id: key_a.as_str().to_owned(),
                 percentage: Some(7),
+                max_tokens: Some(200_000),
             },
         );
         assert_eq!(

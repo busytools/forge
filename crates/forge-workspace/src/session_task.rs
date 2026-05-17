@@ -319,8 +319,12 @@ impl SessionTask {
             AgentEvent::OauthCredentialsSnapshot { session_id, credentials } => {
                 self.emit(SessionUpdate::OauthCredentialsSnapshot { session_id, credentials });
             }
-            AgentEvent::ContextUsage { session_id, percentage } => {
-                self.emit(SessionUpdate::ContextUsageSnapshot { session_id, percentage });
+            AgentEvent::ContextUsage { session_id, percentage, max_tokens } => {
+                self.emit(SessionUpdate::ContextUsageSnapshot {
+                    session_id,
+                    percentage,
+                    max_tokens,
+                });
             }
             AgentEvent::McpSnapshot { session_id, servers, error } => {
                 self.emit(SessionUpdate::McpSnapshot { session_id, servers, error });

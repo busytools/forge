@@ -143,10 +143,15 @@ pub(crate) fn request_oauth_credentials_snapshot_refresh(app: &mut App) {
     }
 }
 
-pub(crate) fn apply_context_usage_snapshot(app: &mut App, percentage: Option<u8>) {
+pub(crate) fn apply_context_usage_snapshot(
+    app: &mut App,
+    percentage: Option<u8>,
+    max_tokens: Option<u64>,
+) {
     let refresh_pending = {
         let usage = app.session_usage_mut();
         usage.context_usage_percent = percentage;
+        usage.context_max_tokens = max_tokens;
         usage.context_usage_in_flight = false;
         std::mem::take(&mut usage.context_usage_refresh_pending)
     };
@@ -226,7 +231,7 @@ mod tests {
         request_context_usage_refresh(&mut app);
         let _ = rx.try_recv().expect("initial context usage command");
 
-        apply_context_usage_snapshot(&mut app, Some(62));
+        apply_context_usage_snapshot(&mut app, Some(62), Some(200_000));
 
         assert_eq!(app.session_usage().context_usage_percent, Some(62));
         assert!(app.session_usage().context_usage_in_flight);

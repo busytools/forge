@@ -378,6 +378,9 @@ pub enum SessionUpdate {
     ContextUsageSnapshot {
         session_id: String,
         percentage: Option<u8>,
+        /// Raw model context-window size in tokens (e.g. `1_000_000`
+        /// for Opus 1M). `None` until the upstream probe reports it.
+        max_tokens: Option<u64>,
     },
     McpSnapshot {
         session_id: String,
