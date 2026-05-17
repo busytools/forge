@@ -262,7 +262,14 @@ impl ConfigState {
     }
 
     pub fn model_effective(&self) -> Option<String> {
-        store::model(&self.committed_settings_document).ok().flatten()
+        // Forge defaults to `opus` when no model is persisted. The
+        // claude CLI's own default is `sonnet`; without this override
+        // every fresh forge session would launch on sonnet even
+        // though the user expects opus.
+        store::model(&self.committed_settings_document)
+            .ok()
+            .flatten()
+            .or_else(|| Some("opus".to_owned()))
     }
 
     pub fn thinking_effort_effective(&self) -> EffortLevel {
