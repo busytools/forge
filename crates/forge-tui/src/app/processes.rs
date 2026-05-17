@@ -135,10 +135,11 @@ impl ProcessCollection {
 /// the OS process's cmdline. Cron rows tag along separately because
 /// they're registrations, not processes.
 ///
-/// Order: DFS pre-order from claude's direct children (each
-/// supervisor + its descendants in PID-asc sibling order, matched
-/// supervisors pinned first); Cron rows appended at the end. Final
-/// list is capped at [`PROCESSES_MAX`] for sanity.
+/// Order: DFS pre-order from claude's direct children. Within each
+/// sibling group, matched (pinned) rows take priority over unmatched
+/// ones; rows in the same pin tier sort by `memory_bytes` descending
+/// with PID as the stable tie-break. Cron rows are appended at the
+/// end. Final list is capped at [`PROCESSES_MAX`] for sanity.
 pub fn collect_active_processes(app: &App) -> ProcessCollection {
     let Some(session) = app.active_session() else {
         return ProcessCollection { rows: Vec::new() };
