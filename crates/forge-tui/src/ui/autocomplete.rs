@@ -42,20 +42,20 @@ pub fn is_active(app: &App) -> bool {
 }
 
 pub fn compute_height(app: &App) -> u16 {
-    let count = if let Some(m) = &app.mention() {
-        m.candidates.len().max(1)
+    let (count, cap) = if let Some(m) = &app.mention() {
+        (m.candidates.len().max(1), MAX_VISIBLE)
     } else if let Some(s) = &app.slash() {
-        s.candidates.len()
+        (s.candidates.len(), slash::MAX_VISIBLE)
     } else if let Some(s) = &app.subagent() {
-        s.candidates.len()
+        (s.candidates.len(), MAX_VISIBLE)
     } else {
-        0
+        (0, MAX_VISIBLE)
     };
 
     if count == 0 {
         0
     } else {
-        let visible = count.min(MAX_VISIBLE) as u16;
+        let visible = count.min(cap) as u16;
         visible.saturating_add(2) // +2 for top/bottom border
     }
 }
@@ -141,8 +141,8 @@ fn dropdown_meta(dropdown: &Dropdown<'_>) -> DropdownMeta {
             DropdownMeta { visible_count, start, end, title: " Files & Folders ".to_owned() }
         }
         Dropdown::Slash(s) => {
-            let visible_count = s.candidates.len().min(MAX_VISIBLE);
-            let (start, end) = s.dialog.visible_range(s.candidates.len(), MAX_VISIBLE);
+            let visible_count = s.candidates.len().min(slash::MAX_VISIBLE);
+            let (start, end) = s.dialog.visible_range(s.candidates.len(), slash::MAX_VISIBLE);
             let title = match &s.context {
                 slash::SlashContext::CommandName => format!(" Commands ({}) ", s.candidates.len()),
                 slash::SlashContext::Argument { command, .. } => {
