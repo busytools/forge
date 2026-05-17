@@ -226,8 +226,7 @@ pub(super) fn supported_command_candidates(app: &App) -> Vec<SlashCandidate> {
         claude.insert(name, cmd.description.clone());
     }
 
-    let mut out: Vec<SlashCandidate> =
-        Vec::with_capacity(1 + forge.len() + 1 + claude.len());
+    let mut out: Vec<SlashCandidate> = Vec::with_capacity(1 + forge.len() + 1 + claude.len());
     // Empty `insert_value` flags a non-selectable group divider —
     // the dropdown renders these as a DIM rule + label and
     // navigation skips them.

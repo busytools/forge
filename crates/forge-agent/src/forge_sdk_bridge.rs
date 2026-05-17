@@ -974,5 +974,4 @@ mod tests {
         let err = bridge.cancel("session-1".to_owned()).unwrap_err();
         assert!(err.to_string().contains("before active session"));
     }
-
 }

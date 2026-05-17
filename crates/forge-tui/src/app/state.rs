@@ -24,8 +24,8 @@ pub use types::{
     AppStatus, ExtraUsage, HelpView, HistoryRetentionPolicy, HistoryRetentionStats, LoginHint,
     McpState, MessageUsage, ModeInfo, ModeState, PasteSessionState, PendingCommandAck,
     RecentSessionInfo, RenderCacheBudget, ScrollbarDragState, SelectionKind, SelectionPoint,
-    SelectionState, SessionTurnState, SessionUsageState, TodoItem, TodoStatus,
-    ToolCallScope, UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState, UsageWindow,
+    SelectionState, SessionTurnState, SessionUsageState, TodoItem, TodoStatus, ToolCallScope,
+    UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState, UsageWindow,
 };
 pub use viewport::{
     ChatViewport, LayoutInvalidation, LayoutInvalidation as InvalidationLevel,
@@ -142,13 +142,7 @@ pub enum PaneHitTarget {
     /// the clipboard. `session_id` is captured at stamp time so the
     /// handler doesn't have to look it up again (and so a session
     /// switch between render and click can't write the wrong id).
-    CopySessionId {
-        session_id: String,
-        y: u16,
-        height: u16,
-        x_start: u16,
-        x_end: u16,
-    },
+    CopySessionId { session_id: String, y: u16, height: u16, x_start: u16, x_end: u16 },
 }
 
 impl PaneHitTarget {

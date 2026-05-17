@@ -214,10 +214,11 @@ pub async fn scan(cwd: &Path, target: &str) -> ScanOutcome {
         // drops before the stream runs — we mutate `files[idx]`
         // inside the consume loop.
         let paths: Vec<String> = files.iter().map(|f| f.path.clone()).collect();
-        let mut stream = futures::stream::iter(paths.into_iter().enumerate().map(|(idx, path)| {
-            async move { (idx, fetch_file_hunks(cwd, target, &path).await) }
-        }))
-        .buffer_unordered(MAX_INFLIGHT_FETCHES);
+        let mut stream =
+            futures::stream::iter(paths.into_iter().enumerate().map(|(idx, path)| async move {
+                (idx, fetch_file_hunks(cwd, target, &path).await)
+            }))
+            .buffer_unordered(MAX_INFLIGHT_FETCHES);
         while let Some((idx, result)) = stream.next().await {
             match result {
                 FileScanOutcome::Ok(hunks) => files[idx].hunks = hunks,

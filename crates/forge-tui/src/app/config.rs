@@ -520,4 +520,3 @@ pub(crate) fn language_input_validation_message(value: &str) -> Option<&'static 
         None
     }
 }
-

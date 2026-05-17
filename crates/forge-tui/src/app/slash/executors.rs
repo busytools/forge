@@ -2,8 +2,7 @@
 
 use super::{
     parse, push_system_info, push_system_message, push_user_message, require_active_session,
-    require_connection,
-    set_command_pending,
+    require_connection, set_command_pending,
 };
 use crate::app::App;
 use crate::app::connect::{SessionStartReason, begin_resume_session, start_new_session};
@@ -386,10 +385,7 @@ fn handle_effort_submit(app: &mut App, args: &[&str]) -> bool {
     match crate::app::config::store::save(&path, &next_document) {
         Ok(()) => {
             app.config.committed_settings_document = next_document;
-            push_system_info(
-                app,
-                format!("Effort: {} (takes effect next session)", level.label()),
-            );
+            push_system_info(app, format!("Effort: {} (takes effect next session)", level.label()));
         }
         Err(err) => push_system_message(app, format!("Failed to save effort: {err}")),
     }

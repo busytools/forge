@@ -160,5 +160,4 @@ mod tests {
             Some("Resets Feb 12 at 1:30pm (Asia/Calcutta)".to_owned())
         );
     }
-
 }

@@ -195,9 +195,9 @@ mod tests {
         let app = App::test_default();
         let names: Vec<String> =
             supported_command_candidates(&app).into_iter().map(|c| c.primary).collect();
-        for expected in [
-            "/compact", "/effort", "/mcp", "/mode", "/model", "/new", "/plugins", "/resume",
-        ] {
+        for expected in
+            ["/compact", "/effort", "/mcp", "/mode", "/model", "/new", "/plugins", "/resume"]
+        {
             assert!(names.iter().any(|n| n == expected), "missing {expected}");
         }
         for removed in ["/1m-context", "/cancel", "/docs", "/login", "/logout", "/opus-version"] {

@@ -17,11 +17,8 @@ const SUBAGENT_NAME_MAX_WIDTH: usize = 28;
 const SUBAGENT_NAME_MAX_SHARE_NUM: usize = 2;
 const SUBAGENT_NAME_MAX_SHARE_DEN: usize = 5;
 const HELP_PANEL_HEIGHT: u16 = 14;
-const HELP_BUILTIN_SLASH_COMMANDS: [(&str, &str); 3] = [
-    ("/effort", "Show / set thinking effort"),
-    ("/mcp", "Open MCP"),
-    ("/plugins", "Open plugins"),
-];
+const HELP_BUILTIN_SLASH_COMMANDS: [(&str, &str); 3] =
+    [("/effort", "Show / set thinking effort"), ("/mcp", "Open MCP"), ("/plugins", "Open plugins")];
 
 // Platform-aware key labels: macOS uses Cmd for app-level shortcuts,
 // other OSes use Ctrl. Word navigation is Alt+Arrow on every platform

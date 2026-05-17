@@ -807,17 +807,15 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     // Button sits flush at the right gutter regardless of value
     // length so its hit column doesn't shift with pane width.
     // Click target stamped in `stamp_session_copy_hit_target`.
-    let session_value = app.session_id().map_or_else(
-        || "—".to_owned(),
-        |sid| sid.to_string().chars().take(8).collect::<String>(),
-    );
+    let session_value = app
+        .session_id()
+        .map_or_else(|| "—".to_owned(), |sid| sid.to_string().chars().take(8).collect::<String>());
     // Reserve 4 cells at the right end of the value area: 3 for the
     // ` ⎘ ` button + 1 for the right gutter (matches the close
     // button's right edge on project rows).
     let session_value_budget = value_budget.saturating_sub(4);
     let session_fitted = truncate_with_ellipsis(&session_value, session_value_budget);
-    let pad_cells =
-        value_budget.saturating_sub(session_fitted.chars().count()).saturating_sub(4);
+    let pad_cells = value_budget.saturating_sub(session_fitted.chars().count()).saturating_sub(4);
     let mut session_spans = vec![
         Span::raw(" "),
         label_span("ID", ACCOUNT_PANEL_ID_LABEL_WIDTH),
@@ -828,10 +826,7 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     if app.session_id().is_some() {
         session_spans.push(Span::styled(
             " \u{2398} ".to_owned(),
-            Style::default()
-                .fg(Color::Gray)
-                .bg(theme::USER_MSG_BG)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(Color::Gray).bg(theme::USER_MSG_BG).add_modifier(Modifier::BOLD),
         ));
     } else {
         session_spans.push(Span::raw("   "));
@@ -889,10 +884,8 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     ctx_line.push(Span::raw(ctx_pct_str));
     lines.push(Line::from(ctx_line));
 
-    let ctx_size_text = app
-        .session_usage()
-        .context_max_tokens
-        .map_or_else(|| "—".to_owned(), format_token_count);
+    let ctx_size_text =
+        app.session_usage().context_max_tokens.map_or_else(|| "—".to_owned(), format_token_count);
     let ctx_size_chars = ctx_size_text.chars().count();
     let ctx_size_budget = usize::from(width).saturating_sub(PANEL_RIGHT_GUTTER);
     let ctx_size_fill = ctx_size_budget.saturating_sub(ctx_size_chars);

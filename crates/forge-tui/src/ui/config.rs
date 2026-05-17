@@ -49,11 +49,7 @@ fn render_view(
     let inner = frame_area.inner(Margin { vertical: 1, horizontal: 1 });
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(3),
-            Constraint::Length(1),
-            Constraint::Length(1),
-        ])
+        .constraints([Constraint::Min(3), Constraint::Length(1), Constraint::Length(1)])
         .split(inner);
 
     body(frame, chunks[0], app);
@@ -427,7 +423,7 @@ mod tests {
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
-        
+
         app.active_view = crate::app::ActiveView::Plugins;
         app.plugins.installed = vec![crate::app::plugins::InstalledPluginEntry {
             id: "frontend-design@claude-plugins-official".to_owned(),
@@ -475,7 +471,7 @@ mod tests {
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
-        
+
         app.active_view = crate::app::ActiveView::Plugins;
         app.plugins.active_tab = crate::app::plugins::PluginsViewTab::Plugins;
         app.plugins.marketplace = vec![crate::app::plugins::MarketplaceEntry {
@@ -505,7 +501,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
         app.set_cwd_raw("C:\\work\\project-b");
-        
+
         app.active_view = crate::app::ActiveView::Plugins;
         app.plugins.installed = vec![
             crate::app::plugins::InstalledPluginEntry {
@@ -567,7 +563,7 @@ mod tests {
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
-        
+
         app.active_view = crate::app::ActiveView::Plugins;
         app.plugins.loading = true;
 
@@ -587,7 +583,7 @@ mod tests {
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
-        
+
         app.active_view = crate::app::ActiveView::Plugins;
         app.plugins.active_tab = crate::app::plugins::PluginsViewTab::Marketplace;
 
@@ -607,7 +603,7 @@ mod tests {
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
-        
+
         app.active_view = crate::app::ActiveView::Plugins;
         app.config.overlay = Some(crate::app::config::ConfigOverlayState::InstalledPluginActions(
             InstalledPluginActionOverlayState {
@@ -645,7 +641,7 @@ mod tests {
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
-        
+
         app.active_view = crate::app::ActiveView::Plugins;
         app.config.overlay = Some(crate::app::config::ConfigOverlayState::PluginInstallActions(
             PluginInstallOverlayState {
@@ -680,7 +676,7 @@ mod tests {
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
-        
+
         app.active_view = crate::app::ActiveView::Plugins;
         app.config.overlay = Some(crate::app::config::ConfigOverlayState::MarketplaceActions(
             crate::app::config::MarketplaceActionsOverlayState {
@@ -713,7 +709,7 @@ mod tests {
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
-        
+
         app.active_view = crate::app::ActiveView::Plugins;
         app.config.overlay = Some(crate::app::config::ConfigOverlayState::AddMarketplace(
             crate::app::config::AddMarketplaceOverlayState { draft: String::new(), cursor: 0 },
@@ -737,7 +733,7 @@ mod tests {
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
-        
+
         app.active_view = crate::app::ActiveView::Mcp;
         app.config.overlay = Some(crate::app::config::ConfigOverlayState::McpDetails(
             crate::app::config::McpDetailsOverlayState {
@@ -796,7 +792,7 @@ mod tests {
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
-        
+
         app.config.status_message = Some("Renaming session...".to_owned());
 
         terminal

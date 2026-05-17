@@ -167,12 +167,7 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
             apply_session_update_oauth_credentials_snapshot(app, &session_id, credentials);
         }
         SessionUpdate::ContextUsageSnapshot { session_id, percentage, max_tokens } => {
-            apply_session_update_context_usage_snapshot(
-                app,
-                &session_id,
-                percentage,
-                max_tokens,
-            );
+            apply_session_update_context_usage_snapshot(app, &session_id, percentage, max_tokens);
         }
         SessionUpdate::McpSnapshot { session_id, servers, error } => {
             apply_session_update_mcp_snapshot(app, &session_id, servers, error);
