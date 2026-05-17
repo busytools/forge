@@ -105,12 +105,6 @@ pub enum Command {
         cwd: String,
         launch_settings: SessionLaunchSettings,
     },
-    ResumeOrNewSession {
-        key: SessionKey,
-        session_id: String,
-        cwd: String,
-        launch_settings: SessionLaunchSettings,
-    },
     RespondPermission {
         key: SessionKey,
         tool_id: String,
@@ -207,7 +201,6 @@ impl Command {
             | Self::SetModel { key, .. }
             | Self::NewSession { key, .. }
             | Self::ResumeSession { key, .. }
-            | Self::ResumeOrNewSession { key, .. }
             | Self::RespondPermission { key, .. }
             | Self::RespondQuestion { key, .. }
             | Self::RespondElicitation { key, .. }

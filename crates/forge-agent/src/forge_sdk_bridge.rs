@@ -898,12 +898,6 @@ impl ForgeSdkBridge {
         crate::userdata::memory::project_memory_path(&self.inner.config_dir, cwd)
     }
 
-    pub(crate) fn oauth_credentials(
-        &self,
-    ) -> Option<crate::cloud::oauth_credentials::OauthCredentials> {
-        crate::cloud::oauth_credentials::load_oauth_credentials(&self.inner.config_dir)
-    }
-
     pub(crate) fn settings_documents(
         &self,
         cwd: &Path,

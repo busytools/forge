@@ -6,9 +6,8 @@
 //! inherent method on the bridge. The bridge's `AgentEvent`
 //! receiver is handed back to consumers via `take_events()`.
 //!
-//! Direct-return accessors (config_dir, oauth_credentials,
-//! settings_documents, etc.) live on [`AgentHandle`] as method
-//! passthroughs to the bridge.
+//! Direct-return accessors (config_dir, settings_documents, etc.)
+//! live on [`AgentHandle`] as method passthroughs to the bridge.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -33,7 +32,7 @@ pub struct AgentHandle {
     /// this and converts to its `ClientEvent` shape.
     agent_events: Mutex<Option<mpsc::UnboundedReceiver<crate::client::AgentEvent>>>,
     /// Bridge handle used for direct-return accessors (config_dir,
-    /// settings_documents, oauth_*) plus internal command dispatch.
+    /// settings_documents, …) plus internal command dispatch.
     bridge: Arc<ForgeSdkBridge>,
 }
 
@@ -60,10 +59,6 @@ impl AgentHandle {
 
     pub fn project_memory_path(&self, cwd: &Path) -> PathBuf {
         self.bridge.project_memory_path(cwd)
-    }
-
-    pub fn oauth_credentials(&self) -> Option<crate::cloud::oauth_credentials::OauthCredentials> {
-        self.bridge.oauth_credentials()
     }
 
     pub fn settings_documents(&self, cwd: &Path) -> crate::userdata::settings::SettingsDocuments {

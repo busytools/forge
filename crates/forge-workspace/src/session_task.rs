@@ -562,9 +562,6 @@ pub(crate) fn execute_command_via_handle(
         Command::ResumeSession { key: _, session_id, cwd, launch_settings } => {
             handle.resume_session(session_id, cwd, launch_settings)
         }
-        Command::ResumeOrNewSession { key: _, session_id, cwd, launch_settings } => {
-            handle.resume_or_new_session(session_id, cwd, launch_settings)
-        }
         Command::ReconnectMcpServer { key: _, server_name } => {
             let Some(sid) = session_id else {
                 warn_no_session(key, "ReconnectMcpServer");
