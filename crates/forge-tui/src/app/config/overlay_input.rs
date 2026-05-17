@@ -3,7 +3,7 @@ use crate::app::App;
 use crossterm::event::{KeyEvent, KeyModifiers};
 
 pub(super) fn handle_overlay_key(app: &mut App, key: KeyEvent) {
-    if super::mcp_edit::handle_overlay_key(app, key) {
+    if super::mcp_overlay::handle_overlay_key(app, key) {
         return;
     }
     match app.config.overlay.clone() {
@@ -30,7 +30,7 @@ pub(super) fn handle_overlay_key(app: &mut App, key: KeyEvent) {
 }
 
 pub(super) fn handle_overlay_paste(app: &mut App, text: &str) -> bool {
-    if super::mcp_edit::handle_overlay_paste(app, text) {
+    if super::mcp_overlay::handle_overlay_paste(app, text) {
         return true;
     }
     match app.config.overlay {

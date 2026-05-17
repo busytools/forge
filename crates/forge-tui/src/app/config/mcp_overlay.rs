@@ -1,14 +1,14 @@
 use super::ConfigOverlayState;
-use super::edit::{
-    TextInputOverlay, accepts_text_input, delete_text_at_cursor, delete_text_before_cursor,
-    insert_text_char, insert_text_str, move_text_cursor_left, move_text_cursor_right,
-    move_text_cursor_to_end, set_text_cursor, step_index_clamped,
-};
 use super::mcp::{
     McpCallbackUrlOverlayState, McpServerActionKind, authenticate_mcp_server,
     available_mcp_actions, clear_mcp_server_auth, copy_text_to_clipboard, is_mcp_action_available,
     open_mcp_server_details, reconnect_mcp_server, refresh_mcp_snapshot,
     send_mcp_elicitation_response, set_mcp_server_enabled, submit_mcp_oauth_callback_url,
+};
+use super::overlay_input::{
+    TextInputOverlay, accepts_text_input, delete_text_at_cursor, delete_text_before_cursor,
+    insert_text_char, insert_text_str, move_text_cursor_left, move_text_cursor_right,
+    move_text_cursor_to_end, set_text_cursor, step_index_clamped,
 };
 use crate::app::App;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};

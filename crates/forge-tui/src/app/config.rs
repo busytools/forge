@@ -1,6 +1,6 @@
-mod edit;
 mod mcp;
-mod mcp_edit;
+mod mcp_overlay;
+mod overlay_input;
 pub mod store;
 
 use super::view::{self, ActiveView};
@@ -435,7 +435,7 @@ pub fn handle_plugins_key(app: &mut App, key: KeyEvent) {
     }
 
     if app.config.overlay.is_some() {
-        edit::handle_overlay_key(app, key);
+        overlay_input::handle_overlay_key(app, key);
         return;
     }
 
@@ -455,7 +455,7 @@ pub fn handle_mcp_key(app: &mut App, key: KeyEvent) {
     }
 
     if app.config.overlay.is_some() {
-        edit::handle_overlay_key(app, key);
+        overlay_input::handle_overlay_key(app, key);
         return;
     }
 
@@ -470,14 +470,14 @@ pub fn handle_mcp_key(app: &mut App, key: KeyEvent) {
 
 pub fn handle_plugins_paste(app: &mut App, text: &str) -> bool {
     if app.config.overlay.is_some() {
-        return edit::handle_overlay_paste(app, text);
+        return overlay_input::handle_overlay_paste(app, text);
     }
     crate::app::plugins::handle_paste(app, text)
 }
 
 pub fn handle_mcp_paste(app: &mut App, text: &str) -> bool {
     if app.config.overlay.is_some() {
-        return edit::handle_overlay_paste(app, text);
+        return overlay_input::handle_overlay_paste(app, text);
     }
     false
 }

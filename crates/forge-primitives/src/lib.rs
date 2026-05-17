@@ -38,7 +38,7 @@
 //!   [`permissions`]).
 //! - [`question`] — `AskUserQuestion` request/response shapes.
 //! - [`elicitation`] — MCP elicitation request/response (form / URL).
-//! - [`mcp_view`] — MCP UI events (`McpAuthRedirect`,
+//! - [`mcp_ui_sync`] — MCP UI events (`McpAuthRedirect`,
 //!   `McpOperationError`).
 //! - [`session_meta`] — `SessionListEntry`, `PromptChunk`.
 //!
@@ -54,7 +54,7 @@ pub mod git;
 pub mod hooks;
 pub mod ids;
 pub mod image;
-pub mod mcp_view;
+pub mod mcp_ui_sync;
 pub mod messages;
 pub mod options;
 pub mod permission;
@@ -91,7 +91,7 @@ pub use image::{
     ImageAttachment, SUPPORTED_IMAGE_MIME_TYPES, is_supported_image_type, is_valid_base64,
     validate_image,
 };
-pub use mcp_view::{McpAuthRedirect, McpOperationError};
+pub use mcp_ui_sync::{McpAuthRedirect, McpOperationError};
 pub use messages::{
     AssistantEnvelope, AssistantMessageError, Message, RateLimitInfo, RateLimitStatus,
     RateLimitType, StopReason, TaskNotificationStatus, TaskUsage, Usage, UserEnvelope,

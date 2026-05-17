@@ -223,7 +223,7 @@ mod tests {
     }
 
     #[test]
-    fn mcp_opens_mcp_view() {
+    fn mcp_opens_mcp_screen() {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut app = App::test_default();
         app.settings_home_override = Some(dir.path().to_path_buf());
