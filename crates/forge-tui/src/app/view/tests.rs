@@ -132,7 +132,7 @@ fn set_active_view_closes_help_without_clearing_question_mark_draft() {
 }
 
 #[test]
-fn leaving_config_clears_config_overlay() {
+fn leaving_plugins_clears_config_overlay() {
     let mut app = App::test_default();
     app.active_view = ActiveView::Plugins;
     app.config.overlay = Some(ConfigOverlayState::AddMarketplace(AddMarketplaceOverlayState {
@@ -140,7 +140,7 @@ fn leaving_config_clears_config_overlay() {
         cursor: 0,
     }));
 
-    set_active_view(&mut app, ActiveView::Plugins);
+    set_active_view(&mut app, ActiveView::Chat);
 
     assert!(app.config.overlay.is_none());
 }
