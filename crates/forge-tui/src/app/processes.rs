@@ -372,10 +372,15 @@ fn sort_siblings_inplace(entries: &mut [&ProcessEntry], wire_alive: &[&ToolCallI
     entries.sort_by(|a, b| {
         let a_m = is_matched_entry(a, wire_alive);
         let b_m = is_matched_entry(b, wire_alive);
+        // Matched (pinned) rows stay on top of their unpinned
+        // siblings; within each group sort by memory descending so
+        // the heaviest workloads land at the top. PID is the stable
+        // tie-break so identical-memory siblings keep a deterministic
+        // order across frames.
         match (a_m, b_m) {
             (true, false) => std::cmp::Ordering::Less,
             (false, true) => std::cmp::Ordering::Greater,
-            _ => a.pid.cmp(&b.pid),
+            _ => b.memory_bytes.cmp(&a.memory_bytes).then_with(|| a.pid.cmp(&b.pid)),
         }
     });
 }
@@ -813,6 +818,50 @@ mod tests {
         assert_eq!(rows[1].kind, ProcessKind::Process);
         // Unmatched supervisor headline = cmdline (cmdline-as-name).
         assert_eq!(rows[1].headline, "node /path/to/mcp-server");
+    }
+
+    #[test]
+    fn rows_from_os_snapshot_sorts_unpinned_siblings_by_memory_desc() {
+        // Three unmatched siblings under claude; expect memory desc
+        // with PID as the tie-break inside each memory tier.
+        let snapshot = ProcessSnapshot {
+            scanned_at: std::time::SystemTime::now(),
+            processes: vec![
+                fake_entry(100, "small", "node small", 32 * 1024 * 1024),
+                fake_entry(200, "huge", "node huge", 512 * 1024 * 1024),
+                fake_entry(300, "medium", "node medium", 128 * 1024 * 1024),
+            ],
+        };
+        let rows = rows_from_os_snapshot(&snapshot, &[]);
+        assert_eq!(rows[0].headline, "node huge");
+        assert_eq!(rows[1].headline, "node medium");
+        assert_eq!(rows[2].headline, "node small");
+    }
+
+    #[test]
+    fn rows_from_os_snapshot_keeps_pinned_above_heavier_unpinned() {
+        // Pinned (matched) row stays on top even when an unpinned
+        // sibling has more memory.
+        let tc = fake_tool_call_info(
+            "toolu_1",
+            "Bash",
+            json!({
+                "description": "Run tests",
+                "command": "cargo nextest run",
+                "run_in_background": true,
+            }),
+        );
+        let snapshot = ProcessSnapshot {
+            scanned_at: std::time::SystemTime::now(),
+            processes: vec![
+                fake_entry(100, "node", "node /path/big-server", 1024 * 1024 * 1024),
+                fake_entry(200, "zsh", "/bin/zsh -c -l eval 'cargo nextest run'", 16 * 1024 * 1024),
+            ],
+        };
+        let rows = rows_from_os_snapshot(&snapshot, &[&tc]);
+        // Matched zsh first (despite tiny memory), heavy node second.
+        assert_eq!(rows[0].kind, ProcessKind::BashBackgrounded);
+        assert_eq!(rows[1].headline, "node /path/big-server");
     }
 
     #[test]
