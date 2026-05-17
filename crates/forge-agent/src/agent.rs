@@ -192,21 +192,6 @@ impl AgentHandle {
         self.send(AgentCommand::GetMcpSnapshot { session_id: session_id.into() })
     }
 
-    pub fn respond_to_elicitation(
-        &self,
-        session_id: String,
-        elicitation_request_id: String,
-        action: forge_primitives::ElicitationAction,
-        content: Option<serde_json::Value>,
-    ) -> Result<(), AgentError> {
-        self.send(AgentCommand::RespondToElicitation {
-            session_id: session_id.into(),
-            elicitation_request_id,
-            action,
-            content,
-        })
-    }
-
     pub fn reconnect_mcp_server(
         &self,
         session_id: String,
@@ -225,46 +210,6 @@ impl AgentHandle {
             session_id: session_id.into(),
             server_name,
             enabled,
-        })
-    }
-
-    pub fn set_mcp_servers(
-        &self,
-        session_id: String,
-        servers: std::collections::BTreeMap<String, forge_primitives::McpServerConfig>,
-    ) -> Result<(), AgentError> {
-        self.send(AgentCommand::SetMcpServers { session_id: session_id.into(), servers })
-    }
-
-    pub fn authenticate_mcp_server(
-        &self,
-        session_id: String,
-        server_name: String,
-    ) -> Result<(), AgentError> {
-        self.send(AgentCommand::AuthenticateMcpServer {
-            session_id: session_id.into(),
-            server_name,
-        })
-    }
-
-    pub fn clear_mcp_auth(
-        &self,
-        session_id: String,
-        server_name: String,
-    ) -> Result<(), AgentError> {
-        self.send(AgentCommand::ClearMcpAuth { session_id: session_id.into(), server_name })
-    }
-
-    pub fn submit_mcp_oauth_callback_url(
-        &self,
-        session_id: String,
-        server_name: String,
-        callback_url: String,
-    ) -> Result<(), AgentError> {
-        self.send(AgentCommand::SubmitMcpOauthCallbackUrl {
-            session_id: session_id.into(),
-            server_name,
-            callback_url,
         })
     }
 
@@ -465,30 +410,12 @@ fn dispatch(cmd: AgentCommand, bridge: &ForgeSdkBridge) -> anyhow::Result<()> {
         C::QuestionResponse { session_id, tool_call_id, outcome } => {
             bridge.question_response(session_id.into_string(), tool_call_id.into_string(), outcome)
         }
-        C::RespondToElicitation { session_id, elicitation_request_id, action, content } => bridge
-            .respond_to_elicitation(
-                session_id.into_string(),
-                elicitation_request_id,
-                action,
-                content,
-            ),
         C::ReconnectMcpServer { session_id, server_name } => {
             bridge.reconnect_mcp_server(session_id.into_string(), server_name)
         }
         C::ToggleMcpServer { session_id, server_name, enabled } => {
             bridge.toggle_mcp_server(session_id.into_string(), server_name, enabled)
         }
-        C::SetMcpServers { session_id, servers } => {
-            bridge.set_mcp_servers(session_id.into_string(), servers)
-        }
-        C::AuthenticateMcpServer { session_id, server_name } => {
-            bridge.authenticate_mcp_server(session_id.into_string(), server_name)
-        }
-        C::ClearMcpAuth { session_id, server_name } => {
-            bridge.clear_mcp_auth(session_id.into_string(), server_name)
-        }
-        C::SubmitMcpOauthCallbackUrl { session_id, server_name, callback_url } => bridge
-            .submit_mcp_oauth_callback_url(session_id.into_string(), server_name, callback_url),
         C::ReloadPlugins { session_id } => bridge.reload_plugins(session_id.into_string()),
     }
 }

@@ -46,10 +46,6 @@ pub enum AgentEvent {
         session_id: String,
         request: types::QuestionRequest,
     },
-    McpAuthRedirect {
-        session_id: String,
-        redirect: types::McpAuthRedirect,
-    },
     McpOperationError {
         session_id: String,
         error: types::McpOperationError,
@@ -141,7 +137,6 @@ impl AgentEvent {
             Self::ConnectionFailed { .. } => "connection_failed",
             Self::PermissionRequest { .. } => "permission_request",
             Self::QuestionRequest { .. } => "question_request",
-            Self::McpAuthRedirect { .. } => "mcp_auth_redirect",
             Self::McpOperationError { .. } => "mcp_operation_error",
             Self::SlashError { .. } => "slash_error",
             Self::RuntimeReloadCompleted { .. } => "runtime_reload_completed",
@@ -161,7 +156,6 @@ impl AgentEvent {
             Self::Connected { session_id, .. }
             | Self::PermissionRequest { session_id, .. }
             | Self::QuestionRequest { session_id, .. }
-            | Self::McpAuthRedirect { session_id, .. }
             | Self::McpOperationError { session_id, .. }
             | Self::SlashError { session_id, .. }
             | Self::RuntimeReloadCompleted { session_id, .. }
@@ -188,7 +182,6 @@ impl AgentEvent {
             Self::Connected { .. }
             | Self::AuthRequired { .. }
             | Self::ConnectionFailed { .. }
-            | Self::McpAuthRedirect { .. }
             | Self::McpOperationError { .. }
             | Self::SlashError { .. }
             | Self::RuntimeReloadCompleted { .. }

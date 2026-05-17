@@ -24,7 +24,6 @@
 //! envelope minimal at its respective boundary. The translation
 //! happens in `session_task::execute_command_via_handle`.
 
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use forge_agent::client::SessionLaunchSettings;
@@ -38,8 +37,8 @@ use forge_primitives::question::{QuestionOutcome, QuestionRequest};
 use forge_primitives::runtime::{AvailableModel, CurrentModel, ModeState, TerminalReason};
 use forge_primitives::usage::{UsageSnapshot, UsageSourceKind};
 use forge_primitives::{
-    AccountInfo, ElicitationAction, ForgeAccountIdentity, ImageAttachment, McpAuthRedirect,
-    McpOperationError, McpServerConfig, McpServerStatus, Message, SessionId, SessionListEntry,
+    AccountInfo, ForgeAccountIdentity, ImageAttachment, McpOperationError, McpServerStatus,
+    Message, SessionId, SessionListEntry,
 };
 use tokio::sync::oneshot;
 
@@ -55,8 +54,6 @@ pub use forge_primitives::TurnErrorClass;
 /// keyed by `tool_id` in `DomainSession.pending_interactions`.
 /// `Command::RespondPermission` / `RespondQuestion` look up the
 /// matching slot and send the outcome down the oneshot.
-/// `RespondElicitation` bypasses this map and dispatches directly
-/// to `AgentHandle::respond_to_elicitation`.
 pub enum PendingInteractionSlot {
     Permission(oneshot::Sender<PermissionOutcome>),
     Question(oneshot::Sender<QuestionOutcome>),
@@ -115,16 +112,6 @@ pub enum Command {
         tool_id: String,
         outcome: QuestionOutcome,
     },
-    /// MCP elicitation response. Routed directly to
-    /// `AgentHandle::respond_to_elicitation` — there's no
-    /// pending-interaction slot for elicitations, so the oneshot
-    /// path used by permission/question round-trips doesn't apply.
-    RespondElicitation {
-        key: SessionKey,
-        elicitation_id: String,
-        action: ElicitationAction,
-        content: Option<serde_json::Value>,
-    },
     /// Reconnect a configured MCP server.
     ReconnectMcpServer {
         key: SessionKey,
@@ -135,27 +122,6 @@ pub enum Command {
         key: SessionKey,
         server_name: String,
         enabled: bool,
-    },
-    /// Replace the live MCP server registration for this session.
-    SetMcpServers {
-        key: SessionKey,
-        servers: BTreeMap<String, McpServerConfig>,
-    },
-    /// Begin OAuth (or similar) auth flow for an MCP server.
-    AuthenticateMcpServer {
-        key: SessionKey,
-        server_name: String,
-    },
-    /// Wipe cached auth for an MCP server.
-    ClearMcpAuth {
-        key: SessionKey,
-        server_name: String,
-    },
-    /// Submit a captured OAuth callback URL for an MCP server.
-    SubmitMcpOauthCallbackUrl {
-        key: SessionKey,
-        server_name: String,
-        callback_url: String,
     },
     /// User clicked an inactive project to wake it. No `key` — the
     /// session doesn't exist yet; workspace synthesizes a key and
@@ -203,13 +169,8 @@ impl Command {
             | Self::ResumeSession { key, .. }
             | Self::RespondPermission { key, .. }
             | Self::RespondQuestion { key, .. }
-            | Self::RespondElicitation { key, .. }
             | Self::ReconnectMcpServer { key, .. }
-            | Self::ToggleMcpServer { key, .. }
-            | Self::SetMcpServers { key, .. }
-            | Self::AuthenticateMcpServer { key, .. }
-            | Self::ClearMcpAuth { key, .. }
-            | Self::SubmitMcpOauthCallbackUrl { key, .. } => Some(key),
+            | Self::ToggleMcpServer { key, .. } => Some(key),
             Self::SpawnProject { .. } | Self::SpawnSession { .. } | Self::StartDefault { .. } => {
                 None
             }
@@ -219,10 +180,10 @@ impl Command {
 
 /// Update envelope: forge-workspace -> forge-tui.
 ///
-/// Permission/Question/Elicitation variants do NOT carry response
-/// oneshots — responses flow back via `Command::Respond*`. The
-/// workspace stores the oneshot in `DomainSession.pending_interactions`
-/// when emitting these variants.
+/// Permission/Question variants do NOT carry response oneshots —
+/// responses flow back via `Command::Respond*`. The workspace stores
+/// the oneshot in `DomainSession.pending_interactions` when emitting
+/// these variants.
 pub enum SessionUpdate {
     /// Workspace has synthesized a spawning state for a project /
     /// session wake (in response to `Command::SpawnProject` /
@@ -309,10 +270,6 @@ pub enum SessionUpdate {
         key: SessionKey,
         tool_id: String,
         request: QuestionRequest,
-    },
-    McpAuthRedirect {
-        key: SessionKey,
-        redirect: McpAuthRedirect,
     },
     McpOperationError {
         key: SessionKey,
@@ -435,7 +392,6 @@ impl SessionUpdate {
             | Self::SlashCommandError { key, .. }
             | Self::PermissionRequest { key, .. }
             | Self::QuestionRequest { key, .. }
-            | Self::McpAuthRedirect { key, .. }
             | Self::McpOperationError { key, .. }
             | Self::TurnComplete { key, .. }
             | Self::TurnCancelled { key }
@@ -518,9 +474,6 @@ impl std::fmt::Debug for SessionUpdate {
                 .field("key", key)
                 .field("tool_id", tool_id)
                 .finish_non_exhaustive(),
-            Self::McpAuthRedirect { key, .. } => {
-                f.debug_struct("McpAuthRedirect").field("key", key).finish_non_exhaustive()
-            }
             Self::McpOperationError { key, .. } => {
                 f.debug_struct("McpOperationError").field("key", key).finish_non_exhaustive()
             }

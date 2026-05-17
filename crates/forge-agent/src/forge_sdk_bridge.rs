@@ -31,7 +31,7 @@ use tracing::Instrument;
 
 use crate::client::{AgentEvent, SessionLaunchSettings};
 use crate::forge_sdk_worker;
-use forge_primitives::{ElicitationAction, McpServerConfig, PermissionOutcome, QuestionOutcome};
+use forge_primitives::{PermissionOutcome, QuestionOutcome};
 
 /// Sentinel `config_dir` for `ForgeSdkBridge` test stubs that never
 /// exercise the path. Production code constructs the bridge with a
@@ -328,9 +328,8 @@ impl ForgeSdkBridge {
     /// here on mismatch and returns false; the caller is expected to
     /// drop the dispatch with a no-op `Ok(())`.
     ///
-    /// Other user-action methods (`prompt_with_images`,
-    /// `respond_to_elicitation`) intentionally opt out — see the inline
-    /// rationale at each call site.
+    /// Other user-action methods (`prompt_with_images`) intentionally
+    /// opt out — see the inline rationale at each call site.
     fn check_session_id(&self, session_id: &str, label: &'static str) -> bool {
         let current = self.inner.session_id_slot.lock().clone();
         if current.is_empty() || current == session_id {
@@ -524,25 +523,6 @@ impl ForgeSdkBridge {
         })
     }
 
-    pub(crate) fn respond_to_elicitation(
-        &self,
-        session_id: String,
-        elicitation_request_id: String,
-        action: ElicitationAction,
-        content: Option<Value>,
-    ) -> anyhow::Result<()> {
-        // No `check_session_id` — same shape as `prompt_with_images`:
-        // an elicitation has its own request_id seam, and a silent
-        // stale-session drop would leave the agent waiting forever
-        // for a response that no longer comes.
-        self.trace_session_id_bypass(&session_id, "respond_to_elicitation");
-        let action_str = action.as_wire_str();
-        self.dispatch("respond_to_elicitation", move |client| async move {
-            client.respond_to_elicitation(&elicitation_request_id, action_str, content).await?;
-            Ok(())
-        })
-    }
-
     pub(crate) fn reconnect_mcp_server(
         &self,
         session_id: String,
@@ -576,126 +556,6 @@ impl ForgeSdkBridge {
                     &event_tx,
                     session_id,
                     "toggle",
-                    Some(server_name),
-                    format!("{e}"),
-                );
-            }
-            Ok(())
-        })
-    }
-
-    pub(crate) fn set_mcp_servers(
-        &self,
-        session_id: String,
-        servers: std::collections::BTreeMap<String, McpServerConfig>,
-    ) -> anyhow::Result<()> {
-        let event_tx = self.inner.event_tx.clone();
-        let payload = serde_json::to_value(servers)?;
-        self.dispatch("set_mcp_servers", move |client| async move {
-            if let Err(e) = client.mcp_set_servers(payload).await {
-                Self::emit_mcp_error_or_log(
-                    &event_tx,
-                    session_id,
-                    "set_servers",
-                    None,
-                    format!("{e}"),
-                );
-            }
-            Ok(())
-        })
-    }
-
-    pub(crate) fn authenticate_mcp_server(
-        &self,
-        session_id: String,
-        server_name: String,
-    ) -> anyhow::Result<()> {
-        let event_tx = self.inner.event_tx.clone();
-        self.dispatch("authenticate_mcp_server", move |client| async move {
-            match client.mcp_authenticate(&server_name).await {
-                Ok(response) => {
-                    let url = response
-                        .get("redirect_url")
-                        .or_else(|| response.get("authUrl"))
-                        .or_else(|| response.get("auth_url"))
-                        .and_then(serde_json::Value::as_str)
-                        .map(str::to_owned);
-                    if let Some(auth_url) = url {
-                        if event_tx
-                            .send(AgentEvent::McpAuthRedirect {
-                                session_id,
-                                redirect: forge_primitives::McpAuthRedirect {
-                                    server_name,
-                                    auth_url,
-                                },
-                            })
-                            .is_err()
-                        {
-                            tracing::warn!(
-                                target: crate::logging::targets::BRIDGE_LIFECYCLE,
-                                "event channel closed; McpAuthRedirect dropped",
-                            );
-                        }
-                    } else {
-                        // Without a redirect URL the TUI's authenticating
-                        // overlay would hang forever — surface as an
-                        // operation error so the user sees the failure.
-                        Self::emit_mcp_error_or_log(
-                            &event_tx,
-                            session_id,
-                            "authenticate",
-                            Some(server_name),
-                            "MCP authentication response had no redirect URL".to_owned(),
-                        );
-                    }
-                }
-                Err(e) => {
-                    Self::emit_mcp_error_or_log(
-                        &event_tx,
-                        session_id,
-                        "authenticate",
-                        Some(server_name),
-                        format!("{e}"),
-                    );
-                }
-            }
-            Ok(())
-        })
-    }
-
-    pub(crate) fn clear_mcp_auth(
-        &self,
-        session_id: String,
-        server_name: String,
-    ) -> anyhow::Result<()> {
-        let event_tx = self.inner.event_tx.clone();
-        self.dispatch("clear_mcp_auth", move |client| async move {
-            if let Err(e) = client.mcp_clear_auth(&server_name).await {
-                Self::emit_mcp_error_or_log(
-                    &event_tx,
-                    session_id,
-                    "clear_auth",
-                    Some(server_name),
-                    format!("{e}"),
-                );
-            }
-            Ok(())
-        })
-    }
-
-    pub(crate) fn submit_mcp_oauth_callback_url(
-        &self,
-        session_id: String,
-        server_name: String,
-        callback_url: String,
-    ) -> anyhow::Result<()> {
-        let event_tx = self.inner.event_tx.clone();
-        self.dispatch("submit_mcp_oauth_callback_url", move |client| async move {
-            if let Err(e) = client.mcp_oauth_callback_url(&server_name, &callback_url).await {
-                Self::emit_mcp_error_or_log(
-                    &event_tx,
-                    session_id,
-                    "oauth_callback",
                     Some(server_name),
                     format!("{e}"),
                 );

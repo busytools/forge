@@ -205,11 +205,6 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         SessionUpdate::QuestionRequest { key, tool_id, request } => {
             turn::apply_session_update_question_request(app, &key, &tool_id, request);
         }
-        SessionUpdate::McpAuthRedirect { redirect, .. } => {
-            if is_active_or_global {
-                crate::app::config::present_mcp_auth_redirect(app, redirect);
-            }
-        }
         SessionUpdate::McpOperationError { error, .. } => {
             if is_active_or_global {
                 crate::app::config::handle_mcp_operation_error(app, &error);
@@ -566,23 +561,6 @@ fn apply_mcp_snapshot_presentation(
         }
         app.config.mcp_selected_server_index =
             app.config.mcp_selected_server_index.min(app.mcp().servers.len().saturating_sub(1));
-        if let Some(overlay) = app.config.mcp_auth_redirect_overlay() {
-            let server_name = overlay.redirect.server_name.clone();
-            if let Some(server) = app.mcp().servers.iter().find(|server| server.name == server_name)
-                && !matches!(
-                    server.status,
-                    forge_primitives::McpServerConnectionStatus::NeedsAuth
-                        | forge_primitives::McpServerConnectionStatus::Pending
-                )
-            {
-                if matches!(server.status, forge_primitives::McpServerConnectionStatus::Connected) {
-                    app.config.status_message =
-                        Some(format!("{} authenticated successfully.", server.name));
-                    app.config.last_error = None;
-                }
-                app.config.overlay = None;
-            }
-        }
     } else if let Some(session) = app.session_mut(&session_key) {
         session.mcp.servers = servers;
         session.mcp.in_flight = false;

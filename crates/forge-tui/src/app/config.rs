@@ -10,10 +10,8 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::path::PathBuf;
 
 pub(crate) use mcp::{
-    McpAuthRedirectOverlayState, McpCallbackUrlOverlayState, McpDetailsOverlayState,
-    McpElicitationOverlayState, available_mcp_actions, handle_mcp_elicitation_completed,
-    handle_mcp_operation_error, is_mcp_action_available, present_mcp_auth_redirect,
-    present_mcp_elicitation_request, refresh_mcp_snapshot,
+    McpDetailsOverlayState, available_mcp_actions, handle_mcp_operation_error,
+    is_mcp_action_available, refresh_mcp_snapshot,
 };
 use serde_json::Value;
 
@@ -216,9 +214,6 @@ pub enum ConfigOverlayState {
     MarketplaceActions(MarketplaceActionsOverlayState),
     AddMarketplace(AddMarketplaceOverlayState),
     McpDetails(McpDetailsOverlayState),
-    McpCallbackUrl(McpCallbackUrlOverlayState),
-    McpElicitation(McpElicitationOverlayState),
-    McpAuthRedirect(McpAuthRedirectOverlayState),
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -64,12 +64,6 @@ fn render_view(
         render_add_marketplace_overlay(frame, frame_area, app);
     } else if app.config.mcp_details_overlay().is_some() {
         mcp::render_details_overlay(frame, frame_area, app);
-    } else if app.config.mcp_callback_url_overlay().is_some() {
-        mcp::render_callback_url_overlay(frame, frame_area, app);
-    } else if app.config.mcp_auth_redirect_overlay().is_some() {
-        mcp::render_auth_redirect_overlay(frame, frame_area, app);
-    } else if app.config.mcp_elicitation_overlay().is_some() {
-        mcp::render_elicitation_overlay(frame, frame_area, app);
     }
 
     let (message, is_error) = if let Some(error) = app.config.last_error.clone() {

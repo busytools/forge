@@ -4,13 +4,11 @@
 //! to perform. Direct-return accessors (config_dir, settings_documents,
 //! etc.) live on a separate sync surface, not in `Command`.
 
-use std::collections::BTreeMap;
-
 use serde::{Deserialize, Serialize};
 
 use crate::ids::{SessionId, ToolUseId};
 use crate::image::ImageAttachment;
-use crate::{ElicitationAction, McpServerConfig, PermissionOutcome, QuestionOutcome};
+use crate::{PermissionOutcome, QuestionOutcome};
 
 /// UI → agent channel envelope. Each variant maps to one inherent
 /// method on `forge_agent::ForgeSdkBridge`. Named `AgentCommand`
@@ -101,12 +99,6 @@ pub enum AgentCommand {
         tool_call_id: ToolUseId,
         outcome: QuestionOutcome,
     },
-    RespondToElicitation {
-        session_id: SessionId,
-        elicitation_request_id: String,
-        action: ElicitationAction,
-        content: Option<serde_json::Value>,
-    },
 
     // --- MCP management ---
     ReconnectMcpServer {
@@ -117,23 +109,6 @@ pub enum AgentCommand {
         session_id: SessionId,
         server_name: String,
         enabled: bool,
-    },
-    SetMcpServers {
-        session_id: SessionId,
-        servers: BTreeMap<String, McpServerConfig>,
-    },
-    AuthenticateMcpServer {
-        session_id: SessionId,
-        server_name: String,
-    },
-    ClearMcpAuth {
-        session_id: SessionId,
-        server_name: String,
-    },
-    SubmitMcpOauthCallbackUrl {
-        session_id: SessionId,
-        server_name: String,
-        callback_url: String,
     },
 
     // --- Plugins / runtime ---

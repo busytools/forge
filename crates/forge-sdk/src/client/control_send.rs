@@ -90,31 +90,6 @@ impl Client {
         Ok(())
     }
 
-    /// Respond to an MCP elicitation request the CLI surfaced via a
-    /// `system/elicitation_request` message. `request_id` is the id
-    /// the CLI attached to the request; `action` selects accept /
-    /// decline / cancel; `content` is the form payload (only meaningful
-    /// for `"accept"`).
-    ///
-    /// # Errors
-    ///
-    /// See the outbound control error cases.
-    pub async fn respond_to_elicitation(
-        &self,
-        request_id: &str,
-        action: &str,
-        content: Option<serde_json::Value>,
-    ) -> Result<(), Error> {
-        let mut body = serde_json::Map::new();
-        body.insert("request_id".to_owned(), serde_json::Value::String(request_id.to_owned()));
-        body.insert("action".to_owned(), serde_json::Value::String(action.to_owned()));
-        if let Some(c) = content {
-            body.insert("content".to_owned(), c);
-        }
-        self.send_control("elicitation_response", serde_json::Value::Object(body)).await?;
-        Ok(())
-    }
-
     /// Query MCP server status. Returns the typed response.
     ///
     /// # Errors
@@ -173,64 +148,5 @@ impl Client {
     /// See the outbound control error cases.
     pub async fn reload_plugins(&self) -> Result<serde_json::Value, Error> {
         self.send_control("reload_plugins", serde_json::json!({})).await
-    }
-
-    /// Replace the active MCP server set. Wire shape:
-    /// `{"subtype": "mcp_set_servers", "servers": <map of name → config>}`.
-    ///
-    /// # Errors
-    ///
-    /// See the outbound control error cases.
-    pub async fn mcp_set_servers(&self, servers: serde_json::Value) -> Result<(), Error> {
-        self.send_control("mcp_set_servers", serde_json::json!({"servers": servers})).await?;
-        Ok(())
-    }
-
-    /// Begin OAuth authentication for an MCP server. Wire shape:
-    /// `{"subtype": "mcp_authenticate", "server_name": <string>}`. The
-    /// CLI may return an authorization URL or an immediate completion
-    /// status; returns the raw JSON.
-    ///
-    /// # Errors
-    ///
-    /// See the outbound control error cases.
-    pub async fn mcp_authenticate(&self, server_name: &str) -> Result<serde_json::Value, Error> {
-        self.send_control("mcp_authenticate", serde_json::json!({"server_name": server_name})).await
-    }
-
-    /// Clear stored OAuth credentials for an MCP server. Wire shape:
-    /// `{"subtype": "mcp_clear_auth", "server_name": <string>}`.
-    ///
-    /// # Errors
-    ///
-    /// See the outbound control error cases.
-    pub async fn mcp_clear_auth(&self, server_name: &str) -> Result<(), Error> {
-        self.send_control("mcp_clear_auth", serde_json::json!({"server_name": server_name}))
-            .await?;
-        Ok(())
-    }
-
-    /// Forward an OAuth callback URL to the CLI to complete an MCP
-    /// authentication flow. Wire shape:
-    /// `{"subtype": "mcp_oauth_callback_url", "server_name": <string>,
-    /// "callback_url": <string>}`.
-    ///
-    /// # Errors
-    ///
-    /// See the outbound control error cases.
-    pub async fn mcp_oauth_callback_url(
-        &self,
-        server_name: &str,
-        callback_url: &str,
-    ) -> Result<(), Error> {
-        self.send_control(
-            "mcp_oauth_callback_url",
-            serde_json::json!({
-                "server_name": server_name,
-                "callback_url": callback_url,
-            }),
-        )
-        .await?;
-        Ok(())
     }
 }

@@ -284,10 +284,6 @@ impl SessionTask {
                     );
                 }
             }
-            AgentEvent::McpAuthRedirect { session_id, redirect } => {
-                let session_key = SessionKey::from_session_id(session_id);
-                self.emit(SessionUpdate::McpAuthRedirect { key: session_key, redirect });
-            }
             AgentEvent::McpOperationError { session_id, error } => {
                 let session_key = SessionKey::from_session_id(session_id);
                 self.emit(SessionUpdate::McpOperationError { key: session_key, error });
@@ -518,16 +514,6 @@ pub(crate) fn execute_command_via_handle(
     cmd: Command,
 ) -> Result<(), forge_agent::AgentError> {
     match cmd {
-        Command::RespondElicitation { key: _, elicitation_id, action, content } => {
-            // MCP elicitation runs through the SDK message stream rather
-            // than the workspace oneshot mailbox; forward the response
-            // straight to the agent.
-            let Some(sid) = session_id else {
-                warn_no_session(key, "RespondElicitation");
-                return Ok(());
-            };
-            handle.respond_to_elicitation(sid.to_owned(), elicitation_id, action, content)
-        }
         Command::Prompt { key: _, text, attachments } => {
             let Some(sid) = session_id else {
                 warn_no_session(key, "Prompt");
@@ -575,34 +561,6 @@ pub(crate) fn execute_command_via_handle(
                 return Ok(());
             };
             handle.toggle_mcp_server(sid.to_owned(), server_name, enabled)
-        }
-        Command::SetMcpServers { key: _, servers } => {
-            let Some(sid) = session_id else {
-                warn_no_session(key, "SetMcpServers");
-                return Ok(());
-            };
-            handle.set_mcp_servers(sid.to_owned(), servers)
-        }
-        Command::AuthenticateMcpServer { key: _, server_name } => {
-            let Some(sid) = session_id else {
-                warn_no_session(key, "AuthenticateMcpServer");
-                return Ok(());
-            };
-            handle.authenticate_mcp_server(sid.to_owned(), server_name)
-        }
-        Command::ClearMcpAuth { key: _, server_name } => {
-            let Some(sid) = session_id else {
-                warn_no_session(key, "ClearMcpAuth");
-                return Ok(());
-            };
-            handle.clear_mcp_auth(sid.to_owned(), server_name)
-        }
-        Command::SubmitMcpOauthCallbackUrl { key: _, server_name, callback_url } => {
-            let Some(sid) = session_id else {
-                warn_no_session(key, "SubmitMcpOauthCallbackUrl");
-                return Ok(());
-            };
-            handle.submit_mcp_oauth_callback_url(sid.to_owned(), server_name, callback_url)
         }
         Command::RespondPermission { .. } | Command::RespondQuestion { .. } => {
             tracing::error!(
@@ -1015,58 +973,6 @@ mod tests {
             }
             other => panic!("expected ReconnectMcpServer, got {other:?}"),
         }
-    }
-
-    /// `Command::SubmitMcpOauthCallbackUrl` carries the captured URL
-    /// through.
-    #[test]
-    fn execute_submit_mcp_oauth_callback_url_forwards() {
-        let (handle, mut rx) = stub_handle_with_rx();
-        let key = SessionKey::from_str_for_test("sess");
-        execute_command_via_handle(
-            &handle,
-            &key,
-            Some("sess-1"),
-            Command::SubmitMcpOauthCallbackUrl {
-                key: key.clone(),
-                server_name: "github".into(),
-                callback_url: "https://example.com/cb?code=abc".into(),
-            },
-        )
-        .expect("dispatch succeeds");
-        let cmd = rx.try_recv().expect("command queued");
-        match cmd {
-            forge_primitives::AgentCommand::SubmitMcpOauthCallbackUrl { callback_url, .. } => {
-                assert_eq!(callback_url, "https://example.com/cb?code=abc");
-            }
-            other => panic!("expected SubmitMcpOauthCallbackUrl, got {other:?}"),
-        }
-    }
-
-    /// `Command::RespondElicitation` forwards directly (no
-    /// `pending_interactions` lookup needed — MCP elicitations
-    /// bypass the workspace's oneshot path).
-    #[test]
-    fn execute_respond_elicitation_forwards_with_content() {
-        let (handle, mut rx) = stub_handle_with_rx();
-        let key = SessionKey::from_str_for_test("sess");
-        execute_command_via_handle(
-            &handle,
-            &key,
-            Some("sess-1"),
-            Command::RespondElicitation {
-                key: key.clone(),
-                elicitation_id: "elic-1".into(),
-                action: forge_primitives::ElicitationAction::Accept,
-                content: Some(serde_json::json!({"answer": "yes"})),
-            },
-        )
-        .expect("dispatch succeeds");
-        let cmd = rx.try_recv().expect("command queued");
-        assert!(matches!(
-            cmd,
-            forge_primitives::AgentCommand::RespondToElicitation { content: Some(_), .. }
-        ));
     }
 
     /// `Command::Cancel` without a `session_id` (pre-Connect) logs

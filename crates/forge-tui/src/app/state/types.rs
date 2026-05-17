@@ -98,7 +98,6 @@ pub struct McpState {
     pub servers: Vec<forge_primitives::McpServerStatus>,
     pub in_flight: bool,
     pub last_error: Option<String>,
-    pub pending_elicitation: Option<forge_primitives::ElicitationRequest>,
 }
 
 // Per-session SDK turn state lives in
