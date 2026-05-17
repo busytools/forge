@@ -401,8 +401,6 @@ pub struct App {
     /// Timestamp of the previous presented frame.
     pub last_frame_at: Option<Instant>,
     pub connection_started: bool,
-    pub startup_resume_id: Option<String>,
-    pub startup_resume_requested: bool,
     /// Project name from the CLI's positional `<PROJECT>` argument, if
     /// any. `None` means open the `default = true` project.
     /// Forwarded to [`forge_workspace::SessionTarget::Named`] when the
@@ -2231,8 +2229,6 @@ impl App {
             fps_ema: None,
             last_frame_at: None,
             connection_started: false,
-            startup_resume_id: None,
-            startup_resume_requested: false,
             startup_project: None,
             replay_in_progress: false,
         }

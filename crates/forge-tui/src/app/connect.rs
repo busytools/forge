@@ -237,8 +237,6 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
         fps_ema: None,
         last_frame_at: None,
         connection_started: false,
-        startup_resume_id: None,
-        startup_resume_requested: false,
         startup_project: cli.project.clone(),
         replay_in_progress: false,
     };
