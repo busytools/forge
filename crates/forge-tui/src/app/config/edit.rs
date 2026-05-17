@@ -319,7 +319,6 @@ where
                     crate::app::file_index::reset(app);
                 }
             }
-            app.reconcile_runtime_from_persisted_settings_change();
             app.config.last_error = None;
             app.config.status_message = Some(format!(
                 "Saved {}: {}",
@@ -701,7 +700,6 @@ fn persist_model_and_effort_change(app: &mut App, model: &str, effort: EffortLev
     match store::save(&path, &next_document) {
         Ok(()) => {
             app.config.committed_settings_document = next_document;
-            app.reconcile_runtime_from_persisted_settings_change();
             app.config.last_error = None;
             app.config.status_message = None;
             true

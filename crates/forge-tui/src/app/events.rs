@@ -133,10 +133,6 @@ fn dispatch_key_by_view(app: &mut App, key: crossterm::event::KeyEvent) -> bool 
             super::config::handle_key(app, key);
             true
         }
-        ActiveView::Trusted => {
-            super::trust::handle_key(app, key);
-            true
-        }
         ActiveView::SessionPicker => {
             super::session_picker::handle_key(app, key);
             true
@@ -161,7 +157,6 @@ fn dispatch_mouse_by_view(app: &mut App, mouse: crossterm::event::MouseEvent) {
         // Launchpad / config / etc. stay keyboard-only — mouse
         // events are intentionally dropped.
         ActiveView::Config
-        | ActiveView::Trusted
         | ActiveView::SessionPicker
         | ActiveView::Launchpad => {}
     }
@@ -183,7 +178,7 @@ fn dispatch_paste_by_view(app: &mut App, text: &str) -> bool {
         }
         ActiveView::Config => super::config::handle_paste(app, text),
         ActiveView::Diff => super::diff_overlay::handle_paste(app, text),
-        ActiveView::Trusted | ActiveView::SessionPicker | ActiveView::Launchpad => false,
+        ActiveView::SessionPicker | ActiveView::Launchpad => false,
     }
 }
 
@@ -1590,34 +1585,6 @@ mod tests {
     }
 
     #[test]
-    fn connected_reconciles_trust_for_new_cwd() {
-        let mut app = make_test_app();
-        app.trust.status = crate::app::trust::TrustStatus::Trusted;
-        app.config.committed_preferences_document = serde_json::json!({
-            "projects": {}
-        });
-
-        apply_session_update(
-            &mut app,
-            SessionUpdate::Connected {
-                key: forge_workspace::SessionKey::from_session_id("session-trust".to_owned()),
-                session_id: forge_primitives::SessionId::new("session-trust"),
-                cwd: "/untrusted".into(),
-                current_model: test_current_model_primitives("claude-updated"),
-                available_models: Vec::new(),
-                mode: None,
-                history: Vec::new(),
-            },
-        );
-
-        assert_eq!(app.trust.status, crate::app::trust::TrustStatus::Untrusted);
-        assert_eq!(
-            app.trust.project_key,
-            crate::app::trust::store::normalize_project_key(std::path::Path::new("/untrusted"))
-        );
-    }
-
-    #[test]
     fn connected_updates_welcome_once_even_after_chat_started() {
         let mut app = make_test_app();
         app.active_messages_mut().push(ChatMessage::welcome(
@@ -1661,7 +1628,6 @@ mod tests {
             &mut app.config.committed_settings_document,
             Some("haiku"),
         );
-        app.reconcile_runtime_from_persisted_settings_change();
 
         // The wire path delivers model changes via System("init") with
         // a `model` field; same downstream path as the original
@@ -5201,43 +5167,6 @@ mod tests {
     }
 
     #[test]
-    fn trusted_view_accept_key_does_not_edit_chat_input() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join(".claude.json");
-        std::fs::write(&path, "{\n  \"projects\": {}\n}\n").expect("write");
-
-        let mut app = make_test_app();
-        app.active_view = ActiveView::Trusted;
-        app.input_mut().set_text("seed");
-        app.set_cwd_raw(dir.path().join("project").to_string_lossy().to_string());
-        app.config.preferences_path = Some(path);
-        app.trust.status = crate::app::trust::TrustStatus::Untrusted;
-        app.trust.project_key =
-            crate::app::trust::store::normalize_project_key(std::path::Path::new(&app.cwd_raw()));
-
-        handle_terminal_event(
-            &mut app,
-            Event::Key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE)),
-        );
-
-        assert_eq!(app.active_view, ActiveView::Chat);
-        assert_eq!(app.input().text(), "seed");
-        assert!(app.pending_paste_text().is_empty());
-        assert!(app.startup_connection_requested);
-    }
-
-    #[test]
-    fn trusted_view_ignores_paste_events() {
-        let mut app = make_test_app();
-        app.active_view = ActiveView::Trusted;
-
-        handle_terminal_event(&mut app, Event::Paste("blocked".into()));
-
-        assert!(app.pending_paste_text().is_empty());
-        assert!(app.input().is_empty());
-    }
-
-    #[test]
     fn session_picker_ignores_paste_events() {
         let mut app = make_test_app();
         app.active_view = ActiveView::SessionPicker;
@@ -5274,32 +5203,6 @@ mod tests {
 
         assert!(!app.needs_redraw);
         assert!(app.input().is_empty());
-    }
-
-    #[test]
-    fn trusted_view_ignores_mouse_events() {
-        let mut app = make_test_app();
-        app.active_view = ActiveView::Trusted;
-        app.active_viewport_mut().scroll_target = 4;
-        *app.selection_mut() = Some(SelectionState {
-            kind: SelectionKind::Chat,
-            start: SelectionPoint { row: 0, col: 0 },
-            end: SelectionPoint { row: 0, col: 1 },
-            dragging: false,
-        });
-
-        handle_terminal_event(
-            &mut app,
-            Event::Mouse(MouseEvent {
-                kind: MouseEventKind::ScrollDown,
-                column: 0,
-                row: 0,
-                modifiers: KeyModifiers::NONE,
-            }),
-        );
-
-        assert_eq!(app.viewport().scroll_target, 4);
-        assert!(app.selection().is_some());
     }
 
     #[test]

@@ -1343,15 +1343,10 @@ pub fn initialize_shared_state(app: &mut App) -> Result<(), String> {
         store_workspace_bridge(app).as_ref().copied(),
     )?;
     app.config.apply_loaded(loaded, false);
-    app.reconcile_runtime_from_persisted_settings_change();
     Ok(())
 }
 
 pub fn open(app: &mut App) -> Result<(), String> {
-    if !app.is_project_trusted() {
-        return Err("Project trust must be accepted before opening settings".to_owned());
-    }
-
     let pr = project_root(app);
     let loaded = store::load(
         app.settings_home_override.as_deref(),
@@ -1359,7 +1354,6 @@ pub fn open(app: &mut App) -> Result<(), String> {
         store_workspace_bridge(app).as_ref().copied(),
     )?;
     app.config.apply_loaded(loaded, false);
-    app.reconcile_runtime_from_persisted_settings_change();
     view::set_active_view(app, ActiveView::Config);
     request_active_tab_side_effects(app);
     Ok(())

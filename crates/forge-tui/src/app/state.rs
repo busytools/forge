@@ -34,7 +34,7 @@ pub use viewport::{
 
 use crate::agent::model;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc as std_mpsc;
 use std::time::Instant;
@@ -50,7 +50,6 @@ use super::mention;
 use super::plugins::PluginsState;
 use super::slash;
 use super::subagent;
-use super::trust::TrustState;
 use super::view::ActiveView;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -204,7 +203,6 @@ pub struct ChatRenderTraceState {
 pub struct App {
     pub active_view: ActiveView,
     pub config: ConfigState,
-    pub trust: TrustState,
     pub settings_home_override: Option<PathBuf>,
     pub status: AppStatus,
     pub should_quit: bool,
@@ -404,7 +402,6 @@ pub struct App {
     pub fps_ema: Option<f32>,
     /// Timestamp of the previous presented frame.
     pub last_frame_at: Option<Instant>,
-    pub startup_connection_requested: bool,
     pub connection_started: bool,
     pub startup_resume_id: Option<String>,
     pub startup_resume_requested: bool,
@@ -1734,10 +1731,6 @@ impl App {
         });
     }
 
-    pub fn is_project_trusted(&self) -> bool {
-        self.trust.is_trusted()
-    }
-
     pub fn frame_fps(&self) -> Option<f32> {
         self.fps_ema
     }
@@ -2187,7 +2180,6 @@ impl App {
         Self {
             active_view: ActiveView::Chat,
             config: ConfigState::default(),
-            trust: TrustState::default(),
             settings_home_override: None,
             status: AppStatus::Ready,
             should_quit: false,
@@ -2244,7 +2236,6 @@ impl App {
             render_cache_budget: RenderCacheBudget::default(),
             fps_ema: None,
             last_frame_at: None,
-            startup_connection_requested: false,
             connection_started: false,
             startup_resume_id: None,
             startup_resume_requested: false,
@@ -2342,30 +2333,6 @@ impl App {
         self.set_mode(None);
         self.set_fast_mode_state(model::FastModeState::Off);
         *self.session_usage_mut() = SessionUsageState::default();
-    }
-
-    pub fn reconcile_trust_state_from_preferences_and_cwd(&mut self) {
-        let cwd = self.cwd_raw();
-        let lookup = crate::app::trust::store::read_status(
-            &self.config.committed_preferences_document,
-            Path::new(&cwd),
-        );
-        self.trust.project_key = lookup.project_key;
-        self.trust.status = if lookup.trusted {
-            crate::app::trust::TrustStatus::Trusted
-        } else {
-            crate::app::trust::TrustStatus::Untrusted
-        };
-        self.trust.selection = crate::app::trust::TrustSelection::Yes;
-        self.trust.last_error = self
-            .config
-            .preferences_path
-            .is_none()
-            .then(|| "Trust preferences path is not available".to_owned());
-    }
-
-    pub fn reconcile_runtime_from_persisted_settings_change(&mut self) {
-        self.reconcile_trust_state_from_preferences_and_cwd();
     }
 
     pub(crate) fn shift_active_turn_assistant_for_insert(&mut self, idx: usize) {

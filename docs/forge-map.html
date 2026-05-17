@@ -347,7 +347,7 @@
 <h2 class="section-title" id="layout">Layout</h2>
 
 <p class="intro">
-  forge-tui's main frame is a strict vertical stack composed by <code>layout::compute</code>, flanked by inline side panes at the wider tiers. <strong>This stack only renders in <code>ActiveView::Chat</code>.</strong> When the user opens <code>/config</code>, the resume picker, or hits the trust gate, forge swaps the entire frame to a single full-screen overlay (<code>ActiveView::Config</code>, <code>ActiveView::SessionPicker</code>, <code>ActiveView::Trusted</code>) — chat / input / side panes all disappear during those views. At terminal widths ≥160 cols the chat frame is flanked by a 40ch <a href="#projects-pane">Projects pane</a> on the left (carrying the account / mode / model / usage / location panel at its bottom) and a 40ch <a href="#inspector-pane">Inspector pane</a> on the right (carrying the live <code>TASKS</code> list from <code>TodoWrite</code>); between 120–159 cols both panes shrink to 30ch with truncation; below 120 cols a single-row top bar replaces both panes — tapping the <code>▤</code> icon (or <kbd>Ctrl+B</kbd>) opens the Projects overlay, tapping <code>▦</code> (or <kbd>Ctrl+E</kbd>) opens the Inspector overlay.
+  forge-tui's main frame is a strict vertical stack composed by <code>layout::compute</code>, flanked by inline side panes at the wider tiers. <strong>This stack only renders in <code>ActiveView::Chat</code>.</strong> When the user opens <code>/config</code> or the resume picker, forge swaps the entire frame to a single full-screen overlay (<code>ActiveView::Config</code>, <code>ActiveView::SessionPicker</code>) — chat / input / side panes all disappear during those views. At terminal widths ≥160 cols the chat frame is flanked by a 40ch <a href="#projects-pane">Projects pane</a> on the left (carrying the account / mode / model / usage / location panel at its bottom) and a 40ch <a href="#inspector-pane">Inspector pane</a> on the right (carrying the live <code>TASKS</code> list from <code>TodoWrite</code>); between 120–159 cols both panes shrink to 30ch with truncation; below 120 cols a single-row top bar replaces both panes — tapping the <code>▤</code> icon (or <kbd>Ctrl+B</kbd>) opens the Projects overlay, tapping <code>▦</code> (or <kbd>Ctrl+E</kbd>) opens the Inspector overlay.
 </p>
 
 <p class="intro">
@@ -1211,36 +1211,6 @@ chat continues here…
     <dl>
       <dt>code</dt><dd><code>crates/forge-tui/src/ui/message.rs::welcome_lines</code> · ASCII in <code>FERRIS_SAYS</code> · tips in <code>WELCOME_TIPS</code> (~21 entries)</dd>
       <dt>color</dt><dd>art: RUST_ORANGE · field labels: DIM · account/subscription value: RUST_ORANGE bold · field values + tip: DIM</dd>
-    </dl>
-  </div>
-</div>
-
-<div class="surface">
-  <div class="surface-head">
-    <h4>Trust-this-project prompt</h4>
-    <div class="when">visible: first launch in a directory that hasn't been trusted yet (no <code>hasTrustDialogAccepted</code> flag in <code>~/.claude.json</code> for this cwd)</div>
-  </div>
-  <div class="surface-body">
-    <p>Full-frame bordered overlay with the block title <code>Unknown Project</code> (in DIM). Inside: a header row "Trust this project directory?" (RUST_ORANGE bold), a 3-line body intro, a message line, then two action rows. Action format: <code>&gt; Yes</code> / <code>  No</code> — selected gets a <code>&gt;</code> marker and white-on-RUST_ORANGE styling + bold; unselected uses a leading space and DIM bold.</p>
-    <div class="term">
-      <pre class="indent">
-  <span class="dim">╭ Unknown Project ─────────────────────────────────────────────────────╮</span>
-  <span class="dim">│</span>                                                                     <span class="dim">│</span>
-  <span class="dim">│</span>  <span class="accent bold">Trust this project directory?</span>                                       <span class="dim">│</span>
-  <span class="dim">│</span>  Claude Rust will wait here until you choose whether to trust this   <span class="dim">│</span>
-  <span class="dim">│</span>  workspace.                                                          <span class="dim">│</span>
-  <span class="dim">│</span>                                                                     <span class="dim">│</span>
-  <span class="dim">│</span>  Review the project before continuing if you are unsure.             <span class="dim">│</span>
-  <span class="dim">│</span>  Choose Yes to continue or No to close Claude Rust.                  <span class="dim">│</span>
-  <span class="dim">│</span>                                                                     <span class="dim">│</span>
-  <span class="dim">│</span>  <span style="background: var(--rust-orange); color: white; font-weight: 700;">&gt; Yes</span>                                                                <span class="dim">│</span>
-  <span class="dim">│</span>  <span class="dim bold">  No</span>                                                                 <span class="dim">│</span>
-  <span class="dim">│</span>                                                                     <span class="dim">│</span>
-  <span class="dim">╰─────────────────────────────────────────────────────────────────────╯</span></pre>
-    </div>
-    <dl>
-      <dt>code</dt><dd><code>crates/forge-tui/src/ui/trusted.rs</code> · 2 actions only (<code>Yes</code> / <code>No</code>)</dd>
-      <dt>error path</dt><dd>if writing the trust flag to <code>~/.claude.json</code> fails, the message line is replaced with the error text (no toast — inline replacement)</dd>
     </dl>
   </div>
 </div>

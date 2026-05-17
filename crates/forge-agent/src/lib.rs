@@ -14,7 +14,7 @@
 //! - [`agent`] — `Agent::spawn` + `AgentHandle` (the public API).
 //! - [`client`] — `AgentEvent` enum + supporting types.
 //! - [`cloud`] — network-side state: oauth + cli usage fetchers.
-//! - [`userdata`] — disk-side state: trust file (more incoming).
+//! - [`userdata`] — disk-side state: settings, sessions catalog, memory, plugins.
 //! - [`commands`] / [`session_lifecycle`] — bridge helpers reused by
 //!   forge-tui via re-exports.
 //! - [`forge_sdk_worker`] / [`replay`] / [`tooling`] / [`user_interaction`] /

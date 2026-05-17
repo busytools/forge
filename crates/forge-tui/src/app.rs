@@ -34,7 +34,6 @@ pub(crate) mod subagent;
 mod tab_title;
 mod terminal;
 mod todos;
-mod trust;
 pub(crate) mod usage;
 pub(crate) mod view;
 
@@ -71,7 +70,6 @@ pub use state::{
     WelcomeBlock, compute_scrollbar_geometry, hash_text_block_content, hash_welcome_block_content,
     is_execute_tool_name,
 };
-pub use trust::TrustSelection;
 pub use view::ActiveView;
 
 use crossterm::event::{

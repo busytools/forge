@@ -5,7 +5,6 @@ use std::time::Instant;
 pub enum ActiveView {
     Chat,
     Config,
-    Trusted,
     SessionPicker,
     /// Project picker shown when forge is invoked without an argv
     /// project, or when the user runs `/launchpad` mid-session. The

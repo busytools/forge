@@ -23,8 +23,7 @@ pub struct ProjectView {
     pub org: String,
     /// Filesystem-resolved project root (`~` expanded). This is the
     /// path callers should hand to filesystem APIs — `cwd_raw` for
-    /// the spawning bucket, `file_index::restart`,
-    /// `trust::store::normalize_project_key`, the git-context
+    /// the spawning bucket, `file_index::restart`, the git-context
     /// watcher, etc. Use [`Self::display_path`] for human-readable
     /// rendering instead.
     pub path: PathBuf,

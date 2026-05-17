@@ -10,7 +10,6 @@ use super::config::ConfigState;
 use super::dialog::DialogState;
 use super::plugins::PluginsState;
 use super::state::{RenderCacheBudget, SessionPickerState};
-use super::trust;
 use super::view::ActiveView;
 use super::{App, AppStatus, FocusManager, HelpView};
 use crate::Cli;
@@ -182,7 +181,6 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
     let mut app = App {
         active_view,
         config: ConfigState::default(),
-        trust: trust::TrustState::default(),
         settings_home_override: None,
         status: AppStatus::Connecting,
         should_quit: false,
@@ -239,7 +237,6 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
         render_cache_budget: RenderCacheBudget::default(),
         fps_ema: None,
         last_frame_at: None,
-        startup_connection_requested: false,
         connection_started: false,
         startup_resume_id: None,
         startup_resume_requested: false,
@@ -268,7 +265,6 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
     // sessions render `Account: …` from the very first frame
     // instead of a hidden line that pops in once data arrives.
     app.sync_welcome_snapshot();
-    trust::initialize(&mut app);
     super::file_index::restart(&mut app);
     app
 }
@@ -277,7 +273,7 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
 /// Dispatches `Command::StartDefault`; the workspace owns the
 /// spawn from there.
 pub fn start_connection(app: &mut App) {
-    if !app.startup_connection_requested || app.connection_started {
+    if app.connection_started {
         return;
     }
 
@@ -470,10 +466,8 @@ mod tests {
         let cli = cli_with(Some("forge-test"));
         let local = tokio::task::LocalSet::new();
         let app = local.run_until(async { super::create_app(&cli, Arc::new(workspace)) }).await;
-        // With argv supplied the boot view is NOT Launchpad. In a
-        // pristine tempdir the cwd is untrusted so the trust gate
-        // routes to Trusted; once accepted the user lands in Chat.
-        // The invariant the launchpad change cares about is just
+        // With argv supplied the boot view is NOT Launchpad. The
+        // invariant the launchpad change cares about is just
         // "argv supplied ⇒ never the launchpad."
         assert_ne!(app.active_view, crate::app::ActiveView::Launchpad);
     }

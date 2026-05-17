@@ -8,14 +8,6 @@ use std::path::PathBuf;
 use tempfile::TempDir;
 
 fn open_settings_app_in_dir(dir: &TempDir) -> App {
-    std::fs::write(
-        dir.path().join(".claude.json"),
-        format!(
-            "{{\n  \"projects\": {{\n    \"{}\": {{ \"hasTrustDialogAccepted\": true }}\n  }}\n}}\n",
-            crate::app::trust::store::normalize_project_key(dir.path())
-        ),
-    )
-    .expect("write trust prefs");
     let mut app = App::test_default();
     app.settings_home_override = Some(dir.path().to_path_buf());
     app.set_cwd_raw(dir.path().to_string_lossy().to_string());
@@ -104,26 +96,6 @@ fn open_does_not_force_stop_active_turn() {
 }
 
 #[test]
-fn initialize_shared_state_reconciles_trust_from_preferences() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let prefs_path = dir.path().join(".claude.json");
-    std::fs::write(&prefs_path, r#"{"projects":{}}"#).expect("write prefs");
-
-    let mut app = App::test_default();
-    app.settings_home_override = Some(dir.path().to_path_buf());
-    app.set_cwd_raw(dir.path().join("project").to_string_lossy().to_string());
-    app.trust.status = crate::app::trust::TrustStatus::Trusted;
-
-    initialize_shared_state(&mut app).expect("initialize");
-
-    assert_eq!(app.trust.status, crate::app::trust::TrustStatus::Untrusted);
-    assert_eq!(
-        app.trust.project_key,
-        crate::app::trust::store::normalize_project_key(std::path::Path::new(&app.cwd_raw()))
-    );
-}
-
-#[test]
 fn activate_tab_clears_status_and_error_feedback() {
     let (_dir, mut app) = open_settings_test_app();
     app.config.status_message = Some("saved".into());
@@ -141,14 +113,6 @@ fn reopen_reload_picks_up_external_settings_changes() {
     let path = dir.path().join(".claude").join("settings.json");
     std::fs::create_dir_all(path.parent().expect("settings parent")).expect("create dir");
     std::fs::write(&path, r#"{"fastMode":false}"#).expect("write");
-    std::fs::write(
-        dir.path().join(".claude.json"),
-        format!(
-            "{{\n  \"projects\": {{\n    \"{}\": {{ \"hasTrustDialogAccepted\": true }}\n  }}\n}}\n",
-            crate::app::trust::store::normalize_project_key(dir.path())
-        ),
-    )
-    .expect("write trust prefs");
     let mut app = App::test_default();
     app.settings_home_override = Some(dir.path().to_path_buf());
     app.set_cwd_raw(dir.path().to_string_lossy().to_string());
@@ -223,20 +187,6 @@ fn handle_key_moves_between_config_rows() {
     }
 
     assert_eq!(app.config.selected_setting_index, last_index);
-}
-
-#[test]
-fn open_rejects_untrusted_projects() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let mut app = App::test_default();
-    app.settings_home_override = Some(dir.path().to_path_buf());
-    app.set_cwd_raw(dir.path().to_string_lossy().to_string());
-    app.trust.status = crate::app::trust::TrustStatus::Untrusted;
-
-    let err = open(&mut app).expect_err("open should be blocked");
-
-    assert!(err.contains("Project trust"));
-    assert_eq!(app.active_view, ActiveView::Chat);
 }
 
 #[test]

@@ -828,7 +828,6 @@ pub(super) fn apply_session_cwd(app: &mut App, cwd_raw: String) {
     app.set_cwd_raw(cwd_raw);
     app.set_cwd(display);
     sync_welcome_cwd(app);
-    app.reconcile_trust_state_from_preferences_and_cwd();
 
     // Bump the git-diff generation when the cwd genuinely changed,
     // reset the cached snapshot to `None`, AND abandon the in-flight
