@@ -97,17 +97,11 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     }
 
     // Render the input AFTER the pane separators and help row so the
-    // bordered box paints over the help row. The box is inset 1 col
-    // on each side inside the chat column so the L/R borders read
-    // symmetric regardless of whether the inspector pane is visible
-    // (when it isn't, chat_area extends to the screen edge — without
-    // the inset the right border would paste against the edge while
-    // the left still had the projects pane separator giving it
-    // visual breathing room).
+    // bordered box paints over the help row. Box spans the full
+    // chat column with no L/R inset; the box's own border IS the
+    // visual margin.
     let input_box_area = {
         let mut rect = areas.input;
-        rect.x = rect.x.saturating_add(1);
-        rect.width = rect.width.saturating_sub(2);
         rect.height = rect.height.saturating_add(areas.help.height);
         rect
     };
