@@ -14,8 +14,8 @@ use forge_agent::AgentHandle;
 use forge_agent::client::AgentEvent;
 use forge_primitives::SessionId;
 use parking_lot::Mutex;
-use tracing::Instrument;
 use tokio::sync::mpsc;
+use tracing::Instrument;
 
 use crate::SessionKey;
 use crate::domain_session::DomainSession;

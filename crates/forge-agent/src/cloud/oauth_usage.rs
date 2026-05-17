@@ -7,11 +7,6 @@
 //! on macOS — keychain). The `Authorization` header never escapes
 //! this module.
 //!
-//! Lifted from forge-sdk in 2026-05-05. Direct hits on
-//! `api.anthropic.com` belong with the agent — forge-sdk's job is
-//! to wrap the `claude` CLI subprocess, not to talk HTTP to
-//! Anthropic.
-//!
 //! The response shape mirrors the live API as of 2026-04, exposed as
 //! plain optional fields. Timestamp parsing is left to consumers
 //! because the field is documented inconsistently (sometimes ISO-8601,

@@ -1,7 +1,6 @@
 //! Subagent declarations forwarded to the `claude` CLI via the
-//! `initialize` `control_request`'s `agents` field.
-//!
-//! Lifted from forge-sdk in 2026-05-05. Pure data — no callbacks.
+//! `initialize` `control_request`'s `agents` field. Pure data — no
+//! callbacks.
 
 use std::collections::HashMap;
 

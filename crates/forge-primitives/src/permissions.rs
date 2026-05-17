@@ -1,10 +1,8 @@
-//! Permission decision wire-data.
-//!
-//! Lifted from forge-sdk in 2026-05-05. The data types
-//! (ToolPermissionContext, PermissionDecision, PermissionUpdate,
-//! PermissionUpdateDestination, PermissionBehavior, PermissionRuleValue)
-//! are workspace-shared shapes; the `CanUseToolCallback` trait stays
-//! SDK-side because it owns function-pointer dispatch.
+//! Permission decision wire-data — `ToolPermissionContext`,
+//! `PermissionDecision`, `PermissionUpdate`,
+//! `PermissionUpdateDestination`, `PermissionBehavior`,
+//! `PermissionRuleValue`. The matching `CanUseToolCallback` trait
+//! stays SDK-side because it owns function-pointer dispatch.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

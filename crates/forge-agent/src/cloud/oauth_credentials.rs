@@ -3,12 +3,6 @@
 //! path on every platform, plus a macOS keychain fallback for fresh
 //! installs that haven't seeded the file yet).
 //!
-//! Lifted from forge-sdk in 2026-05-05. Reading the user's stored
-//! credentials is agent-side work — forge-sdk's job is to wrap the
-//! long-lived `claude` subprocess, not to consult a keychain or
-//! parse `.credentials.json`. Mirrors the shape of the `auth_status`
-//! shell-out next door: both are one-shot lookups outside the live
-//! stream-json session.
 //!
 //! The returned [`OauthCredentials`] feeds the
 //! `cloud::oauth_usage` HTTP client (Bearer header) — no other

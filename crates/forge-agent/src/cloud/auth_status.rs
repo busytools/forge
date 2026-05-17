@@ -11,12 +11,6 @@
 //! cheapest equivalent is to spawn `claude auth status` and parse its
 //! JSON output. Adds ~50ms latency for the first read.
 //!
-//! Lifted from forge-sdk in 2026-05-05. Shell-outs to `claude` are
-//! agent-side concerns — the SDK now only owns the long-lived
-//! stream-json subprocess. Mirrors the shape of
-//! `userdata::plugins::cli`, which wraps `claude plugin` in the same
-//! way.
-//!
 //! Returns a fully populated [`AccountInfo`] when the shell-out
 //! succeeds, mapping `claude auth status`'s camelCase JSON into the
 //! `snake_case` struct.

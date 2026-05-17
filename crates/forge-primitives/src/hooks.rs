@@ -1,12 +1,11 @@
 //! Hook callback wire-data — input payloads, output decisions, and
 //! the lifecycle plumbing.
 //!
-//! Lifted from forge-sdk in 2026-05-05. The data types (HookKind,
-//! HookContext, HookDecision, all input/output payloads) are
-//! workspace-shared shapes; the callback machinery (HookCallback
-//! trait, ErasedHookCallback type-erasure adapter, Hooks
-//! builder/registry) stays SDK-side because it owns `Arc<dyn …>`
-//! pointers.
+//! Workspace-shared shapes: `HookKind`, `HookContext`,
+//! `HookDecision`, plus every input/output payload. The callback
+//! machinery (`HookCallback` trait, `ErasedHookCallback`
+//! type-erasure adapter, `Hooks` builder/registry) stays SDK-side
+//! because it owns `Arc<dyn …>` pointers.
 //!
 //! Submodule split:
 //! - [`inputs`] — `BaseHookInput`, `SubagentContext`, the ten `*Input`
