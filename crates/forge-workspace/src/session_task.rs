@@ -889,13 +889,12 @@ mod tests {
         let (_cmd_tx, command_rx) = tokio::sync::mpsc::unbounded_channel::<crate::protocol::Command>();
         let (update_tx, _update_rx) = tokio::sync::mpsc::unbounded_channel::<SessionUpdate>();
         let domain = Arc::new(parking_lot::Mutex::new(empty_domain()));
-        {
-            let (response_tx, _response_rx) = oneshot::channel::<forge_primitives::PermissionOutcome>();
-            domain
-                .lock()
-                .pending_interactions
-                .insert("stale_tool_id".to_owned(), PendingInteractionSlot::Permission(response_tx));
-        }
+        let (response_tx, mut response_rx) =
+            oneshot::channel::<forge_primitives::PermissionOutcome>();
+        domain
+            .lock()
+            .pending_interactions
+            .insert("stale_tool_id".to_owned(), PendingInteractionSlot::Permission(response_tx));
         let mut task = SessionTask {
             key: SessionKey::from_str_for_test("old-uuid"),
             handle: Arc::new(handle),
@@ -931,6 +930,10 @@ mod tests {
         assert!(
             domain.lock().pending_interactions.is_empty(),
             "second Connected must clear stale pending_interactions",
+        );
+        assert!(
+            matches!(response_rx.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Closed)),
+            "forwarder receiver must observe Closed after the sender was dropped"
         );
     }
 
