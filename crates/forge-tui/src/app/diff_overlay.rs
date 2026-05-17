@@ -22,7 +22,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc as std_mpsc;
 
-use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use forge_workspace::env::git_diff::hunks::ScanOutcome;
 use forge_workspace::env::git_diff::hunks::{DiffLine, DiffLineKind, FileHunks};
 use tui_textarea::TextArea;
@@ -896,6 +896,8 @@ struct MouseEffect {
 /// Bindings (v1):
 /// - Scroll wheel over the rail → advance `rail_scroll`.
 /// - Scroll wheel over the body → advance `body_scroll`.
+/// - Shift + scroll wheel, or a native horizontal-scroll event
+///   (trackpad two-finger sideways) → advance `body_scroll_x`.
 /// - Left click on a file row in the FILES rail → switch the right
 ///   pane to that file; resets `body_scroll` to 0.
 /// - Left click on a diff line in the body → open an inline comment
@@ -907,7 +909,15 @@ struct MouseEffect {
 pub(crate) fn handle_mouse(app: &mut App, mouse: MouseEvent) {
     let terminal_width = app.cached_frame_area.width;
     let effect = if let Some(overlay) = app.diff_overlay.as_mut() {
+        let shift = mouse.modifiers.contains(KeyModifiers::SHIFT);
         match mouse.kind {
+            // Shift+wheel maps to horizontal scroll for terminals
+            // that don't emit native ScrollLeft / ScrollRight events
+            // (most do one or the other depending on driver).
+            MouseEventKind::ScrollUp if shift => handle_horizontal_scroll(overlay, -1),
+            MouseEventKind::ScrollDown if shift => handle_horizontal_scroll(overlay, 1),
+            MouseEventKind::ScrollLeft => handle_horizontal_scroll(overlay, -1),
+            MouseEventKind::ScrollRight => handle_horizontal_scroll(overlay, 1),
             MouseEventKind::ScrollUp => handle_scroll(overlay, mouse.column, terminal_width, false),
             MouseEventKind::ScrollDown => {
                 handle_scroll(overlay, mouse.column, terminal_width, true)
@@ -923,6 +933,16 @@ pub(crate) fn handle_mouse(app: &mut App, mouse: MouseEvent) {
     if effect.redraw {
         app.needs_redraw = true;
     }
+}
+
+/// Step `body_scroll_x` by `direction * SCROLL_COLS_PER_STEP` cols.
+/// Negative goes left (clamped at 0), positive goes right.
+fn handle_horizontal_scroll(overlay: &mut DiffOverlayState, direction: i32) -> MouseEffect {
+    let step = i32::from(SCROLL_COLS_PER_STEP);
+    let next = i32::from(overlay.body_scroll_x).saturating_add(direction.saturating_mul(step));
+    let clamped = next.clamp(0, i32::from(u16::MAX));
+    overlay.body_scroll_x = u16::try_from(clamped).unwrap_or(0);
+    MouseEffect { redraw: true }
 }
 
 fn handle_scroll(
