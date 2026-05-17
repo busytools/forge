@@ -1,5 +1,5 @@
 use super::*;
-use crate::app::config::{ConfigOverlayState, OutputStyle, OutputStyleOverlayState};
+use crate::app::config::{AddMarketplaceOverlayState, ConfigOverlayState};
 use crate::app::dialog::DialogState;
 use crate::app::slash::{SlashContext, SlashState};
 use crate::app::state::types::ScrollbarDragState;
@@ -135,8 +135,9 @@ fn set_active_view_closes_help_without_clearing_question_mark_draft() {
 fn leaving_config_clears_config_overlay() {
     let mut app = App::test_default();
     app.active_view = ActiveView::Config;
-    app.config.overlay = Some(ConfigOverlayState::OutputStyle(OutputStyleOverlayState {
-        selected: OutputStyle::Default,
+    app.config.overlay = Some(ConfigOverlayState::AddMarketplace(AddMarketplaceOverlayState {
+        draft: String::new(),
+        cursor: 0,
     }));
 
     set_active_view(&mut app, ActiveView::Config);

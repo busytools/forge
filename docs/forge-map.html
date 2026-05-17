@@ -1121,7 +1121,7 @@ chat continues here…
     <p>Three views with different layouts:</p>
     <ul style="color: var(--muted); font-size: 13px; line-height: 1.7; margin: 0 0 12px 18px;">
       <li><strong>Keys</strong> — items distributed top-half-left / bottom-half-right (so scanning down each column reads chronologically). Each cell: <code>label : description</code> with label in BOLD and <code> : </code> separator in DIM.</li>
-      <li><strong>Slash commands</strong> — single-column two-column list (name + description) via <code>two_column_list</code>. Built-in commands: <code>/config</code>, <code>/mcp</code>, <code>/plugins</code>, <code>/status</code>. Plus user-installed commands.</li>
+      <li><strong>Slash commands</strong> — single-column two-column list (name + description) via <code>two_column_list</code>. Built-in commands: <code>/config</code>, <code>/effort</code>, <code>/mcp</code>, <code>/plugins</code>. Plus user-installed commands.</li>
       <li><strong>Subagents</strong> — same two-column shape as Slash, listing user-defined subagents and their descriptions.</li>
     </ul>
     <div class="term">
@@ -1186,10 +1186,10 @@ chat continues here…
 </div>
 
 <!-- ============================================================== -->
-<h2 class="section-title" id="settings">Config screen (Settings · Plugins · Status · Usage · MCP)</h2>
+<h2 class="section-title" id="settings">Config screen (Plugins · MCP)</h2>
 
 <p class="intro">
-  All five "settings" surfaces live inside a <strong>single full-frame Config screen</strong> with a tabbed header. Slash commands (<code>/config</code>, <code>/mcp</code>, <code>/plugins</code>, <code>/status</code>, <code>/usage</code>) all open this screen — the slash determines which tab opens active. Outer block title: <code>Config</code> in DIM border.
+  Plugins and MCP live inside a <strong>single full-frame Config screen</strong> with a tabbed header. Slash commands (<code>/config</code>, <code>/mcp</code>, <code>/plugins</code>) all open this screen — the slash determines which tab opens active. Outer block title: <code>Config</code> in DIM border.
 </p>
 
 <div class="surface">
@@ -1198,7 +1198,7 @@ chat continues here…
     <div class="when">visible: top row of the Config screen at all times</div>
   </div>
   <div class="surface-body">
-    <p>Centered horizontal tab strip. Active tab in <code>RUST_ORANGE</code> bold; inactive tabs in <code>Color::White</code>. Separator <code> | </code> in DIM. Tab order: <strong>Settings · Plugins · Status · Usage · MCP</strong>.</p>
+    <p>Centered horizontal tab strip. Active tab in <code>RUST_ORANGE</code> bold; inactive tabs in <code>Color::White</code>. Separator <code> | </code> in DIM. Tab order: <strong>Plugins · MCP</strong>.</p>
     <div class="term">
       <pre class="indent">
   <span class="dim">╭ Config ──────────────────────────────────────────────────────────────╮</span>
@@ -1210,36 +1210,6 @@ chat continues here…
     </div>
     <dl>
       <dt>code</dt><dd><code>crates/forge-tui/src/ui/config.rs::render_tab_header</code> · tabs are <code>ConfigTab::ALL</code></dd>
-    </dl>
-  </div>
-</div>
-
-<div class="surface">
-  <div class="surface-head">
-    <h4>Settings tab</h4>
-    <div class="when">visible: when the Settings tab is active</div>
-  </div>
-  <div class="surface-body">
-    <p>Two-column layout when wide enough (44% / 56%): a "<code>Settings</code>"-titled list on the left and a "<code>Details</code>"-titled detail pane on the right. Both columns have DIM-border boxes. When the area is narrow (below <code>COMPACT_SETTINGS_MIN_WIDTH</code>) it collapses to a single full-width "Settings" panel. A bottom hint reserves a wrapped line for: "<em>Currently, not all settings are supported by forge. This project uses the official Anthropic Claude Agent SDK, which limits forge implementing all Claude Code settings.</em>"</p>
-    <div class="term">
-      <pre class="indent">
-  <span class="dim">╭ Settings ────────────────╮</span>  <span class="dim">╭ Details ───────────────────────────────╮</span>
-  <span class="dim">│</span> <span class="bold">Permission default mode </span><span class="dim">│</span>  <span class="dim">│</span> <span class="bold">Permission default mode</span>                <span class="dim">│</span>
-  <span class="dim">│</span> Setting sources          <span class="dim">│</span>  <span class="dim">│</span> <span class="dim">Mode the SDK starts in for this</span>        <span class="dim">│</span>
-  <span class="dim">│</span> Tools collapsed by deflt <span class="dim">│</span>  <span class="dim">│</span> <span class="dim">session before any /mode toggle.</span>       <span class="dim">│</span>
-  <span class="dim">│</span> Capture transcripts      <span class="dim">│</span>  <span class="dim">│</span>                                        <span class="dim">│</span>
-  <span class="dim">│</span> Tracing level            <span class="dim">│</span>  <span class="dim">│</span> <span class="dim">Options:</span>                               <span class="dim">│</span>
-  <span class="dim">│</span> Mouse support            <span class="dim">│</span>  <span class="dim">│</span>   <span class="success">▸</span> default                            <span class="dim">│</span>
-  <span class="dim">│</span> ...                      <span class="dim">│</span>  <span class="dim">│</span>     acceptEdits                        <span class="dim">│</span>
-  <span class="dim">╰──────────────────────────╯</span>  <span class="dim">│</span>     plan                               <span class="dim">│</span>
-                              <span class="dim">╰────────────────────────────────────────╯</span>
-  <span class="dim">Currently, not all settings are supported by forge. This project uses the…</span>
-</pre>
-    </div>
-    <dl>
-      <dt>code</dt><dd><code>crates/forge-tui/src/ui/config/settings.rs</code> · spec data via <code>setting_specs</code> in <code>app::config</code></dd>
-      <dt>unsupported flag</dt><dd>specs that aren't honored by forge yet show an "Unsupported" hint in the details pane</dd>
-      <dt>invalid persisted</dt><dd>if the persisted value can't validate, the details pane shows a STATUS_ERROR-coloured hint with fallback explanation</dd>
     </dl>
   </div>
 </div>

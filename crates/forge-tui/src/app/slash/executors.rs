@@ -35,6 +35,7 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
         "/compact" => handle_compact_submit(app, &parsed.args),
         "/config" => handle_config_submit(app, &parsed.args),
         "/diff" => handle_diff_submit(app, &parsed.args),
+        "/effort" => handle_effort_submit(app, &parsed.args),
         "/launchpad" => handle_launchpad_submit(app, &parsed.args),
         "/mcp" => handle_mcp_submit(app, &parsed.args),
         "/plugins" => handle_plugins_submit(app, &parsed.args),
@@ -174,13 +175,27 @@ fn handle_mcp_submit(app: &mut App, args: &[&str]) -> bool {
 }
 
 fn handle_mode_submit(app: &mut App, args: &[&str]) -> bool {
+    if args.is_empty() {
+        let label = app.mode().map_or_else(
+            || "no active mode".to_owned(),
+            |state| {
+                if state.current_mode_name.is_empty() {
+                    state.current_mode_id.clone()
+                } else {
+                    format!("{} ({})", state.current_mode_name, state.current_mode_id)
+                }
+            },
+        );
+        push_system_message(app, format!("Mode: {label}"));
+        return true;
+    }
     let [requested_mode_arg] = args else {
-        push_system_message(app, "Usage: /mode <id>");
+        push_system_message(app, "Usage: /mode [id]");
         return true;
     };
     let requested_mode = requested_mode_arg.trim();
     if requested_mode.is_empty() {
-        push_system_message(app, "Usage: /mode <id>");
+        push_system_message(app, "Usage: /mode [id]");
         return true;
     }
 
@@ -250,13 +265,32 @@ fn apply_optimistic_mode_change(app: &mut App, requested_mode: &str) {
 }
 
 fn handle_model_submit(app: &mut App, args: &[&str]) -> bool {
+    if args.is_empty() {
+        let label = app.current_model().map_or_else(
+            || "no active model".to_owned(),
+            |model| {
+                let display = if model.display_name_long.is_empty() {
+                    model.resolved_id.clone()
+                } else {
+                    model.display_name_long.clone()
+                };
+                if model.resolved_id.is_empty() || display == model.resolved_id {
+                    display
+                } else {
+                    format!("{display} ({})", model.resolved_id)
+                }
+            },
+        );
+        push_system_message(app, format!("Model: {label}"));
+        return true;
+    }
     let [model_name_arg] = args else {
-        push_system_message(app, "Usage: /model <id>");
+        push_system_message(app, "Usage: /model [id]");
         return true;
     };
     let model_name = model_name_arg.trim();
     if model_name.is_empty() {
-        push_system_message(app, "Usage: /model <id>");
+        push_system_message(app, "Usage: /model [id]");
         return true;
     }
 
@@ -327,6 +361,52 @@ fn apply_optimistic_model_change(app: &mut App, model_name: &str) {
         let model_mode_state = wire_mode_state;
         crate::app::events::apply_mode_state_update(app, model_mode_state);
     }
+}
+
+/// `/effort` no-arg → show current effort level.
+/// `/effort <level>` → persist the level into ~/.claude/settings.json
+/// so the next session launch picks it up (mirrors today's overlay
+/// path). There's no live SDK command for effort; the change
+/// surfaces on the next session restart.
+fn handle_effort_submit(app: &mut App, args: &[&str]) -> bool {
+    use crate::agent::model::EffortLevel;
+
+    if args.is_empty() {
+        let level = app.config.thinking_effort_effective();
+        push_system_message(app, format!("Effort: {} ({})", level.label(), level.as_stored()));
+        return true;
+    }
+    let [requested_arg] = args else {
+        push_system_message(app, "Usage: /effort [low|medium|high|xhigh|max]");
+        return true;
+    };
+    let requested = requested_arg.trim();
+    if requested.is_empty() {
+        push_system_message(app, "Usage: /effort [low|medium|high|xhigh|max]");
+        return true;
+    }
+    let Some(level) = EffortLevel::from_stored(requested) else {
+        push_system_message(app, format!("Unknown effort level: {requested}"));
+        return true;
+    };
+
+    let Some(path) = app.config.settings_path.clone() else {
+        push_system_message(app, "Effort: settings path is unavailable");
+        return true;
+    };
+    let mut next_document = app.config.committed_settings_document.clone();
+    crate::app::config::store::set_thinking_effort_level(&mut next_document, level);
+    match crate::app::config::store::save(&path, &next_document) {
+        Ok(()) => {
+            app.config.committed_settings_document = next_document;
+            push_system_message(
+                app,
+                format!("Effort: {} (takes effect next session)", level.label()),
+            );
+        }
+        Err(err) => push_system_message(app, format!("Failed to save effort: {err}")),
+    }
+    true
 }
 
 fn handle_new_session_submit(app: &mut App, args: &[&str]) -> bool {

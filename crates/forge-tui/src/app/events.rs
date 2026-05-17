@@ -1503,7 +1503,7 @@ mod tests {
     #[test]
     fn connected_requests_mcp_snapshot_even_outside_mcp_tab() {
         let (mut app, mut rx) = app_with_bridge_connection();
-        app.config.active_tab = crate::app::config::ConfigTab::Settings;
+        app.config.active_tab = crate::app::config::ConfigTab::Plugins;
         app.mcp_mut().servers.push(forge_primitives::McpServerStatus {
             name: "supabase".into(),
             status: forge_primitives::McpServerConnectionStatus::Connected,
@@ -1846,7 +1846,7 @@ mod tests {
     #[test]
     fn session_replaced_requests_mcp_snapshot_even_outside_mcp_tab() {
         let (mut app, mut rx) = app_with_bridge_connection();
-        app.config.active_tab = crate::app::config::ConfigTab::Settings;
+        app.config.active_tab = crate::app::config::ConfigTab::Plugins;
         app.mcp_mut().servers.push(forge_primitives::McpServerStatus {
             name: "supabase".into(),
             status: forge_primitives::McpServerConnectionStatus::Connected,
@@ -4823,31 +4823,6 @@ mod tests {
 
         assert_eq!(app.input().cursor_row(), 1);
         assert_eq!(app.viewport().scroll_target, 3);
-    }
-
-    #[test]
-    fn settings_view_routes_space_to_settings_handler_not_chat_input() {
-        let mut app = make_test_app();
-        let dir = tempfile::tempdir().expect("tempdir");
-        app.settings_home_override = Some(dir.path().to_path_buf());
-        app.set_cwd_raw(dir.path().to_string_lossy().to_string());
-        crate::app::config::open(&mut app).expect("open settings");
-        app.active_view = ActiveView::Config;
-        app.config.selected_setting_index = crate::app::config::setting_specs()
-            .iter()
-            .position(|spec| spec.id == crate::app::config::SettingId::FastMode)
-            .expect("fast mode setting row");
-        app.input_mut().set_text("seed");
-
-        handle_terminal_event(
-            &mut app,
-            Event::Key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE)),
-        );
-
-        assert_eq!(app.input().text(), "seed");
-        assert!(app.pending_submit().is_none());
-        assert!(app.config.fast_mode_effective());
-        assert!(app.config.last_error.is_none());
     }
 
     #[test]

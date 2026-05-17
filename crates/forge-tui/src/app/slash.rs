@@ -180,7 +180,8 @@ mod tests {
         let names: Vec<String> =
             supported_command_candidates(&app).into_iter().map(|c| c.primary).collect();
         for expected in [
-            "/compact", "/config", "/mcp", "/mode", "/model", "/new", "/plugins", "/resume",
+            "/compact", "/config", "/effort", "/mcp", "/mode", "/model", "/new", "/plugins",
+            "/resume",
         ] {
             assert!(names.iter().any(|n| n == expected), "missing {expected}");
         }
@@ -670,22 +671,26 @@ mod tests {
         let Some(MessageBlock::Text(block)) = last.blocks.first() else {
             panic!("expected text block");
         };
-        assert_eq!(block.text, "Usage: /mode <id>");
+        assert_eq!(block.text, "Usage: /mode [id]");
     }
 
     #[test]
-    fn model_with_missing_id_returns_usage_message() {
+    fn model_with_no_arg_reports_current_model() {
         let mut app = App::test_default();
+        app.set_current_model(Some(
+            crate::agent::model::CurrentModel::new("opus", "Opus", "Opus 4.7").authoritative(true),
+        ));
 
         let consumed = try_handle_submit(&mut app, "/model");
         assert!(consumed);
         let Some(last) = app.messages().last() else {
-            panic!("expected system usage message");
+            panic!("expected system message");
         };
         let Some(MessageBlock::Text(block)) = last.blocks.first() else {
             panic!("expected text block");
         };
-        assert_eq!(block.text, "Usage: /model <id>");
+        assert!(block.text.starts_with("Model: "), "got `{}`", block.text);
+        assert!(block.text.contains("Opus"));
     }
 
     #[test]
@@ -700,7 +705,7 @@ mod tests {
         let Some(MessageBlock::Text(block)) = last.blocks.first() else {
             panic!("expected text block");
         };
-        assert_eq!(block.text, "Usage: /model <id>");
+        assert_eq!(block.text, "Usage: /model [id]");
     }
 
     #[test]

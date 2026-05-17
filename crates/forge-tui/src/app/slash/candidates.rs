@@ -161,11 +161,11 @@ pub(super) fn find_advertised_command<'a>(
 }
 
 fn is_builtin_variable_input_command(command_name: &str) -> bool {
-    matches!(command_name, "/mode" | "/model" | "/resume")
+    matches!(command_name, "/effort" | "/mode" | "/model" | "/resume")
 }
 
 pub(super) fn builtin_argument_confirmation_closes(command_name: &str, arg_index: usize) -> bool {
-    arg_index == 0 && matches!(command_name, "/mode" | "/model" | "/resume")
+    arg_index == 0 && matches!(command_name, "/effort" | "/mode" | "/model" | "/resume")
 }
 
 pub(super) fn is_variable_input_command(app: &App, command_name: &str) -> bool {
@@ -206,10 +206,11 @@ pub(super) fn supported_command_candidates(app: &App) -> Vec<SlashCandidate> {
     by_name.insert("/compact".into(), "Compact session context".into());
     by_name.insert("/config".into(), "Open settings".into());
     by_name.insert("/diff".into(), "Review changes in a full-screen diff overlay".into());
+    by_name.insert("/effort".into(), "Show / set thinking effort".into());
     by_name.insert("/launchpad".into(), "Return to project picker".into());
     by_name.insert("/mcp".into(), "Open MCP".into());
-    by_name.insert("/mode".into(), "Set session mode".into());
-    by_name.insert("/model".into(), "Set session model".into());
+    by_name.insert("/mode".into(), "Show / set session mode".into());
+    by_name.insert("/model".into(), "Show / set session model".into());
     by_name.insert("/new".into(), "Start a fresh session".into());
     by_name.insert("/resume".into(), "Resume a session by ID".into());
     by_name.insert("/plugins".into(), "Open plugins".into());
@@ -364,6 +365,24 @@ pub(super) fn argument_candidates(
                 secondary: model_candidate_secondary(app, model),
             })
             .collect(),
+        "/effort" => {
+            use crate::agent::model::EffortLevel;
+            const LEVELS: [EffortLevel; 5] = [
+                EffortLevel::Low,
+                EffortLevel::Medium,
+                EffortLevel::High,
+                EffortLevel::Xhigh,
+                EffortLevel::Max,
+            ];
+            LEVELS
+                .into_iter()
+                .map(|level| SlashCandidate {
+                    insert_value: level.as_stored().to_owned(),
+                    primary: level.label().to_owned(),
+                    secondary: Some(level.description().to_owned()),
+                })
+                .collect()
+        }
         _ => Vec::new(),
     }
 }
@@ -409,6 +428,7 @@ pub fn is_supported_command(app: &App, command_name: &str) -> bool {
         "/compact"
             | "/config"
             | "/diff"
+            | "/effort"
             | "/help"
             | "/launchpad"
             | "/mcp"

@@ -2,29 +2,21 @@ mod input;
 mod mcp;
 mod overlay;
 mod plugins;
-mod settings;
 
-use crate::app::config::{
-    OutputStyle, OverlayFocus, language_input_validation_message, model_overlay_options,
-    supported_effort_levels_for_model,
-};
 use crate::app::{App, ConfigTab};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::Color;
 use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span, Text};
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
 use super::theme;
 use input::{add_marketplace_example_lines, render_text_input_field};
 use overlay::{
-    OverlayChrome, OverlayLayoutSpec, overlay_line_style, render_overlay_header,
-    render_overlay_separator as shared_render_overlay_separator, render_overlay_shell,
+    OverlayChrome, OverlayLayoutSpec, overlay_line_style, render_overlay_separator,
+    render_overlay_shell,
 };
-
-const SETTINGS_LIMITATION_HINT: &str = "Currently, not all settings are supported by forge. This project uses the official Anthropic Claude Agent SDK, which limits forge implementing all Claude Code settings.";
-const MIN_SETTINGS_PANEL_HEIGHT: u16 = 3;
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     let frame_area = frame.area();
@@ -50,18 +42,11 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     render_tab_header(frame, chunks[0], app.config.active_tab);
 
     match app.config.active_tab {
-        ConfigTab::Settings => settings::render(frame, chunks[1], app),
         ConfigTab::Plugins => plugins::render(frame, chunks[1], app),
         ConfigTab::Mcp => mcp::render(frame, chunks[1], app),
     }
 
-    if app.config.model_and_effort_overlay().is_some() {
-        render_model_and_effort_overlay(frame, frame_area, app);
-    } else if app.config.output_style_overlay().is_some() {
-        render_output_style_overlay(frame, frame_area, app);
-    } else if app.config.language_overlay().is_some() {
-        render_language_overlay(frame, frame_area, app);
-    } else if app.config.installed_plugin_actions_overlay().is_some() {
+    if app.config.installed_plugin_actions_overlay().is_some() {
         render_installed_plugin_actions_overlay(frame, frame_area, app);
     } else if app.config.plugin_install_overlay().is_some() {
         render_plugin_install_overlay(frame, frame_area, app);
@@ -107,10 +92,6 @@ fn config_help_text(app: &App) -> String {
     }
 
     match app.config.active_tab {
-        ConfigTab::Settings => {
-            "Left/Right edit | Space edit | Tab next tab | Shift+Tab prev tab | Enter close | Esc close"
-                .to_owned()
-        }
         ConfigTab::Plugins => {
             if crate::app::plugins::search_enabled(app.plugins.active_tab) {
                 if app.plugins.search_focused {
@@ -138,200 +119,6 @@ fn config_help_text(app: &App) -> String {
                 .to_owned()
         }
     }
-}
-
-fn render_model_and_effort_overlay(frame: &mut Frame, area: Rect, app: &App) {
-    let Some(overlay) = app.config.model_and_effort_overlay() else {
-        return;
-    };
-    let rendered = render_overlay_shell(
-        frame,
-        area,
-        OverlayLayoutSpec {
-            min_width: 1,
-            min_height: 1,
-            width_percent: 90,
-            height_percent: 84,
-            preferred_height: u16::MAX,
-            fullscreen_below: Some((90, 20)),
-            inner_margin: Margin { vertical: 1, horizontal: 1 },
-        },
-        OverlayChrome {
-            title: "Model and Thinking Effort",
-            subtitle: None,
-            help: Some("Tab switches model/effort | Enter confirm | Esc cancel"),
-        },
-    );
-    let model_lines = model_overlay_lines(app);
-    let effort_lines = effort_overlay_lines(app);
-    let (model_height, effort_height) = model_and_effort_section_heights(rendered.body_area.height);
-    let sections = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Length(model_height),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(effort_height),
-        ])
-        .split(rendered.body_area);
-
-    let model_focused = overlay.focus == OverlayFocus::Model;
-    let effort_focused = overlay.focus == OverlayFocus::Effort;
-    render_overlay_header(frame, sections[0], "Model", model_focused);
-    shared_render_overlay_separator(frame, sections[2]);
-    render_overlay_header(frame, sections[3], "Thinking effort", effort_focused);
-
-    let model_scroll = model_overlay_scroll(app, sections[1].height, sections[1].width);
-    frame.render_widget(
-        Paragraph::new(model_lines).scroll((model_scroll, 0)).wrap(Wrap { trim: false }),
-        sections[1],
-    );
-
-    frame.render_widget(Paragraph::new(effort_lines).wrap(Wrap { trim: false }), sections[4]);
-}
-
-fn model_overlay_lines(app: &App) -> Vec<Line<'static>> {
-    let Some(overlay) = app.config.model_and_effort_overlay() else {
-        return Vec::new();
-    };
-    let mut lines = model_overlay_options(app)
-        .into_iter()
-        .flat_map(|option| {
-            let selected = option.id == overlay.selected_model;
-            let marker = if selected { ">" } else { " " };
-            let mut lines = vec![model_overlay_title_line(
-                &option,
-                marker,
-                selected,
-                overlay.focus == OverlayFocus::Model,
-            )];
-            if let Some(description) = option.description {
-                lines.push(Line::from(Span::styled(
-                    format!("  {description}"),
-                    Style::default().fg(theme::DIM),
-                )));
-            }
-            lines.push(Line::default());
-            lines
-        })
-        .collect::<Vec<_>>();
-    if !lines.is_empty() {
-        lines.pop();
-    }
-    lines
-}
-
-fn effort_overlay_lines(app: &App) -> Vec<Line<'static>> {
-    let Some(overlay) = app.config.model_and_effort_overlay() else {
-        return Vec::new();
-    };
-    let levels = supported_effort_levels_for_model(app, &overlay.selected_model);
-    if levels.is_empty() {
-        return vec![
-            Line::from(Span::styled(
-                "  Thinking effort is not available for the selected model.",
-                Style::default().fg(theme::DIM),
-            )),
-            Line::default(),
-            Line::from(Span::styled(
-                format!("  Saved value: {}", overlay.selected_effort.label()),
-                Style::default().fg(Color::White),
-            )),
-        ];
-    }
-    let mut lines = levels
-        .into_iter()
-        .flat_map(|level| {
-            let selected = level == overlay.selected_effort;
-            vec![
-                Line::from(Span::styled(
-                    format!("{} {}", if selected { ">" } else { " " }, level.label()),
-                    overlay_line_style(selected, overlay.focus == OverlayFocus::Effort),
-                )),
-                Line::from(Span::styled(
-                    format!("  {}", level.description()),
-                    Style::default().fg(theme::DIM),
-                )),
-                Line::default(),
-            ]
-        })
-        .collect::<Vec<_>>();
-    if !lines.is_empty() {
-        lines.pop();
-    }
-    lines
-}
-
-fn render_output_style_overlay(frame: &mut Frame, area: Rect, app: &App) {
-    let rendered = render_overlay_shell(
-        frame,
-        area,
-        OverlayLayoutSpec {
-            min_width: 72,
-            min_height: 8,
-            width_percent: 84,
-            height_percent: 80,
-            preferred_height: 14,
-            fullscreen_below: Some((72, 16)),
-            inner_margin: Margin { vertical: 1, horizontal: 2 },
-        },
-        OverlayChrome {
-            title: "Preferred output style",
-            subtitle: Some("This changes how Claude Code communicates with you"),
-            help: Some("Enter confirm | Esc cancel"),
-        },
-    );
-    frame.render_widget(
-        Paragraph::new(output_style_overlay_lines(app)).wrap(Wrap { trim: false }),
-        rendered.body_area,
-    );
-}
-
-fn render_language_overlay(frame: &mut Frame, area: Rect, app: &App) {
-    let Some(overlay) = app.config.language_overlay() else {
-        return;
-    };
-    let rendered = render_overlay_shell(
-        frame,
-        area,
-        OverlayLayoutSpec {
-            min_width: 56,
-            min_height: 8,
-            width_percent: 72,
-            height_percent: 48,
-            preferred_height: 10,
-            fullscreen_below: Some((56, 14)),
-            inner_margin: Margin { vertical: 1, horizontal: 2 },
-        },
-        OverlayChrome {
-            title: "Language",
-            subtitle: Some("Free-text prompt language for Claude sessions"),
-            help: Some("Enter confirm | Esc cancel"),
-        },
-    );
-    let sections = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Min(1)])
-        .split(rendered.body_area);
-
-    render_text_input_field(
-        frame,
-        sections[0],
-        &overlay.draft,
-        overlay.cursor,
-        "e.g. en, Greek, Japanese, Pirate",
-    );
-
-    let validation = language_input_validation_message(&overlay.draft);
-    let (message, style) = match validation {
-        Some(message) => (message, Style::default().fg(theme::STATUS_ERROR)),
-        None => (
-            "Examples: en, Greek, Japanese, Klingon, Pirate. Stored as prompt guidance, not UI language.",
-            Style::default().fg(theme::DIM),
-        ),
-    };
-    frame.render_widget(Paragraph::new(Line::from(Span::styled(message, style))), sections[1]);
 }
 
 fn render_installed_plugin_actions_overlay(frame: &mut Frame, area: Rect, app: &App) {
@@ -382,7 +169,7 @@ fn render_installed_plugin_actions_overlay(frame: &mut Frame, area: Rect, app: &
         .wrap(Wrap { trim: false }),
         sections[1],
     );
-    shared_render_overlay_separator(frame, sections[2]);
+    render_overlay_separator(frame, sections[2]);
     frame.render_widget(
         Paragraph::new(installed_plugin_action_overlay_lines(app)).wrap(Wrap { trim: false }),
         sections[3],
@@ -437,7 +224,7 @@ fn render_plugin_install_overlay(frame: &mut Frame, area: Rect, app: &App) {
         .wrap(Wrap { trim: false }),
         sections[1],
     );
-    shared_render_overlay_separator(frame, sections[2]);
+    render_overlay_separator(frame, sections[2]);
     frame.render_widget(
         Paragraph::new(plugin_install_overlay_lines(app)).wrap(Wrap { trim: false }),
         sections[3],
@@ -492,7 +279,7 @@ fn render_marketplace_actions_overlay(frame: &mut Frame, area: Rect, app: &App) 
         .wrap(Wrap { trim: false }),
         sections[1],
     );
-    shared_render_overlay_separator(frame, sections[2]);
+    render_overlay_separator(frame, sections[2]);
     frame.render_widget(
         Paragraph::new(marketplace_action_overlay_lines(app)).wrap(Wrap { trim: false }),
         sections[3],
@@ -552,30 +339,6 @@ fn render_add_marketplace_overlay(frame: &mut Frame, area: Rect, app: &App) {
     );
 }
 
-fn output_style_overlay_lines(app: &App) -> Vec<Line<'static>> {
-    let Some(overlay) = app.config.output_style_overlay() else {
-        return Vec::new();
-    };
-
-    let mut lines = Vec::new();
-    for (index, style) in OutputStyle::ALL.iter().copied().enumerate() {
-        let selected = style == overlay.selected;
-        let marker = if selected { ">" } else { " " };
-        lines.push(Line::from(vec![
-            Span::styled(format!("{marker} {}. ", index + 1), overlay_line_style(selected, true)),
-            Span::styled(style.label().to_owned(), overlay_line_style(selected, true)),
-        ]));
-        lines.push(Line::from(Span::styled(
-            format!("   {}", style.description()),
-            Style::default().fg(theme::DIM),
-        )));
-        if index + 1 < OutputStyle::ALL.len() {
-            lines.push(Line::default());
-        }
-    }
-    lines
-}
-
 fn installed_plugin_action_overlay_lines(app: &App) -> Vec<Line<'static>> {
     let Some(overlay) = app.config.installed_plugin_actions_overlay() else {
         return Vec::new();
@@ -633,169 +396,6 @@ fn marketplace_action_overlay_lines(app: &App) -> Vec<Line<'static>> {
     lines
 }
 
-fn model_and_effort_section_heights(inner_height: u16) -> (u16, u16) {
-    const CHROME_HEIGHT: u16 = 3;
-    const DEFAULT_EFFORT_HEIGHT: u16 = 8;
-
-    let content_height = inner_height.saturating_sub(CHROME_HEIGHT);
-    match content_height {
-        0 => (0, 0),
-        1 => (1, 0),
-        _ => {
-            let effort_height = DEFAULT_EFFORT_HEIGHT.min(content_height.saturating_sub(1));
-            let model_height = content_height.saturating_sub(effort_height);
-            (model_height, effort_height)
-        }
-    }
-}
-
-fn model_overlay_scroll(app: &App, viewport_height: u16, viewport_width: u16) -> u16 {
-    let Some(overlay) = app.config.model_and_effort_overlay() else {
-        return 0;
-    };
-    let options = model_overlay_options(app);
-    if options.is_empty() || viewport_height == 0 || viewport_width == 0 {
-        return 0;
-    }
-
-    let selected_index =
-        options.iter().position(|option| option.id == overlay.selected_model).unwrap_or(0);
-    let selected_start = options
-        .iter()
-        .take(selected_index)
-        .enumerate()
-        .map(|(index, option)| {
-            model_overlay_option_height(option, index + 1 == options.len(), viewport_width)
-        })
-        .sum::<usize>();
-    let selected_height = model_overlay_option_height(
-        &options[selected_index],
-        selected_index + 1 == options.len(),
-        viewport_width,
-    );
-    let viewport_height = usize::from(viewport_height);
-
-    if selected_start + selected_height <= viewport_height {
-        0
-    } else {
-        u16::try_from(selected_start + selected_height - viewport_height).unwrap_or(u16::MAX)
-    }
-}
-
-fn model_overlay_option_height(
-    option: &crate::app::config::OverlayModelOption,
-    is_last: bool,
-    viewport_width: u16,
-) -> usize {
-    let title = model_overlay_title_line(option, " ", false, false);
-    let mut height = wrapped_text_height(Text::from(vec![title]), viewport_width);
-    if let Some(description) = option.description.as_deref() {
-        height += wrapped_text_height(
-            Text::from(vec![Line::from(Span::styled(
-                format!("  {description}"),
-                Style::default().fg(theme::DIM),
-            ))]),
-            viewport_width,
-        );
-    }
-    height + usize::from(!is_last)
-}
-
-struct CapabilityBadge {
-    label: &'static str,
-    bg: Color,
-    fg: Color,
-}
-
-#[cfg(test)]
-fn model_overlay_title_text(
-    option: &crate::app::config::OverlayModelOption,
-    marker: &str,
-) -> String {
-    let badges = model_capability_badges(option);
-    let mut title = format!("{marker} {}", option.display_name);
-    if !badges.is_empty() {
-        title.push_str("  ");
-        title.push_str(&badges.into_iter().map(|badge| badge.label).collect::<Vec<_>>().join("  "));
-    }
-    title
-}
-
-fn model_overlay_title_line(
-    option: &crate::app::config::OverlayModelOption,
-    marker: &str,
-    selected: bool,
-    focused: bool,
-) -> Line<'static> {
-    Line::from(model_overlay_title_spans(option, marker, selected, focused))
-}
-
-fn model_overlay_title_spans(
-    option: &crate::app::config::OverlayModelOption,
-    marker: &str,
-    selected: bool,
-    focused: bool,
-) -> Vec<Span<'static>> {
-    let mut spans = vec![Span::styled(
-        format!("{marker} {}", option.display_name),
-        overlay_line_style(selected, focused),
-    )];
-    let badges = model_capability_badges(option);
-    if badges.is_empty() {
-        return spans;
-    }
-    spans.push(Span::styled("  ", Style::default().fg(theme::DIM)));
-    for (index, badge) in badges.into_iter().enumerate() {
-        if index > 0 {
-            spans.push(Span::styled("  ", Style::default().fg(theme::DIM)));
-        }
-        spans.push(Span::styled(
-            format!(" {} ", badge.label),
-            Style::default().fg(badge.fg).bg(badge.bg).add_modifier(Modifier::BOLD),
-        ));
-    }
-    spans
-}
-
-fn model_capability_badges(
-    option: &crate::app::config::OverlayModelOption,
-) -> Vec<CapabilityBadge> {
-    let mut badges = Vec::new();
-    if option.supports_effort {
-        badges.push(CapabilityBadge {
-            label: "Effort",
-            bg: Color::Rgb(64, 64, 64),
-            fg: Color::White,
-        });
-    }
-    if option.supports_adaptive_thinking == Some(true) {
-        badges.push(CapabilityBadge {
-            label: "Adaptive thinking",
-            bg: Color::Rgb(34, 92, 124),
-            fg: Color::White,
-        });
-    }
-    if option.supports_fast_mode == Some(true) {
-        badges.push(CapabilityBadge {
-            label: "Fast mode",
-            bg: Color::Rgb(24, 120, 82),
-            fg: Color::White,
-        });
-    }
-    if option.supports_auto_mode == Some(true) {
-        badges.push(CapabilityBadge {
-            label: "Auto mode",
-            bg: Color::Rgb(152, 106, 0),
-            fg: Color::Black,
-        });
-    }
-    badges
-}
-
-fn wrapped_text_height(text: Text<'static>, viewport_width: u16) -> usize {
-    Paragraph::new(text).wrap(Wrap { trim: false }).line_count(viewport_width.max(1)).max(1)
-}
-
 fn render_tab_header(frame: &mut Frame, area: Rect, active_tab: ConfigTab) {
     let mut spans = Vec::new();
     for (index, tab) in ConfigTab::ALL.iter().copied().enumerate() {
@@ -828,526 +428,27 @@ fn centered_line_area(area: Rect, content_width: u16) -> Rect {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        SETTINGS_LIMITATION_HINT, model_overlay_lines, model_overlay_scroll,
-        model_overlay_title_line, model_overlay_title_text,
-    };
-    use crate::agent::model::{AvailableModel, EffortLevel};
     use crate::app::App;
     use crate::app::config::{
-        ConfigOverlayState, LanguageOverlayState, ModelAndEffortOverlayState, OutputStyle,
-        OutputStyleOverlayState, OverlayFocus, SettingId, setting_specs,
+        InstalledPluginActionKind, InstalledPluginActionOverlayState, PluginInstallActionKind,
+        PluginInstallOverlayState,
     };
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
-    use ratatui::layout::Rect;
-    use ratatui::style::Style;
-    use ratatui::text::{Line, Span, Text};
-    use ratatui::widgets::{Paragraph, Wrap};
 
-    fn rendered_model_option_height(
-        option: &crate::app::config::OverlayModelOption,
-        is_last: bool,
-        viewport_width: u16,
-    ) -> usize {
-        let mut lines = vec![model_overlay_title_line(option, " ", false, false)];
-        if let Some(description) = option.description.as_deref() {
-            lines.push(Line::from(Span::styled(
-                format!("  {description}"),
-                Style::default().fg(super::theme::DIM),
-            )));
-        }
-        if !is_last {
-            lines.push(Line::default());
-        }
-        Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }).line_count(viewport_width)
-    }
-
-    fn assert_selected_model_visible(app: &App, viewport_height: u16, viewport_width: u16) -> u16 {
-        let options = crate::app::config::model_overlay_options(app);
-        let overlay = app
-            .config
-            .model_and_effort_overlay()
-            .expect("model overlay should be present for visibility assertions");
-        let selected_index = options
-            .iter()
-            .position(|option| option.id == overlay.selected_model)
-            .expect("selected model index");
-        let selected_start = options
-            .iter()
-            .take(selected_index)
-            .enumerate()
-            .map(|(index, option)| {
-                rendered_model_option_height(option, index + 1 == options.len(), viewport_width)
-            })
-            .sum::<usize>();
-        let selected_height = rendered_model_option_height(
-            &options[selected_index],
-            selected_index + 1 == options.len(),
-            viewport_width,
-        );
-        let scroll = usize::from(model_overlay_scroll(app, viewport_height, viewport_width));
-        let viewport_end = scroll + usize::from(viewport_height);
-        let selected_end = selected_start + selected_height;
-
-        assert!(selected_end > scroll, "selected option should overlap the viewport");
-        assert!(selected_end <= viewport_end, "selected option should fit within the viewport");
-        u16::try_from(scroll).unwrap_or(u16::MAX)
-    }
-
-    #[test]
-    fn model_overlay_scroll_keeps_selected_multiline_model_visible() {
-        let mut app = App::test_default();
-        app.try_active_bucket_mut().unwrap().available_models = vec![
-            AvailableModel::new("opus", "Opus")
-                .description("Opus 4.7")
-                .supports_effort(true)
-                .supported_effort_levels(vec![
-                    EffortLevel::Low,
-                    EffortLevel::Medium,
-                    EffortLevel::High,
-                ]),
-            AvailableModel::new("opus-1m", "Opus (1M context)")
-                .description("Extra usage")
-                .supports_effort(true)
-                .supported_effort_levels(vec![
-                    EffortLevel::Low,
-                    EffortLevel::Medium,
-                    EffortLevel::High,
-                ]),
-            AvailableModel::new("sonnet", "Sonnet")
-                .description("Everyday tasks")
-                .supports_effort(true)
-                .supported_effort_levels(vec![
-                    EffortLevel::Low,
-                    EffortLevel::Medium,
-                    EffortLevel::High,
-                ]),
-            AvailableModel::new("haiku", "Haiku").description("Fastest").supports_effort(false),
-        ];
-        app.config.overlay = Some(ConfigOverlayState::ModelAndEffort(ModelAndEffortOverlayState {
-            focus: OverlayFocus::Model,
-            selected_model: "sonnet".to_owned(),
-            selected_effort: EffortLevel::High,
-        }));
-
-        let scroll = assert_selected_model_visible(&app, 6, 40);
-        assert!(scroll > 0);
-    }
-
-    #[test]
-    fn model_overlay_scroll_accounts_for_wrapped_lines() {
-        let mut app = App::test_default();
-        app.try_active_bucket_mut().unwrap().available_models = vec![
-            AvailableModel::new("opus", "Opus")
-                .description("1234567890")
-                .supports_effort(true)
-                .supported_effort_levels(vec![
-                    EffortLevel::Low,
-                    EffortLevel::Medium,
-                    EffortLevel::High,
-                ]),
-            AvailableModel::new("haiku", "Haiku").supports_effort(false),
-        ];
-        app.config.overlay = Some(ConfigOverlayState::ModelAndEffort(ModelAndEffortOverlayState {
-            focus: OverlayFocus::Model,
-            selected_model: "haiku".to_owned(),
-            selected_effort: EffortLevel::Medium,
-        }));
-
-        let narrow_scroll = assert_selected_model_visible(&app, 4, 10);
-        let wide_scroll = assert_selected_model_visible(&app, 4, 20);
-        assert!(narrow_scroll >= wide_scroll);
-    }
-
-    #[test]
-    fn model_overlay_scroll_accounts_for_badge_padding_width() {
-        let mut app = App::test_default();
-        app.try_active_bucket_mut().unwrap().available_models = vec![
-            AvailableModel::new("opus", "Opus")
-                .description("Frontier")
-                .supports_effort(true)
-                .supported_effort_levels(vec![EffortLevel::Low, EffortLevel::Medium])
-                .supports_adaptive_thinking(Some(true))
-                .supports_fast_mode(Some(true))
-                .supports_auto_mode(Some(true)),
-            AvailableModel::new("sonnet", "Sonnet")
-                .description("Everyday tasks")
-                .supports_effort(true)
-                .supported_effort_levels(vec![EffortLevel::Low, EffortLevel::Medium])
-                .supports_adaptive_thinking(Some(true))
-                .supports_fast_mode(Some(true))
-                .supports_auto_mode(Some(true)),
-            AvailableModel::new("haiku", "Haiku")
-                .description("Fastest")
-                .supports_effort(false)
-                .supports_fast_mode(Some(true)),
-        ];
-        app.config.overlay = Some(ConfigOverlayState::ModelAndEffort(ModelAndEffortOverlayState {
-            focus: OverlayFocus::Model,
-            selected_model: "haiku".to_owned(),
-            selected_effort: EffortLevel::Medium,
-        }));
-
-        let narrow_scroll = assert_selected_model_visible(&app, 3, 12);
-        let wide_scroll = assert_selected_model_visible(&app, 3, 40);
-        assert!(narrow_scroll > 0);
-        assert!(narrow_scroll >= wide_scroll);
-    }
-
-    #[test]
-    fn model_overlay_lines_show_positive_capability_badges_only() {
-        let mut app = App::test_default();
-        app.try_active_bucket_mut().unwrap().available_models = vec![
-            AvailableModel::new("sonnet", "Sonnet")
-                .description("Everyday tasks")
-                .supports_effort(true)
-                .supported_effort_levels(vec![
-                    EffortLevel::Low,
-                    EffortLevel::Medium,
-                    EffortLevel::High,
-                ])
-                .supports_adaptive_thinking(Some(true))
-                .supports_fast_mode(Some(true))
-                .supports_auto_mode(Some(true)),
-            AvailableModel::new("haiku", "Haiku")
-                .description("Fastest")
-                .supports_effort(false)
-                .supports_adaptive_thinking(Some(false))
-                .supports_fast_mode(Some(true))
-                .supports_auto_mode(None),
-        ];
-        app.config.overlay = Some(ConfigOverlayState::ModelAndEffort(ModelAndEffortOverlayState {
-            focus: OverlayFocus::Model,
-            selected_model: "sonnet".to_owned(),
-            selected_effort: EffortLevel::High,
-        }));
-
-        let rendered =
-            model_overlay_lines(&app).into_iter().map(|line| line.to_string()).collect::<Vec<_>>();
-
-        let sonnet_line =
-            rendered.iter().find(|line| line.contains("> Sonnet")).expect("sonnet line");
-        assert!(sonnet_line.contains("Effort"));
-        assert!(sonnet_line.contains("Adaptive thinking"));
-        assert!(sonnet_line.contains("Fast mode"));
-        assert!(sonnet_line.contains("Auto mode"));
-
-        let haiku_line = rendered.iter().find(|line| line.contains("  Haiku")).expect("haiku line");
-        assert!(haiku_line.contains("Fast mode"));
-        assert!(!haiku_line.contains("Auto mode"));
-        assert!(rendered.iter().all(|line| !line.contains("no effort")
-            && !line.contains("adaptive false")
-            && !line.contains('[')));
-    }
-
-    #[test]
-    fn model_overlay_title_text_uses_human_labels_without_divider() {
-        let title = model_overlay_title_text(
-            &crate::app::config::OverlayModelOption {
-                id: "sonnet".to_owned(),
-                display_name: "Sonnet".to_owned(),
-                description: None,
-                supports_effort: true,
-                supported_effort_levels: vec![EffortLevel::Low, EffortLevel::Medium],
-                supports_adaptive_thinking: Some(true),
-                supports_fast_mode: Some(true),
-                supports_auto_mode: Some(false),
-            },
-            ">",
-        );
-
-        assert!(title.starts_with("> Sonnet"));
-        assert!(title.contains("Effort"));
-        assert!(title.contains("Adaptive thinking"));
-        assert!(title.contains("Fast mode"));
-        assert!(!title.contains("Auto mode"));
-        assert!(!title.contains('['));
-        assert!(!title.contains('|'));
-    }
-
-    #[test]
-    fn output_style_overlay_lists_expected_options() {
-        let mut app = App::test_default();
-        app.config.overlay = Some(ConfigOverlayState::OutputStyle(OutputStyleOverlayState {
-            selected: OutputStyle::Explanatory,
-        }));
-
-        let rendered = super::output_style_overlay_lines(&app)
-            .into_iter()
-            .map(|line| line.to_string())
-            .collect::<Vec<_>>();
-
-        assert!(rendered.iter().any(|line| line.contains("1. Default")));
-        assert!(rendered.iter().any(|line| line.contains("2. Explanatory")));
-        assert!(rendered.iter().any(|line| line.contains("3. Learning")));
-    }
-
-    #[test]
-    fn language_overlay_input_uses_placeholder_when_empty() {
-        let line =
-            super::input::text_input_line("", 0, "e.g. en, Greek, Japanese, Pirate").to_string();
-
-        assert!(line.contains("e.g. en, Greek, Japanese, Pirate"));
-    }
-
-    #[test]
-    fn language_overlay_renders_inline_validation_message() {
-        fn buffer_text(buffer: &Buffer) -> String {
-            let width = usize::from(buffer.area.width);
-            buffer
-                .content
-                .chunks(width)
-                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
-                .collect::<Vec<_>>()
-                .join("\n")
-        }
-
-        let backend = TestBackend::new(120, 30);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        let mut app = App::test_default();
-        app.active_view = crate::app::ActiveView::Config;
-        app.config.overlay = Some(ConfigOverlayState::Language(LanguageOverlayState {
-            draft: "E".to_owned(),
-            cursor: 1,
-        }));
-
-        terminal
-            .draw(|frame| {
-                super::render(frame, &mut app);
-            })
-            .expect("draw");
-
-        let rendered = buffer_text(terminal.backend().buffer());
-        assert!(rendered.contains("Language must be at least 2 characters."));
-    }
-
-    #[test]
-    fn output_style_details_do_not_show_unsupported_warning() {
-        let mut app = App::test_default();
-        app.config.selected_setting_index = setting_specs()
-            .iter()
-            .position(|spec| spec.id == SettingId::OutputStyle)
-            .expect("output style row");
-
-        let rendered = super::settings::setting_detail_lines(&app)
-            .into_iter()
-            .map(|line| line.to_string())
-            .collect::<Vec<_>>();
-
-        assert!(!rendered.iter().any(|line| line.contains("not supported yet")));
-    }
-
-    #[test]
-    fn compact_settings_layout_triggers_for_small_tuis() {
-        assert!(super::settings::compact_settings_layout(Rect::new(0, 0, 89, 25)));
-        assert!(super::settings::compact_settings_layout(Rect::new(0, 0, 100, 19)));
-        assert!(!super::settings::compact_settings_layout(Rect::new(0, 0, 90, 20)));
-    }
-
-    #[test]
-    fn compact_settings_list_does_not_inline_warning_for_supported_output_style() {
-        fn buffer_text(buffer: &Buffer) -> String {
-            let width = usize::from(buffer.area.width);
-            buffer
-                .content
-                .chunks(width)
-                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
-                .collect::<Vec<_>>()
-                .join("\n")
-        }
-
-        let backend = TestBackend::new(80, 16);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        let mut app = App::test_default();
-        app.active_view = crate::app::ActiveView::Config;
-        app.config.selected_setting_index = setting_specs()
-            .iter()
-            .position(|spec| spec.id == SettingId::OutputStyle)
-            .expect("output style row");
-
-        terminal
-            .draw(|frame| {
-                super::render(frame, &mut app);
-            })
-            .expect("draw");
-
-        let rendered = buffer_text(terminal.backend().buffer());
-
-        assert!(!rendered.contains("not supported yet"));
-    }
-
-    #[test]
-    fn compact_settings_supported_output_style_does_not_render_warning_lines() {
-        fn buffer_lines(buffer: &Buffer) -> Vec<String> {
-            let width = usize::from(buffer.area.width);
-            buffer
-                .content
-                .chunks(width)
-                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
-                .collect()
-        }
-
-        let backend = TestBackend::new(42, 20);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        let mut app = App::test_default();
-        app.active_view = crate::app::ActiveView::Config;
-        app.config.selected_setting_index = setting_specs()
-            .iter()
-            .position(|spec| spec.id == SettingId::OutputStyle)
-            .expect("output style row");
-
-        terminal
-            .draw(|frame| {
-                super::render(frame, &mut app);
-            })
-            .expect("draw");
-
-        let rendered = buffer_lines(terminal.backend().buffer());
-
-        let warning_lines = rendered
-            .iter()
-            .filter(|line| {
-                line.contains("Warning: not supported yet;")
-                    || line.contains("this setting")
-                    || line.contains("affect")
-                    || line.contains("sessions.")
-            })
-            .count();
-
-        assert_eq!(warning_lines, 0);
-    }
-
-    #[test]
-    fn render_updates_settings_scroll_offset_to_keep_selection_visible() {
-        let backend = TestBackend::new(80, 16);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        let mut app = App::test_default();
-        app.active_view = crate::app::ActiveView::Config;
-        app.config.selected_setting_index = setting_specs().len().saturating_sub(1);
-        app.config.settings_scroll_offset = 0;
-
-        terminal
-            .draw(|frame| {
-                super::render(frame, &mut app);
-            })
-            .expect("draw");
-
-        assert!(app.config.settings_scroll_offset > 0);
-    }
-
-    #[test]
-    fn normal_layout_renders_settings_limitation_hint() {
-        fn buffer_text(buffer: &Buffer) -> String {
-            let width = usize::from(buffer.area.width);
-            buffer
-                .content
-                .chunks(width)
-                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
-                .collect::<Vec<_>>()
-                .join("\n")
-        }
-
-        let backend = TestBackend::new(180, 30);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        let mut app = App::test_default();
-        app.active_view = crate::app::ActiveView::Config;
-
-        terminal
-            .draw(|frame| {
-                super::render(frame, &mut app);
-            })
-            .expect("draw");
-
-        let rendered = buffer_text(terminal.backend().buffer());
-
-        assert!(rendered.contains("supported by forge"));
-        assert!(rendered.contains("Anthropic Claude Agent SDK"));
-    }
-
-    #[test]
-    fn compact_layout_renders_settings_limitation_hint() {
-        fn buffer_text(buffer: &Buffer) -> String {
-            let width = usize::from(buffer.area.width);
-            buffer
-                .content
-                .chunks(width)
-                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
-                .collect::<Vec<_>>()
-                .join("\n")
-        }
-
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        let mut app = App::test_default();
-        app.active_view = crate::app::ActiveView::Config;
-
-        terminal
-            .draw(|frame| {
-                super::render(frame, &mut app);
-            })
-            .expect("draw");
-
-        let rendered = buffer_text(terminal.backend().buffer());
-
-        assert!(rendered.contains("supported by forge"));
-        assert!(rendered.contains("Anthropic Claude Agent SDK"));
-    }
-
-    #[test]
-    fn settings_limitation_hint_wraps_on_narrow_widths() {
-        assert_eq!(super::settings::settings_hint_height(200), 1);
-        assert!(super::settings::settings_hint_height(40) > 1);
-        assert!(
-            super::settings::settings_hint_height(20) > super::settings::settings_hint_height(40)
-        );
-        assert_eq!(super::settings::settings_hint_height(0), 0);
-        assert!(SETTINGS_LIMITATION_HINT.contains("not all settings are supported"));
-    }
-
-    #[test]
-    fn settings_tab_help_shows_edit_keys() {
-        fn buffer_text(buffer: &Buffer) -> String {
-            let width = usize::from(buffer.area.width);
-            buffer
-                .content
-                .chunks(width)
-                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
-                .collect::<Vec<_>>()
-                .join("\n")
-        }
-
-        let backend = TestBackend::new(100, 24);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        let mut app = App::test_default();
-        app.active_view = crate::app::ActiveView::Config;
-        app.config.active_tab = crate::app::ConfigTab::Settings;
-
-        terminal
-            .draw(|frame| {
-                super::render(frame, &mut app);
-            })
-            .expect("draw");
-
-        let rendered = buffer_text(terminal.backend().buffer());
-        assert!(rendered.contains("Left/Right edit"));
-        assert!(rendered.contains("Space edit"));
-        assert!(rendered.contains("Shift+Tab prev tab"));
+    fn buffer_text(buffer: &Buffer) -> String {
+        let width = usize::from(buffer.area.width);
+        buffer
+            .content
+            .chunks(width)
+            .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     #[test]
     fn plugins_tab_renders_inventory_shell() {
-        fn buffer_text(buffer: &Buffer) -> String {
-            let width = usize::from(buffer.area.width);
-            buffer
-                .content
-                .chunks(width)
-                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
-                .collect::<Vec<_>>()
-                .join("\n")
-        }
-
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
@@ -1389,7 +490,6 @@ mod tests {
         assert!(rendered.contains("Plugins (1)"));
         assert!(rendered.contains("Marketplace (1)"));
         assert!(rendered.contains("Search"));
-        assert!(rendered.contains("Type to filter this list"));
         assert!(rendered.contains("Frontend Design From Claude Plugins Official"));
         assert!(rendered.contains("SKILL"));
         assert!(rendered.contains("Left/Right switch list"));
@@ -1397,16 +497,6 @@ mod tests {
 
     #[test]
     fn plugins_tab_renders_marketplace_plugin_title_and_plugin_id() {
-        fn buffer_text(buffer: &Buffer) -> String {
-            let width = usize::from(buffer.area.width);
-            buffer
-                .content
-                .chunks(width)
-                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
-                .collect::<Vec<_>>()
-                .join("\n")
-        }
-
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
@@ -1436,16 +526,6 @@ mod tests {
 
     #[test]
     fn plugins_tab_groups_relevant_installed_plugins_above_other_projects() {
-        fn buffer_text(buffer: &Buffer) -> String {
-            let width = usize::from(buffer.area.width);
-            buffer
-                .content
-                .chunks(width)
-                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
-                .collect::<Vec<_>>()
-                .join("\n")
-        }
-
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
@@ -1509,16 +589,6 @@ mod tests {
 
     #[test]
     fn plugins_tab_shows_loading_copy_instead_of_empty_state_during_refresh() {
-        fn buffer_text(buffer: &Buffer) -> String {
-            let width = usize::from(buffer.area.width);
-            buffer
-                .content
-                .chunks(width)
-                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
-                .collect::<Vec<_>>()
-                .join("\n")
-        }
-
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
@@ -1539,16 +609,6 @@ mod tests {
 
     #[test]
     fn marketplace_tab_renders_configured_heading_and_add_placeholder() {
-        fn buffer_text(buffer: &Buffer) -> String {
-            let width = usize::from(buffer.area.width);
-            buffer
-                .content
-                .chunks(width)
-                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
-                .collect::<Vec<_>>()
-                .join("\n")
-        }
-
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
@@ -1569,23 +629,13 @@ mod tests {
 
     #[test]
     fn installed_plugin_overlay_renders_title_description_and_actions() {
-        fn buffer_text(buffer: &Buffer) -> String {
-            let width = usize::from(buffer.area.width);
-            buffer
-                .content
-                .chunks(width)
-                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
-                .collect::<Vec<_>>()
-                .join("\n")
-        }
-
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
         app.active_view = crate::app::ActiveView::Config;
         app.config.active_tab = crate::app::ConfigTab::Plugins;
         app.config.overlay = Some(crate::app::config::ConfigOverlayState::InstalledPluginActions(
-            crate::app::config::InstalledPluginActionOverlayState {
+            InstalledPluginActionOverlayState {
                 plugin_id: "frontend-design@claude-plugins-official".to_owned(),
                 title: "Frontend Design From Claude Plugins Official".to_owned(),
                 description: "Create distinctive interfaces".to_owned(),
@@ -1593,10 +643,10 @@ mod tests {
                 project_path: Some("C:\\work\\project-a".to_owned()),
                 selected_index: 0,
                 actions: vec![
-                    crate::app::config::InstalledPluginActionKind::Disable,
-                    crate::app::config::InstalledPluginActionKind::Update,
-                    crate::app::config::InstalledPluginActionKind::InstallInCurrentProject,
-                    crate::app::config::InstalledPluginActionKind::Uninstall,
+                    InstalledPluginActionKind::Disable,
+                    InstalledPluginActionKind::Update,
+                    InstalledPluginActionKind::InstallInCurrentProject,
+                    InstalledPluginActionKind::Uninstall,
                 ],
             },
         ));
@@ -1617,31 +667,21 @@ mod tests {
 
     #[test]
     fn plugin_install_overlay_renders_title_description_and_actions() {
-        fn buffer_text(buffer: &Buffer) -> String {
-            let width = usize::from(buffer.area.width);
-            buffer
-                .content
-                .chunks(width)
-                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
-                .collect::<Vec<_>>()
-                .join("\n")
-        }
-
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
         app.active_view = crate::app::ActiveView::Config;
         app.config.active_tab = crate::app::ConfigTab::Plugins;
         app.config.overlay = Some(crate::app::config::ConfigOverlayState::PluginInstallActions(
-            crate::app::config::PluginInstallOverlayState {
+            PluginInstallOverlayState {
                 plugin_id: "frontend-design@claude-plugins-official".to_owned(),
                 title: "Frontend Design".to_owned(),
                 description: "Create distinctive interfaces".to_owned(),
                 selected_index: 0,
                 actions: vec![
-                    crate::app::config::PluginInstallActionKind::User,
-                    crate::app::config::PluginInstallActionKind::Project,
-                    crate::app::config::PluginInstallActionKind::Local,
+                    PluginInstallActionKind::User,
+                    PluginInstallActionKind::Project,
+                    PluginInstallActionKind::Local,
                 ],
             },
         ));
@@ -1662,16 +702,6 @@ mod tests {
 
     #[test]
     fn marketplace_actions_overlay_renders_title_description_and_actions() {
-        fn buffer_text(buffer: &Buffer) -> String {
-            let width = usize::from(buffer.area.width);
-            buffer
-                .content
-                .chunks(width)
-                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
-                .collect::<Vec<_>>()
-                .join("\n")
-        }
-
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
@@ -1705,16 +735,6 @@ mod tests {
 
     #[test]
     fn add_marketplace_overlay_renders_examples() {
-        fn buffer_text(buffer: &Buffer) -> String {
-            let width = usize::from(buffer.area.width);
-            buffer
-                .content
-                .chunks(width)
-                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
-                .collect::<Vec<_>>()
-                .join("\n")
-        }
-
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
@@ -1739,16 +759,6 @@ mod tests {
 
     #[test]
     fn mcp_details_overlay_renders_selected_server_details() {
-        fn buffer_text(buffer: &Buffer) -> String {
-            let width = usize::from(buffer.area.width);
-            buffer
-                .content
-                .chunks(width)
-                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
-                .collect::<Vec<_>>()
-                .join("\n")
-        }
-
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
@@ -1805,16 +815,6 @@ mod tests {
 
     #[test]
     fn config_footer_renders_status_message_when_present() {
-        fn buffer_text(buffer: &Buffer) -> String {
-            let width = usize::from(buffer.area.width);
-            buffer
-                .content
-                .chunks(width)
-                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
-                .collect::<Vec<_>>()
-                .join("\n")
-        }
-
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
