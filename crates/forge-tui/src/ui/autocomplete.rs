@@ -221,6 +221,18 @@ fn slash_candidate_line(
     candidate: &slash::SlashCandidate,
     global_idx: usize,
 ) -> Line<'static> {
+    // Group-divider rows render as a DIM rule with the group label
+    // (`── claude ──`). Non-selectable; the navigation helpers skip
+    // them on arrow keys.
+    if candidate.insert_value.is_empty() {
+        let _ = global_idx;
+        let label = format!("── {} ──", candidate.primary);
+        return Line::from(vec![
+            Span::raw("   "),
+            Span::styled(label, Style::default().fg(theme::DIM)),
+        ]);
+    }
+
     let mut spans: Vec<Span<'static>> = Vec::new();
     push_selection_prefix(&mut spans, global_idx == slash.dialog.selected);
 

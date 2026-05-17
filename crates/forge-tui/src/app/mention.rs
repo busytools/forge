@@ -1,7 +1,11 @@
 use super::{App, FocusTarget, dialog::DialogState, file_index};
 
-/// Maximum candidates shown in the dropdown.
-pub const MAX_VISIBLE: usize = 8;
+/// Maximum candidates shown in the dropdown. Bumped from 8 to 16
+/// so the slash command list (which can carry 30-50 entries when
+/// the claude CLI advertises many) is browsable without typing —
+/// the user can press `/` and arrow through ~16 entries on screen,
+/// scrolling past that via the standard `DialogState::move_*` slide.
+pub const MAX_VISIBLE: usize = 16;
 /// Minimum query length before scanning the filesystem for matches.
 pub const MIN_QUERY_CHARS: usize = 1;
 

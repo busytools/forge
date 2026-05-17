@@ -102,12 +102,43 @@ pub fn deactivate(app: &mut App) {
 pub fn move_up(app: &mut App) {
     if let Some(slash) = app.slash_mut().as_mut() {
         slash.dialog.move_up(slash.candidates.len(), MAX_VISIBLE);
+        skip_dividers(slash, MoveDir::Up);
     }
 }
 
 pub fn move_down(app: &mut App) {
     if let Some(slash) = app.slash_mut().as_mut() {
         slash.dialog.move_down(slash.candidates.len(), MAX_VISIBLE);
+        skip_dividers(slash, MoveDir::Down);
+    }
+}
+
+#[derive(Clone, Copy)]
+enum MoveDir {
+    Up,
+    Down,
+}
+
+/// Step past any group-divider rows the selection landed on.
+/// Bounded to one full pass so a degenerate "all dividers" list
+/// can't loop forever.
+fn skip_dividers(slash: &mut super::SlashState, dir: MoveDir) {
+    let count = slash.candidates.len();
+    if count == 0 {
+        return;
+    }
+    for _ in 0..count {
+        let landed_on_divider = slash
+            .candidates
+            .get(slash.dialog.selected)
+            .is_some_and(super::candidates::is_group_divider);
+        if !landed_on_divider {
+            return;
+        }
+        match dir {
+            MoveDir::Up => slash.dialog.move_up(count, MAX_VISIBLE),
+            MoveDir::Down => slash.dialog.move_down(count, MAX_VISIBLE),
+        }
     }
 }
 
@@ -121,6 +152,13 @@ pub fn confirm_selection(app: &mut App) {
         release_autocomplete_focus_if_idle(app);
         return;
     };
+
+    // Dividers are non-selectable. Surface as a no-op (keep the
+    // dropdown open) by re-installing the slash state.
+    if super::candidates::is_group_divider(candidate) {
+        *app.slash_mut() = Some(slash);
+        return;
+    }
 
     let mut lines = app.input().lines().to_vec();
     let Some(line) = lines.get(slash.trigger_row) else {

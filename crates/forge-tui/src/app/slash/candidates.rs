@@ -201,31 +201,61 @@ pub(super) fn supported_command_candidates(app: &App) -> Vec<SlashCandidate> {
             .collect();
     }
 
-    let mut by_name: BTreeMap<String, String> = BTreeMap::new();
-    by_name.insert("/compact".into(), "Compact session context".into());
-    by_name.insert("/diff".into(), "Review changes in a full-screen diff overlay".into());
-    by_name.insert("/effort".into(), "Show / set thinking effort".into());
-    by_name.insert("/launchpad".into(), "Return to project picker".into());
-    by_name.insert("/mcp".into(), "Open MCP".into());
-    by_name.insert("/mode".into(), "Show / set session mode".into());
-    by_name.insert("/model".into(), "Show / set session model".into());
-    by_name.insert("/new".into(), "Start a fresh session".into());
-    by_name.insert("/resume".into(), "Resume a session by ID".into());
-    by_name.insert("/plugins".into(), "Open plugins".into());
+    // Forge group: commands that forge handles itself (either fully
+    // implemented in-process or wrappers around upstream CLI semantics).
+    let mut forge: BTreeMap<String, String> = BTreeMap::new();
+    forge.insert("/compact".into(), "Compact session context".into());
+    forge.insert("/diff".into(), "Review changes in a full-screen diff overlay".into());
+    forge.insert("/effort".into(), "Show / set thinking effort".into());
+    forge.insert("/launchpad".into(), "Return to project picker".into());
+    forge.insert("/mcp".into(), "Open MCP".into());
+    forge.insert("/mode".into(), "Show / set session mode".into());
+    forge.insert("/model".into(), "Show / set session model".into());
+    forge.insert("/new".into(), "Start a fresh session".into());
+    forge.insert("/resume".into(), "Resume a session by ID".into());
+    forge.insert("/plugins".into(), "Open plugins".into());
 
+    // Claude group: commands advertised by the upstream claude CLI that
+    // forge doesn't have its own handler for — forwarded as-is.
+    let mut claude: BTreeMap<String, String> = BTreeMap::new();
     for cmd in app.available_commands() {
         let name = normalize_slash_name(&cmd.name);
-        by_name.entry(name).or_insert_with(|| cmd.description.clone());
+        if forge.contains_key(&name) {
+            continue;
+        }
+        claude.insert(name, cmd.description.clone());
     }
 
-    by_name
-        .into_iter()
-        .map(|(name, description)| SlashCandidate {
+    let mut out: Vec<SlashCandidate> = Vec::with_capacity(forge.len() + 1 + claude.len());
+    out.extend(forge.into_iter().map(|(name, description)| SlashCandidate {
+        insert_value: name.clone(),
+        primary: name,
+        secondary: if description.trim().is_empty() { None } else { Some(description) },
+    }));
+    if !claude.is_empty() {
+        // Empty `insert_value` flags this as a non-selectable group
+        // divider; the dropdown renders it as a DIM rule with the
+        // `claude` label, and selection navigation skips it.
+        out.push(SlashCandidate {
+            insert_value: String::new(),
+            primary: "claude".into(),
+            secondary: None,
+        });
+        out.extend(claude.into_iter().map(|(name, description)| SlashCandidate {
             insert_value: name.clone(),
             primary: name,
             secondary: if description.trim().is_empty() { None } else { Some(description) },
-        })
-        .collect()
+        }));
+    }
+    out
+}
+
+/// `true` when the candidate is the synthetic group-divider row
+/// emitted by `supported_command_candidates`. Used to skip
+/// selection / confirmation in the slash key handler and to render
+/// the row as a DIM rule + label.
+pub(super) fn is_group_divider(candidate: &SlashCandidate) -> bool {
+    candidate.insert_value.is_empty()
 }
 
 pub(super) fn filter_command_candidates(
@@ -236,9 +266,13 @@ pub(super) fn filter_command_candidates(
         return candidates.iter().take(MAX_CANDIDATES).cloned().collect();
     }
 
+    // When the user starts typing, drop group dividers from the
+    // result — a filtered list that collapses to one group looks
+    // confusing if it still carries a header.
     let query_lower = query.to_lowercase();
     candidates
         .iter()
+        .filter(|candidate| !is_group_divider(candidate))
         .filter(|candidate| {
             let body = candidate.primary.strip_prefix('/').unwrap_or(&candidate.primary);
             body.to_lowercase().contains(&query_lower)
