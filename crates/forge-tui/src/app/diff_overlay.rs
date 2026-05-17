@@ -430,6 +430,11 @@ pub struct DiffOverlayState {
     /// Scroll offset (in lines) for the right pane's diff body.
     /// Resets to 0 when the user switches files.
     pub body_scroll: u16,
+    /// Horizontal scroll offset (in columns) applied to both halves
+    /// of the split diff body. Left/Right arrow keys advance and
+    /// retreat this; resets to 0 when the user switches files. Both
+    /// halves use the same offset so the split stays aligned.
+    pub body_scroll_x: u16,
     /// Scroll offset (in lines) for the left FILES rail. Wheel
     /// events with the cursor over the rail advance this; the
     /// renderer clamps it against `max(0, file_count - visible)`.
@@ -515,6 +520,7 @@ impl DiffOverlayState {
             untracked_suppressed: 0,
             current_file_idx: 0,
             body_scroll: 0,
+            body_scroll_x: 0,
             rail_scroll: 0,
             comments: Vec::new(),
             active_input: None,
@@ -541,6 +547,7 @@ impl DiffOverlayState {
             untracked_suppressed: event.untracked_suppressed,
             current_file_idx: 0,
             body_scroll: 0,
+            body_scroll_x: 0,
             rail_scroll: 0,
             comments: Vec::new(),
             active_input: None,
@@ -613,10 +620,34 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
         }
         return;
     }
-    if matches!(key.code, KeyCode::Esc) {
-        close_with_submit(app);
+    match key.code {
+        KeyCode::Esc => close_with_submit(app),
+        KeyCode::Left => scroll_body_horizontal(app, -1),
+        KeyCode::Right => scroll_body_horizontal(app, 1),
+        _ => {}
     }
 }
+
+/// Step the diff body's horizontal scroll by `delta` columns
+/// (`SCROLL_COLS_PER_STEP` per arrow press). Negative goes left,
+/// positive goes right. Clamped at 0 on the left; the right has no
+/// upper bound here because the renderer just truncates whatever
+/// content extends past the available width.
+fn scroll_body_horizontal(app: &mut App, delta: i32) {
+    let Some(overlay) = app.diff_overlay.as_mut() else {
+        return;
+    };
+    let step = i32::from(SCROLL_COLS_PER_STEP);
+    let next = i32::from(overlay.body_scroll_x).saturating_add(delta.saturating_mul(step));
+    let clamped = next.clamp(0, i32::from(u16::MAX));
+    overlay.body_scroll_x = u16::try_from(clamped).unwrap_or(0);
+    app.needs_redraw = true;
+}
+
+/// Columns advanced / retreated per Left / Right arrow press. 8 cols
+/// is enough to reveal a typical token-or-two of context per press
+/// without making short lines feel like they scroll forever.
+const SCROLL_COLS_PER_STEP: u16 = 8;
 
 /// Route bracketed paste into the active comment editor. Returns
 /// `true` when the paste was consumed (editor present), `false`
@@ -970,6 +1001,7 @@ fn handle_rail_click(overlay: &mut DiffOverlayState, row: u16) -> MouseEffect {
     }
     overlay.current_file_idx = file_idx;
     overlay.body_scroll = 0;
+    overlay.body_scroll_x = 0;
     // Close the active editor on file switch — the editor is
     // anchored to a specific line in the previous file, and the
     // helper preserves prior_comment if it was a chip-reopen.

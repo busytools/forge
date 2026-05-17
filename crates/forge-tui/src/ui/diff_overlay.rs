@@ -495,6 +495,9 @@ fn render_footer(frame: &mut Frame, area: Rect, overlay: &DiffOverlayState) {
         spans.push(Span::styled("click a diff line ", dim));
         spans.push(Span::styled("to comment", Style::default().fg(theme::RUST_ORANGE)));
         spans.push(Span::styled("   ·  ", dim));
+        spans.push(Span::styled("← / →  ", dim));
+        spans.push(Span::styled("scroll", Style::default().fg(theme::RUST_ORANGE)));
+        spans.push(Span::styled("   ·  ", dim));
         if count > 0 {
             spans.push(Span::styled("Esc ", dim));
             spans.push(Span::styled("submit & close", Style::default().fg(theme::RUST_ORANGE)));
@@ -600,6 +603,7 @@ fn build_pane_lines(
                         pair,
                         gutter_width,
                         area.width,
+                        usize::from(overlay.body_scroll_x),
                         &mut left_hl,
                         &mut right_hl,
                     );
@@ -931,6 +935,7 @@ fn split_diff_row(
     pair: PairedDiffRow,
     gutter_width: usize,
     pane_width: u16,
+    scroll_cols: usize,
     left_hl: &mut LineHighlighter,
     right_hl: &mut LineHighlighter,
 ) -> Line<'static> {
@@ -941,8 +946,10 @@ fn split_diff_row(
     let usable = usize::from(pane_width).saturating_sub(indent_cols).saturating_sub(divider_cols);
     let per_side_width = usable / 2;
 
-    let left = build_split_half(file, pair.left, gutter_width, per_side_width, left_hl);
-    let right = build_split_half(file, pair.right, gutter_width, per_side_width, right_hl);
+    let left =
+        build_split_half(file, pair.left, gutter_width, per_side_width, scroll_cols, left_hl);
+    let right =
+        build_split_half(file, pair.right, gutter_width, per_side_width, scroll_cols, right_hl);
 
     let mut spans: Vec<Span<'static>> = Vec::with_capacity(left.len() + right.len() + 4);
     spans.push(Span::raw("  "));
@@ -962,6 +969,7 @@ fn build_split_half(
     key: Option<LineKey>,
     gutter_width: usize,
     text_width: usize,
+    scroll_cols: usize,
     highlighter: &mut LineHighlighter,
 ) -> Vec<Span<'static>> {
     let Some(key) = key else {
@@ -985,7 +993,8 @@ fn build_split_half(
         None => Style::default().fg(marker_color),
     };
     let raw_spans = highlighter.highlight(&line.text);
-    let mut text_spans = truncate_spans_to_width(raw_spans, text_width);
+    let scrolled_spans = skip_spans_columns(raw_spans, scroll_cols);
+    let mut text_spans = truncate_spans_to_width(scrolled_spans, text_width);
     // Pad text up to text_width so the right-side column starts at a
     // consistent x-coordinate. With per-line background tint, the
     // pad fills the tinted area to the full column width.
@@ -1034,28 +1043,16 @@ fn truncate_spans_to_width(spans: Vec<Span<'static>>, max_width: usize) -> Vec<S
     if max_width == 0 {
         return Vec::new();
     }
-    // Total content width so we know whether we actually need to
-    // truncate; if it already fits, return as-is.
-    let total_width: usize = spans.iter().map(|s| s.content.width()).sum();
-    if total_width <= max_width {
-        return spans;
-    }
-    // Reserve 1 col for the trailing `…` marker so the user can see
-    // where content was clipped. When max_width is 1 we skip the
-    // marker and just truncate hard.
-    let body_width = max_width.saturating_sub(1);
-    let mut out: Vec<Span<'static>> = Vec::with_capacity(spans.len() + 1);
+    let mut out: Vec<Span<'static>> = Vec::with_capacity(spans.len());
     let mut consumed: usize = 0;
-    let mut last_style = Style::default();
     for span in spans {
-        last_style = span.style;
         let span_width = span.content.width();
-        if consumed.saturating_add(span_width) <= body_width {
+        if consumed.saturating_add(span_width) <= max_width {
             consumed = consumed.saturating_add(span_width);
             out.push(span);
             continue;
         }
-        let remaining = body_width - consumed;
+        let remaining = max_width - consumed;
         let mut buf = String::with_capacity(span.content.len());
         let mut span_consumed = 0usize;
         for c in span.content.chars() {
@@ -1071,14 +1068,48 @@ fn truncate_spans_to_width(spans: Vec<Span<'static>>, max_width: usize) -> Vec<S
         }
         break;
     }
-    // Append the `…` marker carrying the trailing span's bg so the
-    // tint stays unbroken across the truncation cell.
-    let marker_style = Style::default().fg(theme::DIM);
-    let marker_style = match last_style.bg {
-        Some(bg) => marker_style.bg(bg),
-        None => marker_style,
-    };
-    out.push(Span::styled("\u{2026}", marker_style));
+    out
+}
+
+/// Drop the first `skip_cols` columns of `spans` and return the rest
+/// in render order. Used by the horizontal-scroll path so both
+/// halves of a split row can be scrolled by the same amount before
+/// being truncated to the per-side width.
+fn skip_spans_columns(spans: Vec<Span<'static>>, skip_cols: usize) -> Vec<Span<'static>> {
+    if skip_cols == 0 {
+        return spans;
+    }
+    let mut out: Vec<Span<'static>> = Vec::with_capacity(spans.len());
+    let mut remaining = skip_cols;
+    for span in spans {
+        if remaining == 0 {
+            out.push(span);
+            continue;
+        }
+        let span_width = span.content.width();
+        if span_width <= remaining {
+            remaining -= span_width;
+            continue;
+        }
+        // Partial skip inside this span — slice off the leading
+        // `remaining` cols and keep the tail.
+        let mut buf = String::with_capacity(span.content.len());
+        let mut to_skip = remaining;
+        let mut started = false;
+        for c in span.content.chars() {
+            let cw = UnicodeWidthChar::width(c).unwrap_or(0);
+            if !started && to_skip >= cw {
+                to_skip -= cw;
+                continue;
+            }
+            started = true;
+            buf.push(c);
+        }
+        remaining = 0;
+        if !buf.is_empty() {
+            out.push(Span::styled(buf, span.style));
+        }
+    }
     out
 }
 
