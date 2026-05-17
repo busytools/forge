@@ -29,6 +29,12 @@ const PROMPT_WIDTH: u16 = 2;
 /// Rows reserved for the input box's top + bottom borders.
 const INPUT_BORDER_LINES: u16 = 2;
 
+/// Minimum text-area height inside the bordered box. The chat input
+/// is the primary action surface, so the box never collapses to a
+/// single line even when the draft is empty — gives the user a real
+/// "type here" target on first glance.
+const MIN_INPUT_INTERIOR_LINES: u16 = 2;
+
 /// Maximum input area height (lines) to prevent the input from consuming the entire screen.
 const MAX_INPUT_HEIGHT: u16 = 12;
 const HIGHLIGHT_SLASH_PRIORITY: u8 = 6;
@@ -267,7 +273,9 @@ fn configure_input_textarea(app: &mut App) {
         textarea.set_placeholder_text("Type a message...");
         textarea.set_placeholder_style(Style::default().fg(theme::DIM));
         textarea.set_cursor_line_style(Style::default());
-        textarea.set_cursor_style(Style::default().add_modifier(Modifier::REVERSED));
+        textarea.set_cursor_style(
+            Style::default().add_modifier(Modifier::REVERSED).add_modifier(Modifier::SLOW_BLINK),
+        );
     }
 
     if needs_highlight_update {
@@ -390,16 +398,16 @@ fn render_lines_from_textarea(textarea: &TextArea<'_>, area: Rect) -> Vec<String
 
 /// Total visual height for the input area: input lines + hint
 /// banners + the bordered box's top/bottom rows. Called by the
-/// layout to allocate the correct input area height.
+/// layout to allocate the correct input area height. The text-area
+/// portion never collapses below `MIN_INPUT_INTERIOR_LINES`.
 pub fn visual_line_count(app: &mut App, area_width: u16) -> u16 {
     let hint = hint_line_count(app);
-    // Content width sits inside both the horizontal padding and the
-    // box's 1-col left/right borders.
-    let content_width = area_width
-        .saturating_sub(INPUT_PAD * 2 + INPUT_RIGHT_PAD)
-        .saturating_sub(2)
-        .saturating_sub(PROMPT_WIDTH);
-    let input_lines = app.input_mut().measure_visual_lines(content_width, MAX_INPUT_HEIGHT);
+    // Content width sits inside the box's 1-col left/right borders.
+    let content_width = area_width.saturating_sub(2).saturating_sub(PROMPT_WIDTH);
+    let input_lines = app
+        .input_mut()
+        .measure_visual_lines(content_width, MAX_INPUT_HEIGHT)
+        .max(MIN_INPUT_INTERIOR_LINES);
     hint + input_lines + INPUT_BORDER_LINES
 }
 

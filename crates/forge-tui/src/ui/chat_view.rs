@@ -91,19 +91,36 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         top_bar::render(frame, top_bar_area, app);
     }
 
+    if areas.help.height > 0 {
+        let _t = app.perf.as_ref().map(|p| p.start("ui::help"));
+        help::render(frame, areas.help, app);
+    }
+
+    // Render the input AFTER the pane separators and help row so its
+    // bordered box paints over them. The user-visible box extends 1
+    // cell to the left/right over the pane separators and down across
+    // the help row, giving the chat input a flush-with-the-screen
+    // affordance.
+    let input_box_area = {
+        let mut rect = areas.input;
+        if let Some(left_sep) = areas.pane_separator {
+            rect.x = left_sep.x;
+            rect.width = rect.width.saturating_add(left_sep.width);
+        }
+        if let Some(right_sep) = areas.pane_right_separator {
+            rect.width = rect.width.saturating_add(right_sep.width);
+        }
+        rect.height = rect.height.saturating_add(areas.help.height);
+        rect
+    };
     {
         let _t = app.perf.as_ref().map(|p| p.start("ui::input"));
-        input::render(frame, areas.input, app);
+        input::render(frame, input_box_area, app);
     }
 
     if autocomplete::is_active(app) {
         let _t = app.perf.as_ref().map(|p| p.start("ui::autocomplete"));
-        autocomplete::render(frame, areas.input, app);
-    }
-
-    if areas.help.height > 0 {
-        let _t = app.perf.as_ref().map(|p| p.start("ui::help"));
-        help::render(frame, areas.help, app);
+        autocomplete::render(frame, input_box_area, app);
     }
 
     // Chat footer renders at the bottom of the Projects pane
