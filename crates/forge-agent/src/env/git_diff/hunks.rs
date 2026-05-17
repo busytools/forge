@@ -160,6 +160,14 @@ pub struct ScanOutcome {
     pub untracked_suppressed: usize,
 }
 
+/// Max in-flight `git diff -- <path>` subprocesses during a scan.
+/// macOS's default soft open-file limit is ~256 and every git child
+/// holds stdin/stdout/stderr pipes plus a handful of git internals
+/// (~6-10 FDs); firing all N at once on a 100+ file refactor
+/// branch trips `EMFILE`. 16 keeps total well under the FD ceiling
+/// while still giving a 16× speedup over a sequential loop.
+const MAX_INFLIGHT_FETCHES: usize = 16;
+
 /// Top-level scanner entry. `target` is passed verbatim to
 /// `git diff <target>`, comparing the named ref against the working
 /// tree — `"HEAD"` for working-tree-vs-HEAD (uncommitted only),
@@ -190,23 +198,29 @@ pub async fn scan(cwd: &Path, target: &str) -> ScanOutcome {
     let mut files = parse_name_status(&name_status);
 
     if !files.is_empty() {
-        // Per-file concurrent fetch. The aggregate `git diff <target>
-        // --no-ext-diff` was capped at STDOUT_SIZE_CAP — fine on
-        // small branches, fails on real refactor branches where the
-        // combined diff exceeds the cap and the renderer has nothing
-        // to show. Per-file diffs are each well under the cap (a
-        // single file would need 1 MiB+ of changes to trip it), and
-        // `futures::join_all` lets the N subprocesses overlap on the
-        // OS scheduler so total wall time stays close to the aggregate
-        // call's runtime instead of going linear in N.
-        let fetches = files.iter().map(|file| {
-            let path = file.path.clone();
-            async move { fetch_file_hunks(cwd, target, &path).await }
-        });
-        let results = futures::future::join_all(fetches).await;
-        for (file, result) in files.iter_mut().zip(results) {
+        // Per-file concurrent fetch with bounded concurrency. Each
+        // `git diff <target> --no-ext-diff -- <path>` subprocess
+        // holds stdio pipes for its lifetime; firing all N
+        // simultaneously via `futures::future::join_all` blows the
+        // process's open-file limit on real refactor branches
+        // (~130 files × ~3-10 FDs each easily exceeds the macOS
+        // ~256 soft cap). `buffer_unordered(MAX_INFLIGHT_FETCHES)`
+        // caps in-flight subprocesses to a safe number while still
+        // giving ~MAX_INFLIGHT_FETCHES× speedup over a sequential
+        // loop. Order doesn't matter because we zip back into
+        // `files` by index, captured as the future's first item.
+        use futures::StreamExt;
+        // Clone the path list off `files` so the immutable borrow
+        // drops before the stream runs — we mutate `files[idx]`
+        // inside the consume loop.
+        let paths: Vec<String> = files.iter().map(|f| f.path.clone()).collect();
+        let mut stream = futures::stream::iter(paths.into_iter().enumerate().map(|(idx, path)| {
+            async move { (idx, fetch_file_hunks(cwd, target, &path).await) }
+        }))
+        .buffer_unordered(MAX_INFLIGHT_FETCHES);
+        while let Some((idx, result)) = stream.next().await {
             match result {
-                FileScanOutcome::Ok(hunks) => file.hunks = hunks,
+                FileScanOutcome::Ok(hunks) => files[idx].hunks = hunks,
                 FileScanOutcome::SubprocessFailed => {
                     scanner_ok = false;
                 }
