@@ -528,22 +528,16 @@ fn build_options_with_callback(
         }
     }
 
-    // Effort default — forge runs at max effort by default unless the
-    // user has explicitly set otherwise. Resolution order:
+    // Effort resolution order:
     //   1. settings.json `effortLevel` (handled above).
-    //   2. `CLAUDE_CODE_EFFORT_LEVEL` env var — if set, defer to env
-    //      inheritance: don't pass `--effort` so the CLI picks up the
-    //      env var as-is. (Avoids the CLI flag overriding the user's
-    //      explicit env-var override.)
-    //   3. Otherwise: `--effort max`.
+    //   2. `CLAUDE_CODE_EFFORT_LEVEL` env var — leave it to env
+    //      inheritance so a user override isn't shadowed by `--effort`.
+    //   3. Default to `--effort max`.
     let effort_source: &'static str = if applied_effort.is_some() {
         "settings"
     } else {
         match std::env::var("CLAUDE_CODE_EFFORT_LEVEL") {
             Ok(env_value) if !env_value.trim().is_empty() => {
-                // Don't pass --effort flag; let env-var inheritance carry the
-                // value to the CLI (forge-sdk doesn't strip
-                // CLAUDE_CODE_EFFORT_LEVEL on spawn).
                 applied_effort = Some(env_value);
                 "env_var"
             }
@@ -736,12 +730,10 @@ pub(crate) fn deliver_permission_response(
         );
         return;
     };
-    // Deny-on-unknown: only option_ids that explicitly start with
-    // "allow" are treated as allow. Anything else (including future
-    // CLI deny variants like `deny_session` / `deny_repo`, or
-    // unparseable / drifted ids) maps to deny. Previous shape was
-    // permissive-on-unknown — a CLI option-id rename could have
-    // silently elevated denied tool calls to allowed.
+    // Deny-on-unknown: only option_ids that start with "allow" map
+    // to allow. Anything else — future CLI deny variants like
+    // `deny_session` / `deny_repo`, unknown / drifted ids — maps
+    // to deny.
     let decision = match outcome {
         forge_primitives::PermissionOutcome::Selected { option_id } => {
             if option_id.to_ascii_lowercase().starts_with("allow") {
@@ -849,9 +841,6 @@ pub(crate) fn clamp_percentage_to_u8(p: f64) -> u8 {
     if p.is_nan() {
         return 0;
     }
-    // The inline `clamp(0.0, 100.0).round()` guarantees the value
-    // fits in u8; clippy can't see through the clamp so the `as u8`
-    // truncation/sign lints fire spuriously.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let n = p.clamp(0.0, 100.0).round() as u8;
     n

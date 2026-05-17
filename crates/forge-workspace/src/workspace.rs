@@ -1421,9 +1421,9 @@ impl Workspace {
     /// session via [`Self::register_domain_session`] before
     /// exercising any code path that needs one.
     ///
-    /// Returns the workspace alongside the `SessionUpdate` receiver
-    /// (single-take slot — subsequent `subscribe()` calls on the
-    /// returned workspace will return `None`).
+    /// Returns the workspace alongside the `SessionUpdate` receiver.
+    /// The workspace's `subscribe()` slot is `None` — callers that
+    /// need the receiver get it directly from this constructor.
     pub fn testing_stub() -> (Arc<Self>, mpsc::UnboundedReceiver<SessionUpdate>) {
         let (update_tx, update_rx) = mpsc::unbounded_channel::<SessionUpdate>();
         let workspace = Self {
