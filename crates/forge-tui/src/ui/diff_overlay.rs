@@ -110,7 +110,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             o.pane_width = pane_area.width;
             o.body_keys.clear();
             o.body_head_rows = 0;
-            o.banner_close_col_range = None;
         }
         return;
     }
@@ -119,9 +118,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     // height; clamp body_scroll against (total - visible_tail) so
     // a wheel-past-end leaves a useful one-screen-of-tail visible.
     // Banner + rule + blank are PINNED — they don't scroll with the
-    // body, so the diff target / per-file totals / ✕ close
-    // affordance stay visible while the user pages through hunks.
-    let (body_lines, body_keys, banner_close_range) = build_pane_lines(overlay, pane_area);
+    // body, so the diff target / per-file totals stay visible while
+    // the user pages through hunks.
+    let (body_lines, body_keys) = build_pane_lines(overlay, pane_area);
     let head_count = BODY_HEAD_ROWS.min(body_lines.len());
     let tail_count = body_lines.len().saturating_sub(head_count);
     let head_height = u16::try_from(head_count).unwrap_or(u16::MAX);
@@ -136,7 +135,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         overlay_mut.pane_origin_row = pane_area.y;
         overlay_mut.pane_origin_col = pane_area.x;
         overlay_mut.pane_width = pane_area.width;
-        overlay_mut.banner_close_col_range = banner_close_range;
         clamped
     } else {
         0
@@ -517,11 +515,10 @@ fn render_footer(frame: &mut Frame, area: Rect, overlay: &DiffOverlayState) {
 fn build_pane_lines(
     overlay: &DiffOverlayState,
     area: Rect,
-) -> (Vec<Line<'static>>, Vec<BodyRowKey>, Option<(u16, u16)>) {
+) -> (Vec<Line<'static>>, Vec<BodyRowKey>) {
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut keys: Vec<BodyRowKey> = Vec::new();
-    let (banner_line, banner_close_range) = pane_banner_row(overlay, area.x, area.width);
-    lines.push(banner_line);
+    lines.push(pane_banner_row(overlay));
     keys.push(BodyRowKey::Banner);
     lines.push(rule_row(area.width));
     keys.push(BodyRowKey::Rule);
@@ -551,7 +548,7 @@ fn build_pane_lines(
             Style::default().fg(theme::STATUS_ERROR),
         )));
         keys.push(BodyRowKey::EmptyState);
-        return (lines, keys, banner_close_range);
+        return (lines, keys);
     }
     match overlay.current_file() {
         None => {
@@ -657,7 +654,7 @@ fn build_pane_lines(
         }
     }
 
-    (lines, keys, banner_close_range)
+    (lines, keys)
 }
 
 /// Index `comments` by `LineKey` for O(1) chip lookup during row
@@ -1095,7 +1092,6 @@ fn render_too_narrow_notice(frame: &mut Frame, area: Rect, app: &mut App) {
         o.pane_origin_row = area.y;
         o.pane_origin_col = area.x;
         o.pane_width = area.width;
-        o.banner_close_col_range = None;
     }
 }
 
@@ -1106,21 +1102,10 @@ fn banner_row(label: &'static str) -> Line<'static> {
     ])
 }
 
-/// Build the wide-tier pane banner line + return the column range
-/// where the trailing `✕` glyph sits relative to the pane's left
-/// edge. The mouse handler reads this range to gate banner-close
-/// clicks: if the banner clipped past `pane_width` (long path +
-/// totals consumed the budget), returns `None` and the click
-/// handler refuses banner-row clicks rather than treating
-/// arbitrary clipped path text as close intent.
-///
-/// `pane_origin_col` is the absolute screen column where the pane
-/// starts; returned range is in absolute screen coordinates.
-fn pane_banner_row(
-    overlay: &DiffOverlayState,
-    pane_origin_col: u16,
-    pane_width: u16,
-) -> (Line<'static>, Option<(u16, u16)>) {
+/// Build the pane banner line. The footer hint already advertises
+/// `Esc close`, so the banner is informational only — no in-banner
+/// affordance to dismiss.
+fn pane_banner_row(overlay: &DiffOverlayState) -> Line<'static> {
     let dim = Style::default().fg(theme::DIM);
     let (title, added, removed) = overlay.current_file().map_or_else(
         || ("(no file)".to_owned(), 0u32, 0u32),
@@ -1130,7 +1115,7 @@ fn pane_banner_row(
         Span::raw("  "),
         Span::styled("DIFF", Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)),
         Span::styled(" · ", dim),
-        Span::styled(title.clone(), dim),
+        Span::styled(title, dim),
     ];
     if added > 0 {
         spans.push(Span::raw("  "));
@@ -1140,46 +1125,7 @@ fn pane_banner_row(
         spans.push(Span::raw(" "));
         spans.push(Span::styled(format!("-{removed}"), Style::default().fg(Color::Red)));
     }
-    // Compute where ✕ would land: "  DIFF · <path>" prefix +
-    // "  +N" + " -M" when present. Done before pushing the close
-    // spans so the geometry math doesn't have to walk Span widths.
-    let prefix_chars = 2 + 4 + 3; // "  " + "DIFF" + " · "
-    let path_chars = title.chars().count();
-    let plus_chars = if added > 0 { 2 + 1 + count_digits(added) } else { 0 }; // "  " + "+" + digits
-    let minus_chars = if removed > 0 { 1 + 1 + count_digits(removed) } else { 0 }; // " " + "-" + digits
-    let close_pad_chars = 2; // "  " before ✕
-    let close_glyph_chars = 1; // ✕
-    let consumed_before_close =
-        prefix_chars + path_chars + plus_chars + minus_chars + close_pad_chars;
-    let close_start_col =
-        pane_origin_col.saturating_add(u16::try_from(consumed_before_close).unwrap_or(u16::MAX));
-    let close_end_col =
-        close_start_col.saturating_add(u16::try_from(close_glyph_chars).unwrap_or(1));
-    let pane_end_col = pane_origin_col.saturating_add(pane_width);
-    // Always push the close spans — they may clip but the column
-    // budget check below decides whether the click handler trusts
-    // the glyph position. Keeping the spans means the user sees
-    // the ✕ when the terminal is wide enough. Trailing 1-cell pad
-    // matches the Inspector GIT panel convention so banner totals
-    // / close glyph don't touch the pane's right edge.
-    spans.push(Span::raw("  "));
-    spans.push(Span::styled("✕", Style::default().fg(theme::DIM)));
-    spans.push(Span::raw(" "));
-    let visible_range =
-        if close_end_col <= pane_end_col { Some((close_start_col, close_end_col)) } else { None };
-    (Line::from(spans), visible_range)
-}
-
-fn count_digits(mut n: u32) -> usize {
-    if n == 0 {
-        return 1;
-    }
-    let mut digits = 0;
-    while n > 0 {
-        digits += 1;
-        n /= 10;
-    }
-    digits
+    Line::from(spans)
 }
 
 fn rule_row(width: u16) -> Line<'static> {

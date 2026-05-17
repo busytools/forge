@@ -479,13 +479,6 @@ pub struct DiffOverlayState {
     /// handler reads it to decide whether `body_scroll` should
     /// offset a given row.
     pub body_head_rows: usize,
-    /// Screen-column range of the banner `✕` glyph stamped at
-    /// render time. `Some((start, end))` when the glyph is visible
-    /// (banner has room); `None` when the banner clipped its right
-    /// edge offscreen. The click handler refuses banner-row clicks
-    /// when this is `None` so a misclick on truncated path text
-    /// can't trigger an unintended close.
-    pub banner_close_col_range: Option<(u16, u16)>,
 }
 
 impl DiffOverlayState {
@@ -530,7 +523,6 @@ impl DiffOverlayState {
             pane_origin_col: 0,
             pane_width: 0,
             comment_counts: vec![0; file_count],
-            banner_close_col_range: None,
             rail_keys: Vec::new(),
             body_head_rows: 0,
         }
@@ -557,7 +549,6 @@ impl DiffOverlayState {
             pane_origin_col: 0,
             pane_width: 0,
             comment_counts: vec![0; file_count],
-            banner_close_col_range: None,
             rail_keys: Vec::new(),
             body_head_rows: 0,
         }
@@ -863,8 +854,6 @@ pub(crate) fn rail_width_for(terminal_width: u16) -> u16 {
 #[derive(Debug, Default)]
 struct MouseEffect {
     redraw: bool,
-    /// Close the overlay (Esc-equivalent). Used by banner ✕ click.
-    close: bool,
 }
 
 /// Handle a mouse event while the diff overlay is active.
@@ -899,9 +888,6 @@ pub(crate) fn handle_mouse(app: &mut App, mouse: MouseEvent) {
     if effect.redraw {
         app.needs_redraw = true;
     }
-    if effect.close {
-        close_with_submit(app);
-    }
 }
 
 fn handle_scroll(
@@ -923,7 +909,7 @@ fn handle_scroll(
     } else {
         overlay.body_scroll = overlay.body_scroll.saturating_sub(SCROLL_LINES_PER_NOTCH);
     }
-    MouseEffect { redraw: true, close: false }
+    MouseEffect { redraw: true }
 }
 
 /// Resolve a left-click to an action. Returns the effect (redraw +
@@ -984,7 +970,7 @@ fn handle_rail_click(overlay: &mut DiffOverlayState, row: u16) -> MouseEffect {
     // anchored to a specific line in the previous file, and the
     // helper preserves prior_comment if it was a chip-reopen.
     close_active_input_preserving_prior(overlay);
-    MouseEffect { redraw: true, close: false }
+    MouseEffect { redraw: true }
 }
 
 /// Hit-test a left-click against the narrow-tier `◀ ▶` cycle
@@ -1017,27 +1003,6 @@ fn handle_body_click(overlay: &mut DiffOverlayState, column: u16, row: u16) -> M
         return MouseEffect::default();
     };
     match key {
-        BodyRowKey::Banner => {
-            // Banner ✕ click — but only when the renderer actually
-            // stamped a column range for the glyph. `None` means
-            // the banner clipped past `pane_width` (long path +
-            // totals consumed the budget), in which case the ✕ is
-            // offscreen and rightmost cells contain truncated path
-            // text — clicking those must not trigger close. The
-            // user can still Esc.
-            let Some((close_start, close_end)) = overlay.banner_close_col_range else {
-                return MouseEffect::default();
-            };
-            // Tiny padding either side so a near-miss on the glyph
-            // still registers as intent (terminals report column
-            // resolution per cell, not per glyph subdivision).
-            let widened_start = close_start.saturating_sub(1);
-            let widened_end = close_end.saturating_add(1);
-            if column >= widened_start && column.saturating_add(1) <= widened_end {
-                return MouseEffect { redraw: true, close: true };
-            }
-            MouseEffect::default()
-        }
         BodyRowKey::HunkRow { left, right } => {
             // Pick the clicked column. The divider sits at pane
             // midpoint; clicks on it (or to the left) resolve to
@@ -1053,7 +1018,8 @@ fn handle_body_click(overlay: &mut DiffOverlayState, column: u16, row: u16) -> M
             }
         }
         BodyRowKey::CommentChip(line_key) => reopen_comment_for_key(overlay, line_key),
-        BodyRowKey::Rule
+        BodyRowKey::Banner
+        | BodyRowKey::Rule
         | BodyRowKey::Blank
         | BodyRowKey::EmptyState
         | BodyRowKey::HunkHeader { .. }
@@ -1076,7 +1042,7 @@ fn open_input_for_key(overlay: &mut DiffOverlayState, key: LineKey) -> MouseEffe
     close_active_input_preserving_prior(overlay);
     let editor = TextArea::default();
     overlay.active_input = Some(ActiveCommentInput { key, editor, prior_comment: None });
-    MouseEffect { redraw: true, close: false }
+    MouseEffect { redraw: true }
 }
 
 fn reopen_comment_for_key(overlay: &mut DiffOverlayState, key: LineKey) -> MouseEffect {
@@ -1101,7 +1067,7 @@ fn reopen_comment_for_key(overlay: &mut DiffOverlayState, key: LineKey) -> Mouse
     editor.insert_str(&comment.comment_text);
     overlay.active_input =
         Some(ActiveCommentInput { key: comment.key, editor, prior_comment: Some(comment) });
-    MouseEffect { redraw: true, close: false }
+    MouseEffect { redraw: true }
 }
 
 /// Close the overlay; if there are pending comments, bundle them
@@ -1288,7 +1254,6 @@ mod tests {
         // Column inside rail (<40), row 4 = file index 1.
         let effect = handle_left_click(&mut state, 5, 4, 160);
         assert!(effect.redraw);
-        assert!(!effect.close);
         assert_eq!(state.current_file_idx, 1);
         assert_eq!(state.body_scroll, 0);
     }
@@ -1310,7 +1275,6 @@ mod tests {
         let mut state = sample_state();
         let effect = handle_left_click(&mut state, 50, 4, 160);
         assert!(!effect.redraw);
-        assert!(!effect.close);
         assert_eq!(state.current_file_idx, 0);
     }
 
@@ -1438,51 +1402,6 @@ mod tests {
         let input = state.active_input.expect("editor reopened");
         assert_eq!(input.key, key);
         assert_eq!(input.editor.lines().join("\n"), "needs unwrap fix");
-    }
-
-    #[test]
-    fn body_click_on_banner_close_glyph_triggers_close() {
-        let mut state = sample_state();
-        state.body_keys = vec![BodyRowKey::Banner];
-        state.pane_origin_row = 0;
-        state.pane_origin_col = 41;
-        state.pane_width = 119;
-        // Renderer stamps the ✕ at, e.g., column 155 (close_start)
-        // through 156 (close_end).
-        state.banner_close_col_range = Some((155, 156));
-        let effect = handle_left_click(&mut state, 155, 0, 160);
-        assert!(effect.redraw);
-        assert!(effect.close);
-    }
-
-    #[test]
-    fn body_click_on_banner_path_text_does_not_close() {
-        let mut state = sample_state();
-        state.body_keys = vec![BodyRowKey::Banner];
-        state.pane_origin_row = 0;
-        state.pane_origin_col = 41;
-        state.pane_width = 119;
-        state.banner_close_col_range = Some((155, 156));
-        let effect = handle_left_click(&mut state, 60, 0, 160);
-        assert!(!effect.close);
-        assert!(!effect.redraw, "no redraw on miss");
-    }
-
-    #[test]
-    fn body_click_on_clipped_banner_refuses_close() {
-        // When banner_close_col_range is None (renderer detected
-        // clip), banner-row clicks must NOT trigger close.
-        let mut state = sample_state();
-        state.body_keys = vec![BodyRowKey::Banner];
-        state.pane_origin_row = 0;
-        state.pane_origin_col = 41;
-        state.pane_width = 119;
-        state.banner_close_col_range = None;
-        // Far-right click that would have closed under the old
-        // approximation.
-        let effect = handle_left_click(&mut state, 159, 0, 160);
-        assert!(!effect.close, "no close on clipped banner");
-        assert!(!effect.redraw, "no redraw on miss");
     }
 
     #[test]

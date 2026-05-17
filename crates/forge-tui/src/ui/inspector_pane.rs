@@ -412,8 +412,7 @@ fn append_git_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
     if has_glyph {
         // " GIT" is 4 cells; the 🦉 owl is 2 cells wide; trailing
         // 2-cell pad keeps the affordance 2 columns clear of the
-        // pane's right edge (matches the diff overlay banner's ✕
-        // breathing room). Total reserved on the right: 4 cells
+        // pane's right edge. Total reserved on the right: 4 cells
         // (glyph + trailing pad).
         let pad = usize::from(width).saturating_sub(4 + 4);
         header_spans.push(Span::raw(" ".repeat(pad)));
