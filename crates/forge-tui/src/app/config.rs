@@ -17,37 +17,6 @@ pub(crate) use mcp::{
 };
 use serde_json::Value;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConfigTab {
-    Plugins,
-    Mcp,
-}
-
-impl ConfigTab {
-    pub const ALL: [Self; 2] = [Self::Plugins, Self::Mcp];
-
-    pub const fn title(self) -> &'static str {
-        match self {
-            Self::Plugins => "Plugins",
-            Self::Mcp => "MCP",
-        }
-    }
-
-    const fn next(self) -> Self {
-        match self {
-            Self::Plugins => Self::Mcp,
-            Self::Mcp => Self::Plugins,
-        }
-    }
-
-    const fn prev(self) -> Self {
-        match self {
-            Self::Plugins => Self::Mcp,
-            Self::Mcp => Self::Plugins,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DefaultPermissionMode {
     #[default]
@@ -254,7 +223,6 @@ pub enum ConfigOverlayState {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConfigState {
-    pub active_tab: ConfigTab,
     pub mcp_selected_server_index: usize,
     pub overlay: Option<ConfigOverlayState>,
     pub committed_settings_document: Value,
@@ -270,7 +238,6 @@ pub struct ConfigState {
 impl Default for ConfigState {
     fn default() -> Self {
         Self {
-            active_tab: ConfigTab::Plugins,
             mcp_selected_server_index: 0,
             overlay: None,
             committed_settings_document: Value::Object(serde_json::Map::new()),
@@ -415,7 +382,11 @@ pub fn initialize_shared_state(app: &mut App) -> Result<(), String> {
     Ok(())
 }
 
-pub fn open(app: &mut App) -> Result<(), String> {
+/// Open the standalone Plugins view. Loads settings docs (the
+/// plugins state still reads from `~/.claude/settings.json` for
+/// fast-mode flags etc.), sets the active view, and triggers the
+/// inventory refresh.
+pub fn open_plugins(app: &mut App) -> Result<(), String> {
     let pr = project_root(app);
     let loaded = store::load(
         app.settings_home_override.as_deref(),
@@ -423,16 +394,32 @@ pub fn open(app: &mut App) -> Result<(), String> {
         store_workspace_bridge(app).as_ref().copied(),
     )?;
     app.config.apply_loaded(loaded, false);
-    view::set_active_view(app, ActiveView::Config);
-    request_active_tab_side_effects(app);
+    app.config.status_message = None;
+    app.config.last_error = None;
+    view::set_active_view(app, ActiveView::Plugins);
+    crate::app::plugins::request_inventory_refresh_if_needed(app);
+    Ok(())
+}
+
+/// Open the standalone MCP view. Same shape as `open_plugins` but
+/// triggers the MCP snapshot refresh instead.
+pub fn open_mcp(app: &mut App) -> Result<(), String> {
+    let pr = project_root(app);
+    let loaded = store::load(
+        app.settings_home_override.as_deref(),
+        pr.as_path(),
+        store_workspace_bridge(app).as_ref().copied(),
+    )?;
+    app.config.apply_loaded(loaded, false);
+    app.config.status_message = None;
+    app.config.last_error = None;
+    view::set_active_view(app, ActiveView::Mcp);
+    mcp::refresh_mcp_snapshot_if_needed(app);
     Ok(())
 }
 
 pub(crate) fn refresh_runtime_tabs_for_session_change(app: &mut App) {
-    if app.active_view != ActiveView::Config {
-        return;
-    }
-    if app.config.active_tab == ConfigTab::Plugins {
+    if app.active_view == ActiveView::Plugins {
         crate::app::plugins::request_inventory_refresh_if_needed(app);
     }
 }
@@ -441,14 +428,7 @@ pub fn close(app: &mut App) {
     view::set_active_view(app, ActiveView::Chat);
 }
 
-pub(crate) fn activate_tab(app: &mut App, tab: ConfigTab) {
-    app.config.active_tab = tab;
-    app.config.status_message = None;
-    app.config.last_error = None;
-    request_active_tab_side_effects(app);
-}
-
-pub fn handle_key(app: &mut App, key: KeyEvent) {
+pub fn handle_plugins_key(app: &mut App, key: KeyEvent) {
     if is_ctrl_shortcut(key, 'q') || is_ctrl_shortcut(key, 'c') {
         app.should_quit = true;
         return;
@@ -459,50 +439,47 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         return;
     }
 
-    eprintln!("DEBUG handle_key: code={:?} mods={:?} active_tab={:?}", key.code, key.modifiers, app.config.active_tab);
-
-    if app.config.active_tab == ConfigTab::Plugins && crate::app::plugins::handle_key(app, key) {
-        eprintln!("  -> plugins consumed");
-        return;
-    }
-    if mcp::handle_mcp_key(app, key) {
-        eprintln!("  -> mcp consumed");
+    if crate::app::plugins::handle_key(app, key) {
         return;
     }
 
-    match (key.code, key.modifiers) {
-        (KeyCode::Enter | KeyCode::Esc, KeyModifiers::NONE) => {
-            close(app);
-        }
-        (KeyCode::BackTab, _) => {
-            eprintln!("  -> BackTab matched");
-            activate_tab(app, app.config.active_tab.prev());
-            eprintln!("  -> active_tab now {:?}", app.config.active_tab);
-        }
-        (KeyCode::Tab, KeyModifiers::NONE) => {
-            activate_tab(app, app.config.active_tab.next());
-        }
-        _ => {
-            eprintln!("  -> no match");
-        }
+    if matches!(key.code, KeyCode::Enter | KeyCode::Esc) && key.modifiers == KeyModifiers::NONE {
+        close(app);
     }
 }
 
-pub fn handle_paste(app: &mut App, text: &str) -> bool {
+pub fn handle_mcp_key(app: &mut App, key: KeyEvent) {
+    if is_ctrl_shortcut(key, 'q') || is_ctrl_shortcut(key, 'c') {
+        app.should_quit = true;
+        return;
+    }
+
+    if app.config.overlay.is_some() {
+        edit::handle_overlay_key(app, key);
+        return;
+    }
+
+    if mcp::handle_mcp_key(app, key) {
+        return;
+    }
+
+    if matches!(key.code, KeyCode::Enter | KeyCode::Esc) && key.modifiers == KeyModifiers::NONE {
+        close(app);
+    }
+}
+
+pub fn handle_plugins_paste(app: &mut App, text: &str) -> bool {
     if app.config.overlay.is_some() {
         return edit::handle_overlay_paste(app, text);
     }
-    if app.config.active_tab == ConfigTab::Plugins {
-        return crate::app::plugins::handle_paste(app, text);
-    }
-    false
+    crate::app::plugins::handle_paste(app, text)
 }
 
-fn request_active_tab_side_effects(app: &mut App) {
-    mcp::refresh_mcp_snapshot_if_needed(app);
-    if app.config.active_tab == ConfigTab::Plugins {
-        crate::app::plugins::request_inventory_refresh_if_needed(app);
+pub fn handle_mcp_paste(app: &mut App, text: &str) -> bool {
+    if app.config.overlay.is_some() {
+        return edit::handle_overlay_paste(app, text);
     }
+    false
 }
 
 fn is_ctrl_shortcut(key: KeyEvent, ch: char) -> bool {
@@ -544,5 +521,3 @@ pub(crate) fn language_input_validation_message(value: &str) -> Option<&'static 
     }
 }
 
-#[cfg(test)]
-mod tests;

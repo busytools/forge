@@ -33,7 +33,6 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
     }
     match parsed.name {
         "/compact" => handle_compact_submit(app, &parsed.args),
-        "/config" => handle_config_submit(app, &parsed.args),
         "/diff" => handle_diff_submit(app, &parsed.args),
         "/effort" => handle_effort_submit(app, &parsed.args),
         "/launchpad" => handle_launchpad_submit(app, &parsed.args),
@@ -137,26 +136,15 @@ fn handle_compact_submit(app: &mut App, args: &[&str]) -> bool {
     false
 }
 
-fn handle_config_submit(app: &mut App, args: &[&str]) -> bool {
-    if !args.is_empty() {
-        push_system_message(app, "Usage: /config");
-        return true;
-    }
-
-    if let Err(err) = crate::app::config::open(app) {
-        push_system_message(app, format!("Failed to open settings: {err}"));
-    }
-    true
-}
-
 fn handle_plugins_submit(app: &mut App, args: &[&str]) -> bool {
-    let _ = args;
-
-    if let Err(err) = crate::app::config::open(app) {
-        push_system_message(app, format!("Failed to open plugins: {err}"));
+    if !args.is_empty() {
+        push_system_message(app, "Usage: /plugins");
         return true;
     }
-    crate::app::config::activate_tab(app, crate::app::ConfigTab::Plugins);
+
+    if let Err(err) = crate::app::config::open_plugins(app) {
+        push_system_message(app, format!("Failed to open plugins: {err}"));
+    }
     true
 }
 
@@ -166,11 +154,9 @@ fn handle_mcp_submit(app: &mut App, args: &[&str]) -> bool {
         return true;
     }
 
-    if let Err(err) = crate::app::config::open(app) {
+    if let Err(err) = crate::app::config::open_mcp(app) {
         push_system_message(app, format!("Failed to open MCP: {err}"));
-        return true;
     }
-    crate::app::config::activate_tab(app, crate::app::ConfigTab::Mcp);
     true
 }
 

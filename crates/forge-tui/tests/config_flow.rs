@@ -4,7 +4,7 @@ use forge_tui::app::{ActiveView, App, handle_terminal_event};
 #[test]
 fn config_enter_closes_and_preserves_chat_draft() {
     let mut app = App::test_default();
-    app.active_view = ActiveView::Config;
+    app.active_view = ActiveView::Plugins;
     app.input_mut().set_text("seed");
 
     handle_terminal_event(&mut app, Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
@@ -17,7 +17,7 @@ fn config_enter_closes_and_preserves_chat_draft() {
 #[test]
 fn config_escape_closes_and_preserves_chat_draft() {
     let mut app = App::test_default();
-    app.active_view = ActiveView::Config;
+    app.active_view = ActiveView::Plugins;
     app.input_mut().set_text("seed");
 
     handle_terminal_event(&mut app, Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
@@ -30,7 +30,7 @@ fn config_escape_closes_and_preserves_chat_draft() {
 #[test]
 fn config_blocks_chat_text_and_slash_activation() {
     let mut app = App::test_default();
-    app.active_view = ActiveView::Config;
+    app.active_view = ActiveView::Plugins;
     app.input_mut().set_text("seed");
 
     handle_terminal_event(
@@ -49,7 +49,7 @@ fn config_blocks_chat_text_and_slash_activation() {
 #[test]
 fn config_ignores_paste_until_returning_to_chat() {
     let mut app = App::test_default();
-    app.active_view = ActiveView::Config;
+    app.active_view = ActiveView::Plugins;
 
     handle_terminal_event(&mut app, Event::Paste("blocked".into()));
 
@@ -66,7 +66,7 @@ fn config_ignores_paste_until_returning_to_chat() {
 #[test]
 fn ctrl_q_still_quits_from_config() {
     let mut app = App::test_default();
-    app.active_view = ActiveView::Config;
+    app.active_view = ActiveView::Plugins;
 
     handle_terminal_event(
         &mut app,

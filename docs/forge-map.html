@@ -1186,33 +1186,11 @@ chat continues here…
 </div>
 
 <!-- ============================================================== -->
-<h2 class="section-title" id="settings">Config screen (Plugins · MCP)</h2>
+<h2 class="section-title" id="settings">Plugins + MCP standalone views</h2>
 
 <p class="intro">
-  Plugins and MCP live inside a <strong>single full-frame Config screen</strong> with a tabbed header. Slash commands (<code>/config</code>, <code>/mcp</code>, <code>/plugins</code>) all open this screen — the slash determines which tab opens active. Outer block title: <code>Config</code> in DIM border.
+  After the Config screen was retired, <code>/plugins</code> opens <code>ActiveView::Plugins</code> and <code>/mcp</code> opens <code>ActiveView::Mcp</code> — each is its own full-frame top-level view. Both share the same render shell (outer titled box + body + DIM status row + RUST_ORANGE help line) via <code>ui::config::render_view</code>; the body comes from the view-specific renderer (<code>ui::config::plugins::render</code> or <code>ui::config::mcp::render</code>). No tab header; no <code>Config</code> wrapper title.
 </p>
-
-<div class="surface">
-  <div class="surface-head">
-    <h4>Tab header (every Config tab shares this)</h4>
-    <div class="when">visible: top row of the Config screen at all times</div>
-  </div>
-  <div class="surface-body">
-    <p>Centered horizontal tab strip. Active tab in <code>RUST_ORANGE</code> bold; inactive tabs in <code>Color::White</code>. Separator <code> | </code> in DIM. Tab order: <strong>Plugins · MCP</strong>.</p>
-    <div class="term">
-      <pre class="indent">
-  <span class="dim">╭ Config ──────────────────────────────────────────────────────────────╮</span>
-  <span class="dim">│</span>            <span class="accent bold">Settings</span><span class="dim"> | </span>Plugins<span class="dim"> | </span>Status<span class="dim"> | </span>Usage<span class="dim"> | </span>MCP                  <span class="dim">│</span>
-  <span class="dim">│</span>                                                                     <span class="dim">│</span>
-  <span class="dim">│</span>  <span class="dim">… active tab content …</span>                                                <span class="dim">│</span>
-  <span class="dim">│</span>                                                                     <span class="dim">│</span>
-  <span class="dim">╰─────────────────────────────────────────────────────────────────────╯</span></pre>
-    </div>
-    <dl>
-      <dt>code</dt><dd><code>crates/forge-tui/src/ui/config.rs::render_tab_header</code> · tabs are <code>ConfigTab::ALL</code></dd>
-    </dl>
-  </div>
-</div>
 
 <div class="surface">
   <div class="surface-head">

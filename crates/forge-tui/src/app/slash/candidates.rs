@@ -186,8 +186,7 @@ pub(super) fn supported_command_candidates(app: &App) -> Vec<SlashCandidate> {
     // full set; everything else (`/mode`, `/compact`, `/usage`, …)
     // gets filtered out because it requires a connected bucket.
     if app.active_view == crate::app::ActiveView::Launchpad {
-        let entries: [(&str, &str); 4] = [
-            ("/config", "Open settings"),
+        let entries: [(&str, &str); 3] = [
             ("/help", "Toggle help overlay"),
             ("/plugins", "Open plugins"),
             ("/quit", "Quit forge"),
@@ -204,7 +203,6 @@ pub(super) fn supported_command_candidates(app: &App) -> Vec<SlashCandidate> {
 
     let mut by_name: BTreeMap<String, String> = BTreeMap::new();
     by_name.insert("/compact".into(), "Compact session context".into());
-    by_name.insert("/config".into(), "Open settings".into());
     by_name.insert("/diff".into(), "Review changes in a full-screen diff overlay".into());
     by_name.insert("/effort".into(), "Show / set thinking effort".into());
     by_name.insert("/launchpad".into(), "Return to project picker".into());
@@ -426,7 +424,6 @@ pub fn is_supported_command(app: &App, command_name: &str) -> bool {
     matches!(
         command_name,
         "/compact"
-            | "/config"
             | "/diff"
             | "/effort"
             | "/help"
@@ -452,7 +449,6 @@ mod launchpad_filter_tests {
         app.active_view = ActiveView::Launchpad;
         let candidates = supported_command_candidates(&app);
         let names: Vec<&str> = candidates.iter().map(|c| c.primary.as_str()).collect();
-        assert!(names.contains(&"/config"), "launchpad surfaces /config: {names:?}");
         assert!(names.contains(&"/help"), "launchpad surfaces /help: {names:?}");
         assert!(names.contains(&"/plugins"), "launchpad surfaces /plugins: {names:?}");
         assert!(names.contains(&"/quit"), "launchpad surfaces /quit: {names:?}");

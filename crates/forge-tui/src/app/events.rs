@@ -129,8 +129,12 @@ fn dispatch_key_by_view(app: &mut App, key: crossterm::event::KeyEvent) -> bool 
             *app.active_paste_session_mut() = None;
             super::keys::dispatch_key_by_focus(app, key)
         }
-        ActiveView::Config => {
-            super::config::handle_key(app, key);
+        ActiveView::Plugins => {
+            super::config::handle_plugins_key(app, key);
+            true
+        }
+        ActiveView::Mcp => {
+            super::config::handle_mcp_key(app, key);
             true
         }
         ActiveView::Launchpad => super::keys::dispatch_key_by_focus(app, key),
@@ -150,9 +154,9 @@ fn dispatch_mouse_by_view(app: &mut App, mouse: crossterm::event::MouseEvent) {
         ActiveView::Diff => {
             super::diff_overlay::handle_mouse(app, mouse);
         }
-        // Launchpad / config / etc. stay keyboard-only — mouse
+        // Plugins / MCP / Launchpad are keyboard-only — mouse
         // events are intentionally dropped.
-        ActiveView::Config | ActiveView::Launchpad => {}
+        ActiveView::Plugins | ActiveView::Mcp | ActiveView::Launchpad => {}
     }
 }
 
@@ -170,7 +174,8 @@ fn dispatch_paste_by_view(app: &mut App, text: &str) -> bool {
             }
             false
         }
-        ActiveView::Config => super::config::handle_paste(app, text),
+        ActiveView::Plugins => super::config::handle_plugins_paste(app, text),
+        ActiveView::Mcp => super::config::handle_mcp_paste(app, text),
         ActiveView::Diff => super::diff_overlay::handle_paste(app, text),
         ActiveView::Launchpad => false,
     }
@@ -1503,7 +1508,7 @@ mod tests {
     #[test]
     fn connected_requests_mcp_snapshot_even_outside_mcp_tab() {
         let (mut app, mut rx) = app_with_bridge_connection();
-        app.config.active_tab = crate::app::config::ConfigTab::Plugins;
+        app.active_view = crate::app::ActiveView::Plugins;
         app.mcp_mut().servers.push(forge_primitives::McpServerStatus {
             name: "supabase".into(),
             status: forge_primitives::McpServerConnectionStatus::Connected,
@@ -1846,7 +1851,7 @@ mod tests {
     #[test]
     fn session_replaced_requests_mcp_snapshot_even_outside_mcp_tab() {
         let (mut app, mut rx) = app_with_bridge_connection();
-        app.config.active_tab = crate::app::config::ConfigTab::Plugins;
+        app.active_view = crate::app::ActiveView::Plugins;
         app.mcp_mut().servers.push(forge_primitives::McpServerStatus {
             name: "supabase".into(),
             status: forge_primitives::McpServerConnectionStatus::Connected,
@@ -2245,7 +2250,7 @@ mod tests {
     #[test]
     fn mcp_operation_error_stays_in_mcp_feedback_and_out_of_chat() {
         let mut app = make_test_app();
-        app.config.active_tab = crate::app::config::ConfigTab::Mcp;
+        app.active_view = crate::app::ActiveView::Mcp;
         app.config.status_message =
             Some("Starting MCP auth for claude.ai Google Calendar...".into());
         app.mcp_mut().in_flight = true;
@@ -4831,8 +4836,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         app.settings_home_override = Some(dir.path().to_path_buf());
         app.set_cwd_raw(dir.path().to_string_lossy().to_string());
-        crate::app::config::open(&mut app).expect("open settings");
-        app.active_view = ActiveView::Config;
+        crate::app::config::open_plugins(&mut app).expect("open plugins");
         app.input_mut().set_text("seed");
 
         handle_terminal_event(
@@ -4848,7 +4852,7 @@ mod tests {
     #[test]
     fn settings_view_ignores_paste_events() {
         let mut app = make_test_app();
-        app.active_view = ActiveView::Config;
+        app.active_view = ActiveView::Plugins;
 
         handle_terminal_event(&mut app, Event::Paste("blocked".into()));
 
@@ -4881,7 +4885,7 @@ mod tests {
     #[test]
     fn settings_view_ignores_mouse_events() {
         let mut app = make_test_app();
-        app.active_view = ActiveView::Config;
+        app.active_view = ActiveView::Plugins;
         app.active_viewport_mut().scroll_target = 4;
         *app.selection_mut() = Some(SelectionState {
             kind: SelectionKind::Chat,

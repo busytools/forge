@@ -1,4 +1,4 @@
-use super::{ConfigOverlayState, ConfigState, ConfigTab};
+use super::{ConfigOverlayState, ConfigState};
 use crate::app::App;
 use crate::app::view::{self, ActiveView};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -122,7 +122,7 @@ impl ConfigState {
 }
 
 pub(super) fn handle_mcp_key(app: &mut App, key: KeyEvent) -> bool {
-    if app.config.active_tab != ConfigTab::Mcp {
+    if app.active_view != ActiveView::Mcp {
         return false;
     }
 
@@ -155,7 +155,7 @@ pub(super) fn handle_mcp_key(app: &mut App, key: KeyEvent) -> bool {
 }
 
 pub(crate) fn refresh_mcp_snapshot_if_needed(app: &mut App) {
-    if app.config.active_tab == ConfigTab::Mcp {
+    if app.active_view == ActiveView::Mcp {
         refresh_mcp_snapshot(app);
     }
 }
@@ -545,8 +545,7 @@ pub(crate) fn present_mcp_elicitation_request(
     let has_url = request.url.is_some();
     let has_requested_schema = request.requested_schema.is_some();
     app.mcp_mut().pending_elicitation = Some(request.clone());
-    view::set_active_view(app, ActiveView::Config);
-    app.config.active_tab = ConfigTab::Mcp;
+    view::set_active_view(app, ActiveView::Mcp);
     refresh_mcp_snapshot(app);
     let (browser_opened, browser_open_error) =
         if matches!(request.mode, forge_primitives::ElicitationMode::Url) {
@@ -586,8 +585,7 @@ pub(crate) fn present_mcp_auth_redirect(
     redirect: forge_primitives::McpAuthRedirect,
 ) {
     let server_name_for_log = redirect.server_name.clone();
-    view::set_active_view(app, ActiveView::Config);
-    app.config.active_tab = ConfigTab::Mcp;
+    view::set_active_view(app, ActiveView::Mcp);
     refresh_mcp_snapshot(app);
     let (browser_opened, browser_open_error) =
         match forge_workspace::Workspace::open_url_in_browser(&redirect.auth_url) {

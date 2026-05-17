@@ -180,8 +180,7 @@ mod tests {
         let names: Vec<String> =
             supported_command_candidates(&app).into_iter().map(|c| c.primary).collect();
         for expected in [
-            "/compact", "/config", "/effort", "/mcp", "/mode", "/model", "/new", "/plugins",
-            "/resume",
+            "/compact", "/effort", "/mcp", "/mode", "/model", "/new", "/plugins", "/resume",
         ] {
             assert!(names.iter().any(|n| n == expected), "missing {expected}");
         }
@@ -191,35 +190,7 @@ mod tests {
     }
 
     #[test]
-    fn config_without_args_opens_settings_view() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let mut app = App::test_default();
-        app.settings_home_override = Some(dir.path().to_path_buf());
-
-        let consumed = try_handle_submit(&mut app, "/config");
-
-        assert!(consumed);
-        assert_eq!(app.active_view, super::super::ActiveView::Config);
-    }
-
-    #[test]
-    fn config_with_extra_args_returns_usage_message() {
-        let mut app = App::test_default();
-
-        let consumed = try_handle_submit(&mut app, "/config extra");
-
-        assert!(consumed);
-        let Some(last) = app.messages().last() else {
-            panic!("expected usage message");
-        };
-        let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-            panic!("expected text block");
-        };
-        assert_eq!(block.text, "Usage: /config");
-    }
-
-    #[test]
-    fn plugins_without_args_opens_plugins_tab() {
+    fn plugins_without_args_opens_plugins_view() {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut app = App::test_default();
         app.settings_home_override = Some(dir.path().to_path_buf());
@@ -227,12 +198,11 @@ mod tests {
         let consumed = try_handle_submit(&mut app, "/plugins");
 
         assert!(consumed);
-        assert_eq!(app.active_view, super::super::ActiveView::Config);
-        assert_eq!(app.config.active_tab, super::super::ConfigTab::Plugins);
+        assert_eq!(app.active_view, super::super::ActiveView::Plugins);
     }
 
     #[test]
-    fn mcp_opens_config_at_mcp_tab() {
+    fn mcp_opens_mcp_view() {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut app = App::test_default();
         app.settings_home_override = Some(dir.path().to_path_buf());
@@ -240,8 +210,7 @@ mod tests {
         let consumed = try_handle_submit(&mut app, "/mcp");
 
         assert!(consumed);
-        assert_eq!(app.active_view, super::super::ActiveView::Config);
-        assert_eq!(app.config.active_tab, super::super::ConfigTab::Mcp);
+        assert_eq!(app.active_view, super::super::ActiveView::Mcp);
     }
 
     #[test]
@@ -261,7 +230,7 @@ mod tests {
     }
 
     #[test]
-    fn plugins_with_extra_args_still_opens_plugins_tab() {
+    fn plugins_with_extra_args_returns_usage() {
         let mut app = App::test_default();
         let dir = tempfile::tempdir().expect("tempdir");
         app.settings_home_override = Some(dir.path().to_path_buf());
@@ -269,8 +238,13 @@ mod tests {
         let consumed = try_handle_submit(&mut app, "/plugins extra");
 
         assert!(consumed);
-        assert_eq!(app.active_view, super::super::ActiveView::Config);
-        assert_eq!(app.config.active_tab, super::super::ConfigTab::Plugins);
+        let Some(last) = app.messages().last() else {
+            panic!("expected usage message");
+        };
+        let Some(MessageBlock::Text(block)) = last.blocks.first() else {
+            panic!("expected text block");
+        };
+        assert_eq!(block.text, "Usage: /plugins");
     }
 
     #[test]

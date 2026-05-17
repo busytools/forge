@@ -42,7 +42,7 @@ pub use cache_policy::{
     DEFAULT_TOOL_PREVIEW_LIMIT_BYTES, TextSplitDecision, TextSplitKind, default_cache_split_policy,
     find_text_split, find_text_split_index,
 };
-pub use config::{ConfigState, ConfigTab};
+pub use config::ConfigState;
 pub use connect::{create_app, start_connection};
 pub use diff_overlay::DiffOverlayState;
 pub use events::{apply_session_update, handle_terminal_event};

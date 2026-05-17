@@ -3,7 +3,7 @@ mod mcp;
 mod overlay;
 mod plugins;
 
-use crate::app::{App, ConfigTab};
+use crate::app::App;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::Color;
@@ -18,13 +18,31 @@ use overlay::{
     render_overlay_shell,
 };
 
-pub fn render(frame: &mut Frame, app: &mut App) {
+/// Standalone Plugins view. Renders the same chrome the old Config
+/// screen drew (outer titled box + status footer + help line) but
+/// wraps the plugins body directly with no tab header.
+pub fn render_plugins(frame: &mut Frame, app: &mut App) {
+    render_view(frame, app, "Plugins", plugins_help_text, plugins::render);
+}
+
+/// Standalone MCP view. Same chrome pattern as `render_plugins`.
+pub fn render_mcp(frame: &mut Frame, app: &mut App) {
+    render_view(frame, app, "MCP", |_| mcp_help_text(), mcp::render);
+}
+
+fn render_view(
+    frame: &mut Frame,
+    app: &mut App,
+    title: &'static str,
+    help: impl FnOnce(&App) -> String,
+    body: impl FnOnce(&mut Frame, Rect, &App),
+) {
     let frame_area = frame.area();
     app.cached_frame_area = frame_area;
 
     let outer = Block::default()
         .borders(Borders::ALL)
-        .title("Config")
+        .title(title)
         .border_style(Style::default().fg(theme::DIM));
     frame.render_widget(outer, frame_area);
 
@@ -32,19 +50,13 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),
             Constraint::Min(3),
             Constraint::Length(1),
             Constraint::Length(1),
         ])
         .split(inner);
 
-    render_tab_header(frame, chunks[0], app.config.active_tab);
-
-    match app.config.active_tab {
-        ConfigTab::Plugins => plugins::render(frame, chunks[1], app),
-        ConfigTab::Mcp => mcp::render(frame, chunks[1], app),
-    }
+    body(frame, chunks[0], app);
 
     if app.config.installed_plugin_actions_overlay().is_some() {
         render_installed_plugin_actions_overlay(frame, frame_area, app);
@@ -76,49 +88,42 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             message,
             Style::default().fg(if is_error { theme::STATUS_ERROR } else { theme::DIM }),
         ))),
-        chunks[2],
+        chunks[1],
     );
 
-    let help = config_help_text(app);
+    let help_text = if app.config.overlay.is_some() { String::new() } else { help(app) };
     frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(help, Style::default().fg(theme::RUST_ORANGE)))),
-        chunks[3],
+        Paragraph::new(Line::from(Span::styled(
+            help_text,
+            Style::default().fg(theme::RUST_ORANGE),
+        ))),
+        chunks[2],
     );
 }
 
-fn config_help_text(app: &App) -> String {
-    if app.config.overlay.is_some() {
-        return String::new();
-    }
-
-    match app.config.active_tab {
-        ConfigTab::Plugins => {
-            if crate::app::plugins::search_enabled(app.plugins.active_tab) {
-                if app.plugins.search_focused {
-                    "Left/Right switch list | Down list | Type search | Backspace erase | Del clear | Tab next tab | Shift+Tab prev tab | Enter close | Esc close".to_owned()
-                } else if matches!(
-                    app.plugins.active_tab,
-                    crate::app::plugins::PluginsViewTab::Installed
-                        | crate::app::plugins::PluginsViewTab::Plugins
-                ) {
-                    "Left/Right switch list | Up search | Up/Down move | Enter actions | Tab next tab | Shift+Tab prev tab | Esc close".to_owned()
-                } else {
-                    "Left/Right switch list | Up search | Up/Down move | Tab next tab | Shift+Tab prev tab | Enter close | Esc close".to_owned()
-                }
-            } else if matches!(
-                app.plugins.active_tab,
-                crate::app::plugins::PluginsViewTab::Marketplace
-            ) {
-                "Left/Right switch list | Up/Down move | Enter actions | Tab next tab | Shift+Tab prev tab | Esc close".to_owned()
-            } else {
-                "Left/Right switch list | Up/Down move | Tab next tab | Shift+Tab prev tab | Enter close | Esc close".to_owned()
-            }
-        }
-        ConfigTab::Mcp => {
-            "Up/Down select | Enter actions | r refresh | Tab next tab | Shift+Tab prev tab | Esc close"
+fn plugins_help_text(app: &App) -> String {
+    if crate::app::plugins::search_enabled(app.plugins.active_tab) {
+        if app.plugins.search_focused {
+            "Left/Right switch list | Down list | Type search | Backspace erase | Del clear | Enter close | Esc close".to_owned()
+        } else if matches!(
+            app.plugins.active_tab,
+            crate::app::plugins::PluginsViewTab::Installed
+                | crate::app::plugins::PluginsViewTab::Plugins
+        ) {
+            "Left/Right switch list | Up search | Up/Down move | Enter actions | Esc close"
                 .to_owned()
+        } else {
+            "Left/Right switch list | Up search | Up/Down move | Enter close | Esc close".to_owned()
         }
+    } else if matches!(app.plugins.active_tab, crate::app::plugins::PluginsViewTab::Marketplace) {
+        "Left/Right switch list | Up/Down move | Enter actions | Esc close".to_owned()
+    } else {
+        "Left/Right switch list | Up/Down move | Enter close | Esc close".to_owned()
     }
+}
+
+fn mcp_help_text() -> String {
+    "Up/Down select | Enter actions | r refresh | Esc close".to_owned()
 }
 
 fn render_installed_plugin_actions_overlay(frame: &mut Frame, area: Rect, app: &App) {
@@ -396,36 +401,6 @@ fn marketplace_action_overlay_lines(app: &App) -> Vec<Line<'static>> {
     lines
 }
 
-fn render_tab_header(frame: &mut Frame, area: Rect, active_tab: ConfigTab) {
-    let mut spans = Vec::new();
-    for (index, tab) in ConfigTab::ALL.iter().copied().enumerate() {
-        if index > 0 {
-            spans.push(Span::styled(" | ", Style::default().fg(theme::DIM)));
-        }
-
-        let style = if tab == active_tab {
-            Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::White)
-        };
-        spans.push(Span::styled(tab.title().to_owned(), style));
-    }
-
-    let line = Line::from(spans);
-    let content_width = u16::try_from(line.width()).unwrap_or(area.width).min(area.width);
-    let header_area = centered_line_area(area, content_width);
-    frame.render_widget(Paragraph::new(line), header_area);
-}
-
-fn centered_line_area(area: Rect, content_width: u16) -> Rect {
-    if content_width >= area.width {
-        return area;
-    }
-
-    let offset = area.width.saturating_sub(content_width) / 2;
-    Rect { x: area.x + offset, y: area.y, width: content_width, height: area.height }
-}
-
 #[cfg(test)]
 mod tests {
     use crate::app::App;
@@ -452,8 +427,8 @@ mod tests {
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
-        app.active_view = crate::app::ActiveView::Config;
-        app.config.active_tab = crate::app::ConfigTab::Plugins;
+        
+        app.active_view = crate::app::ActiveView::Plugins;
         app.plugins.installed = vec![crate::app::plugins::InstalledPluginEntry {
             id: "frontend-design@claude-plugins-official".to_owned(),
             version: Some("1.0.0".to_owned()),
@@ -481,7 +456,7 @@ mod tests {
 
         terminal
             .draw(|frame| {
-                super::render(frame, &mut app);
+                super::render_plugins(frame, &mut app);
             })
             .expect("draw");
 
@@ -500,8 +475,8 @@ mod tests {
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
-        app.active_view = crate::app::ActiveView::Config;
-        app.config.active_tab = crate::app::ConfigTab::Plugins;
+        
+        app.active_view = crate::app::ActiveView::Plugins;
         app.plugins.active_tab = crate::app::plugins::PluginsViewTab::Plugins;
         app.plugins.marketplace = vec![crate::app::plugins::MarketplaceEntry {
             plugin_id: "frontend-design@claude-plugins-official".to_owned(),
@@ -515,7 +490,7 @@ mod tests {
 
         terminal
             .draw(|frame| {
-                super::render(frame, &mut app);
+                super::render_plugins(frame, &mut app);
             })
             .expect("draw");
 
@@ -530,8 +505,8 @@ mod tests {
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
         app.set_cwd_raw("C:\\work\\project-b");
-        app.active_view = crate::app::ActiveView::Config;
-        app.config.active_tab = crate::app::ConfigTab::Plugins;
+        
+        app.active_view = crate::app::ActiveView::Plugins;
         app.plugins.installed = vec![
             crate::app::plugins::InstalledPluginEntry {
                 id: "other-local@claude-plugins-official".to_owned(),
@@ -567,7 +542,7 @@ mod tests {
 
         terminal
             .draw(|frame| {
-                super::render(frame, &mut app);
+                super::render_plugins(frame, &mut app);
             })
             .expect("draw");
 
@@ -592,13 +567,13 @@ mod tests {
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
-        app.active_view = crate::app::ActiveView::Config;
-        app.config.active_tab = crate::app::ConfigTab::Plugins;
+        
+        app.active_view = crate::app::ActiveView::Plugins;
         app.plugins.loading = true;
 
         terminal
             .draw(|frame| {
-                super::render(frame, &mut app);
+                super::render_plugins(frame, &mut app);
             })
             .expect("draw");
 
@@ -612,13 +587,13 @@ mod tests {
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
-        app.active_view = crate::app::ActiveView::Config;
-        app.config.active_tab = crate::app::ConfigTab::Plugins;
+        
+        app.active_view = crate::app::ActiveView::Plugins;
         app.plugins.active_tab = crate::app::plugins::PluginsViewTab::Marketplace;
 
         terminal
             .draw(|frame| {
-                super::render(frame, &mut app);
+                super::render_plugins(frame, &mut app);
             })
             .expect("draw");
 
@@ -632,8 +607,8 @@ mod tests {
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
-        app.active_view = crate::app::ActiveView::Config;
-        app.config.active_tab = crate::app::ConfigTab::Plugins;
+        
+        app.active_view = crate::app::ActiveView::Plugins;
         app.config.overlay = Some(crate::app::config::ConfigOverlayState::InstalledPluginActions(
             InstalledPluginActionOverlayState {
                 plugin_id: "frontend-design@claude-plugins-official".to_owned(),
@@ -653,7 +628,7 @@ mod tests {
 
         terminal
             .draw(|frame| {
-                super::render(frame, &mut app);
+                super::render_plugins(frame, &mut app);
             })
             .expect("draw");
 
@@ -670,8 +645,8 @@ mod tests {
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
-        app.active_view = crate::app::ActiveView::Config;
-        app.config.active_tab = crate::app::ConfigTab::Plugins;
+        
+        app.active_view = crate::app::ActiveView::Plugins;
         app.config.overlay = Some(crate::app::config::ConfigOverlayState::PluginInstallActions(
             PluginInstallOverlayState {
                 plugin_id: "frontend-design@claude-plugins-official".to_owned(),
@@ -688,7 +663,7 @@ mod tests {
 
         terminal
             .draw(|frame| {
-                super::render(frame, &mut app);
+                super::render_plugins(frame, &mut app);
             })
             .expect("draw");
 
@@ -705,8 +680,8 @@ mod tests {
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
-        app.active_view = crate::app::ActiveView::Config;
-        app.config.active_tab = crate::app::ConfigTab::Plugins;
+        
+        app.active_view = crate::app::ActiveView::Plugins;
         app.config.overlay = Some(crate::app::config::ConfigOverlayState::MarketplaceActions(
             crate::app::config::MarketplaceActionsOverlayState {
                 name: "claude-plugins-official".to_owned(),
@@ -722,7 +697,7 @@ mod tests {
 
         terminal
             .draw(|frame| {
-                super::render(frame, &mut app);
+                super::render_plugins(frame, &mut app);
             })
             .expect("draw");
 
@@ -738,15 +713,15 @@ mod tests {
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
-        app.active_view = crate::app::ActiveView::Config;
-        app.config.active_tab = crate::app::ConfigTab::Plugins;
+        
+        app.active_view = crate::app::ActiveView::Plugins;
         app.config.overlay = Some(crate::app::config::ConfigOverlayState::AddMarketplace(
             crate::app::config::AddMarketplaceOverlayState { draft: String::new(), cursor: 0 },
         ));
 
         terminal
             .draw(|frame| {
-                super::render(frame, &mut app);
+                super::render_plugins(frame, &mut app);
             })
             .expect("draw");
 
@@ -762,14 +737,17 @@ mod tests {
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
-        app.active_view = crate::app::ActiveView::Config;
-        app.config.active_tab = crate::app::ConfigTab::Mcp;
+        
+        app.active_view = crate::app::ActiveView::Mcp;
         app.config.overlay = Some(crate::app::config::ConfigOverlayState::McpDetails(
             crate::app::config::McpDetailsOverlayState {
                 server_name: "filesystem".to_owned(),
                 selected_index: 0,
             },
         ));
+
+        // Switch render below from `render_plugins` to `render_mcp`
+        // — this test exercises the MCP detail overlay.
         app.mcp_mut().servers = vec![forge_primitives::McpServerStatus {
             name: "filesystem".to_owned(),
             status: forge_primitives::McpServerConnectionStatus::Connected,
@@ -800,7 +778,7 @@ mod tests {
 
         terminal
             .draw(|frame| {
-                super::render(frame, &mut app);
+                super::render_mcp(frame, &mut app);
             })
             .expect("draw");
 
@@ -818,12 +796,12 @@ mod tests {
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
-        app.active_view = crate::app::ActiveView::Config;
+        
         app.config.status_message = Some("Renaming session...".to_owned());
 
         terminal
             .draw(|frame| {
-                super::render(frame, &mut app);
+                super::render_plugins(frame, &mut app);
             })
             .expect("draw");
 

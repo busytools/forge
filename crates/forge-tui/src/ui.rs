@@ -30,7 +30,8 @@ use ratatui::Frame;
 pub fn render(frame: &mut Frame, app: &mut App) {
     match app.active_view {
         ActiveView::Chat => chat_view::render(frame, app),
-        ActiveView::Config => config::render(frame, app),
+        ActiveView::Plugins => config::render_plugins(frame, app),
+        ActiveView::Mcp => config::render_mcp(frame, app),
         ActiveView::Launchpad => launchpad::render(frame, app),
         ActiveView::Diff => diff_overlay::render(frame, app),
     }
