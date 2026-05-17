@@ -177,18 +177,6 @@ impl AgentHandle {
         self.send(AgentCommand::SetModel { session_id: session_id.into(), model })
     }
 
-    pub fn generate_session_title(
-        &self,
-        session_id: String,
-        description: String,
-    ) -> Result<(), AgentError> {
-        self.send(AgentCommand::GenerateSessionTitle { session_id: session_id.into(), description })
-    }
-
-    pub fn rename_session(&self, session_id: String, title: String) -> Result<(), AgentError> {
-        self.send(AgentCommand::RenameSession { session_id: session_id.into(), title })
-    }
-
     pub fn get_status_snapshot(&self, session_id: String) -> Result<(), AgentError> {
         self.send(AgentCommand::GetStatusSnapshot { session_id: session_id.into() })
     }
@@ -468,12 +456,6 @@ fn dispatch(cmd: AgentCommand, bridge: &ForgeSdkBridge) -> anyhow::Result<()> {
         C::Cancel { session_id } => bridge.cancel(session_id.into_string()),
         C::SetMode { session_id, mode } => bridge.set_mode(session_id.into_string(), mode),
         C::SetModel { session_id, model } => bridge.set_model(session_id.into_string(), model),
-        C::GenerateSessionTitle { session_id, description } => {
-            bridge.generate_session_title(session_id.into_string(), description)
-        }
-        C::RenameSession { session_id, title } => {
-            bridge.rename_session(session_id.into_string(), title)
-        }
         C::GetStatusSnapshot { session_id } => bridge.get_status_snapshot(session_id.into_string()),
         C::GetOauthCredentialsSnapshot { session_id } => {
             bridge.get_oauth_credentials_snapshot(session_id.into_string())

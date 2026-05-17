@@ -896,9 +896,7 @@ mod tests {
             session_id: "session-1".to_owned(),
             summary: "Session one".to_owned(),
             last_modified_ms: 1,
-            file_size_bytes: 1,
             cwd: None,
-            git_branch: None,
             custom_title: None,
             first_prompt: None,
         }];

@@ -75,14 +75,6 @@ pub enum AgentCommand {
         session_id: SessionId,
         model: String,
     },
-    GenerateSessionTitle {
-        session_id: SessionId,
-        description: String,
-    },
-    RenameSession {
-        session_id: SessionId,
-        title: String,
-    },
 
     // --- Snapshots requested by UI ---
     GetStatusSnapshot {

@@ -8,9 +8,7 @@ pub struct SessionListEntry {
     pub session_id: String,
     pub summary: String,
     pub last_modified_ms: u64,
-    pub file_size_bytes: u64,
     pub cwd: Option<String>,
-    pub git_branch: Option<String>,
     pub custom_title: Option<String>,
     pub first_prompt: Option<String>,
 }

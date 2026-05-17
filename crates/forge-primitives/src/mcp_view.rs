@@ -8,7 +8,6 @@ use serde::{Deserialize, Serialize};
 pub struct McpAuthRedirect {
     pub server_name: String,
     pub auth_url: String,
-    pub requires_user_action: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -10,10 +10,6 @@
 //! `pending_controls` map. Concurrent calls are safe — the writer
 //! mpsc serialises onto stdin in arrival order, and each
 //! `request_id` gets its own oneshot waiter.
-//!
-//! Session forking lives in the offline `fork_session` free function
-//! in `forge_agent::userdata::catalog::mutations` — there's no runtime
-//! `control_request` subtype for it.
 
 use crate::Error;
 use crate::client::Client;
@@ -165,35 +161,6 @@ impl Client {
     /// See the outbound control error cases.
     pub async fn get_context_usage_raw(&self) -> Result<serde_json::Value, Error> {
         self.send_control("get_context_usage", serde_json::json!({})).await
-    }
-
-    /// Ask the CLI to generate a short session title from `description`.
-    /// Wire shape: `{"subtype": "generate_session_title",
-    /// "description": <string>, "persist": true}`. The CLI responds with
-    /// the generated string.
-    ///
-    /// # Errors
-    ///
-    /// See the outbound control error cases, plus [`Error::MessageParse`]
-    /// when the CLI response isn't a string title.
-    pub async fn generate_session_title(&self, description: &str) -> Result<String, Error> {
-        let raw = self
-            .send_control(
-                "generate_session_title",
-                serde_json::json!({"description": description, "persist": true}),
-            )
-            .await?;
-        match raw {
-            serde_json::Value::String(s) => Ok(s),
-            serde_json::Value::Object(map) => {
-                map.get("title").and_then(|v| v.as_str()).map(str::to_owned).ok_or_else(|| {
-                    Error::message_parse("generate_session_title: response missing 'title'")
-                })
-            }
-            other => Err(Error::message_parse(format!(
-                "generate_session_title: unexpected response shape {other}"
-            ))),
-        }
     }
 
     /// Ask the CLI to reload session plugins (slash commands, agents,

@@ -20,11 +20,18 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 use unicode_normalization::UnicodeNormalization;
+use uuid::Uuid;
 
 use forge_primitives::{SDKSessionInfo, SessionMessage, SessionMessageKind};
 use forge_sdk::projects_dir_for;
 
-use crate::userdata::catalog::mutations::is_valid_uuid;
+/// True if `s` is a canonical 8-4-4-4-12 hyphenated UUID. The length
+/// guard rejects the hyphenless / braced / URN forms that
+/// `Uuid::try_parse` otherwise accepts — session ids on disk are always
+/// the hyphenated form the CLI emits.
+pub(crate) fn is_valid_uuid(s: &str) -> bool {
+    s.len() == 36 && Uuid::try_parse(s).is_ok()
+}
 
 const MAX_SANITIZED_LENGTH: usize = 200;
 

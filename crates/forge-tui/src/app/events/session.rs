@@ -145,9 +145,7 @@ pub(super) fn handle_sessions_listed_event(
             session_id: entry.session_id,
             summary: entry.summary,
             last_modified_ms: entry.last_modified_ms,
-            file_size_bytes: entry.file_size_bytes,
             cwd: entry.cwd,
-            git_branch: entry.git_branch,
             custom_title: entry.custom_title,
             first_prompt: entry.first_prompt,
         })

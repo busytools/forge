@@ -565,20 +565,6 @@ pub(crate) fn execute_command_via_handle(
         Command::ResumeOrNewSession { key: _, session_id, cwd, launch_settings } => {
             handle.resume_or_new_session(session_id, cwd, launch_settings)
         }
-        Command::GenerateSessionTitle { key: _, description } => {
-            let Some(sid) = session_id else {
-                warn_no_session(key, "GenerateSessionTitle");
-                return Ok(());
-            };
-            handle.generate_session_title(sid.to_owned(), description)
-        }
-        Command::RenameSession { key: _, title } => {
-            let Some(sid) = session_id else {
-                warn_no_session(key, "RenameSession");
-                return Ok(());
-            };
-            handle.rename_session(sid.to_owned(), title)
-        }
         Command::ReconnectMcpServer { key: _, server_name } => {
             let Some(sid) = session_id else {
                 warn_no_session(key, "ReconnectMcpServer");
@@ -1009,28 +995,6 @@ mod tests {
                 assert_eq!(mode, "plan");
             }
             other => panic!("expected SetMode, got {other:?}"),
-        }
-    }
-
-    /// `Command::GenerateSessionTitle` forwards through the new path.
-    #[test]
-    fn execute_generate_session_title_forwards_to_handle() {
-        let (handle, mut rx) = stub_handle_with_rx();
-        let key = SessionKey::from_str_for_test("sess");
-        execute_command_via_handle(
-            &handle,
-            &key,
-            Some("sess-1"),
-            Command::GenerateSessionTitle { key: key.clone(), description: "first turn".into() },
-        )
-        .expect("dispatch succeeds");
-        let cmd = rx.try_recv().expect("command queued");
-        match cmd {
-            forge_primitives::AgentCommand::GenerateSessionTitle { session_id, description } => {
-                assert_eq!(session_id.as_str(), "sess-1");
-                assert_eq!(description, "first turn");
-            }
-            other => panic!("expected GenerateSessionTitle, got {other:?}"),
         }
     }
 

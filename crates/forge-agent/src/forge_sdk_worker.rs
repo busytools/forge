@@ -330,9 +330,7 @@ async fn list_recent_sessions(
             session_id: info.session_id,
             summary: info.summary,
             last_modified_ms: info.last_modified,
-            file_size_bytes: info.file_size.unwrap_or(0),
             cwd: info.cwd,
-            git_branch: info.git_branch,
             custom_title: info.custom_title,
             first_prompt: info.first_prompt,
         })

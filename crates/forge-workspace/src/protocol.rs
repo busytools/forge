@@ -131,16 +131,6 @@ pub enum Command {
         action: ElicitationAction,
         content: Option<serde_json::Value>,
     },
-    /// Request a fresh session title from the bridge.
-    GenerateSessionTitle {
-        key: SessionKey,
-        description: String,
-    },
-    /// Persist a custom title for the active session.
-    RenameSession {
-        key: SessionKey,
-        title: String,
-    },
     /// Reconnect a configured MCP server.
     ReconnectMcpServer {
         key: SessionKey,
@@ -221,8 +211,6 @@ impl Command {
             | Self::RespondPermission { key, .. }
             | Self::RespondQuestion { key, .. }
             | Self::RespondElicitation { key, .. }
-            | Self::GenerateSessionTitle { key, .. }
-            | Self::RenameSession { key, .. }
             | Self::ReconnectMcpServer { key, .. }
             | Self::ToggleMcpServer { key, .. }
             | Self::SetMcpServers { key, .. }

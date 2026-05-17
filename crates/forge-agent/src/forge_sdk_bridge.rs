@@ -329,8 +329,8 @@ impl ForgeSdkBridge {
     /// drop the dispatch with a no-op `Ok(())`.
     ///
     /// Other user-action methods (`prompt_with_images`,
-    /// `generate_session_title`, `respond_to_elicitation`) intentionally
-    /// opt out — see the inline rationale at each call site.
+    /// `respond_to_elicitation`) intentionally opt out — see the inline
+    /// rationale at each call site.
     fn check_session_id(&self, session_id: &str, label: &'static str) -> bool {
         let current = self.inner.session_id_slot.lock().clone();
         if current.is_empty() || current == session_id {
@@ -365,33 +365,6 @@ impl ForgeSdkBridge {
             requested_session_id = %session_id,
             "passing through dispatch despite stale session id (intentional bypass)",
         );
-    }
-
-    pub(crate) fn generate_session_title(
-        &self,
-        session_id: String,
-        description: String,
-    ) -> anyhow::Result<()> {
-        // No `check_session_id` here — title generation is a
-        // best-effort cosmetic update; even mis-routed it can't
-        // wedge user-visible state. Trace breadcrumb keeps the
-        // bypass observable.
-        self.trace_session_id_bypass(&session_id, "generate_session_title");
-        self.dispatch("generate_session_title", move |client| async move {
-            client.generate_session_title(&description).await?;
-            Ok(())
-        })
-    }
-
-    pub(crate) fn rename_session(&self, session_id: String, title: String) -> anyhow::Result<()> {
-        // Offline disk mutation — no Client required.
-        crate::userdata::catalog::mutations::rename_session(
-            &self.inner.config_dir,
-            &session_id,
-            &title,
-            None,
-        )?;
-        Ok(())
     }
 
     pub(crate) fn get_status_snapshot(&self, session_id: String) -> anyhow::Result<()> {
@@ -654,7 +627,6 @@ impl ForgeSdkBridge {
                                 redirect: forge_primitives::McpAuthRedirect {
                                     server_name,
                                     auth_url,
-                                    requires_user_action: true,
                                 },
                             })
                             .is_err()
@@ -1003,17 +975,4 @@ mod tests {
         assert!(err.to_string().contains("before active session"));
     }
 
-    #[test]
-    fn rename_session_runs_offline_without_client() {
-        let bridge = test_bridge();
-        // Bogus session id — `rename_session` propagates the disk
-        // error rather than the "no active session" guard. The point
-        // of this test is to confirm we do NOT take the dispatch path.
-        let err = bridge
-            .rename_session("does-not-exist-session-id".to_owned(), "title".to_owned())
-            .unwrap_err();
-        // Whatever forge_sdk surfaces — just ensure it isn't the
-        // bridge's own "no active session" message.
-        assert!(!err.to_string().contains("before active session"));
-    }
 }
