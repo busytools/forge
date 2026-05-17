@@ -82,9 +82,13 @@ const SPINNER_FRAME_INTERVAL_NORMAL: Duration = Duration::from_millis(30);
 const SPINNER_FRAME_INTERVAL_REDUCED: Duration = Duration::from_millis(120);
 
 /// Hard cap on candidates shown in autocomplete dropdowns
-/// (file_index, slash, subagent). Same value across the three so a
-/// single change here covers every dropdown.
-pub(crate) const MAX_CANDIDATES: usize = 50;
+/// (file_index, slash, subagent). The slash dropdown sees the
+/// largest counts (forge group + every claude slash command + every
+/// installed skill / plugin command); 50 was hitting that ceiling
+/// in real use. 200 covers anything realistic with headroom; the
+/// dropdown's own visible-row cap (slash::MAX_VISIBLE = 20) keeps
+/// the on-screen size bounded regardless.
+pub(crate) const MAX_CANDIDATES: usize = 200;
 
 // ---------------------------------------------------------------------------
 // Terminal suspend / resume helpers (reused by /login, /logout)
