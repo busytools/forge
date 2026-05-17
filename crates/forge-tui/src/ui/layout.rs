@@ -96,12 +96,15 @@ pub fn compute(
     let (pane_rect, pane_separator_rect, pane_right_rect, pane_right_separator_rect, chat_area) =
         compute_horizontal_split(area, pane_visible, pane_right_visible);
 
+    // No dedicated separator rows above/below the input: the
+    // bordered input box's own top/bottom edges serve as dividers.
+    // The zero-height `input_sep` / `input_bottom_sep` fields stay
+    // around so consumers can still address them, but they no longer
+    // consume any vertical space.
     let mut layout = if chat_area.height < 8 {
-        // Ultra-compact: drop the upper input separator (no room).
-        let [body, input, input_bottom_sep, help] = Layout::vertical([
+        let [body, input, help] = Layout::vertical([
             Constraint::Min(1),
             Constraint::Length(input_height),
-            Constraint::Length(1),
             Constraint::Length(help_height),
         ])
         .areas(chat_area);
@@ -114,15 +117,13 @@ pub fn compute(
             body,
             input_sep: Rect::new(chat_area.x, input.y, chat_area.width, 0),
             input,
-            input_bottom_sep,
+            input_bottom_sep: Rect::new(chat_area.x, input.y + input.height, chat_area.width, 0),
             help,
         }
     } else {
-        let [body, input_sep, input, input_bottom_sep, help] = Layout::vertical([
+        let [body, input, help] = Layout::vertical([
             Constraint::Min(3),
-            Constraint::Length(1),
             Constraint::Length(input_height),
-            Constraint::Length(1),
             Constraint::Length(help_height),
         ])
         .areas(chat_area);
@@ -133,9 +134,9 @@ pub fn compute(
             pane_right: pane_right_rect,
             pane_right_separator: pane_right_separator_rect,
             body,
-            input_sep,
+            input_sep: Rect::new(chat_area.x, input.y, chat_area.width, 0),
             input,
-            input_bottom_sep,
+            input_bottom_sep: Rect::new(chat_area.x, input.y + input.height, chat_area.width, 0),
             help,
         }
     };
@@ -268,9 +269,12 @@ mod tests {
     fn normal_layout_respects_requested_sections() {
         let layout = compute(area(80, 24), 5, 2, false, false);
 
-        assert_eq!(layout.input_sep.height, 1);
+        // input_sep / input_bottom_sep are zero-height anchors now;
+        // the bordered input box's own borders divide it from the
+        // chat body and help row.
+        assert_eq!(layout.input_sep.height, 0);
         assert_eq!(layout.input.height, 5);
-        assert_eq!(layout.input_bottom_sep.height, 1);
+        assert_eq!(layout.input_bottom_sep.height, 0);
         assert_eq!(layout.help.height, 2);
         assert!(layout.body.height >= 3);
         assert_eq!(total_height(&layout), 24);
@@ -280,25 +284,14 @@ mod tests {
     }
 
     #[test]
-    fn compact_layout_omits_input_sep_and_allocates_remaining_space_to_input_and_help() {
+    fn compact_layout_allocates_remaining_space_to_input_and_help() {
         let layout = compute(area(80, 6), 3, 2, false, false);
 
         assert_eq!(layout.input_sep.height, 0);
+        assert_eq!(layout.input_bottom_sep.height, 0);
         assert_eq!(layout.help.height, 2);
         assert!(layout.input.height >= 1);
         assert_eq!(total_height(&layout), 6);
-    }
-
-    #[test]
-    fn layout_threshold_switches_at_height_eight() {
-        let compact = compute(area(80, 7), 1, 0, false, false);
-        let normal = compute(area(80, 8), 1, 1, false, false);
-
-        // Compact path skips the input_sep allocation.
-        assert_eq!(compact.input_sep.height, 0);
-        // Normal path allocates an input_sep.
-        assert_eq!(normal.input_sep.height, 1);
-        assert_eq!(normal.help.height, 1);
     }
 
     #[test]

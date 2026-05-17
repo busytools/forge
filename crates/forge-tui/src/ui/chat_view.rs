@@ -91,8 +91,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         top_bar::render(frame, top_bar_area, app);
     }
 
-    render_separator(frame, areas.input_sep);
-
     {
         let _t = app.perf.as_ref().map(|p| p.start("ui::input"));
         input::render(frame, areas.input, app);
@@ -103,8 +101,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         autocomplete::render(frame, areas.input, app);
     }
 
-    render_separator(frame, areas.input_bottom_sep);
-
     if areas.help.height > 0 {
         let _t = app.perf.as_ref().map(|p| p.start("ui::help"));
         help::render(frame, areas.help, app);
@@ -114,15 +110,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     // (`projects_pane::render_account_status_footer`); todos render
     // in the Inspector pane (`inspector_pane::render`).
     render_perf_fps_overlay(frame, frame_area, frame_area.y, app);
-}
-
-fn render_separator(frame: &mut Frame, area: Rect) {
-    if area.height == 0 {
-        return;
-    }
-    let sep_str = theme::SEPARATOR_CHAR.repeat(area.width as usize);
-    let line = Line::from(Span::styled(sep_str, Style::default().fg(theme::DIM)));
-    frame.render_widget(Paragraph::new(line), area);
 }
 
 /// Render the full-height `│` column between a side pane and the
