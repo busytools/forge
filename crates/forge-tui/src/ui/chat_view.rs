@@ -97,16 +97,12 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     }
 
     // Render the input AFTER the pane separators and help row so its
-    // bordered box paints over them. The user-visible box extends 1
-    // cell to the left/right over the pane separators and down across
-    // the help row, giving the chat input a flush-with-the-screen
-    // affordance.
+    // bordered box paints over them. The box extends 1 cell to the
+    // right over the right pane separator and down across the help
+    // row; the left edge stays inside the chat column so the
+    // projects pane's right border stays visually intact.
     let input_box_area = {
         let mut rect = areas.input;
-        if let Some(left_sep) = areas.pane_separator {
-            rect.x = left_sep.x;
-            rect.width = rect.width.saturating_add(left_sep.width);
-        }
         if let Some(right_sep) = areas.pane_right_separator {
             rect.width = rect.width.saturating_add(right_sep.width);
         }

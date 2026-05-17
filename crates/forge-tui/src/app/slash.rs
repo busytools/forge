@@ -14,12 +14,14 @@ use super::{
 };
 use crate::agent::model;
 
-/// Visible rows in the slash dropdown. No artificial cap — the
-/// candidate list is already bounded by `MAX_CANDIDATES`, and the
-/// terminal frame clips anything that doesn't fit. Every slash
-/// command the user has is reachable from the idle open without
-/// scrolling.
-pub const MAX_VISIBLE: usize = MAX_CANDIDATES;
+/// Visible rows in the slash dropdown. Capped at 20 so a long
+/// command list (50+ between forge + claude groups) doesn't blow
+/// the dropdown to two-thirds of the screen height; scrolling via
+/// the dialog handles the overflow. The renderer additionally
+/// clamps to whatever rows the terminal actually has above the
+/// input cursor — the navigation math uses this same cap so the
+/// rendered window and the dialog's scroll_offset agree.
+pub const MAX_VISIBLE: usize = 20;
 use super::MAX_CANDIDATES;
 
 // Re-export public API
