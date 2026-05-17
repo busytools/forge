@@ -197,13 +197,13 @@ fn render_scrollable_body(frame: &mut Frame, body_area: Rect, app: &mut App) {
 
     // Stamp the 🦉 open-review hit target — GIT header is body
     // line 0, so the glyph is visible exactly when `offset == 0`.
-    // The 🦉 owl is 2 cells wide and sits with 2 cells of trailing
-    // pad before the right edge (matches `append_git_section`'s
+    // The 🦉 owl is 2 cells wide and sits with PANE_PAD (1 cell) of
+    // trailing pad before the right edge (matches `append_git_section`'s
     // layout). Hit-test covers both glyph cells + 1 cell left/right
     // for forgiveness.
     if has_open_diff_glyph && offset == 0 {
         let right_edge = body_area.x.saturating_add(body_area.width);
-        let glyph_x = right_edge.saturating_sub(4);
+        let glyph_x = right_edge.saturating_sub(3);
         let x_start = glyph_x.saturating_sub(1);
         let x_end = glyph_x.saturating_add(3);
         app.pane_hit_targets.push(PaneHitTarget::InspectorGitOpenDiff {
@@ -411,13 +411,13 @@ fn append_git_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
     )];
     if has_glyph {
         // " GIT" is 4 cells; the 🦉 owl is 2 cells wide; trailing
-        // 2-cell pad keeps the affordance 2 columns clear of the
-        // pane's right edge. Total reserved on the right: 4 cells
-        // (glyph + trailing pad).
-        let pad = usize::from(width).saturating_sub(4 + 4);
+        // pad is PANE_PAD (1 cell) so the owl's right edge aligns
+        // with the `-M` column on the diff-stats rows below.
+        let trailing_pad = usize::from(PANE_PAD);
+        let pad = usize::from(width).saturating_sub(4 + 2 + trailing_pad);
         header_spans.push(Span::raw(" ".repeat(pad)));
         header_spans.push(Span::styled("\u{1F989}".to_owned(), Style::default()));
-        header_spans.push(Span::raw("  "));
+        header_spans.push(Span::raw(" ".repeat(trailing_pad)));
     }
     lines.push(Line::from(header_spans));
     // Blank between header and content.
