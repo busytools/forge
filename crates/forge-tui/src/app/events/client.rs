@@ -618,7 +618,7 @@ pub(super) fn apply_session_update_chat_appended(
 
 fn apply_sdk_message_presentation(app: &mut App, session_id: &str, msg: forge_primitives::Message) {
     // For new sessions the CLI doesn't emit `system/init` until AFTER
-    // the first user message lands (per `spawn_inner` docs), so
+    // the first user message lands (per `Client::spawn` docs), so
     // `Client::session_id()` is empty at spawn time and that empty
     // value rides through `Connected` onto `app.session_id`. The
     // first wire message that DOES carry a real id (Assistant /
