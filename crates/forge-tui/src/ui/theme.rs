@@ -5,7 +5,7 @@ pub const RUST_ORANGE: Color = Color::Rgb(244, 118, 0);
 
 // UI chrome
 pub const DIM: Color = Color::DarkGray;
-pub const PROMPT_CHAR: &str = "\u{276f}";
+pub const PROMPT_CHAR: &str = "\u{27a4}";
 pub const SEPARATOR_CHAR: &str = "\u{2500}";
 
 // Role header colors

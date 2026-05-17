@@ -97,17 +97,13 @@ pub(crate) fn compute_render_geometry(area: Rect, hint_lines: u16) -> InputRende
         height: hint.height,
     });
 
-    // Bordered box spans the input_main_area horizontally with the
-    // same INPUT_PAD inset used for hints, so the box sits centred
-    // under the chat column. `box_area` is the full Rect the Block
-    // widget draws into (borders + interior); `padded` is the
-    // 1-cell-inset interior where prompt + text live.
-    let box_area = Rect {
-        x: input_main_area.x.saturating_add(INPUT_PAD),
-        y: input_main_area.y,
-        width: input_main_area.width.saturating_sub(INPUT_PAD * 2 + INPUT_RIGHT_PAD),
-        height: input_main_area.height,
-    };
+    // Bordered box spans the full chat column width — the box's L/R
+    // borders themselves are the visual margin, so the box sits flush
+    // against the pane separators (or screen edges in narrow tier).
+    // `box_area` is the full Rect the Block widget draws into
+    // (borders + interior); `padded` is the 1-cell-inset interior
+    // where prompt + text live.
+    let box_area = input_main_area;
     let padded = Rect {
         x: box_area.x.saturating_add(1),
         y: box_area.y.saturating_add(1),
@@ -124,13 +120,13 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     let hint_lines = hint_line_count(app);
     let geometry = compute_render_geometry(area, hint_lines);
 
-    // Bordered frame around the input area — matches the diff
-    // overlay's comment-composer chrome so both editing surfaces
-    // read as the same affordance.
+    // Bordered frame around the input area — the chat input is THE
+    // primary action surface, so the box renders with thick line
+    // chrome in RUST_ORANGE + BOLD to grab the eye on first glance.
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_type(BorderType::Plain)
-        .border_style(Style::default().fg(theme::RUST_ORANGE));
+        .border_type(BorderType::Thick)
+        .border_style(Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD));
     frame.render_widget(block, geometry.box_area);
 
     if let Some(hint_pad) = geometry.hint_pad {
