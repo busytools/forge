@@ -51,14 +51,6 @@ pub struct RecentSessionInfo {
     pub first_prompt: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct SessionPickerState {
-    /// Index of the currently highlighted session in `app.recent_sessions`.
-    pub selected: usize,
-    /// Scroll offset for when the list exceeds the visible area.
-    pub scroll_offset: usize,
-}
-
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct MessageUsage {
     pub input_tokens: Option<u64>,

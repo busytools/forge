@@ -347,7 +347,7 @@
 <h2 class="section-title" id="layout">Layout</h2>
 
 <p class="intro">
-  forge-tui's main frame is a strict vertical stack composed by <code>layout::compute</code>, flanked by inline side panes at the wider tiers. <strong>This stack only renders in <code>ActiveView::Chat</code>.</strong> When the user opens <code>/config</code> or the resume picker, forge swaps the entire frame to a single full-screen overlay (<code>ActiveView::Config</code>, <code>ActiveView::SessionPicker</code>) — chat / input / side panes all disappear during those views. At terminal widths ≥160 cols the chat frame is flanked by a 40ch <a href="#projects-pane">Projects pane</a> on the left (carrying the account / mode / model / usage / location panel at its bottom) and a 40ch <a href="#inspector-pane">Inspector pane</a> on the right (carrying the live <code>TASKS</code> list from <code>TodoWrite</code>); between 120–159 cols both panes shrink to 30ch with truncation; below 120 cols a single-row top bar replaces both panes — tapping the <code>▤</code> icon (or <kbd>Ctrl+B</kbd>) opens the Projects overlay, tapping <code>▦</code> (or <kbd>Ctrl+E</kbd>) opens the Inspector overlay.
+  forge-tui's main frame is a strict vertical stack composed by <code>layout::compute</code>, flanked by inline side panes at the wider tiers. <strong>This stack only renders in <code>ActiveView::Chat</code>.</strong> When the user opens <code>/config</code>, forge swaps the entire frame to <code>ActiveView::Config</code> — chat / input / side panes all disappear. At terminal widths ≥160 cols the chat frame is flanked by a 40ch <a href="#projects-pane">Projects pane</a> on the left (carrying the account / mode / model / usage / location panel at its bottom) and a 40ch <a href="#inspector-pane">Inspector pane</a> on the right (carrying the live <code>TASKS</code> list from <code>TodoWrite</code>); between 120–159 cols both panes shrink to 30ch with truncation; below 120 cols a single-row top bar replaces both panes — tapping the <code>▤</code> icon (or <kbd>Ctrl+B</kbd>) opens the Projects overlay, tapping <code>▦</code> (or <kbd>Ctrl+E</kbd>) opens the Inspector overlay.
 </p>
 
 <p class="intro">
@@ -1142,41 +1142,8 @@ chat continues here…
 <!-- ============================================================== -->
 <h2 class="section-title" id="sessions">Session picker</h2>
 
-<div class="surface">
-  <div class="surface-head">
-    <h4>Resume picker</h4>
-    <div class="when">visible: when user runs <code>/resume</code> (or app starts in startup-picker mode)</div>
-  </div>
-  <div class="surface-body">
-    <p>Full-frame bordered overlay with the block title <code>Resume Session</code> (in DIM). Inside: a 4-row layout — header line "Select a session to resume" (RUST_ORANGE bold), subtitle "Recent sessions for this project directory." (DIM), session list (filling the middle), footer text (DIM).</p>
-    <p><strong>Single list, current cwd only.</strong> No "other projects" section. Each session = 2 rows. Selected row is white-on-RUST_ORANGE (full-row background highlight). Empty state: "No recent sessions found for this directory." Loading state: "Loading recent sessions...".</p>
-    <div class="term">
-      <pre class="indent">
-  <span class="dim">╭ Resume Session ──────────────────────────────────────────────────────╮</span>
-  <span class="dim">│</span>                                                                     <span class="dim">│</span>
-  <span class="dim">│</span>  <span class="accent bold">Select a session to resume</span>                                          <span class="dim">│</span>
-  <span class="dim">│</span>  <span class="dim">Recent sessions for this project directory.</span>                         <span class="dim">│</span>
-  <span class="dim">│</span>                                                                     <span class="dim">│</span>
-  <span class="dim">│</span>  <span style="background: var(--rust-orange); color: white;"> Soften rate-limit chip wording                            (selected) </span> <span class="dim">│</span>
-  <span class="dim">│</span>  <span class="dim"> 12 minutes ago · 47 messages                                        </span> <span class="dim">│</span>
-  <span class="dim">│</span>  Audit cleanup PR batch                                              <span class="dim">│</span>
-  <span class="dim">│</span>  <span class="dim">2 hours ago · 89 messages</span>                                          <span class="dim">│</span>
-  <span class="dim">│</span>  busytools migration                                                 <span class="dim">│</span>
-  <span class="dim">│</span>  <span class="dim">yesterday · 31 messages</span>                                            <span class="dim">│</span>
-  <span class="dim">│</span>                                                                     <span class="dim">│</span>
-  <span class="dim">│</span>  <span class="dim">↑↓ to choose · Enter to resume · Esc to cancel</span>                       <span class="dim">│</span>
-  <span class="dim">╰─────────────────────────────────────────────────────────────────────╯</span></pre>
-    </div>
-    <dl>
-      <dt>code</dt><dd><code>crates/forge-tui/src/ui/session_picker.rs</code> · data via <code>forge-agent::userdata::catalog::scan::list_sessions</code></dd>
-      <dt>data</dt><dd>head/tail lite read of each <code>~/.claude/projects/&lt;slug&gt;/&lt;uuid&gt;.jsonl</code>; parallelised at 16 concurrent reads (<a href="https://github.com/busytools/forge/issues/70">#70</a>, landed)</dd>
-      <dt>scroll</dt><dd>list scrolls when count exceeds visible rows; 2 lines per item</dd>
-    </dl>
-  </div>
-</div>
-
 <!-- ============================================================== -->
-<h2 class="section-title" id="welcome">Welcome + trust</h2>
+<h2 class="section-title" id="welcome">Welcome</h2>
 
 <div class="surface">
   <div class="surface-head">
@@ -1724,7 +1691,7 @@ use a let-else with explicit error path
     </tr>
   </thead>
   <tbody>
-    <tr><td class="glyph">╭</td><td class="codepoint">U+256D</td><td>autocomplete, help, session picker, settings panes (rounded box top-left)</td><td>via <code>BorderType::Rounded</code> on the wrapping <code>Block</code></td></tr>
+    <tr><td class="glyph">╭</td><td class="codepoint">U+256D</td><td>autocomplete, help, settings panes (rounded box top-left)</td><td>via <code>BorderType::Rounded</code> on the wrapping <code>Block</code></td></tr>
     <tr><td class="glyph">╮</td><td class="codepoint">U+256E</td><td>top-right corner</td><td></td></tr>
     <tr><td class="glyph">╰</td><td class="codepoint">U+2570</td><td>bottom-left corner</td><td></td></tr>
     <tr><td class="glyph">╯</td><td class="codepoint">U+256F</td><td>bottom-right corner</td><td></td></tr>

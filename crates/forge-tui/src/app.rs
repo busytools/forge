@@ -26,7 +26,6 @@ mod questions;
 mod selection;
 mod service_status_check;
 pub mod session;
-pub(crate) mod session_picker;
 mod session_runtime;
 pub(crate) mod slash;
 mod state;
@@ -63,8 +62,8 @@ pub use state::{
     MessageBlock, MessageRenderCache, MessageRenderCacheKey, MessageRenderSignature, MessageRole,
     MessageUsage, ModeInfo, ModeState, NoticeBlock, NoticeDedupKey, NoticeStage, PaneHitTarget,
     PasteSessionState, PendingCommandAck, RateLimitIncidentKey, RecentSessionInfo,
-    ScrollbarGeometry, SelectionKind, SelectionPoint, SelectionState, SessionPickerState,
-    SessionTurnState, SessionUsageState, SystemSeverity, TerminalSnapshotMode, TextBlock,
+    ScrollbarGeometry, SelectionKind, SelectionPoint, SelectionState, SessionTurnState,
+    SessionUsageState, SystemSeverity, TerminalSnapshotMode, TextBlock,
     TextBlockSpacing, TodoItem, TodoStatus, ToolCallInfo, ToolCallScope, TurnNoticeLocation,
     TurnNoticeRef, UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState, UsageWindow,
     WelcomeBlock, compute_scrollbar_geometry, hash_text_block_content, hash_welcome_block_content,

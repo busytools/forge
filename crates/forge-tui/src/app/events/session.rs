@@ -1,6 +1,5 @@
 use super::super::connect::{SessionStartReason, start_new_session};
 use super::super::state::RecentSessionInfo;
-use super::super::view::{self, ActiveView};
 use super::super::{
     App, AppStatus, ChatMessage, LoginHint, MessageBlock, MessageRole, SystemSeverity, TextBlock,
 };
@@ -70,7 +69,6 @@ fn apply_connected_presentation(
         crate::app::file_index::restart(app);
         app.rebuild_chat_focus_from_state();
         crate::app::config::refresh_runtime_tabs_for_session_change(app);
-        maybe_open_startup_session_picker(app);
         crate::app::tab_title::update_tab_title(&app.status, app.spinner_frame, app.cwd());
     } else {
         // Background path: temp-swap `active_session_key` so the
@@ -142,14 +140,6 @@ pub(super) fn handle_sessions_listed_event(
 ) {
     let session_count = sessions.len();
     let pending_title_change = app.config.pending_session_title_change.take();
-    // Selection state is reconciled against the active bucket's list
-    // (the picker UI shows the active session's catalog). Reading
-    // here before the targeted write so a session-switch-then-listing
-    // race doesn't snapshot the wrong list.
-    let selected_session_id = app
-        .recent_sessions()
-        .get(app.session_picker.selected)
-        .map(|session| session.session_id.clone());
     let had_pending_title_change = pending_title_change.is_some();
     let mapped: Vec<RecentSessionInfo> = sessions
         .into_iter()
@@ -199,9 +189,6 @@ pub(super) fn handle_sessions_listed_event(
             });
         }
     }
-    app.startup_recent_sessions_loaded = true;
-    reconcile_session_picker_selection(app, selected_session_id.as_deref());
-    maybe_open_startup_session_picker(app);
     tracing::info!(
         target: crate::logging::targets::APP_SESSION,
         event_name = "sessions_list_updated",
@@ -850,52 +837,6 @@ pub(super) fn apply_session_cwd(app: &mut App, cwd_raw: String) {
         session.git_diff_last_refreshed_at = None;
         session.git_diff_scan_in_flight.store(false, std::sync::atomic::Ordering::Release);
     }
-}
-
-fn reconcile_session_picker_selection(app: &mut App, selected_session_id: Option<&str>) {
-    let session_count = super::super::session_picker::picker_session_count(app);
-    if session_count == 0 {
-        app.session_picker.selected = 0;
-        app.session_picker.scroll_offset = 0;
-        return;
-    }
-
-    if let Some(session_id) = selected_session_id
-        && let Some(idx) =
-            app.recent_sessions().iter().position(|session| session.session_id == session_id)
-        && idx < session_count
-    {
-        app.session_picker.selected = idx;
-    } else {
-        app.session_picker.selected =
-            app.session_picker.selected.min(session_count.saturating_sub(1));
-    }
-    app.session_picker.scroll_offset =
-        app.session_picker.scroll_offset.min(app.session_picker.selected);
-}
-
-fn maybe_open_startup_session_picker(app: &mut App) {
-    if !app.startup_session_picker_requested || app.startup_session_picker_resolved {
-        return;
-    }
-    if !app.has_active_agent() || !app.startup_recent_sessions_loaded {
-        return;
-    }
-
-    app.startup_session_picker_resolved = true;
-    let session_count = super::super::session_picker::picker_session_count(app);
-    if session_count == 0 {
-        push_system_message_with_severity(
-            app,
-            Some(SystemSeverity::Info),
-            "No recent sessions found for this directory; continuing with a new session.",
-        );
-        return;
-    }
-
-    app.session_picker.selected = app.session_picker.selected.min(session_count - 1);
-    app.session_picker.scroll_offset = 0;
-    view::set_active_view(app, ActiveView::SessionPicker);
 }
 
 // ─────────────────────────────────────────────────────────────────

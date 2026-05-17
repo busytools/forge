@@ -24,7 +24,7 @@ pub use types::{
     AppStatus, ExtraUsage, HelpView, HistoryRetentionPolicy, HistoryRetentionStats, LoginHint,
     McpState, MessageUsage, ModeInfo, ModeState, PasteSessionState, PendingCommandAck,
     RecentSessionInfo, RenderCacheBudget, ScrollbarDragState, SelectionKind, SelectionPoint,
-    SelectionState, SessionPickerState, SessionTurnState, SessionUsageState, TodoItem, TodoStatus,
+    SelectionState, SessionTurnState, SessionUsageState, TodoItem, TodoStatus,
     ToolCallScope, UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState, UsageWindow,
 };
 pub use viewport::{
@@ -342,8 +342,6 @@ pub struct App {
     // list is per-project — switching active session via the
     // Projects pane naturally swaps the list along with the bucket.
     // See `App::recent_sessions` / `App::recent_sessions_mut`.
-    /// Selection state for the startup session picker screen.
-    pub session_picker: SessionPickerState,
     /// State for the launchpad view (project picker shown when forge
     /// is invoked without a project argv, or after `/launchpad`).
     /// Always present — reset whenever the active view transitions
@@ -405,9 +403,6 @@ pub struct App {
     pub connection_started: bool,
     pub startup_resume_id: Option<String>,
     pub startup_resume_requested: bool,
-    pub startup_session_picker_requested: bool,
-    pub startup_recent_sessions_loaded: bool,
-    pub startup_session_picker_resolved: bool,
     /// Project name from the CLI's positional `<PROJECT>` argument, if
     /// any. `None` means open the `default = true` project.
     /// Forwarded to [`forge_workspace::SessionTarget::Named`] when the
@@ -2219,7 +2214,6 @@ impl App {
             force_redraw: false,
             focus: FocusManager::default(),
             plugins: PluginsState::default(),
-            session_picker: SessionPickerState::default(),
             launchpad: crate::app::LaunchpadState::default(),
             diff_overlay: None,
             cached_frame_area: ratatui::layout::Rect::default(),
@@ -2239,9 +2233,6 @@ impl App {
             connection_started: false,
             startup_resume_id: None,
             startup_resume_requested: false,
-            startup_session_picker_requested: false,
-            startup_recent_sessions_loaded: false,
-            startup_session_picker_resolved: false,
             startup_project: None,
             replay_in_progress: false,
         }

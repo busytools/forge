@@ -15,7 +15,6 @@ pub(crate) mod layout;
 mod markdown;
 mod message;
 pub mod projects_pane;
-mod session_picker;
 pub mod theme;
 mod tool_call;
 pub mod top_bar;
@@ -32,7 +31,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     match app.active_view {
         ActiveView::Chat => chat_view::render(frame, app),
         ActiveView::Config => config::render(frame, app),
-        ActiveView::SessionPicker => session_picker::render(frame, app),
         ActiveView::Launchpad => launchpad::render(frame, app),
         ActiveView::Diff => diff_overlay::render(frame, app),
     }

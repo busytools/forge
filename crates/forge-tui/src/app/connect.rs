@@ -9,7 +9,7 @@ pub(crate) mod type_converters;
 use super::config::ConfigState;
 use super::dialog::DialogState;
 use super::plugins::PluginsState;
-use super::state::{RenderCacheBudget, SessionPickerState};
+use super::state::RenderCacheBudget;
 use super::view::ActiveView;
 use super::{App, AppStatus, FocusManager, HelpView};
 use crate::Cli;
@@ -220,7 +220,6 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
         force_redraw: false,
         focus: FocusManager::default(),
         plugins: PluginsState::default(),
-        session_picker: SessionPickerState::default(),
         launchpad: initial_launchpad_state,
         diff_overlay: None,
         cached_frame_area: ratatui::layout::Rect::new(0, 0, 0, 0),
@@ -240,9 +239,6 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
         connection_started: false,
         startup_resume_id: None,
         startup_resume_requested: false,
-        startup_session_picker_requested: false,
-        startup_recent_sessions_loaded: false,
-        startup_session_picker_resolved: false,
         startup_project: cli.project.clone(),
         replay_in_progress: false,
     };

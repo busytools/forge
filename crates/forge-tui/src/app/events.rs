@@ -133,10 +133,6 @@ fn dispatch_key_by_view(app: &mut App, key: crossterm::event::KeyEvent) -> bool 
             super::config::handle_key(app, key);
             true
         }
-        ActiveView::SessionPicker => {
-            super::session_picker::handle_key(app, key);
-            true
-        }
         ActiveView::Launchpad => super::keys::dispatch_key_by_focus(app, key),
         ActiveView::Diff => {
             super::diff_overlay::handle_key(app, key);
@@ -156,9 +152,7 @@ fn dispatch_mouse_by_view(app: &mut App, mouse: crossterm::event::MouseEvent) {
         }
         // Launchpad / config / etc. stay keyboard-only — mouse
         // events are intentionally dropped.
-        ActiveView::Config
-        | ActiveView::SessionPicker
-        | ActiveView::Launchpad => {}
+        ActiveView::Config | ActiveView::Launchpad => {}
     }
 }
 
@@ -178,7 +172,7 @@ fn dispatch_paste_by_view(app: &mut App, text: &str) -> bool {
         }
         ActiveView::Config => super::config::handle_paste(app, text),
         ActiveView::Diff => super::diff_overlay::handle_paste(app, text),
-        ActiveView::SessionPicker | ActiveView::Launchpad => false,
+        ActiveView::Launchpad => false,
     }
 }
 
@@ -894,19 +888,6 @@ mod tests {
         let mut app = make_test_app();
         let rx = app.install_testing_stub();
         (app, rx)
-    }
-
-    fn listed_session(id: &str, title: &str) -> forge_primitives::SessionListEntry {
-        forge_primitives::SessionListEntry {
-            session_id: id.to_owned(),
-            summary: title.to_owned(),
-            last_modified_ms: 1,
-            file_size_bytes: 2,
-            cwd: Some("/test".to_owned()),
-            git_branch: Some("main".to_owned()),
-            custom_title: Some(title.to_owned()),
-            first_prompt: Some(format!("prompt {title}")),
-        }
     }
 
     // Wire-message helpers for the SdkMessageReceived path. Mirror the
@@ -2412,105 +2393,6 @@ mod tests {
         assert!(app.config.pending_session_title_change.is_none());
         assert_eq!(app.config.status_message.as_deref(), Some("Generated session title"));
         assert!(app.config.last_error.is_none());
-    }
-
-    #[test]
-    fn startup_picker_waits_for_connected_after_sessions_listed() {
-        let mut app = make_test_app();
-        app.startup_session_picker_requested = true;
-
-        apply_session_update(
-            &mut app,
-            SessionUpdate::SessionsListed {
-                key: forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY),
-                sessions: vec![listed_session("session-1", "First Session")],
-            },
-        );
-
-        assert_eq!(app.active_view, ActiveView::Chat);
-        assert!(app.startup_recent_sessions_loaded);
-        assert!(!app.startup_session_picker_resolved);
-
-        let _rx = app.install_testing_stub();
-        apply_session_update(&mut app, connected_event("claude-updated"));
-
-        assert_eq!(app.active_view, ActiveView::SessionPicker);
-        assert!(app.startup_session_picker_resolved);
-    }
-
-    #[test]
-    fn startup_picker_empty_list_stays_in_chat_with_info_message() {
-        let mut app = make_test_app();
-        app.startup_session_picker_requested = true;
-        let _rx = app.install_testing_stub();
-
-        apply_session_update(&mut app, connected_event("claude-updated"));
-        assert_eq!(app.active_view, ActiveView::Chat);
-        assert!(!app.startup_session_picker_resolved);
-
-        // Post-Connected the bucket has migrated to the real key
-        // (`test-session`); SessionsListed routes onto that bucket.
-        apply_session_update(
-            &mut app,
-            SessionUpdate::SessionsListed {
-                key: forge_workspace::SessionKey::from_session_id("test-session"),
-                sessions: Vec::new(),
-            },
-        );
-
-        assert_eq!(app.active_view, ActiveView::Chat);
-        assert!(app.startup_session_picker_resolved);
-        let last = app.messages().last().expect("info message");
-        let text = match last.blocks.first().expect("text block") {
-            MessageBlock::Text(block) => block.text.as_str(),
-            _ => panic!("expected text block"),
-        };
-        assert!(text.contains("No recent sessions found for this directory"));
-    }
-
-    #[test]
-    fn sessions_listed_refresh_preserves_picker_selection_by_session_id() {
-        let mut app = make_test_app();
-        app.active_view = ActiveView::SessionPicker;
-        *app.recent_sessions_mut() = vec![
-            crate::app::RecentSessionInfo {
-                session_id: "session-1".to_owned(),
-                summary: "First".to_owned(),
-                last_modified_ms: 1,
-                file_size_bytes: 1,
-                cwd: Some("/test".to_owned()),
-                git_branch: Some("main".to_owned()),
-                custom_title: Some("First".to_owned()),
-                first_prompt: Some("prompt one".to_owned()),
-            },
-            crate::app::RecentSessionInfo {
-                session_id: "session-2".to_owned(),
-                summary: "Second".to_owned(),
-                last_modified_ms: 2,
-                file_size_bytes: 1,
-                cwd: Some("/test".to_owned()),
-                git_branch: Some("main".to_owned()),
-                custom_title: Some("Second".to_owned()),
-                first_prompt: Some("prompt two".to_owned()),
-            },
-        ];
-        app.session_picker.selected = 1;
-        app.session_picker.scroll_offset = 1;
-
-        apply_session_update(
-            &mut app,
-            SessionUpdate::SessionsListed {
-                key: forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY),
-                sessions: vec![
-                    listed_session("session-2", "Second"),
-                    listed_session("session-3", "Third"),
-                ],
-            },
-        );
-
-        assert_eq!(app.session_picker.selected, 0);
-        assert_eq!(app.recent_sessions()[app.session_picker.selected].session_id, "session-2");
-        assert_eq!(app.session_picker.scroll_offset, 0);
     }
 
     #[test]
@@ -5167,17 +5049,6 @@ mod tests {
     }
 
     #[test]
-    fn session_picker_ignores_paste_events() {
-        let mut app = make_test_app();
-        app.active_view = ActiveView::SessionPicker;
-
-        handle_terminal_event(&mut app, Event::Paste("blocked".into()));
-
-        assert!(app.pending_paste_text().is_empty());
-        assert!(app.input().is_empty());
-    }
-
-    #[test]
     fn buffered_paste_char_does_not_force_redraw() {
         let mut app = make_test_app();
         let now = Instant::now();
@@ -5203,32 +5074,6 @@ mod tests {
 
         assert!(!app.needs_redraw);
         assert!(app.input().is_empty());
-    }
-
-    #[test]
-    fn session_picker_ignores_mouse_events() {
-        let mut app = make_test_app();
-        app.active_view = ActiveView::SessionPicker;
-        app.active_viewport_mut().scroll_target = 4;
-        *app.selection_mut() = Some(SelectionState {
-            kind: SelectionKind::Chat,
-            start: SelectionPoint { row: 0, col: 0 },
-            end: SelectionPoint { row: 0, col: 1 },
-            dragging: false,
-        });
-
-        handle_terminal_event(
-            &mut app,
-            Event::Mouse(MouseEvent {
-                kind: MouseEventKind::ScrollDown,
-                column: 0,
-                row: 0,
-                modifiers: KeyModifiers::NONE,
-            }),
-        );
-
-        assert_eq!(app.viewport().scroll_target, 4);
-        assert!(app.selection().is_some());
     }
 
     #[test]
