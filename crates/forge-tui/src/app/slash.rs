@@ -14,7 +14,12 @@ use super::{
 };
 use crate::agent::model;
 
-pub const MAX_VISIBLE: usize = 8;
+/// Visible rows in the slash dropdown. Sized for the forge/claude
+/// grouped layout: 1 `── forge ──` divider + ~10 forge commands +
+/// 1 `── claude ──` divider + several claude commands fit without
+/// the user having to scroll to find common picks like `/schedule`
+/// in the claude group.
+pub const MAX_VISIBLE: usize = 20;
 use super::MAX_CANDIDATES;
 
 // Re-export public API

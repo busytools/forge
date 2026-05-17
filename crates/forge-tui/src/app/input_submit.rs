@@ -169,6 +169,18 @@ fn dispatch_prompt(app: &mut App, text: String) {
         }
     }
 
+    // A submit overrides any in-flight cancel intent — the new prompt
+    // IS the user's next move, so the "Cancelling current turn..."
+    // hint should clear immediately. Without this, a cancel followed
+    // by a fast submit leaves the hint pinned on screen forever
+    // because the CLI fuses the new prompt with the in-flight turn
+    // and never emits a Result for the interrupted state that would
+    // otherwise clear the flag.
+    if app.pending_cancel() {
+        app.set_pending_cancel(false);
+        app.set_cancelled_turn_pending_hint(false);
+    }
+
     let user_blocks = vec![MessageBlock::Text(TextBlock::from_complete(&text))];
     app.push_message_tracked(ChatMessage::new(MessageRole::User, user_blocks, None));
 

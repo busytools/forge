@@ -801,7 +801,7 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
 
     // ID. First 8 chars of the active session's UUID when known
     // (labelled `ID` rather than `Session` so the short hex string
-    // reads as an identifier, not a name). Trailing ` ⎘ ` 3-cell
+    // reads as an identifier, not a name). Trailing ` ⧉ ` 3-cell
     // button — same shape + slate background as the project-row
     // close button — copies the FULL session id to the OS clipboard.
     // Button sits flush at the right gutter regardless of value
@@ -811,7 +811,7 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         .session_id()
         .map_or_else(|| "—".to_owned(), |sid| sid.to_string().chars().take(8).collect::<String>());
     // Reserve 4 cells at the right end of the value area: 3 for the
-    // ` ⎘ ` button + 1 for the right gutter (matches the close
+    // ` ⧉ ` button + 1 for the right gutter (matches the close
     // button's right edge on project rows).
     let session_value_budget = value_budget.saturating_sub(4);
     let session_fitted = truncate_with_ellipsis(&session_value, session_value_budget);
@@ -825,7 +825,7 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     ];
     if app.session_id().is_some() {
         session_spans.push(Span::styled(
-            " \u{2398} ".to_owned(),
+            " \u{29C9} ".to_owned(),
             Style::default().fg(Color::Gray).bg(theme::USER_MSG_BG).add_modifier(Modifier::BOLD),
         ));
     } else {
