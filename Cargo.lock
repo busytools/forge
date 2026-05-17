@@ -1014,6 +1014,7 @@ dependencies = [
  "anyhow",
  "forge-primitives",
  "forge-sdk",
+ "futures",
  "hex",
  "ignore",
  "notify",
