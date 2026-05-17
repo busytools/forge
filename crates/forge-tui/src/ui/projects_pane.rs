@@ -158,8 +158,13 @@ fn shift_body_hit_targets(app: &mut App, start_idx: usize, body_top: u16, offset
 }
 
 /// Paint the projects-pane scroll thumb on the right edge of the
-/// body area. Mirrors the inspector pane's thumb (single `▐` cells
-/// in `ROLE_ASSISTANT` colour) so the two panes look consistent.
+/// body area. Mirrors the chat + inspector thumbs: a single `▐` cell
+/// in `ROLE_ASSISTANT` colour. Thumb size is clamped to 1 (same as
+/// `INSPECTOR_THUMB_MAX_CELLS` / `SCROLLBAR_MAX_THUMB_HEIGHT`) so the
+/// three scrollbars look identical at a glance regardless of how
+/// short the body is; `thumb_top` is recomputed against the
+/// post-clamp track so the cell still slides across the full
+/// vertical range while scrolling.
 fn render_projects_scroll_thumb(
     frame: &mut Frame,
     body_area: Rect,
@@ -167,25 +172,32 @@ fn render_projects_scroll_thumb(
     visible: usize,
     offset: u16,
 ) {
-    let Some(geometry) = crate::app::compute_scrollbar_geometry(total, visible, f32::from(offset))
-    else {
+    if crate::app::compute_scrollbar_geometry(total, visible, f32::from(offset)).is_none() {
         return;
+    }
+    let area_h = usize::from(body_area.height);
+    let max_offset = total.saturating_sub(visible);
+    let track = area_h.saturating_sub(1); // post-clamp: thumb is 1 cell
+    let thumb_top_usize = if max_offset == 0 || track == 0 {
+        0
+    } else {
+        #[allow(
+            clippy::cast_precision_loss,
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss
+        )]
+        let pos = (f32::from(offset) / max_offset as f32 * track as f32).round() as usize;
+        pos.min(track)
     };
     let thumb_x = body_area.x.saturating_add(body_area.width).saturating_sub(1);
-    let thumb_top =
-        body_area.y.saturating_add(u16::try_from(geometry.thumb_top).unwrap_or(u16::MAX));
-    let thumb_size = u16::try_from(geometry.thumb_size).unwrap_or(u16::MAX).max(1);
-    for offset in 0..thumb_size {
-        let y = thumb_top.saturating_add(offset);
-        if y >= body_area.y.saturating_add(body_area.height) {
-            break;
-        }
-        let cell = ratatui::buffer::Cell::new("▐");
-        let mut cell = cell;
-        cell.set_style(Style::default().fg(theme::ROLE_ASSISTANT));
-        if let Some(buf_cell) = frame.buffer_mut().cell_mut((thumb_x, y)) {
-            *buf_cell = cell;
-        }
+    let y = body_area.y.saturating_add(u16::try_from(thumb_top_usize).unwrap_or(u16::MAX));
+    if y >= body_area.y.saturating_add(body_area.height) {
+        return;
+    }
+    let mut cell = ratatui::buffer::Cell::new("▐");
+    cell.set_style(Style::default().fg(theme::ROLE_ASSISTANT));
+    if let Some(buf_cell) = frame.buffer_mut().cell_mut((thumb_x, y)) {
+        *buf_cell = cell;
     }
 }
 
