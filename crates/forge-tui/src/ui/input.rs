@@ -14,6 +14,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Widget;
+use ratatui::widgets::{Block, BorderType, Borders};
 use tui_textarea::TextArea;
 
 /// Horizontal padding to match header/footer inset.
@@ -24,6 +25,9 @@ const INPUT_RIGHT_PAD: u16 = 1;
 
 /// Prompt column width: "❯ " = 2 columns (icon + space)
 const PROMPT_WIDTH: u16 = 2;
+
+/// Rows reserved for the input box's top + bottom borders.
+const INPUT_BORDER_LINES: u16 = 2;
 
 /// Maximum input area height (lines) to prevent the input from consuming the entire screen.
 const MAX_INPUT_HEIGHT: u16 = 12;
@@ -49,6 +53,7 @@ const PROMPT_SUGGESTION_HINT_LINES: u16 = 1;
 #[derive(Clone, Copy)]
 pub(crate) struct InputRenderGeometry {
     pub hint_pad: Option<Rect>,
+    pub box_area: Rect,
     pub padded: Rect,
     pub prompt: Rect,
     pub text: Rect,
@@ -92,21 +97,41 @@ pub(crate) fn compute_render_geometry(area: Rect, hint_lines: u16) -> InputRende
         height: hint.height,
     });
 
-    let padded = Rect {
+    // Bordered box spans the input_main_area horizontally with the
+    // same INPUT_PAD inset used for hints, so the box sits centred
+    // under the chat column. `box_area` is the full Rect the Block
+    // widget draws into (borders + interior); `padded` is the
+    // 1-cell-inset interior where prompt + text live.
+    let box_area = Rect {
         x: input_main_area.x.saturating_add(INPUT_PAD),
         y: input_main_area.y,
         width: input_main_area.width.saturating_sub(INPUT_PAD * 2 + INPUT_RIGHT_PAD),
         height: input_main_area.height,
     };
+    let padded = Rect {
+        x: box_area.x.saturating_add(1),
+        y: box_area.y.saturating_add(1),
+        width: box_area.width.saturating_sub(2),
+        height: box_area.height.saturating_sub(2),
+    };
     let [prompt, text] =
         Layout::horizontal([Constraint::Length(PROMPT_WIDTH), Constraint::Min(1)]).areas(padded);
 
-    InputRenderGeometry { hint_pad, padded, prompt, text }
+    InputRenderGeometry { hint_pad, box_area, padded, prompt, text }
 }
 
 pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     let hint_lines = hint_line_count(app);
     let geometry = compute_render_geometry(area, hint_lines);
+
+    // Bordered frame around the input area — matches the diff
+    // overlay's comment-composer chrome so both editing surfaces
+    // read as the same affordance.
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Plain)
+        .border_style(Style::default().fg(theme::RUST_ORANGE));
+    frame.render_widget(block, geometry.box_area);
 
     if let Some(hint_pad) = geometry.hint_pad {
         let mut hint_y = hint_pad.y;
@@ -367,14 +392,19 @@ fn render_lines_from_textarea(textarea: &TextArea<'_>, area: Rect) -> Vec<String
     lines
 }
 
-/// Total visual height for the input area: input lines + hint banners.
-/// Called by the layout to allocate the correct input area height.
+/// Total visual height for the input area: input lines + hint
+/// banners + the bordered box's top/bottom rows. Called by the
+/// layout to allocate the correct input area height.
 pub fn visual_line_count(app: &mut App, area_width: u16) -> u16 {
     let hint = hint_line_count(app);
-    let content_width =
-        area_width.saturating_sub(INPUT_PAD * 2 + INPUT_RIGHT_PAD).saturating_sub(PROMPT_WIDTH);
+    // Content width sits inside both the horizontal padding and the
+    // box's 1-col left/right borders.
+    let content_width = area_width
+        .saturating_sub(INPUT_PAD * 2 + INPUT_RIGHT_PAD)
+        .saturating_sub(2)
+        .saturating_sub(PROMPT_WIDTH);
     let input_lines = app.input_mut().measure_visual_lines(content_width, MAX_INPUT_HEIGHT);
-    hint + input_lines
+    hint + input_lines + INPUT_BORDER_LINES
 }
 
 #[cfg(test)]
