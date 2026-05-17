@@ -486,11 +486,11 @@ fn glyph_for_lifecycle(
 /// Constant by design — values flip but shape stays put (see the
 /// "account chrome, not status row" intent in the design brief).
 ///
-/// 17 rows: rule + 5 identity (Profile/Mode/Model/Effort/Fast) +
+/// 18 rows: rule + 6 identity (Profile/Org/Session/Mode/Model/Effort) +
 /// 1 blank + 1 Ctx + 1 blank + 2 (5h bar + ETA row) + 1 blank +
 /// 2 (7d bar + ETA row) + 1 blank + 2 (forge + claude version
 /// rows).
-const ACCOUNT_PANEL_HEIGHT: u16 = 17;
+const ACCOUNT_PANEL_HEIGHT: u16 = 18;
 
 /// Width (columns) the rule and content extend up to from the
 /// pane's right edge. Matches the project-row right gutter so the
@@ -511,9 +511,9 @@ const BAR_ROW_FIXED_CHROME: usize = 1 + 3 + 2 + 2 + 4;
 /// alternative would push the project list out of meaningful range.
 const ACCOUNT_PANEL_MIN_PANE_HEIGHT: u16 = 24;
 
-/// Width of the identity-block label column (`Profile`, `Mode`,
-/// `Model`, `Fast`). Right-padded so the value column aligns
-/// regardless of label length.
+/// Width of the identity-block label column (`Profile`, `Session`,
+/// `Mode`, `Model`, `Effort`). Right-padded so the value column
+/// aligns regardless of label length.
 const ACCOUNT_PANEL_ID_LABEL_WIDTH: usize = 7;
 
 /// Bar cell count derived from the pane width so the row stretches
@@ -546,7 +546,7 @@ const fn bar_zone_sizes(cells: usize) -> [usize; 4] {
 /// Returns the number of rows the panel consumed (caller subtracts
 /// from `area.height` to size the project-list region). Returns 0
 /// when the pane is too short to fit the panel without crowding.
-fn render_account_status_footer(frame: &mut Frame, area: Rect, app: &App) -> u16 {
+fn render_account_status_footer(frame: &mut Frame, area: Rect, app: &mut App) -> u16 {
     if area.height < ACCOUNT_PANEL_MIN_PANE_HEIGHT || area.width == 0 {
         return 0;
     }
@@ -558,8 +558,33 @@ fn render_account_status_footer(frame: &mut Frame, area: Rect, app: &App) -> u16
         height,
     };
     let lines = build_account_panel_lines(app, area.width);
+    stamp_session_copy_hit_target(app, panel_area);
     frame.render_widget(Paragraph::new(lines), panel_area);
     height
+}
+
+/// Stamp the click target for the Session row's trailing `⎘` glyph.
+/// Row layout: row 0 rule, row 1 Profile, row 2 Org, row 3 Session.
+/// The glyph sits at `panel_area.x + panel_width - PANEL_RIGHT_GUTTER
+/// - 1` (1 cell wide). Only stamped when the active session has
+///   an id — no point copying an empty string.
+fn stamp_session_copy_hit_target(app: &mut App, panel_area: Rect) {
+    let Some(session_id) = app.session_id().map(|sid| sid.to_string()) else {
+        return;
+    };
+    let glyph_x = panel_area
+        .x
+        .saturating_add(panel_area.width)
+        .saturating_sub(u16::try_from(PANEL_RIGHT_GUTTER).unwrap_or(1))
+        .saturating_sub(1);
+    let y = panel_area.y.saturating_add(3); // rule + Profile + Org + Session
+    app.pane_hit_targets.push(PaneHitTarget::CopySessionId {
+        session_id,
+        y,
+        height: 1,
+        x_start: glyph_x,
+        x_end: glyph_x.saturating_add(1),
+    });
 }
 
 /// Filling bar with a per-cell position colour gradient over the
@@ -642,6 +667,51 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         Span::raw(profile_fitted),
     ]));
 
+    // Org. Reads from the active session's `account.organization`;
+    // dim placeholder when the SDK hasn't reported one yet.
+    let org_value = app
+        .account_info()
+        .and_then(|account| account.organization.clone())
+        .unwrap_or_else(|| "—".to_owned());
+    let org_fitted = truncate_with_ellipsis(&org_value, value_budget);
+    lines.push(Line::from(vec![
+        Span::raw(" "),
+        label_span("Org", ACCOUNT_PANEL_ID_LABEL_WIDTH),
+        Span::raw("  "),
+        Span::raw(org_fitted),
+    ]));
+
+    // Session. First 8 chars of the session id when known; trailing
+    // ⎘ copies the full id to the clipboard (click target stamped in
+    // `stamp_session_copy_hit_target` against the panel's row 2).
+    // The glyph sits flush at the panel's right gutter regardless of
+    // value length so its hit-test column is independent of pane
+    // width.
+    let session_value = app.session_id().map_or_else(
+        || "—".to_owned(),
+        |sid| sid.to_string().chars().take(8).collect::<String>(),
+    );
+    // Reserve 2 cells for the trailing ` ⎘` so the short id can't
+    // bleed into the glyph column at narrow widths.
+    let session_value_budget = value_budget.saturating_sub(2);
+    let session_fitted = truncate_with_ellipsis(&session_value, session_value_budget);
+    let glyph_pad_cells = value_budget
+        .saturating_sub(session_fitted.chars().count())
+        .saturating_sub(1);
+    let mut session_spans = vec![
+        Span::raw(" "),
+        label_span("Session", ACCOUNT_PANEL_ID_LABEL_WIDTH),
+        Span::raw("  "),
+        Span::styled(session_fitted, Style::default().fg(theme::DIM)),
+        Span::raw(" ".repeat(glyph_pad_cells)),
+    ];
+    if app.session_id().is_some() {
+        session_spans.push(Span::styled("⎘", Style::default().fg(theme::DIM)));
+    } else {
+        session_spans.push(Span::raw(" "));
+    }
+    lines.push(Line::from(session_spans));
+
     // Mode.
     let (mode_label, mode_color) = mode_label_and_color(app);
     let mode_label_fitted = truncate_with_ellipsis(&mode_label, value_budget);
@@ -672,15 +742,6 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         label_span("Effort", ACCOUNT_PANEL_ID_LABEL_WIDTH),
         Span::raw("  "),
         Span::raw(effort_short_label(effort).to_owned()),
-    ]));
-
-    // Fast mode.
-    let (fast_label, fast_color) = fast_mode_label_and_color(app);
-    lines.push(Line::from(vec![
-        Span::raw(" "),
-        label_span("Fast", ACCOUNT_PANEL_ID_LABEL_WIDTH),
-        Span::raw("  "),
-        Span::styled(fast_label.to_owned(), Style::default().fg(fast_color)),
     ]));
 
     // Row 6: blank separating identity from usage.
@@ -934,7 +995,10 @@ fn mode_label_and_color(app: &App) -> (String, Color) {
 /// model yet (early in spawn).
 fn build_model_label(app: &App) -> Option<String> {
     let current = app.current_model()?;
-    Some(condense_model_name(&current.display_name_short))
+    // Long form carries the model version (e.g. "Claude Opus 4.7"
+    // rather than just "Opus"). Truncation downstream handles
+    // overflow on the narrow panel.
+    Some(condense_model_name(&current.display_name_long))
 }
 
 /// Condense a model display name for the panel's narrow column.
@@ -979,17 +1043,6 @@ const fn effort_short_label(effort: crate::agent::model::EffortLevel) -> &'stati
         EffortLevel::High => "High",
         EffortLevel::Xhigh => "Xhi",
         EffortLevel::Max => "Max",
-    }
-}
-
-/// Fast-mode label + color. Same set the legacy footer used. The
-/// panel uses lowercase `off / cd / on` instead of `FAST:OFF` /
-/// `FAST:CD` / `FAST:ON` because the row already has a `Fast` label.
-fn fast_mode_label_and_color(app: &App) -> (&'static str, Color) {
-    match app.fast_mode_state() {
-        crate::agent::model::FastModeState::Off => ("off", theme::DIM),
-        crate::agent::model::FastModeState::Cooldown => ("cd", Color::Yellow),
-        crate::agent::model::FastModeState::On => ("on", theme::RUST_ORANGE),
     }
 }
 

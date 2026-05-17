@@ -137,6 +137,18 @@ pub enum PaneHitTarget {
     /// AND the inspector scroll offset is 0 (otherwise the header
     /// is off-screen).
     InspectorGitOpenDiff { y: u16, height: u16, x_start: u16, x_end: u16 },
+    /// Click on the `⎘` glyph at the right end of the projects-pane
+    /// account footer's Session row → copy the full session id to
+    /// the clipboard. `session_id` is captured at stamp time so the
+    /// handler doesn't have to look it up again (and so a session
+    /// switch between render and click can't write the wrong id).
+    CopySessionId {
+        session_id: String,
+        y: u16,
+        height: u16,
+        x_start: u16,
+        x_end: u16,
+    },
 }
 
 impl PaneHitTarget {
@@ -154,7 +166,8 @@ impl PaneHitTarget {
             | Self::InspectorTopBarIcon { y, height, .. }
             | Self::OverlayClose { y, height, .. }
             | Self::CloseSession { y, height, .. }
-            | Self::InspectorGitOpenDiff { y, height, .. } => (*y, *height),
+            | Self::InspectorGitOpenDiff { y, height, .. }
+            | Self::CopySessionId { y, height, .. } => (*y, *height),
         };
         (start..start.saturating_add(height)).contains(&y)
     }
@@ -173,7 +186,8 @@ impl PaneHitTarget {
             | Self::InspectorTopBarIcon { x_start, x_end, .. }
             | Self::OverlayClose { x_start, x_end, .. }
             | Self::CloseSession { x_start, x_end, .. }
-            | Self::InspectorGitOpenDiff { x_start, x_end, .. } => (*x_start..*x_end).contains(&x),
+            | Self::InspectorGitOpenDiff { x_start, x_end, .. }
+            | Self::CopySessionId { x_start, x_end, .. } => (*x_start..*x_end).contains(&x),
         }
     }
 }

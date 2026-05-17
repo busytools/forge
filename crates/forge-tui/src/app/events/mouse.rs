@@ -451,6 +451,7 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
                     | PaneHitTarget::OverlayClose { .. }
                     | PaneHitTarget::CloseSession { .. }
                     | PaneHitTarget::InspectorGitOpenDiff { .. }
+                    | PaneHitTarget::CopySessionId { .. }
             ) && t.contains(mouse.column, mouse.row)
         })
         .cloned();
@@ -490,6 +491,10 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
                 app.needs_redraw = true;
                 return true;
             }
+            PaneHitTarget::CopySessionId { session_id, .. } => {
+                copy_session_id_to_clipboard(&session_id);
+                return true;
+            }
             PaneHitTarget::ProjectHeader { .. } | PaneHitTarget::SessionRow { .. } => {}
         }
     }
@@ -527,7 +532,8 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
             | PaneHitTarget::InspectorTopBarIcon { .. }
             | PaneHitTarget::OverlayClose { .. }
             | PaneHitTarget::CloseSession { .. }
-            | PaneHitTarget::InspectorGitOpenDiff { .. } => true,
+            | PaneHitTarget::InspectorGitOpenDiff { .. }
+            | PaneHitTarget::CopySessionId { .. } => true,
         };
     }
 
@@ -561,7 +567,8 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
         | PaneHitTarget::InspectorTopBarIcon { .. }
         | PaneHitTarget::OverlayClose { .. }
         | PaneHitTarget::CloseSession { .. }
-        | PaneHitTarget::InspectorGitOpenDiff { .. } => true,
+        | PaneHitTarget::InspectorGitOpenDiff { .. }
+        | PaneHitTarget::CopySessionId { .. } => true,
     }
 }
 
@@ -572,6 +579,29 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
 /// render (no real catalog entry change is needed — `list_projects`
 /// re-partitions based on whether any of the project's sessions are
 /// in `app.sessions`).
+/// Write the active session's id to the OS clipboard via `arboard`.
+/// No on-screen feedback — the click target's `⎘` glyph is its own
+/// affordance. Logs success / failure to the tracing stream.
+fn copy_session_id_to_clipboard(session_id: &str) {
+    match arboard::Clipboard::new().and_then(|mut cb| cb.set_text(session_id.to_owned())) {
+        Ok(()) => tracing::info!(
+            target: crate::logging::targets::APP_INPUT,
+            event_name = "session_id_copied",
+            message = "session id copied to clipboard",
+            outcome = "success",
+            session_id = %session_id,
+        ),
+        Err(err) => tracing::warn!(
+            target: crate::logging::targets::APP_INPUT,
+            event_name = "session_id_copy_failed",
+            message = "failed to copy session id to clipboard",
+            outcome = "failure",
+            session_id = %session_id,
+            error_message = %err,
+        ),
+    }
+}
+
 fn close_session(app: &mut App, session_key: &forge_workspace::SessionKey) {
     if let Some(workspace) = app.workspace.as_ref() {
         workspace.release_session(session_key);
