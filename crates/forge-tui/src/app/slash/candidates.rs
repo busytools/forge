@@ -214,7 +214,6 @@ pub(super) fn supported_command_candidates(app: &App) -> Vec<SlashCandidate> {
     by_name.insert("/resume".into(), "Resume a session by ID".into());
     by_name.insert("/plugins".into(), "Open plugins".into());
     by_name.insert("/status".into(), "Show session status".into());
-    by_name.insert("/usage".into(), "Open usage".into());
 
     for cmd in app.available_commands() {
         let name = normalize_slash_name(&cmd.name);
@@ -421,7 +420,6 @@ pub fn is_supported_command(app: &App, command_name: &str) -> bool {
             | "/resume"
             | "/plugins"
             | "/status"
-            | "/usage"
     ) || advertised_commands(app).iter().any(|c| c == command_name)
 }
 
@@ -441,9 +439,7 @@ mod launchpad_filter_tests {
         assert!(names.contains(&"/plugins"), "launchpad surfaces /plugins: {names:?}");
         assert!(names.contains(&"/quit"), "launchpad surfaces /quit: {names:?}");
         // Session-dependent commands are filtered out.
-        for hidden in
-            ["/mode", "/model", "/compact", "/usage", "/mcp", "/new", "/resume", "/launchpad"]
-        {
+        for hidden in ["/mode", "/model", "/compact", "/mcp", "/new", "/resume", "/launchpad"] {
             assert!(!names.contains(&hidden), "launchpad hides {hidden}: {names:?}");
         }
     }
@@ -456,6 +452,6 @@ mod launchpad_filter_tests {
         let names: Vec<&str> = candidates.iter().map(|c| c.primary.as_str()).collect();
         assert!(names.contains(&"/launchpad"), "chat surfaces /launchpad: {names:?}");
         assert!(names.contains(&"/mode"), "chat surfaces /mode: {names:?}");
-        assert!(names.contains(&"/usage"), "chat surfaces /usage: {names:?}");
+        assert!(names.contains(&"/mcp"), "chat surfaces /mcp: {names:?}");
     }
 }

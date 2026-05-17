@@ -28,20 +28,17 @@ pub enum ConfigTab {
     Settings,
     Plugins,
     Status,
-    Usage,
     Mcp,
 }
 
 impl ConfigTab {
-    pub const ALL: [Self; 5] =
-        [Self::Settings, Self::Plugins, Self::Status, Self::Usage, Self::Mcp];
+    pub const ALL: [Self; 4] = [Self::Settings, Self::Plugins, Self::Status, Self::Mcp];
 
     pub const fn title(self) -> &'static str {
         match self {
             Self::Settings => "Settings",
             Self::Plugins => "Plugins",
             Self::Status => "Status",
-            Self::Usage => "Usage",
             Self::Mcp => "MCP",
         }
     }
@@ -50,8 +47,7 @@ impl ConfigTab {
         match self {
             Self::Settings => Self::Plugins,
             Self::Plugins => Self::Status,
-            Self::Status => Self::Usage,
-            Self::Usage => Self::Mcp,
+            Self::Status => Self::Mcp,
             Self::Mcp => Self::Settings,
         }
     }
@@ -61,8 +57,7 @@ impl ConfigTab {
             Self::Settings => Self::Mcp,
             Self::Plugins => Self::Settings,
             Self::Status => Self::Plugins,
-            Self::Usage => Self::Status,
-            Self::Mcp => Self::Usage,
+            Self::Mcp => Self::Status,
         }
     }
 }
@@ -1364,9 +1359,6 @@ pub(crate) fn refresh_runtime_tabs_for_session_change(app: &mut App) {
         return;
     }
     request_status_snapshot_if_needed(app);
-    if app.config.active_tab == ConfigTab::Usage {
-        crate::app::usage::request_refresh_if_needed(app);
-    }
     if app.config.active_tab == ConfigTab::Plugins {
         crate::app::plugins::request_inventory_refresh_if_needed(app);
     }
@@ -1433,13 +1425,6 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         {
             edit::generate_session_title(app);
         }
-        (KeyCode::Char(ch), modifiers)
-            if app.config.active_tab == ConfigTab::Usage
-                && matches!(ch, 'r' | 'R')
-                && (modifiers.is_empty() || modifiers == KeyModifiers::SHIFT) =>
-        {
-            crate::app::usage::request_refresh(app);
-        }
         (KeyCode::Enter | KeyCode::Esc, KeyModifiers::NONE) => {
             close(app);
         }
@@ -1474,9 +1459,6 @@ pub fn handle_paste(app: &mut App, text: &str) -> bool {
 fn request_active_tab_side_effects(app: &mut App) {
     request_status_snapshot_if_needed(app);
     mcp::refresh_mcp_snapshot_if_needed(app);
-    if app.config.active_tab == ConfigTab::Usage {
-        crate::app::usage::request_refresh_if_needed(app);
-    }
     if app.config.active_tab == ConfigTab::Plugins {
         crate::app::plugins::request_inventory_refresh_if_needed(app);
     }

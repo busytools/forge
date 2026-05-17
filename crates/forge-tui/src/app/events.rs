@@ -1911,25 +1911,6 @@ mod tests {
         );
     }
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn connected_pulls_usage_from_cache_when_usage_tab_is_open() {
-        // Usage refresh is sync now (read-and-copy from workspace
-        // cache), so `in_flight` is never observed as true. Verifies
-        // the path doesn't panic when Connected fires with the usage
-        // tab open — the previous async fetch lifecycle is retired.
-        tokio::task::LocalSet::new()
-            .run_until(async {
-                let mut app = make_test_app();
-                app.active_view = ActiveView::Config;
-                app.config.active_tab = crate::app::ConfigTab::Usage;
-
-                apply_session_update(&mut app, connected_event("claude-updated"));
-
-                assert!(!app.usage().in_flight, "sync refresh never sets in_flight");
-            })
-            .await;
-    }
-
     #[test]
     fn stale_status_snapshot_for_old_session_is_ignored() {
         let mut app = make_test_app();

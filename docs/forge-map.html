@@ -1118,7 +1118,7 @@ chat continues here…
     <p>Three views with different layouts:</p>
     <ul style="color: var(--muted); font-size: 13px; line-height: 1.7; margin: 0 0 12px 18px;">
       <li><strong>Keys</strong> — items distributed top-half-left / bottom-half-right (so scanning down each column reads chronologically). Each cell: <code>label : description</code> with label in BOLD and <code> : </code> separator in DIM.</li>
-      <li><strong>Slash commands</strong> — single-column two-column list (name + description) via <code>two_column_list</code>. Built-in commands: <code>/config</code>, <code>/mcp</code>, <code>/plugins</code>, <code>/status</code>, <code>/usage</code>. Plus user-installed commands.</li>
+      <li><strong>Slash commands</strong> — single-column two-column list (name + description) via <code>two_column_list</code>. Built-in commands: <code>/config</code>, <code>/mcp</code>, <code>/plugins</code>, <code>/status</code>. Plus user-installed commands.</li>
       <li><strong>Subagents</strong> — same two-column shape as Slash, listing user-defined subagents and their descriptions.</li>
     </ul>
     <div class="term">
@@ -1304,33 +1304,6 @@ chat continues here…
     </div>
     <dl>
       <dt>code</dt><dd><code>crates/forge-tui/src/ui/config/status.rs::status_lines</code> · <code>section_header</code> + <code>kv_line</code></dd>
-    </dl>
-  </div>
-</div>
-
-<div class="surface">
-  <div class="surface-head">
-    <h4>Usage tab</h4>
-    <div class="when">visible: when the Usage tab is active</div>
-  </div>
-  <div class="surface-body">
-    <p>Stack of rate-limit windows from the snapshot (e.g. 5-hour / 7-day). Per window: bold label + DIM detail text + a 1-row <strong>ratatui Gauge widget</strong> (colored bar, no inline label) + a DIM "resets in …" countdown row. Optional bordered "<strong>Extra credits</strong>" panel below the windows. Optional STATUS_ERROR-coloured error line at the bottom. Empty states: "<code>Loading usage data...</code>" (DIM) or a bordered box titled "<code>No usage snapshot yet</code>" with hint "<code>Press r to fetch Claude usage for the current account.</code>" (DIM border) — or "<code>Unable to load usage</code>" with the error body when there's a stored error (border in STATUS_ERROR).</p>
-    <div class="term">
-      <pre class="indent">
-  <span class="bold">5-hour limit</span>   <span class="dim">42% of 800 message limit</span>
-  <span style="background: var(--rust-orange); color: black;">████████████████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░</span>
-  <span class="dim">resets in 4h 23m at 14:30 UTC</span>
-
-  <span class="bold">7-day limit</span>    <span class="dim">14% of weekly window</span>
-  <span style="background: var(--rust-orange); color: black;">████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░</span>
-  <span class="dim">resets in 5d 18h at Mon 09:00 UTC</span>
-
-  <span class="dim">╭ Extra credits ─────────────────────────────────────────────────╮</span>
-  <span class="dim">│</span>  Status  Available  ·  Cap  $50.00 / month                  <span class="dim">│</span>
-  <span class="dim">╰────────────────────────────────────────────────────────────────╯</span></pre>
-    </div>
-    <dl>
-      <dt>code</dt><dd><code>crates/forge-tui/src/ui/config/usage.rs</code> · uses <code>ratatui::widgets::Gauge</code> with empty inline label · countdown text from <code>app::usage::format_window_reset</code></dd>
     </dl>
   </div>
 </div>

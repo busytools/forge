@@ -24,15 +24,6 @@ pub(crate) fn request_refresh_if_needed(app: &mut App) {
     }
 }
 
-/// Manual-refresh entry point kept for callers (welcome / settings
-/// surfaces). Same shape as the if-needed variant — the workspace
-/// pool is the only source of usage now, so a "manual refresh"
-/// just re-reads it. The workspace poller's 30 s cadence is the
-/// floor on how stale a snapshot can be.
-pub(crate) fn request_refresh(app: &mut App) {
-    request_refresh_if_needed(app);
-}
-
 /// Compare two `UsageSnapshot` options for equality on the fields
 /// the bottom panel renders. `Eq`/`PartialEq` isn't derived on the
 /// snapshot type (timestamps + labels + nested windows), so we do a
@@ -104,23 +95,6 @@ pub(crate) fn reset_for_session_change(app: &mut App) {
     slot.last_attempted_source = None;
 }
 
-pub(crate) fn visible_windows(snapshot: &UsageSnapshot) -> Vec<&UsageWindow> {
-    let mut windows = Vec::new();
-    if let Some(window) = snapshot.five_hour.as_ref() {
-        windows.push(window);
-    }
-    if let Some(window) = snapshot.seven_day.as_ref() {
-        windows.push(window);
-    }
-    if let Some(window) = snapshot.seven_day_sonnet.as_ref() {
-        windows.push(window);
-    }
-    if let Some(window) = snapshot.seven_day_opus.as_ref() {
-        windows.push(window);
-    }
-    windows
-}
-
 pub(crate) fn format_window_reset(window: &UsageWindow) -> Option<String> {
     if let Some(resets_at) = window.resets_at {
         return Some(format!("resets in {}", format_remaining_until(resets_at)));
@@ -159,7 +133,6 @@ fn format_remaining_until(target: SystemTime) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::UsageSourceKind;
 
     #[test]
     fn formats_day_scale_reset() {
@@ -188,30 +161,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn collects_only_present_windows() {
-        let snapshot = UsageSnapshot {
-            source: UsageSourceKind::Oauth,
-            fetched_at: SystemTime::now(),
-            five_hour: Some(UsageWindow {
-                label: "5-hour",
-                utilization: 10.0,
-                resets_at: None,
-                reset_description: None,
-            }),
-            seven_day: None,
-            seven_day_opus: Some(UsageWindow {
-                label: "7-day Opus",
-                utilization: 30.0,
-                resets_at: None,
-                reset_description: None,
-            }),
-            seven_day_sonnet: None,
-            extra_usage: None,
-        };
-
-        let labels =
-            visible_windows(&snapshot).into_iter().map(|window| window.label).collect::<Vec<_>>();
-        assert_eq!(labels, vec!["5-hour", "7-day Opus"]);
-    }
 }

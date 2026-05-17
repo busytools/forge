@@ -193,10 +193,9 @@ pub struct UiSession {
     /// rather than per-account: each session fetches independently
     /// (idempotent + TTL-gated; redundant fetches across same-account
     /// sessions are cheap). Read by the Projects-pane account/status
-    /// panel and the `/usage` config tab. Routed by `SessionKey` in
-    /// the `Usage*` `SessionUpdate` envelopes so an in-flight fetch
-    /// that lands after the user has switched sessions still writes
-    /// to the bucket that requested it.
+    /// panel. Routed by `SessionKey` in the `Usage*` `SessionUpdate`
+    /// envelopes so an in-flight fetch that lands after the user has
+    /// switched sessions still writes to the bucket that requested it.
     pub usage: UsageState,
     /// Catalog of resumable sessions for this bucket's project,
     /// produced by `forge_sdk_worker::list_recent_sessions` against
