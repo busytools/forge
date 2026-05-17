@@ -315,6 +315,14 @@ pub struct App {
     /// [`Self::projects_pane_overlay_open`] for the on-demand
     /// overlay.
     pub projects_pane_visible: bool,
+    /// Scroll offset (in row units) for the Projects pane body. Top
+    /// banner row + DIM rule stay pinned regardless; the project /
+    /// session list scrolls under them. Bottom account footer also
+    /// stays pinned. In-memory only — each launch starts at 0.
+    /// Mouse wheel over the pane bumps this; renderer clamps against
+    /// `(total_rows - visible_height)` each frame so a wheel-past-end
+    /// settles at the bottom rather than scrolling past.
+    pub projects_pane_scroll_offset: u16,
     /// Whether the Narrow-tier Projects overlay is currently open.
     /// Transient — NOT persisted; each launch starts closed. Toggled
     /// by Ctrl+B at Narrow tier or by clicking the `▤` icon in the
@@ -386,6 +394,13 @@ pub struct App {
     /// session's `inspector_scroll_offset`. `Rect::default()` until
     /// the first inspector render.
     pub rendered_inspector_body_area: ratatui::layout::Rect,
+    /// Rect of the Projects pane's scrollable body (the area below
+    /// the pinned `PROJECTS` banner / rule and above the account
+    /// footer). Mirror of `rendered_inspector_body_area` — used by
+    /// the mouse handler to route wheel events to
+    /// `projects_pane_scroll_offset` instead of the chat viewport.
+    /// `Rect::default()` until the first projects-pane render.
+    pub rendered_projects_pane_body_area: ratatui::layout::Rect,
     // `file_index: FileIndexState` moved to `UiSession.file_index`
     // (per-session bucket). The scanner is project-scoped — switching
     // active session shows the new project's files. The channel
@@ -2218,6 +2233,7 @@ impl App {
             spinner_last_advance_at: None,
             tools_collapsed: false,
             projects_pane_visible: true,
+            projects_pane_scroll_offset: 0,
             projects_pane_overlay_open: false,
             inspector_pane_visible: true,
             inspector_pane_overlay_open: false,
@@ -2235,6 +2251,7 @@ impl App {
             rendered_input_lines: Vec::new(),
             rendered_input_area: ratatui::layout::Rect::default(),
             rendered_inspector_body_area: ratatui::layout::Rect::default(),
+            rendered_projects_pane_body_area: ratatui::layout::Rect::default(),
             paste_burst: super::paste_burst::PasteBurstDetector::new(),
             needs_redraw: true,
             notifications: super::notify::NotificationManager::new(),

@@ -38,12 +38,14 @@ use crate::app::session::SessionLifecycleState;
 pub fn render(frame: &mut Frame, area: Rect, app: &mut App, projects: &[ProjectView]) {
     app.pane_hit_targets.clear();
 
-    // Two anchored regions: top = project list, bottom = account /
-    // status panel. The panel reserves a fixed N rows from the bottom
-    // (see `ACCOUNT_PANEL_HEIGHT`); the list takes everything above.
-    // When the pane is too short the panel is skipped and the list
-    // gets the full area.
+    // Three anchored regions:
+    //   - top 2 rows: `PROJECTS` banner + DIM rule (static)
+    //   - middle:     project list (scrollable)
+    //   - bottom:     account / status footer (static; reserves
+    //                 `ACCOUNT_PANEL_HEIGHT` rows when the pane is
+    //                 tall enough).
     let panel_reserved = render_account_status_footer(frame, area, app);
+    let head_rows: u16 = 2;
     let list_area = Rect {
         x: area.x,
         y: area.y,
@@ -51,25 +53,140 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, projects: &[ProjectV
         height: area.height.saturating_sub(panel_reserved),
     };
 
-    let mut lines: Vec<Line<'static>> = Vec::new();
+    render_pane_head(frame, list_area);
 
-    // Pane name banner: PROJECTS at row 0, dim rule, then straight
-    // into the first section header. The blank-between-section-header-
-    // and-first-row is per section (in `append_project_rows`) so the
-    // banner sits flush against the first section.
-    lines.push(Line::from(Span::styled(
+    let body_area = Rect {
+        x: list_area.x,
+        y: list_area.y.saturating_add(head_rows),
+        width: list_area.width,
+        height: list_area.height.saturating_sub(head_rows),
+    };
+    render_pane_body(frame, body_area, app, projects);
+}
+
+/// Paint the pinned `PROJECTS` banner + DIM rule on the top 2 rows
+/// of the pane. Shared by the inline and overlay renderers — the
+/// overlay variant overrides the banner via its caller; only the
+/// rule is the same.
+fn render_pane_head(frame: &mut Frame, area: Rect) {
+    let head_rows = 2u16.min(area.height);
+    if head_rows == 0 {
+        return;
+    }
+    let mut head_lines: Vec<Line<'static>> = Vec::with_capacity(2);
+    head_lines.push(Line::from(Span::styled(
         " PROJECTS".to_owned(),
         Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
     )));
-    let rule_width = usize::from(list_area.width.saturating_sub(2));
-    lines.push(Line::from(vec![
-        Span::raw(" "),
-        Span::styled("─".repeat(rule_width), Style::default().fg(theme::DIM)),
-    ]));
+    if head_rows >= 2 {
+        let rule_width = usize::from(area.width.saturating_sub(2));
+        head_lines.push(Line::from(vec![
+            Span::raw(" "),
+            Span::styled("─".repeat(rule_width), Style::default().fg(theme::DIM)),
+        ]));
+    }
+    let head_area = Rect { x: area.x, y: area.y, width: area.width, height: head_rows };
+    frame.render_widget(Paragraph::new(head_lines), head_area);
+}
 
-    append_project_rows(&mut lines, list_area, app, projects);
+/// Render the scrollable project list. Builds every row into a
+/// `Vec<Line>`, then renders the Paragraph with the clamped scroll
+/// offset stamped onto `App.projects_pane_scroll_offset`. The thumb
+/// on the right edge mirrors the inspector pane's `▐` style so the
+/// two panes look consistent.
+fn render_pane_body(frame: &mut Frame, area: Rect, app: &mut App, projects: &[ProjectView]) {
+    if area.height == 0 || area.width == 0 {
+        app.rendered_projects_pane_body_area = Rect::default();
+        return;
+    }
+    app.rendered_projects_pane_body_area = area;
 
-    frame.render_widget(Paragraph::new(lines), list_area);
+    let mut body_lines: Vec<Line<'static>> = Vec::new();
+    let body_hit_target_start = app.pane_hit_targets.len();
+    append_project_rows(&mut body_lines, area, app, projects);
+    let total = body_lines.len();
+    let visible = usize::from(area.height);
+    let max_offset = total.saturating_sub(visible);
+    let max_offset_u16 = u16::try_from(max_offset).unwrap_or(u16::MAX);
+    let offset = app.projects_pane_scroll_offset.min(max_offset_u16);
+    app.projects_pane_scroll_offset = offset;
+
+    // Translate body-local hit-target y coords by the scroll offset.
+    // Targets stamped during `append_project_rows` use absolute y =
+    // `body_area.y + line_idx` (with no scroll knowledge); after
+    // scrolling, the line at that screen y is actually `offset` rows
+    // higher. Subtracting `offset` re-aligns hit-tests with the
+    // painted rows. Targets that would land above `body_area.y`
+    // (scrolled off the top) get their `height` zeroed so the
+    // `contains_y` test refuses them — the click would otherwise
+    // register on whatever sits above the body (the static banner /
+    // rule), wrongly switching projects.
+    if offset > 0 {
+        shift_body_hit_targets(app, body_hit_target_start, area.y, offset);
+    }
+
+    frame.render_widget(Paragraph::new(body_lines).scroll((offset, 0)), area);
+
+    if total > visible {
+        render_projects_scroll_thumb(frame, area, total, visible, offset);
+    }
+}
+
+fn shift_body_hit_targets(app: &mut App, start_idx: usize, body_top: u16, offset: u16) {
+    for target in app.pane_hit_targets.iter_mut().skip(start_idx) {
+        match target {
+            crate::app::PaneHitTarget::ProjectHeader { y, height, .. }
+            | crate::app::PaneHitTarget::SessionRow { y, height, .. }
+            | crate::app::PaneHitTarget::CloseSession { y, height, .. } => {
+                if let Some(new_y) = y.checked_sub(offset) {
+                    if new_y < body_top {
+                        *height = 0;
+                    } else {
+                        *y = new_y;
+                    }
+                } else {
+                    *height = 0;
+                }
+            }
+            crate::app::PaneHitTarget::TopBarIcon { .. }
+            | crate::app::PaneHitTarget::InspectorTopBarIcon { .. }
+            | crate::app::PaneHitTarget::OverlayClose { .. }
+            | crate::app::PaneHitTarget::InspectorGitOpenDiff { .. }
+            | crate::app::PaneHitTarget::CopySessionId { .. } => {}
+        }
+    }
+}
+
+/// Paint the projects-pane scroll thumb on the right edge of the
+/// body area. Mirrors the inspector pane's thumb (single `▐` cells
+/// in `ROLE_ASSISTANT` colour) so the two panes look consistent.
+fn render_projects_scroll_thumb(
+    frame: &mut Frame,
+    body_area: Rect,
+    total: usize,
+    visible: usize,
+    offset: u16,
+) {
+    let Some(geometry) = crate::app::compute_scrollbar_geometry(total, visible, f32::from(offset))
+    else {
+        return;
+    };
+    let thumb_x = body_area.x.saturating_add(body_area.width).saturating_sub(1);
+    let thumb_top =
+        body_area.y.saturating_add(u16::try_from(geometry.thumb_top).unwrap_or(u16::MAX));
+    let thumb_size = u16::try_from(geometry.thumb_size).unwrap_or(u16::MAX).max(1);
+    for offset in 0..thumb_size {
+        let y = thumb_top.saturating_add(offset);
+        if y >= body_area.y.saturating_add(body_area.height) {
+            break;
+        }
+        let cell = ratatui::buffer::Cell::new("▐");
+        let mut cell = cell;
+        cell.set_style(Style::default().fg(theme::ROLE_ASSISTANT));
+        if let Some(buf_cell) = frame.buffer_mut().cell_mut((thumb_x, y)) {
+            *buf_cell = cell;
+        }
+    }
 }
 
 /// Render the Narrow-tier full-screen Projects overlay into `area`.
