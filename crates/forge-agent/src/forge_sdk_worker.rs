@@ -803,33 +803,221 @@ fn synth_permission_request(session_id: &str, ctx: &ToolPermissionContext) -> Ag
         session_id: session_id.to_owned(),
         request: PermissionRequest {
             tool_call,
-            options: default_permission_options(),
+            options: build_permission_options(ctx),
             display: Some(display),
         },
     }
 }
 
-fn default_permission_options() -> Vec<forge_primitives::PermissionOption> {
-    vec![
-        forge_primitives::PermissionOption {
-            option_id: "allow_once".to_owned(),
-            name: "Allow once".to_owned(),
-            kind: forge_primitives::permission_ui::PermissionOptionKind::Allow,
-            action: forge_primitives::permission_ui::PermissionAction::Allow,
-        },
-        forge_primitives::PermissionOption {
-            option_id: "allow_always".to_owned(),
-            name: "Allow always".to_owned(),
-            kind: forge_primitives::permission_ui::PermissionOptionKind::Allow,
-            action: forge_primitives::permission_ui::PermissionAction::Allow,
-        },
-        forge_primitives::PermissionOption {
-            option_id: "deny".to_owned(),
-            name: "Deny".to_owned(),
-            kind: forge_primitives::permission_ui::PermissionOptionKind::Deny,
-            action: forge_primitives::permission_ui::PermissionAction::Deny,
-        },
-    ]
+/// Construct the contextual option list for a permission prompt.
+/// Derives "Allow always for X" / "Allow always & add dirs" / "Allow
+/// always & switch mode" entries from `ctx.suggestions`; adds the
+/// synthesized "Allow with edits" for editable tools and the universal
+/// "Tell Claude something else" escape hatch.
+///
+/// Wire reality (captured 2026-05-18; see baselines/sdk/2.1.117/):
+/// - `Read` outside workspace -> `addRules` with `{toolName, ruleContent}`.
+///   macOS sends BOTH `//tmp/**` AND `//private/tmp/**` -- these collapse
+///   into ONE display option whose action carries BOTH rules.
+/// - `Write` / `Edit` outside workspace -> `setMode -> acceptEdits` +
+///   `addDirectories` (NOT addRules). Different variant mix.
+/// - `ExitPlanMode` -> `suggestions: []` (empty). Plain Permission.
+fn build_permission_options(
+    ctx: &ToolPermissionContext,
+) -> Vec<forge_primitives::PermissionOption> {
+    use forge_primitives::PermissionOption;
+    use forge_primitives::permission_ui::{PermissionAction, PermissionOptionKind};
+    use forge_primitives::permissions::PermissionUpdate;
+
+    let mut opts: Vec<PermissionOption> = Vec::new();
+
+    // 1. Allow once is universal.
+    opts.push(PermissionOption {
+        option_id: "allow_once".to_owned(),
+        name: "Allow once".to_owned(),
+        kind: PermissionOptionKind::Allow,
+        action: PermissionAction::Allow,
+    });
+
+    // 2. Derive "Allow always" options from ctx.suggestions, with macOS
+    //    /tmp <-> /private/tmp dedupe for AddRules.
+    let canonical = canonicalize_suggestions(&ctx.suggestions);
+    for (i, update) in canonical.iter().enumerate() {
+        let (name, action) = match update {
+            PermissionUpdate::AddRules { rules, behavior, .. } => {
+                if *behavior != forge_primitives::permissions::PermissionBehavior::Allow {
+                    continue;
+                }
+                let summary = summarize_rules(rules);
+                (
+                    format!("Allow always for {} \u{b7} {}", ctx.tool_name, summary),
+                    PermissionAction::AllowWithUpdates { updates: vec![update.clone()] },
+                )
+            }
+            PermissionUpdate::AddDirectories { directories, .. } => {
+                let summary = summarize_dirs(directories);
+                (
+                    format!("Allow always & add {summary} to allowed dirs"),
+                    PermissionAction::AllowWithUpdates { updates: vec![update.clone()] },
+                )
+            }
+            PermissionUpdate::SetMode { mode, .. } => (
+                format!("Allow always & switch to {} mode", mode.display_name()),
+                PermissionAction::AllowWithUpdates { updates: vec![update.clone()] },
+            ),
+            // RemoveRules / ReplaceRules / RemoveDirectories aren't
+            // user-facing prompt options. Skip.
+            PermissionUpdate::RemoveRules { .. }
+            | PermissionUpdate::ReplaceRules { .. }
+            | PermissionUpdate::RemoveDirectories { .. } => continue,
+        };
+        opts.push(PermissionOption {
+            option_id: format!("allow_always_{i}"),
+            name,
+            kind: PermissionOptionKind::Allow,
+            action,
+        });
+    }
+
+    // 3. "Allow with edits" for editable tools.
+    if is_editable_tool(&ctx.tool_name) {
+        opts.push(PermissionOption {
+            option_id: "allow_with_edits".to_owned(),
+            name: "Allow with edits".to_owned(),
+            kind: PermissionOptionKind::Edit,
+            action: PermissionAction::AllowWithInput,
+        });
+    }
+
+    // 4. Deny.
+    opts.push(PermissionOption {
+        option_id: "deny".to_owned(),
+        name: "Deny".to_owned(),
+        kind: PermissionOptionKind::Deny,
+        action: PermissionAction::Deny,
+    });
+
+    // 5. Universal: Tell Claude something else.
+    opts.push(PermissionOption {
+        option_id: "tell_claude".to_owned(),
+        name: "Tell Claude something else".to_owned(),
+        kind: PermissionOptionKind::Notes,
+        action: PermissionAction::Deny,
+    });
+
+    opts
+}
+
+/// Walk the suggestions list and collapse macOS `/tmp` <-> `/private/tmp`
+/// AddRules mirrors into one merged entry. Two AddRules suggestions with
+/// the same toolName + behavior + destination, whose rule_content differs
+/// only by the `/tmp/` <-> `/private/tmp/` prefix, are merged into a
+/// single AddRules whose `rules` vec contains BOTH entries so the CLI
+/// installs both rules even though the UI shows one option.
+fn canonicalize_suggestions(
+    suggestions: &[forge_primitives::permissions::PermissionUpdate],
+) -> Vec<forge_primitives::permissions::PermissionUpdate> {
+    use forge_primitives::permissions::PermissionUpdate;
+
+    let mut result: Vec<PermissionUpdate> = Vec::with_capacity(suggestions.len());
+    let mut skip: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+
+    for (i, update) in suggestions.iter().enumerate() {
+        if skip.contains(&i) {
+            continue;
+        }
+        let PermissionUpdate::AddRules { rules: rules_a, behavior: beh_a, destination: dst_a } =
+            update
+        else {
+            result.push(update.clone());
+            continue;
+        };
+        let mut merged_rules = rules_a.clone();
+        for (j, other) in suggestions.iter().enumerate().skip(i + 1) {
+            if skip.contains(&j) {
+                continue;
+            }
+            let PermissionUpdate::AddRules {
+                rules: rules_b,
+                behavior: beh_b,
+                destination: dst_b,
+            } = other
+            else {
+                continue;
+            };
+            if beh_a != beh_b || dst_a != dst_b {
+                continue;
+            }
+            if is_tmp_mirror_pair(rules_a, rules_b) {
+                merged_rules.extend(rules_b.iter().cloned());
+                skip.insert(j);
+            }
+        }
+        result.push(PermissionUpdate::AddRules {
+            rules: merged_rules,
+            behavior: *beh_a,
+            destination: *dst_a,
+        });
+    }
+    result
+}
+
+/// True if `rules_a` and `rules_b` differ only by the macOS
+/// `/tmp/` <-> `/private/tmp/` prefix in their rule_content strings.
+fn is_tmp_mirror_pair(
+    rules_a: &[forge_primitives::permissions::PermissionRuleValue],
+    rules_b: &[forge_primitives::permissions::PermissionRuleValue],
+) -> bool {
+    if rules_a.len() != rules_b.len() {
+        return false;
+    }
+    rules_a.iter().zip(rules_b.iter()).all(|(a, b)| {
+        if a.tool_name != b.tool_name {
+            return false;
+        }
+        match (a.rule_content.as_deref(), b.rule_content.as_deref()) {
+            (Some(ca), Some(cb)) => {
+                let na = normalize_tmp_path(ca);
+                let nb = normalize_tmp_path(cb);
+                na == nb && ca != cb
+            }
+            // No content on either side: not a path-prefix mirror.
+            _ => false,
+        }
+    })
+}
+
+/// Strip the `/private` prefix from `//private/tmp/...` rule_content so
+/// the macOS mirror normalizes to the canonical `/tmp/...` form.
+fn normalize_tmp_path(content: &str) -> String {
+    content.replacen("//private/tmp/", "//tmp/", 1)
+}
+
+fn summarize_rules(rules: &[forge_primitives::permissions::PermissionRuleValue]) -> String {
+    // Display: collapse the macOS /tmp + /private/tmp pair to "/tmp/**".
+    let mut shown: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for r in rules {
+        let label = r.rule_content.as_deref().map_or_else(
+            || format!("any {} invocation", r.tool_name),
+            |c| format!("paths matching {}", normalize_tmp_path(c)),
+        );
+        shown.insert(label);
+    }
+    shown.into_iter().collect::<Vec<_>>().join(", ")
+}
+
+fn summarize_dirs(dirs: &[String]) -> String {
+    // Display: collapse the macOS /tmp + /private/tmp pair.
+    let mut shown: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for d in dirs {
+        shown.insert(d.replacen("/private/tmp", "/tmp", 1));
+    }
+    shown.into_iter().collect::<Vec<_>>().join(", ")
+}
+
+/// Tools whose `tool_input` is meaningful to edit before approving.
+fn is_editable_tool(tool_name: &str) -> bool {
+    matches!(tool_name, "Bash" | "Edit" | "Write" | "MultiEdit" | "NotebookEdit")
 }
 
 pub(crate) fn clamp_percentage_to_u8(p: f64) -> u8 {
@@ -1012,8 +1200,13 @@ mod tests {
         assert_eq!(request.tool_call.tool_call_id, "tu_p1");
         assert_eq!(request.tool_call.title, "Bash");
         assert_eq!(request.tool_call.raw_input, Some(json!({ "command": "ls" })));
-        assert_eq!(request.options.len(), 3);
-        assert!(request.options.iter().any(|o| o.option_id == "deny"));
+        // Empty suggestions + editable tool (Bash) -> [allow_once,
+        // allow_with_edits, deny, tell_claude]. Shape assertion: first
+        // is allow_once, last is tell_claude, deny present.
+        let ids: Vec<&str> = request.options.iter().map(|o| o.option_id.as_str()).collect();
+        assert_eq!(ids.first().copied(), Some("allow_once"));
+        assert_eq!(ids.last().copied(), Some("tell_claude"));
+        assert!(ids.contains(&"deny"));
         let display = request.display.expect("display populated");
         assert_eq!(display.title.as_deref(), Some("Run shell command"));
         assert_eq!(display.display_name.as_deref(), Some("Bash"));
@@ -1026,5 +1219,142 @@ mod tests {
         let _rx = park(&pending, "tu_x");
         assert!(take_pending(&pending, "tu_x").is_some());
         assert!(take_pending(&pending, "tu_x").is_none());
+    }
+}
+
+#[cfg(test)]
+mod tests_permission_options {
+    use super::build_permission_options;
+    use forge_primitives::options::PermissionMode;
+    use forge_primitives::permission_ui::{PermissionAction, PermissionOptionKind};
+    use forge_primitives::permissions::{
+        PermissionBehavior, PermissionRuleValue, PermissionUpdate, PermissionUpdateDestination,
+        ToolPermissionContext,
+    };
+    use serde_json::json;
+
+    fn mk_ctx(tool_name: &str, suggestions: Vec<PermissionUpdate>) -> ToolPermissionContext {
+        ToolPermissionContext::new(tool_name, json!({}), "tu-1", None).with_suggestions(suggestions)
+    }
+
+    #[test]
+    fn empty_suggestions_yields_baseline_options() {
+        // Non-editable tool (Read), no suggestions: Allow once, Deny, Tell Claude.
+        let opts = build_permission_options(&mk_ctx("Read", vec![]));
+        let ids: Vec<&str> = opts.iter().map(|o| o.option_id.as_str()).collect();
+        assert_eq!(ids, vec!["allow_once", "deny", "tell_claude"]);
+    }
+
+    #[test]
+    fn editable_tool_appends_allow_with_edits() {
+        let opts = build_permission_options(&mk_ctx("Bash", vec![]));
+        let ids: Vec<&str> = opts.iter().map(|o| o.option_id.as_str()).collect();
+        assert_eq!(ids, vec!["allow_once", "allow_with_edits", "deny", "tell_claude"]);
+        let edits = opts
+            .iter()
+            .find(|o| o.option_id == "allow_with_edits")
+            .expect("allow_with_edits present for editable tool");
+        assert_eq!(edits.kind, PermissionOptionKind::Edit);
+        assert_eq!(edits.action, PermissionAction::AllowWithInput);
+    }
+
+    #[test]
+    fn add_rules_suggestion_inserts_allow_always_option() {
+        let suggestion = PermissionUpdate::AddRules {
+            rules: vec![PermissionRuleValue {
+                tool_name: "Read".into(),
+                rule_content: Some("//tmp/**".into()),
+            }],
+            behavior: PermissionBehavior::Allow,
+            destination: Some(PermissionUpdateDestination::Session),
+        };
+        let opts = build_permission_options(&mk_ctx("Read", vec![suggestion]));
+        // Order: allow_once, allow_always_0 (rules), deny, tell_claude.
+        let ids: Vec<&str> = opts.iter().map(|o| o.option_id.as_str()).collect();
+        assert_eq!(ids, vec!["allow_once", "allow_always_0", "deny", "tell_claude"]);
+        let allow_always = opts
+            .iter()
+            .find(|o| o.option_id == "allow_always_0")
+            .expect("allow_always_0 present");
+        assert_eq!(allow_always.kind, PermissionOptionKind::Allow);
+        assert!(matches!(allow_always.action, PermissionAction::AllowWithUpdates { .. }));
+    }
+
+    #[test]
+    fn macos_tmp_mirror_suggestions_collapse_for_display_but_keep_both_rules() {
+        let suggestion_a = PermissionUpdate::AddRules {
+            rules: vec![PermissionRuleValue {
+                tool_name: "Read".into(),
+                rule_content: Some("//tmp/**".into()),
+            }],
+            behavior: PermissionBehavior::Allow,
+            destination: Some(PermissionUpdateDestination::Session),
+        };
+        let suggestion_b = PermissionUpdate::AddRules {
+            rules: vec![PermissionRuleValue {
+                tool_name: "Read".into(),
+                rule_content: Some("//private/tmp/**".into()),
+            }],
+            behavior: PermissionBehavior::Allow,
+            destination: Some(PermissionUpdateDestination::Session),
+        };
+        let opts = build_permission_options(&mk_ctx("Read", vec![suggestion_a, suggestion_b]));
+        // ONE "Allow always" option whose action carries BOTH rules — not
+        // two separate "Allow always" entries.
+        let allow_always_count = opts
+            .iter()
+            .filter(|o| o.option_id.starts_with("allow_always_"))
+            .count();
+        assert_eq!(
+            allow_always_count, 1,
+            "macOS /tmp + /private/tmp should collapse into one option"
+        );
+        let merged = opts
+            .iter()
+            .find(|o| o.option_id.starts_with("allow_always_"))
+            .expect("merged allow_always option present");
+        let PermissionAction::AllowWithUpdates { updates } = &merged.action else {
+            panic!("expected AllowWithUpdates");
+        };
+        // Both rules should be present in the merged update — count rule
+        // entries across all updates.
+        let total_rules: usize = updates
+            .iter()
+            .map(|u| match u {
+                PermissionUpdate::AddRules { rules, .. } => rules.len(),
+                _ => 0,
+            })
+            .sum();
+        assert_eq!(
+            total_rules, 2,
+            "merged action should carry both /tmp and /private/tmp rules"
+        );
+    }
+
+    #[test]
+    fn add_directories_suggestion_yields_allow_always_option() {
+        let suggestion = PermissionUpdate::AddDirectories {
+            directories: vec!["/tmp".into(), "/private/tmp".into()],
+            destination: Some(PermissionUpdateDestination::Session),
+        };
+        let opts = build_permission_options(&mk_ctx("Write", vec![suggestion]));
+        let ids: Vec<&str> = opts.iter().map(|o| o.option_id.as_str()).collect();
+        // Write is editable so allow_with_edits also appears.
+        assert!(ids.contains(&"allow_always_0"));
+        assert!(ids.contains(&"allow_with_edits"));
+    }
+
+    #[test]
+    fn set_mode_suggestion_yields_switch_mode_option() {
+        let suggestion = PermissionUpdate::SetMode {
+            mode: PermissionMode::AcceptEdits,
+            destination: Some(PermissionUpdateDestination::Session),
+        };
+        let opts = build_permission_options(&mk_ctx("Write", vec![suggestion]));
+        let switch_mode = opts
+            .iter()
+            .find(|o| o.option_id == "allow_always_0")
+            .expect("allow_always_0 present");
+        assert!(switch_mode.name.to_lowercase().contains("accept edits"));
     }
 }
