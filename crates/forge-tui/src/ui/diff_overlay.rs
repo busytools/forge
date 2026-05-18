@@ -940,16 +940,19 @@ fn split_diff_row(
     right_hl: &mut LineHighlighter,
 ) -> Line<'static> {
     // Per-side body width: pane minus 2-col leading indent minus the
-    // 3-col divider zone (space + '│' + space), then halved.
+    // 3-col divider zone (space + '│' + space). Splits as floor/ceil
+    // so any leftover odd column goes to the right (additions) side
+    // — gives the `+` half a touch more breathing room than the `-`
+    // half, which mirrors how most users read a diff (focus right).
     let indent_cols: usize = 2;
     let divider_cols: usize = 3;
     let usable = usize::from(pane_width).saturating_sub(indent_cols).saturating_sub(divider_cols);
-    let per_side_width = usable / 2;
+    let left_width = usable / 2;
+    let right_width = usable - left_width;
 
-    let left =
-        build_split_half(file, pair.left, gutter_width, per_side_width, scroll_cols, left_hl);
+    let left = build_split_half(file, pair.left, gutter_width, left_width, scroll_cols, left_hl);
     let right =
-        build_split_half(file, pair.right, gutter_width, per_side_width, scroll_cols, right_hl);
+        build_split_half(file, pair.right, gutter_width, right_width, scroll_cols, right_hl);
 
     let mut spans: Vec<Span<'static>> = Vec::with_capacity(left.len() + right.len() + 4);
     spans.push(Span::raw("  "));

@@ -845,9 +845,11 @@ const SCROLL_LINES_PER_NOTCH: u16 = 3;
 /// Minimum FILES rail width when the rail is shown. Below this the
 /// file list becomes unreadably narrow; we hide the rail entirely.
 pub(crate) const RAIL_WIDTH_MIN: u16 = 20;
-/// Rail width as a fraction of the terminal width: strict 20%. The
-/// remaining 80% goes to the two-pane diff body (40 / 40 split).
-pub(crate) const RAIL_WIDTH_NUMER: u16 = 20;
+/// Rail width as a fraction of the terminal width: strict 15%. The
+/// remaining 85% goes to the two-pane diff body, split evenly with
+/// any odd leftover column handed to the right half so a `+`
+/// addition column never reads as narrower than its `-` counterpart.
+pub(crate) const RAIL_WIDTH_NUMER: u16 = 15;
 pub(crate) const RAIL_WIDTH_DENOM: u16 = 100;
 /// Medium-tier terminal width threshold (≥ this → rail visible).
 pub(crate) const MEDIUM_MIN: u16 = 120;
@@ -1910,22 +1912,21 @@ mod tests {
     }
 
     #[test]
-    fn rail_width_is_strict_20_percent_on_wide_terminals() {
-        // 200 × 20 / 100 = 40; 300 × 20 / 100 = 60.
-        assert_eq!(rail_width_for(200), 40);
-        assert_eq!(rail_width_for(300), 60);
+    fn rail_width_is_strict_15_percent_on_wide_terminals() {
+        // 200 × 15 / 100 = 30; 300 × 15 / 100 = 45.
+        assert_eq!(rail_width_for(200), 30);
+        assert_eq!(rail_width_for(300), 45);
     }
 
     #[test]
     fn rail_width_floors_at_min_on_narrow_borderline_widths() {
-        // 120 × 20 / 100 = 24 → above MIN, kept.
-        assert_eq!(rail_width_for(120), 24);
-        // 100 × 20 / 100 = 20 → exactly MIN (but 100 < MEDIUM_MIN so 0).
+        // 120 × 15 / 100 = 18 → below MIN (20), floored to 20.
+        assert_eq!(rail_width_for(120), RAIL_WIDTH_MIN);
+        // 140 × 15 / 100 = 21 → above MIN, kept.
+        assert_eq!(rail_width_for(140), 21);
+        // Anything below MEDIUM_MIN still hides the rail entirely
+        // regardless of what the percentage math would produce.
         assert_eq!(rail_width_for(100), 0);
-        // MIN floor kicks in only when the rail is shown (≥ MEDIUM_MIN)
-        // and the proportional value sits below MIN. With MEDIUM_MIN=120
-        // and 20% giving 24 at that threshold, the floor effectively
-        // never triggers under current thresholds; keep it for safety.
     }
 
     #[test]
