@@ -20,7 +20,7 @@ mod notify;
 pub(crate) mod paste_burst;
 mod permissions;
 pub(crate) mod plugins;
-mod prompt;
+pub(crate) mod prompt;
 pub(crate) mod process_scanner;
 pub(crate) mod processes;
 mod questions;

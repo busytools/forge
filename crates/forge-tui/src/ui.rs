@@ -15,6 +15,7 @@ pub(crate) mod layout;
 mod markdown;
 mod message;
 pub mod projects_pane;
+pub mod prompt;
 pub mod theme;
 mod tool_call;
 pub mod top_bar;
