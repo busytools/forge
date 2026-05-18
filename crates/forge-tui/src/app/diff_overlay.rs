@@ -602,6 +602,14 @@ pub(crate) fn close(app: &mut App) {
 ///     `input_submit::dispatch_diff_comment_bundle` so the user
 ///     sees the bubble appear immediately.
 pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
+    tracing::info!(
+        target: crate::logging::targets::APP_SESSION,
+        event_name = "diff_overlay_handle_key",
+        code = ?key.code,
+        modifiers = ?key.modifiers,
+        kind = ?key.kind,
+        "diff overlay received key event",
+    );
     let has_input = app.diff_overlay.as_ref().is_some_and(|o| o.active_input.is_some());
     if has_input {
         match key.code {
@@ -635,12 +643,27 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
 /// content extends past the available width.
 fn scroll_body_horizontal(app: &mut App, delta: i32) {
     let Some(overlay) = app.diff_overlay.as_mut() else {
+        tracing::info!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "diff_horizontal_scroll_no_overlay",
+            delta,
+            "horizontal scroll called but no diff overlay state",
+        );
         return;
     };
     let step = i32::from(SCROLL_COLS_PER_STEP);
     let next = i32::from(overlay.body_scroll_x).saturating_add(delta.saturating_mul(step));
     let clamped = next.clamp(0, i32::from(u16::MAX));
-    overlay.body_scroll_x = u16::try_from(clamped).unwrap_or(0);
+    let new_x = u16::try_from(clamped).unwrap_or(0);
+    tracing::info!(
+        target: crate::logging::targets::APP_SESSION,
+        event_name = "diff_horizontal_scroll",
+        delta,
+        old_x = overlay.body_scroll_x,
+        new_x,
+        "advancing diff horizontal scroll",
+    );
+    overlay.body_scroll_x = new_x;
     app.needs_redraw = true;
 }
 
