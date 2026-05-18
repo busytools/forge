@@ -299,18 +299,11 @@ fn build_key_help_items(app: &App) -> Vec<(String, String)> {
 }
 
 fn focused_question_prompt(app: &App) -> bool {
-    let Some(tool_id) = app.pending_interaction_ids().first() else {
-        return false;
-    };
-    let Some((mi, bi)) = app.lookup_tool_call(tool_id) else {
-        return false;
-    };
-    let Some(crate::app::MessageBlock::ToolCall(tc)) =
-        app.messages().get(mi).and_then(|message| message.blocks.get(bi))
-    else {
-        return false;
-    };
-    tc.pending_question.is_some()
+    app.active_session().is_some_and(|s| {
+        s.prompt_queue
+            .front()
+            .is_some_and(|p| matches!(p.source, crate::app::prompt::PromptSource::Question { .. }))
+    })
 }
 
 fn blocked_input_help_items(input_line: &str) -> Vec<(String, String)> {

@@ -16,7 +16,6 @@ use super::{
     PendingCommandAck, SystemSeverity, TextBlock,
 };
 use crate::agent::model;
-use crate::app::keys::reclaim_input_from_inline_prompt_if_needed;
 #[cfg(test)]
 use crate::app::keys::{CMD_MOD, WORD_NAV_MOD};
 #[cfg(test)]
@@ -165,7 +164,6 @@ fn dispatch_paste_by_view(app: &mut App, text: &str) -> bool {
                 AppStatus::Connecting | AppStatus::CommandPending | AppStatus::Error
             ) && !app.is_compacting()
             {
-                reclaim_input_from_inline_prompt_if_needed(app);
                 app.queue_paste_text(text);
                 return true;
             }
@@ -433,8 +431,6 @@ mod tests {
             last_measured_layout_epoch: 0,
             last_measured_layout_generation: 0,
             cache: BlockCache::default(),
-            pending_permission: None,
-            pending_question: None,
             collapsed_override: None,
             last_measured_y_in_msg: 0,
         }
@@ -3525,22 +3521,6 @@ mod tests {
         dispatch_key_by_focus(&mut app, KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
         assert_eq!(app.help_view, HelpView::Keys);
     }
-
-    #[test]
-    fn permission_focus_allows_typing_for_non_permission_keys() {
-        let mut app = make_test_app();
-        app.pending_interaction_ids_mut().push("perm-1".into());
-        app.claim_focus_target(FocusTarget::Permission);
-
-        handle_terminal_event(
-            &mut app,
-            Event::Key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE)),
-        );
-
-        assert_eq!(app.input().text(), "h");
-        assert_eq!(app.focus_owner(), FocusOwner::Input);
-    }
-
 
     #[test]
     fn connecting_state_allows_navigation_and_help_shortcuts() {

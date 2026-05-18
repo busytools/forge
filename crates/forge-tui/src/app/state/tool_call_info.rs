@@ -42,10 +42,6 @@ pub struct ToolCallInfo {
     pub last_measured_layout_generation: u64,
     /// Per-block render cache for this tool call.
     pub cache: BlockCache,
-    /// Inline permission prompt - rendered inside this tool call block.
-    pub pending_permission: Option<InlinePermission>,
-    /// Inline question prompt from `AskUserQuestion`.
-    pub pending_question: Option<InlineQuestion>,
     /// Per-tool collapse override set by clicking the tool-call row.
     /// `None` means follow the global `app.tools_collapsed` default;
     /// `Some(true)` forces collapsed, `Some(false)` forces expanded.
@@ -106,14 +102,6 @@ impl ToolCallInfo {
 
     pub fn hidden_unless_focused_interaction(&self) -> bool {
         self.hidden
-            && !self.pending_permission.as_ref().is_some_and(|permission| permission.focused)
-            && !self.pending_question.as_ref().is_some_and(|question| question.focused)
-    }
-
-    pub fn is_hidden_focused_interaction(&self) -> bool {
-        self.hidden
-            && (self.pending_permission.as_ref().is_some_and(|permission| permission.focused)
-                || self.pending_question.as_ref().is_some_and(|question| question.focused))
     }
 
     pub fn is_subagent_root_tool(&self) -> bool {
@@ -190,36 +178,6 @@ pub fn is_monitor_tool_name(tool_name: &str) -> bool {
 /// backgrounded tasks.
 pub fn is_cron_create_tool_name(tool_name: &str) -> bool {
     tool_name.eq_ignore_ascii_case("croncreate")
-}
-
-/// Permission state stored inline on a `ToolCallInfo`, so the
-/// permission controls render inside the tool call block (unified
-/// edit/permission UX). Workspace owns the oneshot in
-/// `DomainSession.pending_interactions`; the picker dispatches
-/// `Command::RespondPermission { key, tool_id, outcome }` via
-/// `Workspace::dispatch`.
-pub struct InlinePermission {
-    pub options: Vec<model::PermissionOption>,
-    pub display: Option<model::PermissionDisplay>,
-    pub tool_id: String,
-    pub selected_index: usize,
-    /// Whether this permission currently has keyboard focus.
-    /// When multiple permissions are pending, only the focused one
-    /// shows the selection arrow and accepts Left/Right/Enter input.
-    pub focused: bool,
-}
-
-pub struct InlineQuestion {
-    pub prompt: model::QuestionPrompt,
-    pub tool_id: String,
-    pub focused_option_index: usize,
-    pub selected_option_indices: std::collections::BTreeSet<usize>,
-    pub notes: String,
-    pub notes_cursor: usize,
-    pub editing_notes: bool,
-    pub focused: bool,
-    pub question_index: usize,
-    pub total_questions: usize,
 }
 
 #[cfg(test)]

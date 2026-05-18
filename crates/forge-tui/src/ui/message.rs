@@ -318,26 +318,9 @@ fn append_assistant_blocks(
     }
 
     let show_compacting = spinner.show_compacting;
-    let deferred_interaction = deferred_hidden_interaction_render_after(&msg.blocks);
     let mut state = AssistantLayoutState::default();
     for idx in 0..msg.blocks.len() {
-        if deferred_interaction.is_some_and(|(deferred_idx, _)| deferred_idx == idx) {
-            continue;
-        }
-
         append_assistant_block(&mut msg.blocks[idx], spinner, render_context, layout, &mut state);
-
-        if let Some((deferred_idx, render_after_idx)) = deferred_interaction
-            && render_after_idx == idx
-        {
-            append_assistant_block(
-                &mut msg.blocks[deferred_idx],
-                spinner,
-                render_context,
-                layout,
-                &mut state,
-            );
-        }
     }
 
     if show_compacting {
@@ -352,22 +335,6 @@ fn append_assistant_blocks(
         }
         layout.push_wrapped_line(thinking_line(spinner.frame), render_context.width);
     }
-}
-
-fn deferred_hidden_interaction_render_after(blocks: &[MessageBlock]) -> Option<(usize, usize)> {
-    let deferred_idx = blocks.iter().position(
-        |block| matches!(block, MessageBlock::ToolCall(tc) if tc.is_hidden_focused_interaction()),
-    )?;
-    let render_after_idx = blocks
-        .iter()
-        .enumerate()
-        .skip(deferred_idx.saturating_add(1))
-        .filter_map(|(idx, block)| match block {
-            MessageBlock::ToolCall(tc) if tc.is_subagent_root_tool() => Some(idx),
-            _ => None,
-        })
-        .last()?;
-    Some((deferred_idx, render_after_idx))
 }
 
 fn append_assistant_block(
@@ -871,8 +838,6 @@ fn hash_message_block_into<H: std::hash::Hasher>(
             tc.status.hash(hasher);
             tc.sdk_tool_name.hash(hasher);
             tool_render_context.current_mode_id.hash(hasher);
-            tc.pending_permission.is_some().hash(hasher);
-            tc.pending_question.is_some().hash(hasher);
             // Per-tool collapse override flips the rendered shape, so it
             // has to be folded into the signature alongside the global
             // tools_collapsed bit (which lives on MessageRenderCacheKey).
@@ -1281,9 +1246,7 @@ fn force_markdown_line_breaks(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{
-        ChatMessage, InlinePermission, MessageBlock, NoticeBlock, TextBlock, TextBlockSpacing,
-    };
+    use crate::app::{ChatMessage, MessageBlock, NoticeBlock, TextBlock, TextBlockSpacing};
     use pretty_assertions::assert_eq;
     use ratatui::widgets::{Paragraph, Wrap};
 
@@ -1636,31 +1599,8 @@ mod tests {
             last_measured_layout_epoch: 0,
             last_measured_layout_generation: 0,
             cache: BlockCache::default(),
-            pending_permission: None,
-            pending_question: None,
             collapsed_override: None,
             last_measured_y_in_msg: 0,
-        }
-    }
-
-    fn pending_permission(focused: bool) -> InlinePermission {
-        InlinePermission {
-            options: vec![
-                crate::agent::model::PermissionOption::new(
-                    "allow",
-                    "Allow",
-                    crate::agent::model::PermissionOptionKind::AllowOnce,
-                ),
-                crate::agent::model::PermissionOption::new(
-                    "deny",
-                    "Deny",
-                    crate::agent::model::PermissionOptionKind::RejectOnce,
-                ),
-            ],
-            display: None,
-            tool_id: "test-pending-permission".to_owned(),
-            selected_index: 0,
-            focused,
         }
     }
 
@@ -1669,13 +1609,6 @@ mod tests {
             .iter()
             .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
             .collect()
-    }
-
-    fn line_index_containing(lines: &[String], needle: &str) -> usize {
-        lines
-            .iter()
-            .position(|line| line.contains(needle))
-            .unwrap_or_else(|| panic!("expected line containing {needle:?}"))
     }
 
     fn make_welcome_message(subscription: &str, cwd: &str, session_id: &str) -> ChatMessage {
@@ -2193,183 +2126,6 @@ mod tests {
             assert!(!rendered.iter().any(|line| line.contains("hidden-child")));
             assert!(!rendered.iter().any(|line| line.contains("child output")));
         }
-    }
-
-    #[test]
-    fn assistant_message_renders_hidden_subagent_child_permission_prompt() {
-        let spinner = idle_spinner();
-        let mut hidden_tool = make_tool_call_info(
-            "hidden-permission",
-            "Bash",
-            crate::agent::model::ToolCallStatus::InProgress,
-            "",
-        );
-        hidden_tool.hidden = true;
-        hidden_tool.pending_permission = Some(pending_permission(true));
-        let mut msg = ChatMessage::new(
-            MessageRole::Assistant,
-            vec![MessageBlock::ToolCall(Box::new(hidden_tool))],
-            None,
-        );
-
-        let mut lines = Vec::new();
-        render_message_with_tools_collapsed(&mut msg, &spinner, 120, false, &mut lines);
-        let rendered = render_lines_to_strings(&lines);
-
-        assert!(rendered.iter().any(|line| line.contains("hidden-permission")));
-        assert!(rendered.iter().any(|line| line.contains("Allow")));
-        assert!(rendered.iter().any(|line| line.contains("Deny")));
-    }
-
-    #[test]
-    fn assistant_message_renders_only_focused_hidden_subagent_child_permission_prompt() {
-        let spinner = idle_spinner();
-        let mut focused_tool = make_tool_call_info(
-            "focused-permission",
-            "Bash",
-            crate::agent::model::ToolCallStatus::InProgress,
-            "",
-        );
-        focused_tool.hidden = true;
-        focused_tool.pending_permission = Some(pending_permission(true));
-        let mut waiting_tool = make_tool_call_info(
-            "waiting-permission",
-            "Bash",
-            crate::agent::model::ToolCallStatus::InProgress,
-            "",
-        );
-        waiting_tool.hidden = true;
-        waiting_tool.pending_permission = Some(pending_permission(false));
-        let mut msg = ChatMessage::new(
-            MessageRole::Assistant,
-            vec![
-                MessageBlock::ToolCall(Box::new(focused_tool)),
-                MessageBlock::ToolCall(Box::new(waiting_tool)),
-            ],
-            None,
-        );
-
-        let mut lines = Vec::new();
-        render_message_with_tools_collapsed(&mut msg, &spinner, 120, false, &mut lines);
-        let rendered = render_lines_to_strings(&lines);
-
-        assert!(rendered.iter().any(|line| line.contains("focused-permission")));
-        assert!(!rendered.iter().any(|line| line.contains("waiting-permission")));
-        assert!(!rendered.iter().any(|line| line.contains("Waiting for input")));
-    }
-
-    #[test]
-    fn assistant_message_keeps_unfocused_main_agent_permission_prompt_visible() {
-        let spinner = idle_spinner();
-        let mut main_tool = make_tool_call_info(
-            "main-permission",
-            "Bash",
-            crate::agent::model::ToolCallStatus::InProgress,
-            "",
-        );
-        main_tool.pending_permission = Some(pending_permission(false));
-        let mut msg = ChatMessage::new(
-            MessageRole::Assistant,
-            vec![MessageBlock::ToolCall(Box::new(main_tool))],
-            None,
-        );
-
-        let mut lines = Vec::new();
-        render_message_with_tools_collapsed(&mut msg, &spinner, 120, false, &mut lines);
-        let rendered = render_lines_to_strings(&lines);
-
-        assert!(rendered.iter().any(|line| line.contains("main-permission")));
-        assert!(rendered.iter().any(|line| line.contains("Waiting for input")));
-    }
-
-    #[test]
-    fn assistant_message_defers_focused_hidden_child_permission_after_later_subagent_roots() {
-        let spinner = idle_spinner();
-        let root_a = make_tool_call_info(
-            "root-a",
-            "Task",
-            crate::agent::model::ToolCallStatus::InProgress,
-            "first subagent",
-        );
-        let mut focused_tool = make_tool_call_info(
-            "focused-permission",
-            "Bash",
-            crate::agent::model::ToolCallStatus::InProgress,
-            "",
-        );
-        focused_tool.hidden = true;
-        focused_tool.pending_permission = Some(pending_permission(true));
-        let root_b = make_tool_call_info(
-            "root-b",
-            "Agent",
-            crate::agent::model::ToolCallStatus::InProgress,
-            "second subagent",
-        );
-        let mut msg = ChatMessage::new(
-            MessageRole::Assistant,
-            vec![
-                MessageBlock::ToolCall(Box::new(root_a)),
-                MessageBlock::ToolCall(Box::new(focused_tool)),
-                MessageBlock::ToolCall(Box::new(root_b)),
-            ],
-            None,
-        );
-
-        let mut lines = Vec::new();
-        render_message_with_tools_collapsed(&mut msg, &spinner, 120, false, &mut lines);
-        let rendered = render_lines_to_strings(&lines);
-
-        let first_root_line = line_index_containing(&rendered, "root-a");
-        let second_root_line = line_index_containing(&rendered, "root-b");
-        let focused_idx = line_index_containing(&rendered, "focused-permission");
-
-        assert!(first_root_line < second_root_line);
-        assert!(second_root_line < focused_idx);
-    }
-
-    #[test]
-    fn assistant_message_keeps_focused_hidden_child_permission_before_later_main_tool() {
-        let spinner = idle_spinner();
-        let root = make_tool_call_info(
-            "root",
-            "Task",
-            crate::agent::model::ToolCallStatus::InProgress,
-            "subagent",
-        );
-        let mut focused_tool = make_tool_call_info(
-            "focused-permission",
-            "Bash",
-            crate::agent::model::ToolCallStatus::InProgress,
-            "",
-        );
-        focused_tool.hidden = true;
-        focused_tool.pending_permission = Some(pending_permission(true));
-        let main_tool = make_tool_call_info(
-            "main-tool",
-            "Read",
-            crate::agent::model::ToolCallStatus::InProgress,
-            "main agent tool",
-        );
-        let mut msg = ChatMessage::new(
-            MessageRole::Assistant,
-            vec![
-                MessageBlock::ToolCall(Box::new(root)),
-                MessageBlock::ToolCall(Box::new(focused_tool)),
-                MessageBlock::ToolCall(Box::new(main_tool)),
-            ],
-            None,
-        );
-
-        let mut lines = Vec::new();
-        render_message_with_tools_collapsed(&mut msg, &spinner, 120, false, &mut lines);
-        let rendered = render_lines_to_strings(&lines);
-
-        let root_idx = line_index_containing(&rendered, "root");
-        let focused_idx = line_index_containing(&rendered, "focused-permission");
-        let main_idx = line_index_containing(&rendered, "main-tool");
-
-        assert!(root_idx < focused_idx);
-        assert!(focused_idx < main_idx);
     }
 
     #[test]

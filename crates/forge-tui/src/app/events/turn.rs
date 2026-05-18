@@ -261,8 +261,6 @@ pub(super) fn finalize_background_tool_calls(
                     model::ToolCallStatus::InProgress | model::ToolCallStatus::Pending
                 ) {
                     tc.status = new_status;
-                    let _ = tc.pending_permission.take();
-                    let _ = tc.pending_question.take();
                     let _ = tc.terminal_id.take();
                 }
             }
