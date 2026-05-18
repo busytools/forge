@@ -798,6 +798,7 @@ fn synth_permission_request(session_id: &str, ctx: &ToolPermissionContext) -> Ag
         title: ctx.title.clone(),
         display_name: ctx.display_name.clone(),
         description: ctx.description.clone(),
+        decision_reason: ctx.decision_reason.clone(),
     };
     AgentEvent::PermissionRequest {
         session_id: session_id.to_owned(),
@@ -1211,6 +1212,26 @@ mod tests {
         assert_eq!(display.title.as_deref(), Some("Run shell command"));
         assert_eq!(display.display_name.as_deref(), Some("Bash"));
         assert_eq!(display.description.as_deref(), Some("Lists directory entries"));
+    }
+
+    #[test]
+    fn synth_permission_request_surfaces_decision_reason() {
+        let c = ctx("Read", "tu_dr1", json!({ "file_path": "/tmp/x" })).with_display(
+            None,
+            Some("Path is outside allowed working directories".to_owned()),
+            None,
+            None,
+            None,
+        );
+        let event = synth_permission_request("session-1", &c);
+        let AgentEvent::PermissionRequest { request, .. } = event else {
+            panic!("expected PermissionRequest");
+        };
+        let display = request.display.expect("display populated");
+        assert_eq!(
+            display.decision_reason.as_deref(),
+            Some("Path is outside allowed working directories"),
+        );
     }
 
     #[test]

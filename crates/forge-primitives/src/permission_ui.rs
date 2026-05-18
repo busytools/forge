@@ -66,6 +66,9 @@ pub struct PermissionDisplay {
     pub title: Option<String>,
     pub display_name: Option<String>,
     pub description: Option<String>,
+    /// The CLI's reason for asking (`decision_reason` from CanUseTool).
+    /// Rendered as the yellow ⚠ line in the dock header.
+    pub decision_reason: Option<String>,
 }
 
 impl PermissionDisplay {
@@ -88,11 +91,17 @@ impl PermissionDisplay {
         self
     }
 
+    pub fn decision_reason(mut self, decision_reason: Option<String>) -> Self {
+        self.decision_reason = decision_reason;
+        self
+    }
+
     /// `true` iff every field is None or contains only whitespace.
     pub fn is_empty(&self) -> bool {
         self.title.as_ref().is_none_or(|value| value.trim().is_empty())
             && self.display_name.as_ref().is_none_or(|value| value.trim().is_empty())
             && self.description.as_ref().is_none_or(|value| value.trim().is_empty())
+            && self.decision_reason.as_ref().is_none_or(|value| value.trim().is_empty())
     }
 }
 
