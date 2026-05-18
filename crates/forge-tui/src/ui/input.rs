@@ -26,8 +26,11 @@ const INPUT_RIGHT_PAD: u16 = 1;
 /// Prompt column width: "❯ " = 2 columns (icon + space)
 const PROMPT_WIDTH: u16 = 2;
 
-/// Rows reserved for the input box's top + bottom borders.
-const INPUT_BORDER_LINES: u16 = 2;
+/// Rows reserved for the input box's chrome: top border + top inner
+/// padding + bottom inner padding + bottom border. Both modes (chat
+/// input and prompt) inherit the same 1-row top + 1-row bottom inner
+/// padding from spec §3.
+const INPUT_BORDER_LINES: u16 = 4;
 
 /// Minimum text-area height inside the bordered box. The chat input
 /// is the primary action surface, so the box never collapses to a
@@ -107,14 +110,15 @@ pub(crate) fn compute_render_geometry(area: Rect, hint_lines: u16) -> InputRende
     // borders themselves are the visual margin, so the box sits flush
     // against the pane separators (or screen edges in narrow tier).
     // `box_area` is the full Rect the Block widget draws into
-    // (borders + interior); `padded` is the 1-cell-inset interior
-    // where prompt + text live.
+    // (borders + interior); `padded` is the interior where prompt +
+    // text live, inset 1 cell L/R for the side borders and 2 rows top
+    // + 2 rows bottom (border + inner padding row).
     let box_area = input_main_area;
     let padded = Rect {
         x: box_area.x.saturating_add(1),
-        y: box_area.y.saturating_add(1),
+        y: box_area.y.saturating_add(2),
         width: box_area.width.saturating_sub(2),
-        height: box_area.height.saturating_sub(2),
+        height: box_area.height.saturating_sub(4),
     };
     let [prompt, text] =
         Layout::horizontal([Constraint::Length(PROMPT_WIDTH), Constraint::Min(1)]).areas(padded);
@@ -125,6 +129,18 @@ pub(crate) fn compute_render_geometry(area: Rect, hint_lines: u16) -> InputRende
 pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     let hint_lines = hint_line_count(app);
     let geometry = compute_render_geometry(area, hint_lines);
+
+    // Prompt mode: when the active session has a prompt at the head of
+    // its queue, the dock morphs into the unified prompt widget. The
+    // widget owns its own chrome (thick orange block) and inner
+    // padding, so we skip the normal chat-input rendering entirely.
+    if let Some(session) = app.active_session()
+        && let Some(prompt) = session.prompt_queue.front()
+    {
+        let queue_depth = session.prompt_queue.len();
+        crate::ui::prompt::render(geometry.box_area, frame.buffer_mut(), prompt, queue_depth);
+        return;
+    }
 
     // Bordered frame around the input area — the chat input is THE
     // primary action surface, so the box renders with thick line
@@ -414,11 +430,13 @@ pub fn visual_line_count(app: &mut App, area_width: u16) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::{
-        CANCEL_HINT_LINES, LOGIN_HINT_LINES, MAX_INPUT_HEIGHT, PROMPT_SUGGESTION_HINT_LINES,
+        CANCEL_HINT_LINES, INPUT_BORDER_LINES, LOGIN_HINT_LINES, MAX_INPUT_HEIGHT,
+        MIN_INPUT_INTERIOR_LINES, PROMPT_SUGGESTION_HINT_LINES, compute_render_geometry,
         slash_command_range, visual_line_count,
     };
     use crate::app::subagent::find_subagent_spans;
     use crate::app::{App, FocusTarget, LoginHint};
+    use ratatui::layout::Rect;
 
     #[test]
     fn slash_range_matches_leading_command_token() {
@@ -451,7 +469,7 @@ mod tests {
     fn visual_line_count_uses_textarea_max_rows() {
         let mut app = App::test_default();
         app.input_mut().set_text(&"x".repeat(500));
-        assert_eq!(visual_line_count(&mut app, 8), MAX_INPUT_HEIGHT);
+        assert_eq!(visual_line_count(&mut app, 8), MAX_INPUT_HEIGHT + INPUT_BORDER_LINES);
     }
 
     #[test]
@@ -461,21 +479,30 @@ mod tests {
             method_name: "oauth".to_owned(),
             method_description: "Sign in".to_owned(),
         });
-        assert_eq!(visual_line_count(&mut app, 80), LOGIN_HINT_LINES + 1);
+        assert_eq!(
+            visual_line_count(&mut app, 80),
+            LOGIN_HINT_LINES + MIN_INPUT_INTERIOR_LINES + INPUT_BORDER_LINES
+        );
     }
 
     #[test]
     fn visual_line_count_includes_cancel_hint_row() {
         let mut app = App::test_default();
         app.set_pending_cancel(true);
-        assert_eq!(visual_line_count(&mut app, 80), CANCEL_HINT_LINES + 1);
+        assert_eq!(
+            visual_line_count(&mut app, 80),
+            CANCEL_HINT_LINES + MIN_INPUT_INTERIOR_LINES + INPUT_BORDER_LINES
+        );
     }
 
     #[test]
     fn visual_line_count_includes_prompt_suggestion_hint_row() {
         let mut app = App::test_default();
         app.set_prompt_suggestion(Some("Write tests for the retry flow".to_owned()));
-        assert_eq!(visual_line_count(&mut app, 80), PROMPT_SUGGESTION_HINT_LINES + 1);
+        assert_eq!(
+            visual_line_count(&mut app, 80),
+            PROMPT_SUGGESTION_HINT_LINES + MIN_INPUT_INTERIOR_LINES + INPUT_BORDER_LINES
+        );
     }
 
     #[test]
@@ -483,7 +510,7 @@ mod tests {
         let mut app = App::test_default();
         app.set_prompt_suggestion(Some("Write tests for the retry flow".to_owned()));
         app.input_mut().set_text("draft");
-        assert_eq!(visual_line_count(&mut app, 80), 1);
+        assert_eq!(visual_line_count(&mut app, 80), MIN_INPUT_INTERIOR_LINES + INPUT_BORDER_LINES);
     }
 
     #[test]
@@ -496,6 +523,16 @@ mod tests {
         // it's been removed along with the bottom todo panel.)
         *app.pending_interaction_ids_mut() = vec!["perm-1".into()];
         app.claim_focus_target(FocusTarget::Permission);
-        assert_eq!(visual_line_count(&mut app, 80), 1);
+        assert_eq!(visual_line_count(&mut app, 80), MIN_INPUT_INTERIOR_LINES + INPUT_BORDER_LINES);
+    }
+
+    #[test]
+    fn compute_render_geometry_reserves_top_and_bottom_padding_rows() {
+        let area = Rect::new(0, 0, 80, 5);
+        let geometry = compute_render_geometry(area, 0);
+        // text area should start at y=2 (border y=0, padding y=1, text y=2).
+        assert_eq!(geometry.text.y, 2);
+        // text area should occupy a single row (y=2 only) — padding y=3, border y=4.
+        assert_eq!(geometry.text.height, 1);
     }
 }
