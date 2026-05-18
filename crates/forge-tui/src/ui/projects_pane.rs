@@ -1345,6 +1345,6 @@ mod tests {
         // co-anchor the layout. This test pins the constant explicitly
         // so a change to row count surfaces here too, not only at
         // runtime.
-        assert_eq!(ACCOUNT_PANEL_HEIGHT, 17);
+        assert_eq!(ACCOUNT_PANEL_HEIGHT, 19);
     }
 }
