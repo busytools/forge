@@ -1,5 +1,6 @@
-//! Unified prompt state. Replaces `InlinePermission` + `InlineQuestion`
-//! and the per-tool-call attach pattern.
+//! Unified prompt state. Owns the per-session FIFO queue of pending
+//! `can_use_tool` + `AskUserQuestion` interactions, plus the
+//! option-picker / notes-editor / edit-input dispatch state machine.
 
 use crossterm::event::{KeyCode, KeyEvent};
 use forge_primitives::permission_ui::{PermissionOption, PermissionRequest};

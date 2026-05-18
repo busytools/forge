@@ -354,9 +354,7 @@ pub struct UiSession {
     pub input: InputState,
 
     /// Per-session FIFO queue of pending prompts. The dock shows
-    /// `prompt_queue.front()` when this session is active. Replaces
-    /// the legacy per-tool-call `ToolCallInfo.pending_permission` /
-    /// `pending_question` attachment pattern (legacy dies in Task 25).
+    /// `prompt_queue.front()` when this session is active.
     pub prompt_queue: std::collections::VecDeque<crate::app::prompt::PromptState>,
 }
 

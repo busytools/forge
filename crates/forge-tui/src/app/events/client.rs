@@ -1703,10 +1703,8 @@ mod tests {
     }
 
     /// `SessionUpdate::PermissionRequest` enqueues a `PromptState`
-    /// onto the target session's `prompt_queue` in addition to running
-    /// the legacy `ToolCallInfo.pending_permission` attach pattern.
-    /// The new unified-prompt dock reads from `prompt_queue`; Task 25
-    /// removes the legacy parallel write.
+    /// onto the target session's `prompt_queue`; the unified-prompt
+    /// dock reads from that queue.
     #[test]
     fn permission_request_event_enqueues_prompt_on_target_session() {
         let mut app = App::test_default();
