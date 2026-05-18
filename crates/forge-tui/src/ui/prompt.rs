@@ -17,11 +17,7 @@ pub fn render(area: Rect, buf: &mut Buffer, prompt: &PromptState, queue_depth: u
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Thick)
-        .border_style(
-            Style::default()
-                .fg(theme::RUST_ORANGE)
-                .add_modifier(Modifier::BOLD),
-        );
+        .border_style(Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD));
     let inner = block.inner(area);
     block.render(area, buf);
     if inner.width == 0 || inner.height == 0 {
@@ -85,19 +81,14 @@ fn build_header_lines(prompt: &PromptState) -> Vec<Line<'static>> {
                 Span::raw("  "),
                 Span::styled(
                     title_owned,
-                    Style::default()
-                        .fg(Color::White)
-                        .add_modifier(Modifier::BOLD),
+                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
                 ),
             ]));
             // Yellow ⚠ decision_reason.
             if let Some(reason) = decision_reason.as_deref().filter(|r| !r.is_empty()) {
                 out.push(Line::from(vec![
                     Span::raw("  "),
-                    Span::styled(
-                        format!("⚠ {reason}"),
-                        Style::default().fg(Color::Yellow),
-                    ),
+                    Span::styled(format!("⚠ {reason}"), Style::default().fg(Color::Yellow)),
                 ]));
             }
             // Dim display_description.
@@ -109,11 +100,7 @@ fn build_header_lines(prompt: &PromptState) -> Vec<Line<'static>> {
             }
             out
         }
-        PromptSource::Question {
-            prompt: q,
-            question_index,
-            total_questions,
-        } => {
+        PromptSource::Question { prompt: q, question_index, total_questions } => {
             let mut out = Vec::new();
             let progress = if *total_questions > 1 {
                 format!(" (Q{} of {})", question_index + 1, total_questions)
@@ -125,9 +112,7 @@ fn build_header_lines(prompt: &PromptState) -> Vec<Line<'static>> {
                 Span::styled("? ", Style::default().fg(theme::RUST_ORANGE)),
                 Span::styled(
                     format!("{}{}", q.header, progress),
-                    Style::default()
-                        .fg(Color::White)
-                        .add_modifier(Modifier::BOLD),
+                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
                 ),
             ]));
             for row in q.question.lines() {
@@ -158,23 +143,17 @@ fn build_option_lines(prompt: &PromptState) -> Vec<Line<'static>> {
         let (icon, icon_color) = icon_for_kind(opt.kind);
         let pointer = if is_focused { "▸ " } else { "  " };
         let pointer_style = if is_focused {
-            Style::default()
-                .fg(theme::RUST_ORANGE)
-                .add_modifier(Modifier::BOLD)
+            Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)
         } else {
             Style::default()
         };
         let name_style = if is_focused {
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD)
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(Color::Gray)
         };
-        let mut spans: Vec<Span<'static>> = vec![
-            Span::raw("  "),
-            Span::styled(pointer.to_string(), pointer_style),
-        ];
+        let mut spans: Vec<Span<'static>> =
+            vec![Span::raw("  "), Span::styled(pointer.to_string(), pointer_style)];
         if is_multi {
             let checkbox = if is_toggled { "[x] " } else { "[ ] " };
             let checkbox_style = if is_toggled {
@@ -184,10 +163,7 @@ fn build_option_lines(prompt: &PromptState) -> Vec<Line<'static>> {
             };
             spans.push(Span::styled(checkbox.to_string(), checkbox_style));
         }
-        spans.push(Span::styled(
-            format!("{icon} "),
-            Style::default().fg(icon_color),
-        ));
+        spans.push(Span::styled(format!("{icon} "), Style::default().fg(icon_color)));
         spans.push(Span::styled(opt.name.clone(), name_style));
         lines.push(Line::from(spans));
 
@@ -216,9 +192,7 @@ fn build_option_lines(prompt: &PromptState) -> Vec<Line<'static>> {
             Span::raw("  "),
             Span::styled(
                 "Preview:".to_string(),
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
             ),
         ]));
         for row in preview.lines() {
@@ -241,14 +215,9 @@ fn build_footer_line(prompt: &PromptState) -> Line<'static> {
                 "  ↑↓ select  ⏎ confirm  esc reject"
             }
         }
-        PromptMode::NotesEditor | PromptMode::EditingInput => {
-            "  ⏎ submit  esc back to options"
-        }
+        PromptMode::NotesEditor | PromptMode::EditingInput => "  ⏎ submit  esc back to options",
     };
-    Line::from(Span::styled(
-        text.to_owned(),
-        Style::default().fg(theme::DIM),
-    ))
+    Line::from(Span::styled(text.to_owned(), Style::default().fg(theme::DIM)))
 }
 
 fn icon_for_kind(kind: PermissionOptionKind) -> (&'static str, Color) {
@@ -265,16 +234,17 @@ mod tests {
     use super::*;
     use crate::app::prompt::tests::{make_permission_request, make_question_request};
 
-    fn render_to_string(prompt: &PromptState, queue_depth: usize, width: u16, height: u16) -> String {
+    fn render_to_string(
+        prompt: &PromptState,
+        queue_depth: usize,
+        width: u16,
+        height: u16,
+    ) -> String {
         let area = Rect::new(0, 0, width, height);
         let mut buf = Buffer::empty(area);
         render(area, &mut buf, prompt, queue_depth);
         (0..height)
-            .map(|y| {
-                (0..width)
-                    .map(|x| buf[(x, y)].symbol().to_string())
-                    .collect::<String>()
-            })
+            .map(|y| (0..width).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>())
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -315,10 +285,7 @@ mod tests {
                 line.starts_with('┃'),
                 "content row should start with thick vertical; got: {line}"
             );
-            assert!(
-                line.ends_with('┃'),
-                "content row should end with thick vertical; got: {line}"
-            );
+            assert!(line.ends_with('┃'), "content row should end with thick vertical; got: {line}");
         }
     }
 
@@ -354,10 +321,7 @@ mod tests {
     fn queue_depth_one_omits_indicator() {
         let prompt = PromptState::from_permission("tc-1".into(), make_permission_request());
         let out = render_to_string(&prompt, 1, 80, 12);
-        assert!(
-            !out.contains("more pending"),
-            "queue indicator should be hidden; got:\n{out}"
-        );
+        assert!(!out.contains("more pending"), "queue indicator should be hidden; got:\n{out}");
     }
 
     #[test]
@@ -385,7 +349,8 @@ mod tests {
     #[test]
     fn question_focused_option_with_preview_renders_inline_preview_block() {
         let mut request = make_question_request(false);
-        request.prompt.options[0].preview = Some("Bash · git push origin polish\n▸ ✓ Allow once".into());
+        request.prompt.options[0].preview =
+            Some("Bash · git push origin polish\n▸ ✓ Allow once".into());
         let prompt = PromptState::from_question("tc-q".into(), request);
         let out = render_to_string(&prompt, 1, 80, 22);
         assert!(out.contains("Preview:"), "expected Preview header; got:\n{out}");
@@ -393,10 +358,7 @@ mod tests {
             out.contains("Bash · git push origin polish"),
             "expected preview content line 1; got:\n{out}"
         );
-        assert!(
-            out.contains("✓ Allow once"),
-            "expected preview content line 2; got:\n{out}"
-        );
+        assert!(out.contains("✓ Allow once"), "expected preview content line 2; got:\n{out}");
     }
 
     #[test]
@@ -415,9 +377,6 @@ mod tests {
     fn permission_prompt_does_not_render_preview_block() {
         let prompt = PromptState::from_permission("tc-1".into(), make_permission_request());
         let out = render_to_string(&prompt, 1, 80, 14);
-        assert!(
-            !out.contains("Preview:"),
-            "Permission prompts shouldn't render a Preview block"
-        );
+        assert!(!out.contains("Preview:"), "Permission prompts shouldn't render a Preview block");
     }
 }

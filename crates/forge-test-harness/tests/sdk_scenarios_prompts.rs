@@ -106,23 +106,21 @@ async fn wire_capture_permission_allow_with_input_bash() {
                 );
                 return PermissionDecision::allow_with_input(Value::Object(modified));
             }
-            PermissionDecision::deny("forge unified-prompt harness — only Bash gets allow_with_input")
+            PermissionDecision::deny(
+                "forge unified-prompt harness — only Bash gets allow_with_input",
+            )
         })
         .build();
 
-    run_live_scenario(
-        "permission_allow_with_input_bash",
-        opts,
-        |client, events| async move {
-            client
-                .send_user_message(
-                    "Run this exact Bash command: `echo forge-harness-original`. \
+    run_live_scenario("permission_allow_with_input_bash", opts, |client, events| async move {
+        client
+            .send_user_message(
+                "Run this exact Bash command: `echo forge-harness-original`. \
                      Just run it once and report whether it succeeded.",
-                )
-                .await?;
-            Ok((client, events))
-        },
-    )
+            )
+            .await?;
+        Ok((client, events))
+    })
     .await
     .expect("scenario run");
 }
@@ -147,21 +145,17 @@ async fn wire_capture_permission_suggestions_edit() {
         })
         .build();
 
-    run_live_scenario(
-        "permission_suggestions_edit",
-        opts,
-        |client, events| async move {
-            client
-                .send_user_message(
-                    "Use the Edit tool to change the file at \
+    run_live_scenario("permission_suggestions_edit", opts, |client, events| async move {
+        client
+            .send_user_message(
+                "Use the Edit tool to change the file at \
                      /tmp/forge-unified-prompt-edit.txt — replace any occurrence of \
                      `old` with `new`. The file doesn't need to exist; just attempt \
                      the Edit so I can see the permission prompt.",
-                )
-                .await?;
-            Ok((client, events))
-        },
-    )
+            )
+            .await?;
+        Ok((client, events))
+    })
     .await
     .expect("scenario run");
 }
@@ -184,19 +178,15 @@ async fn wire_capture_permission_suggestions_read() {
         })
         .build();
 
-    run_live_scenario(
-        "permission_suggestions_read",
-        opts,
-        |client, events| async move {
-            client
-                .send_user_message(
-                    "Use the Read tool to read the file at \
+    run_live_scenario("permission_suggestions_read", opts, |client, events| async move {
+        client
+            .send_user_message(
+                "Use the Read tool to read the file at \
                      /tmp/forge-unified-prompt-read.txt and report its contents.",
-                )
-                .await?;
-            Ok((client, events))
-        },
-    )
+            )
+            .await?;
+        Ok((client, events))
+    })
     .await
     .expect("scenario run");
 }
@@ -217,20 +207,16 @@ async fn wire_capture_permission_suggestions_write() {
         })
         .build();
 
-    run_live_scenario(
-        "permission_suggestions_write",
-        opts,
-        |client, events| async move {
-            client
-                .send_user_message(
-                    "Use the Write tool to create a file at \
+    run_live_scenario("permission_suggestions_write", opts, |client, events| async move {
+        client
+            .send_user_message(
+                "Use the Write tool to create a file at \
                      /tmp/forge-unified-prompt-write.txt containing the word HELLO. \
                      Just attempt the Write so I can see the permission prompt.",
-                )
-                .await?;
-            Ok((client, events))
-        },
-    )
+            )
+            .await?;
+        Ok((client, events))
+    })
     .await
     .expect("scenario run");
 }
@@ -259,8 +245,12 @@ async fn wire_capture_question_notes_only_response() {
             let mut merged = ctx.tool_input.as_object().cloned().unwrap_or_default();
             let mut answers = serde_json::Map::new();
             let mut annotations = serde_json::Map::new();
-            let questions =
-                ctx.tool_input.get("questions").and_then(Value::as_array).cloned().unwrap_or_default();
+            let questions = ctx
+                .tool_input
+                .get("questions")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
             for q in questions {
                 let Some(qtext) = q.get("question").and_then(Value::as_str) else {
                     continue;
@@ -279,20 +269,16 @@ async fn wire_capture_question_notes_only_response() {
         })
         .build();
 
-    run_live_scenario(
-        "question_notes_only_response",
-        opts,
-        |client, events| async move {
-            client
-                .send_user_message(
-                    "Use the AskUserQuestion tool right now to ask me whether I prefer \
+    run_live_scenario("question_notes_only_response", opts, |client, events| async move {
+        client
+            .send_user_message(
+                "Use the AskUserQuestion tool right now to ask me whether I prefer \
                      the colour red, blue, or green. Single question, three options. \
                      Do NOT answer it for me — just call the tool and stop.",
-                )
-                .await?;
-            Ok((client, events))
-        },
-    )
+            )
+            .await?;
+        Ok((client, events))
+    })
     .await
     .expect("scenario run");
 }

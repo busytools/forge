@@ -565,28 +565,26 @@ mod tests {
         let mut app = App::test_default();
         let key = app.active_session_key.clone().expect("active session");
         if let Some(session) = app.session_mut(&key) {
-            session.prompt_queue.push_back(
-                crate::app::prompt::PromptState::from_permission(
-                    "tc-1".into(),
-                    forge_primitives::permission_ui::PermissionRequest {
-                        tool_call: forge_primitives::session_update::ToolCall {
-                            tool_call_id: "tc-1".into(),
-                            title: "Bash".into(),
-                            kind: "execute".into(),
-                            status: "pending".into(),
-                            content: vec![],
-                            raw_input: None,
-                            raw_output: None,
-                            output_metadata: None,
-                            task_metadata: None,
-                            locations: vec![],
-                            meta: None,
-                        },
-                        options: vec![],
-                        display: None,
+            session.prompt_queue.push_back(crate::app::prompt::PromptState::from_permission(
+                "tc-1".into(),
+                forge_primitives::permission_ui::PermissionRequest {
+                    tool_call: forge_primitives::session_update::ToolCall {
+                        tool_call_id: "tc-1".into(),
+                        title: "Bash".into(),
+                        kind: "execute".into(),
+                        status: "pending".into(),
+                        content: vec![],
+                        raw_input: None,
+                        raw_output: None,
+                        output_metadata: None,
+                        task_metadata: None,
+                        locations: vec![],
+                        meta: None,
                     },
-                ),
-            );
+                    options: vec![],
+                    display: None,
+                },
+            ));
         }
         let items = build_help_items(&app);
         assert!(has_item(&items, "Up/Down", "Move option focus"));

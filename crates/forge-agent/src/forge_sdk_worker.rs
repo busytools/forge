@@ -727,15 +727,8 @@ pub(crate) fn deliver_permission_response(
     };
     let decision = match outcome {
         forge_primitives::PermissionOutcome::Selected {
-            action,
-            notes_text,
-            edited_input,
-            ..
-        } => dispatch_permission_action(
-            action,
-            notes_text.as_deref().unwrap_or(""),
-            edited_input,
-        ),
+            action, notes_text, edited_input, ..
+        } => dispatch_permission_action(action, notes_text.as_deref().unwrap_or(""), edited_input),
         forge_primitives::PermissionOutcome::Cancelled => {
             PermissionDecision::deny("user cancelled")
         }
@@ -967,11 +960,8 @@ fn canonicalize_suggestions(
             if skip.contains(&j) {
                 continue;
             }
-            let PermissionUpdate::AddRules {
-                rules: rules_b,
-                behavior: beh_b,
-                destination: dst_b,
-            } = other
+            let PermissionUpdate::AddRules { rules: rules_b, behavior: beh_b, destination: dst_b } =
+                other
             else {
                 continue;
             };
@@ -1348,10 +1338,8 @@ mod tests_permission_options {
         // Order: allow_once, allow_always_0 (rules), deny, tell_claude.
         let ids: Vec<&str> = opts.iter().map(|o| o.option_id.as_str()).collect();
         assert_eq!(ids, vec!["allow_once", "allow_always_0", "deny", "tell_claude"]);
-        let allow_always = opts
-            .iter()
-            .find(|o| o.option_id == "allow_always_0")
-            .expect("allow_always_0 present");
+        let allow_always =
+            opts.iter().find(|o| o.option_id == "allow_always_0").expect("allow_always_0 present");
         assert_eq!(allow_always.kind, PermissionOptionKind::Allow);
         assert!(matches!(allow_always.action, PermissionAction::AllowWithUpdates { .. }));
     }
@@ -1377,10 +1365,8 @@ mod tests_permission_options {
         let opts = build_permission_options(&mk_ctx("Read", vec![suggestion_a, suggestion_b]));
         // ONE "Allow always" option whose action carries BOTH rules — not
         // two separate "Allow always" entries.
-        let allow_always_count = opts
-            .iter()
-            .filter(|o| o.option_id.starts_with("allow_always_"))
-            .count();
+        let allow_always_count =
+            opts.iter().filter(|o| o.option_id.starts_with("allow_always_")).count();
         assert_eq!(
             allow_always_count, 1,
             "macOS /tmp + /private/tmp should collapse into one option"
@@ -1401,10 +1387,7 @@ mod tests_permission_options {
                 _ => 0,
             })
             .sum();
-        assert_eq!(
-            total_rules, 2,
-            "merged action should carry both /tmp and /private/tmp rules"
-        );
+        assert_eq!(total_rules, 2, "merged action should carry both /tmp and /private/tmp rules");
     }
 
     #[test]
@@ -1427,10 +1410,8 @@ mod tests_permission_options {
             destination: Some(PermissionUpdateDestination::Session),
         };
         let opts = build_permission_options(&mk_ctx("Write", vec![suggestion]));
-        let switch_mode = opts
-            .iter()
-            .find(|o| o.option_id == "allow_always_0")
-            .expect("allow_always_0 present");
+        let switch_mode =
+            opts.iter().find(|o| o.option_id == "allow_always_0").expect("allow_always_0 present");
         assert!(switch_mode.name.to_lowercase().contains("accept edits"));
     }
 
@@ -1457,10 +1438,8 @@ mod tests_permission_options {
 
     #[test]
     fn dispatch_allow_with_updates_attaches_them() {
-        let updates = vec![PermissionUpdate::SetMode {
-                mode: PermissionMode::Auto,
-                destination: None,
-            }];
+        let updates =
+            vec![PermissionUpdate::SetMode { mode: PermissionMode::Auto, destination: None }];
         let decision = dispatch_permission_action(
             PermissionAction::AllowWithUpdates { updates: updates.clone() },
             "",
@@ -1472,11 +1451,8 @@ mod tests_permission_options {
     #[test]
     fn dispatch_allow_with_input_uses_edited_value() {
         let edited = json!({"command": "echo modified"});
-        let decision = dispatch_permission_action(
-            PermissionAction::AllowWithInput,
-            "",
-            Some(edited.clone()),
-        );
+        let decision =
+            dispatch_permission_action(PermissionAction::AllowWithInput, "", Some(edited.clone()));
         let updated_input = decision.updated_input().expect("allow_with_input carries value");
         assert_eq!(updated_input, &edited);
     }

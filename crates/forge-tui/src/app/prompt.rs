@@ -45,11 +45,7 @@ pub enum PromptSource {
         raw_input: Option<Value>,
     },
     /// AskUserQuestion request.
-    Question {
-        prompt: QuestionPrompt,
-        question_index: u64,
-        total_questions: u64,
-    },
+    Question { prompt: QuestionPrompt, question_index: u64, total_questions: u64 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -204,8 +200,11 @@ pub fn handle_key_option_picker(prompt: &mut PromptState, key: KeyEvent) -> Prom
     }
     match key.code {
         KeyCode::Up | KeyCode::Left => {
-            prompt.focused_option_index =
-                if prompt.focused_option_index == 0 { len - 1 } else { prompt.focused_option_index - 1 };
+            prompt.focused_option_index = if prompt.focused_option_index == 0 {
+                len - 1
+            } else {
+                prompt.focused_option_index - 1
+            };
             PromptKeyOutcome::Consumed
         }
         KeyCode::Down | KeyCode::Right => {
@@ -272,11 +271,8 @@ pub fn handle_key_notes_editor(prompt: &mut PromptState, key: KeyEvent) -> Promp
             PromptKeyOutcome::Consumed
         }
         KeyCode::Backspace if prompt.notes_cursor > 0 => {
-            let start = prompt
-                .notes
-                .char_indices()
-                .nth(prompt.notes_cursor - 1)
-                .map_or(0, |(i, _)| i);
+            let start =
+                prompt.notes.char_indices().nth(prompt.notes_cursor - 1).map_or(0, |(i, _)| i);
             let end = prompt
                 .notes
                 .char_indices()
@@ -408,8 +404,7 @@ pub fn submit_prompt(app: &mut crate::app::App) {
     };
 
     let trimmed_notes = prompt.notes.trim();
-    let notes_text =
-        if trimmed_notes.is_empty() { None } else { Some(trimmed_notes.to_owned()) };
+    let notes_text = if trimmed_notes.is_empty() { None } else { Some(trimmed_notes.to_owned()) };
 
     match &prompt.source {
         PromptSource::Permission { .. } => {
@@ -530,11 +525,8 @@ pub fn snapshot_draft_if_needed(app: &mut crate::app::App) {
 /// [`submit_prompt`] / [`cancel_prompt`] AFTER popping. No-op when
 /// there's no snapshot or the queue still has prompts pending.
 pub fn restore_draft_if_empty_queue(app: &mut crate::app::App) {
-    let queue_empty =
-        app.active_session().is_none_or(|s| s.prompt_queue.is_empty());
-    if queue_empty
-        && let Some(draft) = app.input_draft_snapshot.take()
-    {
+    let queue_empty = app.active_session().is_none_or(|s| s.prompt_queue.is_empty());
+    if queue_empty && let Some(draft) = app.input_draft_snapshot.take() {
         app.input_mut().set_text(&draft);
     }
 }
@@ -774,8 +766,10 @@ pub(crate) mod tests {
             .position(|o| matches!(o.kind, PermissionOptionKind::Notes))
             .expect("Tell Claude option present");
         prompt.focused_option_index = notes_idx;
-        let outcome =
-            handle_key_option_picker(&mut prompt, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let outcome = handle_key_option_picker(
+            &mut prompt,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        );
         assert_eq!(prompt.mode, PromptMode::NotesEditor);
         assert_eq!(outcome, PromptKeyOutcome::Consumed);
     }
@@ -784,8 +778,10 @@ pub(crate) mod tests {
     fn enter_on_allow_option_emits_submit() {
         let mut prompt = PromptState::from_permission("tc-1".into(), make_permission_request());
         // focused_option_index is 0 by default — should be an Allow option.
-        let outcome =
-            handle_key_option_picker(&mut prompt, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let outcome = handle_key_option_picker(
+            &mut prompt,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        );
         assert_eq!(outcome, PromptKeyOutcome::Submit);
     }
 
@@ -1052,10 +1048,11 @@ pub(crate) mod tests {
         let session = app.session_mut(&key).expect("session");
         assert!(session.prompt_queue.is_empty(), "queue drained after submit");
         // The captured outcome should be Selected{ option_id: "allow_once", Allow }.
-        let outcome = crate::app::events::turn::test_capture::try_take_dispatched_permission_outcome(
-            &app, "tc-1",
-        )
-        .expect("permission outcome captured");
+        let outcome =
+            crate::app::events::turn::test_capture::try_take_dispatched_permission_outcome(
+                &app, "tc-1",
+            )
+            .expect("permission outcome captured");
         match outcome {
             forge_primitives::PermissionOutcome::Selected { option_id, action, .. } => {
                 assert_eq!(option_id, "allow_once");
@@ -1080,10 +1077,11 @@ pub(crate) mod tests {
         cancel_prompt(&mut app);
         let session = app.session_mut(&key).expect("session");
         assert!(session.prompt_queue.is_empty(), "queue drained after cancel");
-        let outcome = crate::app::events::turn::test_capture::try_take_dispatched_permission_outcome(
-            &app, "tc-1",
-        )
-        .expect("permission outcome captured");
+        let outcome =
+            crate::app::events::turn::test_capture::try_take_dispatched_permission_outcome(
+                &app, "tc-1",
+            )
+            .expect("permission outcome captured");
         assert!(
             matches!(outcome, forge_primitives::PermissionOutcome::Cancelled),
             "expected Cancelled, got: {outcome:?}",
@@ -1179,8 +1177,7 @@ pub(crate) mod tests {
         let mut app = crate::app::App::test_default();
         let key = app.active_session_key.clone().expect("session");
         if let Some(session) = app.session_mut(&key) {
-            let mut prompt =
-                PromptState::from_question("tc-q".into(), make_question_request(true));
+            let mut prompt = PromptState::from_question("tc-q".into(), make_question_request(true));
             // Toggle q0, q1, AND the notes option; provide notes text.
             prompt.selected_option_indices.insert(0);
             prompt.selected_option_indices.insert(1);
@@ -1213,8 +1210,7 @@ pub(crate) mod tests {
         let mut app = crate::app::App::test_default();
         let key = app.active_session_key.clone().expect("session");
         if let Some(session) = app.session_mut(&key) {
-            let mut prompt =
-                PromptState::from_question("tc-q".into(), make_question_request(true));
+            let mut prompt = PromptState::from_question("tc-q".into(), make_question_request(true));
             prompt.focused_option_index = prompt.options.len() - 1;
             prompt.mode = PromptMode::NotesEditor;
             // Multi-select with empty toggled set + notes focus + no text.
@@ -1236,8 +1232,7 @@ pub(crate) mod tests {
         let mut app = crate::app::App::test_default();
         let key = app.active_session_key.clone().expect("session");
         if let Some(session) = app.session_mut(&key) {
-            let mut prompt =
-                PromptState::from_permission("tc-1".into(), make_permission_request());
+            let mut prompt = PromptState::from_permission("tc-1".into(), make_permission_request());
             // Focus the notes-option (last); enter notes editor with text.
             prompt.focused_option_index = prompt.options.len() - 1;
             prompt.mode = PromptMode::NotesEditor;
@@ -1245,16 +1240,13 @@ pub(crate) mod tests {
             enqueue_prompt(session, prompt);
         }
         submit_prompt(&mut app);
-        let outcome = crate::app::events::turn::test_capture::try_take_dispatched_permission_outcome(
-            &app, "tc-1",
-        )
-        .expect("permission outcome captured");
+        let outcome =
+            crate::app::events::turn::test_capture::try_take_dispatched_permission_outcome(
+                &app, "tc-1",
+            )
+            .expect("permission outcome captured");
         match outcome {
-            forge_primitives::PermissionOutcome::Selected {
-                option_id,
-                notes_text,
-                ..
-            } => {
+            forge_primitives::PermissionOutcome::Selected { option_id, notes_text, .. } => {
                 assert_eq!(option_id, "tell_claude");
                 assert_eq!(notes_text.as_deref(), Some("don't push to main"));
             }

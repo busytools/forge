@@ -29,8 +29,6 @@ struct TurnExitState {
     show_interrupted_hint: bool,
 }
 
-
-
 /// Dispatch a [`forge_primitives::PermissionOutcome`] for `tool_id`
 /// via the workspace's [`forge_workspace::Workspace::dispatch`] path.
 /// Used by both the user-pick handler (`app::permissions`) and the
