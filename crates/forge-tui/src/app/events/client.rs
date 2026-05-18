@@ -211,6 +211,7 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
                 );
                 crate::app::prompt::enqueue_prompt(session, prompt);
             }
+            crate::app::prompt::snapshot_draft_if_needed(app);
             turn::apply_session_update_permission_request(app, &key, &tool_id, request);
         }
         SessionUpdate::QuestionRequest { key, tool_id, request } => {
@@ -221,6 +222,7 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
                 );
                 crate::app::prompt::enqueue_prompt(session, prompt);
             }
+            crate::app::prompt::snapshot_draft_if_needed(app);
             turn::apply_session_update_question_request(app, &key, &tool_id, request);
         }
         SessionUpdate::McpOperationError { error, .. } => {

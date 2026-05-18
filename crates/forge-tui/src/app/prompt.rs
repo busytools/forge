@@ -382,19 +382,160 @@ pub fn dispatch_key(app: &mut crate::app::App, key: KeyEvent) -> bool {
     }
 }
 
-/// Stub — full impl in Task 19. Pops the prompt and dispatches a
-/// `Command::RespondPermission` / `RespondQuestion` based on the
-/// chosen option's action.
-#[allow(clippy::needless_pass_by_ref_mut)]
-pub fn submit_prompt(_app: &mut crate::app::App) {
-    // Task 19 fills this in.
+/// Pop the head prompt from the active session's queue. Returns
+/// `None` if there's no active session or the queue is empty.
+fn pop_prompt(session: &mut crate::app::session::UiSession) -> Option<PromptState> {
+    session.prompt_queue.pop_front()
 }
 
-/// Stub — full impl in Task 19. Pops the prompt and dispatches a
-/// `Cancelled` outcome.
-#[allow(clippy::needless_pass_by_ref_mut)]
-pub fn cancel_prompt(_app: &mut crate::app::App) {
-    // Task 19 fills this in.
+/// Pop the head prompt from the active session's queue and dispatch
+/// the user's pick as a `Command::RespondPermission` or
+/// `RespondQuestion` (depending on the prompt's source). After the
+/// pop, restore any captured input draft if the queue is now empty.
+pub fn submit_prompt(app: &mut crate::app::App) {
+    use forge_primitives::permission_ui::{PermissionOptionKind, PermissionOutcome};
+    use forge_primitives::question::{QuestionAnnotation, QuestionOutcome};
+
+    let Some(key) = app.active_session_key.clone() else {
+        return;
+    };
+    let Some(session) = app.try_active_bucket_mut() else {
+        return;
+    };
+    let Some(prompt) = pop_prompt(session) else {
+        return;
+    };
+
+    let trimmed_notes = prompt.notes.trim();
+    let notes_text =
+        if trimmed_notes.is_empty() { None } else { Some(trimmed_notes.to_owned()) };
+
+    match &prompt.source {
+        PromptSource::Permission { .. } => {
+            let Some(option) = prompt.options.get(prompt.focused_option_index).cloned() else {
+                restore_draft_if_empty_queue(app);
+                return;
+            };
+            let outcome = PermissionOutcome::Selected {
+                option_id: option.option_id,
+                action: option.action,
+                notes_text,
+                edited_input: prompt.edited_input.clone(),
+            };
+            crate::app::events::turn::dispatch_permission_outcome(
+                app,
+                &key,
+                &prompt.tool_id,
+                outcome,
+            );
+        }
+        PromptSource::Question { prompt: q, .. } => {
+            let selected_indices: Vec<usize> = if q.multi_select {
+                if prompt.selected_option_indices.is_empty() {
+                    vec![prompt.focused_option_index]
+                } else {
+                    prompt.selected_option_indices.iter().copied().collect()
+                }
+            } else {
+                vec![prompt.focused_option_index]
+            };
+            // Convert indices → option_ids, FILTERING OUT the
+            // forge-synthesized notes-option (its content goes into
+            // `annotation.notes`; it doesn't exist on the wire).
+            let selected_option_ids: Vec<String> = selected_indices
+                .iter()
+                .filter_map(|&i| prompt.options.get(i))
+                .filter(|o| !matches!(o.kind, PermissionOptionKind::Notes))
+                .map(|o| o.option_id.clone())
+                .collect();
+            let annotation = notes_text
+                .as_ref()
+                .map(|n| QuestionAnnotation { preview: None, notes: Some(n.clone()) });
+            let outcome = if selected_option_ids.is_empty() && annotation.is_none() {
+                QuestionOutcome::Cancelled
+            } else {
+                QuestionOutcome::Answered { selected_option_ids, annotation }
+            };
+            crate::app::events::turn::dispatch_question_outcome(
+                app,
+                &key,
+                &prompt.tool_id,
+                outcome,
+            );
+        }
+    }
+
+    restore_draft_if_empty_queue(app);
+}
+
+/// Pop the head prompt and dispatch a `Cancelled` outcome to the
+/// workspace. After the pop, restore any captured input draft if the
+/// queue is now empty.
+pub fn cancel_prompt(app: &mut crate::app::App) {
+    use forge_primitives::permission_ui::PermissionOutcome;
+    use forge_primitives::question::QuestionOutcome;
+
+    let Some(key) = app.active_session_key.clone() else {
+        return;
+    };
+    let Some(session) = app.try_active_bucket_mut() else {
+        return;
+    };
+    let Some(prompt) = pop_prompt(session) else {
+        return;
+    };
+
+    match prompt.source {
+        PromptSource::Permission { .. } => {
+            crate::app::events::turn::dispatch_permission_outcome(
+                app,
+                &key,
+                &prompt.tool_id,
+                PermissionOutcome::Cancelled,
+            );
+        }
+        PromptSource::Question { .. } => {
+            crate::app::events::turn::dispatch_question_outcome(
+                app,
+                &key,
+                &prompt.tool_id,
+                QuestionOutcome::Cancelled,
+            );
+        }
+    }
+
+    restore_draft_if_empty_queue(app);
+}
+
+/// Snapshot the chat-input draft if it hasn't been snapshotted yet.
+/// Idempotent — when multiple prompts arrive in a burst the first
+/// snapshot wins, so subsequent prompts don't clobber the original
+/// draft. Called from the inbound event handler right after
+/// [`enqueue_prompt`]. No-op when the editor is empty (nothing to
+/// preserve).
+pub fn snapshot_draft_if_needed(app: &mut crate::app::App) {
+    if app.input_draft_snapshot.is_some() {
+        return;
+    }
+    let text = app.input().text();
+    if !text.is_empty() {
+        app.input_draft_snapshot = Some(text);
+        app.input_mut().clear();
+    }
+}
+
+/// Restore a previously-snapshotted draft into the chat input when
+/// the active session's prompt queue is empty. Called from
+/// [`submit_prompt`] / [`cancel_prompt`] AFTER popping. No-op when
+/// there's no snapshot or the queue still has prompts pending.
+pub fn restore_draft_if_empty_queue(app: &mut crate::app::App) {
+    let queue_empty =
+        app.active_session().is_none_or(|s| s.prompt_queue.is_empty());
+    if queue_empty
+        && let Some(draft) = app.input_draft_snapshot.take()
+    {
+        app.input_mut().set_text(&draft);
+    }
 }
 
 /// Modifier-mask predicate matching plain typing (or AltGr-style
@@ -891,5 +1032,307 @@ pub(crate) mod tests {
         let mut app = crate::app::App::test_default();
         let handled = dispatch_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         assert!(!handled);
+    }
+
+    // ── Task 19 ─ submit_prompt / cancel_prompt ───────────────────
+
+    #[test]
+    fn submit_with_allow_dispatches_respond_permission_with_allow_outcome() {
+        let mut app = crate::app::App::test_default();
+        let key = app.active_session_key.clone().expect("session");
+        if let Some(session) = app.session_mut(&key) {
+            enqueue_prompt(
+                session,
+                PromptState::from_permission("tc-1".into(), make_permission_request()),
+            );
+        }
+        submit_prompt(&mut app);
+        // The queue head should be popped.
+        let session = app.session_mut(&key).expect("session");
+        assert!(session.prompt_queue.is_empty(), "queue drained after submit");
+        // The captured outcome should be Selected{ option_id: "allow_once", Allow }.
+        let outcome = crate::app::events::turn::test_capture::try_take_dispatched_permission_outcome(
+            &app, "tc-1",
+        )
+        .expect("permission outcome captured");
+        match outcome {
+            forge_primitives::PermissionOutcome::Selected { option_id, action, .. } => {
+                assert_eq!(option_id, "allow_once");
+                assert!(matches!(action, forge_primitives::permission_ui::PermissionAction::Allow));
+            }
+            other => panic!("expected Selected, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cancel_dispatches_cancelled_outcome() {
+        let mut app = crate::app::App::test_default();
+        let key = app.active_session_key.clone().expect("session");
+        if let Some(session) = app.session_mut(&key) {
+            enqueue_prompt(
+                session,
+                PromptState::from_permission("tc-1".into(), make_permission_request()),
+            );
+        }
+        cancel_prompt(&mut app);
+        let session = app.session_mut(&key).expect("session");
+        assert!(session.prompt_queue.is_empty(), "queue drained after cancel");
+        let outcome = crate::app::events::turn::test_capture::try_take_dispatched_permission_outcome(
+            &app, "tc-1",
+        )
+        .expect("permission outcome captured");
+        assert!(
+            matches!(outcome, forge_primitives::PermissionOutcome::Cancelled),
+            "expected Cancelled, got: {outcome:?}",
+        );
+    }
+
+    #[test]
+    fn cancel_question_dispatches_cancelled_outcome() {
+        let mut app = crate::app::App::test_default();
+        let key = app.active_session_key.clone().expect("session");
+        if let Some(session) = app.session_mut(&key) {
+            enqueue_prompt(
+                session,
+                PromptState::from_question("tc-q".into(), make_question_request(false)),
+            );
+        }
+        cancel_prompt(&mut app);
+        let outcome = crate::app::events::turn::test_capture::try_take_dispatched_question_outcome(
+            &app, "tc-q",
+        )
+        .expect("question outcome captured");
+        assert!(
+            matches!(outcome, forge_primitives::QuestionOutcome::Cancelled),
+            "expected Cancelled, got: {outcome:?}",
+        );
+    }
+
+    #[test]
+    fn submit_question_single_select_uses_focused_option_id() {
+        let mut app = crate::app::App::test_default();
+        let key = app.active_session_key.clone().expect("session");
+        if let Some(session) = app.session_mut(&key) {
+            let mut prompt =
+                PromptState::from_question("tc-q".into(), make_question_request(false));
+            // Focus the second option ("q1" / Blue).
+            prompt.focused_option_index = 1;
+            enqueue_prompt(session, prompt);
+        }
+        submit_prompt(&mut app);
+        let outcome = crate::app::events::turn::test_capture::try_take_dispatched_question_outcome(
+            &app, "tc-q",
+        )
+        .expect("question outcome captured");
+        match outcome {
+            forge_primitives::QuestionOutcome::Answered { selected_option_ids, annotation } => {
+                assert_eq!(selected_option_ids, vec!["q1".to_string()]);
+                assert!(annotation.is_none());
+            }
+            other => panic!("expected Answered, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn submit_question_with_notes_routes_notes_via_annotation() {
+        let mut app = crate::app::App::test_default();
+        let key = app.active_session_key.clone().expect("session");
+        if let Some(session) = app.session_mut(&key) {
+            let mut prompt =
+                PromptState::from_question("tc-q".into(), make_question_request(false));
+            // Focus the notes-option (last option) and load notes text.
+            prompt.focused_option_index = prompt.options.len() - 1;
+            prompt.mode = PromptMode::NotesEditor;
+            prompt.notes = "use the other option".into();
+            enqueue_prompt(session, prompt);
+        }
+        submit_prompt(&mut app);
+        let outcome = crate::app::events::turn::test_capture::try_take_dispatched_question_outcome(
+            &app, "tc-q",
+        )
+        .expect("question outcome captured");
+        match outcome {
+            forge_primitives::QuestionOutcome::Answered { selected_option_ids, annotation } => {
+                // The notes-option is forge-synthesized; it must NOT
+                // appear in selected_option_ids — its content rides in
+                // annotation.notes instead.
+                assert!(
+                    !selected_option_ids.iter().any(|id| id == "tell_claude"),
+                    "tell_claude must be filtered out of selected_option_ids: {selected_option_ids:?}",
+                );
+                let ann = annotation.expect("annotation populated");
+                assert_eq!(ann.notes.as_deref(), Some("use the other option"));
+            }
+            other => panic!("expected Answered, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn submit_question_multi_select_uses_toggled_indices_and_filters_notes() {
+        let mut app = crate::app::App::test_default();
+        let key = app.active_session_key.clone().expect("session");
+        if let Some(session) = app.session_mut(&key) {
+            let mut prompt =
+                PromptState::from_question("tc-q".into(), make_question_request(true));
+            // Toggle q0, q1, AND the notes option; provide notes text.
+            prompt.selected_option_indices.insert(0);
+            prompt.selected_option_indices.insert(1);
+            prompt.selected_option_indices.insert(prompt.options.len() - 1);
+            prompt.notes = "extra context".into();
+            enqueue_prompt(session, prompt);
+        }
+        submit_prompt(&mut app);
+        let outcome = crate::app::events::turn::test_capture::try_take_dispatched_question_outcome(
+            &app, "tc-q",
+        )
+        .expect("question outcome captured");
+        match outcome {
+            forge_primitives::QuestionOutcome::Answered { selected_option_ids, annotation } => {
+                assert_eq!(selected_option_ids, vec!["q0".to_string(), "q1".to_string()]);
+                let ann = annotation.expect("annotation populated");
+                assert_eq!(ann.notes.as_deref(), Some("extra context"));
+            }
+            other => panic!("expected Answered, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn submit_question_with_only_notes_focus_and_empty_text_is_cancelled() {
+        // User focused notes-option, did NOT enter text, hit Enter
+        // through the editor — empty selected_ids + empty annotation
+        // becomes Cancelled rather than Answered with no payload.
+        let mut app = crate::app::App::test_default();
+        let key = app.active_session_key.clone().expect("session");
+        if let Some(session) = app.session_mut(&key) {
+            let mut prompt =
+                PromptState::from_question("tc-q".into(), make_question_request(true));
+            prompt.focused_option_index = prompt.options.len() - 1;
+            prompt.mode = PromptMode::NotesEditor;
+            // Multi-select with empty toggled set + notes focus + no text.
+            enqueue_prompt(session, prompt);
+        }
+        submit_prompt(&mut app);
+        let outcome = crate::app::events::turn::test_capture::try_take_dispatched_question_outcome(
+            &app, "tc-q",
+        )
+        .expect("question outcome captured");
+        assert!(
+            matches!(outcome, forge_primitives::QuestionOutcome::Cancelled),
+            "empty answer with no notes should be Cancelled, got: {outcome:?}",
+        );
+    }
+
+    #[test]
+    fn submit_permission_with_notes_text_attaches_to_outcome() {
+        let mut app = crate::app::App::test_default();
+        let key = app.active_session_key.clone().expect("session");
+        if let Some(session) = app.session_mut(&key) {
+            let mut prompt =
+                PromptState::from_permission("tc-1".into(), make_permission_request());
+            // Focus the notes-option (last); enter notes editor with text.
+            prompt.focused_option_index = prompt.options.len() - 1;
+            prompt.mode = PromptMode::NotesEditor;
+            prompt.notes = "don't push to main".into();
+            enqueue_prompt(session, prompt);
+        }
+        submit_prompt(&mut app);
+        let outcome = crate::app::events::turn::test_capture::try_take_dispatched_permission_outcome(
+            &app, "tc-1",
+        )
+        .expect("permission outcome captured");
+        match outcome {
+            forge_primitives::PermissionOutcome::Selected {
+                option_id,
+                notes_text,
+                ..
+            } => {
+                assert_eq!(option_id, "tell_claude");
+                assert_eq!(notes_text.as_deref(), Some("don't push to main"));
+            }
+            other => panic!("expected Selected, got: {other:?}"),
+        }
+    }
+
+    // ── Task 20 ─ draft input preservation across morph ───────────
+
+    #[test]
+    fn draft_preserved_across_morph_and_restored_when_queue_empties() {
+        let mut app = crate::app::App::test_default();
+        app.input_mut().set_text("draft message I was typing");
+        let key = app.active_session_key.clone().expect("session");
+        if let Some(session) = app.session_mut(&key) {
+            enqueue_prompt(
+                session,
+                PromptState::from_permission("tc-1".into(), make_permission_request()),
+            );
+        }
+        snapshot_draft_if_needed(&mut app);
+        assert_eq!(app.input().text(), "", "input cleared while prompt active");
+        // User responds; prompt is popped.
+        submit_prompt(&mut app);
+        // Draft restored.
+        assert_eq!(app.input().text(), "draft message I was typing");
+    }
+
+    #[test]
+    fn snapshot_noop_when_input_empty() {
+        let mut app = crate::app::App::test_default();
+        // input is empty by default; snapshot should NOT capture an
+        // empty string (avoid masking "no draft" with Some("")).
+        let key = app.active_session_key.clone().expect("session");
+        if let Some(session) = app.session_mut(&key) {
+            enqueue_prompt(
+                session,
+                PromptState::from_permission("tc-1".into(), make_permission_request()),
+            );
+        }
+        snapshot_draft_if_needed(&mut app);
+        assert!(app.input_draft_snapshot.is_none(), "no draft to snapshot");
+        submit_prompt(&mut app);
+        assert_eq!(app.input().text(), "");
+    }
+
+    #[test]
+    fn snapshot_is_idempotent_across_multiple_prompts() {
+        let mut app = crate::app::App::test_default();
+        app.input_mut().set_text("first draft");
+        let key = app.active_session_key.clone().expect("session");
+        if let Some(session) = app.session_mut(&key) {
+            enqueue_prompt(
+                session,
+                PromptState::from_permission("tc-1".into(), make_permission_request()),
+            );
+        }
+        snapshot_draft_if_needed(&mut app);
+        // A second prompt arrives — must NOT overwrite the snapshot.
+        if let Some(session) = app.session_mut(&key) {
+            enqueue_prompt(
+                session,
+                PromptState::from_permission("tc-2".into(), make_permission_request()),
+            );
+        }
+        snapshot_draft_if_needed(&mut app);
+        // Resolve first prompt — queue still has tc-2, draft NOT restored.
+        submit_prompt(&mut app);
+        assert_eq!(app.input().text(), "", "queue non-empty, draft not yet restored");
+        // Resolve second prompt — queue empty, draft restored.
+        submit_prompt(&mut app);
+        assert_eq!(app.input().text(), "first draft");
+    }
+
+    #[test]
+    fn cancel_restores_draft_when_queue_drains() {
+        let mut app = crate::app::App::test_default();
+        app.input_mut().set_text("partial thought");
+        let key = app.active_session_key.clone().expect("session");
+        if let Some(session) = app.session_mut(&key) {
+            enqueue_prompt(
+                session,
+                PromptState::from_permission("tc-1".into(), make_permission_request()),
+            );
+        }
+        snapshot_draft_if_needed(&mut app);
+        cancel_prompt(&mut app);
+        assert_eq!(app.input().text(), "partial thought");
     }
 }
