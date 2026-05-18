@@ -74,15 +74,14 @@ pub(crate) fn map_permission_request(
         .options
         .into_iter()
         .map(|opt| {
-            // Transitional mapping from the new 4-variant primitives kind
-            // to the legacy 8-variant TUI model kind. Dies in Task 23 when
-            // the legacy enum + this whole converter are deleted.
+            // Transitional bridge — dies with `map_permission_request` itself
+            // in Task 25 (per the unified-prompt plan). Maps the new 4-variant
+            // primitives kind onto the legacy 8-variant TUI model kind for
+            // the renderer modules that haven't been retired yet.
             use forge_primitives::permission_ui::PermissionOptionKind as PrimKind;
             let kind = match opt.kind {
-                PrimKind::Allow => model::PermissionOptionKind::AllowOnce,
-                PrimKind::Deny => model::PermissionOptionKind::RejectOnce,
-                PrimKind::Edit => model::PermissionOptionKind::AllowOnce,
-                PrimKind::Notes => model::PermissionOptionKind::RejectOnce,
+                PrimKind::Allow | PrimKind::Edit => model::PermissionOptionKind::AllowOnce,
+                PrimKind::Deny | PrimKind::Notes => model::PermissionOptionKind::RejectOnce,
             };
             model::PermissionOption::new(opt.option_id, opt.name, kind)
         })
