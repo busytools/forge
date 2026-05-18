@@ -236,10 +236,7 @@ pub(super) fn dispatch_key_by_focus(app: &mut App, key: KeyEvent) -> bool {
     }
 
     // PROMPT MODE: when the active session has a prompt at the head
-    // of its queue, all keys route to the prompt dispatcher. The
-    // legacy `FocusOwner::Permission` arm below is unreachable while
-    // a prompt is active; it stays until Task 24 removes the
-    // inline-interaction subsystem entirely.
+    // of its queue, all keys route to the prompt dispatcher.
     if app.active_session().is_some_and(|s| !s.prompt_queue.is_empty()) {
         return crate::app::prompt::dispatch_key(app, key);
     }

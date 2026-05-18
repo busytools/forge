@@ -76,10 +76,6 @@ impl ToolCallInfo {
         is_ask_question_tool_name(&self.sdk_tool_name)
     }
 
-    pub fn is_exit_plan_mode_tool(&self) -> bool {
-        is_exit_plan_mode_tool_name(&self.sdk_tool_name)
-    }
-
     pub fn assistant_auto_backgrounded(&self) -> bool {
         self.output_metadata
             .as_ref()
@@ -156,10 +152,6 @@ pub fn is_execute_tool_name(tool_name: &str) -> bool {
 
 pub fn is_ask_question_tool_name(tool_name: &str) -> bool {
     tool_name.eq_ignore_ascii_case("askuserquestion")
-}
-
-pub fn is_exit_plan_mode_tool_name(tool_name: &str) -> bool {
-    tool_name.eq_ignore_ascii_case("exitplanmode")
 }
 
 /// True when `tool_name` matches the long-running `Monitor` tool —

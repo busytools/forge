@@ -298,6 +298,7 @@ impl super::App {
         self.clear_turn_notice_refs();
         self.rebuild_render_cache_accounting();
         self.rebuild_tool_indices_and_terminal_refs();
+        self.pending_interaction_ids_mut().clear();
         self.active_viewport_mut().sync_message_count(0);
         self.needs_redraw = true;
     }
