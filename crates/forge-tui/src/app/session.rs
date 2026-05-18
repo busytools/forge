@@ -352,6 +352,12 @@ pub struct UiSession {
     /// state; switching the active session naturally swaps the
     /// editor because the accessor reads from this bucket.
     pub input: InputState,
+
+    /// Per-session FIFO queue of pending prompts. The dock shows
+    /// `prompt_queue.front()` when this session is active. Replaces
+    /// the legacy per-tool-call `ToolCallInfo.pending_permission` /
+    /// `pending_question` attachment pattern (legacy dies in Task 25).
+    pub prompt_queue: std::collections::VecDeque<crate::app::prompt::PromptState>,
 }
 
 impl UiSession {
@@ -455,6 +461,7 @@ impl Default for UiSession {
             last_active_turn_height_state: Option::default(),
             last_chat_render_trace_state: Option::default(),
             input: InputState::default(),
+            prompt_queue: std::collections::VecDeque::new(),
         }
     }
 }

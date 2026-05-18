@@ -149,6 +149,11 @@ impl PromptState {
     }
 }
 
+/// Enqueue a prompt at the tail of the session's queue. FIFO.
+pub fn enqueue_prompt(session: &mut crate::app::session::UiSession, prompt: PromptState) {
+    session.prompt_queue.push_back(prompt);
+}
+
 /// One-line summary of the tool's args for display in the dock header.
 /// Bash → command; Edit → file_path; Read → file_path; etc.
 fn summarize_tool_args(tool_call: &forge_primitives::session_update::ToolCall) -> String {
@@ -279,5 +284,20 @@ pub(crate) mod tests {
     fn from_question_preserves_multi_select_flag() {
         let state = PromptState::from_question("tc-q".into(), make_question_request(true));
         assert!(state.is_multi_select());
+    }
+
+    #[test]
+    fn enqueue_appends_to_session_queue() {
+        let mut session = crate::app::session::UiSession::default();
+        enqueue_prompt(
+            &mut session,
+            PromptState::from_permission("tc-1".into(), make_permission_request()),
+        );
+        enqueue_prompt(
+            &mut session,
+            PromptState::from_permission("tc-2".into(), make_permission_request()),
+        );
+        assert_eq!(session.prompt_queue.len(), 2);
+        assert_eq!(session.prompt_queue.front().expect("head").tool_id, "tc-1");
     }
 }
