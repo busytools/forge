@@ -3891,7 +3891,7 @@ mod tests {
                 app,
                 &self.tool_id,
             ) {
-                Ok(forge_primitives::PermissionOutcome::Selected { option_id }) => {
+                Ok(forge_primitives::PermissionOutcome::Selected { option_id, .. }) => {
                     Ok(model::RequestPermissionResponse::new(
                         model::RequestPermissionOutcome::Selected(
                             model::SelectedPermissionOutcome::new(option_id),

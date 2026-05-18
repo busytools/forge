@@ -328,10 +328,11 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
                 app.active_messages_mut().get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
         {
             let tc = tc.as_mut();
-            let perm_last = tc
-                .pending_permission
-                .take()
-                .and_then(|p| p.options.last().map(|opt| opt.option_id.clone()));
+            let perm_last = tc.pending_permission.take().and_then(|p| {
+                p.options
+                    .last()
+                    .map(|opt| (opt.option_id.clone(), opt.kind))
+            });
             let question_taken = tc.pending_question.take().is_some();
             (perm_last, question_taken)
         } else {
@@ -340,12 +341,17 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
         let Some(session_key) = active_session_key.as_ref() else {
             continue;
         };
-        if let Some(option_id) = perm_last_option_id {
+        if let Some((option_id, kind)) = perm_last_option_id {
             crate::app::events::turn::dispatch_permission_outcome(
                 app,
                 session_key,
                 &tool_id,
-                forge_primitives::PermissionOutcome::Selected { option_id },
+                forge_primitives::PermissionOutcome::Selected {
+                    option_id,
+                    action: permissions::legacy_kind_to_action(kind),
+                    notes_text: None,
+                    edited_input: None,
+                },
             );
         }
         if question_was_pending {

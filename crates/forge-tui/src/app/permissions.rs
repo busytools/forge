@@ -12,6 +12,27 @@ fn focused_permission(app: &App) -> Option<&crate::app::InlinePermission> {
     focused_interaction(app)?.pending_permission.as_ref()
 }
 
+/// Map the legacy `model::PermissionOptionKind` to the new wire-side
+/// `PermissionAction`. Used by the surviving legacy permission paths
+/// that still build outcomes off `model::PermissionOption.kind`; the
+/// unified-prompt redesign will delete those paths and this helper
+/// disappears with them.
+pub(crate) fn legacy_kind_to_action(
+    kind: PermissionOptionKind,
+) -> forge_primitives::permission_ui::PermissionAction {
+    use forge_primitives::permission_ui::PermissionAction;
+    match kind {
+        PermissionOptionKind::AllowOnce
+        | PermissionOptionKind::AllowSession
+        | PermissionOptionKind::AllowAlways
+        | PermissionOptionKind::QuestionChoice
+        | PermissionOptionKind::PlanApprove => PermissionAction::Allow,
+        PermissionOptionKind::RejectOnce
+        | PermissionOptionKind::RejectAlways
+        | PermissionOptionKind::PlanReject => PermissionAction::Deny,
+    }
+}
+
 fn focused_option_index_by_kind(app: &App, kind: PermissionOptionKind) -> Option<usize> {
     focused_option_index_where(app, |opt| opt.kind == kind)
 }
@@ -271,6 +292,9 @@ fn respond_permission(app: &mut App, override_index: Option<usize>) {
             );
             selected_outcome = Some(forge_primitives::PermissionOutcome::Selected {
                 option_id: opt.option_id.clone(),
+                action: legacy_kind_to_action(opt.kind),
+                notes_text: None,
+                edited_input: None,
             });
         } else {
             tracing::warn!(
@@ -417,7 +441,7 @@ mod tests {
                 app,
                 &self.tool_id,
             ) {
-                Ok(forge_primitives::PermissionOutcome::Selected { option_id }) => {
+                Ok(forge_primitives::PermissionOutcome::Selected { option_id, .. }) => {
                     Ok(model::RequestPermissionResponse::new(
                         model::RequestPermissionOutcome::Selected(
                             model::SelectedPermissionOutcome::new(option_id),

@@ -100,7 +100,7 @@ async fn permission_for_unknown_tool_call_auto_rejects() {
         .iter()
         .find(|(tid, _)| tid == &tool_id)
         .expect("auto-reject should dispatch an outcome immediately");
-    let forge_primitives::PermissionOutcome::Selected { option_id } = &entry.1 else {
+    let forge_primitives::PermissionOutcome::Selected { option_id, .. } = &entry.1 else {
         panic!("expected Selected outcome from auto-reject");
     };
     assert_eq!(option_id, "deny", "auto-reject should pick last option");
@@ -152,7 +152,7 @@ async fn duplicate_permission_request_is_rejected_without_duplicate_queue_entry(
     // Expect exactly one auto-reject outcome (for the duplicate); the
     // first pending hasn't been resolved yet.
     assert_eq!(entries.len(), 1, "duplicate permission should produce one auto-reject");
-    let forge_primitives::PermissionOutcome::Selected { option_id } = &entries[0].1 else {
+    let forge_primitives::PermissionOutcome::Selected { option_id, .. } = &entries[0].1 else {
         panic!("expected Selected outcome from duplicate auto-reject");
     };
     assert_eq!(option_id, "deny");

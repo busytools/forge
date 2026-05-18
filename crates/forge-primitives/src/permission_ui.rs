@@ -108,7 +108,23 @@ impl PermissionDisplay {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum PermissionOutcome {
-    Selected { option_id: String },
+    Selected {
+        option_id: String,
+        /// The dispatch routing for this option, as set by the agent
+        /// when constructing the wire `PermissionOption`. The agent's
+        /// response handler reads this directly — no option_id lookup
+        /// or string-prefix matching needed.
+        action: PermissionAction,
+        /// User's "tell Claude" feedback string (when the notes-option
+        /// was toggled or the focused option is a Deny). Empty when the
+        /// user picked a plain Allow without notes.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        notes_text: Option<String>,
+        /// Edited tool input JSON when the action is `AllowWithInput`.
+        /// None otherwise.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        edited_input: Option<serde_json::Value>,
+    },
     Cancelled,
 }
 
@@ -129,5 +145,18 @@ mod tests {
         let json = serde_json::to_string(&allow_with_updates).expect("serialize");
         let back: PermissionAction = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(allow_with_updates, back);
+    }
+
+    #[test]
+    fn permission_outcome_selected_round_trips_with_notes_and_edited_input() {
+        let outcome = PermissionOutcome::Selected {
+            option_id: "allow_with_edits".into(),
+            action: PermissionAction::AllowWithInput,
+            notes_text: Some("trimmed args".to_owned()),
+            edited_input: Some(serde_json::json!({"command": "echo trimmed"})),
+        };
+        let json = serde_json::to_string(&outcome).expect("serialize");
+        let back: PermissionOutcome = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(outcome, back);
     }
 }

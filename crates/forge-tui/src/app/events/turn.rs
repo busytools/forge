@@ -626,7 +626,12 @@ fn auto_reject_permission_via_workspace(
         app,
         session_key,
         tool_id,
-        forge_primitives::PermissionOutcome::Selected { option_id: last_opt.option_id.clone() },
+        forge_primitives::PermissionOutcome::Selected {
+            option_id: last_opt.option_id.clone(),
+            action: super::super::permissions::legacy_kind_to_action(last_opt.kind),
+            notes_text: None,
+            edited_input: None,
+        },
     );
 }
 

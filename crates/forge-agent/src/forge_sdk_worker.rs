@@ -725,18 +725,17 @@ pub(crate) fn deliver_permission_response(
         );
         return;
     };
-    // Deny-on-unknown: only option_ids that start with "allow" map
-    // to allow. Anything else — future CLI deny variants like
-    // `deny_session` / `deny_repo`, unknown / drifted ids — maps
-    // to deny.
     let decision = match outcome {
-        forge_primitives::PermissionOutcome::Selected { option_id } => {
-            if option_id.to_ascii_lowercase().starts_with("allow") {
-                PermissionDecision::allow()
-            } else {
-                PermissionDecision::deny(format!("user selected: {option_id}"))
-            }
-        }
+        forge_primitives::PermissionOutcome::Selected {
+            action,
+            notes_text,
+            edited_input,
+            ..
+        } => dispatch_permission_action(
+            action,
+            notes_text.as_deref().unwrap_or(""),
+            edited_input,
+        ),
         forge_primitives::PermissionOutcome::Cancelled => {
             PermissionDecision::deny("user cancelled")
         }
@@ -747,6 +746,36 @@ pub(crate) fn deliver_permission_response(
             tool_call_id,
             "PermissionResponse oneshot receiver dropped before delivery",
         );
+    }
+}
+
+/// Build the `PermissionDecision` for a submitted option's `action`.
+/// `notes_text` is the user's "tell Claude" feedback string (or
+/// empty); consumed only when the action is `Deny`. `edited_input` is
+/// the user's modified tool args; consumed only when the action is
+/// `AllowWithInput`.
+pub(crate) fn dispatch_permission_action(
+    action: forge_primitives::permission_ui::PermissionAction,
+    notes_text: &str,
+    edited_input: Option<serde_json::Value>,
+) -> PermissionDecision {
+    use forge_primitives::permission_ui::PermissionAction;
+    match action {
+        PermissionAction::Allow => PermissionDecision::allow(),
+        PermissionAction::AllowWithUpdates { updates } => {
+            PermissionDecision::allow().with_updated_permissions(updates)
+        }
+        PermissionAction::AllowWithInput => {
+            PermissionDecision::allow_with_input(edited_input.unwrap_or_default())
+        }
+        PermissionAction::Deny => {
+            let reason = if notes_text.trim().is_empty() {
+                "Denied by user".to_owned()
+            } else {
+                notes_text.trim().to_owned()
+            };
+            PermissionDecision::deny(reason)
+        }
     }
 }
 
@@ -1038,6 +1067,7 @@ mod tests {
     };
     use crate::client::AgentEvent;
     use forge_primitives::ToolPermissionContext;
+    use forge_primitives::permission_ui::PermissionAction;
     use forge_primitives::{PermissionOutcome, QuestionOutcome};
     use parking_lot::Mutex;
     use serde_json::json;
@@ -1069,7 +1099,12 @@ mod tests {
         deliver_permission_response(
             &pending,
             "tu_1",
-            PermissionOutcome::Selected { option_id: "allow_once".to_owned() },
+            PermissionOutcome::Selected {
+                option_id: "allow_once".to_owned(),
+                action: PermissionAction::Allow,
+                notes_text: None,
+                edited_input: None,
+            },
         );
         let decision = rx.blocking_recv().expect("oneshot resolved");
         assert!(decision.is_allow());
@@ -1082,7 +1117,12 @@ mod tests {
         deliver_permission_response(
             &pending,
             "tu_2",
-            PermissionOutcome::Selected { option_id: "deny".to_owned() },
+            PermissionOutcome::Selected {
+                option_id: "deny".to_owned(),
+                action: PermissionAction::Deny,
+                notes_text: None,
+                edited_input: None,
+            },
         );
         let decision = rx.blocking_recv().expect("oneshot resolved");
         assert!(!decision.is_allow());
@@ -1095,7 +1135,12 @@ mod tests {
         deliver_permission_response(
             &pending,
             "tu_r1",
-            PermissionOutcome::Selected { option_id: "reject_once".to_owned() },
+            PermissionOutcome::Selected {
+                option_id: "reject_once".to_owned(),
+                action: PermissionAction::Deny,
+                notes_text: None,
+                edited_input: None,
+            },
         );
         let decision = rx.blocking_recv().expect("oneshot resolved");
         assert!(!decision.is_allow());
@@ -1108,7 +1153,12 @@ mod tests {
         deliver_permission_response(
             &pending,
             "tu_r2",
-            PermissionOutcome::Selected { option_id: "reject_always".to_owned() },
+            PermissionOutcome::Selected {
+                option_id: "reject_always".to_owned(),
+                action: PermissionAction::Deny,
+                notes_text: None,
+                edited_input: None,
+            },
         );
         let decision = rx.blocking_recv().expect("oneshot resolved");
         assert!(!decision.is_allow());
@@ -1129,7 +1179,12 @@ mod tests {
         deliver_permission_response(
             &pending,
             "missing",
-            PermissionOutcome::Selected { option_id: "allow_once".to_owned() },
+            PermissionOutcome::Selected {
+                option_id: "allow_once".to_owned(),
+                action: PermissionAction::Allow,
+                notes_text: None,
+                edited_input: None,
+            },
         );
         assert!(pending.lock().is_empty());
     }
@@ -1245,7 +1300,7 @@ mod tests {
 
 #[cfg(test)]
 mod tests_permission_options {
-    use super::build_permission_options;
+    use super::{build_permission_options, dispatch_permission_action};
     use forge_primitives::options::PermissionMode;
     use forge_primitives::permission_ui::{PermissionAction, PermissionOptionKind};
     use forge_primitives::permissions::{
@@ -1377,5 +1432,52 @@ mod tests_permission_options {
             .find(|o| o.option_id == "allow_always_0")
             .expect("allow_always_0 present");
         assert!(switch_mode.name.to_lowercase().contains("accept edits"));
+    }
+
+    #[test]
+    fn dispatch_allow_action_yields_allow_decision() {
+        let decision = dispatch_permission_action(PermissionAction::Allow, "", None);
+        assert!(decision.is_allow());
+    }
+
+    #[test]
+    fn dispatch_deny_with_notes_passes_notes_as_reason() {
+        let decision =
+            dispatch_permission_action(PermissionAction::Deny, "use --dry-run first", None);
+        let reason = decision.reason().expect("deny carries reason");
+        assert_eq!(reason, "use --dry-run first");
+    }
+
+    #[test]
+    fn dispatch_deny_with_empty_notes_uses_default_reason() {
+        let decision = dispatch_permission_action(PermissionAction::Deny, "", None);
+        let reason = decision.reason().expect("deny carries reason");
+        assert_eq!(reason, "Denied by user");
+    }
+
+    #[test]
+    fn dispatch_allow_with_updates_attaches_them() {
+        let updates = vec![PermissionUpdate::SetMode {
+                mode: PermissionMode::Auto,
+                destination: None,
+            }];
+        let decision = dispatch_permission_action(
+            PermissionAction::AllowWithUpdates { updates: updates.clone() },
+            "",
+            None,
+        );
+        assert_eq!(decision.updated_permissions(), updates.as_slice());
+    }
+
+    #[test]
+    fn dispatch_allow_with_input_uses_edited_value() {
+        let edited = json!({"command": "echo modified"});
+        let decision = dispatch_permission_action(
+            PermissionAction::AllowWithInput,
+            "",
+            Some(edited.clone()),
+        );
+        let updated_input = decision.updated_input().expect("allow_with_input carries value");
+        assert_eq!(updated_input, &edited);
     }
 }
