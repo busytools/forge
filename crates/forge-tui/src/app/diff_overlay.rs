@@ -602,14 +602,6 @@ pub(crate) fn close(app: &mut App) {
 ///     `input_submit::dispatch_diff_comment_bundle` so the user
 ///     sees the bubble appear immediately.
 pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
-    tracing::info!(
-        target: crate::logging::targets::APP_SESSION,
-        event_name = "diff_overlay_handle_key",
-        code = ?key.code,
-        modifiers = ?key.modifiers,
-        kind = ?key.kind,
-        "diff overlay received key event",
-    );
     let has_input = app.diff_overlay.as_ref().is_some_and(|o| o.active_input.is_some());
     if has_input {
         match key.code {
@@ -930,6 +922,15 @@ struct MouseEffect {
 ///   editing.
 /// - Left click on the banner `✕` → equivalent to Esc.
 pub(crate) fn handle_mouse(app: &mut App, mouse: MouseEvent) {
+    tracing::info!(
+        target: crate::logging::targets::APP_SESSION,
+        event_name = "diff_overlay_handle_mouse",
+        kind = ?mouse.kind,
+        modifiers = ?mouse.modifiers,
+        col = mouse.column,
+        row = mouse.row,
+        "diff overlay received mouse event",
+    );
     let terminal_width = app.cached_frame_area.width;
     let effect = if let Some(overlay) = app.diff_overlay.as_mut() {
         let shift = mouse.modifiers.contains(KeyModifiers::SHIFT);
