@@ -22,7 +22,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc as std_mpsc;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use forge_workspace::env::git_diff::hunks::ScanOutcome;
 use forge_workspace::env::git_diff::hunks::{DiffLine, DiffLineKind, FileHunks};
 use tui_textarea::TextArea;
@@ -635,27 +635,12 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
 /// content extends past the available width.
 fn scroll_body_horizontal(app: &mut App, delta: i32) {
     let Some(overlay) = app.diff_overlay.as_mut() else {
-        tracing::info!(
-            target: crate::logging::targets::APP_SESSION,
-            event_name = "diff_horizontal_scroll_no_overlay",
-            delta,
-            "horizontal scroll called but no diff overlay state",
-        );
         return;
     };
     let step = i32::from(SCROLL_COLS_PER_STEP);
     let next = i32::from(overlay.body_scroll_x).saturating_add(delta.saturating_mul(step));
     let clamped = next.clamp(0, i32::from(u16::MAX));
-    let new_x = u16::try_from(clamped).unwrap_or(0);
-    tracing::info!(
-        target: crate::logging::targets::APP_SESSION,
-        event_name = "diff_horizontal_scroll",
-        delta,
-        old_x = overlay.body_scroll_x,
-        new_x,
-        "advancing diff horizontal scroll",
-    );
-    overlay.body_scroll_x = new_x;
+    overlay.body_scroll_x = u16::try_from(clamped).unwrap_or(0);
     app.needs_redraw = true;
 }
 
@@ -857,17 +842,12 @@ fn save_active_input(app: &mut App) {
 /// `Paragraph::scroll`.
 const SCROLL_LINES_PER_NOTCH: u16 = 3;
 
-/// Maximum FILES rail width. The rail tops out here regardless of
-/// terminal width; beyond ~30 columns the extra space goes to waste
-/// because file paths are usually short.
-pub(crate) const RAIL_WIDTH_MAX: u16 = 30;
 /// Minimum FILES rail width when the rail is shown. Below this the
 /// file list becomes unreadably narrow; we hide the rail entirely.
 pub(crate) const RAIL_WIDTH_MIN: u16 = 20;
-/// Fraction of the terminal width the rail aims for: ~22%. Picked so
-/// a 120-col terminal lands at 26 (below max) and a 160-col terminal
-/// lands at the max 30.
-pub(crate) const RAIL_WIDTH_NUMER: u16 = 22;
+/// Rail width as a fraction of the terminal width: strict 20%. The
+/// remaining 80% goes to the two-pane diff body (40 / 40 split).
+pub(crate) const RAIL_WIDTH_NUMER: u16 = 20;
 pub(crate) const RAIL_WIDTH_DENOM: u16 = 100;
 /// Medium-tier terminal width threshold (≥ this → rail visible).
 pub(crate) const MEDIUM_MIN: u16 = 120;
@@ -894,7 +874,7 @@ pub(crate) fn rail_width_for(terminal_width: u16) -> u16 {
         return 0;
     }
     let proportional = terminal_width.saturating_mul(RAIL_WIDTH_NUMER) / RAIL_WIDTH_DENOM;
-    proportional.clamp(RAIL_WIDTH_MIN, RAIL_WIDTH_MAX)
+    proportional.max(RAIL_WIDTH_MIN)
 }
 
 /// Outcome of a mouse interaction. Some interactions need access
@@ -911,8 +891,8 @@ struct MouseEffect {
 /// Bindings (v1):
 /// - Scroll wheel over the rail → advance `rail_scroll`.
 /// - Scroll wheel over the body → advance `body_scroll`.
-/// - Shift + scroll wheel, or a native horizontal-scroll event
-///   (trackpad two-finger sideways) → advance `body_scroll_x`.
+/// - Horizontal scroll uses Left/Right arrow keys; trackpad
+///   horizontal swipes don't propagate from at least Ghostty / iTerm.
 /// - Left click on a file row in the FILES rail → switch the right
 ///   pane to that file; resets `body_scroll` to 0.
 /// - Left click on a diff line in the body → open an inline comment
@@ -922,26 +902,9 @@ struct MouseEffect {
 ///   editing.
 /// - Left click on the banner `✕` → equivalent to Esc.
 pub(crate) fn handle_mouse(app: &mut App, mouse: MouseEvent) {
-    tracing::info!(
-        target: crate::logging::targets::APP_SESSION,
-        event_name = "diff_overlay_handle_mouse",
-        kind = ?mouse.kind,
-        modifiers = ?mouse.modifiers,
-        col = mouse.column,
-        row = mouse.row,
-        "diff overlay received mouse event",
-    );
     let terminal_width = app.cached_frame_area.width;
     let effect = if let Some(overlay) = app.diff_overlay.as_mut() {
-        let shift = mouse.modifiers.contains(KeyModifiers::SHIFT);
         match mouse.kind {
-            // Shift+wheel maps to horizontal scroll for terminals
-            // that don't emit native ScrollLeft / ScrollRight events
-            // (most do one or the other depending on driver).
-            MouseEventKind::ScrollUp if shift => handle_horizontal_scroll(overlay, -1),
-            MouseEventKind::ScrollDown if shift => handle_horizontal_scroll(overlay, 1),
-            MouseEventKind::ScrollLeft => handle_horizontal_scroll(overlay, -1),
-            MouseEventKind::ScrollRight => handle_horizontal_scroll(overlay, 1),
             MouseEventKind::ScrollUp => handle_scroll(overlay, mouse.column, terminal_width, false),
             MouseEventKind::ScrollDown => {
                 handle_scroll(overlay, mouse.column, terminal_width, true)
@@ -949,6 +912,10 @@ pub(crate) fn handle_mouse(app: &mut App, mouse: MouseEvent) {
             MouseEventKind::Down(MouseButton::Left) => {
                 handle_left_click(overlay, mouse.column, mouse.row, terminal_width)
             }
+            // Trackpad horizontal swipes don't propagate from at least
+            // Ghostty / iTerm — they're swallowed by the terminal and
+            // never reach the SGR mouse stream. Left/Right arrow keys
+            // are the only working horizontal-scroll affordance.
             _ => MouseEffect::default(),
         }
     } else {
@@ -957,16 +924,6 @@ pub(crate) fn handle_mouse(app: &mut App, mouse: MouseEvent) {
     if effect.redraw {
         app.needs_redraw = true;
     }
-}
-
-/// Step `body_scroll_x` by `direction * SCROLL_COLS_PER_STEP` cols.
-/// Negative goes left (clamped at 0), positive goes right.
-fn handle_horizontal_scroll(overlay: &mut DiffOverlayState, direction: i32) -> MouseEffect {
-    let step = i32::from(SCROLL_COLS_PER_STEP);
-    let next = i32::from(overlay.body_scroll_x).saturating_add(direction.saturating_mul(step));
-    let clamped = next.clamp(0, i32::from(u16::MAX));
-    overlay.body_scroll_x = u16::try_from(clamped).unwrap_or(0);
-    MouseEffect { redraw: true }
 }
 
 fn handle_scroll(
@@ -1953,22 +1910,26 @@ mod tests {
     }
 
     #[test]
-    fn rail_width_caps_at_max_on_wide_terminals() {
-        assert_eq!(rail_width_for(160), RAIL_WIDTH_MAX);
-        assert_eq!(rail_width_for(300), RAIL_WIDTH_MAX);
+    fn rail_width_is_strict_20_percent_on_wide_terminals() {
+        // 200 × 20 / 100 = 40; 300 × 20 / 100 = 60.
+        assert_eq!(rail_width_for(200), 40);
+        assert_eq!(rail_width_for(300), 60);
     }
 
     #[test]
-    fn rail_width_scales_proportionally_in_medium_band() {
-        // 120 × 22 / 100 = 26 (under MAX, over MIN → clamped to 26).
-        assert_eq!(rail_width_for(120), 26);
-        // 145 × 22 / 100 = 31, clamped down to MAX (30).
-        assert_eq!(rail_width_for(145), RAIL_WIDTH_MAX);
+    fn rail_width_floors_at_min_on_narrow_borderline_widths() {
+        // 120 × 20 / 100 = 24 → above MIN, kept.
+        assert_eq!(rail_width_for(120), 24);
+        // 100 × 20 / 100 = 20 → exactly MIN (but 100 < MEDIUM_MIN so 0).
+        assert_eq!(rail_width_for(100), 0);
+        // MIN floor kicks in only when the rail is shown (≥ MEDIUM_MIN)
+        // and the proportional value sits below MIN. With MEDIUM_MIN=120
+        // and 20% giving 24 at that threshold, the floor effectively
+        // never triggers under current thresholds; keep it for safety.
     }
 
     #[test]
-    fn rail_width_clamps_to_min_on_borderline_terminals() {
-        // Anything below MEDIUM_MIN hides the rail entirely.
+    fn rail_width_hidden_below_medium_threshold() {
         assert_eq!(rail_width_for(119), 0);
         assert_eq!(rail_width_for(80), 0);
     }
