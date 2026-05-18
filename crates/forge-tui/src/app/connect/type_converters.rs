@@ -74,28 +74,17 @@ pub(crate) fn map_permission_request(
         .options
         .into_iter()
         .map(|opt| {
-            let kind = match opt.kind.as_str() {
-                "allow_once" => model::PermissionOptionKind::AllowOnce,
-                "allow_session" => model::PermissionOptionKind::AllowSession,
-                "allow_always" => model::PermissionOptionKind::AllowAlways,
-                "reject_once" => model::PermissionOptionKind::RejectOnce,
-                "reject_always" => model::PermissionOptionKind::RejectAlways,
-                "question_choice" => model::PermissionOptionKind::QuestionChoice,
-                "plan_approve" => model::PermissionOptionKind::PlanApprove,
-                "plan_reject" => model::PermissionOptionKind::PlanReject,
-                _ => {
-                    tracing::warn!(
-                        "unknown permission option kind from bridge; defaulting to reject_once: session_id={} tool_call_id={} option_id={} option_name={} option_kind={}",
-                        session_id,
-                        tool_call_id,
-                        opt.option_id,
-                        opt.name,
-                        opt.kind
-                    );
-                    model::PermissionOptionKind::RejectOnce
-                }
+            // Transitional mapping from the new 4-variant primitives kind
+            // to the legacy 8-variant TUI model kind. Dies in Task 23 when
+            // the legacy enum + this whole converter are deleted.
+            use forge_primitives::permission_ui::PermissionOptionKind as PrimKind;
+            let kind = match opt.kind {
+                PrimKind::Allow => model::PermissionOptionKind::AllowOnce,
+                PrimKind::Deny => model::PermissionOptionKind::RejectOnce,
+                PrimKind::Edit => model::PermissionOptionKind::AllowOnce,
+                PrimKind::Notes => model::PermissionOptionKind::RejectOnce,
             };
-            model::PermissionOption::new(opt.option_id, opt.name, kind).description(opt.description)
+            model::PermissionOption::new(opt.option_id, opt.name, kind)
         })
         .collect();
     (
