@@ -47,8 +47,6 @@ pub use config::ConfigState;
 pub use connect::{create_app, start_connection};
 pub use diff_overlay::DiffOverlayState;
 pub use events::{apply_session_update, handle_terminal_event};
-#[cfg(feature = "testing")]
-pub use events::{handle_permission_request_event, handle_question_request_event};
 pub use focus::{FocusManager, FocusOwner, FocusTarget};
 pub use input::InputState;
 pub use launchpad::LaunchpadState;

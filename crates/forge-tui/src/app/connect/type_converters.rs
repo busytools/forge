@@ -59,84 +59,6 @@ pub(crate) fn map_available_models(
         .collect()
 }
 
-pub(crate) fn map_permission_request(
-    session_id: &str,
-    request: types::PermissionRequest,
-) -> (model::RequestPermissionRequest, String) {
-    let tool_call_id = request.tool_call.tool_call_id.clone();
-    let tool_call_meta = request.tool_call.meta.clone();
-    let tool_call_fields = convert_tool_call_to_fields(request.tool_call);
-    let mut tool_call_update = model::ToolCallUpdate::new(tool_call_id.clone(), tool_call_fields);
-    if let Some(meta) = tool_call_meta {
-        tool_call_update = tool_call_update.meta(meta);
-    }
-    let options = request
-        .options
-        .into_iter()
-        .map(|opt| {
-            // Transitional bridge — dies with `map_permission_request` itself
-            // in Task 25 (per the unified-prompt plan). Maps the new 4-variant
-            // primitives kind onto the legacy 8-variant TUI model kind for
-            // the renderer modules that haven't been retired yet.
-            use forge_primitives::permission_ui::PermissionOptionKind as PrimKind;
-            let kind = match opt.kind {
-                PrimKind::Allow | PrimKind::Edit => model::PermissionOptionKind::AllowOnce,
-                PrimKind::Deny | PrimKind::Notes => model::PermissionOptionKind::RejectOnce,
-            };
-            model::PermissionOption::new(opt.option_id, opt.name, kind)
-        })
-        .collect();
-    (
-        model::RequestPermissionRequest::new(
-            model::SessionId::new(session_id),
-            tool_call_update,
-            options,
-            request.display.filter(|d| !d.is_empty()),
-        ),
-        tool_call_id,
-    )
-}
-
-pub(crate) fn map_question_request(
-    session_id: &str,
-    request: types::QuestionRequest,
-) -> (model::RequestQuestionRequest, String) {
-    let tool_call_id = request.tool_call.tool_call_id.clone();
-    let tool_call_meta = request.tool_call.meta.clone();
-    let tool_call_fields = convert_tool_call_to_fields(request.tool_call);
-    let mut tool_call_update = model::ToolCallUpdate::new(tool_call_id.clone(), tool_call_fields);
-    if let Some(meta) = tool_call_meta {
-        tool_call_update = tool_call_update.meta(meta);
-    }
-
-    let prompt = model::QuestionPrompt::new(
-        request.prompt.question,
-        request.prompt.header,
-        request.prompt.multi_select,
-        request
-            .prompt
-            .options
-            .into_iter()
-            .map(|option| {
-                model::QuestionOption::new(option.option_id, option.label)
-                    .description(option.description)
-                    .preview(option.preview)
-            })
-            .collect(),
-    );
-
-    (
-        model::RequestQuestionRequest::new(
-            model::SessionId::new(session_id),
-            tool_call_update,
-            prompt,
-            usize::try_from(request.question_index).unwrap_or(0),
-            usize::try_from(request.total_questions).unwrap_or(0),
-        ),
-        tool_call_id,
-    )
-}
-
 pub(super) fn convert_content_block(content: types::ChunkContent) -> Option<model::ContentBlock> {
     match content {
         types::ChunkContent::Text { text } => {
@@ -220,47 +142,6 @@ pub(crate) fn convert_tool_call_update(update: types::ToolCallUpdate) -> model::
         out = out.meta(meta);
     }
     out
-}
-
-pub(super) fn convert_tool_call_to_fields(
-    tool_call: types::ToolCall,
-) -> model::ToolCallUpdateFields {
-    let mut fields = model::ToolCallUpdateFields::new()
-        .title(tool_call.title)
-        .kind(convert_tool_kind(&tool_call.kind))
-        .status(convert_tool_status(&tool_call.status))
-        .content(
-            tool_call.content.into_iter().filter_map(convert_tool_call_content).collect::<Vec<_>>(),
-        )
-        .locations(
-            tool_call
-                .locations
-                .into_iter()
-                .map(|loc| {
-                    let mut location = model::ToolCallLocation::new(loc.path);
-                    if let Some(line) = loc.line.and_then(|line| u32::try_from(line).ok()) {
-                        location = location.line(line);
-                    }
-                    location
-                })
-                .collect::<Vec<_>>(),
-        );
-
-    if let Some(raw_input) = tool_call.raw_input {
-        fields = fields.raw_input(raw_input);
-    }
-
-    if let Some(raw_output) = tool_call.raw_output {
-        fields = fields.raw_output(serde_json::Value::String(raw_output));
-    }
-    if let Some(output_metadata) = tool_call.output_metadata {
-        fields = fields.output_metadata(output_metadata);
-    }
-    if let Some(task_metadata) = tool_call.task_metadata {
-        fields = fields.task_metadata(task_metadata);
-    }
-
-    fields
 }
 
 pub(super) fn convert_tool_call_update_fields(
@@ -362,10 +243,7 @@ pub(super) fn convert_tool_status(status: &str) -> model::ToolCallStatus {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        convert_tool_call, convert_tool_call_update_fields, map_available_models,
-        map_permission_request, map_question_request,
-    };
+    use super::{convert_tool_call, convert_tool_call_update_fields, map_available_models};
     use crate::agent::model;
     use forge_primitives as types;
 
@@ -417,130 +295,6 @@ mod tests {
                     .supports_fast_mode(None)
                     .supports_auto_mode(None),
             ]
-        );
-    }
-
-    #[test]
-    fn map_permission_request_preserves_display_metadata() {
-        let (request, tool_call_id) = map_permission_request(
-            "session-1",
-            types::PermissionRequest {
-                tool_call: types::ToolCall {
-                    tool_call_id: "tool-1".to_owned(),
-                    title: "Bash npm test".to_owned(),
-                    kind: "execute".to_owned(),
-                    status: "in_progress".to_owned(),
-                    content: Vec::new(),
-                    raw_input: None,
-                    raw_output: None,
-                    output_metadata: None,
-                    task_metadata: None,
-                    locations: Vec::new(),
-                    meta: None,
-                },
-                options: vec![types::PermissionOption {
-                    option_id: "allow".to_owned(),
-                    name: "Allow".to_owned(),
-                    kind: types::permission_ui::PermissionOptionKind::Allow,
-                    action: types::permission_ui::PermissionAction::Allow,
-                }],
-                display: Some(types::PermissionDisplay {
-                    title: Some("Claude wants to run tests".to_owned()),
-                    display_name: Some("Run tests".to_owned()),
-                    description: Some("This command reads project files".to_owned()),
-                    decision_reason: None,
-                }),
-            },
-        );
-
-        assert_eq!(tool_call_id, "tool-1");
-        assert_eq!(
-            request.display,
-            Some(
-                model::PermissionDisplay::new()
-                    .title(Some("Claude wants to run tests".to_owned()))
-                    .display_name(Some("Run tests".to_owned()))
-                    .description(Some("This command reads project files".to_owned())),
-            )
-        );
-    }
-
-    #[test]
-    fn map_question_request_preserves_preview_and_annotation_shape() {
-        let (request, tool_call_id) = map_question_request(
-            "session-1",
-            types::QuestionRequest {
-                tool_call: types::ToolCall {
-                    tool_call_id: "tool-1".to_owned(),
-                    title: "Pick target".to_owned(),
-                    kind: "other".to_owned(),
-                    status: "in_progress".to_owned(),
-                    content: Vec::new(),
-                    raw_input: Some(serde_json::json!({ "source": "ask_user_question" })),
-                    raw_output: None,
-                    output_metadata: None,
-                    task_metadata: None,
-                    locations: Vec::new(),
-                    meta: Some(
-                        serde_json::json!({ "claudeCode": { "toolName": "AskUserQuestion" } }),
-                    ),
-                },
-                prompt: types::QuestionPrompt {
-                    question: "Where should this roll out?".to_owned(),
-                    header: "Target".to_owned(),
-                    multi_select: true,
-                    options: vec![
-                        types::QuestionOption {
-                            option_id: "question_0".to_owned(),
-                            label: "Staging".to_owned(),
-                            description: Some("Validate in staging first".to_owned()),
-                            preview: Some("Deploy to staging first.".to_owned()),
-                        },
-                        types::QuestionOption {
-                            option_id: "question_1".to_owned(),
-                            label: "Production".to_owned(),
-                            description: Some("Customer-facing rollout".to_owned()),
-                            preview: None,
-                        },
-                    ],
-                },
-                question_index: 1,
-                total_questions: 3,
-            },
-        );
-
-        assert_eq!(tool_call_id, "tool-1");
-        assert_eq!(
-            request,
-            model::RequestQuestionRequest::new(
-                model::SessionId::new("session-1"),
-                model::ToolCallUpdate::new(
-                    "tool-1",
-                    model::ToolCallUpdateFields::new()
-                        .title("Pick target")
-                        .kind(model::ToolKind::Other)
-                        .status(model::ToolCallStatus::InProgress)
-                        .content(Vec::new())
-                        .raw_input(serde_json::json!({ "source": "ask_user_question" }))
-                        .locations(Vec::new()),
-                )
-                .meta(serde_json::json!({ "claudeCode": { "toolName": "AskUserQuestion" } })),
-                model::QuestionPrompt::new(
-                    "Where should this roll out?",
-                    "Target",
-                    true,
-                    vec![
-                        model::QuestionOption::new("question_0", "Staging")
-                            .description(Some("Validate in staging first".to_owned()))
-                            .preview(Some("Deploy to staging first.".to_owned())),
-                        model::QuestionOption::new("question_1", "Production")
-                            .description(Some("Customer-facing rollout".to_owned()))
-                            .preview(None),
-                    ],
-                ),
-                1,
-                3,
-            )
         );
     }
 

@@ -200,30 +200,18 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
             apply_session_update_runtime_reload_failed(app, &session_id, &message);
         }
         SessionUpdate::PermissionRequest { key, tool_id, request } => {
-            // New unified-prompt path: enqueue onto the session's queue.
-            // Clone the request because the legacy path below also
-            // consumes it. Both paths run in parallel until Task 25
-            // deletes the legacy attach pattern.
             if let Some(session) = app.session_mut(&key) {
-                let prompt = crate::app::prompt::PromptState::from_permission(
-                    tool_id.clone(),
-                    request.clone(),
-                );
+                let prompt = crate::app::prompt::PromptState::from_permission(tool_id, request);
                 crate::app::prompt::enqueue_prompt(session, prompt);
             }
             crate::app::prompt::snapshot_draft_if_needed(app);
-            turn::apply_session_update_permission_request(app, &key, &tool_id, request);
         }
         SessionUpdate::QuestionRequest { key, tool_id, request } => {
             if let Some(session) = app.session_mut(&key) {
-                let prompt = crate::app::prompt::PromptState::from_question(
-                    tool_id.clone(),
-                    request.clone(),
-                );
+                let prompt = crate::app::prompt::PromptState::from_question(tool_id, request);
                 crate::app::prompt::enqueue_prompt(session, prompt);
             }
             crate::app::prompt::snapshot_draft_if_needed(app);
-            turn::apply_session_update_question_request(app, &key, &tool_id, request);
         }
         SessionUpdate::McpOperationError { error, .. } => {
             if is_active_or_global {

@@ -1060,7 +1060,9 @@ pub(crate) mod tests {
                 assert_eq!(option_id, "allow_once");
                 assert!(matches!(action, forge_primitives::permission_ui::PermissionAction::Allow));
             }
-            other => panic!("expected Selected, got: {other:?}"),
+            forge_primitives::PermissionOutcome::Cancelled => {
+                panic!("expected Selected, got Cancelled");
+            }
         }
     }
 
@@ -1129,7 +1131,9 @@ pub(crate) mod tests {
                 assert_eq!(selected_option_ids, vec!["q1".to_string()]);
                 assert!(annotation.is_none());
             }
-            other => panic!("expected Answered, got: {other:?}"),
+            forge_primitives::QuestionOutcome::Cancelled => {
+                panic!("expected Answered, got Cancelled");
+            }
         }
     }
 
@@ -1163,7 +1167,9 @@ pub(crate) mod tests {
                 let ann = annotation.expect("annotation populated");
                 assert_eq!(ann.notes.as_deref(), Some("use the other option"));
             }
-            other => panic!("expected Answered, got: {other:?}"),
+            forge_primitives::QuestionOutcome::Cancelled => {
+                panic!("expected Answered, got Cancelled");
+            }
         }
     }
 
@@ -1192,7 +1198,9 @@ pub(crate) mod tests {
                 let ann = annotation.expect("annotation populated");
                 assert_eq!(ann.notes.as_deref(), Some("extra context"));
             }
-            other => panic!("expected Answered, got: {other:?}"),
+            forge_primitives::QuestionOutcome::Cancelled => {
+                panic!("expected Answered, got Cancelled");
+            }
         }
     }
 
@@ -1249,7 +1257,9 @@ pub(crate) mod tests {
                 assert_eq!(option_id, "tell_claude");
                 assert_eq!(notes_text.as_deref(), Some("don't push to main"));
             }
-            other => panic!("expected Selected, got: {other:?}"),
+            forge_primitives::PermissionOutcome::Cancelled => {
+                panic!("expected Selected, got Cancelled");
+            }
         }
     }
 
