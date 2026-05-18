@@ -144,6 +144,14 @@ fn build_header_lines(prompt: &PromptState) -> Vec<Line<'static>> {
 fn build_option_lines(prompt: &PromptState) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     let is_multi = prompt.is_multi_select();
+    // For Question prompts, keep a reference to the wire options so
+    // we can read .description and .preview by index.
+    let question_options: Option<&[forge_primitives::question::QuestionOption]> =
+        match &prompt.source {
+            PromptSource::Question { prompt: q, .. } => Some(&q.options),
+            PromptSource::Permission { .. } => None,
+        };
+
     for (i, opt) in prompt.options.iter().enumerate() {
         let is_focused = i == prompt.focused_option_index;
         let is_toggled = prompt.selected_option_indices.contains(&i);
@@ -182,7 +190,45 @@ fn build_option_lines(prompt: &PromptState) -> Vec<Line<'static>> {
         ));
         spans.push(Span::styled(opt.name.clone(), name_style));
         lines.push(Line::from(spans));
+
+        // Question-specific: render the option's description as dim
+        // subtext below the option label (if present and non-empty).
+        if let Some(q_opts) = question_options
+            && let Some(q_opt) = q_opts.get(i)
+            && let Some(desc) = q_opt.description.as_deref().filter(|d| !d.is_empty())
+        {
+            lines.push(Line::from(vec![
+                Span::raw("      "),
+                Span::styled(desc.to_owned(), Style::default().fg(theme::DIM)),
+            ]));
+        }
     }
+
+    // Question-specific: render the per-focused-option preview block
+    // AFTER all options. Renders only when the source is Question and
+    // the focused option has a non-empty preview.
+    if let Some(q_opts) = question_options
+        && let Some(q_opt) = q_opts.get(prompt.focused_option_index)
+        && let Some(preview) = q_opt.preview.as_deref().filter(|p| !p.trim().is_empty())
+    {
+        lines.push(Line::default());
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                "Preview:".to_string(),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]));
+        for row in preview.lines() {
+            lines.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(row.to_owned(), Style::default().fg(theme::DIM)),
+            ]));
+        }
+    }
+
     lines
 }
 
@@ -322,5 +368,56 @@ mod tests {
         let out = render_to_string(&prompt, 1, 80, 14);
         assert!(out.contains("[x] ✓ Red"), "expected [x] on toggled option; got:\n{out}");
         assert!(out.contains("[ ] ✓ Blue"), "expected [ ] on untoggled option; got:\n{out}");
+    }
+
+    #[test]
+    fn question_option_with_description_renders_dim_subtext() {
+        let mut request = make_question_request(false);
+        request.prompt.options[0].description = Some("matches chat input — loud, urgent".into());
+        let prompt = PromptState::from_question("tc-q".into(), request);
+        let out = render_to_string(&prompt, 1, 80, 18);
+        assert!(
+            out.contains("matches chat input — loud, urgent"),
+            "expected option description in output:\n{out}"
+        );
+    }
+
+    #[test]
+    fn question_focused_option_with_preview_renders_inline_preview_block() {
+        let mut request = make_question_request(false);
+        request.prompt.options[0].preview = Some("Bash · git push origin polish\n▸ ✓ Allow once".into());
+        let prompt = PromptState::from_question("tc-q".into(), request);
+        let out = render_to_string(&prompt, 1, 80, 22);
+        assert!(out.contains("Preview:"), "expected Preview header; got:\n{out}");
+        assert!(
+            out.contains("Bash · git push origin polish"),
+            "expected preview content line 1; got:\n{out}"
+        );
+        assert!(
+            out.contains("✓ Allow once"),
+            "expected preview content line 2; got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn question_preview_only_shown_for_focused_option() {
+        let mut request = make_question_request(false);
+        request.prompt.options[0].preview = Some("First preview".into());
+        request.prompt.options[1].preview = Some("Second preview".into());
+        let mut prompt = PromptState::from_question("tc-q".into(), request);
+        prompt.focused_option_index = 0;
+        let out = render_to_string(&prompt, 1, 80, 20);
+        assert!(out.contains("First preview"), "focused-option preview should render");
+        assert!(!out.contains("Second preview"), "non-focused preview should NOT render");
+    }
+
+    #[test]
+    fn permission_prompt_does_not_render_preview_block() {
+        let prompt = PromptState::from_permission("tc-1".into(), make_permission_request());
+        let out = render_to_string(&prompt, 1, 80, 14);
+        assert!(
+            !out.contains("Preview:"),
+            "Permission prompts shouldn't render a Preview block"
+        );
     }
 }
