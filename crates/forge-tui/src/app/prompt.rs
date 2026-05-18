@@ -99,11 +99,48 @@ impl PromptState {
         }
     }
 
-    /// Construct from a wire `QuestionRequest`. (Implementation in Task 4.)
-    #[allow(clippy::todo, clippy::needless_pass_by_value)]
+    /// Construct from a wire `QuestionRequest`. Always includes the
+    /// forge-synthesized "Tell Claude something else" escape hatch as
+    /// the last option.
     pub fn from_question(tool_id: String, request: QuestionRequest) -> Self {
-        let _ = (tool_id, request);
-        todo!("Task 4 fills this in")
+        use forge_primitives::permission_ui::{
+            PermissionAction, PermissionOption, PermissionOptionKind,
+        };
+        // Convert wire question options to permission-option shape (so
+        // both prompt kinds share one render path).
+        let mut options: Vec<PermissionOption> = request
+            .prompt
+            .options
+            .iter()
+            .map(|opt| PermissionOption {
+                option_id: opt.option_id.clone(),
+                name: opt.label.clone(),
+                kind: PermissionOptionKind::Allow,
+                action: PermissionAction::Allow,
+            })
+            .collect();
+        options.push(PermissionOption {
+            option_id: "tell_claude".into(),
+            name: "Tell Claude something else".into(),
+            kind: PermissionOptionKind::Notes,
+            action: PermissionAction::Deny,
+        });
+
+        Self {
+            source: PromptSource::Question {
+                prompt: request.prompt,
+                question_index: request.question_index,
+                total_questions: request.total_questions,
+            },
+            tool_id,
+            options,
+            focused_option_index: 0,
+            selected_option_indices: BTreeSet::new(),
+            mode: PromptMode::OptionPicker,
+            notes: String::new(),
+            notes_cursor: 0,
+            edited_input: None,
+        }
     }
 
     /// Is the prompt a multi-select Question?
@@ -136,6 +173,45 @@ pub(crate) mod tests {
     use super::*;
     use forge_primitives::permission_ui::{PermissionAction, PermissionOptionKind};
     use forge_primitives::session_update::ToolCall;
+
+    pub(crate) fn make_question_request(multi_select: bool) -> QuestionRequest {
+        QuestionRequest {
+            tool_call: ToolCall {
+                tool_call_id: "tc-q".into(),
+                title: "AskUserQuestion".into(),
+                kind: "execute".into(),
+                status: "pending".into(),
+                content: vec![],
+                raw_input: None,
+                raw_output: None,
+                output_metadata: None,
+                task_metadata: None,
+                locations: vec![],
+                meta: None,
+            },
+            prompt: QuestionPrompt {
+                question: "Pick a colour".into(),
+                header: "Colour".into(),
+                multi_select,
+                options: vec![
+                    forge_primitives::question::QuestionOption {
+                        option_id: "q0".into(),
+                        label: "Red".into(),
+                        description: None,
+                        preview: None,
+                    },
+                    forge_primitives::question::QuestionOption {
+                        option_id: "q1".into(),
+                        label: "Blue".into(),
+                        description: None,
+                        preview: None,
+                    },
+                ],
+            },
+            question_index: 0,
+            total_questions: 1,
+        }
+    }
 
     pub(crate) fn make_permission_request() -> PermissionRequest {
         PermissionRequest {
@@ -189,5 +265,19 @@ pub(crate) mod tests {
     fn from_permission_focused_index_is_zero() {
         let state = PromptState::from_permission("tc-1".into(), make_permission_request());
         assert_eq!(state.focused_option_index, 0);
+    }
+
+    #[test]
+    fn from_question_appends_notes_option() {
+        let state = PromptState::from_question("tc-q".into(), make_question_request(false));
+        assert_eq!(state.options.len(), 3);
+        let last = state.options.last().expect("last option");
+        assert_eq!(last.kind, PermissionOptionKind::Notes);
+    }
+
+    #[test]
+    fn from_question_preserves_multi_select_flag() {
+        let state = PromptState::from_question("tc-q".into(), make_question_request(true));
+        assert!(state.is_multi_select());
     }
 }
