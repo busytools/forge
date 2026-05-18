@@ -20,6 +20,7 @@ mod notify;
 pub(crate) mod paste_burst;
 mod permissions;
 pub(crate) mod plugins;
+mod prompt;
 pub(crate) mod process_scanner;
 pub(crate) mod processes;
 mod questions;
@@ -51,6 +52,7 @@ pub use events::{handle_permission_request_event, handle_question_request_event}
 pub use focus::{FocusManager, FocusOwner, FocusTarget};
 pub use input::InputState;
 pub use launchpad::LaunchpadState;
+pub use prompt::{PromptMode, PromptSource, PromptState};
 pub(crate) use selection::normalize_selection;
 pub use service_status_check::start_service_status_check;
 pub(crate) use state::MarkdownRenderKey;
