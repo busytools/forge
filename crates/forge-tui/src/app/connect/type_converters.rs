@@ -448,6 +448,7 @@ mod tests {
                     title: Some("Claude wants to run tests".to_owned()),
                     display_name: Some("Run tests".to_owned()),
                     description: Some("This command reads project files".to_owned()),
+                    decision_reason: None,
                 }),
             },
         );

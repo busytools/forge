@@ -82,7 +82,7 @@ impl PromptState {
         Self {
             source: PromptSource::Permission {
                 display_title: request.display.as_ref().and_then(|d| d.title.clone()),
-                decision_reason: None, // Filled by Task 6 when wire surfaces it.
+                decision_reason: request.display.as_ref().and_then(|d| d.decision_reason.clone()),
                 display_description: request.display.as_ref().and_then(|d| d.description.clone()),
                 tool_name,
                 tool_args_summary,
