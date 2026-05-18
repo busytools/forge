@@ -814,20 +814,20 @@ fn default_permission_options() -> Vec<forge_primitives::PermissionOption> {
         forge_primitives::PermissionOption {
             option_id: "allow_once".to_owned(),
             name: "Allow once".to_owned(),
-            description: None,
-            kind: "allow_once".to_owned(),
+            kind: forge_primitives::permission_ui::PermissionOptionKind::Allow,
+            action: forge_primitives::permission_ui::PermissionAction::Allow,
         },
         forge_primitives::PermissionOption {
             option_id: "allow_always".to_owned(),
             name: "Allow always".to_owned(),
-            description: None,
-            kind: "allow_always".to_owned(),
+            kind: forge_primitives::permission_ui::PermissionOptionKind::Allow,
+            action: forge_primitives::permission_ui::PermissionAction::Allow,
         },
         forge_primitives::PermissionOption {
             option_id: "deny".to_owned(),
             name: "Deny".to_owned(),
-            description: None,
-            kind: "reject_once".to_owned(),
+            kind: forge_primitives::permission_ui::PermissionOptionKind::Deny,
+            action: forge_primitives::permission_ui::PermissionAction::Deny,
         },
     ]
 }

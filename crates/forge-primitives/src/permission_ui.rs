@@ -6,14 +6,52 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::permissions::PermissionUpdate;
 use crate::session_update::ToolCall;
+
+/// Typed wire-side response routing for a permission option. Each
+/// `PermissionOption` constructed by `forge-agent` carries an
+/// `action`; the dispatcher reads it to build the right
+/// `PermissionDecision` on submit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PermissionAction {
+    /// `PermissionDecision::allow()`.
+    Allow,
+    /// `PermissionDecision::allow().with_updated_permissions(updates)`.
+    AllowWithUpdates { updates: Vec<PermissionUpdate> },
+    /// Marker — the actual edited input value lives on
+    /// `PromptState.edited_input` (TUI-side). Dispatcher sends
+    /// `PermissionDecision::allow_with_input(edited_value)`.
+    AllowWithInput,
+    /// `PermissionDecision::deny(reason)` where reason is the user's
+    /// notes text or a default when notes are empty.
+    Deny,
+}
+
+/// Display style for a permission option — drives icon + color in the
+/// prompt widget. 4 variants total; the legacy 8-variant TUI-side
+/// `PermissionOptionKind` is being replaced by this in the unified
+/// prompt redesign (Task 23 in the plan deletes the legacy version).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionOptionKind {
+    /// Allow paths (✓ green icon).
+    Allow,
+    /// Deny paths (✗ red icon).
+    Deny,
+    /// Allow-with-edits path (✎ blue icon).
+    Edit,
+    /// Forge-synthesized "Tell Claude something else" escape hatch (… dim icon).
+    Notes,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PermissionOption {
     pub option_id: String,
     pub name: String,
-    pub description: Option<String>,
-    pub kind: String,
+    pub kind: PermissionOptionKind,
+    pub action: PermissionAction,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -63,4 +101,24 @@ impl PermissionDisplay {
 pub enum PermissionOutcome {
     Selected { option_id: String },
     Cancelled,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::permission::PermissionMode;
+    use crate::permissions::PermissionUpdate;
+
+    #[test]
+    fn permission_action_round_trips_through_serde() {
+        let allow_with_updates = PermissionAction::AllowWithUpdates {
+            updates: vec![PermissionUpdate::SetMode {
+                mode: PermissionMode::Auto,
+                destination: None,
+            }],
+        };
+        let json = serde_json::to_string(&allow_with_updates).expect("serialize");
+        let back: PermissionAction = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(allow_with_updates, back);
+    }
 }
