@@ -442,8 +442,8 @@ mod tests {
                 options: vec![types::PermissionOption {
                     option_id: "allow".to_owned(),
                     name: "Allow".to_owned(),
-                    description: None,
-                    kind: "allow_once".to_owned(),
+                    kind: types::permission_ui::PermissionOptionKind::Allow,
+                    action: types::permission_ui::PermissionAction::Allow,
                 }],
                 display: Some(types::PermissionDisplay {
                     title: Some("Claude wants to run tests".to_owned()),
