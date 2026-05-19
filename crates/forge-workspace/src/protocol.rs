@@ -35,7 +35,6 @@ use forge_primitives::permission_ui::{PermissionOutcome, PermissionRequest};
 use forge_primitives::plugins::{PluginsCliActionSuccess, PluginsInventorySnapshot};
 use forge_primitives::question::{QuestionOutcome, QuestionRequest};
 use forge_primitives::runtime::{AvailableModel, CurrentModel, ModeState, TerminalReason};
-use forge_primitives::usage::{UsageSnapshot, UsageSourceKind};
 use forge_primitives::{
     AccountInfo, ForgeAccountIdentity, ImageAttachment, McpOperationError, McpServerStatus,
     Message, SessionId, SessionListEntry,
@@ -240,12 +239,6 @@ pub enum SessionUpdate {
         method_name: String,
         method_description: String,
     },
-    AuthCompleted {
-        key: SessionKey,
-    },
-    LogoutCompleted {
-        key: SessionKey,
-    },
     SlashCommandError {
         key: SessionKey,
         message: String,
@@ -338,23 +331,6 @@ pub enum SessionUpdate {
         severity: ServiceSeverity,
         message: String,
     },
-    UsageRefreshStarted {
-        /// Bucket the in-flight fetch belongs to. Used by the TUI
-        /// reducer to route lifecycle flags onto the right
-        /// `UiSession.usage` slot even if the user switched sessions
-        /// mid-fetch. Dropped silently when the bucket no longer
-        /// exists (rare; session closed before the fetch landed).
-        key: SessionKey,
-    },
-    UsageSnapshotReceived {
-        key: SessionKey,
-        snapshot: UsageSnapshot,
-    },
-    UsageRefreshFailed {
-        key: SessionKey,
-        message: String,
-        source: UsageSourceKind,
-    },
     PluginsInventoryUpdated {
         cwd_raw: String,
         snapshot: PluginsInventorySnapshot,
@@ -387,8 +363,6 @@ impl SessionUpdate {
             | Self::SessionReplaced { key, .. }
             | Self::ConnectionFailed { key, .. }
             | Self::AuthRequired { key, .. }
-            | Self::AuthCompleted { key, .. }
-            | Self::LogoutCompleted { key }
             | Self::SlashCommandError { key, .. }
             | Self::PermissionRequest { key, .. }
             | Self::QuestionRequest { key, .. }
@@ -397,9 +371,6 @@ impl SessionUpdate {
             | Self::TurnCancelled { key }
             | Self::TurnError { key, .. }
             | Self::ForgeAccountIdentity { key, .. }
-            | Self::UsageRefreshStarted { key, .. }
-            | Self::UsageSnapshotReceived { key, .. }
-            | Self::UsageRefreshFailed { key, .. }
             | Self::SessionsListed { key, .. } => Some(key.clone()),
             Self::RuntimeReloadCompleted { session_id }
             | Self::RuntimeReloadFailed { session_id, .. }
@@ -447,12 +418,6 @@ impl std::fmt::Debug for SessionUpdate {
             }
             Self::AuthRequired { key, .. } => {
                 f.debug_struct("AuthRequired").field("key", key).finish_non_exhaustive()
-            }
-            Self::AuthCompleted { key, .. } => {
-                f.debug_struct("AuthCompleted").field("key", key).finish_non_exhaustive()
-            }
-            Self::LogoutCompleted { key } => {
-                f.debug_struct("LogoutCompleted").field("key", key).finish()
             }
             Self::SlashCommandError { key, .. } => {
                 f.debug_struct("SlashCommandError").field("key", key).finish_non_exhaustive()
@@ -519,15 +484,6 @@ impl std::fmt::Debug for SessionUpdate {
                 .field("count", &sessions.len())
                 .finish(),
             Self::ServiceStatus { .. } => f.debug_struct("ServiceStatus").finish_non_exhaustive(),
-            Self::UsageRefreshStarted { key } => {
-                f.debug_struct("UsageRefreshStarted").field("key", key).finish()
-            }
-            Self::UsageSnapshotReceived { key, .. } => {
-                f.debug_struct("UsageSnapshotReceived").field("key", key).finish_non_exhaustive()
-            }
-            Self::UsageRefreshFailed { key, .. } => {
-                f.debug_struct("UsageRefreshFailed").field("key", key).finish_non_exhaustive()
-            }
             Self::PluginsInventoryUpdated { cwd_raw, .. } => f
                 .debug_struct("PluginsInventoryUpdated")
                 .field("cwd_raw", cwd_raw)

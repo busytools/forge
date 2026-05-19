@@ -1,7 +1,6 @@
 use std::time::{Duration, SystemTime};
 
-use crate::app::{App, UsageSnapshot, UsageSourceKind, UsageWindow};
-use forge_workspace::SessionKey;
+use crate::app::{App, UsageSnapshot, UsageWindow};
 
 /// Pull the latest cached usage snapshot for the active session's
 /// account out of the workspace's account-usage pool, populating
@@ -52,39 +51,6 @@ fn window_eq(a: Option<&UsageWindow>, b: Option<&UsageWindow>) -> bool {
         }
         _ => false,
     }
-}
-
-pub(crate) fn apply_refresh_started_for(app: &mut App, key: &SessionKey) {
-    let Some(slot) = app.usage_mut_for(key) else {
-        return;
-    };
-    slot.in_flight = true;
-    slot.last_error = None;
-    slot.last_attempted_source = None;
-}
-
-pub(crate) fn apply_refresh_success_for(app: &mut App, key: &SessionKey, snapshot: UsageSnapshot) {
-    let Some(slot) = app.usage_mut_for(key) else {
-        return;
-    };
-    slot.last_attempted_source = Some(snapshot.source);
-    slot.snapshot = Some(snapshot);
-    slot.in_flight = false;
-    slot.last_error = None;
-}
-
-pub(crate) fn apply_refresh_failure_for(
-    app: &mut App,
-    key: &SessionKey,
-    message: String,
-    source: UsageSourceKind,
-) {
-    let Some(slot) = app.usage_mut_for(key) else {
-        return;
-    };
-    slot.in_flight = false;
-    slot.last_error = Some(message);
-    slot.last_attempted_source = Some(source);
 }
 
 pub(crate) fn reset_for_session_change(app: &mut App) {

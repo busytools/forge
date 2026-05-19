@@ -145,12 +145,6 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         SessionUpdate::SlashCommandError { key, message } => {
             session::apply_session_update_slash_command_error(app, &key, &message);
         }
-        SessionUpdate::AuthCompleted { key } => {
-            session::apply_session_update_auth_completed(app, &key);
-        }
-        SessionUpdate::LogoutCompleted { key } => {
-            session::apply_session_update_logout_completed(app, &key);
-        }
         SessionUpdate::ServiceStatus { severity, message } => {
             session::apply_session_update_service_status(app, severity, &message);
         }
@@ -226,15 +220,6 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         }
         SessionUpdate::TurnError { key, message, class, terminal_reason } => {
             turn::apply_session_update_turn_error(app, &key, &message, class, terminal_reason);
-        }
-        SessionUpdate::UsageRefreshStarted { key } => {
-            crate::app::usage::apply_refresh_started_for(app, &key);
-        }
-        SessionUpdate::UsageSnapshotReceived { key, snapshot } => {
-            crate::app::usage::apply_refresh_success_for(app, &key, snapshot);
-        }
-        SessionUpdate::UsageRefreshFailed { key, message, source } => {
-            crate::app::usage::apply_refresh_failure_for(app, &key, message, source);
         }
         SessionUpdate::PluginsInventoryUpdated { cwd_raw, snapshot, claude_path } => {
             dispatch_if_cwd_matches(app, &cwd_raw, "plugins_inventory_dropped", |app| {

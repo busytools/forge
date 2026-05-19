@@ -1,4 +1,3 @@
-use super::super::connect::{SessionStartReason, start_new_session};
 use super::super::state::RecentSessionInfo;
 use super::super::{
     App, AppStatus, ChatMessage, LoginHint, MessageBlock, MessageRole, SystemSeverity, TextBlock,
@@ -472,148 +471,6 @@ pub(super) fn handle_slash_command_error_event(app: &mut App, session_key: &Sess
     *app.resuming_session_id_mut() = None;
 }
 
-pub(super) fn handle_auth_completed_event(app: &mut App, session_key: &SessionKey) {
-    if app.active_session_key.as_ref() != Some(session_key) {
-        // Auth completed for a non-active session is a degenerate
-        // case — the user must have triggered /login from a session
-        // that's since been backgrounded. Log and drop.
-        tracing::warn!(
-            target: crate::logging::targets::APP_AUTH,
-            event_name = "auth_completed_background_dropped",
-            message = "auth-completed event ignored for a non-active session",
-            outcome = "dropped",
-            session_key = %session_key.as_str(),
-            reason = "non_active_session",
-        );
-        return;
-    }
-    *app.login_hint_mut() = None;
-    *app.pending_command_label_mut() = Some("Starting session...".to_owned());
-    *app.pending_command_ack_mut() = None;
-    push_system_message_with_severity(
-        app,
-        Some(SystemSeverity::Info),
-        "Authentication successful. Starting new session...",
-    );
-    app.force_redraw = true;
-    tracing::info!(
-        target: crate::logging::targets::APP_AUTH,
-        event_name = "login_completed",
-        message = "login completed and session restart requested",
-        outcome = "success",
-    );
-
-    if let Err(e) = start_new_session(app, SessionStartReason::Login) {
-        tracing::error!(
-            target: crate::logging::targets::APP_AUTH,
-            event_name = "login_session_restart_failed",
-            message = "failed to start session after login",
-            outcome = "failure",
-            error_message = %e,
-        );
-        clear_pending_command(app);
-        push_system_message_with_severity(
-            app,
-            Some(SystemSeverity::Error),
-            &format!("Failed to start session after login: {e}"),
-        );
-    }
-}
-
-pub(super) fn handle_logout_completed_event(app: &mut App, session_key: &SessionKey) {
-    if app.active_session_key.as_ref() != Some(session_key) {
-        bump_bucket_session_scope_epoch(app, session_key);
-        let Some(session) = app.session_mut(session_key) else {
-            tracing::warn!(
-                target: crate::logging::targets::APP_AUTH,
-                event_name = "logout_completed_dropped",
-                message = "logout completed dropped for an unknown session",
-                outcome = "dropped",
-                session_key = %session_key.as_str(),
-                reason = "unknown_session",
-            );
-            return;
-        };
-        // Background-session logout: clear the bucket's auth +
-        // identity state. Skip App-global UI restart (force_redraw,
-        // pending_command). Foreground switching to that bucket
-        // will surface the auth-required hint via AuthRequired.
-        session.key = None;
-        session.session_id = None;
-        session.account_info = None;
-        session.current_model = None;
-        session.mode = None;
-        session.fast_mode_state = model::FastModeState::Off;
-        session.session_usage = crate::app::state::SessionUsageState::default();
-        session.oauth_credentials = None;
-        session.mcp = super::super::McpState::default();
-        let _ = session;
-        // Mirror session_id reset onto the workspace's DomainSession
-        // so AgentHandle dispatch stops routing to a no-longer-valid
-        // session id.
-        if let Some(workspace) = app.workspace.as_ref() {
-            workspace.set_session_id_in_domain(session_key, None);
-        }
-        tracing::info!(
-            target: crate::logging::targets::APP_AUTH,
-            event_name = "logout_completed_background",
-            message = "logout cleared background session state",
-            outcome = "success",
-            session_key = %session_key.as_str(),
-        );
-        return;
-    }
-    // Clear the session and start a new one. The bridge now checks auth
-    // during initialization and will fire AuthRequired immediately.
-    app.bump_session_scope_epoch();
-    app.clear_session_runtime_identity();
-    app.set_account_info(None);
-    app.set_oauth_credentials(None);
-    *app.mcp_mut() = super::super::McpState::default();
-    crate::app::usage::reset_for_session_change(app);
-    app.force_redraw = true;
-    tracing::info!(
-        target: crate::logging::targets::APP_AUTH,
-        event_name = "logout_completed",
-        message = "logout cleared active session state",
-        outcome = "success",
-    );
-
-    if app.has_active_agent() {
-        *app.pending_command_label_mut() = Some("Starting session...".to_owned());
-        *app.pending_command_ack_mut() = None;
-        if let Err(e) = start_new_session(app, SessionStartReason::Logout) {
-            tracing::error!(
-                target: crate::logging::targets::APP_AUTH,
-                event_name = "logout_session_restart_failed",
-                message = "failed to start replacement session after logout",
-                outcome = "failure",
-                error_message = %e,
-            );
-            clear_pending_command(app);
-            push_system_message_with_severity(
-                app,
-                Some(SystemSeverity::Error),
-                &format!("Failed to start new session after logout: {e}"),
-            );
-        }
-    } else {
-        tracing::warn!(
-            target: crate::logging::targets::APP_AUTH,
-            event_name = "logout_session_restart_unavailable",
-            message = "logout completed without a connection to start a replacement session",
-            outcome = "blocked",
-            reason = "missing_connection",
-        );
-        clear_pending_command(app);
-        push_system_message_with_severity(
-            app,
-            Some(SystemSeverity::Warning),
-            "Logged out, but no connection available to start a new session.",
-        );
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 pub(super) fn handle_session_replaced_event(
     app: &mut App,
@@ -957,14 +814,6 @@ pub(super) fn apply_session_update_slash_command_error(
     message: &str,
 ) {
     handle_slash_command_error_event(app, key, message);
-}
-
-pub(super) fn apply_session_update_auth_completed(app: &mut App, key: &SessionKey) {
-    handle_auth_completed_event(app, key);
-}
-
-pub(super) fn apply_session_update_logout_completed(app: &mut App, key: &SessionKey) {
-    handle_logout_completed_event(app, key);
 }
 
 pub(super) fn apply_session_update_service_status(

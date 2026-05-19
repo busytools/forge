@@ -2121,75 +2121,6 @@ mod tests {
     }
 
     #[test]
-    fn usage_routes_to_targeted_bucket_not_active_bucket() {
-        // Regression for the wrong-account-bars bug: each `UiSession`
-        // bucket owns its own `UsageState`. A snapshot delivered for
-        // bucket B must NOT overwrite bucket A's snapshot, even if
-        // A is the currently active session at delivery time.
-        let mut app = make_test_app();
-        let key_a = forge_workspace::SessionKey::from_str_for_test("sess-a");
-        let key_b = forge_workspace::SessionKey::from_str_for_test("sess-b");
-        app.sessions.insert(key_a.clone(), crate::app::session::UiSession::new(key_a.clone()));
-        app.sessions.insert(key_b.clone(), crate::app::session::UiSession::new(key_b.clone()));
-        app.active_session_key = Some(key_a.clone());
-
-        // Snapshot targets B. The active bucket is A.
-        let snapshot_for_b = UsageSnapshot {
-            source: UsageSourceKind::Oauth,
-            fetched_at: std::time::SystemTime::now(),
-            five_hour: None,
-            seven_day: None,
-            seven_day_opus: None,
-            seven_day_sonnet: None,
-            extra_usage: None,
-        };
-        apply_session_update(
-            &mut app,
-            SessionUpdate::UsageSnapshotReceived {
-                key: key_b.clone(),
-                snapshot: snapshot_for_b.clone(),
-            },
-        );
-
-        // A (active) untouched, B got the data.
-        assert!(
-            app.usage().snapshot.is_none(),
-            "active bucket A must not be touched by a snapshot targeted at B"
-        );
-        let bucket_b = app.sessions.get(&key_b).expect("bucket b");
-        assert!(bucket_b.usage.snapshot.is_some(), "bucket B received its snapshot");
-    }
-
-    #[test]
-    fn usage_refresh_result_for_unknown_session_key_is_dropped() {
-        // `usage` lives on `UiSession`, keyed by `SessionKey`. A
-        // result targeting a key that no longer exists in
-        // `app.sessions` (session closed before the fetch landed)
-        // drops silently — no slot to write to.
-        let mut app = make_test_app();
-        app.set_session_id(Some(model::SessionId::new("active-session")));
-
-        apply_session_update(
-            &mut app,
-            SessionUpdate::UsageSnapshotReceived {
-                key: forge_workspace::SessionKey::from_session_id("unknown-bucket"),
-                snapshot: UsageSnapshot {
-                    source: UsageSourceKind::Oauth,
-                    fetched_at: std::time::SystemTime::now(),
-                    five_hour: None,
-                    seven_day: None,
-                    seven_day_opus: None,
-                    seven_day_sonnet: None,
-                    extra_usage: None,
-                },
-            },
-        );
-
-        // Active bucket untouched — the result targeted a different key.
-        assert!(app.usage().snapshot.is_none());
-    }
-
-    #[test]
     fn stale_plugin_inventory_result_for_old_cwd_is_ignored() {
         let mut app = make_test_app();
         app.set_cwd_raw("/current");
@@ -2937,31 +2868,6 @@ mod tests {
             panic!("expected tool call block");
         };
         assert_eq!(tc.status, model::ToolCallStatus::Failed);
-        assert!(app.session_id().is_none());
-        assert!(app.current_model().is_none());
-        assert!(app.mode().is_none());
-        assert_eq!(app.fast_mode_state(), model::FastModeState::Off);
-    }
-
-    #[test]
-    fn logout_completed_clears_session_runtime_identity_caches() {
-        let mut app = make_test_app();
-        app.set_session_id(Some(model::SessionId::new("session-x")));
-        app.set_current_model(Some(test_current_model("claude-old")));
-        app.set_mode(Some(crate::app::ModeState {
-            current_mode_id: "plan".into(),
-            current_mode_name: "Plan".into(),
-            available_modes: vec![crate::app::ModeInfo {
-                id: "plan".into(),
-                name: "Plan".into(),
-                description: None,
-            }],
-        }));
-        app.set_fast_mode_state(model::FastModeState::On);
-
-        let session_key = active_session_key(&app);
-        apply_session_update(&mut app, SessionUpdate::LogoutCompleted { key: session_key });
-
         assert!(app.session_id().is_none());
         assert!(app.current_model().is_none());
         assert!(app.mode().is_none());
