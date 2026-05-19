@@ -458,7 +458,7 @@ pub fn visual_line_count(app: &mut App, area_width: u16) -> u16 {
         && let Some(prompt) = session.prompt_queue.front()
     {
         let queue_depth = session.prompt_queue.len();
-        return hint + crate::ui::prompt::prompt_required_lines(prompt, queue_depth);
+        return hint + crate::ui::prompt::prompt_required_lines(prompt, queue_depth, area_width);
     }
 
     // Content width sits inside the box's 1-col left/right borders.

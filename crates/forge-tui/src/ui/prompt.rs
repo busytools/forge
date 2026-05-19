@@ -8,7 +8,8 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Widget};
+use ratatui::text::Text;
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Widget, Wrap};
 
 /// Render the prompt into `area` (the chat-input box's rect). The
 /// orange thick chrome is drawn here too — the caller does NOT render
@@ -24,17 +25,23 @@ pub fn render(area: Rect, buf: &mut Buffer, prompt: &PromptState, queue_depth: u
         return;
     }
     let lines = build_lines(prompt, queue_depth);
-    Paragraph::new(lines).render(inner, buf);
+    Paragraph::new(lines).wrap(Wrap { trim: false }).render(inner, buf);
 }
 
 /// Total rows the prompt widget needs when rendered for `prompt` at
-/// `queue_depth`. Includes the inner content + 2 chrome rows (top
-/// border + bottom border). Used by `ui::input::visual_line_count`
-/// to grow the dock to fit the morphed prompt instead of clipping
-/// it to the chat-input editor's default height.
-pub fn prompt_required_lines(prompt: &PromptState, queue_depth: usize) -> u16 {
-    let inner = build_lines(prompt, queue_depth).len();
-    u16::try_from(inner.saturating_add(2)).unwrap_or(u16::MAX)
+/// `queue_depth` inside an area of `area_width` columns. Includes the
+/// inner content (after soft-wrapping at the inner width) + 2 chrome
+/// rows (top border + bottom border). Used by
+/// `ui::input::visual_line_count` to grow the dock to fit the morphed
+/// prompt instead of clipping it to the chat-input editor's default
+/// height.
+pub fn prompt_required_lines(prompt: &PromptState, queue_depth: usize, area_width: u16) -> u16 {
+    let inner_width = area_width.saturating_sub(2).max(1);
+    let lines = build_lines(prompt, queue_depth);
+    let wrapped = Paragraph::new(Text::from(lines))
+        .wrap(Wrap { trim: false })
+        .line_count(inner_width);
+    u16::try_from(wrapped.saturating_add(2)).unwrap_or(u16::MAX)
 }
 
 fn build_lines(prompt: &PromptState, queue_depth: usize) -> Vec<Line<'static>> {
