@@ -631,7 +631,11 @@ fn handle_prompt_suggestion_key(app: &mut App, key: KeyEvent) -> bool {
 }
 
 fn handle_mode_cycle_key(app: &mut App, key: KeyEvent) -> bool {
-    if !matches!(key.code, KeyCode::BackTab) {
+    // Accept both legacy `BackTab` and kitty-keyboard-protocol
+    // `Tab + SHIFT` (Ghostty + some xterm builds emit the latter).
+    let is_shift_tab = matches!(key.code, KeyCode::BackTab)
+        || (matches!(key.code, KeyCode::Tab) && key.modifiers.contains(KeyModifiers::SHIFT));
+    if !is_shift_tab {
         return false;
     }
     let Some(mode) = app.mode() else {

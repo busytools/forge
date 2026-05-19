@@ -256,17 +256,22 @@ pub fn resolve_current_model_from_inputs(
         resolved_id.as_str()
     };
 
-    // Prefer the catalogue's `display_name` when we matched against
-    // the initialize control_response — that's the human-friendly
-    // string the CLI ships (e.g. "Claude Opus 4.7"). Aliases like
-    // "opus[1m]" don't carry a version number, and the humanize
-    // fallback can only echo what's in the id, so the catalog
-    // lookup is the only path to a versioned display name on the
-    // initial Connected event (before system/init lands).
-    let display_name = catalog
-        .map(|m| m.display_name.clone())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| humanize_model_id(runtime_display_id));
+    // Prefer the catalogue's `display_name` when it carries version
+    // info (e.g. "Claude Opus 4.7"). Recent claude CLI builds ship
+    // a short displayName ("Opus") without a version number, so when
+    // the catalogue value lacks any digit we fall back to
+    // humanize_model_id which parses the version off the resolved id
+    // (e.g. "claude-opus-4-7-20251022" -> "Opus 4.7").
+    let catalog_name = catalog.map(|m| m.display_name.clone()).filter(|s| !s.is_empty());
+    let catalog_has_version =
+        catalog_name.as_deref().is_some_and(|s| s.chars().any(|c| c.is_ascii_digit()));
+    let display_name = if catalog_has_version {
+        catalog_name.unwrap_or_else(|| humanize_model_id(runtime_display_id))
+    } else {
+        let humanized = humanize_model_id(runtime_display_id);
+        let humanized_has_version = humanized.chars().any(|c| c.is_ascii_digit());
+        if humanized_has_version { humanized } else { catalog_name.unwrap_or(humanized) }
+    };
 
     CurrentModel {
         requested_id: requested_id.map(str::to_owned),
@@ -392,6 +397,47 @@ mod tests {
         assert_eq!(cm.resolved_id, "claude-sonnet-4-6");
         assert_eq!(cm.display_name_short, "Sonnet 4.6");
         assert!(cm.is_authoritative);
+    }
+
+    #[test]
+    fn catalog_short_name_augmented_with_version_from_resolved_id() {
+        // Recent claude CLI builds ship `displayName: "Opus"` without a
+        // version number. When the resolved id carries version info,
+        // prefer humanize_model_id so the display name renders as
+        // "Opus 4.7" rather than the bare family name.
+        let catalog = vec![AvailableModel {
+            id: "claude-opus-4-7-20251022".to_owned(),
+            display_name: "Opus".to_owned(),
+            description: None,
+            supports_effort: false,
+            supported_effort_levels: vec![],
+            supports_adaptive_thinking: None,
+            supports_fast_mode: None,
+            supports_auto_mode: None,
+        }];
+        let cm =
+            resolve_current_model_from_inputs("claude-opus-4-7-20251022", None, None, &catalog);
+        assert_eq!(cm.display_name_short, "Opus 4.7");
+        assert_eq!(cm.display_name_long, "Opus 4.7");
+    }
+
+    #[test]
+    fn catalog_versioned_name_kept_as_is() {
+        // When the catalog entry already has a version, keep it
+        // verbatim — don't second-guess the CLI.
+        let catalog = vec![AvailableModel {
+            id: "claude-opus-4-7-20251022".to_owned(),
+            display_name: "Claude Opus 4.7".to_owned(),
+            description: None,
+            supports_effort: false,
+            supported_effort_levels: vec![],
+            supports_adaptive_thinking: None,
+            supports_fast_mode: None,
+            supports_auto_mode: None,
+        }];
+        let cm =
+            resolve_current_model_from_inputs("claude-opus-4-7-20251022", None, None, &catalog);
+        assert_eq!(cm.display_name_short, "Claude Opus 4.7");
     }
 
     #[test]
