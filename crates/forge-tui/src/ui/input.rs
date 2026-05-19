@@ -454,11 +454,11 @@ pub fn visual_line_count(app: &mut App, area_width: u16) -> u16 {
     // Prompt-mode short-circuit: dock is morphed, height comes from
     // the prompt widget's required lines (header + options + footer +
     // padding + borders).
-    if let Some(session) = app.active_session() {
-        if let Some(prompt) = session.prompt_queue.front() {
-            let queue_depth = session.prompt_queue.len();
-            return hint + crate::ui::prompt::prompt_required_lines(prompt, queue_depth);
-        }
+    if let Some(session) = app.active_session()
+        && let Some(prompt) = session.prompt_queue.front()
+    {
+        let queue_depth = session.prompt_queue.len();
+        return hint + crate::ui::prompt::prompt_required_lines(prompt, queue_depth);
     }
 
     // Content width sits inside the box's 1-col left/right borders.

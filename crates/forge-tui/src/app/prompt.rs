@@ -256,7 +256,6 @@ pub fn handle_key_option_picker(prompt: &mut PromptState, key: KeyEvent) -> Prom
     }
 }
 
-/// Handle a key while the prompt is in [`PromptMode::NotesEditor`].
 // `handle_key_notes_editor` is gone: the canonical `App.input` editor
 // now serves as the notes input. See `dispatch_key` above for the
 // routing — when focused option is `PermissionOptionKind::Notes`,
@@ -320,10 +319,7 @@ pub fn dispatch_key(app: &mut crate::app::App, key: KeyEvent) -> bool {
                 // Route printable chars, Backspace, Delete, Left/Right,
                 // Home/End, paste bursts, etc. straight to the canonical
                 // chat-input editor. tui_textarea handles cursor + unicode.
-                let _ = app
-                    .input_mut()
-                    .editor_mut()
-                    .input(crossterm::event::Event::Key(key));
+                let _ = app.input_mut().editor_mut().input(crossterm::event::Event::Key(key));
                 return true;
             }
         }
