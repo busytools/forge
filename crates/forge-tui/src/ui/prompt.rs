@@ -7,9 +7,9 @@ use forge_primitives::permission_ui::PermissionOptionKind;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
 use ratatui::text::Text;
-use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Widget, Wrap};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, BorderType, Borders, Padding, Paragraph, Widget, Wrap};
 
 /// Render the prompt into `area` (the chat-input box's rect). The
 /// orange thick chrome is drawn here too — the caller does NOT render
@@ -18,7 +18,8 @@ pub fn render(area: Rect, buf: &mut Buffer, prompt: &PromptState, queue_depth: u
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Thick)
-        .border_style(Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD));
+        .border_style(Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD))
+        .padding(Padding::horizontal(2));
     let inner = block.inner(area);
     block.render(area, buf);
     if inner.width == 0 || inner.height == 0 {
@@ -36,11 +37,11 @@ pub fn render(area: Rect, buf: &mut Buffer, prompt: &PromptState, queue_depth: u
 /// prompt instead of clipping it to the chat-input editor's default
 /// height.
 pub fn prompt_required_lines(prompt: &PromptState, queue_depth: usize, area_width: u16) -> u16 {
-    let inner_width = area_width.saturating_sub(2).max(1);
+    // Block borders eat 2 cols; Padding::horizontal(2) eats 4 more.
+    let inner_width = area_width.saturating_sub(6).max(1);
     let lines = build_lines(prompt, queue_depth);
-    let wrapped = Paragraph::new(Text::from(lines))
-        .wrap(Wrap { trim: false })
-        .line_count(inner_width);
+    let wrapped =
+        Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }).line_count(inner_width);
     u16::try_from(wrapped.saturating_add(2)).unwrap_or(u16::MAX)
 }
 
@@ -52,7 +53,7 @@ fn build_lines(prompt: &PromptState, queue_depth: usize) -> Vec<Line<'static>> {
     // Queue-depth indicator (spec §3.7).
     if queue_depth > 1 {
         lines.push(Line::from(vec![Span::styled(
-            format!("  ▼ {} more pending after this", queue_depth - 1),
+            format!("▼ {} more pending after this", queue_depth - 1),
             Style::default().fg(theme::DIM),
         )]));
     }
@@ -94,26 +95,23 @@ fn build_header_lines(prompt: &PromptState) -> Vec<Line<'static>> {
                 .as_deref()
                 .filter(|t| !t.is_empty() && !t.eq_ignore_ascii_case(tool_name))
                 .map_or(header_text, String::from);
-            out.push(Line::from(vec![
-                Span::raw("  "),
-                Span::styled(
-                    title_owned,
-                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
-                ),
-            ]));
+            out.push(Line::from(Span::styled(
+                title_owned,
+                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            )));
             // Yellow ⚠ decision_reason.
             if let Some(reason) = decision_reason.as_deref().filter(|r| !r.is_empty()) {
-                out.push(Line::from(vec![
-                    Span::raw("  "),
-                    Span::styled(format!("⚠ {reason}"), Style::default().fg(Color::Yellow)),
-                ]));
+                out.push(Line::from(Span::styled(
+                    format!("⚠ {reason}"),
+                    Style::default().fg(Color::Yellow),
+                )));
             }
             // Dim display_description.
             if let Some(desc) = display_description.as_deref().filter(|d| !d.is_empty()) {
-                out.push(Line::from(vec![
-                    Span::raw("  "),
-                    Span::styled(desc.to_owned(), Style::default().fg(theme::DIM)),
-                ]));
+                out.push(Line::from(Span::styled(
+                    desc.to_owned(),
+                    Style::default().fg(theme::DIM),
+                )));
             }
             out
         }
@@ -125,7 +123,6 @@ fn build_header_lines(prompt: &PromptState) -> Vec<Line<'static>> {
                 String::new()
             };
             out.push(Line::from(vec![
-                Span::raw("  "),
                 Span::styled("? ", Style::default().fg(theme::RUST_ORANGE)),
                 Span::styled(
                     format!("{}{}", q.header, progress),
@@ -133,10 +130,10 @@ fn build_header_lines(prompt: &PromptState) -> Vec<Line<'static>> {
                 ),
             ]));
             for row in q.question.lines() {
-                out.push(Line::from(vec![
-                    Span::raw("  "),
-                    Span::styled(row.to_owned(), Style::default().fg(Color::White)),
-                ]));
+                out.push(Line::from(Span::styled(
+                    row.to_owned(),
+                    Style::default().fg(Color::White),
+                )));
             }
             out
         }
@@ -169,8 +166,7 @@ fn build_option_lines(prompt: &PromptState) -> Vec<Line<'static>> {
         } else {
             Style::default().fg(Color::Gray)
         };
-        let mut spans: Vec<Span<'static>> =
-            vec![Span::raw("  "), Span::styled(pointer.to_string(), pointer_style)];
+        let mut spans: Vec<Span<'static>> = vec![Span::styled(pointer.to_string(), pointer_style)];
         if is_multi {
             let checkbox = if is_toggled { "[x] " } else { "[ ] " };
             let checkbox_style = if is_toggled {
@@ -190,8 +186,9 @@ fn build_option_lines(prompt: &PromptState) -> Vec<Line<'static>> {
             && let Some(q_opt) = q_opts.get(i)
             && let Some(desc) = q_opt.description.as_deref().filter(|d| !d.is_empty())
         {
+            // 4-space indent to align with option name (past ▸ + ✓ + space).
             lines.push(Line::from(vec![
-                Span::raw("      "),
+                Span::raw("    "),
                 Span::styled(desc.to_owned(), Style::default().fg(theme::DIM)),
             ]));
         }
@@ -205,18 +202,12 @@ fn build_option_lines(prompt: &PromptState) -> Vec<Line<'static>> {
         && let Some(preview) = q_opt.preview.as_deref().filter(|p| !p.trim().is_empty())
     {
         lines.push(Line::default());
-        lines.push(Line::from(vec![
-            Span::raw("  "),
-            Span::styled(
-                "Preview:".to_string(),
-                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
-            ),
-        ]));
+        lines.push(Line::from(Span::styled(
+            "Preview:".to_string(),
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+        )));
         for row in preview.lines() {
-            lines.push(Line::from(vec![
-                Span::raw("  "),
-                Span::styled(row.to_owned(), Style::default().fg(theme::DIM)),
-            ]));
+            lines.push(Line::from(Span::styled(row.to_owned(), Style::default().fg(theme::DIM))));
         }
     }
 
@@ -227,12 +218,12 @@ fn build_footer_line(prompt: &PromptState) -> Line<'static> {
     let text = match prompt.mode {
         PromptMode::OptionPicker => {
             if prompt.is_multi_select() {
-                "  space toggle  ↑↓ move  ⏎ submit  esc cancel"
+                "space toggle  ↑↓ move  ⏎ submit  esc cancel"
             } else {
-                "  ↑↓ select  ⏎ confirm  esc reject"
+                "↑↓ select  ⏎ confirm  esc reject"
             }
         }
-        PromptMode::EditingInput => "  ⏎ submit  esc back to options",
+        PromptMode::EditingInput => "⏎ submit  esc back to options",
     };
     Line::from(Span::styled(text.to_owned(), Style::default().fg(theme::DIM)))
 }
@@ -388,6 +379,52 @@ mod tests {
         let out = render_to_string(&prompt, 1, 80, 20);
         assert!(out.contains("First preview"), "focused-option preview should render");
         assert!(!out.contains("Second preview"), "non-focused preview should NOT render");
+    }
+
+    #[test]
+    fn long_question_body_wraps_with_aligned_continuation_indent() {
+        // Single-line long body (no `\n`) must soft-wrap across multiple
+        // visual rows whose leading non-blank column matches the first
+        // row's — i.e. Block::Padding::horizontal(2) keeps every wrapped
+        // continuation indented to the same left edge.
+        let mut request = make_question_request(false);
+        request.prompt.question =
+            "AAA BBB CCC DDD EEE FFF GGG HHH III JJJ KKK LLL MMM NNN OOO PPP QQQ RRR SSS TTT UUU \
+             VVV WWW XXX YYY ZZZ aaa bbb ccc ddd eee fff ggg hhh iii jjj kkk lll mmm nnn ooo ppp \
+             qqq rrr sss ttt uuu vvv www xxx yyy zzz 111 222 333 444 555 666 777 888 999 000."
+                .to_string();
+        let prompt = PromptState::from_question("tc-q".into(), request);
+        let out = render_to_string(&prompt, 1, 60, 24);
+        let lines: Vec<&str> = out.lines().collect();
+        // A body row is any row containing one of the unique upper-case
+        // word tokens AAA / BBB / ... ZZZ used in the question text.
+        // AAA / NNN / aaa land on three distinct visual rows at width 60.
+        let body_rows: Vec<&&str> = lines
+            .iter()
+            .filter(|l| l.contains("AAA") || l.contains("NNN") || l.contains("aaa"))
+            .collect();
+        assert!(
+            body_rows.len() >= 3,
+            "expected the long body to wrap across 3+ visual rows at width 60; got:\n{out}"
+        );
+        let leading_cols: Vec<usize> = body_rows
+            .iter()
+            .map(|l| {
+                l.chars()
+                    .enumerate()
+                    .find(|(_, c)| !matches!(*c, '┃' | ' '))
+                    .map_or(usize::MAX, |(i, _)| i)
+            })
+            .collect();
+        assert!(
+            leading_cols.iter().all(|&c| c == leading_cols[0]),
+            "wrapped continuation rows must share the same leading column; got {leading_cols:?} for:\n{out}"
+        );
+        assert_eq!(
+            leading_cols[0], 3,
+            "body should start at col 3 (border 0 + Padding::horizontal(2) cols 1-2); got col {} for:\n{out}",
+            leading_cols[0]
+        );
     }
 
     #[test]
