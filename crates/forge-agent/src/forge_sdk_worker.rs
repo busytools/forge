@@ -660,7 +660,41 @@ async fn run_ask_user_question(
                     .filter(|opt| selected_option_ids.iter().any(|id| id == &opt.option_id))
                     .cloned()
                     .collect();
-                if selected.is_empty() || (!prompt.multi_select && selected.len() != 1) {
+                let notes_provided = annotation
+                    .as_ref()
+                    .and_then(|a| a.notes.as_deref())
+                    .is_some_and(|n| !n.trim().is_empty());
+                if selected.is_empty() {
+                    // "Tell Claude something else" path: no canonical
+                    // option matched, but if the user supplied notes the
+                    // answer is "Other" with the free-text in
+                    // annotations (matches Anthropic's schema where
+                    // Other is the always-available custom-text option).
+                    if notes_provided {
+                        answers.insert(
+                            prompt.question.clone(),
+                            serde_json::Value::String("Other".to_owned()),
+                        );
+                        if let Some(ann) = annotation {
+                            match serde_json::to_value(&ann) {
+                                Ok(v) => {
+                                    annotations.insert(prompt.question.clone(), v);
+                                }
+                                Err(err) => {
+                                    tracing::warn!(
+                                        target: "forge_agent::forge_sdk_worker",
+                                        question = %prompt.question,
+                                        error = %err,
+                                        "failed to serialise question annotation; dropping"
+                                    );
+                                }
+                            }
+                        }
+                        continue;
+                    }
+                    return PermissionDecision::deny("Question answer was invalid");
+                }
+                if !prompt.multi_select && selected.len() != 1 {
                     return PermissionDecision::deny("Question answer was invalid");
                 }
                 let answer =
