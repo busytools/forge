@@ -25,8 +25,7 @@ test:
 test-all:
     cargo nextest run
 
-# Run both wire-conformance replays (sdk_wire + daemon_wire) against every
-# committed baseline.
+# Run wire-conformance replays against every committed baseline.
 conformance:
     cargo nextest run -p forge-test-harness
 
@@ -38,13 +37,6 @@ conformance:
 conformance-capture-sdk test:
     FORGE_WIRE_CAPTURE=1 cargo nextest run -p forge-test-harness \
         --no-capture --run-ignored only sdk_{{test}}
-
-# Live-capture a single daemon-wire conformance scenario against a real
-# forge-daemon. Promote captured trace into
-# `baselines/daemon/<VERSION>/<scenario>.jsonl` to lock the baseline.
-conformance-capture-daemon test:
-    FORGE_DAEMON_WIRE_CAPTURE=1 cargo nextest run -p forge-test-harness \
-        --no-capture --run-ignored only daemon_{{test}}
 
 # Build docs with warnings as errors (matches CI's `cargo doc --workspace`
 # step so a broken intra-doc link in any workspace crate fails locally,

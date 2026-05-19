@@ -244,13 +244,6 @@ pub enum ToolCallContent {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PlanEntry {
-    pub content: String,
-    pub status: String,
-    pub active_form: String,
-}
-
 #[cfg(test)]
 mod tests {
     use super::{

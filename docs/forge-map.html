@@ -1119,23 +1119,16 @@ chat continues here…
       <dd><code>↑</code> / <code>↓</code> / <code>←</code> / <code>→</code> — move option focus (wraps top↔bottom)<br>
       <code>Home</code> / <code>End</code> — jump to first / last option<br>
       <code>Space</code> — multi-select only: toggle current option<br>
-      <code>Enter</code> — Notes-kind option → enter notes editor (Consumed); Edit-kind option → enter editing-input mode (Consumed); otherwise → Submit<br>
+      <code>Enter</code> — Notes-kind option → Submit (notes text routed from canonical <code>App.input</code> editor); Edit-kind option → enter editing-input mode (Consumed); otherwise → Submit<br>
       <code>Esc</code> — Cancel<br>
-      <code>Tab</code> / <code>BackTab</code> / printable chars / <code>Backspace</code> / <code>Delete</code> — Consumed (swallowed; do nothing — no focus reclaim path)</dd>
-
-      <dt>notes-editor mode</dt>
-      <dd>Printable chars insert into <code>prompt.notes</code> at the cursor<br>
-      <code>Backspace</code> / <code>Delete</code> / <code>←</code> / <code>→</code> / <code>Home</code> / <code>End</code> — standard single-line text edit<br>
-      <code>↑</code> / <code>↓</code> — exit editor AND move option focus<br>
-      <code>Enter</code> — Submit (with notes attached as <code>annotation.notes</code> for Question, as <code>deny(notes)</code> reason for Permission)<br>
-      <code>Esc</code> — exit editor, return to option-picker. In multi-select, un-toggles the notes-option if notes is empty (avoids the awkward "selected but empty" state)</dd>
+      <code>Tab</code> / <code>BackTab</code> / printable chars / <code>Backspace</code> / <code>Delete</code> — when focused option is Notes-kind, route to <code>App.input</code> editor (canonical chat-input handler — handles unicode, paste bursts, SuperWhisper insertions, cursor navigation). Otherwise Consumed (swallowed).</dd>
     </dl>
 
     <h5>State + dispatch</h5>
     <dl>
       <dt>renderer</dt><dd><code>crates/forge-tui/src/ui/prompt.rs::render</code> — draws the orange thick chrome itself; callers don't render a separate block.</dd>
       <dt>state</dt><dd><code>crates/forge-tui/src/app/prompt.rs::PromptState</code> (per-prompt) on <code>UiSession.prompt_queue: VecDeque&lt;PromptState&gt;</code> (per-session FIFO).</dd>
-      <dt>keymap</dt><dd><code>crates/forge-tui/src/app/prompt.rs::handle_key_option_picker</code> / <code>handle_key_notes_editor</code> / <code>handle_key_editing_input</code>. Top-level dispatch via <code>dispatch_key</code> called from <code>crates/forge-tui/src/app/keys.rs::dispatch_key_by_focus</code> when the active session has a queued prompt.</dd>
+      <dt>keymap</dt><dd><code>crates/forge-tui/src/app/prompt.rs::handle_key_option_picker</code> / <code>handle_key_editing_input</code>. Top-level dispatch via <code>dispatch_key</code> called from <code>crates/forge-tui/src/app/keys.rs::dispatch_key_by_focus</code> when the active session has a queued prompt. Notes-kind keystrokes route to <code>App.input</code> editor directly.</dd>
       <dt>response dispatch</dt><dd><code>crates/forge-tui/src/app/prompt.rs::submit_prompt</code> / <code>cancel_prompt</code> — builds <code>PermissionOutcome</code> / <code>QuestionOutcome</code> from the picked option's <code>action</code> + notes + edited_input, dispatches via <code>events::turn::dispatch_permission_outcome</code> / <code>dispatch_question_outcome</code>.</dd>
       <dt>option construction</dt><dd><code>crates/forge-agent/src/forge_sdk_worker.rs::build_permission_options</code> — derives contextual options from <code>ctx.suggestions</code>; appends "Allow with edits" for editable tools and "Tell Claude something else" universally.</dd>
       <dt>chat-input draft preservation</dt><dd>When a prompt arrives onto an empty queue, <code>snapshot_draft_if_needed</code> captures any in-flight chat-input text and clears the editor. When the last prompt resolves (queue empties), <code>restore_draft_if_empty_queue</code> puts it back verbatim.</dd>

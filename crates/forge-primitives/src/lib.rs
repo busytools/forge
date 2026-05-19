@@ -117,7 +117,7 @@ pub use runtime::{
 pub use session_key::SessionKey;
 pub use session_meta::{PromptChunk, SessionListEntry};
 pub use session_update::{
-    BashOutputMetadata, ChunkContent, PlanEntry, TaskMetadata, TodoWriteOutputMetadata, ToolCall,
+    BashOutputMetadata, ChunkContent, TaskMetadata, TodoWriteOutputMetadata, ToolCall,
     ToolCallContent, ToolCallUpdate, ToolCallUpdateFields, ToolLocation, ToolOutputMetadata,
 };
 pub use subagents::{EffortPreset, SubagentDefinition, SubagentMcpServerRef, SubagentMemory};
