@@ -225,7 +225,7 @@ fn build_footer_line(prompt: &PromptState) -> Line<'static> {
                 "  ↑↓ select  ⏎ confirm  esc reject"
             }
         }
-        PromptMode::NotesEditor | PromptMode::EditingInput => "  ⏎ submit  esc back to options",
+        PromptMode::EditingInput => "  ⏎ submit  esc back to options",
     };
     Line::from(Span::styled(text.to_owned(), Style::default().fg(theme::DIM)))
 }

@@ -241,28 +241,55 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         return;
     }
 
+    // Vertically center the prompt+text within the padded interior
+    // when the content is shorter than the available height. With
+    // `MIN_INPUT_INTERIOR_LINES = 2` and a single-line input, this
+    // moves the arrow + cursor to the LOWER row of the 2-row inside
+    // (visual centering instead of top-aligned), eliminating the
+    // "lonely arrow with empty row below" look.
+    let content_lines = {
+        let probe_width = geometry.text.width.max(1);
+        app.input_mut().measure_visual_lines(probe_width, MAX_INPUT_HEIGHT)
+    };
+    let interior_height = geometry.padded.height;
+    let centered_height = content_lines.clamp(1, interior_height.max(1));
+    let vertical_slack = interior_height.saturating_sub(centered_height);
+    let extra_top = vertical_slack / 2;
+    let prompt_rect = Rect {
+        x: geometry.prompt.x,
+        y: geometry.prompt.y.saturating_add(extra_top),
+        width: geometry.prompt.width,
+        height: centered_height,
+    };
+    let text_rect = Rect {
+        x: geometry.text.x,
+        y: geometry.text.y.saturating_add(extra_top),
+        width: geometry.text.width,
+        height: centered_height,
+    };
+
     // Render prompt icon
     let prompt = Line::from(Span::styled(
         format!("{} ", theme::PROMPT_CHAR),
         Style::default().fg(theme::RUST_ORANGE),
     ));
-    frame.render_widget(Paragraph::new(prompt), geometry.prompt);
+    frame.render_widget(Paragraph::new(prompt), prompt_rect);
 
-    if geometry.text.width == 0 {
+    if text_rect.width == 0 {
         return;
     }
 
     configure_input_textarea(app);
-    app.rendered_input_area = geometry.text;
+    app.rendered_input_area = text_rect;
     if app.selection().is_some_and(|selection| selection.kind == crate::app::SelectionKind::Input) {
         refresh_selection_snapshot(app);
     }
-    frame.render_widget(app.input().editor(), geometry.text);
+    frame.render_widget(app.input().editor(), text_rect);
 
     if let Some(sel) = app.selection().copied()
         && sel.kind == crate::app::SelectionKind::Input
     {
-        frame.render_widget(SelectionOverlay { selection: sel }, geometry.text);
+        frame.render_widget(SelectionOverlay { selection: sel }, text_rect);
     }
 }
 

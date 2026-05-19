@@ -22,15 +22,20 @@ pub struct PromptState {
     pub selected_option_indices: BTreeSet<usize>,
     /// Current sub-mode.
     pub mode: PromptMode,
-    /// Notes text buffer (for the synthesized notes-option editor).
-    pub notes: String,
-    /// Cursor position within `notes` (char index).
-    pub notes_cursor: usize,
     /// Edited tool input (for AllowWithInput). Populated when the
     /// user enters the allow-with-edits sub-mode; serialized back to
     /// the CLI on submit.
     pub edited_input: Option<Value>,
 }
+
+// Notes text + cursor are NOT stored on PromptState. The canonical
+// chat-input editor (`App.input`) is reused as the notes editor —
+// when the dock is morphed AND the focused option is `Notes`-kind,
+// keystrokes (including SuperWhisper paste) route to `App.input` and
+// the renderer reads `app.input().lines()` inline below the option.
+// Chat-input draft is snapshotted/restored via the App-level draft
+// preservation hooks (see `snapshot_draft_if_needed` /
+// `restore_draft_if_empty_queue`).
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PromptSource {
@@ -50,11 +55,14 @@ pub enum PromptSource {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromptMode {
-    /// Default — arrow keys move option focus, Enter submits.
+    /// Default — arrow keys move option focus, Enter submits. The
+    /// "notes editor" surface is implicit-on-focus: when the focused
+    /// option's kind is `Notes`, keystrokes route to the canonical
+    /// `App.input` editor (rendered inline below the option) instead
+    /// of being swallowed.
     OptionPicker,
-    /// User selected a notes-option — typing inserts into `notes`.
-    NotesEditor,
     /// User selected allow-with-edits — typing edits `edited_input`.
+    /// Stub for v1 per spec §10.
     EditingInput,
 }
 
@@ -91,8 +99,6 @@ impl PromptState {
             focused_option_index: 0,
             selected_option_indices: BTreeSet::new(),
             mode: PromptMode::OptionPicker,
-            notes: String::new(),
-            notes_cursor: 0,
             edited_input: None,
         }
     }
@@ -135,8 +141,6 @@ impl PromptState {
             focused_option_index: 0,
             selected_option_indices: BTreeSet::new(),
             mode: PromptMode::OptionPicker,
-            notes: String::new(),
-            notes_cursor: 0,
             edited_input: None,
         }
     }
@@ -227,12 +231,12 @@ pub fn handle_key_option_picker(prompt: &mut PromptState, key: KeyEvent) -> Prom
             PromptKeyOutcome::Consumed
         }
         KeyCode::Enter => {
+            // Notes-kind never reaches this branch — dispatch_key
+            // routes those keystrokes to App.input directly without
+            // calling handle_key_option_picker. Edit-kind transitions
+            // into the EditingInput stub; everything else submits.
             let focused_kind = prompt.options.get(prompt.focused_option_index).map(|o| o.kind);
             match focused_kind {
-                Some(Kind::Notes) => {
-                    prompt.mode = PromptMode::NotesEditor;
-                    PromptKeyOutcome::Consumed
-                }
                 Some(Kind::Edit) => {
                     prompt.mode = PromptMode::EditingInput;
                     PromptKeyOutcome::Consumed
@@ -253,84 +257,13 @@ pub fn handle_key_option_picker(prompt: &mut PromptState, key: KeyEvent) -> Prom
 }
 
 /// Handle a key while the prompt is in [`PromptMode::NotesEditor`].
-/// Behaves like a single-line text editor over `prompt.notes` plus
-/// the option-picker escape hatches: Up/Down exits to OptionPicker
-/// AND moves the option cursor in one step; Esc exits the editor
-/// (and un-toggles the notes option in multi-select if notes is
-/// empty); Enter submits.
-pub fn handle_key_notes_editor(prompt: &mut PromptState, key: KeyEvent) -> PromptKeyOutcome {
-    match key.code {
-        KeyCode::Char(ch) if is_printable_text_modifiers(key.modifiers) => {
-            let byte_idx = prompt
-                .notes
-                .char_indices()
-                .nth(prompt.notes_cursor)
-                .map_or(prompt.notes.len(), |(i, _)| i);
-            prompt.notes.insert(byte_idx, ch);
-            prompt.notes_cursor += 1;
-            PromptKeyOutcome::Consumed
-        }
-        KeyCode::Backspace if prompt.notes_cursor > 0 => {
-            let start =
-                prompt.notes.char_indices().nth(prompt.notes_cursor - 1).map_or(0, |(i, _)| i);
-            let end = prompt
-                .notes
-                .char_indices()
-                .nth(prompt.notes_cursor)
-                .map_or(prompt.notes.len(), |(i, _)| i);
-            prompt.notes.replace_range(start..end, "");
-            prompt.notes_cursor -= 1;
-            PromptKeyOutcome::Consumed
-        }
-        KeyCode::Delete if prompt.notes_cursor < prompt.notes.chars().count() => {
-            let start = prompt
-                .notes
-                .char_indices()
-                .nth(prompt.notes_cursor)
-                .map_or(prompt.notes.len(), |(i, _)| i);
-            let end = prompt
-                .notes
-                .char_indices()
-                .nth(prompt.notes_cursor + 1)
-                .map_or(prompt.notes.len(), |(i, _)| i);
-            prompt.notes.replace_range(start..end, "");
-            PromptKeyOutcome::Consumed
-        }
-        KeyCode::Left if prompt.notes_cursor > 0 => {
-            prompt.notes_cursor -= 1;
-            PromptKeyOutcome::Consumed
-        }
-        KeyCode::Right if prompt.notes_cursor < prompt.notes.chars().count() => {
-            prompt.notes_cursor += 1;
-            PromptKeyOutcome::Consumed
-        }
-        KeyCode::Home => {
-            prompt.notes_cursor = 0;
-            PromptKeyOutcome::Consumed
-        }
-        KeyCode::End => {
-            prompt.notes_cursor = prompt.notes.chars().count();
-            PromptKeyOutcome::Consumed
-        }
-        KeyCode::Up | KeyCode::Down => {
-            // Exit editor, move option focus in one step.
-            prompt.mode = PromptMode::OptionPicker;
-            handle_key_option_picker(prompt, key)
-        }
-        KeyCode::Enter => PromptKeyOutcome::Submit,
-        KeyCode::Esc => {
-            prompt.mode = PromptMode::OptionPicker;
-            // In multi-select, an empty-notes Escape un-toggles the
-            // notes option so the user doesn't get stuck with a
-            // "selected but empty" entry.
-            if prompt.is_multi_select() && prompt.notes.is_empty() {
-                prompt.selected_option_indices.remove(&prompt.focused_option_index);
-            }
-            PromptKeyOutcome::Consumed
-        }
-        _ => PromptKeyOutcome::Unhandled,
-    }
-}
+// `handle_key_notes_editor` is gone: the canonical `App.input` editor
+// now serves as the notes input. See `dispatch_key` above for the
+// routing — when focused option is `PermissionOptionKind::Notes`,
+// keys flow through `app.input_mut().editor_mut().input(...)` which
+// is `tui_textarea`'s native handler (handles unicode, paste bursts,
+// SuperWhisper insertions, cursor navigation — everything the chat
+// input handles).
 
 /// Stub for Edit-mode handling (`PermissionAction::AllowWithInput`).
 /// Full inline tool-args editor is deferred per spec §10. For now:
@@ -354,15 +287,53 @@ pub fn handle_key_editing_input(prompt: &mut PromptState, key: KeyEvent) -> Prom
 /// consumed (no further routing); `false` if it should fall through
 /// to the normal key handler.
 pub fn dispatch_key(app: &mut crate::app::App, key: KeyEvent) -> bool {
-    let Some(session) = app.try_active_bucket_mut() else {
-        return false;
+    use forge_primitives::permission_ui::PermissionOptionKind as Kind;
+
+    // Short-lived read to capture focus state without holding the mut borrow
+    // across an `app.input_mut()` call below.
+    let focused_kind = {
+        let Some(session) = app.active_session() else { return false };
+        let Some(prompt) = session.prompt_queue.front() else { return false };
+        prompt.options.get(prompt.focused_option_index).map(|o| o.kind)
     };
-    let Some(prompt) = session.prompt_queue.front_mut() else {
-        return false;
-    };
+
+    // Notes-kind focused → keys (incl. SuperWhisper pastes) flow to the
+    // canonical `App.input` editor. Navigation keys (Up/Down/Enter/Esc)
+    // are intercepted for option-picker behaviour first.
+    if matches!(focused_kind, Some(Kind::Notes)) {
+        match key.code {
+            KeyCode::Up | KeyCode::Down => {
+                let Some(session) = app.try_active_bucket_mut() else { return false };
+                let Some(prompt) = session.prompt_queue.front_mut() else { return false };
+                handle_key_option_picker(prompt, key);
+                return true;
+            }
+            KeyCode::Enter => {
+                submit_prompt(app);
+                return true;
+            }
+            KeyCode::Esc => {
+                cancel_prompt(app);
+                return true;
+            }
+            _ => {
+                // Route printable chars, Backspace, Delete, Left/Right,
+                // Home/End, paste bursts, etc. straight to the canonical
+                // chat-input editor. tui_textarea handles cursor + unicode.
+                let _ = app
+                    .input_mut()
+                    .editor_mut()
+                    .input(crossterm::event::Event::Key(key));
+                return true;
+            }
+        }
+    }
+
+    // Non-Notes options: existing keymap.
+    let Some(session) = app.try_active_bucket_mut() else { return false };
+    let Some(prompt) = session.prompt_queue.front_mut() else { return false };
     let outcome = match prompt.mode {
         PromptMode::OptionPicker => handle_key_option_picker(prompt, key),
-        PromptMode::NotesEditor => handle_key_notes_editor(prompt, key),
         PromptMode::EditingInput => handle_key_editing_input(prompt, key),
     };
     match outcome {
@@ -396,6 +367,15 @@ pub fn submit_prompt(app: &mut crate::app::App) {
     let Some(key) = app.active_session_key.clone() else {
         return;
     };
+
+    // Pop the prompt + grab the notes text from the canonical input
+    // editor (App.input). Notes are read BEFORE clearing the editor so
+    // we don't lose the user's typed feedback.
+    let notes_text = {
+        let trimmed = app.input().text().trim().to_owned();
+        if trimmed.is_empty() { None } else { Some(trimmed) }
+    };
+
     let Some(session) = app.try_active_bucket_mut() else {
         return;
     };
@@ -403,8 +383,9 @@ pub fn submit_prompt(app: &mut crate::app::App) {
         return;
     };
 
-    let trimmed_notes = prompt.notes.trim();
-    let notes_text = if trimmed_notes.is_empty() { None } else { Some(trimmed_notes.to_owned()) };
+    // Clear the input editor so the chat-input slot is fresh for the
+    // next prompt (or for the restored draft when queue empties).
+    app.input_mut().clear();
 
     match &prompt.source {
         PromptSource::Permission { .. } => {
@@ -481,6 +462,10 @@ pub fn cancel_prompt(app: &mut crate::app::App) {
         return;
     };
 
+    // Clear the canonical input editor — any user-typed notes shouldn't
+    // leak across the cancel boundary into the next prompt or chat draft.
+    app.input_mut().clear();
+
     match prompt.source {
         PromptSource::Permission { .. } => {
             crate::app::events::turn::dispatch_permission_outcome(
@@ -507,17 +492,24 @@ pub fn cancel_prompt(app: &mut crate::app::App) {
 /// Idempotent — when multiple prompts arrive in a burst the first
 /// snapshot wins, so subsequent prompts don't clobber the original
 /// draft. Called from the inbound event handler right after
-/// [`enqueue_prompt`]. No-op when the editor is empty (nothing to
-/// preserve).
+/// [`enqueue_prompt`]. ALWAYS clears the editor so it's a fresh slate
+/// for the morphed dock — when the focused option is `Notes`-kind the
+/// editor is reused as the notes input, and any leftover draft would
+/// otherwise pre-populate that input incorrectly. The snapshot itself
+/// is only stored when there's text worth restoring.
 pub fn snapshot_draft_if_needed(app: &mut crate::app::App) {
     if app.input_draft_snapshot.is_some() {
+        // Already snapshotted; subsequent prompts in the same burst
+        // share the same snapshot, but we still ensure the editor is
+        // clear (the previous prompt may have left typed notes behind).
+        app.input_mut().clear();
         return;
     }
     let text = app.input().text();
     if !text.is_empty() {
         app.input_draft_snapshot = Some(text);
-        app.input_mut().clear();
     }
+    app.input_mut().clear();
 }
 
 /// Restore a previously-snapshotted draft into the chat input when
@@ -529,18 +521,6 @@ pub fn restore_draft_if_empty_queue(app: &mut crate::app::App) {
     if queue_empty && let Some(draft) = app.input_draft_snapshot.take() {
         app.input_mut().set_text(&draft);
     }
-}
-
-/// Modifier-mask predicate matching plain typing (or AltGr-style
-/// Ctrl+Alt combinations on Windows / X11). Mirrors the same helper
-/// in `app::keys`; duplicated here to avoid a `pub(crate)` widening
-/// that Task 24 would have to undo when the legacy reclaim path is
-/// deleted.
-fn is_printable_text_modifiers(modifiers: crossterm::event::KeyModifiers) -> bool {
-    use crossterm::event::KeyModifiers;
-    let ctrl_alt =
-        modifiers.contains(KeyModifiers::CONTROL) && modifiers.contains(KeyModifiers::ALT);
-    !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) || ctrl_alt
 }
 
 #[cfg(test)]
@@ -757,22 +737,10 @@ pub(crate) mod tests {
         assert!(multi.selected_option_indices.is_empty(), "second Space toggles off");
     }
 
-    #[test]
-    fn enter_on_notes_option_transitions_to_notes_editor_mode() {
-        let mut prompt = PromptState::from_permission("tc-1".into(), make_permission_request());
-        let notes_idx = prompt
-            .options
-            .iter()
-            .position(|o| matches!(o.kind, PermissionOptionKind::Notes))
-            .expect("Tell Claude option present");
-        prompt.focused_option_index = notes_idx;
-        let outcome = handle_key_option_picker(
-            &mut prompt,
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-        );
-        assert_eq!(prompt.mode, PromptMode::NotesEditor);
-        assert_eq!(outcome, PromptKeyOutcome::Consumed);
-    }
+    // Notes-kind Enter is routed by `dispatch_key` directly to
+    // `submit_prompt` (because the canonical `App.input` editor owns
+    // notes text now). The option-picker handler is never reached for
+    // Notes-kind keystrokes — see the `dispatch_key_*` tests below.
 
     #[test]
     fn enter_on_allow_option_emits_submit() {
@@ -821,157 +789,10 @@ pub(crate) mod tests {
         assert_eq!(outcome, PromptKeyOutcome::Consumed);
     }
 
-    // ── Task 17 ─ handle_key_notes_editor ──────────────────────────
-
-    #[test]
-    fn printable_chars_insert_into_notes_in_editor_mode() {
-        let mut prompt = PromptState::from_permission("tc-1".into(), make_permission_request());
-        prompt.mode = PromptMode::NotesEditor;
-        let _ = handle_key_notes_editor(
-            &mut prompt,
-            KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE),
-        );
-        let _ = handle_key_notes_editor(
-            &mut prompt,
-            KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE),
-        );
-        assert_eq!(prompt.notes, "hi");
-        assert_eq!(prompt.notes_cursor, 2);
-    }
-
-    #[test]
-    fn backspace_removes_char_in_editor_mode() {
-        let mut prompt = PromptState::from_permission("tc-1".into(), make_permission_request());
-        prompt.mode = PromptMode::NotesEditor;
-        prompt.notes = "hi".into();
-        prompt.notes_cursor = 2;
-        let _ = handle_key_notes_editor(
-            &mut prompt,
-            KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
-        );
-        assert_eq!(prompt.notes, "h");
-        assert_eq!(prompt.notes_cursor, 1);
-    }
-
-    #[test]
-    fn delete_removes_char_at_cursor_in_editor_mode() {
-        let mut prompt = PromptState::from_permission("tc-1".into(), make_permission_request());
-        prompt.mode = PromptMode::NotesEditor;
-        prompt.notes = "hi".into();
-        prompt.notes_cursor = 0;
-        let _ = handle_key_notes_editor(
-            &mut prompt,
-            KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE),
-        );
-        assert_eq!(prompt.notes, "i");
-        assert_eq!(prompt.notes_cursor, 0);
-    }
-
-    #[test]
-    fn left_right_move_cursor_in_notes_editor() {
-        let mut prompt = PromptState::from_permission("tc-1".into(), make_permission_request());
-        prompt.mode = PromptMode::NotesEditor;
-        prompt.notes = "abc".into();
-        prompt.notes_cursor = 1;
-        let _ =
-            handle_key_notes_editor(&mut prompt, KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
-        assert_eq!(prompt.notes_cursor, 0);
-        let _ =
-            handle_key_notes_editor(&mut prompt, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
-        assert_eq!(prompt.notes_cursor, 1);
-    }
-
-    #[test]
-    fn home_end_jump_in_notes_editor() {
-        let mut prompt = PromptState::from_permission("tc-1".into(), make_permission_request());
-        prompt.mode = PromptMode::NotesEditor;
-        prompt.notes = "abc".into();
-        prompt.notes_cursor = 1;
-        let _ =
-            handle_key_notes_editor(&mut prompt, KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
-        assert_eq!(prompt.notes_cursor, 3);
-        let _ =
-            handle_key_notes_editor(&mut prompt, KeyEvent::new(KeyCode::Home, KeyModifiers::NONE));
-        assert_eq!(prompt.notes_cursor, 0);
-    }
-
-    #[test]
-    fn esc_in_notes_editor_returns_to_option_picker() {
-        let mut prompt = PromptState::from_permission("tc-1".into(), make_permission_request());
-        prompt.mode = PromptMode::NotesEditor;
-        let outcome =
-            handle_key_notes_editor(&mut prompt, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        assert_eq!(prompt.mode, PromptMode::OptionPicker);
-        assert_eq!(outcome, PromptKeyOutcome::Consumed);
-    }
-
-    #[test]
-    fn esc_in_multi_select_empty_notes_untoggles_notes_option() {
-        let mut prompt = PromptState::from_question("tc-q".into(), make_question_request(true));
-        prompt.mode = PromptMode::NotesEditor;
-        // Pretend the notes option was toggled on, then user opened
-        // the editor, didn't type anything, and pressed Esc.
-        let notes_idx = prompt
-            .options
-            .iter()
-            .position(|o| matches!(o.kind, PermissionOptionKind::Notes))
-            .expect("notes option present");
-        prompt.focused_option_index = notes_idx;
-        prompt.selected_option_indices.insert(notes_idx);
-        prompt.notes.clear();
-        let _ =
-            handle_key_notes_editor(&mut prompt, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        assert!(!prompt.selected_option_indices.contains(&notes_idx));
-    }
-
-    #[test]
-    fn esc_in_multi_select_keeps_notes_option_when_text_present() {
-        let mut prompt = PromptState::from_question("tc-q".into(), make_question_request(true));
-        prompt.mode = PromptMode::NotesEditor;
-        let notes_idx = prompt
-            .options
-            .iter()
-            .position(|o| matches!(o.kind, PermissionOptionKind::Notes))
-            .expect("notes option present");
-        prompt.focused_option_index = notes_idx;
-        prompt.selected_option_indices.insert(notes_idx);
-        prompt.notes = "thoughts".into();
-        let _ =
-            handle_key_notes_editor(&mut prompt, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        assert!(prompt.selected_option_indices.contains(&notes_idx));
-    }
-
-    #[test]
-    fn enter_in_notes_editor_submits() {
-        let mut prompt = PromptState::from_permission("tc-1".into(), make_permission_request());
-        prompt.mode = PromptMode::NotesEditor;
-        prompt.notes = "use --dry-run".into();
-        let outcome =
-            handle_key_notes_editor(&mut prompt, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        assert_eq!(outcome, PromptKeyOutcome::Submit);
-    }
-
-    #[test]
-    fn up_in_notes_editor_exits_and_moves_option_focus() {
-        let mut prompt = PromptState::from_permission("tc-1".into(), make_permission_request());
-        prompt.mode = PromptMode::NotesEditor;
-        prompt.focused_option_index = 1;
-        let _ =
-            handle_key_notes_editor(&mut prompt, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
-        assert_eq!(prompt.mode, PromptMode::OptionPicker);
-        assert_eq!(prompt.focused_option_index, 0);
-    }
-
-    #[test]
-    fn down_in_notes_editor_exits_and_moves_option_focus() {
-        let mut prompt = PromptState::from_permission("tc-1".into(), make_permission_request());
-        prompt.mode = PromptMode::NotesEditor;
-        prompt.focused_option_index = 0;
-        let _ =
-            handle_key_notes_editor(&mut prompt, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        assert_eq!(prompt.mode, PromptMode::OptionPicker);
-        assert_eq!(prompt.focused_option_index, 1);
-    }
+    // Notes-editor tests removed: the editor is now the canonical
+    // `App.input` widget reached via `dispatch_key`'s Notes-kind
+    // routing branch. Coverage moves to integration-style tests of
+    // dispatch_key + submit_prompt that read text from App.input.
 
     // ── Task 18 ─ handle_key_editing_input + dispatch_key ──────────
 
@@ -1140,13 +961,14 @@ pub(crate) mod tests {
     fn submit_question_with_notes_routes_notes_via_annotation() {
         let mut app = crate::app::App::test_default();
         let key = app.active_session_key.clone().expect("session");
+        // Load notes text into the canonical App.input editor (the
+        // notes editor surface), then enqueue the prompt focused on
+        // the notes-option.
+        app.input_mut().set_text("use the other option");
         if let Some(session) = app.session_mut(&key) {
             let mut prompt =
                 PromptState::from_question("tc-q".into(), make_question_request(false));
-            // Focus the notes-option (last option) and load notes text.
             prompt.focused_option_index = prompt.options.len() - 1;
-            prompt.mode = PromptMode::NotesEditor;
-            prompt.notes = "use the other option".into();
             enqueue_prompt(session, prompt);
         }
         submit_prompt(&mut app);
@@ -1176,13 +998,13 @@ pub(crate) mod tests {
     fn submit_question_multi_select_uses_toggled_indices_and_filters_notes() {
         let mut app = crate::app::App::test_default();
         let key = app.active_session_key.clone().expect("session");
+        app.input_mut().set_text("extra context");
         if let Some(session) = app.session_mut(&key) {
             let mut prompt = PromptState::from_question("tc-q".into(), make_question_request(true));
-            // Toggle q0, q1, AND the notes option; provide notes text.
+            // Toggle q0, q1, AND the notes option.
             prompt.selected_option_indices.insert(0);
             prompt.selected_option_indices.insert(1);
             prompt.selected_option_indices.insert(prompt.options.len() - 1);
-            prompt.notes = "extra context".into();
             enqueue_prompt(session, prompt);
         }
         submit_prompt(&mut app);
@@ -1212,8 +1034,7 @@ pub(crate) mod tests {
         if let Some(session) = app.session_mut(&key) {
             let mut prompt = PromptState::from_question("tc-q".into(), make_question_request(true));
             prompt.focused_option_index = prompt.options.len() - 1;
-            prompt.mode = PromptMode::NotesEditor;
-            // Multi-select with empty toggled set + notes focus + no text.
+            // Multi-select with empty toggled set + notes focus + no text in App.input.
             enqueue_prompt(session, prompt);
         }
         submit_prompt(&mut app);
@@ -1231,12 +1052,11 @@ pub(crate) mod tests {
     fn submit_permission_with_notes_text_attaches_to_outcome() {
         let mut app = crate::app::App::test_default();
         let key = app.active_session_key.clone().expect("session");
+        app.input_mut().set_text("don't push to main");
         if let Some(session) = app.session_mut(&key) {
             let mut prompt = PromptState::from_permission("tc-1".into(), make_permission_request());
-            // Focus the notes-option (last); enter notes editor with text.
+            // Focus the notes-option (last); App.input carries the notes text.
             prompt.focused_option_index = prompt.options.len() - 1;
-            prompt.mode = PromptMode::NotesEditor;
-            prompt.notes = "don't push to main".into();
             enqueue_prompt(session, prompt);
         }
         submit_prompt(&mut app);
