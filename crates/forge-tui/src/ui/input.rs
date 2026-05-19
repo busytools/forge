@@ -38,11 +38,14 @@ const INPUT_BORDER_LINES: u16 = 2;
 /// chrome — grows as the draft wraps.
 const MIN_INPUT_INTERIOR_LINES: u16 = 1;
 
-/// Maximum input area height (rows of interior content) before the
-/// textarea starts scrolling within itself. Five rows is enough to
-/// see a few lines of context while typing without the box devouring
-/// the chat history; longer drafts scroll the editor.
-const MAX_INPUT_HEIGHT: u16 = 5;
+/// Maximum input area height (rows of interior content). The box
+/// grows row by row as the user types — typed drafts almost never
+/// exceed a few lines, so the cap exists only to prevent the box
+/// from consuming the entire terminal in pathological cases.
+/// Large pastes don't hit this cap because the paste handler
+/// collapses anything past PASTE_PLACEHOLDER_{CHAR,LINE}_THRESHOLD
+/// into a single placeholder token.
+const MAX_INPUT_HEIGHT: u16 = 50;
 const HIGHLIGHT_SLASH_PRIORITY: u8 = 6;
 const HIGHLIGHT_MENTION_PRIORITY: u8 = 7;
 const HIGHLIGHT_SUBAGENT_PRIORITY: u8 = 8;

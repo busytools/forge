@@ -444,7 +444,10 @@ fn finalize_pending_paste_event(app: &mut App) {
     }
 
     let char_count = input::count_text_chars(&pasted);
-    if char_count > input::PASTE_PLACEHOLDER_CHAR_THRESHOLD {
+    let line_count = pasted.split(['\n', '\r']).count();
+    if char_count > input::PASTE_PLACEHOLDER_CHAR_THRESHOLD
+        || line_count > input::PASTE_PLACEHOLDER_LINE_THRESHOLD
+    {
         app.input_mut().insert_paste_block(&pasted);
         let idx = app.input().lines().get(app.input().cursor_row()).and_then(|line| {
             input::parse_paste_placeholder_before_cursor(line, app.input().cursor_col())
@@ -624,6 +627,30 @@ mod tests {
         finalize_pending_paste_event(&mut app);
 
         assert_eq!(app.input().lines(), vec!["x".repeat(1000)]);
+    }
+
+    #[test]
+    fn pending_paste_six_lines_under_char_threshold_collapses_to_placeholder() {
+        // Six short lines: ~12 chars total, well under the 1000-char
+        // threshold, but still over the 5-line threshold. Should
+        // collapse to a placeholder so the input box doesn't grow tall.
+        let mut app = App::test_default();
+        *app.pending_paste_text_mut() = "a\nb\nc\nd\ne\nf".to_owned();
+
+        finalize_pending_paste_event(&mut app);
+
+        assert_eq!(app.input().lines(), vec!["[Pasted Text 1 - 11 chars]"]);
+    }
+
+    #[test]
+    fn pending_paste_five_lines_stays_inline() {
+        // Five lines fits inline (right at the threshold = 5).
+        let mut app = App::test_default();
+        *app.pending_paste_text_mut() = "a\nb\nc\nd\ne".to_owned();
+
+        finalize_pending_paste_event(&mut app);
+
+        assert_eq!(app.input().lines(), vec!["a", "b", "c", "d", "e"]);
     }
 
     #[test]
