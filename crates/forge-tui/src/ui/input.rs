@@ -26,20 +26,23 @@ const INPUT_RIGHT_PAD: u16 = 1;
 /// Prompt column width: "❯ " = 2 columns (icon + space)
 const PROMPT_WIDTH: u16 = 2;
 
-/// Rows reserved for the input box's chrome: top border + top inner
-/// padding + bottom inner padding + bottom border. Both modes (chat
-/// input and prompt) inherit the same 1-row top + 1-row bottom inner
-/// padding from spec §3.
-const INPUT_BORDER_LINES: u16 = 4;
+/// Rows reserved for the input box's chrome: top border + bottom
+/// border. No internal vertical padding — the slim chat-input box
+/// starts as a single-row interior and grows up to MAX_INPUT_HEIGHT
+/// rows of interior content. The wider prompt-mode dock keeps its
+/// own internal padding via Line::default() entries in build_lines.
+const INPUT_BORDER_LINES: u16 = 2;
 
-/// Minimum text-area height inside the bordered box. The chat input
-/// is the primary action surface, so the box never collapses to a
-/// single line even when the draft is empty — gives the user a real
-/// "type here" target on first glance.
-const MIN_INPUT_INTERIOR_LINES: u16 = 2;
+/// Minimum text-area height inside the bordered box. Single row so
+/// the box is just tall enough for one typed line plus the orange
+/// chrome — grows as the draft wraps.
+const MIN_INPUT_INTERIOR_LINES: u16 = 1;
 
-/// Maximum input area height (lines) to prevent the input from consuming the entire screen.
-const MAX_INPUT_HEIGHT: u16 = 12;
+/// Maximum input area height (rows of interior content) before the
+/// textarea starts scrolling within itself. Five rows is enough to
+/// see a few lines of context while typing without the box devouring
+/// the chat history; longer drafts scroll the editor.
+const MAX_INPUT_HEIGHT: u16 = 5;
 const HIGHLIGHT_SLASH_PRIORITY: u8 = 6;
 const HIGHLIGHT_MENTION_PRIORITY: u8 = 7;
 const HIGHLIGHT_SUBAGENT_PRIORITY: u8 = 8;
@@ -111,14 +114,14 @@ pub(crate) fn compute_render_geometry(area: Rect, hint_lines: u16) -> InputRende
     // against the pane separators (or screen edges in narrow tier).
     // `box_area` is the full Rect the Block widget draws into
     // (borders + interior); `padded` is the interior where prompt +
-    // text live, inset 1 cell L/R for the side borders and 2 rows top
-    // + 2 rows bottom (border + inner padding row).
+    // text live, inset 1 cell L/R for the side borders and 1 row top
+    // + 1 row bottom for the top/bottom borders (no inner padding).
     let box_area = input_main_area;
     let padded = Rect {
         x: box_area.x.saturating_add(1),
-        y: box_area.y.saturating_add(2),
+        y: box_area.y.saturating_add(1),
         width: box_area.width.saturating_sub(2),
-        height: box_area.height.saturating_sub(4),
+        height: box_area.height.saturating_sub(2),
     };
     let [prompt, text] =
         Layout::horizontal([Constraint::Length(PROMPT_WIDTH), Constraint::Min(1)]).areas(padded);
@@ -241,32 +244,11 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         return;
     }
 
-    // Vertically center the prompt+text within the padded interior
-    // when the content is shorter than the available height. With
-    // `MIN_INPUT_INTERIOR_LINES = 2` and a single-line input, this
-    // moves the arrow + cursor to the LOWER row of the 2-row inside
-    // (visual centering instead of top-aligned), eliminating the
-    // "lonely arrow with empty row below" look.
-    let content_lines = {
-        let probe_width = geometry.text.width.max(1);
-        app.input_mut().measure_visual_lines(probe_width, MAX_INPUT_HEIGHT)
-    };
-    let interior_height = geometry.padded.height;
-    let centered_height = content_lines.clamp(1, interior_height.max(1));
-    let vertical_slack = interior_height.saturating_sub(centered_height);
-    let extra_top = vertical_slack / 2;
-    let prompt_rect = Rect {
-        x: geometry.prompt.x,
-        y: geometry.prompt.y.saturating_add(extra_top),
-        width: geometry.prompt.width,
-        height: centered_height,
-    };
-    let text_rect = Rect {
-        x: geometry.text.x,
-        y: geometry.text.y.saturating_add(extra_top),
-        width: geometry.text.width,
-        height: centered_height,
-    };
+    // Padded interior fits exactly the content lines (1 to
+    // MAX_INPUT_HEIGHT). No vertical slack to center against — the
+    // box height tracks the textarea row count directly.
+    let prompt_rect = geometry.prompt;
+    let text_rect = geometry.text;
 
     // Render prompt icon
     let prompt = Line::from(Span::styled(
@@ -570,12 +552,13 @@ mod tests {
     }
 
     #[test]
-    fn compute_render_geometry_reserves_top_and_bottom_padding_rows() {
-        let area = Rect::new(0, 0, 80, 5);
+    fn compute_render_geometry_carves_borders_only() {
+        // Slim chat-input box: top border at y=0, interior starts at
+        // y=1, bottom border at y=area.height-1. With area.height=3,
+        // interior is exactly 1 row at y=1.
+        let area = Rect::new(0, 0, 80, 3);
         let geometry = compute_render_geometry(area, 0);
-        // text area should start at y=2 (border y=0, padding y=1, text y=2).
-        assert_eq!(geometry.text.y, 2);
-        // text area should occupy a single row (y=2 only) — padding y=3, border y=4.
-        assert_eq!(geometry.text.height, 1);
+        assert_eq!(geometry.text.y, 1, "interior starts immediately after top border");
+        assert_eq!(geometry.text.height, 1, "single-row interior for 3-row box");
     }
 }
