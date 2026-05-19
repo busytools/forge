@@ -144,7 +144,15 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         && let Some(prompt) = session.prompt_queue.front()
     {
         let queue_depth = session.prompt_queue.len();
-        crate::ui::prompt::render(geometry.box_area, frame.buffer_mut(), prompt, queue_depth);
+        let prompt = prompt.clone();
+        let notes_text = app.input().text();
+        crate::ui::prompt::render(
+            geometry.box_area,
+            frame.buffer_mut(),
+            &prompt,
+            queue_depth,
+            Some(notes_text.as_str()),
+        );
         return;
     }
 
@@ -443,7 +451,15 @@ pub fn visual_line_count(app: &mut App, area_width: u16) -> u16 {
         && let Some(prompt) = session.prompt_queue.front()
     {
         let queue_depth = session.prompt_queue.len();
-        return hint + crate::ui::prompt::prompt_required_lines(prompt, queue_depth, area_width);
+        let prompt = prompt.clone();
+        let notes_text = app.input().text();
+        return hint
+            + crate::ui::prompt::prompt_required_lines(
+                &prompt,
+                queue_depth,
+                area_width,
+                Some(notes_text.as_str()),
+            );
     }
 
     // Content width sits inside the box's 1-col left/right borders.

@@ -14,7 +14,13 @@ use unicode_width::UnicodeWidthStr;
 /// Render the prompt into `area` (the chat-input box's rect). The
 /// orange thick chrome is drawn here too — the caller does NOT render
 /// its own block first.
-pub fn render(area: Rect, buf: &mut Buffer, prompt: &PromptState, queue_depth: usize) {
+pub fn render(
+    area: Rect,
+    buf: &mut Buffer,
+    prompt: &PromptState,
+    queue_depth: usize,
+    notes_text: Option<&str>,
+) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Thick)
@@ -25,7 +31,7 @@ pub fn render(area: Rect, buf: &mut Buffer, prompt: &PromptState, queue_depth: u
     if inner.width == 0 || inner.height == 0 {
         return;
     }
-    let lines = build_lines(prompt, queue_depth, inner.width as usize);
+    let lines = build_lines(prompt, queue_depth, inner.width as usize, notes_text);
     Paragraph::new(lines).render(inner, buf);
 }
 
@@ -36,10 +42,15 @@ pub fn render(area: Rect, buf: &mut Buffer, prompt: &PromptState, queue_depth: u
 /// `ui::input::visual_line_count` to grow the dock to fit the morphed
 /// prompt instead of clipping it to the chat-input editor's default
 /// height.
-pub fn prompt_required_lines(prompt: &PromptState, queue_depth: usize, area_width: u16) -> u16 {
+pub fn prompt_required_lines(
+    prompt: &PromptState,
+    queue_depth: usize,
+    area_width: u16,
+    notes_text: Option<&str>,
+) -> u16 {
     // Block borders eat 2 cols; Padding::horizontal(2) eats 4 more.
     let inner_width = area_width.saturating_sub(6).max(1) as usize;
-    let lines = build_lines(prompt, queue_depth, inner_width);
+    let lines = build_lines(prompt, queue_depth, inner_width, notes_text);
     u16::try_from(lines.len().saturating_add(2)).unwrap_or(u16::MAX)
 }
 
@@ -105,6 +116,7 @@ fn build_lines(
     prompt: &PromptState,
     queue_depth: usize,
     content_width: usize,
+    notes_text: Option<&str>,
 ) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     // 1 empty row top (spec §3 inner padding).
@@ -123,7 +135,7 @@ fn build_lines(
     lines.push(Line::default());
 
     // Options stack.
-    lines.extend(build_option_lines(prompt, content_width));
+    lines.extend(build_option_lines(prompt, content_width, notes_text));
 
     // Footer hint.
     lines.push(Line::default());
@@ -225,7 +237,11 @@ fn build_header_lines(prompt: &PromptState, content_width: usize) -> Vec<Line<'s
     }
 }
 
-fn build_option_lines(prompt: &PromptState, content_width: usize) -> Vec<Line<'static>> {
+fn build_option_lines(
+    prompt: &PromptState,
+    content_width: usize,
+    notes_text: Option<&str>,
+) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     let is_multi = prompt.is_multi_select();
     // For Question prompts, keep a reference to the wire options so
@@ -298,6 +314,39 @@ fn build_option_lines(prompt: &PromptState, content_width: usize) -> Vec<Line<'s
                 ]));
             }
         }
+
+        // Notes-kind focused: surface the canonical chat-input editor
+        // inline under the option. Keystrokes are already routed to
+        // App.input by dispatch_key; this just shows what the user
+        // typed (or a placeholder when empty). Indent matches the
+        // option name column.
+        if is_focused && matches!(opt.kind, PermissionOptionKind::Notes) {
+            let indent = " ".repeat(prefix_width);
+            let inner_width = content_width.saturating_sub(prefix_width).max(1);
+            let raw = notes_text.unwrap_or("");
+            if raw.is_empty() {
+                lines.push(Line::from(vec![
+                    Span::raw(indent.clone()),
+                    Span::styled(
+                        "Type your message and press Enter to send.".to_string(),
+                        Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC),
+                    ),
+                ]));
+            } else {
+                for chunk in raw.split('\n') {
+                    if chunk.is_empty() {
+                        lines.push(Line::from(Span::raw(indent.clone())));
+                        continue;
+                    }
+                    for row in word_wrap(chunk, inner_width) {
+                        lines.push(Line::from(vec![
+                            Span::raw(indent.clone()),
+                            Span::styled(row, Style::default().fg(Color::White)),
+                        ]));
+                    }
+                }
+            }
+        }
     }
 
     // Question-specific: render the per-focused-option preview block
@@ -364,7 +413,7 @@ mod tests {
     ) -> String {
         let area = Rect::new(0, 0, width, height);
         let mut buf = Buffer::empty(area);
-        render(area, &mut buf, prompt, queue_depth);
+        render(area, &mut buf, prompt, queue_depth, None);
         (0..height)
             .map(|y| (0..width).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>())
             .collect::<Vec<_>>()
@@ -487,7 +536,7 @@ mod tests {
             Some("short description for second option that wraps just a little".into());
         let prompt = PromptState::from_question("tc-q".into(), request);
         let area_width = 60u16;
-        let required = prompt_required_lines(&prompt, 1, area_width);
+        let required = prompt_required_lines(&prompt, 1, area_width, None);
         let out = render_to_string(&prompt, 1, area_width, required);
         let lines: Vec<&str> = out.lines().collect();
         assert_eq!(
@@ -657,6 +706,64 @@ mod tests {
             leading_cols[0], 3,
             "body should start at col 3 (border 0 + Padding::horizontal(2) cols 1-2); got col {} for:\n{out}",
             leading_cols[0]
+        );
+    }
+
+    #[test]
+    fn notes_option_focused_shows_inline_notes_text() {
+        // When the "Tell Claude something else" option is focused, the
+        // notes_text passed in by the caller renders inline under the
+        // option label.
+        let request = make_question_request(false);
+        let mut prompt = PromptState::from_question("tc-q".into(), request);
+        // Move focus to the last option (the synthesized Tell-Claude one).
+        prompt.focused_option_index = prompt.options.len() - 1;
+        let area = Rect::new(0, 0, 80, 24);
+        let mut buf = Buffer::empty(area);
+        render(area, &mut buf, &prompt, 1, Some("HELLO WORLD"));
+        let out: String = (0..area.height)
+            .map(|y| (0..area.width).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            out.contains("HELLO WORLD"),
+            "notes text should render inline under focused Notes option; got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn notes_option_focused_empty_shows_placeholder() {
+        let request = make_question_request(false);
+        let mut prompt = PromptState::from_question("tc-q".into(), request);
+        prompt.focused_option_index = prompt.options.len() - 1;
+        let area = Rect::new(0, 0, 80, 24);
+        let mut buf = Buffer::empty(area);
+        render(area, &mut buf, &prompt, 1, Some(""));
+        let out: String = (0..area.height)
+            .map(|y| (0..area.width).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            out.contains("Type your message"),
+            "empty notes should render placeholder; got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn notes_text_not_shown_when_notes_option_not_focused() {
+        let request = make_question_request(false);
+        let prompt = PromptState::from_question("tc-q".into(), request);
+        // focus stays on option 0 (not Notes).
+        let area = Rect::new(0, 0, 80, 24);
+        let mut buf = Buffer::empty(area);
+        render(area, &mut buf, &prompt, 1, Some("SHOULD NOT APPEAR"));
+        let out: String = (0..area.height)
+            .map(|y| (0..area.width).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !out.contains("SHOULD NOT APPEAR"),
+            "notes text must NOT render unless Notes option is focused; got:\n{out}"
         );
     }
 
