@@ -21,8 +21,7 @@ use tracing::Instrument;
 use crate::client::AgentEvent;
 use crate::forge_sdk_bridge::{ForgeSdkBridge, PendingQuestions, PendingResponses};
 use crate::{
-    commands as bridge_commands, session_lifecycle, state as bridge_state,
-    user_interaction as bridge_user_interaction,
+    commands as bridge_commands, session_lifecycle, user_interaction as bridge_user_interaction,
 };
 
 /// Spawn a fresh `Client` for `bridge` and start the reader subtask.
@@ -176,8 +175,8 @@ async fn emit_connected(
         });
     let init_permission_mode = raw_permission_mode
         .as_deref()
-        .and_then(bridge_state::PermissionMode::from_wire)
-        .or(Some(bridge_state::PermissionMode::Ask));
+        .and_then(PermissionMode::from_wire)
+        .or(Some(PermissionMode::Ask));
     let supports_bypass = init_record
         .and_then(|r| r.get("supportsBypassPermissionsMode"))
         .and_then(serde_json::Value::as_bool)

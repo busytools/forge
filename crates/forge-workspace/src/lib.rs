@@ -127,7 +127,7 @@ pub mod translate {
 pub mod userdata {
     pub use forge_agent::userdata::*;
 }
-pub use forge_agent::state::PermissionMode;
+pub use forge_primitives::permission::PermissionMode;
 
 // Test-only re-exports. The smoke-test suite at
 // `crates/forge-tui/tests/forge_sdk_smoke.rs` needs `Agent::spawn`

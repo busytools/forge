@@ -3,9 +3,8 @@
 //! `System(init)` arrives + on `/mode` slash submit) and by the
 //! worker (to assemble the Connected event payload at spawn time).
 
+use forge_primitives::permission::PermissionMode;
 use forge_primitives::{ModeInfo, ModeState};
-
-use super::state::PermissionMode;
 
 const BASE_SUPPORTED_MODE_IDS: [PermissionMode; 4] = [
     PermissionMode::Ask,

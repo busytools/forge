@@ -31,7 +31,6 @@ pub mod forge_sdk_worker;
 pub mod logging;
 pub mod replay;
 pub mod session_lifecycle;
-pub mod state;
 pub mod tooling;
 pub mod translate;
 pub mod user_interaction;
@@ -39,4 +38,4 @@ pub mod userdata;
 
 pub use agent::{Agent, AgentError, AgentHandle};
 pub use client::{AgentEvent, SessionLaunchSettings};
-pub use state::PermissionMode;
+pub use forge_primitives::permission::PermissionMode;
