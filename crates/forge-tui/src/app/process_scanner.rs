@@ -92,8 +92,8 @@ impl Drop for ScanInFlightGuard {
 }
 
 /// Spawn a tokio local task that runs
-/// `workspace.scan_processes(claude_pid)` on a blocking pool and
-/// sends a `SnapshotReady` on completion.
+/// `forge_workspace::env::processes::scan(claude_pid)` on a blocking
+/// pool and sends a `SnapshotReady` on completion.
 ///
 /// Early-returns (debug-logged) when:
 /// - `claude_pid` is `None` (pre-spawn / disconnected session).
@@ -135,7 +135,7 @@ pub fn request_refresh(
         // pool so the per-second ticker on this runtime doesn't
         // stall behind the ~50–100 ms scan.
         let snapshot = match tokio::task::spawn_blocking(move || {
-            forge_workspace::Workspace::scan_processes(claude_pid)
+            forge_workspace::env::processes::scan(claude_pid)
         })
         .await
         {
