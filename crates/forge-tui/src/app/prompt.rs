@@ -67,19 +67,24 @@ pub enum PromptMode {
 }
 
 impl PromptState {
-    /// Construct from a wire `PermissionRequest`. Always includes the
+    /// Construct from a wire `PermissionRequest`. Appends a
     /// forge-synthesized "Tell Claude something else" escape hatch as
-    /// the last option.
+    /// the last option, but only when the wire didn't already include
+    /// a Notes-kind option — claude CLI's permission UI ships its own
+    /// "Tell Claude something else" entry for some tools.
     pub fn from_permission(tool_id: String, request: PermissionRequest) -> Self {
         let mut options = request.options;
-        // Append the forge-synthesized "Tell Claude something else" escape
-        // hatch. Routes to `deny(notes_text)` on submit.
-        options.push(PermissionOption {
-            option_id: "tell_claude".into(),
-            name: "Tell Claude something else".into(),
-            kind: forge_primitives::permission_ui::PermissionOptionKind::Notes,
-            action: forge_primitives::permission_ui::PermissionAction::Deny,
+        let already_has_notes = options.iter().any(|o| {
+            matches!(o.kind, forge_primitives::permission_ui::PermissionOptionKind::Notes)
         });
+        if !already_has_notes {
+            options.push(PermissionOption {
+                option_id: "tell_claude".into(),
+                name: "Tell Claude something else".into(),
+                kind: forge_primitives::permission_ui::PermissionOptionKind::Notes,
+                action: forge_primitives::permission_ui::PermissionAction::Deny,
+            });
+        }
 
         let tool_name = request.tool_call.title.clone();
         let tool_args_summary = summarize_tool_args(&request.tool_call);

@@ -678,6 +678,11 @@ fn handle_mode_cycle_key(app: &mut App, key: KeyEvent) -> bool {
         available_modes: modes,
     }));
     app.invalidate_layout(InvalidationLevel::Global);
+    // `set_mode` + layout invalidation don't trigger a redraw on their
+    // own — without this the chat history doesn't re-render until the
+    // next async update, so the mode chip (and any UI surface that
+    // reads `app.mode()`) lags behind the keypress.
+    app.needs_redraw = true;
     true
 }
 
