@@ -918,10 +918,24 @@ fn build_permission_options(
                     PermissionAction::AllowWithUpdates { updates: vec![update.clone()] },
                 )
             }
-            PermissionUpdate::SetMode { mode, .. } => (
-                format!("Allow always & switch to {} mode", mode.display_name()),
-                PermissionAction::AllowWithUpdates { updates: vec![update.clone()] },
-            ),
+            PermissionUpdate::SetMode { mode, destination } => {
+                // Forge promotes claude's `acceptEdits` suggestion to
+                // `auto` (bypassPermissions) — the user has a global
+                // Auto/Ask toggle, so the partial-auto stepping stone
+                // is confusing. Other SetMode targets pass through.
+                let target_mode =
+                    if matches!(mode, forge_primitives::permission::PermissionMode::AcceptEdits) {
+                        forge_primitives::permission::PermissionMode::Auto
+                    } else {
+                        *mode
+                    };
+                let swapped_update =
+                    PermissionUpdate::SetMode { mode: target_mode, destination: *destination };
+                (
+                    format!("Allow always & switch to {} mode", target_mode.display_name()),
+                    PermissionAction::AllowWithUpdates { updates: vec![swapped_update] },
+                )
+            }
             // RemoveRules / ReplaceRules / RemoveDirectories aren't
             // user-facing prompt options. Skip.
             PermissionUpdate::RemoveRules { .. }
@@ -1438,7 +1452,10 @@ mod tests_permission_options {
     }
 
     #[test]
-    fn set_mode_suggestion_yields_switch_mode_option() {
+    fn set_mode_suggestion_promotes_accept_edits_to_auto() {
+        // Forge promotes the wire's `acceptEdits` SetMode suggestion
+        // to `auto` so the user sees a single coherent Auto/Ask toggle
+        // instead of a partial-auto stepping stone.
         let suggestion = PermissionUpdate::SetMode {
             mode: PermissionMode::AcceptEdits,
             destination: Some(PermissionUpdateDestination::Session),
@@ -1446,7 +1463,37 @@ mod tests_permission_options {
         let opts = build_permission_options(&mk_ctx("Write", vec![suggestion]));
         let switch_mode =
             opts.iter().find(|o| o.option_id == "allow_always_0").expect("allow_always_0 present");
-        assert!(switch_mode.name.to_lowercase().contains("accept edits"));
+        assert!(
+            switch_mode.name.to_lowercase().contains("auto"),
+            "expected 'Auto' in promoted option name; got: {}",
+            switch_mode.name
+        );
+        // Action carries the swapped SetMode with Auto target.
+        let PermissionAction::AllowWithUpdates { updates } = &switch_mode.action else {
+            panic!("expected AllowWithUpdates action; got {:?}", switch_mode.action);
+        };
+        let PermissionUpdate::SetMode { mode, .. } = &updates[0] else {
+            panic!("expected SetMode update");
+        };
+        assert_eq!(*mode, PermissionMode::Auto);
+    }
+
+    #[test]
+    fn set_mode_suggestion_keeps_non_accept_edits_modes() {
+        // Plan / Ask / Auto / BypassPermissions targets pass through
+        // unchanged — only acceptEdits is promoted.
+        let suggestion =
+            PermissionUpdate::SetMode { mode: PermissionMode::Plan, destination: None };
+        let opts = build_permission_options(&mk_ctx("Write", vec![suggestion]));
+        let switch_mode =
+            opts.iter().find(|o| o.option_id == "allow_always_0").expect("allow_always_0 present");
+        let PermissionAction::AllowWithUpdates { updates } = &switch_mode.action else {
+            panic!("expected AllowWithUpdates");
+        };
+        let PermissionUpdate::SetMode { mode, .. } = &updates[0] else {
+            panic!("expected SetMode");
+        };
+        assert_eq!(*mode, PermissionMode::Plan);
     }
 
     #[test]
