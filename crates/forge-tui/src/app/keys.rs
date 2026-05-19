@@ -1171,14 +1171,16 @@ mod tests {
         assert!(!is_ctrl_char_shortcut(key, 'v'));
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn shift_z_routes_to_redo_not_undo() {
         // Regression: `is_cmd_shortcut` is permissive about extra
         // modifier bits, so a plain `Char('z') if is_cmd_shortcut(m)`
         // arm placed BEFORE the Shift-bearing redo arm would match
-        // Ctrl+Shift+Z / Cmd+Shift+Z first and route to undo. The
-        // Shift-bearing arms must come first AND the undo arm must
-        // exclude Shift.
+        // Cmd+Shift+Z first and route to undo. The Shift-bearing
+        // arms must come first AND the undo arm must exclude Shift.
+        // macOS-only: Linux/Windows redo via Ctrl+Y, not Ctrl+Shift+Z,
+        // so the regression class doesn't exist there.
         let mut app = App::test_default();
         app.input_mut().set_text("a");
         // Make a delete so we have something to undo, then make
