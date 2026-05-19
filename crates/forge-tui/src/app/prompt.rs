@@ -28,15 +28,6 @@ pub struct PromptState {
     pub edited_input: Option<Value>,
 }
 
-// Notes text + cursor are NOT stored on PromptState. The canonical
-// chat-input editor (`App.input`) is reused as the notes editor —
-// when the dock is morphed AND the focused option is `Notes`-kind,
-// keystrokes (including SuperWhisper paste) route to `App.input` and
-// the renderer reads `app.input().lines()` inline below the option.
-// Chat-input draft is snapshotted/restored via the App-level draft
-// preservation hooks (see `snapshot_draft_if_needed` /
-// `restore_draft_if_empty_queue`).
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum PromptSource {
     /// `can_use_tool` permission request (incl. ExitPlanMode).
@@ -62,7 +53,7 @@ pub enum PromptMode {
     /// of being swallowed.
     OptionPicker,
     /// User selected allow-with-edits — typing edits `edited_input`.
-    /// Stub for v1 per spec §10.
+    /// Stub; full inline tool-args editor is a follow-on.
     EditingInput,
 }
 
@@ -261,19 +252,11 @@ pub fn handle_key_option_picker(prompt: &mut PromptState, key: KeyEvent) -> Prom
     }
 }
 
-// `handle_key_notes_editor` is gone: the canonical `App.input` editor
-// now serves as the notes input. See `dispatch_key` above for the
-// routing — when focused option is `PermissionOptionKind::Notes`,
-// keys flow through `app.input_mut().editor_mut().input(...)` which
-// is `tui_textarea`'s native handler (handles unicode, paste bursts,
-// SuperWhisper insertions, cursor navigation — everything the chat
-// input handles).
-
 /// Stub for Edit-mode handling (`PermissionAction::AllowWithInput`).
-/// Full inline tool-args editor is deferred per spec §10. For now:
 /// Esc returns to OptionPicker; Enter submits (with `edited_input`
-/// still `None`, which the dispatcher in Task 7 falls back to plain
-/// `allow()`). Any other key is consumed so it can't leak through.
+/// still `None`, which the dispatcher falls back to plain `allow()`).
+/// Any other key is consumed so it can't leak through.
+// TODO: inline tool-args editor for AllowWithInput.
 pub fn handle_key_editing_input(prompt: &mut PromptState, key: KeyEvent) -> PromptKeyOutcome {
     match key.code {
         KeyCode::Esc => {
@@ -652,7 +635,7 @@ pub(crate) mod tests {
         assert_eq!(session.prompt_queue.front().expect("head").tool_id, "tc-1");
     }
 
-    // ── Task 16 ─ handle_key_option_picker ─────────────────────────
+    // ── handle_key_option_picker ───────────────────────────────────
 
     use crossterm::event::KeyModifiers;
 
@@ -790,12 +773,7 @@ pub(crate) mod tests {
         assert_eq!(outcome, PromptKeyOutcome::Consumed);
     }
 
-    // Notes-editor tests removed: the editor is now the canonical
-    // `App.input` widget reached via `dispatch_key`'s Notes-kind
-    // routing branch. Coverage moves to integration-style tests of
-    // dispatch_key + submit_prompt that read text from App.input.
-
-    // ── Task 18 ─ handle_key_editing_input + dispatch_key ──────────
+    // ── handle_key_editing_input + dispatch_key ────────────────────
 
     #[test]
     fn esc_in_editing_input_returns_to_option_picker() {
@@ -853,7 +831,7 @@ pub(crate) mod tests {
         assert!(!handled);
     }
 
-    // ── Task 19 ─ submit_prompt / cancel_prompt ───────────────────
+    // ── submit_prompt / cancel_prompt ──────────────────────────────
 
     #[test]
     fn submit_with_allow_dispatches_respond_permission_with_allow_outcome() {
@@ -1077,7 +1055,7 @@ pub(crate) mod tests {
         }
     }
 
-    // ── Task 20 ─ draft input preservation across morph ───────────
+    // ── draft input preservation across morph ──────────────────────
 
     #[test]
     fn draft_preserved_across_morph_and_restored_when_queue_empties() {

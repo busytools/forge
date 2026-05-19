@@ -1,5 +1,5 @@
 //! Unified prompt widget renderer. Renders the dock when a prompt is
-//! active in the session's queue. See spec §3.
+//! active in the session's queue.
 
 use crate::app::{PromptMode, PromptSource, PromptState};
 use crate::ui::theme;
@@ -119,10 +119,10 @@ fn build_lines(
     notes_text: Option<&str>,
 ) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
-    // 1 empty row top (spec §3 inner padding).
+    // 1 empty row top.
     lines.push(Line::default());
 
-    // Queue-depth indicator (spec §3.7).
+    // Queue-depth indicator.
     if queue_depth > 1 {
         lines.push(Line::from(vec![Span::styled(
             format!("▼ {} more pending after this", queue_depth - 1),
@@ -141,7 +141,7 @@ fn build_lines(
     lines.push(Line::default());
     lines.push(build_footer_line(prompt));
 
-    // 1 empty row bottom (spec §3 inner padding).
+    // 1 empty row bottom.
     lines.push(Line::default());
     lines
 }
