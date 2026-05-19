@@ -24,6 +24,13 @@ const HELP_TAB_NEXT_KEY: KeyCode = KeyCode::Right;
 // kitty enhanced-keyboard protocol (Ghostty, kitty, WezTerm). forge-tui
 // negotiates DISAMBIGUATE_ESCAPE_CODES + REPORT_EVENT_TYPES +
 // REPORT_ALTERNATE_KEYS at startup so this is the case in our stack.
+//
+// Cmd-prefixed shortcut detection on macOS accepts BOTH SUPER and
+// CONTROL — Termux/SSH sessions to the Mac Studio cannot send SUPER
+// (Android sends Ctrl), so requiring SUPER would lock SSH'd users
+// out of Cmd+C / Cmd+V / Cmd+Z. Treating Ctrl as an equivalent Cmd
+// for these app shortcuts costs nothing local (Cmd still works) and
+// makes the remote case work too. See `is_cmd_shortcut`.
 #[cfg(target_os = "macos")]
 pub(crate) const CMD_MOD: KeyModifiers = KeyModifiers::SUPER;
 #[cfg(not(target_os = "macos"))]
@@ -51,7 +58,23 @@ fn is_ctrl_shortcut(modifiers: KeyModifiers) -> bool {
 }
 
 fn is_cmd_shortcut(modifiers: KeyModifiers) -> bool {
-    modifiers.contains(CMD_MOD) && !modifiers.contains(KeyModifiers::ALT)
+    if modifiers.contains(KeyModifiers::ALT) {
+        return false;
+    }
+    if modifiers.contains(CMD_MOD) {
+        return true;
+    }
+    // macOS: accept Ctrl too so SSH/Termux clients (which can't send
+    // SUPER) still get Cmd+C / Cmd+V / Cmd+Z. Off macOS this is a
+    // no-op because CMD_MOD already equals CONTROL.
+    #[cfg(target_os = "macos")]
+    {
+        return modifiers.contains(KeyModifiers::CONTROL);
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
 }
 
 fn ctrl_char(expected: char) -> Option<char> {
@@ -297,7 +320,7 @@ fn handle_global_shortcuts(app: &mut App, key: KeyEvent) -> bool {
         // Toggle all tool calls — Cmd+X on macOS, Ctrl+X elsewhere
         // via CMD_MOD. Same platform-modifier convention as the
         // pane-toggle arrows above.
-        (KeyCode::Char('x'), m) if m == CMD_MOD => {
+        (KeyCode::Char('x'), m) if is_cmd_shortcut(m) => {
             toggle_all_tool_calls(app);
             true
         }
@@ -508,19 +531,22 @@ fn handle_submit_key(app: &mut App, key: KeyEvent) -> bool {
 fn handle_history_key(app: &mut App, key: KeyEvent) -> bool {
     match (key.code, key.modifiers) {
         // macOS: Cmd+Z undo. Linux/Windows: Ctrl+Z undo.
-        (KeyCode::Char('z'), m) if m == CMD_MOD => app.input_mut().textarea_undo(),
+        (KeyCode::Char('z'), m) if is_cmd_shortcut(m) => app.input_mut().textarea_undo(),
         // macOS: Cmd+Shift+Z redo. Ghostty / kitty enhanced keyboard
         // reports this as lowercase 'z' with SUPER | SHIFT bits set;
         // some terminals report uppercase 'Z' with SUPER. Match both.
         #[cfg(target_os = "macos")]
-        (KeyCode::Char('z'), m) if m == CMD_MOD | KeyModifiers::SHIFT => {
+        (KeyCode::Char('z'), m)
+            if m.contains(KeyModifiers::SHIFT)
+                && is_cmd_shortcut(m.difference(KeyModifiers::SHIFT)) =>
+        {
             app.input_mut().textarea_redo()
         }
         #[cfg(target_os = "macos")]
-        (KeyCode::Char('Z'), m) if m == CMD_MOD => app.input_mut().textarea_redo(),
+        (KeyCode::Char('Z'), m) if is_cmd_shortcut(m) => app.input_mut().textarea_redo(),
         // Linux/Windows: Ctrl+Y redo.
         #[cfg(not(target_os = "macos"))]
-        (KeyCode::Char('y'), m) if m == CMD_MOD => app.input_mut().textarea_redo(),
+        (KeyCode::Char('y'), m) if is_cmd_shortcut(m) => app.input_mut().textarea_redo(),
         _ => false,
     }
 }
@@ -858,13 +884,18 @@ fn should_sync_autocomplete_after_key(_app: &App, key: KeyEvent) -> bool {
             | KeyCode::Enter,
             _,
         ) => true,
-        (KeyCode::Char('z'), m) if m == CMD_MOD => true,
+        (KeyCode::Char('z'), m) if is_cmd_shortcut(m) => true,
         #[cfg(target_os = "macos")]
-        (KeyCode::Char('z'), m) if m == CMD_MOD | KeyModifiers::SHIFT => true,
+        (KeyCode::Char('z'), m)
+            if m.contains(KeyModifiers::SHIFT)
+                && is_cmd_shortcut(m.difference(KeyModifiers::SHIFT)) =>
+        {
+            true
+        }
         #[cfg(target_os = "macos")]
-        (KeyCode::Char('Z'), m) if m == CMD_MOD => true,
+        (KeyCode::Char('Z'), m) if is_cmd_shortcut(m) => true,
         #[cfg(not(target_os = "macos"))]
-        (KeyCode::Char('y'), m) if m == CMD_MOD => true,
+        (KeyCode::Char('y'), m) if is_cmd_shortcut(m) => true,
         (KeyCode::Char(_), m) if is_printable_text_modifiers(m) => true,
         _ => false,
     }
