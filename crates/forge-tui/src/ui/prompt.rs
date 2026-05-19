@@ -10,6 +10,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Text;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Padding, Paragraph, Widget, Wrap};
+use unicode_width::UnicodeWidthStr;
 
 /// Render the prompt into `area` (the chat-input box's rect). The
 /// orange thick chrome is drawn here too — the caller does NOT render
@@ -167,28 +168,35 @@ fn build_option_lines(prompt: &PromptState) -> Vec<Line<'static>> {
             Style::default().fg(Color::Gray)
         };
         let mut spans: Vec<Span<'static>> = vec![Span::styled(pointer.to_string(), pointer_style)];
+        let checkbox_str = if is_multi { if is_toggled { "[x] " } else { "[ ] " } } else { "" };
         if is_multi {
-            let checkbox = if is_toggled { "[x] " } else { "[ ] " };
             let checkbox_style = if is_toggled {
                 Style::default().fg(Color::Green)
             } else {
                 Style::default().fg(theme::DIM)
             };
-            spans.push(Span::styled(checkbox.to_string(), checkbox_style));
+            spans.push(Span::styled(checkbox_str.to_string(), checkbox_style));
         }
-        spans.push(Span::styled(format!("{icon} "), Style::default().fg(icon_color)));
+        let icon_str = format!("{icon} ");
+        spans.push(Span::styled(icon_str.clone(), Style::default().fg(icon_color)));
         spans.push(Span::styled(opt.name.clone(), name_style));
         lines.push(Line::from(spans));
 
         // Question-specific: render the option's description as dim
         // subtext below the option label (if present and non-empty).
+        // Indent dynamically matches the display width of pointer +
+        // checkbox + icon so the description's first column aligns with
+        // the option name regardless of glyph widths.
         if let Some(q_opts) = question_options
             && let Some(q_opt) = q_opts.get(i)
             && let Some(desc) = q_opt.description.as_deref().filter(|d| !d.is_empty())
         {
-            // 4-space indent to align with option name (past ▸ + ✓ + space).
+            let prefix_width = UnicodeWidthStr::width(pointer)
+                + UnicodeWidthStr::width(checkbox_str)
+                + UnicodeWidthStr::width(icon_str.as_str());
+            let indent = " ".repeat(prefix_width);
             lines.push(Line::from(vec![
-                Span::raw("    "),
+                Span::raw(indent),
                 Span::styled(desc.to_owned(), Style::default().fg(theme::DIM)),
             ]));
         }
@@ -255,6 +263,19 @@ mod tests {
             .map(|y| (0..width).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>())
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// Display column of `target` in `s`, summing UnicodeWidthChar
+    /// widths of every char before it.
+    fn display_col(s: &str, target: char) -> Option<usize> {
+        let mut col = 0;
+        for c in s.chars() {
+            if c == target {
+                return Some(col);
+            }
+            col += unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+        }
+        None
     }
 
     #[test]
@@ -340,6 +361,26 @@ mod tests {
         let out = render_to_string(&prompt, 1, 80, 14);
         assert!(out.contains("[x] ✓ Red"), "expected [x] on toggled option; got:\n{out}");
         assert!(out.contains("[ ] ✓ Blue"), "expected [ ] on untoggled option; got:\n{out}");
+    }
+
+    #[test]
+    fn description_left_column_equals_option_name_left_column() {
+        // Description should align with the option NAME column, not the
+        // icon column. Asserts both rows' first non-blank/non-border
+        // character lands on the same DISPLAY column (not byte index).
+        let mut request = make_question_request(false);
+        request.prompt.options[0].description = Some("DESCSTART".into());
+        let prompt = PromptState::from_question("tc-q".into(), request);
+        let out = render_to_string(&prompt, 1, 80, 18);
+        let lines: Vec<&str> = out.lines().collect();
+        let opt_line = lines.iter().find(|l| l.contains("Red")).expect("option row");
+        let desc_line = lines.iter().find(|l| l.contains("DESCSTART")).expect("desc row");
+        let opt_name_col = display_col(opt_line, 'R').expect("Red in option row");
+        let desc_col = display_col(desc_line, 'D').expect("DESCSTART in desc row");
+        assert_eq!(
+            opt_name_col, desc_col,
+            "description first char must align with option name first char (display cols).\nname col {opt_name_col} in: {opt_line}\ndesc col {desc_col} in: {desc_line}"
+        );
     }
 
     #[test]
