@@ -78,47 +78,7 @@ impl ContentChunk {
 /// payload — same shape as `ContentChunk`.
 pub type Content = ContentChunk;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ToolKind {
-    Read,
-    Edit,
-    Delete,
-    Move,
-    Execute,
-    Search,
-    Fetch,
-    Think,
-    SwitchMode,
-    Other,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ToolCallStatus {
-    Pending,
-    InProgress,
-    Completed,
-    Failed,
-    Killed,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ToolCallLocation {
-    pub path: PathBuf,
-    pub line: Option<u32>,
-}
-
-impl ToolCallLocation {
-    pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into(), line: None }
-    }
-
-    pub fn line(mut self, line: u32) -> Self {
-        self.line = Some(line);
-        self
-    }
-}
+pub use forge_primitives::{ToolCallLocation, ToolCallStatus, ToolKind};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalToolCallContent {

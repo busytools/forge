@@ -726,12 +726,12 @@ async fn run_ask_user_question(
 }
 
 fn synth_question_base_tool_call(ctx: &ToolPermissionContext) -> forge_primitives::ToolCall {
-    use forge_primitives::ToolCall;
+    use forge_primitives::{ToolCall, ToolCallStatus, ToolKind};
     ToolCall {
         tool_call_id: ctx.tool_use_id.clone(),
         title: bridge_user_interaction::ASK_USER_QUESTION_TOOL_NAME.to_owned(),
-        kind: "ask".to_owned(),
-        status: "pending".to_owned(),
+        kind: ToolKind::Other,
+        status: ToolCallStatus::Pending,
         content: Vec::new(),
         raw_input: Some(ctx.tool_input.clone()),
         raw_output: None,
@@ -825,12 +825,14 @@ pub(crate) fn deliver_question_response(
 }
 
 fn synth_permission_request(session_id: &str, ctx: &ToolPermissionContext) -> AgentEvent {
-    use forge_primitives::{PermissionDisplay, PermissionRequest, ToolCall};
+    use forge_primitives::{
+        PermissionDisplay, PermissionRequest, ToolCall, ToolCallStatus, ToolKind,
+    };
     let tool_call = ToolCall {
         tool_call_id: ctx.tool_use_id.clone(),
         title: ctx.tool_name.clone(),
-        kind: "execute".to_owned(),
-        status: "pending".to_owned(),
+        kind: ToolKind::Execute,
+        status: ToolCallStatus::Pending,
         content: Vec::new(),
         raw_input: Some(ctx.tool_input.clone()),
         raw_output: None,

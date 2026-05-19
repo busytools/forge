@@ -96,21 +96,10 @@ pub(crate) fn convert_tool_call(tool_call: types::ToolCall) -> model::ToolCall {
     } = tool_call;
 
     let mut tc = model::ToolCall::new(tool_call_id, title)
-        .kind(convert_tool_kind(&kind))
-        .status(convert_tool_status(&status))
+        .kind(kind)
+        .status(status)
         .content(content.into_iter().filter_map(convert_tool_call_content).collect())
-        .locations(
-            locations
-                .into_iter()
-                .map(|loc| {
-                    let mut location = model::ToolCallLocation::new(loc.path);
-                    if let Some(line) = loc.line.and_then(|line| u32::try_from(line).ok()) {
-                        location = location.line(line);
-                    }
-                    location
-                })
-                .collect(),
-        );
+        .locations(locations);
 
     if let Some(raw_input) = raw_input {
         tc = tc.raw_input(raw_input);
@@ -153,10 +142,10 @@ pub(super) fn convert_tool_call_update_fields(
         out = out.title(title);
     }
     if let Some(kind) = fields.kind {
-        out = out.kind(convert_tool_kind(&kind));
+        out = out.kind(kind);
     }
     if let Some(status) = fields.status {
-        out = out.status(convert_tool_status(&status));
+        out = out.status(status);
     }
     if let Some(content) = fields.content {
         out = out
@@ -175,18 +164,7 @@ pub(super) fn convert_tool_call_update_fields(
         out = out.task_metadata(task_metadata);
     }
     if let Some(locations) = fields.locations {
-        out = out.locations(
-            locations
-                .into_iter()
-                .map(|loc| {
-                    let mut location = model::ToolCallLocation::new(loc.path);
-                    if let Some(line) = loc.line.and_then(|line| u32::try_from(line).ok()) {
-                        location = location.line(line);
-                    }
-                    location
-                })
-                .collect::<Vec<_>>(),
-        );
+        out = out.locations(locations);
     }
 
     out
@@ -213,31 +191,6 @@ fn convert_tool_call_content(
                     .blob_saved_to(blob_saved_to),
             ))
         }
-    }
-}
-
-pub(super) fn convert_tool_kind(kind: &str) -> model::ToolKind {
-    match kind {
-        "read" => model::ToolKind::Read,
-        "edit" => model::ToolKind::Edit,
-        "delete" => model::ToolKind::Delete,
-        "move" => model::ToolKind::Move,
-        "execute" => model::ToolKind::Execute,
-        "search" => model::ToolKind::Search,
-        "fetch" => model::ToolKind::Fetch,
-        "switch_mode" => model::ToolKind::SwitchMode,
-        "other" => model::ToolKind::Other,
-        _ => model::ToolKind::Think,
-    }
-}
-
-pub(super) fn convert_tool_status(status: &str) -> model::ToolCallStatus {
-    match status {
-        "in_progress" => model::ToolCallStatus::InProgress,
-        "completed" => model::ToolCallStatus::Completed,
-        "failed" => model::ToolCallStatus::Failed,
-        "killed" => model::ToolCallStatus::Killed,
-        _ => model::ToolCallStatus::Pending,
     }
 }
 
@@ -301,7 +254,7 @@ mod tests {
     #[test]
     fn convert_tool_call_update_fields_preserves_output_metadata() {
         let fields = convert_tool_call_update_fields(types::ToolCallUpdateFields {
-            status: Some("completed".to_owned()),
+            status: Some(types::ToolCallStatus::Completed),
             output_metadata: Some(types::ToolOutputMetadata {
                 bash: Some(types::BashOutputMetadata { assistant_auto_backgrounded: Some(true) }),
                 todo_write: Some(types::TodoWriteOutputMetadata {
@@ -323,11 +276,6 @@ mod tests {
                     )),
             )
         );
-    }
-
-    #[test]
-    fn convert_tool_status_maps_killed() {
-        assert_eq!(super::convert_tool_status("killed"), model::ToolCallStatus::Killed);
     }
 
     #[test]
@@ -359,8 +307,8 @@ mod tests {
         let tool_call = convert_tool_call(types::ToolCall {
             tool_call_id: "tool-task".to_owned(),
             title: "Agent task".to_owned(),
-            kind: "think".to_owned(),
-            status: "killed".to_owned(),
+            kind: types::ToolKind::Think,
+            status: types::ToolCallStatus::Killed,
             content: Vec::new(),
             raw_input: None,
             raw_output: None,
@@ -393,8 +341,8 @@ mod tests {
         let tool_call = convert_tool_call(types::ToolCall {
             tool_call_id: "tool-1".to_owned(),
             title: "Write src/main.rs".to_owned(),
-            kind: "edit".to_owned(),
-            status: "completed".to_owned(),
+            kind: types::ToolKind::Edit,
+            status: types::ToolCallStatus::Completed,
             content: vec![types::ToolCallContent::Diff {
                 new_path: "src/main.rs".to_owned(),
                 old: "old".to_owned(),
@@ -424,8 +372,8 @@ mod tests {
         let tool_call = convert_tool_call(types::ToolCall {
             tool_call_id: "tool-2".to_owned(),
             title: "ReadMcpResource docs file://manual.pdf".to_owned(),
-            kind: "read".to_owned(),
-            status: "completed".to_owned(),
+            kind: types::ToolKind::Read,
+            status: types::ToolCallStatus::Completed,
             content: vec![types::ToolCallContent::McpResource {
                 uri: "file://manual.pdf".to_owned(),
                 mime_type: Some("application/pdf".to_owned()),

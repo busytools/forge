@@ -430,7 +430,7 @@ fn apply_tool_use_block(
         .map(str::to_owned)
         .or_else(|| parent_tool_use_id_from_meta(existing.as_ref().and_then(|e| e.meta.as_ref())));
     let mut tool_call = create_tool_call(tool_use_id, name, input, resolved_parent.as_deref());
-    "in_progress".clone_into(&mut tool_call.status);
+    tool_call.status = forge_primitives::ToolCallStatus::InProgress;
 
     if existing.is_none() {
         let tc = tool_call.clone();
@@ -444,8 +444,8 @@ fn apply_tool_use_block(
 
     let mut fields = ToolCallUpdateFields {
         title: Some(tool_call.title.clone()),
-        kind: Some(tool_call.kind.clone()),
-        status: Some("in_progress".to_owned()),
+        kind: Some(tool_call.kind),
+        status: Some(forge_primitives::ToolCallStatus::InProgress),
         raw_input: tool_call.raw_input.clone(),
         locations: Some(tool_call.locations.clone()),
         meta: tool_call.meta.clone(),
@@ -508,14 +508,16 @@ fn apply_tool_call_update(
 /// to `Completed` here would visually mark a still-running monitor
 /// as done in both the chat-stream card and the Inspector PROCESSES
 /// section.
-fn finalize_open_tool_calls(app: &mut App, status: &str) {
+fn finalize_open_tool_calls(app: &mut App, status: forge_primitives::ToolCallStatus) {
     use crate::app::state::tool_call_info::is_monitor_tool_name;
-    use forge_primitives::ToolCallUpdateFields;
+    use forge_primitives::{ToolCallStatus, ToolCallUpdateFields};
 
     let pending: Vec<String> = app.with_turn_state(|ts| {
         ts.tool_calls
             .iter()
-            .filter(|(_, t)| matches!(t.status.as_str(), "pending" | "in_progress"))
+            .filter(|(_, t)| {
+                matches!(t.status, ToolCallStatus::Pending | ToolCallStatus::InProgress)
+            })
             .filter(|(_, t)| {
                 // Skip explicit persistent monitors — the docs and
                 // wire shape both say these outlive the turn that
@@ -548,7 +550,7 @@ fn finalize_open_tool_calls(app: &mut App, status: &str) {
         apply_tool_call_update(
             app,
             &id,
-            ToolCallUpdateFields { status: Some(status.to_owned()), ..Default::default() },
+            ToolCallUpdateFields { status: Some(status), ..Default::default() },
         );
     }
 }
@@ -967,7 +969,7 @@ fn handle_task_updated(app: &mut App, msg: Message) {
     apply_tool_call_update(
         app,
         &tool_use_id,
-        ToolCallUpdateFields { status: Some(mapped_status.to_owned()), ..Default::default() },
+        ToolCallUpdateFields { status: Some(mapped_status), ..Default::default() },
     );
 
     // Drain the alive-task set on terminal transitions so the
@@ -984,22 +986,19 @@ fn handle_task_updated(app: &mut App, msg: Message) {
 }
 
 /// Map the wire-side `task_updated.patch.status` string to the
-/// internal `ToolCallInfo.status` string vocabulary.
-///
-/// The wire uses `"running"`; the internal state uses
-/// `"in_progress"`. Other transitions (`completed`, `failed`,
-/// `killed`, `stopped`, `pending`) round-trip 1:1. Unknown strings
-/// pass through unchanged for forward-compat — a future CLI version
-/// adding a status won't crash forge; the renderer just won't
-/// know how to colour it.
-fn map_task_updated_status_to_tool_status(wire_status: &str) -> &str {
+/// typed `ToolCallStatus`. The wire uses `"running"`; the internal
+/// type uses `InProgress`. `stopped` is the wire spelling for a
+/// graceful cancel; map to `Killed` so the renderer picks the same
+/// glyph as for explicit kill operations. Unknown wire strings fall
+/// through to `Pending` (matches `#[serde(other)]` on the enum).
+fn map_task_updated_status_to_tool_status(wire_status: &str) -> forge_primitives::ToolCallStatus {
+    use forge_primitives::ToolCallStatus;
     match wire_status {
-        "running" => "in_progress",
-        // `stopped` is the wire spelling for a graceful cancel; map
-        // to the internal `killed` so the renderer picks the same
-        // glyph as for explicit kill operations.
-        "stopped" => "killed",
-        other => other,
+        "running" => ToolCallStatus::InProgress,
+        "completed" => ToolCallStatus::Completed,
+        "failed" => ToolCallStatus::Failed,
+        "killed" | "stopped" => ToolCallStatus::Killed,
+        _ => ToolCallStatus::Pending,
     }
 }
 
@@ -1022,13 +1021,20 @@ fn apply_tool_progress_update(app: &mut App, tool_use_id: &str, name: &str) {
         apply_tool_use_block(app, tool_use_id, name, &Value::Object(serde_json::Map::new()), None);
         return;
     };
-    if matches!(existing.status.as_str(), "in_progress" | "completed" | "failed" | "killed") {
+    use forge_primitives::ToolCallStatus;
+    if matches!(
+        existing.status,
+        ToolCallStatus::InProgress
+            | ToolCallStatus::Completed
+            | ToolCallStatus::Failed
+            | ToolCallStatus::Killed
+    ) {
         return;
     }
     apply_tool_call_update(
         app,
         tool_use_id,
-        ToolCallUpdateFields { status: Some("in_progress".to_owned()), ..Default::default() },
+        ToolCallUpdateFields { status: Some(ToolCallStatus::InProgress), ..Default::default() },
     );
 }
 
@@ -1054,15 +1060,16 @@ fn apply_tool_summary_update(app: &mut App, tool_use_id: &str, summary: &str) {
     let Some(base) = app.with_turn_state(|ts| ts.tool_calls.get(tool_use_id).cloned()) else {
         return;
     };
+    use forge_primitives::ToolCallStatus;
     let persistent = raw_input_is_persistent(base.raw_input.as_ref());
-    let status = if matches!(base.status.as_str(), "failed" | "killed") {
+    let status = if matches!(base.status, ToolCallStatus::Failed | ToolCallStatus::Killed) {
         base.status
     } else if persistent {
-        // Keep the persistent monitor visibly running — only the
+        // Keep the persistent monitor visibly running: only the
         // summary content + raw_output update through.
         base.status
     } else {
-        "completed".to_owned()
+        ToolCallStatus::Completed
     };
     let fields = ToolCallUpdateFields {
         status: Some(status),
@@ -1140,13 +1147,13 @@ fn apply_result_finalize(
         .unwrap_or_else(|| forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY));
     if !is_error && subtype == "success" {
         let _: () = app.with_turn_state_mut(|ts| ts.last_assistant_error = None);
-        finalize_open_tool_calls(app, "completed");
+        finalize_open_tool_calls(app, forge_primitives::ToolCallStatus::Completed);
         super::turn::handle_turn_complete_event(app, &active_key, terminal_reason);
         return;
     }
 
     let assistant_error = app.with_turn_state(|ts| ts.last_assistant_error.clone());
-    finalize_open_tool_calls(app, "failed");
+    finalize_open_tool_calls(app, forge_primitives::ToolCallStatus::Failed);
     // Build a clean detail string for the renderer to use after its
     // canonical "Turn failed: " prefix. Drop the SDK's default
     // `subtype="success"` (an internal bookkeeping value, not a user

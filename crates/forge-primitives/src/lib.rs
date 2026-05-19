@@ -118,7 +118,8 @@ pub use session_key::SessionKey;
 pub use session_meta::{PromptChunk, SessionListEntry};
 pub use session_update::{
     BashOutputMetadata, ChunkContent, TaskMetadata, TodoWriteOutputMetadata, ToolCall,
-    ToolCallContent, ToolCallUpdate, ToolCallUpdateFields, ToolLocation, ToolOutputMetadata,
+    ToolCallContent, ToolCallLocation, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields,
+    ToolKind, ToolOutputMetadata,
 };
 pub use subagents::{EffortPreset, SubagentDefinition, SubagentMcpServerRef, SubagentMemory};
 pub use turn_error::TurnErrorClass;
