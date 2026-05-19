@@ -414,10 +414,26 @@ fn render_lines_from_textarea(textarea: &TextArea<'_>, area: Rect) -> Vec<String
 
 /// Total visual height for the input area: input lines + hint
 /// banners + the bordered box's top/bottom rows. Called by the
-/// layout to allocate the correct input area height. The text-area
-/// portion never collapses below `MIN_INPUT_INTERIOR_LINES`.
+/// layout to allocate the correct input area height.
+///
+/// When the active session has a prompt at the head of its queue,
+/// the height is dictated by the prompt widget's required lines
+/// instead of the chat-input editor — otherwise the morphed dock
+/// would clip the option list to the editor's tiny default height.
+/// The text-area portion never collapses below `MIN_INPUT_INTERIOR_LINES`.
 pub fn visual_line_count(app: &mut App, area_width: u16) -> u16 {
     let hint = hint_line_count(app);
+
+    // Prompt-mode short-circuit: dock is morphed, height comes from
+    // the prompt widget's required lines (header + options + footer +
+    // padding + borders).
+    if let Some(session) = app.active_session() {
+        if let Some(prompt) = session.prompt_queue.front() {
+            let queue_depth = session.prompt_queue.len();
+            return hint + crate::ui::prompt::prompt_required_lines(prompt, queue_depth);
+        }
+    }
+
     // Content width sits inside the box's 1-col left/right borders.
     let content_width = area_width.saturating_sub(2).saturating_sub(PROMPT_WIDTH);
     let input_lines = app

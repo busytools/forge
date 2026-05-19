@@ -27,6 +27,16 @@ pub fn render(area: Rect, buf: &mut Buffer, prompt: &PromptState, queue_depth: u
     Paragraph::new(lines).render(inner, buf);
 }
 
+/// Total rows the prompt widget needs when rendered for `prompt` at
+/// `queue_depth`. Includes the inner content + 2 chrome rows (top
+/// border + bottom border). Used by `ui::input::visual_line_count`
+/// to grow the dock to fit the morphed prompt instead of clipping
+/// it to the chat-input editor's default height.
+pub fn prompt_required_lines(prompt: &PromptState, queue_depth: usize) -> u16 {
+    let inner = build_lines(prompt, queue_depth).len();
+    u16::try_from(inner.saturating_add(2)).unwrap_or(u16::MAX)
+}
+
 fn build_lines(prompt: &PromptState, queue_depth: usize) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     // 1 empty row top (spec §3 inner padding).
