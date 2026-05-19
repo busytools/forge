@@ -40,7 +40,6 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 parking_lot = { workspace = true }
 dirs = { workspace = true }
-uuid = { workspace = true }
 
 [dev-dependencies]
 forge-agent = { workspace = true, features = ["testing"] }

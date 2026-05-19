@@ -21,17 +21,6 @@ pub enum GitBranch {
     Unknown,
 }
 
-impl GitBranch {
-    /// `Some(name)` for `Named`, `None` for everything else. Useful
-    /// for chip-style display where only named branches surface.
-    pub fn as_deref(&self) -> Option<&str> {
-        match self {
-            Self::Named(name) => Some(name.as_str()),
-            Self::Detached | Self::NoRepo | Self::Unknown => None,
-        }
-    }
-}
-
 /// Open pull request associated with the current branch. Populated
 /// by the git-diff scanner via `gh pr list --head <branch>`; surfaces
 /// in the Inspector pane's GIT section as the `PR #N` row.

@@ -2,8 +2,7 @@
 //! upstream's `agent-sdk/src/bridge/tooling.ts` (714 `LoC`).
 //!
 //! Three groups of helpers:
-//! 1. Front-of-tool: `create_tool_call`, `tool_title`, `normalize_tool_kind`,
-//!    `is_tool_use_block_type`, `TOOL_RESULT_TYPES`.
+//! 1. Front-of-tool: `create_tool_call`, `tool_title`, `normalize_tool_kind`.
 //! 2. Result extraction: `build_tool_result_fields` per-tool branches
 //!    (Bash / Read / Write / Edit / Agent / `ReadMcpResource`),
 //!    `normalize_tool_result_text`, `extract_text`,
@@ -37,7 +36,7 @@ fn preview_kilobyte_label() -> String {
 
 /// Block types the CLI uses for tool results. Mirrors upstream's
 /// `TOOL_RESULT_TYPES` set in tooling.ts:5.
-pub const TOOL_RESULT_TYPES: &[&str] = &[
+const TOOL_RESULT_TYPES: &[&str] = &[
     "tool_result",
     "tool_search_tool_result",
     "web_fetch_tool_result",
@@ -50,10 +49,6 @@ pub const TOOL_RESULT_TYPES: &[&str] = &[
 
 pub fn is_tool_result_block_type(block_type: &str) -> bool {
     TOOL_RESULT_TYPES.contains(&block_type)
-}
-
-pub fn is_tool_use_block_type(block_type: &str) -> bool {
-    matches!(block_type, "tool_use" | "server_tool_use" | "mcp_tool_use")
 }
 
 /// Mirrors `normalizeToolKind`. Maps tool name → kind string consumed
