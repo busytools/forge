@@ -772,7 +772,7 @@ fn render_culled_messages(
             local_scroll = remaining_skip;
             structural_skip = 0;
         } else {
-            message::render_message_with_tools_collapsed_and_separator_and_layout_generation_with_mode(
+            message::render_message(
                 &mut app.active_messages_mut()[i],
                 &sp,
                 message::MessageRenderContext::new(
@@ -1438,12 +1438,18 @@ mod tests {
         let scroll = 60;
         let mut full_lines = Vec::new();
         let tools_collapsed = app.tools_collapsed;
-        message::render_message_with_tools_collapsed_and_separator(
+        message::render_message(
             &mut app.active_messages_mut()[0],
             &spinner,
-            width,
-            tools_collapsed,
-            false,
+            message::MessageRenderContext::new(
+                None,
+                width,
+                0,
+                message::MessageRenderOptions {
+                    tools_collapsed,
+                    include_trailing_separator: false,
+                },
+            ),
             &mut full_lines,
         );
         let full_preview = render_lines_from_paragraph(
@@ -1491,12 +1497,18 @@ mod tests {
         let scroll = 1;
         let mut full_lines = Vec::new();
         let tools_collapsed = app.tools_collapsed;
-        message::render_message_with_tools_collapsed_and_separator(
+        message::render_message(
             &mut app.active_messages_mut()[0],
             &spinner,
-            width,
-            tools_collapsed,
-            false,
+            message::MessageRenderContext::new(
+                None,
+                width,
+                0,
+                message::MessageRenderOptions {
+                    tools_collapsed,
+                    include_trailing_separator: false,
+                },
+            ),
             &mut full_lines,
         );
         let full_preview = render_lines_from_paragraph(
