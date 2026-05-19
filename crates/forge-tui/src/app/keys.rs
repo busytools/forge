@@ -69,7 +69,7 @@ fn is_cmd_shortcut(modifiers: KeyModifiers) -> bool {
     // no-op because CMD_MOD already equals CONTROL.
     #[cfg(target_os = "macos")]
     {
-        return modifiers.contains(KeyModifiers::CONTROL);
+        modifiers.contains(KeyModifiers::CONTROL)
     }
     #[cfg(not(target_os = "macos"))]
     {

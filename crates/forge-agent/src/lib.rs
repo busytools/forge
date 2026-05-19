@@ -17,9 +17,9 @@
 //! - [`userdata`] — disk-side state: settings, sessions catalog, memory, plugins.
 //! - [`commands`] / [`session_lifecycle`] — bridge helpers reused by
 //!   forge-tui via re-exports.
-//! - [`forge_sdk_worker`] / [`replay`] / [`tooling`] / [`user_interaction`] /
-//!   [`state`] — internal implementation modules consumed by `agent`'s
-//!   dispatcher and translator paths.
+//! - [`forge_sdk_worker`] / [`replay`] / [`tooling`] / [`user_interaction`]
+//!   — internal implementation modules consumed by `agent`'s dispatcher
+//!   and translator paths.
 
 pub mod agent;
 pub mod client;
