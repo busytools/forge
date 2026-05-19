@@ -328,7 +328,6 @@ fn fold_rail_chains(node: &mut RailNode) {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn walk_rail_tree(
     node: &RailNode,
     prefix: &str,
@@ -345,7 +344,6 @@ fn walk_rail_tree(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn emit_rail_node(
     node: &RailNode,
     prefix: &str,

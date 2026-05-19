@@ -129,7 +129,6 @@ pub(crate) async fn spawn_session(
 
 /// Build the typed `Connected` envelope from the SDK's cached init data
 /// + the initialize `control_response`, and emit it onto `event_tx`.
-#[allow(clippy::too_many_arguments)]
 async fn emit_connected(
     event_tx: &mpsc::UnboundedSender<AgentEvent>,
     client: &Client,
@@ -413,8 +412,6 @@ pub(crate) fn parse_permission_mode(mode: &str) -> anyhow::Result<PermissionMode
 // Permission / question round-trip
 // ----------------------------------------------------------------------------
 
-// Options-builder bridge — args mirror `forge_sdk::OptionsBuilder` setters 1:1. Wrapping doesn't simplify — caller would just unpack again.
-#[allow(clippy::too_many_arguments)]
 fn build_options_with_callback(
     cwd: &str,
     resume: Option<&str>,

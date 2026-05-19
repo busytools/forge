@@ -374,7 +374,6 @@ fn append_project_rows(
 /// trailing close-affordance (or relative time) fill the rest of
 /// the row. Hit targets are stamped relative to `area.y` + the
 /// current line count.
-#[allow(clippy::too_many_arguments)] // Render fn — args are layout state.
 fn append_org_project_row(
     lines: &mut Vec<Line<'static>>,
     area: Rect,

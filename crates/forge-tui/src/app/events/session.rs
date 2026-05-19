@@ -36,7 +36,6 @@ fn bump_bucket_session_scope_epoch(app: &mut App, key: &SessionKey) {
 /// `was_active` indicates whether the user is watching this session
 /// (active path: full apply chain) or whether it completed in the
 /// background (background path: write into the bucket directly).
-#[allow(clippy::too_many_arguments)]
 fn apply_connected_presentation(
     app: &mut App,
     session_key: &SessionKey,
@@ -471,7 +470,6 @@ pub(super) fn handle_slash_command_error_event(app: &mut App, session_key: &Sess
     *app.resuming_session_id_mut() = None;
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn handle_session_replaced_event(
     app: &mut App,
     session_id: model::SessionId,
@@ -673,7 +671,6 @@ pub(super) fn apply_session_cwd(app: &mut App, cwd_raw: String) {
 // module-level `needless_pass_by_value` allow at the top of this
 // file covers the "I own this but only pass it by reference" arms.
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn apply_session_update_connected(
     app: &mut App,
     key: &SessionKey,
@@ -759,7 +756,6 @@ fn is_synthetic_key(key: &SessionKey) -> bool {
     s.len() >= 4 && s.starts_with("__") && s.ends_with("__")
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn apply_session_update_session_replaced(
     app: &mut App,
     _key: &SessionKey,
