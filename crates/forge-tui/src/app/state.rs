@@ -945,16 +945,6 @@ impl App {
         self.active_bucket_mut().pending_compact_clear = value;
     }
 
-    /// Borrow the active session's pending interaction id list.
-    pub fn pending_interaction_ids(&self) -> &[String] {
-        self.active_session().map_or(&[], |s| s.pending_interaction_ids.as_slice())
-    }
-
-    /// Mutable borrow of the pending interaction id list.
-    pub fn pending_interaction_ids_mut(&mut self) -> &mut Vec<String> {
-        &mut self.active_bucket_mut().pending_interaction_ids
-    }
-
     /// Active session's cancelled-turn pending hint flag.
     pub fn cancelled_turn_pending_hint(&self) -> bool {
         self.active_session().is_some_and(|s| s.cancelled_turn_pending_hint)
@@ -2078,30 +2068,14 @@ impl App {
 
         if changed > 0 {
             self.invalidate_message_set(changed_message_indices.iter().copied());
-            self.pending_interaction_ids_mut().clear();
-            self.release_focus_target(FocusTarget::Permission);
         }
 
         changed
     }
 
-    /// Clear pending interaction tracking on the active bucket. The
-    /// unified prompt queue owns its own clearing path (`prompt::*`);
-    /// this helper just releases focus + flushes the per-bucket id list
-    /// that other parts of the app still consult.
-    pub fn clear_inline_tool_interactions(&mut self) -> usize {
-        if self.pending_interaction_ids().is_empty() {
-            return 0;
-        }
-        self.pending_interaction_ids_mut().clear();
-        self.release_focus_target(FocusTarget::Permission);
-        0
-    }
-
     /// Clear runtime-only turn tracking while preserving the message history itself.
     pub fn finalize_turn_runtime_artifacts(&mut self, new_status: model::ToolCallStatus) {
         let _ = self.finalize_in_progress_tool_calls(new_status);
-        let _ = self.clear_inline_tool_interactions();
         self.clear_tool_scope_tracking();
     }
 
@@ -2364,20 +2338,13 @@ impl App {
 
         self.normalize_focus_stack();
 
-        // Inline permission/question focus is gone — the unified prompt
-        // queue handles its own focus routing via prompt::dispatch_key.
-        self.release_focus_target(FocusTarget::Permission);
-
         if self.autocomplete_focus_available() {
             self.claim_focus_target(FocusTarget::Mention);
         } else {
             self.release_focus_target(FocusTarget::Mention);
         }
 
-        if self.is_help_active()
-            && self.pending_interaction_ids().is_empty()
-            && !self.autocomplete_focus_available()
-        {
+        if self.is_help_active() && !self.autocomplete_focus_available() {
             self.claim_focus_target(FocusTarget::Help);
         } else {
             self.release_focus_target(FocusTarget::Help);
@@ -2407,13 +2374,8 @@ impl App {
 
     fn focus_context(&self) -> FocusContext {
         let mut ctx = FocusContext::empty();
-        // TodoList focus is intentionally never enabled — the bottom
-        // todo panel was replaced by the read-only Inspector pane.
         if self.autocomplete_focus_available() {
             ctx = ctx.with(FocusTarget::Mention);
-        }
-        if !self.pending_interaction_ids().is_empty() {
-            ctx = ctx.with(FocusTarget::Permission);
         }
         if self.is_help_active() {
             ctx = ctx.with(FocusTarget::Help);
@@ -3685,7 +3647,6 @@ mod tests {
         ));
         app.index_tool_call("bash-1".to_owned(), 0, 0);
         app.sync_terminal_tool_call("term-1".to_owned(), 0, 0);
-        app.pending_interaction_ids_mut().push("bash-1".into());
 
         app.clear_messages_tracked();
 
@@ -3693,7 +3654,6 @@ mod tests {
         assert!(app.tool_call_index().is_empty());
         assert!(app.terminal_tool_calls().is_empty());
         assert!(app.terminal_tool_call_membership().is_empty());
-        assert!(app.pending_interaction_ids().is_empty());
     }
 
     #[test]
@@ -4320,7 +4280,6 @@ mod tests {
 
     fn focus_test_app_with_available_targets() -> App {
         let mut app = make_test_app();
-        app.pending_interaction_ids_mut().push("perm-1".into());
         *app.slash_mut() = Some(SlashState {
             trigger_row: 0,
             trigger_col: 0,
@@ -4342,16 +4301,10 @@ mod tests {
 
         assert_eq!(app.focus_owner(), FocusOwner::Input);
 
-        app.claim_focus_target(FocusTarget::Permission);
-        assert_eq!(app.focus_owner(), FocusOwner::Permission);
-
         app.claim_focus_target(FocusTarget::Mention);
         assert_eq!(app.focus_owner(), FocusOwner::Mention);
 
         app.release_focus_target(FocusTarget::Mention);
-        assert_eq!(app.focus_owner(), FocusOwner::Permission);
-
-        app.release_focus_target(FocusTarget::Permission);
         assert_eq!(app.focus_owner(), FocusOwner::Input);
     }
 

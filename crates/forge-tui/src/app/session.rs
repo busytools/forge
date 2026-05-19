@@ -99,11 +99,6 @@ pub struct UiSession {
     /// local conversation history. Set by `/compact` once the
     /// command is accepted for bridge forwarding.
     pub pending_compact_clear: bool,
-    /// Tool call IDs with pending inline interactions, ordered by
-    /// arrival. The first entry is the focused interaction that
-    /// receives keyboard input. Up / Down arrow keys cycle focus
-    /// through the list.
-    pub pending_interaction_ids: Vec<String>,
     /// Set when a cancel notification succeeds; consumed on
     /// `TurnComplete` to render a red interruption hint in chat.
     pub cancelled_turn_pending_hint: bool,
@@ -391,7 +386,6 @@ impl Default for UiSession {
             active_turn_assistant_message_idx: Option::default(),
             is_compacting: bool::default(),
             pending_compact_clear: bool::default(),
-            pending_interaction_ids: Vec::default(),
             cancelled_turn_pending_hint: bool::default(),
             pending_cancel: false,
             prompt_suggestion: Option::default(),

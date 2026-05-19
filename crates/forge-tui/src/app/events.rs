@@ -376,9 +376,9 @@ mod tests {
 
     use super::*;
     use crate::app::{
-        ActiveView, BlockCache, FocusOwner, FocusTarget, HelpView, SelectionKind, SelectionPoint,
-        SelectionState, TextBlockSpacing, TodoItem, TodoStatus, ToolCallInfo, ToolCallScope,
-        UsageSnapshot, UsageSourceKind, mention,
+        ActiveView, BlockCache, HelpView, SelectionKind, SelectionPoint, SelectionState,
+        TextBlockSpacing, TodoItem, TodoStatus, ToolCallInfo, ToolCallScope, UsageSnapshot,
+        UsageSourceKind, mention,
     };
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
     use forge_primitives::cloud::service_status::ServiceSeverity;
@@ -1375,7 +1375,6 @@ mod tests {
         assert!(!app.should_quit);
         assert!(app.session_id().is_none());
         assert_eq!(app.files_accessed(), 0);
-        assert!(app.pending_interaction_ids().is_empty());
         assert!(!app.tools_collapsed);
         assert!(!app.force_redraw);
         assert!(app.todos().is_empty());
@@ -1787,7 +1786,6 @@ mod tests {
             .push(assistant_msg(vec![MessageBlock::Text(TextBlock::from_complete("world"))]));
         app.status = AppStatus::Running;
         app.set_files_accessed(9);
-        app.pending_interaction_ids_mut().push("perm-1".into());
         app.todos_mut().push(TodoItem {
             content: "Task".into(),
             status: TodoStatus::InProgress,
@@ -1826,7 +1824,6 @@ mod tests {
         assert_eq!(app.messages().len(), 1);
         assert!(matches!(app.messages()[0].role, MessageRole::Welcome));
         assert_eq!(app.files_accessed(), 0);
-        assert!(app.pending_interaction_ids().is_empty());
         assert!(app.todos().is_empty());
         assert!(!app.todo_verification_nudge());
         assert!(app.mention().is_none());
@@ -2847,8 +2844,6 @@ mod tests {
         app.bind_active_turn_assistant(0);
         app.register_tool_call_scope("task-1".into(), ToolCallScope::SubagentRoot);
         app.insert_active_task("task-1".into());
-        app.pending_interaction_ids_mut().push("task-1".into());
-        app.claim_focus_target(FocusTarget::Permission);
 
         let session_key = active_session_key(&app);
         apply_session_update(
@@ -2862,8 +2857,6 @@ mod tests {
 
         assert_eq!(app.active_turn_assistant_idx(), None);
         assert!(app.active_task_ids().is_empty());
-        assert!(app.pending_interaction_ids().is_empty());
-        assert_ne!(app.focus_owner(), FocusOwner::Permission);
         let Some(MessageBlock::ToolCall(tc)) = app.messages()[0].blocks.first() else {
             panic!("expected tool call block");
         };

@@ -77,7 +77,6 @@ fn reset_input_state_for_new_session(app: &mut App) {
 }
 
 fn reset_interaction_state_for_new_session(app: &mut App) {
-    app.pending_interaction_ids_mut().clear();
     app.clear_tool_scope_tracking();
     app.active_tool_call_index_mut().clear();
     app.todos_mut().clear();

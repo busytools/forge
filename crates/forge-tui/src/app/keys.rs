@@ -244,9 +244,7 @@ pub(super) fn dispatch_key_by_focus(app: &mut App, key: KeyEvent) -> bool {
     match app.focus_owner() {
         FocusOwner::Mention => handle_autocomplete_key(app, key),
         FocusOwner::Help => handle_help_key(app, key),
-        FocusOwner::Input | FocusOwner::TodoList | FocusOwner::Permission => {
-            handle_normal_key(app, key)
-        }
+        FocusOwner::Input => handle_normal_key(app, key),
     }
 }
 
@@ -452,10 +450,6 @@ fn handle_turn_control_key(app: &mut App, key: KeyEvent) -> bool {
         app.pending_images_mut().clear();
         app.needs_redraw = true;
     }
-    if app.focus_owner() == FocusOwner::TodoList {
-        app.release_focus_target(FocusTarget::TodoList);
-        return true;
-    }
     if matches!(app.status, AppStatus::Thinking | AppStatus::Running)
         && let Err(message) = super::input_submit::request_cancel(app)
     {
@@ -471,7 +465,7 @@ fn handle_turn_control_key(app: &mut App, key: KeyEvent) -> bool {
 }
 
 fn handle_submit_key(app: &mut App, key: KeyEvent) -> bool {
-    if !matches!(key.code, KeyCode::Enter) || app.focus_owner() == FocusOwner::TodoList {
+    if !matches!(key.code, KeyCode::Enter) {
         return false;
     }
 
@@ -512,9 +506,6 @@ fn handle_submit_key(app: &mut App, key: KeyEvent) -> bool {
 }
 
 fn handle_history_key(app: &mut App, key: KeyEvent) -> bool {
-    if app.focus_owner() == FocusOwner::TodoList {
-        return false;
-    }
     match (key.code, key.modifiers) {
         // macOS: Cmd+Z undo. Linux/Windows: Ctrl+Z undo.
         (KeyCode::Char('z'), m) if m == CMD_MOD => app.input_mut().textarea_undo(),
@@ -537,19 +528,11 @@ fn handle_history_key(app: &mut App, key: KeyEvent) -> bool {
 fn handle_navigation_key(app: &mut App, key: KeyEvent) -> bool {
     match (key.code, key.modifiers) {
         // Word left: Alt+Left on macOS, Ctrl+Left elsewhere.
-        (KeyCode::Left, m)
-            if app.focus_owner() != FocusOwner::TodoList
-                && m.contains(WORD_NAV_MOD)
-                && !m.intersects(WORD_NAV_MOD_EXCLUDED) =>
-        {
+        (KeyCode::Left, m) if m.contains(WORD_NAV_MOD) && !m.intersects(WORD_NAV_MOD_EXCLUDED) => {
             app.input_mut().textarea_move_word_left()
         }
         // Word right: Alt+Right on macOS, Ctrl+Right elsewhere.
-        (KeyCode::Right, m)
-            if app.focus_owner() != FocusOwner::TodoList
-                && m.contains(WORD_NAV_MOD)
-                && !m.intersects(WORD_NAV_MOD_EXCLUDED) =>
-        {
+        (KeyCode::Right, m) if m.contains(WORD_NAV_MOD) && !m.intersects(WORD_NAV_MOD_EXCLUDED) => {
             app.input_mut().textarea_move_word_right()
         }
         // macOS readline-style fallbacks: many terminals (Ghostty,
@@ -557,23 +540,15 @@ fn handle_navigation_key(app: &mut App, key: KeyEvent) -> bool {
         // Option+Right as ESC+f rather than Left/Right with ALT.
         // Crossterm decodes those as Char('b')/Char('f') with ALT.
         #[cfg(target_os = "macos")]
-        (KeyCode::Char('b'), m)
-            if app.focus_owner() != FocusOwner::TodoList && m == KeyModifiers::ALT =>
-        {
+        (KeyCode::Char('b'), m) if m == KeyModifiers::ALT => {
             app.input_mut().textarea_move_word_left()
         }
         #[cfg(target_os = "macos")]
-        (KeyCode::Char('f'), m)
-            if app.focus_owner() != FocusOwner::TodoList && m == KeyModifiers::ALT =>
-        {
+        (KeyCode::Char('f'), m) if m == KeyModifiers::ALT => {
             app.input_mut().textarea_move_word_right()
         }
-        (KeyCode::Left, _) if app.focus_owner() != FocusOwner::TodoList => {
-            app.input_mut().textarea_move_left()
-        }
-        (KeyCode::Right, _) if app.focus_owner() != FocusOwner::TodoList => {
-            app.input_mut().textarea_move_right()
-        }
+        (KeyCode::Left, _) => app.input_mut().textarea_move_left(),
+        (KeyCode::Right, _) => app.input_mut().textarea_move_right(),
         (KeyCode::Up, _) => {
             if !try_move_input_cursor_up(app) {
                 app.active_viewport_mut().scroll_up(1);
@@ -586,12 +561,8 @@ fn handle_navigation_key(app: &mut App, key: KeyEvent) -> bool {
             }
             true
         }
-        (KeyCode::Home, _) if app.focus_owner() != FocusOwner::TodoList => {
-            app.input_mut().textarea_move_home()
-        }
-        (KeyCode::End, _) if app.focus_owner() != FocusOwner::TodoList => {
-            app.input_mut().textarea_move_end()
-        }
+        (KeyCode::Home, _) => app.input_mut().textarea_move_home(),
+        (KeyCode::End, _) => app.input_mut().textarea_move_end(),
         _ => false,
     }
 }
@@ -686,8 +657,8 @@ fn handle_mode_cycle_key(app: &mut App, key: KeyEvent) -> bool {
     true
 }
 
-fn handle_clipboard_paste_key(app: &mut App, key: KeyEvent) -> bool {
-    if !is_clipboard_paste_shortcut(key) || app.focus_owner() == FocusOwner::TodoList {
+fn handle_clipboard_paste_key(#[allow(unused_variables)] app: &mut App, key: KeyEvent) -> bool {
+    if !is_clipboard_paste_shortcut(key) {
         return false;
     }
     if key.kind != KeyEventKind::Release {
@@ -756,9 +727,7 @@ fn handle_editing_key(app: &mut App, key: KeyEvent) -> bool {
     match (key.code, key.modifiers) {
         // Delete word backward: Alt+Backspace on macOS, Ctrl+Backspace elsewhere.
         (KeyCode::Backspace, m)
-            if app.focus_owner() != FocusOwner::TodoList
-                && m.contains(WORD_NAV_MOD)
-                && !m.intersects(WORD_NAV_MOD_EXCLUDED) =>
+            if m.contains(WORD_NAV_MOD) && !m.intersects(WORD_NAV_MOD_EXCLUDED) =>
         {
             if try_delete_image_badge(app, "before") {
                 return true;
@@ -767,22 +736,20 @@ fn handle_editing_key(app: &mut App, key: KeyEvent) -> bool {
         }
         // Delete word forward: Alt+Delete on macOS, Ctrl+Delete elsewhere.
         (KeyCode::Delete, m)
-            if app.focus_owner() != FocusOwner::TodoList
-                && m.contains(WORD_NAV_MOD)
-                && !m.intersects(WORD_NAV_MOD_EXCLUDED) =>
+            if m.contains(WORD_NAV_MOD) && !m.intersects(WORD_NAV_MOD_EXCLUDED) =>
         {
             if try_delete_image_badge(app, "after") {
                 return true;
             }
             app.input_mut().textarea_delete_word_after()
         }
-        (KeyCode::Backspace, _) if app.focus_owner() != FocusOwner::TodoList => {
+        (KeyCode::Backspace, _) => {
             if try_delete_image_badge(app, "before") {
                 return true;
             }
             app.input_mut().textarea_delete_char_before()
         }
-        (KeyCode::Delete, _) if app.focus_owner() != FocusOwner::TodoList => {
+        (KeyCode::Delete, _) => {
             if try_delete_image_badge(app, "after") {
                 return true;
             }
@@ -816,9 +783,6 @@ fn handle_printable_key(app: &mut App, key: KeyEvent) -> bool {
     };
     if !is_printable_text_modifiers(m) {
         return false;
-    }
-    if app.focus_owner() == FocusOwner::TodoList {
-        app.release_focus_target(FocusTarget::TodoList);
     }
 
     let now = Instant::now();
@@ -880,11 +844,7 @@ fn try_move_input_cursor_down(app: &mut App) -> bool {
     (app.input().cursor_row(), app.input().cursor_col()) != before
 }
 
-fn should_sync_autocomplete_after_key(app: &App, key: KeyEvent) -> bool {
-    if app.focus_owner() == FocusOwner::TodoList {
-        return false;
-    }
-
+fn should_sync_autocomplete_after_key(_app: &App, key: KeyEvent) -> bool {
     match (key.code, key.modifiers) {
         (
             KeyCode::Up
@@ -973,10 +933,7 @@ fn set_help_view(app: &mut App, next: HelpView) {
 }
 
 fn sync_help_focus(app: &mut App) {
-    if app.is_help_active()
-        && app.pending_interaction_ids().is_empty()
-        && !app.autocomplete_focus_available()
-    {
+    if app.is_help_active() && !app.autocomplete_focus_available() {
         app.claim_focus_target(FocusTarget::Help);
     } else {
         app.release_focus_target(FocusTarget::Help);

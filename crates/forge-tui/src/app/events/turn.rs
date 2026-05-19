@@ -264,7 +264,6 @@ pub(super) fn finalize_background_tool_calls(
             }
         }
     }
-    session.pending_interaction_ids.clear();
 }
 
 fn begin_turn_exit(app: &mut App, emit_manual_compaction_success: bool) -> TurnExitState {

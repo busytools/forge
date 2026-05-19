@@ -5,8 +5,7 @@ use crate::app::slash::{SlashContext, SlashState};
 use crate::app::state::types::ScrollbarDragState;
 use crate::app::subagent::SubagentState;
 use crate::app::{
-    FocusTarget, PasteSessionState, SelectionKind, SelectionPoint, SelectionState, TodoItem,
-    TodoStatus,
+    PasteSessionState, SelectionKind, SelectionPoint, SelectionState, TodoItem, TodoStatus,
 };
 
 fn busy_view_test_app() -> App {
@@ -55,8 +54,6 @@ fn busy_view_test_app() -> App {
         active_form: "todo".to_owned(),
     }];
     app.set_todo_verification_nudge(true);
-    app.pending_interaction_ids_mut().push("perm-1".to_owned());
-    app.claim_focus_target(FocusTarget::Permission);
     app
 }
 

@@ -479,7 +479,7 @@ mod tests {
         slash_command_range, visual_line_count,
     };
     use crate::app::subagent::find_subagent_spans;
-    use crate::app::{App, FocusTarget, LoginHint};
+    use crate::app::{App, LoginHint};
     use ratatui::layout::Rect;
 
     #[test]
@@ -554,19 +554,6 @@ mod tests {
         let mut app = App::test_default();
         app.set_prompt_suggestion(Some("Write tests for the retry flow".to_owned()));
         app.input_mut().set_text("draft");
-        assert_eq!(visual_line_count(&mut app, 80), MIN_INPUT_INTERIOR_LINES + INPUT_BORDER_LINES);
-    }
-
-    #[test]
-    fn visual_line_count_hides_prompt_suggestion_hint_when_input_lacks_focus() {
-        let mut app = App::test_default();
-        app.set_prompt_suggestion(Some("Write tests for the retry flow".to_owned()));
-        // Claim Permission focus to take focus off the input — the
-        // prompt-suggestion hint only renders when the input owns
-        // focus. (The old TodoList focus target was used here before;
-        // it's been removed along with the bottom todo panel.)
-        *app.pending_interaction_ids_mut() = vec!["perm-1".into()];
-        app.claim_focus_target(FocusTarget::Permission);
         assert_eq!(visual_line_count(&mut app, 80), MIN_INPUT_INTERIOR_LINES + INPUT_BORDER_LINES);
     }
 
