@@ -161,6 +161,15 @@ pub fn compute(
 /// chat column). At Narrow tier or when both panes are hidden, the
 /// chat column takes the full area.
 #[allow(clippy::type_complexity)]
+/// Chat column width given the frame area and pane visibility. Used
+/// pre-layout so callers (e.g. visual_line_count) can size content
+/// using the actual width the chat column will end up with, not the
+/// full frame width.
+pub fn chat_column_width(area: Rect, pane_visible: bool, pane_right_visible: bool) -> u16 {
+    let (_, _, _, _, chat) = compute_horizontal_split(area, pane_visible, pane_right_visible);
+    chat.width
+}
+
 fn compute_horizontal_split(
     area: Rect,
     pane_visible: bool,

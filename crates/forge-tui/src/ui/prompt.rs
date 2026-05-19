@@ -470,6 +470,53 @@ mod tests {
     }
 
     #[test]
+    fn dock_height_matches_prompt_required_lines_with_realistic_content() {
+        // The dock area allocated by `prompt_required_lines(...)` must
+        // exactly contain build_lines's output PLUS top + bottom thick
+        // borders. The first content row (after the top border) and the
+        // last content row (before the bottom border) must BOTH be the
+        // top_empty / bottom_empty padding rows (i.e. blank inside the
+        // box).
+        let mut request = make_question_request(false);
+        request.prompt.options[0].description = Some(
+            "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu \
+             nu xi omicron pi rho sigma tau upsilon"
+                .into(),
+        );
+        request.prompt.options[1].description =
+            Some("short description for second option that wraps just a little".into());
+        let prompt = PromptState::from_question("tc-q".into(), request);
+        let area_width = 60u16;
+        let required = prompt_required_lines(&prompt, 1, area_width);
+        let out = render_to_string(&prompt, 1, area_width, required);
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(
+            u16::try_from(lines.len()).expect("height fits u16"),
+            required,
+            "rendered height should match required"
+        );
+        // First row = top border (┏...┓). Second row = top padding (blank inside box).
+        assert!(lines[0].starts_with('┏'), "row 0 should be top border, got: {}", lines[0]);
+        let row1 = lines[1];
+        assert!(
+            row1.starts_with('┃')
+                && row1.ends_with('┃')
+                && row1[3..row1.len() - 3].trim().is_empty(),
+            "row 1 should be top padding (blank inside the box), got: {row1}"
+        );
+        // Last row = bottom border. Second-to-last = bottom padding (blank inside box).
+        let last = lines[lines.len() - 1];
+        assert!(last.starts_with('┗'), "last row should be bottom border, got: {last}");
+        let second_last = lines[lines.len() - 2];
+        assert!(
+            second_last.starts_with('┃')
+                && second_last.ends_with('┃')
+                && second_last[3..second_last.len() - 3].trim().is_empty(),
+            "second-to-last row should be bottom padding (blank inside box), got: {second_last}"
+        );
+    }
+
+    #[test]
     fn long_description_wraps_with_hanging_indent_matching_first_row() {
         // A long description that wraps onto 2+ rows should have every
         // continuation row's first non-blank column equal the first
