@@ -14,9 +14,10 @@
 //!   detached tasks, and routes outbound `control_response`s to
 //!   per-request oneshots so [`Client::send_control`] callers can
 //!   `await` their typed reply.
-//! - The writer half is a clonable [`crate::transport::AsyncWriter`]
-//!   cloned from [`Subprocess`](crate::transport::process::Subprocess);
-//!   outbound writes go through it without contending on `&mut self`.
+//! - The writer half is a clonable
+//!   [`SharedWriter`](crate::transport::process::SharedWriter) cloned
+//!   from [`Subprocess`](crate::transport::process::Subprocess); outbound
+//!   writes go through it without contending on `&mut self`.
 
 pub(crate) mod control_dispatch;
 mod control_send;
@@ -67,7 +68,7 @@ pub struct Client {
 
 struct ClientInner {
     /// Cloned writer (mpsc-backed via the transport's writer task).
-    writer: std::sync::Arc<dyn crate::transport::AsyncWriter>,
+    writer: std::sync::Arc<crate::transport::process::SharedWriter>,
     /// PID of the spawned `claude` child captured at spawn time.
     /// Stable for the lifetime of the subprocess; consumers (e.g. the
     /// Inspector pane's OS-level process walker) cache snapshots

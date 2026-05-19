@@ -41,10 +41,6 @@ struct NormalizedModelKey {
     context_suffix: String,
 }
 
-fn is_release_build_token(part: &str) -> bool {
-    part.len() == 8 && part.starts_with("20") && part.chars().all(|c| c.is_ascii_digit())
-}
-
 fn normalize_model_key(id: &str) -> NormalizedModelKey {
     let original = id.trim().to_owned();
     if original.is_empty() {
@@ -87,9 +83,13 @@ fn normalize_model_key(id: &str) -> NormalizedModelKey {
                     }
                     continue;
                 }
-                if is_release_build_token(part) {
-                    // upstream tracks build_parts but never uses them
-                    // in the user-visible humanizer, so we drop here.
+                // 8-digit `20YYMMDD` release-build token — upstream
+                // tracks these in `build_parts` but never surfaces them
+                // in the user-visible humanizer, so drop.
+                if part.len() == 8
+                    && part.starts_with("20")
+                    && part.chars().all(|c| c.is_ascii_digit())
+                {
                     continue;
                 }
             }

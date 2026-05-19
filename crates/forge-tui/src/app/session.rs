@@ -253,7 +253,7 @@ pub struct UiSession {
 
     // ---- Todos ----
     /// Current todo list from Claude's `TodoWrite` tool calls.
-    /// Rendered by [`crate::ui::inspector_pane`] (right side).
+    /// Rendered by the inspector pane on the right side of the chat view.
     pub todos: Vec<TodoItem>,
     /// Whether the latest `TodoWrite` tool result carried
     /// `TodoWriteOutputMetadata.verification_nudge_needed = Some(true)`.

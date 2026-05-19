@@ -343,7 +343,7 @@ impl ControlRequest {
     ///
     /// [`serde_json::Error`] if the decision can't be serialised (practically
     /// impossible for valid decisions).
-    pub fn build_response(
+    pub(crate) fn build_response(
         &self,
         behavior: AllowBehavior,
     ) -> Result<ControlResponse, serde_json::Error> {
@@ -361,7 +361,7 @@ impl ControlRequest {
     /// `input` JSON. Used to echo the original input back in an allow
     /// response when the callback supplied no override (the CLI always
     /// populates `updatedInput`).
-    pub fn original_tool_input(&self) -> Option<&Value> {
+    pub(crate) fn original_tool_input(&self) -> Option<&Value> {
         match &self.request {
             ControlRequestKind::CanUseTool { input, .. } => Some(input),
             _ => None,

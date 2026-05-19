@@ -74,15 +74,6 @@ pub(crate) struct InputRenderGeometry {
     pub text: Rect,
 }
 
-/// Whether a login hint banner is active.
-fn has_login_hint(app: &App) -> bool {
-    app.login_hint().is_some()
-}
-
-fn has_cancel_hint(app: &App) -> bool {
-    app.pending_cancel()
-}
-
 fn has_prompt_suggestion_hint(app: &App) -> bool {
     app.input().is_empty()
         && app.focus_owner() == FocusOwner::Input
@@ -90,8 +81,8 @@ fn has_prompt_suggestion_hint(app: &App) -> bool {
 }
 
 pub(crate) fn hint_line_count(app: &App) -> u16 {
-    let login = if has_login_hint(app) { LOGIN_HINT_LINES } else { 0 };
-    let cancel = if has_cancel_hint(app) { CANCEL_HINT_LINES } else { 0 };
+    let login = if app.login_hint().is_some() { LOGIN_HINT_LINES } else { 0 };
+    let cancel = if app.pending_cancel() { CANCEL_HINT_LINES } else { 0 };
     let suggestion = if has_prompt_suggestion_hint(app) { PROMPT_SUGGESTION_HINT_LINES } else { 0 };
     login + cancel + suggestion
 }
@@ -188,7 +179,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
             hint_y = hint_y.saturating_add(LOGIN_HINT_LINES);
         }
 
-        if has_cancel_hint(app) {
+        if app.pending_cancel() {
             let spinner_ch = SPINNER_FRAMES[app.spinner_frame % SPINNER_FRAMES.len()];
             let cancel_line = Line::from(vec![
                 Span::styled(format!("{spinner_ch} "), Style::default().fg(theme::DIM)),
