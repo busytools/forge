@@ -7,9 +7,8 @@ use forge_primitives::permission_ui::PermissionOptionKind;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::Text;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Padding, Paragraph, Widget, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, Padding, Paragraph, Widget};
 use unicode_width::UnicodeWidthStr;
 
 /// Render the prompt into `area` (the chat-input box's rect). The
@@ -26,27 +25,87 @@ pub fn render(area: Rect, buf: &mut Buffer, prompt: &PromptState, queue_depth: u
     if inner.width == 0 || inner.height == 0 {
         return;
     }
-    let lines = build_lines(prompt, queue_depth);
-    Paragraph::new(lines).wrap(Wrap { trim: false }).render(inner, buf);
+    let lines = build_lines(prompt, queue_depth, inner.width as usize);
+    Paragraph::new(lines).render(inner, buf);
 }
 
 /// Total rows the prompt widget needs when rendered for `prompt` at
 /// `queue_depth` inside an area of `area_width` columns. Includes the
-/// inner content (after soft-wrapping at the inner width) + 2 chrome
+/// inner content (after pre-wrapping at the inner width) + 2 chrome
 /// rows (top border + bottom border). Used by
 /// `ui::input::visual_line_count` to grow the dock to fit the morphed
 /// prompt instead of clipping it to the chat-input editor's default
 /// height.
 pub fn prompt_required_lines(prompt: &PromptState, queue_depth: usize, area_width: u16) -> u16 {
     // Block borders eat 2 cols; Padding::horizontal(2) eats 4 more.
-    let inner_width = area_width.saturating_sub(6).max(1);
-    let lines = build_lines(prompt, queue_depth);
-    let wrapped =
-        Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }).line_count(inner_width);
-    u16::try_from(wrapped.saturating_add(2)).unwrap_or(u16::MAX)
+    let inner_width = area_width.saturating_sub(6).max(1) as usize;
+    let lines = build_lines(prompt, queue_depth, inner_width);
+    u16::try_from(lines.len().saturating_add(2)).unwrap_or(u16::MAX)
 }
 
-fn build_lines(prompt: &PromptState, queue_depth: usize) -> Vec<Line<'static>> {
+/// Word-wrap `text` to fit within `width` display columns. Returns a
+/// vec of rows; each row's `UnicodeWidthStr::width(...) <= width`. Words
+/// longer than `width` are split at the column boundary (rare; only
+/// happens for adversarial input like long URLs).
+fn word_wrap(text: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return vec![text.to_string()];
+    }
+    let mut out: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut current_w = 0usize;
+    for word in text.split_whitespace() {
+        let w = UnicodeWidthStr::width(word);
+        if w > width {
+            // Word longer than line width: flush current, then break the
+            // word into width-sized chunks.
+            if !current.is_empty() {
+                out.push(std::mem::take(&mut current));
+                current_w = 0;
+            }
+            let mut chunk = String::new();
+            let mut chunk_w = 0usize;
+            for c in word.chars() {
+                let cw = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+                if chunk_w + cw > width {
+                    out.push(std::mem::take(&mut chunk));
+                    chunk_w = 0;
+                }
+                chunk.push(c);
+                chunk_w += cw;
+            }
+            if !chunk.is_empty() {
+                current = chunk;
+                current_w = chunk_w;
+            }
+            continue;
+        }
+        let needed = if current.is_empty() { w } else { 1 + w };
+        if current_w + needed > width && !current.is_empty() {
+            out.push(std::mem::take(&mut current));
+            current_w = 0;
+        }
+        if !current.is_empty() {
+            current.push(' ');
+            current_w += 1;
+        }
+        current.push_str(word);
+        current_w += w;
+    }
+    if !current.is_empty() {
+        out.push(current);
+    }
+    if out.is_empty() {
+        out.push(String::new());
+    }
+    out
+}
+
+fn build_lines(
+    prompt: &PromptState,
+    queue_depth: usize,
+    content_width: usize,
+) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     // 1 empty row top (spec §3 inner padding).
     lines.push(Line::default());
@@ -60,11 +119,11 @@ fn build_lines(prompt: &PromptState, queue_depth: usize) -> Vec<Line<'static>> {
     }
 
     // Header lines.
-    lines.extend(build_header_lines(prompt));
+    lines.extend(build_header_lines(prompt, content_width));
     lines.push(Line::default());
 
     // Options stack.
-    lines.extend(build_option_lines(prompt));
+    lines.extend(build_option_lines(prompt, content_width));
 
     // Footer hint.
     lines.push(Line::default());
@@ -75,7 +134,7 @@ fn build_lines(prompt: &PromptState, queue_depth: usize) -> Vec<Line<'static>> {
     lines
 }
 
-fn build_header_lines(prompt: &PromptState) -> Vec<Line<'static>> {
+fn build_header_lines(prompt: &PromptState, content_width: usize) -> Vec<Line<'static>> {
     match &prompt.source {
         PromptSource::Permission {
             display_title,
@@ -96,23 +155,23 @@ fn build_header_lines(prompt: &PromptState) -> Vec<Line<'static>> {
                 .as_deref()
                 .filter(|t| !t.is_empty() && !t.eq_ignore_ascii_case(tool_name))
                 .map_or(header_text, String::from);
-            out.push(Line::from(Span::styled(
-                title_owned,
-                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
-            )));
+            for row in word_wrap(&title_owned, content_width) {
+                out.push(Line::from(Span::styled(
+                    row,
+                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                )));
+            }
             // Yellow ⚠ decision_reason.
             if let Some(reason) = decision_reason.as_deref().filter(|r| !r.is_empty()) {
-                out.push(Line::from(Span::styled(
-                    format!("⚠ {reason}"),
-                    Style::default().fg(Color::Yellow),
-                )));
+                for row in word_wrap(&format!("⚠ {reason}"), content_width) {
+                    out.push(Line::from(Span::styled(row, Style::default().fg(Color::Yellow))));
+                }
             }
             // Dim display_description.
             if let Some(desc) = display_description.as_deref().filter(|d| !d.is_empty()) {
-                out.push(Line::from(Span::styled(
-                    desc.to_owned(),
-                    Style::default().fg(theme::DIM),
-                )));
+                for row in word_wrap(desc, content_width) {
+                    out.push(Line::from(Span::styled(row, Style::default().fg(theme::DIM))));
+                }
             }
             out
         }
@@ -123,25 +182,50 @@ fn build_header_lines(prompt: &PromptState) -> Vec<Line<'static>> {
             } else {
                 String::new()
             };
-            out.push(Line::from(vec![
-                Span::styled("? ", Style::default().fg(theme::RUST_ORANGE)),
-                Span::styled(
-                    format!("{}{}", q.header, progress),
-                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
-                ),
-            ]));
-            for row in q.question.lines() {
-                out.push(Line::from(Span::styled(
-                    row.to_owned(),
-                    Style::default().fg(Color::White),
-                )));
+            // Header: "? <header><progress>". The "? " glyph is part of
+            // the visible first row only; continuation rows of a wrapped
+            // header indent past the "? " prefix to keep alignment.
+            let prefix = "? ";
+            let prefix_w = UnicodeWidthStr::width(prefix);
+            let header_text = format!("{}{}", q.header, progress);
+            let header_rows =
+                word_wrap(&header_text, content_width.saturating_sub(prefix_w).max(1));
+            for (i, row) in header_rows.into_iter().enumerate() {
+                if i == 0 {
+                    out.push(Line::from(vec![
+                        Span::styled(prefix.to_string(), Style::default().fg(theme::RUST_ORANGE)),
+                        Span::styled(
+                            row,
+                            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                        ),
+                    ]));
+                } else {
+                    out.push(Line::from(vec![
+                        Span::raw(" ".repeat(prefix_w)),
+                        Span::styled(
+                            row,
+                            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                        ),
+                    ]));
+                }
+            }
+            // Body: each newline-separated chunk is word-wrapped
+            // independently to preserve user paragraph breaks.
+            for chunk in q.question.lines() {
+                if chunk.is_empty() {
+                    out.push(Line::default());
+                    continue;
+                }
+                for row in word_wrap(chunk, content_width) {
+                    out.push(Line::from(Span::styled(row, Style::default().fg(Color::White))));
+                }
             }
             out
         }
     }
 }
 
-fn build_option_lines(prompt: &PromptState) -> Vec<Line<'static>> {
+fn build_option_lines(prompt: &PromptState, content_width: usize) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     let is_multi = prompt.is_multi_select();
     // For Question prompts, keep a reference to the wire options so
@@ -178,27 +262,41 @@ fn build_option_lines(prompt: &PromptState) -> Vec<Line<'static>> {
             spans.push(Span::styled(checkbox_str.to_string(), checkbox_style));
         }
         let icon_str = format!("{icon} ");
+        let prefix_width = UnicodeWidthStr::width(pointer)
+            + UnicodeWidthStr::width(checkbox_str)
+            + UnicodeWidthStr::width(icon_str.as_str());
         spans.push(Span::styled(icon_str.clone(), Style::default().fg(icon_color)));
-        spans.push(Span::styled(opt.name.clone(), name_style));
-        lines.push(Line::from(spans));
+        // Word-wrap the option name with hanging indent so a long name's
+        // continuation rows sit under the name's first column.
+        let name_rows = word_wrap(&opt.name, content_width.saturating_sub(prefix_width).max(1));
+        for (row_idx, row) in name_rows.into_iter().enumerate() {
+            if row_idx == 0 {
+                spans.push(Span::styled(row, name_style));
+                lines.push(Line::from(std::mem::take(&mut spans)));
+            } else {
+                lines.push(Line::from(vec![
+                    Span::raw(" ".repeat(prefix_width)),
+                    Span::styled(row, name_style),
+                ]));
+            }
+        }
 
         // Question-specific: render the option's description as dim
         // subtext below the option label (if present and non-empty).
-        // Indent dynamically matches the display width of pointer +
-        // checkbox + icon so the description's first column aligns with
-        // the option name regardless of glyph widths.
+        // Indent matches the display width of pointer + checkbox + icon
+        // so the description aligns with the option name. Description
+        // is pre-wrapped so continuation rows preserve the indent.
         if let Some(q_opts) = question_options
             && let Some(q_opt) = q_opts.get(i)
             && let Some(desc) = q_opt.description.as_deref().filter(|d| !d.is_empty())
         {
-            let prefix_width = UnicodeWidthStr::width(pointer)
-                + UnicodeWidthStr::width(checkbox_str)
-                + UnicodeWidthStr::width(icon_str.as_str());
             let indent = " ".repeat(prefix_width);
-            lines.push(Line::from(vec![
-                Span::raw(indent),
-                Span::styled(desc.to_owned(), Style::default().fg(theme::DIM)),
-            ]));
+            for row in word_wrap(desc, content_width.saturating_sub(prefix_width).max(1)) {
+                lines.push(Line::from(vec![
+                    Span::raw(indent.clone()),
+                    Span::styled(row, Style::default().fg(theme::DIM)),
+                ]));
+            }
         }
     }
 
@@ -210,12 +308,20 @@ fn build_option_lines(prompt: &PromptState) -> Vec<Line<'static>> {
         && let Some(preview) = q_opt.preview.as_deref().filter(|p| !p.trim().is_empty())
     {
         lines.push(Line::default());
-        lines.push(Line::from(Span::styled(
-            "Preview:".to_string(),
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
-        )));
-        for row in preview.lines() {
-            lines.push(Line::from(Span::styled(row.to_owned(), Style::default().fg(theme::DIM))));
+        for row in word_wrap("Preview:", content_width) {
+            lines.push(Line::from(Span::styled(
+                row,
+                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            )));
+        }
+        for chunk in preview.lines() {
+            if chunk.is_empty() {
+                lines.push(Line::default());
+                continue;
+            }
+            for row in word_wrap(chunk, content_width) {
+                lines.push(Line::from(Span::styled(row, Style::default().fg(theme::DIM))));
+            }
         }
     }
 
@@ -361,6 +467,45 @@ mod tests {
         let out = render_to_string(&prompt, 1, 80, 14);
         assert!(out.contains("[x] ✓ Red"), "expected [x] on toggled option; got:\n{out}");
         assert!(out.contains("[ ] ✓ Blue"), "expected [ ] on untoggled option; got:\n{out}");
+    }
+
+    #[test]
+    fn long_description_wraps_with_hanging_indent_matching_first_row() {
+        // A long description that wraps onto 2+ rows should have every
+        // continuation row's first non-blank column equal the first
+        // row's first non-blank column. Asserts hanging-indent
+        // preservation across the manual word-wrap path.
+        let mut request = make_question_request(false);
+        request.prompt.options[0].description = Some(
+            "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu \
+             nu xi omicron pi rho sigma tau upsilon phi chi psi omega"
+                .into(),
+        );
+        let prompt = PromptState::from_question("tc-q".into(), request);
+        // Narrow width to force wrap.
+        let out = render_to_string(&prompt, 1, 50, 24);
+        let lines: Vec<&str> = out.lines().collect();
+        let desc_rows: Vec<&&str> = lines
+            .iter()
+            .filter(|l| l.contains("alpha") || l.contains("lambda") || l.contains("upsilon"))
+            .collect();
+        assert!(
+            desc_rows.len() >= 2,
+            "expected the long description to wrap across 2+ visual rows; got:\n{out}"
+        );
+        let cols: Vec<usize> = desc_rows
+            .iter()
+            .map(|l| {
+                l.chars()
+                    .enumerate()
+                    .find(|(_, c)| !matches!(*c, '┃' | ' '))
+                    .map_or(usize::MAX, |(i, _)| i)
+            })
+            .collect();
+        assert!(
+            cols.iter().all(|&c| c == cols[0]),
+            "description wrap continuation rows must share the same leading column; got {cols:?} for:\n{out}"
+        );
     }
 
     #[test]
