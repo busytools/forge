@@ -530,11 +530,12 @@ fn handle_submit_key(app: &mut App, key: KeyEvent) -> bool {
 
 fn handle_history_key(app: &mut App, key: KeyEvent) -> bool {
     match (key.code, key.modifiers) {
-        // macOS: Cmd+Z undo. Linux/Windows: Ctrl+Z undo.
-        (KeyCode::Char('z'), m) if is_cmd_shortcut(m) => app.input_mut().textarea_undo(),
-        // macOS: Cmd+Shift+Z redo. Ghostty / kitty enhanced keyboard
-        // reports this as lowercase 'z' with SUPER | SHIFT bits set;
-        // some terminals report uppercase 'Z' with SUPER. Match both.
+        // macOS: Cmd+Shift+Z (or Ctrl+Shift+Z) redo. Match Shift-bearing
+        // forms BEFORE the plain undo arm — kitty enhanced keyboard
+        // sends lowercase 'z' with SUPER | SHIFT; some terminals send
+        // uppercase 'Z' with SUPER. Either way, the plain `is_cmd_shortcut`
+        // predicate is permissive about extra modifier bits, so the
+        // undo arm must come AFTER these to avoid swallowing Shift+Z.
         #[cfg(target_os = "macos")]
         (KeyCode::Char('z'), m)
             if m.contains(KeyModifiers::SHIFT)
@@ -544,6 +545,10 @@ fn handle_history_key(app: &mut App, key: KeyEvent) -> bool {
         }
         #[cfg(target_os = "macos")]
         (KeyCode::Char('Z'), m) if is_cmd_shortcut(m) => app.input_mut().textarea_redo(),
+        // macOS: Cmd+Z undo. Linux/Windows: Ctrl+Z undo.
+        (KeyCode::Char('z'), m) if is_cmd_shortcut(m) && !m.contains(KeyModifiers::SHIFT) => {
+            app.input_mut().textarea_undo()
+        }
         // Linux/Windows: Ctrl+Y redo.
         #[cfg(not(target_os = "macos"))]
         (KeyCode::Char('y'), m) if is_cmd_shortcut(m) => app.input_mut().textarea_redo(),
@@ -1164,6 +1169,64 @@ mod tests {
     fn ctrl_shortcut_rejects_raw_control_character_with_alt() {
         let key = KeyEvent::new(KeyCode::Char('\u{16}'), KeyModifiers::ALT);
         assert!(!is_ctrl_char_shortcut(key, 'v'));
+    }
+
+    #[test]
+    fn shift_z_routes_to_redo_not_undo() {
+        // Regression: `is_cmd_shortcut` is permissive about extra
+        // modifier bits, so a plain `Char('z') if is_cmd_shortcut(m)`
+        // arm placed BEFORE the Shift-bearing redo arm would match
+        // Ctrl+Shift+Z / Cmd+Shift+Z first and route to undo. The
+        // Shift-bearing arms must come first AND the undo arm must
+        // exclude Shift.
+        let mut app = App::test_default();
+        app.input_mut().set_text("a");
+        // Make a delete so we have something to undo, then make
+        // another action so we have something to redo.
+        app.input_mut().textarea_insert_char('b');
+        app.input_mut().textarea_undo();
+        let after_undo = app.input().text();
+
+        // Cmd+Shift+Z should redo, not undo again.
+        let cmd_shift_z = KeyEvent::new(KeyCode::Char('z'), CMD_MOD | KeyModifiers::SHIFT);
+        let consumed = handle_history_key(&mut app, cmd_shift_z);
+        assert!(consumed, "Cmd+Shift+Z must be consumed by history handler");
+        assert_ne!(
+            app.input().text(),
+            after_undo,
+            "Cmd+Shift+Z must redo (text changes from the post-undo state), not undo again"
+        );
+    }
+
+    #[test]
+    fn ctrl_shift_z_routes_to_redo_on_macos() {
+        // Same as above but with Ctrl modifier — exercises the
+        // Ctrl-as-Cmd alias on macOS (SSH/Termux clients).
+        let mut app = App::test_default();
+        app.input_mut().set_text("a");
+        app.input_mut().textarea_insert_char('b');
+        app.input_mut().textarea_undo();
+        let after_undo = app.input().text();
+
+        let ctrl_shift_z =
+            KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+        let consumed = handle_history_key(&mut app, ctrl_shift_z);
+        // Off macOS, Ctrl+Shift+Z isn't bound (Linux/Windows use
+        // Ctrl+Y for redo) — only assert redo behaviour on macOS.
+        #[cfg(target_os = "macos")]
+        {
+            assert!(consumed, "Ctrl+Shift+Z must be consumed by history handler on macOS");
+            assert_ne!(
+                app.input().text(),
+                after_undo,
+                "Ctrl+Shift+Z must redo on macOS, not undo again"
+            );
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = consumed;
+            let _ = after_undo;
+        }
     }
 
     #[test]
