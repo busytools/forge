@@ -750,7 +750,7 @@ pub(crate) fn deliver_permission_response(
     tool_call_id: &str,
     outcome: forge_primitives::PermissionOutcome,
 ) {
-    let Some(tx) = take_pending(pending, tool_call_id) else {
+    let Some(tx) = pending.lock().remove(tool_call_id) else {
         tracing::warn!(
             target: crate::logging::targets::APP_PERMISSION,
             tool_call_id,
@@ -825,13 +825,6 @@ pub(crate) fn deliver_question_response(
             "QuestionResponse oneshot receiver dropped before delivery",
         );
     }
-}
-
-fn take_pending(
-    pending: &PendingResponses,
-    tool_call_id: &str,
-) -> Option<oneshot::Sender<PermissionDecision>> {
-    pending.lock().remove(tool_call_id)
 }
 
 fn synth_permission_request(session_id: &str, ctx: &ToolPermissionContext) -> AgentEvent {
@@ -1100,7 +1093,7 @@ pub(crate) fn clamp_percentage_to_u8(p: f64) -> u8 {
 mod tests {
     use super::{
         PendingQuestions, PendingResponses, deliver_permission_response, deliver_question_response,
-        synth_permission_request, take_pending,
+        synth_permission_request,
     };
     use crate::client::AgentEvent;
     use forge_primitives::ToolPermissionContext;
@@ -1327,11 +1320,11 @@ mod tests {
     }
 
     #[test]
-    fn take_pending_removes_entry() {
+    fn pending_lock_remove_drains_entry() {
         let pending = fresh_pending();
         let _rx = park(&pending, "tu_x");
-        assert!(take_pending(&pending, "tu_x").is_some());
-        assert!(take_pending(&pending, "tu_x").is_none());
+        assert!(pending.lock().remove("tu_x").is_some());
+        assert!(pending.lock().remove("tu_x").is_none());
     }
 }
 

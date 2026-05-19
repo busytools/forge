@@ -334,12 +334,6 @@ pub fn dispatch_key(app: &mut crate::app::App, key: KeyEvent) -> bool {
     }
 }
 
-/// Pop the head prompt from the active session's queue. Returns
-/// `None` if there's no active session or the queue is empty.
-fn pop_prompt(session: &mut crate::app::session::UiSession) -> Option<PromptState> {
-    session.prompt_queue.pop_front()
-}
-
 /// Pop the head prompt from the active session's queue and dispatch
 /// the user's pick as a `Command::RespondPermission` or
 /// `RespondQuestion` (depending on the prompt's source). After the
@@ -363,7 +357,7 @@ pub fn submit_prompt(app: &mut crate::app::App) {
     let Some(session) = app.try_active_bucket_mut() else {
         return;
     };
-    let Some(prompt) = pop_prompt(session) else {
+    let Some(prompt) = session.prompt_queue.pop_front() else {
         return;
     };
 
@@ -442,7 +436,7 @@ pub fn cancel_prompt(app: &mut crate::app::App) {
     let Some(session) = app.try_active_bucket_mut() else {
         return;
     };
-    let Some(prompt) = pop_prompt(session) else {
+    let Some(prompt) = session.prompt_queue.pop_front() else {
         return;
     };
 
