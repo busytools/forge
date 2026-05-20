@@ -54,7 +54,6 @@ impl DialogState {
     }
 
     /// Compute the `[start, end)` visible slice for rendering.
-    #[must_use]
     pub fn visible_range(&self, item_count: usize, max_visible: usize) -> (usize, usize) {
         if item_count == 0 || max_visible == 0 {
             return (0, 0);

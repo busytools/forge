@@ -32,8 +32,8 @@
 
 use std::path::{Path, PathBuf};
 
-use forge_sdk::ContentBlock;
-use forge_sdk::Message;
+use forge_primitives::ContentBlock;
+use forge_primitives::Message;
 use forge_sdk::transport::codec::{DecodedLine, decode_dispatch};
 use forge_test_harness::sdk_wire::session_redact::redact_session_file;
 

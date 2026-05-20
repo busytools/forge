@@ -26,7 +26,6 @@ struct TableRenderPolicy {
     preferred_spacing: usize,
     min_spacing: usize,
     min_column_width: usize,
-    allow_stacked_fallback: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -78,12 +77,8 @@ impl DocumentTable {
             return Vec::new();
         }
 
-        let policy = TableRenderPolicy {
-            preferred_spacing: 3,
-            min_spacing: 1,
-            min_column_width: 4,
-            allow_stacked_fallback: true,
-        };
+        let policy =
+            TableRenderPolicy { preferred_spacing: 3, min_spacing: 1, min_column_width: 4 };
         let layout = resolve_layout(self, usize::from(width), policy);
         match layout.mode {
             TableLayoutMode::Grid | TableLayoutMode::DenseGrid => {
@@ -375,7 +370,6 @@ fn resolve_layout(
         return layout;
     }
 
-    let _ = policy.allow_stacked_fallback;
     ResolvedTableLayout { mode: TableLayoutMode::Stacked, column_widths: Vec::new(), spacing: 0 }
 }
 

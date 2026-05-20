@@ -16,14 +16,17 @@ workspace = true
 # Cross-crate test helpers. Exposes constructors on `ProjectView`,
 # `SessionView`, and `ProjectKey` so integration tests in sibling
 # crates' `tests/` directories (e.g. `forge-tui`) can build view
-# fixtures without spinning up a real on-disk catalog.
-test-helpers = []
+# fixtures without spinning up a real on-disk catalog. Forwards to
+# the same feature on `forge-primitives` for `SessionKey::from_str_for_test`.
+test-helpers = ["forge-primitives/test-helpers"]
 # Test fixture helpers (`Workspace::testing_stub`,
 # `Workspace::test_default`). Replaces forge-tui's prior
 # `forge_agent::Agent::testing_stub` so the TUI's unit + integration
 # tests can construct a fully-wired `Workspace` without a real
-# `forge.toml`. Production builds never see this code.
-testing = []
+# `forge.toml`. Forwards to `forge-agent/testing` so the stub
+# `Agent::testing_stub()` factory is visible cross-crate.
+# Production builds never see this code.
+testing = ["forge-agent/testing"]
 
 [dependencies]
 forge-primitives = { workspace = true }
@@ -37,5 +40,7 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 parking_lot = { workspace = true }
 dirs = { workspace = true }
+
+[dev-dependencies]
+forge-agent = { workspace = true, features = ["testing"] }
 tempfile = { workspace = true }
-time = { workspace = true }

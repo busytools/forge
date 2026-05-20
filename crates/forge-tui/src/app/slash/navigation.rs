@@ -53,14 +53,39 @@ fn replacement_range(slash: &SlashState, chars: &[char]) -> Option<(usize, usize
 }
 
 pub fn activate(app: &mut App) {
-    let Some(state) = build_slash_state(app) else {
+    let Some(mut state) = build_slash_state(app) else {
         return;
     };
+
+    // `build_slash_state` initialises `dialog.selected = 0`; with the
+    // forge/claude group dividers always sitting at index 0, the
+    // initial selection lands on a non-selectable divider row. Snap
+    // it to the first real command so the dropdown opens with a
+    // valid top-row highlight.
+    advance_past_leading_divider(&mut state);
 
     *app.slash_mut() = Some(state);
     *app.mention_mut() = None;
     *app.subagent_mut() = None;
     app.claim_focus_target(FocusTarget::Mention);
+}
+
+fn advance_past_leading_divider(state: &mut super::SlashState) {
+    let count = state.candidates.len();
+    if count == 0 {
+        return;
+    }
+    while state.dialog.selected < count
+        && state
+            .candidates
+            .get(state.dialog.selected)
+            .is_some_and(super::candidates::is_group_divider)
+    {
+        state.dialog.selected += 1;
+    }
+    if state.dialog.selected >= count {
+        state.dialog.selected = 0;
+    }
 }
 
 pub fn update_query(app: &mut App) {
@@ -79,8 +104,13 @@ pub fn update_query(app: &mut App) {
         slash.candidates = next_state.candidates;
         slash.dialog = dialog;
         slash.dialog.clamp(slash.candidates.len(), MAX_VISIBLE);
+        // After a context reset the new candidate list might lead
+        // with a divider — snap the highlight to the first real row.
+        advance_past_leading_divider(slash);
     } else {
-        *app.slash_mut() = Some(next_state);
+        let mut state = next_state;
+        advance_past_leading_divider(&mut state);
+        *app.slash_mut() = Some(state);
         app.claim_focus_target(FocusTarget::Mention);
     }
 }
@@ -102,12 +132,43 @@ pub fn deactivate(app: &mut App) {
 pub fn move_up(app: &mut App) {
     if let Some(slash) = app.slash_mut().as_mut() {
         slash.dialog.move_up(slash.candidates.len(), MAX_VISIBLE);
+        skip_dividers(slash, MoveDir::Up);
     }
 }
 
 pub fn move_down(app: &mut App) {
     if let Some(slash) = app.slash_mut().as_mut() {
         slash.dialog.move_down(slash.candidates.len(), MAX_VISIBLE);
+        skip_dividers(slash, MoveDir::Down);
+    }
+}
+
+#[derive(Clone, Copy)]
+enum MoveDir {
+    Up,
+    Down,
+}
+
+/// Step past any group-divider rows the selection landed on.
+/// Bounded to one full pass so a degenerate "all dividers" list
+/// can't loop forever.
+fn skip_dividers(slash: &mut super::SlashState, dir: MoveDir) {
+    let count = slash.candidates.len();
+    if count == 0 {
+        return;
+    }
+    for _ in 0..count {
+        let landed_on_divider = slash
+            .candidates
+            .get(slash.dialog.selected)
+            .is_some_and(super::candidates::is_group_divider);
+        if !landed_on_divider {
+            return;
+        }
+        match dir {
+            MoveDir::Up => slash.dialog.move_up(count, MAX_VISIBLE),
+            MoveDir::Down => slash.dialog.move_down(count, MAX_VISIBLE),
+        }
     }
 }
 
@@ -121,6 +182,13 @@ pub fn confirm_selection(app: &mut App) {
         release_autocomplete_focus_if_idle(app);
         return;
     };
+
+    // Dividers are non-selectable. Surface as a no-op (keep the
+    // dropdown open) by re-installing the slash state.
+    if super::candidates::is_group_divider(candidate) {
+        *app.slash_mut() = Some(slash);
+        return;
+    }
 
     let mut lines = app.input().lines().to_vec();
     let Some(line) = lines.get(slash.trigger_row) else {

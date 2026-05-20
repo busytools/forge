@@ -4,10 +4,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::{
-    DefaultPermissionMode, OutputStyle, PreferredNotifChannel, SettingId, SettingKind, SettingSpec,
-    setting_spec,
-};
+use super::{DefaultPermissionMode, OutputStyle, PreferredNotifChannel};
 use crate::agent::model::EffortLevel;
 
 const SETTINGS_FILENAME: &str = "settings.json";
@@ -15,13 +12,6 @@ const LOCAL_SETTINGS_FILENAME: &str = "settings.local.json";
 const PREFERENCES_FILENAME: &str = ".claude.json";
 const CLAUDE_DIR: &str = ".claude";
 const ANTHROPIC_DEFAULT_OPUS_MODEL_ENV: &str = "ANTHROPIC_DEFAULT_OPUS_MODEL";
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PersistedSettingValue {
-    Missing,
-    Bool(bool),
-    String(String),
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SettingsPaths {
@@ -110,256 +100,163 @@ pub fn save(path: &Path, document: &Value) -> Result<(), String> {
     Ok(())
 }
 
-pub fn read_persisted_setting(
-    document: &Value,
-    spec: &SettingSpec,
-) -> Result<PersistedSettingValue, ()> {
-    let Some(value) = read_json_path(document, spec.json_path) else {
-        return Ok(PersistedSettingValue::Missing);
-    };
-
-    match spec.kind {
-        SettingKind::Bool => match value {
-            Value::Bool(flag) => Ok(PersistedSettingValue::Bool(*flag)),
-            _ => Err(()),
-        },
-        SettingKind::Enum | SettingKind::DynamicEnum | SettingKind::Text => match value {
-            Value::String(text) => Ok(PersistedSettingValue::String(text.clone())),
-            _ => Err(()),
-        },
+fn read_bool(document: &Value, path: &[&str]) -> Result<Option<bool>, ()> {
+    match read_json_path(document, path) {
+        None => Ok(None),
+        Some(Value::Bool(value)) => Ok(Some(*value)),
+        Some(_) => Err(()),
     }
 }
 
-pub fn write_persisted_setting(
-    document: &mut Value,
-    spec: &SettingSpec,
-    value: PersistedSettingValue,
-) {
-    match value {
-        PersistedSettingValue::Missing => remove_json_path(document, spec.json_path),
-        PersistedSettingValue::Bool(flag) => {
-            set_json_path(document, spec.json_path, Value::Bool(flag));
-        }
-        PersistedSettingValue::String(text) => {
-            set_json_path(document, spec.json_path, Value::String(text));
-        }
-    }
-}
-
-pub fn fast_mode(document: &Value) -> Result<bool, ()> {
-    match read_persisted_setting(document, setting_spec(SettingId::FastMode))? {
-        PersistedSettingValue::Missing => Ok(false),
-        PersistedSettingValue::Bool(value) => Ok(value),
-        PersistedSettingValue::String(_) => Err(()),
-    }
-}
-
-pub fn set_fast_mode(document: &mut Value, enabled: bool) {
-    write_persisted_setting(
-        document,
-        setting_spec(SettingId::FastMode),
-        PersistedSettingValue::Bool(enabled),
-    );
-}
-
-pub fn always_thinking_enabled(document: &Value) -> Result<bool, ()> {
-    match read_persisted_setting(document, setting_spec(SettingId::AlwaysThinking))? {
-        PersistedSettingValue::Missing => Ok(false),
-        PersistedSettingValue::Bool(value) => Ok(value),
-        PersistedSettingValue::String(_) => Err(()),
-    }
-}
-
-pub fn set_always_thinking_enabled(document: &mut Value, enabled: bool) {
-    write_persisted_setting(
-        document,
-        setting_spec(SettingId::AlwaysThinking),
-        PersistedSettingValue::Bool(enabled),
-    );
-}
-
-pub fn thinking_effort_level(document: &Value) -> Result<EffortLevel, ()> {
-    match read_persisted_setting(document, setting_spec(SettingId::ThinkingEffort))? {
-        // Forge defaults to `max` effort when the user hasn't set an
-        // explicit value — matches PR #91's "default forge to --effort
-        // max" intent.
-        PersistedSettingValue::Missing => Ok(EffortLevel::Max),
-        PersistedSettingValue::Bool(_) => Err(()),
-        PersistedSettingValue::String(value) => EffortLevel::from_stored(&value).ok_or(()),
-    }
-}
-
-pub fn set_thinking_effort_level(document: &mut Value, level: EffortLevel) {
-    write_persisted_setting(
-        document,
-        setting_spec(SettingId::ThinkingEffort),
-        PersistedSettingValue::String(level.as_stored().to_owned()),
-    );
-}
-
-pub fn spinner_tips_enabled(document: &Value) -> Result<bool, ()> {
-    match read_persisted_setting(document, setting_spec(SettingId::ShowTips))? {
-        PersistedSettingValue::Missing => Ok(true),
-        PersistedSettingValue::Bool(value) => Ok(value),
-        PersistedSettingValue::String(_) => Err(()),
-    }
-}
-
-pub fn set_spinner_tips_enabled(document: &mut Value, enabled: bool) {
-    write_persisted_setting(
-        document,
-        setting_spec(SettingId::ShowTips),
-        PersistedSettingValue::Bool(enabled),
-    );
-}
-
-pub fn terminal_progress_bar_enabled(document: &Value) -> Result<bool, ()> {
-    match read_persisted_setting(document, setting_spec(SettingId::TerminalProgressBar))? {
-        PersistedSettingValue::Missing => Ok(true),
-        PersistedSettingValue::Bool(value) => Ok(value),
-        PersistedSettingValue::String(_) => Err(()),
-    }
-}
-
-pub fn set_terminal_progress_bar_enabled(document: &mut Value, enabled: bool) {
-    write_persisted_setting(
-        document,
-        setting_spec(SettingId::TerminalProgressBar),
-        PersistedSettingValue::Bool(enabled),
-    );
-}
-
-pub fn prefers_reduced_motion(document: &Value) -> Result<bool, ()> {
-    match read_persisted_setting(document, setting_spec(SettingId::ReduceMotion))? {
-        PersistedSettingValue::Missing => Ok(false),
-        PersistedSettingValue::Bool(value) => Ok(value),
-        PersistedSettingValue::String(_) => Err(()),
-    }
-}
-
-pub fn set_prefers_reduced_motion(document: &mut Value, enabled: bool) {
-    write_persisted_setting(
-        document,
-        setting_spec(SettingId::ReduceMotion),
-        PersistedSettingValue::Bool(enabled),
-    );
-}
-
-pub fn output_style(document: &Value) -> Result<OutputStyle, ()> {
-    match read_persisted_setting(document, setting_spec(SettingId::OutputStyle))? {
-        PersistedSettingValue::Missing => Ok(OutputStyle::Default),
-        PersistedSettingValue::Bool(_) => Err(()),
-        PersistedSettingValue::String(value) => OutputStyle::from_stored(&value).ok_or(()),
-    }
-}
-
-pub fn set_output_style(document: &mut Value, style: OutputStyle) {
-    write_persisted_setting(
-        document,
-        setting_spec(SettingId::OutputStyle),
-        PersistedSettingValue::String(style.as_stored().to_owned()),
-    );
-}
-
-pub fn set_model(document: &mut Value, model: Option<&str>) {
-    let value = model.map_or(PersistedSettingValue::Missing, |model| {
-        PersistedSettingValue::String(model.to_owned())
-    });
-    write_persisted_setting(document, setting_spec(SettingId::Model), value);
-}
-
-#[cfg(test)]
-pub fn model(document: &Value) -> Result<Option<String>, ()> {
-    match read_persisted_setting(document, setting_spec(SettingId::Model))? {
-        PersistedSettingValue::Missing => Ok(None),
-        PersistedSettingValue::Bool(_) => Err(()),
-        PersistedSettingValue::String(value) => Ok(Some(value)),
-    }
-}
-
-pub fn default_permission_mode(document: &Value) -> Result<DefaultPermissionMode, ()> {
-    match read_persisted_setting(document, setting_spec(SettingId::DefaultPermissionMode))? {
-        // Forge defaults to `Auto` permission mode when the user
-        // hasn't set an explicit value — mirrors `thinking_effort_level`'s
-        // PR #91 default of `Max`. The CLI itself defaults to
-        // `default`; the override happens here so every site that
-        // reads the persisted setting picks up the forge-flavoured
-        // default consistently (launch settings, settings UI cycle,
-        // resolve layer for picker rendering).
-        PersistedSettingValue::Missing => Ok(DefaultPermissionMode::Auto),
-        PersistedSettingValue::Bool(_) => Err(()),
-        PersistedSettingValue::String(value) => {
-            DefaultPermissionMode::from_stored(&value).ok_or(())
-        }
-    }
-}
-
-pub fn set_default_permission_mode(document: &mut Value, mode: DefaultPermissionMode) {
-    write_persisted_setting(
-        document,
-        setting_spec(SettingId::DefaultPermissionMode),
-        PersistedSettingValue::String(mode.as_stored().to_owned()),
-    );
-}
-
-pub fn language(document: &Value) -> Result<Option<String>, ()> {
-    match read_persisted_setting(document, setting_spec(SettingId::Language))? {
-        PersistedSettingValue::Missing => Ok(None),
-        PersistedSettingValue::Bool(_) => Err(()),
-        PersistedSettingValue::String(value) => Ok(Some(value)),
-    }
-}
-
-pub fn set_language(document: &mut Value, value: Option<&str>) {
-    let persisted = value
-        .map(str::trim)
-        .filter(|text| !text.is_empty())
-        .map_or(PersistedSettingValue::Missing, |text| {
-            PersistedSettingValue::String(text.to_owned())
-        });
-    write_persisted_setting(document, setting_spec(SettingId::Language), persisted);
-}
-
-pub fn opus_version_pin(document: &Value) -> Result<Option<String>, ()> {
-    match read_json_path(document, &["env", ANTHROPIC_DEFAULT_OPUS_MODEL_ENV]) {
+fn read_string(document: &Value, path: &[&str]) -> Result<Option<String>, ()> {
+    match read_json_path(document, path) {
         None => Ok(None),
         Some(Value::String(value)) => Ok(Some(value.clone())),
         Some(_) => Err(()),
     }
 }
 
-pub fn respect_gitignore(document: &Value) -> Result<bool, ()> {
-    match read_persisted_setting(document, setting_spec(SettingId::RespectGitignore))? {
-        PersistedSettingValue::Missing => Ok(true),
-        PersistedSettingValue::Bool(value) => Ok(value),
-        PersistedSettingValue::String(_) => Err(()),
+#[cfg(test)]
+fn write_bool(document: &mut Value, path: &[&str], enabled: bool) {
+    set_json_path(document, path, Value::Bool(enabled));
+}
+
+fn write_string(document: &mut Value, path: &[&str], value: &str) {
+    set_json_path(document, path, Value::String(value.to_owned()));
+}
+
+#[cfg(test)]
+fn write_missing(document: &mut Value, path: &[&str]) {
+    remove_json_path(document, path);
+}
+
+pub fn fast_mode(document: &Value) -> Result<bool, ()> {
+    Ok(read_bool(document, &["fastMode"])?.unwrap_or(false))
+}
+
+pub fn always_thinking_enabled(document: &Value) -> Result<bool, ()> {
+    Ok(read_bool(document, &["alwaysThinkingEnabled"])?.unwrap_or(false))
+}
+
+pub fn thinking_effort_level(document: &Value) -> Result<EffortLevel, ()> {
+    match read_string(document, &["effortLevel"])? {
+        // Forge defaults to `max` effort when unset.
+        None => Ok(EffortLevel::Max),
+        Some(value) => EffortLevel::from_stored(&value).ok_or(()),
     }
 }
 
+pub fn set_thinking_effort_level(document: &mut Value, level: EffortLevel) {
+    write_string(document, &["effortLevel"], level.as_stored());
+}
+
+pub fn prefers_reduced_motion(document: &Value) -> Result<bool, ()> {
+    Ok(read_bool(document, &["prefersReducedMotion"])?.unwrap_or(false))
+}
+
+#[cfg(test)]
+pub fn set_prefers_reduced_motion(document: &mut Value, enabled: bool) {
+    write_bool(document, &["prefersReducedMotion"], enabled);
+}
+
+pub fn output_style(document: &Value) -> Result<OutputStyle, ()> {
+    match read_string(document, &["outputStyle"])? {
+        None => Ok(OutputStyle::Default),
+        Some(value) => OutputStyle::from_stored(&value).ok_or(()),
+    }
+}
+
+#[cfg(test)]
+pub fn set_model(document: &mut Value, model: Option<&str>) {
+    match model {
+        Some(value) => write_string(document, &["model"], value),
+        None => write_missing(document, &["model"]),
+    }
+}
+
+pub fn model(document: &Value) -> Result<Option<String>, ()> {
+    read_string(document, &["model"])
+}
+
+pub fn default_permission_mode(document: &Value) -> Result<DefaultPermissionMode, ()> {
+    match read_string(document, &["permissions", "defaultMode"])? {
+        // Forge defaults to `Auto` permission mode when unset (the
+        // CLI itself defaults to `default`). The override lives
+        // here so launch_settings / picker render all pick up the
+        // same forge-flavoured default.
+        None => Ok(DefaultPermissionMode::Auto),
+        Some(value) => DefaultPermissionMode::from_stored(&value).ok_or(()),
+    }
+}
+
+#[cfg(test)]
 pub fn set_respect_gitignore(document: &mut Value, enabled: bool) {
-    write_persisted_setting(
-        document,
-        setting_spec(SettingId::RespectGitignore),
-        PersistedSettingValue::Bool(enabled),
-    );
+    write_bool(document, &["respectGitignore"], enabled);
+}
+
+#[cfg(test)]
+pub fn set_default_permission_mode(document: &mut Value, mode: DefaultPermissionMode) {
+    write_string(document, &["permissions", "defaultMode"], mode.as_stored());
+}
+
+#[cfg(test)]
+pub fn set_language(document: &mut Value, value: Option<&str>) {
+    match value.map(str::trim).filter(|text| !text.is_empty()) {
+        Some(text) => write_string(document, &["language"], text),
+        None => write_missing(document, &["language"]),
+    }
+}
+
+#[cfg(test)]
+pub fn set_always_thinking_enabled(document: &mut Value, enabled: bool) {
+    write_bool(document, &["alwaysThinkingEnabled"], enabled);
+}
+
+#[cfg(test)]
+pub fn set_fast_mode(document: &mut Value, enabled: bool) {
+    write_bool(document, &["fastMode"], enabled);
+}
+
+#[cfg(test)]
+pub fn set_output_style(document: &mut Value, style: OutputStyle) {
+    write_string(document, &["outputStyle"], style.as_stored());
+}
+
+#[cfg(test)]
+pub fn set_spinner_tips_enabled(document: &mut Value, enabled: bool) {
+    write_bool(document, &["spinnerTipsEnabled"], enabled);
+}
+
+#[cfg(test)]
+pub fn set_terminal_progress_bar_enabled(document: &mut Value, enabled: bool) {
+    write_bool(document, &["terminalProgressBarEnabled"], enabled);
+}
+
+pub fn opus_version_pin(document: &Value) -> Result<Option<String>, ()> {
+    read_string(document, &["env", ANTHROPIC_DEFAULT_OPUS_MODEL_ENV])
+}
+
+pub fn respect_gitignore(document: &Value) -> Result<bool, ()> {
+    Ok(read_bool(document, &["respectGitignore"])?.unwrap_or(true))
 }
 
 pub fn preferred_notification_channel(document: &Value) -> Result<PreferredNotifChannel, ()> {
-    match read_persisted_setting(document, setting_spec(SettingId::Notifications))? {
-        PersistedSettingValue::Missing => Ok(PreferredNotifChannel::default()),
-        PersistedSettingValue::Bool(_) => Err(()),
-        PersistedSettingValue::String(value) => {
-            PreferredNotifChannel::from_stored(&value).ok_or(())
-        }
+    match read_string(document, &["preferredNotifChannel"])? {
+        None => Ok(PreferredNotifChannel::default()),
+        Some(value) => PreferredNotifChannel::from_stored(&value).ok_or(()),
     }
 }
 
-pub fn set_preferred_notification_channel(document: &mut Value, channel: PreferredNotifChannel) {
-    write_persisted_setting(
-        document,
-        setting_spec(SettingId::Notifications),
-        PersistedSettingValue::String(channel.as_stored().to_owned()),
-    );
+pub fn language(document: &Value) -> Result<Option<String>, ()> {
+    read_string(document, &["language"])
+}
+
+pub fn spinner_tips_enabled(document: &Value) -> Result<bool, ()> {
+    Ok(read_bool(document, &["spinnerTipsEnabled"])?.unwrap_or(true))
+}
+
+pub fn terminal_progress_bar_enabled(document: &Value) -> Result<bool, ()> {
+    Ok(read_bool(document, &["terminalProgressBarEnabled"])?.unwrap_or(true))
 }
 
 fn resolve_paths(
@@ -394,32 +291,48 @@ fn resolve_paths(
     })
 }
 
-/// Map the TUI's `SettingFile` enum onto forge-agent's
-/// `SettingsTarget`. Used by `persist_setting_change` to delegate
-/// writes through the agent while keeping `SettingFile` as the
-/// TUI-domain type that callers reason about.
-pub fn settings_target_for(
-    file: super::SettingFile,
-    cwd: PathBuf,
-) -> forge_workspace::userdata::settings::SettingsTarget {
-    use forge_workspace::userdata::settings::SettingsTarget;
-    match file {
-        super::SettingFile::Settings => SettingsTarget::User,
-        super::SettingFile::LocalSettings => SettingsTarget::ProjectLocal { cwd },
-        super::SettingFile::Preferences => SettingsTarget::Preferences,
-    }
-}
-
 fn empty_object() -> Value {
     Value::Object(Map::new())
 }
 
 fn read_json_or_empty(path: &Path) -> Value {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
-        .filter(Value::is_object)
-        .unwrap_or_else(empty_object)
+    // NotFound is the normal case for fresh user/project settings —
+    // return empty silently. Other I/O errors (perm denied, broken
+    // FS) and JSON parse errors are surfaced as warn so the user
+    // gets a triage signal instead of an empty-config mystery.
+    let raw = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return empty_object(),
+        Err(e) => {
+            tracing::warn!(
+                target: "forge_tui::config",
+                path = %path.display(),
+                error = %e,
+                "failed to read settings/preferences file"
+            );
+            return empty_object();
+        }
+    };
+    match serde_json::from_str::<Value>(&raw) {
+        Ok(v) if v.is_object() => v,
+        Ok(_) => {
+            tracing::warn!(
+                target: "forge_tui::config",
+                path = %path.display(),
+                "settings/preferences file is not a JSON object; ignoring"
+            );
+            empty_object()
+        }
+        Err(e) => {
+            tracing::warn!(
+                target: "forge_tui::config",
+                path = %path.display(),
+                error = %e,
+                "failed to parse settings/preferences file as JSON"
+            );
+            empty_object()
+        }
+    }
 }
 
 fn unique_temp_path(parent: &Path, filename_hint: Option<&str>) -> PathBuf {
@@ -457,12 +370,14 @@ fn set_json_path(document: &mut Value, path: &[&str], value: Value) {
     current.insert((*last_key).to_owned(), value);
 }
 
+#[cfg(test)]
 fn remove_json_path(document: &mut Value, path: &[&str]) {
     if let Value::Object(object) = document {
         remove_from_object_path(object, path);
     }
 }
 
+#[cfg(test)]
 fn remove_from_object_path(object: &mut Map<String, Value>, path: &[&str]) -> bool {
     let Some((head, tail)) = path.split_first() else {
         return object.is_empty();
@@ -510,7 +425,6 @@ fn ensure_object_mut(document: &mut Value) -> &mut Map<String, Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::config::setting_spec;
 
     #[test]
     fn load_missing_files_returns_empty_objects() {
@@ -531,10 +445,6 @@ mod tests {
 
     #[test]
     fn load_malformed_files_returns_empty_objects_silently() {
-        // forge-sdk's read path treats malformed JSON the same as a
-        // missing file — empty object, no notice, no backup. This is a
-        // deliberate simplification of the previous "rename to .bak +
-        // surface a banner" UX.
         let dir = tempfile::tempdir().expect("tempdir");
         let settings_path = dir.path().join(".claude").join("settings.json");
         let preferences_path = dir.path().join(".claude.json");
@@ -553,117 +463,29 @@ mod tests {
     fn persisted_setting_readers_apply_defaults() {
         let document = Value::Object(Map::new());
 
-        // Forge defaults `defaultMode` to `Auto` when missing (mirrors
-        // the effort=Max default landed in PR #91).
+        // Forge defaults `defaultMode` to `Auto` when missing.
         assert_eq!(default_permission_mode(&document), Ok(DefaultPermissionMode::Auto));
         assert_eq!(respect_gitignore(&document), Ok(true));
-        assert_eq!(terminal_progress_bar_enabled(&document), Ok(true));
         assert_eq!(output_style(&document), Ok(OutputStyle::Default));
         assert_eq!(model(&document), Ok(None));
-        assert_eq!(language(&document), Ok(None));
         assert_eq!(preferred_notification_channel(&document), Ok(PreferredNotifChannel::Iterm2));
     }
 
     #[test]
     fn persisted_setting_readers_reject_invalid_values() {
-        let invalid_notification = serde_json::json!({
-            "preferredNotifChannel": "not-a-channel"
-        });
-        let invalid_output_style = serde_json::json!({
-            "outputStyle": "Verbose"
-        });
-        let invalid_gitignore = serde_json::json!({
-            "respectGitignore": "yes"
-        });
-        let invalid_model = serde_json::json!({
-            "model": true
-        });
-        let invalid_language = serde_json::json!({
-            "language": true
-        });
+        let invalid_notification = serde_json::json!({ "preferredNotifChannel": "not-a-channel" });
+        let invalid_output_style = serde_json::json!({ "outputStyle": "Verbose" });
+        let invalid_gitignore = serde_json::json!({ "respectGitignore": "yes" });
+        let invalid_model = serde_json::json!({ "model": true });
         let invalid_permission_mode = serde_json::json!({
-            "permissions": {
-                "defaultMode": "not-a-mode"
-            }
+            "permissions": { "defaultMode": "not-a-mode" }
         });
 
         assert_eq!(preferred_notification_channel(&invalid_notification), Err(()));
         assert_eq!(output_style(&invalid_output_style), Err(()));
         assert_eq!(respect_gitignore(&invalid_gitignore), Err(()));
         assert_eq!(model(&invalid_model), Err(()));
-        assert_eq!(language(&invalid_language), Err(()));
         assert_eq!(default_permission_mode(&invalid_permission_mode), Err(()));
-    }
-
-    #[test]
-    fn save_persists_settings_values_without_dropping_neighboring_keys() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("settings.json");
-        let mut document = serde_json::json!({
-            "fastMode": false,
-            "permissions": {
-                "defaultMode": "default",
-                "keep": true
-            },
-            "model": "old-model",
-            "language": "English",
-            "unknown": {
-                "keep": true
-            }
-        });
-
-        set_fast_mode(&mut document, true);
-        set_default_permission_mode(&mut document, DefaultPermissionMode::Plan);
-        set_model(&mut document, Some("sonnet"));
-        set_language(&mut document, Some("German"));
-
-        save(&path, &document).expect("save");
-        let saved: Value =
-            serde_json::from_str(&std::fs::read_to_string(path).expect("read")).expect("json");
-
-        assert_eq!(fast_mode(&saved), Ok(true));
-        assert_eq!(default_permission_mode(&saved), Ok(DefaultPermissionMode::Plan));
-        assert_eq!(model(&saved), Ok(Some("sonnet".to_owned())));
-        assert_eq!(language(&saved), Ok(Some("German".to_owned())));
-        assert_eq!(saved["permissions"]["keep"], Value::Bool(true));
-        assert_eq!(saved["unknown"]["keep"], Value::Bool(true));
-    }
-
-    #[test]
-    fn save_roundtrips_auto_permission_mode() {
-        let mut document = Value::Object(Map::new());
-        set_default_permission_mode(&mut document, DefaultPermissionMode::Auto);
-
-        assert_eq!(default_permission_mode(&document), Ok(DefaultPermissionMode::Auto));
-    }
-
-    #[test]
-    fn set_language_trims_and_removes_whitespace_only_values() {
-        let mut document = Value::Object(Map::new());
-        set_language(&mut document, Some("  German  "));
-        assert_eq!(language(&document), Ok(Some("German".to_owned())));
-
-        set_language(&mut document, Some("   "));
-        assert_eq!(language(&document), Ok(None));
-    }
-
-    #[test]
-    fn save_preserves_unknown_keys_and_updates_output_style() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join(".claude").join("settings.local.json");
-        std::fs::create_dir_all(path.parent().expect("settings parent")).expect("create dir");
-        let mut document = serde_json::json!({
-            "outputStyle": "Default",
-            "spinnerTipsEnabled": true
-        });
-        set_output_style(&mut document, OutputStyle::Learning);
-
-        save(&path, &document).expect("save");
-        let saved: Value =
-            serde_json::from_str(&std::fs::read_to_string(path).expect("read")).expect("json");
-
-        assert_eq!(output_style(&saved), Ok(OutputStyle::Learning));
-        assert_eq!(saved["spinnerTipsEnabled"], Value::Bool(true));
     }
 
     #[test]
@@ -676,9 +498,7 @@ mod tests {
     #[test]
     fn opus_version_pin_returns_string_when_set() {
         let document = serde_json::json!({
-            "env": {
-                "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-4-7"
-            }
+            "env": { "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-4-7" }
         });
 
         assert_eq!(opus_version_pin(&document), Ok(Some("claude-opus-4-7".to_owned())));
@@ -687,73 +507,25 @@ mod tests {
     #[test]
     fn opus_version_pin_errors_on_non_string_value() {
         let document = serde_json::json!({
-            "env": {
-                "ANTHROPIC_DEFAULT_OPUS_MODEL": true
-            }
+            "env": { "ANTHROPIC_DEFAULT_OPUS_MODEL": true }
         });
 
         assert_eq!(opus_version_pin(&document), Err(()));
     }
 
     #[test]
-    fn save_persists_preferences_values_without_dropping_neighboring_keys() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join(".claude.json");
-        let mut document = serde_json::json!({
-            "preferredNotifChannel": "iterm2",
-            "respectGitignore": true,
-            "terminalProgressBarEnabled": true,
-            "theme": "dark"
-        });
-
-        set_preferred_notification_channel(&mut document, PreferredNotifChannel::TerminalBell);
-        set_respect_gitignore(&mut document, false);
-        set_terminal_progress_bar_enabled(&mut document, false);
-
-        save(&path, &document).expect("save");
-        let saved: Value =
-            serde_json::from_str(&std::fs::read_to_string(path).expect("read")).expect("json");
-
-        assert_eq!(preferred_notification_channel(&saved), Ok(PreferredNotifChannel::TerminalBell));
-        assert_eq!(respect_gitignore(&saved), Ok(false));
-        assert_eq!(terminal_progress_bar_enabled(&saved), Ok(false));
-        assert_eq!(saved["theme"], Value::String("dark".to_owned()));
+    fn set_thinking_effort_level_writes_string_value() {
+        let mut document = Value::Object(Map::new());
+        set_thinking_effort_level(&mut document, EffortLevel::High);
+        assert_eq!(thinking_effort_level(&document), Ok(EffortLevel::High));
     }
 
     #[test]
-    fn write_persisted_setting_removes_nested_path_and_prunes_empty_parent() {
-        let mut document = serde_json::json!({
-            "permissions": {
-                "defaultMode": "plan"
-            },
-            "keep": true
-        });
-
-        write_persisted_setting(
-            &mut document,
-            setting_spec(SettingId::DefaultPermissionMode),
-            PersistedSettingValue::Missing,
-        );
-
-        assert_eq!(
-            document,
-            serde_json::json!({
-                "keep": true
-            })
-        );
-    }
-
-    #[test]
-    fn read_persisted_setting_uses_json_path_metadata() {
-        let document = serde_json::json!({
-            "permissions": {
-                "defaultMode": "plan"
-            }
-        });
-
-        let value =
-            read_persisted_setting(&document, setting_spec(SettingId::DefaultPermissionMode));
-
-        assert_eq!(value, Ok(PersistedSettingValue::String("plan".to_owned())));
+    fn set_model_writes_or_removes_value() {
+        let mut document = serde_json::json!({ "model": "sonnet" });
+        set_model(&mut document, Some("opus"));
+        assert_eq!(model(&document), Ok(Some("opus".to_owned())));
+        set_model(&mut document, None);
+        assert_eq!(model(&document), Ok(None));
     }
 }

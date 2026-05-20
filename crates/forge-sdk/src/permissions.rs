@@ -1,14 +1,7 @@
-//! Permission callback trait + tests.
-//!
-//! Wire-data (`ToolPermissionContext`, `PermissionDecision`,
-//! `PermissionUpdate`, `PermissionUpdateDestination`, `PermissionBehavior`,
-//! `PermissionRuleValue`) lifted to forge-primitives in 2026-05-05;
-//! re-exported here for back-compat.
+//! Permission callback trait + tests. Wire-data lives in
+//! forge-primitives — consumers import from there directly.
 
-pub use forge_primitives::{
-    PermissionBehavior, PermissionDecision, PermissionRuleValue, PermissionUpdate,
-    PermissionUpdateDestination, ToolPermissionContext,
-};
+use forge_primitives::{PermissionDecision, ToolPermissionContext};
 
 /// Trait for permission callbacks.
 ///
@@ -55,7 +48,7 @@ mod tests {
     #[allow(unused_imports)]
     use super::*;
 
-    use crate::{PermissionDecision, ToolPermissionContext};
+    use forge_primitives::{PermissionDecision, ToolPermissionContext};
     use serde_json::json;
 
     #[test]
@@ -89,7 +82,7 @@ mod tests {
     }
 
     use crate::PermissionMode;
-    use crate::{
+    use forge_primitives::{
         PermissionBehavior, PermissionRuleValue, PermissionUpdate, PermissionUpdateDestination,
     };
 

@@ -3,12 +3,6 @@
 //! path on every platform, plus a macOS keychain fallback for fresh
 //! installs that haven't seeded the file yet).
 //!
-//! Lifted from forge-sdk in 2026-05-05. Reading the user's stored
-//! credentials is agent-side work — forge-sdk's job is to wrap the
-//! long-lived `claude` subprocess, not to consult a keychain or
-//! parse `.credentials.json`. Mirrors the shape of the `auth_status`
-//! shell-out next door: both are one-shot lookups outside the live
-//! stream-json session.
 //!
 //! The returned [`OauthCredentials`] feeds the
 //! `cloud::oauth_usage` HTTP client (Bearer header) — no other
@@ -42,7 +36,6 @@ pub use forge_primitives::cloud::oauth_credentials::OauthCredentials;
 /// payload omits an expiry field; otherwise it is the parsed
 /// [`std::time::SystemTime`] of the `expiresAt` numeric or stringified-numeric
 /// epoch.
-#[must_use]
 pub fn load_oauth_credentials(config_dir: &Path) -> Option<OauthCredentials> {
     let path = config_dir.join(".credentials.json");
     if let Some(creds) = load_oauth_credentials_at(&path) {

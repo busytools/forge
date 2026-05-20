@@ -106,15 +106,6 @@ impl Hooks {
 
         registry
     }
-
-    /// Render the `hooks` key of the `initialize` `control_request` payload
-    /// exactly as the Client will send it. Test-only surface — production
-    /// code uses this indirectly through the Client's initialize path.
-    #[doc(hidden)]
-    #[must_use]
-    pub fn to_initialize_payload_for_test(&self) -> serde_json::Value {
-        self.mint_registry().to_initialize_payload()
-    }
 }
 
 /// Internal bundle mapping opaque ids to erased callbacks, with parallel
@@ -193,7 +184,6 @@ impl std::fmt::Debug for HooksBuilder {
 
 impl HooksBuilder {
     /// Start empty.
-    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -205,7 +195,6 @@ impl HooksBuilder {
     /// 30 seconds. Lower it for scenarios
     /// that deliberately provoke cancellation; raise it for
     /// long-running callbacks (e.g. LLM sub-calls inside a hook).
-    #[must_use]
     pub fn default_timeout_secs(mut self, secs: u64) -> Self {
         self.inner.default_timeout_secs = Some(secs);
         self
@@ -213,7 +202,6 @@ impl HooksBuilder {
 
     /// Register a `PreToolUse` hook. `matcher` is a glob against tool names
     /// (`"*"` matches all); pass `"Bash"` to match only the Bash tool.
-    #[must_use]
     pub fn pre_tool_use<C>(mut self, matcher: impl Into<String>, callback: C) -> Self
     where
         C: HookCallback<PreToolUseInput> + 'static,
@@ -229,7 +217,6 @@ impl HooksBuilder {
     }
 
     /// Register a `PostToolUse` hook.
-    #[must_use]
     pub fn post_tool_use<C>(mut self, matcher: impl Into<String>, callback: C) -> Self
     where
         C: HookCallback<PostToolUseInput> + 'static,
@@ -245,7 +232,6 @@ impl HooksBuilder {
     }
 
     /// Register a `UserPromptSubmit` hook.
-    #[must_use]
     pub fn user_prompt_submit<C>(mut self, callback: C) -> Self
     where
         C: HookCallback<UserPromptSubmitInput> + 'static,
@@ -258,7 +244,6 @@ impl HooksBuilder {
     }
 
     /// Register a `Stop` hook.
-    #[must_use]
     pub fn stop<C>(mut self, callback: C) -> Self
     where
         C: HookCallback<StopInput> + 'static,
@@ -271,7 +256,6 @@ impl HooksBuilder {
     }
 
     /// Register a `SubagentStop` hook.
-    #[must_use]
     pub fn subagent_stop<C>(mut self, callback: C) -> Self
     where
         C: HookCallback<SubagentStopInput> + 'static,
@@ -284,7 +268,6 @@ impl HooksBuilder {
     }
 
     /// Register a `PreCompact` hook.
-    #[must_use]
     pub fn pre_compact<C>(mut self, callback: C) -> Self
     where
         C: HookCallback<PreCompactInput> + 'static,
@@ -298,7 +281,6 @@ impl HooksBuilder {
 
     /// Register a `PostToolUseFailure` hook. `matcher` follows the same
     /// tool-name glob semantics as [`Self::pre_tool_use`] / [`Self::post_tool_use`].
-    #[must_use]
     pub fn post_tool_use_failure<C>(mut self, matcher: impl Into<String>, callback: C) -> Self
     where
         C: HookCallback<PostToolUseFailureInput> + 'static,
@@ -314,7 +296,6 @@ impl HooksBuilder {
     }
 
     /// Register a `Notification` hook.
-    #[must_use]
     pub fn notification<C>(mut self, callback: C) -> Self
     where
         C: HookCallback<NotificationInput> + 'static,
@@ -327,7 +308,6 @@ impl HooksBuilder {
     }
 
     /// Register a `SubagentStart` hook.
-    #[must_use]
     pub fn subagent_start<C>(mut self, callback: C) -> Self
     where
         C: HookCallback<SubagentStartInput> + 'static,
@@ -341,7 +321,6 @@ impl HooksBuilder {
 
     /// Register a `PermissionRequest` hook (observational; `matcher` globs
     /// against tool names the same way as [`Self::pre_tool_use`]).
-    #[must_use]
     pub fn permission_request<C>(mut self, matcher: impl Into<String>, callback: C) -> Self
     where
         C: HookCallback<PermissionRequestInput> + 'static,
@@ -357,7 +336,6 @@ impl HooksBuilder {
     }
 
     /// Finalise.
-    #[must_use]
     pub fn build(self) -> Hooks {
         self.inner
     }
@@ -456,7 +434,7 @@ mod tests_hooks_registration {
             })
             .build();
 
-        let payload = hooks.to_initialize_payload_for_test();
+        let payload = hooks.mint_registry().to_initialize_payload();
         for key in [
             "PreToolUse",
             "PostToolUseFailure",

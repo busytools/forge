@@ -10,27 +10,9 @@ use forge_tui::app::ActiveView;
 use forge_tui::app::App;
 use forge_tui::app::session::UiSession;
 use forge_tui::ui::launchpad;
-use forge_workspace::{ProjectKey, ProjectView, SessionKey, SessionView};
+use forge_workspace::SessionKey;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
-
-#[allow(dead_code)] // Helpers reserved for fuller-fidelity snapshot tests once a
-// populated `Workspace` fixture lands (see TODO at bottom of file).
-fn project_view(
-    name: &str,
-    org: &str,
-    accounts: Vec<String>,
-    sessions: Vec<SessionView>,
-) -> ProjectView {
-    ProjectView::new_for_test_with_org(
-        ProjectKey::new_for_test(name),
-        name,
-        format!("~/Projects/{name}"),
-        org,
-        accounts,
-        sessions,
-    )
-}
 
 /// Force-set a UiSession bucket with the given lifecycle so the
 /// launchpad picker resolves the row to that state.
@@ -75,10 +57,7 @@ fn cold_boot_renders_all_pending_rows() {
     // The launchpad reads projects via `workspace.list_projects()` —
     // for the test-only path we use a stub workspace whose
     // `list_projects()` returns an empty Vec, so the picker chrome
-    // (wordmark + footer) renders without project rows. Fuller
-    // fidelity needs a populated `Workspace` fixture; see TODO below.
-    let _example_project = project_view("forge", "Busytools", vec!["Personal".to_owned()], vec![]);
-
+    // (wordmark + footer) renders without project rows.
     let lines = render_to_lines(&mut app, 100, 20);
     // Wordmark and footer always render even when workspace is empty.
     assert!(

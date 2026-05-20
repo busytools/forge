@@ -47,50 +47,21 @@ async fn default_init_omits_conditional_fields() {
     );
     assert!(
         req.get("excludeDynamicSections").is_none(),
-        "excludeDynamicSections must be omitted when unset, got {req:?}"
-    );
-    assert!(
-        req.get("skills").is_none(),
-        "skills must be omitted when no concrete list, got {req:?}"
+        "excludeDynamicSections must be omitted when no preset sets it, got {req:?}"
     );
 }
 
 #[tokio::test]
-async fn exclude_dynamic_sections_when_set_is_included() {
-    let req = capture_init(|b| b.exclude_dynamic_sections(true)).await;
-    assert_eq!(req["excludeDynamicSections"], true);
-}
-
-#[tokio::test]
-async fn exclude_dynamic_sections_via_preset_wins() {
+async fn exclude_dynamic_sections_via_preset_is_included() {
     use forge_sdk::SystemPromptKind;
     let req = capture_init(|b| {
-        // Top-level is false, preset flips to true — preset wins per
-        // Python types.py:43-66 (preset is the canonical path).
-        b.exclude_dynamic_sections(false).system_prompt(SystemPromptKind::Preset {
+        b.system_prompt(SystemPromptKind::Preset {
             append: None,
             exclude_dynamic_sections: Some(true),
         })
     })
     .await;
     assert_eq!(req["excludeDynamicSections"], true);
-}
-
-#[tokio::test]
-async fn skills_all_marker_omits_field() {
-    // 'all' sentinel maps to --allowedTools only per Python; initialize
-    // payload must NOT contain the skills list.
-    let req = capture_init(|b| b.skills(["all"])).await;
-    assert!(req.get("skills").is_none(), "'all' sentinel must stay out of initialize.skills");
-}
-
-#[tokio::test]
-async fn skills_concrete_list_is_included() {
-    let req = capture_init(|b| b.skills(["create-story", "other-skill"])).await;
-    let list = req["skills"].as_array().expect("skills is array");
-    assert_eq!(list.len(), 2);
-    assert_eq!(list[0], "create-story");
-    assert_eq!(list[1], "other-skill");
 }
 
 #[test]

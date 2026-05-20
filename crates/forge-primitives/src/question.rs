@@ -30,7 +30,7 @@ pub struct QuestionRequest {
     pub total_questions: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QuestionAnnotation {
     pub preview: Option<String>,
     pub notes: Option<String>,

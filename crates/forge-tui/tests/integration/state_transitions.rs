@@ -284,8 +284,8 @@ async fn mode_updates_switch_known_modes_fall_back_for_unknown_ids_and_noop_with
         current_mode_id: "code".into(),
         current_mode_name: "Code".into(),
         available_modes: vec![
-            forge_tui::app::ModeInfo { id: "code".into(), name: "Code".into() },
-            forge_tui::app::ModeInfo { id: "plan".into(), name: "Plan".into() },
+            forge_tui::app::ModeInfo { id: "code".into(), name: "Code".into(), description: None },
+            forge_tui::app::ModeInfo { id: "plan".into(), name: "Plan".into(), description: None },
         ],
     }));
 

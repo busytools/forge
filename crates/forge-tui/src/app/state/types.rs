@@ -1,17 +1,6 @@
 use crate::agent::model;
-use serde::{Deserialize, Serialize};
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ModeInfo {
-    pub id: String,
-    pub name: String,
-}
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ModeState {
-    pub current_mode_id: String,
-    pub current_mode_name: String,
-    pub available_modes: Vec<ModeInfo>,
-}
+pub use forge_primitives::runtime::{ModeInfo, ModeState};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum HelpView {
@@ -55,27 +44,10 @@ pub struct RecentSessionInfo {
     pub session_id: String,
     pub summary: String,
     pub last_modified_ms: u64,
-    pub file_size_bytes: u64,
     pub cwd: Option<String>,
-    pub git_branch: Option<String>,
     pub custom_title: Option<String>,
     pub first_prompt: Option<String>,
 }
-
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct SessionPickerState {
-    /// Index of the currently highlighted session in `app.recent_sessions`.
-    pub selected: usize,
-    /// Scroll offset for when the list exceeds the visible area.
-    pub scroll_offset: usize,
-}
-
-// `QueuedMessage` + `PendingEchoBubble` removed 2026-05-13. Forge
-// no longer maintains any local queue or dim/un-dim state for
-// mid-turn submits — claude's CLI handles in-flight buffering
-// internally, and the chat just appends a regular user bubble per
-// submit. Session resume reconstructs queued messages from the
-// JSONL `type:"attachment"` rows via `forge_agent::userdata::catalog::scan`.
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct MessageUsage {
@@ -111,6 +83,12 @@ pub struct SessionUsageState {
     pub last_compaction_trigger: Option<model::CompactionTrigger>,
     pub last_compaction_pre_tokens: Option<u64>,
     pub context_usage_percent: Option<u8>,
+    /// Raw model context-window size in tokens (e.g. 200_000 for
+    /// Sonnet's base cap, 1_000_000 for the 1M variant). Read by
+    /// the projects-pane footer to render `200K` / `1M` beneath
+    /// the Ctx bar. `None` until the first ContextUsage poll
+    /// returns a snapshot for this session.
+    pub context_max_tokens: Option<u64>,
     pub context_usage_in_flight: bool,
     pub context_usage_refresh_pending: bool,
 }
@@ -120,13 +98,12 @@ pub struct McpState {
     pub servers: Vec<forge_primitives::McpServerStatus>,
     pub in_flight: bool,
     pub last_error: Option<String>,
-    pub pending_elicitation: Option<forge_primitives::ElicitationRequest>,
 }
 
 // Per-session SDK turn state lives in
-// [`forge_primitives::runtime::SessionTurnState`] as of Phase 2 of
-// the MVVM refactor (#102). Re-export keeps existing import paths
-// (`crate::app::state::types::SessionTurnState`) resolving.
+// `forge_primitives::runtime::SessionTurnState`. Re-exported here
+// so the existing `crate::app::state::types::SessionTurnState`
+// import path resolves.
 pub use forge_primitives::runtime::SessionTurnState;
 
 pub const DEFAULT_RENDER_CACHE_BUDGET_BYTES: usize = 24 * 1024 * 1024;
@@ -198,22 +175,6 @@ pub enum ToolCallScope {
     MainAgent,
     SubagentRoot,
     SubagentChild { parent_tool_use_id: String },
-}
-
-/// Why the user-visible cancel was requested. As of issue #85 the
-/// only routine caller is the Escape keybinding ([`Self::Manual`]).
-/// The historical `AutoQueue` variant (set by submit-during-busy to
-/// distinguish auto-induced cancels for the post-cancel auto-submit
-/// path) was removed alongside the rest of the local-queue machinery
-/// — submit now dispatches immediately and claude internally queues
-/// in-flight inputs as `queued_command` content blocks.
-///
-/// The enum is kept as a single-variant for forward-extensibility
-/// (future cancel origins like "rate-limit" or "external API" can
-/// land without rewriting every match site).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CancelOrigin {
-    Manual,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

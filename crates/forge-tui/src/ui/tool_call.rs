@@ -3,11 +3,9 @@
 //! Submodules handle specific rendering concerns:
 //! - [`standard`] -- one render path for every tool (Read, Write, Bash,
 //!   Glob, etc.) — title row plus optional indented body.
-//! - [`interactions`] -- inline permissions, questions, and plan approvals
 //! - [`errors`] -- error rendering and tool-use error extraction
 
 mod errors;
-mod interactions;
 mod standard;
 
 use std::borrow::Cow;
@@ -84,10 +82,7 @@ pub fn render_tool_call_cached_with_tools_collapsed(
 
     let has_execute_body = tc.is_execute_tool()
         && (tc.terminal_output.is_some() || matches!(tc.status, model::ToolCallStatus::InProgress));
-    let has_body = !(tc.content.is_empty()
-        && tc.pending_permission.is_none()
-        && tc.pending_question.is_none())
-        || has_execute_body;
+    let has_body = !tc.content.is_empty() || has_execute_body;
     if !has_body {
         return;
     }
@@ -143,10 +138,7 @@ pub fn measure_tool_call_height_cached_with_tools_collapsed(
         Paragraph::new(Text::from(vec![title])).wrap(Wrap { trim: false }).line_count(width);
     let has_execute_body = tc.is_execute_tool()
         && (tc.terminal_output.is_some() || matches!(tc.status, model::ToolCallStatus::InProgress));
-    let has_body = !(tc.content.is_empty()
-        && tc.pending_permission.is_none()
-        && tc.pending_question.is_none())
-        || has_execute_body;
+    let has_body = !tc.content.is_empty() || has_execute_body;
 
     if !has_body {
         tc.record_measured_height(width, title_h, layout_generation);
@@ -296,8 +288,6 @@ mod tests {
             last_measured_layout_epoch: 0,
             last_measured_layout_generation: 0,
             cache: BlockCache::default(),
-            pending_permission: None,
-            pending_question: None,
             collapsed_override: None,
             last_measured_y_in_msg: 0,
         }
@@ -1006,8 +996,6 @@ mod tests {
             last_measured_layout_epoch: 0,
             last_measured_layout_generation: 0,
             cache: BlockCache::default(),
-            pending_permission: None,
-            pending_question: None,
             collapsed_override: None,
             last_measured_y_in_msg: 0,
         };
@@ -1040,8 +1028,6 @@ mod tests {
             last_measured_layout_epoch: 0,
             last_measured_layout_generation: 0,
             cache: BlockCache::default(),
-            pending_permission: None,
-            pending_question: None,
             collapsed_override: None,
             last_measured_y_in_msg: 0,
         };
@@ -1076,8 +1062,6 @@ mod tests {
             last_measured_layout_epoch: 0,
             last_measured_layout_generation: 0,
             cache: BlockCache::default(),
-            pending_permission: None,
-            pending_question: None,
             collapsed_override: None,
             last_measured_y_in_msg: 0,
         };
@@ -1135,8 +1119,6 @@ mod tests {
             last_measured_layout_epoch: 0,
             last_measured_layout_generation: 0,
             cache: BlockCache::default(),
-            pending_permission: None,
-            pending_question: None,
             collapsed_override: None,
             last_measured_y_in_msg: 0,
         };

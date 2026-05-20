@@ -42,20 +42,20 @@ pub fn is_active(app: &App) -> bool {
 }
 
 pub fn compute_height(app: &App) -> u16 {
-    let count = if let Some(m) = &app.mention() {
-        m.candidates.len().max(1)
+    let (count, cap) = if let Some(m) = &app.mention() {
+        (m.candidates.len().max(1), MAX_VISIBLE)
     } else if let Some(s) = &app.slash() {
-        s.candidates.len()
+        (s.candidates.len(), slash::MAX_VISIBLE)
     } else if let Some(s) = &app.subagent() {
-        s.candidates.len()
+        (s.candidates.len(), MAX_VISIBLE)
     } else {
-        0
+        (0, MAX_VISIBLE)
     };
 
     if count == 0 {
         0
     } else {
-        let visible = count.min(MAX_VISIBLE) as u16;
+        let visible = count.min(cap) as u16;
         visible.saturating_add(2) // +2 for top/bottom border
     }
 }
@@ -66,8 +66,8 @@ pub fn render(frame: &mut Frame, input_area: Rect, app: &App) {
         return;
     };
 
-    let height = compute_height(app);
-    if height == 0 {
+    let desired_height = compute_height(app);
+    if desired_height == 0 {
         return;
     }
 
@@ -87,10 +87,26 @@ pub fn render(frame: &mut Frame, input_area: Rect, app: &App) {
     }
 
     let anchor_y = text_area.y.saturating_add(anchor_row).min(text_area.bottom().saturating_sub(1));
+    // Clamp the dropdown to whatever vertical space exists above the
+    // anchor (most cases) or below it (when the input is near the top
+    // of the frame). Without this clamp `compute_height` can return a
+    // box taller than the screen; ratatui then clips the bottom of
+    // the dropdown and the scroll-window math has no idea, so the
+    // user sees fewer rows than the dialog thinks it's showing.
+    let rows_above = anchor_y.saturating_sub(frame.area().y).saturating_sub(ANCHOR_VERTICAL_GAP);
+    let rows_below =
+        frame.area().bottom().saturating_sub(anchor_y).saturating_sub(ANCHOR_VERTICAL_GAP);
+    let max_height = rows_above.max(rows_below);
+    let height = desired_height.min(max_height);
+    if height < 3 {
+        // Need at least 2 border rows + 1 content row to be useful.
+        return;
+    }
     let y = choose_dropdown_y(anchor_y, height, frame.area().y, frame.area().bottom());
 
     let dropdown_area = Rect { x, y, width, height };
-    let meta = dropdown_meta(&dropdown);
+    let visible_interior = usize::from(height.saturating_sub(2));
+    let meta = dropdown_meta(&dropdown, visible_interior);
     let lines = dropdown_lines(&dropdown, &meta);
 
     let block = Block::default()
@@ -129,20 +145,26 @@ fn dropdown_trigger(dropdown: &Dropdown<'_>) -> (usize, usize) {
     }
 }
 
-fn dropdown_meta(dropdown: &Dropdown<'_>) -> DropdownMeta {
+/// `visible_interior` is the number of content rows the dropdown
+/// actually has on screen (height minus borders). Each branch uses
+/// `min(per-dropdown cap, visible_interior)` so the scroll-window
+/// math agrees with what ratatui ends up rendering.
+fn dropdown_meta(dropdown: &Dropdown<'_>, visible_interior: usize) -> DropdownMeta {
     match dropdown {
         Dropdown::Mention(m) => {
-            let visible_count = m.candidates.len().clamp(1, MAX_VISIBLE);
+            let cap = MAX_VISIBLE.min(visible_interior).max(1);
+            let visible_count = m.candidates.len().clamp(1, cap);
             let (start, end) = if m.candidates.is_empty() {
                 (0, 0)
             } else {
-                m.dialog.visible_range(m.candidates.len(), MAX_VISIBLE)
+                m.dialog.visible_range(m.candidates.len(), cap)
             };
             DropdownMeta { visible_count, start, end, title: " Files & Folders ".to_owned() }
         }
         Dropdown::Slash(s) => {
-            let visible_count = s.candidates.len().min(MAX_VISIBLE);
-            let (start, end) = s.dialog.visible_range(s.candidates.len(), MAX_VISIBLE);
+            let cap = slash::MAX_VISIBLE.min(visible_interior).max(1);
+            let visible_count = s.candidates.len().min(cap);
+            let (start, end) = s.dialog.visible_range(s.candidates.len(), cap);
             let title = match &s.context {
                 slash::SlashContext::CommandName => format!(" Commands ({}) ", s.candidates.len()),
                 slash::SlashContext::Argument { command, .. } => {
@@ -152,8 +174,9 @@ fn dropdown_meta(dropdown: &Dropdown<'_>) -> DropdownMeta {
             DropdownMeta { visible_count, start, end, title }
         }
         Dropdown::Subagent(s) => {
-            let visible_count = s.candidates.len().min(MAX_VISIBLE);
-            let (start, end) = s.dialog.visible_range(s.candidates.len(), MAX_VISIBLE);
+            let cap = MAX_VISIBLE.min(visible_interior).max(1);
+            let visible_count = s.candidates.len().min(cap);
+            let (start, end) = s.dialog.visible_range(s.candidates.len(), cap);
             DropdownMeta {
                 visible_count,
                 start,
@@ -221,6 +244,18 @@ fn slash_candidate_line(
     candidate: &slash::SlashCandidate,
     global_idx: usize,
 ) -> Line<'static> {
+    // Group-divider rows render as a DIM rule with the group label
+    // (`── claude ──`). Non-selectable; the navigation helpers skip
+    // them on arrow keys.
+    if candidate.insert_value.is_empty() {
+        let _ = global_idx;
+        let label = format!("── {} ──", candidate.primary);
+        return Line::from(vec![
+            Span::raw("   "),
+            Span::styled(label, Style::default().fg(theme::DIM)),
+        ]);
+    }
+
     let mut spans: Vec<Span<'static>> = Vec::new();
     push_selection_prefix(&mut spans, global_idx == slash.dialog.selected);
 

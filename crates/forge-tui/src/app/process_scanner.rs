@@ -92,14 +92,13 @@ impl Drop for ScanInFlightGuard {
 }
 
 /// Spawn a tokio local task that runs
-/// `workspace.scan_processes(claude_pid)` on a blocking pool and
-/// sends a `SnapshotReady` on completion.
+/// `forge_workspace::env::processes::scan(claude_pid)` on a blocking
+/// pool and sends a `SnapshotReady` on completion.
 ///
 /// Early-returns (debug-logged) when:
 /// - `claude_pid` is `None` (pre-spawn / disconnected session).
 /// - The session's `scan_in_flight` guard is already set.
 pub fn request_refresh(
-    workspace: Arc<forge_workspace::Workspace>,
     tx: std_mpsc::Sender<ProcessScanEvent>,
     key: SessionKey,
     claude_pid: Option<u32>,
@@ -135,21 +134,24 @@ pub fn request_refresh(
         // `sysinfo` refresh is CPU-bound — offload to the blocking
         // pool so the per-second ticker on this runtime doesn't
         // stall behind the ~50–100 ms scan.
-        let snapshot =
-            match tokio::task::spawn_blocking(move || workspace.scan_processes(claude_pid)).await {
-                Ok(snap) => snap,
-                Err(err) => {
-                    tracing::warn!(
-                        target: crate::logging::targets::APP_SESSION,
-                        event_name = "process_scan_join_failed",
-                        message = "process scan blocking task panicked or was cancelled",
-                        outcome = "failure",
-                        error = %err,
-                        key = %key.as_str(),
-                    );
-                    return;
-                }
-            };
+        let snapshot = match tokio::task::spawn_blocking(move || {
+            forge_workspace::env::processes::scan(claude_pid)
+        })
+        .await
+        {
+            Ok(snap) => snap,
+            Err(err) => {
+                tracing::warn!(
+                    target: crate::logging::targets::APP_SESSION,
+                    event_name = "process_scan_join_failed",
+                    message = "process scan blocking task panicked or was cancelled",
+                    outcome = "failure",
+                    error = %err,
+                    key = %key.as_str(),
+                );
+                return;
+            }
+        };
         let _ = tx.send(ProcessScanEvent::SnapshotReady { key, generation, snapshot });
     });
 }
@@ -227,14 +229,13 @@ fn apply_timer_tick(app: &mut App) {
     if !should_refresh(session) {
         return;
     }
-    let Some(workspace) = app.workspace.as_ref().map(Arc::clone) else {
+    let Some(workspace) = app.workspace.as_ref() else {
         return;
     };
     let claude_pid = workspace.claude_pid(&active_key);
     let generation = session.process_scan_generation;
     let scan_in_flight = Arc::clone(&session.process_scan_in_flight);
     request_refresh(
-        workspace,
         app.process_scan_event_tx.clone(),
         active_key,
         claude_pid,

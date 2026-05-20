@@ -19,45 +19,62 @@ use crate::protocol::SessionUpdate;
 use crate::workspace::Workspace;
 use crate::{SessionKey, SessionTarget};
 
-/// Synthesize a `__spawn_<project_name>__` placeholder bucket key
-/// (matches the legacy TUI spawn flow), emit `SessionUpdate::Spawning`,
-/// then spawn the agent. The first `Connected` event from the
-/// resulting `SessionTask` emits `KeyRenamed` + `Connected` to
-/// migrate the synthetic bucket onto the real claude session UUID.
-pub(crate) async fn handle_spawn_project(
-    workspace: Arc<Workspace>,
-    project_name: String,
+/// Emit a `SessionUpdate` and log at debug when the receiver is gone
+/// (TUI is shutting down or has crashed). The send is logically
+/// best-effort — no caller can act on the failure — but visibility
+/// in the log distinguishes "TUI dropped the channel" from "the
+/// emit never happened" during diagnosis.
+fn try_emit(workspace: &Workspace, label: &'static str, update: SessionUpdate) {
+    if let Err(err) = workspace.update_tx().send(update) {
+        tracing::debug!(
+            target: "forge_workspace::spawn",
+            label,
+            error = %err,
+            "SessionUpdate dropped — receiver is gone (likely TUI shutdown)"
+        );
+    }
+}
+
+/// Synthesize a `__spawn_<project_name>__` placeholder bucket key,
+/// emit `SessionUpdate::Spawning`, then spawn the agent. The first
+/// `Connected` event from the resulting `SessionTask` emits
+/// `KeyRenamed` + `Connected` to migrate the synthetic bucket onto
+/// the real claude session UUID.
+pub(crate) fn handle_spawn_project(
+    workspace: &Arc<Workspace>,
+    project_name: &str,
     launch_settings: SessionLaunchSettings,
 ) {
-    let Some(project) = workspace.find_project_view_by_name(&project_name) else {
+    let Some(project) = workspace.find_project_view_by_name(project_name) else {
         tracing::warn!(
             target: "forge_workspace::spawn",
-            project = %project_name,
+            project = project_name,
             "Command::SpawnProject for unknown project; ignoring"
         );
         return;
     };
 
     let synth_key = SessionKey::from_session_id(format!("__spawn_{project_name}__"));
-    let _ = workspace.update_tx().send(SessionUpdate::Spawning {
-        key: synth_key.clone(),
-        project_name: project_name.clone(),
-        cwd: project.path.to_string_lossy().to_string(),
-        display_name: project.display_path.clone(),
-    });
+    try_emit(
+        workspace,
+        "spawn_project::Spawning",
+        SessionUpdate::Spawning {
+            key: synth_key.clone(),
+            project_name: project_name.to_owned(),
+            cwd: project.path.to_string_lossy().to_string(),
+            display_name: project.display_path.clone(),
+        },
+    );
 
-    match workspace
-        .get_agent_handle_with_spawn_key(
-            SessionTarget::Named(project_name.clone()),
-            launch_settings,
-            Some(synth_key.clone()),
-        )
-        .await
-    {
+    match workspace.get_agent_handle_with_spawn_key(
+        SessionTarget::Named(project_name.to_owned()),
+        launch_settings,
+        Some(synth_key.clone()),
+    ) {
         Ok(_handle) => {
             tracing::info!(
                 target: "forge_workspace::spawn",
-                project = %project_name,
+                project = project_name,
                 spawn_key = %synth_key.as_str(),
                 "spawn task started for project"
             );
@@ -65,15 +82,19 @@ pub(crate) async fn handle_spawn_project(
         Err(err) => {
             tracing::error!(
                 target: "forge_workspace::spawn",
-                project = %project_name,
+                project = project_name,
                 error = %err,
                 "spawn_project: get_agent_handle failed"
             );
-            let _ = workspace.update_tx().send(SessionUpdate::ConnectionFailed {
-                key: synth_key,
-                message: format!("agent spawn failed: {err}"),
-                fatal: false,
-            });
+            try_emit(
+                workspace,
+                "spawn_project::ConnectionFailed",
+                SessionUpdate::ConnectionFailed {
+                    key: synth_key,
+                    message: format!("agent spawn failed: {err}"),
+                    fatal: false,
+                },
+            );
         }
     }
 }
@@ -81,19 +102,19 @@ pub(crate) async fn handle_spawn_project(
 /// Spawn for a non-lead session row. Synthesizes
 /// `__resume_<session_id>__` and resumes via
 /// `SessionTarget::Session`.
-pub(crate) async fn handle_spawn_session(
-    workspace: Arc<Workspace>,
-    session_id: String,
+pub(crate) fn handle_spawn_session(
+    workspace: &Arc<Workspace>,
+    session_id: &str,
     launch_settings: SessionLaunchSettings,
 ) {
     let synth_key = SessionKey::from_session_id(format!("__resume_{session_id}__"));
 
     // Locate parent project so we can seed Spawning with the cwd.
-    let session_key = SessionKey::new(session_id.clone());
+    let session_key = SessionKey::from_session_id(session_id.to_owned());
     let Some(parent) = workspace.find_project_for_session(&session_key) else {
         tracing::warn!(
             target: "forge_workspace::spawn",
-            session_id = %session_id,
+            session_id,
             "Command::SpawnSession for unknown session; ignoring"
         );
         return;
@@ -101,25 +122,26 @@ pub(crate) async fn handle_spawn_session(
     let cwd = parent.path.to_string_lossy().to_string();
     let display_name = parent.display_path.clone();
 
-    let _ = workspace.update_tx().send(SessionUpdate::Spawning {
-        key: synth_key.clone(),
-        project_name: display_name.clone(),
-        cwd,
-        display_name,
-    });
+    try_emit(
+        workspace,
+        "spawn_session::Spawning",
+        SessionUpdate::Spawning {
+            key: synth_key.clone(),
+            project_name: display_name.clone(),
+            cwd,
+            display_name,
+        },
+    );
 
-    match workspace
-        .get_agent_handle_with_spawn_key(
-            SessionTarget::Session(session_key),
-            launch_settings,
-            Some(synth_key.clone()),
-        )
-        .await
-    {
+    match workspace.get_agent_handle_with_spawn_key(
+        SessionTarget::Session(session_key),
+        launch_settings,
+        Some(synth_key.clone()),
+    ) {
         Ok(_handle) => {
             tracing::info!(
                 target: "forge_workspace::spawn",
-                session_id = %session_id,
+                session_id,
                 spawn_key = %synth_key.as_str(),
                 "spawn task started for session resume"
             );
@@ -127,15 +149,19 @@ pub(crate) async fn handle_spawn_session(
         Err(err) => {
             tracing::error!(
                 target: "forge_workspace::spawn",
-                session_id = %session_id,
+                session_id,
                 error = %err,
                 "spawn_session: get_agent_handle failed"
             );
-            let _ = workspace.update_tx().send(SessionUpdate::ConnectionFailed {
-                key: synth_key,
-                message: format!("agent spawn failed: {err}"),
-                fatal: false,
-            });
+            try_emit(
+                workspace,
+                "spawn_session::ConnectionFailed",
+                SessionUpdate::ConnectionFailed {
+                    key: synth_key,
+                    message: format!("agent spawn failed: {err}"),
+                    fatal: false,
+                },
+            );
         }
     }
 }
@@ -144,8 +170,8 @@ pub(crate) async fn handle_spawn_session(
 /// passed on argv) and spawns under the `__conn_pending__` synthetic
 /// key. Failure before the first Connected emits
 /// `SessionUpdate::FatalError` so TUI exits cleanly.
-pub(crate) async fn handle_start_default(
-    workspace: Arc<Workspace>,
+pub(crate) fn handle_start_default(
+    workspace: &Arc<Workspace>,
     project_name: Option<String>,
     launch_settings: SessionLaunchSettings,
 ) {
@@ -155,10 +181,11 @@ pub(crate) async fn handle_start_default(
         None => SessionTarget::Default,
     };
 
-    match workspace
-        .get_agent_handle_with_spawn_key(target, launch_settings, Some(synth_key.clone()))
-        .await
-    {
+    match workspace.get_agent_handle_with_spawn_key(
+        target,
+        launch_settings,
+        Some(synth_key.clone()),
+    ) {
         Ok(_handle) => {
             tracing::info!(
                 target: "forge_workspace::spawn",
@@ -172,14 +199,20 @@ pub(crate) async fn handle_start_default(
                 error = %err,
                 "start_default: get_agent_handle failed"
             );
-            let _ = workspace.update_tx().send(SessionUpdate::ConnectionFailed {
-                key: synth_key,
-                message: format!("agent spawn failed: {err}"),
-                fatal: true,
-            });
-            let _ = workspace.update_tx().send(SessionUpdate::FatalError(
-                forge_primitives::error::AppError::ConnectionFailed,
-            ));
+            try_emit(
+                workspace,
+                "start_default::ConnectionFailed",
+                SessionUpdate::ConnectionFailed {
+                    key: synth_key,
+                    message: format!("agent spawn failed: {err}"),
+                    fatal: true,
+                },
+            );
+            try_emit(
+                workspace,
+                "start_default::FatalError",
+                SessionUpdate::FatalError(forge_primitives::error::AppError::ConnectionFailed),
+            );
         }
     }
 }
@@ -224,12 +257,7 @@ config_dir = "~/.claude-stargate"
         let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
         let mut rx = workspace.subscribe().expect("subscribe");
 
-        handle_spawn_project(
-            Arc::clone(&workspace),
-            "no-such-project".to_owned(),
-            SessionLaunchSettings::default(),
-        )
-        .await;
+        handle_spawn_project(&workspace, "no-such-project", SessionLaunchSettings::default());
 
         // No SessionUpdate should have been emitted.
         assert!(rx.try_recv().is_err(), "no SessionUpdate emitted for unknown project");
@@ -246,12 +274,7 @@ config_dir = "~/.claude-stargate"
         let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
         let mut rx = workspace.subscribe().expect("subscribe");
 
-        handle_spawn_project(
-            Arc::clone(&workspace),
-            "forge".to_owned(),
-            SessionLaunchSettings::default(),
-        )
-        .await;
+        handle_spawn_project(&workspace, "forge", SessionLaunchSettings::default());
 
         let update = rx.try_recv().expect("Spawning emit");
         match update {
@@ -265,10 +288,8 @@ config_dir = "~/.claude-stargate"
 
     /// `handle_start_default` is the startup spawn path; on failure
     /// it must emit `SessionUpdate::ConnectionFailed { fatal: true }`
-    /// followed by `SessionUpdate::FatalError`. C1 regression target:
-    /// pre-Phase-4 the failure always killed forge-tui regardless of
-    /// path; Phase 4 splits the fatal/non-fatal contract — startup
-    /// is fatal, sleeping-session-spawn is not.
+    /// followed by `SessionUpdate::FatalError`. Startup failures are
+    /// fatal; sleeping-session-spawn failures are not.
     ///
     /// Drives the failure path by passing a non-existent project
     /// name (`SessionTarget::Named` resolves via `find_project_by_name`
@@ -283,11 +304,10 @@ config_dir = "~/.claude-stargate"
         // Drive a failure by passing a project name that doesn't
         // exist in forge.toml.
         handle_start_default(
-            Arc::clone(&workspace),
+            &workspace,
             Some("nonexistent".to_owned()),
             SessionLaunchSettings::default(),
-        )
-        .await;
+        );
 
         // Expect ConnectionFailed { fatal: true } then FatalError.
         let first = rx.try_recv().expect("first update");
@@ -306,10 +326,8 @@ config_dir = "~/.claude-stargate"
 
     /// `handle_spawn_session` failure path emits
     /// `ConnectionFailed { fatal: false }` — a sleeping-session
-    /// spawn failure must NOT kill the app. C1 regression: pre-fix
-    /// the unconditional `FatalError` send in the legacy
-    /// bridge_lifecycle path killed the app on any spawn failure;
-    /// Phase 4's spawn-route distinguishes the contract.
+    /// spawn failure must NOT kill the app. Distinguished from
+    /// `handle_start_default`'s fatal contract by route.
     ///
     /// Drives the failure by passing a session id that doesn't
     /// appear in any project catalog. `find_project_for_session`
@@ -322,12 +340,7 @@ config_dir = "~/.claude-stargate"
         let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
         let mut rx = workspace.subscribe().expect("subscribe");
 
-        handle_spawn_session(
-            Arc::clone(&workspace),
-            "no-such-session-id".to_owned(),
-            SessionLaunchSettings::default(),
-        )
-        .await;
+        handle_spawn_session(&workspace, "no-such-session-id", SessionLaunchSettings::default());
 
         // The handler should not emit a Fatal envelope. (For the
         // unknown-session path it doesn't emit anything; the

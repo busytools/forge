@@ -1,10 +1,5 @@
 //! Wire-side support types for streaming session events: content
 //! chunks, tool-call envelopes, tool-output metadata, plan entries.
-//!
-//! The legacy `SessionUpdate` enum that wrapped these types lived
-//! here too; it was deleted when the dispatcher-collapse refactor
-//! (issue #67) routed disk replay through the same raw walker as
-//! live messages, eliminating the typed dispatcher.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -21,18 +16,49 @@ pub enum ChunkContent {
     Image { mime_type: Option<String>, uri: Option<String>, data: Option<String> },
 }
 
+/// Typed tool-call category. Unknown wire values fall through to
+/// `Other` so a new CLI variant doesn't break decode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolKind {
+    Read,
+    Edit,
+    Delete,
+    Move,
+    Execute,
+    Search,
+    Fetch,
+    Think,
+    SwitchMode,
+    #[serde(other)]
+    Other,
+}
+
+/// Lifecycle state of a tool call. Unknown wire values fall through
+/// to `Pending` so a new CLI variant doesn't break decode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolCallStatus {
+    InProgress,
+    Completed,
+    Failed,
+    Killed,
+    #[serde(other)]
+    Pending,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolCall {
     pub tool_call_id: String,
     pub title: String,
-    pub kind: String,
-    pub status: String,
+    pub kind: ToolKind,
+    pub status: ToolCallStatus,
     pub content: Vec<ToolCallContent>,
     pub raw_input: Option<Value>,
     pub raw_output: Option<String>,
     pub output_metadata: Option<ToolOutputMetadata>,
     pub task_metadata: Option<TaskMetadata>,
-    pub locations: Vec<ToolLocation>,
+    pub locations: Vec<ToolCallLocation>,
     pub meta: Option<Value>,
 }
 
@@ -45,14 +71,14 @@ pub struct ToolCallUpdate {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ToolCallUpdateFields {
     pub title: Option<String>,
-    pub kind: Option<String>,
-    pub status: Option<String>,
+    pub kind: Option<ToolKind>,
+    pub status: Option<ToolCallStatus>,
     pub content: Option<Vec<ToolCallContent>>,
     pub raw_input: Option<Value>,
     pub raw_output: Option<String>,
     pub output_metadata: Option<ToolOutputMetadata>,
     pub task_metadata: Option<TaskMetadata>,
-    pub locations: Option<Vec<ToolLocation>>,
+    pub locations: Option<Vec<ToolCallLocation>>,
     pub meta: Option<Value>,
 }
 
@@ -112,10 +138,24 @@ impl ToolCall {
     }
 }
 
+/// File path + optional 1-based line number a tool call inspected
+/// or modified. Used by the chat renderer's clickable file glyphs
+/// and by `/diff` to open the right file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ToolLocation {
-    pub path: String,
-    pub line: Option<u64>,
+pub struct ToolCallLocation {
+    pub path: std::path::PathBuf,
+    pub line: Option<u32>,
+}
+
+impl ToolCallLocation {
+    pub fn new(path: impl Into<std::path::PathBuf>) -> Self {
+        Self { path: path.into(), line: None }
+    }
+
+    pub fn line(mut self, line: u32) -> Self {
+        self.line = Some(line);
+        self
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -123,15 +163,56 @@ pub struct TodoWriteOutputMetadata {
     pub verification_nudge_needed: Option<bool>,
 }
 
+impl TodoWriteOutputMetadata {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn verification_nudge_needed(mut self, verification_nudge_needed: Option<bool>) -> Self {
+        self.verification_nudge_needed = verification_nudge_needed;
+        self
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct BashOutputMetadata {
     pub assistant_auto_backgrounded: Option<bool>,
+}
+
+impl BashOutputMetadata {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn assistant_auto_backgrounded(
+        mut self,
+        assistant_auto_backgrounded: Option<bool>,
+    ) -> Self {
+        self.assistant_auto_backgrounded = assistant_auto_backgrounded;
+        self
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ToolOutputMetadata {
     pub bash: Option<BashOutputMetadata>,
     pub todo_write: Option<TodoWriteOutputMetadata>,
+}
+
+impl ToolOutputMetadata {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn bash(mut self, bash: Option<BashOutputMetadata>) -> Self {
+        self.bash = bash;
+        self
+    }
+
+    pub fn todo_write(mut self, todo_write: Option<TodoWriteOutputMetadata>) -> Self {
+        self.todo_write = todo_write;
+        self
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -143,6 +224,30 @@ pub struct TaskMetadata {
 }
 
 impl TaskMetadata {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn end_time(mut self, end_time: Option<u64>) -> Self {
+        self.end_time = end_time;
+        self
+    }
+
+    pub fn total_paused_ms(mut self, total_paused_ms: Option<u64>) -> Self {
+        self.total_paused_ms = total_paused_ms;
+        self
+    }
+
+    pub fn error(mut self, error: Option<String>) -> Self {
+        self.error = error;
+        self
+    }
+
+    pub fn backgrounded(mut self, is_backgrounded: Option<bool>) -> Self {
+        self.is_backgrounded = is_backgrounded;
+        self
+    }
+
     /// Field-wise merge: any `Some` field on `update` overrides `self`;
     /// `None` leaves `self` alone. The destructure forces a compile
     /// error if a new field is added without a corresponding merge
@@ -171,7 +276,6 @@ pub enum ToolCallContent {
         content: ChunkContent,
     },
     Diff {
-        old_path: String,
         new_path: String,
         old: String,
         new: String,
@@ -185,17 +289,11 @@ pub enum ToolCallContent {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PlanEntry {
-    pub content: String,
-    pub status: String,
-    pub active_form: String,
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        ChunkContent, TaskMetadata, ToolCall, ToolCallContent, ToolCallUpdateFields, ToolLocation,
+        ChunkContent, TaskMetadata, ToolCall, ToolCallContent, ToolCallLocation, ToolCallStatus,
+        ToolCallUpdateFields, ToolKind,
     };
     use serde_json::json;
 
@@ -203,8 +301,8 @@ mod tests {
         ToolCall {
             tool_call_id: "tc_1".into(),
             title: "old title".into(),
-            kind: "execute".into(),
-            status: "in_progress".into(),
+            kind: ToolKind::Execute,
+            status: ToolCallStatus::InProgress,
             content: vec![ToolCallContent::Content {
                 content: ChunkContent::Text { text: "before".into() },
             }],
@@ -212,7 +310,7 @@ mod tests {
             raw_output: Some("old stdout".into()),
             output_metadata: None,
             task_metadata: None,
-            locations: vec![ToolLocation { path: "/old".into(), line: Some(1) }],
+            locations: vec![ToolCallLocation::new("/old").line(1)],
             meta: Some(json!({"old": true})),
         }
     }
@@ -230,8 +328,8 @@ mod tests {
         let mut tc = sample_tool_call();
         tc.merge(ToolCallUpdateFields {
             title: Some("new title".into()),
-            kind: Some("read".into()),
-            status: Some("completed".into()),
+            kind: Some(ToolKind::Read),
+            status: Some(ToolCallStatus::Completed),
             content: Some(vec![ToolCallContent::Content {
                 content: ChunkContent::Text { text: "after".into() },
             }]),
@@ -239,17 +337,17 @@ mod tests {
             raw_output: Some("new stdout".into()),
             output_metadata: None,
             task_metadata: None,
-            locations: Some(vec![ToolLocation { path: "/new".into(), line: Some(7) }]),
+            locations: Some(vec![ToolCallLocation::new("/new").line(7)]),
             meta: Some(json!({"new": true})),
         });
         assert_eq!(tc.title, "new title");
-        assert_eq!(tc.kind, "read");
-        assert_eq!(tc.status, "completed");
+        assert_eq!(tc.kind, ToolKind::Read);
+        assert_eq!(tc.status, ToolCallStatus::Completed);
         assert_eq!(tc.content.len(), 1);
         assert_eq!(tc.raw_input, Some(json!({"cmd": "pwd"})));
         assert_eq!(tc.raw_output.as_deref(), Some("new stdout"));
         assert_eq!(tc.locations.len(), 1);
-        assert_eq!(tc.locations[0].path, "/new");
+        assert_eq!(tc.locations[0].path, std::path::PathBuf::from("/new"));
         assert_eq!(tc.meta, Some(json!({"new": true})));
     }
 

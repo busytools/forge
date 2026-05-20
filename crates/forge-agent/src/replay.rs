@@ -21,7 +21,6 @@ use forge_primitives::{AssistantEnvelope, ContentBlock, Message, UserEnvelope};
 /// The `session_id` field on each Message is left empty; the caller
 /// (`forge_sdk_worker::spawn_session`) is responsible for stamping the
 /// correct id before emitting `AgentEvent::Connected`.
-#[must_use]
 pub fn synthesize_replay_messages(messages: &[Value]) -> Vec<Message> {
     let mut out: Vec<Message> = Vec::new();
 

@@ -1,10 +1,4 @@
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TurnErrorClass {
-    PlanLimit,
-    AuthRequired,
-    Internal,
-    Other,
-}
+pub use forge_primitives::TurnErrorClass;
 
 pub fn classify_turn_error(input: &str) -> TurnErrorClass {
     let lower = input.to_ascii_lowercase();

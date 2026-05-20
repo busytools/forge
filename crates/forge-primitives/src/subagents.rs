@@ -1,7 +1,6 @@
 //! Subagent declarations forwarded to the `claude` CLI via the
-//! `initialize` `control_request`'s `agents` field.
-//!
-//! Lifted from forge-sdk in 2026-05-05. Pure data — no callbacks.
+//! `initialize` `control_request`'s `agents` field. Pure data — no
+//! callbacks.
 
 use std::collections::HashMap;
 
@@ -50,7 +49,7 @@ pub struct SubagentDefinition {
     pub background: Option<bool>,
     /// Reasoning-effort hint.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub effort: Option<EffortLevel>,
+    pub effort: Option<SubagentEffort>,
     /// Override permission-mode for this subagent only. Wire key is
     /// `permissionMode`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -134,20 +133,21 @@ mod inline_mcp_server {
 }
 
 /// Reasoning-effort hint on a subagent. Wire shape:
-/// `Literal["low","medium","high","max"] | int`.
+/// `Literal["low","medium","high","max"] | int`. Named
+/// `SubagentEffort` to disambiguate from the runtime model effort
+/// in `forge_primitives::runtime::EffortLevel`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
-pub enum EffortLevel {
+pub enum SubagentEffort {
     /// One of the named presets.
     Preset(EffortPreset),
     /// Numeric override (CLI-defined semantics).
     Numeric(i64),
 }
 
-impl EffortLevel {
+impl SubagentEffort {
     /// String form suitable for passing via `--effort <value>` or
     /// any other CLI surface that expects a literal-or-int.
-    #[must_use]
     pub fn as_cli_arg(&self) -> String {
         match self {
             Self::Preset(p) => match p {

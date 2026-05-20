@@ -1,10 +1,7 @@
-//! Image-attachment types + validation. Lifted from
-//! `forge-tui::app::clipboard_image` so forge-agent and forge-tui can
-//! share the wire-shape type without forge-agent reaching into the UI
-//! crate.
-//!
-//! Encoding-from-clipboard helpers stay in forge-tui (they pull
-//! `arboard` + `image` crates which only the UI cares about).
+//! Image-attachment wire-shape types + validation, shared between
+//! forge-agent and forge-tui. Encoding-from-clipboard helpers stay
+//! in forge-tui — they pull `arboard` + `image` crates only the UI
+//! cares about.
 
 use serde::{Deserialize, Serialize};
 
@@ -20,14 +17,12 @@ pub struct ImageAttachment {
 }
 
 /// Returns `true` if `mime_type` is a supported image MIME type.
-#[must_use]
 pub fn is_supported_image_type(mime_type: &str) -> bool {
     SUPPORTED_IMAGE_MIME_TYPES.contains(&mime_type)
 }
 
 /// Returns `true` if `data` is non-empty, correctly padded, and decodes
 /// as valid standard base64.
-#[must_use]
 pub fn is_valid_base64(data: &str) -> bool {
     use base64::Engine as _;
     if data.is_empty() {

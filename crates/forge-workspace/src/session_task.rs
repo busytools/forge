@@ -5,8 +5,8 @@
 //! fan-in channel. Mutates [`DomainSession`] inline before each
 //! emit so workspace-side projections stay current.
 //!
-//! Phase 4 made `SessionTask::run` the sole consumer of the
-//! AgentHandle event stream; `bridge_lifecycle` is gone.
+//! `SessionTask::run` is the sole consumer of the AgentHandle event
+//! stream.
 
 use std::sync::Arc;
 
@@ -15,6 +15,7 @@ use forge_agent::client::AgentEvent;
 use forge_primitives::SessionId;
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
+use tracing::Instrument;
 
 use crate::SessionKey;
 use crate::domain_session::DomainSession;
@@ -26,7 +27,7 @@ pub(crate) struct SessionTask {
     pub(crate) command_rx: mpsc::UnboundedReceiver<Command>,
     pub(crate) domain: Arc<Mutex<DomainSession>>,
     pub(crate) update_tx: mpsc::UnboundedSender<SessionUpdate>,
-    /// Synthetic key tagged by `Workspace::attach_spawn_key` so the
+    /// Synthetic key tagged by `Workspace::get_agent_handle_with_spawn_key` so the
     /// task can emit `SessionUpdate::KeyRenamed { from: spawn_key,
     /// to: real_key }` ahead of the first `Connected` emit. Cleared
     /// after the first migration.
@@ -37,8 +38,8 @@ pub(crate) struct SessionTask {
     /// login, logout flows).
     pub(crate) connected_once: bool,
     /// Weak reference to the parent [`crate::Workspace`]. Used inside
-    /// [`Self::translate_event`]'s `Connected` / `SessionReplaced`
-    /// arms to call back into `Workspace::record_connected_session`
+    /// [`Self::translate_event`]'s `Connected` arm to call back into
+    /// `Workspace::record_connected_session`
     /// so the project catalog stays current as freshly-spawned
     /// sessions reach Connected. `Weak` avoids the Workspace<->Task
     /// reference cycle (Workspace holds Task's command_tx; Task
@@ -63,7 +64,7 @@ impl SessionTask {
                 "AgentHandle::take_events returned None; session task aborting"
             );
             let fail_key = self.spawn_key.clone().unwrap_or_else(|| self.key.clone());
-            let _ = self.update_tx.send(SessionUpdate::ConnectionFailed {
+            self.emit(SessionUpdate::ConnectionFailed {
                 key: fail_key,
                 message: "agent event receiver unavailable".to_owned(),
                 fatal: false,
@@ -76,9 +77,7 @@ impl SessionTask {
         // rendering shows the right label from the first frame.
         if let Some(display_name) = self.handle.display_name() {
             let id_key = self.spawn_key.clone().unwrap_or_else(|| self.key.clone());
-            let _ = self
-                .update_tx
-                .send(SessionUpdate::ForgeAccountIdentity { key: id_key, display_name });
+            self.emit(SessionUpdate::ForgeAccountIdentity { key: id_key, display_name });
         }
 
         loop {
@@ -102,9 +101,8 @@ impl SessionTask {
 
     /// Translate one `AgentEvent` into the matching `SessionUpdate`
     /// (or pair of updates for `Connected`, which also emits
-    /// `KeyRenamed` if a synthetic spawn key is pending). Mutates
-    /// `DomainSession` inline before the emit so workspace-side
-    /// projections stay current.
+    /// `KeyRenamed` if a synthetic spawn key is pending). Updates
+    /// `DomainSession` in-place before each emit.
     fn translate_event(&mut self, event: AgentEvent) {
         // First, update DomainSession in-place.
         {
@@ -112,13 +110,10 @@ impl SessionTask {
             apply_event_to_domain(&mut guard, &event);
         }
 
-        // Mirror Connected/SessionReplaced into the project catalog
-        // so the Projects pane's drilldown reflects newly-spawned
-        // sessions without forcing a full disk re-scan. Pre-Phase-4
-        // this was done by `Workspace::record_event_for_domain`; now
-        // it's inlined here since `SessionTask` owns the event drain.
-        if let AgentEvent::Connected { session_id, cwd, .. }
-        | AgentEvent::SessionReplaced { session_id, cwd, .. } = &event
+        // Mirror Connected into the project catalog so the Projects
+        // pane's drilldown reflects newly-spawned sessions without
+        // forcing a full disk re-scan.
+        if let AgentEvent::Connected { session_id, cwd, .. } = &event
             && !cwd.is_empty()
             && let Some(workspace) = self.workspace.upgrade()
         {
@@ -145,12 +140,15 @@ impl SessionTask {
                 // project with no on-disk sessions, or the previous
                 // session's id on a `/new` flow. Without this, the
                 // TUI's `active_session_key` flips to `real_key` after
-                // `Connected` / `SessionReplaced` and every subsequent
-                // `Command::Prompt` falls off `dispatch`'s key lookup
-                // with `UnknownSession`.
-                self.rekey_to(&real_key);
+                // `Connected` and every subsequent `Command::Prompt`
+                // falls off `dispatch`'s key lookup with `UnknownSession`.
                 if self.connected_once {
-                    let _ = self.update_tx.send(SessionUpdate::SessionReplaced {
+                    // Drop oneshots from the previous identity so parked
+                    // forwarder tasks exit instead of waiting on
+                    // tool_call_ids the new session will never produce.
+                    self.domain.lock().pending_interactions.clear();
+                    self.rekey_to(&real_key);
+                    self.emit(SessionUpdate::SessionReplaced {
                         key: real_key,
                         session_id: SessionId::new(session_id),
                         cwd,
@@ -160,6 +158,7 @@ impl SessionTask {
                         history,
                     });
                 } else {
+                    self.rekey_to(&real_key);
                     self.connected_once = true;
                     // First Connected: emit KeyRenamed { from:
                     // spawn_key, to: real_key } so the TUI migrates
@@ -168,12 +167,12 @@ impl SessionTask {
                     if let Some(spawn_key) = self.spawn_key.take()
                         && spawn_key.as_str() != real_key.as_str()
                     {
-                        let _ = self.update_tx.send(SessionUpdate::KeyRenamed {
+                        self.emit(SessionUpdate::KeyRenamed {
                             from: spawn_key,
                             to: real_key.clone(),
                         });
                     }
-                    let _ = self.update_tx.send(SessionUpdate::Connected {
+                    self.emit(SessionUpdate::Connected {
                         key: real_key,
                         session_id: SessionId::new(session_id),
                         cwd,
@@ -184,45 +183,13 @@ impl SessionTask {
                     });
                 }
             }
-            AgentEvent::SessionReplaced {
-                session_id,
-                cwd,
-                current_model,
-                available_models,
-                mode,
-                history_updates,
-            } => {
-                let history = history_updates.unwrap_or_default();
-                let real_key = SessionKey::from_session_id(session_id.clone());
-                // Same rekey rationale as the `Connected` arm — the
-                // `/new` / `/resume` / `/login` flows hit this path
-                // and need the workspace's routing maps to catch up.
-                self.rekey_to(&real_key);
-                let _ = self.update_tx.send(SessionUpdate::SessionReplaced {
-                    key: real_key,
-                    session_id: SessionId::new(session_id),
-                    cwd,
-                    current_model,
-                    available_models,
-                    mode,
-                    history,
-                });
-            }
             AgentEvent::AuthRequired { method_name, method_description } => {
                 let key = self.spawn_key.clone().unwrap_or_else(|| self.key.clone());
-                let _ = self.update_tx.send(SessionUpdate::AuthRequired {
-                    key,
-                    method_name,
-                    method_description,
-                });
+                self.emit(SessionUpdate::AuthRequired { key, method_name, method_description });
             }
             AgentEvent::ConnectionFailed { message } => {
                 let key = self.spawn_key.clone().unwrap_or_else(|| self.key.clone());
-                let _ = self.update_tx.send(SessionUpdate::ConnectionFailed {
-                    key,
-                    message,
-                    fatal: false,
-                });
+                self.emit(SessionUpdate::ConnectionFailed { key, message, fatal: false });
             }
             AgentEvent::PermissionRequest { session_id, request } => {
                 let session_key = SessionKey::from_session_id(session_id.clone());
@@ -251,6 +218,23 @@ impl SessionTask {
                         response_rx,
                         session_id,
                         tool_call_id,
+                    );
+                } else {
+                    // TUI channel closed between the insert and the
+                    // send. Resolve the orphaned oneshot with Cancelled
+                    // so the SDK callback unblocks rather than hanging
+                    // the `claude` subprocess turn forever.
+                    if let Some(slot) =
+                        self.domain.lock().pending_interactions.remove(&tool_call_id)
+                        && let PendingInteractionSlot::Permission(tx) = slot
+                    {
+                        let _ = tx.send(forge_primitives::PermissionOutcome::Cancelled);
+                    }
+                    tracing::warn!(
+                        target: "forge_workspace::session_task",
+                        key = %self.key.as_str(),
+                        tool_id = %tool_call_id,
+                        "PermissionRequest send failed; orphaned oneshot cancelled"
                     );
                 }
             }
@@ -282,49 +266,37 @@ impl SessionTask {
                         session_id,
                         tool_call_id,
                     );
+                } else {
+                    // TUI channel closed between insert and send —
+                    // resolve the orphan with Cancelled so the SDK
+                    // callback unblocks.
+                    if let Some(slot) =
+                        self.domain.lock().pending_interactions.remove(&tool_call_id)
+                        && let PendingInteractionSlot::Question(tx) = slot
+                    {
+                        let _ = tx.send(forge_primitives::QuestionOutcome::Cancelled);
+                    }
+                    tracing::warn!(
+                        target: "forge_workspace::session_task",
+                        key = %self.key.as_str(),
+                        tool_id = %tool_call_id,
+                        "QuestionRequest send failed; orphaned oneshot cancelled"
+                    );
                 }
-            }
-            AgentEvent::ElicitationRequest { session_id, request } => {
-                let session_key = SessionKey::from_session_id(session_id);
-                let elicitation_id = request.elicitation_id.clone().unwrap_or_default();
-                let _ = self.update_tx.send(SessionUpdate::McpElicitationRequest {
-                    key: session_key,
-                    elicitation_id,
-                    request,
-                });
-            }
-            AgentEvent::ElicitationComplete { session_id, elicitation_id, server_name } => {
-                let session_key = SessionKey::from_session_id(session_id);
-                let _ = self.update_tx.send(SessionUpdate::McpElicitationCompleted {
-                    key: session_key,
-                    elicitation_id,
-                    server_name,
-                });
-            }
-            AgentEvent::McpAuthRedirect { session_id, redirect } => {
-                let session_key = SessionKey::from_session_id(session_id);
-                let _ = self
-                    .update_tx
-                    .send(SessionUpdate::McpAuthRedirect { key: session_key, redirect });
             }
             AgentEvent::McpOperationError { session_id, error } => {
                 let session_key = SessionKey::from_session_id(session_id);
-                let _ = self
-                    .update_tx
-                    .send(SessionUpdate::McpOperationError { key: session_key, error });
+                self.emit(SessionUpdate::McpOperationError { key: session_key, error });
             }
             AgentEvent::SlashError { session_id, message } => {
                 let session_key = SessionKey::from_session_id(session_id);
-                let _ = self
-                    .update_tx
-                    .send(SessionUpdate::SlashCommandError { key: session_key, message });
+                self.emit(SessionUpdate::SlashCommandError { key: session_key, message });
             }
             AgentEvent::RuntimeReloadCompleted { session_id } => {
-                let _ = self.update_tx.send(SessionUpdate::RuntimeReloadCompleted { session_id });
+                self.emit(SessionUpdate::RuntimeReloadCompleted { session_id });
             }
             AgentEvent::RuntimeReloadFailed { session_id, message } => {
-                let _ =
-                    self.update_tx.send(SessionUpdate::RuntimeReloadFailed { session_id, message });
+                self.emit(SessionUpdate::RuntimeReloadFailed { session_id, message });
             }
             AgentEvent::SessionsListed { sessions } => {
                 // Route via `spawn_key` while the pre-Connect bucket
@@ -335,31 +307,26 @@ impl SessionTask {
                 // land via `self.key` directly because `spawn_key` is
                 // cleared in the Connected arm.
                 let key = self.spawn_key.clone().unwrap_or_else(|| self.key.clone());
-                let _ = self.update_tx.send(SessionUpdate::SessionsListed { key, sessions });
+                self.emit(SessionUpdate::SessionsListed { key, sessions });
             }
             AgentEvent::StatusSnapshot { session_id, account, forge_account } => {
-                let _ = self.update_tx.send(SessionUpdate::StatusSnapshot {
-                    session_id,
-                    account,
-                    forge_account,
-                });
+                self.emit(SessionUpdate::StatusSnapshot { session_id, account, forge_account });
             }
             AgentEvent::OauthCredentialsSnapshot { session_id, credentials } => {
-                let _ = self
-                    .update_tx
-                    .send(SessionUpdate::OauthCredentialsSnapshot { session_id, credentials });
+                self.emit(SessionUpdate::OauthCredentialsSnapshot { session_id, credentials });
             }
-            AgentEvent::ContextUsage { session_id, percentage } => {
-                let _ = self
-                    .update_tx
-                    .send(SessionUpdate::ContextUsageSnapshot { session_id, percentage });
+            AgentEvent::ContextUsage { session_id, percentage, max_tokens } => {
+                self.emit(SessionUpdate::ContextUsageSnapshot {
+                    session_id,
+                    percentage,
+                    max_tokens,
+                });
             }
             AgentEvent::McpSnapshot { session_id, servers, error } => {
-                let _ =
-                    self.update_tx.send(SessionUpdate::McpSnapshot { session_id, servers, error });
+                self.emit(SessionUpdate::McpSnapshot { session_id, servers, error });
             }
             AgentEvent::SdkMessage { session_id, msg } => {
-                let _ = self.update_tx.send(SessionUpdate::ChatAppended { session_id, msg });
+                self.emit(SessionUpdate::ChatAppended { session_id, msg });
             }
             AgentEvent::HookObservation {
                 session_id,
@@ -369,7 +336,7 @@ impl SessionTask {
                 agent_id,
                 agent_type,
             } => {
-                let _ = self.update_tx.send(SessionUpdate::HookObservation {
+                self.emit(SessionUpdate::HookObservation {
                     session_id,
                     tool_use_id,
                     permission_mode,
@@ -384,72 +351,91 @@ impl SessionTask {
     fn execute_command(&self, cmd: Command) {
         match cmd {
             Command::RespondPermission { key: _, tool_id, outcome } => {
+                // Peek the slot kind first; only remove on a kind
+                // match so a mismatched response leaves the real
+                // waiter intact.
                 let mut guard = self.domain.lock();
-                match guard.pending_interactions.remove(&tool_id) {
-                    Some(PendingInteractionSlot::Permission(tx)) => {
-                        if tx.send(outcome).is_err() {
-                            tracing::warn!(
-                                target: "forge_workspace::session_task",
-                                key = %self.key.as_str(),
-                                tool_id = %tool_id,
-                                "permission oneshot receiver dropped before response could be sent"
-                            );
-                        }
-                    }
-                    Some(other) => {
+                let kind_matches = matches!(
+                    guard.pending_interactions.get(&tool_id),
+                    Some(PendingInteractionSlot::Permission(_)),
+                );
+                if kind_matches
+                    && let Some(PendingInteractionSlot::Permission(tx)) =
+                        guard.pending_interactions.remove(&tool_id)
+                {
+                    if tx.send(outcome).is_err() {
                         tracing::warn!(
                             target: "forge_workspace::session_task",
                             key = %self.key.as_str(),
                             tool_id = %tool_id,
-                            slot = ?other,
-                            "RespondPermission expected Permission slot; got different kind. Dropping."
+                            "permission oneshot receiver dropped before response could be sent"
                         );
                     }
-                    None => {
-                        tracing::warn!(
-                            target: "forge_workspace::session_task",
-                            key = %self.key.as_str(),
-                            tool_id = %tool_id,
-                            "RespondPermission found no pending interaction (already responded or expired)"
-                        );
-                    }
+                } else if let Some(other) = guard.pending_interactions.get(&tool_id) {
+                    tracing::warn!(
+                        target: "forge_workspace::session_task",
+                        key = %self.key.as_str(),
+                        tool_id = %tool_id,
+                        slot = ?other,
+                        "RespondPermission expected Permission slot; got different kind. Outcome dropped, slot preserved."
+                    );
+                } else {
+                    tracing::warn!(
+                        target: "forge_workspace::session_task",
+                        key = %self.key.as_str(),
+                        tool_id = %tool_id,
+                        "RespondPermission found no pending interaction (already responded or expired)"
+                    );
                 }
             }
             Command::RespondQuestion { key: _, tool_id, outcome } => {
+                // Peek-before-remove — mirror of RespondPermission.
                 let mut guard = self.domain.lock();
-                match guard.pending_interactions.remove(&tool_id) {
-                    Some(PendingInteractionSlot::Question(tx)) => {
-                        if tx.send(outcome).is_err() {
-                            tracing::warn!(
-                                target: "forge_workspace::session_task",
-                                key = %self.key.as_str(),
-                                tool_id = %tool_id,
-                                "question oneshot receiver dropped"
-                            );
-                        }
-                    }
-                    Some(other) => {
+                let kind_matches = matches!(
+                    guard.pending_interactions.get(&tool_id),
+                    Some(PendingInteractionSlot::Question(_)),
+                );
+                if kind_matches
+                    && let Some(PendingInteractionSlot::Question(tx)) =
+                        guard.pending_interactions.remove(&tool_id)
+                {
+                    if tx.send(outcome).is_err() {
                         tracing::warn!(
                             target: "forge_workspace::session_task",
                             key = %self.key.as_str(),
                             tool_id = %tool_id,
-                            slot = ?other,
-                            "RespondQuestion got non-Question slot. Dropping."
+                            "question oneshot receiver dropped"
                         );
                     }
-                    None => {
-                        tracing::warn!(
-                            target: "forge_workspace::session_task",
-                            key = %self.key.as_str(),
-                            tool_id = %tool_id,
-                            "RespondQuestion found no pending interaction"
-                        );
-                    }
+                } else if let Some(other) = guard.pending_interactions.get(&tool_id) {
+                    tracing::warn!(
+                        target: "forge_workspace::session_task",
+                        key = %self.key.as_str(),
+                        tool_id = %tool_id,
+                        slot = ?other,
+                        "RespondQuestion got non-Question slot. Outcome dropped, slot preserved."
+                    );
+                } else {
+                    tracing::warn!(
+                        target: "forge_workspace::session_task",
+                        key = %self.key.as_str(),
+                        tool_id = %tool_id,
+                        "RespondQuestion found no pending interaction"
+                    );
                 }
             }
             other => {
                 let sid = self.session_id_string();
-                let _ = execute_command_via_handle(&self.handle, &self.key, sid.as_deref(), other);
+                if let Err(err) =
+                    execute_command_via_handle(&self.handle, &self.key, sid.as_deref(), other)
+                {
+                    tracing::warn!(
+                        target: "forge_workspace::session_task",
+                        key = %self.key.as_str(),
+                        error = %err,
+                        "agent command dispatch failed; bridge channel closed?"
+                    );
+                }
             }
         }
     }
@@ -462,6 +448,19 @@ impl SessionTask {
         self.domain.lock().session_id.as_ref().map(std::string::ToString::to_string)
     }
 
+    /// Send `update` to the workspace fan-in; log on send failure so a
+    /// closed-channel regression leaves a trail rather than silently
+    /// dropping events.
+    fn emit(&self, update: SessionUpdate) {
+        if self.update_tx.send(update).is_err() {
+            tracing::warn!(
+                target: "forge_workspace::session_task",
+                key = %self.key.as_str(),
+                "SessionUpdate channel closed; dropping event"
+            );
+        }
+    }
+
     /// Migrate this task's workspace-side registrations from the
     /// current `self.key` to `real_key` (and update `self.key`).
     /// No-op when `self.key == real_key` or the workspace has been
@@ -472,8 +471,18 @@ impl SessionTask {
         if self.key.as_str() == real_key.as_str() {
             return;
         }
-        if let Some(workspace) = self.workspace.upgrade() {
-            workspace.migrate_session_task(&self.key, real_key);
+        let migrated = self
+            .workspace
+            .upgrade()
+            .is_some_and(|workspace| workspace.migrate_session_task(&self.key, real_key));
+        if !migrated {
+            // Workspace refused the migration (collision or no workspace
+            // upgrade). Keep `self.key` at the old slot so events
+            // continue flowing through this task's existing channel.
+            // Command dispatch against `real_key` will miss until the
+            // TUI reconnects — single-user scope makes the collision
+            // effectively impossible.
+            return;
         }
         tracing::info!(
             target: "forge_workspace::session_task",
@@ -503,20 +512,8 @@ pub(crate) fn execute_command_via_handle(
     key: &SessionKey,
     session_id: Option<&str>,
     cmd: Command,
-) -> anyhow::Result<()> {
+) -> Result<(), forge_agent::AgentError> {
     match cmd {
-        Command::RespondElicitation { key: _, elicitation_id, action, content } => {
-            // MCP elicitation responses bypass `pending_interactions`
-            // entirely — the bridge emits `AgentEvent::ElicitationRequest`
-            // without registering a workspace-side oneshot, and the TUI
-            // replies out of band with optional `content`. Forward
-            // straight to the agent.
-            let Some(sid) = session_id else {
-                warn_no_session(key, "RespondElicitation");
-                return Ok(());
-            };
-            handle.respond_to_elicitation(sid.to_owned(), elicitation_id, action, content)
-        }
         Command::Prompt { key: _, text, attachments } => {
             let Some(sid) = session_id else {
                 warn_no_session(key, "Prompt");
@@ -551,23 +548,6 @@ pub(crate) fn execute_command_via_handle(
         Command::ResumeSession { key: _, session_id, cwd, launch_settings } => {
             handle.resume_session(session_id, cwd, launch_settings)
         }
-        Command::ResumeOrNewSession { key: _, session_id, cwd, launch_settings } => {
-            handle.resume_or_new_session(session_id, cwd, launch_settings)
-        }
-        Command::GenerateSessionTitle { key: _, description } => {
-            let Some(sid) = session_id else {
-                warn_no_session(key, "GenerateSessionTitle");
-                return Ok(());
-            };
-            handle.generate_session_title(sid.to_owned(), description)
-        }
-        Command::RenameSession { key: _, title } => {
-            let Some(sid) = session_id else {
-                warn_no_session(key, "RenameSession");
-                return Ok(());
-            };
-            handle.rename_session(sid.to_owned(), title)
-        }
         Command::ReconnectMcpServer { key: _, server_name } => {
             let Some(sid) = session_id else {
                 warn_no_session(key, "ReconnectMcpServer");
@@ -582,61 +562,12 @@ pub(crate) fn execute_command_via_handle(
             };
             handle.toggle_mcp_server(sid.to_owned(), server_name, enabled)
         }
-        Command::SetMcpServers { key: _, servers } => {
-            let Some(sid) = session_id else {
-                warn_no_session(key, "SetMcpServers");
-                return Ok(());
-            };
-            handle.set_mcp_servers(sid.to_owned(), servers)
-        }
-        Command::AuthenticateMcpServer { key: _, server_name } => {
-            let Some(sid) = session_id else {
-                warn_no_session(key, "AuthenticateMcpServer");
-                return Ok(());
-            };
-            handle.authenticate_mcp_server(sid.to_owned(), server_name)
-        }
-        Command::ClearMcpAuth { key: _, server_name } => {
-            let Some(sid) = session_id else {
-                warn_no_session(key, "ClearMcpAuth");
-                return Ok(());
-            };
-            handle.clear_mcp_auth(sid.to_owned(), server_name)
-        }
-        Command::SubmitMcpOauthCallbackUrl { key: _, server_name, callback_url } => {
-            let Some(sid) = session_id else {
-                warn_no_session(key, "SubmitMcpOauthCallbackUrl");
-                return Ok(());
-            };
-            handle.submit_mcp_oauth_callback_url(sid.to_owned(), server_name, callback_url)
-        }
         Command::RespondPermission { .. } | Command::RespondQuestion { .. } => {
             tracing::error!(
                 target: "forge_workspace::session_task",
                 key = %key.as_str(),
                 command = ?cmd,
                 "Respond* commands must be handled by SessionTask::execute_command before delegation"
-            );
-            Ok(())
-        }
-        // The remaining variants (CloseSession, the four Request*
-        // refresh commands, RuntimeReload, UpdatePermissions)
-        // aren't wired through `dispatch` yet — they predate the
-        // Phase 6 strict-wiring pass and remain stubs. Refresh
-        // commands flow via `Workspace::refresh_*` direct methods
-        // instead.
-        stub @ (Command::CloseSession { .. }
-        | Command::RequestStatusSnapshot { .. }
-        | Command::RequestMcpSnapshot { .. }
-        | Command::RequestContextUsage { .. }
-        | Command::RequestOauthCredentials { .. }
-        | Command::RuntimeReload { .. }
-        | Command::UpdatePermissions { .. }) => {
-            tracing::trace!(
-                target: "forge_workspace::session_task",
-                key = %key.as_str(),
-                command = ?stub,
-                "command received but not yet wired to AgentHandle"
             );
             Ok(())
         }
@@ -674,14 +605,10 @@ fn warn_no_session(key: &SessionKey, command: &'static str) {
 /// account info) lives on the TUI's `UiSession`, populated via the
 /// `SessionUpdate` envelopes the task emits.
 pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEvent) {
-    match event {
-        AgentEvent::Connected { session_id, .. } if domain.session_id.is_none() => {
-            domain.session_id = Some(SessionId::new(session_id.clone()));
-        }
-        AgentEvent::SessionReplaced { session_id, .. } => {
-            domain.session_id = Some(SessionId::new(session_id.clone()));
-        }
-        _ => {}
+    // Always overwrite so /new / /login / /logout don't leave the
+    // mirror stale on the second-Connected emission.
+    if let AgentEvent::Connected { session_id, .. } = event {
+        domain.session_id = Some(SessionId::new(session_id.clone()));
     }
 }
 
@@ -693,44 +620,54 @@ fn spawn_permission_response_forwarder(
     session_id: String,
     tool_call_id: String,
 ) {
-    tokio::task::spawn(async move {
-        let Ok(outcome) = response_rx.await else {
-            tracing::warn!(
-                target: "forge_workspace::session_task",
-                session_id = %session_id,
-                tool_call_id = %tool_call_id,
-                "permission response channel closed before forwarding"
-            );
-            return;
-        };
-        let selected_option = match &outcome {
-            forge_primitives::PermissionOutcome::Selected { option_id } => option_id.clone(),
-            forge_primitives::PermissionOutcome::Cancelled => "cancelled".to_owned(),
-        };
-        let session_id_for_log = session_id.clone();
-        let tool_call_id_for_log = tool_call_id.clone();
-        match agent.permission_response(session_id, tool_call_id, outcome) {
-            Ok(()) => {
-                tracing::info!(
+    let span = tracing::info_span!(
+        "permission_response_forwarder",
+        session_id = %session_id,
+        tool_call_id = %tool_call_id,
+    );
+    tokio::task::spawn(
+        async move {
+            let Ok(outcome) = response_rx.await else {
+                tracing::warn!(
                     target: "forge_workspace::session_task",
-                    session_id = %session_id_for_log,
-                    tool_call_id = %tool_call_id_for_log,
-                    selected_option = %selected_option,
-                    "permission response forwarded to bridge"
+                    session_id = %session_id,
+                    tool_call_id = %tool_call_id,
+                    "permission response channel closed before forwarding"
                 );
-            }
-            Err(err) => {
-                tracing::error!(
-                    target: "forge_workspace::session_task",
-                    session_id = %session_id_for_log,
-                    tool_call_id = %tool_call_id_for_log,
-                    selected_option = %selected_option,
-                    error = %err,
-                    "failed to forward permission response to bridge"
-                );
+                return;
+            };
+            let selected_option = match &outcome {
+                forge_primitives::PermissionOutcome::Selected { option_id, .. } => {
+                    option_id.clone()
+                }
+                forge_primitives::PermissionOutcome::Cancelled => "cancelled".to_owned(),
+            };
+            let session_id_for_log = session_id.clone();
+            let tool_call_id_for_log = tool_call_id.clone();
+            match agent.permission_response(session_id, tool_call_id, outcome) {
+                Ok(()) => {
+                    tracing::info!(
+                        target: "forge_workspace::session_task",
+                        session_id = %session_id_for_log,
+                        tool_call_id = %tool_call_id_for_log,
+                        selected_option = %selected_option,
+                        "permission response forwarded to bridge"
+                    );
+                }
+                Err(err) => {
+                    tracing::error!(
+                        target: "forge_workspace::session_task",
+                        session_id = %session_id_for_log,
+                        tool_call_id = %tool_call_id_for_log,
+                        selected_option = %selected_option,
+                        error = %err,
+                        "failed to forward permission response to bridge"
+                    );
+                }
             }
         }
-    });
+        .instrument(span),
+    );
 }
 
 /// Forward an awaited question outcome to the agent so the bridge
@@ -741,46 +678,54 @@ fn spawn_question_response_forwarder(
     session_id: String,
     tool_call_id: String,
 ) {
-    tokio::task::spawn(async move {
-        let Ok(outcome) = response_rx.await else {
-            tracing::warn!(
-                target: "forge_workspace::session_task",
-                session_id = %session_id,
-                tool_call_id = %tool_call_id,
-                "question response channel closed before forwarding"
-            );
-            return;
-        };
-        let selected_option_count = match &outcome {
-            forge_primitives::QuestionOutcome::Answered { selected_option_ids, .. } => {
-                selected_option_ids.len()
-            }
-            forge_primitives::QuestionOutcome::Cancelled => 0,
-        };
-        let session_id_for_log = session_id.clone();
-        let tool_call_id_for_log = tool_call_id.clone();
-        match agent.question_response(session_id, tool_call_id, outcome) {
-            Ok(()) => {
-                tracing::info!(
+    let span = tracing::info_span!(
+        "question_response_forwarder",
+        session_id = %session_id,
+        tool_call_id = %tool_call_id,
+    );
+    tokio::task::spawn(
+        async move {
+            let Ok(outcome) = response_rx.await else {
+                tracing::warn!(
                     target: "forge_workspace::session_task",
-                    session_id = %session_id_for_log,
-                    tool_call_id = %tool_call_id_for_log,
-                    selected_option_count,
-                    "question response forwarded to bridge"
+                    session_id = %session_id,
+                    tool_call_id = %tool_call_id,
+                    "question response channel closed before forwarding"
                 );
-            }
-            Err(err) => {
-                tracing::error!(
-                    target: "forge_workspace::session_task",
-                    session_id = %session_id_for_log,
-                    tool_call_id = %tool_call_id_for_log,
-                    selected_option_count,
-                    error = %err,
-                    "failed to forward question response to bridge"
-                );
+                return;
+            };
+            let selected_option_count = match &outcome {
+                forge_primitives::QuestionOutcome::Answered { selected_option_ids, .. } => {
+                    selected_option_ids.len()
+                }
+                forge_primitives::QuestionOutcome::Cancelled => 0,
+            };
+            let session_id_for_log = session_id.clone();
+            let tool_call_id_for_log = tool_call_id.clone();
+            match agent.question_response(session_id, tool_call_id, outcome) {
+                Ok(()) => {
+                    tracing::info!(
+                        target: "forge_workspace::session_task",
+                        session_id = %session_id_for_log,
+                        tool_call_id = %tool_call_id_for_log,
+                        selected_option_count,
+                        "question response forwarded to bridge"
+                    );
+                }
+                Err(err) => {
+                    tracing::error!(
+                        target: "forge_workspace::session_task",
+                        session_id = %session_id_for_log,
+                        tool_call_id = %tool_call_id_for_log,
+                        selected_option_count,
+                        error = %err,
+                        "failed to forward question response to bridge"
+                    );
+                }
             }
         }
-    });
+        .instrument(span),
+    );
 }
 
 #[cfg(test)]
@@ -794,11 +739,11 @@ mod tests {
         DomainSession::new(SessionKey::from_str_for_test("test"), Some(Arc::new(handle)))
     }
 
-    /// `apply_event_to_domain` on `AgentEvent::Connected` stamps
-    /// `session_id` so the workspace can route subsequent
-    /// `AgentHandle` calls. The first-Connect path leaves any
-    /// existing session_id alone — the bridge can re-fire this on
-    /// snapshot rebuilds.
+    /// `apply_event_to_domain` on `AgentEvent::Connected` stamps (or
+    /// overwrites) `session_id` so subsequent `AgentHandle` calls
+    /// route to the live identity. See
+    /// `translate_second_connected_overwrites_session_id` for the
+    /// `/new`-flow overwrite case.
     #[test]
     fn translate_connected_stamps_session_id() {
         let mut domain = empty_domain();
@@ -834,19 +779,19 @@ mod tests {
         );
     }
 
-    /// `SessionReplaced` (e.g., `/new`, login, logout) overwrites the
-    /// session_id mirror; the new session_id is what subsequent
-    /// `AgentHandle` calls dispatch with.
+    /// A second `Connected` (`/new`, `/login`, `/logout`) overwrites
+    /// the session_id mirror so subsequent user commands route to the
+    /// new identity.
     #[test]
-    fn translate_session_replaced_replaces_session_id() {
+    fn translate_second_connected_overwrites_session_id() {
         let mut domain = empty_domain();
         domain.session_id = Some(SessionId::new("old-uuid"));
 
         apply_event_to_domain(
             &mut domain,
-            &AgentEvent::SessionReplaced {
+            &AgentEvent::Connected {
                 session_id: "new-uuid".to_owned(),
-                cwd: "/new-proj".to_owned(),
+                cwd: "/proj".to_owned(),
                 current_model: forge_primitives::CurrentModel {
                     resolved_id: "claude".to_owned(),
                     display_name_short: "claude".to_owned(),
@@ -868,14 +813,80 @@ mod tests {
 
         assert_eq!(
             domain.session_id.as_ref().map(std::string::ToString::to_string),
-            Some("new-uuid".to_owned())
+            Some("new-uuid".to_owned()),
+            "second Connected must overwrite session_id mirror",
+        );
+    }
+
+    /// `SessionTask::translate_event` on a second `Connected`
+    /// (`connected_once = true`) drains `pending_interactions` so
+    /// forwarder tasks parked on the previous identity's
+    /// tool_call_ids exit instead of waiting forever.
+    #[test]
+    fn translate_second_connected_drains_pending_interactions() {
+        use tokio::sync::oneshot;
+
+        let (handle, _commands_rx) = Agent::testing_stub();
+        let (_cmd_tx, command_rx) =
+            tokio::sync::mpsc::unbounded_channel::<crate::protocol::Command>();
+        let (update_tx, _update_rx) = tokio::sync::mpsc::unbounded_channel::<SessionUpdate>();
+        let domain = Arc::new(parking_lot::Mutex::new(empty_domain()));
+        let (response_tx, mut response_rx) =
+            oneshot::channel::<forge_primitives::PermissionOutcome>();
+        domain
+            .lock()
+            .pending_interactions
+            .insert("stale_tool_id".to_owned(), PendingInteractionSlot::Permission(response_tx));
+        let mut task = SessionTask {
+            key: SessionKey::from_str_for_test("old-uuid"),
+            handle: Arc::new(handle),
+            command_rx,
+            domain: Arc::clone(&domain),
+            update_tx,
+            spawn_key: None,
+            connected_once: true,
+            workspace: std::sync::Weak::new(),
+        };
+
+        task.translate_event(AgentEvent::Connected {
+            session_id: "new-uuid".to_owned(),
+            cwd: "/proj".to_owned(),
+            current_model: forge_primitives::CurrentModel {
+                resolved_id: "claude".to_owned(),
+                display_name_short: "claude".to_owned(),
+                display_name_long: "claude".to_owned(),
+                requested_id: None,
+                catalog_id: None,
+                supports_effort: false,
+                supported_effort_levels: Vec::new(),
+                supports_fast_mode: None,
+                supports_auto_mode: None,
+                supports_adaptive_thinking: None,
+                is_authoritative: true,
+            },
+            available_models: Vec::new(),
+            mode: None,
+            history_updates: None,
+        });
+
+        assert!(
+            domain.lock().pending_interactions.is_empty(),
+            "second Connected must clear stale pending_interactions",
+        );
+        assert!(
+            matches!(
+                response_rx.try_recv(),
+                Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+            ),
+            "forwarder receiver must observe Closed after the sender was dropped"
         );
     }
 
     /// Common harness for the `execute_command_via_handle` tests
     /// below: build a fresh stub handle + drain channel, return both.
     fn stub_handle_with_rx()
-    -> (Arc<AgentHandle>, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::Command>) {
+    -> (Arc<AgentHandle>, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::AgentCommand>)
+    {
         let (handle, rx) = Agent::testing_stub();
         (Arc::new(handle), rx)
     }
@@ -896,7 +907,7 @@ mod tests {
         let cmd = rx.try_recv().expect("command queued");
         assert!(matches!(
             cmd,
-            forge_primitives::Command::PromptWithImages { session_id, .. }
+            forge_primitives::AgentCommand::PromptWithImages { session_id, .. }
                 if session_id == "sess-1"
         ));
     }
@@ -916,7 +927,7 @@ mod tests {
         let cmd = rx.try_recv().expect("command queued");
         assert!(matches!(
             cmd,
-            forge_primitives::Command::Cancel { session_id } if session_id == "sess-1"
+            forge_primitives::AgentCommand::Cancel { session_id } if session_id == "sess-1"
         ));
     }
 
@@ -936,33 +947,11 @@ mod tests {
         .expect("dispatch succeeds");
         let cmd = rx.try_recv().expect("command queued");
         match cmd {
-            forge_primitives::Command::SetMode { session_id, mode } => {
+            forge_primitives::AgentCommand::SetMode { session_id, mode } => {
                 assert_eq!(session_id.as_str(), "sess-1");
                 assert_eq!(mode, "plan");
             }
             other => panic!("expected SetMode, got {other:?}"),
-        }
-    }
-
-    /// `Command::GenerateSessionTitle` forwards through the new path.
-    #[test]
-    fn execute_generate_session_title_forwards_to_handle() {
-        let (handle, mut rx) = stub_handle_with_rx();
-        let key = SessionKey::from_str_for_test("sess");
-        execute_command_via_handle(
-            &handle,
-            &key,
-            Some("sess-1"),
-            Command::GenerateSessionTitle { key: key.clone(), description: "first turn".into() },
-        )
-        .expect("dispatch succeeds");
-        let cmd = rx.try_recv().expect("command queued");
-        match cmd {
-            forge_primitives::Command::GenerateSessionTitle { session_id, description } => {
-                assert_eq!(session_id.as_str(), "sess-1");
-                assert_eq!(description, "first turn");
-            }
-            other => panic!("expected GenerateSessionTitle, got {other:?}"),
         }
     }
 
@@ -981,63 +970,11 @@ mod tests {
         .expect("dispatch succeeds");
         let cmd = rx.try_recv().expect("command queued");
         match cmd {
-            forge_primitives::Command::ReconnectMcpServer { server_name, .. } => {
+            forge_primitives::AgentCommand::ReconnectMcpServer { server_name, .. } => {
                 assert_eq!(server_name, "fs");
             }
             other => panic!("expected ReconnectMcpServer, got {other:?}"),
         }
-    }
-
-    /// `Command::SubmitMcpOauthCallbackUrl` carries the captured URL
-    /// through.
-    #[test]
-    fn execute_submit_mcp_oauth_callback_url_forwards() {
-        let (handle, mut rx) = stub_handle_with_rx();
-        let key = SessionKey::from_str_for_test("sess");
-        execute_command_via_handle(
-            &handle,
-            &key,
-            Some("sess-1"),
-            Command::SubmitMcpOauthCallbackUrl {
-                key: key.clone(),
-                server_name: "github".into(),
-                callback_url: "https://example.com/cb?code=abc".into(),
-            },
-        )
-        .expect("dispatch succeeds");
-        let cmd = rx.try_recv().expect("command queued");
-        match cmd {
-            forge_primitives::Command::SubmitMcpOauthCallbackUrl { callback_url, .. } => {
-                assert_eq!(callback_url, "https://example.com/cb?code=abc");
-            }
-            other => panic!("expected SubmitMcpOauthCallbackUrl, got {other:?}"),
-        }
-    }
-
-    /// `Command::RespondElicitation` forwards directly (no
-    /// `pending_interactions` lookup needed — MCP elicitations
-    /// bypass the workspace's oneshot path).
-    #[test]
-    fn execute_respond_elicitation_forwards_with_content() {
-        let (handle, mut rx) = stub_handle_with_rx();
-        let key = SessionKey::from_str_for_test("sess");
-        execute_command_via_handle(
-            &handle,
-            &key,
-            Some("sess-1"),
-            Command::RespondElicitation {
-                key: key.clone(),
-                elicitation_id: "elic-1".into(),
-                action: forge_primitives::ElicitationAction::Accept,
-                content: Some(serde_json::json!({"answer": "yes"})),
-            },
-        )
-        .expect("dispatch succeeds");
-        let cmd = rx.try_recv().expect("command queued");
-        assert!(matches!(
-            cmd,
-            forge_primitives::Command::RespondToElicitation { content: Some(_), .. }
-        ));
     }
 
     /// `Command::Cancel` without a `session_id` (pre-Connect) logs

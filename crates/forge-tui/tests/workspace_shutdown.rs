@@ -46,7 +46,8 @@ config_dir = "~/.claude-stargate"
     let app_clone = Arc::clone(&workspace);
     drop(app_clone);
 
-    // Phase 4: `Workspace::shutdown` takes `&self` (it just drains
-    // internal mutexes), so we don't need to unwrap the Arc.
-    workspace.shutdown().await;
+    // `Workspace::shutdown` takes `&self` and is synchronous — it
+    // just drains internal mutexes — so we don't need to unwrap
+    // the Arc or await.
+    workspace.shutdown();
 }

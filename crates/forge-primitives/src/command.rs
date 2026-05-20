@@ -4,18 +4,21 @@
 //! to perform. Direct-return accessors (config_dir, settings_documents,
 //! etc.) live on a separate sync surface, not in `Command`.
 
-use std::collections::BTreeMap;
-
 use serde::{Deserialize, Serialize};
 
-use crate::ids::{MessageId, SessionId, ToolUseId};
+use crate::ids::{SessionId, ToolUseId};
 use crate::image::ImageAttachment;
-use crate::{ElicitationAction, McpServerConfig, PermissionOutcome, QuestionOutcome};
+use crate::{PermissionOutcome, QuestionOutcome};
 
 /// UI → agent channel envelope. Each variant maps to one inherent
-/// method on `forge_agent::ForgeSdkBridge`.
+/// method on `forge_agent::ForgeSdkBridge`. Named `AgentCommand`
+/// to disambiguate from the higher-level
+/// `forge_workspace::protocol::Command` (UI → workspace) — the two
+/// envelopes are deliberately different shapes with overlapping
+/// names, and disambiguating the agent-side enum makes which one
+/// is meant obvious at every call site.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum Command {
+pub enum AgentCommand {
     // --- Session lifecycle ---
     NewSession {
         cwd: String,
@@ -70,18 +73,6 @@ pub enum Command {
         session_id: SessionId,
         model: String,
     },
-    GenerateSessionTitle {
-        session_id: SessionId,
-        description: String,
-    },
-    RenameSession {
-        session_id: SessionId,
-        title: String,
-    },
-    RewindFiles {
-        session_id: SessionId,
-        user_message_id: MessageId,
-    },
 
     // --- Snapshots requested by UI ---
     GetStatusSnapshot {
@@ -108,12 +99,6 @@ pub enum Command {
         tool_call_id: ToolUseId,
         outcome: QuestionOutcome,
     },
-    RespondToElicitation {
-        session_id: SessionId,
-        elicitation_request_id: String,
-        action: ElicitationAction,
-        content: Option<serde_json::Value>,
-    },
 
     // --- MCP management ---
     ReconnectMcpServer {
@@ -124,23 +109,6 @@ pub enum Command {
         session_id: SessionId,
         server_name: String,
         enabled: bool,
-    },
-    SetMcpServers {
-        session_id: SessionId,
-        servers: BTreeMap<String, McpServerConfig>,
-    },
-    AuthenticateMcpServer {
-        session_id: SessionId,
-        server_name: String,
-    },
-    ClearMcpAuth {
-        session_id: SessionId,
-        server_name: String,
-    },
-    SubmitMcpOauthCallbackUrl {
-        session_id: SessionId,
-        server_name: String,
-        callback_url: String,
     },
 
     // --- Plugins / runtime ---

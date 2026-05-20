@@ -1,6 +1,4 @@
-use super::super::connect::{SessionStartReason, start_new_session};
 use super::super::state::RecentSessionInfo;
-use super::super::view::{self, ActiveView};
 use super::super::{
     App, AppStatus, ChatMessage, LoginHint, MessageBlock, MessageRole, SystemSeverity, TextBlock,
 };
@@ -28,20 +26,19 @@ fn bump_bucket_session_scope_epoch(app: &mut App, key: &SessionKey) {
     }
 }
 
-/// Post-migration apply chain for `Connected` events.
-///
-/// Runs the welcome/file-index/runtime-tabs/trust/tab-title work that
-/// follows the synthetic-key → real-key migration. The migration
+/// Apply chain for `Connected` events that runs after the
+/// synthetic-key → real-key migration completes. The migration
 /// itself runs via `SessionUpdate::KeyRenamed` (emitted by
 /// `SessionTask::translate_event` ahead of the matching `Connected`).
+/// This chain handles the welcome / file-index / runtime-tabs / trust
+/// / tab-title work that follows.
 ///
 /// `was_active` indicates whether the user is watching this session
 /// (active path: full apply chain) or whether it completed in the
 /// background (background path: write into the bucket directly).
-#[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
 fn apply_connected_presentation(
     app: &mut App,
-    session_key: SessionKey,
+    session_key: &SessionKey,
     session_id: model::SessionId,
     cwd: String,
     current_model: model::CurrentModel,
@@ -70,7 +67,6 @@ fn apply_connected_presentation(
         crate::app::file_index::restart(app);
         app.rebuild_chat_focus_from_state();
         crate::app::config::refresh_runtime_tabs_for_session_change(app);
-        maybe_open_startup_session_picker(app);
         crate::app::tab_title::update_tab_title(&app.status, app.spinner_frame, app.cwd());
     } else {
         // Background path: temp-swap `active_session_key` so the
@@ -90,7 +86,7 @@ fn apply_connected_presentation(
         // disturbed.
         let display = shorten_cwd_display(&cwd);
         let session_id_for_domain = session_id.clone();
-        if let Some(bucket) = app.sessions.get_mut(&session_key) {
+        if let Some(bucket) = app.sessions.get_mut(session_key) {
             bucket.cwd = display;
             bucket.cwd_raw = cwd;
             bucket.session_id =
@@ -105,7 +101,7 @@ fn apply_connected_presentation(
         // UUID) can resolve this bucket.
         if let Some(workspace) = app.workspace.as_ref() {
             workspace.set_session_id_in_domain(
-                &session_key,
+                session_key,
                 Some(forge_primitives::SessionId::new(session_id_for_domain.to_string())),
             );
         }
@@ -141,25 +137,13 @@ pub(super) fn handle_sessions_listed_event(
     sessions: Vec<forge_primitives::SessionListEntry>,
 ) {
     let session_count = sessions.len();
-    let pending_title_change = app.config.pending_session_title_change.take();
-    // Selection state is reconciled against the active bucket's list
-    // (the picker UI shows the active session's catalog). Reading
-    // here before the targeted write so a session-switch-then-listing
-    // race doesn't snapshot the wrong list.
-    let selected_session_id = app
-        .recent_sessions()
-        .get(app.session_picker.selected)
-        .map(|session| session.session_id.clone());
-    let had_pending_title_change = pending_title_change.is_some();
     let mapped: Vec<RecentSessionInfo> = sessions
         .into_iter()
         .map(|entry| RecentSessionInfo {
             session_id: entry.session_id,
             summary: entry.summary,
             last_modified_ms: entry.last_modified_ms,
-            file_size_bytes: entry.file_size_bytes,
             cwd: entry.cwd,
-            git_branch: entry.git_branch,
             custom_title: entry.custom_title,
             first_prompt: entry.first_prompt,
         })
@@ -177,39 +161,12 @@ pub(super) fn handle_sessions_listed_event(
         return;
     };
     *slot = mapped;
-    let mut pending_title_change_resolved = false;
-    if let Some(pending_title_change) = pending_title_change {
-        let renamed_session_present = app
-            .recent_sessions()
-            .iter()
-            .any(|session| session.session_id == pending_title_change.session_id);
-        pending_title_change_resolved = renamed_session_present;
-        if renamed_session_present {
-            app.config.last_error = None;
-            app.config.status_message = Some(match pending_title_change.kind {
-                crate::app::config::PendingSessionTitleChangeKind::Rename { requested_title } => {
-                    match requested_title {
-                        Some(title) => format!("Renamed session to {title}"),
-                        None => "Cleared session name".to_owned(),
-                    }
-                }
-                crate::app::config::PendingSessionTitleChangeKind::Generate => {
-                    "Generated session title".to_owned()
-                }
-            });
-        }
-    }
-    app.startup_recent_sessions_loaded = true;
-    reconcile_session_picker_selection(app, selected_session_id.as_deref());
-    maybe_open_startup_session_picker(app);
     tracing::info!(
         target: crate::logging::targets::APP_SESSION,
         event_name = "sessions_list_updated",
         message = "sessions list applied",
         outcome = "success",
         session_count,
-        had_pending_title_change,
-        pending_title_change_resolved,
     );
 }
 
@@ -246,15 +203,13 @@ pub(super) fn handle_auth_required_event(
         session.session_usage = crate::app::state::SessionUsageState::default();
         session.last_rate_limit_update = None;
         session.cancelled_turn_pending_hint = false;
-        session.pending_cancel_origin = None;
+        session.pending_cancel = false;
         session.mcp = super::super::McpState::default();
         super::turn::finalize_background_tool_calls(session, model::ToolCallStatus::Failed);
         session.active_turn_assistant_message_idx = None;
         session.turn_notice_refs.clear();
-        // Flip the bucket's lifecycle state so the Projects pane glyph
-        // reflects the auth-blocked condition. Pre-Phase-5 the workspace
-        // wrote this; with operational state back on UiSession the
-        // reducer owns it directly.
+        // Flip the bucket's lifecycle state so the Projects pane
+        // glyph reflects the auth-blocked condition.
         session.lifecycle_state = crate::app::session::SessionLifecycleState::AuthRequired;
         let _ = session;
         // Mirror session_id reset onto the workspace's DomainSession
@@ -282,10 +237,9 @@ pub(super) fn handle_auth_required_event(
     super::clear_compaction_state(app, false);
     app.set_last_rate_limit_update(None);
     app.set_cancelled_turn_pending_hint(false);
-    app.set_pending_cancel_origin(None);
+    app.set_pending_cancel(false);
     app.set_account_info(None);
     *app.mcp_mut() = super::super::McpState::default();
-    app.config.pending_session_title_change = None;
     crate::app::usage::reset_for_session_change(app);
     app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
     app.clear_active_turn_assistant();
@@ -341,7 +295,7 @@ pub(super) fn handle_connection_failed_event(app: &mut App, session_key: &Sessio
         session.fast_mode_state = model::FastModeState::Off;
         session.session_usage = crate::app::state::SessionUsageState::default();
         session.cancelled_turn_pending_hint = false;
-        session.pending_cancel_origin = None;
+        session.pending_cancel = false;
         session.last_rate_limit_update = None;
         session.mcp = super::super::McpState::default();
         super::turn::finalize_background_tool_calls(session, model::ToolCallStatus::Failed);
@@ -402,11 +356,10 @@ pub(super) fn handle_connection_failed_event(app: &mut App, session_key: &Sessio
     app.clear_session_runtime_identity();
     super::clear_compaction_state(app, false);
     app.set_cancelled_turn_pending_hint(false);
-    app.set_pending_cancel_origin(None);
+    app.set_pending_cancel(false);
     app.set_last_rate_limit_update(None);
     app.set_account_info(None);
     *app.mcp_mut() = super::super::McpState::default();
-    app.config.pending_session_title_change = None;
     crate::app::usage::reset_for_session_change(app);
     *app.resuming_session_id_mut() = None;
     *app.pending_command_label_mut() = None;
@@ -450,8 +403,7 @@ pub(super) fn handle_connection_failed_event(app: &mut App, session_key: &Sessio
     );
 }
 
-/// Spec text for the rate-limit fallback chat message. See
-/// `~/.claude-stargate/plans/2026-05-10-forge-tui-projects-pane-wide-design.md`.
+/// Chat message rendered when all accounts are rate-limited.
 const RATE_LIMIT_FALLBACK_MESSAGE: &str =
     "Waiting for account reset; click another project or wait.";
 
@@ -507,12 +459,6 @@ pub(super) fn handle_slash_command_error_event(app: &mut App, session_key: &Sess
         );
         return;
     }
-    if app.config.pending_session_title_change.take().is_some() {
-        app.config.last_error = Some(msg.to_owned());
-        app.config.status_message = None;
-        app.needs_redraw = true;
-        return;
-    }
     app.push_message_tracked(ChatMessage::new(
         MessageRole::System(None),
         vec![MessageBlock::Text(TextBlock::from_complete(msg))],
@@ -524,153 +470,6 @@ pub(super) fn handle_slash_command_error_event(app: &mut App, session_key: &Sess
     *app.resuming_session_id_mut() = None;
 }
 
-pub(super) fn handle_auth_completed_event(app: &mut App, session_key: &SessionKey) {
-    if app.active_session_key.as_ref() != Some(session_key) {
-        // Auth completed for a non-active session is a degenerate case
-        // — the user must have triggered /login from a session that's
-        // since been backgrounded. Restarting a session targets the
-        // active bucket by definition; the safest thing is to log and
-        // drop. Once Phase 2b ships proper multi-bridge auth flows the
-        // bridge will deliver this only to the active path.
-        tracing::warn!(
-            target: crate::logging::targets::APP_AUTH,
-            event_name = "auth_completed_background_dropped",
-            message = "auth-completed event ignored for a non-active session",
-            outcome = "dropped",
-            session_key = %session_key.as_str(),
-            reason = "non_active_session",
-        );
-        return;
-    }
-    *app.login_hint_mut() = None;
-    *app.pending_command_label_mut() = Some("Starting session...".to_owned());
-    *app.pending_command_ack_mut() = None;
-    push_system_message_with_severity(
-        app,
-        Some(SystemSeverity::Info),
-        "Authentication successful. Starting new session...",
-    );
-    app.force_redraw = true;
-    tracing::info!(
-        target: crate::logging::targets::APP_AUTH,
-        event_name = "login_completed",
-        message = "login completed and session restart requested",
-        outcome = "success",
-    );
-
-    if let Err(e) = start_new_session(app, SessionStartReason::Login) {
-        tracing::error!(
-            target: crate::logging::targets::APP_AUTH,
-            event_name = "login_session_restart_failed",
-            message = "failed to start session after login",
-            outcome = "failure",
-            error_message = %e,
-        );
-        clear_pending_command(app);
-        push_system_message_with_severity(
-            app,
-            Some(SystemSeverity::Error),
-            &format!("Failed to start session after login: {e}"),
-        );
-    }
-}
-
-pub(super) fn handle_logout_completed_event(app: &mut App, session_key: &SessionKey) {
-    if app.active_session_key.as_ref() != Some(session_key) {
-        bump_bucket_session_scope_epoch(app, session_key);
-        let Some(session) = app.session_mut(session_key) else {
-            tracing::warn!(
-                target: crate::logging::targets::APP_AUTH,
-                event_name = "logout_completed_dropped",
-                message = "logout completed dropped for an unknown session",
-                outcome = "dropped",
-                session_key = %session_key.as_str(),
-                reason = "unknown_session",
-            );
-            return;
-        };
-        // Background-session logout: clear the bucket's auth +
-        // identity state. Skip App-global UI restart (force_redraw,
-        // pending_command). Foreground switching to that bucket
-        // will surface the auth-required hint via AuthRequired.
-        session.key = None;
-        session.session_id = None;
-        session.account_info = None;
-        session.current_model = None;
-        session.mode = None;
-        session.fast_mode_state = model::FastModeState::Off;
-        session.session_usage = crate::app::state::SessionUsageState::default();
-        session.oauth_credentials = None;
-        session.mcp = super::super::McpState::default();
-        let _ = session;
-        // Mirror session_id reset onto the workspace's DomainSession
-        // so AgentHandle dispatch stops routing to a no-longer-valid
-        // session id.
-        if let Some(workspace) = app.workspace.as_ref() {
-            workspace.set_session_id_in_domain(session_key, None);
-        }
-        tracing::info!(
-            target: crate::logging::targets::APP_AUTH,
-            event_name = "logout_completed_background",
-            message = "logout cleared background session state",
-            outcome = "success",
-            session_key = %session_key.as_str(),
-        );
-        return;
-    }
-    // Clear the session and start a new one. The bridge now checks auth
-    // during initialization and will fire AuthRequired immediately.
-    app.bump_session_scope_epoch();
-    app.clear_session_runtime_identity();
-    app.set_account_info(None);
-    app.set_oauth_credentials(None);
-    *app.mcp_mut() = super::super::McpState::default();
-    app.config.pending_session_title_change = None;
-    crate::app::usage::reset_for_session_change(app);
-    app.force_redraw = true;
-    tracing::info!(
-        target: crate::logging::targets::APP_AUTH,
-        event_name = "logout_completed",
-        message = "logout cleared active session state",
-        outcome = "success",
-    );
-
-    if app.has_active_agent() {
-        *app.pending_command_label_mut() = Some("Starting session...".to_owned());
-        *app.pending_command_ack_mut() = None;
-        if let Err(e) = start_new_session(app, SessionStartReason::Logout) {
-            tracing::error!(
-                target: crate::logging::targets::APP_AUTH,
-                event_name = "logout_session_restart_failed",
-                message = "failed to start replacement session after logout",
-                outcome = "failure",
-                error_message = %e,
-            );
-            clear_pending_command(app);
-            push_system_message_with_severity(
-                app,
-                Some(SystemSeverity::Error),
-                &format!("Failed to start new session after logout: {e}"),
-            );
-        }
-    } else {
-        tracing::warn!(
-            target: crate::logging::targets::APP_AUTH,
-            event_name = "logout_session_restart_unavailable",
-            message = "logout completed without a connection to start a replacement session",
-            outcome = "blocked",
-            reason = "missing_connection",
-        );
-        clear_pending_command(app);
-        push_system_message_with_severity(
-            app,
-            Some(SystemSeverity::Warning),
-            "Logged out, but no connection available to start a new session.",
-        );
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
 pub(super) fn handle_session_replaced_event(
     app: &mut App,
     session_id: model::SessionId,
@@ -685,7 +484,7 @@ pub(super) fn handle_session_replaced_event(
     let history_message_count = history_messages.len();
     let available_model_count = available_models.len();
     super::clear_compaction_state(app, false);
-    app.set_pending_cancel_origin(None);
+    app.set_pending_cancel(false);
 
     // Capture the outgoing bucket's key BEFORE `reset_for_new_session`
     // runs — that call goes through `set_session_id`, which inserts a
@@ -730,24 +529,16 @@ pub(super) fn handle_session_replaced_event(
         app.sessions.remove(&prev);
     }
 
-    // Reset the DomainSession's `lifecycle_state` to `Idle`. The
-    // replacement session reuses the same `DomainSession` (Phase 5
-    // stamps the new AgentHandle onto it), which means a previously-
-    // set `Attention` from a pending permission on the outgoing
-    // session would otherwise carry forward and leave the Projects
-    // pane glyph stale until the next lifecycle event. The active-
-    // session Connected path does the same reset explicitly; this
-    // mirrors it for the SessionReplaced path.
+    // Reset lifecycle_state to Idle — the replacement session
+    // reuses the same DomainSession, so a previously-set Attention
+    // from a pending permission on the outgoing session would
+    // otherwise carry forward and leave the Projects pane glyph
+    // stale until the next lifecycle event.
     super::set_bucket_lifecycle_state(
         app,
         &session_key,
         crate::app::session::SessionLifecycleState::Idle,
     );
-
-    // Workspace catalog is now updated by
-    // `Workspace::record_event_for_domain` on the
-    // `AgentEvent::SessionReplaced` arm (Phase 3a); no TUI-side
-    // write is needed here.
 
     tracing::info!(
         target: crate::logging::targets::APP_SESSION,
@@ -842,7 +633,6 @@ pub(super) fn apply_session_cwd(app: &mut App, cwd_raw: String) {
     app.set_cwd_raw(cwd_raw);
     app.set_cwd(display);
     sync_welcome_cwd(app);
-    app.reconcile_trust_state_from_preferences_and_cwd();
 
     // Bump the git-diff generation when the cwd genuinely changed,
     // reset the cached snapshot to `None`, AND abandon the in-flight
@@ -867,52 +657,6 @@ pub(super) fn apply_session_cwd(app: &mut App, cwd_raw: String) {
     }
 }
 
-fn reconcile_session_picker_selection(app: &mut App, selected_session_id: Option<&str>) {
-    let session_count = super::super::session_picker::picker_session_count(app);
-    if session_count == 0 {
-        app.session_picker.selected = 0;
-        app.session_picker.scroll_offset = 0;
-        return;
-    }
-
-    if let Some(session_id) = selected_session_id
-        && let Some(idx) =
-            app.recent_sessions().iter().position(|session| session.session_id == session_id)
-        && idx < session_count
-    {
-        app.session_picker.selected = idx;
-    } else {
-        app.session_picker.selected =
-            app.session_picker.selected.min(session_count.saturating_sub(1));
-    }
-    app.session_picker.scroll_offset =
-        app.session_picker.scroll_offset.min(app.session_picker.selected);
-}
-
-fn maybe_open_startup_session_picker(app: &mut App) {
-    if !app.startup_session_picker_requested || app.startup_session_picker_resolved {
-        return;
-    }
-    if !app.has_active_agent() || !app.startup_recent_sessions_loaded {
-        return;
-    }
-
-    app.startup_session_picker_resolved = true;
-    let session_count = super::super::session_picker::picker_session_count(app);
-    if session_count == 0 {
-        push_system_message_with_severity(
-            app,
-            Some(SystemSeverity::Info),
-            "No recent sessions found for this directory; continuing with a new session.",
-        );
-        return;
-    }
-
-    app.session_picker.selected = app.session_picker.selected.min(session_count - 1);
-    app.session_picker.scroll_offset = 0;
-    view::set_active_view(app, ActiveView::SessionPicker);
-}
-
 // ─────────────────────────────────────────────────────────────────
 // `SessionUpdate` reducers for the 11 session-lifecycle events.
 //
@@ -922,26 +666,22 @@ fn maybe_open_startup_session_picker(app: &mut App) {
 // presentation helper.
 // ─────────────────────────────────────────────────────────────────
 
-// Each reducer below receives owned values from the SessionUpdate
-// destructure in `events::client::apply_workspace_update`. Several
-// of them merely forward references into the underlying handler;
-// `#[allow(clippy::needless_pass_by_value)]` is the standard escape
-// for that "I own this but only pass it by reference" pattern.
+// Reducers below receive owned values from the SessionUpdate
+// destructure in `events::client::apply_workspace_update`. The
+// module-level `needless_pass_by_value` allow at the top of this
+// file covers the "I own this but only pass it by reference" arms.
 
-#[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
 pub(super) fn apply_session_update_connected(
     app: &mut App,
-    key: SessionKey,
+    key: &SessionKey,
     session_id: forge_primitives::SessionId,
     cwd: String,
     current_model: forge_primitives::CurrentModel,
     available_models: Vec<forge_primitives::AvailableModel>,
     mode: Option<forge_primitives::ModeState>,
-    history: Vec<forge_primitives::Message>,
+    history: &[forge_primitives::Message],
 ) {
-    use super::super::connect::type_converters::{
-        convert_current_model, convert_mode_state, map_available_models,
-    };
+    use super::super::connect::type_converters::map_available_models;
     // Defensive synthetic→real migration: in production, the
     // `SessionTask` emits `SessionUpdate::KeyRenamed` ahead of
     // `Connected` so the bucket already lives at `key`. Tests that
@@ -949,7 +689,7 @@ pub(super) fn apply_session_update_connected(
     // legacy single-session bridges still rely on this reducer to
     // do the migration when the active key is a synthetic
     // placeholder.
-    let synthetic_to_migrate = if !app.sessions.contains_key(&key)
+    let synthetic_to_migrate = if !app.sessions.contains_key(key)
         && let Some(active_key) = app.active_session_key.clone()
         && is_synthetic_key(&active_key)
     {
@@ -979,42 +719,30 @@ pub(super) fn apply_session_update_connected(
         // synthesize `SessionUpdate::Connected` directly and the
         // legacy single-session SessionReplaced shape.
         if let Some(workspace) = app.workspace.as_ref()
-            && workspace.domain_session_for(&key).is_none()
+            && workspace.domain_session_for(key).is_none()
         {
             workspace.register_domain_session(key.clone(), None);
         }
     }
-    set_bucket_lifecycle_state(app, &key, crate::app::session::SessionLifecycleState::Idle);
+    set_bucket_lifecycle_state(app, key, crate::app::session::SessionLifecycleState::Idle);
     // Clear any captured connection error on a successful reconnect —
     // the launchpad picker stops surfacing the stale `✗` row tail.
-    if let Some(session) = app.session_mut(&key) {
+    if let Some(session) = app.session_mut(key) {
         session.last_connection_error = None;
     }
-    // `was_active` drives whether the welcome / model snapshots get
-    // applied to the active-session UI. The rule is now simple:
-    // this Connected is for the active session only when its key
-    // already matches `active_session_key`. Active migration is
-    // owned by the synthetic_to_migrate branch above (legacy/test
-    // paths that skip KeyRenamed) and by the `KeyRenamed` reducer
-    // itself — Connected never steals focus on its own.
-    //
-    // Why the auto-steal was wrong: with multi-project auto_start,
-    // every project's Connected used to make itself active, so the
-    // LAST Connected won the focused tab regardless of which
-    // project actually owned `focus = true`. The fix routes focus
-    // through KeyRenamed (which is what fires for the
-    // `__conn_pending__` → real-key migration of the focus winner)
-    // and leaves background Connecteds untouched.
-    let was_active = app.active_session_key.as_ref() == Some(&key);
+    // Connected applies welcome/model snapshots to active-session UI
+    // only when the key already matches `active_session_key`. Focus
+    // routing lives in the `KeyRenamed` reducer, not here.
+    let was_active = app.active_session_key.as_ref() == Some(key);
     apply_connected_presentation(
         app,
         key,
         model::SessionId::new(session_id.into_string()),
         cwd,
-        convert_current_model(current_model),
+        current_model,
         map_available_models(available_models),
-        mode.map(convert_mode_state),
-        &history,
+        mode,
+        history,
         was_active,
     );
 }
@@ -1028,28 +756,25 @@ fn is_synthetic_key(key: &SessionKey) -> bool {
     s.len() >= 4 && s.starts_with("__") && s.ends_with("__")
 }
 
-#[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
 pub(super) fn apply_session_update_session_replaced(
     app: &mut App,
-    _key: SessionKey,
+    _key: &SessionKey,
     session_id: forge_primitives::SessionId,
     cwd: String,
     current_model: forge_primitives::CurrentModel,
     available_models: Vec<forge_primitives::AvailableModel>,
     mode: Option<forge_primitives::ModeState>,
-    history: Vec<forge_primitives::Message>,
+    history: &[forge_primitives::Message],
 ) {
-    use super::super::connect::type_converters::{
-        convert_current_model, convert_mode_state, map_available_models,
-    };
+    use super::super::connect::type_converters::map_available_models;
     handle_session_replaced_event(
         app,
         model::SessionId::new(session_id.into_string()),
         cwd,
-        convert_current_model(current_model),
+        current_model,
         map_available_models(available_models),
-        mode.map(convert_mode_state),
-        &history,
+        mode,
+        history,
     );
 }
 
@@ -1061,52 +786,38 @@ pub(super) fn apply_session_update_sessions_listed(
     handle_sessions_listed_event(app, key, sessions);
 }
 
-#[allow(clippy::needless_pass_by_value)]
 pub(super) fn apply_session_update_auth_required(
     app: &mut App,
-    key: SessionKey,
+    key: &SessionKey,
     method_name: String,
     method_description: String,
 ) {
-    handle_auth_required_event(app, &key, method_name, method_description);
+    handle_auth_required_event(app, key, method_name, method_description);
 }
 
-#[allow(clippy::needless_pass_by_value)]
 pub(super) fn apply_session_update_connection_failed(
     app: &mut App,
-    key: SessionKey,
-    message: String,
+    key: &SessionKey,
+    message: &str,
     _fatal: bool,
 ) {
-    handle_connection_failed_event(app, &key, &message);
+    handle_connection_failed_event(app, key, message);
 }
 
-#[allow(clippy::needless_pass_by_value)]
 pub(super) fn apply_session_update_slash_command_error(
     app: &mut App,
-    key: SessionKey,
-    message: String,
+    key: &SessionKey,
+    message: &str,
 ) {
-    handle_slash_command_error_event(app, &key, &message);
+    handle_slash_command_error_event(app, key, message);
 }
 
-#[allow(clippy::needless_pass_by_value)]
-pub(super) fn apply_session_update_auth_completed(app: &mut App, key: SessionKey) {
-    handle_auth_completed_event(app, &key);
-}
-
-#[allow(clippy::needless_pass_by_value)]
-pub(super) fn apply_session_update_logout_completed(app: &mut App, key: SessionKey) {
-    handle_logout_completed_event(app, &key);
-}
-
-#[allow(clippy::needless_pass_by_value)]
 pub(super) fn apply_session_update_service_status(
     app: &mut App,
     severity: forge_primitives::cloud::service_status::ServiceSeverity,
-    message: String,
+    message: &str,
 ) {
-    present_service_status(app, severity, &message);
+    present_service_status(app, severity, message);
 }
 
 pub(super) fn apply_session_update_fatal_error(app: &mut App, error: AppError) {

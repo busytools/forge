@@ -5,8 +5,6 @@
 //! - `CLAUDE_CODE_ENTRYPOINT=sdk-rs` (forge-sdk's own attribution —
 //!   upstream Python SDK stamps `sdk-py` here; we identify as Rust).
 //! - `CLAUDE_AGENT_SDK_VERSION=<crate version>`
-//! - `CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING=true` (when
-//!   `Options::enable_file_checkpointing`).
 //! - `PWD=<cwd>` (when `Options::cwd`).
 //!
 //! Filtering of `CLAUDECODE` (upstream #573) is not covered by a
@@ -65,22 +63,6 @@ async fn spawn_sets_entrypoint_and_version_envs() {
     let version =
         env.get("CLAUDE_AGENT_SDK_VERSION").expect("CLAUDE_AGENT_SDK_VERSION must be stamped");
     assert_eq!(version, env!("CARGO_PKG_VERSION"));
-}
-
-#[tokio::test]
-async fn spawn_sets_file_checkpointing_env_when_enabled() {
-    let on = spawn_and_capture_env(|b| b.enable_file_checkpointing(true)).await;
-    assert_eq!(
-        on.get("CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING").map(String::as_str),
-        Some("true"),
-        "enable_file_checkpointing must surface as env var (NOT a CLI flag)"
-    );
-
-    let off = spawn_and_capture_env(|b| b).await;
-    assert!(
-        !off.contains_key("CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING"),
-        "env var must NOT be stamped when enable_file_checkpointing is false"
-    );
 }
 
 #[tokio::test]

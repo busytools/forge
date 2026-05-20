@@ -19,7 +19,6 @@
 //! Mouse handling: see [`handle_mouse`].
 
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::mpsc as std_mpsc;
 
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
@@ -81,9 +80,11 @@ pub enum BodyRowKey {
     EmptyState,
     /// `@@ -A,B +C,D @@` hunk header — non-interactive in v1.
     HunkHeader { file_idx: usize, hunk_idx: usize },
-    /// An actual diff line inside a hunk. Click → open a comment
-    /// input anchored at this key.
-    HunkLine(LineKey),
+    /// A diff row in the split body. Carries both column keys —
+    /// the click handler picks `left` or `right` by comparing the
+    /// click column against the pane midpoint. At least one side
+    /// is `Some` (the pairing algorithm never emits both-None).
+    HunkRow { left: Option<LineKey>, right: Option<LineKey> },
     /// The single-line summary chip showing a saved comment ("💬
     /// L<line>: ..."). Click → re-open the saved comment for edit.
     CommentChip(LineKey),
@@ -151,16 +152,10 @@ pub struct DiffOverlayEvent {
 /// [`forge_workspace::Workspace::scan_git_diff_hunks`] and posts a
 /// [`DiffOverlayEvent`] when the scan completes. Best-effort send —
 /// receiver going away (app shutdown) just drops the result.
-pub fn spawn_fetch(
-    workspace: Arc<forge_workspace::Workspace>,
-    cwd: PathBuf,
-    target: String,
-    seq: u64,
-    tx: std_mpsc::Sender<DiffOverlayEvent>,
-) {
+pub fn spawn_fetch(cwd: PathBuf, target: String, seq: u64, tx: std_mpsc::Sender<DiffOverlayEvent>) {
     tokio::task::spawn_local(async move {
         let ScanOutcome { files, scanner_ok, untracked_suppressed } =
-            workspace.scan_git_diff_hunks(&cwd, &target).await;
+            forge_workspace::env::git_diff::hunks::scan(&cwd, &target).await;
         let _ =
             tx.send(DiffOverlayEvent { cwd, target, files, scanner_ok, untracked_suppressed, seq });
     });
@@ -247,10 +242,6 @@ pub fn resolve_default_target(app: &App) -> DefaultTarget {
 /// directly; `open_default` builds on top of it for the auto-detect
 /// path.
 pub fn open_with_target(app: &mut App, target: String) {
-    let Some(workspace) = app.workspace.clone() else {
-        crate::app::slash::push_system_message(app, "Cannot open diff: workspace not ready.");
-        return;
-    };
     let Some(cwd_raw) = app.active_session().map(|s| s.cwd_raw.clone()) else {
         crate::app::slash::push_system_message(app, "Cannot open diff: no active session.");
         return;
@@ -265,7 +256,7 @@ pub fn open_with_target(app: &mut App, target: String) {
     // dropped by drain_events as superseded.
     app.diff_scan_seq = app.diff_scan_seq.wrapping_add(1);
     let seq = app.diff_scan_seq;
-    spawn_fetch(workspace, PathBuf::from(cwd_raw), target, seq, app.diff_overlay_event_tx.clone());
+    spawn_fetch(PathBuf::from(cwd_raw), target, seq, app.diff_overlay_event_tx.clone());
 }
 
 /// Auto-detect the diff target from the Inspector GIT snapshot and
@@ -428,6 +419,11 @@ pub struct DiffOverlayState {
     /// Scroll offset (in lines) for the right pane's diff body.
     /// Resets to 0 when the user switches files.
     pub body_scroll: u16,
+    /// Horizontal scroll offset (in columns) applied to both halves
+    /// of the split diff body. Left/Right arrow keys advance and
+    /// retreat this; resets to 0 when the user switches files. Both
+    /// halves use the same offset so the split stays aligned.
+    pub body_scroll_x: u16,
     /// Scroll offset (in lines) for the left FILES rail. Wheel
     /// events with the cursor over the rail advance this; the
     /// renderer clamps it against `max(0, file_count - visible)`.
@@ -473,27 +469,10 @@ pub struct DiffOverlayState {
     /// Number of leading rows in `body_keys` that are pinned (not
     /// scrolled with `body_scroll`). Wide-tier sets this to
     /// `BODY_HEAD_ROWS` because the renderer keeps the banner +
-    /// rule + blank pinned above the scrolling tail. Narrow-tier
-    /// strips those rows out of `body_keys` and sets this to `0`.
-    /// The click handler reads it to decide whether `body_scroll`
-    /// should offset a given row.
+    /// rule + blank pinned above the scrolling tail. The click
+    /// handler reads it to decide whether `body_scroll` should
+    /// offset a given row.
     pub body_head_rows: usize,
-    /// Screen-row coordinate of the narrow-tier header line, set by
-    /// the renderer at narrow-tier draw time. `None` when the last
-    /// render was a wide/medium tier (rail is up, no narrow header).
-    pub narrow_header_row_y: Option<u16>,
-    /// Screen-column positions of the `◀` and `▶` arrows on the
-    /// narrow-tier header row. Used by the click handler to advance
-    /// `current_file_idx`. `None` when no files exist (arrows are
-    /// no-ops) or when the last render wasn't narrow tier.
-    pub narrow_arrow_cols: Option<(u16, u16)>,
-    /// Screen-column range of the banner `✕` glyph stamped at
-    /// render time. `Some((start, end))` when the glyph is visible
-    /// (banner has room); `None` when the banner clipped its right
-    /// edge offscreen. The click handler refuses banner-row clicks
-    /// when this is `None` so a misclick on truncated path text
-    /// can't trigger an unintended close.
-    pub banner_close_col_range: Option<(u16, u16)>,
 }
 
 impl DiffOverlayState {
@@ -530,6 +509,7 @@ impl DiffOverlayState {
             untracked_suppressed: 0,
             current_file_idx: 0,
             body_scroll: 0,
+            body_scroll_x: 0,
             rail_scroll: 0,
             comments: Vec::new(),
             active_input: None,
@@ -538,9 +518,6 @@ impl DiffOverlayState {
             pane_origin_col: 0,
             pane_width: 0,
             comment_counts: vec![0; file_count],
-            narrow_header_row_y: None,
-            narrow_arrow_cols: None,
-            banner_close_col_range: None,
             rail_keys: Vec::new(),
             body_head_rows: 0,
         }
@@ -559,6 +536,7 @@ impl DiffOverlayState {
             untracked_suppressed: event.untracked_suppressed,
             current_file_idx: 0,
             body_scroll: 0,
+            body_scroll_x: 0,
             rail_scroll: 0,
             comments: Vec::new(),
             active_input: None,
@@ -567,9 +545,6 @@ impl DiffOverlayState {
             pane_origin_col: 0,
             pane_width: 0,
             comment_counts: vec![0; file_count],
-            narrow_header_row_y: None,
-            narrow_arrow_cols: None,
-            banner_close_col_range: None,
             rail_keys: Vec::new(),
             body_head_rows: 0,
         }
@@ -634,10 +609,34 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
         }
         return;
     }
-    if matches!(key.code, KeyCode::Esc) {
-        close_with_submit(app);
+    match key.code {
+        KeyCode::Esc => close_with_submit(app),
+        KeyCode::Left => scroll_body_horizontal(app, -1),
+        KeyCode::Right => scroll_body_horizontal(app, 1),
+        _ => {}
     }
 }
+
+/// Step the diff body's horizontal scroll by `delta` columns
+/// (`SCROLL_COLS_PER_STEP` per arrow press). Negative goes left,
+/// positive goes right. Clamped at 0 on the left; the right has no
+/// upper bound here because the renderer just truncates whatever
+/// content extends past the available width.
+fn scroll_body_horizontal(app: &mut App, delta: i32) {
+    let Some(overlay) = app.diff_overlay.as_mut() else {
+        return;
+    };
+    let step = i32::from(SCROLL_COLS_PER_STEP);
+    let next = i32::from(overlay.body_scroll_x).saturating_add(delta.saturating_mul(step));
+    let clamped = next.clamp(0, i32::from(u16::MAX));
+    overlay.body_scroll_x = u16::try_from(clamped).unwrap_or(0);
+    app.needs_redraw = true;
+}
+
+/// Columns advanced / retreated per Left / Right arrow press. 8 cols
+/// is enough to reveal a typical token-or-two of context per press
+/// without making short lines feel like they scroll forever.
+const SCROLL_COLS_PER_STEP: u16 = 8;
 
 /// Route bracketed paste into the active comment editor. Returns
 /// `true` when the paste was consumed (editor present), `false`
@@ -832,13 +831,16 @@ fn save_active_input(app: &mut App) {
 /// `Paragraph::scroll`.
 const SCROLL_LINES_PER_NOTCH: u16 = 3;
 
-/// Wide-tier FILES rail width. Shared with the renderer.
-pub(crate) const RAIL_WIDTH_WIDE: u16 = 40;
-/// Medium-tier FILES rail width.
-pub(crate) const RAIL_WIDTH_MEDIUM: u16 = 30;
-/// Wide-tier terminal width threshold (≥ this → Wide).
-pub(crate) const WIDE_MIN: u16 = 160;
-/// Medium-tier terminal width threshold (≥ this → Medium).
+/// Minimum FILES rail width when the rail is shown. Below this the
+/// file list becomes unreadably narrow; we hide the rail entirely.
+pub(crate) const RAIL_WIDTH_MIN: u16 = 20;
+/// Rail width as a fraction of the terminal width: strict 15%. The
+/// remaining 85% goes to the two-pane diff body, split evenly with
+/// any odd leftover column handed to the right half so a `+`
+/// addition column never reads as narrower than its `-` counterpart.
+pub(crate) const RAIL_WIDTH_NUMER: u16 = 15;
+pub(crate) const RAIL_WIDTH_DENOM: u16 = 100;
+/// Medium-tier terminal width threshold (≥ this → rail visible).
 pub(crate) const MEDIUM_MIN: u16 = 120;
 
 /// First file row in the FILES rail. Rows above this are:
@@ -859,13 +861,11 @@ pub(crate) const BODY_HEAD_ROWS: usize = 3;
 /// renderer at `crate::ui::diff_overlay::render` so the rail's
 /// width and the click-handler's column threshold never drift.
 pub(crate) fn rail_width_for(terminal_width: u16) -> u16 {
-    if terminal_width >= WIDE_MIN {
-        RAIL_WIDTH_WIDE
-    } else if terminal_width >= MEDIUM_MIN {
-        RAIL_WIDTH_MEDIUM
-    } else {
-        0
+    if terminal_width < MEDIUM_MIN {
+        return 0;
     }
+    let proportional = terminal_width.saturating_mul(RAIL_WIDTH_NUMER) / RAIL_WIDTH_DENOM;
+    proportional.max(RAIL_WIDTH_MIN)
 }
 
 /// Outcome of a mouse interaction. Some interactions need access
@@ -875,8 +875,6 @@ pub(crate) fn rail_width_for(terminal_width: u16) -> u16 {
 #[derive(Debug, Default)]
 struct MouseEffect {
     redraw: bool,
-    /// Close the overlay (Esc-equivalent). Used by banner ✕ click.
-    close: bool,
 }
 
 /// Handle a mouse event while the diff overlay is active.
@@ -884,6 +882,8 @@ struct MouseEffect {
 /// Bindings (v1):
 /// - Scroll wheel over the rail → advance `rail_scroll`.
 /// - Scroll wheel over the body → advance `body_scroll`.
+/// - Horizontal scroll uses Left/Right arrow keys; trackpad
+///   horizontal swipes don't propagate from at least Ghostty / iTerm.
 /// - Left click on a file row in the FILES rail → switch the right
 ///   pane to that file; resets `body_scroll` to 0.
 /// - Left click on a diff line in the body → open an inline comment
@@ -903,6 +903,10 @@ pub(crate) fn handle_mouse(app: &mut App, mouse: MouseEvent) {
             MouseEventKind::Down(MouseButton::Left) => {
                 handle_left_click(overlay, mouse.column, mouse.row, terminal_width)
             }
+            // Trackpad horizontal swipes don't propagate from at least
+            // Ghostty / iTerm — they're swallowed by the terminal and
+            // never reach the SGR mouse stream. Left/Right arrow keys
+            // are the only working horizontal-scroll affordance.
             _ => MouseEffect::default(),
         }
     } else {
@@ -910,9 +914,6 @@ pub(crate) fn handle_mouse(app: &mut App, mouse: MouseEvent) {
     };
     if effect.redraw {
         app.needs_redraw = true;
-    }
-    if effect.close {
-        close_with_submit(app);
     }
 }
 
@@ -935,7 +936,7 @@ fn handle_scroll(
     } else {
         overlay.body_scroll = overlay.body_scroll.saturating_sub(SCROLL_LINES_PER_NOTCH);
     }
-    MouseEffect { redraw: true, close: false }
+    MouseEffect { redraw: true }
 }
 
 /// Resolve a left-click to an action. Returns the effect (redraw +
@@ -953,17 +954,10 @@ fn handle_left_click(
     if rail_width > 0 && column < rail_width {
         return handle_rail_click(overlay, row);
     }
-    // Narrow tier: try the header arrows before falling through to
-    // the body hit-test. `handle_narrow_arrow_click` returns
-    // `MouseEffect::default()` on a miss so the body hit-test still
-    // runs for diff-line clicks on narrow tier.
-    if rail_width == 0 {
-        let arrow_effect = handle_narrow_arrow_click(overlay, column, row);
-        if arrow_effect.redraw || arrow_effect.close {
-            return arrow_effect;
-        }
-    }
     // Body click: column past rail+separator. Resolve via body_keys.
+    // When the rail isn't rendered (terminal narrower than the split
+    // threshold), the renderer paints a "too narrow" notice and
+    // clears `body_keys` — clicks just no-op.
     handle_body_click(overlay, column, row)
 }
 
@@ -999,62 +993,15 @@ fn handle_rail_click(overlay: &mut DiffOverlayState, row: u16) -> MouseEffect {
     }
     overlay.current_file_idx = file_idx;
     overlay.body_scroll = 0;
+    overlay.body_scroll_x = 0;
     // Close the active editor on file switch — the editor is
     // anchored to a specific line in the previous file, and the
     // helper preserves prior_comment if it was a chip-reopen.
     close_active_input_preserving_prior(overlay);
-    MouseEffect { redraw: true, close: false }
+    MouseEffect { redraw: true }
 }
 
 /// Hit-test a left-click against the narrow-tier `◀ ▶` cycle
-/// arrows. Returns the effect when a hit is taken; returns
-/// `MouseEffect::default()` when the click missed (so the caller
-/// falls through to the body hit-test).
-fn handle_narrow_arrow_click(overlay: &mut DiffOverlayState, column: u16, row: u16) -> MouseEffect {
-    let Some(header_row_y) = overlay.narrow_header_row_y else {
-        return MouseEffect::default();
-    };
-    if row != header_row_y {
-        return MouseEffect::default();
-    }
-    let Some((left_col, right_col)) = overlay.narrow_arrow_cols else {
-        return MouseEffect::default();
-    };
-    if column == left_col {
-        // Wrap-around: from index 0 → last file. Mirrors common
-        // pager UX so the user can quickly reach the last file
-        // without holding the right-arrow.
-        let total = overlay.files.len();
-        if total == 0 {
-            return MouseEffect::default();
-        }
-        let next =
-            if overlay.current_file_idx == 0 { total - 1 } else { overlay.current_file_idx - 1 };
-        if next == overlay.current_file_idx {
-            return MouseEffect::default();
-        }
-        overlay.current_file_idx = next;
-        overlay.body_scroll = 0;
-        close_active_input_preserving_prior(overlay);
-        return MouseEffect { redraw: true, close: false };
-    }
-    if column == right_col {
-        let total = overlay.files.len();
-        if total == 0 {
-            return MouseEffect::default();
-        }
-        let next = (overlay.current_file_idx + 1) % total;
-        if next == overlay.current_file_idx {
-            return MouseEffect::default();
-        }
-        overlay.current_file_idx = next;
-        overlay.body_scroll = 0;
-        close_active_input_preserving_prior(overlay);
-        return MouseEffect { redraw: true, close: false };
-    }
-    MouseEffect::default()
-}
-
 fn handle_body_click(overlay: &mut DiffOverlayState, column: u16, row: u16) -> MouseEffect {
     // Empty body_keys means the renderer hasn't drawn yet (or drew
     // the too-short fallback). A click before the first real render
@@ -1084,30 +1031,23 @@ fn handle_body_click(overlay: &mut DiffOverlayState, column: u16, row: u16) -> M
         return MouseEffect::default();
     };
     match key {
-        BodyRowKey::Banner => {
-            // Banner ✕ click — but only when the renderer actually
-            // stamped a column range for the glyph. `None` means
-            // the banner clipped past `pane_width` (long path +
-            // totals consumed the budget), in which case the ✕ is
-            // offscreen and rightmost cells contain truncated path
-            // text — clicking those must not trigger close. The
-            // user can still Esc.
-            let Some((close_start, close_end)) = overlay.banner_close_col_range else {
-                return MouseEffect::default();
-            };
-            // Tiny padding either side so a near-miss on the glyph
-            // still registers as intent (terminals report column
-            // resolution per cell, not per glyph subdivision).
-            let widened_start = close_start.saturating_sub(1);
-            let widened_end = close_end.saturating_add(1);
-            if column >= widened_start && column.saturating_add(1) <= widened_end {
-                return MouseEffect { redraw: true, close: true };
+        BodyRowKey::HunkRow { left, right } => {
+            // Pick the clicked column. The divider sits at pane
+            // midpoint; clicks on it (or to the left) resolve to
+            // the left key, clicks to the right resolve to the
+            // right key. If the picked side is empty (blank half
+            // of an unbalanced row), no-op.
+            let pane_local_col = column.saturating_sub(overlay.pane_origin_col);
+            let mid_col = overlay.pane_width / 2;
+            let key = if pane_local_col < mid_col { left } else { right };
+            match key {
+                Some(key) => open_input_for_key(overlay, key),
+                None => MouseEffect::default(),
             }
-            MouseEffect::default()
         }
-        BodyRowKey::HunkLine(line_key) => open_input_for_key(overlay, line_key),
         BodyRowKey::CommentChip(line_key) => reopen_comment_for_key(overlay, line_key),
-        BodyRowKey::Rule
+        BodyRowKey::Banner
+        | BodyRowKey::Rule
         | BodyRowKey::Blank
         | BodyRowKey::EmptyState
         | BodyRowKey::HunkHeader { .. }
@@ -1130,7 +1070,7 @@ fn open_input_for_key(overlay: &mut DiffOverlayState, key: LineKey) -> MouseEffe
     close_active_input_preserving_prior(overlay);
     let editor = TextArea::default();
     overlay.active_input = Some(ActiveCommentInput { key, editor, prior_comment: None });
-    MouseEffect { redraw: true, close: false }
+    MouseEffect { redraw: true }
 }
 
 fn reopen_comment_for_key(overlay: &mut DiffOverlayState, key: LineKey) -> MouseEffect {
@@ -1155,7 +1095,7 @@ fn reopen_comment_for_key(overlay: &mut DiffOverlayState, key: LineKey) -> Mouse
     editor.insert_str(&comment.comment_text);
     overlay.active_input =
         Some(ActiveCommentInput { key: comment.key, editor, prior_comment: Some(comment) });
-    MouseEffect { redraw: true, close: false }
+    MouseEffect { redraw: true }
 }
 
 /// Close the overlay; if there are pending comments, bundle them
@@ -1342,7 +1282,6 @@ mod tests {
         // Column inside rail (<40), row 4 = file index 1.
         let effect = handle_left_click(&mut state, 5, 4, 160);
         assert!(effect.redraw);
-        assert!(!effect.close);
         assert_eq!(state.current_file_idx, 1);
         assert_eq!(state.body_scroll, 0);
     }
@@ -1364,7 +1303,6 @@ mod tests {
         let mut state = sample_state();
         let effect = handle_left_click(&mut state, 50, 4, 160);
         assert!(!effect.redraw);
-        assert!(!effect.close);
         assert_eq!(state.current_file_idx, 0);
     }
 
@@ -1403,25 +1341,67 @@ mod tests {
     }
 
     #[test]
-    fn body_click_opens_comment_input_on_hunk_line() {
-        // Simulate a rendered body by stashing body_keys + pane
-        // origin, then click into a HunkLine row.
+    fn body_click_left_column_opens_comment_input_on_left_key() {
+        // Simulate a rendered split row with both columns present;
+        // click in the left half resolves to the left key.
         let mut state = sample_state();
-        let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        let left_key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        let right_key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 1 };
         state.body_keys = vec![
             BodyRowKey::Banner,
             BodyRowKey::Rule,
             BodyRowKey::Blank,
             BodyRowKey::HunkHeader { file_idx: 0, hunk_idx: 0 },
-            BodyRowKey::HunkLine(key),
+            BodyRowKey::HunkRow { left: Some(left_key), right: Some(right_key) },
         ];
         state.pane_origin_row = 0;
         state.pane_origin_col = 41; // Past rail + separator on wide.
         state.pane_width = 119;
+        // Left half: pane-local col in [0, 59) → click_col in [41, 100).
         let effect = handle_left_click(&mut state, 60, 4, 160);
         assert!(effect.redraw);
-        assert!(state.active_input.is_some());
-        assert_eq!(state.active_input.as_ref().map(|i| i.key), Some(key));
+        assert_eq!(state.active_input.as_ref().map(|i| i.key), Some(left_key));
+    }
+
+    #[test]
+    fn body_click_right_column_opens_comment_input_on_right_key() {
+        let mut state = sample_state();
+        let left_key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        let right_key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 1 };
+        state.body_keys = vec![
+            BodyRowKey::Banner,
+            BodyRowKey::Rule,
+            BodyRowKey::Blank,
+            BodyRowKey::HunkHeader { file_idx: 0, hunk_idx: 0 },
+            BodyRowKey::HunkRow { left: Some(left_key), right: Some(right_key) },
+        ];
+        state.pane_origin_row = 0;
+        state.pane_origin_col = 41;
+        state.pane_width = 119;
+        // Right half: pane-local col in [60, 119) → click_col in [101, 160).
+        let effect = handle_left_click(&mut state, 120, 4, 160);
+        assert!(effect.redraw);
+        assert_eq!(state.active_input.as_ref().map(|i| i.key), Some(right_key));
+    }
+
+    #[test]
+    fn body_click_on_empty_side_is_noop() {
+        let mut state = sample_state();
+        let right_key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        state.body_keys = vec![
+            BodyRowKey::Banner,
+            BodyRowKey::Rule,
+            BodyRowKey::Blank,
+            BodyRowKey::HunkHeader { file_idx: 0, hunk_idx: 0 },
+            BodyRowKey::HunkRow { left: None, right: Some(right_key) },
+        ];
+        state.pane_origin_row = 0;
+        state.pane_origin_col = 41;
+        state.pane_width = 119;
+        // Click in the (blank) LEFT half — left=None, so no editor opens.
+        let effect = handle_left_click(&mut state, 60, 4, 160);
+        assert!(!effect.redraw);
+        assert!(state.active_input.is_none());
     }
 
     #[test]
@@ -1450,51 +1430,6 @@ mod tests {
         let input = state.active_input.expect("editor reopened");
         assert_eq!(input.key, key);
         assert_eq!(input.editor.lines().join("\n"), "needs unwrap fix");
-    }
-
-    #[test]
-    fn body_click_on_banner_close_glyph_triggers_close() {
-        let mut state = sample_state();
-        state.body_keys = vec![BodyRowKey::Banner];
-        state.pane_origin_row = 0;
-        state.pane_origin_col = 41;
-        state.pane_width = 119;
-        // Renderer stamps the ✕ at, e.g., column 155 (close_start)
-        // through 156 (close_end).
-        state.banner_close_col_range = Some((155, 156));
-        let effect = handle_left_click(&mut state, 155, 0, 160);
-        assert!(effect.redraw);
-        assert!(effect.close);
-    }
-
-    #[test]
-    fn body_click_on_banner_path_text_does_not_close() {
-        let mut state = sample_state();
-        state.body_keys = vec![BodyRowKey::Banner];
-        state.pane_origin_row = 0;
-        state.pane_origin_col = 41;
-        state.pane_width = 119;
-        state.banner_close_col_range = Some((155, 156));
-        let effect = handle_left_click(&mut state, 60, 0, 160);
-        assert!(!effect.close);
-        assert!(!effect.redraw, "no redraw on miss");
-    }
-
-    #[test]
-    fn body_click_on_clipped_banner_refuses_close() {
-        // When banner_close_col_range is None (renderer detected
-        // clip), banner-row clicks must NOT trigger close.
-        let mut state = sample_state();
-        state.body_keys = vec![BodyRowKey::Banner];
-        state.pane_origin_row = 0;
-        state.pane_origin_col = 41;
-        state.pane_width = 119;
-        state.banner_close_col_range = None;
-        // Far-right click that would have closed under the old
-        // approximation.
-        let effect = handle_left_click(&mut state, 159, 0, 160);
-        assert!(!effect.close, "no close on clipped banner");
-        assert!(!effect.redraw, "no redraw on miss");
     }
 
     #[test]
@@ -1625,59 +1560,6 @@ mod tests {
     }
 
     #[test]
-    fn narrow_arrow_right_click_advances_file_idx() {
-        let mut state = sample_state();
-        state.narrow_header_row_y = Some(0);
-        state.narrow_arrow_cols = Some((10, 20));
-        let effect = handle_left_click(&mut state, 20, 0, 100); // narrow tier.
-        assert!(effect.redraw);
-        assert_eq!(state.current_file_idx, 1);
-    }
-
-    #[test]
-    fn narrow_arrow_left_click_wraps_to_last_file() {
-        let mut state = sample_state();
-        state.narrow_header_row_y = Some(0);
-        state.narrow_arrow_cols = Some((10, 20));
-        let effect = handle_left_click(&mut state, 10, 0, 100);
-        assert!(effect.redraw);
-        // Sample state has 2 files; from idx 0 → last (idx 1).
-        assert_eq!(state.current_file_idx, 1);
-    }
-
-    #[test]
-    fn narrow_arrow_click_miss_falls_through_to_body() {
-        let mut state = sample_state();
-        state.narrow_header_row_y = Some(0);
-        state.narrow_arrow_cols = Some((10, 20));
-        // Click between arrows; on the header row but not on either
-        // glyph — should NOT advance file and NOT open input
-        // (body_keys empty here).
-        let effect = handle_left_click(&mut state, 15, 0, 100);
-        assert!(!effect.redraw);
-        assert_eq!(state.current_file_idx, 0);
-    }
-
-    #[test]
-    fn narrow_body_click_opens_comment_editor() {
-        // At narrow tier, body geometry is stamped at body_rect.y,
-        // not area.y — verify click on a HunkLine still resolves.
-        let mut state = sample_state();
-        let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
-        state.narrow_header_row_y = Some(0);
-        state.body_keys =
-            vec![BodyRowKey::HunkHeader { file_idx: 0, hunk_idx: 0 }, BodyRowKey::HunkLine(key)];
-        // Narrow body starts at row 2 (header + rule).
-        state.pane_origin_row = 2;
-        state.pane_origin_col = 0;
-        state.pane_width = 100;
-        let effect = handle_left_click(&mut state, 10, 3, 100);
-        assert!(effect.redraw);
-        assert!(state.active_input.is_some());
-        assert_eq!(state.active_input.as_ref().map(|i| i.key), Some(key));
-    }
-
-    #[test]
     fn reopen_then_cancel_restores_saved_comment() {
         // F1 fix: clicking a chip stashes the saved comment on
         // active_input.prior_comment; Esc-cancel must restore it
@@ -1743,7 +1625,7 @@ mod tests {
         state.body_keys = vec![
             BodyRowKey::CommentChip(key_a),
             BodyRowKey::HunkHeader { file_idx: 0, hunk_idx: 0 },
-            BodyRowKey::HunkLine(key_b),
+            BodyRowKey::HunkRow { left: Some(key_b), right: Some(key_b) },
         ];
         state.pane_origin_row = 0;
         state.pane_origin_col = 41;
@@ -1818,30 +1700,6 @@ mod tests {
         assert!(state.active_input.is_none());
         assert_eq!(state.comments.len(), 1);
         assert_eq!(state.comments[0].key, key_a);
-    }
-
-    #[test]
-    fn narrow_arrow_switch_preserves_prior_comment() {
-        let mut state = sample_state();
-        let key_a = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
-        state.comments.push(HunkComment {
-            key: key_a,
-            path: "a.rs".into(),
-            line: 1,
-            hunk_context: vec![],
-            comment_text: "A".into(),
-        });
-        state.recompute_comment_counts();
-        // Reopen via direct call (saves test setup).
-        let _ = reopen_comment_for_key(&mut state, key_a);
-        assert!(state.active_input.as_ref().unwrap().prior_comment.is_some());
-        // Trigger narrow-arrow advance (file_idx 0 → 1).
-        state.narrow_header_row_y = Some(0);
-        state.narrow_arrow_cols = Some((10, 20));
-        let _ = handle_left_click(&mut state, 20, 0, 100);
-        assert!(state.active_input.is_none(), "editor closed on file cycle");
-        assert_eq!(state.comments.len(), 1, "A restored");
-        assert_eq!(state.current_file_idx, 1);
     }
 
     #[test]
@@ -1984,7 +1842,7 @@ mod tests {
         // receiver picked up.
         let dispatched = rx.try_recv().expect("a prompt was dispatched");
         match dispatched {
-            forge_primitives::Command::PromptWithImages { text, .. } => {
+            forge_primitives::AgentCommand::PromptWithImages { text, .. } => {
                 assert!(
                     text.contains("important review note"),
                     "bundle markdown contains the prior comment text, got: {text}",
@@ -2043,19 +1901,25 @@ mod tests {
     }
 
     #[test]
-    fn rail_width_picks_wide_at_160() {
-        assert_eq!(rail_width_for(160), RAIL_WIDTH_WIDE);
-        assert_eq!(rail_width_for(200), RAIL_WIDTH_WIDE);
+    fn rail_width_is_strict_15_percent_on_wide_terminals() {
+        // 200 × 15 / 100 = 30; 300 × 15 / 100 = 45.
+        assert_eq!(rail_width_for(200), 30);
+        assert_eq!(rail_width_for(300), 45);
     }
 
     #[test]
-    fn rail_width_picks_medium_between_120_and_160() {
-        assert_eq!(rail_width_for(120), RAIL_WIDTH_MEDIUM);
-        assert_eq!(rail_width_for(159), RAIL_WIDTH_MEDIUM);
+    fn rail_width_floors_at_min_on_narrow_borderline_widths() {
+        // 120 × 15 / 100 = 18 → below MIN (20), floored to 20.
+        assert_eq!(rail_width_for(120), RAIL_WIDTH_MIN);
+        // 140 × 15 / 100 = 21 → above MIN, kept.
+        assert_eq!(rail_width_for(140), 21);
+        // Anything below MEDIUM_MIN still hides the rail entirely
+        // regardless of what the percentage math would produce.
+        assert_eq!(rail_width_for(100), 0);
     }
 
     #[test]
-    fn rail_width_collapses_at_narrow_tier() {
+    fn rail_width_hidden_below_medium_threshold() {
         assert_eq!(rail_width_for(119), 0);
         assert_eq!(rail_width_for(80), 0);
     }

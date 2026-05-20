@@ -1,7 +1,6 @@
-mod edit;
 mod mcp;
-mod mcp_edit;
-mod resolve;
+mod mcp_overlay;
+mod overlay_input;
 pub mod store;
 
 use super::view::{self, ActiveView};
@@ -10,167 +9,11 @@ use crate::app::App;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::path::PathBuf;
 
-pub(crate) use edit::{
-    OverlayModelOption, model_overlay_options, supported_effort_levels_for_model,
-};
 pub(crate) use mcp::{
-    McpAuthRedirectOverlayState, McpCallbackUrlOverlayState, McpDetailsOverlayState,
-    McpElicitationOverlayState, available_mcp_actions, handle_mcp_elicitation_completed,
-    handle_mcp_operation_error, is_mcp_action_available, present_mcp_auth_redirect,
-    present_mcp_elicitation_request, refresh_mcp_snapshot,
+    McpDetailsOverlayState, available_mcp_actions, handle_mcp_operation_error,
+    is_mcp_action_available, refresh_mcp_snapshot,
 };
-pub(crate) use resolve::language_input_validation_message;
-use resolve::resolve_setting_document;
 use serde_json::Value;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConfigTab {
-    Settings,
-    Plugins,
-    Status,
-    Usage,
-    Mcp,
-}
-
-impl ConfigTab {
-    pub const ALL: [Self; 5] =
-        [Self::Settings, Self::Plugins, Self::Status, Self::Usage, Self::Mcp];
-
-    pub const fn title(self) -> &'static str {
-        match self {
-            Self::Settings => "Settings",
-            Self::Plugins => "Plugins",
-            Self::Status => "Status",
-            Self::Usage => "Usage",
-            Self::Mcp => "MCP",
-        }
-    }
-
-    const fn next(self) -> Self {
-        match self {
-            Self::Settings => Self::Plugins,
-            Self::Plugins => Self::Status,
-            Self::Status => Self::Usage,
-            Self::Usage => Self::Mcp,
-            Self::Mcp => Self::Settings,
-        }
-    }
-
-    const fn prev(self) -> Self {
-        match self {
-            Self::Settings => Self::Mcp,
-            Self::Plugins => Self::Settings,
-            Self::Status => Self::Plugins,
-            Self::Usage => Self::Status,
-            Self::Mcp => Self::Usage,
-        }
-    }
-}
-
-#[repr(usize)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum SettingId {
-    AlwaysThinking,
-    Model,
-    DefaultPermissionMode,
-    EditorMode,
-    FastMode,
-    Language,
-    Notifications,
-    OutputStyle,
-    ReduceMotion,
-    RespectGitignore,
-    ShowTips,
-    TerminalProgressBar,
-    Theme,
-    ThinkingEffort,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SettingKind {
-    Bool,
-    Enum,
-    DynamicEnum,
-    Text,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EditorKind {
-    Toggle,
-    Cycle,
-    Overlay,
-    Search,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ValueSource {
-    PersistedOnly,
-    RuntimeBacked,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SettingFile {
-    Settings,
-    LocalSettings,
-    Preferences,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RuntimeCatalogKind {
-    Models,
-    PermissionModes,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FallbackPolicy {
-    None,
-    AppDefault,
-    English,
-    RuntimeDefault,
-    Unset,
-}
-
-impl FallbackPolicy {
-    #[must_use]
-    pub const fn short_label(self) -> &'static str {
-        match self {
-            Self::None => "current value",
-            Self::AppDefault => "default",
-            Self::English => "English",
-            Self::RuntimeDefault => "runtime default",
-            Self::Unset => "unset",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SettingOption {
-    pub stored: &'static str,
-    pub label: &'static str,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SettingOptions {
-    None,
-    Static(&'static [SettingOption]),
-    RuntimeCatalog(RuntimeCatalogKind),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SettingSpec {
-    pub id: SettingId,
-    pub entry_id: &'static str,
-    pub label: &'static str,
-    pub description: &'static str,
-    pub file: SettingFile,
-    pub json_path: &'static [&'static str],
-    pub kind: SettingKind,
-    pub editor: EditorKind,
-    pub source: ValueSource,
-    pub options: SettingOptions,
-    pub fallback: FallbackPolicy,
-    pub supported: bool,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DefaultPermissionMode {
@@ -184,7 +27,6 @@ pub enum DefaultPermissionMode {
 }
 
 impl DefaultPermissionMode {
-    #[must_use]
     pub const fn as_stored(self) -> &'static str {
         match self {
             Self::Default => "default",
@@ -196,19 +38,6 @@ impl DefaultPermissionMode {
         }
     }
 
-    #[must_use]
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Default => "Default",
-            Self::Auto => "Auto",
-            Self::AcceptEdits => "Accept Edits",
-            Self::Plan => "Plan",
-            Self::DontAsk => "Don't Ask",
-            Self::BypassPermissions => "Bypass Permissions",
-        }
-    }
-
-    #[must_use]
     pub fn from_stored(value: &str) -> Option<Self> {
         match value {
             "default" => Some(Self::Default),
@@ -218,30 +47,6 @@ impl DefaultPermissionMode {
             "dontAsk" => Some(Self::DontAsk),
             "bypassPermissions" => Some(Self::BypassPermissions),
             _ => None,
-        }
-    }
-
-    #[must_use]
-    pub const fn next(self) -> Self {
-        match self {
-            Self::Default => Self::Auto,
-            Self::Auto => Self::AcceptEdits,
-            Self::AcceptEdits => Self::Plan,
-            Self::Plan => Self::DontAsk,
-            Self::DontAsk => Self::BypassPermissions,
-            Self::BypassPermissions => Self::Default,
-        }
-    }
-
-    #[must_use]
-    pub const fn prev(self) -> Self {
-        match self {
-            Self::Default => Self::BypassPermissions,
-            Self::Auto => Self::Default,
-            Self::AcceptEdits => Self::Auto,
-            Self::Plan => Self::AcceptEdits,
-            Self::DontAsk => Self::Plan,
-            Self::BypassPermissions => Self::DontAsk,
         }
     }
 }
@@ -257,7 +62,6 @@ pub enum PreferredNotifChannel {
 }
 
 impl PreferredNotifChannel {
-    #[must_use]
     pub const fn as_stored(self) -> &'static str {
         match self {
             Self::Iterm2 => "iterm2",
@@ -268,18 +72,6 @@ impl PreferredNotifChannel {
         }
     }
 
-    #[must_use]
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Iterm2 => "Auto / iTerm2",
-            Self::Iterm2WithBell => "iTerm2 with Bell",
-            Self::TerminalBell => "Terminal Bell",
-            Self::NotificationsDisabled => "Disabled",
-            Self::Ghostty => "Ghostty",
-        }
-    }
-
-    #[must_use]
     pub fn from_stored(value: &str) -> Option<Self> {
         match value {
             "iterm2" => Some(Self::Iterm2),
@@ -301,9 +93,6 @@ pub enum OutputStyle {
 }
 
 impl OutputStyle {
-    pub const ALL: [Self; 3] = [Self::Default, Self::Explanatory, Self::Learning];
-
-    #[must_use]
     pub const fn as_stored(self) -> &'static str {
         match self {
             Self::Default => "Default",
@@ -312,25 +101,6 @@ impl OutputStyle {
         }
     }
 
-    #[must_use]
-    pub const fn label(self) -> &'static str {
-        self.as_stored()
-    }
-
-    #[must_use]
-    pub const fn description(self) -> &'static str {
-        match self {
-            Self::Default => {
-                "Claude completes coding tasks efficiently and provides concise responses"
-            }
-            Self::Explanatory => "Claude explains its implementation choices and codebase patterns",
-            Self::Learning => {
-                "Claude pauses and asks you to write small pieces of code for hands-on practice"
-            }
-        }
-    }
-
-    #[must_use]
     pub fn from_stored(value: &str) -> Option<Self> {
         match value {
             "Default" => Some(Self::Default),
@@ -341,322 +111,6 @@ impl OutputStyle {
     }
 }
 
-const DEFAULT_PERMISSION_OPTIONS: &[SettingOption] = &[
-    SettingOption { stored: "default", label: "Default" },
-    SettingOption { stored: "auto", label: "Auto" },
-    SettingOption { stored: "acceptEdits", label: "Accept Edits" },
-    SettingOption { stored: "plan", label: "Plan" },
-    SettingOption { stored: "dontAsk", label: "Don't Ask" },
-    SettingOption { stored: "bypassPermissions", label: "Bypass Permissions" },
-];
-
-const NOTIFICATION_OPTIONS: &[SettingOption] = &[
-    SettingOption { stored: "iterm2", label: "Auto / iTerm2" },
-    SettingOption { stored: "iterm2_with_bell", label: "iTerm2 with Bell" },
-    SettingOption { stored: "terminal_bell", label: "Terminal Bell" },
-    SettingOption { stored: "ghostty", label: "Ghostty" },
-    SettingOption { stored: "notifications_disabled", label: "Disabled" },
-];
-
-const OUTPUT_STYLE_OPTIONS: &[SettingOption] = &[
-    SettingOption { stored: "Default", label: "Default" },
-    SettingOption { stored: "Explanatory", label: "Explanatory" },
-    SettingOption { stored: "Learning", label: "Learning" },
-];
-
-const THEME_OPTIONS: &[SettingOption] = &[
-    SettingOption { stored: "dark", label: "Dark" },
-    SettingOption { stored: "light", label: "Light" },
-    SettingOption { stored: "light-daltonized", label: "Light (Daltonized)" },
-    SettingOption { stored: "dark-daltonized", label: "Dark (Daltonized)" },
-];
-
-const EDITOR_MODE_OPTIONS: &[SettingOption] = &[
-    SettingOption { stored: "default", label: "Default" },
-    SettingOption { stored: "vim", label: "Vim" },
-];
-const OPUS_MODEL_ALIAS_ID: &str = "opus";
-const OPUS_MODEL_ALIAS_LABEL: &str = "Opus";
-const DEFAULT_EFFORT_LEVELS: [EffortLevel; 5] = [
-    EffortLevel::Low,
-    EffortLevel::Medium,
-    EffortLevel::High,
-    EffortLevel::Xhigh,
-    EffortLevel::Max,
-];
-const LANGUAGE_MIN_CHARS: usize = 2;
-const LANGUAGE_MAX_CHARS: usize = 30;
-
-const EFFORT_OPTIONS: &[SettingOption] = &[
-    SettingOption { stored: "low", label: "Low" },
-    SettingOption { stored: "medium", label: "Medium" },
-    SettingOption { stored: "high", label: "High" },
-    SettingOption { stored: "xhigh", label: "Extra High" },
-    SettingOption { stored: "max", label: "Max" },
-];
-
-const CONFIG_SETTINGS: [SettingSpec; 14] = [
-    SettingSpec {
-        id: SettingId::AlwaysThinking,
-        entry_id: "A04",
-        label: "Always Thinking",
-        description: "Enable adaptive thinking for new sessions. When off, new sessions start with thinking disabled.",
-        file: SettingFile::Settings,
-        json_path: &["alwaysThinkingEnabled"],
-        kind: SettingKind::Bool,
-        editor: EditorKind::Toggle,
-        source: ValueSource::PersistedOnly,
-        options: SettingOptions::None,
-        fallback: FallbackPolicy::AppDefault,
-        supported: true,
-    },
-    SettingSpec {
-        id: SettingId::Model,
-        entry_id: "A19",
-        label: "Model",
-        description: "Sets the model for new sessions and opens the combined model and thinking effort picker.",
-        file: SettingFile::Settings,
-        json_path: &["model"],
-        kind: SettingKind::DynamicEnum,
-        editor: EditorKind::Overlay,
-        source: ValueSource::RuntimeBacked,
-        options: SettingOptions::RuntimeCatalog(RuntimeCatalogKind::Models),
-        fallback: FallbackPolicy::RuntimeDefault,
-        supported: true,
-    },
-    SettingSpec {
-        id: SettingId::DefaultPermissionMode,
-        entry_id: "A09",
-        label: "Default permission mode",
-        description: "Sets the default approval behavior for future sessions.",
-        file: SettingFile::Settings,
-        json_path: &["permissions", "defaultMode"],
-        kind: SettingKind::DynamicEnum,
-        editor: EditorKind::Cycle,
-        source: ValueSource::RuntimeBacked,
-        options: SettingOptions::RuntimeCatalog(RuntimeCatalogKind::PermissionModes),
-        fallback: FallbackPolicy::RuntimeDefault,
-        supported: true,
-    },
-    SettingSpec {
-        id: SettingId::EditorMode,
-        entry_id: "A17",
-        label: "Editor mode",
-        description: "Controls how text editing keys behave in the TUI.",
-        file: SettingFile::Preferences,
-        json_path: &["editorMode"],
-        kind: SettingKind::Enum,
-        editor: EditorKind::Cycle,
-        source: ValueSource::PersistedOnly,
-        options: SettingOptions::Static(EDITOR_MODE_OPTIONS),
-        fallback: FallbackPolicy::AppDefault,
-        supported: false,
-    },
-    SettingSpec {
-        id: SettingId::FastMode,
-        entry_id: "A05",
-        label: "Fast mode",
-        description: "Controls the persisted fast-mode preference for future sessions.",
-        file: SettingFile::Settings,
-        json_path: &["fastMode"],
-        kind: SettingKind::Bool,
-        editor: EditorKind::Toggle,
-        source: ValueSource::PersistedOnly,
-        options: SettingOptions::None,
-        fallback: FallbackPolicy::AppDefault,
-        supported: true,
-    },
-    SettingSpec {
-        id: SettingId::Language,
-        entry_id: "A16",
-        label: "Language",
-        description: "Controls the free-text language instruction Claude uses in sessions. Accepts 2 to 30 characters and does not localize the UI.",
-        file: SettingFile::Settings,
-        json_path: &["language"],
-        kind: SettingKind::Text,
-        editor: EditorKind::Overlay,
-        source: ValueSource::PersistedOnly,
-        options: SettingOptions::None,
-        fallback: FallbackPolicy::Unset,
-        supported: true,
-    },
-    SettingSpec {
-        id: SettingId::Notifications,
-        entry_id: "A14",
-        label: "Notifications",
-        description: "Controls how Claude Code notifies you when attention is needed.",
-        file: SettingFile::Preferences,
-        json_path: &["preferredNotifChannel"],
-        kind: SettingKind::Enum,
-        editor: EditorKind::Cycle,
-        source: ValueSource::PersistedOnly,
-        options: SettingOptions::Static(NOTIFICATION_OPTIONS),
-        fallback: FallbackPolicy::AppDefault,
-        supported: true,
-    },
-    SettingSpec {
-        id: SettingId::OutputStyle,
-        entry_id: "A15",
-        label: "Output style",
-        description: "Changes how Claude communicates with you in sessions.",
-        file: SettingFile::LocalSettings,
-        json_path: &["outputStyle"],
-        kind: SettingKind::Enum,
-        editor: EditorKind::Overlay,
-        source: ValueSource::PersistedOnly,
-        options: SettingOptions::Static(OUTPUT_STYLE_OPTIONS),
-        fallback: FallbackPolicy::AppDefault,
-        supported: true,
-    },
-    SettingSpec {
-        id: SettingId::ReduceMotion,
-        entry_id: "A03",
-        label: "Reduce motion",
-        description: "Reduce UI motion by slowing spinners and disabling smooth chat scrolling.",
-        file: SettingFile::LocalSettings,
-        json_path: &["prefersReducedMotion"],
-        kind: SettingKind::Bool,
-        editor: EditorKind::Toggle,
-        source: ValueSource::PersistedOnly,
-        options: SettingOptions::None,
-        fallback: FallbackPolicy::AppDefault,
-        supported: true,
-    },
-    SettingSpec {
-        id: SettingId::RespectGitignore,
-        entry_id: "A10",
-        label: "Respect .gitignore",
-        description: "Controls whether @ file mentions hide entries ignored by git ignore rules.",
-        file: SettingFile::Preferences,
-        json_path: &["respectGitignore"],
-        kind: SettingKind::Bool,
-        editor: EditorKind::Toggle,
-        source: ValueSource::PersistedOnly,
-        options: SettingOptions::None,
-        fallback: FallbackPolicy::AppDefault,
-        supported: true,
-    },
-    SettingSpec {
-        id: SettingId::ShowTips,
-        entry_id: "A02",
-        label: "Show Tips",
-        description: "Controls whether Claude shows spinner tips in supported clients.",
-        file: SettingFile::LocalSettings,
-        json_path: &["spinnerTipsEnabled"],
-        kind: SettingKind::Bool,
-        editor: EditorKind::Toggle,
-        source: ValueSource::PersistedOnly,
-        options: SettingOptions::None,
-        fallback: FallbackPolicy::AppDefault,
-        supported: false,
-    },
-    SettingSpec {
-        id: SettingId::TerminalProgressBar,
-        entry_id: "A08",
-        label: "Terminal progress bar",
-        description: "Controls whether Claude should show its terminal progress bar in supported clients.",
-        file: SettingFile::Preferences,
-        json_path: &["terminalProgressBarEnabled"],
-        kind: SettingKind::Bool,
-        editor: EditorKind::Toggle,
-        source: ValueSource::PersistedOnly,
-        options: SettingOptions::None,
-        fallback: FallbackPolicy::AppDefault,
-        supported: false,
-    },
-    SettingSpec {
-        id: SettingId::Theme,
-        entry_id: "A13",
-        label: "Theme",
-        description: "Controls the TUI color theme.",
-        file: SettingFile::Preferences,
-        json_path: &["theme"],
-        kind: SettingKind::Enum,
-        editor: EditorKind::Cycle,
-        source: ValueSource::PersistedOnly,
-        options: SettingOptions::Static(THEME_OPTIONS),
-        fallback: FallbackPolicy::AppDefault,
-        supported: false,
-    },
-    SettingSpec {
-        id: SettingId::ThinkingEffort,
-        entry_id: "A20",
-        label: "Thinking effort",
-        description: "Controls how much effort Claude uses when thinking for new sessions. Only applies when Always Thinking is on and the selected model supports effort.",
-        file: SettingFile::Settings,
-        json_path: &["effortLevel"],
-        kind: SettingKind::Enum,
-        editor: EditorKind::Overlay,
-        source: ValueSource::PersistedOnly,
-        options: SettingOptions::Static(EFFORT_OPTIONS),
-        fallback: FallbackPolicy::AppDefault,
-        supported: true,
-    },
-];
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SettingValidation {
-    Valid,
-    InvalidValue,
-    UnavailableOption,
-}
-
-impl SettingValidation {
-    #[must_use]
-    pub const fn is_invalid(self) -> bool {
-        !matches!(self, Self::Valid)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ResolvedChoice {
-    Automatic,
-    Stored(String),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ResolvedSettingValue {
-    Bool(bool),
-    Choice(ResolvedChoice),
-    Text(String),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResolvedSetting {
-    pub value: ResolvedSettingValue,
-    pub validation: SettingValidation,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OverlayFocus {
-    Model,
-    Effort,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ModelAndEffortOverlayState {
-    pub focus: OverlayFocus,
-    pub selected_model: String,
-    pub selected_effort: EffortLevel,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct OutputStyleOverlayState {
-    pub selected: OutputStyle,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LanguageOverlayState {
-    pub draft: String,
-    pub cursor: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SessionRenameOverlayState {
-    pub draft: String,
-    pub cursor: usize,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MarketplaceActionKind {
     Update,
@@ -664,7 +118,6 @@ pub enum MarketplaceActionKind {
 }
 
 impl MarketplaceActionKind {
-    #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
             Self::Update => "Update",
@@ -683,7 +136,6 @@ pub enum InstalledPluginActionKind {
 }
 
 impl InstalledPluginActionKind {
-    #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
             Self::Enable => "Enable",
@@ -703,7 +155,6 @@ pub enum PluginInstallActionKind {
 }
 
 impl PluginInstallActionKind {
-    #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
             Self::User => "Install for user",
@@ -712,7 +163,6 @@ impl PluginInstallActionKind {
         }
     }
 
-    #[must_use]
     pub const fn scope(self) -> &'static str {
         match self {
             Self::User => "user",
@@ -759,37 +209,15 @@ pub struct AddMarketplaceOverlayState {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConfigOverlayState {
-    ModelAndEffort(ModelAndEffortOverlayState),
-    OutputStyle(OutputStyleOverlayState),
-    Language(LanguageOverlayState),
-    SessionRename(SessionRenameOverlayState),
     InstalledPluginActions(InstalledPluginActionOverlayState),
     PluginInstallActions(PluginInstallOverlayState),
     MarketplaceActions(MarketplaceActionsOverlayState),
     AddMarketplace(AddMarketplaceOverlayState),
     McpDetails(McpDetailsOverlayState),
-    McpCallbackUrl(McpCallbackUrlOverlayState),
-    McpElicitation(McpElicitationOverlayState),
-    McpAuthRedirect(McpAuthRedirectOverlayState),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PendingSessionTitleChangeKind {
-    Rename { requested_title: Option<String> },
-    Generate,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PendingSessionTitleChangeState {
-    pub session_id: String,
-    pub kind: PendingSessionTitleChangeKind,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConfigState {
-    pub active_tab: ConfigTab,
-    pub selected_setting_index: usize,
-    pub settings_scroll_offset: usize,
     pub mcp_selected_server_index: usize,
     pub overlay: Option<ConfigOverlayState>,
     pub committed_settings_document: Value,
@@ -800,15 +228,11 @@ pub struct ConfigState {
     pub preferences_path: Option<PathBuf>,
     pub status_message: Option<String>,
     pub last_error: Option<String>,
-    pub pending_session_title_change: Option<PendingSessionTitleChangeState>,
 }
 
 impl Default for ConfigState {
     fn default() -> Self {
         Self {
-            active_tab: ConfigTab::Settings,
-            selected_setting_index: 0,
-            settings_scroll_offset: 0,
             mcp_selected_server_index: 0,
             overlay: None,
             committed_settings_document: Value::Object(serde_json::Map::new()),
@@ -819,280 +243,64 @@ impl Default for ConfigState {
             preferences_path: None,
             status_message: None,
             last_error: None,
-            pending_session_title_change: None,
         }
     }
 }
 
 impl ConfigState {
-    #[must_use]
     pub fn fast_mode_effective(&self) -> bool {
-        match resolve_setting_document(&self.committed_settings_document, SettingId::FastMode, &[])
-            .value
-        {
-            ResolvedSettingValue::Bool(value) => value,
-            ResolvedSettingValue::Choice(_) | ResolvedSettingValue::Text(_) => false,
-        }
+        store::fast_mode(&self.committed_settings_document).unwrap_or(false)
     }
 
-    #[must_use]
     pub fn always_thinking_effective(&self) -> bool {
-        match resolve_setting_document(
-            &self.committed_settings_document,
-            SettingId::AlwaysThinking,
-            &[],
-        )
-        .value
-        {
-            ResolvedSettingValue::Bool(value) => value,
-            ResolvedSettingValue::Choice(_) | ResolvedSettingValue::Text(_) => false,
-        }
+        store::always_thinking_enabled(&self.committed_settings_document).unwrap_or(false)
     }
 
-    #[must_use]
     pub fn model_effective(&self) -> Option<String> {
-        match resolve_setting_document(&self.committed_settings_document, SettingId::Model, &[])
-            .value
-        {
-            ResolvedSettingValue::Choice(ResolvedChoice::Automatic) => {
-                Some(OPUS_MODEL_ALIAS_ID.to_owned())
-            }
-            ResolvedSettingValue::Choice(ResolvedChoice::Stored(value)) => Some(value),
-            ResolvedSettingValue::Bool(_) | ResolvedSettingValue::Text(_) => None,
-        }
+        // Forge defaults to `opus` when no model is persisted. The
+        // claude CLI's own default is `sonnet`; without this override
+        // every fresh forge session would launch on sonnet even
+        // though the user expects opus.
+        store::model(&self.committed_settings_document)
+            .ok()
+            .flatten()
+            .or_else(|| Some("opus".to_owned()))
     }
 
-    #[must_use]
     pub fn thinking_effort_effective(&self) -> EffortLevel {
-        // Forge defaults to `max` effort when the user hasn't set an
-        // explicit value — matches the "default forge to --effort max"
-        // intent landed in PR #91. The worker's `default_max` fallback
-        // covered the case where launch_settings carries no effort,
-        // but forge-tui always populates effortLevel from this method,
-        // so the default has to live here too.
+        // Forge defaults to `max` effort when unset.
         store::thinking_effort_level(&self.committed_settings_document).unwrap_or(EffortLevel::Max)
     }
 
-    #[must_use]
     pub fn default_permission_mode_effective(&self) -> DefaultPermissionMode {
-        // Forge defaults to `Auto` permission mode when the user
-        // hasn't set an explicit value — mirrors the effort=max
-        // default landed in PR #91. The CLI itself defaults to
-        // `default`, so without this override every fresh forge
-        // session would ship `permissions.defaultMode = "default"`
-        // even though the personal-use scope wants auto.
+        // Forge defaults to `Auto` permission mode; the CLI defaults
+        // to `default`, so without this override every fresh forge
+        // session would ship `permissions.defaultMode = "default"`.
         store::default_permission_mode(&self.committed_settings_document)
             .unwrap_or(DefaultPermissionMode::Auto)
     }
 
-    #[must_use]
     pub fn respect_gitignore_effective(&self) -> bool {
         store::respect_gitignore(&self.committed_preferences_document).unwrap_or(true)
     }
 
-    #[must_use]
     pub fn preferred_notification_channel_effective(&self) -> PreferredNotifChannel {
         store::preferred_notification_channel(&self.committed_preferences_document)
             .unwrap_or_default()
     }
 
-    #[must_use]
     pub fn prefers_reduced_motion_effective(&self) -> bool {
         store::prefers_reduced_motion(&self.committed_local_settings_document).unwrap_or(false)
     }
 
-    #[must_use]
     pub fn output_style_effective(&self) -> OutputStyle {
         store::output_style(&self.committed_local_settings_document).unwrap_or_default()
     }
 
-    #[must_use]
-    pub fn selected_setting_spec(&self) -> Option<&'static SettingSpec> {
-        setting_specs().get(self.selected_setting_index)
-    }
-
-    #[must_use]
-    pub fn model_and_effort_overlay(&self) -> Option<&ModelAndEffortOverlayState> {
-        match &self.overlay {
-            Some(ConfigOverlayState::ModelAndEffort(overlay)) => Some(overlay),
-            Some(
-                ConfigOverlayState::OutputStyle(_)
-                | ConfigOverlayState::Language(_)
-                | ConfigOverlayState::SessionRename(_)
-                | ConfigOverlayState::InstalledPluginActions(_)
-                | ConfigOverlayState::PluginInstallActions(_)
-                | ConfigOverlayState::MarketplaceActions(_)
-                | ConfigOverlayState::AddMarketplace(_)
-                | ConfigOverlayState::McpDetails(_)
-                | ConfigOverlayState::McpCallbackUrl(_)
-                | ConfigOverlayState::McpElicitation(_)
-                | ConfigOverlayState::McpAuthRedirect(_),
-            )
-            | None => None,
-        }
-    }
-
-    pub fn model_and_effort_overlay_mut(&mut self) -> Option<&mut ModelAndEffortOverlayState> {
-        match &mut self.overlay {
-            Some(ConfigOverlayState::ModelAndEffort(overlay)) => Some(overlay),
-            Some(
-                ConfigOverlayState::OutputStyle(_)
-                | ConfigOverlayState::Language(_)
-                | ConfigOverlayState::SessionRename(_)
-                | ConfigOverlayState::InstalledPluginActions(_)
-                | ConfigOverlayState::PluginInstallActions(_)
-                | ConfigOverlayState::MarketplaceActions(_)
-                | ConfigOverlayState::AddMarketplace(_)
-                | ConfigOverlayState::McpDetails(_)
-                | ConfigOverlayState::McpCallbackUrl(_)
-                | ConfigOverlayState::McpElicitation(_)
-                | ConfigOverlayState::McpAuthRedirect(_),
-            )
-            | None => None,
-        }
-    }
-
-    #[must_use]
-    pub fn output_style_overlay(&self) -> Option<&OutputStyleOverlayState> {
-        match &self.overlay {
-            Some(ConfigOverlayState::OutputStyle(overlay)) => Some(overlay),
-            Some(
-                ConfigOverlayState::ModelAndEffort(_)
-                | ConfigOverlayState::Language(_)
-                | ConfigOverlayState::SessionRename(_)
-                | ConfigOverlayState::InstalledPluginActions(_)
-                | ConfigOverlayState::PluginInstallActions(_)
-                | ConfigOverlayState::MarketplaceActions(_)
-                | ConfigOverlayState::AddMarketplace(_)
-                | ConfigOverlayState::McpDetails(_)
-                | ConfigOverlayState::McpCallbackUrl(_)
-                | ConfigOverlayState::McpElicitation(_)
-                | ConfigOverlayState::McpAuthRedirect(_),
-            )
-            | None => None,
-        }
-    }
-
-    pub fn output_style_overlay_mut(&mut self) -> Option<&mut OutputStyleOverlayState> {
-        match &mut self.overlay {
-            Some(ConfigOverlayState::OutputStyle(overlay)) => Some(overlay),
-            Some(
-                ConfigOverlayState::ModelAndEffort(_)
-                | ConfigOverlayState::Language(_)
-                | ConfigOverlayState::SessionRename(_)
-                | ConfigOverlayState::InstalledPluginActions(_)
-                | ConfigOverlayState::PluginInstallActions(_)
-                | ConfigOverlayState::MarketplaceActions(_)
-                | ConfigOverlayState::AddMarketplace(_)
-                | ConfigOverlayState::McpDetails(_)
-                | ConfigOverlayState::McpCallbackUrl(_)
-                | ConfigOverlayState::McpElicitation(_)
-                | ConfigOverlayState::McpAuthRedirect(_),
-            )
-            | None => None,
-        }
-    }
-
-    #[must_use]
-    pub fn language_overlay(&self) -> Option<&LanguageOverlayState> {
-        match &self.overlay {
-            Some(ConfigOverlayState::Language(overlay)) => Some(overlay),
-            Some(
-                ConfigOverlayState::ModelAndEffort(_)
-                | ConfigOverlayState::OutputStyle(_)
-                | ConfigOverlayState::SessionRename(_)
-                | ConfigOverlayState::InstalledPluginActions(_)
-                | ConfigOverlayState::PluginInstallActions(_)
-                | ConfigOverlayState::MarketplaceActions(_)
-                | ConfigOverlayState::AddMarketplace(_)
-                | ConfigOverlayState::McpDetails(_)
-                | ConfigOverlayState::McpCallbackUrl(_)
-                | ConfigOverlayState::McpElicitation(_)
-                | ConfigOverlayState::McpAuthRedirect(_),
-            )
-            | None => None,
-        }
-    }
-
-    pub fn language_overlay_mut(&mut self) -> Option<&mut LanguageOverlayState> {
-        match &mut self.overlay {
-            Some(ConfigOverlayState::Language(overlay)) => Some(overlay),
-            Some(
-                ConfigOverlayState::ModelAndEffort(_)
-                | ConfigOverlayState::OutputStyle(_)
-                | ConfigOverlayState::SessionRename(_)
-                | ConfigOverlayState::InstalledPluginActions(_)
-                | ConfigOverlayState::PluginInstallActions(_)
-                | ConfigOverlayState::MarketplaceActions(_)
-                | ConfigOverlayState::AddMarketplace(_)
-                | ConfigOverlayState::McpDetails(_)
-                | ConfigOverlayState::McpCallbackUrl(_)
-                | ConfigOverlayState::McpElicitation(_)
-                | ConfigOverlayState::McpAuthRedirect(_),
-            )
-            | None => None,
-        }
-    }
-
-    #[must_use]
-    pub fn session_rename_overlay(&self) -> Option<&SessionRenameOverlayState> {
-        match &self.overlay {
-            Some(ConfigOverlayState::SessionRename(overlay)) => Some(overlay),
-            Some(
-                ConfigOverlayState::ModelAndEffort(_)
-                | ConfigOverlayState::OutputStyle(_)
-                | ConfigOverlayState::Language(_)
-                | ConfigOverlayState::InstalledPluginActions(_)
-                | ConfigOverlayState::PluginInstallActions(_)
-                | ConfigOverlayState::MarketplaceActions(_)
-                | ConfigOverlayState::AddMarketplace(_)
-                | ConfigOverlayState::McpDetails(_)
-                | ConfigOverlayState::McpCallbackUrl(_)
-                | ConfigOverlayState::McpElicitation(_)
-                | ConfigOverlayState::McpAuthRedirect(_),
-            )
-            | None => None,
-        }
-    }
-
-    pub fn session_rename_overlay_mut(&mut self) -> Option<&mut SessionRenameOverlayState> {
-        match &mut self.overlay {
-            Some(ConfigOverlayState::SessionRename(overlay)) => Some(overlay),
-            Some(
-                ConfigOverlayState::ModelAndEffort(_)
-                | ConfigOverlayState::OutputStyle(_)
-                | ConfigOverlayState::Language(_)
-                | ConfigOverlayState::InstalledPluginActions(_)
-                | ConfigOverlayState::PluginInstallActions(_)
-                | ConfigOverlayState::MarketplaceActions(_)
-                | ConfigOverlayState::AddMarketplace(_)
-                | ConfigOverlayState::McpDetails(_)
-                | ConfigOverlayState::McpCallbackUrl(_)
-                | ConfigOverlayState::McpElicitation(_)
-                | ConfigOverlayState::McpAuthRedirect(_),
-            )
-            | None => None,
-        }
-    }
-
-    #[must_use]
     pub fn installed_plugin_actions_overlay(&self) -> Option<&InstalledPluginActionOverlayState> {
         match &self.overlay {
             Some(ConfigOverlayState::InstalledPluginActions(overlay)) => Some(overlay),
-            Some(
-                ConfigOverlayState::ModelAndEffort(_)
-                | ConfigOverlayState::OutputStyle(_)
-                | ConfigOverlayState::Language(_)
-                | ConfigOverlayState::SessionRename(_)
-                | ConfigOverlayState::PluginInstallActions(_)
-                | ConfigOverlayState::MarketplaceActions(_)
-                | ConfigOverlayState::AddMarketplace(_)
-                | ConfigOverlayState::McpDetails(_)
-                | ConfigOverlayState::McpCallbackUrl(_)
-                | ConfigOverlayState::McpElicitation(_)
-                | ConfigOverlayState::McpAuthRedirect(_),
-            )
-            | None => None,
+            _ => None,
         }
     }
 
@@ -1101,82 +309,28 @@ impl ConfigState {
     ) -> Option<&mut InstalledPluginActionOverlayState> {
         match &mut self.overlay {
             Some(ConfigOverlayState::InstalledPluginActions(overlay)) => Some(overlay),
-            Some(
-                ConfigOverlayState::ModelAndEffort(_)
-                | ConfigOverlayState::OutputStyle(_)
-                | ConfigOverlayState::Language(_)
-                | ConfigOverlayState::SessionRename(_)
-                | ConfigOverlayState::PluginInstallActions(_)
-                | ConfigOverlayState::MarketplaceActions(_)
-                | ConfigOverlayState::AddMarketplace(_)
-                | ConfigOverlayState::McpDetails(_)
-                | ConfigOverlayState::McpCallbackUrl(_)
-                | ConfigOverlayState::McpElicitation(_)
-                | ConfigOverlayState::McpAuthRedirect(_),
-            )
-            | None => None,
+            _ => None,
         }
     }
 
-    #[must_use]
     pub fn plugin_install_overlay(&self) -> Option<&PluginInstallOverlayState> {
         match &self.overlay {
             Some(ConfigOverlayState::PluginInstallActions(overlay)) => Some(overlay),
-            Some(
-                ConfigOverlayState::ModelAndEffort(_)
-                | ConfigOverlayState::OutputStyle(_)
-                | ConfigOverlayState::Language(_)
-                | ConfigOverlayState::SessionRename(_)
-                | ConfigOverlayState::InstalledPluginActions(_)
-                | ConfigOverlayState::MarketplaceActions(_)
-                | ConfigOverlayState::AddMarketplace(_)
-                | ConfigOverlayState::McpDetails(_)
-                | ConfigOverlayState::McpCallbackUrl(_)
-                | ConfigOverlayState::McpElicitation(_)
-                | ConfigOverlayState::McpAuthRedirect(_),
-            )
-            | None => None,
+            _ => None,
         }
     }
 
     pub fn plugin_install_overlay_mut(&mut self) -> Option<&mut PluginInstallOverlayState> {
         match &mut self.overlay {
             Some(ConfigOverlayState::PluginInstallActions(overlay)) => Some(overlay),
-            Some(
-                ConfigOverlayState::ModelAndEffort(_)
-                | ConfigOverlayState::OutputStyle(_)
-                | ConfigOverlayState::Language(_)
-                | ConfigOverlayState::SessionRename(_)
-                | ConfigOverlayState::InstalledPluginActions(_)
-                | ConfigOverlayState::MarketplaceActions(_)
-                | ConfigOverlayState::AddMarketplace(_)
-                | ConfigOverlayState::McpDetails(_)
-                | ConfigOverlayState::McpCallbackUrl(_)
-                | ConfigOverlayState::McpElicitation(_)
-                | ConfigOverlayState::McpAuthRedirect(_),
-            )
-            | None => None,
+            _ => None,
         }
     }
 
-    #[must_use]
     pub fn marketplace_actions_overlay(&self) -> Option<&MarketplaceActionsOverlayState> {
         match &self.overlay {
             Some(ConfigOverlayState::MarketplaceActions(overlay)) => Some(overlay),
-            Some(
-                ConfigOverlayState::ModelAndEffort(_)
-                | ConfigOverlayState::OutputStyle(_)
-                | ConfigOverlayState::Language(_)
-                | ConfigOverlayState::SessionRename(_)
-                | ConfigOverlayState::InstalledPluginActions(_)
-                | ConfigOverlayState::PluginInstallActions(_)
-                | ConfigOverlayState::AddMarketplace(_)
-                | ConfigOverlayState::McpDetails(_)
-                | ConfigOverlayState::McpCallbackUrl(_)
-                | ConfigOverlayState::McpElicitation(_)
-                | ConfigOverlayState::McpAuthRedirect(_),
-            )
-            | None => None,
+            _ => None,
         }
     }
 
@@ -1185,87 +339,21 @@ impl ConfigState {
     ) -> Option<&mut MarketplaceActionsOverlayState> {
         match &mut self.overlay {
             Some(ConfigOverlayState::MarketplaceActions(overlay)) => Some(overlay),
-            Some(
-                ConfigOverlayState::ModelAndEffort(_)
-                | ConfigOverlayState::OutputStyle(_)
-                | ConfigOverlayState::Language(_)
-                | ConfigOverlayState::SessionRename(_)
-                | ConfigOverlayState::InstalledPluginActions(_)
-                | ConfigOverlayState::PluginInstallActions(_)
-                | ConfigOverlayState::AddMarketplace(_)
-                | ConfigOverlayState::McpDetails(_)
-                | ConfigOverlayState::McpCallbackUrl(_)
-                | ConfigOverlayState::McpElicitation(_)
-                | ConfigOverlayState::McpAuthRedirect(_),
-            )
-            | None => None,
+            _ => None,
         }
     }
 
-    #[must_use]
     pub fn add_marketplace_overlay(&self) -> Option<&AddMarketplaceOverlayState> {
         match &self.overlay {
             Some(ConfigOverlayState::AddMarketplace(overlay)) => Some(overlay),
-            Some(
-                ConfigOverlayState::ModelAndEffort(_)
-                | ConfigOverlayState::OutputStyle(_)
-                | ConfigOverlayState::Language(_)
-                | ConfigOverlayState::SessionRename(_)
-                | ConfigOverlayState::InstalledPluginActions(_)
-                | ConfigOverlayState::PluginInstallActions(_)
-                | ConfigOverlayState::MarketplaceActions(_)
-                | ConfigOverlayState::McpDetails(_)
-                | ConfigOverlayState::McpCallbackUrl(_)
-                | ConfigOverlayState::McpElicitation(_)
-                | ConfigOverlayState::McpAuthRedirect(_),
-            )
-            | None => None,
+            _ => None,
         }
     }
 
     pub fn add_marketplace_overlay_mut(&mut self) -> Option<&mut AddMarketplaceOverlayState> {
         match &mut self.overlay {
             Some(ConfigOverlayState::AddMarketplace(overlay)) => Some(overlay),
-            Some(
-                ConfigOverlayState::ModelAndEffort(_)
-                | ConfigOverlayState::OutputStyle(_)
-                | ConfigOverlayState::Language(_)
-                | ConfigOverlayState::SessionRename(_)
-                | ConfigOverlayState::InstalledPluginActions(_)
-                | ConfigOverlayState::PluginInstallActions(_)
-                | ConfigOverlayState::MarketplaceActions(_)
-                | ConfigOverlayState::McpDetails(_)
-                | ConfigOverlayState::McpCallbackUrl(_)
-                | ConfigOverlayState::McpElicitation(_)
-                | ConfigOverlayState::McpAuthRedirect(_),
-            )
-            | None => None,
-        }
-    }
-
-    #[must_use]
-    pub fn path_for(&self, file: SettingFile) -> Option<&PathBuf> {
-        match file {
-            SettingFile::Settings => self.settings_path.as_ref(),
-            SettingFile::LocalSettings => self.local_settings_path.as_ref(),
-            SettingFile::Preferences => self.preferences_path.as_ref(),
-        }
-    }
-
-    #[must_use]
-    pub fn document_for(&self, file: SettingFile) -> &Value {
-        match file {
-            SettingFile::Settings => &self.committed_settings_document,
-            SettingFile::LocalSettings => &self.committed_local_settings_document,
-            SettingFile::Preferences => &self.committed_preferences_document,
-        }
-    }
-
-    pub fn committed_document_for_mut(&mut self, file: SettingFile) -> &mut Value {
-        match file {
-            SettingFile::Settings => &mut self.committed_settings_document,
-            SettingFile::LocalSettings => &mut self.committed_local_settings_document,
-            SettingFile::Preferences => &mut self.committed_preferences_document,
+            _ => None,
         }
     }
 
@@ -1277,110 +365,11 @@ impl ConfigState {
         self.committed_local_settings_document = loaded.local_settings_document;
         self.committed_preferences_document = loaded.preferences_document;
         self.overlay = None;
-        self.selected_setting_index =
-            self.selected_setting_index.min(setting_specs().len().saturating_sub(1));
-        self.settings_scroll_offset = self.settings_scroll_offset.min(self.selected_setting_index);
         self.mcp_selected_server_index = 0;
         if !preserve_status {
             self.status_message = None;
             self.last_error = None;
         }
-    }
-}
-
-#[must_use]
-pub const fn setting_specs() -> &'static [SettingSpec] {
-    &CONFIG_SETTINGS
-}
-
-#[must_use]
-pub fn setting_spec(id: SettingId) -> &'static SettingSpec {
-    &CONFIG_SETTINGS[id as usize]
-}
-
-#[must_use]
-pub fn resolved_setting(app: &App, spec: &SettingSpec) -> ResolvedSetting {
-    let document = app.config.document_for(spec.file);
-    resolve_setting_document(document, spec.id, app.available_models())
-}
-
-#[must_use]
-pub fn setting_display_value(app: &App, spec: &SettingSpec, resolved: &ResolvedSetting) -> String {
-    match (&resolved.value, spec.id) {
-        (ResolvedSettingValue::Bool(value), _) => {
-            if *value {
-                "On".to_owned()
-            } else {
-                "Off".to_owned()
-            }
-        }
-        (ResolvedSettingValue::Text(value), _) => {
-            if value.is_empty() {
-                "Not set".to_owned()
-            } else {
-                value.clone()
-            }
-        }
-        (ResolvedSettingValue::Choice(ResolvedChoice::Automatic), SettingId::Model) => {
-            OPUS_MODEL_ALIAS_LABEL.to_owned()
-        }
-        (ResolvedSettingValue::Choice(ResolvedChoice::Stored(value)), SettingId::Model) => {
-            model_status_label(Some(value), app)
-        }
-        (
-            ResolvedSettingValue::Choice(ResolvedChoice::Stored(value)),
-            SettingId::ThinkingEffort,
-        ) => effort_level_label(value).unwrap_or_else(|| value.clone()),
-        (ResolvedSettingValue::Choice(ResolvedChoice::Stored(value)), _) => {
-            option_label(spec, value).unwrap_or_else(|| value.clone())
-        }
-        _ => String::new(),
-    }
-}
-
-#[must_use]
-pub fn setting_invalid_hint(spec: &SettingSpec, validation: SettingValidation) -> Option<String> {
-    match validation {
-        SettingValidation::Valid => None,
-        SettingValidation::InvalidValue => {
-            Some(format!("invalid value, using {}", spec.fallback.short_label()))
-        }
-        SettingValidation::UnavailableOption if spec.id == SettingId::Model => {
-            Some("model not advertised by current SDK session".to_owned())
-        }
-        SettingValidation::UnavailableOption => {
-            Some(format!("value unavailable, using {}", spec.fallback.short_label()))
-        }
-    }
-}
-
-#[must_use]
-pub fn setting_detail_options(app: &App, spec: &SettingSpec) -> Vec<String> {
-    match spec.kind {
-        SettingKind::Bool => vec!["Off".to_owned(), "On".to_owned()],
-        SettingKind::Text => Vec::new(),
-        SettingKind::Enum | SettingKind::DynamicEnum => match spec.options {
-            SettingOptions::None => Vec::new(),
-            SettingOptions::Static(options) => {
-                options.iter().map(|option| option.label.to_owned()).collect()
-            }
-            SettingOptions::RuntimeCatalog(RuntimeCatalogKind::Models) => {
-                if app.available_models().is_empty() {
-                    vec![
-                        OPUS_MODEL_ALIAS_LABEL.to_owned(),
-                        "Connect to load available models".to_owned(),
-                    ]
-                } else {
-                    model_overlay_options(app)
-                        .into_iter()
-                        .map(|option| option.display_name)
-                        .collect()
-                }
-            }
-            SettingOptions::RuntimeCatalog(RuntimeCatalogKind::PermissionModes) => {
-                DEFAULT_PERMISSION_OPTIONS.iter().map(|option| option.label.to_owned()).collect()
-            }
-        },
     }
 }
 
@@ -1392,15 +381,14 @@ pub fn initialize_shared_state(app: &mut App) -> Result<(), String> {
         store_workspace_bridge(app).as_ref().copied(),
     )?;
     app.config.apply_loaded(loaded, false);
-    app.reconcile_runtime_from_persisted_settings_change();
     Ok(())
 }
 
-pub fn open(app: &mut App) -> Result<(), String> {
-    if !app.is_project_trusted() {
-        return Err("Project trust must be accepted before opening settings".to_owned());
-    }
-
+/// Open the standalone Plugins view. Loads settings docs (the
+/// plugins state still reads from `~/.claude/settings.json` for
+/// fast-mode flags etc.), sets the active view, and triggers the
+/// inventory refresh.
+pub fn open_plugins(app: &mut App) -> Result<(), String> {
     let pr = project_root(app);
     let loaded = store::load(
         app.settings_home_override.as_deref(),
@@ -1408,21 +396,32 @@ pub fn open(app: &mut App) -> Result<(), String> {
         store_workspace_bridge(app).as_ref().copied(),
     )?;
     app.config.apply_loaded(loaded, false);
-    app.reconcile_runtime_from_persisted_settings_change();
-    view::set_active_view(app, ActiveView::Config);
-    request_active_tab_side_effects(app);
+    app.config.status_message = None;
+    app.config.last_error = None;
+    view::set_active_view(app, ActiveView::Plugins);
+    crate::app::plugins::request_inventory_refresh_if_needed(app);
+    Ok(())
+}
+
+/// Open the standalone MCP view. Same shape as `open_plugins` but
+/// triggers the MCP snapshot refresh instead.
+pub fn open_mcp(app: &mut App) -> Result<(), String> {
+    let pr = project_root(app);
+    let loaded = store::load(
+        app.settings_home_override.as_deref(),
+        pr.as_path(),
+        store_workspace_bridge(app).as_ref().copied(),
+    )?;
+    app.config.apply_loaded(loaded, false);
+    app.config.status_message = None;
+    app.config.last_error = None;
+    view::set_active_view(app, ActiveView::Mcp);
+    mcp::refresh_mcp_snapshot_if_needed(app);
     Ok(())
 }
 
 pub(crate) fn refresh_runtime_tabs_for_session_change(app: &mut App) {
-    if app.active_view != ActiveView::Config {
-        return;
-    }
-    request_status_snapshot_if_needed(app);
-    if app.config.active_tab == ConfigTab::Usage {
-        crate::app::usage::request_refresh_if_needed(app);
-    }
-    if app.config.active_tab == ConfigTab::Plugins {
+    if app.active_view == ActiveView::Plugins {
         crate::app::plugins::request_inventory_refresh_if_needed(app);
     }
 }
@@ -1431,145 +430,63 @@ pub fn close(app: &mut App) {
     view::set_active_view(app, ActiveView::Chat);
 }
 
-pub(crate) fn activate_tab(app: &mut App, tab: ConfigTab) {
-    app.config.active_tab = tab;
-    app.config.status_message = None;
-    app.config.last_error = None;
-    request_active_tab_side_effects(app);
-}
-
-pub fn handle_key(app: &mut App, key: KeyEvent) {
+pub fn handle_plugins_key(app: &mut App, key: KeyEvent) {
     if is_ctrl_shortcut(key, 'q') || is_ctrl_shortcut(key, 'c') {
         app.should_quit = true;
         return;
     }
 
     if app.config.overlay.is_some() {
-        edit::handle_overlay_key(app, key);
+        overlay_input::handle_overlay_key(app, key);
         return;
     }
 
-    if app.config.active_tab == ConfigTab::Plugins && crate::app::plugins::handle_key(app, key) {
+    if crate::app::plugins::handle_key(app, key) {
         return;
     }
+
+    if matches!(key.code, KeyCode::Enter | KeyCode::Esc) && key.modifiers == KeyModifiers::NONE {
+        close(app);
+    }
+}
+
+pub fn handle_mcp_key(app: &mut App, key: KeyEvent) {
+    if is_ctrl_shortcut(key, 'q') || is_ctrl_shortcut(key, 'c') {
+        app.should_quit = true;
+        return;
+    }
+
+    if app.config.overlay.is_some() {
+        overlay_input::handle_overlay_key(app, key);
+        return;
+    }
+
     if mcp::handle_mcp_key(app, key) {
         return;
     }
 
-    match (key.code, key.modifiers) {
-        (KeyCode::Char(' '), KeyModifiers::NONE)
-            if app.config.active_tab == ConfigTab::Settings =>
-        {
-            if let Some(spec) = app.config.selected_setting_spec() {
-                edit::activate_setting(app, spec);
-            }
-        }
-        (KeyCode::Left, KeyModifiers::NONE) if app.config.active_tab == ConfigTab::Settings => {
-            if let Some(spec) = app.config.selected_setting_spec() {
-                edit::step_setting(app, spec, -1);
-            }
-        }
-        (KeyCode::Right, KeyModifiers::NONE) if app.config.active_tab == ConfigTab::Settings => {
-            if let Some(spec) = app.config.selected_setting_spec() {
-                edit::step_setting(app, spec, 1);
-            }
-        }
-        (KeyCode::Char(ch), modifiers)
-            if app.config.active_tab == ConfigTab::Status
-                && matches!(ch, 'r' | 'R')
-                && (modifiers.is_empty() || modifiers == KeyModifiers::SHIFT) =>
-        {
-            edit::open_session_rename_overlay(app);
-        }
-        (KeyCode::Char(ch), modifiers)
-            if app.config.active_tab == ConfigTab::Status
-                && matches!(ch, 'g' | 'G')
-                && (modifiers.is_empty() || modifiers == KeyModifiers::SHIFT) =>
-        {
-            edit::generate_session_title(app);
-        }
-        (KeyCode::Char(ch), modifiers)
-            if app.config.active_tab == ConfigTab::Usage
-                && matches!(ch, 'r' | 'R')
-                && (modifiers.is_empty() || modifiers == KeyModifiers::SHIFT) =>
-        {
-            crate::app::usage::request_refresh(app);
-        }
-        (KeyCode::Enter | KeyCode::Esc, KeyModifiers::NONE) => {
-            close(app);
-        }
-        (KeyCode::BackTab, _) => {
-            activate_tab(app, app.config.active_tab.prev());
-        }
-        (KeyCode::Tab, KeyModifiers::NONE) => {
-            activate_tab(app, app.config.active_tab.next());
-        }
-        (KeyCode::Up, KeyModifiers::NONE) if app.config.active_tab == ConfigTab::Settings => {
-            app.config.selected_setting_index = app.config.selected_setting_index.saturating_sub(1);
-        }
-        (KeyCode::Down, KeyModifiers::NONE) if app.config.active_tab == ConfigTab::Settings => {
-            let last_index = setting_specs().len().saturating_sub(1);
-            app.config.selected_setting_index =
-                (app.config.selected_setting_index + 1).min(last_index);
-        }
-        _ => {}
+    if matches!(key.code, KeyCode::Enter | KeyCode::Esc) && key.modifiers == KeyModifiers::NONE {
+        close(app);
     }
 }
 
-pub fn handle_paste(app: &mut App, text: &str) -> bool {
+pub fn handle_plugins_paste(app: &mut App, text: &str) -> bool {
     if app.config.overlay.is_some() {
-        return edit::handle_overlay_paste(app, text);
+        return overlay_input::handle_overlay_paste(app, text);
     }
-    if app.config.active_tab == ConfigTab::Plugins {
-        return crate::app::plugins::handle_paste(app, text);
+    crate::app::plugins::handle_paste(app, text)
+}
+
+pub fn handle_mcp_paste(app: &mut App, text: &str) -> bool {
+    if app.config.overlay.is_some() {
+        return overlay_input::handle_overlay_paste(app, text);
     }
     false
-}
-
-fn request_active_tab_side_effects(app: &mut App) {
-    request_status_snapshot_if_needed(app);
-    mcp::refresh_mcp_snapshot_if_needed(app);
-    if app.config.active_tab == ConfigTab::Usage {
-        crate::app::usage::request_refresh_if_needed(app);
-    }
-    if app.config.active_tab == ConfigTab::Plugins {
-        crate::app::plugins::request_inventory_refresh_if_needed(app);
-    }
 }
 
 fn is_ctrl_shortcut(key: KeyEvent, ch: char) -> bool {
     matches!(key.code, KeyCode::Char(candidate) if candidate == ch)
         && key.modifiers == KeyModifiers::CONTROL
-}
-
-/// Send a `get_status_snapshot` command when the Status tab is active.
-pub fn request_status_snapshot_if_needed(app: &App) {
-    if app.config.active_tab != ConfigTab::Status {
-        return;
-    }
-    let Some(workspace) = app.workspace.as_ref() else { return };
-    let Some(key) = app.active_session_key.as_ref() else { return };
-    let Some(session_id) = app.session_id() else {
-        return;
-    };
-    let session_id = session_id.to_string();
-    match workspace.refresh_status_snapshot(key) {
-        Ok(()) => tracing::debug!(
-            target: crate::logging::targets::APP_AUTH,
-            event_name = "status_snapshot_requested",
-            message = "status snapshot requested",
-            outcome = "start",
-            session_id = %session_id,
-        ),
-        Err(error) => tracing::warn!(
-            target: crate::logging::targets::APP_AUTH,
-            event_name = "status_snapshot_request_failed",
-            message = "failed to request status snapshot",
-            outcome = "failure",
-            session_id = %session_id,
-            error_message = %error,
-        ),
-    }
 }
 
 /// Build a `WorkspaceBridge` for the active session, or `None`
@@ -1581,48 +498,27 @@ pub(crate) fn store_workspace_bridge(app: &App) -> Option<store::WorkspaceBridge
     Some(store::WorkspaceBridge { workspace, key })
 }
 
-pub(crate) fn model_status_label(model: Option<&str>, app: &App) -> String {
-    match model {
-        None => OPUS_MODEL_ALIAS_LABEL.to_owned(),
-        Some(model_id) => model_overlay_options(app)
-            .into_iter()
-            .find(|candidate| candidate.id == model_id)
-            .map_or_else(
-                || {
-                    if model_id == OPUS_MODEL_ALIAS_ID {
-                        OPUS_MODEL_ALIAS_LABEL.to_owned()
-                    } else {
-                        model_id.to_owned()
-                    }
-                },
-                |candidate| candidate.display_name,
-            ),
-    }
-}
-
-fn effort_level_label(value: &str) -> Option<String> {
-    EffortLevel::from_stored(value).map(|level| level.label().to_owned())
-}
-
 fn project_root(app: &App) -> std::path::PathBuf {
     std::path::PathBuf::from(app.cwd_raw())
 }
 
-fn option_label(spec: &SettingSpec, value: &str) -> Option<String> {
-    match spec.options {
-        SettingOptions::Static(options) => options
-            .iter()
-            .find(|option| option.stored == value)
-            .map(|option| option.label.to_owned()),
-        SettingOptions::RuntimeCatalog(RuntimeCatalogKind::PermissionModes) => {
-            DEFAULT_PERMISSION_OPTIONS
-                .iter()
-                .find(|option| option.stored == value)
-                .map(|option| option.label.to_owned())
-        }
-        _ => None,
+const LANGUAGE_MIN_CHARS: usize = 2;
+const LANGUAGE_MAX_CHARS: usize = 30;
+
+/// Validate a free-text language string before forwarding it to the
+/// session-launch settings payload. Returns a static error message
+/// when the value is out of range, otherwise `None` for "looks fine."
+pub(crate) fn language_input_validation_message(value: &str) -> Option<&'static str> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let length = trimmed.chars().count();
+    if length < LANGUAGE_MIN_CHARS {
+        Some("Language must be at least 2 characters.")
+    } else if length > LANGUAGE_MAX_CHARS {
+        Some("Language must be at most 30 characters.")
+    } else {
+        None
     }
 }
-
-#[cfg(test)]
-mod tests;

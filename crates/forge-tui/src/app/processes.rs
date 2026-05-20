@@ -121,7 +121,6 @@ pub struct ProcessCollection {
 }
 
 impl ProcessCollection {
-    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.rows.is_empty()
     }
@@ -136,11 +135,11 @@ impl ProcessCollection {
 /// the OS process's cmdline. Cron rows tag along separately because
 /// they're registrations, not processes.
 ///
-/// Order: DFS pre-order from claude's direct children (each
-/// supervisor + its descendants in PID-asc sibling order, matched
-/// supervisors pinned first); Cron rows appended at the end. Final
-/// list is capped at [`PROCESSES_MAX`] for sanity.
-#[must_use]
+/// Order: DFS pre-order from claude's direct children. Within each
+/// sibling group, matched (pinned) rows take priority over unmatched
+/// ones; rows in the same pin tier sort by `memory_bytes` descending
+/// with PID as the stable tie-break. Cron rows are appended at the
+/// end. Final list is capped at [`PROCESSES_MAX`] for sanity.
 pub fn collect_active_processes(app: &App) -> ProcessCollection {
     let Some(session) = app.active_session() else {
         return ProcessCollection { rows: Vec::new() };
@@ -374,10 +373,15 @@ fn sort_siblings_inplace(entries: &mut [&ProcessEntry], wire_alive: &[&ToolCallI
     entries.sort_by(|a, b| {
         let a_m = is_matched_entry(a, wire_alive);
         let b_m = is_matched_entry(b, wire_alive);
+        // Matched (pinned) rows stay on top of their unpinned
+        // siblings; within each group sort by memory descending so
+        // the heaviest workloads land at the top. PID is the stable
+        // tie-break so identical-memory siblings keep a deterministic
+        // order across frames.
         match (a_m, b_m) {
             (true, false) => std::cmp::Ordering::Less,
             (false, true) => std::cmp::Ordering::Greater,
-            _ => a.pid.cmp(&b.pid),
+            _ => b.memory_bytes.cmp(&a.memory_bytes).then_with(|| a.pid.cmp(&b.pid)),
         }
     });
 }
@@ -515,7 +519,6 @@ fn cron_row(tc: &ToolCallInfo) -> ProcessRow {
 /// Format a byte count compactly for the metadata suffix:
 /// `< 1 KB` → `b`, `< 1 MB` → `K`, etc. Two significant digits in
 /// the fractional range, integer above 99.
-#[must_use]
 pub fn format_memory_short(bytes: u64) -> String {
     const KB: u64 = 1024;
     const MB: u64 = 1024 * KB;
@@ -622,8 +625,6 @@ mod tests {
             last_measured_layout_epoch: 0,
             last_measured_layout_generation: 0,
             cache: crate::app::BlockCache::default(),
-            pending_permission: None,
-            pending_question: None,
             collapsed_override: None,
             last_measured_y_in_msg: 0,
         }
@@ -816,6 +817,50 @@ mod tests {
         assert_eq!(rows[1].kind, ProcessKind::Process);
         // Unmatched supervisor headline = cmdline (cmdline-as-name).
         assert_eq!(rows[1].headline, "node /path/to/mcp-server");
+    }
+
+    #[test]
+    fn rows_from_os_snapshot_sorts_unpinned_siblings_by_memory_desc() {
+        // Three unmatched siblings under claude; expect memory desc
+        // with PID as the tie-break inside each memory tier.
+        let snapshot = ProcessSnapshot {
+            scanned_at: std::time::SystemTime::now(),
+            processes: vec![
+                fake_entry(100, "small", "node small", 32 * 1024 * 1024),
+                fake_entry(200, "huge", "node huge", 512 * 1024 * 1024),
+                fake_entry(300, "medium", "node medium", 128 * 1024 * 1024),
+            ],
+        };
+        let rows = rows_from_os_snapshot(&snapshot, &[]);
+        assert_eq!(rows[0].headline, "node huge");
+        assert_eq!(rows[1].headline, "node medium");
+        assert_eq!(rows[2].headline, "node small");
+    }
+
+    #[test]
+    fn rows_from_os_snapshot_keeps_pinned_above_heavier_unpinned() {
+        // Pinned (matched) row stays on top even when an unpinned
+        // sibling has more memory.
+        let tc = fake_tool_call_info(
+            "toolu_1",
+            "Bash",
+            json!({
+                "description": "Run tests",
+                "command": "cargo nextest run",
+                "run_in_background": true,
+            }),
+        );
+        let snapshot = ProcessSnapshot {
+            scanned_at: std::time::SystemTime::now(),
+            processes: vec![
+                fake_entry(100, "node", "node /path/big-server", 1024 * 1024 * 1024),
+                fake_entry(200, "zsh", "/bin/zsh -c -l eval 'cargo nextest run'", 16 * 1024 * 1024),
+            ],
+        };
+        let rows = rows_from_os_snapshot(&snapshot, &[&tc]);
+        // Matched zsh first (despite tiny memory), heavy node second.
+        assert_eq!(rows[0].kind, ProcessKind::BashBackgrounded);
+        assert_eq!(rows[1].headline, "node /path/big-server");
     }
 
     #[test]

@@ -14,8 +14,15 @@ use super::{
 };
 use crate::agent::model;
 
-pub const MAX_VISIBLE: usize = 8;
-const MAX_CANDIDATES: usize = 50;
+/// Visible rows in the slash dropdown. Capped at 20 so a long
+/// command list (50+ between forge + claude groups) doesn't blow
+/// the dropdown to two-thirds of the screen height; scrolling via
+/// the dialog handles the overflow. The renderer additionally
+/// clamps to whatever rows the terminal actually has above the
+/// input cursor — the navigation math uses this same cap so the
+/// rendered window and the dialog's scroll_offset agree.
+pub const MAX_VISIBLE: usize = 20;
+use super::MAX_CANDIDATES;
 
 // Re-export public API
 pub use executors::try_handle_submit;
@@ -83,6 +90,22 @@ pub(super) fn push_system_message(app: &mut App, text: impl Into<String>) {
     let text = text.into();
     app.push_message_tracked(ChatMessage::new(
         MessageRole::System(None),
+        vec![MessageBlock::Text(TextBlock::from_complete(&text))],
+        None,
+    ));
+    app.enforce_history_retention_tracked();
+    app.active_viewport_mut().engage_auto_scroll();
+}
+
+/// Push an info-severity system message — the success / status
+/// variant. `push_system_message` (severity `None`) renders as
+/// red Error per `system_severity_from_role`; use this for non-
+/// error feedback like `/mode` / `/model` / `/effort` no-arg
+/// getters and successful "Set X to Y" confirmations.
+pub(super) fn push_system_info(app: &mut App, text: impl Into<String>) {
+    let text = text.into();
+    app.push_message_tracked(ChatMessage::new(
+        MessageRole::System(Some(super::SystemSeverity::Info)),
         vec![MessageBlock::Text(TextBlock::from_complete(&text))],
         None,
     ));
@@ -179,10 +202,9 @@ mod tests {
         let app = App::test_default();
         let names: Vec<String> =
             supported_command_candidates(&app).into_iter().map(|c| c.primary).collect();
-        for expected in [
-            "/compact", "/config", "/mcp", "/mode", "/model", "/new", "/plugins", "/resume",
-            "/status", "/usage",
-        ] {
+        for expected in
+            ["/compact", "/effort", "/mcp", "/mode", "/model", "/new", "/plugins", "/resume"]
+        {
             assert!(names.iter().any(|n| n == expected), "missing {expected}");
         }
         for removed in ["/1m-context", "/cancel", "/docs", "/login", "/logout", "/opus-version"] {
@@ -191,35 +213,7 @@ mod tests {
     }
 
     #[test]
-    fn config_without_args_opens_settings_view() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let mut app = App::test_default();
-        app.settings_home_override = Some(dir.path().to_path_buf());
-
-        let consumed = try_handle_submit(&mut app, "/config");
-
-        assert!(consumed);
-        assert_eq!(app.active_view, super::super::ActiveView::Config);
-    }
-
-    #[test]
-    fn config_with_extra_args_returns_usage_message() {
-        let mut app = App::test_default();
-
-        let consumed = try_handle_submit(&mut app, "/config extra");
-
-        assert!(consumed);
-        let Some(last) = app.messages().last() else {
-            panic!("expected usage message");
-        };
-        let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-            panic!("expected text block");
-        };
-        assert_eq!(block.text, "Usage: /config");
-    }
-
-    #[test]
-    fn plugins_without_args_opens_plugins_tab() {
+    fn plugins_without_args_opens_plugins_view() {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut app = App::test_default();
         app.settings_home_override = Some(dir.path().to_path_buf());
@@ -227,12 +221,11 @@ mod tests {
         let consumed = try_handle_submit(&mut app, "/plugins");
 
         assert!(consumed);
-        assert_eq!(app.active_view, super::super::ActiveView::Config);
-        assert_eq!(app.config.active_tab, super::super::ConfigTab::Plugins);
+        assert_eq!(app.active_view, super::super::ActiveView::Plugins);
     }
 
     #[test]
-    fn mcp_opens_config_at_mcp_tab() {
+    fn mcp_opens_mcp_screen() {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut app = App::test_default();
         app.settings_home_override = Some(dir.path().to_path_buf());
@@ -240,8 +233,7 @@ mod tests {
         let consumed = try_handle_submit(&mut app, "/mcp");
 
         assert!(consumed);
-        assert_eq!(app.active_view, super::super::ActiveView::Config);
-        assert_eq!(app.config.active_tab, super::super::ConfigTab::Mcp);
+        assert_eq!(app.active_view, super::super::ActiveView::Mcp);
     }
 
     #[test]
@@ -261,7 +253,7 @@ mod tests {
     }
 
     #[test]
-    fn plugins_with_extra_args_still_opens_plugins_tab() {
+    fn plugins_with_extra_args_returns_usage() {
         let mut app = App::test_default();
         let dir = tempfile::tempdir().expect("tempdir");
         app.settings_home_override = Some(dir.path().to_path_buf());
@@ -269,8 +261,13 @@ mod tests {
         let consumed = try_handle_submit(&mut app, "/plugins extra");
 
         assert!(consumed);
-        assert_eq!(app.active_view, super::super::ActiveView::Config);
-        assert_eq!(app.config.active_tab, super::super::ConfigTab::Plugins);
+        let Some(last) = app.messages().last() else {
+            panic!("expected usage message");
+        };
+        let Some(MessageBlock::Text(block)) = last.blocks.first() else {
+            panic!("expected text block");
+        };
+        assert_eq!(block.text, "Usage: /plugins");
     }
 
     #[test]
@@ -297,8 +294,16 @@ mod tests {
             current_mode_id: "plan".to_owned(),
             current_mode_name: "Plan".to_owned(),
             available_modes: vec![
-                super::super::ModeInfo { id: "plan".to_owned(), name: "Plan".to_owned() },
-                super::super::ModeInfo { id: "code".to_owned(), name: "Code".to_owned() },
+                super::super::ModeInfo {
+                    id: "plan".to_owned(),
+                    name: "Plan".to_owned(),
+                    description: None,
+                },
+                super::super::ModeInfo {
+                    id: "code".to_owned(),
+                    name: "Code".to_owned(),
+                    description: None,
+                },
             ],
         }));
 
@@ -401,6 +406,7 @@ mod tests {
             available_modes: vec![super::super::ModeInfo {
                 id: "plan".to_owned(),
                 name: "Plan".to_owned(),
+                description: None,
             }],
         }));
         app.input_mut().set_text("/mode xyz");
@@ -495,7 +501,12 @@ mod tests {
                 assert_eq!(app.resuming_session_id(), Some("abc-123"));
 
                 tokio::task::yield_now().await;
-                assert!(rx.try_recv().is_ok());
+                let cmd = rx.try_recv().expect("resume command dispatched");
+                assert!(matches!(
+                    cmd,
+                    forge_primitives::AgentCommand::ResumeSession { session_id, .. }
+                        if session_id == "abc-123"
+                ));
             })
             .await;
     }
@@ -514,8 +525,16 @@ mod tests {
                     current_mode_id: "code".to_owned(),
                     current_mode_name: "Code".to_owned(),
                     available_modes: vec![
-                        super::super::ModeInfo { id: "plan".to_owned(), name: "Plan".to_owned() },
-                        super::super::ModeInfo { id: "code".to_owned(), name: "Code".to_owned() },
+                        super::super::ModeInfo {
+                            id: "plan".to_owned(),
+                            name: "Plan".to_owned(),
+                            description: None,
+                        },
+                        super::super::ModeInfo {
+                            id: "code".to_owned(),
+                            name: "Code".to_owned(),
+                            description: None,
+                        },
                     ],
                 }));
 
@@ -649,22 +668,26 @@ mod tests {
         let Some(MessageBlock::Text(block)) = last.blocks.first() else {
             panic!("expected text block");
         };
-        assert_eq!(block.text, "Usage: /mode <id>");
+        assert_eq!(block.text, "Usage: /mode [id]");
     }
 
     #[test]
-    fn model_with_missing_id_returns_usage_message() {
+    fn model_with_no_arg_reports_current_model() {
         let mut app = App::test_default();
+        app.set_current_model(Some(
+            crate::agent::model::CurrentModel::new("opus", "Opus", "Opus 4.7").authoritative(true),
+        ));
 
         let consumed = try_handle_submit(&mut app, "/model");
         assert!(consumed);
         let Some(last) = app.messages().last() else {
-            panic!("expected system usage message");
+            panic!("expected system message");
         };
         let Some(MessageBlock::Text(block)) = last.blocks.first() else {
             panic!("expected text block");
         };
-        assert_eq!(block.text, "Usage: /model <id>");
+        assert!(block.text.starts_with("Model: "), "got `{}`", block.text);
+        assert!(block.text.contains("Opus"));
     }
 
     #[test]
@@ -679,7 +702,7 @@ mod tests {
         let Some(MessageBlock::Text(block)) = last.blocks.first() else {
             panic!("expected text block");
         };
-        assert_eq!(block.text, "Usage: /model <id>");
+        assert_eq!(block.text, "Usage: /model [id]");
     }
 
     #[test]
@@ -702,80 +725,6 @@ mod tests {
         confirm_selection(&mut app);
 
         assert_eq!(app.input().text(), "/mode");
-    }
-
-    #[test]
-    fn status_opens_config_at_status_tab() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let mut app = App::test_default();
-        app.settings_home_override = Some(dir.path().to_path_buf());
-
-        let consumed = try_handle_submit(&mut app, "/status");
-
-        assert!(consumed);
-        assert_eq!(app.active_view, super::super::ActiveView::Config);
-        assert_eq!(app.config.active_tab, super::super::ConfigTab::Status);
-    }
-
-    #[test]
-    fn usage_opens_config_at_usage_tab() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let mut app = App::test_default();
-        app.settings_home_override = Some(dir.path().to_path_buf());
-
-        let consumed = try_handle_submit(&mut app, "/usage");
-
-        assert!(consumed);
-        assert_eq!(app.active_view, super::super::ActiveView::Config);
-        assert_eq!(app.config.active_tab, super::super::ConfigTab::Usage);
-    }
-
-    #[test]
-    fn status_with_extra_args_returns_usage() {
-        let mut app = App::test_default();
-
-        let consumed = try_handle_submit(&mut app, "/status extra");
-
-        assert!(consumed);
-        let Some(last) = app.messages().last() else {
-            panic!("expected usage message");
-        };
-        let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-            panic!("expected text block");
-        };
-        assert_eq!(block.text, "Usage: /status");
-    }
-
-    #[test]
-    fn usage_with_extra_args_returns_usage() {
-        let mut app = App::test_default();
-
-        let consumed = try_handle_submit(&mut app, "/usage extra");
-
-        assert!(consumed);
-        let Some(last) = app.messages().last() else {
-            panic!("expected usage message");
-        };
-        let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-            panic!("expected text block");
-        };
-        assert_eq!(block.text, "Usage: /usage");
-    }
-
-    #[test]
-    fn status_appears_in_candidates() {
-        let app = App::test_default();
-        let names: Vec<String> =
-            supported_command_candidates(&app).into_iter().map(|c| c.primary).collect();
-        assert!(names.iter().any(|n| n == "/status"), "missing /status");
-    }
-
-    #[test]
-    fn usage_appears_in_candidates() {
-        let app = App::test_default();
-        let names: Vec<String> =
-            supported_command_candidates(&app).into_iter().map(|c| c.primary).collect();
-        assert!(names.iter().any(|n| n == "/usage"), "missing /usage");
     }
 
     #[test]

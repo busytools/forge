@@ -10,7 +10,6 @@ use forge_primitives::AvailableAgent;
 /// Mirrors `mapAvailableAgentsFromNames(value)` — agents listed as
 /// plain strings (no descriptions). Used when the CLI emits a names-
 /// only list.
-#[must_use]
 pub fn map_available_agents_from_names(value: Option<&Value>) -> Vec<AvailableAgent> {
     let Some(arr) = value.and_then(Value::as_array) else {
         return Vec::new();

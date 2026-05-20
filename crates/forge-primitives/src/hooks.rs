@@ -1,12 +1,11 @@
 //! Hook callback wire-data — input payloads, output decisions, and
 //! the lifecycle plumbing.
 //!
-//! Lifted from forge-sdk in 2026-05-05. The data types (HookKind,
-//! HookContext, HookDecision, all input/output payloads) are
-//! workspace-shared shapes; the callback machinery (HookCallback
-//! trait, ErasedHookCallback type-erasure adapter, Hooks
-//! builder/registry) stays SDK-side because it owns `Arc<dyn …>`
-//! pointers.
+//! Workspace-shared shapes: `HookKind`, `HookContext`,
+//! `HookDecision`, plus every input/output payload. The callback
+//! machinery (`HookCallback` trait, `ErasedHookCallback`
+//! type-erasure adapter, `Hooks` builder/registry) stays SDK-side
+//! because it owns `Arc<dyn …>` pointers.
 //!
 //! Submodule split:
 //! - [`inputs`] — `BaseHookInput`, `SubagentContext`, the ten `*Input`
@@ -60,7 +59,6 @@ pub enum HookKind {
 
 impl HookKind {
     /// Wire-name used by the `claude` binary.
-    #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
             Self::PreToolUse => "PreToolUse",
@@ -80,7 +78,6 @@ impl HookKind {
     /// Parse a wire-name back into the enum. Unknown strings fall through
     /// to `HookKind::Unknown` — forge-sdk is forward-compatible with new
     /// hook types Anthropic introduces between our parity checks.
-    #[must_use]
     pub fn from_wire(s: &str) -> Self {
         match s {
             "PreToolUse" => Self::PreToolUse,

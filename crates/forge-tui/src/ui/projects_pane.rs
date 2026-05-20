@@ -13,10 +13,6 @@
 //! routine. Hit-target stamps always carry the *un-truncated*
 //! identifier so click routing keeps working regardless of
 //! truncation.
-//!
-//! Render-time-stamp pattern from PR #83. See specs at
-//! `~/.claude-stargate/plans/2026-05-10-forge-tui-projects-pane-wide-design.md`
-//! and `~/.claude-stargate/plans/2026-05-10-forge-tui-projects-pane-medium-design.md`.
 
 use std::time::SystemTime;
 
@@ -42,12 +38,14 @@ use crate::app::session::SessionLifecycleState;
 pub fn render(frame: &mut Frame, area: Rect, app: &mut App, projects: &[ProjectView]) {
     app.pane_hit_targets.clear();
 
-    // Two anchored regions: top = project list, bottom = account /
-    // status panel. The panel reserves a fixed N rows from the bottom
-    // (see `ACCOUNT_PANEL_HEIGHT`); the list takes everything above.
-    // When the pane is too short the panel is skipped and the list
-    // gets the full area.
+    // Three anchored regions:
+    //   - top 2 rows: `PROJECTS` banner + DIM rule (static)
+    //   - middle:     project list (scrollable)
+    //   - bottom:     account / status footer (static; reserves
+    //                 `ACCOUNT_PANEL_HEIGHT` rows when the pane is
+    //                 tall enough).
     let panel_reserved = render_account_status_footer(frame, area, app);
+    let head_rows: u16 = 2;
     let list_area = Rect {
         x: area.x,
         y: area.y,
@@ -55,25 +53,152 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, projects: &[ProjectV
         height: area.height.saturating_sub(panel_reserved),
     };
 
-    let mut lines: Vec<Line<'static>> = Vec::new();
+    render_pane_head(frame, list_area);
 
-    // Pane name banner: PROJECTS at row 0, dim rule, then straight
-    // into the first section header. The blank-between-section-header-
-    // and-first-row is per section (in `append_project_rows`) so the
-    // banner sits flush against the first section.
-    lines.push(Line::from(Span::styled(
+    let body_area = Rect {
+        x: list_area.x,
+        y: list_area.y.saturating_add(head_rows),
+        width: list_area.width,
+        height: list_area.height.saturating_sub(head_rows),
+    };
+    render_pane_body(frame, body_area, app, projects);
+}
+
+/// Paint the pinned `PROJECTS` banner + DIM rule on the top 2 rows
+/// of the pane. Shared by the inline and overlay renderers — the
+/// overlay variant overrides the banner via its caller; only the
+/// rule is the same.
+fn render_pane_head(frame: &mut Frame, area: Rect) {
+    let head_rows = 2u16.min(area.height);
+    if head_rows == 0 {
+        return;
+    }
+    let mut head_lines: Vec<Line<'static>> = Vec::with_capacity(2);
+    head_lines.push(Line::from(Span::styled(
         " PROJECTS".to_owned(),
         Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
     )));
-    let rule_width = usize::from(list_area.width.saturating_sub(2));
-    lines.push(Line::from(vec![
-        Span::raw(" "),
-        Span::styled("─".repeat(rule_width), Style::default().fg(theme::DIM)),
-    ]));
+    if head_rows >= 2 {
+        let rule_width = usize::from(area.width.saturating_sub(2));
+        head_lines.push(Line::from(vec![
+            Span::raw(" "),
+            Span::styled("─".repeat(rule_width), Style::default().fg(theme::DIM)),
+        ]));
+    }
+    let head_area = Rect { x: area.x, y: area.y, width: area.width, height: head_rows };
+    frame.render_widget(Paragraph::new(head_lines), head_area);
+}
 
-    append_project_rows(&mut lines, list_area, app, projects);
+/// Render the scrollable project list. Builds every row into a
+/// `Vec<Line>`, then renders the Paragraph with the clamped scroll
+/// offset stamped onto `App.projects_pane_scroll_offset`. The thumb
+/// on the right edge mirrors the inspector pane's `▐` style so the
+/// two panes look consistent.
+fn render_pane_body(frame: &mut Frame, area: Rect, app: &mut App, projects: &[ProjectView]) {
+    if area.height == 0 || area.width == 0 {
+        app.rendered_projects_pane_body_area = Rect::default();
+        return;
+    }
+    app.rendered_projects_pane_body_area = area;
 
-    frame.render_widget(Paragraph::new(lines), list_area);
+    let mut body_lines: Vec<Line<'static>> = Vec::new();
+    let body_hit_target_start = app.pane_hit_targets.len();
+    append_project_rows(&mut body_lines, area, app, projects);
+    let total = body_lines.len();
+    let visible = usize::from(area.height);
+    let max_offset = total.saturating_sub(visible);
+    let max_offset_u16 = u16::try_from(max_offset).unwrap_or(u16::MAX);
+    let offset = app.projects_pane_scroll_offset.min(max_offset_u16);
+    app.projects_pane_scroll_offset = offset;
+
+    // Translate body-local hit-target y coords by the scroll offset.
+    // Targets stamped during `append_project_rows` use absolute y =
+    // `body_area.y + line_idx` (with no scroll knowledge); after
+    // scrolling, the line at that screen y is actually `offset` rows
+    // higher. Subtracting `offset` re-aligns hit-tests with the
+    // painted rows. Targets that would land above `body_area.y`
+    // (scrolled off the top) get their `height` zeroed so the
+    // `contains_y` test refuses them — the click would otherwise
+    // register on whatever sits above the body (the static banner /
+    // rule), wrongly switching projects.
+    if offset > 0 {
+        shift_body_hit_targets(app, body_hit_target_start, area.y, offset);
+    }
+
+    frame.render_widget(Paragraph::new(body_lines).scroll((offset, 0)), area);
+
+    if total > visible {
+        render_projects_scroll_thumb(frame, area, total, visible, offset);
+    }
+}
+
+fn shift_body_hit_targets(app: &mut App, start_idx: usize, body_top: u16, offset: u16) {
+    for target in app.pane_hit_targets.iter_mut().skip(start_idx) {
+        match target {
+            crate::app::PaneHitTarget::ProjectHeader { y, height, .. }
+            | crate::app::PaneHitTarget::SessionRow { y, height, .. }
+            | crate::app::PaneHitTarget::CloseSession { y, height, .. } => {
+                if let Some(new_y) = y.checked_sub(offset) {
+                    if new_y < body_top {
+                        *height = 0;
+                    } else {
+                        *y = new_y;
+                    }
+                } else {
+                    *height = 0;
+                }
+            }
+            crate::app::PaneHitTarget::TopBarIcon { .. }
+            | crate::app::PaneHitTarget::InspectorTopBarIcon { .. }
+            | crate::app::PaneHitTarget::OverlayClose { .. }
+            | crate::app::PaneHitTarget::InspectorGitOpenDiff { .. }
+            | crate::app::PaneHitTarget::CopySessionId { .. } => {}
+        }
+    }
+}
+
+/// Paint the projects-pane scroll thumb on the right edge of the
+/// body area. Mirrors the chat + inspector thumbs: a single `▐` cell
+/// in `ROLE_ASSISTANT` colour. Thumb size is clamped to 1 (same as
+/// `INSPECTOR_THUMB_MAX_CELLS` / `SCROLLBAR_MAX_THUMB_HEIGHT`) so the
+/// three scrollbars look identical at a glance regardless of how
+/// short the body is; `thumb_top` is recomputed against the
+/// post-clamp track so the cell still slides across the full
+/// vertical range while scrolling.
+fn render_projects_scroll_thumb(
+    frame: &mut Frame,
+    body_area: Rect,
+    total: usize,
+    visible: usize,
+    offset: u16,
+) {
+    if crate::app::compute_scrollbar_geometry(total, visible, f32::from(offset)).is_none() {
+        return;
+    }
+    let area_h = usize::from(body_area.height);
+    let max_offset = total.saturating_sub(visible);
+    let track = area_h.saturating_sub(1); // post-clamp: thumb is 1 cell
+    let thumb_top_usize = if max_offset == 0 || track == 0 {
+        0
+    } else {
+        #[allow(
+            clippy::cast_precision_loss,
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss
+        )]
+        let pos = (f32::from(offset) / max_offset as f32 * track as f32).round() as usize;
+        pos.min(track)
+    };
+    let thumb_x = body_area.x.saturating_add(body_area.width).saturating_sub(1);
+    let y = body_area.y.saturating_add(u16::try_from(thumb_top_usize).unwrap_or(u16::MAX));
+    if y >= body_area.y.saturating_add(body_area.height) {
+        return;
+    }
+    let mut cell = ratatui::buffer::Cell::new("▐");
+    cell.set_style(Style::default().fg(theme::ROLE_ASSISTANT));
+    if let Some(buf_cell) = frame.buffer_mut().cell_mut((thumb_x, y)) {
+        *buf_cell = cell;
+    }
 }
 
 /// Render the Narrow-tier full-screen Projects overlay into `area`.
@@ -249,7 +374,6 @@ fn append_project_rows(
 /// trailing close-affordance (or relative time) fill the rest of
 /// the row. Hit targets are stamped relative to `area.y` + the
 /// current line count.
-#[allow(clippy::too_many_arguments)] // Render fn — args are layout state.
 fn append_org_project_row(
     lines: &mut Vec<Line<'static>>,
     area: Rect,
@@ -358,25 +482,12 @@ fn name_budget_org_row(area_width: u16) -> usize {
 }
 
 /// Format `activity` as a short relative-time string anchored at
-/// `now` (`now` / `Xm` / `Xh` / `Xd` / `Xw`), padded/truncated to a
-/// stable 3-char column.
+/// `now`, padded/truncated to a stable 3-char column. None → 3 spaces.
 fn format_relative_time(activity: Option<SystemTime>, now: SystemTime) -> String {
     let Some(activity) = activity else {
         return "   ".to_owned();
     };
-    let elapsed = now.duration_since(activity).unwrap_or_default();
-    let secs = elapsed.as_secs();
-    let raw = if secs < 60 {
-        "now".to_owned()
-    } else if secs < 3600 {
-        format!("{}m", secs / 60)
-    } else if secs < 86_400 {
-        format!("{}h", secs / 3600)
-    } else if secs < 604_800 {
-        format!("{}d", secs / 86_400)
-    } else {
-        format!("{}w", (secs / 604_800).min(99))
-    };
+    let raw = super::format::relative_time(activity, now);
     if raw.chars().count() > 3 { raw.chars().take(3).collect() } else { format!("{raw:>3}") }
 }
 
@@ -436,7 +547,6 @@ const SPINNER_FRAMES: &[char] = &[
 /// running = `RUST_ORANGE`, background + running = terminal default).
 /// `spinner_frame` indexes into `SPINNER_FRAMES` so the spinner
 /// actually animates instead of sitting on `⠋`.
-/// See `~/.claude-stargate/plans/2026-05-10-forge-tui-projects-pane-wide-design.md`.
 fn glyph_for_lifecycle(
     lifecycle: SessionLifecycleState,
     session_is_active: bool,
@@ -496,20 +606,19 @@ fn glyph_for_lifecycle(
 // (cells 1–3 green, 4–6 yellow, 7–9 orange, 10–12 red) so the
 // rightmost filled cell tells you which zone the bar is in.
 //
-// The `📁 cwd` and `⎇ branch` rows that used to live here moved to
-// the right-hand Inspector pane's `GIT` section in the 2026-05-13
-// pane work — see `crate::ui::inspector_pane`.
+// Cwd + branch rows live in the Inspector pane's `GIT` section —
+// see `crate::ui::inspector_pane`.
 // ---------------------------------------------------------------
 
 /// Rows the account panel reserves from the bottom of the pane.
 /// Constant by design — values flip but shape stays put (see the
 /// "account chrome, not status row" intent in the design brief).
 ///
-/// 17 rows: rule + 5 identity (Profile/Mode/Model/Effort/Fast) +
-/// 1 blank + 1 Ctx + 1 blank + 2 (5h bar + ETA row) + 1 blank +
-/// 2 (7d bar + ETA row) + 1 blank + 2 (forge + claude version
+/// 19 rows: rule + 6 identity (Profile/Org/Session/Mode/Model/Effort) +
+/// 1 blank + 2 (Ctx bar + size row) + 1 blank + 2 (5h bar + ETA row) +
+/// 1 blank + 2 (7d bar + ETA row) + 1 blank + 2 (forge + claude version
 /// rows).
-const ACCOUNT_PANEL_HEIGHT: u16 = 17;
+const ACCOUNT_PANEL_HEIGHT: u16 = 19;
 
 /// Width (columns) the rule and content extend up to from the
 /// pane's right edge. Matches the project-row right gutter so the
@@ -530,9 +639,9 @@ const BAR_ROW_FIXED_CHROME: usize = 1 + 3 + 2 + 2 + 4;
 /// alternative would push the project list out of meaningful range.
 const ACCOUNT_PANEL_MIN_PANE_HEIGHT: u16 = 24;
 
-/// Width of the identity-block label column (`Profile`, `Mode`,
-/// `Model`, `Fast`). Right-padded so the value column aligns
-/// regardless of label length.
+/// Width of the identity-block label column (`Profile`, `Session`,
+/// `Mode`, `Model`, `Effort`). Right-padded so the value column
+/// aligns regardless of label length.
 const ACCOUNT_PANEL_ID_LABEL_WIDTH: usize = 7;
 
 /// Bar cell count derived from the pane width so the row stretches
@@ -565,7 +674,7 @@ const fn bar_zone_sizes(cells: usize) -> [usize; 4] {
 /// Returns the number of rows the panel consumed (caller subtracts
 /// from `area.height` to size the project-list region). Returns 0
 /// when the pane is too short to fit the panel without crowding.
-fn render_account_status_footer(frame: &mut Frame, area: Rect, app: &App) -> u16 {
+fn render_account_status_footer(frame: &mut Frame, area: Rect, app: &mut App) -> u16 {
     if area.height < ACCOUNT_PANEL_MIN_PANE_HEIGHT || area.width == 0 {
         return 0;
     }
@@ -577,8 +686,32 @@ fn render_account_status_footer(frame: &mut Frame, area: Rect, app: &App) -> u16
         height,
     };
     let lines = build_account_panel_lines(app, area.width);
+    stamp_session_copy_hit_target(app, panel_area);
     frame.render_widget(Paragraph::new(lines), panel_area);
     height
+}
+
+/// Stamp the click target for the ID row's trailing 4-cell copy
+/// button. Row layout: row 0 rule, row 1 Profile, row 2 Org, row 3
+/// ID. The button occupies the rightmost 4 cells before the 1-col
+/// right gutter. Hit band has 1 cell of tolerance on the left so a
+/// near-miss still registers. Only stamped when the active session
+/// has an id.
+fn stamp_session_copy_hit_target(app: &mut App, panel_area: Rect) {
+    let Some(session_id) = app.session_id().map(|sid| sid.to_string()) else {
+        return;
+    };
+    let panel_right = panel_area.x.saturating_add(panel_area.width);
+    let x_start = panel_right.saturating_sub(6);
+    let x_end = panel_right.saturating_sub(1);
+    let y = panel_area.y.saturating_add(3); // rule + Profile + Org + ID
+    app.pane_hit_targets.push(PaneHitTarget::CopySessionId {
+        session_id,
+        y,
+        height: 1,
+        x_start,
+        x_end,
+    });
 }
 
 /// Filling bar with a per-cell position colour gradient over the
@@ -661,6 +794,53 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         Span::raw(profile_fitted),
     ]));
 
+    // Org. Reads from the active session's `account.organization`;
+    // dim placeholder when the SDK hasn't reported one yet.
+    let org_value = app
+        .account_info()
+        .and_then(|account| account.organization.clone())
+        .unwrap_or_else(|| "—".to_owned());
+    let org_fitted = truncate_with_ellipsis(&org_value, value_budget);
+    lines.push(Line::from(vec![
+        Span::raw(" "),
+        label_span("Org", ACCOUNT_PANEL_ID_LABEL_WIDTH),
+        Span::raw("  "),
+        Span::raw(org_fitted),
+    ]));
+
+    // ID. First 8 chars of the active session's UUID when known
+    // (labelled `ID` rather than `Session` so the short hex string
+    // reads as an identifier, not a name). Trailing 4-cell button
+    // with slate background — copies the FULL session id to the OS
+    // clipboard. Button sits flush at the right gutter regardless of
+    // value length so its hit column doesn't shift with pane width.
+    // Click target stamped in `stamp_session_copy_hit_target`.
+    let session_value = app
+        .session_id()
+        .map_or_else(|| "—".to_owned(), |sid| sid.to_string().chars().take(8).collect::<String>());
+    // Reserve 5 cells at the right end of the value area: 4 for the
+    // button + 1 for the right gutter.
+    let session_value_budget = value_budget.saturating_sub(5);
+    let session_fitted = truncate_with_ellipsis(&session_value, session_value_budget);
+    let pad_cells = value_budget.saturating_sub(session_fitted.chars().count()).saturating_sub(5);
+    let mut session_spans = vec![
+        Span::raw(" "),
+        label_span("ID", ACCOUNT_PANEL_ID_LABEL_WIDTH),
+        Span::raw("  "),
+        Span::styled(session_fitted, Style::default().fg(theme::DIM)),
+        Span::raw(" ".repeat(pad_cells)),
+    ];
+    if app.session_id().is_some() {
+        session_spans.push(Span::styled(
+            " \u{29C9}  ".to_owned(),
+            Style::default().fg(Color::Gray).bg(theme::USER_MSG_BG).add_modifier(Modifier::BOLD),
+        ));
+    } else {
+        session_spans.push(Span::raw("    "));
+    }
+    session_spans.push(Span::raw(" "));
+    lines.push(Line::from(session_spans));
+
     // Mode.
     let (mode_label, mode_color) = mode_label_and_color(app);
     let mode_label_fitted = truncate_with_ellipsis(&mode_label, value_budget);
@@ -693,19 +873,15 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         Span::raw(effort_short_label(effort).to_owned()),
     ]));
 
-    // Fast mode.
-    let (fast_label, fast_color) = fast_mode_label_and_color(app);
-    lines.push(Line::from(vec![
-        Span::raw(" "),
-        label_span("Fast", ACCOUNT_PANEL_ID_LABEL_WIDTH),
-        Span::raw("  "),
-        Span::styled(fast_label.to_owned(), Style::default().fg(fast_color)),
-    ]));
-
     // Row 6: blank separating identity from usage.
     lines.push(Line::default());
 
-    // Row 7: Ctx bar. No ETA row — context has no reset window.
+    // Rows 7-8: Ctx bar + size row. Size mirrors the 5h/7d ETA
+    // pattern — DIM, right-justified to the panel's content right
+    // edge — but reads the model's raw context-window size
+    // (`SessionUsageState.context_max_tokens`) instead of a reset
+    // duration. `—` when the upstream probe hasn't reported a size
+    // yet so the panel's row count stays constant.
     let bar_cells = bar_cells_for(width);
     let ctx_pct = app.session_usage().context_usage_percent.map_or(0.0, f64::from);
     let ctx_pct_str = format!("{:>3}%", app.session_usage().context_usage_percent.unwrap_or(0));
@@ -714,6 +890,16 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     ctx_line.push(Span::raw("  "));
     ctx_line.push(Span::raw(ctx_pct_str));
     lines.push(Line::from(ctx_line));
+
+    let ctx_size_text =
+        app.session_usage().context_max_tokens.map_or_else(|| "—".to_owned(), format_token_count);
+    let ctx_size_chars = ctx_size_text.chars().count();
+    let ctx_size_budget = usize::from(width).saturating_sub(PANEL_RIGHT_GUTTER);
+    let ctx_size_fill = ctx_size_budget.saturating_sub(ctx_size_chars);
+    lines.push(Line::from(vec![
+        Span::raw(" ".repeat(ctx_size_fill)),
+        Span::styled(ctx_size_text, Style::default().fg(theme::DIM)),
+    ]));
 
     // Row 8: blank between Ctx and 5h.
     lines.push(Line::default());
@@ -953,7 +1139,10 @@ fn mode_label_and_color(app: &App) -> (String, Color) {
 /// model yet (early in spawn).
 fn build_model_label(app: &App) -> Option<String> {
     let current = app.current_model()?;
-    Some(condense_model_name(&current.display_name_short))
+    // Long form carries the model version (e.g. "Claude Opus 4.7"
+    // rather than just "Opus"). Truncation downstream handles
+    // overflow on the narrow panel.
+    Some(condense_model_name(&current.display_name_long))
 }
 
 /// Condense a model display name for the panel's narrow column.
@@ -1001,27 +1190,15 @@ const fn effort_short_label(effort: crate::agent::model::EffortLevel) -> &'stati
     }
 }
 
-/// Fast-mode label + color. Same set the legacy footer used. The
-/// panel uses lowercase `off / cd / on` instead of `FAST:OFF` /
-/// `FAST:CD` / `FAST:ON` because the row already has a `Fast` label.
-fn fast_mode_label_and_color(app: &App) -> (&'static str, Color) {
-    match app.fast_mode_state() {
-        crate::agent::model::FastModeState::Off => ("off", theme::DIM),
-        crate::agent::model::FastModeState::Cooldown => ("cd", Color::Yellow),
-        crate::agent::model::FastModeState::On => ("on", theme::RUST_ORANGE),
-    }
-}
-
 /// Head-truncate `s` to at most `max_chars` characters with a
 /// trailing `…` ellipsis. Returns the original string if it
 /// already fits. When `max_chars` is `0` or `1` the result is just
 /// `…` — there's no room for content + ellipsis at those budgets.
 ///
 /// Counts Unicode chars, not bytes, so multibyte labels truncate at
-/// a sane visual position. Note that non-ASCII chars with display
-/// width > 1 (CJK, some emoji) may still overflow visually; the
-/// pane's content is project + session names which are overwhelmingly
-/// ASCII or near-ASCII in practice.
+/// a sane visual position. CJK / wide-emoji chars (display width > 1)
+/// may still overflow visually; project + session names are
+/// near-ASCII in practice.
 ///
 /// Exposed as `pub(super)` so `top_bar` can reuse the same routine
 /// for the active-context label without duplicating the logic.
@@ -1035,6 +1212,39 @@ pub(super) fn truncate_with_ellipsis(s: &str, max_chars: usize) -> String {
     let mut out: String = s.chars().take(max_chars - 1).collect();
     out.push('…');
     out
+}
+
+/// Format a token count for the Ctx size row. Picks the largest
+/// unit that produces a value ≥ 1: `1_000_000` → `1M`, `200_000` →
+/// `200K`, anything under 1K returns the raw number. Exact multiples
+/// of the unit drop the decimal (`1_000_000` → `1M`, not `1.0M`);
+/// non-exact values round to one decimal (`1_200_000` → `1.2M`).
+fn format_token_count(tokens: u64) -> String {
+    const MILLION: u64 = 1_000_000;
+    const THOUSAND: u64 = 1_000;
+    if tokens >= MILLION {
+        let whole = tokens / MILLION;
+        let remainder = tokens % MILLION;
+        if remainder == 0 {
+            format!("{whole}M")
+        } else {
+            #[allow(clippy::cast_precision_loss)]
+            let scaled = tokens as f64 / MILLION as f64;
+            format!("{scaled:.1}M")
+        }
+    } else if tokens >= THOUSAND {
+        let whole = tokens / THOUSAND;
+        let remainder = tokens % THOUSAND;
+        if remainder == 0 {
+            format!("{whole}K")
+        } else {
+            #[allow(clippy::cast_precision_loss)]
+            let scaled = tokens as f64 / THOUSAND as f64;
+            format!("{scaled:.1}K")
+        }
+    } else {
+        tokens.to_string()
+    }
 }
 
 #[cfg(test)]
@@ -1134,6 +1344,6 @@ mod tests {
         // co-anchor the layout. This test pins the constant explicitly
         // so a change to row count surfaces here too, not only at
         // runtime.
-        assert_eq!(ACCOUNT_PANEL_HEIGHT, 17);
+        assert_eq!(ACCOUNT_PANEL_HEIGHT, 19);
     }
 }

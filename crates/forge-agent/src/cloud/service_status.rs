@@ -1,10 +1,6 @@
 //! Anthropic statuspage poller. Pulls the public summary endpoint and
-//! classifies whether Claude Code or the underlying Claude API is in a
-//! degraded state.
-//!
-//! Lifted from forge-tui::app::service_status_check (2026-05-05) so the
-//! HTTP/JSON work lives next to the other network-side fetchers in
-//! forge-agent::cloud.
+//! classifies whether Claude Code or the underlying Claude API is in
+//! a degraded state.
 
 use serde::Deserialize;
 use std::time::Duration;

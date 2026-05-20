@@ -295,7 +295,6 @@ impl Message {
     /// Returns `None` for the two variants that aren't session-scoped
     /// (`Error` and `RateLimitEvent`, which carries no session id of its
     /// own).
-    #[must_use]
     pub fn session_id(&self) -> Option<&str> {
         match self {
             Message::Assistant { session_id, .. }
@@ -640,7 +639,7 @@ enum SystemRepr {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "subtype", rename_all = "snake_case")]
-// Wire-shape enum — variants share the `System` prefix because that's the CLI's wire-tag scheme.
+// Wire-shape enum — variants share the `Task` prefix to match the CLI's wire-tag scheme.
 #[allow(clippy::enum_variant_names)]
 enum TypedSystemRepr {
     TaskStarted {

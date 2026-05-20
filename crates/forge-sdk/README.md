@@ -42,8 +42,8 @@ Core types and functions exposed from the crate root:
   custom I/O (e.g. wire-recording in `forge-test-harness`).
   `Subprocess` is the shipped in-process implementation.
 - **Options + config** — `Options`, `OptionsBuilder`. The pure-data
-  enums (`PermissionMode`, `SystemPromptKind`, `ThinkingConfig`,
-  `ToolsPreset`, `SdkPluginConfig`) live in `forge-primitives`.
+  enums (`PermissionMode`, `SystemPromptKind`, `SdkPluginConfig`) live
+  in `forge-primitives`.
 - **Hooks** — `Hooks`, `HooksBuilder`, `HookCallback` trait,
   `HookDecision`. Input + output structs live in
   `forge_primitives::hooks::{inputs, outputs}`.

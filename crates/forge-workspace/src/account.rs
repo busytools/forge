@@ -28,10 +28,9 @@
 //!    only, so the spawn at least returns something rather than
 //!    blocking on an empty pool.
 //!
-//! Without the probe-failure consideration (originally tier 0
-//! collapsed ALL `usage = None` accounts) a perpetually-failing
-//! probe pinned that account at top-of-sort forever and the
-//! picker kept choosing the most-broken account in the pool.
+//! Tier 0 splits truly-cold (no probe yet) from perpetually-failing
+//! (probe failed) so a broken account doesn't pin at top-of-sort
+//! and starve the picker.
 //!
 //! No LRU, no round-robin, no fallback outside the project's pin.
 //! Rate-limited accounts are visible in the panel bars so the user
@@ -460,8 +459,6 @@ mod tests {
         // Gateway: 5h=0%, 7d=100% — RATE LIMITED on 7d.
         // Stargate: 5h=80%, 7d=80% — heavily used but neither at 100%.
         // Picker must exclude Gateway even though its 5h is lower.
-        // This is the bug the user hit: 7d=100% was being ignored
-        // by the old binding-pct algo.
         let mut map = AccountStateMap::new(&[make_account("Gateway"), make_account("Stargate")]);
         map.set_usage(&AccountKey("Gateway".to_owned()), snapshot(Some(0.0), Some(100.0)));
         map.set_usage(&AccountKey("Stargate".to_owned()), snapshot(Some(80.0), Some(80.0)));
@@ -565,12 +562,10 @@ mod tests {
 
     #[test]
     fn known_available_account_beats_probe_failed_account() {
-        // The bug this fixes: Gateway has a fresh successful probe
-        // (tier 1 available, 30% used), Personal's probe keeps
-        // returning 429 (last_error = RateLimited, usage still None).
-        // Previously Personal stayed in tier 0 (Unknown) and won the
-        // sort. With the fix, Personal lands in tier 3 (Probe rate-
-        // limited) and Gateway wins.
+        // Gateway has a fresh successful probe (tier 1, 30% used);
+        // Personal's probe keeps returning 429 (last_error =
+        // RateLimited, usage still None → tier 3, probe rate-limited).
+        // Gateway wins.
         let mut map = AccountStateMap::new(&[make_account("Gateway"), make_account("Personal")]);
         map.set_usage(&AccountKey("Gateway".to_owned()), snapshot(Some(30.0), Some(30.0)));
         map.set_last_error(&AccountKey("Personal".to_owned()), UsageFetchStatus::RateLimited, None);

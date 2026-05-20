@@ -97,7 +97,6 @@ impl OauthUsageError {
     /// `Network` and `HttpStatus` are excluded because they typically
     /// indicate the API is unreachable / broken — falling back to a
     /// different source for the same backend won't help.
-    #[must_use]
     pub fn should_fallback(&self) -> bool {
         matches!(self, Self::NoCredentials | Self::Expired | Self::Unauthorized(_))
     }
@@ -105,7 +104,6 @@ impl OauthUsageError {
     /// True when this is a 429 rate-limit response. Used by callers
     /// that schedule the next probe attempt against the
     /// `Retry-After` value.
-    #[must_use]
     pub fn is_rate_limited(&self) -> bool {
         matches!(self, Self::RateLimited { .. })
     }

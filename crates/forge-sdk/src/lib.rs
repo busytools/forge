@@ -43,7 +43,6 @@
 //! # Ok(()) }
 //! ```
 
-#![doc(html_root_url = "https://docs.rs/forge-sdk/0.14.2")]
 #![forbid(unsafe_code)]
 
 pub mod argv;
@@ -60,23 +59,9 @@ pub(crate) mod request_id;
 pub mod subagents;
 pub mod transport;
 
-#[doc(hidden)]
 pub use crate::mcp::macros::__private;
 pub use client::{Client, ClientEvents};
 pub use error::Error;
-pub use paths::{claude_config_dir_from_env, projects_dir_for};
-// Wire-shape types live in forge-primitives now. Re-exported here so
-// pre-restructure imports (`use forge_sdk::Message`, `use forge_sdk::AccountInfo`,
-// …) keep resolving. New code should reach for `forge_primitives::*` directly —
-// primitives is the base crate, forge-sdk depends on it.
-pub use forge_primitives::{
-    AccountInfo, AssistantEnvelope, AssistantMessageError, ContentBlock, ContextUsageCategory,
-    ContextUsageResponse, McpServerConfig, McpServerConnectionStatus, McpServerInfo,
-    McpServerStatus, McpStatusResponse, McpToolAnnotations, McpToolInfo, Message, RateLimitInfo,
-    RateLimitStatus, RateLimitType, SDKSessionInfo, SandboxIgnoreViolations, SandboxNetworkConfig,
-    SandboxSettings, SessionMessage, SessionMessageKind, SettingSource, StopReason, StreamEvent,
-    TaskNotificationStatus, TaskUsage, Usage, UserEnvelope,
-};
 pub use hooks::{
     BaseHookInput, HookCallback, HookContext, HookDecision, HookKind, HookSpecificOutput, Hooks,
     HooksBuilder, NotificationHookSpecificOutput, NotificationInput,
@@ -87,14 +72,9 @@ pub use hooks::{
     SubagentStartHookSpecificOutput, SubagentStartInput, SubagentStopInput,
     UserPromptSubmitHookSpecificOutput, UserPromptSubmitInput,
 };
-pub use options::{
-    Options, OptionsBuilder, PermissionMode, SdkPluginConfig, SystemPromptKind, ThinkingConfig,
-    ToolsPreset,
-};
-pub use permissions::{
-    CanUseToolCallback, PermissionBehavior, PermissionDecision, PermissionRuleValue,
-    PermissionUpdate, PermissionUpdateDestination, ToolPermissionContext,
-};
+pub use options::{Options, OptionsBuilder, PermissionMode, SdkPluginConfig, SystemPromptKind};
+pub use paths::{claude_config_dir_from_env, projects_dir_for};
+pub use permissions::CanUseToolCallback;
 
 /// Convenient alias for `Result<T, forge_sdk::Error>`.
 pub type Result<T, E = Error> = core::result::Result<T, E>;

@@ -10,6 +10,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use forge_workspace::SessionUpdate;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
+use tracing::{Instrument, info_span};
 
 const INVENTORY_REFRESH_TTL: Duration = Duration::from_secs(5);
 
@@ -24,7 +25,6 @@ pub enum PluginsViewTab {
 impl PluginsViewTab {
     pub const ALL: [Self; 3] = [Self::Installed, Self::Plugins, Self::Marketplace];
 
-    #[must_use]
     pub const fn title(self) -> &'static str {
         match self {
             Self::Installed => "Installed",
@@ -33,7 +33,6 @@ impl PluginsViewTab {
         }
     }
 
-    #[must_use]
     pub const fn next(self) -> Self {
         match self {
             Self::Installed => Self::Plugins,
@@ -42,7 +41,6 @@ impl PluginsViewTab {
         }
     }
 
-    #[must_use]
     pub const fn prev(self) -> Self {
         match self {
             Self::Installed => Self::Marketplace,
@@ -52,9 +50,8 @@ impl PluginsViewTab {
     }
 }
 
-// Plugin registry types lifted to forge_primitives::plugins (Phase 0
-// of the MVVM refactor, 2026-05-11). Re-exported here so existing
-// forge-tui imports keep resolving.
+// Plugin registry types defined in forge_primitives::plugins;
+// re-exported here so the existing forge-tui import paths resolve.
 pub use forge_primitives::plugins::{
     InstalledPluginEntry, MarketplaceEntry, MarketplaceSourceEntry, PluginCapability,
     PluginsCliActionSuccess, PluginsInventorySnapshot,
@@ -82,7 +79,6 @@ pub struct PluginsState {
 }
 
 impl PluginsState {
-    #[must_use]
     pub fn selected_index_for(&self, tab: PluginsViewTab) -> usize {
         match tab {
             PluginsViewTab::Installed => self.installed_selected_index,
@@ -104,7 +100,6 @@ impl PluginsState {
         self.last_error = None;
     }
 
-    #[must_use]
     pub fn search_query_for(&self, tab: PluginsViewTab) -> &str {
         match tab {
             PluginsViewTab::Installed => &self.installed_search_query,
@@ -259,23 +254,31 @@ pub(crate) fn request_inventory_refresh(app: &mut App) {
     let cwd_context = app.cwd_raw();
     let cwd_raw = app.cwd_raw();
     let cached_claude_path = app.plugins.claude_path.clone();
-    tokio::task::spawn_local(async move {
-        match cli::refresh_inventory(cwd_raw, cached_claude_path).await {
-            Ok((snapshot, claude_path)) => {
-                let _ = event_tx.send(SessionUpdate::PluginsInventoryUpdated {
-                    cwd_raw: cwd_context,
-                    snapshot,
-                    claude_path,
-                });
-            }
-            Err(message) => {
-                let _ = event_tx.send(SessionUpdate::PluginsInventoryRefreshFailed {
-                    cwd_raw: cwd_context,
-                    message,
-                });
+    let span = info_span!(
+        target: crate::logging::targets::APP_CONFIG,
+        "plugin_inventory_refresh",
+        cwd = %cwd_raw,
+    );
+    tokio::task::spawn_local(
+        async move {
+            match cli::refresh_inventory(cwd_raw, cached_claude_path).await {
+                Ok((snapshot, claude_path)) => {
+                    let _ = event_tx.send(SessionUpdate::PluginsInventoryUpdated {
+                        cwd_raw: cwd_context,
+                        snapshot,
+                        claude_path,
+                    });
+                }
+                Err(message) => {
+                    let _ = event_tx.send(SessionUpdate::PluginsInventoryRefreshFailed {
+                        cwd_raw: cwd_context,
+                        message,
+                    });
+                }
             }
         }
-    });
+        .instrument(span),
+    );
 }
 
 pub(crate) fn apply_inventory_refresh_success(
@@ -335,7 +338,6 @@ pub(crate) fn clamp_selection(app: &mut App) {
         clamp_index(app.plugins.marketplace_selected_index, marketplace_len);
 }
 
-#[must_use]
 pub(crate) fn filtered_installed(state: &PluginsState) -> Vec<&InstalledPluginEntry> {
     state
         .installed
@@ -346,7 +348,6 @@ pub(crate) fn filtered_installed(state: &PluginsState) -> Vec<&InstalledPluginEn
         .collect()
 }
 
-#[must_use]
 pub(crate) fn ordered_installed<'a>(
     state: &'a PluginsState,
     current_project_raw: &str,
@@ -367,7 +368,6 @@ pub(crate) fn ordered_installed<'a>(
     relevant
 }
 
-#[must_use]
 pub(crate) fn relevant_installed_count(state: &PluginsState, current_project_raw: &str) -> usize {
     let current_project = normalize_project_path(current_project_raw);
     filtered_installed(state)
@@ -376,7 +376,6 @@ pub(crate) fn relevant_installed_count(state: &PluginsState, current_project_raw
         .count()
 }
 
-#[must_use]
 pub(crate) fn filtered_marketplace_plugins(state: &PluginsState) -> Vec<&MarketplaceEntry> {
     state
         .marketplace
@@ -387,12 +386,10 @@ pub(crate) fn filtered_marketplace_plugins(state: &PluginsState) -> Vec<&Marketp
         .collect()
 }
 
-#[must_use]
 pub(crate) fn visible_marketplaces(state: &PluginsState) -> Vec<&MarketplaceSourceEntry> {
     state.marketplaces.iter().collect()
 }
 
-#[must_use]
 pub(crate) fn display_label(raw: &str) -> String {
     let normalized = raw.replace('@', " from ").replace('-', " ");
     let mut result = String::with_capacity(normalized.len());
@@ -624,22 +621,32 @@ fn execute_selected_installed_overlay_action(app: &mut App) {
     let event_tx = app.update_tx.clone();
     let cwd_context = app.cwd_raw();
     let cached_claude_path = app.plugins.claude_path.clone();
-    tokio::task::spawn_local(async move {
-        match cli::run_cli_command_and_refresh(cwd_raw, cached_claude_path, args).await {
-            Ok((snapshot, claude_path)) => {
-                let message =
-                    installed_action_success_message(action, &overlay.title, &overlay.scope);
-                let _ = event_tx.send(SessionUpdate::PluginsCliActionSucceeded {
-                    cwd_raw: cwd_context,
-                    result: PluginsCliActionSuccess { snapshot, message, claude_path },
-                });
-            }
-            Err(message) => {
-                let _ = event_tx
-                    .send(SessionUpdate::PluginsCliActionFailed { cwd_raw: cwd_context, message });
+    let span = info_span!(
+        target: crate::logging::targets::APP_CONFIG,
+        "plugin_cli_action_installed",
+        cwd = %cwd_raw,
+    );
+    tokio::task::spawn_local(
+        async move {
+            match cli::run_cli_command_and_refresh(cwd_raw, cached_claude_path, args).await {
+                Ok((snapshot, claude_path)) => {
+                    let message =
+                        installed_action_success_message(action, &overlay.title, &overlay.scope);
+                    let _ = event_tx.send(SessionUpdate::PluginsCliActionSucceeded {
+                        cwd_raw: cwd_context,
+                        result: PluginsCliActionSuccess { snapshot, message, claude_path },
+                    });
+                }
+                Err(message) => {
+                    let _ = event_tx.send(SessionUpdate::PluginsCliActionFailed {
+                        cwd_raw: cwd_context,
+                        message,
+                    });
+                }
             }
         }
-    });
+        .instrument(span),
+    );
 }
 
 fn execute_selected_plugin_install_action(app: &mut App) {
@@ -685,21 +692,31 @@ fn execute_selected_plugin_install_action(app: &mut App) {
     let cwd_raw = app.cwd_raw();
     let cwd_context = app.cwd_raw();
     let cached_claude_path = app.plugins.claude_path.clone();
-    tokio::task::spawn_local(async move {
-        match cli::run_cli_command_and_refresh(cwd_raw, cached_claude_path, args).await {
-            Ok((snapshot, claude_path)) => {
-                let message = plugin_install_success_message(action, &overlay.title);
-                let _ = event_tx.send(SessionUpdate::PluginsCliActionSucceeded {
-                    cwd_raw: cwd_context,
-                    result: PluginsCliActionSuccess { snapshot, message, claude_path },
-                });
-            }
-            Err(message) => {
-                let _ = event_tx
-                    .send(SessionUpdate::PluginsCliActionFailed { cwd_raw: cwd_context, message });
+    let span = info_span!(
+        target: crate::logging::targets::APP_CONFIG,
+        "plugin_cli_action_install",
+        cwd = %cwd_raw,
+    );
+    tokio::task::spawn_local(
+        async move {
+            match cli::run_cli_command_and_refresh(cwd_raw, cached_claude_path, args).await {
+                Ok((snapshot, claude_path)) => {
+                    let message = plugin_install_success_message(action, &overlay.title);
+                    let _ = event_tx.send(SessionUpdate::PluginsCliActionSucceeded {
+                        cwd_raw: cwd_context,
+                        result: PluginsCliActionSuccess { snapshot, message, claude_path },
+                    });
+                }
+                Err(message) => {
+                    let _ = event_tx.send(SessionUpdate::PluginsCliActionFailed {
+                        cwd_raw: cwd_context,
+                        message,
+                    });
+                }
             }
         }
-    });
+        .instrument(span),
+    );
 }
 
 fn execute_selected_marketplace_action(app: &mut App) {
@@ -730,21 +747,31 @@ fn execute_selected_marketplace_action(app: &mut App) {
     let cwd_raw = app.cwd_raw();
     let cwd_context = app.cwd_raw();
     let cached_claude_path = app.plugins.claude_path.clone();
-    tokio::task::spawn_local(async move {
-        match cli::run_cli_command_and_refresh(cwd_raw, cached_claude_path, args).await {
-            Ok((snapshot, claude_path)) => {
-                let message = marketplace_action_success_message(&overlay.title, action);
-                let _ = event_tx.send(SessionUpdate::PluginsCliActionSucceeded {
-                    cwd_raw: cwd_context,
-                    result: PluginsCliActionSuccess { snapshot, message, claude_path },
-                });
-            }
-            Err(message) => {
-                let _ = event_tx
-                    .send(SessionUpdate::PluginsCliActionFailed { cwd_raw: cwd_context, message });
+    let span = info_span!(
+        target: crate::logging::targets::APP_CONFIG,
+        "plugin_cli_action_marketplace",
+        cwd = %cwd_raw,
+    );
+    tokio::task::spawn_local(
+        async move {
+            match cli::run_cli_command_and_refresh(cwd_raw, cached_claude_path, args).await {
+                Ok((snapshot, claude_path)) => {
+                    let message = marketplace_action_success_message(&overlay.title, action);
+                    let _ = event_tx.send(SessionUpdate::PluginsCliActionSucceeded {
+                        cwd_raw: cwd_context,
+                        result: PluginsCliActionSuccess { snapshot, message, claude_path },
+                    });
+                }
+                Err(message) => {
+                    let _ = event_tx.send(SessionUpdate::PluginsCliActionFailed {
+                        cwd_raw: cwd_context,
+                        message,
+                    });
+                }
             }
         }
-    });
+        .instrument(span),
+    );
 }
 
 fn confirm_add_marketplace_overlay(app: &mut App) {
@@ -783,24 +810,35 @@ fn confirm_add_marketplace_overlay(app: &mut App) {
     let cwd_raw = app.cwd_raw();
     let cwd_context = app.cwd_raw();
     let cached_claude_path = app.plugins.claude_path.clone();
-    tokio::task::spawn_local(async move {
-        match cli::run_cli_command_and_refresh(cwd_raw, cached_claude_path, args).await {
-            Ok((snapshot, claude_path)) => {
-                let _ = event_tx.send(SessionUpdate::PluginsCliActionSucceeded {
-                    cwd_raw: cwd_context,
-                    result: PluginsCliActionSuccess {
-                        snapshot,
-                        message: format!("Added marketplace {source}"),
-                        claude_path,
-                    },
-                });
-            }
-            Err(message) => {
-                let _ = event_tx
-                    .send(SessionUpdate::PluginsCliActionFailed { cwd_raw: cwd_context, message });
+    let span = info_span!(
+        target: crate::logging::targets::APP_CONFIG,
+        "plugin_cli_action_add_marketplace",
+        cwd = %cwd_raw,
+        source = %source,
+    );
+    tokio::task::spawn_local(
+        async move {
+            match cli::run_cli_command_and_refresh(cwd_raw, cached_claude_path, args).await {
+                Ok((snapshot, claude_path)) => {
+                    let _ = event_tx.send(SessionUpdate::PluginsCliActionSucceeded {
+                        cwd_raw: cwd_context,
+                        result: PluginsCliActionSuccess {
+                            snapshot,
+                            message: format!("Added marketplace {source}"),
+                            claude_path,
+                        },
+                    });
+                }
+                Err(message) => {
+                    let _ = event_tx.send(SessionUpdate::PluginsCliActionFailed {
+                        cwd_raw: cwd_context,
+                        message,
+                    });
+                }
             }
         }
-    });
+        .instrument(span),
+    );
 }
 
 pub(crate) fn apply_cli_action_success(app: &mut App, result: PluginsCliActionSuccess) {
@@ -1235,7 +1273,6 @@ fn marketplace_plugin_matches(entry: &MarketplaceEntry, query: &str) -> bool {
             .is_some_and(|version| version.to_ascii_lowercase().contains(&query))
 }
 
-#[must_use]
 pub(crate) const fn search_enabled(tab: PluginsViewTab) -> bool {
     !matches!(tab, PluginsViewTab::Marketplace)
 }
@@ -1246,7 +1283,7 @@ mod tests {
     use crate::agent::model;
 
     fn app_with_connection()
-    -> (crate::app::App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::Command>) {
+    -> (crate::app::App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::AgentCommand>) {
         let mut app = crate::app::App::test_default();
         let rx = app.install_testing_stub();
         app.set_session_id(Some(model::SessionId::new("session-1")));
@@ -1438,7 +1475,7 @@ mod tests {
         let envelope = rx.try_recv().expect("reload command");
         assert!(matches!(
             envelope,
-            forge_primitives::Command::ReloadPlugins { session_id } if session_id == "session-1"
+            forge_primitives::AgentCommand::ReloadPlugins { session_id } if session_id == "session-1"
         ));
         assert!(!app.plugins.runtime_reload_after_refresh);
         assert_eq!(app.config.status_message.as_deref(), Some("Reloading session plugins..."));
@@ -1464,7 +1501,7 @@ mod tests {
         let envelope = rx.try_recv().expect("reload command");
         assert!(matches!(
             envelope,
-            forge_primitives::Command::ReloadPlugins { session_id } if session_id == "session-1"
+            forge_primitives::AgentCommand::ReloadPlugins { session_id } if session_id == "session-1"
         ));
         assert_eq!(
             app.plugins.pending_runtime_reload_success_message.as_deref(),

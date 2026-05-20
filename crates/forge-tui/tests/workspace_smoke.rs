@@ -47,7 +47,6 @@ async fn forge_tui_starts_against_fixture_default_project() {
 
     let handle = workspace
         .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
-        .await
         .expect("default handle resolves");
 
     assert!(handle.take_events().is_some(), "fresh handle should own its event receiver");

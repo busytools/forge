@@ -5,20 +5,20 @@ mod config;
 mod diff;
 mod diff_overlay;
 mod document_table;
+pub(crate) mod format;
 pub(crate) mod help;
 mod highlight;
 mod input;
-pub mod inspector_pane;
+pub(crate) mod inspector_pane;
 pub mod launchpad;
 pub(crate) mod layout;
 mod markdown;
 mod message;
 pub mod projects_pane;
-mod session_picker;
-pub mod theme;
+pub(crate) mod prompt;
+pub(crate) mod theme;
 mod tool_call;
 pub mod top_bar;
-mod trusted;
 mod two_column_list;
 mod wrap;
 
@@ -31,9 +31,8 @@ use ratatui::Frame;
 pub fn render(frame: &mut Frame, app: &mut App) {
     match app.active_view {
         ActiveView::Chat => chat_view::render(frame, app),
-        ActiveView::Config => config::render(frame, app),
-        ActiveView::Trusted => trusted::render(frame, app),
-        ActiveView::SessionPicker => session_picker::render(frame, app),
+        ActiveView::Plugins => config::render_plugins(frame, app),
+        ActiveView::Mcp => config::render_mcp(frame, app),
         ActiveView::Launchpad => launchpad::render(frame, app),
         ActiveView::Diff => diff_overlay::render(frame, app),
     }

@@ -19,17 +19,14 @@ pub(crate) struct RenderCacheSlotState {
 }
 
 impl super::App {
-    #[must_use]
     fn render_cache_slot_count_for_message(msg: &super::ChatMessage) -> usize {
         msg.blocks.len().saturating_add(1)
     }
 
-    #[must_use]
     fn is_message_render_cache_slot(&self, msg_idx: usize, slot_idx: usize) -> bool {
         self.messages().get(msg_idx).is_some_and(|msg| slot_idx == msg.blocks.len())
     }
 
-    #[must_use]
     fn is_render_cache_message_protected(&self, msg_idx: usize) -> bool {
         let tail_protected = self.protected_streaming_message_idx() == Some(msg_idx);
         let tool_protected = self.messages().get(msg_idx).is_some_and(|msg| {
@@ -41,12 +38,10 @@ impl super::App {
         tail_protected || tool_protected
     }
 
-    #[must_use]
     fn is_streaming_tail_protected(&self) -> bool {
         matches!(self.status, AppStatus::Thinking | AppStatus::Running)
     }
 
-    #[must_use]
     fn protected_streaming_message_idx(&self) -> Option<usize> {
         if !self.is_streaming_tail_protected() {
             return None;
@@ -54,7 +49,6 @@ impl super::App {
         self.active_turn_assistant_idx().or_else(|| self.messages().len().checked_sub(1))
     }
 
-    #[must_use]
     fn block_cache(block: &MessageBlock) -> &super::BlockCache {
         match block {
             MessageBlock::Text(block) => &block.cache,
@@ -65,7 +59,6 @@ impl super::App {
         }
     }
 
-    #[must_use]
     fn is_render_cache_block_protected(&self, msg_idx: usize, block_idx: usize) -> bool {
         let tail_protected = self.protected_streaming_message_idx() == Some(msg_idx);
         let Some(block) = self.messages().get(msg_idx).and_then(|msg| msg.blocks.get(block_idx))
@@ -83,7 +76,6 @@ impl super::App {
         tail_protected || tool_protected
     }
 
-    #[must_use]
     fn render_cache_slot_key(
         msg_idx: usize,
         block_idx: usize,
@@ -97,7 +89,6 @@ impl super::App {
         })
     }
 
-    #[must_use]
     fn render_cache_slots_match_messages(&self) -> bool {
         self.render_cache_slots().len() == self.messages().len()
             && self
@@ -306,9 +297,10 @@ impl super::App {
         self.ensure_render_cache_accounting();
         self.render_cache_evictable_mut().clear();
 
-        // Phase 1: snapshot every slot's new state into a Vec so we never
-        // have an immutable borrow on `self.messages()` while mutating
-        // `self.render_cache_slots` / `self.render_cache_evictable`.
+        // Snapshot every slot's new state into a Vec so we never
+        // have an immutable borrow on `self.messages()` while
+        // mutating `self.render_cache_slots` /
+        // `self.render_cache_evictable`.
         let mut updates: Vec<SlotUpdate> = Vec::new();
         let msg_count = self.messages().len();
         let mut block_protections: Vec<Vec<bool>> = Vec::with_capacity(msg_count);

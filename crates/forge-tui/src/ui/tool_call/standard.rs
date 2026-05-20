@@ -14,7 +14,6 @@ use super::errors::{
     debug_failed_tool_render, extract_tool_use_error_message, failed_execute_first_line,
     looks_like_internal_error, render_internal_failure_content, render_tool_use_error_content,
 };
-use super::interactions::{render_permission_lines, render_question_lines};
 use super::{
     ToolCallRenderContext, markdown_inline_spans, status_icon, tool_display_title,
     tool_output_badge_spans,
@@ -93,22 +92,17 @@ pub(super) fn render_tool_call_body(tc: &ToolCallInfo, width: u16) -> Vec<Line<'
     lines
 }
 
-#[must_use]
 pub(super) fn tool_call_body_depends_on_width(tc: &ToolCallInfo) -> bool {
     tc.content.iter().any(|content| matches!(content, model::ToolCallContent::Diff(_)))
 }
 
-#[must_use]
 pub(super) fn tool_call_effectively_collapsed(tc: &ToolCallInfo, tools_collapsed: bool) -> bool {
-    let has_permission = tc.pending_permission.is_some();
-    let has_question = tc.pending_question.is_some();
     let has_diff = tc.content.iter().any(|c| matches!(c, model::ToolCallContent::Diff(_)));
     // Per-tool override (set by clicking the row) wins; otherwise fall
-    // back to the global session-level collapse default. Both paths
-    // still respect the diff/permission/question short-circuit because
-    // those interactions need to stay visible regardless of preference.
+    // back to the global session-level collapse default. The diff
+    // short-circuit keeps diffs visible regardless of preference.
     let prefers_collapsed = tc.collapsed_override.unwrap_or(tools_collapsed);
-    prefers_collapsed && !has_diff && !has_permission && !has_question
+    prefers_collapsed && !has_diff
 }
 
 pub(super) fn render_collapsed_tool_call_summary(
@@ -126,25 +120,15 @@ pub(super) fn render_collapsed_tool_call_summary(
 /// Render the body (everything after the title line) of a tool call.
 fn render_standard_body(tc: &ToolCallInfo, width: u16, lines: &mut Vec<Line<'static>>) {
     let pipe_style = Style::default().fg(theme::DIM);
-    let has_permission = tc.pending_permission.is_some();
-    let has_question = tc.pending_question.is_some();
     let has_execute_output = tc.is_execute_tool()
         && (tc.terminal_output.is_some() || matches!(tc.status, model::ToolCallStatus::InProgress));
 
-    if tc.content.is_empty() && !has_permission && !has_question && !has_execute_output {
+    if tc.content.is_empty() && !has_execute_output {
         return;
     }
 
     // Expanded: render full content with | prefix on each line
-    let mut content_lines = render_tool_content(tc, width.saturating_sub(5));
-
-    // Append inline permission controls if pending
-    if let Some(ref perm) = tc.pending_permission {
-        content_lines.extend(render_permission_lines(tc, perm));
-    }
-    if let Some(ref question) = tc.pending_question {
-        content_lines.extend(render_question_lines(question));
-    }
+    let content_lines = render_tool_content(tc, width.saturating_sub(5));
 
     let last_idx = content_lines.len().saturating_sub(1);
     for (i, content_line) in content_lines.into_iter().enumerate() {

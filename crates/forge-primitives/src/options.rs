@@ -34,36 +34,9 @@ impl SystemPromptKind {
     /// Convenience constructor for the `claude_code` preset with an
     /// append string. Wire shape:
     /// `{"type": "preset", "preset": "claude_code", "append": ...}`.
-    #[must_use]
     pub fn preset_append(append: impl Into<String>) -> Self {
         Self::Preset { append: Some(append.into()), exclude_dynamic_sections: None }
     }
-}
-
-/// Tool-base selector. The CLI's `ToolsPreset` is a dict `{"type":"default"}`;
-/// forge-sdk normalises to an enum.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ToolsPreset {
-    /// `claude_code` preset — emits `--tools default`.
-    Default,
-    /// Explicit list — emits `--tools <csv>`.
-    List(Vec<String>),
-}
-
-/// Extended-thinking configuration. Wraps the CLI's union of
-/// `Adaptive`, `Enabled`, `Disabled`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ThinkingConfig {
-    /// CLI picks per-turn — `--thinking adaptive`.
-    Adaptive,
-    /// Thinking on with a per-turn token cap —
-    /// `--max-thinking-tokens <n>`.
-    Enabled {
-        /// Per-turn budget.
-        budget_tokens: u64,
-    },
-    /// Thinking off — `--thinking disabled`.
-    Disabled,
 }
 
 /// Plugin config. Wraps the CLI's `SdkPluginConfig`

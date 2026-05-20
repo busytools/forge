@@ -20,12 +20,41 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 use unicode_normalization::UnicodeNormalization;
+use uuid::Uuid;
 
-use forge_sdk::{SDKSessionInfo, SessionMessage, SessionMessageKind, projects_dir_for};
+use forge_primitives::{SDKSessionInfo, SessionMessage, SessionMessageKind};
+use forge_sdk::projects_dir_for;
 
-use crate::userdata::catalog::mutations::is_valid_uuid;
+/// True if `s` is a canonical 8-4-4-4-12 hyphenated UUID. The length
+/// guard rejects the hyphenless / braced / URN forms that
+/// `Uuid::try_parse` otherwise accepts — session ids on disk are always
+/// the hyphenated form the CLI emits.
+pub(crate) fn is_valid_uuid(s: &str) -> bool {
+    s.len() == 36 && Uuid::try_parse(s).is_ok()
+}
 
 const MAX_SANITIZED_LENGTH: usize = 200;
+
+/// Open `dir` for directory iteration. NotFound is the expected case
+/// for the catalog's projects/ tree on a fresh forge install and is
+/// silent; real I/O failures (perm denied, broken FS) log at warn
+/// so the user gets a triage signal rather than silently empty
+/// catalog reads.
+fn try_read_dir(dir: &Path) -> Option<fs::ReadDir> {
+    match fs::read_dir(dir) {
+        Ok(iter) => Some(iter),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => {
+            tracing::warn!(
+                target: "forge_agent::userdata::catalog",
+                path = %dir.display(),
+                error = %e,
+                "failed to read catalog directory"
+            );
+            None
+        }
+    }
+}
 
 /// Size of the head / tail byte buffer for lite metadata reads.
 /// the CLI constant — match exactly so
@@ -36,7 +65,6 @@ const LITE_READ_BUF_SIZE: u64 = 65_536;
 /// it to derive the same on-disk project-key layout the CLI uses. Not
 /// part of the public API; downstream consumers should call
 /// [`project_key_for_directory`] instead.
-#[must_use]
 pub(crate) fn sanitize_path_public(name: &str) -> String {
     sanitize_path(name)
 }
@@ -45,7 +73,6 @@ pub(crate) fn sanitize_path_public(name: &str) -> String {
 /// the path first and then applies the CLI's JS-style sanitisation
 /// hash. `None` defaults to `"."` (the process's current working
 /// directory).
-#[must_use]
 pub fn project_key_for_directory(path: Option<&str>) -> String {
     sanitize_path(&canonicalize_path(path.unwrap_or(".")))
 }
@@ -74,20 +101,11 @@ fn canonicalize_path(path: &str) -> String {
 /// Returns an empty Vec when `session_id` is not a valid UUID, the
 /// session has no subagents directory, or no `agent-*.jsonl` files are
 /// present.
-#[must_use]
-// Owned `String` matches the call-site shape (cwd arg from std::env).
-// Switching to `&str` would force every caller to materialise a temporary.
-#[allow(clippy::needless_pass_by_value)]
-pub fn list_subagents(
-    config_dir: &Path,
-    session_id: &str,
-    directory: Option<String>,
-) -> Vec<String> {
+pub fn list_subagents(config_dir: &Path, session_id: &str, directory: Option<&str>) -> Vec<String> {
     if !is_valid_uuid(session_id) {
         return Vec::new();
     }
-    let Some(subagents_dir) = resolve_subagents_dir(config_dir, session_id, directory.as_deref())
-    else {
+    let Some(subagents_dir) = resolve_subagents_dir(config_dir, session_id, directory) else {
         return Vec::new();
     };
     collect_agent_files(&subagents_dir).into_iter().map(|(agent_id, _)| agent_id).collect()
@@ -102,23 +120,18 @@ pub fn list_subagents(
 /// Returns an empty Vec when `session_id` is not a valid UUID,
 /// `agent_id` is empty, the transcript can't be found, or the file
 /// contains no user/assistant entries.
-#[must_use]
-// Owned `String` matches the call-site shape (cwd arg from std::env).
-// Switching to `&str` would force every caller to materialise a temporary.
-#[allow(clippy::needless_pass_by_value)]
 pub fn get_subagent_messages(
     config_dir: &Path,
     session_id: &str,
     agent_id: &str,
-    directory: Option<String>,
+    directory: Option<&str>,
     limit: Option<usize>,
     offset: usize,
 ) -> Vec<SessionMessage> {
     if !is_valid_uuid(session_id) || agent_id.is_empty() {
         return Vec::new();
     }
-    let Some(subagents_dir) = resolve_subagents_dir(config_dir, session_id, directory.as_deref())
-    else {
+    let Some(subagents_dir) = resolve_subagents_dir(config_dir, session_id, directory) else {
         return Vec::new();
     };
     // Walk the tree — the file may live directly under subagents/ or
@@ -146,7 +159,7 @@ fn collect_agent_files(base_dir: &Path) -> Vec<(String, PathBuf)> {
 }
 
 fn walk_agent_files(dir: &Path, out: &mut Vec<(String, PathBuf)>) {
-    let Ok(iter) = fs::read_dir(dir) else {
+    let Some(iter) = try_read_dir(dir) else {
         return;
     };
     let mut entries: Vec<_> = iter.flatten().collect();
@@ -184,7 +197,7 @@ fn resolve_subagents_dir(
     let project_dir = if let Some(dir) = directory {
         project_dir_for(config_dir, dir)
     } else {
-        let iter = fs::read_dir(projects_dir_for(config_dir)).ok()?;
+        let iter = try_read_dir(&projects_dir_for(config_dir))?;
         iter.flatten()
             .map(|e| e.path())
             .find(|p| p.join(format!("{session_id}.jsonl")).is_file())?
@@ -340,20 +353,16 @@ const LIST_SESSIONS_MAX_CONCURRENT: usize = 16;
 /// # Panics
 ///
 /// Never — filesystem errors fall through and produce an empty Vec.
-#[must_use]
-// Owned `String` matches the call-site shape (cwd arg from std::env).
-// Switching to `&str` would force every caller to materialise a temporary.
-#[allow(clippy::needless_pass_by_value)]
 pub async fn list_sessions(
     config_dir: &Path,
-    directory: Option<String>,
+    directory: Option<&str>,
     limit: Option<usize>,
     offset: usize,
 ) -> Vec<SDKSessionInfo> {
     let search_dirs: Vec<PathBuf> = if let Some(dir) = directory {
-        vec![project_dir_for(config_dir, &dir)]
+        vec![project_dir_for(config_dir, dir)]
     } else {
-        fs::read_dir(projects_dir_for(config_dir))
+        try_read_dir(&projects_dir_for(config_dir))
             .map(|iter| {
                 iter.flatten()
                     .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
@@ -368,7 +377,7 @@ pub async fn list_sessions(
     // which we hand off to spawn_blocking below.
     let mut candidates: Vec<PathBuf> = Vec::new();
     for project_dir in search_dirs {
-        let Ok(iter) = fs::read_dir(&project_dir) else {
+        let Some(iter) = try_read_dir(&project_dir) else {
             continue;
         };
         for entry in iter.flatten() {
@@ -410,24 +419,20 @@ pub async fn list_sessions(
 /// Read metadata for one session. When `directory` is `None`, every
 /// project directory under `<config_dir>/projects/` is searched for
 /// a matching `<session_id>.jsonl`.
-#[must_use]
-// Owned `String` matches the call-site shape (cwd arg from std::env).
-// Switching to `&str` would force every caller to materialise a temporary.
-#[allow(clippy::needless_pass_by_value)]
 pub fn get_session_info(
     config_dir: &Path,
     session_id: &str,
-    directory: Option<String>,
+    directory: Option<&str>,
 ) -> Option<SDKSessionInfo> {
     if !is_valid_uuid(session_id) {
         return None;
     }
     let file_name = format!("{session_id}.jsonl");
     if let Some(dir) = directory {
-        return read_session_info(&project_dir_for(config_dir, &dir).join(&file_name));
+        return read_session_info(&project_dir_for(config_dir, dir).join(&file_name));
     }
     let projects = projects_dir_for(config_dir);
-    let iter = fs::read_dir(projects).ok()?;
+    let iter = try_read_dir(&projects)?;
     for entry in iter.flatten() {
         let candidate = entry.path().join(&file_name);
         if candidate.is_file() {
@@ -439,23 +444,19 @@ pub fn get_session_info(
 
 /// Read the full transcript for one session. Returns an empty Vec when
 /// the session file can't be found or parsed.
-#[must_use]
-// Owned `String` matches the call-site shape (cwd arg from std::env).
-// Switching to `&str` would force every caller to materialise a temporary.
-#[allow(clippy::needless_pass_by_value)]
 pub fn get_session_messages(
     config_dir: &Path,
     session_id: &str,
-    directory: Option<String>,
+    directory: Option<&str>,
 ) -> Vec<SessionMessage> {
     if !is_valid_uuid(session_id) {
         return Vec::new();
     }
     let file_name = format!("{session_id}.jsonl");
     let candidate = if let Some(dir) = directory {
-        Some(project_dir_for(config_dir, &dir).join(&file_name))
+        Some(project_dir_for(config_dir, dir).join(&file_name))
     } else {
-        fs::read_dir(projects_dir_for(config_dir)).ok().and_then(|iter| {
+        try_read_dir(&projects_dir_for(config_dir)).and_then(|iter| {
             iter.flatten().map(|e| e.path().join(&file_name)).find(|p| p.is_file())
         })
     };

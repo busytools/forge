@@ -1,9 +1,5 @@
 //! Shared wire-message helpers used by multiple integration test
 //! suites that exercise the `SessionUpdate::ChatAppended` path.
-//!
-//! Extracted from `state_transitions.rs` (Task 4 of the dispatcher
-//! collapse refactor; issue #67) so subsequent migration commits
-//! (`tool_lifecycle.rs` etc.) can share the same envelope builders.
 
 use forge_tui::agent::model;
 use forge_workspace::SessionUpdate;

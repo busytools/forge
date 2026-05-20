@@ -2,12 +2,10 @@
 //! per-project auto-memory file
 //! (`<config_dir>/projects/<project_key>/memory/MEMORY.md`).
 //!
-//! Lifted from forge-sdk's `session::paths` (2026-05-05). The
-//! filesystem reads are agent-side concerns — the SDK no longer
-//! exposes them on `Client`. The caller (typically a `ForgeSdkBridge`)
-//! threads the resolved `config_dir` in; the project-key sanitiser
-//! from `forge_agent::userdata::catalog::scan` keeps the on-disk
-//! layout aligned with what the `claude` CLI writes.
+//! The caller (typically a `ForgeSdkBridge`) threads the resolved
+//! `config_dir` in; the project-key sanitiser from
+//! `forge_agent::userdata::catalog::scan` keeps the on-disk layout
+//! aligned with what the `claude` CLI writes.
 
 use std::path::{Path, PathBuf};
 
@@ -16,7 +14,6 @@ use std::path::{Path, PathBuf};
 ///
 /// Always returns a resolved path; the caller decides whether the
 /// file exists.
-#[must_use]
 pub fn project_memory_path(config_dir: &Path, cwd: &Path) -> PathBuf {
     let key =
         crate::userdata::catalog::scan::project_key_for_directory(Some(&cwd.to_string_lossy()));

@@ -35,13 +35,11 @@ pub struct JsonRpcResponse {
 
 impl JsonRpcResponse {
     /// Build a successful response.
-    #[must_use]
     pub fn success(id: Value, result: JsonRpcResult) -> Self {
         Self { jsonrpc: "2.0".into(), id, result: Some(result), error: None }
     }
 
     /// Build an error response.
-    #[must_use]
     pub fn error(id: Value, error: McpError) -> Self {
         Self { jsonrpc: "2.0".into(), id, result: None, error: Some(error) }
     }

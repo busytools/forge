@@ -1,27 +1,27 @@
 //! Session-launcher + reader-pump helpers for the bridge layer.
 //!
-//! Plays the role of the upstream Node `bridge.ts`'s spawn dance and
-//! reader subtask: build `forge_sdk::Options` from the TUI's launch
-//! settings (with the `can_use_tool` callback wired in), spawn the
-//! `Client`, emit a synthetic `Connected` event, and pump the events
-//! stream from `forge_sdk::Client::spawn` into `AgentEvent::SdkMessage`.
-//! The bridge owns the resulting `Client`; this module exposes the
+//! Builds `forge_sdk::Options` from the TUI's launch settings (with
+//! the `can_use_tool` callback wired in), spawns the `Client`, emits a
+//! synthetic `Connected`, and pumps the event stream from
+//! `forge_sdk::Client::spawn` into `AgentEvent::SdkMessage`. The
+//! bridge owns the resulting `Client`; this module exposes the
 //! helpers it calls.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use forge_primitives::{PermissionDecision, ToolPermissionContext};
 use forge_sdk::{
-    Client, HookContext, HookDecision, HooksBuilder, Options, OptionsBuilder, PermissionDecision,
-    PermissionMode, PreToolUseInput, ToolPermissionContext, UserPromptSubmitInput,
+    Client, HookContext, HookDecision, HooksBuilder, Options, OptionsBuilder, PermissionMode,
+    PreToolUseInput, UserPromptSubmitInput,
 };
 use tokio::sync::{mpsc, oneshot};
+use tracing::Instrument;
 
 use crate::client::AgentEvent;
 use crate::forge_sdk_bridge::{ForgeSdkBridge, PendingQuestions, PendingResponses};
 use crate::{
-    commands as bridge_commands, session_lifecycle, state as bridge_state,
-    user_interaction as bridge_user_interaction,
+    commands as bridge_commands, session_lifecycle, user_interaction as bridge_user_interaction,
 };
 
 /// Spawn a fresh `Client` for `bridge` and start the reader subtask.
@@ -69,7 +69,7 @@ pub(crate) async fn spawn_session(
     let (client, events) = Client::spawn(options).await?;
     // For resume sessions the CLI flag carried the real session id —
     // prefer that over `Client::session_id()`, which is empty until
-    // `system/init` lands on the wire (per `spawn_inner` docs, after
+    // `system/init` lands on the wire (per `Client::spawn` docs, after
     // both the initialize control_response AND a user message). For
     // new sessions we also fall back to whatever Client captured
     // during its init loop (typically empty), and the App-side handler
@@ -80,12 +80,11 @@ pub(crate) async fn spawn_session(
     };
     bridge.session_id_slot_arc().lock().clone_from(&session_id);
 
-    // Source of truth for the session's cwd is the caller. Phase 1a
-    // workspace flow always passes the forge.toml-derived project
-    // path; the in-session /resume flow (out of scope for 1a) needs
-    // to source the cwd from the session's transcript before calling
-    // here. An empty cwd is a caller-side bug; log it and pass through
-    // — no `current_dir()` fallback, because that would mask the bug.
+    // The caller owns the session's cwd source — workspace flow
+    // passes the forge.toml-derived project path; in-session
+    // /resume sources the cwd from the session's transcript. An
+    // empty cwd is a caller-side bug; log it and pass through. No
+    // `current_dir()` fallback.
     if cwd.is_empty() {
         tracing::warn!(
             target: crate::logging::targets::BRIDGE_LIFECYCLE,
@@ -123,13 +122,13 @@ pub(crate) async fn spawn_session(
     // handle (Arc-backed, Clone) and stays on the bridge.
     let reader_event_tx = bridge.event_tx().clone();
     let reader_session_id = session_id.clone();
-    tokio::spawn(reader_loop(events, reader_event_tx, reader_session_id));
+    let span = tracing::info_span!("sdk_reader", session_id = %reader_session_id);
+    tokio::spawn(reader_loop(events, reader_event_tx, reader_session_id).instrument(span));
     Ok(())
 }
 
 /// Build the typed `Connected` envelope from the SDK's cached init data
 /// + the initialize `control_response`, and emit it onto `event_tx`.
-#[allow(clippy::too_many_arguments)]
 async fn emit_connected(
     event_tx: &mpsc::UnboundedSender<AgentEvent>,
     client: &Client,
@@ -175,8 +174,8 @@ async fn emit_connected(
         });
     let init_permission_mode = raw_permission_mode
         .as_deref()
-        .and_then(bridge_state::PermissionMode::from_wire)
-        .or(Some(bridge_state::PermissionMode::Ask));
+        .and_then(PermissionMode::from_wire)
+        .or(Some(PermissionMode::Ask));
     let supports_bypass = init_record
         .and_then(|r| r.get("supportsBypassPermissionsMode"))
         .and_then(serde_json::Value::as_bool)
@@ -204,30 +203,77 @@ async fn emit_connected(
         if messages.is_empty() { None } else { Some(messages) }
     });
 
-    let _ = event_tx.send(AgentEvent::Connected {
-        session_id: session_id.to_owned(),
-        cwd: cwd.to_owned(),
-        current_model,
-        available_models,
-        mode,
-        history_updates,
-    });
-
-    if let Some(account) = client
-        .account_info_from_init()
-        .or_else(|| crate::cloud::auth_status::account_info_from_shell(config_dir))
-    {
-        let forge_account =
-            display_name.map(|d| forge_primitives::ForgeAccountIdentity::new(d.to_owned()));
-        let _ = event_tx.send(AgentEvent::StatusSnapshot {
+    if event_tx
+        .send(AgentEvent::Connected {
             session_id: session_id.to_owned(),
-            account,
-            forge_account,
-        });
+            cwd: cwd.to_owned(),
+            current_model,
+            available_models,
+            mode,
+            history_updates,
+        })
+        .is_err()
+    {
+        tracing::warn!(
+            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+            session_id,
+            "Connected event channel closed before emit; session stuck on Connecting"
+        );
     }
 
-    let _ = event_tx
-        .send(AgentEvent::SessionsListed { sessions: list_recent_sessions(config_dir, cwd).await });
+    // account_info_from_shell shells out to `claude auth status` (~50ms
+    // blocking per the docstring) — wrap in spawn_blocking so the
+    // async worker doesn't park a tokio worker thread for the
+    // duration. account_info_from_init is in-memory, no I/O.
+    let account = if let Some(account) = client.account_info_from_init() {
+        Some(account)
+    } else {
+        let config_dir_owned = config_dir.to_owned();
+        match tokio::task::spawn_blocking(move || {
+            crate::cloud::auth_status::account_info_from_shell(&config_dir_owned)
+        })
+        .await
+        {
+            Ok(opt) => opt,
+            Err(join_err) => {
+                tracing::warn!(
+                    target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                    error = %join_err,
+                    "account_info_from_shell spawn_blocking task panicked"
+                );
+                None
+            }
+        }
+    };
+    if let Some(account) = account {
+        let forge_account =
+            display_name.map(|d| forge_primitives::ForgeAccountIdentity::new(d.to_owned()));
+        if event_tx
+            .send(AgentEvent::StatusSnapshot {
+                session_id: session_id.to_owned(),
+                account,
+                forge_account,
+            })
+            .is_err()
+        {
+            tracing::warn!(
+                target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                session_id,
+                "StatusSnapshot event channel closed before emit"
+            );
+        }
+    }
+
+    if event_tx
+        .send(AgentEvent::SessionsListed { sessions: list_recent_sessions(config_dir, cwd).await })
+        .is_err()
+    {
+        tracing::warn!(
+            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+            session_id,
+            "SessionsListed event channel closed before emit"
+        );
+    }
 }
 
 fn load_history_messages(
@@ -236,7 +282,7 @@ fn load_history_messages(
     cwd: &str,
     session_id: &str,
 ) -> Vec<forge_primitives::Message> {
-    let dir = if cwd.is_empty() { None } else { Some(cwd.to_owned()) };
+    let dir = if cwd.is_empty() { None } else { Some(cwd) };
     let messages =
         crate::userdata::catalog::scan::get_session_messages(config_dir, prev_session_id, dir);
     let raw: Vec<serde_json::Value> = messages
@@ -274,7 +320,7 @@ async fn list_recent_sessions(
 ) -> Vec<forge_primitives::SessionListEntry> {
     use forge_primitives::SessionListEntry;
     const MAX_RECENT: usize = 50;
-    let dir = if cwd.is_empty() { None } else { Some(cwd.to_owned()) };
+    let dir = if cwd.is_empty() { None } else { Some(cwd) };
     crate::userdata::catalog::scan::list_sessions(config_dir, dir, Some(MAX_RECENT), 0)
         .await
         .into_iter()
@@ -282,24 +328,11 @@ async fn list_recent_sessions(
             session_id: info.session_id,
             summary: info.summary,
             last_modified_ms: info.last_modified,
-            file_size_bytes: info.file_size.unwrap_or(0),
             cwd: info.cwd,
-            git_branch: info.git_branch,
             custom_title: info.custom_title,
             first_prompt: info.first_prompt,
         })
         .collect()
-}
-
-fn msg_session_id(msg: &forge_primitives::Message) -> Option<String> {
-    use forge_primitives::Message;
-    match msg {
-        Message::Assistant { session_id, .. }
-        | Message::User { session_id, .. }
-        | Message::Result { session_id, .. } => Some(session_id.clone()),
-        Message::System { session_id, .. } => session_id.clone(),
-        _ => None,
-    }
 }
 
 async fn reader_loop(
@@ -310,8 +343,10 @@ async fn reader_loop(
     while let Some(item) = events.recv().await {
         match item {
             Ok(msg) => {
-                let session_id_for_sdk_msg =
-                    msg_session_id(&msg).unwrap_or_else(|| session_id.clone());
+                let session_id_for_sdk_msg = match msg.session_id() {
+                    Some(sid) => sid.to_owned(),
+                    None => session_id.clone(),
+                };
                 if event_tx
                     .send(AgentEvent::SdkMessage { session_id: session_id_for_sdk_msg, msg })
                     .is_err()
@@ -339,6 +374,7 @@ pub(crate) async fn send_prompt(
     client: &Client,
     chunks: Vec<forge_primitives::PromptChunk>,
 ) -> anyhow::Result<()> {
+    debug_assert!(!chunks.is_empty(), "send_prompt called with empty chunks");
     if chunks.iter().all(|c| c.kind == "text") {
         let prompt: String =
             chunks.iter().filter_map(|c| c.value.as_str()).collect::<Vec<_>>().join("\n");
@@ -376,8 +412,6 @@ pub(crate) fn parse_permission_mode(mode: &str) -> anyhow::Result<PermissionMode
 // Permission / question round-trip
 // ----------------------------------------------------------------------------
 
-// Options-builder bridge — args mirror `forge_sdk::OptionsBuilder` setters 1:1. Wrapping doesn't simplify — caller would just unpack again.
-#[allow(clippy::too_many_arguments)]
 fn build_options_with_callback(
     cwd: &str,
     resume: Option<&str>,
@@ -388,16 +422,10 @@ fn build_options_with_callback(
     session_id_slot: Arc<parking_lot::Mutex<String>>,
     config_dir: &Path,
 ) -> Options {
-    // Observation hooks: passthrough callbacks that read CLI runtime
-    // state out of every PreToolUse and UserPromptSubmit hook input
-    // and emit `AgentEvent::HookObservation` upward without altering
-    // the dispatch outcome. Higher-fidelity than `system/status` for
-    // mode / effort drift detection (see #88, #89). PreToolUse also
-    // carries subagent attribution (`agent_id` + `agent_type`) so the
-    // TUI can label sub-agent tool calls with their type (#84
-    // partial). The callbacks own clones of `event_tx` and the
-    // `session_id` slot; the same slot the can_use_tool callback
-    // reads, kept in sync via the parking_lot mutex.
+    // Passthrough hooks emit `AgentEvent::HookObservation` for every
+    // PreToolUse / UserPromptSubmit input without altering the dispatch
+    // outcome. PreToolUse carries subagent attribution (`agent_id` +
+    // `agent_type`) — see #84.
     let pre_tool_observe_tx = event_tx.clone();
     let pre_tool_observe_sid = Arc::clone(&session_id_slot);
     let user_prompt_observe_tx = event_tx.clone();
@@ -491,22 +519,16 @@ fn build_options_with_callback(
         }
     }
 
-    // Effort default — forge runs at max effort by default unless the
-    // user has explicitly set otherwise. Resolution order:
+    // Effort resolution order:
     //   1. settings.json `effortLevel` (handled above).
-    //   2. `CLAUDE_CODE_EFFORT_LEVEL` env var — if set, defer to env
-    //      inheritance: don't pass `--effort` so the CLI picks up the
-    //      env var as-is. (Avoids the CLI flag overriding the user's
-    //      explicit env-var override.)
-    //   3. Otherwise: `--effort max`.
+    //   2. `CLAUDE_CODE_EFFORT_LEVEL` env var — leave it to env
+    //      inheritance so a user override isn't shadowed by `--effort`.
+    //   3. Default to `--effort max`.
     let effort_source: &'static str = if applied_effort.is_some() {
         "settings"
     } else {
         match std::env::var("CLAUDE_CODE_EFFORT_LEVEL") {
             Ok(env_value) if !env_value.trim().is_empty() => {
-                // Don't pass --effort flag; let env-var inheritance carry the
-                // value to the CLI (forge-sdk doesn't strip
-                // CLAUDE_CODE_EFFORT_LEVEL on spawn).
                 applied_effort = Some(env_value);
                 "env_var"
             }
@@ -549,7 +571,23 @@ async fn run_permission_request(
     pending: &PendingResponses,
 ) -> PermissionDecision {
     let (tx, rx) = oneshot::channel();
-    pending.lock().insert(ctx.tool_use_id.clone(), tx);
+    {
+        let mut guard = pending.lock();
+        // Guard against duplicate tool_use_id from upstream (CLI retry
+        // bug, protocol drift). Without this, the second insert
+        // silently drops the first oneshot and the original
+        // `run_permission_request` hangs until the channel is dropped.
+        if let Some(prev) = guard.insert(ctx.tool_use_id.clone(), tx) {
+            tracing::warn!(
+                target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                tool_use_id = %ctx.tool_use_id,
+                "duplicate tool_use_id on permission request; cancelling prior oneshot"
+            );
+            // Best-effort resolve the displaced sender so the prior
+            // run_permission_request future doesn't hang.
+            let _ = prev.send(PermissionDecision::deny("displaced by duplicate tool_use_id"));
+        }
+    }
     let event = synth_permission_request(&session_id, &ctx);
     if event_tx.send(event).is_err() {
         return PermissionDecision::deny("event channel closed");
@@ -586,7 +624,17 @@ async fn run_ask_user_question(
             total,
         );
         let (tx, rx) = oneshot::channel();
-        pending_questions.lock().insert(ctx.tool_use_id.clone(), tx);
+        {
+            let mut guard = pending_questions.lock();
+            if let Some(prev) = guard.insert(ctx.tool_use_id.clone(), tx) {
+                tracing::warn!(
+                    target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                    tool_use_id = %ctx.tool_use_id,
+                    "duplicate tool_use_id on question request; cancelling prior oneshot"
+                );
+                let _ = prev.send(QuestionOutcome::Cancelled);
+            }
+        }
         if event_tx
             .send(AgentEvent::QuestionRequest {
                 session_id: session_id.clone(),
@@ -608,7 +656,41 @@ async fn run_ask_user_question(
                     .filter(|opt| selected_option_ids.iter().any(|id| id == &opt.option_id))
                     .cloned()
                     .collect();
-                if selected.is_empty() || (!prompt.multi_select && selected.len() != 1) {
+                let notes_provided = annotation
+                    .as_ref()
+                    .and_then(|a| a.notes.as_deref())
+                    .is_some_and(|n| !n.trim().is_empty());
+                if selected.is_empty() {
+                    // "Tell Claude something else" path: no canonical
+                    // option matched, but if the user supplied notes the
+                    // answer is "Other" with the free-text in
+                    // annotations (matches Anthropic's schema where
+                    // Other is the always-available custom-text option).
+                    if notes_provided {
+                        answers.insert(
+                            prompt.question.clone(),
+                            serde_json::Value::String("Other".to_owned()),
+                        );
+                        if let Some(ann) = annotation {
+                            match serde_json::to_value(&ann) {
+                                Ok(v) => {
+                                    annotations.insert(prompt.question.clone(), v);
+                                }
+                                Err(err) => {
+                                    tracing::warn!(
+                                        target: "forge_agent::forge_sdk_worker",
+                                        question = %prompt.question,
+                                        error = %err,
+                                        "failed to serialise question annotation; dropping"
+                                    );
+                                }
+                            }
+                        }
+                        continue;
+                    }
+                    return PermissionDecision::deny("Question answer was invalid");
+                }
+                if !prompt.multi_select && selected.len() != 1 {
                     return PermissionDecision::deny("Question answer was invalid");
                 }
                 let answer =
@@ -616,9 +698,20 @@ async fn run_ask_user_question(
                 answers.insert(prompt.question.clone(), serde_json::Value::String(answer));
                 if let Some(annotation) =
                     bridge_user_interaction::derive_annotation(&selected, annotation.as_ref())
-                    && let Ok(v) = serde_json::to_value(&annotation)
                 {
-                    annotations.insert(prompt.question.clone(), v);
+                    match serde_json::to_value(&annotation) {
+                        Ok(v) => {
+                            annotations.insert(prompt.question.clone(), v);
+                        }
+                        Err(err) => {
+                            tracing::warn!(
+                                target: "forge_agent::forge_sdk_worker",
+                                question = %prompt.question,
+                                error = %err,
+                                "failed to serialise question annotation; dropping"
+                            );
+                        }
+                    }
                 }
             }
             QuestionOutcome::Cancelled => {
@@ -633,12 +726,12 @@ async fn run_ask_user_question(
 }
 
 fn synth_question_base_tool_call(ctx: &ToolPermissionContext) -> forge_primitives::ToolCall {
-    use forge_primitives::ToolCall;
+    use forge_primitives::{ToolCall, ToolCallStatus, ToolKind};
     ToolCall {
         tool_call_id: ctx.tool_use_id.clone(),
         title: bridge_user_interaction::ASK_USER_QUESTION_TOOL_NAME.to_owned(),
-        kind: "ask".to_owned(),
-        status: "pending".to_owned(),
+        kind: ToolKind::Other,
+        status: ToolCallStatus::Pending,
         content: Vec::new(),
         raw_input: Some(ctx.tool_input.clone()),
         raw_output: None,
@@ -654,7 +747,7 @@ pub(crate) fn deliver_permission_response(
     tool_call_id: &str,
     outcome: forge_primitives::PermissionOutcome,
 ) {
-    let Some(tx) = take_pending(pending, tool_call_id) else {
+    let Some(tx) = pending.lock().remove(tool_call_id) else {
         tracing::warn!(
             target: crate::logging::targets::APP_PERMISSION,
             tool_call_id,
@@ -663,13 +756,9 @@ pub(crate) fn deliver_permission_response(
         return;
     };
     let decision = match outcome {
-        forge_primitives::PermissionOutcome::Selected { option_id } => {
-            if option_id.eq_ignore_ascii_case("deny") || option_id.eq_ignore_ascii_case("reject") {
-                PermissionDecision::deny(format!("user denied: {option_id}"))
-            } else {
-                PermissionDecision::allow()
-            }
-        }
+        forge_primitives::PermissionOutcome::Selected {
+            action, notes_text, edited_input, ..
+        } => dispatch_permission_action(action, notes_text.as_deref().unwrap_or(""), edited_input),
         forge_primitives::PermissionOutcome::Cancelled => {
             PermissionDecision::deny("user cancelled")
         }
@@ -680,6 +769,36 @@ pub(crate) fn deliver_permission_response(
             tool_call_id,
             "PermissionResponse oneshot receiver dropped before delivery",
         );
+    }
+}
+
+/// Build the `PermissionDecision` for a submitted option's `action`.
+/// `notes_text` is the user's "tell Claude" feedback string (or
+/// empty); consumed only when the action is `Deny`. `edited_input` is
+/// the user's modified tool args; consumed only when the action is
+/// `AllowWithInput`.
+pub(crate) fn dispatch_permission_action(
+    action: forge_primitives::permission_ui::PermissionAction,
+    notes_text: &str,
+    edited_input: Option<serde_json::Value>,
+) -> PermissionDecision {
+    use forge_primitives::permission_ui::PermissionAction;
+    match action {
+        PermissionAction::Allow => PermissionDecision::allow(),
+        PermissionAction::AllowWithUpdates { updates } => {
+            PermissionDecision::allow().with_updated_permissions(updates)
+        }
+        PermissionAction::AllowWithInput => {
+            PermissionDecision::allow_with_input(edited_input.unwrap_or_default())
+        }
+        PermissionAction::Deny => {
+            let reason = if notes_text.trim().is_empty() {
+                "Denied by user".to_owned()
+            } else {
+                notes_text.trim().to_owned()
+            };
+            PermissionDecision::deny(reason)
+        }
     }
 }
 
@@ -705,20 +824,15 @@ pub(crate) fn deliver_question_response(
     }
 }
 
-fn take_pending(
-    pending: &PendingResponses,
-    tool_call_id: &str,
-) -> Option<oneshot::Sender<PermissionDecision>> {
-    pending.lock().remove(tool_call_id)
-}
-
 fn synth_permission_request(session_id: &str, ctx: &ToolPermissionContext) -> AgentEvent {
-    use forge_primitives::{PermissionDisplay, PermissionRequest, ToolCall};
+    use forge_primitives::{
+        PermissionDisplay, PermissionRequest, ToolCall, ToolCallStatus, ToolKind,
+    };
     let tool_call = ToolCall {
         tool_call_id: ctx.tool_use_id.clone(),
         title: ctx.tool_name.clone(),
-        kind: "execute".to_owned(),
-        status: "pending".to_owned(),
+        kind: ToolKind::Execute,
+        status: ToolCallStatus::Pending,
         content: Vec::new(),
         raw_input: Some(ctx.tool_input.clone()),
         raw_output: None,
@@ -731,47 +845,244 @@ fn synth_permission_request(session_id: &str, ctx: &ToolPermissionContext) -> Ag
         title: ctx.title.clone(),
         display_name: ctx.display_name.clone(),
         description: ctx.description.clone(),
+        decision_reason: ctx.decision_reason.clone(),
     };
     AgentEvent::PermissionRequest {
         session_id: session_id.to_owned(),
         request: PermissionRequest {
             tool_call,
-            options: default_permission_options(),
+            options: build_permission_options(ctx),
             display: Some(display),
         },
     }
 }
 
-fn default_permission_options() -> Vec<forge_primitives::PermissionOption> {
-    vec![
-        forge_primitives::PermissionOption {
-            option_id: "allow_once".to_owned(),
-            name: "Allow once".to_owned(),
-            description: None,
-            kind: "allow_once".to_owned(),
-        },
-        forge_primitives::PermissionOption {
-            option_id: "allow_always".to_owned(),
-            name: "Allow always".to_owned(),
-            description: None,
-            kind: "allow_always".to_owned(),
-        },
-        forge_primitives::PermissionOption {
-            option_id: "deny".to_owned(),
-            name: "Deny".to_owned(),
-            description: None,
-            kind: "reject_once".to_owned(),
-        },
-    ]
+/// Construct the contextual option list for a permission prompt.
+/// Derives "Allow always for X" / "Allow always & add dirs" / "Allow
+/// always & switch mode" entries from `ctx.suggestions`; adds the
+/// synthesized "Allow with edits" for editable tools and the universal
+/// "Tell Claude something else" escape hatch.
+///
+/// Wire reality (captured 2026-05-18; see baselines/sdk/2.1.117/):
+/// - `Read` outside workspace -> `addRules` with `{toolName, ruleContent}`.
+///   macOS sends BOTH `//tmp/**` AND `//private/tmp/**` -- these collapse
+///   into ONE display option whose action carries BOTH rules.
+/// - `Write` / `Edit` outside workspace -> `setMode -> acceptEdits` +
+///   `addDirectories` (NOT addRules). Different variant mix.
+/// - `ExitPlanMode` -> `suggestions: []` (empty). Plain Permission.
+fn build_permission_options(
+    ctx: &ToolPermissionContext,
+) -> Vec<forge_primitives::PermissionOption> {
+    use forge_primitives::PermissionOption;
+    use forge_primitives::permission_ui::{PermissionAction, PermissionOptionKind};
+    use forge_primitives::permissions::PermissionUpdate;
+
+    let mut opts: Vec<PermissionOption> = Vec::new();
+
+    // 1. Allow once is universal.
+    opts.push(PermissionOption {
+        option_id: "allow_once".to_owned(),
+        name: "Allow once".to_owned(),
+        kind: PermissionOptionKind::Allow,
+        action: PermissionAction::Allow,
+    });
+
+    // 2. Derive "Allow always" options from ctx.suggestions, with macOS
+    //    /tmp <-> /private/tmp dedupe for AddRules.
+    let canonical = canonicalize_suggestions(&ctx.suggestions);
+    for (i, update) in canonical.iter().enumerate() {
+        let (name, action) = match update {
+            PermissionUpdate::AddRules { rules, behavior, .. } => {
+                if *behavior != forge_primitives::permissions::PermissionBehavior::Allow {
+                    continue;
+                }
+                let summary = summarize_rules(rules);
+                (
+                    format!("Allow always for {} \u{b7} {}", ctx.tool_name, summary),
+                    PermissionAction::AllowWithUpdates { updates: vec![update.clone()] },
+                )
+            }
+            PermissionUpdate::AddDirectories { directories, .. } => {
+                let summary = summarize_dirs(directories);
+                (
+                    format!("Allow always & add {summary} to allowed dirs"),
+                    PermissionAction::AllowWithUpdates { updates: vec![update.clone()] },
+                )
+            }
+            PermissionUpdate::SetMode { mode, destination } => {
+                // Forge promotes claude's `acceptEdits` suggestion to
+                // `auto` (bypassPermissions) — the user has a global
+                // Auto/Ask toggle, so the partial-auto stepping stone
+                // is confusing. Other SetMode targets pass through.
+                let target_mode =
+                    if matches!(mode, forge_primitives::permission::PermissionMode::AcceptEdits) {
+                        forge_primitives::permission::PermissionMode::Auto
+                    } else {
+                        *mode
+                    };
+                let swapped_update =
+                    PermissionUpdate::SetMode { mode: target_mode, destination: *destination };
+                (
+                    format!("Allow always & switch to {} mode", target_mode.display_name()),
+                    PermissionAction::AllowWithUpdates { updates: vec![swapped_update] },
+                )
+            }
+            // RemoveRules / ReplaceRules / RemoveDirectories aren't
+            // user-facing prompt options. Skip.
+            PermissionUpdate::RemoveRules { .. }
+            | PermissionUpdate::ReplaceRules { .. }
+            | PermissionUpdate::RemoveDirectories { .. } => continue,
+        };
+        opts.push(PermissionOption {
+            option_id: format!("allow_always_{i}"),
+            name,
+            kind: PermissionOptionKind::Allow,
+            action,
+        });
+    }
+
+    // 3. "Allow with edits" for editable tools.
+    if is_editable_tool(&ctx.tool_name) {
+        opts.push(PermissionOption {
+            option_id: "allow_with_edits".to_owned(),
+            name: "Allow with edits".to_owned(),
+            kind: PermissionOptionKind::Edit,
+            action: PermissionAction::AllowWithInput,
+        });
+    }
+
+    // 4. Deny.
+    opts.push(PermissionOption {
+        option_id: "deny".to_owned(),
+        name: "Deny".to_owned(),
+        kind: PermissionOptionKind::Deny,
+        action: PermissionAction::Deny,
+    });
+
+    // 5. Universal: Tell Claude something else.
+    opts.push(PermissionOption {
+        option_id: "tell_claude".to_owned(),
+        name: "Tell Claude something else".to_owned(),
+        kind: PermissionOptionKind::Notes,
+        action: PermissionAction::Deny,
+    });
+
+    opts
+}
+
+/// Walk the suggestions list and collapse macOS `/tmp` <-> `/private/tmp`
+/// AddRules mirrors into one merged entry. Two AddRules suggestions with
+/// the same toolName + behavior + destination, whose rule_content differs
+/// only by the `/tmp/` <-> `/private/tmp/` prefix, are merged into a
+/// single AddRules whose `rules` vec contains BOTH entries so the CLI
+/// installs both rules even though the UI shows one option.
+fn canonicalize_suggestions(
+    suggestions: &[forge_primitives::permissions::PermissionUpdate],
+) -> Vec<forge_primitives::permissions::PermissionUpdate> {
+    use forge_primitives::permissions::PermissionUpdate;
+
+    let mut result: Vec<PermissionUpdate> = Vec::with_capacity(suggestions.len());
+    let mut skip: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+
+    for (i, update) in suggestions.iter().enumerate() {
+        if skip.contains(&i) {
+            continue;
+        }
+        let PermissionUpdate::AddRules { rules: rules_a, behavior: beh_a, destination: dst_a } =
+            update
+        else {
+            result.push(update.clone());
+            continue;
+        };
+        let mut merged_rules = rules_a.clone();
+        for (j, other) in suggestions.iter().enumerate().skip(i + 1) {
+            if skip.contains(&j) {
+                continue;
+            }
+            let PermissionUpdate::AddRules { rules: rules_b, behavior: beh_b, destination: dst_b } =
+                other
+            else {
+                continue;
+            };
+            if beh_a != beh_b || dst_a != dst_b {
+                continue;
+            }
+            if is_tmp_mirror_pair(rules_a, rules_b) {
+                merged_rules.extend(rules_b.iter().cloned());
+                skip.insert(j);
+            }
+        }
+        result.push(PermissionUpdate::AddRules {
+            rules: merged_rules,
+            behavior: *beh_a,
+            destination: *dst_a,
+        });
+    }
+    result
+}
+
+/// True if `rules_a` and `rules_b` differ only by the macOS
+/// `/tmp/` <-> `/private/tmp/` prefix in their rule_content strings.
+fn is_tmp_mirror_pair(
+    rules_a: &[forge_primitives::permissions::PermissionRuleValue],
+    rules_b: &[forge_primitives::permissions::PermissionRuleValue],
+) -> bool {
+    if rules_a.len() != rules_b.len() {
+        return false;
+    }
+    rules_a.iter().zip(rules_b.iter()).all(|(a, b)| {
+        if a.tool_name != b.tool_name {
+            return false;
+        }
+        match (a.rule_content.as_deref(), b.rule_content.as_deref()) {
+            (Some(ca), Some(cb)) => {
+                let na = normalize_tmp_path(ca);
+                let nb = normalize_tmp_path(cb);
+                na == nb && ca != cb
+            }
+            // No content on either side: not a path-prefix mirror.
+            _ => false,
+        }
+    })
+}
+
+/// Strip the `/private` prefix from `//private/tmp/...` rule_content so
+/// the macOS mirror normalizes to the canonical `/tmp/...` form.
+fn normalize_tmp_path(content: &str) -> String {
+    content.replacen("//private/tmp/", "//tmp/", 1)
+}
+
+fn summarize_rules(rules: &[forge_primitives::permissions::PermissionRuleValue]) -> String {
+    // Display: collapse the macOS /tmp + /private/tmp pair to "/tmp/**".
+    let mut shown: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for r in rules {
+        let label = r.rule_content.as_deref().map_or_else(
+            || format!("any {} invocation", r.tool_name),
+            |c| format!("paths matching {}", normalize_tmp_path(c)),
+        );
+        shown.insert(label);
+    }
+    shown.into_iter().collect::<Vec<_>>().join(", ")
+}
+
+fn summarize_dirs(dirs: &[String]) -> String {
+    // Display: collapse the macOS /tmp + /private/tmp pair.
+    let mut shown: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for d in dirs {
+        shown.insert(d.replacen("/private/tmp", "/tmp", 1));
+    }
+    shown.into_iter().collect::<Vec<_>>().join(", ")
+}
+
+/// Tools whose `tool_input` is meaningful to edit before approving.
+fn is_editable_tool(tool_name: &str) -> bool {
+    matches!(tool_name, "Bash" | "Edit" | "Write" | "MultiEdit" | "NotebookEdit")
 }
 
 pub(crate) fn clamp_percentage_to_u8(p: f64) -> u8 {
     if p.is_nan() {
         return 0;
     }
-    // The inline `clamp(0.0, 100.0).round()` guarantees the value
-    // fits in u8; clippy can't see through the clamp so the `as u8`
-    // truncation/sign lints fire spuriously.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let n = p.clamp(0.0, 100.0).round() as u8;
     n
@@ -781,11 +1092,12 @@ pub(crate) fn clamp_percentage_to_u8(p: f64) -> u8 {
 mod tests {
     use super::{
         PendingQuestions, PendingResponses, deliver_permission_response, deliver_question_response,
-        synth_permission_request, take_pending,
+        synth_permission_request,
     };
     use crate::client::AgentEvent;
-    use forge_primitives::{ElicitationAction, PermissionOutcome, QuestionOutcome};
-    use forge_sdk::ToolPermissionContext;
+    use forge_primitives::ToolPermissionContext;
+    use forge_primitives::permission_ui::PermissionAction;
+    use forge_primitives::{PermissionOutcome, QuestionOutcome};
     use parking_lot::Mutex;
     use serde_json::json;
     use std::collections::HashMap;
@@ -803,7 +1115,7 @@ mod tests {
     fn park(
         pending: &PendingResponses,
         id: &str,
-    ) -> oneshot::Receiver<forge_sdk::PermissionDecision> {
+    ) -> oneshot::Receiver<forge_primitives::PermissionDecision> {
         let (tx, rx) = oneshot::channel();
         pending.lock().insert(id.to_owned(), tx);
         rx
@@ -816,7 +1128,12 @@ mod tests {
         deliver_permission_response(
             &pending,
             "tu_1",
-            PermissionOutcome::Selected { option_id: "allow_once".to_owned() },
+            PermissionOutcome::Selected {
+                option_id: "allow_once".to_owned(),
+                action: PermissionAction::Allow,
+                notes_text: None,
+                edited_input: None,
+            },
         );
         let decision = rx.blocking_recv().expect("oneshot resolved");
         assert!(decision.is_allow());
@@ -829,7 +1146,48 @@ mod tests {
         deliver_permission_response(
             &pending,
             "tu_2",
-            PermissionOutcome::Selected { option_id: "deny".to_owned() },
+            PermissionOutcome::Selected {
+                option_id: "deny".to_owned(),
+                action: PermissionAction::Deny,
+                notes_text: None,
+                edited_input: None,
+            },
+        );
+        let decision = rx.blocking_recv().expect("oneshot resolved");
+        assert!(!decision.is_allow());
+    }
+
+    #[test]
+    fn permission_response_reject_once_drains_with_deny() {
+        let pending = fresh_pending();
+        let rx = park(&pending, "tu_r1");
+        deliver_permission_response(
+            &pending,
+            "tu_r1",
+            PermissionOutcome::Selected {
+                option_id: "reject_once".to_owned(),
+                action: PermissionAction::Deny,
+                notes_text: None,
+                edited_input: None,
+            },
+        );
+        let decision = rx.blocking_recv().expect("oneshot resolved");
+        assert!(!decision.is_allow());
+    }
+
+    #[test]
+    fn permission_response_reject_always_drains_with_deny() {
+        let pending = fresh_pending();
+        let rx = park(&pending, "tu_r2");
+        deliver_permission_response(
+            &pending,
+            "tu_r2",
+            PermissionOutcome::Selected {
+                option_id: "reject_always".to_owned(),
+                action: PermissionAction::Deny,
+                notes_text: None,
+                edited_input: None,
+            },
         );
         let decision = rx.blocking_recv().expect("oneshot resolved");
         assert!(!decision.is_allow());
@@ -850,7 +1208,12 @@ mod tests {
         deliver_permission_response(
             &pending,
             "missing",
-            PermissionOutcome::Selected { option_id: "allow_once".to_owned() },
+            PermissionOutcome::Selected {
+                option_id: "allow_once".to_owned(),
+                action: PermissionAction::Allow,
+                notes_text: None,
+                edited_input: None,
+            },
         );
         assert!(pending.lock().is_empty());
     }
@@ -922,8 +1285,13 @@ mod tests {
         assert_eq!(request.tool_call.tool_call_id, "tu_p1");
         assert_eq!(request.tool_call.title, "Bash");
         assert_eq!(request.tool_call.raw_input, Some(json!({ "command": "ls" })));
-        assert_eq!(request.options.len(), 3);
-        assert!(request.options.iter().any(|o| o.option_id == "deny"));
+        // Empty suggestions + editable tool (Bash) -> [allow_once,
+        // allow_with_edits, deny, tell_claude]. Shape assertion: first
+        // is allow_once, last is tell_claude, deny present.
+        let ids: Vec<&str> = request.options.iter().map(|o| o.option_id.as_str()).collect();
+        assert_eq!(ids.first().copied(), Some("allow_once"));
+        assert_eq!(ids.last().copied(), Some("tell_claude"));
+        assert!(ids.contains(&"deny"));
         let display = request.display.expect("display populated");
         assert_eq!(display.title.as_deref(), Some("Run shell command"));
         assert_eq!(display.display_name.as_deref(), Some("Bash"));
@@ -931,27 +1299,233 @@ mod tests {
     }
 
     #[test]
-    fn take_pending_removes_entry() {
-        let pending = fresh_pending();
-        let _rx = park(&pending, "tu_x");
-        assert!(take_pending(&pending, "tu_x").is_some());
-        assert!(take_pending(&pending, "tu_x").is_none());
+    fn synth_permission_request_surfaces_decision_reason() {
+        let c = ctx("Read", "tu_dr1", json!({ "file_path": "/tmp/x" })).with_display(
+            None,
+            Some("Path is outside allowed working directories".to_owned()),
+            None,
+            None,
+            None,
+        );
+        let event = synth_permission_request("session-1", &c);
+        let AgentEvent::PermissionRequest { request, .. } = event else {
+            panic!("expected PermissionRequest");
+        };
+        let display = request.display.expect("display populated");
+        assert_eq!(
+            display.decision_reason.as_deref(),
+            Some("Path is outside allowed working directories"),
+        );
     }
 
     #[test]
-    fn elicitation_action_variants_match_expected_wire_strings() {
-        let cases = [
-            (ElicitationAction::Accept, "accept"),
-            (ElicitationAction::Decline, "decline"),
-            (ElicitationAction::Cancel, "cancel"),
-        ];
-        for (action, expected) in cases {
-            let actual = match action {
-                ElicitationAction::Accept => "accept",
-                ElicitationAction::Decline => "decline",
-                ElicitationAction::Cancel => "cancel",
-            };
-            assert_eq!(actual, expected);
-        }
+    fn pending_lock_remove_drains_entry() {
+        let pending = fresh_pending();
+        let _rx = park(&pending, "tu_x");
+        assert!(pending.lock().remove("tu_x").is_some());
+        assert!(pending.lock().remove("tu_x").is_none());
+    }
+}
+
+#[cfg(test)]
+mod tests_permission_options {
+    use super::{build_permission_options, dispatch_permission_action};
+    use forge_primitives::options::PermissionMode;
+    use forge_primitives::permission_ui::{PermissionAction, PermissionOptionKind};
+    use forge_primitives::permissions::{
+        PermissionBehavior, PermissionRuleValue, PermissionUpdate, PermissionUpdateDestination,
+        ToolPermissionContext,
+    };
+    use serde_json::json;
+
+    fn mk_ctx(tool_name: &str, suggestions: Vec<PermissionUpdate>) -> ToolPermissionContext {
+        ToolPermissionContext::new(tool_name, json!({}), "tu-1", None).with_suggestions(suggestions)
+    }
+
+    #[test]
+    fn empty_suggestions_yields_baseline_options() {
+        // Non-editable tool (Read), no suggestions: Allow once, Deny, Tell Claude.
+        let opts = build_permission_options(&mk_ctx("Read", vec![]));
+        let ids: Vec<&str> = opts.iter().map(|o| o.option_id.as_str()).collect();
+        assert_eq!(ids, vec!["allow_once", "deny", "tell_claude"]);
+    }
+
+    #[test]
+    fn editable_tool_appends_allow_with_edits() {
+        let opts = build_permission_options(&mk_ctx("Bash", vec![]));
+        let ids: Vec<&str> = opts.iter().map(|o| o.option_id.as_str()).collect();
+        assert_eq!(ids, vec!["allow_once", "allow_with_edits", "deny", "tell_claude"]);
+        let edits = opts
+            .iter()
+            .find(|o| o.option_id == "allow_with_edits")
+            .expect("allow_with_edits present for editable tool");
+        assert_eq!(edits.kind, PermissionOptionKind::Edit);
+        assert_eq!(edits.action, PermissionAction::AllowWithInput);
+    }
+
+    #[test]
+    fn add_rules_suggestion_inserts_allow_always_option() {
+        let suggestion = PermissionUpdate::AddRules {
+            rules: vec![PermissionRuleValue {
+                tool_name: "Read".into(),
+                rule_content: Some("//tmp/**".into()),
+            }],
+            behavior: PermissionBehavior::Allow,
+            destination: Some(PermissionUpdateDestination::Session),
+        };
+        let opts = build_permission_options(&mk_ctx("Read", vec![suggestion]));
+        // Order: allow_once, allow_always_0 (rules), deny, tell_claude.
+        let ids: Vec<&str> = opts.iter().map(|o| o.option_id.as_str()).collect();
+        assert_eq!(ids, vec!["allow_once", "allow_always_0", "deny", "tell_claude"]);
+        let allow_always =
+            opts.iter().find(|o| o.option_id == "allow_always_0").expect("allow_always_0 present");
+        assert_eq!(allow_always.kind, PermissionOptionKind::Allow);
+        assert!(matches!(allow_always.action, PermissionAction::AllowWithUpdates { .. }));
+    }
+
+    #[test]
+    fn macos_tmp_mirror_suggestions_collapse_for_display_but_keep_both_rules() {
+        let suggestion_a = PermissionUpdate::AddRules {
+            rules: vec![PermissionRuleValue {
+                tool_name: "Read".into(),
+                rule_content: Some("//tmp/**".into()),
+            }],
+            behavior: PermissionBehavior::Allow,
+            destination: Some(PermissionUpdateDestination::Session),
+        };
+        let suggestion_b = PermissionUpdate::AddRules {
+            rules: vec![PermissionRuleValue {
+                tool_name: "Read".into(),
+                rule_content: Some("//private/tmp/**".into()),
+            }],
+            behavior: PermissionBehavior::Allow,
+            destination: Some(PermissionUpdateDestination::Session),
+        };
+        let opts = build_permission_options(&mk_ctx("Read", vec![suggestion_a, suggestion_b]));
+        // ONE "Allow always" option whose action carries BOTH rules — not
+        // two separate "Allow always" entries.
+        let allow_always_count =
+            opts.iter().filter(|o| o.option_id.starts_with("allow_always_")).count();
+        assert_eq!(
+            allow_always_count, 1,
+            "macOS /tmp + /private/tmp should collapse into one option"
+        );
+        let merged = opts
+            .iter()
+            .find(|o| o.option_id.starts_with("allow_always_"))
+            .expect("merged allow_always option present");
+        let PermissionAction::AllowWithUpdates { updates } = &merged.action else {
+            panic!("expected AllowWithUpdates");
+        };
+        // Both rules should be present in the merged update — count rule
+        // entries across all updates.
+        let total_rules: usize = updates
+            .iter()
+            .map(|u| match u {
+                PermissionUpdate::AddRules { rules, .. } => rules.len(),
+                _ => 0,
+            })
+            .sum();
+        assert_eq!(total_rules, 2, "merged action should carry both /tmp and /private/tmp rules");
+    }
+
+    #[test]
+    fn add_directories_suggestion_yields_allow_always_option() {
+        let suggestion = PermissionUpdate::AddDirectories {
+            directories: vec!["/tmp".into(), "/private/tmp".into()],
+            destination: Some(PermissionUpdateDestination::Session),
+        };
+        let opts = build_permission_options(&mk_ctx("Write", vec![suggestion]));
+        let ids: Vec<&str> = opts.iter().map(|o| o.option_id.as_str()).collect();
+        // Write is editable so allow_with_edits also appears.
+        assert!(ids.contains(&"allow_always_0"));
+        assert!(ids.contains(&"allow_with_edits"));
+    }
+
+    #[test]
+    fn set_mode_suggestion_promotes_accept_edits_to_auto() {
+        // Forge promotes the wire's `acceptEdits` SetMode suggestion
+        // to `auto` so the user sees a single coherent Auto/Ask toggle
+        // instead of a partial-auto stepping stone.
+        let suggestion = PermissionUpdate::SetMode {
+            mode: PermissionMode::AcceptEdits,
+            destination: Some(PermissionUpdateDestination::Session),
+        };
+        let opts = build_permission_options(&mk_ctx("Write", vec![suggestion]));
+        let switch_mode =
+            opts.iter().find(|o| o.option_id == "allow_always_0").expect("allow_always_0 present");
+        assert!(
+            switch_mode.name.to_lowercase().contains("auto"),
+            "expected 'Auto' in promoted option name; got: {}",
+            switch_mode.name
+        );
+        // Action carries the swapped SetMode with Auto target.
+        let PermissionAction::AllowWithUpdates { updates } = &switch_mode.action else {
+            panic!("expected AllowWithUpdates action; got {:?}", switch_mode.action);
+        };
+        let PermissionUpdate::SetMode { mode, .. } = &updates[0] else {
+            panic!("expected SetMode update");
+        };
+        assert_eq!(*mode, PermissionMode::Auto);
+    }
+
+    #[test]
+    fn set_mode_suggestion_keeps_non_accept_edits_modes() {
+        // Plan / Ask / Auto / BypassPermissions targets pass through
+        // unchanged — only acceptEdits is promoted.
+        let suggestion =
+            PermissionUpdate::SetMode { mode: PermissionMode::Plan, destination: None };
+        let opts = build_permission_options(&mk_ctx("Write", vec![suggestion]));
+        let switch_mode =
+            opts.iter().find(|o| o.option_id == "allow_always_0").expect("allow_always_0 present");
+        let PermissionAction::AllowWithUpdates { updates } = &switch_mode.action else {
+            panic!("expected AllowWithUpdates");
+        };
+        let PermissionUpdate::SetMode { mode, .. } = &updates[0] else {
+            panic!("expected SetMode");
+        };
+        assert_eq!(*mode, PermissionMode::Plan);
+    }
+
+    #[test]
+    fn dispatch_allow_action_yields_allow_decision() {
+        let decision = dispatch_permission_action(PermissionAction::Allow, "", None);
+        assert!(decision.is_allow());
+    }
+
+    #[test]
+    fn dispatch_deny_with_notes_passes_notes_as_reason() {
+        let decision =
+            dispatch_permission_action(PermissionAction::Deny, "use --dry-run first", None);
+        let reason = decision.reason().expect("deny carries reason");
+        assert_eq!(reason, "use --dry-run first");
+    }
+
+    #[test]
+    fn dispatch_deny_with_empty_notes_uses_default_reason() {
+        let decision = dispatch_permission_action(PermissionAction::Deny, "", None);
+        let reason = decision.reason().expect("deny carries reason");
+        assert_eq!(reason, "Denied by user");
+    }
+
+    #[test]
+    fn dispatch_allow_with_updates_attaches_them() {
+        let updates =
+            vec![PermissionUpdate::SetMode { mode: PermissionMode::Auto, destination: None }];
+        let decision = dispatch_permission_action(
+            PermissionAction::AllowWithUpdates { updates: updates.clone() },
+            "",
+            None,
+        );
+        assert_eq!(decision.updated_permissions(), updates.as_slice());
+    }
+
+    #[test]
+    fn dispatch_allow_with_input_uses_edited_value() {
+        let edited = json!({"command": "echo modified"});
+        let decision =
+            dispatch_permission_action(PermissionAction::AllowWithInput, "", Some(edited.clone()));
+        let updated_input = decision.updated_input().expect("allow_with_input carries value");
+        assert_eq!(updated_input, &edited);
     }
 }

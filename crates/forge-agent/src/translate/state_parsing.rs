@@ -10,12 +10,10 @@ use forge_primitives::{
 
 // JSON walking helpers.
 
-#[must_use]
 fn record(value: &Value) -> Option<&Map<String, Value>> {
     value.as_object()
 }
 
-#[must_use]
 fn number_field(record: &Map<String, Value>, keys: &[&str]) -> Option<f64> {
     for key in keys {
         if let Some(v) = record.get(*key).and_then(Value::as_f64)
@@ -36,17 +34,14 @@ fn parse_enum<T: serde::de::DeserializeOwned>(value: Option<&Value>) -> Option<T
     serde_json::from_value(value?.clone()).ok()
 }
 
-#[must_use]
 pub fn parse_fast_mode_state(value: Option<&Value>) -> Option<FastModeState> {
     parse_enum(value)
 }
 
-#[must_use]
 fn parse_rate_limit_status(value: Option<&Value>) -> Option<RateLimitStatus> {
     parse_enum(value)
 }
 
-#[must_use]
 pub fn parse_runtime_session_state(value: Option<&Value>) -> Option<RuntimeSessionState> {
     parse_enum(value)
 }
@@ -60,7 +55,6 @@ pub fn parse_runtime_session_state(value: Option<&Value>) -> Option<RuntimeSessi
 /// the explicit guard runs BEFORE the cast. The `>=` upper bound
 /// rejects `u64::MAX as f64` itself (which equals `2^64`, one past
 /// the largest representable u64) along with everything above.
-#[must_use]
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
 fn parse_clamped_u64(message: &Map<String, Value>, keys: &[&str]) -> Option<u64> {
     let v = number_field(message, keys)?;
@@ -79,7 +73,6 @@ fn parse_clamped_u64(message: &Map<String, Value>, keys: &[&str]) -> Option<u64>
 /// Optional sibling of [`parse_clamped_u64`] for u16-sized fields
 /// (status codes). Field-absent is silent (`None`); out-of-range
 /// value logs at debug and returns `None`.
-#[must_use]
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
 fn parse_clamped_u16_optional(message: &Map<String, Value>, keys: &[&str]) -> Option<u16> {
     let v = number_field(message, keys)?;
@@ -97,7 +90,6 @@ fn parse_clamped_u16_optional(message: &Map<String, Value>, keys: &[&str]) -> Op
     Some(v as u16)
 }
 
-#[must_use]
 fn parse_api_retry_error(value: Option<&Value>) -> ApiRetryError {
     match value.and_then(Value::as_str) {
         Some("authentication_failed") => ApiRetryError::AuthenticationFailed,
@@ -113,7 +105,6 @@ fn parse_api_retry_error(value: Option<&Value>) -> ApiRetryError {
 /// Mirrors upstream's `buildRateLimitUpdate(rateLimitInfo)`. Returns a
 /// typed `RateLimitUpdate` when the input has a recognised `status`,
 /// populating optional fields when present.
-#[must_use]
 pub fn build_rate_limit_update(
     rate_limit_info: Option<&Value>,
 ) -> Option<forge_primitives::RateLimitUpdate> {
@@ -151,7 +142,6 @@ pub fn build_rate_limit_update(
 /// rather than allowed to saturate silently. `f64::is_finite()`
 /// upstream filters NaN/inf, so the helpers only see finite values
 /// to guard.
-#[must_use]
 pub fn build_api_retry_update(
     message: &Map<String, Value>,
 ) -> Option<forge_primitives::ApiRetryUpdate> {
@@ -171,7 +161,6 @@ pub fn build_api_retry_update(
 }
 
 /// Mirrors `normalizeSettingsParseError(value)`.
-#[must_use]
 fn normalize_settings_parse_error(value: &Value) -> Option<SettingsParseErrorUpdate> {
     let r = record(value)?;
     let message = r.get("message").and_then(Value::as_str)?.trim();
@@ -185,7 +174,6 @@ fn normalize_settings_parse_error(value: &Value) -> Option<SettingsParseErrorUpd
 }
 
 /// Accepts either a single record or an array; returns all valid entries.
-#[must_use]
 pub fn normalize_settings_parse_errors(value: &Value) -> Vec<SettingsParseErrorUpdate> {
     if let Some(arr) = value.as_array() {
         return arr.iter().filter_map(normalize_settings_parse_error).collect();

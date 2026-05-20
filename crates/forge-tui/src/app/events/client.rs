@@ -1,6 +1,41 @@
 use super::{App, session, turn};
 use forge_workspace::{SessionKey, SessionUpdate};
 
+/// Side-effects shared by `Connected` and `SessionReplaced`: refresh
+/// MCP + status + oauth-credentials + context-usage snapshots, and
+/// kick a usage poll so the Projects pane's 5h/7d bars land within
+/// seconds of session start instead of staying on placeholder `—%`.
+fn post_connect_refreshes(app: &mut App) {
+    crate::app::config::refresh_mcp_snapshot(app);
+    crate::app::session_runtime::request_status_snapshot_refresh(app);
+    crate::app::session_runtime::request_oauth_credentials_snapshot_refresh(app);
+    crate::app::session_runtime::request_context_usage_refresh(app);
+    crate::app::usage::request_refresh_if_needed(app);
+}
+
+/// Apply `f` only when `cwd_raw` matches the app's current cwd; log
+/// and drop the event otherwise. Plugin lifecycle events are
+/// cwd-scoped and stale ones from a previous project must not affect
+/// the active project's inventory.
+fn dispatch_if_cwd_matches(
+    app: &mut App,
+    cwd_raw: &str,
+    event_name: &str,
+    f: impl FnOnce(&mut App),
+) {
+    if app.cwd_raw() == cwd_raw {
+        f(app);
+    } else {
+        tracing::debug!(
+            target: crate::logging::targets::APP_CONFIG,
+            event_name,
+            expected_cwd = %app.cwd_raw(),
+            received_cwd = %cwd_raw,
+            "stale-cwd plugin event dropped"
+        );
+    }
+}
+
 /// Compact discriminant name for a wire `Message`. Used by the
 /// `sdk_message_dropped` error log so a triage grep can see whether
 /// the dropped envelope was a Result (TurnComplete carrier),
@@ -49,9 +84,6 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
     {
         session.last_activity_at = std::time::Instant::now();
     }
-    // Smoke counter retained from Phase 1 to make the dispatcher hit
-    // count observable to integration tests.
-    app.workspace_update_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     match update {
         SessionUpdate::Spawning { key, project_name, cwd, display_name } => {
             apply_session_update_spawning(app, key, &project_name, &cwd, &display_name);
@@ -70,25 +102,15 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         } => {
             session::apply_session_update_connected(
                 app,
-                key,
+                &key,
                 session_id,
                 cwd,
                 current_model,
                 available_models,
                 mode,
-                history,
+                &history,
             );
-            crate::app::config::refresh_mcp_snapshot(app);
-            crate::app::session_runtime::request_status_snapshot_refresh(app);
-            crate::app::session_runtime::request_oauth_credentials_snapshot_refresh(app);
-            crate::app::session_runtime::request_context_usage_refresh(app);
-            // The account / status panel at the Projects pane bottom
-            // renders 5h + 7d usage bars on every frame. Before, usage
-            // only fetched when the user opened the /usage config tab;
-            // now we kick the fetch on every Connected so the bars
-            // land within seconds of session start instead of staying
-            // on placeholder `—%` until the user opens /usage.
-            crate::app::usage::request_refresh_if_needed(app);
+            post_connect_refreshes(app);
         }
         SessionUpdate::SessionReplaced {
             key,
@@ -101,64 +123,51 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         } => {
             session::apply_session_update_session_replaced(
                 app,
-                key,
+                &key,
                 session_id,
                 cwd,
                 current_model,
                 available_models,
                 mode,
-                history,
+                &history,
             );
-            crate::app::config::refresh_mcp_snapshot(app);
-            crate::app::session_runtime::request_status_snapshot_refresh(app);
-            crate::app::session_runtime::request_oauth_credentials_snapshot_refresh(app);
-            crate::app::session_runtime::request_context_usage_refresh(app);
-            // Same reason as the Connected arm above — keep the
-            // pane-footer 5h/7d bars fresh when the session is
-            // replaced (`/new` / `/resume` / `/login` flows).
-            crate::app::usage::request_refresh_if_needed(app);
+            post_connect_refreshes(app);
         }
         SessionUpdate::SessionsListed { key, sessions } => {
             session::apply_session_update_sessions_listed(app, &key, sessions);
         }
         SessionUpdate::AuthRequired { key, method_name, method_description } => {
-            session::apply_session_update_auth_required(app, key, method_name, method_description);
+            session::apply_session_update_auth_required(app, &key, method_name, method_description);
         }
         SessionUpdate::ConnectionFailed { key, message, fatal } => {
-            session::apply_session_update_connection_failed(app, key, message, fatal);
+            session::apply_session_update_connection_failed(app, &key, &message, fatal);
         }
         SessionUpdate::SlashCommandError { key, message } => {
-            session::apply_session_update_slash_command_error(app, key, message);
-        }
-        SessionUpdate::AuthCompleted { key } => {
-            session::apply_session_update_auth_completed(app, key);
-        }
-        SessionUpdate::LogoutCompleted { key } => {
-            session::apply_session_update_logout_completed(app, key);
+            session::apply_session_update_slash_command_error(app, &key, &message);
         }
         SessionUpdate::ServiceStatus { severity, message } => {
-            session::apply_session_update_service_status(app, severity, message);
+            session::apply_session_update_service_status(app, severity, &message);
         }
         SessionUpdate::FatalError(error) => {
             session::apply_session_update_fatal_error(app, error);
         }
         SessionUpdate::ForgeAccountIdentity { key, display_name } => {
-            apply_session_update_forge_account_identity(app, key, display_name);
+            apply_session_update_forge_account_identity(app, &key, display_name);
         }
         SessionUpdate::StatusSnapshot { session_id, account, forge_account } => {
-            apply_session_update_status_snapshot(app, session_id, account, forge_account);
+            apply_session_update_status_snapshot(app, &session_id, account, forge_account);
         }
         SessionUpdate::OauthCredentialsSnapshot { session_id, credentials } => {
-            apply_session_update_oauth_credentials_snapshot(app, session_id, credentials);
+            apply_session_update_oauth_credentials_snapshot(app, &session_id, credentials);
         }
-        SessionUpdate::ContextUsageSnapshot { session_id, percentage } => {
-            apply_session_update_context_usage_snapshot(app, session_id, percentage);
+        SessionUpdate::ContextUsageSnapshot { session_id, percentage, max_tokens } => {
+            apply_session_update_context_usage_snapshot(app, &session_id, percentage, max_tokens);
         }
         SessionUpdate::McpSnapshot { session_id, servers, error } => {
-            apply_session_update_mcp_snapshot(app, session_id, servers, error);
+            apply_session_update_mcp_snapshot(app, &session_id, servers, error);
         }
         SessionUpdate::ChatAppended { session_id, msg } => {
-            apply_session_update_chat_appended(app, session_id, msg);
+            apply_session_update_chat_appended(app, &session_id, msg);
         }
         SessionUpdate::HookObservation {
             session_id,
@@ -170,42 +179,33 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         } => {
             apply_session_update_hook_observation(
                 app,
-                session_id,
-                tool_use_id,
-                permission_mode,
-                effort,
-                agent_id,
-                agent_type,
+                &session_id,
+                tool_use_id.as_deref(),
+                permission_mode.as_deref(),
+                effort.as_deref(),
+                agent_id.as_deref(),
+                agent_type.as_deref(),
             );
         }
         SessionUpdate::RuntimeReloadCompleted { session_id } => {
-            apply_session_update_runtime_reload_completed(app, session_id);
+            apply_session_update_runtime_reload_completed(app, &session_id);
         }
         SessionUpdate::RuntimeReloadFailed { session_id, message } => {
-            apply_session_update_runtime_reload_failed(app, session_id, message);
+            apply_session_update_runtime_reload_failed(app, &session_id, &message);
         }
         SessionUpdate::PermissionRequest { key, tool_id, request } => {
-            turn::apply_session_update_permission_request(app, key, tool_id, request);
+            if let Some(session) = app.session_mut(&key) {
+                let prompt = crate::app::prompt::PromptState::from_permission(tool_id, request);
+                crate::app::prompt::enqueue_prompt(session, prompt);
+            }
+            crate::app::prompt::snapshot_draft_if_needed(app);
         }
         SessionUpdate::QuestionRequest { key, tool_id, request } => {
-            turn::apply_session_update_question_request(app, key, tool_id, request);
-        }
-        SessionUpdate::McpElicitationRequest { key, elicitation_id, request } => {
-            turn::apply_session_update_mcp_elicitation_request(app, key, elicitation_id, request);
-        }
-        SessionUpdate::McpElicitationCompleted { elicitation_id, server_name, .. } => {
-            if is_active_or_global {
-                crate::app::config::handle_mcp_elicitation_completed(
-                    app,
-                    &elicitation_id,
-                    server_name,
-                );
+            if let Some(session) = app.session_mut(&key) {
+                let prompt = crate::app::prompt::PromptState::from_question(tool_id, request);
+                crate::app::prompt::enqueue_prompt(session, prompt);
             }
-        }
-        SessionUpdate::McpAuthRedirect { redirect, .. } => {
-            if is_active_or_global {
-                crate::app::config::present_mcp_auth_redirect(app, redirect);
-            }
+            crate::app::prompt::snapshot_draft_if_needed(app);
         }
         SessionUpdate::McpOperationError { error, .. } => {
             if is_active_or_global {
@@ -213,74 +213,33 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
             }
         }
         SessionUpdate::TurnComplete { key, terminal_reason } => {
-            turn::apply_session_update_turn_complete(app, key, terminal_reason);
+            turn::apply_session_update_turn_complete(app, &key, terminal_reason);
         }
         SessionUpdate::TurnCancelled { key } => {
             turn::apply_session_update_turn_cancelled(app, &key);
         }
         SessionUpdate::TurnError { key, message, class, terminal_reason } => {
-            turn::apply_session_update_turn_error(app, key, message, class, terminal_reason);
-        }
-        SessionUpdate::UsageRefreshStarted { key } => {
-            crate::app::usage::apply_refresh_started_for(app, &key);
-        }
-        SessionUpdate::UsageSnapshotReceived { key, snapshot } => {
-            crate::app::usage::apply_refresh_success_for(app, &key, snapshot);
-        }
-        SessionUpdate::UsageRefreshFailed { key, message, source } => {
-            crate::app::usage::apply_refresh_failure_for(app, &key, message, source);
+            turn::apply_session_update_turn_error(app, &key, &message, class, terminal_reason);
         }
         SessionUpdate::PluginsInventoryUpdated { cwd_raw, snapshot, claude_path } => {
-            if app.cwd_raw() != cwd_raw {
-                tracing::debug!(
-                    target: crate::logging::targets::APP_CONFIG,
-                    event_name = "plugins_inventory_dropped",
-                    expected_cwd = %app.cwd_raw(),
-                    received_cwd = %cwd_raw,
-                    "plugins inventory for stale cwd dropped"
-                );
-            } else {
+            dispatch_if_cwd_matches(app, &cwd_raw, "plugins_inventory_dropped", |app| {
                 crate::app::plugins::apply_inventory_refresh_success(app, snapshot, claude_path);
-            }
+            });
         }
         SessionUpdate::PluginsInventoryRefreshFailed { cwd_raw, message } => {
-            if app.cwd_raw() != cwd_raw {
-                tracing::debug!(
-                    target: crate::logging::targets::APP_CONFIG,
-                    event_name = "plugins_inventory_failure_dropped",
-                    expected_cwd = %app.cwd_raw(),
-                    received_cwd = %cwd_raw,
-                    "plugins inventory failure for stale cwd dropped"
-                );
-            } else {
+            dispatch_if_cwd_matches(app, &cwd_raw, "plugins_inventory_failure_dropped", |app| {
                 crate::app::plugins::apply_inventory_refresh_failure(app, message);
-            }
+            });
         }
         SessionUpdate::PluginsCliActionSucceeded { cwd_raw, result } => {
-            if app.cwd_raw() != cwd_raw {
-                tracing::debug!(
-                    target: crate::logging::targets::APP_CONFIG,
-                    event_name = "plugins_cli_success_dropped",
-                    expected_cwd = %app.cwd_raw(),
-                    received_cwd = %cwd_raw,
-                    "plugins cli success for stale cwd dropped"
-                );
-            } else {
+            dispatch_if_cwd_matches(app, &cwd_raw, "plugins_cli_success_dropped", |app| {
                 crate::app::plugins::apply_cli_action_success(app, result);
-            }
+            });
         }
         SessionUpdate::PluginsCliActionFailed { cwd_raw, message } => {
-            if app.cwd_raw() != cwd_raw {
-                tracing::debug!(
-                    target: crate::logging::targets::APP_CONFIG,
-                    event_name = "plugins_cli_failure_dropped",
-                    expected_cwd = %app.cwd_raw(),
-                    received_cwd = %cwd_raw,
-                    "plugins cli failure for stale cwd dropped"
-                );
-            } else {
+            dispatch_if_cwd_matches(app, &cwd_raw, "plugins_cli_failure_dropped", |app| {
                 crate::app::plugins::apply_cli_action_failure(app, message);
-            }
+            });
         }
     }
     if is_active_or_global {
@@ -299,8 +258,6 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
 /// session is focused (the StartDefault target after `forge.toml`'s
 /// `focus = true` project's Connected fires), subsequent
 /// auto_start projects' `Spawning` events must NOT steal focus.
-/// This is what made multi-project auto_start drift to whichever
-/// project spawned last before the fix.
 ///
 /// Existing buckets (user clicked a stale row to re-wake) still
 /// switch focus — that's an explicit user action, not a passive
@@ -362,7 +319,7 @@ fn shorten_cwd_display_path(cwd: &str) -> String {
     cwd.to_owned()
 }
 
-/// Phase 3b — `SessionUpdate::ForgeAccountIdentity` reducer for the
+/// `SessionUpdate::ForgeAccountIdentity` reducer for the
 /// session bucket addressed by `key`. Active-session targeting goes
 /// through the existing
 /// [`crate::app::App::set_active_account_display_name`] accessor +
@@ -370,13 +327,12 @@ fn shorten_cwd_display_path(cwd: &str) -> String {
 /// updates promptly. Background-session targeting writes the
 /// display name directly into the bucket without touching the
 /// active-session welcome snapshot.
-#[allow(clippy::needless_pass_by_value)]
 pub(super) fn apply_session_update_forge_account_identity(
     app: &mut App,
-    key: SessionKey,
+    key: &SessionKey,
     display_name: String,
 ) {
-    apply_forge_account_identity_presentation(app, &key, display_name);
+    apply_forge_account_identity_presentation(app, key, display_name);
 }
 
 fn apply_forge_account_identity_presentation(
@@ -404,20 +360,19 @@ fn apply_forge_account_identity_presentation(
     }
 }
 
-/// Phase 3b — `SessionUpdate::StatusSnapshot` reducer for the
+/// `SessionUpdate::StatusSnapshot` reducer for the
 /// session bucket addressed by `session_id`. Routes through the
 /// active-session accessors when targeting the rendered session
 /// (so welcome + Status panel rerender promptly); writes directly
 /// into the bucket otherwise so background sessions accumulate
 /// state silently.
-#[allow(clippy::needless_pass_by_value)]
 pub(super) fn apply_session_update_status_snapshot(
     app: &mut App,
-    session_id: String,
+    session_id: &str,
     account: forge_primitives::AccountInfo,
     forge_account: Option<forge_primitives::ForgeAccountIdentity>,
 ) {
-    apply_status_snapshot_presentation(app, &session_id, account, forge_account);
+    apply_status_snapshot_presentation(app, session_id, account, forge_account);
 }
 
 fn apply_status_snapshot_presentation(
@@ -471,17 +426,16 @@ fn apply_status_snapshot_presentation(
     );
 }
 
-/// Phase 3b — `SessionUpdate::OauthCredentialsSnapshot` reducer for
+/// `SessionUpdate::OauthCredentialsSnapshot` reducer for
 /// the session bucket addressed by `session_id`. Active-session
 /// targeting goes through [`crate::app::App::set_oauth_credentials`];
 /// background-session targeting writes directly into the bucket.
-#[allow(clippy::needless_pass_by_value)]
 pub(super) fn apply_session_update_oauth_credentials_snapshot(
     app: &mut App,
-    session_id: String,
+    session_id: &str,
     credentials: Option<forge_primitives::cloud::oauth_credentials::OauthCredentials>,
 ) {
-    apply_oauth_credentials_snapshot_presentation(app, &session_id, credentials);
+    apply_oauth_credentials_snapshot_presentation(app, session_id, credentials);
 }
 
 fn apply_oauth_credentials_snapshot_presentation(
@@ -520,33 +474,35 @@ fn apply_oauth_credentials_snapshot_presentation(
     );
 }
 
-/// Phase 3b — `SessionUpdate::ContextUsageSnapshot` reducer for the
+/// `SessionUpdate::ContextUsageSnapshot` reducer for the
 /// session bucket addressed by `session_id`. Active-session
 /// targeting goes through
 /// [`crate::app::session_runtime::apply_context_usage_snapshot`] so
 /// the in-flight refresh chaining still kicks in. Background-session
 /// targeting writes directly into the bucket and skips the refresh
 /// chain (a background session re-requests on next active switch).
-#[allow(clippy::needless_pass_by_value)]
 pub(super) fn apply_session_update_context_usage_snapshot(
     app: &mut App,
-    session_id: String,
+    session_id: &str,
     percentage: Option<u8>,
+    max_tokens: Option<u64>,
 ) {
-    apply_context_usage_snapshot_presentation(app, &session_id, percentage);
+    apply_context_usage_snapshot_presentation(app, session_id, percentage, max_tokens);
 }
 
 fn apply_context_usage_snapshot_presentation(
     app: &mut App,
     session_id: &str,
     percentage: Option<u8>,
+    max_tokens: Option<u64>,
 ) {
     let session_key = SessionKey::from_session_id(session_id.to_owned());
     let is_active = app.active_session_key.as_ref() == Some(&session_key);
     if is_active {
-        crate::app::session_runtime::apply_context_usage_snapshot(app, percentage);
+        crate::app::session_runtime::apply_context_usage_snapshot(app, percentage, max_tokens);
     } else if let Some(session) = app.session_mut(&session_key) {
         session.session_usage.context_usage_percent = percentage;
+        session.session_usage.context_max_tokens = max_tokens;
         session.session_usage.context_usage_in_flight = false;
         // Drop the refresh-pending flag too — once a fresh value
         // landed, queueing another refresh is wasteful for a
@@ -564,20 +520,19 @@ fn apply_context_usage_snapshot_presentation(
     }
 }
 
-/// Phase 3b — `SessionUpdate::McpSnapshot` reducer for the session
+/// `SessionUpdate::McpSnapshot` reducer for the session
 /// bucket addressed by `session_id`. Active-session targeting also
 /// reconciles the App-global MCP auth-redirect overlay and selection
 /// index. Background-session targeting only writes the per-session
 /// MCP state into the bucket — the overlay reconciliation is
 /// inherently active-session UI.
-#[allow(clippy::needless_pass_by_value)]
 pub(super) fn apply_session_update_mcp_snapshot(
     app: &mut App,
-    session_id: String,
+    session_id: &str,
     servers: Vec<forge_primitives::McpServerStatus>,
     error: Option<String>,
 ) {
-    apply_mcp_snapshot_presentation(app, &session_id, servers, error);
+    apply_mcp_snapshot_presentation(app, session_id, servers, error);
 }
 
 fn apply_mcp_snapshot_presentation(
@@ -599,23 +554,6 @@ fn apply_mcp_snapshot_presentation(
         }
         app.config.mcp_selected_server_index =
             app.config.mcp_selected_server_index.min(app.mcp().servers.len().saturating_sub(1));
-        if let Some(overlay) = app.config.mcp_auth_redirect_overlay() {
-            let server_name = overlay.redirect.server_name.clone();
-            if let Some(server) = app.mcp().servers.iter().find(|server| server.name == server_name)
-                && !matches!(
-                    server.status,
-                    forge_primitives::McpServerConnectionStatus::NeedsAuth
-                        | forge_primitives::McpServerConnectionStatus::Pending
-                )
-            {
-                if matches!(server.status, forge_primitives::McpServerConnectionStatus::Connected) {
-                    app.config.status_message =
-                        Some(format!("{} authenticated successfully.", server.name));
-                    app.config.last_error = None;
-                }
-                app.config.overlay = None;
-            }
-        }
     } else if let Some(session) = app.session_mut(&session_key) {
         session.mcp.servers = servers;
         session.mcp.in_flight = false;
@@ -643,24 +581,23 @@ fn apply_mcp_snapshot_presentation(
     );
 }
 
-/// Phase 3b — `SessionUpdate::ChatAppended` reducer for the session
-/// bucket addressed by `session_id`. The SDK message dispatcher is
-/// deeply intertwined with active-session UI accessors (chat buffer,
-/// tool-call indices, viewport) so the active-session temp-swap
-/// inside [`apply_sdk_message_presentation`] is the Phase 4 cleanup
-/// target, not this phase's.
-#[allow(clippy::needless_pass_by_value)]
+/// `SessionUpdate::ChatAppended` reducer for the session bucket
+/// addressed by `session_id`. The SDK message dispatcher uses
+/// active-session UI accessors (chat buffer, tool-call indices,
+/// viewport); [`apply_sdk_message_presentation`] temp-swaps
+/// `active_session_key` to route background sessions through the
+/// same path.
 pub(super) fn apply_session_update_chat_appended(
     app: &mut App,
-    session_id: String,
+    session_id: &str,
     msg: forge_primitives::Message,
 ) {
-    apply_sdk_message_presentation(app, &session_id, msg);
+    apply_sdk_message_presentation(app, session_id, msg);
 }
 
 fn apply_sdk_message_presentation(app: &mut App, session_id: &str, msg: forge_primitives::Message) {
     // For new sessions the CLI doesn't emit `system/init` until AFTER
-    // the first user message lands (per `spawn_inner` docs), so
+    // the first user message lands (per `Client::spawn` docs), so
     // `Client::session_id()` is empty at spawn time and that empty
     // value rides through `Connected` onto `app.session_id`. The
     // first wire message that DOES carry a real id (Assistant /
@@ -734,7 +671,7 @@ fn apply_sdk_message_presentation(app: &mut App, session_id: &str, msg: forge_pr
     super::sdk_message::handle_sdk_message(app, msg);
 }
 
-/// Phase 3b — `SessionUpdate::HookObservation` reducer for the
+/// `SessionUpdate::HookObservation` reducer for the
 /// session bucket addressed by `session_id`. Active-session
 /// targeting goes through the App accessors so the mode/effort
 /// chips update promptly. Background-session targeting writes
@@ -742,24 +679,23 @@ fn apply_sdk_message_presentation(app: &mut App, session_id: &str, msg: forge_pr
 /// for a future switch. Wraps the `String` fields from the
 /// workspace payload into `&str` borrows before delegating to the
 /// shared presentation helper.
-#[allow(clippy::needless_pass_by_value)]
 pub(super) fn apply_session_update_hook_observation(
     app: &mut App,
-    session_id: String,
-    tool_use_id: Option<String>,
-    permission_mode: Option<String>,
-    effort: Option<String>,
-    agent_id: Option<String>,
-    agent_type: Option<String>,
+    session_id: &str,
+    tool_use_id: Option<&str>,
+    permission_mode: Option<&str>,
+    effort: Option<&str>,
+    agent_id: Option<&str>,
+    agent_type: Option<&str>,
 ) {
     apply_hook_observation_presentation(
         app,
-        &session_id,
-        tool_use_id.as_deref(),
-        permission_mode.as_deref(),
-        effort.as_deref(),
-        agent_id.as_deref(),
-        agent_type.as_deref(),
+        session_id,
+        tool_use_id,
+        permission_mode,
+        effort,
+        agent_id,
+        agent_type,
     );
 }
 
@@ -773,7 +709,7 @@ fn apply_hook_observation_presentation(
     agent_type: Option<&str>,
 ) {
     use crate::agent::model::EffortLevel;
-    use crate::agent::state::PermissionMode;
+    use forge_workspace::PermissionMode;
 
     let session_key = SessionKey::from_session_id(session_id.to_owned());
     let is_active = app.active_session_key.as_ref() == Some(&session_key);
@@ -831,15 +767,14 @@ fn apply_hook_observation_presentation(
     }
 }
 
-/// Phase 3b — `SessionUpdate::RuntimeReloadCompleted` reducer for the
+/// `SessionUpdate::RuntimeReloadCompleted` reducer for the
 /// session bucket addressed by `session_id`. The plugins config tab
 /// is App-global UI scoped to the active session — a background
 /// reload that completes silently is a no-op on the UI but logged
 /// so the operator can confirm the bridge dispatched it. Unknown-
 /// session events log a warn-level breadcrumb.
-#[allow(clippy::needless_pass_by_value)]
-pub(super) fn apply_session_update_runtime_reload_completed(app: &mut App, session_id: String) {
-    apply_runtime_reload_completed_presentation(app, &session_id);
+pub(super) fn apply_session_update_runtime_reload_completed(app: &mut App, session_id: &str) {
+    apply_runtime_reload_completed_presentation(app, session_id);
 }
 
 fn apply_runtime_reload_completed_presentation(app: &mut App, session_id: &str) {
@@ -867,16 +802,15 @@ fn apply_runtime_reload_completed_presentation(app: &mut App, session_id: &str) 
     }
 }
 
-/// Phase 3b — `SessionUpdate::RuntimeReloadFailed` reducer for the
+/// `SessionUpdate::RuntimeReloadFailed` reducer for the
 /// session bucket addressed by `session_id`. Same routing shape as
 /// [`apply_session_update_runtime_reload_completed`].
-#[allow(clippy::needless_pass_by_value)]
 pub(super) fn apply_session_update_runtime_reload_failed(
     app: &mut App,
-    session_id: String,
-    message: String,
+    session_id: &str,
+    message: &str,
 ) {
-    apply_runtime_reload_failed_presentation(app, &session_id, &message);
+    apply_runtime_reload_failed_presentation(app, session_id, message);
 }
 
 fn apply_runtime_reload_failed_presentation(app: &mut App, session_id: &str, message: &str) {
@@ -905,7 +839,7 @@ fn apply_runtime_reload_failed_presentation(app: &mut App, session_id: &str, mes
     }
 }
 
-/// Phase 3a — migrate the bucket at `from` over to `to` when the
+/// migrate the bucket at `from` over to `to` when the
 /// workspace renames a synthetic spawn key onto the real claude
 /// session UUID. Updates `active_session_key` only when it
 /// currently points at `from` (background-spawn case must NOT
@@ -974,7 +908,7 @@ mod tests {
         if let Some(ws) = app.workspace.as_ref() {
             for k in [&key_a, &key_b] {
                 let (h, _) = forge_workspace::Workspace::testing_stub_handle();
-                let dom = ws.register_domain_session_for_test(k.clone(), std::sync::Arc::new(h));
+                let dom = ws.register_domain_session(k.clone(), Some(std::sync::Arc::new(h)));
                 dom.lock().session_id = Some(forge_primitives::SessionId::new(k.as_str()));
             }
         }
@@ -1072,7 +1006,7 @@ mod tests {
         app.sessions.insert(key_a.clone(), UiSession::new(key_a.clone()));
         if let Some(ws) = app.workspace.as_ref() {
             let (h, _) = forge_workspace::Workspace::testing_stub_handle();
-            let dom = ws.register_domain_session_for_test(key_a.clone(), std::sync::Arc::new(h));
+            let dom = ws.register_domain_session(key_a.clone(), Some(std::sync::Arc::new(h)));
             dom.lock().session_id = Some(forge_primitives::SessionId::new("a"));
         }
         app.active_session_key = Some(key_a.clone());
@@ -1137,6 +1071,7 @@ mod tests {
             forge_workspace::SessionUpdate::ContextUsageSnapshot {
                 session_id: key_b.as_str().to_owned(),
                 percentage: Some(42),
+                max_tokens: Some(200_000),
             },
         );
         assert_eq!(
@@ -1156,6 +1091,7 @@ mod tests {
             forge_workspace::SessionUpdate::ContextUsageSnapshot {
                 session_id: key_a.as_str().to_owned(),
                 percentage: Some(7),
+                max_tokens: Some(200_000),
             },
         );
         assert_eq!(
@@ -1314,10 +1250,7 @@ mod tests {
         {
             let ws = app.workspace.as_ref().expect("workspace stub present in test_default");
             let (stub_handle, _) = forge_workspace::Workspace::testing_stub_handle();
-            ws.register_domain_session_for_test(
-                synth_key.clone(),
-                std::sync::Arc::new(stub_handle),
-            );
+            ws.register_domain_session(synth_key.clone(), Some(std::sync::Arc::new(stub_handle)));
         }
 
         apply_session_update(
@@ -1348,11 +1281,9 @@ mod tests {
         );
     }
 
-    /// User-visible bug fix verification: after the spawning reducer
-    /// runs, `is_animating` (the render-loop probe) sees a session in
-    /// `Spawning` lifecycle and keeps the spinner ticking. Pre-fix,
-    /// the lifecycle state lived on `DomainSession` and a synth-key
-    /// race left it stuck at `Idle`, freezing the spinner on wake-up.
+    /// After the spawning reducer runs, `is_animating` (the
+    /// render-loop probe) sees the session in `Spawning` lifecycle and
+    /// keeps the spinner ticking.
     #[test]
     fn spinner_animates_during_spawning() {
         let mut app = App::test_default();
@@ -1754,5 +1685,80 @@ mod tests {
         );
         assert!(app.file_index_mut().entries.is_empty(), "stale entries cleared on restart");
         assert!(!app.file_index_mut().scan_finished, "scan_finished reset on restart");
+    }
+
+    /// `SessionUpdate::PermissionRequest` enqueues a `PromptState`
+    /// onto the target session's `prompt_queue`; the unified-prompt
+    /// dock reads from that queue.
+    #[test]
+    fn permission_request_event_enqueues_prompt_on_target_session() {
+        let mut app = App::test_default();
+        let (key_a, _key_b) = seed_two_sessions(&mut app);
+        let request = crate::app::prompt::tests::make_permission_request();
+        apply_session_update(
+            &mut app,
+            SessionUpdate::PermissionRequest {
+                key: key_a.clone(),
+                tool_id: "tc-evt".into(),
+                request,
+            },
+        );
+        let session = app.sessions.get(&key_a).expect("session a");
+        assert_eq!(session.prompt_queue.len(), 1, "prompt enqueued onto queue");
+        assert_eq!(
+            session.prompt_queue.front().expect("head").tool_id,
+            "tc-evt",
+            "queued prompt carries the event's tool_id"
+        );
+    }
+
+    /// Same shape as the permission test for `QuestionRequest`.
+    #[test]
+    fn question_request_event_enqueues_prompt_on_target_session() {
+        let mut app = App::test_default();
+        let (key_a, _key_b) = seed_two_sessions(&mut app);
+        let request = crate::app::prompt::tests::make_question_request(false);
+        apply_session_update(
+            &mut app,
+            SessionUpdate::QuestionRequest {
+                key: key_a.clone(),
+                tool_id: "tc-q-evt".into(),
+                request,
+            },
+        );
+        let session = app.sessions.get(&key_a).expect("session a");
+        assert_eq!(session.prompt_queue.len(), 1, "question prompt enqueued");
+        assert_eq!(
+            session.prompt_queue.front().expect("head").tool_id,
+            "tc-q-evt",
+            "queued question prompt carries the event's tool_id"
+        );
+    }
+
+    /// Background-session permission requests must enqueue onto the
+    /// target bucket's queue, not the active bucket's queue. Same
+    /// routing rule as the rest of the multiplexer.
+    #[test]
+    fn permission_request_event_enqueues_on_background_target_only() {
+        let mut app = App::test_default();
+        let (key_a, key_b) = seed_two_sessions(&mut app);
+        let request = crate::app::prompt::tests::make_permission_request();
+        apply_session_update(
+            &mut app,
+            SessionUpdate::PermissionRequest {
+                key: key_b.clone(),
+                tool_id: "tc-bg".into(),
+                request,
+            },
+        );
+        assert_eq!(
+            app.sessions.get(&key_b).expect("b").prompt_queue.len(),
+            1,
+            "background target enqueues onto its own queue"
+        );
+        assert!(
+            app.sessions.get(&key_a).expect("a").prompt_queue.is_empty(),
+            "active session must not receive a background bucket's prompt"
+        );
     }
 }

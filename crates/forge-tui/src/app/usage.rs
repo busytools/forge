@@ -1,18 +1,12 @@
 use std::time::{Duration, SystemTime};
 
-use crate::app::{App, UsageSnapshot, UsageSourceKind, UsageWindow};
-use forge_workspace::SessionKey;
+use crate::app::{App, UsageSnapshot, UsageWindow};
 
 /// Pull the latest cached usage snapshot for the active session's
 /// account out of the workspace's account-usage pool, populating
 /// `UsageState` on the active session. The pool is refreshed every
 /// 30 s by the workspace's background poller; this function is
 /// purely a sync read-and-copy — no fetch task, no TTL logic.
-///
-/// Historical note: this used to spawn a per-session OAuth fetch on
-/// a 120 s TTL. That path is retired — the workspace now owns the
-/// usage cache as the single source of truth and polls all
-/// configured accounts on a shared cadence. See `Workspace::start_usage_poller`.
 pub(crate) fn request_refresh_if_needed(app: &mut App) {
     let Some(workspace) = app.workspace.as_ref() else { return };
     let Some(name) = app.active_account_display_name() else { return };
@@ -27,15 +21,6 @@ pub(crate) fn request_refresh_if_needed(app: &mut App) {
     if changed {
         app.needs_redraw = true;
     }
-}
-
-/// Manual-refresh entry point kept for callers (welcome / settings
-/// surfaces). Same shape as the if-needed variant — the workspace
-/// pool is the only source of usage now, so a "manual refresh"
-/// just re-reads it. The workspace poller's 30 s cadence is the
-/// floor on how stale a snapshot can be.
-pub(crate) fn request_refresh(app: &mut App) {
-    request_refresh_if_needed(app);
 }
 
 /// Compare two `UsageSnapshot` options for equality on the fields
@@ -68,62 +53,12 @@ fn window_eq(a: Option<&UsageWindow>, b: Option<&UsageWindow>) -> bool {
     }
 }
 
-pub(crate) fn apply_refresh_started_for(app: &mut App, key: &SessionKey) {
-    let Some(slot) = app.usage_mut_for(key) else {
-        return;
-    };
-    slot.in_flight = true;
-    slot.last_error = None;
-    slot.last_attempted_source = None;
-}
-
-pub(crate) fn apply_refresh_success_for(app: &mut App, key: &SessionKey, snapshot: UsageSnapshot) {
-    let Some(slot) = app.usage_mut_for(key) else {
-        return;
-    };
-    slot.last_attempted_source = Some(snapshot.source);
-    slot.snapshot = Some(snapshot);
-    slot.in_flight = false;
-    slot.last_error = None;
-}
-
-pub(crate) fn apply_refresh_failure_for(
-    app: &mut App,
-    key: &SessionKey,
-    message: String,
-    source: UsageSourceKind,
-) {
-    let Some(slot) = app.usage_mut_for(key) else {
-        return;
-    };
-    slot.in_flight = false;
-    slot.last_error = Some(message);
-    slot.last_attempted_source = Some(source);
-}
-
 pub(crate) fn reset_for_session_change(app: &mut App) {
     let slot = app.usage_mut();
     slot.snapshot = None;
     slot.in_flight = false;
     slot.last_error = None;
     slot.last_attempted_source = None;
-}
-
-pub(crate) fn visible_windows(snapshot: &UsageSnapshot) -> Vec<&UsageWindow> {
-    let mut windows = Vec::new();
-    if let Some(window) = snapshot.five_hour.as_ref() {
-        windows.push(window);
-    }
-    if let Some(window) = snapshot.seven_day.as_ref() {
-        windows.push(window);
-    }
-    if let Some(window) = snapshot.seven_day_sonnet.as_ref() {
-        windows.push(window);
-    }
-    if let Some(window) = snapshot.seven_day_opus.as_ref() {
-        windows.push(window);
-    }
-    windows
 }
 
 pub(crate) fn format_window_reset(window: &UsageWindow) -> Option<String> {
@@ -164,7 +99,6 @@ fn format_remaining_until(target: SystemTime) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::UsageSourceKind;
 
     #[test]
     fn formats_day_scale_reset() {
@@ -191,32 +125,5 @@ mod tests {
             format_window_reset(&window),
             Some("Resets Feb 12 at 1:30pm (Asia/Calcutta)".to_owned())
         );
-    }
-
-    #[test]
-    fn collects_only_present_windows() {
-        let snapshot = UsageSnapshot {
-            source: UsageSourceKind::Oauth,
-            fetched_at: SystemTime::now(),
-            five_hour: Some(UsageWindow {
-                label: "5-hour",
-                utilization: 10.0,
-                resets_at: None,
-                reset_description: None,
-            }),
-            seven_day: None,
-            seven_day_opus: Some(UsageWindow {
-                label: "7-day Opus",
-                utilization: 30.0,
-                resets_at: None,
-                reset_description: None,
-            }),
-            seven_day_sonnet: None,
-            extra_usage: None,
-        };
-
-        let labels =
-            visible_windows(&snapshot).into_iter().map(|window| window.label).collect::<Vec<_>>();
-        assert_eq!(labels, vec!["5-hour", "7-day Opus"]);
     }
 }

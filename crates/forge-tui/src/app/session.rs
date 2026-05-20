@@ -1,15 +1,5 @@
 //! Per-session state bucket.
 //!
-//! Phase 2a moves ~50 fields off `App` into this struct. Commit 1
-//! (this commit) ships the struct empty — subsequent bucket-migration
-//! commits add field groups one bucket at a time, each leaving the
-//! tree compiling + tests passing.
-//!
-//! `App.sessions: HashMap<SessionKey, Session>` holds N sessions;
-//! `App.active_session_key` points at the rendered one. Background
-//! sessions accumulate state silently while the user is elsewhere
-//! (Phase 2 of the side-panes feature; backend prerequisite for the
-//! Projects pane UI).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::time::Instant;
@@ -25,7 +15,7 @@ use crate::app::state::cache_metrics::CacheMetrics;
 use crate::app::state::messages::ChatMessage;
 use crate::app::state::render_budget::{RenderCacheEvictionKey, RenderCacheSlotState};
 use crate::app::state::types::{
-    CancelOrigin, HistoryRetentionPolicy, HistoryRetentionStats, LoginHint, McpState, ModeState,
+    HistoryRetentionPolicy, HistoryRetentionStats, LoginHint, McpState, ModeState,
     PasteSessionState, PendingCommandAck, RecentSessionInfo, SelectionState, SessionUsageState,
     TodoItem, ToolCallScope, UsageState,
 };
@@ -50,7 +40,6 @@ use forge_primitives::{AccountInfo, SessionId};
 /// senders, pending interactions) but never duplicates these
 /// fields. TUI reducers in `app::events::*` update them from
 /// `SessionUpdate` payloads as events arrive.
-#[allow(clippy::struct_excessive_bools)]
 pub struct UiSession {
     /// The claude-issued session UUID, also used as the map key.
     /// Stored here for symmetry; the map lookup uses the same value.
@@ -110,16 +99,11 @@ pub struct UiSession {
     /// local conversation history. Set by `/compact` once the
     /// command is accepted for bridge forwarding.
     pub pending_compact_clear: bool,
-    /// Tool call IDs with pending inline interactions, ordered by
-    /// arrival. The first entry is the focused interaction that
-    /// receives keyboard input. Up / Down arrow keys cycle focus
-    /// through the list.
-    pub pending_interaction_ids: Vec<String>,
     /// Set when a cancel notification succeeds; consumed on
     /// `TurnComplete` to render a red interruption hint in chat.
     pub cancelled_turn_pending_hint: bool,
     /// Origin of the in-flight cancellation request, if any.
-    pub pending_cancel_origin: Option<CancelOrigin>,
+    pub pending_cancel: bool,
     /// Latest prompt suggestion from the SDK, shown in the input
     /// hint band.
     pub prompt_suggestion: Option<String>,
@@ -169,7 +153,7 @@ pub struct UiSession {
     pub mode: Option<ModeState>,
     /// Hook-observed permission mode. Higher fidelity than [`Self::mode`]
     /// when the CLI changes mode without re-emitting status (#88).
-    pub observed_permission_mode: Option<crate::agent::state::PermissionMode>,
+    pub observed_permission_mode: Option<forge_workspace::PermissionMode>,
     /// Hook-observed effort level. Same pattern as
     /// [`Self::observed_permission_mode`].
     pub observed_effort: Option<model::EffortLevel>,
@@ -204,10 +188,9 @@ pub struct UiSession {
     /// rather than per-account: each session fetches independently
     /// (idempotent + TTL-gated; redundant fetches across same-account
     /// sessions are cheap). Read by the Projects-pane account/status
-    /// panel and the `/usage` config tab. Routed by `SessionKey` in
-    /// the `Usage*` `SessionUpdate` envelopes so an in-flight fetch
-    /// that lands after the user has switched sessions still writes
-    /// to the bucket that requested it.
+    /// panel. Routed by `SessionKey` in the `Usage*` `SessionUpdate`
+    /// envelopes so an in-flight fetch that lands after the user has
+    /// switched sessions still writes to the bucket that requested it.
     pub usage: UsageState,
     /// Catalog of resumable sessions for this bucket's project,
     /// produced by `forge_sdk_worker::list_recent_sessions` against
@@ -270,7 +253,7 @@ pub struct UiSession {
 
     // ---- Todos ----
     /// Current todo list from Claude's `TodoWrite` tool calls.
-    /// Rendered by [`crate::ui::inspector_pane`] (right side).
+    /// Rendered by the inspector pane on the right side of the chat view.
     pub todos: Vec<TodoItem>,
     /// Whether the latest `TodoWrite` tool result carried
     /// `TodoWriteOutputMetadata.verification_nudge_needed = Some(true)`.
@@ -361,15 +344,16 @@ pub struct UiSession {
     pub last_chat_render_trace_state: Option<ChatRenderTraceState>,
 
     /// Per-session input editor. Each session owns its own input
-    /// state; switching the active session naturally swaps the editor
-    /// because the accessor reads from this bucket. Replaces the
-    /// pre-Phase-6 App-level `input` field plus the per-bucket
-    /// `draft_input` snapshot/restore dance in `switch_active_session`.
+    /// state; switching the active session naturally swaps the
+    /// editor because the accessor reads from this bucket.
     pub input: InputState,
+
+    /// Per-session FIFO queue of pending prompts. The dock shows
+    /// `prompt_queue.front()` when this session is active.
+    pub prompt_queue: std::collections::VecDeque<crate::app::prompt::PromptState>,
 }
 
 impl UiSession {
-    #[must_use]
     pub fn new(key: SessionKey) -> Self {
         Self { key: Some(key), last_activity_at: Instant::now(), ..Self::default() }
     }
@@ -402,9 +386,8 @@ impl Default for UiSession {
             active_turn_assistant_message_idx: Option::default(),
             is_compacting: bool::default(),
             pending_compact_clear: bool::default(),
-            pending_interaction_ids: Vec::default(),
             cancelled_turn_pending_hint: bool::default(),
-            pending_cancel_origin: Option::default(),
+            pending_cancel: false,
             prompt_suggestion: Option::default(),
             last_rate_limit_update: Option::default(),
             turn_notice_refs: Vec::default(),
@@ -470,16 +453,10 @@ impl Default for UiSession {
             last_active_turn_height_state: Option::default(),
             last_chat_render_trace_state: Option::default(),
             input: InputState::default(),
+            prompt_queue: std::collections::VecDeque::new(),
         }
     }
 }
-
-// Phase 4 deleted the `pub type Session = UiSession;` back-compat
-// alias; the ~250 call sites that used `UiSession::new(...)` etc.
-// were migrated to `UiSession::new(...)`. `UiSession` owns the
-// operational state TUI renders; workspace's `DomainSession` holds
-// only the routing metadata (`AgentHandle` slot, `session_id`,
-// pending interactions).
 
 #[cfg(test)]
 mod tests {

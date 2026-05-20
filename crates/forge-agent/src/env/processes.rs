@@ -98,7 +98,6 @@ pub struct ProcessEntry {
 /// - Skip ephemeral `ps` / `sysinfo` self-probes that would
 ///   themselves match the walk window (mirrors architect's
 ///   filter pattern).
-#[must_use]
 pub fn scan(claude_pid: u32) -> ProcessSnapshot {
     // `System::new()` is cheap; refreshing processes is the
     // expensive bit. Limit the refresh to memory + cmdline only
@@ -216,7 +215,6 @@ fn collect_descendants(
 /// non-empty substring of `process_cmd`.
 ///
 /// Empty `tool_command` returns `false` (no useful match possible).
-#[must_use]
 pub fn process_cmdline_matches_tool_input(process_cmd: &str, tool_command: &str) -> bool {
     let needle = tool_command.trim();
     if needle.is_empty() {

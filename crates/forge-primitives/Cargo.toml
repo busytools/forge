@@ -12,6 +12,11 @@ publish = false
 [lints]
 workspace = true
 
+[features]
+# Cross-crate test helpers. Currently exposes
+# `SessionKey::from_str_for_test`. Production builds don't see it.
+test-helpers = []
+
 [dependencies]
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

@@ -14,8 +14,7 @@
 //!
 //! ## Communication contract
 //!
-//! Post-MVVM refactor (#102) the TUI ↔ workspace contract is **one
-//! channel pair**:
+//! The TUI ↔ workspace contract is **one channel pair**:
 //!
 //! - **TUI → workspace:** [`Workspace::dispatch`] takes a
 //!   [`protocol::Command`]. One enum, one entry point.
@@ -23,24 +22,15 @@
 //!   for [`protocol::SessionUpdate`]. One enum, one consumer.
 //!
 //! No second channel for "control events" vs "data events." No
-//! callback hooks. No shared mutable state.
-//!
-//! Strict-wiring follow-up (Phase 6): TUI no longer holds an
-//! `Arc<AgentHandle>`. Every outbound call — `Prompt`, `Cancel`,
-//! `SetMode`/`SetModel`, `NewSession`/`ResumeSession`/`ResumeOrNew`,
-//! `GenerateSessionTitle`/`RenameSession`, the MCP suite
-//! (`ReconnectMcpServer`, `ToggleMcpServer`, `AuthenticateMcpServer`,
-//! `ClearMcpAuth`, `SetMcpServers`, `SubmitMcpOauthCallbackUrl`),
-//! `RespondElicitation`, the git-watch start/stop pair — flows
-//! through `Workspace::dispatch(Command)`. Query-style refreshes
+//! callback hooks. No shared mutable state. TUI does not hold an
+//! `Arc<AgentHandle>`: every outbound call goes through
+//! `Workspace::dispatch(Command)`; query-style refreshes
 //! (`refresh_status_snapshot`, `refresh_oauth_credentials_snapshot`,
 //! `refresh_context_usage`, `reload_plugins`, `refresh_mcp_snapshot`)
 //! and direct accessors (`settings_documents`, `write_settings_document`,
 //! `project_memory_path`, `config_dir_for`, `oauth_usage`) live as
-//! inherent methods on [`Workspace`]. The `Connected` /
-//! `SessionReplaced` / `AuthCompleted` updates no longer carry an
-//! `Arc<AgentHandle>` either — the handle stays on the workspace's
-//! [`DomainSession`].
+//! inherent methods on [`Workspace`]. The handle stays on the
+//! workspace's [`DomainSession`].
 //!
 //! ## Single-channel event bus
 //!
@@ -50,33 +40,22 @@
 //! `service_status_check`, `input_submit`) grab a sender via
 //! [`Workspace::update_sender`] and emit their own `SessionUpdate`s
 //! rather than dispatching a `Command` and waiting for a round-trip.
-//!
-//! These are TUI-originated presentation events that reuse the
-//! existing channel as a single event bus rather than spinning up a
-//! second one. They only mutate presentation-side state in TUI's
-//! `UiSession` buckets — workspace itself never reads those updates.
-//!
-//! Future-proofing watchlist: if the goal ever becomes "swap the TUI
-//! for a different frontend," the only contract a replacement should
-//! need to honor is the two-enum-stream boundary. The leaky-emitter
-//! pattern above is an implicit second contract. Tracked at
-//! <https://github.com/busytools/forge/issues/105> — not urgent.
+//! They only mutate presentation-side state in TUI's `UiSession`
+//! buckets — workspace itself never reads those updates.
+//! See <https://github.com/busytools/forge/issues/105> for the
+//! tracking issue.
 //!
 //! ## Facade scope (intentionally thin)
 //!
 //! The MVVM boundary between forge-tui and forge-agent is enforced at
 //! the **dependency graph** level: `forge-tui/Cargo.toml` has no
-//! `forge-agent` line; everything routes through forge-workspace. But
-//! the workspace exposes forge-agent's submodules verbatim via
+//! `forge-agent` line; everything routes through forge-workspace. The
+//! workspace exposes forge-agent's submodules verbatim via
 //! pass-through `pub use` (see `cloud`, `commands`, `env::git_diff`,
 //! `session_lifecycle`, `tooling`, `translate`, `userdata` below).
 //! Types like `forge_workspace::cloud::oauth::Token` are *defined* in
 //! forge-agent — the workspace just exposes them under the workspace
 //! name so TUI can keep its dep graph clean.
-//!
-//! Tightening this (specific [`Workspace`] methods in place of each
-//! wildcard re-export) is a "Phase 7 narrow agent surface" follow-up.
-//! Not on the current roadmap; documented for future reference.
 
 mod account;
 mod config;
@@ -126,6 +105,9 @@ pub mod env {
     pub mod cli_version {
         pub use forge_agent::env::cli_version::*;
     }
+    pub mod file_index {
+        pub use forge_agent::env::file_index::*;
+    }
     pub mod git_diff {
         pub use forge_agent::env::git_diff::*;
     }
@@ -145,7 +127,7 @@ pub mod translate {
 pub mod userdata {
     pub use forge_agent::userdata::*;
 }
-pub use forge_agent::state::PermissionMode;
+pub use forge_primitives::permission::PermissionMode;
 
 // Test-only re-exports. The smoke-test suite at
 // `crates/forge-tui/tests/forge_sdk_smoke.rs` needs `Agent::spawn`

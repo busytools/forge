@@ -1,42 +1,15 @@
-use super::{App, AppStatus, CancelOrigin, ChatMessage, MessageBlock, MessageRole, TextBlock};
+use super::{App, AppStatus, ChatMessage, MessageBlock, MessageRole, TextBlock};
 use crate::agent::model;
 use crate::app::slash;
 
-/// Handle Enter on the input editor.
-///
-/// Issue #85 (revised 2026-05-14): forge holds no local queue, and
-/// every submit dispatches `Command::Prompt` to claude immediately.
-/// The mid-turn fix from this round is in the receive-path
-/// placement, not the dispatch path: every submit (idle OR mid-turn)
-/// pushes both a user bubble AND a fresh empty assistant placeholder
-/// at the tail, reparenting `active_turn_assistant_idx` onto that
-/// new placeholder. Claude's continuing wire tokens then land in
-/// the new bubble — below the user's new message — instead of
-/// pinning in the prior turn's assistant bubble above it.
-///
-/// Claude's CLI internally queues the mid-turn prompt (the bundled
-/// JS `queuedCommands` array, flushed into the next user→model
-/// envelope at the next tool cycle or turn boundary). The model's
-/// reply then covers both turn-1's continuation and the queued
-/// prompt's answer in a single assistant message; forge folds the
-/// whole thing into the reparented placeholder so geometry stays
-/// append-only.
-///
-/// Pure-text turns produce a small artifact: any turn-1 tokens that
-/// arrive between the user's submit and claude's `result` event
-/// land in the new placeholder rather than the prior asst bubble.
-/// If claude emits nothing in that window, `remove_empty_tail_assistant`
-/// strips the empty stub on TurnComplete. If it emits a few
-/// trailing tokens, they appear as a thin stub below the new user
-/// bubble — known cost of the always-reparent design.
-///
-/// The previous dim → un-dim handshake was a pre-investigation
-/// artefact already removed in PR #117. This revision keeps the
-/// no-dim outcome and fixes the ordering issue PR #117 left behind.
-///
-/// Session resume reconstructs queued submits from JSONL
-/// `type:"attachment"` rows via the catalog/scan layer in
-/// `forge-agent` (see `userdata::catalog::scan`).
+/// Handle Enter on the input editor. Dispatches `Command::Prompt`
+/// immediately and pushes both a user bubble and a fresh empty
+/// assistant placeholder at the tail, reparenting the active turn
+/// onto the new placeholder so claude's continuing wire tokens land
+/// below the user's submission rather than pinning to the prior
+/// assistant bubble. Mid-turn queuing happens inside the CLI; the
+/// resume path reconstructs queued submits from JSONL `attachment`
+/// rows via `forge_agent::userdata::catalog::scan`.
 pub(super) fn submit_input(app: &mut App) {
     if matches!(app.status, AppStatus::Connecting | AppStatus::CommandPending | AppStatus::Error) {
         return;
@@ -93,18 +66,18 @@ pub(super) fn dispatch_diff_comment_bundle(app: &mut App, text: String) {
 /// (mid-turn path).
 fn is_turn_busy(app: &App) -> bool {
     matches!(app.status, AppStatus::Thinking | AppStatus::Running)
-        || app.pending_cancel_origin().is_some()
+        || app.pending_cancel()
         || app.is_compacting()
 }
 
 /// Cancel the in-flight turn. The only routine caller is Escape;
 /// submit dispatches immediately and claude internally buffers
 /// mid-turn writes, so there are no auto-induced cancels.
-pub(super) fn request_cancel(app: &mut App, origin: CancelOrigin) -> Result<(), String> {
+pub(super) fn request_cancel(app: &mut App) -> Result<(), String> {
     if !matches!(app.status, AppStatus::Thinking | AppStatus::Running) {
         return Ok(());
     }
-    if app.pending_cancel_origin().is_some() {
+    if app.pending_cancel() {
         // Already cancelling — second Escape is a no-op.
         return Ok(());
     }
@@ -119,8 +92,8 @@ pub(super) fn request_cancel(app: &mut App, origin: CancelOrigin) -> Result<(), 
     let session_id = sid.to_string();
     app.dispatch_command(|key| forge_workspace::Command::Cancel { key })
         .map_err(|e| e.to_string())?;
-    app.set_pending_cancel_origin(Some(origin));
-    app.set_cancelled_turn_pending_hint(matches!(origin, CancelOrigin::Manual));
+    app.set_pending_cancel(true);
+    app.set_cancelled_turn_pending_hint(true);
     let session_key = forge_workspace::SessionKey::from_session_id(session_id.clone());
     let _ = app.update_tx.send(forge_workspace::SessionUpdate::TurnCancelled { key: session_key });
     tracing::info!(
@@ -129,7 +102,6 @@ pub(super) fn request_cancel(app: &mut App, origin: CancelOrigin) -> Result<(), 
         message = "turn cancel requested",
         outcome = "success",
         session_id = %session_id,
-        origin = ?origin,
     );
     Ok(())
 }
@@ -137,15 +109,15 @@ pub(super) fn request_cancel(app: &mut App, origin: CancelOrigin) -> Result<(), 
 /// Push a fresh user bubble + an empty assistant placeholder and
 /// dispatch `Command::Prompt`. Always pushes both — idle or mid-turn.
 ///
-/// The mid-turn shape (post 2026-05-14): every submit reparents
-/// `active_turn_assistant_idx` onto a fresh assistant placeholder at
-/// the tail. Claude's continuing wire tokens then land in that new
-/// placeholder, below the user's new bubble — append-only geometry
-/// regardless of whether a turn is already in flight. Claude's
-/// internal `gO6` queue folds the mid-turn prompt into the next
+/// Mid-turn shape: every submit reparents
+/// `active_turn_assistant_idx` onto a fresh assistant placeholder
+/// at the tail. Claude's continuing wire tokens then land in that
+/// new placeholder, below the user's new bubble — append-only
+/// geometry regardless of whether a turn is already in flight. The
+/// CLI queues the mid-turn prompt and folds it into the next
 /// user→model envelope (typically the tool_result cycle), so the
-/// response to the queued prompt naturally streams into the new
-/// asst bubble alongside whatever turn-1 continuation arrives.
+/// response to the queued prompt streams into the new asst bubble
+/// alongside whatever turn-1 continuation arrives.
 ///
 /// Pure-text turns with no tool cycle leave a small artifact: any
 /// turn-1 tokens that arrive between the submit and `result` land
@@ -186,9 +158,7 @@ fn dispatch_prompt(app: &mut App, text: String) {
     // previous submit pushed that claude never had a chance to
     // fill), drop it before appending. Without this, rapid mid-turn
     // submits accumulate visible empty asst bubbles between user
-    // messages — exactly the artifact the screenshot from 2026-05-14
-    // showed: `restarted lets test`, empty asst, `1`, empty asst,
-    // `2`, …
+    // messages.
     if let Some(tail_idx) = app.messages().len().checked_sub(1) {
         let tail_is_empty_asst = app
             .messages()
@@ -197,6 +167,18 @@ fn dispatch_prompt(app: &mut App, text: String) {
         if tail_is_empty_asst {
             let _ = app.remove_message_tracked(tail_idx);
         }
+    }
+
+    // A submit overrides any in-flight cancel intent — the new prompt
+    // IS the user's next move, so the "Cancelling current turn..."
+    // hint should clear immediately. Without this, a cancel followed
+    // by a fast submit leaves the hint pinned on screen forever
+    // because the CLI fuses the new prompt with the in-flight turn
+    // and never emits a Result for the interrupted state that would
+    // otherwise clear the flag.
+    if app.pending_cancel() {
+        app.set_pending_cancel(false);
+        app.set_cancelled_turn_pending_hint(false);
     }
 
     let user_blocks = vec![MessageBlock::Text(TextBlock::from_complete(&text))];
@@ -263,7 +245,7 @@ mod tests {
     use crate::app::ActiveView;
 
     fn app_with_connection()
-    -> (App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::Command>) {
+    -> (App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::AgentCommand>) {
         let mut app = App::test_default();
         let rx = app.install_testing_stub();
         app.set_session_id(Some(model::SessionId::new("session-1")));
@@ -285,15 +267,15 @@ mod tests {
         let prompt = rx.try_recv().expect("prompt command should be sent");
         assert!(matches!(
             prompt,
-            forge_primitives::Command::PromptWithImages { session_id, .. } if session_id == "session-1"
+            forge_primitives::AgentCommand::PromptWithImages { session_id, .. } if session_id == "session-1"
         ));
     }
 
     #[test]
     fn submit_input_while_running_appends_bubble_and_reparents_active_idx() {
-        // Mid-turn submit (post 2026-05-14): user bubble appears
-        // immediately AND a fresh empty assistant placeholder is
-        // pushed right after it, with `active_turn_assistant_idx`
+        // Mid-turn submit: user bubble appears immediately AND a
+        // fresh empty assistant placeholder is pushed right after
+        // it, with `active_turn_assistant_idx`
         // reparented onto the new placeholder. Status flips back to
         // Thinking so the spinner attaches to the new placeholder
         // while claude's continuing tokens stream into it. The prompt
@@ -319,11 +301,11 @@ mod tests {
             Some(1),
             "active asst idx reparented onto the new placeholder at tail",
         );
-        assert!(app.pending_cancel_origin().is_none(), "no cancel fired");
+        assert!(!app.pending_cancel(), "no cancel fired");
         let prompt = rx.try_recv().expect("prompt dispatched immediately");
         assert!(matches!(
             prompt,
-            forge_primitives::Command::PromptWithImages { session_id, text, .. }
+            forge_primitives::AgentCommand::PromptWithImages { session_id, text, .. }
                 if session_id == "session-1" && text == "mid-turn prompt"
         ));
     }
@@ -359,8 +341,18 @@ mod tests {
             Some(2),
             "active asst idx tracks the surviving tail placeholder",
         );
-        assert!(rx.try_recv().is_ok());
-        assert!(rx.try_recv().is_ok());
+        let first = rx.try_recv().expect("first prompt dispatched");
+        assert!(matches!(
+            first,
+            forge_primitives::AgentCommand::PromptWithImages { session_id, text, .. }
+                if session_id == "session-1" && text == "first"
+        ));
+        let second = rx.try_recv().expect("second prompt dispatched");
+        assert!(matches!(
+            second,
+            forge_primitives::AgentCommand::PromptWithImages { session_id, text, .. }
+                if session_id == "session-1" && text == "second"
+        ));
         assert!(rx.try_recv().is_err(), "exactly two prompts dispatched");
     }
 
@@ -413,14 +405,14 @@ mod tests {
         let (mut app, mut rx) = app_with_connection();
         app.status = AppStatus::Thinking;
 
-        request_cancel(&mut app, CancelOrigin::Manual).expect("first manual cancel");
-        request_cancel(&mut app, CancelOrigin::Manual).expect("second manual cancel");
+        request_cancel(&mut app).expect("first manual cancel");
+        request_cancel(&mut app).expect("second manual cancel");
 
-        assert_eq!(app.pending_cancel_origin(), Some(CancelOrigin::Manual));
+        assert!(app.pending_cancel());
         let envelope = rx.try_recv().expect("single cancel command should be sent");
         assert!(matches!(
             envelope,
-            forge_primitives::Command::Cancel { session_id } if session_id == "session-1"
+            forge_primitives::AgentCommand::Cancel { session_id } if session_id == "session-1"
         ));
         assert!(rx.try_recv().is_err(), "second cancel should not re-dispatch");
     }
@@ -440,21 +432,21 @@ mod tests {
     }
 
     #[test]
-    fn config_slash_command_fires_regardless_of_busy() {
-        // /config is a TUI-side meta-command and should work even when
+    fn plugins_slash_command_fires_regardless_of_busy() {
+        // /plugins is a TUI-side view switch and should work even when
         // a turn is in flight (slash commands don't queue).
         let (mut app, mut rx) = app_with_connection();
         let dir = tempfile::tempdir().expect("tempdir");
         app.settings_home_override = Some(dir.path().to_path_buf());
         app.set_cwd_raw(dir.path().to_string_lossy().to_string());
         app.status = AppStatus::Running;
-        app.input_mut().set_text("/config");
+        app.input_mut().set_text("/plugins");
 
         submit_input(&mut app);
 
-        assert_eq!(app.active_view, ActiveView::Config);
+        assert_eq!(app.active_view, ActiveView::Plugins);
         assert!(app.input().text().is_empty());
-        assert!(app.pending_cancel_origin().is_none());
+        assert!(!app.pending_cancel());
         assert!(rx.try_recv().is_err());
     }
 }

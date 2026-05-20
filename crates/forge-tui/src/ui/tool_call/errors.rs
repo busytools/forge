@@ -1,12 +1,12 @@
 //! Error rendering and tool-use error extraction for failed tool calls.
 
-use crate::agent::error_handling::{extract_xml_tag_value, truncate_for_log};
-pub(super) use crate::agent::error_handling::{
-    looks_like_internal_error, summarize_internal_error,
-};
 use crate::agent::model;
 use crate::app::ToolCallInfo;
 use crate::ui::theme;
+use forge_workspace::translate::error_handling::{extract_xml_tag_value, truncate_for_log};
+pub(super) use forge_workspace::translate::error_handling::{
+    looks_like_internal_error, summarize_internal_error,
+};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 

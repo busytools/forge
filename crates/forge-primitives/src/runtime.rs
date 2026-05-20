@@ -28,11 +28,33 @@ pub struct AvailableCommand {
     pub input_hint: Option<String>,
 }
 
+impl AvailableCommand {
+    pub fn new(name: impl Into<String>, description: impl Into<String>) -> Self {
+        Self { name: name.into(), description: description.into(), input_hint: None }
+    }
+
+    pub fn input_hint(mut self, input_hint: impl Into<String>) -> Self {
+        self.input_hint = Some(input_hint.into());
+        self
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AvailableAgent {
     pub name: String,
     pub description: String,
     pub model: Option<String>,
+}
+
+impl AvailableAgent {
+    pub fn new(name: impl Into<String>, description: impl Into<String>) -> Self {
+        Self { name: name.into(), description: description.into(), model: None }
+    }
+
+    pub fn model(mut self, model: impl Into<String>) -> Self {
+        self.model = Some(model.into());
+        self
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -49,6 +71,49 @@ pub enum EffortLevel {
     Max,
 }
 
+impl EffortLevel {
+    pub const fn as_stored(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Xhigh => "xhigh",
+            Self::Max => "max",
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Low => "Low",
+            Self::Medium => "Medium",
+            Self::High => "High",
+            Self::Xhigh => "Extra High",
+            Self::Max => "Max",
+        }
+    }
+
+    pub const fn description(self) -> &'static str {
+        match self {
+            Self::Low => "Fastest responses",
+            Self::Medium => "Balanced speed and depth",
+            Self::High => "Deeper reasoning",
+            Self::Xhigh => "Extra-high reasoning",
+            Self::Max => "Maximum reasoning",
+        }
+    }
+
+    pub fn from_stored(value: &str) -> Option<Self> {
+        match value {
+            "low" => Some(Self::Low),
+            "medium" => Some(Self::Medium),
+            "high" => Some(Self::High),
+            "xhigh" | "extra_high" => Some(Self::Xhigh),
+            "max" => Some(Self::Max),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AvailableModel {
     pub id: String,
@@ -60,6 +125,51 @@ pub struct AvailableModel {
     pub supports_adaptive_thinking: Option<bool>,
     pub supports_fast_mode: Option<bool>,
     pub supports_auto_mode: Option<bool>,
+}
+
+impl AvailableModel {
+    pub fn new(id: impl Into<String>, display_name: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            display_name: display_name.into(),
+            description: None,
+            supports_effort: false,
+            supported_effort_levels: Vec::new(),
+            supports_adaptive_thinking: None,
+            supports_fast_mode: None,
+            supports_auto_mode: None,
+        }
+    }
+
+    pub fn description(mut self, description: impl Into<String>) -> Self {
+        self.description = Some(description.into());
+        self
+    }
+
+    pub fn supports_effort(mut self, supports_effort: bool) -> Self {
+        self.supports_effort = supports_effort;
+        self
+    }
+
+    pub fn supported_effort_levels(mut self, supported_effort_levels: Vec<EffortLevel>) -> Self {
+        self.supported_effort_levels = supported_effort_levels;
+        self
+    }
+
+    pub fn supports_adaptive_thinking(mut self, supports_adaptive_thinking: Option<bool>) -> Self {
+        self.supports_adaptive_thinking = supports_adaptive_thinking;
+        self
+    }
+
+    pub fn supports_fast_mode(mut self, supports_fast_mode: Option<bool>) -> Self {
+        self.supports_fast_mode = supports_fast_mode;
+        self
+    }
+
+    pub fn supports_auto_mode(mut self, supports_auto_mode: Option<bool>) -> Self {
+        self.supports_auto_mode = supports_auto_mode;
+        self
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,9 +188,72 @@ pub struct CurrentModel {
     pub is_authoritative: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+impl CurrentModel {
+    pub fn new(
+        resolved_id: impl Into<String>,
+        display_name_short: impl Into<String>,
+        display_name_long: impl Into<String>,
+    ) -> Self {
+        Self {
+            requested_id: None,
+            resolved_id: resolved_id.into(),
+            display_name_short: display_name_short.into(),
+            display_name_long: display_name_long.into(),
+            catalog_id: None,
+            supports_effort: false,
+            supported_effort_levels: Vec::new(),
+            supports_fast_mode: None,
+            supports_auto_mode: None,
+            supports_adaptive_thinking: None,
+            is_authoritative: false,
+        }
+    }
+
+    pub fn requested_id(mut self, requested_id: impl Into<String>) -> Self {
+        self.requested_id = Some(requested_id.into());
+        self
+    }
+
+    pub fn catalog_id(mut self, catalog_id: impl Into<String>) -> Self {
+        self.catalog_id = Some(catalog_id.into());
+        self
+    }
+
+    pub fn supports_effort(mut self, supports_effort: bool) -> Self {
+        self.supports_effort = supports_effort;
+        self
+    }
+
+    pub fn supported_effort_levels(mut self, supported_effort_levels: Vec<EffortLevel>) -> Self {
+        self.supported_effort_levels = supported_effort_levels;
+        self
+    }
+
+    pub fn supports_adaptive_thinking(mut self, supports_adaptive_thinking: Option<bool>) -> Self {
+        self.supports_adaptive_thinking = supports_adaptive_thinking;
+        self
+    }
+
+    pub fn supports_fast_mode(mut self, supports_fast_mode: Option<bool>) -> Self {
+        self.supports_fast_mode = supports_fast_mode;
+        self
+    }
+
+    pub fn supports_auto_mode(mut self, supports_auto_mode: Option<bool>) -> Self {
+        self.supports_auto_mode = supports_auto_mode;
+        self
+    }
+
+    pub fn authoritative(mut self, is_authoritative: bool) -> Self {
+        self.is_authoritative = is_authoritative;
+        self
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FastModeState {
+    #[default]
     Off,
     Cooldown,
     On,
@@ -170,7 +343,6 @@ pub enum TerminalReason {
 }
 
 impl TerminalReason {
-    #[must_use]
     pub const fn as_stored(self) -> &'static str {
         match self {
             Self::BlockingLimit => "blocking_limit",
@@ -190,10 +362,8 @@ impl TerminalReason {
 }
 
 /// Lifecycle state of a session, used by the Projects pane to render
-/// the right state glyph and (in later phases) by the multiplexer to
-/// decide redraw semantics. Promoted from `forge_tui::app::session`
-/// in Phase 2 of the MVVM refactor (#102) so both `forge-tui` and
-/// `forge-workspace` can project this state.
+/// the right state glyph. Shared between `forge-tui` and
+/// `forge-workspace` so both crates project the same state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SessionLifecycleState {
     /// No subprocess yet; lead exists conceptually but has never
@@ -224,10 +394,8 @@ pub enum SessionLifecycleState {
 
 /// Per-session SDK turn state — model-resolution cache, mode
 /// capability state, MCP per-server cooldowns, and the auth/error
-/// flags that survive across messages. Promoted from
-/// `forge_tui::app::state::types` in Phase 2 of the MVVM refactor
-/// (#102) so `forge-workspace` can hold an authoritative copy
-/// alongside the existing forge-tui projection.
+/// flags that survive across messages. Held authoritatively by
+/// `forge-workspace`; `forge-tui` projects from there.
 #[derive(Debug, Default)]
 pub struct SessionTurnState {
     /// Live tool-call store keyed by `tool_use_id` for cross-message
@@ -268,9 +436,10 @@ pub struct SessionTurnState {
     /// Current mode resolution alongside the human-readable label.
     pub mode_state: Option<ModeState>,
 
-    /// Sha-style fingerprint of the `available_agents` list — used to
-    /// emit `AvailableAgentsUpdate` only when the catalogue changes.
-    pub last_agents_signature: Option<String>,
+    /// Whether an `AvailableAgentsUpdate` has been emitted for this
+    /// turn. The first `system/init` of a turn carries the catalogue;
+    /// subsequent re-fires within the same turn are no-ops.
+    pub agents_emitted_this_turn: bool,
 
     /// True once an `AuthRequired` event has been emitted for this
     /// session; suppresses re-emits on subsequent stream events.

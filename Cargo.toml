@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/forge-sdk", "crates/forge-primitives", "crates/forge-agent", "crates/forge-workspace", "crates/forge-tui", "crates/forge-test-harness"]
 
 [workspace.package]
-version = "0.15.1"
+version = "0.16.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/busytools/forge"
@@ -25,7 +25,6 @@ sha2 = "0.10"
 uuid = { version = "1", features = ["v4"] }
 time = { version = "0.3", features = ["parsing", "formatting"] }
 unicode-normalization = "0.1"
-tokio-stream = "0.1"
 regex = "1"
 parking_lot = "0.12"
 clap = { version = "4", features = ["derive"] }
@@ -51,15 +50,16 @@ unicode-segmentation = "1.12"
 unicode-width = "0.2"
 base64 = "0.22"
 sysinfo = { version = "0.32", default-features = false, features = ["system"] }
+futures = "0.3.31"
+arboard = { version = "3.6.1", features = ["image-data"] }
+which = "8.0.2"
 
 # Workspace-internal crates
-forge-primitives = { path = "crates/forge-primitives", version = "=0.15.1" }
-forge-agent = { path = "crates/forge-agent", version = "=0.15.1" }
-forge-workspace = { path = "crates/forge-workspace", version = "=0.15.1" }
+forge-primitives = { path = "crates/forge-primitives", version = "=0.16.0" }
+forge-agent = { path = "crates/forge-agent", version = "=0.16.0" }
+forge-workspace = { path = "crates/forge-workspace", version = "=0.16.0" }
 
 # Dev-only
-proptest = "1"
-insta = { version = "1", features = ["yaml"] }
 pretty_assertions = "1"
 tempfile = "3"
 
@@ -88,12 +88,16 @@ unimplemented = "deny"
 # Pedantic exemptions: not load-bearing for personal-use scope.
 module_name_repetitions = "allow"   # Rust-idiomatic; not actually repetition.
 must_use_candidate = "allow"        # Most fns don't need the marker.
+return_self_not_must_use = "allow"  # Pair with must_use_candidate; builder
+                                    # setters returning Self don't need it.
 missing_errors_doc = "allow"        # thiserror covers public-error docs.
 missing_panics_doc = "allow"        # `panic` is denied above; noise is minimal.
 doc_markdown = "allow"              # Bare crate paths in prose are fine.
 too_many_lines = "allow"            # Translators + dispatchers naturally large.
 unnecessary_wraps = "allow"         # Symmetry across translate-fn returns.
 struct_field_names = "allow"        # Wire-shape structs share prefixes by API contract.
+struct_excessive_bools = "allow"    # Many UI state structs are flag bags by nature
+                                    # (Cli flags, RenderState, SpinnerState, etc.).
 # CLI surface (forge-tui binary) legitimately prints to stdout/stderr.
 print_stdout = "allow"
 print_stderr = "allow"

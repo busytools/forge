@@ -1,8 +1,8 @@
 //! Slash command executors: dispatching parsed commands to their handler functions.
 
 use super::{
-    parse, push_system_message, push_user_message, require_active_session, require_connection,
-    set_command_pending,
+    parse, push_system_info, push_system_message, push_user_message, require_active_session,
+    require_connection, set_command_pending,
 };
 use crate::app::App;
 use crate::app::connect::{SessionStartReason, begin_resume_session, start_new_session};
@@ -33,13 +33,11 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
     }
     match parsed.name {
         "/compact" => handle_compact_submit(app, &parsed.args),
-        "/config" => handle_config_submit(app, &parsed.args),
         "/diff" => handle_diff_submit(app, &parsed.args),
+        "/effort" => handle_effort_submit(app, &parsed.args),
         "/launchpad" => handle_launchpad_submit(app, &parsed.args),
         "/mcp" => handle_mcp_submit(app, &parsed.args),
         "/plugins" => handle_plugins_submit(app, &parsed.args),
-        "/status" => handle_status_submit(app, &parsed.args),
-        "/usage" => handle_usage_submit(app, &parsed.args),
         "/mode" => handle_mode_submit(app, &parsed.args),
         "/model" => handle_model_submit(app, &parsed.args),
         "/new" => handle_new_session_submit(app, &parsed.args),
@@ -138,26 +136,15 @@ fn handle_compact_submit(app: &mut App, args: &[&str]) -> bool {
     false
 }
 
-fn handle_config_submit(app: &mut App, args: &[&str]) -> bool {
-    if !args.is_empty() {
-        push_system_message(app, "Usage: /config");
-        return true;
-    }
-
-    if let Err(err) = crate::app::config::open(app) {
-        push_system_message(app, format!("Failed to open settings: {err}"));
-    }
-    true
-}
-
 fn handle_plugins_submit(app: &mut App, args: &[&str]) -> bool {
-    let _ = args;
-
-    if let Err(err) = crate::app::config::open(app) {
-        push_system_message(app, format!("Failed to open plugins: {err}"));
+    if !args.is_empty() {
+        push_system_message(app, "Usage: /plugins");
         return true;
     }
-    crate::app::config::activate_tab(app, crate::app::ConfigTab::Plugins);
+
+    if let Err(err) = crate::app::config::open_plugins(app) {
+        push_system_message(app, format!("Failed to open plugins: {err}"));
+    }
     true
 }
 
@@ -167,50 +154,34 @@ fn handle_mcp_submit(app: &mut App, args: &[&str]) -> bool {
         return true;
     }
 
-    if let Err(err) = crate::app::config::open(app) {
+    if let Err(err) = crate::app::config::open_mcp(app) {
         push_system_message(app, format!("Failed to open MCP: {err}"));
-        return true;
     }
-    crate::app::config::activate_tab(app, crate::app::ConfigTab::Mcp);
-    true
-}
-
-fn handle_status_submit(app: &mut App, args: &[&str]) -> bool {
-    if !args.is_empty() {
-        push_system_message(app, "Usage: /status");
-        return true;
-    }
-
-    if let Err(err) = crate::app::config::open(app) {
-        push_system_message(app, format!("Failed to open status: {err}"));
-        return true;
-    }
-    crate::app::config::activate_tab(app, crate::app::ConfigTab::Status);
-    true
-}
-
-fn handle_usage_submit(app: &mut App, args: &[&str]) -> bool {
-    if !args.is_empty() {
-        push_system_message(app, "Usage: /usage");
-        return true;
-    }
-
-    if let Err(err) = crate::app::config::open(app) {
-        push_system_message(app, format!("Failed to open usage: {err}"));
-        return true;
-    }
-    crate::app::config::activate_tab(app, crate::app::ConfigTab::Usage);
     true
 }
 
 fn handle_mode_submit(app: &mut App, args: &[&str]) -> bool {
+    if args.is_empty() {
+        let label = app.mode().map_or_else(
+            || "no active mode".to_owned(),
+            |state| {
+                if state.current_mode_name.is_empty() {
+                    state.current_mode_id.clone()
+                } else {
+                    format!("{} ({})", state.current_mode_name, state.current_mode_id)
+                }
+            },
+        );
+        push_system_info(app, format!("Mode: {label}"));
+        return true;
+    }
     let [requested_mode_arg] = args else {
-        push_system_message(app, "Usage: /mode <id>");
+        push_system_info(app, "Usage: /mode [id]");
         return true;
     };
     let requested_mode = requested_mode_arg.trim();
     if requested_mode.is_empty() {
-        push_system_message(app, "Usage: /mode <id>");
+        push_system_info(app, "Usage: /mode [id]");
         return true;
     }
 
@@ -253,9 +224,8 @@ fn handle_mode_submit(app: &mut App, args: &[&str]) -> bool {
 }
 
 fn apply_optimistic_mode_change(app: &mut App, requested_mode: &str) {
-    use crate::agent::commands::{build_mode_state_from_supported, supported_mode_ids_filtered};
-    use crate::agent::state::PermissionMode;
-    use crate::app::connect::type_converters::convert_mode_state;
+    use forge_workspace::PermissionMode;
+    use forge_workspace::commands::{build_mode_state_from_supported, supported_mode_ids_filtered};
 
     let Some(parsed) = PermissionMode::from_wire(requested_mode) else { return };
     let _: () = app.with_turn_state_mut(|ts| ts.mode = Some(parsed));
@@ -276,18 +246,37 @@ fn apply_optimistic_mode_change(app: &mut App, requested_mode: &str) {
     crate::app::events::apply_current_mode_update(app, &current_mode_update);
 
     let wire_mode_state = build_mode_state_from_supported(parsed, &supported);
-    let model_mode_state = convert_mode_state(wire_mode_state);
+    let model_mode_state = wire_mode_state;
     crate::app::events::apply_mode_state_update(app, model_mode_state);
 }
 
 fn handle_model_submit(app: &mut App, args: &[&str]) -> bool {
+    if args.is_empty() {
+        let label = app.current_model().map_or_else(
+            || "no active model".to_owned(),
+            |model| {
+                let display = if model.display_name_long.is_empty() {
+                    model.resolved_id.clone()
+                } else {
+                    model.display_name_long.clone()
+                };
+                if model.resolved_id.is_empty() || display == model.resolved_id {
+                    display
+                } else {
+                    format!("{display} ({})", model.resolved_id)
+                }
+            },
+        );
+        push_system_info(app, format!("Model: {label}"));
+        return true;
+    }
     let [model_name_arg] = args else {
-        push_system_message(app, "Usage: /model <id>");
+        push_system_info(app, "Usage: /model [id]");
         return true;
     };
     let model_name = model_name_arg.trim();
     if model_name.is_empty() {
-        push_system_message(app, "Usage: /model <id>");
+        push_system_info(app, "Usage: /model [id]");
         return true;
     }
 
@@ -325,9 +314,8 @@ fn handle_model_submit(app: &mut App, args: &[&str]) -> bool {
 }
 
 fn apply_optimistic_model_change(app: &mut App, model_name: &str) {
-    use crate::agent::commands::{build_mode_state_from_supported, supported_mode_ids_filtered};
-    use crate::agent::session_lifecycle::resolve_current_model_from_inputs;
-    use crate::app::connect::type_converters::{convert_current_model, convert_mode_state};
+    use forge_workspace::commands::{build_mode_state_from_supported, supported_mode_ids_filtered};
+    use forge_workspace::session_lifecycle::resolve_current_model_from_inputs;
 
     let _: () = app.with_turn_state_mut(|ts| ts.requested_model_id = Some(model_name.to_owned()));
     let (model_id, resolved_runtime) =
@@ -338,7 +326,7 @@ fn apply_optimistic_model_change(app: &mut App, model_name: &str) {
         resolved_runtime.as_deref(),
         &[],
     );
-    let next_model = convert_current_model(next_wire);
+    let next_model = next_wire;
     crate::app::events::apply_current_model_update(app, next_model);
 
     let mode_opt = app.with_turn_state(|ts| ts.mode);
@@ -356,9 +344,52 @@ fn apply_optimistic_model_change(app: &mut App, model_name: &str) {
         );
         let _: () = app.with_turn_state_mut(|ts| ts.supported_mode_ids.clone_from(&supported));
         let wire_mode_state = build_mode_state_from_supported(mode, &supported);
-        let model_mode_state = convert_mode_state(wire_mode_state);
+        let model_mode_state = wire_mode_state;
         crate::app::events::apply_mode_state_update(app, model_mode_state);
     }
+}
+
+/// `/effort` no-arg → show current effort level.
+/// `/effort <level>` → persist the level into ~/.claude/settings.json
+/// so the next session launch picks it up (mirrors today's overlay
+/// path). There's no live SDK command for effort; the change
+/// surfaces on the next session restart.
+fn handle_effort_submit(app: &mut App, args: &[&str]) -> bool {
+    use crate::agent::model::EffortLevel;
+
+    if args.is_empty() {
+        let level = app.config.thinking_effort_effective();
+        push_system_info(app, format!("Effort: {} ({})", level.label(), level.as_stored()));
+        return true;
+    }
+    let [requested_arg] = args else {
+        push_system_info(app, "Usage: /effort [low|medium|high|xhigh|max]");
+        return true;
+    };
+    let requested = requested_arg.trim();
+    if requested.is_empty() {
+        push_system_info(app, "Usage: /effort [low|medium|high|xhigh|max]");
+        return true;
+    }
+    let Some(level) = EffortLevel::from_stored(requested) else {
+        push_system_message(app, format!("Unknown effort level: {requested}"));
+        return true;
+    };
+
+    let Some(path) = app.config.settings_path.clone() else {
+        push_system_message(app, "Effort: settings path is unavailable");
+        return true;
+    };
+    let mut next_document = app.config.committed_settings_document.clone();
+    crate::app::config::store::set_thinking_effort_level(&mut next_document, level);
+    match crate::app::config::store::save(&path, &next_document) {
+        Ok(()) => {
+            app.config.committed_settings_document = next_document;
+            push_system_info(app, format!("Effort: {} (takes effect next session)", level.label()));
+        }
+        Err(err) => push_system_message(app, format!("Failed to save effort: {err}")),
+    }
+    true
 }
 
 fn handle_new_session_submit(app: &mut App, args: &[&str]) -> bool {

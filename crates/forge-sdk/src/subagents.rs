@@ -1,10 +1,7 @@
-//! Subagent declarations — re-export shim.
-//!
-//! Wire-shape data (`SubagentDefinition`, `SubagentMemory`,
-//! `SubagentMcpServerRef`, `EffortLevel`, `EffortPreset`, `SubagentMap`)
-//! lifted to forge-primitives in 2026-05-05.
+//! Subagent declarations — re-export shim. Wire-shape data lives
+//! in forge-primitives.
 
 pub use forge_primitives::subagents::{
-    EffortLevel, EffortPreset, SubagentDefinition, SubagentMap, SubagentMcpServerRef,
+    EffortPreset, SubagentDefinition, SubagentEffort, SubagentMap, SubagentMcpServerRef,
     SubagentMemory,
 };

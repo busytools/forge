@@ -20,11 +20,11 @@
 use forge_primitives::Message;
 use serde_json::Value;
 
-use crate::agent::state_parsing::{
+use crate::app::App;
+use forge_workspace::translate::state_parsing::{
     build_api_retry_update, build_rate_limit_update, normalize_settings_parse_errors,
     parse_runtime_session_state,
 };
-use crate::app::App;
 
 /// Top-level entry point. Called from `events::client` after the
 /// session-id check on `SessionUpdate::ChatAppended`. Dispatches
@@ -72,9 +72,9 @@ fn apply_fast_mode_state(app: &mut App, wire_state: forge_primitives::FastModeSt
 /// generic system envelope). Drops silently when the field is absent
 /// or doesn't deserialize to a known variant.
 fn apply_fast_mode_state_from_value(app: &mut App, data: &Value) {
-    let Some(wire_state) =
-        crate::agent::state_parsing::parse_fast_mode_state(data.get("fast_mode_state"))
-    else {
+    let Some(wire_state) = forge_workspace::translate::state_parsing::parse_fast_mode_state(
+        data.get("fast_mode_state"),
+    ) else {
         return;
     };
     apply_fast_mode_state(app, wire_state);
@@ -194,7 +194,7 @@ fn walk_assistant_content(
                 if tool_use_id.is_empty() {
                     continue;
                 }
-                let raw_block = serde_json::to_value(block).ok();
+                let raw_block = serde_json::to_value(block).map_err(|err| { tracing::warn!(target: "forge_tui::sdk_message", error = %err, "ContentBlock failed to serialize to Value"); err }).ok();
                 apply_tool_result_block(
                     app,
                     tool_use_id,
@@ -204,7 +204,7 @@ fn walk_assistant_content(
                 );
             }
             ContentBlock::Unknown { type_str, raw }
-                if crate::agent::tooling::is_tool_result_block_type(type_str) =>
+                if forge_workspace::tooling::is_tool_result_block_type(type_str) =>
             {
                 // Wire-side tool-result variants the typed enum
                 // doesn't enumerate: `mcp_tool_result`,
@@ -238,38 +238,21 @@ fn walk_assistant_content(
 }
 
 /// When the assistant invokes the TodoWrite tool with a `todos`
-/// array, apply the plan via the existing `apply_plan_todos` handler.
+/// array, parse the wire JSON into `TodoItem`s and apply them.
+/// Uses the same parser as the `parse_todos_if_present` path so
+/// `activeForm` is preserved (previously dropped via a model::Plan
+/// detour that had no `active_form` field).
 fn apply_plan_if_todo_write(app: &mut App, name: &str, input: &Value) {
-    use crate::agent::model;
-    use crate::app::connect::type_converters::convert_plan_entry;
-    use forge_primitives as types;
-
     if name != "TodoWrite" {
         return;
     }
-    let Some(todos) = input.as_object().and_then(|r| r.get("todos")).and_then(Value::as_array)
-    else {
+    let Some(todos) = crate::app::todos::parse_todos_if_present(input) else {
         return;
     };
-    let wire_entries: Vec<types::PlanEntry> = todos
-        .iter()
-        .filter_map(|todo| {
-            let r = todo.as_object()?;
-            let content = r.get("content").and_then(Value::as_str)?.to_owned();
-            if content.is_empty() {
-                return None;
-            }
-            let status = r.get("status").and_then(Value::as_str).unwrap_or("pending").to_owned();
-            let active_form = status.clone();
-            Some(types::PlanEntry { content, status, active_form })
-        })
-        .collect();
-    if wire_entries.is_empty() {
+    if todos.is_empty() {
         return;
     }
-    let entries: Vec<model::PlanEntry> = wire_entries.into_iter().map(convert_plan_entry).collect();
-    let plan = model::Plan::new(entries);
-    crate::app::todos::apply_plan_todos(app, &plan);
+    crate::app::todos::set_todos(app, todos);
 }
 
 fn handle_user(app: &mut App, msg: Message) {
@@ -284,7 +267,7 @@ fn handle_user(app: &mut App, msg: Message) {
         && let Some(tool_use_id) = parent_tool_use_id.as_deref()
         && !tool_use_id.is_empty()
     {
-        let parsed = crate::agent::tooling::unwrap_tool_use_result(result);
+        let parsed = forge_workspace::tooling::unwrap_tool_use_result(result);
         apply_tool_result_block(
             app,
             tool_use_id,
@@ -306,7 +289,7 @@ fn walk_user_tool_results(app: &mut App, content: &[forge_primitives::ContentBlo
                 if tool_use_id.is_empty() {
                     continue;
                 }
-                let raw_block = serde_json::to_value(block).ok();
+                let raw_block = serde_json::to_value(block).map_err(|err| { tracing::warn!(target: "forge_tui::sdk_message", error = %err, "ContentBlock failed to serialize to Value"); err }).ok();
                 apply_tool_result_block(
                     app,
                     tool_use_id,
@@ -316,7 +299,7 @@ fn walk_user_tool_results(app: &mut App, content: &[forge_primitives::ContentBlo
                 );
             }
             ContentBlock::Unknown { type_str, raw }
-                if crate::agent::tooling::is_tool_result_block_type(type_str) =>
+                if forge_workspace::tooling::is_tool_result_block_type(type_str) =>
             {
                 // Same fallback as `walk_assistant_content` — wire
                 // tool-result variants outside the typed enum.
@@ -331,10 +314,10 @@ fn walk_user_tool_results(app: &mut App, content: &[forge_primitives::ContentBlo
                 apply_tool_result_block(app, tool_use_id, is_error, raw_content, Some(raw));
             }
             ContentBlock::QueuedCommand { prompt, .. } => {
-                // Issue #85: claude bundled a user-typed-while-busy
-                // message as a `queued_command` content block here.
-                // Match against a pending dimmed bubble (live) or
-                // push a fresh user bubble (replay).
+                // Claude bundled a user-typed-while-busy message as
+                // a `queued_command` content block — match against
+                // a pending dimmed bubble (live) or push a fresh
+                // user bubble (replay).
                 let prompt_text = extract_queued_command_text(prompt);
                 handle_queued_command_echo(app, &prompt_text);
             }
@@ -381,12 +364,11 @@ pub(super) fn extract_queued_command_text(prompt: &Value) -> String {
     parts.join("\n")
 }
 
-/// Issue #85: process a `queued_command` content-block.
+/// Process a `queued_command` content-block.
 ///
-/// **Reachability (verified by live wire capture 2026-05-13)**:
-/// claude does NOT emit `queued_command` on stream-json stdout — it
-/// only persists those messages to the session JSONL as
-/// `type:"attachment"` rows. The replay scanner in
+/// **Reachability**: claude does NOT emit `queued_command` on
+/// stream-json stdout — it only persists those messages to the
+/// session JSONL as `type:"attachment"` rows. The replay scanner in
 /// `forge_agent::userdata::catalog::scan` hoists those rows into
 /// synthetic user envelopes carrying a single `queued_command`
 /// content block each. So in practice this walker only runs during
@@ -439,16 +421,16 @@ fn apply_tool_use_block(
     input: &Value,
     parent_tool_use_id: Option<&str>,
 ) {
-    use crate::agent::tooling::create_tool_call;
     use crate::app::connect::type_converters::convert_tool_call;
     use forge_primitives::ToolCallUpdateFields;
+    use forge_workspace::tooling::create_tool_call;
 
     let existing = app.with_turn_state(|ts| ts.tool_calls.get(tool_use_id).cloned());
     let resolved_parent = parent_tool_use_id
         .map(str::to_owned)
         .or_else(|| parent_tool_use_id_from_meta(existing.as_ref().and_then(|e| e.meta.as_ref())));
     let mut tool_call = create_tool_call(tool_use_id, name, input, resolved_parent.as_deref());
-    "in_progress".clone_into(&mut tool_call.status);
+    tool_call.status = forge_primitives::ToolCallStatus::InProgress;
 
     if existing.is_none() {
         let tc = tool_call.clone();
@@ -462,8 +444,8 @@ fn apply_tool_use_block(
 
     let mut fields = ToolCallUpdateFields {
         title: Some(tool_call.title.clone()),
-        kind: Some(tool_call.kind.clone()),
-        status: Some("in_progress".to_owned()),
+        kind: Some(tool_call.kind),
+        status: Some(forge_primitives::ToolCallStatus::InProgress),
         raw_input: tool_call.raw_input.clone(),
         locations: Some(tool_call.locations.clone()),
         meta: tool_call.meta.clone(),
@@ -486,7 +468,7 @@ fn apply_tool_result_block(
     raw_content: Option<&Value>,
     raw_block: Option<&Value>,
 ) {
-    use crate::agent::tooling::build_tool_result_fields;
+    use forge_workspace::tooling::build_tool_result_fields;
 
     let base = app.with_turn_state(|ts| ts.tool_calls.get(tool_use_id).cloned());
     let fields = build_tool_result_fields(is_error, raw_content, base.as_ref(), raw_block);
@@ -526,14 +508,16 @@ fn apply_tool_call_update(
 /// to `Completed` here would visually mark a still-running monitor
 /// as done in both the chat-stream card and the Inspector PROCESSES
 /// section.
-fn finalize_open_tool_calls(app: &mut App, status: &str) {
+fn finalize_open_tool_calls(app: &mut App, status: forge_primitives::ToolCallStatus) {
     use crate::app::state::tool_call_info::is_monitor_tool_name;
-    use forge_primitives::ToolCallUpdateFields;
+    use forge_primitives::{ToolCallStatus, ToolCallUpdateFields};
 
     let pending: Vec<String> = app.with_turn_state(|ts| {
         ts.tool_calls
             .iter()
-            .filter(|(_, t)| matches!(t.status.as_str(), "pending" | "in_progress"))
+            .filter(|(_, t)| {
+                matches!(t.status, ToolCallStatus::Pending | ToolCallStatus::InProgress)
+            })
             .filter(|(_, t)| {
                 // Skip explicit persistent monitors — the docs and
                 // wire shape both say these outlive the turn that
@@ -566,7 +550,7 @@ fn finalize_open_tool_calls(app: &mut App, status: &str) {
         apply_tool_call_update(
             app,
             &id,
-            ToolCallUpdateFields { status: Some(status.to_owned()), ..Default::default() },
+            ToolCallUpdateFields { status: Some(status), ..Default::default() },
         );
     }
 }
@@ -602,8 +586,8 @@ fn handle_system(app: &mut App, msg: Message) {
                     app,
                     &crate::agent::model::CurrentModeUpdate::new(mode_str),
                 );
-                if let Some(parsed) = crate::agent::state::PermissionMode::from_wire(mode_str) {
-                    use crate::agent::commands::supported_mode_ids_filtered;
+                if let Some(parsed) = forge_workspace::PermissionMode::from_wire(mode_str) {
+                    use forge_workspace::commands::supported_mode_ids_filtered;
                     let _: () = app.with_turn_state_mut(|ts| ts.mode = Some(parsed));
                     let supports_auto_mode =
                         app.current_model().is_some_and(|m| m.supports_auto_mode == Some(true));
@@ -655,12 +639,6 @@ fn handle_system(app: &mut App, msg: Message) {
         }
         "compact_boundary" => {
             apply_compaction_boundary(app, &data);
-        }
-        "elicitation_complete" => {
-            apply_elicitation_complete(app, &data);
-        }
-        "elicitation_request" => {
-            apply_elicitation_request(app, &data);
         }
         "local_command_output" => {
             apply_local_command_output(app, &data);
@@ -731,19 +709,17 @@ fn apply_available_commands_from_init(app: &mut App, data: &Value) {
     super::apply_available_commands_update(app, model_update);
 }
 
-/// Build `AvailableAgentsUpdate` from System(init).agents with
-/// last-signature change detection (so identical re-emits are no-ops).
+/// Build `AvailableAgentsUpdate` from the first `system/init` of a turn.
+/// Subsequent re-fires within the same turn are dropped.
 fn apply_available_agents_from_init(app: &mut App, data: &Value) {
     let Some(record) = data.as_object() else { return };
-    if app.with_turn_state(|ts| ts.last_agents_signature.is_some()) {
-        // Only emit on first init — subsequent inits with the same
-        // agent set are silent no-ops.
+    if app.with_turn_state(|ts| ts.agents_emitted_this_turn) {
         return;
     }
     let Some(agents_value) = record.get("agents") else { return };
-    let agents = crate::agent::agents::map_available_agents_from_names(Some(agents_value));
-    let signature = serde_json::to_string(&agents).unwrap_or_default();
-    let _: () = app.with_turn_state_mut(|ts| ts.last_agents_signature = Some(signature));
+    let agents =
+        forge_workspace::translate::agents::map_available_agents_from_names(Some(agents_value));
+    let _: () = app.with_turn_state_mut(|ts| ts.agents_emitted_this_turn = true);
     let model_update = crate::app::connect::type_converters::map_available_agents_update(agents);
     super::apply_available_agents_update(app, model_update);
 }
@@ -761,9 +737,8 @@ fn apply_available_agents_from_init(app: &mut App, data: &Value) {
 /// the footer's effort chip and adaptive-thinking flags after the
 /// first turn lands.
 fn apply_current_model_from_init(app: &mut App, data: &Value) {
-    use crate::agent::session_lifecycle::resolve_current_model_from_inputs;
-    use crate::app::connect::type_converters::convert_current_model;
     use forge_primitives as wire;
+    use forge_workspace::session_lifecycle::resolve_current_model_from_inputs;
 
     let Some(record) = data.as_object() else { return };
     let model_id = record.get("model").and_then(Value::as_str).unwrap_or("");
@@ -807,11 +782,10 @@ fn apply_current_model_from_init(app: &mut App, data: &Value) {
 
     let next_wire =
         resolve_current_model_from_inputs(model_id, requested, resolved_runtime, &available_models);
-    let next_model = convert_current_model(next_wire);
-    if app.current_model() == Some(&next_model) {
+    if app.current_model() == Some(&next_wire) {
         return;
     }
-    super::apply_current_model_update(app, next_model);
+    super::apply_current_model_update(app, next_wire);
 }
 
 /// Resolve `mode_state` from System(init) data and apply via the
@@ -822,9 +796,8 @@ fn apply_current_model_from_init(app: &mut App, data: &Value) {
 /// `supported_mode_ids` (using the App's current_model auto-mode
 /// support + the bypass flag), then builds a `ModeState` and applies.
 fn apply_mode_state_from_init(app: &mut App, data: &Value) {
-    use crate::agent::commands::{build_mode_state_from_supported, supported_mode_ids_filtered};
-    use crate::agent::state::PermissionMode;
-    use crate::app::connect::type_converters::convert_mode_state;
+    use forge_workspace::PermissionMode;
+    use forge_workspace::commands::{build_mode_state_from_supported, supported_mode_ids_filtered};
 
     let Some(record) = data.as_object() else { return };
     let Some(mode_str) = record.get("permissionMode").and_then(Value::as_str) else { return };
@@ -855,8 +828,7 @@ fn apply_mode_state_from_init(app: &mut App, data: &Value) {
     let _: () = app.with_turn_state_mut(|ts| ts.supported_mode_ids.clone_from(&supported));
 
     let wire_mode_state = build_mode_state_from_supported(mode, &supported);
-    let model_mode_state = convert_mode_state(wire_mode_state);
-    super::apply_mode_state_update(app, model_mode_state);
+    super::apply_mode_state_update(app, wire_mode_state);
 }
 
 /// When the SDK fires a System(local_command_output), forward the
@@ -874,46 +846,6 @@ fn apply_local_command_output(app: &mut App, data: &Value) {
         content.to_owned(),
     )));
     super::streaming::handle_agent_message_chunk(app, chunk);
-}
-
-/// Build an `ElicitationRequest` from System(elicitation_request)
-/// data and dispatch via the App's MCP overlay handler.
-fn apply_elicitation_request(app: &mut App, data: &Value) {
-    use forge_primitives::{ElicitationMode, ElicitationRequest};
-    let Some(record) = data.as_object() else { return };
-    let Some(request_id) = record.get("request_id").and_then(Value::as_str) else { return };
-    let server_name = record.get("server_name").and_then(Value::as_str).unwrap_or("").to_owned();
-    let message = record.get("message").and_then(Value::as_str).unwrap_or("").to_owned();
-    let mode = match record.get("mode").and_then(Value::as_str) {
-        Some("url") => ElicitationMode::Url,
-        _ => ElicitationMode::Form,
-    };
-    let url = record.get("url").and_then(Value::as_str).map(str::to_owned);
-    let elicitation_id = record.get("elicitation_id").and_then(Value::as_str).map(str::to_owned);
-    let requested_schema = record.get("requested_schema").cloned();
-    let request = ElicitationRequest {
-        request_id: request_id.to_owned(),
-        server_name,
-        message,
-        mode,
-        url,
-        elicitation_id,
-        requested_schema,
-    };
-    crate::app::config::present_mcp_elicitation_request(app, request);
-}
-
-/// Drain a System(elicitation_complete) record and call the App's
-/// MCP elicitation-completed handler (notice + overlay state).
-fn apply_elicitation_complete(app: &mut App, data: &Value) {
-    let Some(record) = data.as_object() else { return };
-    let Some(elicitation_id) =
-        record.get("elicitation_id").and_then(Value::as_str).filter(|s| !s.is_empty())
-    else {
-        return;
-    };
-    let server_name = record.get("mcp_server_name").and_then(Value::as_str).map(str::to_owned);
-    crate::app::config::handle_mcp_elicitation_completed(app, elicitation_id, server_name);
 }
 
 fn apply_settings_parse_errors(app: &mut App, data: &Value) {
@@ -942,14 +874,13 @@ fn apply_api_retry_update(app: &mut App, data: &Value) {
     else {
         return;
     };
-    let model_error = crate::app::connect::type_converters::map_api_retry_error(error);
     super::api_retry::handle_api_retry_update(
         app,
         attempt,
         max_retries,
         retry_delay_ms,
         error_status,
-        model_error,
+        error,
     );
 }
 
@@ -1038,7 +969,7 @@ fn handle_task_updated(app: &mut App, msg: Message) {
     apply_tool_call_update(
         app,
         &tool_use_id,
-        ToolCallUpdateFields { status: Some(mapped_status.to_owned()), ..Default::default() },
+        ToolCallUpdateFields { status: Some(mapped_status), ..Default::default() },
     );
 
     // Drain the alive-task set on terminal transitions so the
@@ -1055,22 +986,19 @@ fn handle_task_updated(app: &mut App, msg: Message) {
 }
 
 /// Map the wire-side `task_updated.patch.status` string to the
-/// internal `ToolCallInfo.status` string vocabulary.
-///
-/// The wire uses `"running"`; the internal state uses
-/// `"in_progress"`. Other transitions (`completed`, `failed`,
-/// `killed`, `stopped`, `pending`) round-trip 1:1. Unknown strings
-/// pass through unchanged for forward-compat — a future CLI version
-/// adding a status won't crash forge; the renderer just won't
-/// know how to colour it.
-fn map_task_updated_status_to_tool_status(wire_status: &str) -> &str {
+/// typed `ToolCallStatus`. The wire uses `"running"`; the internal
+/// type uses `InProgress`. `stopped` is the wire spelling for a
+/// graceful cancel; map to `Killed` so the renderer picks the same
+/// glyph as for explicit kill operations. Unknown wire strings fall
+/// through to `Pending` (matches `#[serde(other)]` on the enum).
+fn map_task_updated_status_to_tool_status(wire_status: &str) -> forge_primitives::ToolCallStatus {
+    use forge_primitives::ToolCallStatus;
     match wire_status {
-        "running" => "in_progress",
-        // `stopped` is the wire spelling for a graceful cancel; map
-        // to the internal `killed` so the renderer picks the same
-        // glyph as for explicit kill operations.
-        "stopped" => "killed",
-        other => other,
+        "running" => ToolCallStatus::InProgress,
+        "completed" => ToolCallStatus::Completed,
+        "failed" => ToolCallStatus::Failed,
+        "killed" | "stopped" => ToolCallStatus::Killed,
+        _ => ToolCallStatus::Pending,
     }
 }
 
@@ -1086,20 +1014,26 @@ fn handle_task_notification(app: &mut App, msg: Message) {
 /// `tool_use_id`'s status to `in_progress` if it isn't already in a
 /// terminal/active state.
 fn apply_tool_progress_update(app: &mut App, tool_use_id: &str, name: &str) {
-    use forge_primitives::ToolCallUpdateFields;
+    use forge_primitives::{ToolCallStatus, ToolCallUpdateFields};
 
     let existing = app.with_turn_state(|ts| ts.tool_calls.get(tool_use_id).cloned());
     let Some(existing) = existing else {
         apply_tool_use_block(app, tool_use_id, name, &Value::Object(serde_json::Map::new()), None);
         return;
     };
-    if matches!(existing.status.as_str(), "in_progress" | "completed" | "failed" | "killed") {
+    if matches!(
+        existing.status,
+        ToolCallStatus::InProgress
+            | ToolCallStatus::Completed
+            | ToolCallStatus::Failed
+            | ToolCallStatus::Killed
+    ) {
         return;
     }
     apply_tool_call_update(
         app,
         tool_use_id,
-        ToolCallUpdateFields { status: Some("in_progress".to_owned()), ..Default::default() },
+        ToolCallUpdateFields { status: Some(ToolCallStatus::InProgress), ..Default::default() },
     );
 }
 
@@ -1120,20 +1054,20 @@ fn apply_tool_progress_update(app: &mut App, tool_use_id: &str, name: &str) {
 /// events through the same handler, and the cost is one cheap
 /// JSON lookup.
 fn apply_tool_summary_update(app: &mut App, tool_use_id: &str, summary: &str) {
-    use forge_primitives::{ToolCallContent, ToolCallUpdateFields};
+    use forge_primitives::{ToolCallContent, ToolCallStatus, ToolCallUpdateFields};
 
     let Some(base) = app.with_turn_state(|ts| ts.tool_calls.get(tool_use_id).cloned()) else {
         return;
     };
     let persistent = raw_input_is_persistent(base.raw_input.as_ref());
-    let status = if matches!(base.status.as_str(), "failed" | "killed") {
+    let status = if matches!(base.status, ToolCallStatus::Failed | ToolCallStatus::Killed) {
         base.status
     } else if persistent {
-        // Keep the persistent monitor visibly running — only the
+        // Keep the persistent monitor visibly running: only the
         // summary content + raw_output update through.
         base.status
     } else {
-        "completed".to_owned()
+        ToolCallStatus::Completed
     };
     let fields = ToolCallUpdateFields {
         status: Some(status),
@@ -1171,12 +1105,9 @@ fn handle_rate_limit_event(app: &mut App, msg: Message) {
         session_id = app.session_id().map(|s| s.to_string()).as_deref().unwrap_or(""),
         rate_limit_info = %value,
     );
-    let Some(wire) = build_rate_limit_update(Some(&value)) else {
+    let Some(update) = build_rate_limit_update(Some(&value)) else {
         return;
     };
-    // Convert wire-side types::RateLimitUpdate → model::RateLimitUpdate
-    // via the existing converter, then call the App-side handler.
-    let update = crate::app::connect::type_converters::map_rate_limit_update(wire);
     super::rate_limit::handle_rate_limit_update(app, &update);
 }
 
@@ -1214,13 +1145,13 @@ fn apply_result_finalize(
         .unwrap_or_else(|| forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY));
     if !is_error && subtype == "success" {
         let _: () = app.with_turn_state_mut(|ts| ts.last_assistant_error = None);
-        finalize_open_tool_calls(app, "completed");
+        finalize_open_tool_calls(app, forge_primitives::ToolCallStatus::Completed);
         super::turn::handle_turn_complete_event(app, &active_key, terminal_reason);
         return;
     }
 
     let assistant_error = app.with_turn_state(|ts| ts.last_assistant_error.clone());
-    finalize_open_tool_calls(app, "failed");
+    finalize_open_tool_calls(app, forge_primitives::ToolCallStatus::Failed);
     // Build a clean detail string for the renderer to use after its
     // canonical "Turn failed: " prefix. Drop the SDK's default
     // `subtype="success"` (an internal bookkeeping value, not a user
@@ -1246,8 +1177,8 @@ fn classify_turn_error_kind(
     subtype: &str,
     errors: &[String],
     assistant_error: Option<&str>,
-) -> crate::agent::error_handling::TurnErrorClass {
-    use crate::agent::error_handling::TurnErrorClass;
+) -> forge_workspace::translate::error_handling::TurnErrorClass {
+    use forge_workspace::translate::error_handling::TurnErrorClass;
     let plan_limit_signals =
         ["error_max_turns", "error_max_budget_usd", "billing_error", "rate_limit"];
     if plan_limit_signals.iter().any(|s| subtype.contains(s)) {
@@ -1260,7 +1191,9 @@ fn classify_turn_error_kind(
         return TurnErrorClass::AuthRequired;
     }
     if errors.iter().any(|e| {
-        crate::agent::error_handling::looks_like_auth_required_error_lower(&e.to_ascii_lowercase())
+        forge_workspace::translate::error_handling::looks_like_auth_required_error_lower(
+            &e.to_ascii_lowercase(),
+        )
     }) {
         return TurnErrorClass::AuthRequired;
     }
@@ -1278,9 +1211,12 @@ mod task_updated_mapping_tests {
     fn running_maps_to_in_progress() {
         // Wire spelling vs forge-internal spelling. Without this
         // mapping, a backgrounded Bash transitioning through
-        // running would be left in the unknown "running" status
-        // and the renderer would pick an unintended glyph.
-        assert_eq!(map_task_updated_status_to_tool_status("running"), "in_progress");
+        // running would be left in the Pending fallback and the
+        // renderer would pick an unintended glyph.
+        assert_eq!(
+            map_task_updated_status_to_tool_status("running"),
+            forge_primitives::ToolCallStatus::InProgress,
+        );
     }
 
     #[test]
@@ -1289,24 +1225,31 @@ mod task_updated_mapping_tests {
         // (e.g. claude TaskStop). Map to the internal `killed`
         // so the renderer picks the same red glyph as for explicit
         // kills.
-        assert_eq!(map_task_updated_status_to_tool_status("stopped"), "killed");
+        assert_eq!(
+            map_task_updated_status_to_tool_status("stopped"),
+            forge_primitives::ToolCallStatus::Killed,
+        );
     }
 
     #[test]
     fn round_trip_statuses_unchanged() {
-        assert_eq!(map_task_updated_status_to_tool_status("completed"), "completed");
-        assert_eq!(map_task_updated_status_to_tool_status("failed"), "failed");
-        assert_eq!(map_task_updated_status_to_tool_status("killed"), "killed");
-        assert_eq!(map_task_updated_status_to_tool_status("pending"), "pending");
+        use forge_primitives::ToolCallStatus;
+        assert_eq!(map_task_updated_status_to_tool_status("completed"), ToolCallStatus::Completed);
+        assert_eq!(map_task_updated_status_to_tool_status("failed"), ToolCallStatus::Failed);
+        assert_eq!(map_task_updated_status_to_tool_status("killed"), ToolCallStatus::Killed);
+        assert_eq!(map_task_updated_status_to_tool_status("pending"), ToolCallStatus::Pending);
     }
 
     #[test]
-    fn unknown_status_passes_through() {
+    fn unknown_status_falls_through_to_pending() {
         // Forward-compat: a future CLI version adding `degraded`
-        // (say) must not crash forge. The renderer's glyph picker
-        // falls back to a default; the reducer just stores the
-        // string.
-        assert_eq!(map_task_updated_status_to_tool_status("degraded"), "degraded");
+        // (say) must not crash forge. Unknown wire values land in
+        // the `Pending` fallback so the renderer's glyph picker
+        // has a defined fallback.
+        assert_eq!(
+            map_task_updated_status_to_tool_status("degraded"),
+            forge_primitives::ToolCallStatus::Pending,
+        );
     }
 }
 

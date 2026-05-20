@@ -96,12 +96,15 @@ pub fn compute(
     let (pane_rect, pane_separator_rect, pane_right_rect, pane_right_separator_rect, chat_area) =
         compute_horizontal_split(area, pane_visible, pane_right_visible);
 
+    // No dedicated separator rows above/below the input: the
+    // bordered input box's own top/bottom edges serve as dividers.
+    // The zero-height `input_sep` / `input_bottom_sep` fields stay
+    // around so consumers can still address them, but they no longer
+    // consume any vertical space.
     let mut layout = if chat_area.height < 8 {
-        // Ultra-compact: drop the upper input separator (no room).
-        let [body, input, input_bottom_sep, help] = Layout::vertical([
+        let [body, input, help] = Layout::vertical([
             Constraint::Min(1),
             Constraint::Length(input_height),
-            Constraint::Length(1),
             Constraint::Length(help_height),
         ])
         .areas(chat_area);
@@ -114,15 +117,13 @@ pub fn compute(
             body,
             input_sep: Rect::new(chat_area.x, input.y, chat_area.width, 0),
             input,
-            input_bottom_sep,
+            input_bottom_sep: Rect::new(chat_area.x, input.y + input.height, chat_area.width, 0),
             help,
         }
     } else {
-        let [body, input_sep, input, input_bottom_sep, help] = Layout::vertical([
+        let [body, input, help] = Layout::vertical([
             Constraint::Min(3),
-            Constraint::Length(1),
             Constraint::Length(input_height),
-            Constraint::Length(1),
             Constraint::Length(help_height),
         ])
         .areas(chat_area);
@@ -133,18 +134,19 @@ pub fn compute(
             pane_right: pane_right_rect,
             pane_right_separator: pane_right_separator_rect,
             body,
-            input_sep,
+            input_sep: Rect::new(chat_area.x, input.y, chat_area.width, 0),
             input,
-            input_bottom_sep,
+            input_bottom_sep: Rect::new(chat_area.x, input.y + input.height, chat_area.width, 0),
             help,
         }
     };
 
     // At Narrow tier (<120), no inline panes: peel a single row off
     // the top of the body for the top bar. Only allocate when the
-    // body has at least 2 rows so we keep at least one row of chat
-    // behind the top bar.
-    if area.width < MEDIUM_TIER_MIN_WIDTH && layout.body.height >= 2 {
+    // body has at least 3 rows so peeling leaves the body with at
+    // least 2 rows of chat behind the top bar — anything less and
+    // the chat surface becomes unusable.
+    if area.width < MEDIUM_TIER_MIN_WIDTH && layout.body.height >= 3 {
         let [top, rest] =
             Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(layout.body);
         layout.top_bar = Some(top);
@@ -159,6 +161,15 @@ pub fn compute(
 /// chat column). At Narrow tier or when both panes are hidden, the
 /// chat column takes the full area.
 #[allow(clippy::type_complexity)]
+/// Chat column width given the frame area and pane visibility. Used
+/// pre-layout so callers (e.g. visual_line_count) can size content
+/// using the actual width the chat column will end up with, not the
+/// full frame width.
+pub fn chat_column_width(area: Rect, pane_visible: bool, pane_right_visible: bool) -> u16 {
+    let (_, _, _, _, chat) = compute_horizontal_split(area, pane_visible, pane_right_visible);
+    chat.width
+}
+
 fn compute_horizontal_split(
     area: Rect,
     pane_visible: bool,
@@ -268,9 +279,12 @@ mod tests {
     fn normal_layout_respects_requested_sections() {
         let layout = compute(area(80, 24), 5, 2, false, false);
 
-        assert_eq!(layout.input_sep.height, 1);
+        // input_sep / input_bottom_sep are zero-height anchors now;
+        // the bordered input box's own borders divide it from the
+        // chat body and help row.
+        assert_eq!(layout.input_sep.height, 0);
         assert_eq!(layout.input.height, 5);
-        assert_eq!(layout.input_bottom_sep.height, 1);
+        assert_eq!(layout.input_bottom_sep.height, 0);
         assert_eq!(layout.help.height, 2);
         assert!(layout.body.height >= 3);
         assert_eq!(total_height(&layout), 24);
@@ -280,25 +294,14 @@ mod tests {
     }
 
     #[test]
-    fn compact_layout_omits_input_sep_and_allocates_remaining_space_to_input_and_help() {
+    fn compact_layout_allocates_remaining_space_to_input_and_help() {
         let layout = compute(area(80, 6), 3, 2, false, false);
 
         assert_eq!(layout.input_sep.height, 0);
+        assert_eq!(layout.input_bottom_sep.height, 0);
         assert_eq!(layout.help.height, 2);
         assert!(layout.input.height >= 1);
         assert_eq!(total_height(&layout), 6);
-    }
-
-    #[test]
-    fn layout_threshold_switches_at_height_eight() {
-        let compact = compute(area(80, 7), 1, 0, false, false);
-        let normal = compute(area(80, 8), 1, 1, false, false);
-
-        // Compact path skips the input_sep allocation.
-        assert_eq!(compact.input_sep.height, 0);
-        // Normal path allocates an input_sep.
-        assert_eq!(normal.input_sep.height, 1);
-        assert_eq!(normal.help.height, 1);
     }
 
     #[test]
@@ -473,15 +476,16 @@ mod tests {
 
     #[test]
     fn narrow_tier_skips_top_bar_when_body_truly_too_short() {
-        // Compact-mode area (height < 8) with input+separator+help
-        // chewing 1+1+1=3 of the 4 rows leaves body.height=1. The
-        // skip guard refuses to peel another row off, so `top_bar`
-        // stays `None`.
+        // Compact-mode area (height < 8). input + help chew 1+1=2 of
+        // the 4 rows; the `Min(1)` body soaks up the leftover row,
+        // so body=2 before any peel. The skip-guard refuses to peel
+        // another row off — that would leave body=1, an unusable
+        // single chat row behind a top bar.
         let layout = compute(area(100, 4), 1, 1, true, true);
-        assert!(layout.body.height < 2, "fixture must produce a 1-row body");
+        assert_eq!(layout.body.height, 2, "fixture must produce a 2-row body");
         assert!(
             layout.top_bar.is_none(),
-            "top bar must skip when peeling would leave body with 0 rows"
+            "top bar must skip when peeling would leave body with <2 rows"
         );
     }
 

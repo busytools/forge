@@ -22,7 +22,7 @@ async fn wire_capture_multi_turn() {
         // Drain until Result.
         loop {
             match events.recv().await {
-                Some(Ok(forge_sdk::Message::Result { .. })) | None => break,
+                Some(Ok(forge_primitives::Message::Result { .. })) | None => break,
                 Some(Ok(_)) => {}
                 Some(Err(e)) => return Err(e),
             }

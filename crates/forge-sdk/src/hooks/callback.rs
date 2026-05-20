@@ -55,27 +55,23 @@ impl HookDecision {
     }
 
     /// Allow the action unchanged.
-    #[must_use]
     pub fn allow() -> Self {
         Self::with_inner(HookDecisionKind::Allow { updated_input: None })
     }
 
     /// Allow but substitute a new input payload (`PreToolUse` /
     /// `UserPromptSubmit`).
-    #[must_use]
     pub fn replace_input(new_input: Value) -> Self {
         Self::with_inner(HookDecisionKind::Allow { updated_input: Some(new_input) })
     }
 
     /// Deny the action with a reason string.
-    #[must_use]
     pub fn deny(reason: impl Into<String>) -> Self {
         Self::with_inner(HookDecisionKind::Deny { reason: reason.into() })
     }
 
     /// Observational only — continue unchanged (typical `PostToolUse` /
     /// `Stop`).
-    #[must_use]
     pub fn passthrough() -> Self {
         Self::with_inner(HookDecisionKind::Passthrough)
     }
@@ -87,20 +83,17 @@ impl HookDecision {
     /// caller is expected to deliver the real decision out-of-band
     /// (wiring that channel is follow-up work — forge-sdk currently
     /// emits only the ACK shape).
-    #[must_use]
     pub fn defer(timeout_ms: Option<u64>) -> Self {
         Self::with_inner(HookDecisionKind::Defer { timeout_ms })
     }
 
     /// True iff the decision was constructed via [`defer`](Self::defer).
-    #[must_use]
     pub fn is_deferred(&self) -> bool {
         matches!(self.inner, HookDecisionKind::Defer { .. })
     }
 
     /// Optional timeout in milliseconds attached to a
     /// [`defer`](Self::defer) decision.
-    #[must_use]
     pub fn defer_timeout_ms(&self) -> Option<u64> {
         match &self.inner {
             HookDecisionKind::Defer { timeout_ms } => *timeout_ms,
@@ -112,7 +105,6 @@ impl HookDecision {
     /// `continue`). Pass `false` to signal that Claude should not proceed
     /// after the hook — typically combined with
     /// [`with_stop_reason`](Self::with_stop_reason).
-    #[must_use]
     pub fn with_continue(mut self, should_continue: bool) -> Self {
         self.continue_execution = Some(should_continue);
         self
@@ -120,7 +112,6 @@ impl HookDecision {
 
     /// Attach the `suppressOutput` control field. When
     /// `true`, the CLI hides stdout from transcript mode.
-    #[must_use]
     pub fn with_suppress_output(mut self, suppress: bool) -> Self {
         self.suppress_output = Some(suppress);
         self
@@ -128,7 +119,6 @@ impl HookDecision {
 
     /// Attach the `stopReason` control field — the message
     /// the CLI shows when `continue` is set to `false`.
-    #[must_use]
     pub fn with_stop_reason(mut self, reason: impl Into<String>) -> Self {
         self.stop_reason = Some(reason.into());
         self
@@ -136,20 +126,17 @@ impl HookDecision {
 
     /// Attach the `systemMessage` control field — a warning
     /// displayed to the user alongside the hook's decision.
-    #[must_use]
     pub fn with_system_message(mut self, msg: impl Into<String>) -> Self {
         self.system_message = Some(msg.into());
         self
     }
 
     /// True if the decision allows the action.
-    #[must_use]
     pub fn is_allow(&self) -> bool {
         !matches!(self.inner, HookDecisionKind::Deny { .. })
     }
 
     /// Optional modified input.
-    #[must_use]
     pub fn updated_input(&self) -> Option<&Value> {
         match &self.inner {
             HookDecisionKind::Allow { updated_input } => updated_input.as_ref(),
@@ -158,7 +145,6 @@ impl HookDecision {
     }
 
     /// Optional deny reason.
-    #[must_use]
     pub fn reason(&self) -> Option<&str> {
         match &self.inner {
             HookDecisionKind::Deny { reason } => Some(reason),
@@ -168,25 +154,21 @@ impl HookDecision {
 
     /// `continue` control field, if the callback set one. Wire name is
     /// `continue` (stored as `continue_` to dodge the keyword).
-    #[must_use]
     pub fn continue_execution(&self) -> Option<bool> {
         self.continue_execution
     }
 
     /// `suppressOutput` control field, if the callback set one.
-    #[must_use]
     pub fn suppress_output(&self) -> Option<bool> {
         self.suppress_output
     }
 
     /// `stopReason` control field, if the callback set one.
-    #[must_use]
     pub fn stop_reason(&self) -> Option<&str> {
         self.stop_reason.as_deref()
     }
 
     /// `systemMessage` control field, if the callback set one.
-    #[must_use]
     pub fn system_message(&self) -> Option<&str> {
         self.system_message.as_deref()
     }
