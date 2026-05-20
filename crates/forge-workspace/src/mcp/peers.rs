@@ -21,7 +21,7 @@
 
 use std::sync::Arc;
 
-use forge_primitives::{CorrelationId, InflightStatus, WrappedKind, WrappedPrompt};
+use forge_primitives::{CorrelationId, InflightAsk, InflightStatus, WrappedKind, WrappedPrompt};
 use forge_sdk::mcp::server::{McpServer, McpServerBuilder};
 use forge_sdk::mcp::tool::{Tool, ToolInput, ToolOutput};
 
@@ -46,13 +46,20 @@ pub mod facade;
 pub fn build_server(facade: Arc<dyn WorkspaceFacade>, caller_key: SessionKey) -> McpServer {
     let whoami = Whoami { facade: facade.clone(), caller_key: caller_key.clone() };
     let list_agents = ListAgents { facade: facade.clone() };
-    let tell_agent = TellAgent { facade, caller_key };
+    let tell_agent = TellAgent { facade: facade.clone(), caller_key: caller_key.clone() };
+    let ask_agent = AskAgent { facade, caller_key };
     McpServerBuilder::new("forge", env!("CARGO_PKG_VERSION"))
         .tool(whoami)
         .tool(list_agents)
         .tool(tell_agent)
+        .tool(ask_agent)
         .build()
 }
+
+/// Per-ask budget for the 30-minute reply timer (#114 v1 brainstorm).
+/// Wired in C12; for now this constant is the inflight_ask shape's
+/// `timeout_at` calculation.
+const ASK_TIMEOUT_SECS: u64 = 30 * 60;
 
 /// Default hop limit for forwarded ask/tell chains (#114 v1 brainstorm
 /// locked at 10). Bumped at each forward; refused past the limit by
@@ -392,6 +399,160 @@ fn chrono_rfc3339_now() -> String {
     OffsetDateTime::now_utc().format(&Rfc3339).unwrap_or_else(|_| "0".to_owned())
 }
 
+/// `peers__ask_agent` — async question to another agent. Returns
+/// immediately with a correlation_id; the reply lands later as a
+/// new user-turn injection in YOUR chat when the recipient calls
+/// `peers__tell_agent { in_reply_to: <this correlation_id> }`.
+///
+/// Arguments:
+/// - `target` (string, required) — project name to ask
+/// - `prompt` (string, required) — the question body
+/// - `in_reply_to` (string, optional) — pass-through threading id
+///   if this ask itself is a follow-up to an earlier message
+///
+/// Returns a JSON object with `correlation_id` (starts with `q-`),
+/// `queued_at`, `target_status` (delivered / queued_for_spawn).
+///
+/// Auto-spawns the target if it's currently sleeping; the reply
+/// will take longer in that case (one full spawn cycle). Multiple
+/// asks can run in parallel — fire several ask_agent calls in one
+/// turn, replies arrive independently and can be threaded back via
+/// their distinct correlation_ids.
+///
+/// Hop count is stamped by forge automatically
+/// (peek_current_inbound_hop + 1). The LLM does not pass it.
+/// Outgoing hops exceeding HOP_LIMIT (default 10) are refused with
+/// is_error.
+pub(crate) struct AskAgent {
+    pub(crate) facade: Arc<dyn WorkspaceFacade>,
+    pub(crate) caller_key: SessionKey,
+}
+
+#[derive(serde::Deserialize)]
+struct AskArgs {
+    target: String,
+    prompt: String,
+    #[serde(default)]
+    in_reply_to: Option<String>,
+}
+
+#[async_trait::async_trait]
+impl Tool for AskAgent {
+    #[allow(clippy::unnecessary_literal_bound)]
+    fn name(&self) -> &str {
+        "peers__ask_agent"
+    }
+
+    #[allow(clippy::unnecessary_literal_bound)]
+    fn description(&self) -> &str {
+        "Send a question to another forge agent (project) and get a reply \
+         back asynchronously. Returns immediately with a correlation_id; \
+         does NOT wait for the reply. The target's LLM will respond by \
+         calling peers__tell_agent with in_reply_to=<this correlation_id>. \
+         The reply lands in YOUR chat as a new user-turn injection - you'll \
+         see it whenever the target finishes its work and responds. If the \
+         target is currently sleeping, it auto-spawns; you may see latency. \
+         Multiple asks can run in parallel - fire several ask_agent calls \
+         in one turn, each reply arrives independently. Failure modes \
+         return is_error: true (target not in forge.toml, hop limit \
+         exceeded). Hop count is managed by forge automatically."
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "target": {
+                    "type": "string",
+                    "description": "Project name of the agent to ask.",
+                },
+                "prompt": {
+                    "type": "string",
+                    "description": "The question body the target agent will see.",
+                },
+                "in_reply_to": {
+                    "type": "string",
+                    "description": "Optional correlation_id of an earlier message this ask threads onto.",
+                },
+            },
+            "required": ["target", "prompt"],
+            "additionalProperties": false,
+        })
+    }
+
+    async fn call(&self, input: ToolInput) -> ToolOutput {
+        let args: AskArgs = match serde_json::from_value(input.value) {
+            Ok(a) => a,
+            Err(err) => return tool_error(format!("invalid arguments: {err}")),
+        };
+
+        let Some(identity) = self.facade.whoami(&self.caller_key) else {
+            return tool_error(format!(
+                "no identity resolved for caller {} (forge bug)",
+                self.caller_key.as_str(),
+            ));
+        };
+
+        let inbound_hop = self.facade.peek_current_inbound_hop(&self.caller_key).unwrap_or(0);
+        let outgoing_hop = inbound_hop.saturating_add(1);
+
+        let correlation_id = CorrelationId::new_ask();
+        let in_reply_to_id = args.in_reply_to.as_ref().map(|s| CorrelationId(s.clone()));
+
+        let wrapped = WrappedPrompt {
+            correlation_id: correlation_id.clone(),
+            kind: WrappedKind::Question,
+            sender_name: identity.name.clone(),
+            sender_org: identity.org.clone(),
+            hop: outgoing_hop,
+            hop_limit: HOP_LIMIT,
+            in_reply_to: in_reply_to_id,
+            body: args.prompt,
+        };
+
+        let target_status =
+            match self.facade.deliver_peer_prompt(&self.caller_key, &args.target, wrapped) {
+                Ok(s) => s,
+                Err(err) => return tool_error(format_deliver_error(&args.target, &err)),
+            };
+
+        // Register the inflight ask AFTER delivery succeeds. The 30-min
+        // timer is armed inside register_inflight_ask in C12; today
+        // register only writes the inflight_asks map + a placeholder
+        // timer task.
+        let queued_at = std::time::SystemTime::now();
+        let timeout_at = queued_at
+            .checked_add(std::time::Duration::from_secs(ASK_TIMEOUT_SECS))
+            .unwrap_or(queued_at);
+        self.facade.register_inflight_ask(InflightAsk {
+            correlation_id: correlation_id.clone(),
+            caller: self.caller_key.clone(),
+            caller_project: identity.name.clone(),
+            caller_org: identity.org.clone(),
+            target_project: args.target.clone(),
+            queued_at,
+            timeout_at,
+            hop: outgoing_hop,
+            hop_limit: HOP_LIMIT,
+            status: InflightStatus::Pending,
+        });
+        self.facade.bump_inflight_stats(&self.caller_key, PeerStatsDelta::OutgoingPlus1);
+
+        let body = serde_json::json!({
+            "correlation_id": correlation_id.as_str(),
+            "queued_at": chrono_rfc3339_now(),
+            "target_status": match target_status {
+                crate::mcp::peers::facade::TargetStatus::Delivered => "delivered",
+                crate::mcp::peers::facade::TargetStatus::QueuedForSpawn => "queued_for_spawn",
+            },
+        });
+        match serde_json::to_string_pretty(&body) {
+            Ok(json) => ToolOutput::text(json),
+            Err(err) => tool_error(format!("response serialization failed: {err}")),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -682,5 +843,152 @@ mod tests {
         assert!(required.iter().any(|v| v == "target"));
         assert!(required.iter().any(|v| v == "message"));
         assert!(!required.iter().any(|v| v == "in_reply_to"), "in_reply_to is optional");
+    }
+
+    #[tokio::test]
+    async fn ask_agent_returns_q_correlation_id() {
+        let mock = MockWorkspaceFacade::new();
+        mock.peers.lock().push(fake_peer("forge"));
+        mock.peers.lock().push(fake_peer("granite-backend"));
+        let facade = mock.into_arc();
+        let tool = AskAgent { facade, caller_key: fake_key("forge") };
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({
+                    "target": "granite-backend",
+                    "prompt": "Which Rust toolchain do you use?",
+                }),
+            })
+            .await;
+        assert!(!output.is_error, "happy path should succeed: {:?}", output.blocks);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&output.blocks[0].text).expect("valid JSON");
+        let id = parsed["correlation_id"].as_str().expect("correlation_id present");
+        assert!(id.starts_with("q-"), "ask correlation ids prefix q-, got {id}");
+    }
+
+    #[tokio::test]
+    async fn ask_agent_registers_inflight_and_bumps_outgoing() {
+        // Reach into the mock by holding a concrete handle BEFORE
+        // converting to dyn (Arc<dyn WorkspaceFacade> can't be
+        // downcast cleanly).
+        let mock = Arc::new(MockWorkspaceFacade::new());
+        mock.peers.lock().push(fake_peer("forge"));
+        mock.peers.lock().push(fake_peer("granite-backend"));
+        let facade: Arc<dyn WorkspaceFacade> = mock.clone();
+        let tool = AskAgent { facade, caller_key: fake_key("forge") };
+        let _ = tool
+            .call(ToolInput {
+                value: serde_json::json!({
+                    "target": "granite-backend",
+                    "prompt": "hi",
+                }),
+            })
+            .await;
+
+        assert_eq!(mock.register_calls.lock().len(), 1, "inflight ask should be registered");
+        let registered = &mock.register_calls.lock()[0];
+        assert!(registered.correlation_id.is_ask());
+        assert_eq!(registered.target_project, "granite-backend");
+        assert_eq!(registered.caller_project, "forge");
+        assert_eq!(registered.hop, 1);
+        assert_eq!(registered.hop_limit, 10);
+        assert_eq!(registered.status, InflightStatus::Pending);
+
+        let bumps = mock.bump_calls.lock();
+        assert_eq!(bumps.len(), 1, "exactly one stats bump per ask");
+        assert_eq!(bumps[0].1, PeerStatsDelta::OutgoingPlus1);
+    }
+
+    #[tokio::test]
+    async fn ask_agent_unknown_target_is_error_without_register() {
+        let mock = Arc::new(MockWorkspaceFacade::new());
+        mock.peers.lock().push(fake_peer("forge"));
+        let facade: Arc<dyn WorkspaceFacade> = mock.clone();
+        let tool = AskAgent { facade, caller_key: fake_key("forge") };
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({
+                    "target": "missing",
+                    "prompt": "hi",
+                }),
+            })
+            .await;
+        assert!(output.is_error);
+        assert!(output.blocks[0].text.contains("missing"));
+        assert!(
+            mock.register_calls.lock().is_empty(),
+            "failed delivery must NOT register an inflight ask",
+        );
+        assert!(mock.bump_calls.lock().is_empty(), "failed delivery must NOT bump stats");
+    }
+
+    #[tokio::test]
+    async fn ask_agent_invalid_args_is_error() {
+        let mock = MockWorkspaceFacade::new();
+        let facade = mock.into_arc();
+        let tool = AskAgent { facade, caller_key: fake_key("forge") };
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({
+                    // missing required 'prompt'
+                    "target": "granite-backend",
+                }),
+            })
+            .await;
+        assert!(output.is_error);
+    }
+
+    #[tokio::test]
+    async fn ask_agent_hop_propagation_stamps_outgoing_plus_one() {
+        let mock = Arc::new(MockWorkspaceFacade::new());
+        mock.peers.lock().push(fake_peer("forge"));
+        mock.peers.lock().push(fake_peer("granite-backend"));
+        // Caller is mid-turn on a peer prompt with hop=3; outgoing
+        // should stamp hop=4.
+        *mock.current_inbound_hop.lock() = Some(3);
+        let facade: Arc<dyn WorkspaceFacade> = mock.clone();
+        let tool = AskAgent { facade, caller_key: fake_key("forge") };
+        let _ = tool
+            .call(ToolInput {
+                value: serde_json::json!({
+                    "target": "granite-backend",
+                    "prompt": "hi",
+                }),
+            })
+            .await;
+        let calls = mock.deliver_calls.lock();
+        assert_eq!(calls.len(), 1);
+        let wrapped = &calls[0].2;
+        assert_eq!(wrapped.hop, 4, "ambient inbound hop=3 -> outgoing hop should be 4");
+    }
+
+    #[test]
+    fn ask_agent_metadata_shape() {
+        let mock = MockWorkspaceFacade::new();
+        let facade = mock.into_arc();
+        let tool = AskAgent { facade, caller_key: fake_key("forge") };
+        assert_eq!(tool.name(), "peers__ask_agent");
+        let schema = tool.input_schema();
+        let required = schema["required"].as_array().expect("required field present");
+        assert!(required.iter().any(|v| v == "target"));
+        assert!(required.iter().any(|v| v == "prompt"));
+        assert!(!required.iter().any(|v| v == "in_reply_to"));
+    }
+
+    #[test]
+    fn build_server_registers_all_four_tools() {
+        let mock = MockWorkspaceFacade::new();
+        let facade = mock.into_arc();
+        let server = build_server(facade, fake_key("test"));
+        let debug = format!("{server:?}");
+        for expected in
+            ["peers__whoami", "peers__list_agents", "peers__tell_agent", "peers__ask_agent"]
+        {
+            assert!(
+                debug.contains(expected),
+                "build_server must include {expected}; debug: {debug}",
+            );
+        }
     }
 }
