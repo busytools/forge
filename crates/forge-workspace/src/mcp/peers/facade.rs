@@ -31,8 +31,56 @@ use forge_primitives::{
 use tracing::warn;
 
 use crate::SessionKey;
+use crate::domain_session::DomainSession;
 use crate::protocol::{Command, SessionUpdate};
 use crate::workspace::Workspace;
+
+/// Snapshot the caller's current [`SessionKey`] on demand.
+///
+/// Each session's peer-MCP tools hold a `CallerKeyResolver` instead of
+/// a bare `SessionKey` because the session's key isn't stable — it
+/// rekeys from a synthetic placeholder (e.g. `__spawn_forge__`) to the
+/// real claude-issued UUID once `Connected` fires
+/// ([`Workspace::migrate_session_task`]). Tools that baked the
+/// synthetic key in at server-build time would see stale lookups
+/// after the rekey.
+///
+/// Production resolver reads from `DomainSession.key` via the
+/// session's shared `Arc<Mutex<DomainSession>>`. The migrate path
+/// updates `DomainSession.key` in place, so the resolver always
+/// returns the current key.
+///
+/// Test resolvers can be any closure (typically returning a fixed
+/// fake key).
+#[derive(Clone)]
+pub struct CallerKeyResolver(Arc<dyn Fn() -> SessionKey + Send + Sync>);
+
+impl std::fmt::Debug for CallerKeyResolver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CallerKeyResolver").finish_non_exhaustive()
+    }
+}
+
+impl CallerKeyResolver {
+    /// Build a resolver that reads `DomainSession.key` through the
+    /// shared `Arc<Mutex<DomainSession>>`. Use this in production
+    /// (the spawn path).
+    pub fn from_domain(domain: Arc<parking_lot::Mutex<DomainSession>>) -> Self {
+        Self(Arc::new(move || domain.lock().key.clone()))
+    }
+
+    /// Build a resolver that returns a fixed `SessionKey`. Use this
+    /// in tests where the session never rekeys.
+    pub fn from_fixed(key: SessionKey) -> Self {
+        Self(Arc::new(move || key.clone()))
+    }
+
+    /// Resolve the caller's current `SessionKey`. Cheap (one mutex
+    /// acquire over a `String`).
+    pub fn current(&self) -> SessionKey {
+        (self.0)()
+    }
+}
 
 /// What `deliver_peer_prompt` returns on success — whether the target
 /// session was already running (prompt sent immediately) or asleep

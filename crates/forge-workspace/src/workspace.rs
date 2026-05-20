@@ -362,10 +362,47 @@ impl Workspace {
         // debugging the raw wire shape.
         let account_proxy_enabled = self.accounts.lock().proxy_enabled(&account_key);
         let attached_proxy = if account_proxy_enabled { self.proxy.clone() } else { None };
+
+        // Hoist DomainSession creation to BEFORE Agent::spawn so the
+        // per-session peer-MCP server's CallerKeyResolver can read
+        // back through the same Arc<Mutex<DomainSession>>. The
+        // existing connect::create_app path may have registered a
+        // pre-Connect placeholder under `session_key` (conn = None);
+        // reuse it when present so the TUI's pre-spawn accessors
+        // keep their handle reference. Otherwise create fresh with
+        // conn = None and update post-Agent::spawn at line ~470.
+        let domain_arc = {
+            let mut handles = self.domain_handles.lock();
+            if let Some(existing) = handles.get(&session_key).cloned() {
+                existing
+            } else {
+                let fresh =
+                    Arc::new(Mutex::new(DomainSession::new(session_key.clone(), None)));
+                handles.insert(session_key.clone(), Arc::clone(&fresh));
+                fresh
+            }
+        };
+
+        // Build the per-session `forge` MCP server with the four peer
+        // tools (peers__whoami / peers__list_agents / peers__tell_agent /
+        // peers__ask_agent). CallerKeyResolver reads `domain.key`
+        // through the shared Arc — when SessionTask migrates the key
+        // from synthetic to real on Connected, the resolver tracks.
+        let peer_server = {
+            let workspace_arc: Arc<Self> = Arc::clone(self);
+            let facade: Arc<dyn crate::mcp::peers::facade::WorkspaceFacade> =
+                Arc::new(workspace_arc);
+            let resolver = crate::mcp::peers::facade::CallerKeyResolver::from_domain(
+                Arc::clone(&domain_arc),
+            );
+            crate::mcp::peers::build_server(facade, resolver)
+        };
+
         let handle = forge_agent::Agent::spawn(
             account_dir.clone(),
             Some(account_key.0.clone()),
             attached_proxy,
+            vec![("forge".to_owned(), peer_server)],
         );
         // Project-rooted targets (`Default` / `Named`) resume the
         // project's lead session when the on-disk catalog has one,
@@ -441,28 +478,16 @@ impl Workspace {
             }
         };
         if let Some(cmd_rx) = cmd_rx {
-            // If the workspace already holds a pre-spawn domain
-            // handle for this key (e.g. registered by
-            // `connect::create_app` for the pre-Connect bucket), reuse
-            // it and stamp the live `Arc<AgentHandle>` onto its `conn`
-            // slot rather than overwriting the entry. The TUI's
-            // accessors keep reading from the same `Arc<Mutex<…>>`
-            // they were given pre-spawn — no second `domain_session_for`
+            // `domain_arc` was hoisted above so the peer-MCP server's
+            // CallerKeyResolver could reference it pre-Agent::spawn.
+            // Stamp the live `Arc<AgentHandle>` onto its `conn` slot
+            // now that the handle exists. The TUI's pre-spawn
+            // accessors (`connect::create_app`'s placeholder entry)
+            // keep reading from the same `Arc<Mutex<…>>` they were
+            // given before — no second `domain_session_for`
             // round-trip after the spawn lands.
-            let domain = {
-                let mut handles = self.domain_handles.lock();
-                if let Some(existing) = handles.get(&session_key).cloned() {
-                    existing.lock().conn = Some(Arc::clone(&arc));
-                    existing
-                } else {
-                    let fresh = Arc::new(Mutex::new(DomainSession::new(
-                        session_key.clone(),
-                        Some(Arc::clone(&arc)),
-                    )));
-                    handles.insert(session_key.clone(), Arc::clone(&fresh));
-                    fresh
-                }
-            };
+            domain_arc.lock().conn = Some(Arc::clone(&arc));
+            let domain = Arc::clone(&domain_arc);
             let task = SessionTask {
                 key: session_key,
                 handle: Arc::clone(&arc),

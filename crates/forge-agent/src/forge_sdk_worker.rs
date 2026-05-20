@@ -57,6 +57,7 @@ pub(crate) async fn spawn_session(
     let config_dir = bridge.config_dir();
     let display_name = bridge.display_name();
     let proxy = bridge.proxy();
+    let extra_mcp_servers = bridge.extra_mcp_servers();
     let options = build_options_with_callback(
         cwd,
         resume_id,
@@ -67,6 +68,7 @@ pub(crate) async fn spawn_session(
         Arc::clone(bridge.session_id_slot_arc()),
         &config_dir,
         proxy,
+        extra_mcp_servers,
     );
     let (client, events) = Client::spawn(options).await?;
     // For resume sessions the CLI flag carried the real session id —
@@ -424,6 +426,7 @@ fn build_options_with_callback(
     session_id_slot: Arc<parking_lot::Mutex<String>>,
     config_dir: &Path,
     proxy: Option<forge_sdk::transport::proxy::ProxyHandle>,
+    extra_mcp_servers: Vec<(String, forge_sdk::mcp::McpServer)>,
 ) -> Options {
     // Passthrough hooks emit `AgentEvent::HookObservation` for every
     // PreToolUse / UserPromptSubmit input without altering the dispatch
@@ -485,6 +488,16 @@ fn build_options_with_callback(
         .can_use_tool(callback)
         .hooks(observation_hooks)
         .permission_prompt_tool_name("stdio");
+    // Forge-workspace-supplied in-process MCP servers. Today this is
+    // the `forge` server carrying the four peer-coordination tools
+    // (#114 v1: peers__whoami / peers__list_agents / peers__tell_agent /
+    // peers__ask_agent). Each spawned `claude` subprocess sees them as
+    // `mcp__<server_name>__<tool_name>` and the auto-approve fast-path
+    // (lands in C10) skips the permission prompt for any tool whose
+    // name starts with `mcp__forge__`.
+    for (name, server) in extra_mcp_servers {
+        b = b.mcp_server(name, server);
+    }
     if !cwd.is_empty() {
         b = b.cwd(PathBuf::from(cwd));
     }
