@@ -1508,6 +1508,142 @@ impl Workspace {
             }
         }
     }
+
+    /// Expire every in-flight ask whose target session is the one
+    /// closing. Called when:
+    /// - `AgentEvent::ConnectionFailed` arrives for a target's bridge
+    ///   (target's claude subprocess crashed or failed to spawn)
+    /// - A `SessionTask::drop` fires (target's session was closed by
+    ///   any reason — user close, lifecycle terminate, panic)
+    ///
+    /// Maps the closing `SessionKey` to its project name via
+    /// `list_projects`, then walks `inflight_asks` for entries whose
+    /// `target_project` matches and dispatches the failure dual-path
+    /// notification for each (PeerAskFailed UI state + Command::Prompt
+    /// with DeliveryFailureNotice wrapper to caller).
+    ///
+    /// Idempotent. Safe to call from a Drop impl via Weak<Workspace>.
+    pub(crate) fn expire_target_inflight(
+        self: &Arc<Self>,
+        closing_key: &SessionKey,
+        reason: &forge_primitives::PeerFailureReason,
+    ) {
+        // Find the project this closing session belongs to. If we can't
+        // (caller raced with config-reload; defensive only), there's
+        // nothing to do.
+        let project_name = self
+            .list_projects()
+            .into_iter()
+            .find(|v| v.sessions.iter().any(|s| s.session == *closing_key))
+            .map(|v| v.name);
+        let Some(project_name) = project_name else {
+            return;
+        };
+
+        // Snapshot the IDs to expire. Holding the inflight_asks lock
+        // across the dispatch loop below would risk re-entrancy via
+        // bump_inflight_stats. Take a copy + release the lock.
+        let ids_to_expire: Vec<CorrelationId> = {
+            let asks = self.inflight_asks.lock();
+            asks.iter()
+                .filter(|(_, ask)| ask.target_project == project_name)
+                .map(|(id, _)| id.clone())
+                .collect()
+        };
+
+        for id in ids_to_expire {
+            self.expire_inflight_ask_failed(&id, reason);
+        }
+    }
+
+    /// Expire an in-flight ask because of a delivery failure (target
+    /// crashed, spawn failed, channel closed). Same shape as
+    /// `expire_inflight_ask` but emits the failure variant instead of
+    /// the timeout variant on both paths (SessionUpdate +
+    /// Command::Prompt wrapper). Idempotent.
+    pub(crate) fn expire_inflight_ask_failed(
+        self: &Arc<Self>,
+        id: &CorrelationId,
+        reason: &forge_primitives::PeerFailureReason,
+    ) {
+        let ask = {
+            let mut asks = self.inflight_asks.lock();
+            asks.remove(id)
+        };
+        let Some(ask) = ask else {
+            tracing::trace!(
+                target: "forge_workspace::workspace",
+                correlation_id = %id,
+                "expire_inflight_ask_failed: entry already gone"
+            );
+            return;
+        };
+        self.inflight_timers.lock().remove(id);
+
+        if !matches!(ask.status, InflightStatus::Pending) {
+            return;
+        }
+
+        let _ = self.update_tx().send(crate::protocol::SessionUpdate::PeerAskFailed {
+            caller_key: ask.caller.clone(),
+            correlation_id: id.clone(),
+            reason: reason.clone(),
+        });
+
+        let facade: Arc<dyn crate::mcp::peers::facade::WorkspaceFacade> =
+            Arc::new(Arc::clone(self));
+        facade.bump_inflight_stats(
+            &ask.caller,
+            crate::mcp::peers::facade::PeerStatsDelta::DeliveryFailedPlus1,
+        );
+        facade.bump_inflight_stats(
+            &ask.caller,
+            crate::mcp::peers::facade::PeerStatsDelta::OutgoingMinus1,
+        );
+
+        let target_org = self
+            .list_projects()
+            .into_iter()
+            .find(|p| p.name == ask.target_project)
+            .map_or_else(|| "?".to_owned(), |p| p.org);
+
+        // Body carries the human-readable failure reason — caller
+        // chat block surfaces it underneath the bracket header.
+        let body = match &reason {
+            forge_primitives::PeerFailureReason::TargetSpawnFailed { reason: r } => {
+                format!("target spawn failed: {r}")
+            }
+            forge_primitives::PeerFailureReason::TargetConnectionFailed => {
+                "target session connection lost".to_owned()
+            }
+            forge_primitives::PeerFailureReason::ChannelClosed => {
+                "target session command channel closed".to_owned()
+            }
+        };
+
+        let caller_notice = WrappedPrompt {
+            correlation_id: id.clone(),
+            kind: WrappedKind::DeliveryFailureNotice,
+            sender_name: ask.target_project.clone(),
+            sender_org: target_org,
+            hop: 0,
+            hop_limit: 10,
+            in_reply_to: None,
+            body,
+        };
+        if let Err(err) = self.dispatch(crate::protocol::Command::Prompt {
+            key: ask.caller.clone(),
+            text: caller_notice.to_prose(),
+            attachments: Vec::new(),
+        }) {
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                correlation_id = %id,
+                error = ?err,
+                "expire_inflight_ask_failed: caller notice dispatch failed (caller closed?)"
+            );
+        }
+    }
 }
 
 #[cfg(feature = "testing")]

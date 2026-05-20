@@ -197,6 +197,18 @@ impl SessionTask {
             }
             AgentEvent::ConnectionFailed { message } => {
                 let key = self.spawn_key.clone().unwrap_or_else(|| self.key.clone());
+                // Expire any inflight peer asks targeting THIS session
+                // before emitting the user-visible ConnectionFailed.
+                // Each ask gets the dual-path failure notification to
+                // its caller (PeerAskFailed UI state + Command::Prompt
+                // with DeliveryFailureNotice). No 30-min wait when
+                // we know the target is gone.
+                if let Some(workspace) = self.workspace.upgrade() {
+                    workspace.expire_target_inflight(
+                        &key,
+                        &forge_primitives::PeerFailureReason::TargetConnectionFailed,
+                    );
+                }
                 self.emit(SessionUpdate::ConnectionFailed { key, message, fatal: false });
             }
             AgentEvent::PermissionRequest { session_id, request } => {
@@ -544,6 +556,25 @@ impl SessionTask {
                     "drain_pending_peer_prompts: dispatch failed; prompt dropped"
                 );
             }
+        }
+    }
+}
+
+/// Drop hook: on SessionTask exit (any reason — graceful close,
+/// crash, panic), expire every in-flight peer ask targeting this
+/// session. The expiration fires PeerAskFailed + a synthetic
+/// DeliveryFailureNotice prompt to each caller so they aren't left
+/// waiting on a session that no longer exists.
+///
+/// Uses the stored Weak<Workspace> reference so a Workspace drop
+/// before the task drops doesn't double-fire or panic.
+impl Drop for SessionTask {
+    fn drop(&mut self) {
+        if let Some(workspace) = self.workspace.upgrade() {
+            workspace.expire_target_inflight(
+                &self.key,
+                &forge_primitives::PeerFailureReason::TargetConnectionFailed,
+            );
         }
     }
 }
