@@ -135,12 +135,19 @@ fn walk_normalize(v: &mut Value, changed: &mut bool) {
     }
 }
 
-/// Rewrite an `/api/event_logging/v2/batch` body via the recursive
-/// normaliser. Thin wrapper kept for call-site readability and
-/// because the proxy dispatches on URL path.
+/// Rewrite an `/api/event_logging/v2/batch` body. Two stages:
+///
+/// 1. Drop any event whose `event_name` contains `_sdk_` — these are
+///    forge-internal protocol events (tengu_sdk_init_handshake,
+///    tengu_sdk_control_roundtrip, etc.) that native interactive
+///    `claude` never emits. Their presence in the batch is itself a
+///    classification leak via event nomenclature.
+/// 2. Apply the recursive classification normaliser to the
+///    remaining events, then the defensive byte-level pass.
 #[must_use]
 pub fn rewrite_event_logging(body: &Bytes) -> Bytes {
-    rewrite_body_recursive(body)
+    let stripped = strip_sdk_events(body);
+    rewrite_body_recursive(&stripped)
 }
 
 /// Rewrite a Statsig (`/api/eval/sdk-...`) feature evaluation body.
@@ -235,6 +242,85 @@ fn rewrite_cc_entrypoint(s: &str) -> String {
         .replace("cc_entrypoint=sdk-py", "cc_entrypoint=cli")
         .replace("cc_entrypoint=sdk-ts", "cc_entrypoint=cli")
         .replace("cc_entrypoint=sdk-rs", "cc_entrypoint=cli")
+}
+
+/// Forge-only `anthropic-beta` flags that native interactive `claude`
+/// sessions don't request. Stripping these from the comma-joined
+/// header value before forwarding makes the request's feature
+/// fingerprint match a native session. Empirical list from
+/// `/tmp/forge-round3-results-2026-05-20.md` (Round 3 wire diff).
+///
+/// Conservative: only removes flags confirmed forge-specific. Does
+/// NOT add native-only flags forge isn't requesting (those may
+/// require feature support forge doesn't have — adding them blindly
+/// risks server-side errors).
+const FORGE_ONLY_ANTHROPIC_BETAS: &[&str] = &[
+    "claude-code-20250219",
+    "extended-cache-ttl-2025-04-11",
+    "advanced-tool-use-2025-11-20",
+    "effort-2025-11-24",
+    "afk-mode-2026-01-31",
+];
+
+/// Rewrite an `anthropic-beta` header value: strip every flag in
+/// [`FORGE_ONLY_ANTHROPIC_BETAS`] from the comma-joined list,
+/// re-serialise the remainder. Returns `None` when nothing was
+/// stripped (header passes through unchanged).
+#[must_use]
+pub fn rewrite_anthropic_beta(header_value: &str) -> Option<String> {
+    let parts: Vec<&str> = header_value.split(',').map(str::trim).collect();
+    let mut kept: Vec<&str> = Vec::with_capacity(parts.len());
+    let mut stripped = 0usize;
+    for part in parts {
+        if FORGE_ONLY_ANTHROPIC_BETAS.contains(&part) {
+            stripped += 1;
+        } else if !part.is_empty() {
+            kept.push(part);
+        }
+    }
+    if stripped == 0 {
+        return None;
+    }
+    Some(kept.join(","))
+}
+
+/// Telemetry event names native interactive `claude` never emits;
+/// forge-sdk's protocol bookkeeping produces these. The `_sdk_`
+/// substring inside the name is itself a classification signal,
+/// independent of field values inside the event.
+///
+/// Defensive coverage: any event whose name contains `_sdk_` is
+/// dropped, not just the four confirmed names — catches future
+/// SDK-protocol events the team might add.
+const SDK_EVENT_NAME_SUBSTRING: &str = "_sdk_";
+
+/// Filter forge-internal SDK protocol events out of an
+/// `/api/event_logging/v2/batch` body. Walks `events[]`, drops any
+/// entry whose `event_name` contains `_sdk_`. No-op when nothing
+/// matches; returns the original bytes unchanged in that case.
+///
+/// Forge still records these events locally (via the SDK's tracing
+/// layer); only the outbound copy to Anthropic's telemetry endpoint
+/// is suppressed, so wire-equivalence with native is preserved
+/// without losing diagnostic data.
+#[must_use]
+pub fn strip_sdk_events(body: &Bytes) -> Bytes {
+    let Ok(mut v) = serde_json::from_slice::<Value>(body) else {
+        return body.clone();
+    };
+    let mut dropped = 0usize;
+    if let Some(events) = v.get_mut("events").and_then(|e| e.as_array_mut()) {
+        let before = events.len();
+        events.retain(|ev| {
+            let name = ev.get("event_name").and_then(|n| n.as_str()).unwrap_or("");
+            !name.contains(SDK_EVENT_NAME_SUBSTRING)
+        });
+        dropped = before.saturating_sub(events.len());
+    }
+    if dropped == 0 {
+        return body.clone();
+    }
+    serde_json::to_vec(&v).map_or_else(|_| body.clone(), Bytes::from)
 }
 
 /// Generic body rewriter: parse, normalise classification fields
@@ -650,6 +736,101 @@ mod tests {
         let s = std::str::from_utf8(&out).unwrap();
         assert!(s.contains(r#"\"entrypoint\":\"cli\""#));
         assert!(!s.contains("sdk-cli"));
+    }
+
+    #[test]
+    fn anthropic_beta_strips_forge_only_flags() {
+        // Sample from Round 3 capture: forge-specific betas mixed
+        // with native-also-requested ones. Strip the forge-only.
+        let input = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advisor-tool-2026-03-01,advanced-tool-use-2025-11-20,effort-2025-11-24,afk-mode-2026-01-31,extended-cache-ttl-2025-04-11,cache-diagnosis-2026-04-07";
+        let out = rewrite_anthropic_beta(input).expect("should rewrite");
+        assert!(!out.contains("claude-code-20250219"));
+        assert!(!out.contains("extended-cache-ttl-2025-04-11"));
+        assert!(!out.contains("advanced-tool-use-2025-11-20"));
+        assert!(!out.contains("effort-2025-11-24"));
+        assert!(!out.contains("afk-mode-2026-01-31"));
+        // Shared / native flags retained:
+        assert!(out.contains("oauth-2025-04-20"));
+        assert!(out.contains("interleaved-thinking-2025-05-14"));
+        assert!(out.contains("context-management-2025-06-27"));
+        assert!(out.contains("prompt-caching-scope-2026-01-05"));
+        assert!(out.contains("advisor-tool-2026-03-01"));
+        assert!(out.contains("cache-diagnosis-2026-04-07"));
+    }
+
+    #[test]
+    fn anthropic_beta_no_op_when_only_shared_flags() {
+        // Native's sample — no forge-only flags. Nothing to strip.
+        let input = "oauth-2025-04-20,interleaved-thinking-2025-05-14";
+        assert!(rewrite_anthropic_beta(input).is_none());
+    }
+
+    #[test]
+    fn anthropic_beta_trims_whitespace_and_drops_empty() {
+        let input = " effort-2025-11-24 , oauth-2025-04-20 , afk-mode-2026-01-31 ";
+        let out = rewrite_anthropic_beta(input).expect("should rewrite");
+        assert_eq!(out, "oauth-2025-04-20");
+    }
+
+    #[test]
+    fn strip_sdk_events_drops_tengu_sdk_entries() {
+        // 4 of the events from Round 3's forge capture had _sdk_ in
+        // the event_name. They get dropped; others are retained.
+        let body = serde_json::to_vec(&json!({
+            "events": [
+                { "event_name": "tengu_sdk_init_handshake", "event_data": {} },
+                { "event_name": "tengu_api_request", "event_data": { "entrypoint": "cli" } },
+                { "event_name": "tengu_sdk_control_roundtrip", "event_data": {} },
+                { "event_name": "tengu_tool_use", "event_data": {} },
+                { "event_name": "tengu_sdk_result", "event_data": {} },
+                { "event_name": "tengu_sdk_ttft", "event_data": {} }
+            ]
+        }))
+        .expect("encode");
+        let out = strip_sdk_events(&Bytes::from(body));
+        let parsed: Value = serde_json::from_slice(&out).expect("decode");
+        let names: Vec<&str> = parsed["events"]
+            .as_array()
+            .expect("array")
+            .iter()
+            .map(|e| e["event_name"].as_str().unwrap_or(""))
+            .collect();
+        assert_eq!(names, vec!["tengu_api_request", "tengu_tool_use"]);
+    }
+
+    #[test]
+    fn strip_sdk_events_noop_when_no_sdk_events() {
+        let body = serde_json::to_vec(&json!({
+            "events": [
+                { "event_name": "tengu_api_request", "event_data": {} },
+                { "event_name": "tengu_tool_use", "event_data": {} }
+            ]
+        }))
+        .expect("encode");
+        let out = strip_sdk_events(&Bytes::from(body.clone()));
+        assert_eq!(out.as_ref(), body.as_slice());
+    }
+
+    #[test]
+    fn event_logging_drops_sdk_events_then_normalises_classification() {
+        // End-to-end: a batch with both an _sdk_ event AND a
+        // classification leak on a kept event. Verify both get
+        // handled correctly in one pass.
+        let body = serde_json::to_vec(&json!({
+            "events": [
+                { "event_name": "tengu_sdk_init_handshake", "event_data": { "entrypoint": "sdk-cli" } },
+                { "event_name": "tengu_api_request", "event_data": { "entrypoint": "sdk-cli", "client_type": "sdk-cli", "is_interactive": false } }
+            ]
+        }))
+        .expect("encode");
+        let out = rewrite_event_logging(&Bytes::from(body));
+        let parsed: Value = serde_json::from_slice(&out).expect("decode");
+        let events = parsed["events"].as_array().expect("array");
+        assert_eq!(events.len(), 1, "tengu_sdk_init_handshake should be dropped");
+        assert_eq!(events[0]["event_name"], "tengu_api_request");
+        assert_eq!(events[0]["event_data"]["entrypoint"], "cli");
+        assert_eq!(events[0]["event_data"]["client_type"], "cli");
+        assert_eq!(events[0]["event_data"]["is_interactive"], true);
     }
 
     #[test]

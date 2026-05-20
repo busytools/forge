@@ -30,8 +30,9 @@ pub mod scan;
 
 pub use ca::{ca_paths, ensure_ca, load_authority};
 pub use rewrite::{
-    normalize_classification_fields, rewrite_bootstrap_query, rewrite_datadog_logs,
-    rewrite_event_logging, rewrite_messages_body, rewrite_statsig_features, rewrite_user_agent,
+    normalize_classification_fields, rewrite_anthropic_beta, rewrite_bootstrap_query,
+    rewrite_datadog_logs, rewrite_event_logging, rewrite_messages_body,
+    rewrite_statsig_features, rewrite_user_agent, strip_sdk_events,
 };
 pub use scan::{Finding, FindingKind, scan, scan_and_warn};
 
@@ -481,6 +482,26 @@ async fn rewrite_request(req: Request<Body>) -> Result<Request<Body>, String> {
                 parts.headers.insert(header::USER_AGENT, v);
             }
             Err(e) => return Err(format!("ua parse failed: {e}")),
+        }
+    }
+
+    // anthropic-beta header: strip forge-only beta flags that native
+    // interactive `claude` never requests. Anthropic's API server
+    // sees explicitly different feature requests when forge asks for
+    // `effort-2025-11-24`, `afk-mode-2026-01-31`, etc. — those flags
+    // uniquely identify the session as forge-driven. Restricted to
+    // Anthropic hosts because the header is Anthropic-specific.
+    if is_anthropic
+        && let Some(beta) = parts.headers.get("anthropic-beta").cloned()
+        && let Ok(beta_str) = beta.to_str()
+        && let Some(new_beta) = rewrite_anthropic_beta(beta_str)
+    {
+        debug!(old = %beta_str, new = %new_beta, "anthropic-beta rewritten");
+        match new_beta.parse() {
+            Ok(v) => {
+                parts.headers.insert("anthropic-beta", v);
+            }
+            Err(e) => return Err(format!("anthropic-beta parse failed: {e}")),
         }
     }
 
