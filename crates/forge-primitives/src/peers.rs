@@ -270,22 +270,16 @@ impl WrappedPrompt {
                 self.correlation_id, self.sender_name, self.sender_org, self.body,
             ),
             WrappedKind::CallerTimeoutNotice => {
-                let trailing = if self.body.is_empty() {
-                    String::new()
-                } else {
-                    format!("\n\n{}", self.body)
-                };
+                let trailing =
+                    if self.body.is_empty() { String::new() } else { format!("\n\n{}", self.body) };
                 format!(
                     "[Ask id={} to agent '{}' (org '{}') timed out after 30 minutes - no reply received. Any reply after this point will be tagged late.]{}",
                     self.correlation_id, self.sender_name, self.sender_org, trailing,
                 )
             }
             WrappedKind::RecipientExpiredNotice => {
-                let trailing = if self.body.is_empty() {
-                    String::new()
-                } else {
-                    format!("\n\n{}", self.body)
-                };
+                let trailing =
+                    if self.body.is_empty() { String::new() } else { format!("\n\n{}", self.body) };
                 format!(
                     "[Ask id={} from agent '{}' (org '{}') has expired - any reply you produce will be tagged late.]{}",
                     self.correlation_id, self.sender_name, self.sender_org, trailing,
@@ -394,8 +388,11 @@ mod tests {
     fn wrapper(kind: WrappedKind, sender: &str, org: &str, body: &str) -> WrappedPrompt {
         WrappedPrompt {
             correlation_id: CorrelationId(match kind {
-                WrappedKind::Question | WrappedKind::Reply | WrappedKind::LateReply
-                | WrappedKind::CallerTimeoutNotice | WrappedKind::RecipientExpiredNotice
+                WrappedKind::Question
+                | WrappedKind::Reply
+                | WrappedKind::LateReply
+                | WrappedKind::CallerTimeoutNotice
+                | WrappedKind::RecipientExpiredNotice
                 | WrappedKind::DeliveryFailureNotice => "q-7f3a92e0".to_owned(),
                 WrappedKind::Message => "t-c45a8f12".to_owned(),
             }),
@@ -411,12 +408,8 @@ mod tests {
 
     #[test]
     fn wrapped_prompt_question_prose_matches_mockup() {
-        let w = wrapper(
-            WrappedKind::Question,
-            "forge",
-            "Personal",
-            "What's the test setup look like?",
-        );
+        let w =
+            wrapper(WrappedKind::Question, "forge", "Personal", "What's the test setup look like?");
         let prose = w.to_prose();
         assert!(
             prose.starts_with(
@@ -437,7 +430,9 @@ mod tests {
         );
         let prose = w.to_prose();
         assert!(
-            prose.starts_with("[Message id=t-c45a8f12 hop=1/10 from agent 'forge' (org 'Personal')]"),
+            prose.starts_with(
+                "[Message id=t-c45a8f12 hop=1/10 from agent 'forge' (org 'Personal')]"
+            ),
             "got: {prose}",
         );
         assert!(prose.ends_with("FYI I just pushed the rewriter cleanup."));
@@ -463,12 +458,7 @@ mod tests {
 
     #[test]
     fn wrapped_prompt_late_reply_prose_matches_mockup() {
-        let w = wrapper(
-            WrappedKind::LateReply,
-            "granite-backend",
-            "Granite",
-            "We use pgtemp.",
-        );
+        let w = wrapper(WrappedKind::LateReply, "granite-backend", "Granite", "We use pgtemp.");
         let prose = w.to_prose();
         assert!(
             prose.starts_with(
