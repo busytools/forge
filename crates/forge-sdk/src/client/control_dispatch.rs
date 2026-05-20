@@ -145,35 +145,59 @@ impl ControlDispatchHandle {
                     description,
                 },
             ) => {
-                let suggestions: Vec<forge_primitives::PermissionUpdate> = permission_suggestions
-                    .iter()
-                    .filter_map(|v| match serde_json::from_value(v.clone()) {
-                        Ok(s) => Some(s),
-                        Err(e) => {
-                            tracing::warn!(
-                                error = %e,
-                                raw = %v,
-                                "permission_suggestion failed to decode; dropping (CLI schema drift?)"
-                            );
-                            None
-                        }
-                    })
-                    .collect();
-                let ctx = ToolPermissionContext::new(
-                    tool_name.clone(),
-                    input.clone(),
-                    tool_use_id.clone(),
-                    agent_id.clone(),
-                )
-                .with_suggestions(suggestions)
-                .with_display(
-                    blocked_path.clone(),
-                    decision_reason.clone(),
-                    title.clone(),
-                    display_name.clone(),
-                    description.clone(),
-                );
-                cb.call(ctx).await
+                // Auto-approve fast-path for forge's own in-process MCP
+                // tools (#114 v1). The user already opted into the
+                // cross-agent peer-coordination feature by configuring
+                // forge.toml + spawning sessions; surfacing a
+                // permission prompt for every `peers__ask_agent` /
+                // `peers__tell_agent` / `peers__list_agents` /
+                // `peers__whoami` call defeats the whole point of
+                // LLM-driven peer coordination. The recipient's
+                // downstream tools (Read, Bash, Edit, …) still flow
+                // through this same callback under their own names —
+                // so the user remains in the loop for any actual
+                // side effect a peer agent performs. Mirrors the
+                // pattern claudechic / architect use for their
+                // `mcp__chic__*` / `mcp__architect__*` tools.
+                if tool_name.starts_with("mcp__forge__") {
+                    tracing::trace!(
+                        target: "forge_sdk::control_dispatch",
+                        tool_name = %tool_name,
+                        "auto-approving forge in-process MCP tool"
+                    );
+                    PermissionDecision::allow()
+                } else {
+                    let suggestions: Vec<forge_primitives::PermissionUpdate> =
+                        permission_suggestions
+                            .iter()
+                            .filter_map(|v| match serde_json::from_value(v.clone()) {
+                                Ok(s) => Some(s),
+                                Err(e) => {
+                                    tracing::warn!(
+                                        error = %e,
+                                        raw = %v,
+                                        "permission_suggestion failed to decode; dropping (CLI schema drift?)"
+                                    );
+                                    None
+                                }
+                            })
+                            .collect();
+                    let ctx = ToolPermissionContext::new(
+                        tool_name.clone(),
+                        input.clone(),
+                        tool_use_id.clone(),
+                        agent_id.clone(),
+                    )
+                    .with_suggestions(suggestions)
+                    .with_display(
+                        blocked_path.clone(),
+                        decision_reason.clone(),
+                        title.clone(),
+                        display_name.clone(),
+                        description.clone(),
+                    );
+                    cb.call(ctx).await
+                }
             }
             (None, ControlRequestKind::CanUseTool { .. }) => {
                 PermissionDecision::deny("no permission callback registered")
