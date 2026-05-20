@@ -90,8 +90,10 @@ impl CallerKeyResolver {
     pub fn from_domain(domain: &Arc<parking_lot::Mutex<DomainSession>>) -> Self {
         let weak = Arc::downgrade(domain);
         Self(Arc::new(move || {
-            weak.upgrade()
-                .map_or_else(|| SessionKey::from_session_id("__detached__"), |d| d.lock().key.clone())
+            weak.upgrade().map_or_else(
+                || SessionKey::from_session_id("__detached__"),
+                |d| d.lock().key.clone(),
+            )
         }))
     }
 
