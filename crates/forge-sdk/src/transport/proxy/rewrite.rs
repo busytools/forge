@@ -21,7 +21,7 @@ use serde_json::Value;
 /// value other than `cli`; otherwise returns `None`.
 ///
 /// The proxy is responsible for splicing the result back into the
-/// request URI — this function operates on the raw query string only.
+/// request URI - this function operates on the raw query string only.
 #[must_use]
 pub fn rewrite_bootstrap_query(query: &str) -> Option<String> {
     if !query.contains("entrypoint=") {
@@ -83,7 +83,7 @@ pub fn rewrite_user_agent(ua: &str) -> Option<String> {
 ///
 /// Per-key behaviour:
 /// - `entrypoint` / `client_type` → set to `cli` when current string
-///   value isn't `cli` (or isn't a string at all — paranoid).
+///   value isn't `cli` (or isn't a string at all - paranoid).
 /// - `is_interactive` → set to JSON `true` when not already `true`.
 /// - `agent_sdk_version` → key removed entirely (presence itself is a
 ///   signal; blanking the value is insufficient).
@@ -137,17 +137,26 @@ fn walk_normalize(v: &mut Value, changed: &mut bool) {
 
 /// Rewrite an `/api/event_logging/v2/batch` body. Two stages:
 ///
-/// 1. Drop any event whose `event_name` contains `_sdk_` — these are
-///    forge-internal protocol events (tengu_sdk_init_handshake,
-///    tengu_sdk_control_roundtrip, etc.) that native interactive
-///    `claude` never emits. Their presence in the batch is itself a
-///    classification leak via event nomenclature.
+/// 1. Drop any event whose `event_data.event_name` carries the
+///    `tengu_sdk_` prefix. These are forge-internal protocol events
+///    (init_handshake, control_roundtrip, result, ttft) that native
+///    interactive `claude` never emits; their presence is itself a
+///    classification leak via nomenclature.
 /// 2. Apply the recursive classification normaliser to the
 ///    remaining events, then the defensive byte-level pass.
 #[must_use]
 pub fn rewrite_event_logging(body: &Bytes) -> Bytes {
     let stripped = strip_sdk_events(body);
     rewrite_body_recursive(&stripped)
+}
+
+/// Catch-all rewriter for Anthropic endpoints without a per-path
+/// specialisation: parse, recursive-normalise, byte-finalise. Used
+/// from the proxy's request handler so a new Anthropic surface gets
+/// covered without code changes here.
+#[must_use]
+pub fn rewrite_anthropic_unknown(body: &Bytes) -> Bytes {
+    rewrite_body_recursive(body)
 }
 
 /// Rewrite a Statsig (`/api/eval/sdk-...`) feature evaluation body.
@@ -254,12 +263,11 @@ fn rewrite_cc_entrypoint(s: &str) -> String {
 /// Forge-only `anthropic-beta` flags that native interactive `claude`
 /// sessions don't request. Stripping these from the comma-joined
 /// header value before forwarding makes the request's feature
-/// fingerprint match a native session. Empirical list from
-/// `/tmp/forge-round3-results-2026-05-20.md` (Round 3 wire diff).
+/// fingerprint match a native session.
 ///
 /// Conservative: only removes flags confirmed forge-specific. Does
 /// NOT add native-only flags forge isn't requesting (those may
-/// require feature support forge doesn't have — adding them blindly
+/// require feature support forge doesn't have - adding them blindly
 /// risks server-side errors).
 const FORGE_ONLY_ANTHROPIC_BETAS: &[&str] = &[
     "claude-code-20250219",
@@ -297,7 +305,7 @@ pub fn rewrite_anthropic_beta(header_value: &str) -> Option<String> {
 /// signal, independent of field values inside the event.
 ///
 /// Defensive coverage: any event whose name contains `tengu_sdk_`
-/// is dropped, not just the four confirmed names — catches future
+/// is dropped, not just the four confirmed names - catches future
 /// SDK-protocol events the team adds that follow the same naming
 /// pattern. `tengu_sdk_` is specific enough to NOT collide with
 /// the legitimate `agent_sdk_version` field name (which the
@@ -306,16 +314,10 @@ const SDK_EVENT_NAME_SUBSTRING: &str = "tengu_sdk_";
 
 /// Filter forge-internal SDK protocol events out of an
 /// `/api/event_logging/v2/batch` body. Walks `events[]`, drops any
-/// entry whose `event_data.event_name` contains `_sdk_`. The
-/// event_name field is nested inside `event_data`, NOT at the top
-/// level of each event entry — Round 3's audit confirmed this is
-/// where forge's `tengu_sdk_init_handshake` etc. live. No-op when
-/// nothing matches; returns the original bytes unchanged.
-///
-/// Forge still records these events locally (via the SDK's tracing
-/// layer); only the outbound copy to Anthropic's telemetry endpoint
-/// is suppressed, so wire-equivalence with native is preserved
-/// without losing diagnostic data.
+/// entry whose `event_data.event_name` starts with `tengu_sdk_`
+/// (forge's `init_handshake`, `control_roundtrip`, `result`, `ttft`
+/// among others). Forge still records these via its local tracing
+/// layer; only the outbound telemetry copy is suppressed.
 #[must_use]
 pub fn strip_sdk_events(body: &Bytes) -> Bytes {
     let Ok(mut v) = serde_json::from_slice::<Value>(body) else {
@@ -381,7 +383,7 @@ pub fn strip_sdk_datadog_entries(body: &Bytes) -> Bytes {
 /// recursively, serialise back, then apply a defensive byte-level
 /// substring pass for any classification leaks the structured walker
 /// missed (typically values where the CLI nested a stringified-JSON
-/// blob inside an outer JSON string — the walker treats the outer
+/// blob inside an outer JSON string - the walker treats the outer
 /// string as opaque and doesn't descend). Used by every Anthropic
 /// body endpoint we touch.
 fn rewrite_body_recursive(body: &Bytes) -> Bytes {
@@ -398,55 +400,45 @@ fn rewrite_body_recursive(body: &Bytes) -> Bytes {
 }
 
 /// Final byte-level substring pass over a serialised body. Catches
-/// `sdk-cli` / `sdk-py` / `sdk-ts` / `sdk-rs` substrings inside
-/// `"entrypoint"` and `"client_type"` JSON values that the structured
-/// walker couldn't reach (escaped-JSON-inside-a-string is the known
-/// case, but the pass is also defensive against any future schema
-/// addition that nests a classification string deeper).
-///
-/// Returns the original bytes if no substitution applies (cheap O(n)
-/// scan via memmem; allocates only when at least one needle hits).
+/// classification leaks the structured walker can't reach (escaped
+/// stringified-JSON, future schema additions that nest the value
+/// deeper). Gated on a single `memmem` scan for the `sdk-` substring:
+/// if the body contains no `sdk-` anywhere, it returns the original
+/// `Bytes` without allocating.
+/// Escaped and unescaped JSON-key forms that need their `sdk-X` value
+/// substring rewritten to `cli`. Used by [`finalize_string_pass`].
+const FINALIZE_NEEDLES: &[(&str, &str)] = &[
+    (r#""entrypoint":"sdk-cli""#, r#""entrypoint":"cli""#),
+    (r#""entrypoint":"sdk-py""#, r#""entrypoint":"cli""#),
+    (r#""entrypoint":"sdk-ts""#, r#""entrypoint":"cli""#),
+    (r#""entrypoint":"sdk-rs""#, r#""entrypoint":"cli""#),
+    (r#""client_type":"sdk-cli""#, r#""client_type":"cli""#),
+    (r#""client_type":"sdk-py""#, r#""client_type":"cli""#),
+    (r#""client_type":"sdk-ts""#, r#""client_type":"cli""#),
+    (r#""client_type":"sdk-rs""#, r#""client_type":"cli""#),
+    (r#"\"entrypoint\":\"sdk-cli\""#, r#"\"entrypoint\":\"cli\""#),
+    (r#"\"entrypoint\":\"sdk-py\""#, r#"\"entrypoint\":\"cli\""#),
+    (r#"\"entrypoint\":\"sdk-ts\""#, r#"\"entrypoint\":\"cli\""#),
+    (r#"\"entrypoint\":\"sdk-rs\""#, r#"\"entrypoint\":\"cli\""#),
+    (r#"\"client_type\":\"sdk-cli\""#, r#"\"client_type\":\"cli\""#),
+    (r#"\"client_type\":\"sdk-py\""#, r#"\"client_type\":\"cli\""#),
+    (r#"\"client_type\":\"sdk-ts\""#, r#"\"client_type\":\"cli\""#),
+    (r#"\"client_type\":\"sdk-rs\""#, r#"\"client_type\":\"cli\""#),
+];
+
 pub fn finalize_string_pass(body: Bytes) -> Bytes {
-    const NEEDLES: &[(&str, &str)] = &[
-        (r#""entrypoint":"sdk-cli""#, r#""entrypoint":"cli""#),
-        (r#""entrypoint":"sdk-py""#, r#""entrypoint":"cli""#),
-        (r#""entrypoint":"sdk-ts""#, r#""entrypoint":"cli""#),
-        (r#""entrypoint":"sdk-rs""#, r#""entrypoint":"cli""#),
-        (r#""client_type":"sdk-cli""#, r#""client_type":"cli""#),
-        (r#""client_type":"sdk-py""#, r#""client_type":"cli""#),
-        (r#""client_type":"sdk-ts""#, r#""client_type":"cli""#),
-        (r#""client_type":"sdk-rs""#, r#""client_type":"cli""#),
-        // Backslash-escaped form for stringified-JSON contexts (each
-        // double-quote escaped as \"). Same pairs as above.
-        (r#"\"entrypoint\":\"sdk-cli\""#, r#"\"entrypoint\":\"cli\""#),
-        (r#"\"entrypoint\":\"sdk-py\""#, r#"\"entrypoint\":\"cli\""#),
-        (r#"\"entrypoint\":\"sdk-ts\""#, r#"\"entrypoint\":\"cli\""#),
-        (r#"\"entrypoint\":\"sdk-rs\""#, r#"\"entrypoint\":\"cli\""#),
-        (r#"\"client_type\":\"sdk-cli\""#, r#"\"client_type\":\"cli\""#),
-        (r#"\"client_type\":\"sdk-py\""#, r#"\"client_type\":\"cli\""#),
-        (r#"\"client_type\":\"sdk-ts\""#, r#"\"client_type\":\"cli\""#),
-        (r#"\"client_type\":\"sdk-rs\""#, r#"\"client_type\":\"cli\""#),
-    ];
-    let mut changed = false;
-    let mut out = body.to_vec();
-    for (needle, replacement) in NEEDLES {
-        if memchr_contains(&out, needle.as_bytes()) {
-            let s = String::from_utf8_lossy(&out).replace(needle, replacement);
-            out = s.into_bytes();
-            changed = true;
+    if memchr::memmem::find(&body, b"sdk-").is_none() {
+        return body;
+    }
+    let Ok(mut s) = String::from_utf8(body.to_vec()) else {
+        return body;
+    };
+    for (needle, replacement) in FINALIZE_NEEDLES {
+        if s.contains(needle) {
+            s = s.replace(needle, replacement);
         }
     }
-    if changed { Bytes::from(out) } else { body }
-}
-
-/// Cheap byte-substring containment check via the standard
-/// windowing scan. Used to avoid the lossy UTF-8 decode + replace
-/// allocation when there's nothing to replace.
-fn memchr_contains(hay: &[u8], needle: &[u8]) -> bool {
-    if needle.is_empty() || needle.len() > hay.len() {
-        return false;
-    }
-    hay.windows(needle.len()).any(|w| w == needle)
+    Bytes::from(s.into_bytes())
 }
 
 fn rewrite_ddtags(tags: &str) -> String {
@@ -747,9 +739,9 @@ mod tests {
 
     #[test]
     fn event_logging_rewrites_stringified_user_attributes() {
-        // Mirrors the round-2 leak: `user_attributes` is a JSON string
-        // (not a nested object), so the structured walker doesn't
-        // descend. The byte-level finalize pass must catch the
+        // `user_attributes` is a JSON string (not a nested object),
+        // so the structured walker doesn't descend. The byte-level
+        // finalize pass must catch the
         // escaped `\"entrypoint\":\"sdk-cli\"` form inside it.
         let body = serde_json::to_vec(&json!({
             "events": [{
@@ -794,7 +786,7 @@ mod tests {
 
     #[test]
     fn anthropic_beta_strips_forge_only_flags() {
-        // Sample from Round 3 capture: forge-specific betas mixed
+        // Sample of forge-specific betas mixed
         // with native-also-requested ones. Strip the forge-only.
         let input = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advisor-tool-2026-03-01,advanced-tool-use-2025-11-20,effort-2025-11-24,afk-mode-2026-01-31,extended-cache-ttl-2025-04-11,cache-diagnosis-2026-04-07";
         let out = rewrite_anthropic_beta(input).expect("should rewrite");
@@ -814,7 +806,7 @@ mod tests {
 
     #[test]
     fn anthropic_beta_no_op_when_only_shared_flags() {
-        // Native's sample — no forge-only flags. Nothing to strip.
+        // Native's sample - no forge-only flags. Nothing to strip.
         let input = "oauth-2025-04-20,interleaved-thinking-2025-05-14";
         assert!(rewrite_anthropic_beta(input).is_none());
     }
@@ -889,7 +881,7 @@ mod tests {
 
     #[test]
     fn strip_sdk_datadog_entries_drops_entries_with_sdk_in_tags_or_message() {
-        // Round 3's audit caught _sdk_ in both ddtags and message
+        // _sdk_ can appear in both ddtags and message
         // fields of Datadog entries. Either occurrence drops the entry.
         let body = serde_json::to_vec(&json!([
             { "ddtags": "event_name:tengu_sdk_init_handshake,version:2.1.133", "message": "fine" },

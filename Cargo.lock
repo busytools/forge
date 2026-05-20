@@ -1137,6 +1137,7 @@ dependencies = [
  "hyper-proxy2",
  "hyper-rustls 0.26.0",
  "hyper-util",
+ "memchr",
  "parking_lot",
  "rustls-pemfile",
  "rustls-pki-types",

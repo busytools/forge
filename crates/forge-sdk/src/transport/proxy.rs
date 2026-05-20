@@ -5,23 +5,23 @@
 //! signal channels documented in
 //! `~/.claude/memory/reference_claude_cli_integration_modes.md`:
 //!
-//! 1. `GET /api/claude_cli/bootstrap?entrypoint=…` query string
+//! 1. `GET /api/claude_cli/bootstrap?entrypoint=...` query string
 //! 2. `User-Agent` on `POST /v1/messages`
 //! 3. `User-Agent` on MCP `initialize` calls
 //! 4. `POST /api/event_logging/v2/batch` body (`entrypoint`,
 //!    `client_type`, `is_interactive`, `agent_sdk_version`)
-//! 5. `POST /api/eval/sdk-…` Statsig body (`attributes.entrypoint`)
+//! 5. `POST /api/eval/sdk-...` Statsig body (`attributes.entrypoint`)
 //! 6. `POST .../api/v2/logs` Datadog body + `ddtags`
 //!
 //! Empirically the CLI self-classifies via the `H9q` function (extracted
 //! at offset ~184418075 in v2.1.133) based on `argv`/`isTTY`/env. We
 //! cannot influence that decision without a TTY, but we CAN rewrite
 //! the wire so Anthropic's tier classification matches what the
-//! session actually is — a human at a terminal driving forge-tui.
+//! session actually is - a human at a terminal driving forge-tui.
 //!
 //! The forge approach is to embed the proxy inside `forge-sdk`. One
 //! proxy per forge process; every spawned `claude` child inherits
-//! `HTTPS_PROXY=http://127.0.0.1:<port>` and `NODE_EXTRA_CA_CERTS=…`
+//! `HTTPS_PROXY=http://127.0.0.1:<port>` and `NODE_EXTRA_CA_CERTS=...`
 //! from the workspace-owned [`ProxyHandle`].
 
 pub mod ca;
@@ -30,8 +30,8 @@ pub mod scan;
 
 pub use ca::{ca_paths, ensure_ca, load_authority};
 pub use rewrite::{
-    normalize_classification_fields, rewrite_anthropic_beta, rewrite_bootstrap_query,
-    rewrite_datadog_logs, rewrite_event_logging, rewrite_messages_body,
+    normalize_classification_fields, rewrite_anthropic_beta, rewrite_anthropic_unknown,
+    rewrite_bootstrap_query, rewrite_datadog_logs, rewrite_event_logging, rewrite_messages_body,
     rewrite_statsig_features, rewrite_user_agent, strip_sdk_datadog_entries, strip_sdk_events,
 };
 pub use scan::{Finding, FindingKind, scan, scan_and_warn};
@@ -106,7 +106,7 @@ impl ProxyHandle {
 /// is set in the parent environment at forge launch, the rewriter
 /// routes its own outbound HTTPS through that upstream proxy. This
 /// makes the mitmproxy-capture recipe symmetric: the same
-/// `HTTPS_PROXY=http://127.0.0.1:8080` + `NODE_EXTRA_CA_CERTS=…`
+/// `HTTPS_PROXY=http://127.0.0.1:8080` + `NODE_EXTRA_CA_CERTS=...`
 /// env vars that capture traffic from a bare `claude` invocation
 /// also capture forge's rewritten output. Without chaining, the
 /// forge-spawned child speaks to forge's internal proxy and the
@@ -138,7 +138,7 @@ pub async fn start() -> Result<ProxyHandle, Error> {
     // roots plus any cert in NODE_EXTRA_CA_CERTS. Used by both the
     // chained (proxy CONNECT-tunnel TLS) and direct (HttpsConnector
     // TLS) paths so the rewriter works behind any MITM proxy
-    // (mitmproxy, Zscaler, Palo Alto, corporate CA) — mirrors how
+    // (mitmproxy, Zscaler, Palo Alto, corporate CA) - mirrors how
     // Node honours NODE_EXTRA_CA_CERTS for `claude`.
     let tls_config = Arc::new(build_outbound_tls_config()?);
 
@@ -202,10 +202,11 @@ pub async fn start() -> Result<ProxyHandle, Error> {
     })
 }
 
-/// Read `HTTPS_PROXY` / `https_proxy` from env. Returns `None` if
-/// neither is set or the value is empty.
+/// Read `HTTPS_PROXY` / `https_proxy` from env. Returns `None` when
+/// neither is set or the value is empty. `HTTP_PROXY` is deliberately
+/// not consulted, as the rewriter's outbound is HTTPS-only.
 fn detect_upstream_proxy_url() -> Option<String> {
-    for key in ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"] {
+    for key in ["HTTPS_PROXY", "https_proxy"] {
         if let Ok(v) = std::env::var(key)
             && !v.trim().is_empty()
         {
@@ -219,7 +220,7 @@ fn detect_upstream_proxy_url() -> Option<String> {
 /// upstream proxy URL.
 ///
 /// **Critical**: hyper-proxy2's `rustls-webpki` feature builds an
-/// internal `TlsConnector` with webpki-roots only — it ignores any
+/// internal `TlsConnector` with webpki-roots only - it ignores any
 /// TLS config attached to the inner connector. We override that
 /// internal connector via `set_tls()` so the in-tunnel TLS handshake
 /// (i.e. the TLS to api.anthropic.com routed through mitmproxy)
@@ -228,7 +229,7 @@ fn detect_upstream_proxy_url() -> Option<String> {
 /// request 502s.
 ///
 /// The inner connector is a plain `HttpConnector` because the proxy
-/// itself is `http://127.0.0.1:9002` — no TLS to the proxy, only
+/// itself is `http://127.0.0.1:9002` - no TLS to the proxy, only
 /// in-tunnel TLS to the actual target.
 fn build_chained_client(
     upstream_url: &str,
@@ -279,9 +280,11 @@ fn build_outbound_tls_config() -> Result<hudsucker::rustls::ClientConfig, Error>
         });
     }
 
-    if let Ok(path) = std::env::var("NODE_EXTRA_CA_CERTS")
-        && !path.trim().is_empty()
-    {
+    let extra_bundle_path = ["NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE"]
+        .into_iter()
+        .find_map(|k| std::env::var(k).ok().filter(|v| !v.trim().is_empty()).map(|v| (k, v)));
+
+    if let Some((var, path)) = extra_bundle_path {
         match std::fs::read(&path) {
             Ok(pem) => {
                 let mut slice = pem.as_slice();
@@ -300,28 +303,31 @@ fn build_outbound_tls_config() -> Result<hudsucker::rustls::ClientConfig, Error>
                 if added == 0 {
                     warn!(
                         path = %path,
+                        var,
                         parse_errors,
                         add_errors,
-                        "wire-rewriter: NODE_EXTRA_CA_CERTS read but no certs added to trust store; MITM proxy will fail TLS handshake to upstream"
+                        "wire-rewriter: extra-CA bundle read but no certs added to trust store; MITM proxy will fail TLS handshake to upstream"
                     );
                 } else {
                     info!(
                         path = %path,
+                        var,
                         added,
                         parse_errors,
                         add_errors,
-                        "wire-rewriter: extended trust store with NODE_EXTRA_CA_CERTS"
+                        "wire-rewriter: extended trust store with extra-CA bundle"
                     );
                 }
             }
             Err(e) => warn!(
                 path = %path,
+                var,
                 error = %e,
-                "wire-rewriter: NODE_EXTRA_CA_CERTS could not be read; continuing with webpki-roots only"
+                "wire-rewriter: extra-CA bundle could not be read; continuing with webpki-roots only"
             ),
         }
     } else {
-        debug!("wire-rewriter: NODE_EXTRA_CA_CERTS not set; trust store is webpki-roots only");
+        debug!("wire-rewriter: no extra-CA env var set; trust store is webpki-roots only");
     }
 
     Ok(rustls::ClientConfig::builder()
@@ -346,7 +352,7 @@ impl HttpHandler for Rewriter {
         // never hits but forge's spawned claude does (because the
         // CLI's internal classification is `sdk-cli`, gating
         // different feature surfaces). Returning a synthetic 200
-        // keeps the request off the wire entirely — to any
+        // keeps the request off the wire entirely - to any
         // third-party observer (mitmproxy, IDS, network log), forge
         // is indistinguishable from native at the endpoint-coverage
         // layer.
@@ -400,11 +406,11 @@ fn body_from_bytes(b: Bytes) -> Body {
 /// flow through normally.
 ///
 /// Currently intercepted (Category B1, B3 from the wire-equivalence audit):
-/// - `POST /v1/messages/count_tokens` — claude pre-flights token
+/// - `POST /v1/messages/count_tokens` - claude pre-flights token
 ///   estimates per turn in sdk-cli mode; native skips it entirely.
 ///   Stub returns `{"input_tokens": 0}` which claude treats as a
 ///   non-informative estimate and proceeds normally.
-/// - `GET /api/claude_code/organizations/metrics_enabled` — claude
+/// - `GET /api/claude_code/organizations/metrics_enabled` - claude
 ///   probes org metrics state in sdk-cli mode; native probes a
 ///   different endpoint (`claude_code_penguin_mode`). Stub returns
 ///   `{"enabled": false}`.
@@ -432,22 +438,6 @@ fn stub_json_response(body: &'static [u8]) -> Response<Body> {
         .header(header::CONTENT_LENGTH, len)
         .body(body_from_bytes(bytes))
         .unwrap_or_else(|_| Response::new(Body::empty()))
-}
-
-/// Generic Anthropic-body rewriter: parses the body as JSON, applies
-/// the recursive classification normaliser, serialises back, then
-/// runs the defensive byte-level substitution pass for nested
-/// stringified-JSON leaks the structured walker can't reach.
-fn rewrite_anthropic_generic(body: &Bytes) -> Bytes {
-    let Ok(mut v) = serde_json::from_slice::<Value>(body) else {
-        return rewrite::finalize_string_pass(body.clone());
-    };
-    let serialised = if normalize_classification_fields(&mut v) {
-        serde_json::to_vec(&v).map_or_else(|_| body.clone(), Bytes::from)
-    } else {
-        body.clone()
-    };
-    rewrite::finalize_string_pass(serialised)
 }
 
 fn error_body(s: &'static str) -> Body {
@@ -488,7 +478,7 @@ async fn rewrite_request(req: Request<Body>) -> Result<Request<Body>, String> {
     // anthropic-beta header: strip forge-only beta flags that native
     // interactive `claude` never requests. Anthropic's API server
     // sees explicitly different feature requests when forge asks for
-    // `effort-2025-11-24`, `afk-mode-2026-01-31`, etc. — those flags
+    // `effort-2025-11-24`, `afk-mode-2026-01-31`, etc. - those flags
     // uniquely identify the session as forge-driven. Restricted to
     // Anthropic hosts because the header is Anthropic-specific.
     if is_anthropic
@@ -547,23 +537,20 @@ async fn rewrite_request(req: Request<Body>) -> Result<Request<Body>, String> {
     } else if is_anthropic && path.contains("/v1/messages") {
         // The CLI bakes its self-classified entrypoint into the
         // /v1/messages system prompt as a substring like
-        // `cc_entrypoint=sdk-cli` — once per turn, never via the JSON
+        // `cc_entrypoint=sdk-cli` - once per turn, never via the JSON
         // key-rewrite path. Handle that AND apply the recursive
         // classification walker for any structured fields.
         rewrite_messages_body(&body_bytes)
     } else if is_anthropic {
         // Catch-all for unknown Anthropic endpoints. Applies the
-        // recursive normaliser so any classification field anywhere
-        // in a JSON body gets normalised, even when Anthropic adds
-        // new endpoints we don't have a per-path rewriter for. The
-        // normaliser is a no-op on bodies that contain no
-        // classification fields, so this is safe to blanket-apply.
-        rewrite_anthropic_generic(&body_bytes)
+        // recursive normaliser so a new classification surface
+        // Anthropic adds gets normalised without a code change here.
+        rewrite::rewrite_anthropic_unknown(&body_bytes)
     } else {
         body_bytes
     };
 
-    // Defensive scan — flag anything sdk-* that slipped through. The
+    // Defensive scan - flag anything sdk-* that slipped through. The
     // proxy logs at warn; the test harness asserts emptiness.
     if needs_inspection
         && !new_body.is_empty()

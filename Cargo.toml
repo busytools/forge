@@ -75,6 +75,7 @@ webpki-roots = "0.26"
 http-body-util = "0.1"
 bytes = "1"
 url = "2"
+memchr = "2"
 
 # Workspace-internal crates
 forge-primitives = { path = "crates/forge-primitives", version = "=0.16.0" }

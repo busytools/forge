@@ -3,7 +3,7 @@
 //! Generates a self-signed CA on first launch and persists it under
 //! the forge data dir (`~/Library/Application Support/forge-tui/ca/`
 //! on macOS, `$XDG_DATA_HOME/forge-tui/ca/` on Linux). Reused across
-//! launches so the spawned child can pin `NODE_EXTRA_CA_CERTS=…` to
+//! launches so the spawned child can pin `NODE_EXTRA_CA_CERTS=...` to
 //! a stable path.
 //!
 //! The key file is chmod 0600 on Unix (best-effort; the proxy is a
@@ -25,7 +25,7 @@ use crate::Error;
 ///
 /// Returns [`Error::Connection`] when neither `dirs::data_local_dir()`
 /// nor a reasonable fallback is available. Per the project's Hard
-/// Rule #15, we refuse to fall back to `std::env::current_dir()` —
+/// Rule #15, we refuse to fall back to `std::env::current_dir()` -
 /// the proxy must behave identically regardless of launch directory.
 pub fn ca_dir() -> Result<PathBuf, Error> {
     if let Some(dir) = dirs::data_local_dir() {

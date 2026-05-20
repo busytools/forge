@@ -41,6 +41,7 @@ webpki-roots = { workspace = true }
 http-body-util = { workspace = true }
 bytes = { workspace = true }
 url = { workspace = true }
+memchr = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
