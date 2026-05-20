@@ -164,8 +164,12 @@ pub fn rewrite_statsig_features(body: &Bytes) -> Bytes {
 /// (handled by [`rewrite_ddtags`]).
 #[must_use]
 pub fn rewrite_datadog_logs(body: &Bytes) -> Bytes {
-    let Ok(mut v) = serde_json::from_slice::<Value>(body) else {
-        return finalize_string_pass(body.clone());
+    // First pass: drop any log entry tagged with a forge SDK protocol
+    // event name (`_sdk_` substring in ddtags or message). Then run
+    // classification normalisation on the remaining entries.
+    let stripped = strip_sdk_datadog_entries(body);
+    let Ok(mut v) = serde_json::from_slice::<Value>(&stripped) else {
+        return finalize_string_pass(stripped);
     };
     let mut changed = normalize_classification_fields(&mut v);
     // ddtags is a comma-joined string outside the normal JSON object
@@ -183,10 +187,13 @@ pub fn rewrite_datadog_logs(body: &Bytes) -> Bytes {
             }
         }
     }
+    // If the stripped body got further normalised, re-serialise; else
+    // pass `stripped` through (it already reflects any _sdk_ entries
+    // we dropped).
     let serialised = if changed {
-        serde_json::to_vec(&v).map_or_else(|_| body.clone(), Bytes::from)
+        serde_json::to_vec(&v).map_or_else(|_| stripped.clone(), Bytes::from)
     } else {
-        body.clone()
+        stripped
     };
     finalize_string_pass(serialised)
 }
@@ -285,19 +292,25 @@ pub fn rewrite_anthropic_beta(header_value: &str) -> Option<String> {
 }
 
 /// Telemetry event names native interactive `claude` never emits;
-/// forge-sdk's protocol bookkeeping produces these. The `_sdk_`
-/// substring inside the name is itself a classification signal,
-/// independent of field values inside the event.
+/// forge-sdk's protocol bookkeeping produces these. The
+/// `tengu_sdk_` prefix on the name is itself a classification
+/// signal, independent of field values inside the event.
 ///
-/// Defensive coverage: any event whose name contains `_sdk_` is
-/// dropped, not just the four confirmed names — catches future
-/// SDK-protocol events the team might add.
-const SDK_EVENT_NAME_SUBSTRING: &str = "_sdk_";
+/// Defensive coverage: any event whose name contains `tengu_sdk_`
+/// is dropped, not just the four confirmed names — catches future
+/// SDK-protocol events the team adds that follow the same naming
+/// pattern. `tengu_sdk_` is specific enough to NOT collide with
+/// the legitimate `agent_sdk_version` field name (which the
+/// recursive walker / ddtag rewriter handle separately).
+const SDK_EVENT_NAME_SUBSTRING: &str = "tengu_sdk_";
 
 /// Filter forge-internal SDK protocol events out of an
 /// `/api/event_logging/v2/batch` body. Walks `events[]`, drops any
-/// entry whose `event_name` contains `_sdk_`. No-op when nothing
-/// matches; returns the original bytes unchanged in that case.
+/// entry whose `event_data.event_name` contains `_sdk_`. The
+/// event_name field is nested inside `event_data`, NOT at the top
+/// level of each event entry — Round 3's audit confirmed this is
+/// where forge's `tengu_sdk_init_handshake` etc. live. No-op when
+/// nothing matches; returns the original bytes unchanged.
 ///
 /// Forge still records these events locally (via the SDK's tracing
 /// layer); only the outbound copy to Anthropic's telemetry endpoint
@@ -312,10 +325,51 @@ pub fn strip_sdk_events(body: &Bytes) -> Bytes {
     if let Some(events) = v.get_mut("events").and_then(|e| e.as_array_mut()) {
         let before = events.len();
         events.retain(|ev| {
-            let name = ev.get("event_name").and_then(|n| n.as_str()).unwrap_or("");
+            let name = ev
+                .get("event_data")
+                .and_then(|d| d.get("event_name"))
+                .and_then(|n| n.as_str())
+                .unwrap_or("");
             !name.contains(SDK_EVENT_NAME_SUBSTRING)
         });
         dropped = before.saturating_sub(events.len());
+    }
+    if dropped == 0 {
+        return body.clone();
+    }
+    serde_json::to_vec(&v).map_or_else(|_| body.clone(), Bytes::from)
+}
+
+/// Filter `_sdk_`-tagged log entries out of a Datadog
+/// `/api/v2/logs` ingest body. Datadog entries embed the forge SDK
+/// protocol event name in two places: the `ddtags` comma-joined
+/// string (`event_name:tengu_sdk_init_handshake,...`) and the
+/// free-text `message` field. Either occurrence is a wire-leak
+/// since native interactive `claude` never emits these events.
+///
+/// Drops any log entry whose `ddtags` or `message` contains the
+/// `_sdk_` substring. The remaining entries pass through to the
+/// classification normaliser.
+#[must_use]
+pub fn strip_sdk_datadog_entries(body: &Bytes) -> Bytes {
+    let Ok(mut v) = serde_json::from_slice::<Value>(body) else {
+        return body.clone();
+    };
+    let mut dropped = 0usize;
+    if let Some(entries) = v.as_array_mut() {
+        let before = entries.len();
+        entries.retain(|ev| {
+            let in_tags = ev
+                .get("ddtags")
+                .and_then(|t| t.as_str())
+                .is_some_and(|s| s.contains(SDK_EVENT_NAME_SUBSTRING));
+            let in_msg = ev
+                .get("message")
+                .and_then(|m| m.as_str())
+                .is_some_and(|s| s.contains(SDK_EVENT_NAME_SUBSTRING));
+            !(in_tags || in_msg)
+        });
+        dropped = before.saturating_sub(entries.len());
     }
     if dropped == 0 {
         return body.clone();
@@ -773,17 +827,17 @@ mod tests {
     }
 
     #[test]
-    fn strip_sdk_events_drops_tengu_sdk_entries() {
-        // 4 of the events from Round 3's forge capture had _sdk_ in
-        // the event_name. They get dropped; others are retained.
+    fn strip_sdk_events_drops_entries_by_nested_event_name() {
+        // Real shape from forge captures: event_name lives nested
+        // inside event_data, not as a top-level event field.
         let body = serde_json::to_vec(&json!({
             "events": [
-                { "event_name": "tengu_sdk_init_handshake", "event_data": {} },
-                { "event_name": "tengu_api_request", "event_data": { "entrypoint": "cli" } },
-                { "event_name": "tengu_sdk_control_roundtrip", "event_data": {} },
-                { "event_name": "tengu_tool_use", "event_data": {} },
-                { "event_name": "tengu_sdk_result", "event_data": {} },
-                { "event_name": "tengu_sdk_ttft", "event_data": {} }
+                { "event_data": { "event_name": "tengu_sdk_init_handshake" } },
+                { "event_data": { "event_name": "tengu_api_request", "entrypoint": "cli" } },
+                { "event_data": { "event_name": "tengu_sdk_control_roundtrip" } },
+                { "event_data": { "event_name": "tengu_tool_use" } },
+                { "event_data": { "event_name": "tengu_sdk_result" } },
+                { "event_data": { "event_name": "tengu_sdk_ttft" } }
             ]
         }))
         .expect("encode");
@@ -793,7 +847,7 @@ mod tests {
             .as_array()
             .expect("array")
             .iter()
-            .map(|e| e["event_name"].as_str().unwrap_or(""))
+            .map(|e| e["event_data"]["event_name"].as_str().unwrap_or(""))
             .collect();
         assert_eq!(names, vec!["tengu_api_request", "tengu_tool_use"]);
     }
@@ -802,8 +856,8 @@ mod tests {
     fn strip_sdk_events_noop_when_no_sdk_events() {
         let body = serde_json::to_vec(&json!({
             "events": [
-                { "event_name": "tengu_api_request", "event_data": {} },
-                { "event_name": "tengu_tool_use", "event_data": {} }
+                { "event_data": { "event_name": "tengu_api_request" } },
+                { "event_data": { "event_name": "tengu_tool_use" } }
             ]
         }))
         .expect("encode");
@@ -818,8 +872,8 @@ mod tests {
         // handled correctly in one pass.
         let body = serde_json::to_vec(&json!({
             "events": [
-                { "event_name": "tengu_sdk_init_handshake", "event_data": { "entrypoint": "sdk-cli" } },
-                { "event_name": "tengu_api_request", "event_data": { "entrypoint": "sdk-cli", "client_type": "sdk-cli", "is_interactive": false } }
+                { "event_data": { "event_name": "tengu_sdk_init_handshake", "entrypoint": "sdk-cli" } },
+                { "event_data": { "event_name": "tengu_api_request", "entrypoint": "sdk-cli", "client_type": "sdk-cli", "is_interactive": false } }
             ]
         }))
         .expect("encode");
@@ -827,10 +881,59 @@ mod tests {
         let parsed: Value = serde_json::from_slice(&out).expect("decode");
         let events = parsed["events"].as_array().expect("array");
         assert_eq!(events.len(), 1, "tengu_sdk_init_handshake should be dropped");
-        assert_eq!(events[0]["event_name"], "tengu_api_request");
+        assert_eq!(events[0]["event_data"]["event_name"], "tengu_api_request");
         assert_eq!(events[0]["event_data"]["entrypoint"], "cli");
         assert_eq!(events[0]["event_data"]["client_type"], "cli");
         assert_eq!(events[0]["event_data"]["is_interactive"], true);
+    }
+
+    #[test]
+    fn strip_sdk_datadog_entries_drops_entries_with_sdk_in_tags_or_message() {
+        // Round 3's audit caught _sdk_ in both ddtags and message
+        // fields of Datadog entries. Either occurrence drops the entry.
+        let body = serde_json::to_vec(&json!([
+            { "ddtags": "event_name:tengu_sdk_init_handshake,version:2.1.133", "message": "fine" },
+            { "ddtags": "event_name:tengu_api_request,version:2.1.133", "message": "fine" },
+            { "ddtags": "version:2.1.133", "message": "doing tengu_sdk_control_roundtrip work" },
+            { "ddtags": "version:2.1.133", "message": "normal log line" }
+        ]))
+        .expect("encode");
+        let out = strip_sdk_datadog_entries(&Bytes::from(body));
+        let parsed: Value = serde_json::from_slice(&out).expect("decode");
+        let entries = parsed.as_array().expect("array");
+        assert_eq!(entries.len(), 2, "two _sdk_-tagged entries should be dropped: {entries:?}");
+        assert_eq!(entries[0]["ddtags"], "event_name:tengu_api_request,version:2.1.133");
+        assert_eq!(entries[1]["message"], "normal log line");
+    }
+
+    #[test]
+    fn strip_sdk_datadog_entries_noop_when_no_sdk_substring() {
+        let body = serde_json::to_vec(&json!([
+            { "ddtags": "event_name:tengu_api_request", "message": "all clean" }
+        ]))
+        .expect("encode");
+        let out = strip_sdk_datadog_entries(&Bytes::from(body.clone()));
+        assert_eq!(out.as_ref(), body.as_slice());
+    }
+
+    #[test]
+    fn datadog_logs_strips_sdk_entries_and_normalises_remaining() {
+        // End-to-end: datadog body with an _sdk_ entry alongside a
+        // classification-leak entry. Both surfaces handled.
+        let body = serde_json::to_vec(&json!([
+            { "ddtags": "event_name:tengu_sdk_init_handshake,entrypoint:sdk-cli", "message": "sdk init" },
+            { "ddtags": "entrypoint:sdk-cli,client_type:sdk-cli,is_interactive:false", "message": "normal", "entrypoint": "sdk-cli" }
+        ]))
+        .expect("encode");
+        let out = rewrite_datadog_logs(&Bytes::from(body));
+        let parsed: Value = serde_json::from_slice(&out).expect("decode");
+        let entries = parsed.as_array().expect("array");
+        assert_eq!(entries.len(), 1, "_sdk_ entry should be dropped: {entries:?}");
+        let tags = entries[0]["ddtags"].as_str().expect("string");
+        assert!(tags.contains("entrypoint:cli"));
+        assert!(tags.contains("client_type:cli"));
+        assert!(tags.contains("is_interactive:true"));
+        assert_eq!(entries[0]["entrypoint"], "cli");
     }
 
     #[test]

@@ -32,7 +32,7 @@ pub use ca::{ca_paths, ensure_ca, load_authority};
 pub use rewrite::{
     normalize_classification_fields, rewrite_anthropic_beta, rewrite_bootstrap_query,
     rewrite_datadog_logs, rewrite_event_logging, rewrite_messages_body,
-    rewrite_statsig_features, rewrite_user_agent, strip_sdk_events,
+    rewrite_statsig_features, rewrite_user_agent, strip_sdk_datadog_entries, strip_sdk_events,
 };
 pub use scan::{Finding, FindingKind, scan, scan_and_warn};
 
