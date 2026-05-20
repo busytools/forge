@@ -132,12 +132,24 @@ pub async fn start() -> Result<ProxyHandle, Error> {
     let upstream_proxy_url = detect_upstream_proxy_url();
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
+    // Single source of truth for the outbound TLS trust store: webpki
+    // roots plus any cert in NODE_EXTRA_CA_CERTS. This runs in both
+    // the chained and direct paths so the rewriter's TLS works behind
+    // any MITM proxy (mitmproxy, Zscaler, Palo Alto, corporate CA) —
+    // mirrors how Node honours NODE_EXTRA_CA_CERTS for `claude`.
+    let tls_config = build_outbound_tls_config()?;
+    let https = HttpsConnectorBuilder::new()
+        .with_tls_config(tls_config)
+        .https_or_http()
+        .enable_http1()
+        .build();
+
     if let Some(upstream_url) = &upstream_proxy_url {
         info!(
             upstream = %upstream_url,
             "wire-rewriter: chaining outbound HTTPS through upstream proxy (HTTPS_PROXY)"
         );
-        let client = build_chained_client(upstream_url)?;
+        let client = build_chained_client(upstream_url, https)?;
         let proxy = ProxyBuilder::new()
             .with_listener(listener)
             .with_client(client)
@@ -153,9 +165,13 @@ pub async fn start() -> Result<ProxyHandle, Error> {
             }
         });
     } else {
+        let client = HyperClient::builder(TokioExecutor::new())
+            .http1_title_case_headers(true)
+            .http1_preserve_header_case(true)
+            .build(https);
         let proxy = ProxyBuilder::new()
             .with_listener(listener)
-            .with_rustls_client()
+            .with_client(client)
             .with_ca(authority)
             .with_http_handler(Rewriter)
             .with_graceful_shutdown(async move {
@@ -197,26 +213,18 @@ fn detect_upstream_proxy_url() -> Option<String> {
 }
 
 /// Build a hyper client whose connector tunnels through the given
-/// upstream proxy URL. Used by the rewriter when the parent env has
-/// `HTTPS_PROXY` set, so its outbound HTTPS goes to that proxy
-/// instead of directly to Anthropic / Datadog.
-///
-/// When `NODE_EXTRA_CA_CERTS` is set in the parent env, its certs
-/// are added to the trust store alongside webpki-roots — mirrors
-/// Node.js's behaviour so the same mitmproxy recipe that captures
-/// from a bare `claude` also captures from forge.
+/// upstream proxy URL. Takes the prebuilt HTTPS connector (already
+/// configured with the rewriter's trust store via
+/// [`build_outbound_tls_config`]) and wraps it in a ProxyConnector
+/// so HTTPS targets get CONNECT-tunnelled through the upstream
+/// proxy first.
 fn build_chained_client(
     upstream_url: &str,
+    https: HttpsConnector<HttpConnector>,
 ) -> Result<HyperClient<ProxyConnector<HttpsConnector<HttpConnector>>, Body>, Error> {
     let proxy_uri = upstream_url.parse::<Uri>().map_err(|e| Error::Connection {
         reason: format!("wire-rewriter: HTTPS_PROXY={upstream_url:?} is not a valid URI: {e}"),
     })?;
-    let tls_config = build_outbound_tls_config()?;
-    let https = HttpsConnectorBuilder::new()
-        .with_tls_config(tls_config)
-        .https_or_http()
-        .enable_http1()
-        .build();
     let upstream = UpstreamProxy::new(Intercept::All, proxy_uri);
     let connector =
         ProxyConnector::from_proxy(https, upstream).map_err(|e| Error::Connection {
@@ -257,22 +265,33 @@ fn build_outbound_tls_config() -> Result<hudsucker::rustls::ClientConfig, Error>
             Ok(pem) => {
                 let mut slice = pem.as_slice();
                 let mut added = 0usize;
-                let mut errors = 0usize;
-                while let Some(cert) = rustls_pemfile::certs(&mut slice).next() {
+                let mut parse_errors = 0usize;
+                let mut add_errors = 0usize;
+                for cert in rustls_pemfile::certs(&mut slice) {
                     match cert {
-                        Ok(c) => match roots.add(c) {
+                        Ok(der) => match roots.add(der) {
                             Ok(()) => added += 1,
-                            Err(_) => errors += 1,
+                            Err(_) => add_errors += 1,
                         },
-                        Err(_) => errors += 1,
+                        Err(_) => parse_errors += 1,
                     }
                 }
-                info!(
-                    path = %path,
-                    added,
-                    errors,
-                    "wire-rewriter: extended trust store with NODE_EXTRA_CA_CERTS bundle"
-                );
+                if added == 0 {
+                    warn!(
+                        path = %path,
+                        parse_errors,
+                        add_errors,
+                        "wire-rewriter: NODE_EXTRA_CA_CERTS read but no certs added to trust store; MITM proxy will fail TLS handshake to upstream"
+                    );
+                } else {
+                    info!(
+                        path = %path,
+                        added,
+                        parse_errors,
+                        add_errors,
+                        "wire-rewriter: extended trust store with NODE_EXTRA_CA_CERTS"
+                    );
+                }
             }
             Err(e) => warn!(
                 path = %path,
@@ -280,6 +299,8 @@ fn build_outbound_tls_config() -> Result<hudsucker::rustls::ClientConfig, Error>
                 "wire-rewriter: NODE_EXTRA_CA_CERTS could not be read; continuing with webpki-roots only"
             ),
         }
+    } else {
+        debug!("wire-rewriter: NODE_EXTRA_CA_CERTS not set; trust store is webpki-roots only");
     }
 
     Ok(rustls::ClientConfig::builder()
