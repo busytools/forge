@@ -31,7 +31,7 @@ pub mod scan;
 pub use ca::{ca_paths, ensure_ca, load_authority};
 pub use rewrite::{
     normalize_classification_fields, rewrite_bootstrap_query, rewrite_datadog_logs,
-    rewrite_event_logging, rewrite_statsig_features, rewrite_user_agent,
+    rewrite_event_logging, rewrite_messages_body, rewrite_statsig_features, rewrite_user_agent,
 };
 pub use scan::{Finding, FindingKind, scan, scan_and_warn};
 
@@ -341,6 +341,18 @@ impl HttpHandler for Rewriter {
         _ctx: &HttpContext,
         req: Request<Body>,
     ) -> RequestOrResponse {
+        // Local intercept: a handful of endpoints native `claude`
+        // never hits but forge's spawned claude does (because the
+        // CLI's internal classification is `sdk-cli`, gating
+        // different feature surfaces). Returning a synthetic 200
+        // keeps the request off the wire entirely — to any
+        // third-party observer (mitmproxy, IDS, network log), forge
+        // is indistinguishable from native at the endpoint-coverage
+        // layer.
+        if let Some(stub) = try_local_intercept(&req) {
+            debug!(uri = %req.uri(), "wire-rewriter: local-intercept stub returned");
+            return RequestOrResponse::Response(stub);
+        }
         match rewrite_request(req).await {
             Ok(req) => RequestOrResponse::Request(req),
             Err(e) => {
@@ -381,6 +393,46 @@ fn body_from_bytes(b: Bytes) -> Body {
     Body::from(Full::new(b))
 }
 
+/// Returns a synthetic 200 response for endpoints native `claude`
+/// doesn't hit but forge's spawned claude does (sdk-cli classification
+/// gates these on differently). Returns None when the request should
+/// flow through normally.
+///
+/// Currently intercepted (Category B1, B3 from the wire-equivalence audit):
+/// - `POST /v1/messages/count_tokens` — claude pre-flights token
+///   estimates per turn in sdk-cli mode; native skips it entirely.
+///   Stub returns `{"input_tokens": 0}` which claude treats as a
+///   non-informative estimate and proceeds normally.
+/// - `GET /api/claude_code/organizations/metrics_enabled` — claude
+///   probes org metrics state in sdk-cli mode; native probes a
+///   different endpoint (`claude_code_penguin_mode`). Stub returns
+///   `{"enabled": false}`.
+fn try_local_intercept(req: &Request<Body>) -> Option<Response<Body>> {
+    let host = req.uri().host().unwrap_or("");
+    if !host.ends_with("anthropic.com") {
+        return None;
+    }
+    let path = req.uri().path();
+    if path.contains("/v1/messages/count_tokens") {
+        return Some(stub_json_response(br#"{"input_tokens":0}"#));
+    }
+    if path.contains("/claude_code/organizations/metrics_enabled") {
+        return Some(stub_json_response(br#"{"enabled":false}"#));
+    }
+    None
+}
+
+fn stub_json_response(body: &'static [u8]) -> Response<Body> {
+    let bytes = Bytes::from_static(body);
+    let len = bytes.len();
+    Response::builder()
+        .status(200)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::CONTENT_LENGTH, len)
+        .body(body_from_bytes(bytes))
+        .unwrap_or_else(|_| Response::new(Body::empty()))
+}
+
 /// Generic Anthropic-body rewriter: parses the body as JSON, applies
 /// the recursive classification normaliser, serialises back. Returns
 /// the original bytes on any parse failure or when the body wasn't
@@ -410,6 +462,26 @@ async fn rewrite_request(req: Request<Body>) -> Result<Request<Body>, String> {
 
     let (mut parts, body) = req.into_parts();
 
+    // Universal User-Agent rewrite. Applies to EVERY outbound request
+    // regardless of host. The CLI's `(external, sdk-cli, agent-sdk/X)`
+    // UA on /v1/messages is one source; forge-sdk's MCP client's own
+    // `(sdk-cli, agent-sdk/X)` UA on third-party MCP hosts
+    // (mcp.context7.com, api.greptile.com, custom user MCPs) is the
+    // other. Both must be normalised for any third-party observer to
+    // be unable to distinguish forge from native claude.
+    if let Some(ua) = parts.headers.get(header::USER_AGENT).cloned()
+        && let Ok(ua_str) = ua.to_str()
+        && let Some(new_ua) = rewrite_user_agent(ua_str)
+    {
+        debug!(old = %ua_str, new = %new_ua, "user-agent rewritten");
+        match new_ua.parse() {
+            Ok(v) => {
+                parts.headers.insert(header::USER_AGENT, v);
+            }
+            Err(e) => return Err(format!("ua parse failed: {e}")),
+        }
+    }
+
     // (1) Bootstrap query string rewrite.
     if is_anthropic
         && path.contains("/bootstrap")
@@ -435,24 +507,7 @@ async fn rewrite_request(req: Request<Body>) -> Result<Request<Body>, String> {
         }
     }
 
-    // (2 + 3) User-Agent rewrite. Applies to /v1/messages and MCP init
-    // alike — both touch anthropic.com endpoints and both carry the
-    // classification label inside the parens.
-    if is_anthropic
-        && let Some(ua) = parts.headers.get(header::USER_AGENT).cloned()
-        && let Ok(ua_str) = ua.to_str()
-        && let Some(new_ua) = rewrite_user_agent(ua_str)
-    {
-        debug!(old = %ua_str, new = %new_ua, "user-agent rewritten");
-        match new_ua.parse() {
-            Ok(v) => {
-                parts.headers.insert(header::USER_AGENT, v);
-            }
-            Err(e) => return Err(format!("ua parse failed: {e}")),
-        }
-    }
-
-    // (4, 5, 6) Body rewrites.
+    // Body rewrites. Per-path dispatch.
     let body_bytes = match body.collect().await {
         Ok(c) => c.to_bytes(),
         Err(e) => return Err(format!("body collect failed: {e}")),
@@ -466,6 +521,13 @@ async fn rewrite_request(req: Request<Body>) -> Result<Request<Body>, String> {
         rewrite_statsig_features(&body_bytes)
     } else if is_datadog && path.contains("/api/v2/logs") {
         rewrite_datadog_logs(&body_bytes)
+    } else if is_anthropic && path.contains("/v1/messages") {
+        // The CLI bakes its self-classified entrypoint into the
+        // /v1/messages system prompt as a substring like
+        // `cc_entrypoint=sdk-cli` — once per turn, never via the JSON
+        // key-rewrite path. Handle that AND apply the recursive
+        // classification walker for any structured fields.
+        rewrite_messages_body(&body_bytes)
     } else if is_anthropic {
         // Catch-all for unknown Anthropic endpoints. Applies the
         // recursive normaliser so any classification field anywhere

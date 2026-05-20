@@ -103,10 +103,20 @@ fn walk_normalize(v: &mut Value, changed: &mut bool) {
             }
             for (k, val) in map.iter_mut() {
                 match k.as_str() {
-                    "entrypoint" | "client_type" if val.as_str() != Some("cli") => {
-                        *val = Value::String("cli".into());
-                        *changed = true;
+                    // Only rewrite when the existing value is a string
+                    // that isn't already "cli". Non-string values are
+                    // left intact rather than silently overwritten.
+                    "entrypoint" | "client_type" => {
+                        if let Some(s) = val.as_str()
+                            && s != "cli"
+                        {
+                            *val = Value::String("cli".into());
+                            *changed = true;
+                        }
                     }
+                    // For is_interactive we'll coerce any non-true value
+                    // (false, null, even non-bool surprises) to true,
+                    // since the field is unambiguously boolean in shape.
                     "is_interactive" if val != &Value::Bool(true) => {
                         *val = Value::Bool(true);
                         *changed = true;
@@ -170,6 +180,57 @@ pub fn rewrite_datadog_logs(body: &Bytes) -> Bytes {
         return body.clone();
     }
     serde_json::to_vec(&v).map_or_else(|_| body.clone(), Bytes::from)
+}
+
+/// Rewrite a `/v1/messages` request body.
+///
+/// Two passes:
+/// 1. Recursive classification normalisation across the whole JSON
+///    structure (catches any structured `entrypoint`/`client_type`/
+///    `is_interactive`/`agent_sdk_version` field at any depth).
+/// 2. String-content rewrite of `cc_entrypoint=sdk-*` substrings
+///    inside `system[*].text` values. The CLI bakes its self-
+///    classified entrypoint into the system prompt as a literal
+///    substring on every turn, so the JSON-key walker doesn't catch
+///    it. This is the highest-volume leak by request count (one per
+///    turn) and the most visible to anyone diffing alt vs native.
+#[must_use]
+pub fn rewrite_messages_body(body: &Bytes) -> Bytes {
+    let Ok(mut v) = serde_json::from_slice::<Value>(body) else {
+        return body.clone();
+    };
+    let mut changed = normalize_classification_fields(&mut v);
+
+    if let Some(system) = v.get_mut("system").and_then(|s| s.as_array_mut()) {
+        for entry in system {
+            let Some(text_str) = entry.get("text").and_then(|t| t.as_str()) else {
+                continue;
+            };
+            let rewritten = rewrite_cc_entrypoint(text_str);
+            if rewritten != text_str
+                && let Some(obj) = entry.as_object_mut()
+            {
+                obj.insert("text".into(), Value::String(rewritten));
+                changed = true;
+            }
+        }
+    }
+
+    if !changed {
+        return body.clone();
+    }
+    serde_json::to_vec(&v).map_or_else(|_| body.clone(), Bytes::from)
+}
+
+/// Replace `cc_entrypoint=sdk-<anything>` with `cc_entrypoint=cli`
+/// in arbitrary text. Handles the four known SDK-tier values; a
+/// future `sdk-X` would slip through and be caught by the defensive
+/// scan's warn-log surface, prompting an extension here.
+fn rewrite_cc_entrypoint(s: &str) -> String {
+    s.replace("cc_entrypoint=sdk-cli", "cc_entrypoint=cli")
+        .replace("cc_entrypoint=sdk-py", "cc_entrypoint=cli")
+        .replace("cc_entrypoint=sdk-ts", "cc_entrypoint=cli")
+        .replace("cc_entrypoint=sdk-rs", "cc_entrypoint=cli")
 }
 
 /// Generic body rewriter: parse, normalise classification fields
@@ -439,6 +500,46 @@ mod tests {
         assert!(v["level1"].get("agent_sdk_version").is_none());
         assert!(v["level1"]["level2"].get("agent_sdk_version").is_none());
         assert_eq!(v["level1"]["level2"]["data"], "keep");
+    }
+
+    #[test]
+    fn messages_body_rewrites_cc_entrypoint_in_system_text() {
+        let body = serde_json::to_vec(&json!({
+            "model": "claude-haiku",
+            "system": [
+                { "type": "text", "text": "header\n; cc_entrypoint=sdk-cli; cch=abc; trailer" },
+                { "type": "text", "text": "no marker here" },
+                { "type": "text", "text": "cc_entrypoint=sdk-py with python style" }
+            ],
+            "messages": []
+        }))
+        .expect("encode");
+        let out = rewrite_messages_body(&Bytes::from(body));
+        let parsed: Value = serde_json::from_slice(&out).expect("decode");
+        let first = parsed["system"][0]["text"].as_str().expect("string");
+        assert!(first.contains("cc_entrypoint=cli"), "first system text: {first}");
+        assert!(!first.contains("sdk-cli"));
+        assert_eq!(parsed["system"][1]["text"], "no marker here");
+        let third = parsed["system"][2]["text"].as_str().expect("string");
+        assert!(third.contains("cc_entrypoint=cli"));
+        assert!(!third.contains("sdk-py"));
+    }
+
+    #[test]
+    fn messages_body_normalizes_nested_classification_fields() {
+        let body = serde_json::to_vec(&json!({
+            "metadata": {
+                "user_attributes": { "entrypoint": "sdk-cli" },
+                "client": { "client_type": "sdk-cli", "agent_sdk_version": "0.16.0" }
+            },
+            "system": [{ "type": "text", "text": "no marker" }]
+        }))
+        .expect("encode");
+        let out = rewrite_messages_body(&Bytes::from(body));
+        let parsed: Value = serde_json::from_slice(&out).expect("decode");
+        assert_eq!(parsed["metadata"]["user_attributes"]["entrypoint"], "cli");
+        assert_eq!(parsed["metadata"]["client"]["client_type"], "cli");
+        assert!(parsed["metadata"]["client"].get("agent_sdk_version").is_none());
     }
 
     #[test]
