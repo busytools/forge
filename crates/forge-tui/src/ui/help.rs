@@ -571,8 +571,8 @@ mod tests {
                     tool_call: forge_primitives::session_update::ToolCall {
                         tool_call_id: "tc-1".into(),
                         title: "Bash".into(),
-                        kind: "execute".into(),
-                        status: "pending".into(),
+                        kind: forge_primitives::ToolKind::Execute,
+                        status: forge_primitives::ToolCallStatus::Pending,
                         content: vec![],
                         raw_input: None,
                         raw_output: None,

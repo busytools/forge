@@ -1014,14 +1014,13 @@ fn handle_task_notification(app: &mut App, msg: Message) {
 /// `tool_use_id`'s status to `in_progress` if it isn't already in a
 /// terminal/active state.
 fn apply_tool_progress_update(app: &mut App, tool_use_id: &str, name: &str) {
-    use forge_primitives::ToolCallUpdateFields;
+    use forge_primitives::{ToolCallStatus, ToolCallUpdateFields};
 
     let existing = app.with_turn_state(|ts| ts.tool_calls.get(tool_use_id).cloned());
     let Some(existing) = existing else {
         apply_tool_use_block(app, tool_use_id, name, &Value::Object(serde_json::Map::new()), None);
         return;
     };
-    use forge_primitives::ToolCallStatus;
     if matches!(
         existing.status,
         ToolCallStatus::InProgress
@@ -1055,12 +1054,11 @@ fn apply_tool_progress_update(app: &mut App, tool_use_id: &str, name: &str) {
 /// events through the same handler, and the cost is one cheap
 /// JSON lookup.
 fn apply_tool_summary_update(app: &mut App, tool_use_id: &str, summary: &str) {
-    use forge_primitives::{ToolCallContent, ToolCallUpdateFields};
+    use forge_primitives::{ToolCallContent, ToolCallStatus, ToolCallUpdateFields};
 
     let Some(base) = app.with_turn_state(|ts| ts.tool_calls.get(tool_use_id).cloned()) else {
         return;
     };
-    use forge_primitives::ToolCallStatus;
     let persistent = raw_input_is_persistent(base.raw_input.as_ref());
     let status = if matches!(base.status, ToolCallStatus::Failed | ToolCallStatus::Killed) {
         base.status
@@ -1213,9 +1211,12 @@ mod task_updated_mapping_tests {
     fn running_maps_to_in_progress() {
         // Wire spelling vs forge-internal spelling. Without this
         // mapping, a backgrounded Bash transitioning through
-        // running would be left in the unknown "running" status
-        // and the renderer would pick an unintended glyph.
-        assert_eq!(map_task_updated_status_to_tool_status("running"), "in_progress");
+        // running would be left in the Pending fallback and the
+        // renderer would pick an unintended glyph.
+        assert_eq!(
+            map_task_updated_status_to_tool_status("running"),
+            forge_primitives::ToolCallStatus::InProgress,
+        );
     }
 
     #[test]
@@ -1224,24 +1225,31 @@ mod task_updated_mapping_tests {
         // (e.g. claude TaskStop). Map to the internal `killed`
         // so the renderer picks the same red glyph as for explicit
         // kills.
-        assert_eq!(map_task_updated_status_to_tool_status("stopped"), "killed");
+        assert_eq!(
+            map_task_updated_status_to_tool_status("stopped"),
+            forge_primitives::ToolCallStatus::Killed,
+        );
     }
 
     #[test]
     fn round_trip_statuses_unchanged() {
-        assert_eq!(map_task_updated_status_to_tool_status("completed"), "completed");
-        assert_eq!(map_task_updated_status_to_tool_status("failed"), "failed");
-        assert_eq!(map_task_updated_status_to_tool_status("killed"), "killed");
-        assert_eq!(map_task_updated_status_to_tool_status("pending"), "pending");
+        use forge_primitives::ToolCallStatus;
+        assert_eq!(map_task_updated_status_to_tool_status("completed"), ToolCallStatus::Completed);
+        assert_eq!(map_task_updated_status_to_tool_status("failed"), ToolCallStatus::Failed);
+        assert_eq!(map_task_updated_status_to_tool_status("killed"), ToolCallStatus::Killed);
+        assert_eq!(map_task_updated_status_to_tool_status("pending"), ToolCallStatus::Pending);
     }
 
     #[test]
-    fn unknown_status_passes_through() {
+    fn unknown_status_falls_through_to_pending() {
         // Forward-compat: a future CLI version adding `degraded`
-        // (say) must not crash forge. The renderer's glyph picker
-        // falls back to a default; the reducer just stores the
-        // string.
-        assert_eq!(map_task_updated_status_to_tool_status("degraded"), "degraded");
+        // (say) must not crash forge. Unknown wire values land in
+        // the `Pending` fallback so the renderer's glyph picker
+        // has a defined fallback.
+        assert_eq!(
+            map_task_updated_status_to_tool_status("degraded"),
+            forge_primitives::ToolCallStatus::Pending,
+        );
     }
 }
 
