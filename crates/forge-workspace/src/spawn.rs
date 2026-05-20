@@ -14,8 +14,12 @@
 use std::sync::Arc;
 
 use forge_agent::client::SessionLaunchSettings;
+use forge_primitives::WrappedPrompt;
+use parking_lot::Mutex;
 
-use crate::protocol::SessionUpdate;
+use crate::domain_session::DomainSession;
+use crate::mcp::peers::facade::{PeerStatsDelta, WorkspaceFacade};
+use crate::protocol::{Command, SessionUpdate};
 use crate::workspace::Workspace;
 use crate::{SessionKey, SessionTarget};
 
@@ -96,6 +100,120 @@ pub(crate) fn handle_spawn_project(
                 },
             );
         }
+    }
+}
+
+/// Handle a `Command::DeliverPeerPrompt`. Resolves the target
+/// project to a running SessionTask (deliver immediately) or a
+/// sleeping one (buffer + auto-spawn). Hop stamping on target's
+/// DomainSession happens here, before dispatching the wrapped
+/// prompt as a regular `Command::Prompt`.
+pub(crate) fn handle_deliver_peer_prompt(
+    workspace: &Arc<Workspace>,
+    _caller: SessionKey,
+    target_project: String,
+    wrapped: WrappedPrompt,
+) {
+    // Find the target project's running lead session (if any). The
+    // `list_projects()` snapshot has `sessions: Vec<SessionView>` per
+    // project; `is_open == true` on a session means an Agent is in
+    // the workspace pool — that's "running."
+    let target_running_key = workspace
+        .list_projects()
+        .into_iter()
+        .find(|v| v.name == target_project)
+        .and_then(|v| v.sessions.into_iter().find(|s| s.is_open).map(|s| s.session));
+
+    if let Some(target_key) = target_running_key {
+        // Stamp current_inbound_hop on target's DomainSession before
+        // dispatch so any tools the target's LLM fires on the resulting
+        // turn read the correct ambient hop via peek_current_inbound_hop.
+        stamp_inbound_hop(workspace, &target_key, wrapped.hop);
+        // Bump target's incoming counter (sidebar badge).
+        let workspace_arc: Arc<Workspace> = Arc::clone(workspace);
+        let facade: Arc<dyn WorkspaceFacade> = Arc::new(workspace_arc);
+        facade.bump_inflight_stats(&target_key, PeerStatsDelta::IncomingPlus1);
+
+        let text = wrapped.to_prose();
+        if let Err(err) = workspace.dispatch(Command::Prompt {
+            key: target_key.clone(),
+            text,
+            attachments: Vec::new(),
+        }) {
+            tracing::warn!(
+                target: "forge_workspace::spawn",
+                target_project = %target_project,
+                error = ?err,
+                "DeliverPeerPrompt dispatch to running target failed"
+            );
+        }
+        return;
+    }
+
+    // Target is sleeping (or unknown — defensive). If the project
+    // exists in forge.toml, ensure a DomainSession exists at the
+    // synthetic spawn key, buffer the wrapped prompt for delivery on
+    // Connected, then dispatch SpawnProject.
+    if workspace.find_project_view_by_name(&target_project).is_none() {
+        tracing::warn!(
+            target: "forge_workspace::spawn",
+            target_project = %target_project,
+            "DeliverPeerPrompt target not in forge.toml; dropping"
+        );
+        return;
+    }
+
+    let synth_key = SessionKey::from_session_id(format!("__spawn_{target_project}__"));
+
+    // Ensure DomainSession at synth_key + buffer wrapped + stamp hop.
+    // get_agent_handle_with_spawn_key (called by handle_spawn_project
+    // below) will re-use this DomainSession if present; otherwise it
+    // creates a new one. We want to buffer BEFORE the spawn so the
+    // session_task's Connected handler can drain on first turn.
+    {
+        let mut handles = workspace.domain_handles.lock();
+        let domain = handles
+            .entry(synth_key.clone())
+            .or_insert_with(|| {
+                Arc::new(Mutex::new(DomainSession::new(synth_key.clone(), None)))
+            })
+            .clone();
+        drop(handles);
+        let mut d = domain.lock();
+        let current = d.current_inbound_hop.unwrap_or(0);
+        d.current_inbound_hop = Some(current.max(wrapped.hop));
+        d.pending_peer_prompts.push(wrapped);
+    }
+
+    // Dispatch SpawnProject. handle_spawn_project reuses the
+    // DomainSession we just placed at synth_key. Move target_project
+    // into the command rather than cloning (it's the last use).
+    let project_for_log = target_project.clone();
+    if let Err(err) = workspace.dispatch(Command::SpawnProject {
+        project_name: target_project,
+        launch_settings: SessionLaunchSettings::default(),
+    }) {
+        tracing::warn!(
+            target: "forge_workspace::spawn",
+            target_project = %project_for_log,
+            error = ?err,
+            "DeliverPeerPrompt SpawnProject dispatch failed"
+        );
+    }
+}
+
+/// Stamp `current_inbound_hop = max(current, hop)` on the target's
+/// DomainSession. Used by handle_deliver_peer_prompt before
+/// dispatching Command::Prompt so the recipient's tools observe the
+/// correct ambient hop when they fire outbound asks/tells during
+/// the resulting turn.
+fn stamp_inbound_hop(workspace: &Workspace, target_key: &SessionKey, hop: u8) {
+    let handles = workspace.domain_handles.lock();
+    if let Some(domain) = handles.get(target_key).cloned() {
+        drop(handles);
+        let mut d = domain.lock();
+        let current = d.current_inbound_hop.unwrap_or(0);
+        d.current_inbound_hop = Some(current.max(hop));
     }
 }
 

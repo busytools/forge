@@ -964,6 +964,15 @@ impl Workspace {
                     let _enter = span.enter();
                     spawn::handle_start_default(self, project_name, launch_settings);
                 }
+                Command::DeliverPeerPrompt { caller, target_project, wrapped } => {
+                    let span = tracing::info_span!(
+                        "deliver_peer_prompt",
+                        target = %target_project,
+                        correlation_id = %wrapped.correlation_id,
+                    );
+                    let _enter = span.enter();
+                    spawn::handle_deliver_peer_prompt(self, caller, target_project, wrapped);
+                }
                 other => {
                     tracing::warn!(
                         target: "forge_workspace",

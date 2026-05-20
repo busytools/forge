@@ -181,6 +181,14 @@ impl SessionTask {
                         mode,
                         history,
                     });
+                    // Drain any peer prompts buffered while this
+                    // session was pre-Connected (pushed by
+                    // spawn::handle_deliver_peer_prompt when a peer
+                    // ask hit a sleeping target). Each gets
+                    // re-dispatched as a regular Command::Prompt so
+                    // the existing prompt-delivery path handles it
+                    // uniformly with user-typed prompts.
+                    self.drain_pending_peer_prompts();
                 }
             }
             AgentEvent::AuthRequired { method_name, method_description } => {
@@ -326,6 +334,15 @@ impl SessionTask {
                 self.emit(SessionUpdate::McpSnapshot { session_id, servers, error });
             }
             AgentEvent::SdkMessage { session_id, msg } => {
+                // Clear current_inbound_hop on turn boundary so the
+                // next user-initiated turn starts the outgoing peer
+                // chain at hop=1 instead of inheriting a stale
+                // forwarded-peer hop from the prior turn.
+                // `Message::Result` is the SDK's signal that the
+                // assistant turn has fully completed.
+                if matches!(msg, forge_primitives::Message::Result { .. }) {
+                    self.domain.lock().current_inbound_hop = None;
+                }
                 self.emit(SessionUpdate::ChatAppended { session_id, msg });
             }
             AgentEvent::HookObservation {
@@ -491,6 +508,43 @@ impl SessionTask {
             "session task rekeyed onto real session UUID"
         );
         self.key = real_key.clone();
+    }
+
+    /// Drain `DomainSession.pending_peer_prompts` after the session's
+    /// first `Connected` event. Each buffered peer prompt is
+    /// re-dispatched as a normal `Command::Prompt` against
+    /// `self.key` (now the real claude session UUID after rekey).
+    /// The existing prompt-delivery path handles it identically to a
+    /// user-typed prompt — the only difference is the prose body
+    /// carries the `[Question id=q-…]` / `[Message id=t-…]` wrapper
+    /// that the chat renderer pattern-matches into a styled peer
+    /// block (lands in C16).
+    ///
+    /// Called once per session from the first-Connected arm of
+    /// [`Self::translate_event`]. No-op when there are no buffered
+    /// prompts.
+    fn drain_pending_peer_prompts(&self) {
+        let pending: Vec<forge_primitives::WrappedPrompt> =
+            std::mem::take(&mut self.domain.lock().pending_peer_prompts);
+        if pending.is_empty() {
+            return;
+        }
+        let Some(workspace) = self.workspace.upgrade() else { return };
+        for wrapped in pending {
+            let text = wrapped.to_prose();
+            if let Err(err) = workspace.dispatch(crate::protocol::Command::Prompt {
+                key: self.key.clone(),
+                text,
+                attachments: Vec::new(),
+            }) {
+                tracing::warn!(
+                    target: "forge_workspace::session_task",
+                    key = %self.key.as_str(),
+                    error = ?err,
+                    "drain_pending_peer_prompts: dispatch failed; prompt dropped"
+                );
+            }
+        }
     }
 }
 
