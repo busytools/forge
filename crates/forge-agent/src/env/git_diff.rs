@@ -26,10 +26,14 @@ use tokio::time::timeout;
 
 pub mod hunks;
 
-/// Max bytes accepted from `git diff --numstat`. A 1 MiB output is
-/// already deep in pathological territory (~10k+ files); past that
-/// we bail rather than allocate.
-const STDOUT_SIZE_CAP: usize = 1024 * 1024;
+/// Max bytes accepted from any single `git` subprocess invocation.
+/// `--numstat` is small in practice; the per-file `git diff <target>
+/// --no-ext-diff -- <path>` calls produced by [`hunks::scan`] are
+/// each bounded by one file's worth of changes. 8 MiB is generous
+/// headroom for genuinely huge single-file diffs (lockfiles,
+/// generated source, vendored snapshots) without exposing the scan
+/// to unbounded memory growth on a corrupted-git-output edge case.
+const STDOUT_SIZE_CAP: usize = 8 * 1024 * 1024;
 
 /// Per-subprocess timeout. Worst case across the full scan
 /// sequence is ~50s (5 commands × 10s each), but in practice every
@@ -122,7 +126,6 @@ pub struct GitDiffFile {
 /// newly-resolved branch (same `Named(name)`), the prior
 /// `pr` / `closes` carry over without re-running `gh`. Pass `None`
 /// for cold starts.
-#[must_use]
 pub async fn scan(cwd: &Path, prev: Option<&GitDiffSnapshot>) -> GitDiffSnapshot {
     let raw_branch = match run_git(cwd, &["rev-parse", "--abbrev-ref", "HEAD"]).await {
         GitOutput::Ok(s) => s.trim().to_owned(),

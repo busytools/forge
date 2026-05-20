@@ -58,7 +58,6 @@ impl Default for LaunchpadState {
 /// Wired into `/launchpad` slash command execution; the boot-time
 /// path builds the equivalent snapshot inline in `create_app` so
 /// the View transitions atomically with App construction.
-#[allow(dead_code)] // Wired up in the /launchpad slash command (next commit).
 pub(crate) fn open(app: &mut App) {
     let spinner_style =
         app.workspace.as_ref().map(|w| w.ui_settings().launchpad_spinner).unwrap_or_default();

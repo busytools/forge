@@ -1,17 +1,13 @@
 use super::dialog::DialogState;
 use super::paste_burst::CharAction;
 use super::{
-    App, AppStatus, CancelOrigin, FocusOwner, FocusTarget, HelpView, InvalidationLevel, ModeInfo,
-    ModeState,
+    App, AppStatus, FocusOwner, FocusTarget, HelpView, InvalidationLevel, ModeInfo, ModeState,
 };
 #[cfg(not(test))]
 use crate::app::SystemSeverity;
-use crate::app::inline_interactions::{
-    clear_inline_interaction_focus, focus_next_inline_interaction, handle_inline_interaction_key,
-};
 use crate::app::selection::{clear_selection, selection_text_from_rendered_lines};
 use crate::app::state::AutocompleteKind;
-use crate::app::{mention, questions, slash, subagent};
+use crate::app::{mention, slash, subagent};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 #[cfg(test)]
 use std::cell::Cell;
@@ -28,6 +24,13 @@ const HELP_TAB_NEXT_KEY: KeyCode = KeyCode::Right;
 // kitty enhanced-keyboard protocol (Ghostty, kitty, WezTerm). forge-tui
 // negotiates DISAMBIGUATE_ESCAPE_CODES + REPORT_EVENT_TYPES +
 // REPORT_ALTERNATE_KEYS at startup so this is the case in our stack.
+//
+// Cmd-prefixed shortcut detection on macOS accepts BOTH SUPER and
+// CONTROL — Termux/SSH sessions to the Mac Studio cannot send SUPER
+// (Android sends Ctrl), so requiring SUPER would lock SSH'd users
+// out of Cmd+C / Cmd+V / Cmd+Z. Treating Ctrl as an equivalent Cmd
+// for these app shortcuts costs nothing local (Cmd still works) and
+// makes the remote case work too. See `is_cmd_shortcut`.
 #[cfg(target_os = "macos")]
 pub(crate) const CMD_MOD: KeyModifiers = KeyModifiers::SUPER;
 #[cfg(not(target_os = "macos"))]
@@ -55,7 +58,23 @@ fn is_ctrl_shortcut(modifiers: KeyModifiers) -> bool {
 }
 
 fn is_cmd_shortcut(modifiers: KeyModifiers) -> bool {
-    modifiers.contains(CMD_MOD) && !modifiers.contains(KeyModifiers::ALT)
+    if modifiers.contains(KeyModifiers::ALT) {
+        return false;
+    }
+    if modifiers.contains(CMD_MOD) {
+        return true;
+    }
+    // macOS: accept Ctrl too so SSH/Termux clients (which can't send
+    // SUPER) still get Cmd+C / Cmd+V / Cmd+Z. Off macOS this is a
+    // no-op because CMD_MOD already equals CONTROL.
+    #[cfg(target_os = "macos")]
+    {
+        modifiers.contains(KeyModifiers::CONTROL)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
 }
 
 fn ctrl_char(expected: char) -> Option<char> {
@@ -85,12 +104,6 @@ pub(super) fn is_cmd_char_shortcut(key: KeyEvent, expected: char) -> bool {
         KeyCode::Char(c) if c.eq_ignore_ascii_case(&expected) => is_cmd_shortcut(key.modifiers),
         _ => false,
     }
-}
-
-fn is_permission_ctrl_shortcut(key: KeyEvent) -> bool {
-    is_ctrl_char_shortcut(key, 'y')
-        || is_ctrl_char_shortcut(key, 'a')
-        || is_ctrl_char_shortcut(key, 'n')
 }
 
 fn handle_always_allowed_shortcuts(app: &mut App, key: KeyEvent) -> bool {
@@ -245,20 +258,16 @@ pub(super) fn dispatch_key_by_focus(app: &mut App, key: KeyEvent) -> bool {
         return true;
     }
 
+    // PROMPT MODE: when the active session has a prompt at the head
+    // of its queue, all keys route to the prompt dispatcher.
+    if app.active_session().is_some_and(|s| !s.prompt_queue.is_empty()) {
+        return crate::app::prompt::dispatch_key(app, key);
+    }
+
     match app.focus_owner() {
         FocusOwner::Mention => handle_autocomplete_key(app, key),
         FocusOwner::Help => handle_help_key(app, key),
-        FocusOwner::Permission => {
-            if should_reclaim_input_focus_before_inline_interaction(app, key) {
-                reclaim_input_from_inline_prompt_if_needed(app);
-                handle_normal_key(app, key)
-            } else if handle_inline_interaction_key(app, key) {
-                true
-            } else {
-                handle_normal_key(app, key)
-            }
-        }
-        FocusOwner::Input | FocusOwner::TodoList => handle_normal_key(app, key),
+        FocusOwner::Input => handle_normal_key(app, key),
     }
 }
 
@@ -307,16 +316,11 @@ fn handle_blocked_input_shortcuts(app: &mut App, key: KeyEvent) -> bool {
 
 /// Handle shortcuts that should work regardless of current focus owner.
 fn handle_global_shortcuts(app: &mut App, key: KeyEvent) -> bool {
-    // Permission quick shortcuts are global when permissions are pending.
-    if !app.pending_interaction_ids().is_empty() && is_permission_ctrl_shortcut(key) {
-        return handle_inline_interaction_key(app, key);
-    }
-
     match (key.code, key.modifiers) {
         // Toggle all tool calls — Cmd+X on macOS, Ctrl+X elsewhere
         // via CMD_MOD. Same platform-modifier convention as the
         // pane-toggle arrows above.
-        (KeyCode::Char('x'), m) if m == CMD_MOD => {
+        (KeyCode::Char('x'), m) if is_cmd_shortcut(m) => {
             toggle_all_tool_calls(app);
             true
         }
@@ -420,15 +424,6 @@ fn is_editing_like_key(key: KeyEvent) -> bool {
     )
 }
 
-fn should_reclaim_input_focus_before_inline_interaction(app: &App, key: KeyEvent) -> bool {
-    let question_notes_editing = questions::focused_question_is_editing_notes(app);
-    match key.code {
-        KeyCode::Backspace | KeyCode::Delete => !question_notes_editing,
-        KeyCode::Char(_) if is_printable_text_modifiers(key.modifiers) => !question_notes_editing,
-        _ => false,
-    }
-}
-
 fn handle_normal_key_actions(app: &mut App, key: KeyEvent) -> bool {
     if handle_turn_control_key(app, key) {
         return true;
@@ -478,12 +473,8 @@ fn handle_turn_control_key(app: &mut App, key: KeyEvent) -> bool {
         app.pending_images_mut().clear();
         app.needs_redraw = true;
     }
-    if app.focus_owner() == FocusOwner::TodoList {
-        app.release_focus_target(FocusTarget::TodoList);
-        return true;
-    }
     if matches!(app.status, AppStatus::Thinking | AppStatus::Running)
-        && let Err(message) = super::input_submit::request_cancel(app, CancelOrigin::Manual)
+        && let Err(message) = super::input_submit::request_cancel(app)
     {
         tracing::error!(
             target: crate::logging::targets::APP_INPUT,
@@ -497,7 +488,7 @@ fn handle_turn_control_key(app: &mut App, key: KeyEvent) -> bool {
 }
 
 fn handle_submit_key(app: &mut App, key: KeyEvent) -> bool {
-    if !matches!(key.code, KeyCode::Enter) || app.focus_owner() == FocusOwner::TodoList {
+    if !matches!(key.code, KeyCode::Enter) {
         return false;
     }
 
@@ -538,24 +529,29 @@ fn handle_submit_key(app: &mut App, key: KeyEvent) -> bool {
 }
 
 fn handle_history_key(app: &mut App, key: KeyEvent) -> bool {
-    if app.focus_owner() == FocusOwner::TodoList {
-        return false;
-    }
     match (key.code, key.modifiers) {
-        // macOS: Cmd+Z undo. Linux/Windows: Ctrl+Z undo.
-        (KeyCode::Char('z'), m) if m == CMD_MOD => app.input_mut().textarea_undo(),
-        // macOS: Cmd+Shift+Z redo. Ghostty / kitty enhanced keyboard
-        // reports this as lowercase 'z' with SUPER | SHIFT bits set;
-        // some terminals report uppercase 'Z' with SUPER. Match both.
+        // macOS: Cmd+Shift+Z (or Ctrl+Shift+Z) redo. Match Shift-bearing
+        // forms BEFORE the plain undo arm — kitty enhanced keyboard
+        // sends lowercase 'z' with SUPER | SHIFT; some terminals send
+        // uppercase 'Z' with SUPER. Either way, the plain `is_cmd_shortcut`
+        // predicate is permissive about extra modifier bits, so the
+        // undo arm must come AFTER these to avoid swallowing Shift+Z.
         #[cfg(target_os = "macos")]
-        (KeyCode::Char('z'), m) if m == CMD_MOD | KeyModifiers::SHIFT => {
+        (KeyCode::Char('z'), m)
+            if m.contains(KeyModifiers::SHIFT)
+                && is_cmd_shortcut(m.difference(KeyModifiers::SHIFT)) =>
+        {
             app.input_mut().textarea_redo()
         }
         #[cfg(target_os = "macos")]
-        (KeyCode::Char('Z'), m) if m == CMD_MOD => app.input_mut().textarea_redo(),
+        (KeyCode::Char('Z'), m) if is_cmd_shortcut(m) => app.input_mut().textarea_redo(),
+        // macOS: Cmd+Z undo. Linux/Windows: Ctrl+Z undo.
+        (KeyCode::Char('z'), m) if is_cmd_shortcut(m) && !m.contains(KeyModifiers::SHIFT) => {
+            app.input_mut().textarea_undo()
+        }
         // Linux/Windows: Ctrl+Y redo.
         #[cfg(not(target_os = "macos"))]
-        (KeyCode::Char('y'), m) if m == CMD_MOD => app.input_mut().textarea_redo(),
+        (KeyCode::Char('y'), m) if is_cmd_shortcut(m) => app.input_mut().textarea_redo(),
         _ => false,
     }
 }
@@ -563,19 +559,11 @@ fn handle_history_key(app: &mut App, key: KeyEvent) -> bool {
 fn handle_navigation_key(app: &mut App, key: KeyEvent) -> bool {
     match (key.code, key.modifiers) {
         // Word left: Alt+Left on macOS, Ctrl+Left elsewhere.
-        (KeyCode::Left, m)
-            if app.focus_owner() != FocusOwner::TodoList
-                && m.contains(WORD_NAV_MOD)
-                && !m.intersects(WORD_NAV_MOD_EXCLUDED) =>
-        {
+        (KeyCode::Left, m) if m.contains(WORD_NAV_MOD) && !m.intersects(WORD_NAV_MOD_EXCLUDED) => {
             app.input_mut().textarea_move_word_left()
         }
         // Word right: Alt+Right on macOS, Ctrl+Right elsewhere.
-        (KeyCode::Right, m)
-            if app.focus_owner() != FocusOwner::TodoList
-                && m.contains(WORD_NAV_MOD)
-                && !m.intersects(WORD_NAV_MOD_EXCLUDED) =>
-        {
+        (KeyCode::Right, m) if m.contains(WORD_NAV_MOD) && !m.intersects(WORD_NAV_MOD_EXCLUDED) => {
             app.input_mut().textarea_move_word_right()
         }
         // macOS readline-style fallbacks: many terminals (Ghostty,
@@ -583,23 +571,15 @@ fn handle_navigation_key(app: &mut App, key: KeyEvent) -> bool {
         // Option+Right as ESC+f rather than Left/Right with ALT.
         // Crossterm decodes those as Char('b')/Char('f') with ALT.
         #[cfg(target_os = "macos")]
-        (KeyCode::Char('b'), m)
-            if app.focus_owner() != FocusOwner::TodoList && m == KeyModifiers::ALT =>
-        {
+        (KeyCode::Char('b'), m) if m == KeyModifiers::ALT => {
             app.input_mut().textarea_move_word_left()
         }
         #[cfg(target_os = "macos")]
-        (KeyCode::Char('f'), m)
-            if app.focus_owner() != FocusOwner::TodoList && m == KeyModifiers::ALT =>
-        {
+        (KeyCode::Char('f'), m) if m == KeyModifiers::ALT => {
             app.input_mut().textarea_move_word_right()
         }
-        (KeyCode::Left, _) if app.focus_owner() != FocusOwner::TodoList => {
-            app.input_mut().textarea_move_left()
-        }
-        (KeyCode::Right, _) if app.focus_owner() != FocusOwner::TodoList => {
-            app.input_mut().textarea_move_right()
-        }
+        (KeyCode::Left, _) => app.input_mut().textarea_move_left(),
+        (KeyCode::Right, _) => app.input_mut().textarea_move_right(),
         (KeyCode::Up, _) => {
             if !try_move_input_cursor_up(app) {
                 app.active_viewport_mut().scroll_up(1);
@@ -612,38 +592,20 @@ fn handle_navigation_key(app: &mut App, key: KeyEvent) -> bool {
             }
             true
         }
-        (KeyCode::Home, _) if app.focus_owner() != FocusOwner::TodoList => {
-            app.input_mut().textarea_move_home()
-        }
-        (KeyCode::End, _) if app.focus_owner() != FocusOwner::TodoList => {
-            app.input_mut().textarea_move_end()
-        }
+        (KeyCode::Home, _) => app.input_mut().textarea_move_home(),
+        (KeyCode::End, _) => app.input_mut().textarea_move_end(),
         _ => false,
     }
 }
 
-fn handle_focus_toggle_key(app: &mut App, key: KeyEvent) -> bool {
+fn handle_focus_toggle_key(_app: &mut App, key: KeyEvent) -> bool {
     match (key.code, key.modifiers) {
         (KeyCode::Tab, m)
             if !m.contains(KeyModifiers::SHIFT)
                 && !m.contains(KeyModifiers::CONTROL)
                 && !m.contains(KeyModifiers::ALT) =>
         {
-            if app.pending_interaction_ids().is_empty() {
-                false
-            } else {
-                match app.focus_owner() {
-                    FocusOwner::Permission => {
-                        clear_inline_interaction_focus(app);
-                        true
-                    }
-                    FocusOwner::Input => {
-                        focus_next_inline_interaction(app);
-                        true
-                    }
-                    _ => false,
-                }
-            }
+            false
         }
         _ => false,
     }
@@ -671,7 +633,11 @@ fn handle_prompt_suggestion_key(app: &mut App, key: KeyEvent) -> bool {
 }
 
 fn handle_mode_cycle_key(app: &mut App, key: KeyEvent) -> bool {
-    if !matches!(key.code, KeyCode::BackTab) {
+    // Accept both legacy `BackTab` and kitty-keyboard-protocol
+    // `Tab + SHIFT` (Ghostty + some xterm builds emit the latter).
+    let is_shift_tab = matches!(key.code, KeyCode::BackTab)
+        || (matches!(key.code, KeyCode::Tab) && key.modifiers.contains(KeyModifiers::SHIFT));
+    if !is_shift_tab {
         return false;
     }
     let Some(mode) = app.mode() else {
@@ -690,7 +656,7 @@ fn handle_mode_cycle_key(app: &mut App, key: KeyEvent) -> bool {
     let modes = mode
         .available_modes
         .iter()
-        .map(|m| ModeInfo { id: m.id.clone(), name: m.name.clone() })
+        .map(|m| ModeInfo { id: m.id.clone(), name: m.name.clone(), description: None })
         .collect();
 
     if app.has_active_agent()
@@ -714,11 +680,16 @@ fn handle_mode_cycle_key(app: &mut App, key: KeyEvent) -> bool {
         available_modes: modes,
     }));
     app.invalidate_layout(InvalidationLevel::Global);
+    // `set_mode` + layout invalidation don't trigger a redraw on their
+    // own — without this the chat history doesn't re-render until the
+    // next async update, so the mode chip (and any UI surface that
+    // reads `app.mode()`) lags behind the keypress.
+    app.needs_redraw = true;
     true
 }
 
-fn handle_clipboard_paste_key(app: &mut App, key: KeyEvent) -> bool {
-    if !is_clipboard_paste_shortcut(key) || app.focus_owner() == FocusOwner::TodoList {
+fn handle_clipboard_paste_key(#[allow(unused_variables)] app: &mut App, key: KeyEvent) -> bool {
+    if !is_clipboard_paste_shortcut(key) {
         return false;
     }
     if key.kind != KeyEventKind::Release {
@@ -783,21 +754,12 @@ pub(super) fn is_clipboard_paste_shortcut(key: KeyEvent) -> bool {
     is_cmd_char_shortcut(key, 'v') || is_ctrl_char_shortcut(key, 'v')
 }
 
-pub(super) fn reclaim_input_from_inline_prompt_if_needed(app: &mut App) {
-    if app.focus_owner() == FocusOwner::Permission {
-        clear_inline_interaction_focus(app);
-    }
-}
-
 fn handle_editing_key(app: &mut App, key: KeyEvent) -> bool {
     match (key.code, key.modifiers) {
         // Delete word backward: Alt+Backspace on macOS, Ctrl+Backspace elsewhere.
         (KeyCode::Backspace, m)
-            if app.focus_owner() != FocusOwner::TodoList
-                && m.contains(WORD_NAV_MOD)
-                && !m.intersects(WORD_NAV_MOD_EXCLUDED) =>
+            if m.contains(WORD_NAV_MOD) && !m.intersects(WORD_NAV_MOD_EXCLUDED) =>
         {
-            reclaim_input_from_inline_prompt_if_needed(app);
             if try_delete_image_badge(app, "before") {
                 return true;
             }
@@ -805,25 +767,20 @@ fn handle_editing_key(app: &mut App, key: KeyEvent) -> bool {
         }
         // Delete word forward: Alt+Delete on macOS, Ctrl+Delete elsewhere.
         (KeyCode::Delete, m)
-            if app.focus_owner() != FocusOwner::TodoList
-                && m.contains(WORD_NAV_MOD)
-                && !m.intersects(WORD_NAV_MOD_EXCLUDED) =>
+            if m.contains(WORD_NAV_MOD) && !m.intersects(WORD_NAV_MOD_EXCLUDED) =>
         {
-            reclaim_input_from_inline_prompt_if_needed(app);
             if try_delete_image_badge(app, "after") {
                 return true;
             }
             app.input_mut().textarea_delete_word_after()
         }
-        (KeyCode::Backspace, _) if app.focus_owner() != FocusOwner::TodoList => {
-            reclaim_input_from_inline_prompt_if_needed(app);
+        (KeyCode::Backspace, _) => {
             if try_delete_image_badge(app, "before") {
                 return true;
             }
             app.input_mut().textarea_delete_char_before()
         }
-        (KeyCode::Delete, _) if app.focus_owner() != FocusOwner::TodoList => {
-            reclaim_input_from_inline_prompt_if_needed(app);
+        (KeyCode::Delete, _) => {
             if try_delete_image_badge(app, "after") {
                 return true;
             }
@@ -858,10 +815,6 @@ fn handle_printable_key(app: &mut App, key: KeyEvent) -> bool {
     if !is_printable_text_modifiers(m) {
         return false;
     }
-    if app.focus_owner() == FocusOwner::TodoList {
-        app.release_focus_target(FocusTarget::TodoList);
-    }
-    reclaim_input_from_inline_prompt_if_needed(app);
 
     let now = Instant::now();
     match app.paste_burst.on_char(c, now) {
@@ -922,11 +875,7 @@ fn try_move_input_cursor_down(app: &mut App) -> bool {
     (app.input().cursor_row(), app.input().cursor_col()) != before
 }
 
-fn should_sync_autocomplete_after_key(app: &App, key: KeyEvent) -> bool {
-    if app.focus_owner() == FocusOwner::TodoList {
-        return false;
-    }
-
+fn should_sync_autocomplete_after_key(_app: &App, key: KeyEvent) -> bool {
     match (key.code, key.modifiers) {
         (
             KeyCode::Up
@@ -940,13 +889,18 @@ fn should_sync_autocomplete_after_key(app: &App, key: KeyEvent) -> bool {
             | KeyCode::Enter,
             _,
         ) => true,
-        (KeyCode::Char('z'), m) if m == CMD_MOD => true,
+        (KeyCode::Char('z'), m) if is_cmd_shortcut(m) => true,
         #[cfg(target_os = "macos")]
-        (KeyCode::Char('z'), m) if m == CMD_MOD | KeyModifiers::SHIFT => true,
+        (KeyCode::Char('z'), m)
+            if m.contains(KeyModifiers::SHIFT)
+                && is_cmd_shortcut(m.difference(KeyModifiers::SHIFT)) =>
+        {
+            true
+        }
         #[cfg(target_os = "macos")]
-        (KeyCode::Char('Z'), m) if m == CMD_MOD => true,
+        (KeyCode::Char('Z'), m) if is_cmd_shortcut(m) => true,
         #[cfg(not(target_os = "macos"))]
-        (KeyCode::Char('y'), m) if m == CMD_MOD => true,
+        (KeyCode::Char('y'), m) if is_cmd_shortcut(m) => true,
         (KeyCode::Char(_), m) if is_printable_text_modifiers(m) => true,
         _ => false,
     }
@@ -1015,10 +969,7 @@ fn set_help_view(app: &mut App, next: HelpView) {
 }
 
 fn sync_help_focus(app: &mut App) {
-    if app.is_help_active()
-        && app.pending_interaction_ids().is_empty()
-        && !app.autocomplete_focus_available()
-    {
+    if app.is_help_active() && !app.autocomplete_focus_available() {
         app.claim_focus_target(FocusTarget::Help);
     } else {
         app.release_focus_target(FocusTarget::Help);
@@ -1147,10 +1098,9 @@ pub(super) fn toggle_all_tool_calls(app: &mut App) {
 /// Tier-aware Ctrl+B handler.
 ///
 /// At Wide / Medium tiers (terminal width ≥ `MEDIUM_TIER_MIN_WIDTH`)
-/// this toggles the inline pane's persisted visibility — same
-/// behaviour as Phases 2b-α / 2b-β. At Narrow tier it toggles the
-/// transient `projects_pane_overlay_open` flag, opening or closing
-/// the full-screen overlay rendered by
+/// this toggles the inline pane's persisted visibility. At Narrow
+/// tier it toggles the transient `projects_pane_overlay_open` flag,
+/// opening or closing the full-screen overlay rendered by
 /// [`crate::ui::projects_pane::render_overlay`].
 ///
 /// Both the inline-pane visibility and the overlay flag are
@@ -1219,6 +1169,66 @@ mod tests {
     fn ctrl_shortcut_rejects_raw_control_character_with_alt() {
         let key = KeyEvent::new(KeyCode::Char('\u{16}'), KeyModifiers::ALT);
         assert!(!is_ctrl_char_shortcut(key, 'v'));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn shift_z_routes_to_redo_not_undo() {
+        // Regression: `is_cmd_shortcut` is permissive about extra
+        // modifier bits, so a plain `Char('z') if is_cmd_shortcut(m)`
+        // arm placed BEFORE the Shift-bearing redo arm would match
+        // Cmd+Shift+Z first and route to undo. The Shift-bearing
+        // arms must come first AND the undo arm must exclude Shift.
+        // macOS-only: Linux/Windows redo via Ctrl+Y, not Ctrl+Shift+Z,
+        // so the regression class doesn't exist there.
+        let mut app = App::test_default();
+        app.input_mut().set_text("a");
+        // Make a delete so we have something to undo, then make
+        // another action so we have something to redo.
+        app.input_mut().textarea_insert_char('b');
+        app.input_mut().textarea_undo();
+        let after_undo = app.input().text();
+
+        // Cmd+Shift+Z should redo, not undo again.
+        let cmd_shift_z = KeyEvent::new(KeyCode::Char('z'), CMD_MOD | KeyModifiers::SHIFT);
+        let consumed = handle_history_key(&mut app, cmd_shift_z);
+        assert!(consumed, "Cmd+Shift+Z must be consumed by history handler");
+        assert_ne!(
+            app.input().text(),
+            after_undo,
+            "Cmd+Shift+Z must redo (text changes from the post-undo state), not undo again"
+        );
+    }
+
+    #[test]
+    fn ctrl_shift_z_routes_to_redo_on_macos() {
+        // Same as above but with Ctrl modifier — exercises the
+        // Ctrl-as-Cmd alias on macOS (SSH/Termux clients).
+        let mut app = App::test_default();
+        app.input_mut().set_text("a");
+        app.input_mut().textarea_insert_char('b');
+        app.input_mut().textarea_undo();
+        let after_undo = app.input().text();
+
+        let ctrl_shift_z =
+            KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+        let consumed = handle_history_key(&mut app, ctrl_shift_z);
+        // Off macOS, Ctrl+Shift+Z isn't bound (Linux/Windows use
+        // Ctrl+Y for redo) — only assert redo behaviour on macOS.
+        #[cfg(target_os = "macos")]
+        {
+            assert!(consumed, "Ctrl+Shift+Z must be consumed by history handler on macOS");
+            assert_ne!(
+                app.input().text(),
+                after_undo,
+                "Ctrl+Shift+Z must redo on macOS, not undo again"
+            );
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = consumed;
+            let _ = after_undo;
+        }
     }
 
     #[test]

@@ -2,7 +2,7 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
-use forge_sdk::Message;
+use forge_primitives::Message;
 use forge_sdk::{Client, HookContext, HookDecision, HooksBuilder, OptionsBuilder, PreToolUseInput};
 use serde_json::json;
 
@@ -30,7 +30,7 @@ async fn pre_tool_use_replaces_input() {
         Message::Assistant { message, .. } => {
             assert!(
                 message.content.iter().any(
-                    |b| matches!(b, forge_sdk::ContentBlock::Text { text } if text.contains("echo replaced"))
+                    |b| matches!(b, forge_primitives::ContentBlock::Text { text } if text.contains("echo replaced"))
                 ),
                 "expected replaced command in reply, got: {:?}",
                 message.content
@@ -60,7 +60,7 @@ async fn pre_tool_use_deny_propagates() {
         Message::Assistant { message, .. } => {
             assert!(
                 message.content.iter().any(
-                    |b| matches!(b, forge_sdk::ContentBlock::Text { text } if text.contains("hook denied"))
+                    |b| matches!(b, forge_primitives::ContentBlock::Text { text } if text.contains("hook denied"))
                 ),
                 "expected deny text, got: {:?}",
                 message.content

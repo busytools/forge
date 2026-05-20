@@ -25,8 +25,7 @@
 //!   `ToolPermissionContext`, `PermissionUpdate*`, `Permission*`).
 //! - [`options`] — option-config enums shared between the SDK's
 //!   `Options` builder and consumers (`PermissionMode`,
-//!   `SystemPromptKind`, `ToolsPreset`, `ThinkingConfig`,
-//!   `SdkPluginConfig`).
+//!   `SystemPromptKind`, `SdkPluginConfig`).
 //! - [`subagents`] — `SubagentDefinition` + nested types.
 //! - [`runtime`] — live runtime state: mode/model state, available
 //!   commands/agents/models, rate-limit views, retry classification,
@@ -38,9 +37,7 @@
 //!   shapes (distinct from the wire-side decisions in
 //!   [`permissions`]).
 //! - [`question`] — `AskUserQuestion` request/response shapes.
-//! - [`elicitation`] — MCP elicitation request/response (form / URL).
-//! - [`mcp_view`] — MCP UI events (`McpAuthRedirect`,
-//!   `McpOperationError`).
+//! - [`mcp_ui_sync`] — MCP UI events (`McpOperationError`).
 //! - [`session_meta`] — `SessionListEntry`, `PromptChunk`.
 //!
 //! Add a type here when 2+ forge crates need it. Never reach for
@@ -49,13 +46,12 @@
 pub mod cloud;
 pub mod command;
 pub mod content;
-pub mod elicitation;
 pub mod error;
 pub mod git;
 pub mod hooks;
 pub mod ids;
 pub mod image;
-pub mod mcp_view;
+pub mod mcp_ui_sync;
 pub mod messages;
 pub mod options;
 pub mod permission;
@@ -65,16 +61,15 @@ pub mod plugins;
 pub mod public_types;
 pub mod question;
 pub mod runtime;
+pub mod session_key;
 pub mod session_meta;
 pub mod session_update;
 pub mod subagents;
+pub mod turn_error;
 pub mod usage;
 
-pub use command::Command;
+pub use command::AgentCommand;
 pub use content::ContentBlock;
-pub use elicitation::{
-    ElicitationAction, ElicitationMode, ElicitationRequest, ElicitationResponse,
-};
 pub use error::AppError;
 pub use hooks::{
     BaseHookInput, HookContext, HookKind, HookSpecificOutput, NotificationHookSpecificOutput,
@@ -90,12 +85,12 @@ pub use image::{
     ImageAttachment, SUPPORTED_IMAGE_MIME_TYPES, is_supported_image_type, is_valid_base64,
     validate_image,
 };
-pub use mcp_view::{McpAuthRedirect, McpOperationError};
+pub use mcp_ui_sync::McpOperationError;
 pub use messages::{
     AssistantEnvelope, AssistantMessageError, Message, RateLimitInfo, RateLimitStatus,
     RateLimitType, StopReason, TaskNotificationStatus, TaskUsage, Usage, UserEnvelope,
 };
-pub use options::{SdkPluginConfig, SystemPromptKind, ThinkingConfig, ToolsPreset};
+pub use options::{SdkPluginConfig, SystemPromptKind};
 pub use permission::PermissionMode;
 pub use permission_ui::{
     PermissionDisplay, PermissionOption, PermissionOutcome, PermissionRequest,
@@ -119,9 +114,12 @@ pub use runtime::{
     RateLimitUpdate, RuntimeSessionState, SessionLifecycleState, SessionStatus, SessionTurnState,
     SettingsParseErrorUpdate, TerminalReason,
 };
+pub use session_key::SessionKey;
 pub use session_meta::{PromptChunk, SessionListEntry};
 pub use session_update::{
-    BashOutputMetadata, ChunkContent, PlanEntry, TaskMetadata, TodoWriteOutputMetadata, ToolCall,
-    ToolCallContent, ToolCallUpdate, ToolCallUpdateFields, ToolLocation, ToolOutputMetadata,
+    BashOutputMetadata, ChunkContent, TaskMetadata, TodoWriteOutputMetadata, ToolCall,
+    ToolCallContent, ToolCallLocation, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields,
+    ToolKind, ToolOutputMetadata,
 };
 pub use subagents::{EffortPreset, SubagentDefinition, SubagentMcpServerRef, SubagentMemory};
+pub use turn_error::TurnErrorClass;

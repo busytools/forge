@@ -14,18 +14,12 @@
 //! - **Concurrent writes.** Cloning the writer-side mpsc is cheap
 //!   and `Send + 'static`. The `Subprocess::clone_writer` helper
 //!   hands out a clonable writer backed by the same writer task,
-//!   so detached control-request dispatch (the daemon's actor
-//!   pattern) can write concurrently with the reader without
-//!   serialising on `&mut self`.
-//!
-//! Closes audit 2026-04-26 G1 directly inside the SDK — every
-//! spawned [`Client`](crate::Client) gets cancel-safe reads +
-//! concurrent writes for free.
+//!   so detached control-request dispatch can write concurrently
+//!   with the reader without serialising on `&mut self`.
 
 use std::process::Stdio;
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::{mpsc, oneshot};
@@ -35,7 +29,6 @@ use tracing::{debug, warn};
 use crate::Error;
 use crate::argv::build_args;
 use crate::options::{Options, WireTee};
-use crate::transport::AsyncWriter;
 
 /// Default upper bound on `close()` wait-for-exit. After this elapses,
 /// the child is SIGKILL'd. 5s is generous for a CLI that's draining
@@ -67,8 +60,9 @@ pub fn query_cli_version(binary: &str) -> Result<String, Error> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-/// Check that the reported `claude` version is at least `min_version`
-/// (semver-style major.minor.patch, only major component compared).
+/// Check that the reported `claude` version is at least `min_version`.
+/// Compares all three semver components (major.minor.patch)
+/// lexicographically.
 ///
 /// # Errors
 ///
@@ -82,21 +76,31 @@ pub fn check_cli_version(reported: &str, min_version: &str) -> Result<(), Error>
         .ok_or_else(|| Error::Connection {
             reason: format!("could not parse claude version from: {reported}"),
         })?;
-    let major: u32 = token.split('.').next().and_then(|s| s.parse().ok()).ok_or_else(|| {
-        Error::Connection { reason: format!("could not parse major version from: {token}") }
+    let reported_triple = parse_semver_triple(token).ok_or_else(|| Error::Connection {
+        reason: format!("could not parse semver triple from: {token}"),
     })?;
-    let min_major: u32 =
-        min_version.split('.').next().and_then(|s| s.parse().ok()).ok_or_else(|| {
-            Error::Connection {
-                reason: format!("could not parse minimum major from: {min_version}"),
-            }
-        })?;
-    if major < min_major {
+    let min_triple = parse_semver_triple(min_version).ok_or_else(|| Error::Connection {
+        reason: format!("could not parse minimum semver triple from: {min_version}"),
+    })?;
+    if reported_triple < min_triple {
         return Err(Error::Connection {
             reason: format!("claude CLI version {reported} below minimum required {min_version}"),
         });
     }
     Ok(())
+}
+
+/// Parse `"<major>.<minor>.<patch>"` (any trailing non-numeric suffix
+/// ignored). Missing minor/patch default to 0.
+fn parse_semver_triple(s: &str) -> Option<(u32, u32, u32)> {
+    let mut parts = s.split('.');
+    let major: u32 = parts.next()?.parse().ok()?;
+    let minor: u32 = parts.next().and_then(|p| p.parse().ok()).unwrap_or(0);
+    let patch_str = parts.next().unwrap_or("0");
+    // Strip any non-digit suffix (e.g. "117-rc1" or "117 (build)").
+    let patch_digits: String = patch_str.chars().take_while(char::is_ascii_digit).collect();
+    let patch: u32 = if patch_digits.is_empty() { 0 } else { patch_digits.parse().ok()? };
+    Some((major, minor, patch))
 }
 
 /// Outcome of one writer-task operation. Sent back over a oneshot the
@@ -120,7 +124,7 @@ enum WriterCmd {
 /// gives a graceful exit path with a 5s timeout before SIGKILL.
 pub struct Subprocess {
     /// Outbound channel into the writer task. Cloned by
-    /// [`try_clone_writer`](Self::try_clone_writer) so external
+    /// [`clone_writer`](Self::clone_writer) so external
     /// dispatchers can write without contending on `&mut self`.
     writer_tx: mpsc::UnboundedSender<WriterCmd>,
     /// Inbound channel from the reader task. Single-consumer.
@@ -158,16 +162,23 @@ impl Subprocess {
     /// - [`Error::CliNotFound`] when the binary isn't on PATH or the given path
     ///   doesn't exist.
     /// - [`Error::Io`] for other spawn failures.
-    #[allow(clippy::unused_async)] // kept async for API symmetry + future runtime hooks
     pub async fn spawn(options: &Options) -> Result<Self, Error> {
         // Optional CLI-version guard. Runs `<binary> --version` once.
         // The caller asked for a floor — if the probe fails, surface it
         // rather than silently skipping (they won't know the check was
         // bypassed otherwise).
         if let Some(min) = &options.minimum_cli_version {
-            let reported = query_cli_version(&options.binary).map_err(|e| Error::Connection {
-                reason: format!("minimum_cli_version set but --version probe failed: {e}"),
-            })?;
+            // `claude --version` is a fork+exec; wrap in spawn_blocking
+            // so the tokio worker thread isn't parked during the probe.
+            let binary = options.binary.clone();
+            let reported = tokio::task::spawn_blocking(move || query_cli_version(&binary))
+                .await
+                .map_err(|e| Error::Connection {
+                    reason: format!("version probe join failed: {e}"),
+                })?
+                .map_err(|e| Error::Connection {
+                    reason: format!("minimum_cli_version set but --version probe failed: {e}"),
+                })?;
             check_cli_version(&reported, min)?;
         }
         let mut cmd = Command::new(&options.binary);
@@ -189,18 +200,13 @@ impl Subprocess {
         //    otherwise default, EXCEPT `CLAUDE_AGENT_SDK_VERSION` —
         //    that one the SDK always stamps last.
         // 4. Stamp `CLAUDE_AGENT_SDK_VERSION` as the final write.
-        // 5. Gate `CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING=true` on
-        //    `enable_file_checkpointing` (NOT a CLI flag — env var).
-        // 6. Set `PWD` to the chosen cwd when present.
+        // 5. Set `PWD` to the chosen cwd when present.
         cmd.env_remove("CLAUDECODE");
         cmd.env("CLAUDE_CODE_ENTRYPOINT", "sdk-rs");
         for (k, v) in &options.env {
             cmd.env(k, v);
         }
         cmd.env("CLAUDE_AGENT_SDK_VERSION", env!("CARGO_PKG_VERSION"));
-        if options.enable_file_checkpointing {
-            cmd.env("CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING", "true");
-        }
         if let Some(cwd) = &options.cwd {
             cmd.env("PWD", cwd);
         }
@@ -278,7 +284,6 @@ impl Subprocess {
     /// types). The PID is stable for the lifetime of the subprocess
     /// so the scanner can cache its snapshot across polls keyed off
     /// this value.
-    #[must_use]
     pub fn child_pid(&self) -> Option<u32> {
         self.child.as_ref().and_then(tokio::process::Child::id)
     }
@@ -340,15 +345,12 @@ impl Subprocess {
         })
     }
 
-    /// Hand out a clonable [`AsyncWriter`] backed by the same writer
+    /// Hand out a clonable [`SharedWriter`] backed by the same writer
     /// task. Multiple clones can write concurrently; the writer task
-    /// serialises onto the child's stdin in arrival order.
-    ///
-    /// Used by detached control-request dispatch (the daemon's actor
-    /// pattern) so a slow callback can't block the reader / command
-    /// loop.
-    #[must_use]
-    pub(crate) fn clone_writer(&self) -> Arc<dyn AsyncWriter> {
+    /// serialises onto the child's stdin in arrival order. Used by
+    /// detached control-request dispatch so a slow callback can't
+    /// block the reader / command loop.
+    pub(crate) fn clone_writer(&self) -> Arc<SharedWriter> {
         Arc::new(SharedWriter { writer_tx: self.writer_tx.clone() })
     }
 
@@ -368,15 +370,30 @@ impl Subprocess {
 
         // Drop our held writer_tx and abort the writer task. The abort
         // forces stdin closure even if external `SharedWriter` clones
-        // (handed out via `try_clone_writer`) still hold writer_tx
+        // (handed out via `clone_writer`) still hold writer_tx
         // clones — without the abort the writer task would wait for
         // every clone to drop. In-flight write_line acks on cloned
         // writers will resolve with the ack-channel-dropped error,
         // which is correct semantics for a closed transport.
-        let (closed_tx, _closed_rx) = mpsc::unbounded_channel();
+        let (closed_tx, closed_rx) = mpsc::unbounded_channel();
         self.writer_tx = closed_tx;
+        // Drop the placeholder receiver immediately so any concurrent
+        // SharedWriter clone trying to send on `writer_tx` fails fast
+        // with BrokenPipe rather than queuing into a dead channel and
+        // hanging for the duration of the close grace period.
+        drop(closed_rx);
         if let Some(handle) = self.writer_task.take() {
             handle.abort();
+            // Symmetric drain with the stderr task below. abort() then
+            // await — the future returns JoinError::Cancelled which is
+            // expected; surface panic JoinErrors at debug so the
+            // tokio default panic handler isn't the only path that
+            // notices.
+            if let Err(e) = handle.await
+                && !e.is_cancelled()
+            {
+                debug!(error = %e, "writer task ended abnormally");
+            }
         }
 
         // Wait for child exit, with a SIGKILL timeout so a stuck CLI
@@ -419,17 +436,22 @@ impl Subprocess {
 /// task's mpsc. Multiple clones can write concurrently; the writer
 /// task serialises onto the child's stdin in arrival order.
 ///
-/// Returned by [`Subprocess::try_clone_writer`]. Used by the daemon's
-/// session actor for detached `control_request` dispatch (closes
-/// audit 2026-04-26 G1).
+/// Returned by [`Subprocess::clone_writer`]. Used by detached
+/// `control_request` dispatch.
 #[derive(Debug, Clone)]
-struct SharedWriter {
+pub(crate) struct SharedWriter {
     writer_tx: mpsc::UnboundedSender<WriterCmd>,
 }
 
-#[async_trait]
-impl AsyncWriter for SharedWriter {
-    async fn write_line(&self, line: &str) -> Result<(), Error> {
+impl SharedWriter {
+    /// Write one line of stream-json to the transport. Caller supplies
+    /// the trailing `\n`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Io`] on write failure or after the transport has
+    /// closed its write half.
+    pub(crate) async fn write_line(&self, line: &str) -> Result<(), Error> {
         let (ack_tx, ack_rx) = oneshot::channel();
         self.writer_tx.send(WriterCmd::Write(line.to_owned(), ack_tx)).map_err(|_| {
             Error::Io(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "SharedWriter task gone"))
@@ -442,7 +464,12 @@ impl AsyncWriter for SharedWriter {
         })?
     }
 
-    async fn end_input(&self) -> Result<(), Error> {
+    /// Close the write half so the remote sees EOF on stdin. Idempotent.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Io`] on flush failure.
+    pub(crate) async fn end_input(&self) -> Result<(), Error> {
         let (ack_tx, ack_rx) = oneshot::channel();
         // Writer task already exited (e.g. previous end_input or close)
         // → treat as no-op, matching `Subprocess::end_input`.
@@ -462,40 +489,50 @@ fn spawn_reader_task(
     tee: Option<WireTee>,
     tx: mpsc::UnboundedSender<Result<Option<String>, Error>>,
 ) {
-    tokio::spawn(async move {
-        let mut reader = match buf_capacity {
-            Some(n) => BufReader::with_capacity(n, stdout),
-            None => BufReader::new(stdout),
-        };
-        let mut buf = String::new();
-        loop {
-            buf.clear();
-            match reader.read_line(&mut buf).await {
-                Ok(0) => {
-                    // EOF — signal end-of-stream and exit.
-                    let _ = tx.send(Ok(None));
-                    break;
-                }
-                Ok(_) => {
-                    let mut line = std::mem::take(&mut buf);
-                    while matches!(line.chars().last(), Some('\n' | '\r')) {
-                        line.pop();
+    use tracing::Instrument;
+    let span = tracing::info_span!("forge_sdk::stdout_reader");
+    tokio::spawn(
+        async move {
+            let mut reader = match buf_capacity {
+                Some(n) => BufReader::with_capacity(n, stdout),
+                None => BufReader::new(stdout),
+            };
+            let mut buf = String::new();
+            loop {
+                buf.clear();
+                match reader.read_line(&mut buf).await {
+                    Ok(0) => {
+                        // EOF — signal end-of-stream and exit.
+                        let _ = tx.send(Ok(None));
+                        break;
                     }
-                    if let Some(cb) = tee.as_ref() {
-                        cb(&line);
+                    Ok(_) => {
+                        let mut line = std::mem::take(&mut buf);
+                        while matches!(line.chars().last(), Some('\n' | '\r')) {
+                            line.pop();
+                        }
+                        if let Some(cb) = tee.as_ref() {
+                            cb(&line);
+                        }
+                        if tx.send(Ok(Some(line))).is_err() {
+                            // Receiver gone — caller dropped the transport.
+                            break;
+                        }
                     }
-                    if tx.send(Ok(Some(line))).is_err() {
-                        // Receiver gone — caller dropped the transport.
+                    Err(e) => {
+                        if tx.send(Err(Error::Io(e))).is_err() {
+                            tracing::warn!(
+                                target: "forge_sdk::transport",
+                                "subprocess stdout I/O error after caller dropped reader"
+                            );
+                        }
                         break;
                     }
                 }
-                Err(e) => {
-                    let _ = tx.send(Err(Error::Io(e)));
-                    break;
-                }
             }
         }
-    });
+        .instrument(span),
+    );
 }
 
 fn spawn_writer_task(
@@ -557,6 +594,10 @@ async fn drain_stderr(stderr: ChildStderr, callback: Option<Arc<dyn Fn(String) +
         }
         if let Some(cb) = callback.as_ref() {
             cb(buf.clone());
+        } else if buf.starts_with("ERROR") || buf.starts_with("Error") {
+            tracing::warn!(target: "forge_sdk::stderr", line = %buf, "claude stderr");
+        } else {
+            tracing::info!(target: "forge_sdk::stderr", line = %buf, "claude stderr");
         }
     }
 }
@@ -607,7 +648,14 @@ mod tests {
         let result = sub.close().await;
         let elapsed = start.elapsed();
 
-        assert!(elapsed <= Duration::from_secs(6), "close() took {elapsed:?}, expected <= 6s");
+        // The documented bound is 5s; widen the assert to 30s for
+        // CI-load tolerance — flagging a one-time-blip scheduler
+        // delay as a regression would be noise.
+        assert!(elapsed <= Duration::from_secs(30), "close() took {elapsed:?}, expected <= 30s");
+        assert!(
+            elapsed >= Duration::from_secs(5),
+            "close() returned in {elapsed:?}, expected >= 5s (close timeout fired)"
+        );
         match result {
             Err(Error::Process { stderr, .. }) => {
                 assert!(

@@ -59,7 +59,6 @@ impl SpinnerStyle {
     /// Frame cycle for this style. Returned slice has fixed-known
     /// length per variant — callers index modulo `len()` per render
     /// tick.
-    #[must_use]
     pub fn frames(self) -> &'static [char] {
         match self {
             Self::Braille => &[
@@ -80,7 +79,6 @@ impl SpinnerStyle {
     /// rename_all = "snake_case"` mapping above. Useful for
     /// rendering the current value back to the user (e.g. in help
     /// output or config dump).
-    #[must_use]
     pub fn key(self) -> &'static str {
         match self {
             Self::Braille => "braille",
@@ -99,7 +97,6 @@ impl SpinnerStyle {
     /// glyph and the cadence here drives a full opacity tween cycle
     /// (so it's intentionally much slower than the others, ~1.4s
     /// per cycle).
-    #[must_use]
     pub fn cadence_ms(self) -> u64 {
         match self {
             Self::Braille => 80,

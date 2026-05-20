@@ -17,13 +17,8 @@ const SUBAGENT_NAME_MAX_WIDTH: usize = 28;
 const SUBAGENT_NAME_MAX_SHARE_NUM: usize = 2;
 const SUBAGENT_NAME_MAX_SHARE_DEN: usize = 5;
 const HELP_PANEL_HEIGHT: u16 = 14;
-const HELP_BUILTIN_SLASH_COMMANDS: [(&str, &str); 5] = [
-    ("/config", "Open settings"),
-    ("/mcp", "Open MCP"),
-    ("/plugins", "Open plugins"),
-    ("/status", "Show session status"),
-    ("/usage", "Open usage"),
-];
+const HELP_BUILTIN_SLASH_COMMANDS: [(&str, &str); 3] =
+    [("/effort", "Show / set thinking effort"), ("/mcp", "Open MCP"), ("/plugins", "Open plugins")];
 
 // Platform-aware key labels: macOS uses Cmd for app-level shortcuts,
 // other OSes use Ctrl. Word navigation is Alt+Arrow on every platform
@@ -245,24 +240,10 @@ fn build_key_help_items(app: &App) -> Vec<(String, String)> {
         items.push(("Status".to_owned(), "Compacting context".to_owned()));
     }
     let focus_owner = app.focus_owner();
+    let prompt_active = app.active_session().is_some_and(|s| !s.prompt_queue.is_empty());
 
-    if !app.pending_interaction_ids().is_empty() {
-        match focus_owner {
-            FocusOwner::Input => {
-                items.push(("Tab".to_owned(), "Focus pending prompt".to_owned()));
-            }
-            FocusOwner::Permission => {
-                items.push(("Tab".to_owned(), "Return to draft".to_owned()));
-            }
-            _ => {}
-        }
-    }
-
-    // Input + navigation (active outside mention/help/permission focus)
-    if focus_owner != FocusOwner::Mention
-        && focus_owner != FocusOwner::Help
-        && focus_owner != FocusOwner::Permission
-    {
+    // Input + navigation (suppressed while a unified prompt owns input).
+    if focus_owner != FocusOwner::Mention && focus_owner != FocusOwner::Help && !prompt_active {
         items.push(("Enter".to_owned(), "Send message".to_owned()));
         items.push(("Shift+Enter".to_owned(), "Insert newline".to_owned()));
         items.push(("Up/Down".to_owned(), "Move cursor / scroll chat".to_owned()));
@@ -283,39 +264,24 @@ fn build_key_help_items(app: &App) -> Vec<(String, String)> {
         items.push(("Esc".to_owned(), "No-op (idle)".to_owned()));
     }
 
-    // Inline interactions (permissions or questions)
-    if !app.pending_interaction_ids().is_empty() && focus_owner == FocusOwner::Permission {
-        if app.pending_interaction_ids().len() > 1 {
-            items.push(("Up/Down".to_owned(), "Switch prompt focus".to_owned()));
-        }
+    // Unified prompt navigation (drives ui::prompt rendering when active).
+    if prompt_active {
+        items.push(("Up/Down".to_owned(), "Move option focus".to_owned()));
         if focused_question_prompt(app) {
-            items.push(("Left/Right".to_owned(), "Move selection".to_owned()));
-            items.push(("Tab".to_owned(), "Toggle notes editor".to_owned()));
-            items.push(("Enter".to_owned(), "Confirm answer".to_owned()));
-            items.push(("Esc".to_owned(), "Cancel prompt".to_owned()));
-        } else {
-            items.push(("Left/Right".to_owned(), "Select option".to_owned()));
-            items.push(("Enter".to_owned(), "Confirm option".to_owned()));
-            items.push(("Ctrl+y/a/n".to_owned(), "Quick select".to_owned()));
-            items.push(("Esc".to_owned(), "Reject".to_owned()));
+            items.push(("Space".to_owned(), "Toggle option (multi-select)".to_owned()));
         }
+        items.push(("Enter".to_owned(), "Confirm answer".to_owned()));
+        items.push(("Esc".to_owned(), "Cancel prompt".to_owned()));
     }
     items
 }
 
 fn focused_question_prompt(app: &App) -> bool {
-    let Some(tool_id) = app.pending_interaction_ids().first() else {
-        return false;
-    };
-    let Some((mi, bi)) = app.lookup_tool_call(tool_id) else {
-        return false;
-    };
-    let Some(crate::app::MessageBlock::ToolCall(tc)) =
-        app.messages().get(mi).and_then(|message| message.blocks.get(bi))
-    else {
-        return false;
-    };
-    tc.pending_question.is_some()
+    app.active_session().is_some_and(|s| {
+        s.prompt_queue
+            .front()
+            .is_some_and(|p| matches!(p.source, crate::app::prompt::PromptSource::Question { .. }))
+    })
 }
 
 fn blocked_input_help_items(input_line: &str) -> Vec<(String, String)> {
@@ -584,7 +550,7 @@ fn build_two_column_items(
 #[cfg(test)]
 mod tests {
     use super::build_help_items;
-    use crate::app::{App, AppStatus, FocusTarget, HelpView};
+    use crate::app::{App, AppStatus, HelpView};
 
     fn has_item(items: &[(String, String)], key: &str, desc: &str) -> bool {
         items.iter().any(|(k, d)| k == key && d == desc)
@@ -595,24 +561,37 @@ mod tests {
     }
 
     #[test]
-    fn permission_navigation_only_shown_when_permission_has_focus() {
+    fn prompt_navigation_shown_when_unified_prompt_queue_is_non_empty() {
         let mut app = App::test_default();
-        *app.pending_interaction_ids_mut() = vec!["perm-1".into(), "perm-2".into()];
-
-        // Without permission focus claim, do not show permission-only arrows.
+        let key = app.active_session_key.clone().expect("active session");
+        if let Some(session) = app.session_mut(&key) {
+            session.prompt_queue.push_back(crate::app::prompt::PromptState::from_permission(
+                "tc-1".into(),
+                forge_primitives::permission_ui::PermissionRequest {
+                    tool_call: forge_primitives::session_update::ToolCall {
+                        tool_call_id: "tc-1".into(),
+                        title: "Bash".into(),
+                        kind: forge_primitives::ToolKind::Execute,
+                        status: forge_primitives::ToolCallStatus::Pending,
+                        content: vec![],
+                        raw_input: None,
+                        raw_output: None,
+                        output_metadata: None,
+                        task_metadata: None,
+                        locations: vec![],
+                        meta: None,
+                    },
+                    options: vec![],
+                    display: None,
+                },
+            ));
+        }
         let items = build_help_items(&app);
-        assert!(has_item(&items, "Tab", "Focus pending prompt"));
-        assert!(has_item(&items, "Enter", "Send message"));
-        assert!(!has_item(&items, "Left/Right", "Select option"));
-        assert!(!has_item(&items, "Up/Down", "Switch prompt focus"));
-
-        app.claim_focus_target(FocusTarget::Permission);
-        let items = build_help_items(&app);
-        assert!(has_item(&items, "Tab", "Return to draft"));
-        assert!(!has_item(&items, "Enter", "Send message"));
-        assert!(has_item(&items, "Enter", "Confirm option"));
-        assert!(has_item(&items, "Left/Right", "Select option"));
-        assert!(has_item(&items, "Up/Down", "Switch prompt focus"));
+        assert!(has_item(&items, "Up/Down", "Move option focus"));
+        assert!(has_item(&items, "Enter", "Confirm answer"));
+        assert!(has_item(&items, "Esc", "Cancel prompt"));
+        // Plain editing keys are suppressed while a prompt is active.
+        assert!(!has_item(&items, "Backspace", "Delete before"));
     }
 
     #[test]
@@ -635,7 +614,7 @@ mod tests {
         app.help_view = HelpView::SlashCommands;
 
         let items = build_help_items(&app);
-        for command in ["/config", "/mcp", "/plugins", "/status", "/usage"] {
+        for command in ["/effort", "/mcp", "/plugins"] {
             assert!(has_key(&items, command), "missing builtin command: {command}");
         }
         assert!(!has_item(

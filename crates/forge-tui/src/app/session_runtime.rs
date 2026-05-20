@@ -143,10 +143,15 @@ pub(crate) fn request_oauth_credentials_snapshot_refresh(app: &mut App) {
     }
 }
 
-pub(crate) fn apply_context_usage_snapshot(app: &mut App, percentage: Option<u8>) {
+pub(crate) fn apply_context_usage_snapshot(
+    app: &mut App,
+    percentage: Option<u8>,
+    max_tokens: Option<u64>,
+) {
     let refresh_pending = {
         let usage = app.session_usage_mut();
         usage.context_usage_percent = percentage;
+        usage.context_max_tokens = max_tokens;
         usage.context_usage_in_flight = false;
         std::mem::take(&mut usage.context_usage_refresh_pending)
     };
@@ -172,7 +177,7 @@ mod tests {
     use crate::app::App;
 
     fn app_with_connection()
-    -> (App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::Command>) {
+    -> (App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::AgentCommand>) {
         let mut app = App::test_default();
         let rx = app.install_testing_stub();
         app.set_session_id(Some(model::SessionId::new("session-1")));
@@ -188,7 +193,7 @@ mod tests {
         let envelope = rx.try_recv().expect("reload command");
         assert!(matches!(
             envelope,
-            forge_primitives::Command::ReloadPlugins { session_id } if session_id == "session-1"
+            forge_primitives::AgentCommand::ReloadPlugins { session_id } if session_id == "session-1"
         ));
     }
 
@@ -214,7 +219,7 @@ mod tests {
         let envelope = rx.try_recv().expect("context usage command");
         assert!(matches!(
             envelope,
-            forge_primitives::Command::GetContextUsage { session_id } if session_id == "session-1"
+            forge_primitives::AgentCommand::GetContextUsage { session_id } if session_id == "session-1"
         ));
         assert!(rx.try_recv().is_err(), "coalesced refresh should not send twice");
     }
@@ -226,7 +231,7 @@ mod tests {
         request_context_usage_refresh(&mut app);
         let _ = rx.try_recv().expect("initial context usage command");
 
-        apply_context_usage_snapshot(&mut app, Some(62));
+        apply_context_usage_snapshot(&mut app, Some(62), Some(200_000));
 
         assert_eq!(app.session_usage().context_usage_percent, Some(62));
         assert!(app.session_usage().context_usage_in_flight);
@@ -234,7 +239,7 @@ mod tests {
         let envelope = rx.try_recv().expect("replayed context usage command");
         assert!(matches!(
             envelope,
-            forge_primitives::Command::GetContextUsage { session_id } if session_id == "session-1"
+            forge_primitives::AgentCommand::GetContextUsage { session_id } if session_id == "session-1"
         ));
     }
 
@@ -247,7 +252,7 @@ mod tests {
         let envelope = rx.try_recv().expect("status snapshot command");
         assert!(matches!(
             envelope,
-            forge_primitives::Command::GetStatusSnapshot { session_id } if session_id == "session-1"
+            forge_primitives::AgentCommand::GetStatusSnapshot { session_id } if session_id == "session-1"
         ));
     }
 }

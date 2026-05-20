@@ -95,7 +95,6 @@ impl Error {
     /// Construct a [`Error::MessageParse`] carrying only a reason string
     /// (most call sites). Equivalent to the struct-literal form with
     /// `data: None`.
-    #[must_use]
     pub fn message_parse(reason: impl Into<String>) -> Self {
         Self::MessageParse { reason: reason.into(), data: None }
     }
@@ -104,7 +103,6 @@ impl Error {
     /// failure. Use this for `serde_json::to_string`/`to_value`
     /// failures on data the SDK constructed, NOT for parse
     /// failures on incoming CLI bytes.
-    #[must_use]
     pub fn encode(context: impl Into<String>, source: serde_json::Error) -> Self {
         Self::Encode { context: context.into(), source }
     }

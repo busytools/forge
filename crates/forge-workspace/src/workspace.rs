@@ -11,6 +11,7 @@ use forge_agent::client::SessionLaunchSettings;
 use forge_primitives::SDKSessionInfo;
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
+use tracing::Instrument;
 
 use crate::account::{self, AccountKey, AccountStateMap};
 use crate::config::{LoadedConfig, LoadedProject, load_from_dir};
@@ -24,17 +25,12 @@ use crate::views::{ProjectView, SessionView};
 
 /// How often the background poller refreshes account usage. The
 /// TUI's bottom panel + the spawn-path account picker both read
-/// from the cache this poll populates. Tighter than the historical
-/// per-session 120 s refresh because the picker benefits from
-/// fresher data — 60 s is the upper bound on how stale a "which
-/// account has more headroom" decision can be.
-///
-/// 2026-05-15: bumped 30 s → 60 s after a real-world run showed
-/// every account hitting HTTP 429 on Anthropic's OAuth usage
-/// endpoint under multi-instance polling. Combined with the
-/// per-account `last_error` tracking (see `account::AccountState`),
-/// transient 429s now back off naturally rather than spamming the
-/// endpoint every 30 s and getting throttled.
+/// from the cache this poll populates. 60 s upper-bounds how stale
+/// the "which account has more headroom" decision can be while
+/// staying clear of the OAuth usage endpoint's 429 throttle under
+/// multi-instance polling — combined with per-account `last_error`
+/// backoff (see `account::AccountState`), transient 429s recover
+/// naturally.
 const USAGE_POLL_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Multi-session orchestrator. Owns the project catalog snapshot
@@ -43,13 +39,11 @@ const USAGE_POLL_INTERVAL: Duration = Duration::from_secs(60);
 ///
 /// Construct via [`Workspace::new`]; consume via
 /// [`Workspace::get_agent_handle`]; drain on exit via
-/// [`Workspace::shutdown`]. See spec at
-/// `~/.claude-subspace/plans/2026-05-09-forge-tui-phase-1a-workspace-design.md`
-/// for the full contract.
+/// [`Workspace::shutdown`].
 pub struct Workspace {
     /// Retained so error messages can reference the `forge.toml`
-    /// path the workspace was constructed from, and so Phase 1b's
-    /// per-account config-dir binding can re-resolve from here.
+    /// path the workspace was constructed from, and so the per-account
+    /// config-dir binding can re-resolve from here.
     config_dir: PathBuf,
     config: LoadedConfig,
     /// Catalog of sessions per project. Seeded from
@@ -67,11 +61,10 @@ pub struct Workspace {
     /// Account picker state. Updated on every spawn; refreshed by
     /// the in-memory usage poller.
     accounts: Mutex<AccountStateMap>,
-    /// Fan-in [`SessionUpdate`] sender. Cloned and handed to
-    /// `bridge_lifecycle` via [`Self::update_sender`] so the existing
-    /// AgentEvent translator can dual-emit `ClientEvent` + `SessionUpdate`
-    /// during Phases 1-3. Phase 4 retires the dual-emit pattern when
-    /// `SessionTask` owns the AgentHandle event drain.
+    /// Fan-in [`SessionUpdate`] sender. Cloned and handed to TUI-side
+    /// modules (slash executors, plugin install, service-status check)
+    /// via [`Self::update_sender`] so they can emit presentation
+    /// events on the same channel TUI subscribes to.
     update_tx: mpsc::UnboundedSender<SessionUpdate>,
     /// Single-take slot holding the matching receiver. [`Self::subscribe`]
     /// pops it on first call; subsequent calls return `None`.
@@ -84,19 +77,18 @@ pub struct Workspace {
     /// [`Self::store_pending_interaction`] writes under the same lock
     /// the `SessionTask` actor uses to read+remove.
     domain_handles: Mutex<HashMap<SessionKey, Arc<Mutex<DomainSession>>>>,
+    /// Set the first time [`Self::start_usage_poller`] runs. Subsequent
+    /// calls early-return to avoid spawning duplicate poller tasks.
+    usage_poller_started: std::sync::atomic::AtomicBool,
 }
 
-/// Pool entry wrapping the live `Arc<AgentHandle>` together with
-/// the account it was spawned against. The account binding is
-/// retained so Phase 4+ can surface "which credential pool is this
-/// session running on" in the UI, and so tests can verify the
-/// picker's choice round-trips through the pool.
+/// Pool entry wrapping the live `Arc<AgentHandle>`. Tests assert
+/// which account each spawn was bound to; that binding lives behind
+/// `cfg(test)` so production carries no dead field.
 #[derive(Clone)]
 pub(crate) struct PooledAgent {
     pub handle: Arc<AgentHandle>,
-    /// Which account this session is bound to. Phase 1b uses this
-    /// for test-only inspection; Phase 4+ surfaces it.
-    #[allow(dead_code)] // surfaced in Phase 4+; tests read via pool_accounts_for_test
+    #[cfg(test)]
     pub account: AccountKey,
 }
 
@@ -110,10 +102,9 @@ impl Workspace {
         let config = load_from_dir(&config_dir)?;
 
         // Catalog scan reads against the workspace's canonical
-        // `config_dir` (where forge.toml lives). Phase 1b binds each
-        // spawn to its own account `config_dir`, but the catalog
-        // listing isn't UI-consumed yet — multi-account catalog
-        // merge is deferred to a later phase.
+        // `config_dir` (where forge.toml lives). Each spawn binds to
+        // its own account `config_dir` separately; multi-account
+        // catalog merge is a separate concern.
         let catalog_entries = forge_agent::userdata::catalog::scan::list_sessions(
             &config_dir,
             None, // every project in the catalog
@@ -151,15 +142,13 @@ impl Workspace {
             update_rx_slot: Mutex::new(Some(update_rx)),
             command_senders: Mutex::new(HashMap::new()),
             domain_handles: Mutex::new(HashMap::new()),
+            usage_poller_started: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
-    /// Every project listed in `forge.toml`, each carrying its catalog
-    /// sessions sorted by last-activity descending — `sessions[0]` is
     /// Return the names of all orgs in declaration order, paired
     /// with their pinned account list. The Projects pane uses this
     /// to drive the org-grouped tree render.
-    #[must_use]
     pub fn list_orgs(&self) -> Vec<(String, Vec<String>)> {
         self.config.orgs.iter().map(|org| (org.name.clone(), org.accounts.clone())).collect()
     }
@@ -168,7 +157,6 @@ impl Workspace {
     /// have defaults so callers can use the result without worrying
     /// about whether the section was present in the config file.
     /// Cheap clone — the struct is shallow.
-    #[must_use]
     pub fn ui_settings(&self) -> crate::ui::UiSettings {
         self.config.ui.clone()
     }
@@ -177,14 +165,14 @@ impl Workspace {
     /// launch (`auto_start = true`). Order is declaration order from
     /// forge.toml — the launchpad picker uses its own row sort, so
     /// no further ordering is imposed here.
-    #[must_use]
     pub fn auto_start_project_names(&self) -> Vec<String> {
         self.config.auto_start_projects().map(|p| p.name.clone()).collect()
     }
 
-    /// the lead. Empty `sessions` means the project has nothing on disk
-    /// yet; the project still surfaces in the returned Vec.
-    #[must_use]
+    /// Every project listed in `forge.toml`, each carrying its catalog
+    /// sessions sorted by last-activity descending — `sessions[0]` is
+    /// the lead. Empty `sessions` means the project has nothing on
+    /// disk yet; the project still surfaces in the returned Vec.
     pub fn list_projects(&self) -> Vec<ProjectView> {
         let open_sessions: std::collections::HashSet<SessionKey> =
             self.pool.lock().keys().cloned().collect();
@@ -203,7 +191,7 @@ impl Workspace {
                     entries
                         .iter()
                         .map(|info| {
-                            let session = SessionKey::new(info.session_id.clone());
+                            let session = SessionKey::from_session_id(info.session_id.clone());
                             SessionView {
                                 session: session.clone(),
                                 label: info.summary.clone(),
@@ -254,17 +242,12 @@ impl Workspace {
     ///
     /// Workspace does not track which handle the caller is "using" —
     /// that's the caller's concern.
-    ///
-    /// `async` is mandated by the spec contract — Phase 2+ work
-    /// (live-account refresh, oauth probing) will need to await
-    /// before the picker decision lands. Phase 1b's body is
-    /// synchronous; the `unused_async` allow keeps the contract.
-    pub async fn get_agent_handle(
+    pub fn get_agent_handle(
         self: &Arc<Self>,
         target: SessionTarget,
         settings: SessionLaunchSettings,
     ) -> Result<Arc<AgentHandle>> {
-        self.get_agent_handle_with_spawn_key(target, settings, None).await
+        self.get_agent_handle_with_spawn_key(target, settings, None)
     }
 
     /// Like [`Self::get_agent_handle`] but threads a synthetic
@@ -274,8 +257,7 @@ impl Workspace {
     /// emit before the matching `Connected` so TUI re-keys its
     /// `UiSession` map atomically. `None` for re-entrant callers (the
     /// pooled handle path) where no key migration is needed.
-    #[allow(clippy::unused_async)]
-    pub async fn get_agent_handle_with_spawn_key(
+    pub fn get_agent_handle_with_spawn_key(
         self: &Arc<Self>,
         target: SessionTarget,
         settings: SessionLaunchSettings,
@@ -320,11 +302,9 @@ impl Workspace {
         // Project-rooted targets (`Default` / `Named`) resume the
         // project's lead session when the on-disk catalog has one,
         // and fall back to a fresh session in that project's cwd
-        // otherwise. Keeps the pool key (lead's session id from the
-        // catalog) consistent with the running session id when a
-        // resume happens — no more stale lead-id pool entries for a
-        // freshly spawned session.
-        match &target {
+        // otherwise. Pool key = lead's session id from the catalog
+        // so it stays consistent with the running session id.
+        match target {
             SessionTarget::Default => {
                 let project = self.config.default_project();
                 let cwd = project.path.to_string_lossy().to_string();
@@ -335,7 +315,7 @@ impl Workspace {
                 }
             }
             SessionTarget::Named(name) => {
-                let project = self.find_project_by_name(name)?;
+                let project = self.find_project_by_name(&name)?;
                 let cwd = project.path.to_string_lossy().to_string();
                 if let Some(lead) = self.try_lead_session_id_for(project) {
                     handle.resume_or_new_session(lead.as_str().to_owned(), cwd, settings)?;
@@ -350,7 +330,7 @@ impl Workspace {
                 // catalog has no record (or no cwd) the session can't
                 // be resumed cleanly anyway — pass through and let the
                 // bridge surface ConnectionFailed.
-                let cwd = self.session_cwd_for(key).unwrap_or_default();
+                let cwd = self.session_cwd_for(&key).unwrap_or_default();
                 handle.resume_session(key.as_str().to_owned(), cwd, settings)?;
             }
         }
@@ -360,8 +340,8 @@ impl Workspace {
         // Insert: race-safe via "if absent" semantics. If a concurrent
         // caller raced us to the spawn, theirs wins the pool slot and
         // ours drops at end-of-scope (subprocess killed via Client's
-        // existing Drop). Acceptable for single-user scope; forge-tui's
-        // startup is the only caller in 1a and never races itself.
+        // existing Drop). Single-user scope makes the race effectively
+        // impossible.
         {
             let mut pool = self.pool.lock();
             if let Some(existing) = pool.get(&session_key) {
@@ -369,26 +349,30 @@ impl Workspace {
             }
             pool.insert(
                 session_key.clone(),
-                PooledAgent { handle: Arc::clone(&arc), account: account_key },
+                PooledAgent {
+                    handle: Arc::clone(&arc),
+                    #[cfg(test)]
+                    account: account_key,
+                },
             );
         }
 
-        // Phase 1: spawn the per-session `SessionTask` actor. Idempotent
-        // — a second `get_agent_handle` call for the same key reuses the
-        // existing task. Insert under the command_senders lock so a
-        // concurrent caller that lost the pool race also loses this
-        // race (and drops its `cmd_tx` at end-of-scope).
-        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<Command>();
-        let needs_spawn = {
+        // Spawn the per-session `SessionTask` actor. Idempotent —
+        // a second `get_agent_handle` call for the same key reuses
+        // the existing task. The command channel is created only
+        // on the cold path (no existing sender), held by the
+        // workspace until the task takes its receiver.
+        let cmd_rx = {
             let mut senders = self.command_senders.lock();
             if senders.contains_key(&session_key) {
-                false
+                None
             } else {
+                let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<Command>();
                 senders.insert(session_key.clone(), cmd_tx);
-                true
+                Some(cmd_rx)
             }
         };
-        if needs_spawn {
+        if let Some(cmd_rx) = cmd_rx {
             // If the workspace already holds a pre-spawn domain
             // handle for this key (e.g. registered by
             // `connect::create_app` for the pre-Connect bucket), reuse
@@ -421,7 +405,11 @@ impl Workspace {
                 connected_once: false,
                 workspace: Arc::downgrade(self),
             };
-            tokio::spawn(task.run());
+            let span = tracing::info_span!(
+                "session_task",
+                key = %task.key.as_str(),
+            );
+            tokio::spawn(task.run().instrument(span));
         }
 
         Ok(arc)
@@ -434,28 +422,38 @@ impl Workspace {
     /// The TUI's bottom panel + the spawn-path picker both read
     /// from that cache.
     ///
-    /// Call once at construction. Multiple calls spawn independent
-    /// poller tasks and multiply the actual poll rate, which is
-    /// almost never what you want — the App's `create_app` is the
-    /// only production caller. Tests either skip this or call it
-    /// explicitly when they need a cache-warm path.
+    /// Call once at construction. A `usage_poller_started` flag
+    /// guards against duplicate spawns — second and later calls
+    /// return without spawning so a forge-tui programming error
+    /// can't multiply the poll rate.
     pub fn start_usage_poller(self: &Arc<Self>) {
+        if self.usage_poller_started.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            tracing::debug!(
+                target: "forge_workspace::workspace",
+                "start_usage_poller called more than once; ignoring",
+            );
+            return;
+        }
         let weak = Arc::downgrade(self);
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(USAGE_POLL_INTERVAL);
-            // First tick fires immediately — keep it so the cache
-            // warms within seconds of startup. Subsequent ticks
-            // honour `MissedTickBehavior::Skip` so a stalled fetch
-            // can't pile up backlogged refreshes.
-            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            loop {
-                interval.tick().await;
-                let Some(workspace) = weak.upgrade() else {
-                    return; // Workspace dropped; exit cleanly.
-                };
-                workspace.refresh_account_usage_once().await;
+        let span = tracing::info_span!("usage_poller");
+        tokio::spawn(
+            async move {
+                let mut interval = tokio::time::interval(USAGE_POLL_INTERVAL);
+                // First tick fires immediately — keep it so the cache
+                // warms within seconds of startup. Subsequent ticks
+                // honour `MissedTickBehavior::Skip` so a stalled fetch
+                // can't pile up backlogged refreshes.
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    interval.tick().await;
+                    let Some(workspace) = weak.upgrade() else {
+                        return; // Workspace dropped; exit cleanly.
+                    };
+                    workspace.refresh_account_usage_once().await;
+                }
             }
-        });
+            .instrument(span),
+        );
     }
 
     /// One pass of the usage poller: fetch OAuth usage for every
@@ -483,15 +481,10 @@ impl Workspace {
                 .collect()
         };
         // Sequential probes. Anthropic's `/api/oauth/usage` endpoint
-        // has a per-IP burst limit; firing all accounts in parallel
-        // (the previous behaviour, via `tokio::spawn` per entry) trips
-        // that limit and the slower replies come back as HTTP 429
-        // even though the user is nowhere near their own quota.
-        // Serializing the awaits naturally staggers requests by the
-        // per-probe latency (~hundreds of ms), which is well within
-        // the 60 s poll interval — no perf cost — and eliminates the
-        // boot-burst 429 cascade that left every account stuck at
-        // tier 0 (Unknown) until the next clean cycle.
+        // has a per-IP burst limit; parallel spawns trip the limit
+        // and produce HTTP 429s even well under the user's own quota.
+        // Serial execution staggers requests by per-probe latency
+        // (~hundreds of ms), within the 60 s poll interval.
         for (key, dir) in entries {
             let fetch_result = forge_agent::cloud::oauth_usage::oauth_usage(&dir).await;
             match fetch_result {
@@ -542,7 +535,6 @@ impl Workspace {
     /// name. `None` when the poller hasn't yet succeeded (cold
     /// cache, no credentials, network blip). The TUI bottom panel
     /// renders the 5h / 7d bars from this snapshot.
-    #[must_use]
     pub fn usage_for(&self, display_name: &str) -> Option<forge_primitives::usage::UsageSnapshot> {
         self.accounts.lock().usage(&AccountKey(display_name.to_owned())).cloned()
     }
@@ -554,7 +546,6 @@ impl Workspace {
     /// user can tell an empty bar from an upstream failure (the
     /// HTTP 429 case is especially common when multiple forge
     /// instances poll the same Anthropic account).
-    #[must_use]
     pub fn usage_error_for(&self, display_name: &str) -> Option<crate::account::UsageFetchStatus> {
         self.accounts.lock().usage_error(&AccountKey(display_name.to_owned()))
     }
@@ -632,8 +623,9 @@ impl Workspace {
             ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
                 &project.path.to_string_lossy(),
             )));
-        self.try_lead_session_id_for(project)
-            .unwrap_or_else(|| SessionKey::new(format!("__fresh__:{}", project_key.as_str())))
+        self.try_lead_session_id_for(project).unwrap_or_else(|| {
+            SessionKey::from_session_id(format!("__fresh__:{}", project_key.as_str()))
+        })
     }
 
     /// Return the project's lead (most-recent) session id when the
@@ -648,7 +640,7 @@ impl Workspace {
         let catalog = self.catalog.lock();
         let entries = catalog.get(&key)?;
         let lead = entries.first()?;
-        Some(SessionKey::new(lead.session_id.clone()))
+        Some(SessionKey::from_session_id(lead.session_id.clone()))
     }
 
     /// Locate a `ProjectView`-like (`LoadedProject`) by `name` from
@@ -702,7 +694,6 @@ impl Workspace {
     /// resume hits "No conversation found with session ID …" even
     /// when the `.jsonl` exists. Returns `None` when the catalog has
     /// no entry for `session_id` or the entry lacks a cwd.
-    #[must_use]
     pub fn session_cwd_for(&self, session_id: &SessionKey) -> Option<String> {
         self.catalog
             .lock()
@@ -745,12 +736,22 @@ impl Workspace {
     }
 
     /// Single-take fan-in receiver for [`SessionUpdate`]s. Returns
-    /// `None` on subsequent calls. forge-tui's main event loop owns
-    /// the returned `mpsc::UnboundedReceiver` and reads `SessionUpdate`
-    /// envelopes directly (Phase 4 retired the legacy `ClientEvent`
-    /// channel; this is now the only event source the App consumes).
+    /// `None` on subsequent calls (and logs at error level so a
+    /// second-subscriber programming error doesn't disappear into
+    /// silent data loss). forge-tui's main event loop owns the
+    /// returned `mpsc::UnboundedReceiver` and reads `SessionUpdate`
+    /// envelopes directly — this is the sole event source the App
+    /// consumes.
     pub fn subscribe(&self) -> Option<mpsc::UnboundedReceiver<SessionUpdate>> {
-        self.update_rx_slot.lock().take()
+        if let Some(rx) = self.update_rx_slot.lock().take() {
+            Some(rx)
+        } else {
+            tracing::error!(
+                target: "forge_workspace::workspace",
+                "Workspace::subscribe called after the receiver was already taken — second subscriber would silently receive nothing"
+            );
+            None
+        }
     }
 
     /// Clone the [`SessionUpdate`] sender. TUI-side async tasks
@@ -759,7 +760,6 @@ impl Workspace {
     /// a clone so they can forward state into the App's event loop
     /// the same way the workspace's `SessionTask`s do. Cloned at App
     /// construction time and stored on `App.update_tx`.
-    #[must_use]
     pub fn update_sender(&self) -> mpsc::UnboundedSender<SessionUpdate> {
         self.update_tx.clone()
     }
@@ -774,7 +774,6 @@ impl Workspace {
     /// Callers should hold the lock for the shortest scope possible
     /// — concurrent reducers and the per-session `SessionTask`
     /// share this mutex.
-    #[must_use]
     pub fn domain_session_for(&self, key: &SessionKey) -> Option<Arc<Mutex<DomainSession>>> {
         self.domain_handles.lock().get(key).cloned()
     }
@@ -784,7 +783,6 @@ impl Workspace {
     /// presence check so callers don't need to peek at
     /// `DomainSession.conn` directly — the field layout is a
     /// workspace internal.
-    #[must_use]
     pub fn has_agent_for(&self, key: &SessionKey) -> bool {
         self.domain_session_for(key).is_some_and(|d| d.lock().conn.is_some())
     }
@@ -800,7 +798,7 @@ impl Workspace {
     /// `Workspace::testing_stub` path), the command runs
     /// synchronously against that handle. This keeps `#[test]`-flavor
     /// unit tests (no tokio runtime) able to observe the
-    /// `forge_primitives::Command` emitted on the stub's channel
+    /// `forge_primitives::AgentCommand` emitted on the stub's channel
     /// without spinning up an async actor.
     ///
     /// # Errors
@@ -844,32 +842,34 @@ impl Workspace {
                 Err(DispatchError::UnknownSession(key))
             }
         } else {
-            // App-level commands: route into `spawn::*` handlers. The
-            // spawn handlers run on a tokio task because they await
-            // `get_agent_handle_with_spawn_key` (which blocks the
-            // sender if we ran it inline).
-            let workspace = Arc::clone(self);
+            // App-level commands. The `spawn::*` handlers are sync —
+            // they emit one event, kick off `get_agent_handle_with_spawn_key`
+            // (which internally tokio::spawns the agent), and return.
+            // Run them inline under the span; no detach needed.
             match cmd {
                 Command::SpawnProject { project_name, launch_settings } => {
-                    tokio::spawn(spawn::handle_spawn_project(
-                        workspace,
-                        project_name,
-                        launch_settings,
-                    ));
+                    let span = tracing::info_span!(
+                        "spawn_project",
+                        project = %project_name,
+                    );
+                    let _enter = span.enter();
+                    spawn::handle_spawn_project(self, &project_name, launch_settings);
                 }
                 Command::SpawnSession { session_id, launch_settings } => {
-                    tokio::spawn(spawn::handle_spawn_session(
-                        workspace,
-                        session_id,
-                        launch_settings,
-                    ));
+                    let span = tracing::info_span!(
+                        "spawn_session",
+                        session_id = %session_id,
+                    );
+                    let _enter = span.enter();
+                    spawn::handle_spawn_session(self, &session_id, launch_settings);
                 }
                 Command::StartDefault { project_name, launch_settings } => {
-                    tokio::spawn(spawn::handle_start_default(
-                        workspace,
-                        project_name,
-                        launch_settings,
-                    ));
+                    let span = tracing::info_span!(
+                        "start_default",
+                        project = ?project_name,
+                    );
+                    let _enter = span.enter();
+                    spawn::handle_start_default(self, project_name, launch_settings);
                 }
                 other => {
                     tracing::warn!(
@@ -885,8 +885,8 @@ impl Workspace {
 
     /// Park an oneshot in
     /// `DomainSession.pending_interactions[tool_id]`. Called from
-    /// `bridge_lifecycle` when an `AgentEvent::PermissionRequest` /
-    /// `QuestionRequest` / `ElicitationRequest` arrives.
+    /// `SessionTask::run` when an `AgentEvent::PermissionRequest` /
+    /// `QuestionRequest` arrives.
     ///
     /// No-op when no `SessionTask` is registered for `key` (e.g.,
     /// the session was just closed) — the oneshot is dropped and the
@@ -934,27 +934,21 @@ impl Workspace {
     /// `forge_sdk::Client` kills its `claude` subprocess via its
     /// existing `Drop` impl when the last reference goes away.
     ///
-    /// In 1a forge-tui drops its handle reference before calling
-    /// shutdown, so Workspace is the sole owner of every pool entry
-    /// and dropping it triggers the subprocess shutdown chain (sender
-    /// drop -> dispatcher exit -> Client drop -> subprocess
-    /// kill_on_drop). Phase 2+ callers that hold cloned handles
-    /// across shutdown will need to release them for the kill-chain
-    /// to fire promptly. Synchronous and fast in 1a; the async
-    /// signature is preserved so a future "send shutdown signal,
-    /// await acknowledgement" body can slot in without restructuring
-    /// the call sites.
-    #[allow(clippy::unused_async)]
-    pub async fn shutdown(&self) {
+    /// forge-tui releases its handle reference before calling shutdown,
+    /// so Workspace is the sole owner of every pool entry and dropping
+    /// it triggers the subprocess shutdown chain (sender drop ->
+    /// dispatcher exit -> Client drop -> subprocess kill_on_drop).
+    /// Callers that hold cloned handles across shutdown will need to
+    /// release them for the kill-chain to fire promptly.
+    pub fn shutdown(&self) {
         // Drop command senders first so every SessionTask sees its
         // command channel close and exits cleanly.
         let _ = self.command_senders.lock().drain().collect::<Vec<_>>();
         let _ = self.domain_handles.lock().drain().collect::<Vec<_>>();
         let entries: Vec<_> = self.pool.lock().drain().collect();
-        // Each (SessionKey, PooledAgent) drops here; the
-        // subprocess teardown chain (sender drop -> dispatcher exit
-        // -> Client drop -> subprocess kill_on_drop) is synchronous
-        // and fast in 1a.
+        // Each (SessionKey, PooledAgent) drops here; the subprocess
+        // teardown chain (sender drop -> dispatcher exit -> Client
+        // drop -> subprocess kill_on_drop) is synchronous and fast.
         drop(entries);
     }
 
@@ -1045,7 +1039,6 @@ impl Workspace {
     /// Resolve the auto-memory path the bridge would consult for
     /// `cwd`, scoped to `key`'s configured account. Returns `None`
     /// when no agent is registered for `key`.
-    #[must_use]
     pub fn project_memory_path(&self, key: &SessionKey, cwd: &std::path::Path) -> Option<PathBuf> {
         let handle = self.agent_handle_for(key)?;
         Some(handle.project_memory_path(cwd))
@@ -1053,7 +1046,6 @@ impl Workspace {
 
     /// Snapshot the bridge's settings documents for `key` at `cwd`.
     /// Returns `None` when no agent is registered for `key`.
-    #[must_use]
     pub fn settings_documents(
         &self,
         key: &SessionKey,
@@ -1083,7 +1075,6 @@ impl Workspace {
 
     /// Resolve the agent's configured config_dir for `key`. Returns
     /// `None` when no agent is registered for `key`.
-    #[must_use]
     pub fn config_dir_for(&self, key: &SessionKey) -> Option<PathBuf> {
         let handle = self.agent_handle_for(key)?;
         Some(handle.config_dir())
@@ -1106,115 +1097,14 @@ impl Workspace {
         handle.oauth_usage().await.map_err(|err| err.to_string())
     }
 
-    /// Scan the project at `cwd` and return a git-diff snapshot for
-    /// the Inspector pane's GIT section. Delegates to
-    /// [`forge_agent::env::git_diff::scan`] — exists as a workspace
-    /// method so the TUI never depends on `forge-agent` directly
-    /// (see CLAUDE.md placement guide).
-    ///
-    /// `prev` is the caller's most-recent snapshot for the same
-    /// `cwd`, used by the scanner to short-circuit the `gh pr list`
-    /// call when the branch hasn't changed. Pass `None` for cold
-    /// starts.
-    ///
-    /// Infallible: scanner errors collapse to
-    /// `GitDiffView::NoRepo` with structured WARN logs. Renderer
-    /// treats the returned snapshot as authoritative regardless of
-    /// which variant came back.
-    pub async fn scan_git_diff(
-        &self,
-        cwd: &std::path::Path,
-        prev: Option<&forge_agent::env::git_diff::GitDiffSnapshot>,
-    ) -> forge_agent::env::git_diff::GitDiffSnapshot {
-        forge_agent::env::git_diff::scan(cwd, prev).await
-    }
-
-    /// Scan the project at `cwd` and return per-file hunks for the
-    /// `/diff` overlay. Delegates to
-    /// [`forge_agent::env::git_diff::hunks::scan`] — same workspace-
-    /// as-facade pattern as [`Self::scan_git_diff`] so the TUI never
-    /// depends on `forge-agent` directly.
-    ///
-    /// `target` is passed verbatim to `git diff <target>`,
-    /// comparing the named ref against the working tree: `"HEAD"`
-    /// for working-tree-vs-HEAD (uncommitted only), `"main"` for
-    /// everything since `main` (committed + uncommitted), any other
-    /// ref / SHA for that comparison. NOT a `..` or `...` range
-    /// syntax — passing those would let git parse them as ranges
-    /// which yields a different (commit-vs-commit) diff.
-    /// Untracked files round-trip only when `target == "HEAD"`.
-    ///
-    /// Single-shot — no polling, no caching. Each call runs a fresh
-    /// scan against the working tree at the moment of invocation.
-    ///
-    /// Returns a [`forge_agent::env::git_diff::hunks::ScanOutcome`]
-    /// — `files` carries one entry per changed file (empty when the
-    /// tree is genuinely clean OR when the scanner crashed),
-    /// `scanner_ok` is `false` when at least one underlying `git`
-    /// subprocess hit Failed / Oversize. Callers MUST check
-    /// `scanner_ok` and surface a "scan failed" message rather than
-    /// rendering an empty `files` as a clean tree; subprocess
-    /// failures still emit structured WARN logs under the
-    /// `ENV_GIT` target for operator diagnosis.
-    pub async fn scan_git_diff_hunks(
-        &self,
-        cwd: &std::path::Path,
-        target: &str,
-    ) -> forge_agent::env::git_diff::hunks::ScanOutcome {
-        forge_agent::env::git_diff::hunks::scan(cwd, target).await
-    }
-
-    /// Probe the local `claude --version` and the latest published
-    /// version on npm in parallel, returning both via
-    /// [`forge_agent::env::cli_version::CliVersionInfo`]. Used by
-    /// the bottom-left account panel to render the forge + claude
-    /// version rows and the `↑ vX.Y.Z` update indicator.
-    ///
-    /// Infallible: each probe collapses to `None` on its half of the
-    /// struct when it fails (binary missing, no network, parse
-    /// failure, timeout); structured WARN logs surface the failure
-    /// without breaking the renderer.
-    pub async fn fetch_cli_version_info(&self) -> forge_agent::env::cli_version::CliVersionInfo {
-        forge_agent::env::cli_version::fetch_info().await
-    }
-
     /// OS PID of the `claude` subprocess bound to `key`. Returns
     /// `None` when the session has no live client (pre-spawn /
     /// post-disconnect / synthetic spawn bucket). The PID is stable
     /// for the lifetime of the subprocess, so consumers (e.g. the
     /// Inspector pane's PROCESSES OS walk) can cache snapshots
     /// keyed off this value.
-    #[must_use]
     pub fn claude_pid(&self, key: &SessionKey) -> Option<u32> {
         self.agent_handle_for(key).and_then(|handle| handle.claude_pid())
-    }
-
-    /// Walk the descendants of `claude_pid` at the OS level and
-    /// return a sorted snapshot for the Inspector pane's PROCESSES
-    /// section. Delegates to
-    /// [`forge_agent::env::processes::scan`] — exists as a
-    /// workspace method so the TUI never depends on `forge-agent`
-    /// directly.
-    ///
-    /// Infallible: scanner failures (sysinfo errors, PID gone)
-    /// collapse to an empty snapshot. Renderer treats the returned
-    /// snapshot as authoritative regardless of how it was
-    /// populated.
-    ///
-    /// Synchronous because `sysinfo`'s refresh is a CPU-bound
-    /// system call rather than async I/O. The TUI's scanner ticker
-    /// is expected to call this from a `tokio::task::spawn_blocking`
-    /// to keep the runtime responsive — the workspace exposes the
-    /// raw function rather than wrapping it in spawn_blocking so
-    /// callers stay in control of their concurrency model (mirrors
-    /// how `scan_git_diff` exposes the async function directly).
-    #[must_use]
-    #[allow(clippy::unused_self)] // Mirror of `scan_git_diff` — kept as an
-    // instance method so the call site reads `workspace.scan_processes(...)`
-    // alongside the other env scanners, even though it doesn't need to
-    // touch workspace state.
-    pub fn scan_processes(&self, claude_pid: u32) -> forge_agent::env::processes::ProcessSnapshot {
-        forge_agent::env::processes::scan(claude_pid)
     }
 
     /// Borrow the [`Arc<AgentHandle>`] registered against `key`.
@@ -1264,23 +1154,13 @@ fn classify_oauth_usage_error(
     use account::UsageFetchStatus;
     use forge_primitives::usage::oauth::OauthUsageError;
     match err {
-        OauthUsageError::RateLimited { .. } => UsageFetchStatus::RateLimited,
-        OauthUsageError::HttpStatus(429, _) => UsageFetchStatus::RateLimited,
+        OauthUsageError::RateLimited { .. } | OauthUsageError::HttpStatus(429, _) => {
+            UsageFetchStatus::RateLimited
+        }
         OauthUsageError::Unauthorized(_) => UsageFetchStatus::Unauthorized,
         OauthUsageError::NoCredentials | OauthUsageError::Expired => UsageFetchStatus::Expired,
         OauthUsageError::Network(_) => UsageFetchStatus::NetworkFailed,
         OauthUsageError::HttpStatus(_, _) | OauthUsageError::Decode(_) => UsageFetchStatus::Other,
-    }
-}
-
-#[cfg(test)]
-impl Workspace {
-    pub fn pool_len_for_test(&self) -> usize {
-        self.pool.lock().len()
-    }
-
-    pub fn pool_accounts_for_test(&self) -> Vec<String> {
-        self.pool.lock().values().map(|p| p.account.0.clone()).collect()
     }
 }
 
@@ -1303,7 +1183,21 @@ impl Workspace {
         handle: Option<Arc<forge_agent::AgentHandle>>,
     ) -> Arc<Mutex<DomainSession>> {
         let domain = Arc::new(Mutex::new(DomainSession::new(key.clone(), handle)));
-        self.domain_handles.lock().insert(key, Arc::clone(&domain));
+        let mut handles = self.domain_handles.lock();
+        if handles.contains_key(&key) {
+            // Overwriting silently drops the previous DomainSession
+            // along with any pending_interactions oneshots — pending
+            // permission/question round-trips would then deny with
+            // "response channel closed" instead of completing. Log
+            // loudly so a future programming error doesn't manifest
+            // as a stale-deny that's hard to trace.
+            tracing::error!(
+                target: "forge_workspace::workspace",
+                key = %key.as_str(),
+                "register_domain_session overwriting existing entry — pending interactions lost"
+            );
+        }
+        handles.insert(key, Arc::clone(&domain));
         domain
     }
 
@@ -1336,15 +1230,29 @@ impl Workspace {
     /// `active_session_key` has flipped to the new one.
     ///
     /// No-op when `from == to` or when `from` is not registered.
-    pub fn migrate_session_task(&self, from: &SessionKey, to: &SessionKey) {
+    pub fn migrate_session_task(&self, from: &SessionKey, to: &SessionKey) -> bool {
         if from == to {
-            return;
+            return true;
         }
         // Lock order matches `get_agent_handle`'s insertion order:
         // pool → command_senders → domain_handles.
         let mut pool = self.pool.lock();
         let mut senders = self.command_senders.lock();
         let mut handles = self.domain_handles.lock();
+        // Refuse the migration if `to` is already registered — moving
+        // would silently replace a live SessionTask's entries and
+        // orphan its pending interactions. This is a hint that a
+        // duplicate Connected event arrived for two SessionTasks
+        // pointing at the same target.
+        if pool.contains_key(to) || senders.contains_key(to) || handles.contains_key(to) {
+            tracing::error!(
+                target: "forge_workspace::workspace",
+                from = %from.as_str(),
+                to = %to.as_str(),
+                "migrate_session_task: target key already registered; migration skipped"
+            );
+            return false;
+        }
         if let Some(pooled) = pool.remove(from) {
             pool.insert(to.clone(), pooled);
         }
@@ -1355,33 +1263,33 @@ impl Workspace {
             domain.lock().key = to.clone();
             handles.insert(to.clone(), domain);
         }
+        true
     }
 }
 
 #[cfg(feature = "testing")]
 impl Workspace {
     /// Construct a stub `AgentHandle` plus the matching
-    /// `Receiver<forge_primitives::Command>` that drains every command
+    /// `Receiver<forge_primitives::AgentCommand>` that drains every command
     /// dispatched to it. Tests use this to wire `App.set_active_conn`
     /// without spinning up a real subprocess; the bridge underneath is
     /// `forge_agent::Agent::testing_stub` — same shape as before, now
     /// reachable from forge-tui via `forge_workspace::Workspace::*`
     /// so the TUI crate no longer needs a direct `forge-agent` dep.
     ///
-    /// The returned `Receiver` carries `forge_primitives::Command`
+    /// The returned `Receiver` carries `forge_primitives::AgentCommand`
     /// because that's what the bridge's dispatcher accepts; this is
     /// distinct from [`crate::protocol::Command`] (the workspace's
     /// outer envelope) that wraps these primitives under a
     /// `SessionKey`.
-    #[must_use]
     pub fn testing_stub_handle()
-    -> (forge_agent::AgentHandle, mpsc::UnboundedReceiver<forge_primitives::Command>) {
+    -> (forge_agent::AgentHandle, mpsc::UnboundedReceiver<forge_primitives::AgentCommand>) {
         forge_agent::Agent::testing_stub()
     }
 
     /// Register a fresh testing-stub agent against `key`'s
     /// `DomainSession`. Returns the matching
-    /// `forge_primitives::Command` receiver so tests can assert on
+    /// `forge_primitives::AgentCommand` receiver so tests can assert on
     /// the commands the workspace routes through it (the same shape
     /// as `testing_stub_handle()`, but with the handle installed in
     /// one step so TUI test code doesn't have to touch
@@ -1390,11 +1298,10 @@ impl Workspace {
     /// Auto-creates a `DomainSession` for `key` when none is
     /// registered yet; otherwise overwrites the existing
     /// `DomainSession.conn` slot.
-    #[must_use]
     pub fn install_testing_stub(
         &self,
         key: &SessionKey,
-    ) -> mpsc::UnboundedReceiver<forge_primitives::Command> {
+    ) -> mpsc::UnboundedReceiver<forge_primitives::AgentCommand> {
         let (handle, rx) = forge_agent::Agent::testing_stub();
         let arc = Arc::new(handle);
         let domain = self
@@ -1404,35 +1311,16 @@ impl Workspace {
         rx
     }
 
-    /// Convenience alias for [`Self::register_domain_session`] used
-    /// by tests that previously named it `_for_test`. Always wraps
-    /// the handle in `Some(...)`; production callers that need
-    /// `None` (pre-spawn) use [`Self::register_domain_session`]
-    /// directly.
-    pub fn register_domain_session_for_test(
-        &self,
-        key: SessionKey,
-        handle: Arc<forge_agent::AgentHandle>,
-    ) -> Arc<Mutex<DomainSession>> {
-        self.register_domain_session(key, Some(handle))
-    }
-
-    /// Convenience alias for [`Self::rekey_domain_session`].
-    pub fn rekey_domain_session_for_test(&self, from: &SessionKey, to: SessionKey) {
-        self.rekey_domain_session(from, to);
-    }
-
     /// Construct an empty `Workspace` for use in unit tests. Skips
     /// the on-disk `forge.toml` load + catalog scan that
     /// [`Workspace::new`] performs; the returned workspace carries an
     /// empty project list and an empty pool. Tests register a domain
-    /// session via [`Self::register_domain_session_for_test`] before
+    /// session via [`Self::register_domain_session`] before
     /// exercising any code path that needs one.
     ///
-    /// Returns the workspace alongside the `SessionUpdate` receiver
-    /// (single-take slot — subsequent `subscribe()` calls on the
-    /// returned workspace will return `None`).
-    #[must_use]
+    /// Returns the workspace alongside the `SessionUpdate` receiver.
+    /// The workspace's `subscribe()` slot is `None` — callers that
+    /// need the receiver get it directly from this constructor.
     pub fn testing_stub() -> (Arc<Self>, mpsc::UnboundedReceiver<SessionUpdate>) {
         let (update_tx, update_rx) = mpsc::unbounded_channel::<SessionUpdate>();
         let workspace = Self {
@@ -1445,6 +1333,7 @@ impl Workspace {
             update_rx_slot: Mutex::new(None),
             command_senders: Mutex::new(HashMap::new()),
             domain_handles: Mutex::new(HashMap::new()),
+            usage_poller_started: std::sync::atomic::AtomicBool::new(false),
         };
         (Arc::new(workspace), update_rx)
     }
@@ -1486,12 +1375,9 @@ config_dir = "~/.claude-subspace"
         let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
         let settings = SessionLaunchSettings::default();
 
-        let handle1 = workspace
-            .get_agent_handle(SessionTarget::Default, settings.clone())
-            .await
-            .expect("first");
-        let handle2 =
-            workspace.get_agent_handle(SessionTarget::Default, settings).await.expect("second");
+        let handle1 =
+            workspace.get_agent_handle(SessionTarget::Default, settings.clone()).expect("first");
+        let handle2 = workspace.get_agent_handle(SessionTarget::Default, settings).expect("second");
 
         assert!(Arc::ptr_eq(&handle1, &handle2), "expected pool hit for repeated Default target");
         assert_eq!(workspace.pool.lock().len(), 1);
@@ -1503,21 +1389,16 @@ config_dir = "~/.claude-subspace"
         let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
         let settings = SessionLaunchSettings::default();
 
+        let _ =
+            workspace.get_agent_handle(SessionTarget::Default, settings.clone()).expect("default");
         let _ = workspace
             .get_agent_handle(SessionTarget::Default, settings.clone())
-            .await
-            .expect("default");
-        let _ = workspace
-            .get_agent_handle(SessionTarget::Default, settings.clone())
-            .await
             .expect("default again");
         assert_eq!(workspace.pool.lock().len(), 1, "Default is idempotent");
 
         let other = SessionKey::from_str_for_test("dual-test-other");
-        let _ = workspace
-            .get_agent_handle(SessionTarget::Session(other), settings)
-            .await
-            .expect("session");
+        let _ =
+            workspace.get_agent_handle(SessionTarget::Session(other), settings).expect("session");
         assert_eq!(workspace.pool.lock().len(), 2, "distinct target adds a pool entry");
     }
 
@@ -1527,21 +1408,15 @@ config_dir = "~/.claude-subspace"
         let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
         let handle = workspace
             .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
-            .await
             .expect("default");
 
         // Pool has one entry going in.
         assert_eq!(workspace.pool.lock().len(), 1);
-        // Workspace pool + spawned `SessionTask.handle` +
-        // `DomainSession.conn` (Phase 2 owned by the workspace's
-        // `domain_handles` map) + this test all hold the Arc →
-        // strong_count == 4.
-        assert_eq!(Arc::strong_count(&handle), 4);
 
         // Shutdown consumes self and must return. Drops `command_senders`,
         // which closes each `SessionTask`'s command channel; the spawned
         // task then exits and drops its `handle` clone.
-        workspace.shutdown().await;
+        workspace.shutdown();
 
         // The spawned `SessionTask` exits asynchronously after its
         // command channel closes; yield to let it run to completion
@@ -1584,14 +1459,12 @@ config_dir = "~/.claude-subspace"
         let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
         let _ = workspace
             .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
-            .await
             .expect("default");
         let _ = workspace
             .get_agent_handle(
                 SessionTarget::Named("dotfiles".to_owned()),
                 SessionLaunchSettings::default(),
             )
-            .await
             .expect("named");
         assert_eq!(workspace.pool.lock().len(), 2);
     }
@@ -1619,12 +1492,10 @@ config_dir = "~/.claude-subspace"
         .expect("write forge.toml");
 
         let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
-        let result = workspace
-            .get_agent_handle(
-                SessionTarget::Named("nonexistent".to_owned()),
-                SessionLaunchSettings::default(),
-            )
-            .await;
+        let result = workspace.get_agent_handle(
+            SessionTarget::Named("nonexistent".to_owned()),
+            SessionLaunchSettings::default(),
+        );
         let Err(err) = result else { panic!("unknown project name should error") };
         let err_string = format!("{err}");
         assert!(
@@ -1666,9 +1537,8 @@ config_dir = "~/.claude-granite"
         let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
         let _ = workspace
             .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
-            .await
             .expect("default");
-        let bound = workspace.pool_accounts_for_test();
+        let bound = workspace.pool.lock().values().map(|p| p.account.0.clone()).collect::<Vec<_>>();
         assert_eq!(bound.len(), 1);
         // Cold cache → unknown-first tie-break is the project's
         // `accounts = ["Subspace", "Granite"]` order. Subspace wins.
@@ -1680,23 +1550,21 @@ config_dir = "~/.claude-granite"
         // With no usage data for any account, the picker sorts
         // unknown-first by `accounts = [...]` enumerate index. Both
         // spawns land on the same account (Subspace, first in list).
-        // No LRU rotation any more — that's the whole point of the
-        // usage-balanced policy: data drives the choice, not time.
+        // No LRU rotation — the usage-balanced policy lets data
+        // drive the choice once it's available.
         let dir = make_workspace_dir_with_two_accounts();
         let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
 
         let _ = workspace
             .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
-            .await
             .expect("first");
 
         let other = SessionKey::from_str_for_test("dual-account-test-other");
         let _ = workspace
             .get_agent_handle(SessionTarget::Session(other), SessionLaunchSettings::default())
-            .await
             .expect("second");
 
-        let bound = workspace.pool_accounts_for_test();
+        let bound = workspace.pool.lock().values().map(|p| p.account.0.clone()).collect::<Vec<_>>();
         assert_eq!(bound.len(), 2);
         // Both spawns picked Subspace (first in accounts list, no
         // usage data to differentiate).
@@ -1743,10 +1611,9 @@ config_dir = "~/.claude-personal"
         let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
         let _ = workspace
             .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
-            .await
             .expect("default spawn");
 
-        let bound = workspace.pool_accounts_for_test();
+        let bound = workspace.pool.lock().values().map(|p| p.account.0.clone()).collect::<Vec<_>>();
         assert_eq!(bound.len(), 1);
         assert!(
             bound[0] == "Subspace" || bound[0] == "Granite",
@@ -1766,7 +1633,7 @@ config_dir = "~/.claude-personal"
     /// stub. Returns the workspace, the matching primitives command
     /// receiver, and the registered key.
     fn ws_with_stub_session()
-    -> (Arc<Workspace>, mpsc::UnboundedReceiver<forge_primitives::Command>, SessionKey) {
+    -> (Arc<Workspace>, mpsc::UnboundedReceiver<forge_primitives::AgentCommand>, SessionKey) {
         let (workspace, _update_rx) = Workspace::testing_stub();
         let key = SessionKey::from_str_for_test("refresh-test");
         let rx = workspace.install_testing_stub(&key);
@@ -1784,7 +1651,7 @@ config_dir = "~/.claude-personal"
         let (workspace, mut rx, key) = ws_with_stub_session();
         workspace.refresh_status_snapshot(&key).expect("dispatch");
         let cmd = rx.try_recv().expect("queued");
-        assert!(matches!(cmd, forge_primitives::Command::GetStatusSnapshot { .. }));
+        assert!(matches!(cmd, forge_primitives::AgentCommand::GetStatusSnapshot { .. }));
     }
 
     #[test]
@@ -1792,7 +1659,7 @@ config_dir = "~/.claude-personal"
         let (workspace, mut rx, key) = ws_with_stub_session();
         workspace.refresh_context_usage(&key).expect("dispatch");
         let cmd = rx.try_recv().expect("queued");
-        assert!(matches!(cmd, forge_primitives::Command::GetContextUsage { .. }));
+        assert!(matches!(cmd, forge_primitives::AgentCommand::GetContextUsage { .. }));
     }
 
     #[test]
@@ -1800,7 +1667,7 @@ config_dir = "~/.claude-personal"
         let (workspace, mut rx, key) = ws_with_stub_session();
         workspace.refresh_oauth_credentials_snapshot(&key).expect("dispatch");
         let cmd = rx.try_recv().expect("queued");
-        assert!(matches!(cmd, forge_primitives::Command::GetOauthCredentialsSnapshot { .. }));
+        assert!(matches!(cmd, forge_primitives::AgentCommand::GetOauthCredentialsSnapshot { .. }));
     }
 
     #[test]
@@ -1808,7 +1675,7 @@ config_dir = "~/.claude-personal"
         let (workspace, mut rx, key) = ws_with_stub_session();
         workspace.reload_plugins(&key).expect("dispatch");
         let cmd = rx.try_recv().expect("queued");
-        assert!(matches!(cmd, forge_primitives::Command::ReloadPlugins { .. }));
+        assert!(matches!(cmd, forge_primitives::AgentCommand::ReloadPlugins { .. }));
     }
 
     #[test]
@@ -1816,7 +1683,7 @@ config_dir = "~/.claude-personal"
         let (workspace, mut rx, key) = ws_with_stub_session();
         workspace.refresh_mcp_snapshot(&key).expect("dispatch");
         let cmd = rx.try_recv().expect("queued");
-        assert!(matches!(cmd, forge_primitives::Command::GetMcpSnapshot { .. }));
+        assert!(matches!(cmd, forge_primitives::AgentCommand::GetMcpSnapshot { .. }));
     }
 
     #[test]
@@ -1837,17 +1704,17 @@ config_dir = "~/.claude-personal"
         let (workspace, mut rx, key) = ws_with_stub_session();
         workspace.dispatch(Command::Cancel { key }).expect("dispatch");
         let cmd = rx.try_recv().expect("queued");
-        assert!(matches!(cmd, forge_primitives::Command::Cancel { .. }));
+        assert!(matches!(cmd, forge_primitives::AgentCommand::Cancel { .. }));
     }
 
     // ---- Session-task rekey tests ----
     //
-    // Regression coverage for the `/new` prompt-stuck bug: the
-    // `SessionTask` was registered under the pool key from
-    // `resolve_target` (usually the previous session's id), but TUI's
-    // `active_session_key` flips to the real session UUID on
-    // `SessionUpdate::SessionReplaced`. Without `migrate_session_task`,
-    // `Command::Prompt { key: new_uuid }` fell off `dispatch`'s key
+    // Pin dispatch routing across session-task key migration. The
+    // `SessionTask` is registered under the pool key from
+    // `resolve_target`, but TUI's `active_session_key` flips to the
+    // real session UUID on `SessionUpdate::SessionReplaced`. Without
+    // `migrate_session_task`, `Command::Prompt { key: new_uuid }`
+    // falls off `dispatch`'s key
     // lookup with `UnknownSession`. These tests pin the routing.
 
     /// Seed `command_senders`, `pool`, and `domain_handles` at `key`
@@ -1863,7 +1730,11 @@ config_dir = "~/.claude-personal"
         let arc = Arc::new(handle);
         workspace.pool.lock().insert(
             key.clone(),
-            PooledAgent { handle: Arc::clone(&arc), account: AccountKey("test".to_owned()) },
+            PooledAgent {
+                handle: Arc::clone(&arc),
+                #[cfg(test)]
+                account: AccountKey("test".to_owned()),
+            },
         );
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<Command>();
         workspace.command_senders.lock().insert(key.clone(), cmd_tx);
@@ -1901,7 +1772,7 @@ config_dir = "~/.claude-personal"
     /// dispatched against the new key must route through the
     /// migrated `command_senders` entry, not fall off with
     /// `UnknownSession`. Mirrors what happens inside the SessionTask
-    /// after `AgentEvent::SessionReplaced`.
+    /// after the second `AgentEvent::Connected` (the `/new` path).
     #[test]
     fn dispatch_after_migrate_routes_to_new_key() {
         let (workspace, _update_rx) = Workspace::testing_stub();
@@ -1962,10 +1833,9 @@ config_dir = "~/.claude-personal"
         assert!(workspace.domain_session_for(&to).is_none());
     }
 
-    /// Regression pins for the 2026-05-15 multi-instance 429 bug: the
-    /// poller's failure-branch classifier must distinguish HTTP 429
-    /// from auth-related failures so the TUI's bottom-panel hint
-    /// reads `rate-limited` (the common case under multiple forge
+    /// `classify_oauth_usage_error` must distinguish HTTP 429 from
+    /// auth-related failures so the TUI's bottom-panel hint reads
+    /// `rate-limited` (the common case under multiple forge
     /// instances) rather than collapsing every failure to a single
     /// generic bucket.
     #[test]

@@ -24,15 +24,12 @@ pub struct MessageId(pub String);
 macro_rules! id_impls {
     ($name:ident) => {
         impl $name {
-            #[must_use]
             pub fn new(s: impl Into<String>) -> Self {
                 Self(s.into())
             }
-            #[must_use]
             pub fn as_str(&self) -> &str {
                 &self.0
             }
-            #[must_use]
             pub fn into_string(self) -> String {
                 self.0
             }

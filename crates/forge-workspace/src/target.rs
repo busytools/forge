@@ -1,20 +1,10 @@
 //! Identifiers + the `SessionTarget` enum used to address sessions.
 
-/// Newtype around the SDK's session id (a UUID string).
-#[derive(Clone, Debug, Hash, Eq, PartialEq)]
-pub struct SessionKey(pub(crate) String);
-
-impl SessionKey {
-    pub(crate) fn new(id: impl Into<String>) -> Self {
-        Self(id.into())
-    }
-
-    /// Borrow the inner id as a `&str`.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
+// `SessionKey` lives in forge-primitives so the same routing key
+// flows through the TUI → workspace → agent layers without each crate
+// growing its own near-identical newtype. Re-exported here so call
+// sites continue to import via `forge_workspace::SessionKey`.
+pub use forge_primitives::SessionKey;
 
 /// Project root path key — the canonicalised, sanitised string form
 /// produced by
@@ -29,7 +19,6 @@ impl ProjectKey {
         Self(key.into())
     }
 
-    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -39,7 +28,6 @@ impl ProjectKey {
     /// Cargo feature so the production constructor stays
     /// crate-private.
     #[cfg(feature = "test-helpers")]
-    #[must_use]
     pub fn new_for_test(key: impl Into<String>) -> Self {
         Self(key.into())
     }
@@ -55,30 +43,7 @@ pub enum SessionTarget {
     /// string in `forge.toml`. Errors with `ProjectNotFound` if no
     /// such name exists.
     Named(String),
-    /// A specific session by id. forge-tui doesn't construct this
-    /// in 1a (no resume CLI); it exists for the dual-session test
-    /// suite and Phase 2's click-to-switch flow.
+    /// A specific session by id. Used by the click-to-resume flow
+    /// in the Projects pane and by `Workspace::spawn_session`.
     Session(SessionKey),
-}
-
-impl SessionKey {
-    /// Construct a `SessionKey` from a literal string. Test-only;
-    /// `#[doc(hidden)] pub` rather than `#[cfg(test)]` so integration
-    /// tests in sibling crates' `tests/` directories can reach it
-    /// (Rust's `#[cfg(test)]` items aren't visible across crate
-    /// boundaries).
-    #[doc(hidden)]
-    #[must_use]
-    pub fn from_str_for_test(s: &str) -> Self {
-        Self(s.to_owned())
-    }
-
-    /// Construct a `SessionKey` from a claude-issued session UUID.
-    /// Production-side constructor used by forge-tui's event
-    /// multiplexer to tag incoming events with the bound session's
-    /// key.
-    #[must_use]
-    pub fn from_session_id(id: impl Into<String>) -> Self {
-        Self(id.into())
-    }
 }

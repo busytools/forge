@@ -10,7 +10,7 @@
 //! horizontally regardless of terminal width. No tier-specific
 //! variants.
 
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use forge_primitives::SessionLifecycleState;
 use forge_workspace::{ProjectView, SessionKey, SpinnerStyle};
@@ -151,10 +151,7 @@ fn build_picker_rows(app: &App) -> Vec<PickerRow> {
 /// 2. Catalog session UUIDs — the lead recorded on disk, if pooled.
 /// 3. `cwd_raw` match — covers the post-KeyRenamed window when the
 ///    synthetic has migrated to the real session UUID but the
-///    catalog scan hasn't refreshed yet. The pre-connect bucket
-///    cannot collide here: its `cwd_raw` is sourced from
-///    `forge.toml` (or empty in launchpad mode), not
-///    `std::env::current_dir()` — see `connect::create_app`.
+///    catalog scan hasn't refreshed yet.
 fn find_live_bucket<'app>(
     app: &'app App,
     project: &ProjectView,
@@ -195,23 +192,7 @@ fn format_activity(
     }
 }
 
-fn format_relative_time(activity: SystemTime, now: SystemTime) -> String {
-    let elapsed = now.duration_since(activity).unwrap_or(Duration::ZERO);
-    let secs = elapsed.as_secs();
-    if secs < 60 {
-        return "now".to_owned();
-    }
-    if secs < 3600 {
-        return format!("{}m", secs / 60);
-    }
-    if secs < 86_400 {
-        return format!("{}h", secs / 3600);
-    }
-    if secs < 604_800 {
-        return format!("{}d", secs / 86_400);
-    }
-    format!("{}w", (secs / 604_800).min(99))
-}
+use super::format::relative_time as format_relative_time;
 
 /// Render the launchpad view. Owns the full frame area; both side
 /// panes are hidden upstream when `app.active_view == Launchpad`.
@@ -652,10 +633,7 @@ fn switch_to_project_and_focus(app: &mut App, project_name: &str) {
     }
 
     // Running bucket match by cwd — matches an auto_start project
-    // whose session UUID has already arrived via KeyRenamed. The
-    // pre-connect bucket cannot collide because its `cwd_raw` is
-    // sourced from `forge.toml` (or empty in launchpad mode), not
-    // `std::env::current_dir()` — see `connect::create_app`.
+    // whose session UUID has already arrived via KeyRenamed.
     let path_str = project_path.to_string_lossy();
     if let Some(key) = app.find_running_bucket_for_path(path_str.as_ref()) {
         app.switch_active_session(key);
@@ -746,6 +724,7 @@ fn retry_project(app: &mut App, project_name: &str) {
 mod tests {
     use super::*;
     use crate::app::App;
+    use std::time::Duration;
 
     #[test]
     fn truncate_keeps_short_strings() {

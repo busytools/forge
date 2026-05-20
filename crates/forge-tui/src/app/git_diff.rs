@@ -86,7 +86,6 @@ impl Drop for ScanInFlightGuard {
 /// - The session's `scan_in_flight` guard is already set (a
 ///   previous scan hasn't completed; let it win).
 pub fn request_refresh(
-    workspace: Arc<forge_workspace::Workspace>,
     tx: std_mpsc::Sender<GitDiffEvent>,
     key: SessionKey,
     cwd: std::path::PathBuf,
@@ -120,13 +119,13 @@ pub fn request_refresh(
 
     let guard = ScanInFlightGuard(scan_in_flight);
     tokio::task::spawn_local(async move {
-        // `_guard` resets the in-flight flag on task exit — normal
-        // completion, panic, or runtime abort. Moved into the task
+        // `_guard` resets the in-flight flag on task exit (normal
+        // completion, panic, or runtime abort). Moved into the task
         // so its lifetime brackets the await.
         let _guard = guard;
-        let snapshot = workspace.scan_git_diff(&cwd, prev_snapshot.as_ref()).await;
+        let snapshot = forge_workspace::env::git_diff::scan(&cwd, prev_snapshot.as_ref()).await;
         // Best-effort send; the receiver going away (app shutdown)
-        // is fine — drop the result.
+        // is fine, drop the result.
         let _ = tx.send(GitDiffEvent::SnapshotReady { key, generation, snapshot });
     });
 }
@@ -229,11 +228,7 @@ fn apply_timer_tick(app: &mut App) {
     // PR info when the branch hasn't changed. The session keeps its
     // own copy for render until the new snapshot lands.
     let prev_snapshot = session.git_diff_snapshot.clone();
-    let Some(workspace) = app.workspace.as_ref().map(Arc::clone) else {
-        return;
-    };
     request_refresh(
-        workspace,
         app.git_diff_event_tx.clone(),
         active_key,
         cwd,
@@ -354,19 +349,17 @@ mod tests {
         assert!(!app.needs_redraw);
     }
 
-    /// `request_refresh` early-returns when an empty cwd is passed —
-    /// guards against the synthetic `__spawn_<name>__` bucket whose
-    /// `cwd_raw` is empty until Connected fires.
+    /// `request_refresh` early-returns when an empty cwd is passed
+    /// (guards against the synthetic `__spawn_<name>__` bucket whose
+    /// `cwd_raw` is empty until Connected fires).
     #[test]
     fn request_refresh_skips_when_cwd_empty() {
         // No tokio runtime needed: we only exercise the synchronous
         // early-return path.
         let scan_in_flight = Arc::new(AtomicBool::new(false));
         let (tx, rx) = std_mpsc::channel();
-        let (workspace, _update_rx) = forge_workspace::Workspace::testing_stub();
 
         request_refresh(
-            workspace,
             tx,
             forge_workspace::SessionKey::from_str_for_test("project-a"),
             std::path::PathBuf::new(), // empty
@@ -375,22 +368,20 @@ mod tests {
             None,
         );
 
-        // No event spawned → guard untouched, channel empty.
+        // No event spawned, guard untouched, channel empty.
         assert!(!scan_in_flight.load(Ordering::Acquire));
         assert!(rx.try_recv().is_err());
     }
 
     /// `request_refresh` early-returns when the in-flight guard is
-    /// already set — a previous scan is racing to completion and we
-    /// let it win. The CAS observation is the test surface.
+    /// already set (a previous scan is racing to completion and we
+    /// let it win). The CAS observation is the test surface.
     #[test]
     fn request_refresh_skips_when_already_in_flight() {
         let scan_in_flight = Arc::new(AtomicBool::new(true)); // pre-set
         let (tx, rx) = std_mpsc::channel();
-        let (workspace, _update_rx) = forge_workspace::Workspace::testing_stub();
 
         request_refresh(
-            workspace,
             tx,
             forge_workspace::SessionKey::from_str_for_test("project-a"),
             std::path::PathBuf::from("/tmp/some-cwd"),

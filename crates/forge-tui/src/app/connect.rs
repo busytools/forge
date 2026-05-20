@@ -1,12 +1,7 @@
-//! App creation and connection startup.
-//!
-//! After Phase 4 of the MVVM refactor the boundary is locked:
-//! TUI subscribes to `Workspace::subscribe()` once and reads
-//! [`forge_workspace::SessionUpdate`] envelopes directly (no
-//! `ClientEvent::WorkspaceUpdate` wrapper). User actions flow
-//! out via [`forge_workspace::Workspace::dispatch`] with
-//! [`forge_workspace::Command::Spawn*`] / `StartDefault` for App-
-//! level kicks and per-session commands otherwise.
+//! App creation and connection startup. User actions flow out via
+//! [`forge_workspace::Workspace::dispatch`] with
+//! [`forge_workspace::Command::Spawn*`] / `StartDefault` for
+//! App-level kicks and per-session commands otherwise.
 
 mod session_start;
 pub(crate) mod type_converters;
@@ -14,8 +9,7 @@ pub(crate) mod type_converters;
 use super::config::ConfigState;
 use super::dialog::DialogState;
 use super::plugins::PluginsState;
-use super::state::{RenderCacheBudget, SessionPickerState};
-use super::trust;
+use super::state::RenderCacheBudget;
 use super::view::ActiveView;
 use super::{App, AppStatus, FocusManager, HelpView};
 use crate::Cli;
@@ -57,18 +51,10 @@ pub(crate) fn session_launch_settings_for_resume(
     )
 }
 
-/// Create the `App` struct in `Connecting` state and load shared settings state.
-///
-/// `cwd_raw` / `cwd` source — `forge.toml` is the single source of
-/// truth for project paths. `std::env::current_dir()` is intentionally
-/// NOT consulted: when forge is launched from inside a project's
-/// directory, using `current_dir()` as the pre-Connect bucket's
-/// `cwd_raw` makes it collide with that project's `path` in
-/// `forge.toml`, and every `cwd_raw`-keyed lookup (`find_live_bucket`,
-/// `find_running_bucket_for_path`, …) becomes a non-deterministic
-/// `HashMap` walk. The right answer is to source the seed from
-/// `forge.toml` when we know which project (chat-direct mode) and
-/// leave it empty otherwise (launchpad mode — no project picked yet).
+/// Create the `App` struct in `Connecting` state and load shared
+/// settings state. `cwd_raw` is sourced from `forge.toml` (per
+/// Hard Rule #15) — chat-direct mode picks up `project.path`,
+/// launchpad mode leaves it empty.
 pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App {
     // Resolve the pre-Connect seed cwd from `forge.toml`:
     //
@@ -92,7 +78,7 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
     let (diff_overlay_event_tx, diff_overlay_event_rx) = std::sync::mpsc::channel();
     let (process_scan_event_tx, process_scan_event_rx) = std::sync::mpsc::channel();
     crate::app::git_diff::spawn_periodic_timer(git_diff_event_tx.clone());
-    crate::app::cli_version::spawn_fetch(Arc::clone(&workspace), cli_version_event_tx.clone());
+    crate::app::cli_version::spawn_fetch(cli_version_event_tx.clone());
     crate::app::process_scanner::spawn_ticker(process_scan_event_tx.clone());
     // Kick off the workspace's 30s account-usage poller. Fetches OAuth
     // usage for every [[accounts]] entry; results land in the
@@ -109,14 +95,13 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
                 outcome = "failure",
                 telemetry_channel = "perf_sidecar",
                 perf_schema = "forge-perf/v1",
-                perf_append = cli.perf_append,
                 error = %err,
             );
             None
         }
     };
     let perf = perf_path.as_deref().and_then(|path| {
-        let logger = crate::perf::PerfLogger::open(path, cli.perf_append);
+        let logger = crate::perf::PerfLogger::open(path);
         if logger.is_some() {
             tracing::info!(
                 target: crate::logging::targets::APP_PERF,
@@ -125,8 +110,7 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
                 outcome = "success",
                 telemetry_channel = "perf_sidecar",
                 perf_schema = "forge-perf/v1",
-                perf_log = %path.display(),
-                perf_append = cli.perf_append,
+                perf_log = %path.display()
             );
         } else {
             tracing::warn!(
@@ -136,8 +120,7 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
                 outcome = "failure",
                 telemetry_channel = "perf_sidecar",
                 perf_schema = "forge-perf/v1",
-                perf_log = %path.display(),
-                perf_append = cli.perf_append,
+                perf_log = %path.display()
             );
         }
         logger
@@ -198,13 +181,11 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
     let mut app = App {
         active_view,
         config: ConfigState::default(),
-        trust: trust::TrustState::default(),
         settings_home_override: None,
         status: AppStatus::Connecting,
         should_quit: false,
         exit_error: None,
         workspace: Some(workspace),
-        workspace_update_count: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         #[rustfmt::skip] #[cfg(feature = "testing")] test_dispatched_permission_outcomes: std::cell::RefCell::new(Vec::new()),
         #[rustfmt::skip] #[cfg(feature = "testing")] test_dispatched_question_outcomes: std::cell::RefCell::new(Vec::new()),
         sessions,
@@ -231,6 +212,7 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
         spinner_last_advance_at: None,
         tools_collapsed: true,
         projects_pane_visible,
+        projects_pane_scroll_offset: 0,
         projects_pane_overlay_open: false,
         inspector_pane_visible,
         inspector_pane_overlay_open: false,
@@ -239,7 +221,6 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
         force_redraw: false,
         focus: FocusManager::default(),
         plugins: PluginsState::default(),
-        session_picker: SessionPickerState::default(),
         launchpad: initial_launchpad_state,
         diff_overlay: None,
         cached_frame_area: ratatui::layout::Rect::new(0, 0, 0, 0),
@@ -249,6 +230,7 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
         rendered_input_lines: Vec::new(),
         rendered_input_area: ratatui::layout::Rect::new(0, 0, 0, 0),
         rendered_inspector_body_area: ratatui::layout::Rect::new(0, 0, 0, 0),
+        rendered_projects_pane_body_area: ratatui::layout::Rect::new(0, 0, 0, 0),
         paste_burst: super::paste_burst::PasteBurstDetector::new(),
         needs_redraw: true,
         notifications: super::notify::NotificationManager::new(),
@@ -256,15 +238,10 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
         render_cache_budget: RenderCacheBudget::default(),
         fps_ema: None,
         last_frame_at: None,
-        startup_connection_requested: false,
         connection_started: false,
-        startup_resume_id: None,
-        startup_resume_requested: false,
-        startup_session_picker_requested: false,
-        startup_recent_sessions_loaded: false,
-        startup_session_picker_resolved: false,
         startup_project: cli.project.clone(),
         replay_in_progress: false,
+        input_draft_snapshot: None,
     };
 
     if let Err(err) = super::config::initialize_shared_state(&mut app) {
@@ -285,17 +262,15 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
     // sessions render `Account: …` from the very first frame
     // instead of a hidden line that pops in once data arrives.
     app.sync_welcome_snapshot();
-    trust::initialize(&mut app);
     super::file_index::restart(&mut app);
     app
 }
 
 /// Kick off the startup connection via the workspace command bus.
-/// Replaces the legacy `bridge_lifecycle::run_connection_task` path
-/// with a single `Command::StartDefault` dispatch — workspace owns
-/// the spawn from there.
+/// Dispatches `Command::StartDefault`; the workspace owns the
+/// spawn from there.
 pub fn start_connection(app: &mut App) {
-    if !app.startup_connection_requested || app.connection_started {
+    if app.connection_started {
         return;
     }
 
@@ -406,13 +381,10 @@ mod tests {
         Cli {
             project: project.map(str::to_owned),
             generate_completion: None,
-            enable_logs: false,
             diagnostics_preset: None,
             log_file: None,
             log_filter: None,
-            enable_perf: false,
             perf_log: None,
-            perf_append: false,
         }
     }
 
@@ -491,10 +463,8 @@ mod tests {
         let cli = cli_with(Some("forge-test"));
         let local = tokio::task::LocalSet::new();
         let app = local.run_until(async { super::create_app(&cli, Arc::new(workspace)) }).await;
-        // With argv supplied the boot view is NOT Launchpad. In a
-        // pristine tempdir the cwd is untrusted so the trust gate
-        // routes to Trusted; once accepted the user lands in Chat.
-        // The invariant the launchpad change cares about is just
+        // With argv supplied the boot view is NOT Launchpad. The
+        // invariant the launchpad change cares about is just
         // "argv supplied ⇒ never the launchpad."
         assert_ne!(app.active_view, crate::app::ActiveView::Launchpad);
     }

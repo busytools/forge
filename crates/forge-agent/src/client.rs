@@ -12,7 +12,6 @@ pub struct SessionLaunchSettings {
 }
 
 impl SessionLaunchSettings {
-    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.language.is_none()
             && self.settings.is_none()
@@ -47,19 +46,6 @@ pub enum AgentEvent {
         session_id: String,
         request: types::QuestionRequest,
     },
-    ElicitationRequest {
-        session_id: String,
-        request: types::ElicitationRequest,
-    },
-    ElicitationComplete {
-        session_id: String,
-        elicitation_id: String,
-        server_name: Option<String>,
-    },
-    McpAuthRedirect {
-        session_id: String,
-        redirect: types::McpAuthRedirect,
-    },
     McpOperationError {
         session_id: String,
         error: types::McpOperationError,
@@ -74,15 +60,6 @@ pub enum AgentEvent {
     RuntimeReloadFailed {
         session_id: String,
         message: String,
-    },
-    SessionReplaced {
-        session_id: String,
-        cwd: String,
-        current_model: types::CurrentModel,
-        #[serde(default)]
-        available_models: Vec<types::AvailableModel>,
-        mode: Option<types::ModeState>,
-        history_updates: Option<Vec<types::Message>>,
     },
     SessionsListed {
         sessions: Vec<types::SessionListEntry>,
@@ -99,6 +76,12 @@ pub enum AgentEvent {
     ContextUsage {
         session_id: String,
         percentage: Option<u8>,
+        /// Raw model context-window size in tokens (e.g. 200_000 for
+        /// Sonnet's default cap, 1_000_000 for the 1M-context variant).
+        /// `None` when the upstream probe hasn't reported it yet.
+        /// Sourced from `ContextUsageResponse.raw_max_tokens`.
+        #[serde(default)]
+        max_tokens: Option<u64>,
     },
     McpSnapshot {
         session_id: String,
@@ -144,88 +127,6 @@ pub enum AgentEvent {
         /// `"code-reviewer"`).
         agent_type: Option<String>,
     },
-}
-
-impl AgentEvent {
-    #[must_use]
-    pub fn event_name(&self) -> &'static str {
-        match self {
-            Self::Connected { .. } => "connected",
-            Self::AuthRequired { .. } => "auth_required",
-            Self::ConnectionFailed { .. } => "connection_failed",
-            Self::PermissionRequest { .. } => "permission_request",
-            Self::QuestionRequest { .. } => "question_request",
-            Self::ElicitationRequest { .. } => "elicitation_request",
-            Self::ElicitationComplete { .. } => "elicitation_complete",
-            Self::McpAuthRedirect { .. } => "mcp_auth_redirect",
-            Self::McpOperationError { .. } => "mcp_operation_error",
-            Self::SlashError { .. } => "slash_error",
-            Self::RuntimeReloadCompleted { .. } => "runtime_reload_completed",
-            Self::RuntimeReloadFailed { .. } => "runtime_reload_failed",
-            Self::SessionReplaced { .. } => "session_replaced",
-            Self::SessionsListed { .. } => "sessions_listed",
-            Self::StatusSnapshot { .. } => "status_snapshot",
-            Self::OauthCredentialsSnapshot { .. } => "oauth_credentials_snapshot",
-            Self::ContextUsage { .. } => "context_usage",
-            Self::McpSnapshot { .. } => "mcp_snapshot",
-            Self::SdkMessage { .. } => "sdk_message",
-            Self::HookObservation { .. } => "hook_observation",
-        }
-    }
-
-    #[must_use]
-    pub fn session_id(&self) -> Option<&str> {
-        match self {
-            Self::Connected { session_id, .. }
-            | Self::PermissionRequest { session_id, .. }
-            | Self::QuestionRequest { session_id, .. }
-            | Self::ElicitationRequest { session_id, .. }
-            | Self::ElicitationComplete { session_id, .. }
-            | Self::McpAuthRedirect { session_id, .. }
-            | Self::McpOperationError { session_id, .. }
-            | Self::SlashError { session_id, .. }
-            | Self::RuntimeReloadCompleted { session_id, .. }
-            | Self::RuntimeReloadFailed { session_id, .. }
-            | Self::SessionReplaced { session_id, .. }
-            | Self::StatusSnapshot { session_id, .. }
-            | Self::OauthCredentialsSnapshot { session_id, .. }
-            | Self::ContextUsage { session_id, .. }
-            | Self::McpSnapshot { session_id, .. }
-            | Self::SdkMessage { session_id, .. }
-            | Self::HookObservation { session_id, .. } => Some(session_id.as_str()),
-            Self::AuthRequired { .. }
-            | Self::ConnectionFailed { .. }
-            | Self::SessionsListed { .. } => None,
-        }
-    }
-
-    #[must_use]
-    pub fn tool_call_id(&self) -> Option<&str> {
-        match self {
-            Self::PermissionRequest { request, .. } => {
-                Some(request.tool_call.tool_call_id.as_str())
-            }
-            Self::QuestionRequest { request, .. } => Some(request.tool_call.tool_call_id.as_str()),
-            Self::HookObservation { tool_use_id, .. } => tool_use_id.as_deref(),
-            Self::Connected { .. }
-            | Self::AuthRequired { .. }
-            | Self::ConnectionFailed { .. }
-            | Self::ElicitationRequest { .. }
-            | Self::ElicitationComplete { .. }
-            | Self::McpAuthRedirect { .. }
-            | Self::McpOperationError { .. }
-            | Self::SlashError { .. }
-            | Self::RuntimeReloadCompleted { .. }
-            | Self::RuntimeReloadFailed { .. }
-            | Self::SessionReplaced { .. }
-            | Self::SessionsListed { .. }
-            | Self::StatusSnapshot { .. }
-            | Self::OauthCredentialsSnapshot { .. }
-            | Self::ContextUsage { .. }
-            | Self::McpSnapshot { .. }
-            | Self::SdkMessage { .. } => None,
-        }
-    }
 }
 
 #[cfg(test)]

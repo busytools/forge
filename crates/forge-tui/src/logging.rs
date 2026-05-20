@@ -53,11 +53,10 @@ impl LoggingRuntime {
         let directives = build_filter_directives(cli);
         let filter = tracing_subscriber::EnvFilter::try_new(directives.as_str())
             .map_err(|e| anyhow::anyhow!("invalid tracing filter `{directives}`: {e}"))?;
-        // Always append: a forge restart immediately after a bug
-        // means the launchpad-mode events that produced the bug were
-        // previously overwritten by the chat-direct restart, making
-        // post-hoc diagnosis impossible. With rotation capped at
-        // 10 MB × 5 files (~50 MB total), the on-disk cost is bounded.
+        // Always append so a restart immediately after a bug
+        // doesn't overwrite the events that produced it. Rotation
+        // capped at 10 MB × 5 files (~50 MB total) bounds the
+        // on-disk cost.
         let writer = RollingFileWriter::new(
             &log_path.path,
             true,
@@ -95,7 +94,6 @@ impl LoggingRuntime {
     }
 }
 
-#[must_use]
 pub fn bridge_diagnostics_enabled() -> bool {
     BRIDGE_DIAGNOSTICS_ENABLED.load(Ordering::Relaxed)
 }
@@ -158,12 +156,8 @@ fn resolve_log_path(cli: &Cli) -> anyhow::Result<Option<ResolvedLogPath>> {
     }
     // Logging on by default. Forge is personal-use and the rolling
     // writer caps disk at ~50MB (5 × 10MB), so we can afford
-    // always-on diagnostics. Users who explicitly want forge silent
-    // can set `RUST_LOG=off`. The `_cli` arg stays in the signature
-    // for compatibility with the explicit-opt-in flags
-    // (`--enable-logs`, `--diagnostics-preset`, …) — they're now
-    // redundant but kept so existing wrappers don't break.
-    let _ = cli;
+    // always-on diagnostics. Users who want forge silent can set
+    // `RUST_LOG=off`.
     let path = default_log_path()?;
     Ok(Some(ResolvedLogPath { path, source: LogPathSource::Default }))
 }
@@ -177,34 +171,13 @@ pub fn resolve_perf_path(cli: &Cli) -> anyhow::Result<Option<PathBuf>> {
     if let Some(path) = cli.perf_log.clone() {
         return Ok(Some(path));
     }
-    if !perf_enabled_without_explicit_path(cli) {
+    // With `--features perf` compiled in (the default for production
+    // builds via dotfiles' install-forge.sh), produce a perf log at
+    // the standard sidecar path. Without the feature, stay silent.
+    if !cfg!(feature = "perf") {
         return Ok(None);
     }
     Ok(Some(default_diagnostics_dir()?.join(DEFAULT_PERF_FILE_NAME)))
-}
-
-/// Whether to log perf telemetry to the default sidecar path when no
-/// explicit `--perf-log` was passed.
-///
-/// With `--features perf` compiled in (the default for production
-/// builds via dotfiles' install-forge.sh), this returns `true`
-/// unconditionally so bare `forge` invocations already produce a
-/// perf log at the standard sidecar path. Without the feature, the
-/// function falls back to the CLI flags so a non-perf binary stays
-/// silent unless explicitly asked.
-///
-/// The runtime cost of "log on" with no slow frames is negligible
-/// after the `write_entry` fast-path reorder — Timer drops only
-/// pay an `Instant::elapsed` + one thread-local borrow when the
-/// LOG_FILE is None vs the typical case where they serialise.
-#[cfg(feature = "perf")]
-fn perf_enabled_without_explicit_path(_cli: &Cli) -> bool {
-    true
-}
-
-#[cfg(not(feature = "perf"))]
-fn perf_enabled_without_explicit_path(cli: &Cli) -> bool {
-    cli.enable_perf || cli.perf_append
 }
 
 fn default_diagnostics_dir() -> anyhow::Result<PathBuf> {
@@ -580,13 +553,10 @@ mod tests {
         let cli = Cli {
             project: None,
             generate_completion: None,
-            enable_logs: false,
             diagnostics_preset: None,
             log_file: Some(PathBuf::from("custom.log")),
             log_filter: None,
-            enable_perf: false,
             perf_log: None,
-            perf_append: false,
         };
 
         let resolved = resolve_log_path(&cli).expect("resolve succeeds").expect("path exists");
@@ -602,13 +572,10 @@ mod tests {
         let cli = Cli {
             project: None,
             generate_completion: None,
-            enable_logs: false,
             diagnostics_preset: None,
             log_file: None,
             log_filter: None,
-            enable_perf: false,
             perf_log: None,
-            perf_append: false,
         };
 
         let resolved = resolve_log_path(&cli).expect("resolve succeeds").expect("path exists");
@@ -638,13 +605,10 @@ mod tests {
         let cli = Cli {
             project: None,
             generate_completion: None,
-            enable_logs: false,
             diagnostics_preset: None,
             log_file: None,
             log_filter: Some("app.render=trace".to_owned()),
-            enable_perf: false,
             perf_log: None,
-            perf_append: false,
         };
 
         let resolved = resolve_log_path(&cli).expect("resolve succeeds").expect("path exists");
@@ -654,17 +618,14 @@ mod tests {
     }
 
     #[test]
-    fn resolve_log_path_uses_default_when_enable_logs_is_set() {
+    fn resolve_log_path_uses_default_when_no_log_file() {
         let cli = Cli {
             project: None,
             generate_completion: None,
-            enable_logs: true,
             diagnostics_preset: None,
             log_file: None,
             log_filter: None,
-            enable_perf: false,
             perf_log: None,
-            perf_append: false,
         };
 
         let resolved = resolve_log_path(&cli).expect("resolve succeeds").expect("path exists");
@@ -676,13 +637,10 @@ mod tests {
         let cli = Cli {
             project: None,
             generate_completion: None,
-            enable_logs: false,
             diagnostics_preset: Some(DiagnosticsPreset::Session),
             log_file: None,
             log_filter: None,
-            enable_perf: false,
             perf_log: None,
-            perf_append: false,
         };
 
         let resolved = resolve_log_path(&cli).expect("resolve succeeds").expect("path exists");
@@ -690,22 +648,36 @@ mod tests {
     }
 
     #[test]
-    fn resolve_perf_path_uses_default_when_enable_perf_is_set() {
+    #[cfg(feature = "perf")]
+    fn resolve_perf_path_uses_default_when_no_perf_log() {
         let cli = Cli {
             project: None,
             generate_completion: None,
-            enable_logs: false,
             diagnostics_preset: None,
             log_file: None,
             log_filter: None,
-            enable_perf: true,
             perf_log: None,
-            perf_append: false,
         };
 
         let resolved = resolve_perf_path(&cli).expect("resolve succeeds").expect("path exists");
         let path = resolved.to_string_lossy().replace('\\', "/");
         assert!(path.ends_with("forge-tui/logs/forge-perf.log"));
+    }
+
+    #[test]
+    #[cfg(not(feature = "perf"))]
+    fn resolve_perf_path_returns_none_without_perf_feature() {
+        let cli = Cli {
+            project: None,
+            generate_completion: None,
+            diagnostics_preset: None,
+            log_file: None,
+            log_filter: None,
+            perf_log: None,
+        };
+
+        let resolved = resolve_perf_path(&cli).expect("resolve succeeds");
+        assert!(resolved.is_none(), "perf feature off → no default perf path");
     }
 
     #[test]

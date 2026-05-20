@@ -161,11 +161,11 @@ pub(super) fn find_advertised_command<'a>(
 }
 
 fn is_builtin_variable_input_command(command_name: &str) -> bool {
-    matches!(command_name, "/mode" | "/model" | "/resume")
+    matches!(command_name, "/effort" | "/mode" | "/model" | "/resume")
 }
 
 pub(super) fn builtin_argument_confirmation_closes(command_name: &str, arg_index: usize) -> bool {
-    arg_index == 0 && matches!(command_name, "/mode" | "/model" | "/resume")
+    arg_index == 0 && matches!(command_name, "/effort" | "/mode" | "/model" | "/resume")
 }
 
 pub(super) fn is_variable_input_command(app: &App, command_name: &str) -> bool {
@@ -186,8 +186,7 @@ pub(super) fn supported_command_candidates(app: &App) -> Vec<SlashCandidate> {
     // full set; everything else (`/mode`, `/compact`, `/usage`, …)
     // gets filtered out because it requires a connected bucket.
     if app.active_view == crate::app::ActiveView::Launchpad {
-        let entries: [(&str, &str); 4] = [
-            ("/config", "Open settings"),
+        let entries: [(&str, &str); 3] = [
             ("/help", "Toggle help overlay"),
             ("/plugins", "Open plugins"),
             ("/quit", "Quit forge"),
@@ -202,33 +201,68 @@ pub(super) fn supported_command_candidates(app: &App) -> Vec<SlashCandidate> {
             .collect();
     }
 
-    let mut by_name: BTreeMap<String, String> = BTreeMap::new();
-    by_name.insert("/compact".into(), "Compact session context".into());
-    by_name.insert("/config".into(), "Open settings".into());
-    by_name.insert("/diff".into(), "Review changes in a full-screen diff overlay".into());
-    by_name.insert("/launchpad".into(), "Return to project picker".into());
-    by_name.insert("/mcp".into(), "Open MCP".into());
-    by_name.insert("/mode".into(), "Set session mode".into());
-    by_name.insert("/model".into(), "Set session model".into());
-    by_name.insert("/new".into(), "Start a fresh session".into());
-    by_name.insert("/resume".into(), "Resume a session by ID".into());
-    by_name.insert("/plugins".into(), "Open plugins".into());
-    by_name.insert("/status".into(), "Show session status".into());
-    by_name.insert("/usage".into(), "Open usage".into());
+    // Forge group: commands that forge handles itself (either fully
+    // implemented in-process or wrappers around upstream CLI semantics).
+    let mut forge: BTreeMap<String, String> = BTreeMap::new();
+    forge.insert("/compact".into(), "Compact session context".into());
+    forge.insert("/diff".into(), "Review changes in a full-screen diff overlay".into());
+    forge.insert("/effort".into(), "Show / set thinking effort".into());
+    forge.insert("/launchpad".into(), "Return to project picker".into());
+    forge.insert("/mcp".into(), "Open MCP".into());
+    forge.insert("/mode".into(), "Show / set session mode".into());
+    forge.insert("/model".into(), "Show / set session model".into());
+    forge.insert("/new".into(), "Start a fresh session".into());
+    forge.insert("/resume".into(), "Resume a session by ID".into());
+    forge.insert("/plugins".into(), "Open plugins".into());
 
+    // Claude group: commands advertised by the upstream claude CLI that
+    // forge doesn't have its own handler for — forwarded as-is.
+    let mut claude: BTreeMap<String, String> = BTreeMap::new();
     for cmd in app.available_commands() {
         let name = normalize_slash_name(&cmd.name);
-        by_name.entry(name).or_insert_with(|| cmd.description.clone());
+        if forge.contains_key(&name) {
+            continue;
+        }
+        claude.insert(name, cmd.description.clone());
     }
 
-    by_name
-        .into_iter()
-        .map(|(name, description)| SlashCandidate {
+    let mut out: Vec<SlashCandidate> = Vec::with_capacity(1 + forge.len() + 1 + claude.len());
+    // Empty `insert_value` flags a non-selectable group divider —
+    // the dropdown renders these as a DIM rule + label and
+    // navigation skips them.
+    if !forge.is_empty() {
+        out.push(SlashCandidate {
+            insert_value: String::new(),
+            primary: "forge".into(),
+            secondary: None,
+        });
+    }
+    out.extend(forge.into_iter().map(|(name, description)| SlashCandidate {
+        insert_value: name.clone(),
+        primary: name,
+        secondary: if description.trim().is_empty() { None } else { Some(description) },
+    }));
+    if !claude.is_empty() {
+        out.push(SlashCandidate {
+            insert_value: String::new(),
+            primary: "claude".into(),
+            secondary: None,
+        });
+        out.extend(claude.into_iter().map(|(name, description)| SlashCandidate {
             insert_value: name.clone(),
             primary: name,
             secondary: if description.trim().is_empty() { None } else { Some(description) },
-        })
-        .collect()
+        }));
+    }
+    out
+}
+
+/// `true` when the candidate is the synthetic group-divider row
+/// emitted by `supported_command_candidates`. Used to skip
+/// selection / confirmation in the slash key handler and to render
+/// the row as a DIM rule + label.
+pub(super) fn is_group_divider(candidate: &SlashCandidate) -> bool {
+    candidate.insert_value.is_empty()
 }
 
 pub(super) fn filter_command_candidates(
@@ -239,9 +273,13 @@ pub(super) fn filter_command_candidates(
         return candidates.iter().take(MAX_CANDIDATES).cloned().collect();
     }
 
+    // When the user starts typing, drop group dividers from the
+    // result — a filtered list that collapses to one group looks
+    // confusing if it still carries a header.
     let query_lower = query.to_lowercase();
     candidates
         .iter()
+        .filter(|candidate| !is_group_divider(candidate))
         .filter(|candidate| {
             let body = candidate.primary.strip_prefix('/').unwrap_or(&candidate.primary);
             body.to_lowercase().contains(&query_lower)
@@ -366,6 +404,24 @@ pub(super) fn argument_candidates(
                 secondary: model_candidate_secondary(app, model),
             })
             .collect(),
+        "/effort" => {
+            use crate::agent::model::EffortLevel;
+            const LEVELS: [EffortLevel; 5] = [
+                EffortLevel::Low,
+                EffortLevel::Medium,
+                EffortLevel::High,
+                EffortLevel::Xhigh,
+                EffortLevel::Max,
+            ];
+            LEVELS
+                .into_iter()
+                .map(|level| SlashCandidate {
+                    insert_value: level.as_stored().to_owned(),
+                    primary: level.label().to_owned(),
+                    secondary: Some(level.description().to_owned()),
+                })
+                .collect()
+        }
         _ => Vec::new(),
     }
 }
@@ -409,8 +465,8 @@ pub fn is_supported_command(app: &App, command_name: &str) -> bool {
     matches!(
         command_name,
         "/compact"
-            | "/config"
             | "/diff"
+            | "/effort"
             | "/help"
             | "/launchpad"
             | "/mcp"
@@ -420,8 +476,6 @@ pub fn is_supported_command(app: &App, command_name: &str) -> bool {
             | "/quit"
             | "/resume"
             | "/plugins"
-            | "/status"
-            | "/usage"
     ) || advertised_commands(app).iter().any(|c| c == command_name)
 }
 
@@ -436,14 +490,11 @@ mod launchpad_filter_tests {
         app.active_view = ActiveView::Launchpad;
         let candidates = supported_command_candidates(&app);
         let names: Vec<&str> = candidates.iter().map(|c| c.primary.as_str()).collect();
-        assert!(names.contains(&"/config"), "launchpad surfaces /config: {names:?}");
         assert!(names.contains(&"/help"), "launchpad surfaces /help: {names:?}");
         assert!(names.contains(&"/plugins"), "launchpad surfaces /plugins: {names:?}");
         assert!(names.contains(&"/quit"), "launchpad surfaces /quit: {names:?}");
         // Session-dependent commands are filtered out.
-        for hidden in
-            ["/mode", "/model", "/compact", "/usage", "/mcp", "/new", "/resume", "/launchpad"]
-        {
+        for hidden in ["/mode", "/model", "/compact", "/mcp", "/new", "/resume", "/launchpad"] {
             assert!(!names.contains(&hidden), "launchpad hides {hidden}: {names:?}");
         }
     }
@@ -456,6 +507,6 @@ mod launchpad_filter_tests {
         let names: Vec<&str> = candidates.iter().map(|c| c.primary.as_str()).collect();
         assert!(names.contains(&"/launchpad"), "chat surfaces /launchpad: {names:?}");
         assert!(names.contains(&"/mode"), "chat surfaces /mode: {names:?}");
-        assert!(names.contains(&"/usage"), "chat surfaces /usage: {names:?}");
+        assert!(names.contains(&"/mcp"), "chat surfaces /mcp: {names:?}");
     }
 }

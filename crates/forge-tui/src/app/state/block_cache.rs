@@ -40,7 +40,6 @@ struct CacheLineSegment {
 }
 
 impl CacheLineSegment {
-    #[must_use]
     fn new(start: usize, end: usize) -> Self {
         Self { start, end, wrapped_height: 0, wrapped_width: 0, wrapped_height_valid: false }
     }
@@ -58,7 +57,6 @@ impl BlockCache {
     }
 
     /// Get a reference to the cached lines, if fresh.
-    #[must_use]
     pub fn get(&self) -> Option<&Vec<ratatui::text::Line<'static>>> {
         if self.version == 0 && self.render_width.is_none() {
             let lines = self.lines.as_ref();
@@ -71,7 +69,6 @@ impl BlockCache {
         }
     }
 
-    #[must_use]
     pub fn get_for_width(&self, width: u16) -> Option<&Vec<ratatui::text::Line<'static>>> {
         if self.version == 0 && self.render_width == Some(width) {
             let lines = self.lines.as_ref();
@@ -145,7 +142,6 @@ impl BlockCache {
     }
 
     /// Get the cached wrapped height if cache is valid and was computed at the given width.
-    #[must_use]
     pub fn height_at(&self, width: u16) -> Option<usize> {
         if self.version == 0 && self.wrapped_height_valid && self.wrapped_width == width {
             self.touch();
@@ -192,17 +188,14 @@ impl BlockCache {
         Some(total_height)
     }
 
-    #[must_use]
     pub fn segment_count(&self) -> usize {
         self.segments.len()
     }
 
-    #[must_use]
     pub fn cached_bytes(&self) -> usize {
         self.cached_bytes
     }
 
-    #[must_use]
     pub fn last_access_tick(&self) -> u64 {
         self.last_access_tick.get()
     }

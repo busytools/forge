@@ -9,7 +9,7 @@ use super::messages::{
     ChatMessage, IncrementalMarkdown, MessageBlock, MessageRole, NoticeDedupKey, TextBlock,
     WelcomeBlock,
 };
-use super::tool_call_info::{InlinePermission, InlineQuestion, ToolCallInfo};
+use super::tool_call_info::ToolCallInfo;
 use super::types::{HistoryRetentionStats, MessageUsage};
 
 const HISTORY_HIDDEN_MARKER_PREFIX: &str = "Older messages hidden to keep memory bounded";
@@ -74,7 +74,6 @@ impl super::App {
         self.invalidate_layout(InvalidationLevel::MessagesFrom(start_idx));
     }
 
-    #[must_use]
     pub(super) fn is_history_hidden_marker_message(msg: &ChatMessage) -> bool {
         if !matches!(msg.role, MessageRole::System(_)) {
             return false;
@@ -85,26 +84,22 @@ impl super::App {
         block.text.starts_with(HISTORY_HIDDEN_MARKER_PREFIX)
     }
 
-    #[must_use]
     pub(super) fn is_history_protected_message(msg: &ChatMessage) -> bool {
         if matches!(msg.role, MessageRole::Welcome) {
             return true;
         }
         msg.blocks.iter().any(|block| {
             if let MessageBlock::ToolCall(tc) = block {
-                tc.pending_permission.is_some()
-                    || tc.pending_question.is_some()
-                    || matches!(
-                        tc.status,
-                        model::ToolCallStatus::Pending | model::ToolCallStatus::InProgress
-                    )
+                matches!(
+                    tc.status,
+                    model::ToolCallStatus::Pending | model::ToolCallStatus::InProgress
+                )
             } else {
                 false
             }
         })
     }
 
-    #[must_use]
     fn measure_tool_content_bytes(content: &model::ToolCallContent) -> usize {
         match content {
             model::ToolCallContent::Content(inner) => match &inner.content {
@@ -130,7 +125,6 @@ impl super::App {
         }
     }
 
-    #[must_use]
     fn measure_tool_call_bytes(tc: &ToolCallInfo) -> usize {
         let mut total = size_of::<ToolCallInfo>()
             .saturating_add(tc.id.capacity())
@@ -147,38 +141,6 @@ impl super::App {
         for content in &tc.content {
             total = total.saturating_add(Self::measure_tool_content_bytes(content));
         }
-        if let Some(permission) = &tc.pending_permission {
-            total = total.saturating_add(size_of::<InlinePermission>()).saturating_add(
-                permission.options.capacity().saturating_mul(size_of::<model::PermissionOption>()),
-            );
-            for option in &permission.options {
-                total = total
-                    .saturating_add(option.option_id.capacity())
-                    .saturating_add(option.name.capacity())
-                    .saturating_add(option.description.as_ref().map_or(0, String::capacity));
-            }
-        }
-        if let Some(question) = &tc.pending_question {
-            total = total
-                .saturating_add(size_of::<InlineQuestion>())
-                .saturating_add(question.prompt.question.capacity())
-                .saturating_add(question.prompt.header.capacity())
-                .saturating_add(
-                    question
-                        .prompt
-                        .options
-                        .capacity()
-                        .saturating_mul(size_of::<model::QuestionOption>()),
-                )
-                .saturating_add(question.notes.capacity());
-            for option in &question.prompt.options {
-                total = total
-                    .saturating_add(option.option_id.capacity())
-                    .saturating_add(option.label.capacity())
-                    .saturating_add(option.description.as_ref().map_or(0, String::capacity))
-                    .saturating_add(option.preview.as_ref().map_or(0, String::capacity));
-            }
-        }
 
         total
     }
@@ -187,7 +149,6 @@ impl super::App {
     ///
     /// Uses `String::capacity()` and `std::mem::size_of` for actual heap
     /// allocation sizes rather than content-length heuristics.
-    #[must_use]
     pub fn measure_message_bytes(msg: &ChatMessage) -> usize {
         let mut total = size_of::<ChatMessage>()
             .saturating_add(msg.blocks.capacity().saturating_mul(size_of::<MessageBlock>()));
@@ -238,7 +199,6 @@ impl super::App {
     }
 
     /// Measure the total in-memory byte footprint of all retained messages.
-    #[must_use]
     pub fn measure_history_bytes(&self) -> usize {
         self.messages().iter().map(Self::measure_message_bytes).sum()
     }
@@ -365,7 +325,6 @@ impl super::App {
         self.clear_terminal_tool_call_tracking();
         self.active_task_ids_mut().clear();
 
-        let mut pending_interaction_ids = Vec::new();
         let mut terminal_tool_call_membership = HashSet::new();
         let mut terminal_tool_calls = Vec::new();
         let mut new_tool_call_index: std::collections::HashMap<String, (usize, usize)> =
@@ -381,14 +340,6 @@ impl super::App {
                         if terminal_tool_call_membership.insert(entry.clone()) {
                             terminal_tool_calls.push(entry);
                         }
-                    }
-                    if let Some(permission) = tc.pending_permission.as_mut() {
-                        permission.focused = false;
-                        pending_interaction_ids.push(tc.id.clone());
-                    }
-                    if let Some(question) = tc.pending_question.as_mut() {
-                        question.focused = false;
-                        pending_interaction_ids.push(tc.id.clone());
                     }
                 }
             }
@@ -428,44 +379,15 @@ impl super::App {
             self.active_task_ids_mut().insert(id);
         }
 
-        let interaction_set: HashSet<&str> =
-            pending_interaction_ids.iter().map(String::as_str).collect();
-        self.pending_interaction_ids_mut().retain(|id| interaction_set.contains(id.as_str()));
-        for id in pending_interaction_ids {
-            if !self.pending_interaction_ids().iter().any(|existing| existing == &id) {
-                self.pending_interaction_ids_mut().push(id);
-            }
-        }
-
-        if let Some(first_id) = self.pending_interaction_ids().first().cloned() {
-            self.claim_focus_target(super::super::focus::FocusTarget::Permission);
-            if let Some((msg_idx, block_idx)) = self.lookup_tool_call(&first_id)
-                && let Some(MessageBlock::ToolCall(tc)) = self
-                    .active_messages_mut()
-                    .get_mut(msg_idx)
-                    .and_then(|m| m.blocks.get_mut(block_idx))
-            {
-                if let Some(permission) = tc.pending_permission.as_mut() {
-                    permission.focused = true;
-                }
-                if let Some(question) = tc.pending_question.as_mut() {
-                    question.focused = true;
-                }
-            }
-        } else {
-            self.release_focus_target(super::super::focus::FocusTarget::Permission);
-        }
         self.normalize_focus_stack();
     }
 
-    #[must_use]
     fn format_mib_tenths(bytes: usize) -> String {
         let tenths =
             (u128::try_from(bytes).unwrap_or(u128::MAX).saturating_mul(10) + 524_288) / 1_048_576;
         format!("{}.{}", tenths / 10, tenths % 10)
     }
 
-    #[must_use]
     fn history_hidden_marker_text(
         total_dropped_messages: usize,
         total_dropped_bytes: usize,

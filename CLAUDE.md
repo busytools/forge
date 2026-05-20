@@ -516,8 +516,16 @@ behaviour we care about.
 - **Tracing:** `tracing` crate for all structured logs. Never
   `println!` / `eprintln!` in library code (binaries can use
   `eprintln!` only when the tracing subsystem itself failed).
-- **`#[non_exhaustive]`** on public struct + enum types expected to
-  grow. Builder pattern with `#[must_use]` for configurable inputs.
+- **Attributes are rare; default to none.** `#[non_exhaustive]`,
+  `#[must_use]`, `#[allow(...)]`, `#[deprecated]`, `#[doc(hidden)]`
+  shouldn't appear unless there's a specific, documentable reason.
+  Forge is workspace-internal — compile breaks on enum/struct
+  evolution are the point, not something `#[non_exhaustive]` should
+  paper over. `#[must_use]` is for futures / locks / builders at
+  the type level (one marker, not one per setter). `#[allow(...)]`
+  on production code is dead-code or stale-lint tech debt; fix the
+  underlying issue and remove the marker. Audit on every attribute
+  you encounter: can it go?
 - **Subprocess patterns:** `tokio::process::Command` for streaming
   I/O; `cmd_lib` for fire-and-forget shell.
 - **Channels-based APIs over &mut self.** When a public type needs

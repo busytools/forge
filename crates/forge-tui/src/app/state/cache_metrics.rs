@@ -218,9 +218,6 @@ pub struct CacheMetricsSnapshot {
 ///
 /// Only called on log cadence (not every frame), so the cost of collecting
 /// fields is negligible.
-#[must_use]
-// Snapshot builder bundles 6 cache-related state slices for a frame-time observability dump. Wrapping into a struct just to call once per frame is overhead.
-#[allow(clippy::too_many_arguments)]
 pub fn build_snapshot(
     budget: &RenderCacheBudget,
     retention_stats: &HistoryRetentionStats,

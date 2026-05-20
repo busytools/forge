@@ -48,7 +48,7 @@ fn reset_session_identity_state(
     app.should_quit = false;
     app.set_files_accessed(0);
     app.set_cancelled_turn_pending_hint(false);
-    app.set_pending_cancel_origin(None);
+    app.set_pending_cancel(false);
     app.set_account_info(None);
 }
 
@@ -77,7 +77,6 @@ fn reset_input_state_for_new_session(app: &mut App) {
 }
 
 fn reset_interaction_state_for_new_session(app: &mut App) {
-    app.pending_interaction_ids_mut().clear();
     app.clear_tool_scope_tracking();
     app.active_tool_call_index_mut().clear();
     app.todos_mut().clear();
@@ -86,7 +85,6 @@ fn reset_interaction_state_for_new_session(app: &mut App) {
     app.available_commands_mut().clear();
     app.available_agents_mut().clear();
     app.config.overlay = None;
-    app.config.pending_session_title_change = None;
 }
 
 fn reset_render_state_for_new_session(app: &mut App) {
@@ -392,9 +390,9 @@ mod tests {
         app.sessions.get_mut(&key).expect("bucket").lifecycle_state = SessionLifecycleState::Idle;
 
         // A modest replay tail — multiple assistant messages, as a
-        // long-lived session would have. Pre-fix: each one flipped
-        // lifecycle to Running with no balancing Result, so the bucket
-        // ended on Running.
+        // long-lived session would have. Replay must leave the bucket
+        // at Idle, not stuck at Running, regardless of how many
+        // assistant messages the history carried.
         let history = vec![
             historical_assistant("prior turn 1"),
             historical_assistant("prior turn 2"),

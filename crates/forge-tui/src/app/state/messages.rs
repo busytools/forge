@@ -17,12 +17,10 @@ pub struct ChatMessage {
 }
 
 impl ChatMessage {
-    #[must_use]
     pub fn new(role: MessageRole, blocks: Vec<MessageBlock>, usage: Option<MessageUsage>) -> Self {
         Self { role, blocks, usage, render_cache: MessageRenderCache::default() }
     }
 
-    #[must_use]
     pub fn welcome(version: &str, subscription: &str, cwd: &str, session_id: &str) -> Self {
         Self::new(
             MessageRole::Welcome,
@@ -90,35 +88,29 @@ impl MessageRenderCache {
         self.last_access_tick.set(super::block_cache::next_cache_access_tick());
     }
 
-    #[must_use]
     pub fn matches(&self, key: &MessageRenderCacheKey) -> bool {
         self.key.as_ref() == Some(key)
     }
 
-    #[must_use]
     pub fn segments(&self) -> &[CachedMessageSegment] {
         self.touch();
         &self.segments
     }
 
-    #[must_use]
     pub fn height(&self) -> usize {
         self.touch();
         self.height
     }
 
-    #[must_use]
     pub fn wrapped_lines(&self) -> usize {
         self.touch();
         self.wrapped_lines
     }
 
-    #[must_use]
     pub fn cached_bytes(&self) -> usize {
         self.cached_bytes
     }
 
-    #[must_use]
     pub fn last_access_tick(&self) -> u64 {
         self.last_access_tick.get()
     }
@@ -158,7 +150,6 @@ impl MessageRenderCache {
 }
 
 impl CachedMessageSegment {
-    #[must_use]
     fn cached_bytes(&self) -> usize {
         match self {
             Self::Blank => 1,
@@ -167,7 +158,6 @@ impl CachedMessageSegment {
     }
 }
 
-#[must_use]
 pub fn hash_text_block_content(text: &str, trailing_spacing: TextBlockSpacing) -> u64 {
     let mut hasher = DefaultHasher::new();
     text.hash(&mut hasher);
@@ -175,7 +165,6 @@ pub fn hash_text_block_content(text: &str, trailing_spacing: TextBlockSpacing) -
     hasher.finish()
 }
 
-#[must_use]
 pub fn hash_welcome_block_content(block: &WelcomeBlock) -> u64 {
     let mut hasher = DefaultHasher::new();
     block.version.hash(&mut hasher);
@@ -234,7 +223,6 @@ pub struct IncrementalMarkdown {
 impl IncrementalMarkdown {
     /// Create from existing full text (e.g. user messages, connection errors).
     /// Treats the entire text as one block source.
-    #[must_use]
     pub fn from_complete(text: &str) -> Self {
         let mut markdown = Self::default();
         markdown.append(text);
@@ -259,13 +247,11 @@ impl IncrementalMarkdown {
     }
 
     /// Get the full source text.
-    #[must_use]
     pub fn full_text(&self) -> String {
         self.text.clone()
     }
 
     /// Allocated capacity of the internal text buffer in bytes.
-    #[must_use]
     pub fn text_capacity(&self) -> usize {
         self.text.capacity()
     }
@@ -384,7 +370,6 @@ pub enum TextBlockSpacing {
 }
 
 impl TextBlockSpacing {
-    #[must_use]
     pub fn blank_lines(self) -> usize {
         match self {
             Self::None => 0,
@@ -407,7 +392,6 @@ pub struct TextBlock {
 }
 
 impl TextBlock {
-    #[must_use]
     pub fn new(text: String) -> Self {
         Self {
             markdown: IncrementalMarkdown::from_complete(&text),
@@ -417,18 +401,15 @@ impl TextBlock {
         }
     }
 
-    #[must_use]
     pub fn from_complete(text: &str) -> Self {
         Self::new(text.to_owned())
     }
 
-    #[must_use]
     pub fn with_trailing_spacing(mut self, trailing_spacing: TextBlockSpacing) -> Self {
         self.trailing_spacing = trailing_spacing;
         self
     }
 
-    #[must_use]
     pub fn trailing_blank_lines(&self) -> usize {
         self.trailing_spacing.blank_lines()
     }
@@ -453,17 +434,14 @@ pub struct NoticeBlock {
 }
 
 impl NoticeBlock {
-    #[must_use]
     pub fn new(severity: SystemSeverity, text: String) -> Self {
         Self { severity, text: TextBlock::new(text), dedup_key: None }
     }
 
-    #[must_use]
     pub fn from_complete(severity: SystemSeverity, text: &str) -> Self {
         Self::new(severity, text.to_owned())
     }
 
-    #[must_use]
     pub fn with_dedup_key(mut self, dedup_key: NoticeDedupKey) -> Self {
         self.dedup_key = Some(dedup_key);
         self
@@ -473,7 +451,6 @@ impl NoticeBlock {
         self.text = TextBlock::from_complete(text);
     }
 
-    #[must_use]
     pub fn trailing_blank_lines(&self) -> usize {
         self.text.trailing_blank_lines()
     }
@@ -498,7 +475,6 @@ pub struct ImageAttachmentBlock {
 }
 
 impl ImageAttachmentBlock {
-    #[must_use]
     pub fn new(count: usize) -> Self {
         Self { count, cache: BlockCache::default() }
     }

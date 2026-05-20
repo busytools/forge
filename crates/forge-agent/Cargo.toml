@@ -12,16 +12,25 @@ publish = false
 [lints]
 workspace = true
 
+[features]
+# Test fixture helpers (`Agent::testing_stub`, `ForgeSdkBridge`'s
+# Default impl). Production builds never see this code; sibling
+# crates that need stub agents in their integration tests must
+# enable this feature via their own [dev-dependencies] entry.
+testing = []
+
 [dependencies]
 forge-primitives = { workspace = true }
-forge-sdk = { path = "../forge-sdk", version = "=0.15.1" }
+forge-sdk = { path = "../forge-sdk", version = "=0.16.0" }
 tokio = { workspace = true, features = ["full"] }
+futures = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 hex = { workspace = true }
+ignore = { workspace = true }
 notify = { workspace = true }
 parking_lot = { workspace = true }
 reqwest = { workspace = true }
@@ -29,7 +38,7 @@ sha2 = { workspace = true }
 time = { workspace = true }
 unicode-normalization = { workspace = true }
 uuid = { workspace = true }
-which = "8.0.2"
+which = { workspace = true }
 sysinfo = { workspace = true }
 
 [dev-dependencies]

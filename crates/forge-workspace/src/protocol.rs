@@ -2,11 +2,28 @@
 //! forge-workspace. TUI dispatches Commands; workspace per-session
 //! tasks emit SessionUpdates back via a fan-in channel.
 //!
-//! Wire shapes are FINAL as of Phase 1 of the MVVM refactor (#102).
-//! Phases 3a-d migrate emitters/consumers but the variant shapes
-//! themselves don't change.
+//! ## Dual Command shape (deliberate)
+//!
+//! Two `Command` enums exist in the workspace: this one, keyed by
+//! [`SessionKey`], and [`forge_primitives::AgentCommand`], keyed by
+//! `session_id: String`. They overlap on variant names (Prompt,
+//! Cancel, SetMode, …) but serve different boundary layers:
+//!
+//! - **`forge_workspace::protocol::Command`** is the TUI ↔ workspace
+//!   envelope. SessionKey routing, App-level variants
+//!   (SpawnProject / SpawnSession / StartDefault), the
+//!   workspace-internal Respond* + MCP cluster.
+//! - **`forge_primitives::AgentCommand`** is the workspace ↔ agent
+//!   envelope. session_id-keyed, raw shapes the AgentHandle
+//!   dispatcher recognises.
+//!
+//! Collapsing them would force the AgentHandle dispatcher to handle
+//! App-level variants it has no business in (SpawnProject is a
+//! workspace concern; SessionKey is a routing concern; neither
+//! belongs in the agent layer). The current split keeps each
+//! envelope minimal at its respective boundary. The translation
+//! happens in `session_task::execute_command_via_handle`.
 
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use forge_agent::client::SessionLaunchSettings;
@@ -15,57 +32,30 @@ use forge_primitives::cloud::service_status::ServiceSeverity;
 use forge_primitives::error::AppError;
 use forge_primitives::permission::PermissionMode;
 use forge_primitives::permission_ui::{PermissionOutcome, PermissionRequest};
-use forge_primitives::permissions::PermissionUpdate;
 use forge_primitives::plugins::{PluginsCliActionSuccess, PluginsInventorySnapshot};
 use forge_primitives::question::{QuestionOutcome, QuestionRequest};
 use forge_primitives::runtime::{AvailableModel, CurrentModel, ModeState, TerminalReason};
-use forge_primitives::usage::{UsageSnapshot, UsageSourceKind};
 use forge_primitives::{
-    AccountInfo, ElicitationAction, ElicitationRequest, ForgeAccountIdentity, ImageAttachment,
-    McpAuthRedirect, McpOperationError, McpServerConfig, McpServerStatus, Message, SessionId,
-    SessionListEntry,
+    AccountInfo, ForgeAccountIdentity, ImageAttachment, McpOperationError, McpServerStatus,
+    Message, SessionId, SessionListEntry,
 };
 use tokio::sync::oneshot;
 
 use crate::SessionKey;
 
-/// Turn-error classification. The full surface (including the
-/// `Internal` / `Other` matrix) lives in
-/// `forge_agent::translate::error_handling`; this slimmer enum is
-/// re-stated here so the protocol module doesn't fan an
-/// implementation-detail crate dependency through every consumer of
-/// `SessionUpdate`. The two enums agree on variant names; the
-/// [`From`] impl below maps between them so future variant divergence
-/// becomes a compile error rather than a silent drop.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TurnErrorClass {
-    PlanLimit,
-    AuthRequired,
-    Internal,
-    Other,
-}
-
-impl From<forge_agent::translate::error_handling::TurnErrorClass> for TurnErrorClass {
-    fn from(value: forge_agent::translate::error_handling::TurnErrorClass) -> Self {
-        use forge_agent::translate::error_handling::TurnErrorClass as Src;
-        match value {
-            Src::PlanLimit => Self::PlanLimit,
-            Src::AuthRequired => Self::AuthRequired,
-            Src::Internal => Self::Internal,
-            Src::Other => Self::Other,
-        }
-    }
-}
+// `TurnErrorClass` lives in forge-primitives so the classifier (in
+// forge-agent) and consumers (in forge-tui, via this protocol module)
+// share one enum. Re-exported here so existing call sites keep
+// resolving via `forge_workspace::protocol::TurnErrorClass`.
+pub use forge_primitives::TurnErrorClass;
 
 /// One pending interaction response slot. Workspace stores these
 /// keyed by `tool_id` in `DomainSession.pending_interactions`.
-/// `Command::RespondPermission` / `RespondQuestion` /
-/// `RespondElicitation` look up the matching slot and send the
-/// outcome down the oneshot.
+/// `Command::RespondPermission` / `RespondQuestion` look up the
+/// matching slot and send the outcome down the oneshot.
 pub enum PendingInteractionSlot {
     Permission(oneshot::Sender<PermissionOutcome>),
     Question(oneshot::Sender<QuestionOutcome>),
-    Elicitation(oneshot::Sender<ElicitationAction>),
 }
 
 impl std::fmt::Debug for PendingInteractionSlot {
@@ -73,7 +63,6 @@ impl std::fmt::Debug for PendingInteractionSlot {
         match self {
             Self::Permission(_) => f.write_str("PendingInteractionSlot::Permission"),
             Self::Question(_) => f.write_str("PendingInteractionSlot::Question"),
-            Self::Elicitation(_) => f.write_str("PendingInteractionSlot::Elicitation"),
         }
     }
 }
@@ -82,9 +71,7 @@ impl std::fmt::Debug for PendingInteractionSlot {
 ///
 /// Every variant carries a `SessionKey` identifying the target
 /// session task. `Workspace::dispatch` fans the variant into the
-/// matching task's command receiver. Phase 1 implements
-/// `Respond*` end-to-end; other variants log + drop until Phase 2
-/// wires them to `AgentHandle` methods.
+/// matching task's command receiver.
 #[derive(Debug)]
 pub enum Command {
     Prompt {
@@ -114,12 +101,6 @@ pub enum Command {
         cwd: String,
         launch_settings: SessionLaunchSettings,
     },
-    ResumeOrNewSession {
-        key: SessionKey,
-        session_id: String,
-        cwd: String,
-        launch_settings: SessionLaunchSettings,
-    },
     RespondPermission {
         key: SessionKey,
         tool_id: String,
@@ -129,27 +110,6 @@ pub enum Command {
         key: SessionKey,
         tool_id: String,
         outcome: QuestionOutcome,
-    },
-    /// MCP elicitation response. Currently routed directly to
-    /// `AgentHandle::respond_to_elicitation` — the workspace never
-    /// stores a `PendingInteractionSlot::Elicitation` slot for
-    /// inbound `ElicitationRequest`s, so the oneshot path used by
-    /// permission/question round-trips doesn't apply here.
-    RespondElicitation {
-        key: SessionKey,
-        elicitation_id: String,
-        action: ElicitationAction,
-        content: Option<serde_json::Value>,
-    },
-    /// Request a fresh session title from the bridge.
-    GenerateSessionTitle {
-        key: SessionKey,
-        description: String,
-    },
-    /// Persist a custom title for the active session.
-    RenameSession {
-        key: SessionKey,
-        title: String,
     },
     /// Reconnect a configured MCP server.
     ReconnectMcpServer {
@@ -161,55 +121,6 @@ pub enum Command {
         key: SessionKey,
         server_name: String,
         enabled: bool,
-    },
-    /// Replace the live MCP server registration for this session.
-    SetMcpServers {
-        key: SessionKey,
-        servers: BTreeMap<String, McpServerConfig>,
-    },
-    /// Begin OAuth (or similar) auth flow for an MCP server.
-    AuthenticateMcpServer {
-        key: SessionKey,
-        server_name: String,
-    },
-    /// Wipe cached auth for an MCP server.
-    ClearMcpAuth {
-        key: SessionKey,
-        server_name: String,
-    },
-    /// Submit a captured OAuth callback URL for an MCP server.
-    SubmitMcpOauthCallbackUrl {
-        key: SessionKey,
-        server_name: String,
-        callback_url: String,
-    },
-    CloseSession {
-        key: SessionKey,
-    },
-    RequestStatusSnapshot {
-        key: SessionKey,
-        session_id: String,
-    },
-    RequestMcpSnapshot {
-        key: SessionKey,
-        session_id: String,
-    },
-    RequestContextUsage {
-        key: SessionKey,
-        session_id: String,
-    },
-    RequestOauthCredentials {
-        key: SessionKey,
-        session_id: String,
-    },
-    RuntimeReload {
-        key: SessionKey,
-        session_id: String,
-    },
-    UpdatePermissions {
-        key: SessionKey,
-        session_id: String,
-        update: PermissionUpdate,
     },
     /// User clicked an inactive project to wake it. No `key` — the
     /// session doesn't exist yet; workspace synthesizes a key and
@@ -247,7 +158,6 @@ impl Command {
     /// to its app-level handler (which synthesizes the new session
     /// key and spawns the agent); `Some(key)` commands route to the
     /// matching SessionTask.
-    #[must_use]
     pub fn key(&self) -> Option<&SessionKey> {
         match self {
             Self::Prompt { key, .. }
@@ -256,25 +166,10 @@ impl Command {
             | Self::SetModel { key, .. }
             | Self::NewSession { key, .. }
             | Self::ResumeSession { key, .. }
-            | Self::ResumeOrNewSession { key, .. }
             | Self::RespondPermission { key, .. }
             | Self::RespondQuestion { key, .. }
-            | Self::RespondElicitation { key, .. }
-            | Self::GenerateSessionTitle { key, .. }
-            | Self::RenameSession { key, .. }
             | Self::ReconnectMcpServer { key, .. }
-            | Self::ToggleMcpServer { key, .. }
-            | Self::SetMcpServers { key, .. }
-            | Self::AuthenticateMcpServer { key, .. }
-            | Self::ClearMcpAuth { key, .. }
-            | Self::SubmitMcpOauthCallbackUrl { key, .. }
-            | Self::CloseSession { key }
-            | Self::RequestStatusSnapshot { key, .. }
-            | Self::RequestMcpSnapshot { key, .. }
-            | Self::RequestContextUsage { key, .. }
-            | Self::RequestOauthCredentials { key, .. }
-            | Self::RuntimeReload { key, .. }
-            | Self::UpdatePermissions { key, .. } => Some(key),
+            | Self::ToggleMcpServer { key, .. } => Some(key),
             Self::SpawnProject { .. } | Self::SpawnSession { .. } | Self::StartDefault { .. } => {
                 None
             }
@@ -284,10 +179,10 @@ impl Command {
 
 /// Update envelope: forge-workspace -> forge-tui.
 ///
-/// FINAL variant shapes as of Phase 1. Permission/Question/Elicitation
-/// variants do NOT carry response oneshots — responses flow back via
-/// `Command::Respond*`. The workspace stores the oneshot in
-/// `DomainSession.pending_interactions` when emitting these variants.
+/// Permission/Question variants do NOT carry response oneshots —
+/// responses flow back via `Command::Respond*`. The workspace stores
+/// the oneshot in `DomainSession.pending_interactions` when emitting
+/// these variants.
 pub enum SessionUpdate {
     /// Workspace has synthesized a spawning state for a project /
     /// session wake (in response to `Command::SpawnProject` /
@@ -344,12 +239,6 @@ pub enum SessionUpdate {
         method_name: String,
         method_description: String,
     },
-    AuthCompleted {
-        key: SessionKey,
-    },
-    LogoutCompleted {
-        key: SessionKey,
-    },
     SlashCommandError {
         key: SessionKey,
         message: String,
@@ -374,22 +263,6 @@ pub enum SessionUpdate {
         key: SessionKey,
         tool_id: String,
         request: QuestionRequest,
-    },
-    /// MCP elicitation. Reply via
-    /// `Command::RespondElicitation { elicitation_id, action }`.
-    McpElicitationRequest {
-        key: SessionKey,
-        elicitation_id: String,
-        request: ElicitationRequest,
-    },
-    McpElicitationCompleted {
-        key: SessionKey,
-        elicitation_id: String,
-        server_name: Option<String>,
-    },
-    McpAuthRedirect {
-        key: SessionKey,
-        redirect: McpAuthRedirect,
     },
     McpOperationError {
         key: SessionKey,
@@ -436,6 +309,9 @@ pub enum SessionUpdate {
     ContextUsageSnapshot {
         session_id: String,
         percentage: Option<u8>,
+        /// Raw model context-window size in tokens (e.g. `1_000_000`
+        /// for Opus 1M). `None` until the upstream probe reports it.
+        max_tokens: Option<u64>,
     },
     McpSnapshot {
         session_id: String,
@@ -454,23 +330,6 @@ pub enum SessionUpdate {
     ServiceStatus {
         severity: ServiceSeverity,
         message: String,
-    },
-    UsageRefreshStarted {
-        /// Bucket the in-flight fetch belongs to. Used by the TUI
-        /// reducer to route lifecycle flags onto the right
-        /// `UiSession.usage` slot even if the user switched sessions
-        /// mid-fetch. Dropped silently when the bucket no longer
-        /// exists (rare; session closed before the fetch landed).
-        key: SessionKey,
-    },
-    UsageSnapshotReceived {
-        key: SessionKey,
-        snapshot: UsageSnapshot,
-    },
-    UsageRefreshFailed {
-        key: SessionKey,
-        message: String,
-        source: UsageSourceKind,
     },
     PluginsInventoryUpdated {
         cwd_raw: String,
@@ -497,7 +356,6 @@ impl SessionUpdate {
     /// updates that target App-level state (`SessionsListed`,
     /// `ServiceStatus`, usage, plugin, key-rename, fatal-error).
     /// Variants carrying a raw `session_id` synthesize a key from it.
-    #[must_use]
     pub fn session_key(&self) -> Option<SessionKey> {
         match self {
             Self::Spawning { key, .. }
@@ -505,22 +363,14 @@ impl SessionUpdate {
             | Self::SessionReplaced { key, .. }
             | Self::ConnectionFailed { key, .. }
             | Self::AuthRequired { key, .. }
-            | Self::AuthCompleted { key, .. }
-            | Self::LogoutCompleted { key }
             | Self::SlashCommandError { key, .. }
             | Self::PermissionRequest { key, .. }
             | Self::QuestionRequest { key, .. }
-            | Self::McpElicitationRequest { key, .. }
-            | Self::McpElicitationCompleted { key, .. }
-            | Self::McpAuthRedirect { key, .. }
             | Self::McpOperationError { key, .. }
             | Self::TurnComplete { key, .. }
             | Self::TurnCancelled { key }
             | Self::TurnError { key, .. }
             | Self::ForgeAccountIdentity { key, .. }
-            | Self::UsageRefreshStarted { key, .. }
-            | Self::UsageSnapshotReceived { key, .. }
-            | Self::UsageRefreshFailed { key, .. }
             | Self::SessionsListed { key, .. } => Some(key.clone()),
             Self::RuntimeReloadCompleted { session_id }
             | Self::RuntimeReloadFailed { session_id, .. }
@@ -569,12 +419,6 @@ impl std::fmt::Debug for SessionUpdate {
             Self::AuthRequired { key, .. } => {
                 f.debug_struct("AuthRequired").field("key", key).finish_non_exhaustive()
             }
-            Self::AuthCompleted { key, .. } => {
-                f.debug_struct("AuthCompleted").field("key", key).finish_non_exhaustive()
-            }
-            Self::LogoutCompleted { key } => {
-                f.debug_struct("LogoutCompleted").field("key", key).finish()
-            }
             Self::SlashCommandError { key, .. } => {
                 f.debug_struct("SlashCommandError").field("key", key).finish_non_exhaustive()
             }
@@ -595,19 +439,6 @@ impl std::fmt::Debug for SessionUpdate {
                 .field("key", key)
                 .field("tool_id", tool_id)
                 .finish_non_exhaustive(),
-            Self::McpElicitationRequest { key, elicitation_id, .. } => f
-                .debug_struct("McpElicitationRequest")
-                .field("key", key)
-                .field("elicitation_id", elicitation_id)
-                .finish_non_exhaustive(),
-            Self::McpElicitationCompleted { key, elicitation_id, .. } => f
-                .debug_struct("McpElicitationCompleted")
-                .field("key", key)
-                .field("elicitation_id", elicitation_id)
-                .finish_non_exhaustive(),
-            Self::McpAuthRedirect { key, .. } => {
-                f.debug_struct("McpAuthRedirect").field("key", key).finish_non_exhaustive()
-            }
             Self::McpOperationError { key, .. } => {
                 f.debug_struct("McpOperationError").field("key", key).finish_non_exhaustive()
             }
@@ -653,15 +484,6 @@ impl std::fmt::Debug for SessionUpdate {
                 .field("count", &sessions.len())
                 .finish(),
             Self::ServiceStatus { .. } => f.debug_struct("ServiceStatus").finish_non_exhaustive(),
-            Self::UsageRefreshStarted { key } => {
-                f.debug_struct("UsageRefreshStarted").field("key", key).finish()
-            }
-            Self::UsageSnapshotReceived { key, .. } => {
-                f.debug_struct("UsageSnapshotReceived").field("key", key).finish_non_exhaustive()
-            }
-            Self::UsageRefreshFailed { key, .. } => {
-                f.debug_struct("UsageRefreshFailed").field("key", key).finish_non_exhaustive()
-            }
             Self::PluginsInventoryUpdated { cwd_raw, .. } => f
                 .debug_struct("PluginsInventoryUpdated")
                 .field("cwd_raw", cwd_raw)

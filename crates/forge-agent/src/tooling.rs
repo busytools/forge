@@ -2,8 +2,7 @@
 //! upstream's `agent-sdk/src/bridge/tooling.ts` (714 `LoC`).
 //!
 //! Three groups of helpers:
-//! 1. Front-of-tool: `create_tool_call`, `tool_title`, `normalize_tool_kind`,
-//!    `is_tool_use_block_type`, `TOOL_RESULT_TYPES`.
+//! 1. Front-of-tool: `create_tool_call`, `tool_title`, `normalize_tool_kind`.
 //! 2. Result extraction: `build_tool_result_fields` per-tool branches
 //!    (Bash / Read / Write / Edit / Agent / `ReadMcpResource`),
 //!    `normalize_tool_result_text`, `extract_text`,
@@ -15,14 +14,13 @@ use serde_json::{Map, Value, json};
 
 use forge_primitives::{
     BashOutputMetadata, ChunkContent, TodoWriteOutputMetadata, ToolCall, ToolCallContent,
-    ToolCallUpdateFields, ToolLocation, ToolOutputMetadata,
+    ToolCallLocation, ToolCallUpdateFields, ToolOutputMetadata,
 };
 
 // Tool-result preview-size cap. Only the preview limit surfaces in
 // user-visible text, so a flat const suffices.
 const CACHE_PREVIEW_LIMIT_BYTES: usize = 2048;
 
-#[must_use]
 fn preview_kilobyte_label() -> String {
     let whole_kb = CACHE_PREVIEW_LIMIT_BYTES / 1024;
     let remainder = CACHE_PREVIEW_LIMIT_BYTES % 1024;
@@ -38,7 +36,7 @@ fn preview_kilobyte_label() -> String {
 
 /// Block types the CLI uses for tool results. Mirrors upstream's
 /// `TOOL_RESULT_TYPES` set in tooling.ts:5.
-pub const TOOL_RESULT_TYPES: &[&str] = &[
+const TOOL_RESULT_TYPES: &[&str] = &[
     "tool_result",
     "tool_search_tool_result",
     "web_fetch_tool_result",
@@ -49,39 +47,32 @@ pub const TOOL_RESULT_TYPES: &[&str] = &[
     "mcp_tool_result",
 ];
 
-#[must_use]
 pub fn is_tool_result_block_type(block_type: &str) -> bool {
     TOOL_RESULT_TYPES.contains(&block_type)
 }
 
-#[must_use]
-pub fn is_tool_use_block_type(block_type: &str) -> bool {
-    matches!(block_type, "tool_use" | "server_tool_use" | "mcp_tool_use")
-}
-
-/// Mirrors `normalizeToolKind`. Maps tool name → kind string consumed
-/// by the TUI's tool-card renderer.
-#[must_use]
-fn normalize_tool_kind(name: &str) -> &'static str {
+/// Mirrors `normalizeToolKind`. Maps tool name to the typed
+/// `ToolKind` consumed by the TUI's tool-card renderer.
+fn normalize_tool_kind(name: &str) -> forge_primitives::ToolKind {
+    use forge_primitives::ToolKind;
     match name {
-        "Bash" => "execute",
-        "Read" | "ReadMcpResource" => "read",
-        "Write" | "Edit" => "edit",
-        "Delete" => "delete",
-        "Move" => "move",
-        "Glob" | "Grep" => "search",
-        "WebFetch" => "fetch",
-        "TodoWrite" => "other",
-        "ExitPlanMode" => "switch_mode",
+        "Bash" => ToolKind::Execute,
+        "Read" | "ReadMcpResource" => ToolKind::Read,
+        "Write" | "Edit" => ToolKind::Edit,
+        "Delete" => ToolKind::Delete,
+        "Move" => ToolKind::Move,
+        "Glob" | "Grep" => ToolKind::Search,
+        "WebFetch" => ToolKind::Fetch,
+        "TodoWrite" => ToolKind::Other,
+        "ExitPlanMode" => ToolKind::SwitchMode,
         // "Task" / "Agent" fall through to the "think" default.
-        _ => "think",
+        _ => ToolKind::Think,
     }
 }
 
 /// Mirrors `toolTitle(name, input)`. Produces the human-friendly
 /// title shown on the tool card header (e.g. Bash → command, Glob →
 /// pattern + path, etc.).
-#[must_use]
 fn tool_title(name: &str, input: &Value) -> String {
     let record = input.as_object();
     let s =
@@ -130,7 +121,6 @@ fn tool_title(name: &str, input: &Value) -> String {
 /// Mirrors `editDiffContent(name, input)` — initial diff content for
 /// Edit / Write tool cards (before the result lands). Empty Vec for
 /// other tools.
-#[must_use]
 fn edit_diff_content(name: &str, input: &Value) -> Vec<ToolCallContent> {
     let Some(record) = input.as_object() else {
         return Vec::new();
@@ -148,7 +138,6 @@ fn edit_diff_content(name: &str, input: &Value) -> Vec<ToolCallContent> {
             return Vec::new();
         }
         return vec![ToolCallContent::Diff {
-            old_path: file_path.to_owned(),
             new_path: file_path.to_owned(),
             old: old_text.to_owned(),
             new: new_text.to_owned(),
@@ -161,7 +150,6 @@ fn edit_diff_content(name: &str, input: &Value) -> Vec<ToolCallContent> {
             return Vec::new();
         }
         return vec![ToolCallContent::Diff {
-            old_path: file_path.to_owned(),
             new_path: file_path.to_owned(),
             old: String::new(),
             new: new_text.to_owned(),
@@ -174,7 +162,6 @@ fn edit_diff_content(name: &str, input: &Value) -> Vec<ToolCallContent> {
 /// Mirrors `createToolCall(toolUseId, name, input, parentToolUseId)`.
 /// Builds the rich `ToolCall` envelope upstream emits when the
 /// assistant first invokes a tool.
-#[must_use]
 pub fn create_tool_call(
     tool_use_id: &str,
     name: &str,
@@ -182,9 +169,7 @@ pub fn create_tool_call(
     parent_tool_use_id: Option<&str>,
 ) -> ToolCall {
     let file_path = input.as_object().and_then(|r| r.get("file_path")).and_then(Value::as_str);
-    let locations = file_path
-        .map(|p| vec![ToolLocation { path: p.to_owned(), line: None }])
-        .unwrap_or_default();
+    let locations = file_path.map(|p| vec![ToolCallLocation::new(p)]).unwrap_or_default();
     let meta = json!({
         "claudeCode": {
             "toolName": name,
@@ -195,8 +180,8 @@ pub fn create_tool_call(
     ToolCall {
         tool_call_id: tool_use_id.to_owned(),
         title: tool_title(name, input),
-        kind: normalize_tool_kind(name).to_owned(),
-        status: "pending".to_owned(),
+        kind: normalize_tool_kind(name),
+        status: forge_primitives::ToolCallStatus::Pending,
         content: edit_diff_content(name, input),
         raw_input: Some(input.clone()),
         raw_output: None,
@@ -212,7 +197,6 @@ pub fn create_tool_call(
 /// Mirrors `extractText(value)` — flattens a `tool_result` content
 /// payload into a single `String`. Accepts string, array of
 /// `{ type: "text", text }` blocks, or single `{ text }` object.
-#[must_use]
 fn extract_text(value: &Value) -> String {
     if let Some(s) = value.as_str() {
         return s.to_owned();
@@ -293,7 +277,6 @@ fn sanitize_sdk_rejection_text(text: &str) -> String {
     text.to_owned()
 }
 
-#[must_use]
 fn normalize_tool_result_text(value: &Value, is_error: bool) -> String {
     let text = extract_text(value);
     if text.is_empty() {
@@ -453,7 +436,6 @@ fn write_diff_from_input(raw_input: Option<&Value>) -> Vec<ToolCallContent> {
         return Vec::new();
     }
     vec![ToolCallContent::Diff {
-        old_path: file_path.to_owned(),
         new_path: file_path.to_owned(),
         old: String::new(),
         new: content.to_owned(),
@@ -480,7 +462,6 @@ fn edit_diff_from_input(raw_input: Option<&Value>) -> Vec<ToolCallContent> {
         return Vec::new();
     }
     vec![ToolCallContent::Diff {
-        old_path: file_path.to_owned(),
         new_path: file_path.to_owned(),
         old: old_text.to_owned(),
         new: new_text.to_owned(),
@@ -517,7 +498,6 @@ fn write_diff_from_result(raw_content: Option<&Value>) -> Vec<ToolCallContent> {
         }
         let original = original_raw.and_then(Value::as_str).map_or_else(String::new, str::to_owned);
         return vec![ToolCallContent::Diff {
-            old_path: file_path.to_owned(),
             new_path: file_path.to_owned(),
             old: original,
             new: content.to_owned(),
@@ -568,7 +548,6 @@ fn edit_diff_from_result(
             .filter(|s| !s.is_empty())
             .map(str::to_owned);
         return vec![ToolCallContent::Diff {
-            old_path: file_path.to_owned(),
             new_path: file_path.to_owned(),
             old: old_text.to_owned(),
             new: new_text.to_owned(),
@@ -733,7 +712,6 @@ fn resolve_tool_name(base: Option<&ToolCall>) -> String {
 /// Mirrors `buildToolResultFields(isError, rawContent, base?, rawResult?)`.
 /// The high-level entry that turns an arbitrary `tool_result` block into
 /// the structured `ToolCallUpdateFields` upstream's TUI consumes.
-#[must_use]
 pub fn build_tool_result_fields(
     is_error: bool,
     raw_content: Option<&Value>,
@@ -742,7 +720,11 @@ pub fn build_tool_result_fields(
 ) -> ToolCallUpdateFields {
     let tool_name = resolve_tool_name(base);
     let mut fields = ToolCallUpdateFields {
-        status: Some(if is_error { "failed".to_owned() } else { "completed".to_owned() }),
+        status: Some(if is_error {
+            forge_primitives::ToolCallStatus::Failed
+        } else {
+            forge_primitives::ToolCallStatus::Completed
+        }),
         ..Default::default()
     };
 
@@ -842,7 +824,6 @@ pub struct UnwrappedToolResult {
     pub content: Value,
 }
 
-#[must_use]
 pub fn unwrap_tool_use_result(raw_result: &Value) -> UnwrappedToolResult {
     let Some(record) = raw_result.as_object() else {
         return UnwrappedToolResult { is_error: false, content: raw_result.clone() };
@@ -872,28 +853,29 @@ mod tests {
 
     #[test]
     fn create_tool_call_titles_per_tool() {
+        use forge_primitives::ToolKind;
         let bash = create_tool_call("tu1", "Bash", &json!({"command": "ls"}), None);
         assert_eq!(bash.title, "ls");
-        assert_eq!(bash.kind, "execute");
+        assert_eq!(bash.kind, ToolKind::Execute);
 
         let read = create_tool_call("tu2", "Read", &json!({"file_path": "/x"}), None);
         assert_eq!(read.title, "Read /x");
-        assert_eq!(read.kind, "read");
+        assert_eq!(read.kind, ToolKind::Read);
 
         let glob =
             create_tool_call("tu3", "Glob", &json!({"pattern": "*.rs", "path": "src"}), None);
         assert_eq!(glob.title, "Glob *.rs in src");
-        assert_eq!(glob.kind, "search");
+        assert_eq!(glob.kind, ToolKind::Search);
 
         let task = create_tool_call("tu4", "Task", &json!({}), None);
-        assert_eq!(task.kind, "think");
+        assert_eq!(task.kind, ToolKind::Think);
     }
 
     #[test]
     fn create_tool_call_locations_from_file_path() {
         let r = create_tool_call("tu", "Edit", &json!({"file_path": "/foo"}), None);
         assert_eq!(r.locations.len(), 1);
-        assert_eq!(r.locations[0].path, "/foo");
+        assert_eq!(r.locations[0].path, std::path::PathBuf::from("/foo"));
     }
 
     #[test]
@@ -960,7 +942,7 @@ mod tests {
             json!([{"type":"text","text":"<persisted-output>\n│ hello\n</persisted-output>"}]);
         let raw_result = json!({"stdout":"hello\n","stderr":"","interrupted":false});
         let f = build_tool_result_fields(false, Some(&raw_content), Some(&base), Some(&raw_result));
-        assert_eq!(f.status.as_deref(), Some("completed"));
+        assert_eq!(f.status, Some(forge_primitives::ToolCallStatus::Completed));
         assert_eq!(f.raw_output.as_deref(), Some("hello\n"));
         // generic content fallback wraps the bash output as text.
         let Some(ToolCallContent::Content { content: ChunkContent::Text { text } }) =

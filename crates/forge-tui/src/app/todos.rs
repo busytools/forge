@@ -1,5 +1,4 @@
 use super::{App, TodoItem, TodoStatus};
-use crate::agent::model;
 
 /// Parse a `TodoWrite` `raw_input` JSON value into a `Vec<TodoItem>`.
 /// Expected shape: `{"todos": [{"content": "...", "status": "...", "activeForm": "..."}]}`
@@ -10,7 +9,7 @@ pub(super) fn parse_todos(raw_input: &serde_json::Value) -> Vec<TodoItem> {
 
 /// Parse todos only when a concrete `todos` array is present in `raw_input`.
 /// Returns `None` for transient/incomplete payloads (missing or non-array `todos`).
-pub(super) fn parse_todos_if_present(raw_input: &serde_json::Value) -> Option<Vec<TodoItem>> {
+pub(crate) fn parse_todos_if_present(raw_input: &serde_json::Value) -> Option<Vec<TodoItem>> {
     let arr = raw_input.get("todos")?.as_array()?;
     Some(
         arr.iter()
@@ -33,7 +32,7 @@ pub(super) fn parse_todos_if_present(raw_input: &serde_json::Value) -> Option<Ve
 /// Replace the active session's todo list. Empties or all-completed
 /// lists clear the active list; the Inspector pane then renders just
 /// its chrome (banner + rule) until the next `TodoWrite` arrives.
-pub(super) fn set_todos(app: &mut App, todos: Vec<TodoItem>) {
+pub(crate) fn set_todos(app: &mut App, todos: Vec<TodoItem>) {
     if todos.is_empty() {
         app.todos_mut().clear();
         return;
@@ -44,21 +43,6 @@ pub(super) fn set_todos(app: &mut App, todos: Vec<TodoItem>) {
     } else {
         *app.todos_mut() = todos;
     }
-}
-
-/// Convert bridge plan entries into the local todo list.
-pub(super) fn apply_plan_todos(app: &mut App, plan: &model::Plan) {
-    let mut todos = Vec::with_capacity(plan.entries.len());
-    for entry in &plan.entries {
-        let status_str = format!("{:?}", entry.status);
-        let status = match status_str.as_str() {
-            "InProgress" => TodoStatus::InProgress,
-            "Completed" => TodoStatus::Completed,
-            _ => TodoStatus::Pending,
-        };
-        todos.push(TodoItem { content: entry.content.clone(), status, active_form: String::new() });
-    }
-    set_todos(app, todos);
 }
 
 #[cfg(test)]
@@ -198,35 +182,17 @@ mod tests {
     }
 
     #[test]
-    fn apply_plan_todos_maps_bridge_statuses_and_clears_completed_plans() {
+    fn set_todos_clears_when_all_completed() {
         let mut app = App::test_default();
-        let active_plan = model::Plan::new(vec![
-            model::PlanEntry::new(
-                "pending",
-                model::PlanEntryPriority::Medium,
-                model::PlanEntryStatus::Pending,
-            ),
-            model::PlanEntry::new(
-                "running",
-                model::PlanEntryPriority::High,
-                model::PlanEntryStatus::InProgress,
-            ),
-        ]);
-
-        apply_plan_todos(&mut app, &active_plan);
-
+        let active =
+            vec![todo("pending", TodoStatus::Pending), todo("running", TodoStatus::InProgress)];
+        set_todos(&mut app, active);
         assert_eq!(app.todos().len(), 2);
         assert_eq!(app.todos()[0].status, TodoStatus::Pending);
         assert_eq!(app.todos()[1].status, TodoStatus::InProgress);
 
-        let completed_plan = model::Plan::new(vec![model::PlanEntry::new(
-            "done",
-            model::PlanEntryPriority::Low,
-            model::PlanEntryStatus::Completed,
-        )]);
-
-        apply_plan_todos(&mut app, &completed_plan);
-
+        let completed = vec![todo("done", TodoStatus::Completed)];
+        set_todos(&mut app, completed);
         assert!(app.todos().is_empty());
     }
 }

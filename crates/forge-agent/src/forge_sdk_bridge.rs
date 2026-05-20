@@ -27,15 +27,17 @@ use forge_sdk::Client;
 use parking_lot::Mutex;
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
+use tracing::Instrument;
 
 use crate::client::{AgentEvent, SessionLaunchSettings};
 use crate::forge_sdk_worker;
-use forge_primitives::{ElicitationAction, McpServerConfig, PermissionOutcome, QuestionOutcome};
+use forge_primitives::{PermissionOutcome, QuestionOutcome};
 
 /// Sentinel `config_dir` for `ForgeSdkBridge` test stubs that never
 /// exercise the path. Production code constructs the bridge with a
 /// real account `config_dir`; tests that don't drive a session use
 /// this path so the typed field stays non-optional.
+#[cfg(any(test, feature = "testing"))]
 const TESTING_STUB_CONFIG_DIR: &str = "/tmp/forge-testing-stub";
 
 /// Pending permission responses keyed by `tool_use_id`. The
@@ -43,7 +45,7 @@ const TESTING_STUB_CONFIG_DIR: &str = "/tmp/forge-testing-stub";
 /// dispatch drains it when the matching `permission_response` arrives
 /// from the App.
 pub(crate) type PendingResponses =
-    Arc<Mutex<HashMap<String, oneshot::Sender<forge_sdk::PermissionDecision>>>>;
+    Arc<Mutex<HashMap<String, oneshot::Sender<forge_primitives::PermissionDecision>>>>;
 
 /// Pending question outcomes keyed by `tool_use_id`. The
 /// `AskUserQuestion` driver in the `can_use_tool` callback parks a
@@ -103,7 +105,6 @@ impl ForgeSdkBridge {
     /// [`AgentEvent::StatusSnapshot`]. The internal event channel
     /// is created here; consumers grab the receiver once via
     /// [`ForgeSdkBridge::take_events`].
-    #[must_use]
     pub(crate) fn new(config_dir: PathBuf, display_name: Option<String>) -> Self {
         let (event_tx, events_rx) = mpsc::unbounded_channel();
         Self {
@@ -145,6 +146,19 @@ impl ForgeSdkBridge {
     }
 
     pub(crate) fn clear_client(&self) -> Option<Client> {
+        // Drain in-flight permission / question oneshots before the
+        // client goes away. The SDK's detached `can_use_tool` /
+        // `question` callback tasks are awaiting these receivers; if
+        // we drop the client without resolving them they leak the
+        // closure (which holds `Arc<event_tx>`, `Arc<PendingResponses>`,
+        // …) and the matching workspace forwarders exit on a closed
+        // channel without notifying the awaiter.
+        for (_, tx) in self.inner.pending.lock().drain() {
+            let _ = tx.send(forge_primitives::PermissionDecision::deny("session replaced"));
+        }
+        for (_, tx) in self.inner.pending_questions.lock().drain() {
+            let _ = tx.send(forge_primitives::QuestionOutcome::Cancelled);
+        }
         self.inner.client.lock().take()
     }
 
@@ -163,6 +177,9 @@ impl ForgeSdkBridge {
         server_name: Option<String>,
         error_msg: String,
     ) {
+        let session_id_for_log = session_id.clone();
+        let server_name_for_log = server_name.clone();
+        let error_msg_for_log = error_msg.clone();
         let event = AgentEvent::McpOperationError {
             session_id,
             error: forge_primitives::McpOperationError {
@@ -171,19 +188,13 @@ impl ForgeSdkBridge {
                 message: error_msg,
             },
         };
-        if let Err(send_err) = event_tx.send(event) {
-            // Unreachable in practice — we just constructed
-            // McpOperationError on the line above and the SendError
-            // wraps the unsent event verbatim.
-            let AgentEvent::McpOperationError { session_id, error } = send_err.0 else {
-                unreachable!("McpOperationError just constructed above")
-            };
+        if event_tx.send(event).is_err() {
             tracing::warn!(
                 target: crate::logging::targets::BRIDGE_LIFECYCLE,
-                session_id = %session_id,
+                session_id = %session_id_for_log,
                 operation,
-                server_name = ?error.server_name,
-                error_msg = %error.message,
+                server_name = ?server_name_for_log,
+                error_msg = %error_msg_for_log,
                 "event channel closed; McpOperationError dropped",
             );
         }
@@ -198,20 +209,25 @@ impl ForgeSdkBridge {
         let Some(client) = self.client() else {
             return Err(anyhow::anyhow!("forge-sdk bridge: {label} called before active session"));
         };
-        tokio::spawn(async move {
-            if let Err(err) = f(client).await {
-                tracing::warn!(
-                    target: crate::logging::targets::BRIDGE_LIFECYCLE,
-                    label,
-                    error = %err,
-                    "forge-sdk bridge: dispatch failed",
-                );
+        let span = tracing::info_span!("bridge_dispatch", label);
+        tokio::spawn(
+            async move {
+                if let Err(err) = f(client).await {
+                    tracing::warn!(
+                        target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                        label,
+                        error = %err,
+                        "forge-sdk bridge: dispatch failed",
+                    );
+                }
             }
-        });
+            .instrument(span),
+        );
         Ok(())
     }
 }
 
+#[cfg(any(test, feature = "testing"))]
 impl Default for ForgeSdkBridge {
     fn default() -> Self {
         Self::new(PathBuf::from(TESTING_STUB_CONFIG_DIR), None)
@@ -312,8 +328,7 @@ impl ForgeSdkBridge {
     /// here on mismatch and returns false; the caller is expected to
     /// drop the dispatch with a no-op `Ok(())`.
     ///
-    /// Other user-action methods (`prompt_with_images`,
-    /// `generate_session_title`, `respond_to_elicitation`) intentionally
+    /// Other user-action methods (`prompt_with_images`) intentionally
     /// opt out — see the inline rationale at each call site.
     fn check_session_id(&self, session_id: &str, label: &'static str) -> bool {
         let current = self.inner.session_id_slot.lock().clone();
@@ -351,45 +366,44 @@ impl ForgeSdkBridge {
         );
     }
 
-    pub(crate) fn generate_session_title(
-        &self,
-        session_id: String,
-        description: String,
-    ) -> anyhow::Result<()> {
-        // No `check_session_id` here — title generation is a
-        // best-effort cosmetic update; even mis-routed it can't
-        // wedge user-visible state. Trace breadcrumb keeps the
-        // bypass observable.
-        self.trace_session_id_bypass(&session_id, "generate_session_title");
-        self.dispatch("generate_session_title", move |client| async move {
-            let _ = client.generate_session_title(&description).await?;
-            Ok(())
-        })
-    }
-
-    pub(crate) fn rename_session(&self, session_id: String, title: String) -> anyhow::Result<()> {
-        // Offline disk mutation — no Client required.
-        crate::userdata::catalog::mutations::rename_session(
-            &self.inner.config_dir,
-            &session_id,
-            &title,
-            None,
-        )?;
-        Ok(())
-    }
-
     pub(crate) fn get_status_snapshot(&self, session_id: String) -> anyhow::Result<()> {
         let event_tx = self.inner.event_tx.clone();
         let config_dir = self.inner.config_dir.clone();
         let display_name = self.inner.display_name.clone();
         self.dispatch("get_status_snapshot", move |client| async move {
-            let account = client
-                .account_info_from_init()
-                .or_else(|| crate::cloud::auth_status::account_info_from_shell(&config_dir))
-                .unwrap_or_default();
+            // account_info_from_shell shells out to `claude auth
+            // status`; wrap in spawn_blocking so this dispatched task
+            // doesn't park its tokio worker for the ~50ms probe.
+            let account = if let Some(account) = client.account_info_from_init() {
+                account
+            } else {
+                let cd = config_dir.clone();
+                match tokio::task::spawn_blocking(move || {
+                    crate::cloud::auth_status::account_info_from_shell(&cd)
+                })
+                .await
+                {
+                    Ok(opt) => opt.unwrap_or_default(),
+                    Err(join_err) => {
+                        tracing::warn!(
+                            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                            error = %join_err,
+                            "get_status_snapshot account probe spawn_blocking task panicked"
+                        );
+                        forge_primitives::AccountInfo::default()
+                    }
+                }
+            };
             let forge_account = display_name.map(forge_primitives::ForgeAccountIdentity::new);
-            let _ =
-                event_tx.send(AgentEvent::StatusSnapshot { session_id, account, forge_account });
+            if event_tx
+                .send(AgentEvent::StatusSnapshot { session_id, account, forge_account })
+                .is_err()
+            {
+                tracing::warn!(
+                    target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                    "event channel closed; StatusSnapshot dropped",
+                );
+            }
             Ok(())
         })
     }
@@ -398,8 +412,34 @@ impl ForgeSdkBridge {
         let event_tx = self.inner.event_tx.clone();
         let config_dir = self.inner.config_dir.clone();
         self.dispatch("get_oauth_credentials_snapshot", move |_client| async move {
-            let credentials = crate::cloud::oauth_credentials::load_oauth_credentials(&config_dir);
-            let _ = event_tx.send(AgentEvent::OauthCredentialsSnapshot { session_id, credentials });
+            // load_oauth_credentials shells out to macOS `security
+            // find-generic-password`; wrap in spawn_blocking so the
+            // 30s usage-poller doesn't park N tokio workers per
+            // account during keychain access.
+            let credentials = match tokio::task::spawn_blocking(move || {
+                crate::cloud::oauth_credentials::load_oauth_credentials(&config_dir)
+            })
+            .await
+            {
+                Ok(opt) => opt,
+                Err(join_err) => {
+                    tracing::warn!(
+                        target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                        error = %join_err,
+                        "load_oauth_credentials spawn_blocking task panicked"
+                    );
+                    None
+                }
+            };
+            if event_tx
+                .send(AgentEvent::OauthCredentialsSnapshot { session_id, credentials })
+                .is_err()
+            {
+                tracing::warn!(
+                    target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                    "event channel closed; OauthCredentialsSnapshot dropped",
+                );
+            }
             Ok(())
         })
     }
@@ -409,8 +449,25 @@ impl ForgeSdkBridge {
         self.dispatch("get_context_usage", move |client| async move {
             let usage = client.get_context_usage().await?;
             let percentage = forge_sdk_worker::clamp_percentage_to_u8(usage.percentage);
-            let _ = event_tx
-                .send(AgentEvent::ContextUsage { session_id, percentage: Some(percentage) });
+            // `raw_max_tokens` is the model's nominal context-window
+            // size; `max_tokens` is the effective cap after autocompact
+            // reductions. Forge surfaces the raw size so the panel
+            // shows the model's headline capacity (1M / 200K / …)
+            // rather than a fluctuating effective number.
+            let max_tokens = Some(usage.raw_max_tokens);
+            if event_tx
+                .send(AgentEvent::ContextUsage {
+                    session_id,
+                    percentage: Some(percentage),
+                    max_tokens,
+                })
+                .is_err()
+            {
+                tracing::warn!(
+                    target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                    "event channel closed; ContextUsage dropped",
+                );
+            }
             Ok(())
         })
     }
@@ -420,7 +477,12 @@ impl ForgeSdkBridge {
         self.dispatch("reload_plugins", move |client| async move {
             match client.reload_plugins().await {
                 Ok(_) => {
-                    let _ = event_tx.send(AgentEvent::RuntimeReloadCompleted { session_id });
+                    if event_tx.send(AgentEvent::RuntimeReloadCompleted { session_id }).is_err() {
+                        tracing::warn!(
+                            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                            "event channel closed; RuntimeReloadCompleted dropped",
+                        );
+                    }
                 }
                 Err(e) => {
                     let msg = format!("reload_plugins failed: {e}");
@@ -444,34 +506,19 @@ impl ForgeSdkBridge {
         let event_tx = self.inner.event_tx.clone();
         self.dispatch("get_mcp_snapshot", move |client| async move {
             let response = client.mcp_status().await?;
-            let _ = event_tx.send(AgentEvent::McpSnapshot {
-                session_id,
-                servers: response.mcp_servers,
-                error: None,
-            });
-            Ok(())
-        })
-    }
-
-    pub(crate) fn respond_to_elicitation(
-        &self,
-        session_id: String,
-        elicitation_request_id: String,
-        action: ElicitationAction,
-        content: Option<Value>,
-    ) -> anyhow::Result<()> {
-        // No `check_session_id` — same shape as `prompt_with_images`:
-        // an elicitation has its own request_id seam, and a silent
-        // stale-session drop would leave the agent waiting forever
-        // for a response that no longer comes.
-        self.trace_session_id_bypass(&session_id, "respond_to_elicitation");
-        let action_str = match action {
-            ElicitationAction::Accept => "accept",
-            ElicitationAction::Decline => "decline",
-            ElicitationAction::Cancel => "cancel",
-        };
-        self.dispatch("respond_to_elicitation", move |client| async move {
-            client.respond_to_elicitation(&elicitation_request_id, action_str, content).await?;
+            if event_tx
+                .send(AgentEvent::McpSnapshot {
+                    session_id,
+                    servers: response.mcp_servers,
+                    error: None,
+                })
+                .is_err()
+            {
+                tracing::warn!(
+                    target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                    "event channel closed; McpSnapshot dropped",
+                );
+            }
             Ok(())
         })
     }
@@ -517,143 +564,34 @@ impl ForgeSdkBridge {
         })
     }
 
-    pub(crate) fn set_mcp_servers(
-        &self,
-        session_id: String,
-        servers: std::collections::BTreeMap<String, McpServerConfig>,
-    ) -> anyhow::Result<()> {
-        let event_tx = self.inner.event_tx.clone();
-        let payload = serde_json::to_value(servers)?;
-        self.dispatch("set_mcp_servers", move |client| async move {
-            if let Err(e) = client.mcp_set_servers(payload).await {
-                Self::emit_mcp_error_or_log(
-                    &event_tx,
-                    session_id,
-                    "set_servers",
-                    None,
-                    format!("{e}"),
-                );
-            }
-            Ok(())
-        })
-    }
-
-    pub(crate) fn authenticate_mcp_server(
-        &self,
-        session_id: String,
-        server_name: String,
-    ) -> anyhow::Result<()> {
-        let event_tx = self.inner.event_tx.clone();
-        self.dispatch("authenticate_mcp_server", move |client| async move {
-            match client.mcp_authenticate(&server_name).await {
-                Ok(response) => {
-                    let url = response
-                        .get("redirect_url")
-                        .or_else(|| response.get("authUrl"))
-                        .or_else(|| response.get("auth_url"))
-                        .and_then(serde_json::Value::as_str)
-                        .map(str::to_owned);
-                    if let Some(auth_url) = url {
-                        let _ = event_tx.send(AgentEvent::McpAuthRedirect {
-                            session_id,
-                            redirect: forge_primitives::McpAuthRedirect {
-                                server_name,
-                                auth_url,
-                                requires_user_action: true,
-                            },
-                        });
-                    } else {
-                        // Without a redirect URL the TUI's authenticating
-                        // overlay would hang forever — surface as an
-                        // operation error so the user sees the failure.
-                        Self::emit_mcp_error_or_log(
-                            &event_tx,
-                            session_id,
-                            "authenticate",
-                            Some(server_name),
-                            "MCP authentication response had no redirect URL".to_owned(),
-                        );
-                    }
-                }
-                Err(e) => {
-                    Self::emit_mcp_error_or_log(
-                        &event_tx,
-                        session_id,
-                        "authenticate",
-                        Some(server_name),
-                        format!("{e}"),
-                    );
-                }
-            }
-            Ok(())
-        })
-    }
-
-    pub(crate) fn clear_mcp_auth(
-        &self,
-        session_id: String,
-        server_name: String,
-    ) -> anyhow::Result<()> {
-        let event_tx = self.inner.event_tx.clone();
-        self.dispatch("clear_mcp_auth", move |client| async move {
-            if let Err(e) = client.mcp_clear_auth(&server_name).await {
-                Self::emit_mcp_error_or_log(
-                    &event_tx,
-                    session_id,
-                    "clear_auth",
-                    Some(server_name),
-                    format!("{e}"),
-                );
-            }
-            Ok(())
-        })
-    }
-
-    pub(crate) fn submit_mcp_oauth_callback_url(
-        &self,
-        session_id: String,
-        server_name: String,
-        callback_url: String,
-    ) -> anyhow::Result<()> {
-        let event_tx = self.inner.event_tx.clone();
-        self.dispatch("submit_mcp_oauth_callback_url", move |client| async move {
-            if let Err(e) = client.mcp_oauth_callback_url(&server_name, &callback_url).await {
-                Self::emit_mcp_error_or_log(
-                    &event_tx,
-                    session_id,
-                    "oauth_callback",
-                    Some(server_name),
-                    format!("{e}"),
-                );
-            }
-            Ok(())
-        })
-    }
-
     pub(crate) fn new_session(
         &self,
         cwd: String,
         launch_settings: SessionLaunchSettings,
     ) -> anyhow::Result<()> {
         let bridge = self.clone();
-        tokio::spawn(async move {
-            if let Err(err) =
-                forge_sdk_worker::spawn_session(&bridge, &cwd, None, &launch_settings).await
-            {
-                let msg = format!("forge-sdk session spawn failed: {err}");
-                if bridge
-                    .event_tx()
-                    .send(AgentEvent::ConnectionFailed { message: msg.clone() })
-                    .is_err()
+        let span = tracing::info_span!("bridge_new_session", cwd = %cwd);
+        tokio::spawn(
+            async move {
+                if let Err(err) =
+                    forge_sdk_worker::spawn_session(&bridge, &cwd, None, &launch_settings).await
                 {
-                    tracing::warn!(
-                        target: crate::logging::targets::BRIDGE_LIFECYCLE,
-                        error = %msg,
-                        "event channel closed; ConnectionFailed dropped",
-                    );
+                    let msg = format!("forge-sdk session spawn failed: {err}");
+                    if bridge
+                        .event_tx()
+                        .send(AgentEvent::ConnectionFailed { message: msg.clone() })
+                        .is_err()
+                    {
+                        tracing::warn!(
+                            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                            error = %msg,
+                            "event channel closed; ConnectionFailed dropped",
+                        );
+                    }
                 }
             }
-        });
+            .instrument(span),
+        );
         Ok(())
     }
 
@@ -664,25 +602,37 @@ impl ForgeSdkBridge {
         launch_settings: SessionLaunchSettings,
     ) -> anyhow::Result<()> {
         let bridge = self.clone();
-        tokio::spawn(async move {
-            if let Err(err) =
-                forge_sdk_worker::spawn_session(&bridge, &cwd, Some(&session_id), &launch_settings)
-                    .await
-            {
-                let msg = format!("forge-sdk session resume failed: {err}");
-                if bridge
-                    .event_tx()
-                    .send(AgentEvent::ConnectionFailed { message: msg.clone() })
-                    .is_err()
+        let span = tracing::info_span!(
+            "bridge_resume_session",
+            session_id = %session_id,
+            cwd = %cwd,
+        );
+        tokio::spawn(
+            async move {
+                if let Err(err) = forge_sdk_worker::spawn_session(
+                    &bridge,
+                    &cwd,
+                    Some(&session_id),
+                    &launch_settings,
+                )
+                .await
                 {
-                    tracing::warn!(
-                        target: crate::logging::targets::BRIDGE_LIFECYCLE,
-                        error = %msg,
-                        "event channel closed; ConnectionFailed dropped",
-                    );
+                    let msg = format!("forge-sdk session resume failed: {err}");
+                    if bridge
+                        .event_tx()
+                        .send(AgentEvent::ConnectionFailed { message: msg.clone() })
+                        .is_err()
+                    {
+                        tracing::warn!(
+                            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                            error = %msg,
+                            "event channel closed; ConnectionFailed dropped",
+                        );
+                    }
                 }
             }
-        });
+            .instrument(span),
+        );
         Ok(())
     }
 
@@ -691,7 +641,7 @@ impl ForgeSdkBridge {
     /// by project-rooted spawns (Default / Named) where the catalog's
     /// recorded lead may be stale (e.g. cross-account scan, deleted
     /// file, schema drift). See
-    /// [`forge_primitives::Command::ResumeOrNewSession`] for the
+    /// [`forge_primitives::AgentCommand::ResumeOrNewSession`] for the
     /// motivation.
     ///
     /// `cwd` is also passed to the resume attempt, not just the
@@ -707,6 +657,11 @@ impl ForgeSdkBridge {
         launch_settings: SessionLaunchSettings,
     ) -> anyhow::Result<()> {
         let bridge = self.clone();
+        let span = tracing::info_span!(
+            "bridge_resume_or_new_session",
+            session_id = %session_id,
+            cwd = %cwd,
+        );
         tokio::spawn(async move {
             if let Err(resume_err) =
                 forge_sdk_worker::spawn_session(&bridge, &cwd, Some(&session_id), &launch_settings)
@@ -737,7 +692,7 @@ impl ForgeSdkBridge {
                     }
                 }
             }
-        });
+        }.instrument(span));
         Ok(())
     }
 
@@ -803,12 +758,6 @@ impl ForgeSdkBridge {
         crate::userdata::memory::project_memory_path(&self.inner.config_dir, cwd)
     }
 
-    pub(crate) fn oauth_credentials(
-        &self,
-    ) -> Option<crate::cloud::oauth_credentials::OauthCredentials> {
-        crate::cloud::oauth_credentials::load_oauth_credentials(&self.inner.config_dir)
-    }
-
     pub(crate) fn settings_documents(
         &self,
         cwd: &Path,
@@ -848,23 +797,35 @@ mod tests {
     }
 
     #[test]
+    fn clear_client_drains_pending_permission_map() {
+        let bridge = test_bridge();
+        let (tx, rx) = tokio::sync::oneshot::channel::<forge_primitives::PermissionDecision>();
+        bridge.inner.pending.lock().insert("tool-id-1".to_owned(), tx);
+
+        bridge.clear_client();
+
+        assert!(bridge.inner.pending.lock().is_empty());
+        let decision = rx.blocking_recv().expect("oneshot resolved by clear_client drain");
+        assert!(!decision.is_allow(), "drain must resolve with deny");
+    }
+
+    #[test]
+    fn clear_client_drains_pending_question_map() {
+        let bridge = test_bridge();
+        let (tx, rx) = tokio::sync::oneshot::channel::<forge_primitives::QuestionOutcome>();
+        bridge.inner.pending_questions.lock().insert("tool-id-q1".to_owned(), tx);
+
+        bridge.clear_client();
+
+        assert!(bridge.inner.pending_questions.lock().is_empty());
+        let outcome = rx.blocking_recv().expect("oneshot resolved by clear_client drain");
+        assert!(matches!(outcome, forge_primitives::QuestionOutcome::Cancelled));
+    }
+
+    #[test]
     fn dispatch_without_client_returns_error() {
         let bridge = test_bridge();
         let err = bridge.cancel("session-1".to_owned()).unwrap_err();
         assert!(err.to_string().contains("before active session"));
-    }
-
-    #[test]
-    fn rename_session_runs_offline_without_client() {
-        let bridge = test_bridge();
-        // Bogus session id — `rename_session` propagates the disk
-        // error rather than the "no active session" guard. The point
-        // of this test is to confirm we do NOT take the dispatch path.
-        let err = bridge
-            .rename_session("does-not-exist-session-id".to_owned(), "title".to_owned())
-            .unwrap_err();
-        // Whatever forge_sdk surfaces — just ensure it isn't the
-        // bridge's own "no active session" message.
-        assert!(!err.to_string().contains("before active session"));
     }
 }

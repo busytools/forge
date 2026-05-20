@@ -51,7 +51,6 @@ impl CliVersionInfo {
     /// numeric-tuple semver: a non-parseable token on either side
     /// collapses to `false` (no update banner shown rather than a
     /// spurious one).
-    #[must_use]
     pub fn has_update(&self) -> bool {
         match (self.installed.as_deref(), self.latest.as_deref()) {
             (Some(installed), Some(latest)) => is_strictly_newer(latest, installed),
@@ -64,7 +63,6 @@ impl CliVersionInfo {
 /// Always succeeds — failures collapse to `None` on the affected
 /// field with a WARN log; the workspace caller never has to handle
 /// a `Result`.
-#[must_use]
 pub async fn fetch_info() -> CliVersionInfo {
     let (installed, latest) = tokio::join!(probe_installed(), probe_latest());
     CliVersionInfo { installed, latest }

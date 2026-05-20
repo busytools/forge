@@ -60,13 +60,11 @@ impl TraceLog {
     }
 
     /// Slice of inbound lines (CLI → SDK).
-    #[must_use]
     pub fn inbound(&self) -> Vec<&str> {
         self.entries.iter().filter(|(d, _)| *d == "in").map(|(_, l)| l.as_str()).collect()
     }
 
     /// Slice of outbound lines (SDK → CLI).
-    #[must_use]
     pub fn outbound(&self) -> Vec<&str> {
         self.entries.iter().filter(|(d, _)| *d == "out").map(|(_, l)| l.as_str()).collect()
     }
@@ -75,12 +73,9 @@ impl TraceLog {
 /// Install inbound + outbound wire-tee callbacks on a builder so the
 /// resulting [`forge_sdk::Options`] captures every stream-json line
 /// the SDK exchanges with the `claude` subprocess. Returns the
-/// configured builder + a shared handle to the trace log.
-///
-/// Replaces the old `RecordingTransport` wrapper — the SDK no longer
-/// has a public `Transport` trait, and capturing wire bytes is now a
-/// spawn-time configuration concern, not a transport-injection one.
-#[must_use]
+/// configured builder + a shared handle to the trace log. Wire
+/// capture is a spawn-time configuration concern, not a
+/// transport-injection one.
 pub fn attach_recording(builder: OptionsBuilder) -> (OptionsBuilder, Arc<Mutex<TraceLog>>) {
     let log = Arc::new(Mutex::new(TraceLog::default()));
     let log_in = log.clone();
@@ -104,7 +99,6 @@ pub const PINNED_CLI_VERSION: &str = "2.1.117";
 /// Directory holding the committed trace baselines for the pinned CLI
 /// version. Resolves to
 /// `crates/forge-test-harness/baselines/sdk/<PINNED_CLI_VERSION>/`.
-#[must_use]
 pub fn baseline_dir() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("baselines")
@@ -121,7 +115,6 @@ pub fn baseline_dir() -> std::path::PathBuf {
 /// # Panics
 ///
 /// If the fixture file is missing, unreadable, or malformed.
-#[must_use]
 pub fn load_baseline(scenario: &str) -> TraceLog {
     let path = baseline_dir().join(format!("{scenario}.jsonl"));
     let body = std::fs::read_to_string(&path).unwrap_or_else(|e| {
@@ -180,7 +173,6 @@ pub struct DecodeReport {
 
 impl DecodeReport {
     /// True if no Unknowns or decode errors were seen.
-    #[must_use]
     pub fn is_clean(&self) -> bool {
         self.unknown_types.is_empty()
             && self.unknown_control_subtypes.is_empty()
@@ -309,8 +301,11 @@ where
     loop {
         match tokio::time::timeout(read_timeout, events.recv()).await {
             Ok(Some(Ok(msg))) => {
-                if let forge_sdk::Message::Result {
-                    num_turns, total_cost_usd, duration_ms, ..
+                if let forge_primitives::Message::Result {
+                    num_turns,
+                    total_cost_usd,
+                    duration_ms,
+                    ..
                 } = &msg
                 {
                     saw_result = true;
@@ -442,7 +437,6 @@ pub struct ScenarioCapture {
 
 /// Run every inbound line from `log` through `decode_dispatch`, returning
 /// a categorised report.
-#[must_use]
 pub fn decode_all_inbound(log: &TraceLog) -> DecodeReport {
     use forge_sdk::control::ControlRequestKind;
     let mut report = DecodeReport::default();

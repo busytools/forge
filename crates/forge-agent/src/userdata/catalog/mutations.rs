@@ -1,58 +1,18 @@
 //! Filesystem-backed session mutations:
 //!
-//! - [`rename_session`] — appends a `custom-title` JSONL entry.
 //! - [`tag_session`] — appends a `tag` JSONL entry (pass `None` to clear).
 //! - [`delete_session`] — removes the `<session_id>.jsonl` file and any
 //!   sibling `<session_id>/` subagent-transcript directory.
-//! - [`fork_session`] — copies transcript entries into a new session,
-//!   remapping UUIDs. Optionally truncates at a supplied
-//!   `up_to_message_id` boundary.
 
-use std::collections::HashMap;
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use serde_json::{Value, json};
-use uuid::Uuid;
+use serde_json::json;
 
 use forge_sdk::{Error, projects_dir_for};
 
-/// Outcome of a [`fork_session`] call.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ForkSessionResult {
-    /// UUID of the new forked session.
-    pub session_id: String,
-}
-
-/// Rename a session by appending a `custom-title` entry. Calls
-/// `list_sessions` / `get_session_info` will surface the most recently
-/// appended title.
-///
-/// # Errors
-///
-/// - [`Error::MessageParse`] when `session_id` is not a valid UUID or
-///   `title` is empty after trimming.
-/// - [`Error::Io`] when the session file can't be found or the append
-///   fails.
-pub fn rename_session(
-    config_dir: &Path,
-    session_id: &str,
-    title: &str,
-    directory: Option<&str>,
-) -> Result<(), Error> {
-    validate_uuid(session_id)?;
-    let stripped = title.trim();
-    if stripped.is_empty() {
-        return Err(Error::message_parse("title must be non-empty"));
-    }
-    let payload = json!({
-        "type": "custom-title",
-        "customTitle": stripped,
-        "sessionId": session_id,
-    });
-    append_to_session(config_dir, session_id, directory, &payload)
-}
+use crate::userdata::catalog::scan::is_valid_uuid;
 
 /// Tag a session. Pass `None` to clear the tag (appends an empty-string
 /// entry which `list_sessions` interprets as cleared).
@@ -127,159 +87,6 @@ pub fn delete_session(
     Ok(())
 }
 
-/// Fork a session into a new branch. Copies the transcript line-by-line
-/// into a new `<new_session_id>.jsonl` file, remapping every `uuid` /
-/// `parentUuid` / `sessionId` field. When `up_to_message_id` is set,
-/// stops copying after that message's UUID has been emitted.
-///
-/// # Errors
-///
-/// - [`Error::MessageParse`] when either UUID is invalid.
-/// - [`Error::Io`] when the source file can't be found, is empty, or
-///   the write fails.
-pub fn fork_session(
-    config_dir: &Path,
-    session_id: &str,
-    directory: Option<&str>,
-    up_to_message_id: Option<&str>,
-    title: Option<&str>,
-) -> Result<ForkSessionResult, Error> {
-    validate_uuid(session_id)?;
-    if let Some(m) = up_to_message_id {
-        validate_uuid(m)?;
-    }
-    let source = find_session_file(config_dir, session_id, directory).ok_or_else(|| {
-        Error::Io(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            format!("session {session_id} not found"),
-        ))
-    })?;
-
-    // Generate new session id up front so we can remap sessionId fields
-    // inline as we scan.
-    let new_session_id = Uuid::new_v4().to_string();
-    let project_dir = source
-        .parent()
-        .ok_or_else(|| Error::Io(std::io::Error::other("session file missing parent dir")))?;
-    let fork_path = project_dir.join(format!("{new_session_id}.jsonl"));
-    if fork_path.exists() {
-        return Err(Error::Io(std::io::Error::new(
-            std::io::ErrorKind::AlreadyExists,
-            format!("fork target {new_session_id} already exists"),
-        )));
-    }
-
-    // Read the whole transcript into memory first. Two passes are
-    // unavoidable: if a child references a parent not yet seen, the
-    // naive streaming approach leaves the parentUuid pointing at a UUID
-    // that doesn't exist in the forked transcript.
-    let mut raw_lines: Vec<String> = Vec::new();
-    for (idx, line_res) in BufReader::new(fs::File::open(&source)?).lines().enumerate() {
-        match line_res {
-            Ok(l) => raw_lines.push(l),
-            Err(e) => {
-                tracing::warn!(
-                    line_no = idx,
-                    error = %e,
-                    source = %source.display(),
-                    "fork: read failed; truncating source transcript — fork will be partial"
-                );
-                break;
-            }
-        }
-    }
-
-    // Pass 1 — mint a new UUID for every entry that has one, so
-    // parentUuid references always find a mapping.
-    let mut uuid_remap: HashMap<String, String> = HashMap::new();
-    for (idx, line) in raw_lines.iter().enumerate() {
-        if line.is_empty() {
-            continue;
-        }
-        match serde_json::from_str::<Value>(line) {
-            Ok(value) => {
-                if let Some(old) = value.get("uuid").and_then(Value::as_str) {
-                    uuid_remap.entry(old.to_string()).or_insert_with(|| Uuid::new_v4().to_string());
-                }
-            }
-            Err(e) => {
-                tracing::debug!(
-                    line_no = idx,
-                    error = %e,
-                    "fork pass 1: skipping unparseable line; pass 2 will copy it verbatim"
-                );
-            }
-        }
-    }
-
-    // Pass 2 — rewrite each entry using the fully-populated map.
-    let mut out_lines: Vec<String> = Vec::new();
-    let mut saw_boundary = false;
-
-    for line in raw_lines {
-        if line.is_empty() {
-            continue;
-        }
-        let Ok(mut value) = serde_json::from_str::<Value>(&line) else {
-            // Pass unparseable lines through verbatim — tolerant copy.
-            out_lines.push(line);
-            continue;
-        };
-        let boundary_hit =
-            remap_entry_fields(&mut value, &uuid_remap, &new_session_id, up_to_message_id);
-        if boundary_hit {
-            saw_boundary = true;
-        }
-        out_lines.push(
-            serde_json::to_string(&value).map_err(|e| Error::encode("fork session entry", e))?,
-        );
-        if saw_boundary {
-            break;
-        }
-    }
-
-    if out_lines.is_empty() {
-        return Err(Error::Io(std::io::Error::other(format!(
-            "session {session_id} has no messages to fork"
-        ))));
-    }
-    if up_to_message_id.is_some() && !saw_boundary {
-        return Err(Error::message_parse(format!(
-            "up_to_message_id {} not found in transcript",
-            up_to_message_id.unwrap_or("")
-        )));
-    }
-
-    // Apply fork title — user-supplied wins, else derive from the source
-    // (last customTitle / aiTitle / first prompt) and append " (fork)".
-    let resolved_title = title
-        .map(|t| t.trim().to_string())
-        .filter(|t| !t.is_empty())
-        .or_else(|| derive_fork_title(&source).map(|orig| format!("{orig} (fork)")));
-    if let Some(final_title) = resolved_title {
-        let title_entry = serde_json::to_string(&json!({
-            "type": "custom-title",
-            "customTitle": final_title,
-            "sessionId": new_session_id,
-        }))
-        .map_err(|e| Error::encode("fork session title", e))?;
-        out_lines.push(title_entry);
-    }
-
-    let mut body = out_lines.join("\n");
-    body.push('\n');
-    fs::write(&fork_path, body)?;
-    Ok(ForkSessionResult { session_id: new_session_id })
-}
-
-/// True if `s` is a canonical 8-4-4-4-12 hyphenated UUID. The length
-/// guard rejects the hyphenless / braced / URN forms that
-/// `Uuid::try_parse` otherwise accepts — session ids on disk are always
-/// the hyphenated form the CLI emits.
-pub(crate) fn is_valid_uuid(s: &str) -> bool {
-    s.len() == 36 && Uuid::try_parse(s).is_ok()
-}
-
 fn validate_uuid(s: &str) -> Result<(), Error> {
     if is_valid_uuid(s) {
         Ok(())
@@ -333,97 +140,6 @@ fn append_line(path: &Path, data: &[u8]) -> Result<(), Error> {
     Ok(())
 }
 
-/// Rewrite `uuid` / `parentUuid` / `parent_uuid` / `sessionId` /
-/// `session_id` on one JSONL entry using a fully-populated remap
-/// (pass-1 output). Returns `true` when the entry's old uuid matched
-/// `boundary` — caller stops after emitting that line.
-pub(crate) fn remap_entry_fields(
-    value: &mut Value,
-    uuid_remap: &HashMap<String, String>,
-    new_session_id: &str,
-    boundary: Option<&str>,
-) -> bool {
-    let Some(obj) = value.as_object_mut() else {
-        return false;
-    };
-    let mut boundary_hit = false;
-    if let Some(old) = obj.get("uuid").and_then(Value::as_str).map(ToOwned::to_owned) {
-        if let Some(mapped) = uuid_remap.get(&old) {
-            obj.insert("uuid".into(), Value::String(mapped.clone()));
-        }
-        if boundary == Some(old.as_str()) {
-            boundary_hit = true;
-        }
-    }
-    for parent_key in ["parentUuid", "parent_uuid"] {
-        if let Some(parent) = obj.get(parent_key).and_then(Value::as_str).map(ToOwned::to_owned)
-            && let Some(mapped) = uuid_remap.get(&parent)
-        {
-            obj.insert(parent_key.into(), Value::String(mapped.clone()));
-        }
-    }
-    for key in ["sessionId", "session_id"] {
-        if obj.contains_key(key) {
-            obj.insert(key.into(), Value::String(new_session_id.into()));
-        }
-    }
-    boundary_hit
-}
-
-/// Scan the source transcript for the last `customTitle` / `aiTitle`
-/// entry, or fall back to the first user prompt's text content.
-fn derive_fork_title(source: &Path) -> Option<String> {
-    let Ok(file) = fs::File::open(source) else {
-        return None;
-    };
-    let mut custom_title: Option<String> = None;
-    let mut ai_title: Option<String> = None;
-    let mut first_prompt: Option<String> = None;
-    for (idx, line_res) in BufReader::new(file).lines().enumerate() {
-        let line = match line_res {
-            Ok(l) => l,
-            Err(e) => {
-                tracing::warn!(
-                    line_no = idx,
-                    error = %e,
-                    source = %source.display(),
-                    "fork title scan: read failed; using best-effort title from lines read so far"
-                );
-                break;
-            }
-        };
-        if line.is_empty() {
-            continue;
-        }
-        let value = match serde_json::from_str::<Value>(&line) {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::debug!(
-                    line_no = idx,
-                    error = %e,
-                    "fork title scan: skipping unparseable line"
-                );
-                continue;
-            }
-        };
-        if let Some(v) = value.get("customTitle").and_then(Value::as_str) {
-            custom_title = Some(v.to_string());
-        }
-        if let Some(v) = value.get("aiTitle").and_then(Value::as_str) {
-            ai_title = Some(v.to_string());
-        }
-        if first_prompt.is_none()
-            && value.get("type").and_then(Value::as_str) == Some("user")
-            && value.get("parent_tool_use_id").is_none_or(Value::is_null)
-            && let Some(content) =
-                value.get("message").and_then(|m| m.get("content")).and_then(Value::as_str)
-        {
-            first_prompt = Some(content.to_string());
-        }
-    }
-    custom_title.or(ai_title).or(first_prompt)
-}
-
 #[cfg(test)]
 mod tests {
 
@@ -431,19 +147,6 @@ mod tests {
 
     fn fake_config_dir() -> PathBuf {
         PathBuf::from("/tmp/forge_mutations_test_cfg")
-    }
-
-    #[test]
-    fn invalid_uuid_is_rejected_on_rename() {
-        let r = rename_session(&fake_config_dir(), "not-a-uuid", "title", None);
-        assert!(matches!(r, Err(Error::MessageParse { .. })));
-    }
-
-    #[test]
-    fn empty_title_is_rejected() {
-        let session_id = "550e8400-e29b-41d4-a716-446655440000";
-        let r = rename_session(&fake_config_dir(), session_id, "   ", None);
-        assert!(matches!(r, Err(Error::MessageParse { .. })));
     }
 
     #[test]

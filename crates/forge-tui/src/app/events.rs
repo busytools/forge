@@ -16,7 +16,6 @@ use super::{
     PendingCommandAck, SystemSeverity, TextBlock,
 };
 use crate::agent::model;
-use crate::app::keys::reclaim_input_from_inline_prompt_if_needed;
 #[cfg(test)]
 use crate::app::keys::{CMD_MOD, WORD_NAV_MOD};
 #[cfg(test)]
@@ -32,11 +31,7 @@ pub use client::apply_session_update;
 ///
 /// Emits a `tracing::debug!` on every transition (including no-op
 /// same-state writes) so the "Projects-pane spinner stops mid-turn"
-/// flake (forge#TBD) has a trail when it next reproduces. Note: this
-/// helper does NOT catch the direct `bucket.lifecycle_state = ...`
-/// assignments scattered through `events/{session,client,turn}.rs`.
-/// Funnelling those through here is a separate, larger refactor —
-/// see the linked issue for the list of bypass sites.
+/// flake has a trail when it next reproduces.
 pub(crate) fn set_bucket_lifecycle_state(
     app: &mut App,
     key: &forge_workspace::SessionKey,
@@ -56,9 +51,6 @@ pub(crate) fn set_bucket_lifecycle_state(
         );
     }
 }
-#[cfg(feature = "testing")]
-pub use turn::{handle_permission_request_event, handle_question_request_event};
-
 pub fn handle_terminal_event(app: &mut App, event: Event) {
     let changed = match event {
         Event::Key(key) if should_dispatch_key_event(key) => dispatch_key_by_view(app, key),
@@ -133,16 +125,12 @@ fn dispatch_key_by_view(app: &mut App, key: crossterm::event::KeyEvent) -> bool 
             *app.active_paste_session_mut() = None;
             super::keys::dispatch_key_by_focus(app, key)
         }
-        ActiveView::Config => {
-            super::config::handle_key(app, key);
+        ActiveView::Plugins => {
+            super::config::handle_plugins_key(app, key);
             true
         }
-        ActiveView::Trusted => {
-            super::trust::handle_key(app, key);
-            true
-        }
-        ActiveView::SessionPicker => {
-            super::session_picker::handle_key(app, key);
+        ActiveView::Mcp => {
+            super::config::handle_mcp_key(app, key);
             true
         }
         ActiveView::Launchpad => super::keys::dispatch_key_by_focus(app, key),
@@ -162,14 +150,9 @@ fn dispatch_mouse_by_view(app: &mut App, mouse: crossterm::event::MouseEvent) {
         ActiveView::Diff => {
             super::diff_overlay::handle_mouse(app, mouse);
         }
-        ActiveView::Config
-        | ActiveView::Trusted
-        | ActiveView::SessionPicker
-        | ActiveView::Launchpad => {
-            // Mouse input is ignored on these views in v1 —
-            // launchpad / config / etc. stay keyboard-only.
-            let _ = mouse;
-        }
+        // Plugins / MCP / Launchpad are keyboard-only — mouse
+        // events are intentionally dropped.
+        ActiveView::Plugins | ActiveView::Mcp | ActiveView::Launchpad => {}
     }
 }
 
@@ -181,15 +164,15 @@ fn dispatch_paste_by_view(app: &mut App, text: &str) -> bool {
                 AppStatus::Connecting | AppStatus::CommandPending | AppStatus::Error
             ) && !app.is_compacting()
             {
-                reclaim_input_from_inline_prompt_if_needed(app);
                 app.queue_paste_text(text);
                 return true;
             }
             false
         }
-        ActiveView::Config => super::config::handle_paste(app, text),
+        ActiveView::Plugins => super::config::handle_plugins_paste(app, text),
+        ActiveView::Mcp => super::config::handle_mcp_paste(app, text),
         ActiveView::Diff => super::diff_overlay::handle_paste(app, text),
-        ActiveView::Trusted | ActiveView::SessionPicker | ActiveView::Launchpad => false,
+        ActiveView::Launchpad => false,
     }
 }
 
@@ -313,7 +296,7 @@ pub(super) fn handle_runtime_session_state_update(
         model::RuntimeSessionState::Idle => {
             if matches!(app.status, AppStatus::Thinking | AppStatus::Running)
                 && !app.is_compacting()
-                && app.pending_cancel_origin().is_none()
+                && !app.pending_cancel()
             {
                 app.status = AppStatus::Ready;
             }
@@ -392,11 +375,10 @@ mod tests {
     // =====
 
     use super::*;
-    use crate::app::slash::{SlashCandidate, SlashContext, SlashState};
     use crate::app::{
-        ActiveView, BlockCache, CancelOrigin, FocusOwner, FocusTarget, HelpView, InlinePermission,
-        InlineQuestion, SelectionKind, SelectionPoint, SelectionState, TextBlockSpacing, TodoItem,
-        TodoStatus, ToolCallInfo, ToolCallScope, UsageSnapshot, UsageSourceKind, mention,
+        ActiveView, BlockCache, HelpView, SelectionKind, SelectionPoint, SelectionState,
+        TextBlockSpacing, TodoItem, TodoStatus, ToolCallInfo, ToolCallScope, UsageSnapshot,
+        UsageSourceKind, mention,
     };
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
     use forge_primitives::cloud::service_status::ServiceSeverity;
@@ -449,8 +431,6 @@ mod tests {
             last_measured_layout_epoch: 0,
             last_measured_layout_generation: 0,
             cache: BlockCache::default(),
-            pending_permission: None,
-            pending_question: None,
             collapsed_override: None,
             last_measured_y_in_msg: 0,
         }
@@ -901,23 +881,10 @@ mod tests {
     }
 
     fn app_with_bridge_connection()
-    -> (App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::Command>) {
+    -> (App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::AgentCommand>) {
         let mut app = make_test_app();
         let rx = app.install_testing_stub();
         (app, rx)
-    }
-
-    fn listed_session(id: &str, title: &str) -> forge_primitives::SessionListEntry {
-        forge_primitives::SessionListEntry {
-            session_id: id.to_owned(),
-            summary: title.to_owned(),
-            last_modified_ms: 1,
-            file_size_bytes: 2,
-            cwd: Some("/test".to_owned()),
-            git_branch: Some("main".to_owned()),
-            custom_title: Some(title.to_owned()),
-            first_prompt: Some(format!("prompt {title}")),
-        }
     }
 
     // Wire-message helpers for the SdkMessageReceived path. Mirror the
@@ -1098,17 +1065,6 @@ mod tests {
         };
         assert_eq!(tc.terminal_output.as_deref(), Some("line 1\nline 2"));
     }
-
-    // Two SessionUpdate-only tests removed in the dispatcher collapse:
-    // `tool_call_update_with_same_terminal_content_still_invalidates_command_changes`
-    // and `repeated_tool_call_updates_existing_execute_snapshot_state`
-    // both exercised the typed `model::ToolCallContent::Terminal` content
-    // variant which has no wire-side equivalent — terminal_id binding via
-    // explicit Terminal content is being deleted along with the typed
-    // dispatcher in the next commits. Coverage for execute-tool output
-    // capture lives in `execute_tool_update_uses_raw_output_fallback` (Bash
-    // tool through the wire path) and the integration tests under
-    // `tests/integration/tool_lifecycle.rs`.
 
     #[test]
     fn late_tool_update_for_removed_tool_does_not_corrupt_active_task_set() {
@@ -1419,7 +1375,6 @@ mod tests {
         assert!(!app.should_quit);
         assert!(app.session_id().is_none());
         assert_eq!(app.files_accessed(), 0);
-        assert!(app.pending_interaction_ids().is_empty());
         assert!(!app.tools_collapsed);
         assert!(!app.force_redraw);
         assert!(app.todos().is_empty());
@@ -1469,7 +1424,7 @@ mod tests {
         app.active_messages_mut().push(assistant_msg(vec![MessageBlock::Text(
             TextBlock::from_complete("partial output"),
         )]));
-        app.set_pending_cancel_origin(Some(CancelOrigin::Manual));
+        app.set_pending_cancel(true);
 
         let session_key = active_session_key(&app);
         apply_session_update(
@@ -1544,7 +1499,7 @@ mod tests {
     #[test]
     fn connected_requests_mcp_snapshot_even_outside_mcp_tab() {
         let (mut app, mut rx) = app_with_bridge_connection();
-        app.config.active_tab = crate::app::config::ConfigTab::Status;
+        app.active_view = crate::app::ActiveView::Plugins;
         app.mcp_mut().servers.push(forge_primitives::McpServerStatus {
             name: "supabase".into(),
             status: forge_primitives::McpServerConnectionStatus::Connected,
@@ -1562,7 +1517,7 @@ mod tests {
         let envelope = rx.try_recv().expect("mcp snapshot command");
         assert_eq!(
             envelope,
-            forge_primitives::Command::GetMcpSnapshot {
+            forge_primitives::AgentCommand::GetMcpSnapshot {
                 session_id: forge_primitives::SessionId::new("test-session".to_owned()),
             }
         );
@@ -1604,34 +1559,6 @@ mod tests {
             panic!("expected welcome block");
         };
         assert_eq!(welcome.cwd, "/changed");
-    }
-
-    #[test]
-    fn connected_reconciles_trust_for_new_cwd() {
-        let mut app = make_test_app();
-        app.trust.status = crate::app::trust::TrustStatus::Trusted;
-        app.config.committed_preferences_document = serde_json::json!({
-            "projects": {}
-        });
-
-        apply_session_update(
-            &mut app,
-            SessionUpdate::Connected {
-                key: forge_workspace::SessionKey::from_session_id("session-trust".to_owned()),
-                session_id: forge_primitives::SessionId::new("session-trust"),
-                cwd: "/untrusted".into(),
-                current_model: test_current_model_primitives("claude-updated"),
-                available_models: Vec::new(),
-                mode: None,
-                history: Vec::new(),
-            },
-        );
-
-        assert_eq!(app.trust.status, crate::app::trust::TrustStatus::Untrusted);
-        assert_eq!(
-            app.trust.project_key,
-            crate::app::trust::store::normalize_project_key(std::path::Path::new("/untrusted"))
-        );
     }
 
     #[test]
@@ -1678,7 +1605,6 @@ mod tests {
             &mut app.config.committed_settings_document,
             Some("haiku"),
         );
-        app.reconcile_runtime_from_persisted_settings_change();
 
         // The wire path delivers model changes via System("init") with
         // a `model` field; same downstream path as the original
@@ -1728,11 +1654,6 @@ mod tests {
             capability: crate::app::plugins::PluginCapability::Skill,
         });
         app.plugins.last_inventory_refresh_at = Some(Instant::now());
-        app.config.pending_session_title_change =
-            Some(crate::app::config::PendingSessionTitleChangeState {
-                session_id: "old-session".into(),
-                kind: crate::app::config::PendingSessionTitleChangeKind::Generate,
-            });
 
         apply_session_update(&mut app, connected_event("claude-updated"));
 
@@ -1744,7 +1665,6 @@ mod tests {
         assert!(app.account_info().is_none());
         assert!(app.plugins.installed.is_empty());
         assert!(app.plugins.last_inventory_refresh_at.is_none());
-        assert!(app.config.pending_session_title_change.is_none());
     }
 
     #[test]
@@ -1866,7 +1786,6 @@ mod tests {
             .push(assistant_msg(vec![MessageBlock::Text(TextBlock::from_complete("world"))]));
         app.status = AppStatus::Running;
         app.set_files_accessed(9);
-        app.pending_interaction_ids_mut().push("perm-1".into());
         app.todos_mut().push(TodoItem {
             content: "Task".into(),
             status: TodoStatus::InProgress,
@@ -1905,7 +1824,6 @@ mod tests {
         assert_eq!(app.messages().len(), 1);
         assert!(matches!(app.messages()[0].role, MessageRole::Welcome));
         assert_eq!(app.files_accessed(), 0);
-        assert!(app.pending_interaction_ids().is_empty());
         assert!(app.todos().is_empty());
         assert!(!app.todo_verification_nudge());
         assert!(app.mention().is_none());
@@ -1922,7 +1840,7 @@ mod tests {
     #[test]
     fn session_replaced_requests_mcp_snapshot_even_outside_mcp_tab() {
         let (mut app, mut rx) = app_with_bridge_connection();
-        app.config.active_tab = crate::app::config::ConfigTab::Status;
+        app.active_view = crate::app::ActiveView::Plugins;
         app.mcp_mut().servers.push(forge_primitives::McpServerStatus {
             name: "supabase".into(),
             status: forge_primitives::McpServerConnectionStatus::Connected,
@@ -1951,7 +1869,7 @@ mod tests {
         let envelope = rx.try_recv().expect("mcp snapshot command");
         assert_eq!(
             envelope,
-            forge_primitives::Command::GetMcpSnapshot {
+            forge_primitives::AgentCommand::GetMcpSnapshot {
                 session_id: forge_primitives::SessionId::new("replacement".to_owned()),
             }
         );
@@ -1968,36 +1886,17 @@ mod tests {
         let mcp = rx.try_recv().expect("mcp snapshot command");
         assert_eq!(
             mcp,
-            forge_primitives::Command::GetMcpSnapshot {
+            forge_primitives::AgentCommand::GetMcpSnapshot {
                 session_id: forge_primitives::SessionId::new("test-session".to_owned()),
             }
         );
         let status = rx.try_recv().expect("status snapshot command");
         assert_eq!(
             status,
-            forge_primitives::Command::GetStatusSnapshot {
+            forge_primitives::AgentCommand::GetStatusSnapshot {
                 session_id: forge_primitives::SessionId::new("test-session".to_owned()),
             }
         );
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn connected_pulls_usage_from_cache_when_usage_tab_is_open() {
-        // Usage refresh is sync now (read-and-copy from workspace
-        // cache), so `in_flight` is never observed as true. Verifies
-        // the path doesn't panic when Connected fires with the usage
-        // tab open — the previous async fetch lifecycle is retired.
-        tokio::task::LocalSet::new()
-            .run_until(async {
-                let mut app = make_test_app();
-                app.active_view = ActiveView::Config;
-                app.config.active_tab = crate::app::ConfigTab::Usage;
-
-                apply_session_update(&mut app, connected_event("claude-updated"));
-
-                assert!(!app.usage().in_flight, "sync refresh never sets in_flight");
-            })
-            .await;
     }
 
     #[test]
@@ -2189,9 +2088,7 @@ mod tests {
                 session_id: "a-only".into(),
                 summary: "From A".into(),
                 last_modified_ms: 100,
-                file_size_bytes: 1,
                 cwd: Some("/proj-a".into()),
-                git_branch: None,
                 custom_title: None,
                 first_prompt: None,
             }];
@@ -2205,9 +2102,7 @@ mod tests {
                     session_id: "b-only".into(),
                     summary: "From B".into(),
                     last_modified_ms: 200,
-                    file_size_bytes: 1,
                     cwd: Some("/proj-b".into()),
-                    git_branch: None,
                     custom_title: None,
                     first_prompt: None,
                 }],
@@ -2220,76 +2115,6 @@ mod tests {
         let bucket_b = app.sessions.get(&key_b).expect("bucket b");
         assert_eq!(bucket_b.recent_sessions.len(), 1);
         assert_eq!(bucket_b.recent_sessions[0].session_id, "b-only");
-    }
-
-    #[test]
-    fn usage_routes_to_targeted_bucket_not_active_bucket() {
-        // Regression for the wrong-account-bars bug: each `UiSession`
-        // bucket owns its own `UsageState`. A snapshot delivered for
-        // bucket B must NOT overwrite bucket A's snapshot, even if
-        // A is the currently active session at delivery time.
-        let mut app = make_test_app();
-        let key_a = forge_workspace::SessionKey::from_str_for_test("sess-a");
-        let key_b = forge_workspace::SessionKey::from_str_for_test("sess-b");
-        app.sessions.insert(key_a.clone(), crate::app::session::UiSession::new(key_a.clone()));
-        app.sessions.insert(key_b.clone(), crate::app::session::UiSession::new(key_b.clone()));
-        app.active_session_key = Some(key_a.clone());
-
-        // Snapshot targets B. The active bucket is A.
-        let snapshot_for_b = UsageSnapshot {
-            source: UsageSourceKind::Oauth,
-            fetched_at: std::time::SystemTime::now(),
-            five_hour: None,
-            seven_day: None,
-            seven_day_opus: None,
-            seven_day_sonnet: None,
-            extra_usage: None,
-        };
-        apply_session_update(
-            &mut app,
-            SessionUpdate::UsageSnapshotReceived {
-                key: key_b.clone(),
-                snapshot: snapshot_for_b.clone(),
-            },
-        );
-
-        // A (active) untouched, B got the data.
-        assert!(
-            app.usage().snapshot.is_none(),
-            "active bucket A must not be touched by a snapshot targeted at B"
-        );
-        let bucket_b = app.sessions.get(&key_b).expect("bucket b");
-        assert!(bucket_b.usage.snapshot.is_some(), "bucket B received its snapshot");
-    }
-
-    #[test]
-    fn usage_refresh_result_for_unknown_session_key_is_dropped() {
-        // Replaces the old scope-epoch guard. After moving `usage`
-        // onto `UiSession` (per-session bucket), the routing key is
-        // the bucket's `SessionKey`. A result targeting a key that
-        // no longer exists in `app.sessions` (session closed before
-        // the fetch landed) drops silently — no slot to write to.
-        let mut app = make_test_app();
-        app.set_session_id(Some(model::SessionId::new("active-session")));
-
-        apply_session_update(
-            &mut app,
-            SessionUpdate::UsageSnapshotReceived {
-                key: forge_workspace::SessionKey::from_session_id("unknown-bucket"),
-                snapshot: UsageSnapshot {
-                    source: UsageSourceKind::Oauth,
-                    fetched_at: std::time::SystemTime::now(),
-                    five_hour: None,
-                    seven_day: None,
-                    seven_day_opus: None,
-                    seven_day_sonnet: None,
-                    extra_usage: None,
-                },
-            },
-        );
-
-        // Active bucket untouched — the result targeted a different key.
-        assert!(app.usage().snapshot.is_none());
     }
 
     #[test]
@@ -2339,72 +2164,9 @@ mod tests {
     }
 
     #[test]
-    fn sessions_listed_completes_pending_session_rename() {
-        let mut app = make_test_app();
-        app.config.pending_session_title_change =
-            Some(crate::app::config::PendingSessionTitleChangeState {
-                session_id: "session-1".to_owned(),
-                kind: crate::app::config::PendingSessionTitleChangeKind::Rename {
-                    requested_title: Some("Renamed session".to_owned()),
-                },
-            });
-
-        apply_session_update(
-            &mut app,
-            SessionUpdate::SessionsListed {
-                key: forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY),
-                sessions: vec![forge_primitives::SessionListEntry {
-                    session_id: "session-1".to_owned(),
-                    summary: "Renamed session".to_owned(),
-                    last_modified_ms: 1,
-                    file_size_bytes: 2,
-                    cwd: Some("/test".to_owned()),
-                    git_branch: None,
-                    custom_title: Some("Renamed session".to_owned()),
-                    first_prompt: Some("prompt".to_owned()),
-                }],
-            },
-        );
-
-        assert!(app.config.pending_session_title_change.is_none());
-        assert_eq!(
-            app.config.status_message.as_deref(),
-            Some("Renamed session to Renamed session")
-        );
-        assert!(app.config.last_error.is_none());
-        assert_eq!(app.recent_sessions().len(), 1);
-    }
-
-    #[test]
-    fn slash_command_error_for_pending_session_rename_stays_in_config_feedback() {
-        let mut app = make_test_app();
-        app.config.pending_session_title_change =
-            Some(crate::app::config::PendingSessionTitleChangeState {
-                session_id: "session-1".to_owned(),
-                kind: crate::app::config::PendingSessionTitleChangeKind::Rename {
-                    requested_title: Some("Renamed session".to_owned()),
-                },
-            });
-
-        let session_key = active_session_key(&app);
-        apply_session_update(
-            &mut app,
-            SessionUpdate::SlashCommandError {
-                key: session_key,
-                message: "failed to rename session: boom".into(),
-            },
-        );
-
-        assert!(app.config.pending_session_title_change.is_none());
-        assert_eq!(app.config.last_error.as_deref(), Some("failed to rename session: boom"));
-        assert!(app.config.status_message.is_none());
-        assert!(app.messages().is_empty());
-    }
-
-    #[test]
     fn mcp_operation_error_stays_in_mcp_feedback_and_out_of_chat() {
         let mut app = make_test_app();
-        app.config.active_tab = crate::app::config::ConfigTab::Mcp;
+        app.active_view = crate::app::ActiveView::Mcp;
         app.config.status_message =
             Some("Starting MCP auth for claude.ai Google Calendar...".into());
         app.mcp_mut().in_flight = true;
@@ -2436,136 +2198,6 @@ mod tests {
     }
 
     #[test]
-    fn sessions_listed_completes_pending_session_title_generation() {
-        let mut app = make_test_app();
-        app.config.pending_session_title_change =
-            Some(crate::app::config::PendingSessionTitleChangeState {
-                session_id: "session-1".to_owned(),
-                kind: crate::app::config::PendingSessionTitleChangeKind::Generate,
-            });
-
-        apply_session_update(
-            &mut app,
-            SessionUpdate::SessionsListed {
-                key: forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY),
-                sessions: vec![forge_primitives::SessionListEntry {
-                    session_id: "session-1".to_owned(),
-                    summary: "Generated session".to_owned(),
-                    last_modified_ms: 1,
-                    file_size_bytes: 2,
-                    cwd: Some("/test".to_owned()),
-                    git_branch: None,
-                    custom_title: Some("Generated session".to_owned()),
-                    first_prompt: Some("prompt".to_owned()),
-                }],
-            },
-        );
-
-        assert!(app.config.pending_session_title_change.is_none());
-        assert_eq!(app.config.status_message.as_deref(), Some("Generated session title"));
-        assert!(app.config.last_error.is_none());
-    }
-
-    #[test]
-    fn startup_picker_waits_for_connected_after_sessions_listed() {
-        let mut app = make_test_app();
-        app.startup_session_picker_requested = true;
-
-        apply_session_update(
-            &mut app,
-            SessionUpdate::SessionsListed {
-                key: forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY),
-                sessions: vec![listed_session("session-1", "First Session")],
-            },
-        );
-
-        assert_eq!(app.active_view, ActiveView::Chat);
-        assert!(app.startup_recent_sessions_loaded);
-        assert!(!app.startup_session_picker_resolved);
-
-        let _rx = app.install_testing_stub();
-        apply_session_update(&mut app, connected_event("claude-updated"));
-
-        assert_eq!(app.active_view, ActiveView::SessionPicker);
-        assert!(app.startup_session_picker_resolved);
-    }
-
-    #[test]
-    fn startup_picker_empty_list_stays_in_chat_with_info_message() {
-        let mut app = make_test_app();
-        app.startup_session_picker_requested = true;
-        let _rx = app.install_testing_stub();
-
-        apply_session_update(&mut app, connected_event("claude-updated"));
-        assert_eq!(app.active_view, ActiveView::Chat);
-        assert!(!app.startup_session_picker_resolved);
-
-        // Post-Connected the bucket has migrated to the real key
-        // (`test-session`); SessionsListed routes onto that bucket.
-        apply_session_update(
-            &mut app,
-            SessionUpdate::SessionsListed {
-                key: forge_workspace::SessionKey::from_session_id("test-session"),
-                sessions: Vec::new(),
-            },
-        );
-
-        assert_eq!(app.active_view, ActiveView::Chat);
-        assert!(app.startup_session_picker_resolved);
-        let last = app.messages().last().expect("info message");
-        let text = match last.blocks.first().expect("text block") {
-            MessageBlock::Text(block) => block.text.as_str(),
-            _ => panic!("expected text block"),
-        };
-        assert!(text.contains("No recent sessions found for this directory"));
-    }
-
-    #[test]
-    fn sessions_listed_refresh_preserves_picker_selection_by_session_id() {
-        let mut app = make_test_app();
-        app.active_view = ActiveView::SessionPicker;
-        *app.recent_sessions_mut() = vec![
-            crate::app::RecentSessionInfo {
-                session_id: "session-1".to_owned(),
-                summary: "First".to_owned(),
-                last_modified_ms: 1,
-                file_size_bytes: 1,
-                cwd: Some("/test".to_owned()),
-                git_branch: Some("main".to_owned()),
-                custom_title: Some("First".to_owned()),
-                first_prompt: Some("prompt one".to_owned()),
-            },
-            crate::app::RecentSessionInfo {
-                session_id: "session-2".to_owned(),
-                summary: "Second".to_owned(),
-                last_modified_ms: 2,
-                file_size_bytes: 1,
-                cwd: Some("/test".to_owned()),
-                git_branch: Some("main".to_owned()),
-                custom_title: Some("Second".to_owned()),
-                first_prompt: Some("prompt two".to_owned()),
-            },
-        ];
-        app.session_picker.selected = 1;
-        app.session_picker.scroll_offset = 1;
-
-        apply_session_update(
-            &mut app,
-            SessionUpdate::SessionsListed {
-                key: forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY),
-                sessions: vec![
-                    listed_session("session-2", "Second"),
-                    listed_session("session-3", "Third"),
-                ],
-            },
-        );
-
-        assert_eq!(app.session_picker.selected, 0);
-        assert_eq!(app.recent_sessions()[app.session_picker.selected].session_id, "session-2");
-        assert_eq!(app.session_picker.scroll_offset, 0);
-    }
-
-    #[test]
     fn current_mode_update_clears_pending_when_expected() {
         let mut app = make_test_app();
         app.status = AppStatus::CommandPending;
@@ -2575,8 +2207,16 @@ mod tests {
             current_mode_id: "code".to_owned(),
             current_mode_name: "Code".to_owned(),
             available_modes: vec![
-                crate::app::ModeInfo { id: "code".to_owned(), name: "Code".to_owned() },
-                crate::app::ModeInfo { id: "plan".to_owned(), name: "Plan".to_owned() },
+                crate::app::ModeInfo {
+                    id: "code".to_owned(),
+                    name: "Code".to_owned(),
+                    description: None,
+                },
+                crate::app::ModeInfo {
+                    id: "plan".to_owned(),
+                    name: "Plan".to_owned(),
+                    description: None,
+                },
             ],
         }));
         app.active_messages_mut().push(user_msg("seed"));
@@ -2603,8 +2243,16 @@ mod tests {
             current_mode_id: "code".to_owned(),
             current_mode_name: "Code".to_owned(),
             available_modes: vec![
-                crate::app::ModeInfo { id: "code".to_owned(), name: "Code".to_owned() },
-                crate::app::ModeInfo { id: "plan".to_owned(), name: "Plan".to_owned() },
+                crate::app::ModeInfo {
+                    id: "code".to_owned(),
+                    name: "Code".to_owned(),
+                    description: None,
+                },
+                crate::app::ModeInfo {
+                    id: "plan".to_owned(),
+                    name: "Plan".to_owned(),
+                    description: None,
+                },
             ],
         }));
         app.active_messages_mut().push(user_msg("seed"));
@@ -2634,12 +2282,6 @@ mod tests {
         assert!(app.pending_command_label().is_none());
         assert!(app.pending_command_ack().is_none());
     }
-
-    // `non_matching_config_option_update_keeps_pending` removed in the
-    // dispatcher collapse: SessionUpdate::ConfigOptionUpdate has no
-    // wire-side equivalent today (no `apply_config_option` handler in
-    // events::sdk_message), so the typed-dispatch-only path it
-    // exercised is going away with the dispatcher itself.
 
     #[test]
     fn resume_does_not_add_confirmation_system_message() {
@@ -3189,7 +2831,11 @@ mod tests {
         app.set_mode(Some(crate::app::ModeState {
             current_mode_id: "plan".into(),
             current_mode_name: "Plan".into(),
-            available_modes: vec![crate::app::ModeInfo { id: "plan".into(), name: "Plan".into() }],
+            available_modes: vec![crate::app::ModeInfo {
+                id: "plan".into(),
+                name: "Plan".into(),
+                description: None,
+            }],
         }));
         app.set_fast_mode_state(model::FastModeState::On);
         app.active_messages_mut().push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(
@@ -3198,8 +2844,6 @@ mod tests {
         app.bind_active_turn_assistant(0);
         app.register_tool_call_scope("task-1".into(), ToolCallScope::SubagentRoot);
         app.insert_active_task("task-1".into());
-        app.pending_interaction_ids_mut().push("task-1".into());
-        app.claim_focus_target(FocusTarget::Permission);
 
         let session_key = active_session_key(&app);
         apply_session_update(
@@ -3213,33 +2857,10 @@ mod tests {
 
         assert_eq!(app.active_turn_assistant_idx(), None);
         assert!(app.active_task_ids().is_empty());
-        assert!(app.pending_interaction_ids().is_empty());
-        assert_ne!(app.focus_owner(), FocusOwner::Permission);
         let Some(MessageBlock::ToolCall(tc)) = app.messages()[0].blocks.first() else {
             panic!("expected tool call block");
         };
         assert_eq!(tc.status, model::ToolCallStatus::Failed);
-        assert!(app.session_id().is_none());
-        assert!(app.current_model().is_none());
-        assert!(app.mode().is_none());
-        assert_eq!(app.fast_mode_state(), model::FastModeState::Off);
-    }
-
-    #[test]
-    fn logout_completed_clears_session_runtime_identity_caches() {
-        let mut app = make_test_app();
-        app.set_session_id(Some(model::SessionId::new("session-x")));
-        app.set_current_model(Some(test_current_model("claude-old")));
-        app.set_mode(Some(crate::app::ModeState {
-            current_mode_id: "plan".into(),
-            current_mode_name: "Plan".into(),
-            available_modes: vec![crate::app::ModeInfo { id: "plan".into(), name: "Plan".into() }],
-        }));
-        app.set_fast_mode_state(model::FastModeState::On);
-
-        let session_key = active_session_key(&app);
-        apply_session_update(&mut app, SessionUpdate::LogoutCompleted { key: session_key });
-
         assert!(app.session_id().is_none());
         assert!(app.current_model().is_none());
         assert!(app.mode().is_none());
@@ -3574,12 +3195,11 @@ mod tests {
         );
         assert_eq!(app.turn_notice_refs().len(), 1);
 
-        // `SessionReplaced` is the post-MVVM session-reset event
-        // (fired by /new, /login, /resume on the active bucket).
-        // Connected-for-a-different-key is no longer a session
-        // reset — it's a background project's connection — so the
-        // notice-clearing assertion must target SessionReplaced for
-        // the ACTIVE session key.
+        // `SessionReplaced` fires on /new, /login, /resume against the
+        // active bucket; a Connected event for a different key is a
+        // background project's connection, not a session reset. The
+        // notice-clearing assertion targets SessionReplaced on the
+        // active key.
         let active_key = active_session_key(&app);
         apply_session_update(
             &mut app,
@@ -3799,739 +3419,6 @@ mod tests {
 
         dispatch_key_by_focus(&mut app, KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
         assert_eq!(app.help_view, HelpView::Keys);
-    }
-
-    #[test]
-    fn permission_focus_allows_typing_for_non_permission_keys() {
-        let mut app = make_test_app();
-        app.pending_interaction_ids_mut().push("perm-1".into());
-        app.claim_focus_target(FocusTarget::Permission);
-
-        handle_terminal_event(
-            &mut app,
-            Event::Key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE)),
-        );
-
-        assert_eq!(app.input().text(), "h");
-        assert_eq!(app.focus_owner(), FocusOwner::Input);
-    }
-
-    #[test]
-    fn permission_request_with_existing_draft_does_not_claim_focus() {
-        let mut app = make_test_app();
-        let tool_id = "perm-draft";
-        append_tool_call_block(&mut app, tool_id);
-        app.input_mut().set_text("draft in progress");
-
-        let session_key = app.active_session_key.clone().expect("active key");
-        turn::handle_permission_request_event(
-            &mut app,
-            session_key,
-            tool_id.to_owned(),
-            model::RequestPermissionRequest::new(
-                "session-1",
-                model::ToolCallUpdate::new(tool_id, model::ToolCallUpdateFields::new()),
-                vec![
-                    model::PermissionOption::new(
-                        "allow",
-                        "Allow",
-                        model::PermissionOptionKind::AllowOnce,
-                    ),
-                    model::PermissionOption::new(
-                        "deny",
-                        "Deny",
-                        model::PermissionOptionKind::RejectOnce,
-                    ),
-                ],
-                None,
-            ),
-        );
-
-        assert_eq!(app.focus_owner(), FocusOwner::Input);
-        assert_eq!(app.pending_interaction_ids(), vec![tool_id]);
-        assert_eq!(permission_focus_state(&app, tool_id), Some(false));
-    }
-
-    #[test]
-    fn question_request_with_existing_draft_does_not_claim_focus() {
-        let mut app = make_test_app();
-        let tool_id = "question-draft";
-        append_tool_call_block(&mut app, tool_id);
-        app.input_mut().set_text("draft in progress");
-
-        let session_key = app.active_session_key.clone().expect("active key");
-        turn::handle_question_request_event(
-            &mut app,
-            session_key,
-            tool_id.to_owned(),
-            model::RequestQuestionRequest::new(
-                "session-1",
-                model::ToolCallUpdate::new(tool_id, model::ToolCallUpdateFields::new()),
-                model::QuestionPrompt::new(
-                    "Choose one",
-                    "Question",
-                    false,
-                    vec![
-                        model::QuestionOption::new("yes", "Yes"),
-                        model::QuestionOption::new("no", "No"),
-                    ],
-                ),
-                0,
-                1,
-            ),
-        );
-
-        assert_eq!(app.focus_owner(), FocusOwner::Input);
-        assert_eq!(app.pending_interaction_ids(), vec![tool_id]);
-        assert_eq!(question_focus_state(&app, tool_id), Some(false));
-    }
-
-    #[test]
-    fn enter_submits_draft_when_permission_arrives_mid_compose() {
-        let (mut app, mut bridge_rx) = app_with_bridge_connection();
-        let tool_id = "perm-submit";
-        append_tool_call_block(&mut app, tool_id);
-        app.set_session_id(Some(model::SessionId::new("session-1")));
-        app.input_mut().set_text("ship the fix");
-
-        let session_key = app.active_session_key.clone().expect("active key");
-        let mut response_rx = TestPermissionRxLocal { tool_id: tool_id.to_owned() };
-        turn::handle_permission_request_event(
-            &mut app,
-            session_key,
-            tool_id.to_owned(),
-            model::RequestPermissionRequest::new(
-                "session-1",
-                model::ToolCallUpdate::new(tool_id, model::ToolCallUpdateFields::new()),
-                vec![
-                    model::PermissionOption::new(
-                        "allow",
-                        "Allow",
-                        model::PermissionOptionKind::AllowOnce,
-                    ),
-                    model::PermissionOption::new(
-                        "deny",
-                        "Deny",
-                        model::PermissionOptionKind::RejectOnce,
-                    ),
-                ],
-                None,
-            ),
-        );
-
-        handle_terminal_event(
-            &mut app,
-            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
-        );
-
-        assert!(app.pending_submit().is_some());
-        assert!(matches!(
-            response_rx.try_recv(&app),
-            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
-        ));
-
-        super::super::finalize_deferred_submit(&mut app);
-
-        assert!(app.pending_submit().is_none());
-        assert!(app.pending_interaction_ids().is_empty());
-        assert!(bridge_rx.try_recv().is_ok());
-        assert!(response_rx.try_recv(&app).is_err());
-    }
-
-    #[test]
-    fn tab_toggles_focus_between_input_and_pending_permission() {
-        let mut app = make_test_app();
-        let _response_rx = attach_pending_permission(
-            &mut app,
-            "perm-tab",
-            vec![
-                model::PermissionOption::new(
-                    "allow",
-                    "Allow",
-                    model::PermissionOptionKind::AllowOnce,
-                ),
-                model::PermissionOption::new(
-                    "deny",
-                    "Deny",
-                    model::PermissionOptionKind::RejectOnce,
-                ),
-            ],
-            false,
-        );
-        app.input_mut().set_text("keep drafting");
-        app.release_focus_target(FocusTarget::Permission);
-
-        handle_terminal_event(
-            &mut app,
-            Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
-        );
-        assert_eq!(app.focus_owner(), FocusOwner::Permission);
-        assert_eq!(permission_focus_state(&app, "perm-tab"), Some(true));
-
-        handle_terminal_event(
-            &mut app,
-            Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
-        );
-        assert_eq!(app.focus_owner(), FocusOwner::Input);
-        assert_eq!(permission_focus_state(&app, "perm-tab"), Some(false));
-    }
-
-    #[test]
-    fn typing_reclaims_input_from_auto_focused_permission() {
-        let mut app = make_test_app();
-        let _response_rx = attach_pending_permission(
-            &mut app,
-            "perm-auto",
-            vec![
-                model::PermissionOption::new(
-                    "allow",
-                    "Allow",
-                    model::PermissionOptionKind::AllowOnce,
-                ),
-                model::PermissionOption::new(
-                    "deny",
-                    "Deny",
-                    model::PermissionOptionKind::RejectOnce,
-                ),
-            ],
-            true,
-        );
-
-        handle_terminal_event(
-            &mut app,
-            Event::Key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE)),
-        );
-
-        assert_eq!(app.focus_owner(), FocusOwner::Input);
-        assert_eq!(app.input().text(), "h");
-        assert_eq!(permission_focus_state(&app, "perm-auto"), Some(false));
-    }
-
-    #[test]
-    fn tab_focuses_question_and_enter_confirms_only_after_explicit_handoff() {
-        let (mut app, _bridge_rx) = app_with_bridge_connection();
-        let mut response_rx = attach_pending_question(
-            &mut app,
-            "question-tab",
-            model::QuestionPrompt::new(
-                "Choose one",
-                "Question",
-                false,
-                vec![
-                    model::QuestionOption::new("yes", "Yes"),
-                    model::QuestionOption::new("no", "No"),
-                ],
-            ),
-            false,
-        );
-        app.input_mut().set_text("draft answer");
-
-        handle_terminal_event(
-            &mut app,
-            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
-        );
-        assert!(app.pending_submit().is_some());
-        assert!(matches!(
-            response_rx.try_recv(&app),
-            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
-        ));
-
-        handle_terminal_event(
-            &mut app,
-            Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
-        );
-        assert_eq!(app.focus_owner(), FocusOwner::Permission);
-        assert_eq!(question_focus_state(&app, "question-tab"), Some(true));
-
-        handle_terminal_event(
-            &mut app,
-            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
-        );
-        let response =
-            response_rx.try_recv(&app).expect("question should be answered after Tab focus");
-        assert!(matches!(response.outcome, model::RequestQuestionOutcome::Answered(_)));
-    }
-
-    #[test]
-    fn typing_reclaims_input_from_auto_focused_question() {
-        let mut app = make_test_app();
-        let _response_rx = attach_pending_question(
-            &mut app,
-            "question-auto",
-            model::QuestionPrompt::new(
-                "Choose one",
-                "Question",
-                false,
-                vec![
-                    model::QuestionOption::new("yes", "Yes"),
-                    model::QuestionOption::new("no", "No"),
-                ],
-            ),
-            true,
-        );
-
-        handle_terminal_event(
-            &mut app,
-            Event::Key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE)),
-        );
-
-        assert_eq!(app.focus_owner(), FocusOwner::Input);
-        assert_eq!(app.input().text(), "n");
-        assert_eq!(question_focus_state(&app, "question-auto"), Some(false));
-    }
-
-    #[test]
-    fn stale_inline_interaction_queue_head_is_pruned_before_enter_response() {
-        let mut app = make_test_app();
-        let mut response_rx = attach_pending_permission(
-            &mut app,
-            "perm-1",
-            vec![
-                model::PermissionOption::new(
-                    "allow",
-                    "Allow",
-                    model::PermissionOptionKind::AllowOnce,
-                ),
-                model::PermissionOption::new(
-                    "deny",
-                    "Deny",
-                    model::PermissionOptionKind::RejectOnce,
-                ),
-            ],
-            false,
-        );
-        app.pending_interaction_ids_mut().insert(0, "stale-id".into());
-
-        handle_terminal_event(
-            &mut app,
-            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
-        );
-
-        let response = response_rx.try_recv(&app).expect("permission response");
-        assert!(matches!(response.outcome, model::RequestPermissionOutcome::Selected(_)));
-        assert!(app.pending_interaction_ids().is_empty());
-    }
-
-    #[test]
-    fn permission_focus_tab_returns_focus_to_input_before_todos() {
-        let mut app = make_test_app();
-        let _response_rx = attach_pending_permission(
-            &mut app,
-            "perm-1",
-            vec![
-                model::PermissionOption::new(
-                    "allow",
-                    "Allow",
-                    model::PermissionOptionKind::AllowOnce,
-                ),
-                model::PermissionOption::new(
-                    "deny",
-                    "Deny",
-                    model::PermissionOptionKind::RejectOnce,
-                ),
-            ],
-            true,
-        );
-        app.todos_mut().push(TodoItem {
-            content: "Task".into(),
-            status: TodoStatus::Pending,
-            active_form: String::new(),
-        });
-
-        handle_terminal_event(
-            &mut app,
-            Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
-        );
-
-        assert_eq!(app.focus_owner(), FocusOwner::Input);
-    }
-
-    /// Phase 1+ test fixture: legacy `oneshot::Receiver` shape was
-    /// retired when workspace took ownership of pending interaction
-    /// oneshots. Tests now read outcomes from `App`'s test-capture
-    /// fields via `try_recv(&app)`.
-    pub(super) struct TestPermissionRxLocal {
-        pub tool_id: String,
-    }
-
-    impl TestPermissionRxLocal {
-        pub fn try_recv(
-            &mut self,
-            app: &App,
-        ) -> Result<model::RequestPermissionResponse, tokio::sync::oneshot::error::TryRecvError>
-        {
-            match crate::app::events::turn::test_capture::try_take_dispatched_permission_outcome(
-                app,
-                &self.tool_id,
-            ) {
-                Ok(forge_primitives::PermissionOutcome::Selected { option_id }) => {
-                    Ok(model::RequestPermissionResponse::new(
-                        model::RequestPermissionOutcome::Selected(
-                            model::SelectedPermissionOutcome::new(option_id),
-                        ),
-                    ))
-                }
-                Ok(forge_primitives::PermissionOutcome::Cancelled) => {
-                    Ok(model::RequestPermissionResponse::new(
-                        model::RequestPermissionOutcome::Cancelled,
-                    ))
-                }
-                Err(err) => Err(err),
-            }
-        }
-    }
-
-    pub(super) struct TestQuestionRxLocal {
-        pub tool_id: String,
-    }
-
-    impl TestQuestionRxLocal {
-        pub fn try_recv(
-            &mut self,
-            app: &App,
-        ) -> Result<model::RequestQuestionResponse, tokio::sync::oneshot::error::TryRecvError>
-        {
-            match crate::app::events::turn::test_capture::try_take_dispatched_question_outcome(
-                app,
-                &self.tool_id,
-            ) {
-                Ok(forge_primitives::QuestionOutcome::Answered {
-                    selected_option_ids,
-                    annotation,
-                }) => Ok(model::RequestQuestionResponse::new(
-                    model::RequestQuestionOutcome::Answered(
-                        model::AnsweredQuestionOutcome::new(selected_option_ids).annotation(
-                            annotation.map(|a| model::QuestionAnnotation {
-                                preview: a.preview,
-                                notes: a.notes,
-                            }),
-                        ),
-                    ),
-                )),
-                Ok(forge_primitives::QuestionOutcome::Cancelled) => Ok(
-                    model::RequestQuestionResponse::new(model::RequestQuestionOutcome::Cancelled),
-                ),
-                Err(err) => Err(err),
-            }
-        }
-    }
-
-    fn attach_pending_permission(
-        app: &mut App,
-        tool_id: &str,
-        options: Vec<model::PermissionOption>,
-        focused: bool,
-    ) -> TestPermissionRxLocal {
-        let mut tc = tool_call(tool_id, model::ToolCallStatus::InProgress);
-        tc.pending_permission = Some(InlinePermission {
-            options,
-            display: None,
-            tool_id: tool_id.to_owned(),
-            selected_index: 0,
-            focused,
-        });
-        app.active_messages_mut().push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tc))]));
-        let msg_idx = app.messages().len().saturating_sub(1);
-        app.index_tool_call(tool_id.into(), msg_idx, 0);
-        app.pending_interaction_ids_mut().push(tool_id.into());
-        app.claim_focus_target(FocusTarget::Permission);
-        TestPermissionRxLocal { tool_id: tool_id.to_owned() }
-    }
-
-    fn attach_pending_question(
-        app: &mut App,
-        tool_id: &str,
-        prompt: model::QuestionPrompt,
-        focused: bool,
-    ) -> TestQuestionRxLocal {
-        let mut tc = tool_call(tool_id, model::ToolCallStatus::InProgress);
-        tc.pending_question = Some(InlineQuestion {
-            prompt,
-            tool_id: tool_id.to_owned(),
-            focused_option_index: 0,
-            selected_option_indices: std::collections::BTreeSet::new(),
-            notes: String::new(),
-            notes_cursor: 0,
-            editing_notes: false,
-            focused,
-            question_index: 0,
-            total_questions: 1,
-        });
-        app.active_messages_mut().push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tc))]));
-        let msg_idx = app.messages().len().saturating_sub(1);
-        app.index_tool_call(tool_id.into(), msg_idx, 0);
-        app.pending_interaction_ids_mut().push(tool_id.into());
-        if focused {
-            app.claim_focus_target(FocusTarget::Permission);
-        }
-        TestQuestionRxLocal { tool_id: tool_id.to_owned() }
-    }
-
-    fn permission_focus_state(app: &App, tool_id: &str) -> Option<bool> {
-        let (mi, bi) = app.lookup_tool_call(tool_id)?;
-        let MessageBlock::ToolCall(tc) = app.messages().get(mi)?.blocks.get(bi)? else {
-            return None;
-        };
-        tc.pending_permission.as_ref().map(|permission| permission.focused)
-    }
-
-    fn question_focus_state(app: &App, tool_id: &str) -> Option<bool> {
-        let (mi, bi) = app.lookup_tool_call(tool_id)?;
-        let MessageBlock::ToolCall(tc) = app.messages().get(mi)?.blocks.get(bi)? else {
-            return None;
-        };
-        tc.pending_question.as_ref().map(|question| question.focused)
-    }
-
-    /// Push a todo item into the active session. The bottom todo
-    /// panel + its keyboard focus target are gone (replaced by the
-    /// Inspector pane, which is mouse-only / read-only), so the old
-    /// helper that claimed `FocusTarget::TodoList` no longer applies;
-    /// the surrounding tests still exercise the global-shortcut
-    /// invariant they were written for (Ctrl+y / a / n resolve a
-    /// pending permission regardless of which non-Input focus owns
-    /// navigation).
-    fn push_todo_and_focus(app: &mut App) {
-        app.todos_mut().push(TodoItem {
-            content: "Task".into(),
-            status: TodoStatus::Pending,
-            active_form: String::new(),
-        });
-    }
-
-    #[test]
-    fn permission_ctrl_y_works_even_when_todo_focus_owns_navigation() {
-        let mut app = make_test_app();
-        let mut response_rx = attach_pending_permission(
-            &mut app,
-            "perm-1",
-            vec![
-                model::PermissionOption::new(
-                    "allow",
-                    "Allow",
-                    model::PermissionOptionKind::AllowOnce,
-                ),
-                model::PermissionOption::new(
-                    "deny",
-                    "Deny",
-                    model::PermissionOptionKind::RejectOnce,
-                ),
-            ],
-            true,
-        );
-
-        // Override focus owner to todo to prove the quick shortcut is global.
-        push_todo_and_focus(&mut app);
-
-        handle_terminal_event(
-            &mut app,
-            Event::Key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL)),
-        );
-
-        let resp = response_rx.try_recv(&app).expect("ctrl+y should resolve pending permission");
-        let model::RequestPermissionOutcome::Selected(selected) = resp.outcome else {
-            panic!("expected selected permission response");
-        };
-        assert_eq!(selected.option_id.clone(), "allow");
-        assert!(app.pending_interaction_ids().is_empty());
-    }
-
-    #[test]
-    fn permission_ctrl_a_works_even_when_todo_focus_owns_navigation() {
-        let mut app = make_test_app();
-        let mut response_rx = attach_pending_permission(
-            &mut app,
-            "perm-1",
-            vec![
-                model::PermissionOption::new(
-                    "allow-once",
-                    "Allow once",
-                    model::PermissionOptionKind::AllowOnce,
-                ),
-                model::PermissionOption::new(
-                    "allow-always",
-                    "Allow always",
-                    model::PermissionOptionKind::AllowAlways,
-                ),
-                model::PermissionOption::new(
-                    "deny",
-                    "Deny",
-                    model::PermissionOptionKind::RejectOnce,
-                ),
-            ],
-            true,
-        );
-        push_todo_and_focus(&mut app);
-
-        handle_terminal_event(
-            &mut app,
-            Event::Key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL)),
-        );
-
-        let resp = response_rx.try_recv(&app).expect("ctrl+a should resolve pending permission");
-        let model::RequestPermissionOutcome::Selected(selected) = resp.outcome else {
-            panic!("expected selected permission response");
-        };
-        assert_eq!(selected.option_id.clone(), "allow-always");
-        assert!(app.pending_interaction_ids().is_empty());
-    }
-
-    #[test]
-    fn permission_ctrl_n_works_even_when_mention_focus_owns_navigation() {
-        let mut app = make_test_app();
-        let mut response_rx = attach_pending_permission(
-            &mut app,
-            "perm-1",
-            vec![
-                model::PermissionOption::new(
-                    "allow",
-                    "Allow",
-                    model::PermissionOptionKind::AllowOnce,
-                ),
-                model::PermissionOption::new(
-                    "deny",
-                    "Deny",
-                    model::PermissionOptionKind::RejectOnce,
-                ),
-            ],
-            true,
-        );
-
-        *app.slash_mut() = Some(SlashState {
-            trigger_row: 0,
-            trigger_col: 0,
-            query: String::new(),
-            context: SlashContext::CommandName,
-            candidates: vec![SlashCandidate {
-                insert_value: "/config".into(),
-                primary: "/config".into(),
-                secondary: Some("Open settings".into()),
-            }],
-            dialog: crate::app::dialog::DialogState::default(),
-        });
-        app.claim_focus_target(FocusTarget::Mention);
-        assert_eq!(app.focus_owner(), FocusOwner::Mention);
-
-        handle_terminal_event(
-            &mut app,
-            Event::Key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL)),
-        );
-
-        let resp = response_rx.try_recv(&app).expect("ctrl+n should resolve pending permission");
-        let model::RequestPermissionOutcome::Selected(selected) = resp.outcome else {
-            panic!("expected selected permission response");
-        };
-        assert_eq!(selected.option_id.clone(), "deny");
-        assert!(app.pending_interaction_ids().is_empty());
-    }
-
-    #[test]
-    fn plan_approval_raw_ctrl_y_resolves_without_editing_input() {
-        let mut app = make_test_app();
-        app.input_mut().set_text("seed");
-        let mut response_rx = attach_pending_permission(
-            &mut app,
-            "perm-1",
-            vec![
-                model::PermissionOption::new(
-                    "plan-approve",
-                    "Approve",
-                    model::PermissionOptionKind::PlanApprove,
-                ),
-                model::PermissionOption::new(
-                    "plan-reject",
-                    "Reject",
-                    model::PermissionOptionKind::PlanReject,
-                ),
-            ],
-            true,
-        );
-
-        handle_terminal_event(
-            &mut app,
-            Event::Key(KeyEvent::new(KeyCode::Char('\u{19}'), KeyModifiers::NONE)),
-        );
-
-        let resp = response_rx.try_recv(&app).expect("raw ctrl+y should resolve plan approval");
-        let model::RequestPermissionOutcome::Selected(selected) = resp.outcome else {
-            panic!("expected selected permission response");
-        };
-        assert_eq!(selected.option_id.clone(), "plan-approve");
-        assert_eq!(app.input().text(), "seed");
-        assert!(app.pending_interaction_ids().is_empty());
-    }
-
-    #[test]
-    fn connecting_state_ctrl_c_with_non_empty_selection_does_not_quit() {
-        let mut app = make_test_app();
-        let _clipboard =
-            crate::app::keys::override_test_clipboard(crate::app::keys::TestClipboardMode::Succeed);
-        app.status = AppStatus::Connecting;
-        app.rendered_input_lines = vec!["copy".to_owned()];
-        *app.selection_mut() = Some(crate::app::SelectionState {
-            kind: crate::app::SelectionKind::Input,
-            start: crate::app::SelectionPoint { row: 0, col: 0 },
-            end: crate::app::SelectionPoint { row: 0, col: 4 },
-            dragging: false,
-        });
-
-        handle_terminal_event(
-            &mut app,
-            Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
-        );
-
-        assert!(!app.should_quit);
-        assert!(app.selection().is_none());
-    }
-
-    #[test]
-    fn second_esc_after_permission_rejection_requests_turn_cancel() {
-        let (mut app, mut rx) = app_with_bridge_connection();
-        app.status = AppStatus::Running;
-        app.set_session_id(Some(model::SessionId::new("session-1")));
-        let mut response_rx = attach_pending_permission(
-            &mut app,
-            "perm-1",
-            vec![
-                model::PermissionOption::new(
-                    "allow",
-                    "Allow",
-                    model::PermissionOptionKind::AllowOnce,
-                ),
-                model::PermissionOption::new(
-                    "deny",
-                    "Deny",
-                    model::PermissionOptionKind::RejectOnce,
-                ),
-            ],
-            true,
-        );
-
-        handle_terminal_event(
-            &mut app,
-            Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
-        );
-
-        let response = response_rx.try_recv(&app).expect("first Esc should answer permission");
-        let model::RequestPermissionOutcome::Selected(selected) = response.outcome else {
-            panic!("expected selected permission response");
-        };
-        assert_eq!(selected.option_id.clone(), "deny");
-        assert!(app.pending_interaction_ids().is_empty());
-        assert_eq!(app.pending_cancel_origin(), None);
-
-        handle_terminal_event(
-            &mut app,
-            Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
-        );
-
-        assert_eq!(app.pending_cancel_origin(), Some(CancelOrigin::Manual));
-        let envelope = rx.try_recv().expect("second Esc should send turn cancel");
-        assert!(matches!(
-            envelope,
-            forge_primitives::Command::Cancel { session_id }
-                if session_id == "session-1"
-        ));
     }
 
     #[test]
@@ -5100,38 +3987,12 @@ mod tests {
     }
 
     #[test]
-    fn settings_view_routes_space_to_settings_handler_not_chat_input() {
-        let mut app = make_test_app();
-        let dir = tempfile::tempdir().expect("tempdir");
-        app.settings_home_override = Some(dir.path().to_path_buf());
-        app.set_cwd_raw(dir.path().to_string_lossy().to_string());
-        crate::app::config::open(&mut app).expect("open settings");
-        app.active_view = ActiveView::Config;
-        app.config.selected_setting_index = crate::app::config::setting_specs()
-            .iter()
-            .position(|spec| spec.id == crate::app::config::SettingId::FastMode)
-            .expect("fast mode setting row");
-        app.input_mut().set_text("seed");
-
-        handle_terminal_event(
-            &mut app,
-            Event::Key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE)),
-        );
-
-        assert_eq!(app.input().text(), "seed");
-        assert!(app.pending_submit().is_none());
-        assert!(app.config.fast_mode_effective());
-        assert!(app.config.last_error.is_none());
-    }
-
-    #[test]
     fn settings_view_routes_enter_to_close_not_chat_submit() {
         let mut app = make_test_app();
         let dir = tempfile::tempdir().expect("tempdir");
         app.settings_home_override = Some(dir.path().to_path_buf());
         app.set_cwd_raw(dir.path().to_string_lossy().to_string());
-        crate::app::config::open(&mut app).expect("open settings");
-        app.active_view = ActiveView::Config;
+        crate::app::config::open_plugins(&mut app).expect("open plugins");
         app.input_mut().set_text("seed");
 
         handle_terminal_event(
@@ -5147,7 +4008,7 @@ mod tests {
     #[test]
     fn settings_view_ignores_paste_events() {
         let mut app = make_test_app();
-        app.active_view = ActiveView::Config;
+        app.active_view = ActiveView::Plugins;
 
         handle_terminal_event(&mut app, Event::Paste("blocked".into()));
 
@@ -5180,7 +4041,7 @@ mod tests {
     #[test]
     fn settings_view_ignores_mouse_events() {
         let mut app = make_test_app();
-        app.active_view = ActiveView::Config;
+        app.active_view = ActiveView::Plugins;
         app.active_viewport_mut().scroll_target = 4;
         *app.selection_mut() = Some(SelectionState {
             kind: SelectionKind::Chat,
@@ -5201,54 +4062,6 @@ mod tests {
 
         assert_eq!(app.viewport().scroll_target, 4);
         assert!(app.selection().is_some());
-    }
-
-    #[test]
-    fn trusted_view_accept_key_does_not_edit_chat_input() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join(".claude.json");
-        std::fs::write(&path, "{\n  \"projects\": {}\n}\n").expect("write");
-
-        let mut app = make_test_app();
-        app.active_view = ActiveView::Trusted;
-        app.input_mut().set_text("seed");
-        app.set_cwd_raw(dir.path().join("project").to_string_lossy().to_string());
-        app.config.preferences_path = Some(path);
-        app.trust.status = crate::app::trust::TrustStatus::Untrusted;
-        app.trust.project_key =
-            crate::app::trust::store::normalize_project_key(std::path::Path::new(&app.cwd_raw()));
-
-        handle_terminal_event(
-            &mut app,
-            Event::Key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE)),
-        );
-
-        assert_eq!(app.active_view, ActiveView::Chat);
-        assert_eq!(app.input().text(), "seed");
-        assert!(app.pending_paste_text().is_empty());
-        assert!(app.startup_connection_requested);
-    }
-
-    #[test]
-    fn trusted_view_ignores_paste_events() {
-        let mut app = make_test_app();
-        app.active_view = ActiveView::Trusted;
-
-        handle_terminal_event(&mut app, Event::Paste("blocked".into()));
-
-        assert!(app.pending_paste_text().is_empty());
-        assert!(app.input().is_empty());
-    }
-
-    #[test]
-    fn session_picker_ignores_paste_events() {
-        let mut app = make_test_app();
-        app.active_view = ActiveView::SessionPicker;
-
-        handle_terminal_event(&mut app, Event::Paste("blocked".into()));
-
-        assert!(app.pending_paste_text().is_empty());
-        assert!(app.input().is_empty());
     }
 
     #[test]
@@ -5277,58 +4090,6 @@ mod tests {
 
         assert!(!app.needs_redraw);
         assert!(app.input().is_empty());
-    }
-
-    #[test]
-    fn trusted_view_ignores_mouse_events() {
-        let mut app = make_test_app();
-        app.active_view = ActiveView::Trusted;
-        app.active_viewport_mut().scroll_target = 4;
-        *app.selection_mut() = Some(SelectionState {
-            kind: SelectionKind::Chat,
-            start: SelectionPoint { row: 0, col: 0 },
-            end: SelectionPoint { row: 0, col: 1 },
-            dragging: false,
-        });
-
-        handle_terminal_event(
-            &mut app,
-            Event::Mouse(MouseEvent {
-                kind: MouseEventKind::ScrollDown,
-                column: 0,
-                row: 0,
-                modifiers: KeyModifiers::NONE,
-            }),
-        );
-
-        assert_eq!(app.viewport().scroll_target, 4);
-        assert!(app.selection().is_some());
-    }
-
-    #[test]
-    fn session_picker_ignores_mouse_events() {
-        let mut app = make_test_app();
-        app.active_view = ActiveView::SessionPicker;
-        app.active_viewport_mut().scroll_target = 4;
-        *app.selection_mut() = Some(SelectionState {
-            kind: SelectionKind::Chat,
-            start: SelectionPoint { row: 0, col: 0 },
-            end: SelectionPoint { row: 0, col: 1 },
-            dragging: false,
-        });
-
-        handle_terminal_event(
-            &mut app,
-            Event::Mouse(MouseEvent {
-                kind: MouseEventKind::ScrollDown,
-                column: 0,
-                row: 0,
-                modifiers: KeyModifiers::NONE,
-            }),
-        );
-
-        assert_eq!(app.viewport().scroll_target, 4);
-        assert!(app.selection().is_some());
     }
 
     #[test]
@@ -5436,7 +4197,7 @@ mod tests {
 
     #[test]
     fn internal_error_detection_accepts_xml_payload() {
-        use crate::agent::error_handling::looks_like_internal_error;
+        use forge_workspace::translate::error_handling::looks_like_internal_error;
         let payload =
             "<error><code>-32603</code><message>Adapter process crashed</message></error>";
         assert!(looks_like_internal_error(payload));
@@ -5444,14 +4205,14 @@ mod tests {
 
     #[test]
     fn internal_error_detection_rejects_plain_bash_failure() {
-        use crate::agent::error_handling::looks_like_internal_error;
+        use forge_workspace::translate::error_handling::looks_like_internal_error;
         let payload = "bash: unknown_command: command not found";
         assert!(!looks_like_internal_error(payload));
     }
 
     #[test]
     fn summarize_internal_error_prefers_xml_message() {
-        use crate::agent::error_handling::summarize_internal_error;
+        use forge_workspace::translate::error_handling::summarize_internal_error;
         let payload =
             "<error><code>-32603</code><message>Adapter process crashed</message></error>";
         assert_eq!(summarize_internal_error(payload), "Adapter process crashed");
@@ -5459,21 +4220,21 @@ mod tests {
 
     #[test]
     fn summarize_internal_error_reads_json_rpc_message() {
-        use crate::agent::error_handling::summarize_internal_error;
+        use forge_workspace::translate::error_handling::summarize_internal_error;
         let payload = r#"{"jsonrpc":"2.0","error":{"code":-32603,"message":"internal rpc fault"}}"#;
         assert_eq!(summarize_internal_error(payload), "internal rpc fault");
     }
 
     #[test]
     fn internal_error_detection_accepts_permission_zod_payload() {
-        use crate::agent::error_handling::looks_like_internal_error;
+        use forge_workspace::translate::error_handling::looks_like_internal_error;
         let payload = "Tool permission request failed: ZodError: [{\"message\":\"Invalid input\"}]";
         assert!(looks_like_internal_error(payload));
     }
 
     #[test]
     fn summarize_internal_error_prefers_permission_failure_summary() {
-        use crate::agent::error_handling::summarize_internal_error;
+        use forge_workspace::translate::error_handling::summarize_internal_error;
         let payload = "Tool permission request failed: ZodError: [{\"message\":\"Invalid input: expected record, received undefined\"}]";
         assert_eq!(
             summarize_internal_error(payload),

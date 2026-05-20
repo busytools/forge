@@ -11,12 +11,6 @@
 //! cheapest equivalent is to spawn `claude auth status` and parse its
 //! JSON output. Adds ~50ms latency for the first read.
 //!
-//! Lifted from forge-sdk in 2026-05-05. Shell-outs to `claude` are
-//! agent-side concerns — the SDK now only owns the long-lived
-//! stream-json subprocess. Mirrors the shape of
-//! `userdata::plugins::cli`, which wraps `claude plugin` in the same
-//! way.
-//!
 //! Returns a fully populated [`AccountInfo`] when the shell-out
 //! succeeds, mapping `claude auth status`'s camelCase JSON into the
 //! `snake_case` struct.
@@ -84,20 +78,47 @@ fn map_auth_method_to_api_key_source(auth_method: &str) -> &str {
 ///
 /// Synchronous; runs the subprocess inline. ~50ms first call, faster
 /// thereafter (claude warms up its keychain reads in-process).
-#[must_use]
 pub fn account_info_from_shell(config_dir: &Path) -> Option<AccountInfo> {
     let mut cmd = std::process::Command::new("claude");
     cmd.args(["auth", "status"]);
     cmd.env("CLAUDE_CONFIG_DIR", config_dir);
-    let output = cmd.output().ok()?;
+    let output = match cmd.output() {
+        Ok(o) => o,
+        Err(err) => {
+            tracing::warn!(
+                target: "forge_agent::cloud::auth_status",
+                error = %err,
+                config_dir = %config_dir.display(),
+                "claude auth status spawn failed"
+            );
+            return None;
+        }
+    };
     if !output.status.success() {
+        tracing::warn!(
+            target: "forge_agent::cloud::auth_status",
+            exit_code = ?output.status.code(),
+            stderr = %String::from_utf8_lossy(&output.stderr),
+            "claude auth status exited non-zero"
+        );
         return None;
     }
     parse_auth_status(&output.stdout)
 }
 
 fn parse_auth_status(stdout: &[u8]) -> Option<AccountInfo> {
-    let parsed: ClaudeAuthStatus = serde_json::from_slice(stdout).ok()?;
+    let parsed: ClaudeAuthStatus = match serde_json::from_slice(stdout) {
+        Ok(p) => p,
+        Err(err) => {
+            tracing::warn!(
+                target: "forge_agent::cloud::auth_status",
+                error = %err,
+                stdout_prefix = %String::from_utf8_lossy(&stdout[..stdout.len().min(160)]),
+                "claude auth status JSON parse failed"
+            );
+            return None;
+        }
+    };
     if !parsed.logged_in {
         return None;
     }

@@ -133,13 +133,11 @@ impl std::fmt::Debug for McpServerBuilder {
 
 impl McpServerBuilder {
     /// Start a new builder.
-    #[must_use]
     pub fn new(name: impl Into<String>, version: impl Into<String>) -> Self {
         Self { name: name.into(), version: version.into(), tools: HashMap::new() }
     }
 
     /// Register a tool.
-    #[must_use]
     pub fn tool<T: Tool + 'static>(mut self, tool: T) -> Self {
         let name = tool.name().to_string();
         self.tools.insert(name, Arc::new(tool));
@@ -147,7 +145,6 @@ impl McpServerBuilder {
     }
 
     /// Finalise into a runnable server.
-    #[must_use]
     pub fn build(self) -> McpServer {
         McpServer { name: self.name, version: self.version, tools: self.tools }
     }

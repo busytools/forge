@@ -10,10 +10,8 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use anyhow::Result;
-use forge_sdk::Message;
-use forge_sdk::{
-    Client, OptionsBuilder, PermissionDecision, PermissionMode, ToolPermissionContext,
-};
+use forge_primitives::{Message, PermissionDecision, ToolPermissionContext};
+use forge_sdk::{Client, OptionsBuilder, PermissionMode};
 
 fn is_read_only(tool_name: &str) -> bool {
     matches!(tool_name, "Read" | "Grep" | "Glob" | "LS" | "WebFetch")

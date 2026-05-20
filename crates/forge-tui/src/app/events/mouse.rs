@@ -68,6 +68,10 @@ pub(super) fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
                 scroll_inspector(app, MOUSE_SCROLL_LINES, true);
                 return;
             }
+            if mouse_in_projects_pane_body(app, mouse) {
+                scroll_projects_pane(app, MOUSE_SCROLL_LINES, true);
+                return;
+            }
             // While the Narrow-tier overlay is open the chat is
             // hidden behind it; scrolling the chat viewport would
             // silently move content the user can't see. Future:
@@ -88,6 +92,10 @@ pub(super) fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
                 scroll_inspector(app, MOUSE_SCROLL_LINES, false);
                 return;
             }
+            if mouse_in_projects_pane_body(app, mouse) {
+                scroll_projects_pane(app, MOUSE_SCROLL_LINES, false);
+                return;
+            }
             if app.projects_pane_overlay_open && app.layout.top_bar.is_some() {
                 return;
             }
@@ -101,6 +109,29 @@ pub(super) fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
         }
         _ => {}
     }
+}
+
+/// True when the cursor is inside the Projects pane's scrollable
+/// body (NOT the pinned banner or the account footer).
+fn mouse_in_projects_pane_body(app: &App, mouse: MouseEvent) -> bool {
+    let rect = app.rendered_projects_pane_body_area;
+    if rect.width == 0 || rect.height == 0 {
+        return false;
+    }
+    mouse.column >= rect.x
+        && mouse.column < rect.x.saturating_add(rect.width)
+        && mouse.row >= rect.y
+        && mouse.row < rect.y.saturating_add(rect.height)
+}
+
+fn scroll_projects_pane(app: &mut App, lines: usize, up: bool) {
+    let delta = u16::try_from(lines).unwrap_or(u16::MAX);
+    app.projects_pane_scroll_offset = if up {
+        app.projects_pane_scroll_offset.saturating_sub(delta)
+    } else {
+        app.projects_pane_scroll_offset.saturating_add(delta)
+    };
+    app.needs_redraw = true;
 }
 
 /// True when the wheel event happened with the cursor inside the
@@ -451,6 +482,7 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
                     | PaneHitTarget::OverlayClose { .. }
                     | PaneHitTarget::CloseSession { .. }
                     | PaneHitTarget::InspectorGitOpenDiff { .. }
+                    | PaneHitTarget::CopySessionId { .. }
             ) && t.contains(mouse.column, mouse.row)
         })
         .cloned();
@@ -490,6 +522,10 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
                 app.needs_redraw = true;
                 return true;
             }
+            PaneHitTarget::CopySessionId { session_id, .. } => {
+                copy_session_id_to_clipboard(&session_id);
+                return true;
+            }
             PaneHitTarget::ProjectHeader { .. } | PaneHitTarget::SessionRow { .. } => {}
         }
     }
@@ -527,7 +563,8 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
             | PaneHitTarget::InspectorTopBarIcon { .. }
             | PaneHitTarget::OverlayClose { .. }
             | PaneHitTarget::CloseSession { .. }
-            | PaneHitTarget::InspectorGitOpenDiff { .. } => true,
+            | PaneHitTarget::InspectorGitOpenDiff { .. }
+            | PaneHitTarget::CopySessionId { .. } => true,
         };
     }
 
@@ -561,7 +598,8 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
         | PaneHitTarget::InspectorTopBarIcon { .. }
         | PaneHitTarget::OverlayClose { .. }
         | PaneHitTarget::CloseSession { .. }
-        | PaneHitTarget::InspectorGitOpenDiff { .. } => true,
+        | PaneHitTarget::InspectorGitOpenDiff { .. }
+        | PaneHitTarget::CopySessionId { .. } => true,
     }
 }
 
@@ -572,6 +610,29 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
 /// render (no real catalog entry change is needed — `list_projects`
 /// re-partitions based on whether any of the project's sessions are
 /// in `app.sessions`).
+/// Write the active session's id to the OS clipboard via `arboard`.
+/// No on-screen feedback — the click target's `⎘` glyph is its own
+/// affordance. Logs success / failure to the tracing stream.
+fn copy_session_id_to_clipboard(session_id: &str) {
+    match arboard::Clipboard::new().and_then(|mut cb| cb.set_text(session_id.to_owned())) {
+        Ok(()) => tracing::info!(
+            target: crate::logging::targets::APP_INPUT,
+            event_name = "session_id_copied",
+            message = "session id copied to clipboard",
+            outcome = "success",
+            session_id = %session_id,
+        ),
+        Err(err) => tracing::warn!(
+            target: crate::logging::targets::APP_INPUT,
+            event_name = "session_id_copy_failed",
+            message = "failed to copy session id to clipboard",
+            outcome = "failure",
+            session_id = %session_id,
+            error_message = %err,
+        ),
+    }
+}
+
 fn close_session(app: &mut App, session_key: &forge_workspace::SessionKey) {
     if let Some(workspace) = app.workspace.as_ref() {
         workspace.release_session(session_key);

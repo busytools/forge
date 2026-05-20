@@ -7,11 +7,6 @@
 //! on macOS — keychain). The `Authorization` header never escapes
 //! this module.
 //!
-//! Lifted from forge-sdk in 2026-05-05. Direct hits on
-//! `api.anthropic.com` belong with the agent — forge-sdk's job is
-//! to wrap the `claude` CLI subprocess, not to talk HTTP to
-//! Anthropic.
-//!
 //! The response shape mirrors the live API as of 2026-04, exposed as
 //! plain optional fields. Timestamp parsing is left to consumers
 //! because the field is documented inconsistently (sometimes ISO-8601,
@@ -49,24 +44,11 @@ const OAUTH_TIMEOUT: Duration = Duration::from_secs(8);
 pub async fn oauth_usage(config_dir: &Path) -> Result<OauthUsage, OauthUsageError> {
     let credentials = load_oauth_credentials(config_dir).ok_or(OauthUsageError::NoCredentials)?;
 
-    // We deliberately DO NOT short-circuit on
-    // `credentials.expires_at <= now`. The on-disk access_token is a
-    // short-lived cache (~1 hour); the `claude` CLI transparently
-    // refreshes it via the refresh_token before each request,
-    // writing the new value back to `.credentials.json`. Forge's
-    // probe runs out-of-band from the CLI and doesn't perform the
-    // refresh dance — but the underlying claude.ai session is still
-    // valid. Treating a stale-clock token as "Expired" produced a
-    // false yellow `⚠ expired — /login` warning on the bottom panel
-    // for accounts whose CLI simply hadn't run recently (verified
-    // empirically: `claude_<account> auth status` reports
-    // loggedIn=true while forge flagged the same account as
-    // expired). The right signal of authentication state is what
-    // the API itself returns: a 401/403 → Unauthorized, anything
-    // else → trust the response. If the stale token genuinely
-    // doesn't work the upstream 401 fires that path correctly,
-    // and we never invent an "Expired" label that contradicts the
-    // CLI's source of truth.
+    // `credentials.expires_at` is a stale cache: the CLI refreshes
+    // the access token silently before each of its own requests,
+    // out-of-band from our probe. Trust the upstream API response
+    // (401 → Unauthorized, anything else → live) instead of the
+    // on-disk timestamp.
     let headers = oauth_headers(&credentials.access_token)?;
     let client = reqwest::Client::builder()
         .timeout(OAUTH_TIMEOUT)

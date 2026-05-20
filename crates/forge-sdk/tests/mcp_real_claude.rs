@@ -13,7 +13,7 @@
 )]
 
 use async_trait::async_trait;
-use forge_sdk::Message;
+use forge_primitives::Message;
 use forge_sdk::mcp::{McpServerBuilder, Tool, ToolInput, ToolOutput};
 use forge_sdk::{Client, OptionsBuilder, PermissionMode};
 use serde_json::json;
@@ -78,12 +78,12 @@ async fn real_claude_calls_in_process_tool() {
             Message::Assistant { message, .. } => {
                 for block in message.content {
                     match block {
-                        forge_sdk::ContentBlock::ToolUse { name, .. } => {
+                        forge_primitives::ContentBlock::ToolUse { name, .. } => {
                             if name == "mcp__probe__greet" {
                                 saw_tool_use = true;
                             }
                         }
-                        forge_sdk::ContentBlock::Text { text } => {
+                        forge_primitives::ContentBlock::Text { text } => {
                             if text.contains("Hello, world!") {
                                 saw_greeting = true;
                             }

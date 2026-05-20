@@ -14,7 +14,6 @@
 
 #![allow(clippy::module_name_repetitions)]
 
-use std::sync::Arc;
 use std::sync::mpsc as std_mpsc;
 
 use forge_workspace::env::cli_version::CliVersionInfo;
@@ -29,15 +28,12 @@ pub struct CliVersionEvent {
 }
 
 /// Spawn a tokio local task that awaits
-/// `workspace.fetch_cli_version_info()` and sends a single
-/// `CliVersionEvent` on completion. Best-effort send — the receiver
-/// going away (app shutdown) is fine, the result just drops.
-pub fn spawn_fetch(
-    workspace: Arc<forge_workspace::Workspace>,
-    tx: std_mpsc::Sender<CliVersionEvent>,
-) {
+/// `forge_workspace::env::cli_version::fetch_info()` and sends a
+/// single `CliVersionEvent` on completion. Best-effort send: the
+/// receiver going away (app shutdown) is fine, the result just drops.
+pub fn spawn_fetch(tx: std_mpsc::Sender<CliVersionEvent>) {
     tokio::task::spawn_local(async move {
-        let snapshot = workspace.fetch_cli_version_info().await;
+        let snapshot = forge_workspace::env::cli_version::fetch_info().await;
         let _ = tx.send(CliVersionEvent { snapshot });
     });
 }

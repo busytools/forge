@@ -24,7 +24,6 @@
 //! so a downstream renderer can show "scan failed" rather than
 //! miscategorising the empty result as "no changes."
 
-use std::collections::HashMap;
 use std::path::Path;
 
 use super::{GitOutput, run_git};
@@ -161,6 +160,14 @@ pub struct ScanOutcome {
     pub untracked_suppressed: usize,
 }
 
+/// Max in-flight `git diff -- <path>` subprocesses during a scan.
+/// macOS's default soft open-file limit is ~256 and every git child
+/// holds stdin/stdout/stderr pipes plus a handful of git internals
+/// (~6-10 FDs); firing all N at once on a 100+ file refactor
+/// branch trips `EMFILE`. 16 keeps total well under the FD ceiling
+/// while still giving a 16× speedup over a sequential loop.
+const MAX_INFLIGHT_FETCHES: usize = 16;
+
 /// Top-level scanner entry. `target` is passed verbatim to
 /// `git diff <target>`, comparing the named ref against the working
 /// tree — `"HEAD"` for working-tree-vs-HEAD (uncommitted only),
@@ -191,15 +198,35 @@ pub async fn scan(cwd: &Path, target: &str) -> ScanOutcome {
     let mut files = parse_name_status(&name_status);
 
     if !files.is_empty() {
-        let diff_content = match run_git(cwd, &["diff", target, "--no-ext-diff"]).await {
-            GitOutput::Ok(s) => s,
-            GitOutput::Empty => String::new(),
-            GitOutput::Failed | GitOutput::Oversize => {
-                scanner_ok = false;
-                String::new()
+        // Per-file concurrent fetch with bounded concurrency. Each
+        // `git diff <target> --no-ext-diff -- <path>` subprocess
+        // holds stdio pipes for its lifetime; firing all N
+        // simultaneously via `futures::future::join_all` blows the
+        // process's open-file limit on real refactor branches
+        // (~130 files × ~3-10 FDs each easily exceeds the macOS
+        // ~256 soft cap). `buffer_unordered(MAX_INFLIGHT_FETCHES)`
+        // caps in-flight subprocesses to a safe number while still
+        // giving ~MAX_INFLIGHT_FETCHES× speedup over a sequential
+        // loop. Order doesn't matter because we zip back into
+        // `files` by index, captured as the future's first item.
+        use futures::StreamExt;
+        // Clone the path list off `files` so the immutable borrow
+        // drops before the stream runs — we mutate `files[idx]`
+        // inside the consume loop.
+        let paths: Vec<String> = files.iter().map(|f| f.path.clone()).collect();
+        let mut stream =
+            futures::stream::iter(paths.into_iter().enumerate().map(|(idx, path)| async move {
+                (idx, fetch_file_hunks(cwd, target, &path).await)
+            }))
+            .buffer_unordered(MAX_INFLIGHT_FETCHES);
+        while let Some((idx, result)) = stream.next().await {
+            match result {
+                FileScanOutcome::Ok(hunks) => files[idx].hunks = hunks,
+                FileScanOutcome::SubprocessFailed => {
+                    scanner_ok = false;
+                }
             }
-        };
-        merge_hunks(&mut files, &diff_content);
+        }
     }
 
     // Untracked only when the caller is asking for working-tree
@@ -214,6 +241,45 @@ pub async fn scan(cwd: &Path, target: &str) -> ScanOutcome {
     }
 
     ScanOutcome { files, scanner_ok, untracked_suppressed }
+}
+
+/// Per-file fetch result. `SubprocessFailed` propagates back to
+/// `scan` so a single-file failure flips `scanner_ok` without
+/// poisoning the rest of the per-file results.
+enum FileScanOutcome {
+    Ok(Vec<Hunk>),
+    SubprocessFailed,
+}
+
+/// Fetch hunks for one file via
+/// `git diff <target> --no-ext-diff -- <path>`. The `--` separator
+/// ensures the path isn't reinterpreted as a flag for files like
+/// `--foo`. Binary files and submodule entries return `Ok(vec![])`
+/// — that's the legitimate "no @@ hunks" case and matches the
+/// rendering convention for those file kinds.
+async fn fetch_file_hunks(cwd: &Path, target: &str, path: &str) -> FileScanOutcome {
+    let section = match run_git(cwd, &["diff", target, "--no-ext-diff", "--", path]).await {
+        GitOutput::Ok(s) => s,
+        GitOutput::Empty => return FileScanOutcome::Ok(Vec::new()),
+        GitOutput::Failed | GitOutput::Oversize => return FileScanOutcome::SubprocessFailed,
+    };
+    let hunks = parse_hunks(&section);
+    if hunks.is_empty() && contains_hunk_marker(&section) {
+        // Parser produced zero hunks despite seeing at least one
+        // `@@` marker. WARN so an operator hunting "I edited this
+        // file but it shows as no-diff" has a breadcrumb. The
+        // per-hunk malformed-header WARN inside parse_hunks already
+        // fires too; this rollup catches the section-level case.
+        tracing::warn!(
+            target: crate::logging::targets::ENV_GIT,
+            event_name = "git_hunks_parse_empty",
+            message = "diff section had @@ markers but produced zero hunks",
+            outcome = "failure",
+            path = %path,
+            section_bytes = section.len(),
+        );
+    }
+    FileScanOutcome::Ok(hunks)
 }
 
 /// Parse `git diff --name-status` output into a list of `FileHunks`
@@ -261,173 +327,12 @@ fn parse_name_status(raw: &str) -> Vec<FileHunks> {
         .collect()
 }
 
-/// Attach hunks parsed from the full unified-diff content to each
-/// file in `files` whose path matches a section in the diff. Files
-/// without a matching section keep their empty `hunks` vector —
-/// that's the legitimate state for binary files (git emits
-/// `Binary files differ` instead of `@@` hunks), submodule entries,
-/// and merge-conflict entries that don't have a unified-diff
-/// body. Two WARN paths fire on anomalies:
-///
-/// - Per-file: section IS matched but `parse_hunks` produced zero
-///   hunks AND the section text contained at least one `@@` line.
-///   Signals a parser gap (round-3 added this).
-/// - Batched: name-status-listed files that had no matching key in
-///   `split_per_file`'s map at all. After the round-4 path_from_section
-///   extensions (rename/mode/binary now resolve cleanly) this case
-///   should be extremely rare — only path-encoding drift between
-///   the two `git diff` subprocesses can produce it. The WARN
-///   names the unmatched paths so an operator hunting "I edited
-///   this file but it shows as no-diff" has the breadcrumb.
-fn merge_hunks(files: &mut [FileHunks], diff_content: &str) {
-    let sections = split_per_file(diff_content);
-    let mut unmatched: Vec<String> = Vec::new();
-    for file in files.iter_mut() {
-        let Some(section) = sections.get(file.path.as_str()) else {
-            unmatched.push(file.path.clone());
-            continue;
-        };
-        let hunks = parse_hunks(section);
-        if hunks.is_empty() && contains_hunk_marker(section) {
-            // The section had at least one `@@` line so the parser
-            // SHOULD have produced something. parse_hunks logs the
-            // malformed-header case per hunk; we add this rollup
-            // log so the file→section linkage failure is also
-            // visible.
-            tracing::warn!(
-                target: crate::logging::targets::ENV_GIT,
-                event_name = "git_hunks_parse_empty",
-                message = "diff section had @@ markers but produced zero hunks",
-                outcome = "failure",
-                path = %file.path,
-                section_bytes = section.len(),
-            );
-        }
-        file.hunks = hunks;
-    }
-    if !unmatched.is_empty() {
-        tracing::warn!(
-            target: crate::logging::targets::ENV_GIT,
-            event_name = "git_section_missing_for_file",
-            message = "files listed by --name-status had no matching section in --no-ext-diff; hunks remain empty",
-            outcome = "skipped",
-            unmatched_count = unmatched.len(),
-            unmatched_paths = ?unmatched,
-        );
-    }
-}
-
-/// True when `section` contains at least one `@@` line — used to
-/// distinguish "no body to parse" (binary / submodule, no log)
-/// from "parser couldn't extract hunks despite headers being
-/// present" (WARN-worthy).
+/// True when `section` contains at least one `@@` line — used by
+/// the per-file fetch path to distinguish "no body to parse"
+/// (binary / submodule, no log) from "parser couldn't extract
+/// hunks despite headers being present" (WARN-worthy).
 fn contains_hunk_marker(section: &str) -> bool {
     section.lines().any(|line| line.starts_with("@@"))
-}
-
-/// Split the full unified-diff output into per-file sections keyed
-/// by the file's path. Paths are derived from the `+++ b/<path>`
-/// (or `--- a/<path>` for deletions) line inside each section
-/// rather than from the `diff --git a/X b/Y` header — the header's
-/// ` b/` separator is ambiguous when the path itself contains
-/// ` b/` (e.g. `bokehjs/src/lib/patch.ts`).
-fn split_per_file(raw: &str) -> HashMap<String, String> {
-    let mut map = HashMap::new();
-    let mut current_lines: Vec<&str> = Vec::new();
-    let mut in_section = false;
-    for line in raw.lines() {
-        if line.starts_with("diff --git ") {
-            if in_section {
-                flush_section(&current_lines, &mut map);
-            }
-            current_lines.clear();
-            current_lines.push(line);
-            in_section = true;
-        } else if in_section {
-            current_lines.push(line);
-        }
-    }
-    if in_section {
-        flush_section(&current_lines, &mut map);
-    }
-    map
-}
-
-/// Drop a per-file section into `map` if the path can be derived,
-/// otherwise WARN with the offending header so an operator hunting
-/// "why didn't my file's diff show" has a trail. The drop case is
-/// rare (every healthy git output produces a `+++ b/` or `+++
-/// /dev/null` line) but the silent skip used to mask custom
-/// pretty-format leakage and unusual rename / copy header shapes.
-fn flush_section(lines: &[&str], map: &mut HashMap<String, String>) {
-    if let Some(path) = path_from_section(lines) {
-        map.insert(path, lines.join("\n"));
-        return;
-    }
-    let header = lines.first().copied().unwrap_or("<empty>");
-    let truncated: String = header.chars().take(120).collect();
-    tracing::warn!(
-        target: crate::logging::targets::ENV_GIT,
-        event_name = "git_section_path_missing",
-        message = "diff section had no resolvable +++/--- path; section dropped",
-        outcome = "skipped",
-        header = %truncated,
-    );
-}
-
-/// Derive the canonical (new-side) path for a per-file diff section
-/// by reading the `+++` and `---` header lines. Deletions are
-/// reported back under the old path so the merger can match them
-/// against the `--name-status` entry, which uses the deleted path
-/// as the only path.
-///
-/// Tries four fallbacks in order so legitimate git sections that
-/// omit `+++ b/` lines still resolve cleanly (avoids spamming
-/// `git_section_path_missing` WARNs on normal repo activity):
-/// 1. `+++ b/<path>` — the canonical new-side header.
-/// 2. `+++ /dev/null` + `--- a/<path>` — deletions.
-/// 3. `rename to <path>` — pure renames (no content change, so no
-///    `---`/`+++` lines at all; only `rename from`/`rename to`).
-/// 4. `diff --git a/X b/Y` header — mode-only changes and binary
-///    diffs ("Binary files a/X and b/Y differ") have no `+++`
-///    lines either. `rsplit_once(" b/")` picks the LAST ` b/` so
-///    paths containing ` b/` in their interior still round-trip.
-fn path_from_section(lines: &[&str]) -> Option<String> {
-    let mut new_path: Option<String> = None;
-    let mut old_path: Option<String> = None;
-    let mut plus_is_devnull = false;
-    let mut rename_to: Option<String> = None;
-    let mut diff_header_rest: Option<&str> = None;
-    for line in lines {
-        if let Some(rest) = line.strip_prefix("diff --git ") {
-            diff_header_rest = Some(rest);
-        } else if let Some(rest) = line.strip_prefix("--- a/") {
-            old_path = Some(rest.to_owned());
-        } else if let Some(rest) = line.strip_prefix("+++ b/") {
-            new_path = Some(rest.to_owned());
-            break;
-        } else if line.starts_with("+++ /dev/null") {
-            plus_is_devnull = true;
-            break;
-        } else if let Some(rest) = line.strip_prefix("rename to ") {
-            rename_to = Some(rest.to_owned());
-        }
-    }
-    if plus_is_devnull {
-        return old_path;
-    }
-    if let Some(path) = new_path {
-        return Some(path);
-    }
-    if let Some(path) = rename_to {
-        return Some(path);
-    }
-    // Last resort: parse `diff --git a/X b/Y` header. Used for
-    // mode-only / binary / pure-rename sections that don't emit
-    // any of the headers above. `rsplit_once` anchors on the LAST
-    // ` b/` which is the canonical separator in git's output even
-    // when the path itself contains ` b/`.
-    diff_header_rest.and_then(|rest| rest.rsplit_once(" b/").map(|(_, b)| b.to_owned()))
 }
 
 /// Parse one file's diff section into individual hunks. Hunks are
@@ -867,145 +772,39 @@ diff --git a/x.rs b/x.rs
     }
 
     #[test]
-    fn path_from_section_addition() {
-        let lines = vec!["diff --git a/new.rs b/new.rs", "--- /dev/null", "+++ b/new.rs"];
-        assert_eq!(path_from_section(&lines), Some("new.rs".into()));
+    fn contains_hunk_marker_true_when_at_marker_present() {
+        let section = "diff --git a/x.rs b/x.rs\n--- a/x.rs\n+++ b/x.rs\n@@ -1 +1 @@\n-a\n+b\n";
+        assert!(contains_hunk_marker(section));
     }
 
     #[test]
-    fn path_from_section_deletion() {
-        let lines = vec!["diff --git a/old.rs b/old.rs", "--- a/old.rs", "+++ /dev/null"];
-        assert_eq!(path_from_section(&lines), Some("old.rs".into()));
+    fn contains_hunk_marker_false_when_no_at_marker() {
+        let section =
+            "diff --git a/logo.png b/logo.png\nBinary files a/logo.png and b/logo.png differ\n";
+        assert!(!contains_hunk_marker(section));
     }
 
     #[test]
-    fn path_from_section_with_b_in_path() {
-        // Regression: paths containing ` b/` used to confuse a
-        // naive ` b/` split on the `diff --git` header.
-        let lines = vec![
-            "diff --git a/bokehjs/src/lib/patch.ts b/bokehjs/src/lib/patch.ts",
-            "--- a/bokehjs/src/lib/patch.ts",
-            "+++ b/bokehjs/src/lib/patch.ts",
-        ];
-        assert_eq!(path_from_section(&lines), Some("bokehjs/src/lib/patch.ts".into()));
-    }
-
-    #[test]
-    fn path_from_section_pure_rename_uses_rename_to() {
-        // Pure rename (similarity index 100%) — git emits no
-        // `+++ b/` because there's no content change.
-        let lines = vec![
-            "diff --git a/old.rs b/new.rs",
-            "similarity index 100%",
-            "rename from old.rs",
-            "rename to new.rs",
-        ];
-        assert_eq!(path_from_section(&lines), Some("new.rs".into()));
-    }
-
-    #[test]
-    fn path_from_section_mode_only_uses_diff_header() {
-        // Mode change only — no `+++ b/`, no rename markers; the
-        // path is implicit in the diff --git header.
-        let lines = vec!["diff --git a/build.sh b/build.sh", "old mode 100644", "new mode 100755"];
-        assert_eq!(path_from_section(&lines), Some("build.sh".into()));
-    }
-
-    #[test]
-    fn path_from_section_binary_diff_uses_diff_header() {
-        // Binary file diff — no `+++ b/`; the header carries the
-        // path.
-        let lines = vec![
-            "diff --git a/logo.png b/logo.png",
-            "index abc..def 100644",
-            "Binary files a/logo.png and b/logo.png differ",
-        ];
-        assert_eq!(path_from_section(&lines), Some("logo.png".into()));
-    }
-
-    #[test]
-    fn path_from_section_diff_header_with_b_in_path_resolves_via_rsplit() {
-        // Combine: binary file whose path contains ` b/`. The
-        // header parser must pick the canonical ` b/` separator
-        // (the last one) so the path round-trips even without
-        // a `+++` line.
-        let lines = vec![
-            "diff --git a/bokehjs/src/lib/patch.ts b/bokehjs/src/lib/patch.ts",
-            "index abc..def 100644",
-            "Binary files a/bokehjs/src/lib/patch.ts and b/bokehjs/src/lib/patch.ts differ",
-        ];
-        assert_eq!(path_from_section(&lines), Some("bokehjs/src/lib/patch.ts".into()));
-    }
-
-    #[test]
-    fn split_per_file_two_files() {
-        let raw = "\
-diff --git a/a.rs b/a.rs
---- a/a.rs
-+++ b/a.rs
-@@ -1,1 +1,1 @@
--old
-+new
-diff --git a/b.rs b/b.rs
---- a/b.rs
-+++ b/b.rs
-@@ -1,1 +1,2 @@
- context
-+added";
-        let map = split_per_file(raw);
-        assert_eq!(map.len(), 2);
-        assert!(map.contains_key("a.rs"));
-        assert!(map.contains_key("b.rs"));
-    }
-
-    #[test]
-    fn flush_section_warns_and_drops_when_path_unresolvable() {
-        // Section with `diff --git ` header but neither +++/--- nor
-        // rename markers AND a header that doesn't have ` b/` for
-        // the rsplit fallback to grab — the WARN path fires and
-        // the section drops out of the map. The header still tries
-        // to parse via rsplit_once(" b/") so we use a header
-        // pathological enough to fail every fallback: no ` b/` at
-        // all (truncated / corrupted).
-        let lines = vec!["diff --git a-only-no-b-separator", "some opaque body content"];
-        let mut map: HashMap<String, String> = HashMap::new();
-        flush_section(&lines, &mut map);
-        assert!(map.is_empty(), "section without resolvable path must not land in the map");
-    }
-
-    #[test]
-    fn flush_section_accepts_section_with_plus_header() {
-        let lines = vec![
-            "diff --git a/foo.rs b/foo.rs",
-            "--- a/foo.rs",
-            "+++ b/foo.rs",
-            "@@ -1,1 +1,2 @@",
-            " keep",
-            "+new",
-        ];
-        let mut map: HashMap<String, String> = HashMap::new();
-        flush_section(&lines, &mut map);
-        assert!(map.contains_key("foo.rs"));
-    }
-
-    #[test]
-    fn merge_hunks_attaches_to_matching_file() {
-        let mut files = vec![FileHunks {
+    fn parse_hunks_on_full_file_section_skips_diff_headers() {
+        // Regression: per-file fetch yields the full output starting
+        // with `diff --git` / `index` / `--- a/` / `+++ b/` headers.
+        // `parse_hunks` must skip those and only consume from the
+        // first `@@` marker onward.
+        let raw = "diff --git a/x.rs b/x.rs\n\
+--- a/x.rs\n\
++++ b/x.rs\n\
+@@ -1,1 +1,2 @@\n\
+ keep\n\
++new\n";
+        let hunks = parse_hunks(raw);
+        assert_eq!(hunks.len(), 1);
+        assert!(hunks[0].lines.iter().any(|l| added(l, "new")));
+        let file = FileHunks {
             path: "x.rs".to_owned(),
             status: FileStatus::Modified,
-            hunks: Vec::new(),
-        }];
-        let raw = "\
-diff --git a/x.rs b/x.rs
---- a/x.rs
-+++ b/x.rs
-@@ -1,1 +1,2 @@
- keep
-+new";
-        merge_hunks(&mut files, raw);
-        assert_eq!(files[0].hunks.len(), 1);
-        assert!(files[0].hunks[0].lines.iter().any(|l| added(l, "new")));
-        assert_eq!(files[0].added_count(), 1);
-        assert_eq!(files[0].removed_count(), 0);
+            hunks: hunks.clone(),
+        };
+        assert_eq!(file.added_count(), 1);
+        assert_eq!(file.removed_count(), 0);
     }
 }

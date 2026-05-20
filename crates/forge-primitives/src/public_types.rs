@@ -29,7 +29,6 @@ pub enum SettingSource {
 
 impl SettingSource {
     /// String form for `--setting-sources=<csv>`.
-    #[must_use]
     pub fn as_cli_arg(self) -> &'static str {
         match self {
             Self::User => "user",
@@ -86,7 +85,6 @@ pub struct ForgeAccountIdentity {
 
 impl ForgeAccountIdentity {
     /// Convenience constructor.
-    #[must_use]
     pub fn new(display_name: String) -> Self {
         Self { display_name }
     }
@@ -337,10 +335,9 @@ pub struct ContextUsageResponse {
 }
 
 /// External MCP server wire-config (non-SDK variants). Wire shape:
-/// `McpStdioServerConfig / McpSSEServerConfig / McpHttpServerConfig`
-///. The in-process SDK variant lives on the
-/// `McpServer` handle directly — use `forge_sdk::OptionsBuilder::mcp_server`
-/// for that.
+/// `McpStdioServerConfig / McpSSEServerConfig / McpHttpServerConfig`.
+/// The in-process SDK variant lives on the `McpServer` handle
+/// directly — use `forge_sdk::OptionsBuilder::mcp_server` for that.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum McpServerConfig {
@@ -373,15 +370,14 @@ pub enum McpServerConfig {
     },
 }
 
-/// Bash sandbox configuration — the CLI's `SandboxSettings`
-///. Merged into `--settings` alongside any
-/// explicit `settings` value via the CLI's `_build_settings_value`
-///. Fields are camelCase on the wire.
+/// Bash sandbox configuration — the CLI's `SandboxSettings`.
+/// Merged into `--settings` alongside any explicit `settings`
+/// value via the CLI's `_build_settings_value`. Fields are
+/// camelCase on the wire.
 ///
-/// **Note:** Filesystem read/write restrictions and network
-/// restrictions are NOT configured here — they travel through the
-/// permission-rules surface (`Read`, `Edit`, `WebFetch`). Sandbox
-/// settings control the *bash-command* sandbox specifically.
+/// Filesystem read/write and network restrictions travel through the
+/// permission-rules surface (`Read`, `Edit`, `WebFetch`); these
+/// settings control the bash-command sandbox only.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SandboxSettings {

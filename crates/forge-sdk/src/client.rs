@@ -14,9 +14,10 @@
 //!   detached tasks, and routes outbound `control_response`s to
 //!   per-request oneshots so [`Client::send_control`] callers can
 //!   `await` their typed reply.
-//! - The writer half is a clonable [`crate::transport::AsyncWriter`]
-//!   cloned from [`Subprocess`](crate::transport::process::Subprocess);
-//!   outbound writes go through it without contending on `&mut self`.
+//! - The writer half is a clonable
+//!   [`SharedWriter`](crate::transport::process::SharedWriter) cloned
+//!   from [`Subprocess`](crate::transport::process::Subprocess); outbound
+//!   writes go through it without contending on `&mut self`.
 
 pub(crate) mod control_dispatch;
 mod control_send;
@@ -67,7 +68,7 @@ pub struct Client {
 
 struct ClientInner {
     /// Cloned writer (mpsc-backed via the transport's writer task).
-    writer: std::sync::Arc<dyn crate::transport::AsyncWriter>,
+    writer: std::sync::Arc<crate::transport::process::SharedWriter>,
     /// PID of the spawned `claude` child captured at spawn time.
     /// Stable for the lifetime of the subprocess; consumers (e.g. the
     /// Inspector pane's OS-level process walker) cache snapshots
@@ -158,15 +159,12 @@ impl Client {
                     .map_err(|e| Error::encode("subagents map", e))?,
             )
         };
-        let skills_payload: Vec<String> =
-            options.skills.iter().filter(|s| s.as_str() != "all").cloned().collect();
-        let skills_payload = if skills_payload.is_empty() { None } else { Some(skills_payload) };
         let exclude_dynamic_sections = match &options.system_prompt {
             Some(crate::options::SystemPromptKind::Preset {
                 exclude_dynamic_sections: Some(v),
                 ..
             }) => Some(*v),
-            _ => options.exclude_dynamic_sections,
+            _ => None,
         };
         let hooks_field = if hook_payload.as_object().is_some_and(serde_json::Map::is_empty) {
             serde_json::Value::Null
@@ -181,12 +179,6 @@ impl Client {
         }
         if let Some(flag) = exclude_dynamic_sections {
             init_body.insert("excludeDynamicSections".into(), serde_json::Value::Bool(flag));
-        }
-        if let Some(list) = skills_payload {
-            init_body.insert(
-                "skills".into(),
-                serde_json::Value::Array(list.into_iter().map(Into::into).collect()),
-            );
         }
         let init_request_id = crate::request_id::next();
         let init_envelope = serde_json::json!({
@@ -359,7 +351,6 @@ impl Client {
     /// the CLI's server capabilities, available commands, and output
     /// styles. Returns `None` when the CLI didn't attach a body to its
     /// initialize response.
-    #[must_use]
     pub fn get_server_info(&self) -> Option<&serde_json::Value> {
         self.inner.initialization_result.as_ref()
     }
@@ -374,7 +365,6 @@ impl Client {
     /// at spawn — never happens for a real subprocess on supported
     /// platforms, but the `Option` keeps the test-stub path
     /// expressible.
-    #[must_use]
     pub fn claude_pid(&self) -> Option<u32> {
         self.inner.claude_pid
     }
@@ -385,21 +375,19 @@ impl Client {
     /// stream during init; cached here for callers that need the
     /// initial session context (e.g. forge-agent's status snapshot +
     /// slash autocomplete).
-    #[must_use]
     pub fn initial_session_data(&self) -> Option<&serde_json::Value> {
         self.inner.cached_init_data.as_ref()
     }
 
     /// The session id captured from the init message. Returns an empty
     /// string until the first session-scoped frame arrives.
-    #[must_use]
     pub fn session_id(&self) -> String {
         self.inner.session_id.read().clone()
     }
 
     /// Read the bare `apiKeySource` field from the cached
     /// `system/init` payload, returning a partial
-    /// [`AccountInfo`](crate::AccountInfo) (auth source only — no
+    /// [`forge_primitives::AccountInfo`] (auth source only — no
     /// email/org/subscription). Returns `None` when the payload is
     /// absent (init not yet arrived), the field is missing, or the
     /// value is empty / `"none"`.
@@ -410,7 +398,6 @@ impl Client {
     /// (`forge_agent::cloud::auth_status`), not SDK-side, because it
     /// spawns a fresh subprocess outside the long-lived stream-json
     /// session.
-    #[must_use]
     pub fn account_info_from_init(&self) -> Option<forge_primitives::AccountInfo> {
         let data = self.inner.cached_init_data.as_ref()?;
         let api_key_source = data
@@ -484,8 +471,14 @@ impl Client {
         if let Some(tx) = self.inner.shutdown_tx.lock().await.take() {
             let _ = tx.send(());
         }
-        if let Some(handle) = self.inner.reader_task.lock().await.take() {
-            let _ = handle.await;
+        if let Some(handle) = self.inner.reader_task.lock().await.take()
+            && let Err(join_err) = handle.await
+        {
+            tracing::error!(
+                target: "forge_sdk",
+                error = %join_err,
+                "reader task panicked during disconnect"
+            );
         }
         Ok(())
     }

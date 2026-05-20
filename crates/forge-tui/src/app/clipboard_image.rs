@@ -6,15 +6,7 @@
 //! can construct them without reaching into the UI crate); this module
 //! keeps the `arboard`/`image`-flavoured encoding helpers that only
 //! the UI cares about.
-// Named-item `pub use` re-export — items not consumed by forge-tui's
-// own code are still part of forge-tui's public surface for
-// downstream consumers (legacy import-path compatibility), so
-// `unused_imports` would fire on them without this allow.
-#[allow(unused_imports)]
-pub use forge_primitives::image::{
-    ImageAttachment, SUPPORTED_IMAGE_MIME_TYPES, is_supported_image_type, is_valid_base64,
-    validate_image,
-};
+pub use forge_primitives::image::ImageAttachment;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClipboardImageError {
@@ -25,7 +17,6 @@ pub enum ClipboardImageError {
 }
 
 impl ClipboardImageError {
-    #[must_use]
     pub fn user_message(self) -> &'static str {
         match self {
             ClipboardImageError::InvalidDimensions | ClipboardImageError::InvalidPixelBuffer => {
@@ -122,6 +113,9 @@ pub fn encode_clipboard_image(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use forge_primitives::image::{
+        SUPPORTED_IMAGE_MIME_TYPES, is_supported_image_type, is_valid_base64, validate_image,
+    };
 
     // --- is_supported_image_type ---
 

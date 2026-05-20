@@ -42,10 +42,6 @@ pub struct ToolCallInfo {
     pub last_measured_layout_generation: u64,
     /// Per-block render cache for this tool call.
     pub cache: BlockCache,
-    /// Inline permission prompt - rendered inside this tool call block.
-    pub pending_permission: Option<InlinePermission>,
-    /// Inline question prompt from `AskUserQuestion`.
-    pub pending_question: Option<InlineQuestion>,
     /// Per-tool collapse override set by clicking the tool-call row.
     /// `None` means follow the global `app.tools_collapsed` default;
     /// `Some(true)` forces collapsed, `Some(false)` forces expanded.
@@ -72,22 +68,14 @@ impl ToolCallInfo {
         serde_json::to_string(value).map_or(0, |json| json.len())
     }
 
-    #[must_use]
     pub fn is_execute_tool(&self) -> bool {
         is_execute_tool_name(&self.sdk_tool_name)
     }
 
-    #[must_use]
     pub fn is_ask_question_tool(&self) -> bool {
         is_ask_question_tool_name(&self.sdk_tool_name)
     }
 
-    #[must_use]
-    pub fn is_exit_plan_mode_tool(&self) -> bool {
-        is_exit_plan_mode_tool_name(&self.sdk_tool_name)
-    }
-
-    #[must_use]
     pub fn assistant_auto_backgrounded(&self) -> bool {
         self.output_metadata
             .as_ref()
@@ -96,7 +84,6 @@ impl ToolCallInfo {
             .unwrap_or(false)
     }
 
-    #[must_use]
     pub fn verification_nudge_needed(&self) -> bool {
         self.output_metadata
             .as_ref()
@@ -105,26 +92,14 @@ impl ToolCallInfo {
             .unwrap_or(false)
     }
 
-    #[must_use]
     pub fn task_is_backgrounded(&self) -> bool {
         self.task_metadata.as_ref().and_then(|metadata| metadata.is_backgrounded).unwrap_or(false)
     }
 
-    #[must_use]
     pub fn hidden_unless_focused_interaction(&self) -> bool {
         self.hidden
-            && !self.pending_permission.as_ref().is_some_and(|permission| permission.focused)
-            && !self.pending_question.as_ref().is_some_and(|question| question.focused)
     }
 
-    #[must_use]
-    pub fn is_hidden_focused_interaction(&self) -> bool {
-        self.hidden
-            && (self.pending_permission.as_ref().is_some_and(|permission| permission.focused)
-                || self.pending_question.as_ref().is_some_and(|question| question.focused))
-    }
-
-    #[must_use]
     pub fn is_subagent_root_tool(&self) -> bool {
         !self.hidden && matches!(self.sdk_tool_name.as_str(), "Task" | "Agent")
     }
@@ -148,7 +123,6 @@ impl ToolCallInfo {
         self.mark_tool_call_render_dirty();
     }
 
-    #[must_use]
     pub fn cache_measurement_key_matches(&self, width: u16, layout_generation: u64) -> bool {
         self.last_measured_width == width
             && self.last_measured_layout_epoch == self.layout_epoch
@@ -172,19 +146,12 @@ impl ToolCallInfo {
     }
 }
 
-#[must_use]
 pub fn is_execute_tool_name(tool_name: &str) -> bool {
     tool_name.eq_ignore_ascii_case("bash")
 }
 
-#[must_use]
 pub fn is_ask_question_tool_name(tool_name: &str) -> bool {
     tool_name.eq_ignore_ascii_case("askuserquestion")
-}
-
-#[must_use]
-pub fn is_exit_plan_mode_tool_name(tool_name: &str) -> bool {
-    tool_name.eq_ignore_ascii_case("exitplanmode")
 }
 
 /// True when `tool_name` matches the long-running `Monitor` tool —
@@ -192,7 +159,6 @@ pub fn is_exit_plan_mode_tool_name(tool_name: &str) -> bool {
 /// bounded). Used by the Inspector PROCESSES section to identify
 /// in-flight monitors regardless of how the CLI happens to capitalise
 /// the name (matches `is_execute_tool_name`'s style).
-#[must_use]
 pub fn is_monitor_tool_name(tool_name: &str) -> bool {
     tool_name.eq_ignore_ascii_case("monitor")
 }
@@ -202,41 +168,8 @@ pub fn is_monitor_tool_name(tool_name: &str) -> bool {
 /// (see `forge_test_harness` captures + claude CLI binary trace).
 /// Used by PROCESSES to surface scheduled jobs alongside live
 /// backgrounded tasks.
-#[must_use]
 pub fn is_cron_create_tool_name(tool_name: &str) -> bool {
     tool_name.eq_ignore_ascii_case("croncreate")
-}
-
-/// Permission state stored inline on a `ToolCallInfo`, so the permission
-/// controls render inside the tool call block (unified edit/permission UX).
-///
-/// Phase 1+: the `response_tx` field has been replaced by `tool_id`.
-/// Workspace owns the oneshot in `DomainSession.pending_interactions`;
-/// the picker site dispatches `Command::RespondPermission { key,
-/// tool_id, outcome }` via `Workspace::dispatch` instead of fulfilling
-/// a local sender.
-pub struct InlinePermission {
-    pub options: Vec<model::PermissionOption>,
-    pub display: Option<model::PermissionDisplay>,
-    pub tool_id: String,
-    pub selected_index: usize,
-    /// Whether this permission currently has keyboard focus.
-    /// When multiple permissions are pending, only the focused one
-    /// shows the selection arrow and accepts Left/Right/Enter input.
-    pub focused: bool,
-}
-
-pub struct InlineQuestion {
-    pub prompt: model::QuestionPrompt,
-    pub tool_id: String,
-    pub focused_option_index: usize,
-    pub selected_option_indices: std::collections::BTreeSet<usize>,
-    pub notes: String,
-    pub notes_cursor: usize,
-    pub editing_notes: bool,
-    pub focused: bool,
-    pub question_index: usize,
-    pub total_questions: usize,
 }
 
 #[cfg(test)]

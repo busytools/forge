@@ -64,14 +64,13 @@ pub enum SettingsTarget {
 /// `config_dir` is the user-scope config directory the caller has
 /// bound this read to (typically the per-spawn account binding).
 /// `cwd` is the project root used to locate
-/// `<cwd>/.claude/settings.local.json`. Pass `std::env::current_dir()`
-/// to match the CLI's default behaviour for the project-local path.
-#[must_use]
+/// `<cwd>/.claude/settings.local.json` — sourced from `forge.toml` or
+/// the agent's reported cwd, never `std::env::current_dir()`.
 pub fn settings_documents(config_dir: &Path, cwd: &Path) -> SettingsDocuments {
     SettingsDocuments {
         user: read_json_file(&config_dir.join("settings.json")),
         project_local: read_json_file(&cwd.join(".claude").join("settings.local.json")),
-        preferences: read_json_file(&home_dir().join(".claude.json")),
+        preferences: home_dir().and_then(|h| read_json_file(&h.join(".claude.json"))),
     }
 }
 
@@ -101,15 +100,19 @@ pub fn write_settings_document(
     target: &SettingsTarget,
     document: &Value,
 ) -> Result<(), Error> {
-    let path = target_path(config_dir, target);
+    let path = target_path(config_dir, target)?;
     write_json_atomic(&path, document)
 }
 
-fn target_path(config_dir: &Path, target: &SettingsTarget) -> PathBuf {
+fn target_path(config_dir: &Path, target: &SettingsTarget) -> Result<PathBuf, Error> {
     match target {
-        SettingsTarget::User => config_dir.join("settings.json"),
-        SettingsTarget::ProjectLocal { cwd } => cwd.join(".claude").join("settings.local.json"),
-        SettingsTarget::Preferences => home_dir().join(".claude.json"),
+        SettingsTarget::User => Ok(config_dir.join("settings.json")),
+        SettingsTarget::ProjectLocal { cwd } => Ok(cwd.join(".claude").join("settings.local.json")),
+        SettingsTarget::Preferences => {
+            home_dir().map(|h| h.join(".claude.json")).ok_or_else(|| {
+                Error::Io(io::Error::other("$HOME unset; cannot resolve preferences path"))
+            })
+        }
     }
 }
 
@@ -200,13 +203,36 @@ fn unique_temp_path(parent: &Path, filename_hint: Option<&str>) -> PathBuf {
     parent.join(format!(".{filename}.{stamp}.tmp"))
 }
 
-fn home_dir() -> PathBuf {
-    PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into()))
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME").filter(|s| !s.is_empty()).map(PathBuf::from)
 }
 
 fn read_json_file(path: &Path) -> Option<Value> {
-    let contents = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str(&contents).ok()
+    let contents = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(e) => {
+            tracing::warn!(
+                target: "forge_agent::userdata::settings",
+                path = %path.display(),
+                error = %e,
+                "failed to read settings file"
+            );
+            return None;
+        }
+    };
+    match serde_json::from_str(&contents) {
+        Ok(v) => Some(v),
+        Err(e) => {
+            tracing::warn!(
+                target: "forge_agent::userdata::settings",
+                path = %path.display(),
+                error = %e,
+                "failed to parse settings file as JSON"
+            );
+            None
+        }
+    }
 }
 
 #[cfg(test)]
@@ -286,7 +312,7 @@ mod tests {
     #[test]
     fn target_path_user_uses_supplied_config_dir() {
         let config_dir = PathBuf::from("/tmp/forge_test_user_settings_dir");
-        let path = target_path(&config_dir, &SettingsTarget::User);
+        let path = target_path(&config_dir, &SettingsTarget::User).expect("path");
         assert_eq!(path, config_dir.join("settings.json"));
     }
 
@@ -294,14 +320,20 @@ mod tests {
     fn target_path_project_local_uses_cwd() {
         let config_dir = PathBuf::from("/tmp/ignored");
         let cwd = PathBuf::from("/tmp/forge_sdk_test_proj");
-        let path = target_path(&config_dir, &SettingsTarget::ProjectLocal { cwd: cwd.clone() });
+        let path = target_path(&config_dir, &SettingsTarget::ProjectLocal { cwd: cwd.clone() })
+            .expect("path");
         assert_eq!(path, cwd.join(".claude").join("settings.local.json"));
     }
 
     #[test]
     fn target_path_preferences_uses_home_root() {
+        // $HOME must be set for this test to assert a path; skip otherwise
+        // (matches the rule-15 fail-loud behaviour).
+        if std::env::var_os("HOME").is_none_or(|s| s.is_empty()) {
+            return;
+        }
         let config_dir = PathBuf::from("/tmp/ignored");
-        let path = target_path(&config_dir, &SettingsTarget::Preferences);
+        let path = target_path(&config_dir, &SettingsTarget::Preferences).expect("path");
         assert!(path.ends_with(".claude.json"));
         // The leading dot makes it a hidden file at $HOME, not a
         // file under $HOME/.claude — sanity-check we didn't drift.

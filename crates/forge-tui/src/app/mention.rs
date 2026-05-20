@@ -1,7 +1,13 @@
 use super::{App, FocusTarget, dialog::DialogState, file_index};
 
-/// Maximum candidates shown in the dropdown.
-pub const MAX_VISIBLE: usize = 8;
+/// Maximum candidates shown in the dropdown. Picked tall enough
+/// that the full forge group (~10 entries) + the `── claude ──`
+/// divider + most of the claude advertised set (~20) is visible
+/// at a glance when the user presses `/` — no scrolling required
+/// for typical pane heights. `choose_dropdown_y` will silently
+/// clip if the terminal is too short; the standard
+/// `DialogState::move_*` slide handles scrolling past the clip.
+pub const MAX_VISIBLE: usize = 32;
 /// Minimum query length before scanning the filesystem for matches.
 pub const MIN_QUERY_CHARS: usize = 1;
 
@@ -27,7 +33,6 @@ enum MentionSearchStatus {
 }
 
 impl MentionState {
-    #[must_use]
     pub fn new(
         trigger_row: usize,
         trigger_col: usize,
@@ -49,7 +54,6 @@ impl MentionState {
         }
     }
 
-    #[must_use]
     pub fn placeholder_message(&self) -> Option<String> {
         if !self.candidates.is_empty() {
             return None;
@@ -63,7 +67,6 @@ impl MentionState {
         }
     }
 
-    #[must_use]
     pub fn has_selectable_candidates(&self) -> bool {
         !self.candidates.is_empty()
     }
@@ -359,6 +362,10 @@ mod tests {
                 return;
             }
         }
+        // Bound exhausted — surface a clear timeout failure instead
+        // of letting downstream assertions fail against a still-
+        // Searching mention state.
+        panic!("mention search did not settle within 1s (200 × 5ms)");
     }
 
     #[test]

@@ -29,8 +29,8 @@
 //!   tool call's `raw_input` + status; the renderer chooses glyphs
 //!   + colours per `ProcessKind`.
 //!
-//! Reads from per-session state on `UiSession.todos` (post PR #109)
-//! and `UiSession.git_diff_snapshot`. The
+//! Reads from per-session state on `UiSession.todos` and
+//! `UiSession.git_diff_snapshot`. The
 //! `TodoWriteOutputMetadata.verification_nudge_needed` flag surfaces
 //! as a dim-yellow notice above the `TASKS` header until the next
 //! `TodoWrite` clears it.
@@ -197,13 +197,13 @@ fn render_scrollable_body(frame: &mut Frame, body_area: Rect, app: &mut App) {
 
     // Stamp the 🦉 open-review hit target — GIT header is body
     // line 0, so the glyph is visible exactly when `offset == 0`.
-    // The 🦉 owl is 2 cells wide and sits with 2 cells of trailing
-    // pad before the right edge (matches `append_git_section`'s
+    // The 🦉 owl is 2 cells wide and sits with PANE_PAD (1 cell) of
+    // trailing pad before the right edge (matches `append_git_section`'s
     // layout). Hit-test covers both glyph cells + 1 cell left/right
     // for forgiveness.
     if has_open_diff_glyph && offset == 0 {
         let right_edge = body_area.x.saturating_add(body_area.width);
-        let glyph_x = right_edge.saturating_sub(4);
+        let glyph_x = right_edge.saturating_sub(3);
         let x_start = glyph_x.saturating_sub(1);
         let x_end = glyph_x.saturating_add(3);
         app.pane_hit_targets.push(PaneHitTarget::InspectorGitOpenDiff {
@@ -380,12 +380,26 @@ fn push_section_rule(lines: &mut Vec<Line<'static>>, width: u16) {
     ]));
 }
 
-/// Append the GIT section to `lines`. Always renders header + path.
-/// Branch (with right-justified aggregate totals when the snapshot
-/// carries a diff) + file tree are gated on the active session's
-/// `git_diff_snapshot` — `None` (no scan yet) stops after the path
-/// row.
+/// Append the GIT section to `lines`. Hidden entirely when the
+/// active session's cwd is not inside a git repository (clean
+/// `NoRepo` view + `scanner_ok = true`). For real repos the section
+/// renders header + path + branch + diff + file tree as usual; for
+/// scanner failures inside a real repo the unhealthy banner still
+/// surfaces so the operator gets a triage signal.
 fn append_git_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
+    // Suppress the whole section when there's no git repo at the
+    // active session's cwd. Without this the user sees an empty
+    // `GIT` header + path in every non-git project. We only know
+    // it's a non-repo once the first scan has landed; pre-scan
+    // (`snapshot.is_none()`) keep rendering the header so the row
+    // animates in once the scanner answers.
+    if let Some(snapshot) = app.active_session().and_then(|s| s.git_diff_snapshot.as_ref())
+        && snapshot.scanner_ok
+        && matches!(snapshot.view, GitDiffView::NoRepo)
+    {
+        return;
+    }
+
     // Section header — DIM bold, flush against the rule above
     // (mirrors `TASKS`). When the snapshot has a diff to surface
     // (Worktree / BranchVsDefault), append the `🦉` glyph at the
@@ -397,14 +411,13 @@ fn append_git_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
     )];
     if has_glyph {
         // " GIT" is 4 cells; the 🦉 owl is 2 cells wide; trailing
-        // 2-cell pad keeps the affordance 2 columns clear of the
-        // pane's right edge (matches the diff overlay banner's ✕
-        // breathing room). Total reserved on the right: 4 cells
-        // (glyph + trailing pad).
-        let pad = usize::from(width).saturating_sub(4 + 4);
+        // pad is PANE_PAD (1 cell) so the owl's right edge aligns
+        // with the `-M` column on the diff-stats rows below.
+        let trailing_pad = usize::from(PANE_PAD);
+        let pad = usize::from(width).saturating_sub(4 + 2 + trailing_pad);
         header_spans.push(Span::raw(" ".repeat(pad)));
         header_spans.push(Span::styled("\u{1F989}".to_owned(), Style::default()));
-        header_spans.push(Span::raw("  "));
+        header_spans.push(Span::raw(" ".repeat(trailing_pad)));
     }
     lines.push(Line::from(header_spans));
     // Blank between header and content.

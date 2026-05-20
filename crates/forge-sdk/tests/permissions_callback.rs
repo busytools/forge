@@ -5,8 +5,8 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use forge_sdk::Message;
-use forge_sdk::{Client, OptionsBuilder, PermissionDecision, ToolPermissionContext};
+use forge_primitives::{Message, PermissionDecision, ToolPermissionContext};
+use forge_sdk::{Client, OptionsBuilder};
 use serde_json::json;
 
 fn fixture(name: &str) -> String {
@@ -36,7 +36,7 @@ async fn allow_path_completes_turn() {
         Message::Assistant { message, .. } => {
             assert!(
                 message.content.iter().any(
-                    |b| matches!(b, forge_sdk::ContentBlock::Text { text } if text.contains("edited"))
+                    |b| matches!(b, forge_primitives::ContentBlock::Text { text } if text.contains("edited"))
                 ),
                 "expected 'edited' text, got: {:?}",
                 message.content
@@ -68,7 +68,7 @@ async fn deny_path_completes_turn_with_denial_text() {
         Message::Assistant { message, .. } => {
             assert!(
                 message.content.iter().any(
-                    |b| matches!(b, forge_sdk::ContentBlock::Text { text } if text.contains("denied"))
+                    |b| matches!(b, forge_primitives::ContentBlock::Text { text } if text.contains("denied"))
                 ),
                 "expected 'denied' text when callback denies, got: {:?}",
                 message.content
@@ -96,7 +96,7 @@ async fn allow_with_updated_input_propagates() {
         Message::Assistant { message, .. } => {
             assert!(
                 message.content.iter().any(
-                    |b| matches!(b, forge_sdk::ContentBlock::Text { text } if text.contains("redirected"))
+                    |b| matches!(b, forge_primitives::ContentBlock::Text { text } if text.contains("redirected"))
                 ),
                 "expected redirected path in reply, got: {:?}",
                 message.content

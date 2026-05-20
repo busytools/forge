@@ -1,9 +1,7 @@
 //! Helper that pivots `App.active_session_key` to a target bucket
-//! around a closure, then restores the App-level UI state. The
-//! pre-Phase-4 ad-hoc snapshot-restore pattern (a manual sequence of
-//! `let prior_* = ...;` saves followed by manual restore) is
-//! encapsulated here in a single safe abstraction so callers don't
-//! reimplement it and the boundary is auditable.
+//! around a closure, then restores the App-level UI state. Wraps
+//! the snapshot-restore dance so callers don't reimplement it and
+//! the boundary is auditable.
 //!
 //! Used by the background-session SDK message dispatcher and the
 //! background-Connected welcome/history-replay path: both need to
@@ -19,9 +17,9 @@ use crate::app::App;
 /// Run `body` against `app` with `active_session_key` temporarily
 /// pivoted to `target_key`. Restores the user-visible UI state
 /// (`active_session_key`, status) after `body` returns. Input lives
-/// on each `UiSession` (Phase 6 of the MVVM refactor #102), so the
-/// pivot naturally swaps which bucket's input editor is active for
-/// the duration of `body` — no manual snapshot/restore needed.
+/// on each `UiSession`, so the pivot naturally swaps which bucket's
+/// input editor is active for the duration of `body` — no manual
+/// snapshot/restore needed.
 pub(crate) fn with_pivoted<F, R>(app: &mut App, target_key: SessionKey, body: F) -> R
 where
     F: FnOnce(&mut App) -> R,

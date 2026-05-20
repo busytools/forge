@@ -1009,12 +1009,14 @@ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
 name = "forge-agent"
-version = "0.15.1"
+version = "0.16.0"
 dependencies = [
  "anyhow",
  "forge-primitives",
  "forge-sdk",
+ "futures",
  "hex",
+ "ignore",
  "notify",
  "parking_lot",
  "reqwest",
@@ -1034,7 +1036,7 @@ dependencies = [
 
 [[package]]
 name = "forge-primitives"
-version = "0.15.1"
+version = "0.16.0"
 dependencies = [
  "base64",
  "serde",
@@ -1045,7 +1047,7 @@ dependencies = [
 
 [[package]]
 name = "forge-sdk"
-version = "0.15.1"
+version = "0.16.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1064,9 +1066,10 @@ dependencies = [
 
 [[package]]
 name = "forge-test-harness"
-version = "0.15.1"
+version = "0.16.0"
 dependencies = [
  "async-trait",
+ "forge-primitives",
  "forge-sdk",
  "parking_lot",
  "regex",
@@ -1076,7 +1079,7 @@ dependencies = [
 
 [[package]]
 name = "forge-tui"
-version = "0.15.1"
+version = "0.16.0"
 dependencies = [
  "ansi-to-tui",
  "anyhow",
@@ -1090,9 +1093,7 @@ dependencies = [
  "forge-tui",
  "forge-workspace",
  "futures",
- "ignore",
  "image",
- "notify",
  "notify-rust",
  "pretty_assertions",
  "pulldown-cmark",
@@ -1102,7 +1103,6 @@ dependencies = [
  "similar",
  "syntect",
  "tempfile",
- "thiserror 2.0.18",
  "tokio",
  "tracing",
  "tracing-appender",
@@ -1116,7 +1116,7 @@ dependencies = [
 
 [[package]]
 name = "forge-workspace"
-version = "0.15.1"
+version = "0.16.0"
 dependencies = [
  "anyhow",
  "dirs",
@@ -1127,7 +1127,6 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
- "time",
  "tokio",
  "toml",
  "tracing",

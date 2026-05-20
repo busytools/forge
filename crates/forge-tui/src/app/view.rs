@@ -4,9 +4,6 @@ use std::time::Instant;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActiveView {
     Chat,
-    Config,
-    Trusted,
-    SessionPicker,
     /// Project picker shown when forge is invoked without an argv
     /// project, or when the user runs `/launchpad` mid-session. The
     /// launchpad is the floor of the UI — `Esc` is a no-op while
@@ -18,6 +15,12 @@ pub enum ActiveView {
     /// section's `🦉` click. `Esc` closes (and, once wired,
     /// one-shot-submits any pending comments).
     Diff,
+    /// Full-screen Plugins view (installed plugins + marketplaces).
+    /// Opened by `/plugins`. `Esc` closes back to chat.
+    Plugins,
+    /// Full-screen MCP server view. Opened by `/mcp`. `Esc` closes
+    /// back to chat.
+    Mcp,
 }
 
 pub fn set_active_view(app: &mut App, next: ActiveView) {
@@ -47,7 +50,7 @@ fn clear_transient_view_state(app: &mut App) {
     *app.mention_mut() = None;
     *app.slash_mut() = None;
     *app.subagent_mut() = None;
-    if app.active_view == ActiveView::Config {
+    if matches!(app.active_view, ActiveView::Plugins | ActiveView::Mcp) {
         app.config.overlay = None;
     }
     if app.active_view == ActiveView::Diff {

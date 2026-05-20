@@ -23,8 +23,7 @@ pub struct ProjectView {
     pub org: String,
     /// Filesystem-resolved project root (`~` expanded). This is the
     /// path callers should hand to filesystem APIs — `cwd_raw` for
-    /// the spawning bucket, `file_index::restart`,
-    /// `trust::store::normalize_project_key`, the git-context
+    /// the spawning bucket, `file_index::restart`, the git-context
     /// watcher, etc. Use [`Self::display_path`] for human-readable
     /// rendering instead.
     pub path: PathBuf,
@@ -47,11 +46,7 @@ impl ProjectView {
     /// the session lands under at the moment of spawn; this is just a
     /// visual cue for the user.
     ///
-    /// Returns `"unknown"` when the accounts vec is empty, which
-    /// shouldn't happen in production (loader enforces non-empty) but
-    /// can occur in test fixtures built via `ProjectView::new_for_test`
-    /// without an explicit accounts arg.
-    #[must_use]
+    /// Empty accounts → `"unknown"`.
     pub fn primary_account_hint(&self) -> String {
         self.accounts.first().map_or_else(|| "unknown".to_owned(), |a| a.to_lowercase())
     }
@@ -63,7 +58,6 @@ impl ProjectView {
     /// Projects pane snapshot tests). Behind the `test-helpers`
     /// Cargo feature to keep test-only construction out of the
     /// production API.
-    #[must_use]
     pub fn new_for_test(
         key: ProjectKey,
         name: impl Into<String>,
@@ -86,7 +80,6 @@ impl ProjectView {
     /// supply an org + accounts list — needed for launchpad picker
     /// snapshot tests where the account hint column reads from
     /// `accounts[0]`.
-    #[must_use]
     pub fn new_for_test_with_org(
         key: ProjectKey,
         name: impl Into<String>,
@@ -114,8 +107,7 @@ pub struct SessionView {
     pub session: SessionKey,
     /// Display label for the session — the title set via the
     /// session-rename flow if any, otherwise a derivation from the
-    /// session id or first message. Phase 2 surfaces this in the
-    /// Projects pane.
+    /// session id or first message. Rendered in the Projects pane.
     pub label: String,
     /// `true` when an Agent for this session is currently in the
     /// workspace pool.
@@ -126,7 +118,6 @@ pub struct SessionView {
 #[cfg(feature = "test-helpers")]
 impl SessionView {
     /// Test-only constructor for cross-crate fixtures.
-    #[must_use]
     pub fn new_for_test(
         session: SessionKey,
         label: impl Into<String>,

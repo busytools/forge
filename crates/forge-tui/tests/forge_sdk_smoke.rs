@@ -33,8 +33,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use forge_tui::agent::{AgentEvent, SessionLaunchSettings};
-use forge_workspace::Agent;
+use forge_workspace::{Agent, AgentEvent, SessionLaunchSettings};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
@@ -195,13 +194,18 @@ async fn forge_sdk_e2e_cancel_mid_turn() {
         )
         .expect("prompt queued");
 
-    // Give the CLI a beat to start the turn, then cancel. We don't
-    // gate on receiving a chunk first — a long task may emit thinking
-    // chunks (which the translator drops today) or no chunk at all
-    // before the interrupt lands. The contract under test is: the
-    // worker forwards `cancel` to the CLI and a terminal frame
-    // (TurnComplete or TurnError) reaches us.
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    // Wait for the first non-init event from the CLI before sending
+    // cancel — a 2s fixed sleep races on loaded CI runners where the
+    // turn hasn't started yet. We don't strictly require a chunk
+    // (long tasks may emit only thinking chunks the translator
+    // drops, or no chunk before the interrupt lands) — receiving
+    // ANY event from the CLI after prompt is sufficient evidence
+    // the turn is in flight. Bounded by 5s so a hung CLI still
+    // fails cleanly rather than hanging the test.
+    let pre_cancel_deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while tokio::time::Instant::now() < pre_cancel_deadline
+        && tokio::time::timeout(Duration::from_millis(500), event_rx.recv()).await.is_err()
+    {}
     agent.cancel(session_id).expect("cancel queued");
     eprintln!("e2e cancel: interrupt sent");
 
@@ -334,7 +338,7 @@ async fn forge_sdk_e2e_mcp_snapshot() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "needs a real `claude` binary on PATH; burns API budget"]
 async fn forge_sdk_e2e_resume_session() {
-    // Phase 1: spawn a fresh session, drive one prompt, capture sid.
+    // Spawn a fresh session, drive one prompt, capture sid.
     let session_id = {
         let agent_handle = Agent::spawn(smoke_config_dir(), None);
         let mut event_rx = agent_handle.take_events().expect("fresh handle has events");
@@ -347,20 +351,20 @@ async fn forge_sdk_e2e_resume_session() {
             )
             .expect("new_session queued");
         let sid = await_connected(&mut event_rx, Duration::from_secs(30)).await;
-        eprintln!("e2e resume: phase 1 session {sid}");
+        eprintln!("e2e resume: fresh session {sid}");
 
         agent
             .prompt_text(sid.clone(), "Reply with the word PERSIST.".to_owned())
-            .expect("phase 1 prompt queued");
+            .expect("first prompt queued");
         let _ = await_turn(&mut event_rx, Duration::from_secs(60)).await;
 
-        // Tear phase 1 down so the underlying CLI subprocess exits and
-        // its session state lands on disk.
+        // Tear down so the underlying CLI subprocess exits and its
+        // session state lands on disk.
         drop(agent);
         sid
     };
 
-    // Phase 2: resume by id on a fresh worker.
+    // Resume by id on a fresh worker.
     let agent_handle = Agent::spawn(smoke_config_dir(), None);
     let mut event_rx = agent_handle.take_events().expect("fresh handle has events");
     let agent: Arc<forge_workspace::AgentHandle> = Arc::new(agent_handle);
@@ -403,7 +407,7 @@ async fn await_connected(
                 panic!("connection failed during smoke test: {message}");
             }
             other => {
-                eprintln!("e2e: pre-connected event: {}", other.event_name());
+                eprintln!("e2e: pre-connected event: {other:?}");
             }
         }
     }
@@ -456,7 +460,7 @@ async fn await_turn(
                 }
                 _ => {}
             },
-            other => eprintln!("e2e: event: {}", other.event_name()),
+            other => eprintln!("e2e: event: {other:?}"),
         }
     }
 }

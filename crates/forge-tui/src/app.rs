@@ -10,7 +10,6 @@ pub(crate) mod events;
 pub(crate) mod file_index;
 mod focus;
 pub(crate) mod git_diff;
-mod inline_interactions;
 pub(crate) mod input;
 mod input_submit;
 mod keys;
@@ -18,15 +17,13 @@ pub(crate) mod launchpad;
 pub(crate) mod mention;
 mod notify;
 pub(crate) mod paste_burst;
-mod permissions;
 pub(crate) mod plugins;
 pub(crate) mod process_scanner;
 pub(crate) mod processes;
-mod questions;
+pub(crate) mod prompt;
 mod selection;
 mod service_status_check;
 pub mod session;
-pub(crate) mod session_picker;
 mod session_runtime;
 pub(crate) mod slash;
 mod state;
@@ -34,7 +31,6 @@ pub(crate) mod subagent;
 mod tab_title;
 mod terminal;
 mod todos;
-mod trust;
 pub(crate) mod usage;
 pub(crate) mod view;
 
@@ -44,34 +40,31 @@ pub use cache_policy::{
     DEFAULT_TOOL_PREVIEW_LIMIT_BYTES, TextSplitDecision, TextSplitKind, default_cache_split_policy,
     find_text_split, find_text_split_index,
 };
-pub use config::{ConfigState, ConfigTab};
+pub use config::ConfigState;
 pub use connect::{create_app, start_connection};
 pub use diff_overlay::DiffOverlayState;
 pub use events::{apply_session_update, handle_terminal_event};
-#[cfg(feature = "testing")]
-pub use events::{handle_permission_request_event, handle_question_request_event};
 pub use focus::{FocusManager, FocusOwner, FocusTarget};
 pub use input::InputState;
 pub use launchpad::LaunchpadState;
+pub use prompt::{PromptMode, PromptSource, PromptState};
 pub(crate) use selection::normalize_selection;
 pub use service_status_check::start_service_status_check;
 pub(crate) use state::MarkdownRenderKey;
 pub(crate) use state::cache_metrics;
 pub use state::{
-    App, AppStatus, BlockCache, CacheMetrics, CachedMessageSegment, CancelOrigin, ChatMessage,
+    App, AppStatus, BlockCache, CacheMetrics, CachedMessageSegment, ChatMessage,
     ChatRenderTraceState, ChatViewport, ExtraUsage, HelpView, IncrementalMarkdown,
-    InlinePermission, InlineQuestion, InvalidationLevel, LayoutInvalidation, LoginHint, McpState,
-    MessageBlock, MessageRenderCache, MessageRenderCacheKey, MessageRenderSignature, MessageRole,
-    MessageUsage, ModeInfo, ModeState, NoticeBlock, NoticeDedupKey, NoticeStage, PaneHitTarget,
-    PasteSessionState, PendingCommandAck, RateLimitIncidentKey, RecentSessionInfo,
-    ScrollbarGeometry, SelectionKind, SelectionPoint, SelectionState, SessionPickerState,
-    SessionTurnState, SessionUsageState, SystemSeverity, TerminalSnapshotMode, TextBlock,
-    TextBlockSpacing, TodoItem, TodoStatus, ToolCallInfo, ToolCallScope, TurnNoticeLocation,
-    TurnNoticeRef, UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState, UsageWindow,
-    WelcomeBlock, compute_scrollbar_geometry, hash_text_block_content, hash_welcome_block_content,
-    is_execute_tool_name,
+    InvalidationLevel, LayoutInvalidation, LoginHint, McpState, MessageBlock, MessageRenderCache,
+    MessageRenderCacheKey, MessageRenderSignature, MessageRole, MessageUsage, ModeInfo, ModeState,
+    NoticeBlock, NoticeDedupKey, NoticeStage, PaneHitTarget, PasteSessionState, PendingCommandAck,
+    RateLimitIncidentKey, RecentSessionInfo, ScrollbarGeometry, SelectionKind, SelectionPoint,
+    SelectionState, SessionTurnState, SessionUsageState, SystemSeverity, TerminalSnapshotMode,
+    TextBlock, TextBlockSpacing, TodoItem, TodoStatus, ToolCallInfo, ToolCallScope,
+    TurnNoticeLocation, TurnNoticeRef, UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState,
+    UsageWindow, WelcomeBlock, compute_scrollbar_geometry, hash_text_block_content,
+    hash_welcome_block_content, is_execute_tool_name,
 };
-pub use trust::TrustSelection;
 pub use view::ActiveView;
 
 use crossterm::event::{
@@ -83,6 +76,15 @@ use std::time::{Duration, Instant};
 
 const SPINNER_FRAME_INTERVAL_NORMAL: Duration = Duration::from_millis(30);
 const SPINNER_FRAME_INTERVAL_REDUCED: Duration = Duration::from_millis(120);
+
+/// Hard cap on candidates shown in autocomplete dropdowns
+/// (file_index, slash, subagent). The slash dropdown sees the
+/// largest counts (forge group + every claude slash command + every
+/// installed skill / plugin command); 50 was hitting that ceiling
+/// in real use. 200 covers anything realistic with headroom; the
+/// dropdown's own visible-row cap (slash::MAX_VISIBLE = 20) keeps
+/// the on-screen size bounded regardless.
+pub(crate) const MAX_CANDIDATES: usize = 200;
 
 // ---------------------------------------------------------------------------
 // Terminal suspend / resume helpers (reused by /login, /logout)
@@ -131,18 +133,16 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
     let mut events = EventStream::new();
     // 4ms tick → ~250 Hz nominal sleep ceiling; practical FPS during
     // animation tops out around 120-150 once render overhead (~3ms
-    // per frame) is included. The previous 8ms tick capped practical
-    // FPS at ~90 because 8ms wait + 3ms render = 11ms ≈ 91 Hz.
-    // Idle state still costs nothing because the render loop skips
-    // when `needs_redraw == false`; only the wakeup cadence increases
-    // (negligible on modern hardware).
+    // per frame) is included. Idle state costs nothing because the
+    // render loop skips when `needs_redraw == false`; only the
+    // wakeup cadence increases (negligible on modern hardware).
     let tick_duration = Duration::from_millis(4);
     let mut last_render = Instant::now();
 
     loop {
         start_connection(app);
 
-        // Phase 1: wait for at least one event or the next frame tick
+        // Wait for an event or the next frame tick.
         let time_to_next = tick_duration.saturating_sub(last_render.elapsed());
         tokio::select! {
             Some(Ok(event)) = events.next() => {
@@ -166,7 +166,7 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
             () = tokio::time::sleep(time_to_next) => {}
         }
 
-        // Phase 2: drain all remaining queued events (non-blocking)
+        // Drain any remaining queued events without blocking.
         loop {
             // Try terminal events first (keeps typing responsive)
             if let Some(Some(Ok(event))) = events.next().now_or_never() {
@@ -203,11 +203,10 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
         // so the actual fetch only fires once per TTL window.
         crate::app::usage::request_refresh_if_needed(app);
 
-        // Issue #85 (revised 2026-05-13): no timer-based drain.
-        // Submit dispatches `Command::Prompt` immediately on every
-        // Tick the burst detector: flush any held/buffered content that
-        // has timed out. EmitChar re-inserts a single held character;
-        // EmitPaste feeds the accumulated burst into the paste queue.
+        // Tick the burst detector: flush any held/buffered content
+        // that has timed out. EmitChar re-inserts a single held
+        // character; EmitPaste feeds the accumulated burst into the
+        // paste queue.
         if app.active_view == ActiveView::Chat
             && let Some(action) = app.paste_burst.tick(Instant::now())
         {
@@ -237,12 +236,10 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
             break;
         }
 
-        // Phase 3: render once (only when something changed)
-        //
-        // Extra is_animating clause: any background session in
-        // Running / Spawning keeps the spinner ticking so the Projects
-        // pane's per-row spinners actually animate (the active session
-        // already drives ticks via `app.status` above).
+        // Render once, only when something changed. The extra
+        // is_animating clause keeps the per-row spinners on background
+        // Running / Spawning sessions animating; the active session
+        // already drives ticks via `app.status` above.
         let any_background_running = app.sessions.values().any(|s| {
             matches!(
                 s.lifecycle_state,
@@ -289,11 +286,10 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
             if let Some(ref mut perf) = app.perf {
                 perf.next_frame();
             }
-            // FPS is computed unconditionally now — the on-screen
-            // overlay is always-on (see `chat_view::render_perf_fps_overlay`),
-            // not gated on the `perf` Cargo feature. Calling
-            // `mark_frame_presented` always keeps the EMA fresh so
-            // the overlay shows real numbers in any build.
+            // FPS overlay is always-on (see
+            // `chat_view::render_perf_fps_overlay`), not gated on the `perf`
+            // Cargo feature. `mark_frame_presented` keeps the EMA fresh so the
+            // overlay shows real numbers in any build.
             app.mark_frame_presented(Instant::now());
             // `Timer` is `Drop`-implementing under `feature = "perf"` and a
             // unit struct otherwise. Explicit `drop()` enforces the desired
@@ -314,46 +310,36 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
 
     // --- Graceful shutdown ---
 
-    // Dismiss all pending inline permissions / questions (reject via
-    // last option / cancelled). Phase 1+: route the outcome through
-    // `Workspace::dispatch` instead of an inline oneshot; the
+    // Cancel all queued prompts via the workspace dispatch path. The
     // workspace-side `SessionTask` pops the matching slot and the
-    // bridge forwards it to the agent.
+    // bridge forwards `Cancelled` to the agent.
     let active_session_key = app.active_session_key.clone();
-    for tool_id in std::mem::take(app.pending_interaction_ids_mut()) {
-        let (perm_last_option_id, question_was_pending) = if let Some((mi, bi)) =
-            app.lookup_tool_call(&tool_id)
-            && let Some(MessageBlock::ToolCall(tc)) =
-                app.active_messages_mut().get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
-        {
-            let tc = tc.as_mut();
-            let perm_last = tc
-                .pending_permission
-                .take()
-                .and_then(|p| p.options.last().map(|opt| opt.option_id.clone()));
-            let question_taken = tc.pending_question.take().is_some();
-            (perm_last, question_taken)
-        } else {
-            (None, false)
-        };
-        let Some(session_key) = active_session_key.as_ref() else {
-            continue;
-        };
-        if let Some(option_id) = perm_last_option_id {
-            crate::app::events::turn::dispatch_permission_outcome(
-                app,
-                session_key,
-                &tool_id,
-                forge_primitives::PermissionOutcome::Selected { option_id },
-            );
-        }
-        if question_was_pending {
-            crate::app::events::turn::dispatch_question_outcome(
-                app,
-                session_key,
-                &tool_id,
-                forge_primitives::QuestionOutcome::Cancelled,
-            );
+    if let Some(session_key) = active_session_key.as_ref() {
+        let queued: Vec<crate::app::prompt::PromptState> =
+            if let Some(session) = app.session_mut(session_key) {
+                session.prompt_queue.drain(..).collect()
+            } else {
+                Vec::new()
+            };
+        for prompt in queued {
+            match prompt.source {
+                crate::app::prompt::PromptSource::Permission { .. } => {
+                    crate::app::events::turn::dispatch_permission_outcome(
+                        app,
+                        session_key,
+                        &prompt.tool_id,
+                        forge_primitives::PermissionOutcome::Cancelled,
+                    );
+                }
+                crate::app::prompt::PromptSource::Question { .. } => {
+                    crate::app::events::turn::dispatch_question_outcome(
+                        app,
+                        session_key,
+                        &prompt.tool_id,
+                        forge_primitives::QuestionOutcome::Cancelled,
+                    );
+                }
+            }
         }
     }
 
@@ -458,7 +444,10 @@ fn finalize_pending_paste_event(app: &mut App) {
     }
 
     let char_count = input::count_text_chars(&pasted);
-    if char_count > input::PASTE_PLACEHOLDER_CHAR_THRESHOLD {
+    let line_count = pasted.split(['\n', '\r']).count();
+    if char_count > input::PASTE_PLACEHOLDER_CHAR_THRESHOLD
+        || line_count > input::PASTE_PLACEHOLDER_LINE_THRESHOLD
+    {
         app.input_mut().insert_paste_block(&pasted);
         let idx = app.input().lines().get(app.input().cursor_row()).and_then(|line| {
             input::parse_paste_placeholder_before_cursor(line, app.input().cursor_col())
@@ -587,7 +576,7 @@ mod tests {
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 
     fn app_with_connection()
-    -> (App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::Command>) {
+    -> (App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::AgentCommand>) {
         let mut app = App::test_default();
         let rx = app.install_testing_stub();
         app.set_session_id(Some(model::SessionId::new("session-1")));
@@ -638,6 +627,30 @@ mod tests {
         finalize_pending_paste_event(&mut app);
 
         assert_eq!(app.input().lines(), vec!["x".repeat(1000)]);
+    }
+
+    #[test]
+    fn pending_paste_six_lines_under_char_threshold_collapses_to_placeholder() {
+        // Six short lines: ~12 chars total, well under the 1000-char
+        // threshold, but still over the 5-line threshold. Should
+        // collapse to a placeholder so the input box doesn't grow tall.
+        let mut app = App::test_default();
+        *app.pending_paste_text_mut() = "a\nb\nc\nd\ne\nf".to_owned();
+
+        finalize_pending_paste_event(&mut app);
+
+        assert_eq!(app.input().lines(), vec!["[Pasted Text 1 - 11 chars]"]);
+    }
+
+    #[test]
+    fn pending_paste_five_lines_stays_inline() {
+        // Five lines fits inline (right at the threshold = 5).
+        let mut app = App::test_default();
+        *app.pending_paste_text_mut() = "a\nb\nc\nd\ne".to_owned();
+
+        finalize_pending_paste_event(&mut app);
+
+        assert_eq!(app.input().lines(), vec!["a", "b", "c", "d", "e"]);
     }
 
     #[test]
@@ -767,7 +780,7 @@ mod tests {
         let envelope = rx.try_recv().expect("prompt command should be sent");
         assert!(matches!(
             envelope,
-            forge_primitives::Command::PromptWithImages { session_id, .. } if session_id == "session-1"
+            forge_primitives::AgentCommand::PromptWithImages { session_id, .. } if session_id == "session-1"
         ));
     }
 
@@ -796,7 +809,7 @@ mod tests {
         let envelope = rx.try_recv().expect("prompt command should be sent");
         assert!(matches!(
             envelope,
-            forge_primitives::Command::PromptWithImages { session_id, .. } if session_id == "session-1"
+            forge_primitives::AgentCommand::PromptWithImages { session_id, .. } if session_id == "session-1"
         ));
     }
 
@@ -830,7 +843,7 @@ mod tests {
         let envelope = rx.try_recv().expect("prompt command should be sent");
         assert!(matches!(
             envelope,
-            forge_primitives::Command::PromptWithImages { session_id, .. } if session_id == "session-1"
+            forge_primitives::AgentCommand::PromptWithImages { session_id, .. } if session_id == "session-1"
         ));
     }
 
@@ -841,8 +854,8 @@ mod tests {
             current_mode_id: "code".to_owned(),
             current_mode_name: "Code".to_owned(),
             available_modes: vec![
-                ModeInfo { id: "plan".to_owned(), name: "Plan".to_owned() },
-                ModeInfo { id: "code".to_owned(), name: "Code".to_owned() },
+                ModeInfo { id: "plan".to_owned(), name: "Plan".to_owned(), description: None },
+                ModeInfo { id: "code".to_owned(), name: "Code".to_owned(), description: None },
             ],
         }));
         app.input_mut().set_text("/mode pl");
@@ -901,9 +914,7 @@ mod tests {
             session_id: "session-1".to_owned(),
             summary: "Session one".to_owned(),
             last_modified_ms: 1,
-            file_size_bytes: 1,
             cwd: None,
-            git_branch: None,
             custom_title: None,
             first_prompt: None,
         }];

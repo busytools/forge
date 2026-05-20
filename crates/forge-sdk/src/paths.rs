@@ -19,7 +19,6 @@ use std::path::{Path, PathBuf};
 /// Trailing slashes are stripped to match the `claude` CLI's own
 /// canonicalisation; a value of `/`, `//`, … resolves to `None`
 /// because the CLI treats those as effectively unset.
-#[must_use]
 pub fn claude_config_dir_from_env() -> Option<PathBuf> {
     let raw = std::env::var("CLAUDE_CONFIG_DIR").ok()?;
     claude_config_dir_from_env_value(raw.as_str())
@@ -34,7 +33,6 @@ fn claude_config_dir_from_env_value(value: &str) -> Option<PathBuf> {
 /// Path to a config_dir's `projects/` subdirectory. Caller passes
 /// the resolved `config_dir` explicitly; this helper just performs
 /// the join so the layout convention lives in one place.
-#[must_use]
 pub fn projects_dir_for(config_dir: &Path) -> PathBuf {
     config_dir.join("projects")
 }

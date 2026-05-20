@@ -106,7 +106,6 @@ mod enabled {
         ts_ms: u128,
         pid: u32,
         version: &'a str,
-        append: bool,
     }
 
     fn unix_ms() -> u128 {
@@ -114,8 +113,20 @@ mod enabled {
     }
 
     fn write_json_line<T: Serialize>(file: &mut BufWriter<File>, value: &T) {
-        if serde_json::to_writer(&mut *file, value).is_ok() {
-            let _ = writeln!(file);
+        if let Err(err) = serde_json::to_writer(&mut *file, value) {
+            tracing::debug!(
+                target: "forge_tui::perf",
+                error = %err,
+                "perf JSON serialize failed"
+            );
+            return;
+        }
+        if let Err(err) = writeln!(file) {
+            tracing::debug!(
+                target: "forge_tui::perf",
+                error = %err,
+                "perf log newline write failed; JSONL stream may be corrupted from this point"
+            );
         }
     }
 
@@ -197,16 +208,24 @@ mod enabled {
     // doesn't read fields off self directly.
     #[allow(clippy::unused_self)]
     impl PerfLogger {
-        /// Open (or create) the log file. Returns `None` on I/O error.
-        pub fn open(path: &Path, append: bool) -> Option<Self> {
-            let mut options = OpenOptions::new();
-            options.create(true).write(true);
-            if append {
-                options.append(true);
-            } else {
-                options.truncate(true);
-            }
-            let file = options.open(path).ok()?;
+        /// Open (or create) the log file. Returns `None` on I/O error
+        /// after logging the failure at warn level. Always appends —
+        /// matches the standard log rolling behaviour so a forge
+        /// restart immediately after a perf-relevant bug doesn't
+        /// erase the evidence.
+        pub fn open(path: &Path) -> Option<Self> {
+            let file = match OpenOptions::new().create(true).append(true).open(path) {
+                Ok(f) => f,
+                Err(err) => {
+                    tracing::warn!(
+                        target: "forge_tui::perf",
+                        path = %path.display(),
+                        error = %err,
+                        "failed to open perf log; perf telemetry disabled"
+                    );
+                    return None;
+                }
+            };
             let mut writer = BufWriter::new(file);
             let run_id = uuid::Uuid::new_v4().to_string();
             let ts_ms = unix_ms();
@@ -217,7 +236,6 @@ mod enabled {
                 ts_ms,
                 pid: std::process::id(),
                 version: crate::FORGE_VERSION,
-                append,
             };
             write_json_line(&mut writer, &started);
             let _ = writer.flush();
@@ -250,13 +268,11 @@ mod enabled {
         }
 
         /// Start a named timer. Logs duration on drop.
-        #[must_use]
         pub fn start(&self, name: &'static str) -> Timer {
             Timer { name, start: Instant::now(), extra: None }
         }
 
         /// Start a named timer with an extra numeric field (e.g. message count).
-        #[must_use]
         pub fn start_with(
             &self,
             name: &'static str,
@@ -283,16 +299,6 @@ mod enabled {
         pub(crate) extra: Option<(&'static str, usize)>,
     }
 
-    // `stop` consumes self but the actual logging happens via `Drop`.
-    // The receiver is part of the API contract (call site `timer.stop()`).
-    #[allow(clippy::unused_self)]
-    impl Timer {
-        /// Manually stop and log. Useful when you need to end timing before scope exit.
-        pub fn stop(self) {
-            // Drop impl handles logging
-        }
-    }
-
     impl Drop for Timer {
         fn drop(&mut self) {
             let ms = self.start.elapsed().as_secs_f64() * 1000.0;
@@ -314,18 +320,16 @@ mod disabled {
     #[allow(clippy::unused_self)]
     impl PerfLogger {
         #[inline]
-        pub fn open(_path: &Path, _append: bool) -> Option<Self> {
+        pub fn open(_path: &Path) -> Option<Self> {
             None
         }
         #[inline]
         pub fn next_frame(&mut self) {}
         #[inline]
-        #[must_use]
         pub fn start(&self, _name: &'static str) -> Timer {
             Timer
         }
         #[inline]
-        #[must_use]
         pub fn start_with(
             &self,
             _name: &'static str,
@@ -340,22 +344,12 @@ mod disabled {
         pub fn mark_with(&self, _name: &'static str, _extra_name: &'static str, _extra_val: usize) {
         }
     }
-
-    // Stub impl for the `!perf` feature path — methods are no-ops.
-    // The receiver shape matches the `feature = "perf"` impl so call
-    // sites compile under both feature flags without an `if` ladder.
-    #[allow(clippy::unused_self)]
-    impl Timer {
-        #[inline]
-        pub fn stop(self) {}
-    }
 }
 
 /// Start a timer without needing a `PerfLogger` reference.
 /// Uses the thread-local log file directly. Returns `None` (and is a no-op)
 /// when the `perf` feature is disabled or no logger has been opened.
 #[cfg(feature = "perf")]
-#[must_use]
 #[inline]
 pub fn start(name: &'static str) -> Option<Timer> {
     // Only create a timer if the log file is actually open
@@ -369,7 +363,6 @@ pub fn start(name: &'static str) -> Option<Timer> {
 }
 
 #[cfg(feature = "perf")]
-#[must_use]
 #[inline]
 pub fn start_with(name: &'static str, extra_name: &'static str, extra_val: usize) -> Option<Timer> {
     enabled::LOG_FILE.with(|f| {
@@ -386,14 +379,12 @@ pub fn start_with(name: &'static str, extra_name: &'static str, extra_val: usize
 }
 
 #[cfg(not(feature = "perf"))]
-#[must_use]
 #[inline]
 pub fn start(_name: &'static str) -> Option<Timer> {
     None
 }
 
 #[cfg(not(feature = "perf"))]
-#[must_use]
 #[inline]
 pub fn start_with(
     _name: &'static str,

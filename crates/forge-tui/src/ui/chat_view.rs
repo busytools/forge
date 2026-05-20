@@ -23,7 +23,16 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     };
     let input_visual_lines = {
         let _t = app.perf.as_ref().map(|p| p.start("ui::input_visual_lines"));
-        input::visual_line_count(app, frame_area.width)
+        // The input box renders inside the chat column, not the full
+        // frame — when side panes are visible the chat column is
+        // narrower. Pass the chat column width so prompt wrapping math
+        // matches the actual render width.
+        let chat_w = layout::chat_column_width(
+            frame_area,
+            app.projects_pane_visible,
+            app.inspector_pane_visible,
+        );
+        input::visual_line_count(app, chat_w)
     };
     let areas = {
         let _t = app.perf.as_ref().map(|p| p.start("ui::layout"));
@@ -91,42 +100,34 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         top_bar::render(frame, top_bar_area, app);
     }
 
-    render_separator(frame, areas.input_sep);
-
-    {
-        let _t = app.perf.as_ref().map(|p| p.start("ui::input"));
-        input::render(frame, areas.input, app);
-    }
-
-    if autocomplete::is_active(app) {
-        let _t = app.perf.as_ref().map(|p| p.start("ui::autocomplete"));
-        autocomplete::render(frame, areas.input, app);
-    }
-
-    render_separator(frame, areas.input_bottom_sep);
-
     if areas.help.height > 0 {
         let _t = app.perf.as_ref().map(|p| p.start("ui::help"));
         help::render(frame, areas.help, app);
     }
 
-    // Chat footer (mode/model/fast/cwd/branch/usage) used to render
-    // here; it moved to the bottom of the Projects pane in PR #108.
-    // See `projects_pane::render_account_status_footer`. The todo
-    // panel that used to sit above the input is gone too — todos
-    // now render in the Inspector pane (right side) via
-    // `inspector_pane::render`.
-
-    render_perf_fps_overlay(frame, frame_area, frame_area.y, app);
-}
-
-fn render_separator(frame: &mut Frame, area: Rect) {
-    if area.height == 0 {
-        return;
+    // Render the input AFTER the pane separators and help row so the
+    // bordered box paints over the help row. Box spans the full
+    // chat column with no L/R inset; the box's own border IS the
+    // visual margin.
+    let input_box_area = {
+        let mut rect = areas.input;
+        rect.height = rect.height.saturating_add(areas.help.height);
+        rect
+    };
+    {
+        let _t = app.perf.as_ref().map(|p| p.start("ui::input"));
+        input::render(frame, input_box_area, app);
     }
-    let sep_str = theme::SEPARATOR_CHAR.repeat(area.width as usize);
-    let line = Line::from(Span::styled(sep_str, Style::default().fg(theme::DIM)));
-    frame.render_widget(Paragraph::new(line), area);
+
+    if autocomplete::is_active(app) {
+        let _t = app.perf.as_ref().map(|p| p.start("ui::autocomplete"));
+        autocomplete::render(frame, input_box_area, app);
+    }
+
+    // Chat footer renders at the bottom of the Projects pane
+    // (`projects_pane::render_account_status_footer`); todos render
+    // in the Inspector pane (`inspector_pane::render`).
+    render_perf_fps_overlay(frame, frame_area, frame_area.y, app);
 }
 
 /// Render the full-height `│` column between a side pane and the
@@ -143,12 +144,9 @@ fn render_pane_separator(frame: &mut Frame, area: Rect) {
 }
 
 /// Render the live FPS indicator at the top-right of `frame_area`.
-/// Always on in default builds — the FPS counter itself is computed
-/// unconditionally (`App::mark_frame_presented` / `App::frame_fps`)
-/// and the overlay is cheap (one styled `Line`, one rect). The
-/// `#[cfg(feature = "perf")]` gate that used to guard this was
-/// dropped so the user can see render rate live without a special
-/// build.
+/// Always on — the FPS counter is computed unconditionally
+/// (`App::mark_frame_presented` / `App::frame_fps`) and the overlay
+/// is cheap (one styled `Line`, one rect).
 fn render_perf_fps_overlay(frame: &mut Frame, frame_area: Rect, y: u16, app: &App) {
     if frame_area.height == 0 || y >= frame_area.y + frame_area.height {
         return;
