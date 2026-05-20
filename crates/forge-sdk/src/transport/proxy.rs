@@ -434,17 +434,19 @@ fn stub_json_response(body: &'static [u8]) -> Response<Body> {
 }
 
 /// Generic Anthropic-body rewriter: parses the body as JSON, applies
-/// the recursive classification normaliser, serialises back. Returns
-/// the original bytes on any parse failure or when the body wasn't
-/// modified.
+/// the recursive classification normaliser, serialises back, then
+/// runs the defensive byte-level substitution pass for nested
+/// stringified-JSON leaks the structured walker can't reach.
 fn rewrite_anthropic_generic(body: &Bytes) -> Bytes {
     let Ok(mut v) = serde_json::from_slice::<Value>(body) else {
-        return body.clone();
+        return rewrite::finalize_string_pass(body.clone());
     };
-    if !normalize_classification_fields(&mut v) {
-        return body.clone();
-    }
-    serde_json::to_vec(&v).map_or_else(|_| body.clone(), Bytes::from)
+    let serialised = if normalize_classification_fields(&mut v) {
+        serde_json::to_vec(&v).map_or_else(|_| body.clone(), Bytes::from)
+    } else {
+        body.clone()
+    };
+    rewrite::finalize_string_pass(serialised)
 }
 
 fn error_body(s: &'static str) -> Body {

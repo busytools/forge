@@ -158,7 +158,7 @@ pub fn rewrite_statsig_features(body: &Bytes) -> Bytes {
 #[must_use]
 pub fn rewrite_datadog_logs(body: &Bytes) -> Bytes {
     let Ok(mut v) = serde_json::from_slice::<Value>(body) else {
-        return body.clone();
+        return finalize_string_pass(body.clone());
     };
     let mut changed = normalize_classification_fields(&mut v);
     // ddtags is a comma-joined string outside the normal JSON object
@@ -176,10 +176,12 @@ pub fn rewrite_datadog_logs(body: &Bytes) -> Bytes {
             }
         }
     }
-    if !changed {
-        return body.clone();
-    }
-    serde_json::to_vec(&v).map_or_else(|_| body.clone(), Bytes::from)
+    let serialised = if changed {
+        serde_json::to_vec(&v).map_or_else(|_| body.clone(), Bytes::from)
+    } else {
+        body.clone()
+    };
+    finalize_string_pass(serialised)
 }
 
 /// Rewrite a `/v1/messages` request body.
@@ -197,7 +199,7 @@ pub fn rewrite_datadog_logs(body: &Bytes) -> Bytes {
 #[must_use]
 pub fn rewrite_messages_body(body: &Bytes) -> Bytes {
     let Ok(mut v) = serde_json::from_slice::<Value>(body) else {
-        return body.clone();
+        return finalize_string_pass(body.clone());
     };
     let mut changed = normalize_classification_fields(&mut v);
 
@@ -216,10 +218,12 @@ pub fn rewrite_messages_body(body: &Bytes) -> Bytes {
         }
     }
 
-    if !changed {
-        return body.clone();
-    }
-    serde_json::to_vec(&v).map_or_else(|_| body.clone(), Bytes::from)
+    let serialised = if changed {
+        serde_json::to_vec(&v).map_or_else(|_| body.clone(), Bytes::from)
+    } else {
+        body.clone()
+    };
+    finalize_string_pass(serialised)
 }
 
 /// Replace `cc_entrypoint=sdk-<anything>` with `cc_entrypoint=cli`
@@ -234,16 +238,75 @@ fn rewrite_cc_entrypoint(s: &str) -> String {
 }
 
 /// Generic body rewriter: parse, normalise classification fields
-/// recursively, serialise back. Used by every Anthropic body
-/// endpoint we touch.
+/// recursively, serialise back, then apply a defensive byte-level
+/// substring pass for any classification leaks the structured walker
+/// missed (typically values where the CLI nested a stringified-JSON
+/// blob inside an outer JSON string — the walker treats the outer
+/// string as opaque and doesn't descend). Used by every Anthropic
+/// body endpoint we touch.
 fn rewrite_body_recursive(body: &Bytes) -> Bytes {
     let Ok(mut v) = serde_json::from_slice::<Value>(body) else {
-        return body.clone();
+        return finalize_string_pass(body.clone());
     };
-    if !normalize_classification_fields(&mut v) {
-        return body.clone();
+    let structured_changed = normalize_classification_fields(&mut v);
+    let serialised = if structured_changed {
+        serde_json::to_vec(&v).map_or_else(|_| body.clone(), Bytes::from)
+    } else {
+        body.clone()
+    };
+    finalize_string_pass(serialised)
+}
+
+/// Final byte-level substring pass over a serialised body. Catches
+/// `sdk-cli` / `sdk-py` / `sdk-ts` / `sdk-rs` substrings inside
+/// `"entrypoint"` and `"client_type"` JSON values that the structured
+/// walker couldn't reach (escaped-JSON-inside-a-string is the known
+/// case, but the pass is also defensive against any future schema
+/// addition that nests a classification string deeper).
+///
+/// Returns the original bytes if no substitution applies (cheap O(n)
+/// scan via memmem; allocates only when at least one needle hits).
+pub fn finalize_string_pass(body: Bytes) -> Bytes {
+    const NEEDLES: &[(&str, &str)] = &[
+        (r#""entrypoint":"sdk-cli""#, r#""entrypoint":"cli""#),
+        (r#""entrypoint":"sdk-py""#, r#""entrypoint":"cli""#),
+        (r#""entrypoint":"sdk-ts""#, r#""entrypoint":"cli""#),
+        (r#""entrypoint":"sdk-rs""#, r#""entrypoint":"cli""#),
+        (r#""client_type":"sdk-cli""#, r#""client_type":"cli""#),
+        (r#""client_type":"sdk-py""#, r#""client_type":"cli""#),
+        (r#""client_type":"sdk-ts""#, r#""client_type":"cli""#),
+        (r#""client_type":"sdk-rs""#, r#""client_type":"cli""#),
+        // Backslash-escaped form for stringified-JSON contexts (each
+        // double-quote escaped as \"). Same pairs as above.
+        (r#"\"entrypoint\":\"sdk-cli\""#, r#"\"entrypoint\":\"cli\""#),
+        (r#"\"entrypoint\":\"sdk-py\""#, r#"\"entrypoint\":\"cli\""#),
+        (r#"\"entrypoint\":\"sdk-ts\""#, r#"\"entrypoint\":\"cli\""#),
+        (r#"\"entrypoint\":\"sdk-rs\""#, r#"\"entrypoint\":\"cli\""#),
+        (r#"\"client_type\":\"sdk-cli\""#, r#"\"client_type\":\"cli\""#),
+        (r#"\"client_type\":\"sdk-py\""#, r#"\"client_type\":\"cli\""#),
+        (r#"\"client_type\":\"sdk-ts\""#, r#"\"client_type\":\"cli\""#),
+        (r#"\"client_type\":\"sdk-rs\""#, r#"\"client_type\":\"cli\""#),
+    ];
+    let mut changed = false;
+    let mut out = body.to_vec();
+    for (needle, replacement) in NEEDLES {
+        if memchr_contains(&out, needle.as_bytes()) {
+            let s = String::from_utf8_lossy(&out).replace(needle, replacement);
+            out = s.into_bytes();
+            changed = true;
+        }
     }
-    serde_json::to_vec(&v).map_or_else(|_| body.clone(), Bytes::from)
+    if changed { Bytes::from(out) } else { body }
+}
+
+/// Cheap byte-substring containment check via the standard
+/// windowing scan. Used to avoid the lossy UTF-8 decode + replace
+/// allocation when there's nothing to replace.
+fn memchr_contains(hay: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() || needle.len() > hay.len() {
+        return false;
+    }
+    hay.windows(needle.len()).any(|w| w == needle)
 }
 
 fn rewrite_ddtags(tags: &str) -> String {
@@ -540,6 +603,60 @@ mod tests {
         assert_eq!(parsed["metadata"]["user_attributes"]["entrypoint"], "cli");
         assert_eq!(parsed["metadata"]["client"]["client_type"], "cli");
         assert!(parsed["metadata"]["client"].get("agent_sdk_version").is_none());
+    }
+
+    #[test]
+    fn event_logging_rewrites_stringified_user_attributes() {
+        // Mirrors the round-2 leak: `user_attributes` is a JSON string
+        // (not a nested object), so the structured walker doesn't
+        // descend. The byte-level finalize pass must catch the
+        // escaped `\"entrypoint\":\"sdk-cli\"` form inside it.
+        let body = serde_json::to_vec(&json!({
+            "events": [{
+                "event_data": {
+                    "user_attributes": "{\"version\":\"2.1.133\",\"entrypoint\":\"sdk-cli\",\"client_type\":\"sdk-cli\"}"
+                }
+            }]
+        }))
+        .expect("encode");
+        let out = rewrite_event_logging(&Bytes::from(body));
+        let body_str = std::str::from_utf8(&out).expect("utf8");
+        assert!(!body_str.contains("sdk-cli"), "stringified sdk-cli not caught: {body_str}");
+        assert!(
+            body_str.contains(r#"\"entrypoint\":\"cli\""#),
+            "expected escaped cli substring: {body_str}"
+        );
+        assert!(
+            body_str.contains(r#"\"client_type\":\"cli\""#),
+            "expected escaped client_type cli substring: {body_str}"
+        );
+    }
+
+    #[test]
+    fn finalize_string_pass_handles_unescaped_and_escaped_forms() {
+        // Unescaped: bare JSON value containing sdk-cli
+        let raw =
+            Bytes::from_static(br#"{"entrypoint":"sdk-cli","other":"unrelated string"}"#);
+        let out = finalize_string_pass(raw);
+        let s = std::str::from_utf8(&out).unwrap();
+        assert!(s.contains(r#""entrypoint":"cli""#));
+        assert!(!s.contains("sdk-cli"));
+
+        // Escaped: stringified JSON inside an outer JSON string
+        let raw = Bytes::from_static(
+            br#"{"wrapper":"{\"entrypoint\":\"sdk-cli\",\"x\":1}"}"#,
+        );
+        let out = finalize_string_pass(raw);
+        let s = std::str::from_utf8(&out).unwrap();
+        assert!(s.contains(r#"\"entrypoint\":\"cli\""#));
+        assert!(!s.contains("sdk-cli"));
+    }
+
+    #[test]
+    fn finalize_string_pass_noop_on_clean_input() {
+        let raw = Bytes::from_static(br#"{"entrypoint":"cli","field":"value"}"#);
+        let out = finalize_string_pass(raw.clone());
+        assert_eq!(out.as_ref(), raw.as_ref());
     }
 
     #[test]
