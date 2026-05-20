@@ -56,6 +56,7 @@ pub(crate) async fn spawn_session(
 
     let config_dir = bridge.config_dir();
     let display_name = bridge.display_name();
+    let proxy = bridge.proxy();
     let options = build_options_with_callback(
         cwd,
         resume_id,
@@ -65,6 +66,7 @@ pub(crate) async fn spawn_session(
         Arc::clone(bridge.inner_pending_questions()),
         Arc::clone(bridge.session_id_slot_arc()),
         &config_dir,
+        proxy,
     );
     let (client, events) = Client::spawn(options).await?;
     // For resume sessions the CLI flag carried the real session id —
@@ -421,6 +423,7 @@ fn build_options_with_callback(
     pending_questions: PendingQuestions,
     session_id_slot: Arc<parking_lot::Mutex<String>>,
     config_dir: &Path,
+    proxy: Option<forge_sdk::transport::proxy::ProxyHandle>,
 ) -> Options {
     // Passthrough hooks emit `AgentEvent::HookObservation` for every
     // PreToolUse / UserPromptSubmit input without altering the dispatch
@@ -546,6 +549,15 @@ fn build_options_with_callback(
     // Threaded through as a typed `Path` from the bridge; no
     // free-form HashMap of env vars at this layer.
     b = b.env("CLAUDE_CONFIG_DIR", config_dir.to_string_lossy().to_string());
+
+    // Wire-classification rewriter proxy: when the workspace booted
+    // one at startup, every subprocess gets HTTPS_PROXY +
+    // NODE_EXTRA_CA_CERTS pointing at it. The CLI then self-classifies
+    // as `sdk-cli` (piped stdout); the proxy normalises that to `cli`
+    // on the wire across the 6 signal channels.
+    if let Some(handle) = proxy {
+        b = b.proxy(handle);
+    }
 
     tracing::info!(
         target: crate::logging::targets::BRIDGE_LIFECYCLE,

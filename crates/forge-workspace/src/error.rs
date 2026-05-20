@@ -64,4 +64,9 @@ pub enum WorkspaceError {
 
     #[error("no project named '{name}' in forge.toml at {}", path.display())]
     ProjectNotFound { name: String, path: PathBuf },
+
+    #[error(
+        "wire-classification rewriter proxy failed to start: {reason}. forge refuses to spawn sessions without a healthy proxy because the wire shape Anthropic sees determines billing tier"
+    )]
+    ProxyUnavailable { reason: String },
 }

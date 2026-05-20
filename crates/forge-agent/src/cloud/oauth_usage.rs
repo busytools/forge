@@ -50,11 +50,11 @@ pub async fn oauth_usage(config_dir: &Path) -> Result<OauthUsage, OauthUsageErro
     // (401 → Unauthorized, anything else → live) instead of the
     // on-disk timestamp.
     let headers = oauth_headers(&credentials.access_token)?;
-    let client = reqwest::Client::builder()
-        .timeout(OAUTH_TIMEOUT)
-        .default_headers(headers)
-        .build()
-        .map_err(|error| OauthUsageError::Network(format!("client build: {error}")))?;
+    let client = crate::http_trust::with_extra_roots(
+        reqwest::Client::builder().timeout(OAUTH_TIMEOUT).default_headers(headers),
+    )
+    .build()
+    .map_err(|error| OauthUsageError::Network(format!("client build: {error}")))?;
 
     let response = client
         .get(OAUTH_USAGE_URL)

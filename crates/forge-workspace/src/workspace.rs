@@ -80,6 +80,18 @@ pub struct Workspace {
     /// Set the first time [`Self::start_usage_poller`] runs. Subsequent
     /// calls early-return to avoid spawning duplicate poller tasks.
     usage_poller_started: std::sync::atomic::AtomicBool,
+    /// Wire-classification rewriter proxy started at workspace boot.
+    /// Stamped onto every `Agent::spawn` so spawned subprocesses
+    /// inherit `HTTPS_PROXY` + `NODE_EXTRA_CA_CERTS` and their wire
+    /// classification gets normalised to `cli` (interactive
+    /// subscription) shape. Forge refuses to construct a Workspace if
+    /// the proxy fails to boot (hard-fail policy — see
+    /// [`forge_agent::proxy`]).
+    ///
+    /// `None` only in `Workspace::testing_stub` — that path skips
+    /// `new()` and therefore the proxy boot. Tests don't drive real
+    /// subprocesses, so the absence is fine.
+    proxy: Option<forge_agent::proxy::ProxyHandle>,
 }
 
 /// Pool entry wrapping the live `Arc<AgentHandle>`. Tests assert
@@ -100,6 +112,17 @@ impl Workspace {
     /// Agents are spawned on success.
     pub async fn new(config_dir: PathBuf) -> Result<Self, WorkspaceError> {
         let config = load_from_dir(&config_dir)?;
+
+        // Boot the wire-classification rewriter proxy BEFORE any
+        // session can spawn. Hard-fail policy: if the proxy can't
+        // bind / load its CA / build the TLS context, forge refuses
+        // to start. The wire shape every spawned `claude` broadcasts
+        // is correctness-critical (Anthropic tier classification), so
+        // there is no "best-effort" fallback that lets sessions land
+        // on metered tier silently.
+        let proxy = forge_agent::proxy::start()
+            .await
+            .map_err(|e| WorkspaceError::ProxyUnavailable { reason: e.to_string() })?;
 
         // Catalog scan reads against the workspace's canonical
         // `config_dir` (where forge.toml lives). Each spawn binds to
@@ -143,7 +166,14 @@ impl Workspace {
             command_senders: Mutex::new(HashMap::new()),
             domain_handles: Mutex::new(HashMap::new()),
             usage_poller_started: std::sync::atomic::AtomicBool::new(false),
+            proxy: Some(proxy),
         })
+    }
+
+    /// Handle to the workspace-owned wire-classification rewriter
+    /// proxy, when one is bound. `None` only in `testing_stub` paths.
+    pub fn proxy_handle(&self) -> Option<&forge_agent::proxy::ProxyHandle> {
+        self.proxy.as_ref()
     }
 
     /// Return the names of all orgs in declaration order, paired
@@ -298,7 +328,19 @@ impl Workspace {
         // it from there, and the spawned `claude` subprocess
         // inherits it as `CLAUDE_CONFIG_DIR` so each session reads/
         // writes the right account's user-data tree.
-        let handle = forge_agent::Agent::spawn(account_dir.clone(), Some(account_key.0.clone()));
+        // Attach the rewriter proxy only when the picked account's
+        // `proxy = true` in forge.toml (defaults to true when the
+        // field is absent). When false, claude talks direct to
+        // Anthropic with native sdk-cli classification — used for
+        // API-key accounts where the rewriter adds no value, or for
+        // debugging the raw wire shape.
+        let account_proxy_enabled = self.accounts.lock().proxy_enabled(&account_key);
+        let attached_proxy = if account_proxy_enabled { self.proxy.clone() } else { None };
+        let handle = forge_agent::Agent::spawn(
+            account_dir.clone(),
+            Some(account_key.0.clone()),
+            attached_proxy,
+        );
         // Project-rooted targets (`Default` / `Named`) resume the
         // project's lead session when the on-disk catalog has one,
         // and fall back to a fresh session in that project's cwd
@@ -1334,6 +1376,9 @@ impl Workspace {
             command_senders: Mutex::new(HashMap::new()),
             domain_handles: Mutex::new(HashMap::new()),
             usage_poller_started: std::sync::atomic::AtomicBool::new(false),
+            // testing_stub skips Workspace::new and therefore the
+            // proxy boot. Tests don't drive real subprocesses.
+            proxy: None,
         };
         (Arc::new(workspace), update_rx)
     }

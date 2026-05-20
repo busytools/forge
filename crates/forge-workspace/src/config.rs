@@ -62,12 +62,30 @@ struct ProjectEntry {
 struct AccountEntry {
     display_name: String,
     config_dir: String,
+    /// When true, sessions for this account spawn with the
+    /// wire-classification rewriter proxy attached
+    /// (`HTTPS_PROXY` + `NODE_EXTRA_CA_CERTS` env vars stamped on
+    /// the claude subprocess). When false, claude talks direct to
+    /// Anthropic and the wire signals carry the CLI's native
+    /// `sdk-cli` classification. Defaults to `true` so existing
+    /// forge.toml files without the field behave as if they had
+    /// it enabled.
+    #[serde(default = "default_account_proxy")]
+    proxy: bool,
+}
+
+fn default_account_proxy() -> bool {
+    true
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct LoadedAccount {
     pub display_name: String,
     pub config_dir: PathBuf,
+    /// Whether the wire-classification rewriter proxy should be
+    /// attached to sessions for this account. See
+    /// [`AccountEntry::proxy`].
+    pub proxy: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -179,6 +197,7 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
         accounts.push(LoadedAccount {
             display_name: entry.display_name,
             config_dir: expand_home(&entry.config_dir),
+            proxy: entry.proxy,
         });
     }
 

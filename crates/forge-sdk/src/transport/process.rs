@@ -187,22 +187,37 @@ impl Subprocess {
             cmd.current_dir(cwd);
         }
 
-        // Env setup — mirrors the CLI
-        //:
+        // Env setup. Order matters because later writes win:
         //
         // 1. Start from parent env, filtering out `CLAUDECODE` so SDK-
         //    spawned subprocesses don't think they're nested inside a
         //    Claude Code parent (upstream issue #573).
-        // 2. Inject `CLAUDE_CODE_ENTRYPOINT=sdk-rs` (overridable via
-        //    `options.env`). the CLI stamps `sdk-py` here; forge-sdk
-        //    identifies as Rust for honest attribution.
-        // 3. Let `options.env` override anything the SDK would
-        //    otherwise default, EXCEPT `CLAUDE_AGENT_SDK_VERSION` —
-        //    that one the SDK always stamps last.
-        // 4. Stamp `CLAUDE_AGENT_SDK_VERSION` as the final write.
-        // 5. Set `PWD` to the chosen cwd when present.
+        // 2. Clear any inherited `CLAUDE_CODE_ENTRYPOINT`. The wire-
+        //    classification rewriter relies on the CLI self-classifying
+        //    (which yields `sdk-cli` for piped stdout); a leaked stamp
+        //    from the parent shell (e.g. running forge inside a
+        //    Claude Code session that itself set `sdk-rs`) would
+        //    confuse the rewriter's source-string assumption. Callers
+        //    that genuinely want to preset the entrypoint can still do
+        //    so via `options.env` — those writes happen after this
+        //    removal.
+        // 3. When a wire-classification rewriter proxy is attached,
+        //    inject `HTTPS_PROXY` + `HTTP_PROXY` + `NODE_EXTRA_CA_CERTS`
+        //    so the child's HTTPS traffic flows through our MITM. The
+        //    proxy rewrites the 6 sdk-cli signals to cli shape — see
+        //    `transport::proxy` for details.
+        // 4. Let `options.env` override anything above, EXCEPT
+        //    `CLAUDE_AGENT_SDK_VERSION` — that one we always stamp last.
+        // 5. Stamp `CLAUDE_AGENT_SDK_VERSION` as the final write.
+        // 6. Set `PWD` to the chosen cwd when present.
         cmd.env_remove("CLAUDECODE");
-        cmd.env("CLAUDE_CODE_ENTRYPOINT", "sdk-rs");
+        cmd.env_remove("CLAUDE_CODE_ENTRYPOINT");
+        if let Some(proxy) = &options.proxy {
+            let proxy_url = proxy.proxy_url();
+            cmd.env("HTTPS_PROXY", &proxy_url);
+            cmd.env("HTTP_PROXY", &proxy_url);
+            cmd.env("NODE_EXTRA_CA_CERTS", proxy.ca_cert_path());
+        }
         for (k, v) in &options.env {
             cmd.env(k, v);
         }

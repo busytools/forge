@@ -123,6 +123,17 @@ pub struct Options {
     /// [`settings`](Self::settings) JSON when emitted via
     /// `--settings`.
     pub sandbox: Option<forge_primitives::SandboxSettings>,
+    /// Wire-classification rewriter proxy. When set, the subprocess
+    /// is launched with `HTTPS_PROXY` + `NODE_EXTRA_CA_CERTS` env
+    /// vars pointing at this proxy so its outbound HTTPS traffic
+    /// flows through the rewriter (which normalises the 6 sdk-cli
+    /// classification signals to cli shape).
+    ///
+    /// forge-workspace boots one proxy per process at startup and
+    /// stamps the handle onto every Options it constructs. forge-sdk
+    /// itself stays proxy-agnostic — leaving this None spawns
+    /// without rewriting (useful for unit/integration tests).
+    pub proxy: Option<crate::transport::proxy::ProxyHandle>,
 }
 
 impl Default for Options {
@@ -157,6 +168,7 @@ impl Default for Options {
             tee_outbound: None,
             settings: None,
             sandbox: None,
+            proxy: None,
         }
     }
 }
@@ -285,6 +297,7 @@ impl std::fmt::Debug for Options {
             .field("tee_outbound", &self.tee_outbound.as_ref().map(|_| "<callback>"))
             .field("settings", &self.settings)
             .field("sandbox", &self.sandbox)
+            .field("proxy", &self.proxy.as_ref().map(|p| format!("<rewriter@{}>", p.listen_addr())))
             .finish()
     }
 }
@@ -467,6 +480,15 @@ impl OptionsBuilder {
     /// `settings` is also set.
     pub fn sandbox(mut self, sandbox: forge_primitives::SandboxSettings) -> Self {
         self.inner.sandbox = Some(sandbox);
+        self
+    }
+
+    /// Attach a wire-classification rewriter proxy. Causes the
+    /// spawned subprocess to inherit `HTTPS_PROXY` +
+    /// `NODE_EXTRA_CA_CERTS` env vars pointing at the proxy. See
+    /// [`crate::transport::proxy`].
+    pub fn proxy(mut self, handle: crate::transport::proxy::ProxyHandle) -> Self {
+        self.inner.proxy = Some(handle);
         self
     }
 
