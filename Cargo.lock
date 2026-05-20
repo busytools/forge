@@ -1210,9 +1210,11 @@ name = "forge-workspace"
 version = "0.16.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "dirs",
  "forge-agent",
  "forge-primitives",
+ "forge-sdk",
  "parking_lot",
  "serde",
  "serde_json",

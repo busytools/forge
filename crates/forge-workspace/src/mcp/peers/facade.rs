@@ -373,15 +373,13 @@ impl WorkspaceFacade for MockWorkspaceFacade {
         if !known {
             return Err(DeliverError::UnknownTarget { name: target_project.to_owned() });
         }
-        let target_status = self
-            .peers
-            .lock()
-            .iter()
-            .find(|p| p.name == target_project)
-            .map_or(TargetStatus::QueuedForSpawn, |p| match p.status {
+        let target_status = self.peers.lock().iter().find(|p| p.name == target_project).map_or(
+            TargetStatus::QueuedForSpawn,
+            |p| match p.status {
                 PeerLiveness::Running => TargetStatus::Delivered,
                 PeerLiveness::Sleeping | PeerLiveness::Failed => TargetStatus::QueuedForSpawn,
-            });
+            },
+        );
         self.deliver_calls.lock().push((caller.clone(), target_project.to_owned(), wrapped));
         Ok(target_status)
     }

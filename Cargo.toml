@@ -79,6 +79,7 @@ memchr = "2"
 
 # Workspace-internal crates
 forge-primitives = { path = "crates/forge-primitives", version = "=0.16.0" }
+forge-sdk = { path = "crates/forge-sdk", version = "=0.16.0" }
 forge-agent = { path = "crates/forge-agent", version = "=0.16.0" }
 forge-workspace = { path = "crates/forge-workspace", version = "=0.16.0" }
 
