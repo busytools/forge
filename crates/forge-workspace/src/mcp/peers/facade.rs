@@ -301,12 +301,27 @@ impl WorkspaceFacade for Arc<Workspace> {
     fn register_inflight_ask(&self, ask: InflightAsk) {
         let id = ask.correlation_id.clone();
         self.inflight_asks.lock().insert(id.clone(), ask);
-        // C12 replaces this placeholder with a 30-min
-        // `tokio::time::sleep` that fires `expire_inflight_ask`.
-        // For now we arm a no-op task so the timers map shape is
-        // established and reply / crash paths can already remove +
-        // abort their entry without special-casing "no timer".
-        let timer = tokio::spawn(async {});
+        // 30-min timer per #114 v1 brainstorm. On expiry the timer
+        // fires Workspace::expire_inflight_ask which:
+        //   1. Marks the ask TimedOut
+        //   2. Removes from the inflight_asks + inflight_timers maps
+        //   3. Bumps caller's TimedOutPlus1 + OutgoingMinus1 stats
+        //   4. Emits SessionUpdate::PeerAskTimedOut for UI badges
+        //   5. Dispatches dual-path Command::Prompt notifications
+        //      (CallerTimeoutNotice to the caller; RecipientExpiredNotice
+        //      to the recipient, when its session is still alive)
+        //
+        // The timer holds a Weak<Workspace> to avoid a cycle. When
+        // the workspace is dropped before the timer fires the upgrade
+        // returns None and the timer exits silently.
+        let weak = Arc::downgrade(self);
+        let id_for_timer = id.clone();
+        let timer = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(30 * 60)).await;
+            if let Some(workspace) = weak.upgrade() {
+                workspace.expire_inflight_ask(&id_for_timer);
+            }
+        });
         self.inflight_timers.lock().insert(id, timer);
     }
 

@@ -8,7 +8,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::Result;
 use forge_agent::AgentHandle;
 use forge_agent::client::SessionLaunchSettings;
-use forge_primitives::{CorrelationId, InflightAsk, PeerInflightStats, SDKSessionInfo};
+use forge_primitives::{
+    CorrelationId, InflightAsk, InflightStatus, PeerInflightStats, SDKSessionInfo, WrappedKind,
+    WrappedPrompt,
+};
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -1366,6 +1369,144 @@ impl Workspace {
             handles.insert(to.clone(), domain);
         }
         true
+    }
+
+    /// Expire an in-flight peer ask. Called by the 30-min timer task
+    /// armed in `WorkspaceFacade::register_inflight_ask`, and (in C13)
+    /// by `expire_target_inflight` on target crash. Idempotent: a
+    /// concurrent reply that beat the timer will have removed the
+    /// inflight entry, so this is a no-op when the ask is already
+    /// gone.
+    ///
+    /// The dual-path notification per the brainstorm:
+    /// - `SessionUpdate::PeerAskTimedOut` for UI badges
+    /// - `Command::Prompt` to caller with `CallerTimeoutNotice` wrapper
+    /// - `Command::Prompt` to target with `RecipientExpiredNotice`
+    ///   when the target session is still running
+    pub(crate) fn expire_inflight_ask(self: &Arc<Self>, id: &CorrelationId) {
+        // Take the ask, mark TimedOut, remove timer. Future late
+        // replies arriving via `tell_agent` will find the entry
+        // GONE in `resolve_correlation` — that maps to WrappedKind::
+        // Message in classify_tell (degraded path). To support
+        // LateReply specifically we'd need a separate "expired"
+        // table; v1 punts on this and degrades all late replies to
+        // Message with a warn-log.
+        let ask = {
+            let mut asks = self.inflight_asks.lock();
+            asks.remove(id)
+        };
+        let Some(ask) = ask else {
+            tracing::trace!(
+                target: "forge_workspace::workspace",
+                correlation_id = %id,
+                "expire_inflight_ask: entry already gone (reply beat the timer)"
+            );
+            return;
+        };
+        // Drop the timer handle. We're inside it (or expire is being
+        // called from elsewhere); aborting from inside the task is a
+        // no-op. Remove from the map either way to keep state clean.
+        self.inflight_timers.lock().remove(id);
+
+        // Skip the rest if the ask was already in a terminal state
+        // (concurrent race; should be rare).
+        if !matches!(ask.status, InflightStatus::Pending) {
+            tracing::debug!(
+                target: "forge_workspace::workspace",
+                correlation_id = %id,
+                status = ?ask.status,
+                "expire_inflight_ask: ask was not Pending; skipping notifications"
+            );
+            return;
+        }
+
+        // Emit UI-state event.
+        let _ = self.update_tx().send(crate::protocol::SessionUpdate::PeerAskTimedOut {
+            caller_key: ask.caller.clone(),
+            target_key: None,
+            correlation_id: id.clone(),
+        });
+
+        // Update stats counters on the caller side.
+        let facade: Arc<dyn crate::mcp::peers::facade::WorkspaceFacade> =
+            Arc::new(Arc::clone(self));
+        facade.bump_inflight_stats(
+            &ask.caller,
+            crate::mcp::peers::facade::PeerStatsDelta::TimedOutPlus1,
+        );
+        facade.bump_inflight_stats(
+            &ask.caller,
+            crate::mcp::peers::facade::PeerStatsDelta::OutgoingMinus1,
+        );
+
+        // Look up target org for the wrapper. If the target project
+        // is unknown (forge.toml mutated since we registered?), the
+        // org defaults to "?" — defensive only; never expected in
+        // practice.
+        let target_org = self
+            .list_projects()
+            .into_iter()
+            .find(|p| p.name == ask.target_project)
+            .map_or_else(|| "?".to_owned(), |p| p.org);
+
+        // Caller-side notice: synthesises a wrapped prompt the
+        // chat renderer pattern-matches into the styled timeout block.
+        let caller_notice = WrappedPrompt {
+            correlation_id: id.clone(),
+            kind: WrappedKind::CallerTimeoutNotice,
+            sender_name: ask.target_project.clone(),
+            sender_org: target_org,
+            hop: 0,
+            hop_limit: 10,
+            in_reply_to: None,
+            body: String::new(),
+        };
+        if let Err(err) = self.dispatch(crate::protocol::Command::Prompt {
+            key: ask.caller.clone(),
+            text: caller_notice.to_prose(),
+            attachments: Vec::new(),
+        }) {
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                correlation_id = %id,
+                error = ?err,
+                "expire_inflight_ask: caller notice dispatch failed (caller closed?)"
+            );
+        }
+
+        // Recipient-side notice: only when the target has a running
+        // session. We tell the target's LLM "the ask you were
+        // working on has expired — any reply you produce will be
+        // tagged late."
+        let target_running_key = self
+            .list_projects()
+            .into_iter()
+            .find(|v| v.name == ask.target_project)
+            .and_then(|v| v.sessions.into_iter().find(|s| s.is_open).map(|s| s.session));
+        if let Some(target_key) = target_running_key {
+            let recipient_notice = WrappedPrompt {
+                correlation_id: id.clone(),
+                kind: WrappedKind::RecipientExpiredNotice,
+                sender_name: ask.caller_project.clone(),
+                sender_org: ask.caller_org.clone(),
+                hop: 0,
+                hop_limit: 10,
+                in_reply_to: None,
+                body: String::new(),
+            };
+            if let Err(err) = self.dispatch(crate::protocol::Command::Prompt {
+                key: target_key,
+                text: recipient_notice.to_prose(),
+                attachments: Vec::new(),
+            }) {
+                tracing::debug!(
+                    target: "forge_workspace::workspace",
+                    correlation_id = %id,
+                    error = ?err,
+                    "expire_inflight_ask: recipient notice dispatch failed (target closed?)"
+                );
+            }
+        }
     }
 }
 
