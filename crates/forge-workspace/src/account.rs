@@ -71,6 +71,11 @@ pub enum UsageFetchStatus {
 #[derive(Debug, Clone)]
 pub(crate) struct AccountState {
     pub config_dir: PathBuf,
+    /// Whether sessions for this account spawn with the
+    /// wire-classification rewriter proxy attached. Mirrors the
+    /// `[[accounts]] proxy = true|false` toggle in forge.toml.
+    /// Defaults to `true` when the field is absent.
+    pub proxy: bool,
     /// Latest usage snapshot fetched by the workspace's background
     /// poller. `None` until the first successful fetch. Drives the
     /// picker's order; also surfaced to the TUI's bottom panel via
@@ -124,6 +129,7 @@ impl AccountStateMap {
                 key,
                 AccountState {
                     config_dir: account.config_dir.clone(),
+                    proxy: account.proxy,
                     usage: None,
                     last_error: None,
                     next_probe_at: None,
@@ -140,6 +146,13 @@ impl AccountStateMap {
     /// hands the dir to `Agent::spawn` as `CLAUDE_CONFIG_DIR`).
     pub fn config_dir(&self, key: &AccountKey) -> Option<&PathBuf> {
         self.by_key.get(key).map(|s| &s.config_dir)
+    }
+
+    /// Whether sessions for `key` should spawn with the rewriter
+    /// proxy attached. Returns `false` for unknown keys (defensive;
+    /// the spawn path's normal-case key always resolves).
+    pub fn proxy_enabled(&self, key: &AccountKey) -> bool {
+        self.by_key.get(key).is_some_and(|s| s.proxy)
     }
 
     /// Replace the cached usage snapshot for `key` and clear any
@@ -404,6 +417,7 @@ mod tests {
         LoadedAccount {
             display_name: name.to_owned(),
             config_dir: PathBuf::from(format!("/fake/{name}")),
+            proxy: true,
         }
     }
 

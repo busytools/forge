@@ -328,10 +328,18 @@ impl Workspace {
         // it from there, and the spawned `claude` subprocess
         // inherits it as `CLAUDE_CONFIG_DIR` so each session reads/
         // writes the right account's user-data tree.
+        // Attach the rewriter proxy only when the picked account's
+        // `proxy = true` in forge.toml (defaults to true when the
+        // field is absent). When false, claude talks direct to
+        // Anthropic with native sdk-cli classification — used for
+        // API-key accounts where the rewriter adds no value, or for
+        // debugging the raw wire shape.
+        let account_proxy_enabled = self.accounts.lock().proxy_enabled(&account_key);
+        let attached_proxy = if account_proxy_enabled { self.proxy.clone() } else { None };
         let handle = forge_agent::Agent::spawn(
             account_dir.clone(),
             Some(account_key.0.clone()),
-            self.proxy.clone(),
+            attached_proxy,
         );
         // Project-rooted targets (`Default` / `Named`) resume the
         // project's lead session when the on-disk catalog has one,
