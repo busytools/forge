@@ -1,18 +1,24 @@
-//! Verifies `Client::spawn` injects the env vars Python SDK v0.1.64
-//! stamps on every subprocess launch
-//! (`_internal/transport/subprocess_cli.py:395-437`):
+//! Verifies `Client::spawn` injects the right env vars on subprocess
+//! launch.
 //!
-//! - `CLAUDE_CODE_ENTRYPOINT=sdk-rs` (forge-sdk's own attribution —
-//!   upstream Python SDK stamps `sdk-py` here; we identify as Rust).
-//! - `CLAUDE_AGENT_SDK_VERSION=<crate version>`
+//! Post wire-classification-rewriter (2026-05-20): forge-sdk no longer
+//! stamps `CLAUDE_CODE_ENTRYPOINT=sdk-rs`. The rewriter proxy handles
+//! classification on the wire, so any leaked stamp here would defeat
+//! the rewriter for surfaces it doesn't cover yet. The CLI is left
+//! to self-classify (yielding `sdk-cli` for piped stdout); the proxy
+//! rewrites that to `cli` shape.
+//!
+//! What forge-sdk DOES stamp:
+//! - `CLAUDE_AGENT_SDK_VERSION=<crate version>` (always).
 //! - `PWD=<cwd>` (when `Options::cwd`).
+//! - `HTTPS_PROXY` / `HTTP_PROXY` / `NODE_EXTRA_CA_CERTS` (when
+//!   `Options::proxy` is set).
+//! - `options.env` entries (caller-controlled).
 //!
 //! Filtering of `CLAUDECODE` (upstream #573) is not covered by a
 //! Rust-side unit test — `forbid(unsafe_code)` blocks the env mutation
 //! a faithful test would need. The call is visually asserted against
 //! `env_remove` in `transport/process.rs`.
-//!
-//! The mock fixture dumps its env to a file; we parse and assert.
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
@@ -41,8 +47,6 @@ async fn spawn_and_capture_env(
 ) -> HashMap<String, String> {
     let dir = tempfile::tempdir().expect("tempdir");
     let dump = dir.path().join("env.txt");
-    // `env!("FORGE_TEST_ENV_DUMP")` is read by the mock; set it via
-    // options.env so our spawn path sees it.
     let mut builder = OptionsBuilder::new().binary(fixture("mock_claude_env.sh"));
     builder = builder.env("FORGE_TEST_ENV_DUMP", dump.to_string_lossy().into_owned());
     builder = opts_cb(builder);
@@ -53,13 +57,18 @@ async fn spawn_and_capture_env(
 }
 
 #[tokio::test]
-async fn spawn_sets_entrypoint_and_version_envs() {
+async fn spawn_does_not_stamp_entrypoint_by_default() {
     let env = spawn_and_capture_env(|b| b).await;
-    assert_eq!(
-        env.get("CLAUDE_CODE_ENTRYPOINT").map(String::as_str),
-        Some("sdk-rs"),
-        "CLAUDE_CODE_ENTRYPOINT must be stamped to identify forge-sdk (Rust) to the CLI — upstream Python SDK stamps sdk-py here"
+    assert!(
+        !env.contains_key("CLAUDE_CODE_ENTRYPOINT"),
+        "CLAUDE_CODE_ENTRYPOINT must NOT be stamped by default — let the CLI self-classify so the rewriter has a uniform source. Stamped: {:?}",
+        env.get("CLAUDE_CODE_ENTRYPOINT")
     );
+}
+
+#[tokio::test]
+async fn spawn_stamps_agent_sdk_version() {
+    let env = spawn_and_capture_env(|b| b).await;
     let version =
         env.get("CLAUDE_AGENT_SDK_VERSION").expect("CLAUDE_AGENT_SDK_VERSION must be stamped");
     assert_eq!(version, env!("CARGO_PKG_VERSION"));
@@ -73,15 +82,15 @@ async fn spawn_sets_pwd_to_cwd_when_present() {
     assert_eq!(
         env.get("PWD").map(String::as_str),
         Some(cwd.to_string_lossy().as_ref()),
-        "PWD must match the Options::cwd (Python subprocess_cli.py:440-441)"
+        "PWD must match the Options::cwd"
     );
 }
 
 #[tokio::test]
-async fn options_env_can_override_entrypoint_but_not_sdk_version() {
-    // Python: options.env is applied BEFORE CLAUDE_AGENT_SDK_VERSION
-    // stamping, so callers can re-label ENTRYPOINT but cannot spoof
-    // the SDK version.
+async fn options_env_can_set_entrypoint_and_is_preserved() {
+    // Callers may still preset CLAUDE_CODE_ENTRYPOINT through
+    // options.env if they want (used by integration tests). The
+    // rewriter normalises whatever ends up on the wire regardless.
     let env = spawn_and_capture_env(|b| {
         b.env("CLAUDE_CODE_ENTRYPOINT", "custom-entry")
             .env("CLAUDE_AGENT_SDK_VERSION", "999.999.999")
@@ -90,11 +99,52 @@ async fn options_env_can_override_entrypoint_but_not_sdk_version() {
     assert_eq!(
         env.get("CLAUDE_CODE_ENTRYPOINT").map(String::as_str),
         Some("custom-entry"),
-        "options.env must override CLAUDE_CODE_ENTRYPOINT"
+        "options.env must be honored when caller explicitly sets ENTRYPOINT"
     );
     assert_eq!(
         env.get("CLAUDE_AGENT_SDK_VERSION").map(String::as_str),
         Some(env!("CARGO_PKG_VERSION")),
         "SDK version must NOT be overridable from options.env"
     );
+}
+
+#[tokio::test]
+async fn spawn_does_not_set_proxy_env_when_proxy_absent() {
+    let env = spawn_and_capture_env(|b| b).await;
+    assert!(!env.contains_key("HTTPS_PROXY"), "no HTTPS_PROXY without Options::proxy");
+    assert!(!env.contains_key("HTTP_PROXY"), "no HTTP_PROXY without Options::proxy");
+    assert!(
+        !env.contains_key("NODE_EXTRA_CA_CERTS"),
+        "no NODE_EXTRA_CA_CERTS without Options::proxy"
+    );
+}
+
+#[tokio::test]
+async fn spawn_sets_https_proxy_and_ca_when_proxy_attached() {
+    // Boot a real (but unused) rewriter proxy and pass its handle.
+    // The mock child doesn't actually make HTTPS calls — we just want
+    // the env vars stamped on it.
+    let handle = forge_sdk::transport::proxy::start().await.expect("start rewriter proxy");
+    let env = spawn_and_capture_env({
+        let h = handle.clone();
+        |b| b.proxy(h)
+    })
+    .await;
+    let expected_url = handle.proxy_url();
+    assert_eq!(
+        env.get("HTTPS_PROXY").map(String::as_str),
+        Some(expected_url.as_str()),
+        "HTTPS_PROXY must point at the rewriter proxy"
+    );
+    assert_eq!(
+        env.get("HTTP_PROXY").map(String::as_str),
+        Some(expected_url.as_str()),
+        "HTTP_PROXY mirrors HTTPS_PROXY for non-TLS endpoints"
+    );
+    assert_eq!(
+        env.get("NODE_EXTRA_CA_CERTS").map(String::as_str),
+        handle.ca_cert_path().to_str(),
+        "NODE_EXTRA_CA_CERTS must point at the rewriter CA"
+    );
+    handle.shutdown();
 }

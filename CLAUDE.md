@@ -472,6 +472,51 @@ Concretely:
     (`$TERM_PROGRAM`, `$ITERM_SESSION_ID`), and user-supplied
     `--effort` overrides like `$CLAUDE_CODE_EFFORT_LEVEL`. None of
     those values change when the user `cd`s.
+16. **Wire classification matches reality. Forge sessions appear as
+    `cli` (interactive subscription) on every Anthropic and Datadog
+    signal channel — byte-equivalent to a real interactive `claude`
+    session.** The wire-classification rewriter
+    (`forge-sdk::transport::proxy`) is the enforcement mechanism: it
+    intercepts every spawned `claude` child's HTTPS traffic via
+    `HTTPS_PROXY` + `NODE_EXTRA_CA_CERTS` and recursively normalises
+    `entrypoint` / `client_type` / `is_interactive` to `cli` / `cli` /
+    `true`, drops `agent_sdk_version` keys, and rewrites the
+    bootstrap-query and User-Agent surfaces. Hard-fail at
+    `Workspace::new`: if the proxy can't bind, load CA, or build TLS,
+    forge refuses to spawn any session.
+
+    Concrete invariants any future change MUST preserve:
+    - `forge-sdk::transport::process::spawn` does NOT stamp
+      `CLAUDE_CODE_ENTRYPOINT`. The CLI self-classifies (`sdk-cli` for
+      piped stdout) and the rewriter handles the wire shape.
+      Re-introducing the stamp leaks an unknown entrypoint string
+      through telemetry surfaces the rewriter doesn't yet cover.
+    - The rewriter scope is anthropic.com + datadoghq.com hosts. Don't
+      narrow further (each removed host is a leaked channel) and
+      don't widen to third-party MCP hosts without explicit need.
+    - The recursive normaliser
+      (`normalize_classification_fields`) is the source of truth for
+      what gets rewritten. Per-channel functions
+      (`rewrite_event_logging`, `rewrite_statsig_features`,
+      `rewrite_datadog_logs`) are thin wrappers — if you reach for a
+      hard-coded JSON path instead, the recursive walker is doing the
+      work; keep that path.
+    - When `HTTPS_PROXY` is set in the parent env at forge launch, the
+      rewriter chains its outbound HTTPS through that upstream proxy
+      (and extends its trust store via `NODE_EXTRA_CA_CERTS` if set).
+      This keeps the mitmproxy capture recipe symmetric: the same
+      `HTTPS_PROXY=…` + `NODE_EXTRA_CA_CERTS=…` env vars that capture
+      from a bare `claude` invocation also capture from forge. A
+      future change that breaks this symmetry is a regression — the
+      stated goal is "indistinguishable from real `claude` on the
+      wire" and that requires identical capture ergonomics for any
+      third-party observer.
+    - The defensive scanner (`scan_and_warn`) runs on every Anthropic
+      / Datadog body and logs at `warn` when an `sdk-*` value,
+      non-`cli` `entrypoint`/`client_type`, false `is_interactive`,
+      or `agent_sdk_version` slips through. Treat any non-empty scan
+      output as a drift signal; the fix is to extend the recursive
+      normaliser, not to silence the scan.
 
 ## Weekly upstream-watch (NEW shape)
 
