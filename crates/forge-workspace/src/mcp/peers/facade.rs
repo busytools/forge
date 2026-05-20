@@ -62,11 +62,37 @@ impl std::fmt::Debug for CallerKeyResolver {
 }
 
 impl CallerKeyResolver {
-    /// Build a resolver that reads `DomainSession.key` through the
-    /// shared `Arc<Mutex<DomainSession>>`. Use this in production
-    /// (the spawn path).
-    pub fn from_domain(domain: Arc<parking_lot::Mutex<DomainSession>>) -> Self {
-        Self(Arc::new(move || domain.lock().key.clone()))
+    /// Build a resolver that reads `DomainSession.key` through a
+    /// `Weak<Mutex<DomainSession>>`. Use this in production (the
+    /// spawn path).
+    ///
+    /// **Weak intentionally**: the DomainSession's `conn` field
+    /// holds an `Arc<AgentHandle>`, and the AgentHandle owns the
+    /// `ForgeSdkBridge` which owns the McpServer (extra_mcp_servers)
+    /// whose Tool impls hold *this* resolver. Holding the
+    /// DomainSession strongly here would close a cycle:
+    /// AgentHandle → bridge → tools → resolver → DomainSession.conn
+    /// → AgentHandle. Drop never fires. With Weak, the cycle is
+    /// broken at the resolver edge: when the workspace drops its
+    /// strong reference (via `domain_handles.drain()` in
+    /// `Workspace::shutdown` and per-session in `release_session`),
+    /// the inner Arc count hits 1 (the cloned strong handle held by
+    /// the bridge's domain reference is the only remaining one) and
+    /// then 0 when the bridge drops, breaking the cycle cleanly.
+    ///
+    /// If the DomainSession gets dropped before a tool fires (e.g.
+    /// the workspace is shutting down concurrently with a peer tool
+    /// invocation), `current()` returns a sentinel `__detached__`
+    /// key. Tools handle this defensively: `whoami` would fail to
+    /// resolve the project, surface as `is_error` with a
+    /// "no identity resolved" message. Fine — the recipient session
+    /// is dying, the LLM call won't have anywhere to land anyway.
+    pub fn from_domain(domain: &Arc<parking_lot::Mutex<DomainSession>>) -> Self {
+        let weak = Arc::downgrade(domain);
+        Self(Arc::new(move || {
+            weak.upgrade()
+                .map_or_else(|| SessionKey::from_session_id("__detached__"), |d| d.lock().key.clone())
+        }))
     }
 
     /// Build a resolver that returns a fixed `SessionKey`. Use this
@@ -76,7 +102,7 @@ impl CallerKeyResolver {
     }
 
     /// Resolve the caller's current `SessionKey`. Cheap (one mutex
-    /// acquire over a `String`).
+    /// acquire over a `String` after one `Weak::upgrade` check).
     pub fn current(&self) -> SessionKey {
         (self.0)()
     }
