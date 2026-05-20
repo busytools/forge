@@ -241,6 +241,12 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
                 crate::app::plugins::apply_cli_action_failure(app, message);
             });
         }
+        SessionUpdate::PeerInflightStatsChanged { .. }
+        | SessionUpdate::PeerAskTimedOut { .. }
+        | SessionUpdate::PeerAskFailed { .. } => {
+            // TODO(C16): wire sidebar peer-activity badge + counts on
+            // UiSession.peer_badges. No-op until the badge field lands.
+        }
     }
     if is_active_or_global {
         app.needs_redraw = true;

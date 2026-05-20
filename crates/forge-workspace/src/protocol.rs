@@ -36,8 +36,9 @@ use forge_primitives::plugins::{PluginsCliActionSuccess, PluginsInventorySnapsho
 use forge_primitives::question::{QuestionOutcome, QuestionRequest};
 use forge_primitives::runtime::{AvailableModel, CurrentModel, ModeState, TerminalReason};
 use forge_primitives::{
-    AccountInfo, ForgeAccountIdentity, ImageAttachment, McpOperationError, McpServerStatus,
-    Message, SessionId, SessionListEntry,
+    AccountInfo, CorrelationId, ForgeAccountIdentity, ImageAttachment, McpOperationError,
+    McpServerStatus, Message, PeerFailureReason, PeerInflightStats, SessionId, SessionListEntry,
+    WrappedPrompt,
 };
 use tokio::sync::oneshot;
 
@@ -149,6 +150,27 @@ pub enum Command {
         project_name: Option<String>,
         launch_settings: SessionLaunchSettings,
     },
+    /// Peer-coordination delivery (#114 v1). Dispatched by the
+    /// `mcp__forge__peers__ask_agent` / `peers__tell_agent` tool
+    /// impls via `WorkspaceFacade::deliver_peer_prompt`. Routed to
+    /// `spawn::handle_deliver_peer_prompt` which: (a) resolves
+    /// `target_project` to a `SessionKey`; (b) if target is running,
+    /// stamps `current_inbound_hop` on target's DomainSession and
+    /// dispatches a plain `Command::Prompt` carrying the wrapper
+    /// prose; (c) if sleeping, buffers `wrapped` in target's
+    /// `pending_peer_prompts` and dispatches `Command::SpawnProject`;
+    /// (d) on `target_project` not in forge.toml, fires the dual-path
+    /// `PeerAskFailed` notification back to caller.
+    ///
+    /// App-level command (`key()` returns `None`); workspace routes
+    /// to the App-level handler in `spawn.rs`. The `caller` field is
+    /// the source session's key for routing failure notifications and
+    /// for in_reply_to validation lookups.
+    DeliverPeerPrompt {
+        caller: SessionKey,
+        target_project: String,
+        wrapped: WrappedPrompt,
+    },
 }
 
 impl Command {
@@ -170,9 +192,10 @@ impl Command {
             | Self::RespondQuestion { key, .. }
             | Self::ReconnectMcpServer { key, .. }
             | Self::ToggleMcpServer { key, .. } => Some(key),
-            Self::SpawnProject { .. } | Self::SpawnSession { .. } | Self::StartDefault { .. } => {
-                None
-            }
+            Self::SpawnProject { .. }
+            | Self::SpawnSession { .. }
+            | Self::StartDefault { .. }
+            | Self::DeliverPeerPrompt { .. } => None,
         }
     }
 }
@@ -348,6 +371,37 @@ pub enum SessionUpdate {
         cwd_raw: String,
         message: String,
     },
+    /// Peer-coordination ask in-flight stats changed for `key`. Fired
+    /// whenever `bump_inflight_stats` mutates the session's
+    /// `PeerInflightStats` (ask sent, reply received, timeout, delivery
+    /// failure). TUI reducer arm updates the sidebar peer-activity
+    /// badge in the Projects pane.
+    PeerInflightStatsChanged {
+        key: SessionKey,
+        stats: PeerInflightStats,
+    },
+    /// An outgoing ask hit its 30-min timeout without a reply. UI
+    /// reducer arm clears the matching ASKED row (when the Inspector
+    /// surface lands as a follow-on) and bumps the timed-out counter
+    /// on the sidebar badge. The wrapped LLM-side notification (the
+    /// chat block the caller's LLM sees) is dispatched separately as
+    /// a synthetic `Command::Prompt`; this variant is UI-state only.
+    PeerAskTimedOut {
+        caller_key: SessionKey,
+        target_key: Option<SessionKey>,
+        correlation_id: CorrelationId,
+    },
+    /// An outgoing ask failed to deliver via any reason in
+    /// `PeerFailureReason` (target spawn failed, target connection
+    /// failed mid-flight, channel closed). UI reducer arm bumps the
+    /// delivery-failed counter on the caller's sidebar badge. The
+    /// wrapped LLM-side notification is dispatched separately as a
+    /// synthetic `Command::Prompt`; this variant is UI-state only.
+    PeerAskFailed {
+        caller_key: SessionKey,
+        correlation_id: CorrelationId,
+        reason: PeerFailureReason,
+    },
     FatalError(AppError),
 }
 
@@ -371,7 +425,11 @@ impl SessionUpdate {
             | Self::TurnCancelled { key }
             | Self::TurnError { key, .. }
             | Self::ForgeAccountIdentity { key, .. }
-            | Self::SessionsListed { key, .. } => Some(key.clone()),
+            | Self::SessionsListed { key, .. }
+            | Self::PeerInflightStatsChanged { key, .. } => Some(key.clone()),
+            Self::PeerAskTimedOut { caller_key, .. } | Self::PeerAskFailed { caller_key, .. } => {
+                Some(caller_key.clone())
+            }
             Self::RuntimeReloadCompleted { session_id }
             | Self::RuntimeReloadFailed { session_id, .. }
             | Self::ChatAppended { session_id, .. }
@@ -500,6 +558,22 @@ impl std::fmt::Debug for SessionUpdate {
                 .debug_struct("PluginsCliActionFailed")
                 .field("cwd_raw", cwd_raw)
                 .finish_non_exhaustive(),
+            Self::PeerInflightStatsChanged { key, stats } => f
+                .debug_struct("PeerInflightStatsChanged")
+                .field("key", key)
+                .field("stats", stats)
+                .finish(),
+            Self::PeerAskTimedOut { caller_key, correlation_id, .. } => f
+                .debug_struct("PeerAskTimedOut")
+                .field("caller_key", caller_key)
+                .field("correlation_id", correlation_id)
+                .finish_non_exhaustive(),
+            Self::PeerAskFailed { caller_key, correlation_id, reason } => f
+                .debug_struct("PeerAskFailed")
+                .field("caller_key", caller_key)
+                .field("correlation_id", correlation_id)
+                .field("reason", reason)
+                .finish(),
             Self::FatalError(err) => f.debug_struct("FatalError").field("error", err).finish(),
         }
     }
