@@ -61,6 +61,7 @@ mod account;
 mod config;
 mod domain_session;
 mod error;
+pub mod mcp;
 pub mod protocol;
 mod session_task;
 mod spawn;

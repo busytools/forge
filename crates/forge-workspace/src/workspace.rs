@@ -8,9 +8,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::Result;
 use forge_agent::AgentHandle;
 use forge_agent::client::SessionLaunchSettings;
-use forge_primitives::SDKSessionInfo;
+use forge_primitives::{CorrelationId, InflightAsk, PeerInflightStats, SDKSessionInfo};
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 use tracing::Instrument;
 
 use crate::account::{self, AccountKey, AccountStateMap};
@@ -75,8 +76,30 @@ pub struct Workspace {
     command_senders: Mutex<HashMap<SessionKey, mpsc::UnboundedSender<Command>>>,
     /// Shared [`DomainSession`] handles, one per active `SessionTask`.
     /// [`Self::store_pending_interaction`] writes under the same lock
-    /// the `SessionTask` actor uses to read+remove.
-    domain_handles: Mutex<HashMap<SessionKey, Arc<Mutex<DomainSession>>>>,
+    /// the `SessionTask` actor uses to read+remove. `pub(crate)` so
+    /// `mcp::peers::facade::WorkspaceFacade` can read
+    /// `current_inbound_hop` without an extra wrapper method.
+    pub(crate) domain_handles: Mutex<HashMap<SessionKey, Arc<Mutex<DomainSession>>>>,
+    /// Wire-shape state for in-flight peer-coordination asks
+    /// (`mcp__forge__peers__ask_agent`). One entry per outstanding ask
+    /// keyed by [`CorrelationId`]. Registered by
+    /// [`mcp::peers::facade::WorkspaceFacade::register_inflight_ask`]
+    /// when a caller's `ask_agent` tool fires; removed on reply,
+    /// timeout, or target-failure.
+    pub(crate) inflight_asks: Mutex<HashMap<CorrelationId, InflightAsk>>,
+    /// Parallel map of tokio timer task handles, one per entry in
+    /// [`Self::inflight_asks`]. Kept here instead of on `InflightAsk`
+    /// itself so `forge-primitives` stays tokio-free. Aborted in the
+    /// same critical section that removes the matching `inflight_asks`
+    /// entry; the 30-min timer is wired in C12.
+    pub(crate) inflight_timers: Mutex<HashMap<CorrelationId, JoinHandle<()>>>,
+    /// Per-session counters of peer-message activity. Mutated by
+    /// [`mcp::peers::facade::WorkspaceFacade::bump_inflight_stats`]
+    /// whenever a peer ask is registered / replied / timed out /
+    /// delivery-failed. Read by `list_peers` and `whoami`. Drives
+    /// `SessionUpdate::PeerInflightStatsChanged` which the TUI
+    /// reducer turns into sidebar peer-activity badges.
+    pub(crate) peer_stats: Mutex<HashMap<SessionKey, PeerInflightStats>>,
     /// Set the first time [`Self::start_usage_poller`] runs. Subsequent
     /// calls early-return to avoid spawning duplicate poller tasks.
     usage_poller_started: std::sync::atomic::AtomicBool,
@@ -165,6 +188,9 @@ impl Workspace {
             update_rx_slot: Mutex::new(Some(update_rx)),
             command_senders: Mutex::new(HashMap::new()),
             domain_handles: Mutex::new(HashMap::new()),
+            inflight_asks: Mutex::new(HashMap::new()),
+            inflight_timers: Mutex::new(HashMap::new()),
+            peer_stats: Mutex::new(HashMap::new()),
             usage_poller_started: std::sync::atomic::AtomicBool::new(false),
             proxy: Some(proxy),
         })
@@ -1375,6 +1401,9 @@ impl Workspace {
             update_rx_slot: Mutex::new(None),
             command_senders: Mutex::new(HashMap::new()),
             domain_handles: Mutex::new(HashMap::new()),
+            inflight_asks: Mutex::new(HashMap::new()),
+            inflight_timers: Mutex::new(HashMap::new()),
+            peer_stats: Mutex::new(HashMap::new()),
             usage_poller_started: std::sync::atomic::AtomicBool::new(false),
             // testing_stub skips Workspace::new and therefore the
             // proxy boot. Tests don't drive real subprocesses.
