@@ -8,9 +8,6 @@ Ships scenarios + committed baselines + a replay test that runs on
 every `cargo nextest run`. Live capture is opt-in via
 `FORGE_WIRE_CAPTURE=1`.
 
-The `daemon_wire` scope was deleted in 2026-05-05 along with the
-forge-daemon crate.
-
 **Not a library consumers use.** Dev tooling only.
 
 ## The model

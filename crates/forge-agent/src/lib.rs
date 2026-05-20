@@ -17,9 +17,9 @@
 //! - [`userdata`] — disk-side state: settings, sessions catalog, memory, plugins.
 //! - [`commands`] / [`session_lifecycle`] — bridge helpers reused by
 //!   forge-tui via re-exports.
-//! - [`forge_sdk_worker`] / [`replay`] / [`tooling`] / [`user_interaction`] /
-//!   [`state`] — internal implementation modules consumed by `agent`'s
-//!   dispatcher and translator paths.
+//! - `forge_sdk_worker` (crate-private) / [`replay`] / [`tooling`] /
+//!   [`user_interaction`] — internal implementation modules consumed by
+//!   `agent`'s dispatcher and translator paths.
 
 pub mod agent;
 pub mod client;
@@ -27,11 +27,10 @@ pub mod cloud;
 pub mod commands;
 pub mod env;
 pub(crate) mod forge_sdk_bridge;
-pub mod forge_sdk_worker;
+pub(crate) mod forge_sdk_worker;
 pub mod logging;
 pub mod replay;
 pub mod session_lifecycle;
-pub mod state;
 pub mod tooling;
 pub mod translate;
 pub mod user_interaction;
@@ -39,4 +38,4 @@ pub mod userdata;
 
 pub use agent::{Agent, AgentError, AgentHandle};
 pub use client::{AgentEvent, SessionLaunchSettings};
-pub use state::PermissionMode;
+pub use forge_primitives::permission::PermissionMode;

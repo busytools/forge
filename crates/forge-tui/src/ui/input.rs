@@ -26,17 +26,26 @@ const INPUT_RIGHT_PAD: u16 = 1;
 /// Prompt column width: "❯ " = 2 columns (icon + space)
 const PROMPT_WIDTH: u16 = 2;
 
-/// Rows reserved for the input box's top + bottom borders.
+/// Rows reserved for the input box's chrome: top border + bottom
+/// border. No internal vertical padding — the slim chat-input box
+/// starts as a single-row interior and grows up to MAX_INPUT_HEIGHT
+/// rows of interior content. The wider prompt-mode dock keeps its
+/// own internal padding via Line::default() entries in build_lines.
 const INPUT_BORDER_LINES: u16 = 2;
 
-/// Minimum text-area height inside the bordered box. The chat input
-/// is the primary action surface, so the box never collapses to a
-/// single line even when the draft is empty — gives the user a real
-/// "type here" target on first glance.
-const MIN_INPUT_INTERIOR_LINES: u16 = 2;
+/// Minimum text-area height inside the bordered box. Single row so
+/// the box is just tall enough for one typed line plus the orange
+/// chrome — grows as the draft wraps.
+const MIN_INPUT_INTERIOR_LINES: u16 = 1;
 
-/// Maximum input area height (lines) to prevent the input from consuming the entire screen.
-const MAX_INPUT_HEIGHT: u16 = 12;
+/// Maximum input area height (rows of interior content). The box
+/// grows row by row as the user types — typed drafts almost never
+/// exceed a few lines, so the cap exists only to prevent the box
+/// from consuming the entire terminal in pathological cases.
+/// Large pastes don't hit this cap because the paste handler
+/// collapses anything past PASTE_PLACEHOLDER_{CHAR,LINE}_THRESHOLD
+/// into a single placeholder token.
+const MAX_INPUT_HEIGHT: u16 = 50;
 const HIGHLIGHT_SLASH_PRIORITY: u8 = 6;
 const HIGHLIGHT_MENTION_PRIORITY: u8 = 7;
 const HIGHLIGHT_SUBAGENT_PRIORITY: u8 = 8;
@@ -65,15 +74,6 @@ pub(crate) struct InputRenderGeometry {
     pub text: Rect,
 }
 
-/// Whether a login hint banner is active.
-fn has_login_hint(app: &App) -> bool {
-    app.login_hint().is_some()
-}
-
-fn has_cancel_hint(app: &App) -> bool {
-    app.pending_cancel()
-}
-
 fn has_prompt_suggestion_hint(app: &App) -> bool {
     app.input().is_empty()
         && app.focus_owner() == FocusOwner::Input
@@ -81,8 +81,8 @@ fn has_prompt_suggestion_hint(app: &App) -> bool {
 }
 
 pub(crate) fn hint_line_count(app: &App) -> u16 {
-    let login = if has_login_hint(app) { LOGIN_HINT_LINES } else { 0 };
-    let cancel = if has_cancel_hint(app) { CANCEL_HINT_LINES } else { 0 };
+    let login = if app.login_hint().is_some() { LOGIN_HINT_LINES } else { 0 };
+    let cancel = if app.pending_cancel() { CANCEL_HINT_LINES } else { 0 };
     let suggestion = if has_prompt_suggestion_hint(app) { PROMPT_SUGGESTION_HINT_LINES } else { 0 };
     login + cancel + suggestion
 }
@@ -107,8 +107,9 @@ pub(crate) fn compute_render_geometry(area: Rect, hint_lines: u16) -> InputRende
     // borders themselves are the visual margin, so the box sits flush
     // against the pane separators (or screen edges in narrow tier).
     // `box_area` is the full Rect the Block widget draws into
-    // (borders + interior); `padded` is the 1-cell-inset interior
-    // where prompt + text live.
+    // (borders + interior); `padded` is the interior where prompt +
+    // text live, inset 1 cell L/R for the side borders and 1 row top
+    // + 1 row bottom for the top/bottom borders (no inner padding).
     let box_area = input_main_area;
     let padded = Rect {
         x: box_area.x.saturating_add(1),
@@ -125,6 +126,26 @@ pub(crate) fn compute_render_geometry(area: Rect, hint_lines: u16) -> InputRende
 pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     let hint_lines = hint_line_count(app);
     let geometry = compute_render_geometry(area, hint_lines);
+
+    // Prompt mode: when the active session has a prompt at the head of
+    // its queue, the dock morphs into the unified prompt widget. The
+    // widget owns its own chrome (thick orange block) and inner
+    // padding, so we skip the normal chat-input rendering entirely.
+    if let Some(session) = app.active_session()
+        && let Some(prompt) = session.prompt_queue.front()
+    {
+        let queue_depth = session.prompt_queue.len();
+        let prompt = prompt.clone();
+        let notes_text = app.input().text();
+        crate::ui::prompt::render(
+            geometry.box_area,
+            frame.buffer_mut(),
+            &prompt,
+            queue_depth,
+            Some(notes_text.as_str()),
+        );
+        return;
+    }
 
     // Bordered frame around the input area — the chat input is THE
     // primary action surface, so the box renders with thick line
@@ -158,7 +179,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
             hint_y = hint_y.saturating_add(LOGIN_HINT_LINES);
         }
 
-        if has_cancel_hint(app) {
+        if app.pending_cancel() {
             let spinner_ch = SPINNER_FRAMES[app.spinner_frame % SPINNER_FRAMES.len()];
             let cancel_line = Line::from(vec![
                 Span::styled(format!("{spinner_ch} "), Style::default().fg(theme::DIM)),
@@ -225,28 +246,34 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         return;
     }
 
+    // Padded interior fits exactly the content lines (1 to
+    // MAX_INPUT_HEIGHT). No vertical slack to center against — the
+    // box height tracks the textarea row count directly.
+    let prompt_rect = geometry.prompt;
+    let text_rect = geometry.text;
+
     // Render prompt icon
     let prompt = Line::from(Span::styled(
         format!("{} ", theme::PROMPT_CHAR),
         Style::default().fg(theme::RUST_ORANGE),
     ));
-    frame.render_widget(Paragraph::new(prompt), geometry.prompt);
+    frame.render_widget(Paragraph::new(prompt), prompt_rect);
 
-    if geometry.text.width == 0 {
+    if text_rect.width == 0 {
         return;
     }
 
     configure_input_textarea(app);
-    app.rendered_input_area = geometry.text;
+    app.rendered_input_area = text_rect;
     if app.selection().is_some_and(|selection| selection.kind == crate::app::SelectionKind::Input) {
         refresh_selection_snapshot(app);
     }
-    frame.render_widget(app.input().editor(), geometry.text);
+    frame.render_widget(app.input().editor(), text_rect);
 
     if let Some(sel) = app.selection().copied()
         && sel.kind == crate::app::SelectionKind::Input
     {
-        frame.render_widget(SelectionOverlay { selection: sel }, geometry.text);
+        frame.render_widget(SelectionOverlay { selection: sel }, text_rect);
     }
 }
 
@@ -398,10 +425,34 @@ fn render_lines_from_textarea(textarea: &TextArea<'_>, area: Rect) -> Vec<String
 
 /// Total visual height for the input area: input lines + hint
 /// banners + the bordered box's top/bottom rows. Called by the
-/// layout to allocate the correct input area height. The text-area
-/// portion never collapses below `MIN_INPUT_INTERIOR_LINES`.
+/// layout to allocate the correct input area height.
+///
+/// When the active session has a prompt at the head of its queue,
+/// the height is dictated by the prompt widget's required lines
+/// instead of the chat-input editor — otherwise the morphed dock
+/// would clip the option list to the editor's tiny default height.
+/// The text-area portion never collapses below `MIN_INPUT_INTERIOR_LINES`.
 pub fn visual_line_count(app: &mut App, area_width: u16) -> u16 {
     let hint = hint_line_count(app);
+
+    // Prompt-mode short-circuit: dock is morphed, height comes from
+    // the prompt widget's required lines (header + options + footer +
+    // padding + borders).
+    if let Some(session) = app.active_session()
+        && let Some(prompt) = session.prompt_queue.front()
+    {
+        let queue_depth = session.prompt_queue.len();
+        let prompt = prompt.clone();
+        let notes_text = app.input().text();
+        return hint
+            + crate::ui::prompt::prompt_required_lines(
+                &prompt,
+                queue_depth,
+                area_width,
+                Some(notes_text.as_str()),
+            );
+    }
+
     // Content width sits inside the box's 1-col left/right borders.
     let content_width = area_width.saturating_sub(2).saturating_sub(PROMPT_WIDTH);
     let input_lines = app
@@ -414,11 +465,13 @@ pub fn visual_line_count(app: &mut App, area_width: u16) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::{
-        CANCEL_HINT_LINES, LOGIN_HINT_LINES, MAX_INPUT_HEIGHT, PROMPT_SUGGESTION_HINT_LINES,
+        CANCEL_HINT_LINES, INPUT_BORDER_LINES, LOGIN_HINT_LINES, MAX_INPUT_HEIGHT,
+        MIN_INPUT_INTERIOR_LINES, PROMPT_SUGGESTION_HINT_LINES, compute_render_geometry,
         slash_command_range, visual_line_count,
     };
     use crate::app::subagent::find_subagent_spans;
-    use crate::app::{App, FocusTarget, LoginHint};
+    use crate::app::{App, LoginHint};
+    use ratatui::layout::Rect;
 
     #[test]
     fn slash_range_matches_leading_command_token() {
@@ -451,7 +504,7 @@ mod tests {
     fn visual_line_count_uses_textarea_max_rows() {
         let mut app = App::test_default();
         app.input_mut().set_text(&"x".repeat(500));
-        assert_eq!(visual_line_count(&mut app, 8), MAX_INPUT_HEIGHT);
+        assert_eq!(visual_line_count(&mut app, 8), MAX_INPUT_HEIGHT + INPUT_BORDER_LINES);
     }
 
     #[test]
@@ -461,21 +514,30 @@ mod tests {
             method_name: "oauth".to_owned(),
             method_description: "Sign in".to_owned(),
         });
-        assert_eq!(visual_line_count(&mut app, 80), LOGIN_HINT_LINES + 1);
+        assert_eq!(
+            visual_line_count(&mut app, 80),
+            LOGIN_HINT_LINES + MIN_INPUT_INTERIOR_LINES + INPUT_BORDER_LINES
+        );
     }
 
     #[test]
     fn visual_line_count_includes_cancel_hint_row() {
         let mut app = App::test_default();
         app.set_pending_cancel(true);
-        assert_eq!(visual_line_count(&mut app, 80), CANCEL_HINT_LINES + 1);
+        assert_eq!(
+            visual_line_count(&mut app, 80),
+            CANCEL_HINT_LINES + MIN_INPUT_INTERIOR_LINES + INPUT_BORDER_LINES
+        );
     }
 
     #[test]
     fn visual_line_count_includes_prompt_suggestion_hint_row() {
         let mut app = App::test_default();
         app.set_prompt_suggestion(Some("Write tests for the retry flow".to_owned()));
-        assert_eq!(visual_line_count(&mut app, 80), PROMPT_SUGGESTION_HINT_LINES + 1);
+        assert_eq!(
+            visual_line_count(&mut app, 80),
+            PROMPT_SUGGESTION_HINT_LINES + MIN_INPUT_INTERIOR_LINES + INPUT_BORDER_LINES
+        );
     }
 
     #[test]
@@ -483,19 +545,17 @@ mod tests {
         let mut app = App::test_default();
         app.set_prompt_suggestion(Some("Write tests for the retry flow".to_owned()));
         app.input_mut().set_text("draft");
-        assert_eq!(visual_line_count(&mut app, 80), 1);
+        assert_eq!(visual_line_count(&mut app, 80), MIN_INPUT_INTERIOR_LINES + INPUT_BORDER_LINES);
     }
 
     #[test]
-    fn visual_line_count_hides_prompt_suggestion_hint_when_input_lacks_focus() {
-        let mut app = App::test_default();
-        app.set_prompt_suggestion(Some("Write tests for the retry flow".to_owned()));
-        // Claim Permission focus to take focus off the input — the
-        // prompt-suggestion hint only renders when the input owns
-        // focus. (The old TodoList focus target was used here before;
-        // it's been removed along with the bottom todo panel.)
-        *app.pending_interaction_ids_mut() = vec!["perm-1".into()];
-        app.claim_focus_target(FocusTarget::Permission);
-        assert_eq!(visual_line_count(&mut app, 80), 1);
+    fn compute_render_geometry_carves_borders_only() {
+        // Slim chat-input box: top border at y=0, interior starts at
+        // y=1, bottom border at y=area.height-1. With area.height=3,
+        // interior is exactly 1 row at y=1.
+        let area = Rect::new(0, 0, 80, 3);
+        let geometry = compute_render_geometry(area, 0);
+        assert_eq!(geometry.text.y, 1, "interior starts immediately after top border");
+        assert_eq!(geometry.text.height, 1, "single-row interior for 3-row box");
     }
 }

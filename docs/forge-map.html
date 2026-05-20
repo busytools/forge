@@ -1016,94 +1016,122 @@ chat continues here…
 </div>
 
 <!-- ============================================================== -->
-<h2 class="section-title" id="prompts">Permission &amp; question prompts</h2>
+<h2 class="section-title" id="prompts">Unified prompt (permission · plan · question)</h2>
 
 <div class="surface">
   <div class="surface-head">
-    <h4>Permission prompt</h4>
-    <div class="when">visible: when the SDK fires a <code>can_use_tool</code> request and forge isn't auto-approving</div>
+    <h4>Dock-morph widget</h4>
+    <div class="when">visible: whenever the active session's <code>prompt_queue</code> has a head — permission requests, plan-approval (ExitPlanMode), or AskUserQuestion all route through the same widget</div>
   </div>
   <div class="surface-body">
-    <p>Inline block appended to a tool-call body in the chat scrollback. <strong>Unfocused state:</strong> a single dim line "<code>○ Waiting for input... (Tab to focus)</code>". <strong>Focused state:</strong> blank line, optional display block (header in white bold, description in dim, both indented 2 cols), then a single line of <strong>inline options</strong> separated by <code>  ·  </code> (middle dot, dim), then a help line.</p>
-    <p>Each option is rendered as: optional <code>▸ </code> selection indicator (RUST_ORANGE bold, only on the focused option) + ✓ (green) for allow / ✗ (red) for reject + space + option name (RUST_ORANGE bold when focused, gray otherwise) + dim shortcut hint <code>(Ctrl+y)</code> / <code>(Ctrl+a)</code> / <code>(Ctrl+n)</code>.</p>
-    <div class="term">
-      <pre class="indent">
-       <span class="bold">Allow Bash to run this command?</span>
-         <span class="dim">git push origin polish/rate-limit-chip-softer-34</span>
+    <p>One renderer, three modes (single-select / multi-select / selection+text). When a prompt arrives the chat-input box at the bottom of the screen <strong>morphs</strong> — text-entry slot disappears, the orange thick chrome stays put, options appear inside with a <code>▸</code> pointer on the focused row, arrow keys move focus, Enter confirms, Esc cancels.</p>
+    <p>The tool block above keeps its normal in-progress render (no inline expansion). Per-session FIFO queue: when more than one prompt is pending, a dim "<code>▼ N more pending after this</code>" line appears at the top of the dock body; otherwise that line is hidden.</p>
 
-       <span class="accent bold">▸ </span><span class="success">✓</span> <span class="accent bold">Allow once</span><span class="dim"> (Ctrl+y)</span>  <span class="dim">·</span>  <span class="success">✓</span> <span class="dim">Allow always</span><span class="dim"> (Ctrl+a)</span>  <span class="dim">·</span>  <span class="error">✗</span> <span class="dim">Deny</span><span class="dim"> (Ctrl+n)</span>
-       <span class="dim">←→ select  ↑↓ next  enter confirm  esc reject</span></pre>
+    <p><strong>Common-case permission</strong> — no decision_reason or display_description (most Bash / Edit / Read calls land here):</p>
+    <div class="term">
+      <pre class="indent"><span class="accent bold">┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓</span>
+<span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>  <span class="bold">Bash · git push origin polish/rate-limit-chip-softer-34</span>             <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>  <span class="accent bold">▸ </span><span class="success">✓</span> <span class="bold">Allow once</span>                                                      <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>    <span class="success">✓</span> <span class="dim">Allow always for Bash · git push *</span>                              <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>    <span class="error">✗</span> <span class="dim">Deny</span>                                                            <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>    <span class="dim">…</span> <span class="dim">Tell Claude something else</span>                                      <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>  <span class="dim">↑↓ select  ⏎ confirm  esc reject</span>                                    <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
+<span class="accent bold">┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛</span></pre>
     </div>
-    <p>(Permission options come from the SDK's <code>PermissionOptionKind</code>: <code>AllowOnce</code> / <code>AllowSession</code> / <code>AllowAlways</code> / <code>RejectOnce</code> / <code>RejectAlways</code>. Allow variants share <code>(Ctrl+a)</code> for "always" and <code>(Ctrl+y)</code> for "once"; <code>RejectOnce</code> is <code>(Ctrl+n)</code>; <code>RejectAlways</code> + plan-mode + question variants don't get a shortcut hint.)</p>
+
+    <p><strong>Permission with full CLI context</strong> — Read outside workspace (yellow <code>⚠</code> = <code>decision_reason</code>, dim line below = <code>display.description</code>; "Allow always" entries derive from <code>permission_suggestions</code>):</p>
+    <div class="term">
+      <pre class="indent"><span class="accent bold">┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓</span>
+<span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>  <span class="bold">Read · /tmp/forge-deny-scenario.txt</span>                                 <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>  <span style="color:#d4b73e">⚠ Path is outside allowed working directories</span>                       <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>  <span class="dim">Reads the contents of a file outside this project.</span>                  <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>  <span class="accent bold">▸ </span><span class="success">✓</span> <span class="bold">Allow once</span>                                                      <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>    <span class="success">✓</span> <span class="dim">Allow always for Read · paths matching //tmp/**</span>                 <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>    <span class="error">✗</span> <span class="dim">Deny</span>                                                            <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>    <span class="dim">…</span> <span class="dim">Tell Claude something else</span>                                      <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>  <span class="dim">↑↓ select  ⏎ confirm  esc reject</span>                                    <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
+<span class="accent bold">┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛</span></pre>
+    </div>
+
+    <p><strong>AskUserQuestion</strong> — multi-select with notes-option toggled. Question header gets a <code>?</code> in RUST_ORANGE, the question body is white below it, options use checkbox markers (<code>[x]</code> / <code>[ ]</code>) before the icon; toggling the <code>… Tell Claude something else</code> entry expands an inline notes editor:</p>
+    <div class="term">
+      <pre class="indent"><span class="accent bold">┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓</span>
+<span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>  <span class="accent">? </span><span class="bold">Environments (Q2 of 3)</span>                                            <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>  <span class="bold">Pick the environments to deploy to.</span>                                <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>    <span class="success">[x]</span> <span class="success">✓</span> <span class="dim">Staging</span>                                                     <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>    <span class="success">[x]</span> <span class="success">✓</span> <span class="dim">Production</span>                                                  <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>    <span class="dim">[ ]</span> <span class="success">✓</span> <span class="dim">Development</span>                                                 <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>  <span class="accent bold">▸ </span><span class="success">[x]</span> <span class="dim">…</span> <span class="bold">Tell Claude something else:</span>                              <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>    <span class="bold">Also bump the queue worker concurrency_</span>                          <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>  <span class="dim">space toggle  ↑↓ move  ⏎ submit  esc cancel</span>                         <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
+<span class="accent bold">┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛</span></pre>
+    </div>
+
+    <p><strong>Queue indicator</strong> — when the queue depth is &gt; 1 (e.g. a background session's prompt is queued behind the active prompt), a dim line at the top of the dock body shows the count:</p>
+    <div class="term">
+      <pre class="indent"><span class="accent bold">┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓</span>
+<span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>  <span class="dim">▼ 2 more pending after this</span>                                         <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>  <span class="bold">Edit · src/foo.rs</span>                                                   <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>  <span class="accent bold">▸ </span><span class="success">✓</span> <span class="bold">Allow once</span>                                                      <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>    <span class="success">✓</span> <span class="dim">Allow always for Edit · src/**</span>                                  <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>    <span class="error">✗</span> <span class="dim">Deny</span>                                                            <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>    <span class="dim">…</span> <span class="dim">Tell Claude something else</span>                                      <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>  <span class="dim">↑↓ select  ⏎ confirm  esc reject</span>                                    <span class="accent bold">┃</span>
+<span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
+<span class="accent bold">┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛</span></pre>
+    </div>
+
+    <h5>Icon vocabulary</h5>
+    <ul>
+      <li><span class="success">✓</span> green — <code>PermissionOptionKind::Allow</code> (any Allow variant)</li>
+      <li><span class="error">✗</span> red — <code>PermissionOptionKind::Deny</code> (any Deny variant)</li>
+      <li><span style="color:#6ba3e5">✎</span> blue — <code>PermissionOptionKind::Edit</code> (Allow with edits — synthesized for editable tools: Bash, Edit, Write, MultiEdit, NotebookEdit)</li>
+      <li><span class="dim">…</span> dim — <code>PermissionOptionKind::Notes</code> (the synthesized "Tell Claude something else" escape hatch; always last in the option list)</li>
+    </ul>
+
+    <h5>Where options come from</h5>
+    <p>Options are derived from the CLI's <code>permission_suggestions</code> field (one of the wire fields forge had been ignoring pre-redesign). Three `PermissionUpdate` variants drive the contextual options:</p>
+    <ul>
+      <li><code>addRules</code> (Read outside workspace) → "Allow always for {tool} · paths matching {pattern}". macOS <code>/tmp</code> + <code>/private/tmp</code> mirror entries are deduped for display but both rule entries are kept on the wire so the CLI installs both.</li>
+      <li><code>addDirectories</code> (Write / Edit outside workspace) → "Allow always &amp; add {dirs} to allowed dirs".</li>
+      <li><code>setMode</code> (typically arrives on the prompt that intercepts plan-mode — Write outside workspace) → "Allow always &amp; switch to {mode} mode". Note: ExitPlanMode itself sends <code>permission_suggestions: null</code>; the mode switch lives on the earlier intercept prompt, not on ExitPlanMode.</li>
+    </ul>
+    <p>Plus two universally-synthesized options: <code>… Tell Claude something else</code> (always last) routes to <code>deny(notes_text)</code> on the wire; <code>✎ Allow with edits</code> (only for editable tools) routes to <code>allow_with_input(edited_value)</code>.</p>
+
+    <h5>Keymap</h5>
     <dl>
-      <dt>code</dt><dd><code>crates/forge-tui/src/ui/tool_call/interactions.rs::render_permission_lines</code></dd>
-      <dt>known issues</dt><dd><a href="https://github.com/busytools/forge/issues/40">#40</a> — accumulated indent / glyph inconsistencies in interactions.rs (multiple constants for option spacing, header, separator)  ·  <a href="https://github.com/busytools/forge/issues/56">#56</a> — ESC sends last option instead of a Cancelled signal</dd>
+      <dt>option-picker mode (default)</dt>
+      <dd><code>↑</code> / <code>↓</code> / <code>←</code> / <code>→</code> — move option focus (wraps top↔bottom)<br>
+      <code>Home</code> / <code>End</code> — jump to first / last option<br>
+      <code>Space</code> — multi-select only: toggle current option<br>
+      <code>Enter</code> — Notes-kind option → Submit (notes text routed from canonical <code>App.input</code> editor); Edit-kind option → enter editing-input mode (Consumed); otherwise → Submit<br>
+      <code>Esc</code> — Cancel<br>
+      <code>Tab</code> / <code>BackTab</code> / printable chars / <code>Backspace</code> / <code>Delete</code> — when focused option is Notes-kind, route to <code>App.input</code> editor (canonical chat-input handler — handles unicode, paste bursts, SuperWhisper insertions, cursor navigation). Otherwise Consumed (swallowed).</dd>
     </dl>
-  </div>
-</div>
 
-<div class="surface">
-  <div class="surface-head">
-    <h4>Plan-approval prompt</h4>
-    <div class="when">visible: when the agent invokes the <code>ExitPlanMode</code> tool</div>
-  </div>
-  <div class="surface-body">
-    <p>Different shape from the permission prompt. <strong>Unfocused:</strong> blank line + dim "<code>○ Waiting for input... (Tab to focus)</code>". <strong>Focused:</strong> blank line, optional "<code>Pre-approved actions:</code>" header (DIM) followed by bullet rows (<code>•</code> in DIM + white-text action) parsed from <code>tc.raw_input</code>'s <code>allowed_prompts</code>, then a blank line, then <strong>vertically-stacked</strong> options (<code>PlanApprove</code> / <code>PlanReject</code>) with <code>▸ </code>/4-space prefix, ✓ green / ✗ red icon, name (RUST_ORANGE bold when focused, gray otherwise), and shortcut suffix in DIM (<code> [Ctrl+y]</code> / <code> [Ctrl+n]</code>). Bottom help line: "<code>↑↓ select  enter confirm  Ctrl+y approve  Ctrl+n/esc reject</code>".</p>
-    <div class="term">
-      <pre class="indent">
-
-  <span class="dim">Pre-approved actions:</span>
-    <span class="dim">•</span> Run cargo nextest after edits
-    <span class="dim">•</span> Open a draft PR if all tests pass
-
-  <span class="accent bold">▸ </span><span class="success">✓</span> <span class="accent bold">Approve plan</span><span class="dim"> [Ctrl+y]</span>
-    <span class="error">✗</span> <span class="dim">Reject plan</span><span class="dim"> [Ctrl+n]</span>
-  <span class="dim">↑↓ select  enter confirm  Ctrl+y approve  Ctrl+n/esc reject</span></pre>
-    </div>
+    <h5>State + dispatch</h5>
     <dl>
-      <dt>code</dt><dd><code>crates/forge-tui/src/ui/tool_call/interactions.rs::render_plan_approval_lines</code> · pre-approved actions parsed via <code>parse_exit_plan_mode_allowed_prompts</code></dd>
-    </dl>
-  </div>
-</div>
-
-<div class="surface">
-  <div class="surface-head">
-    <h4>Question prompt (AskUserQuestion)</h4>
-    <div class="when">visible: when the agent asks a structured question</div>
-  </div>
-  <div class="surface-body">
-    <p>Header line: 2-col indent + <code>? </code> in RUST_ORANGE + header text in white bold + optional <code>(N/total)</code> progress when there are multiple questions. Question body indented 4 cols (RUST_ORANGE when focused, gray otherwise).</p>
-    <p><strong>If unfocused:</strong> "<code>  waiting for input... (Tab to focus)</code>" in dim, no options shown.</p>
-    <p><strong>If focused with ≤3 short options</strong> (each ≤20 chars, no descriptions): horizontal layout — options inline separated by <code>  |  </code> (dim ASCII pipe), each with <code>▸ </code> selection indicator (RUST_ORANGE bold) or 2 spaces, optional <code>[x]</code> / <code>[ ]</code> checkbox (dim) for multi-select, label (white bold when focused, gray otherwise).</p>
-    <p><strong>Otherwise (vertical layout):</strong> each option on its own row with <code>  ▸ </code> for focused and <code>  ○ </code> for others, label, then optional 2-space-indented description on the next line(s).</p>
-    <p>Below the options the focused option's optional <strong>Preview</strong> block renders (white-bold "<code>Preview</code>" header, body lines indented 4 cols in DIM), then a blank line, then the <strong>Notes row</strong>: "<code>Notes:</code>" (white bold) + notes text (DIM, "<code>&lt;empty&gt;</code>" placeholder when blank, switches to white when in edit mode and label becomes "<code>Notes [editing]:</code>"). Help line at the bottom is "<code>Left/Right select  Tab notes  Enter confirm  Esc cancel</code>" or for multi-select "<code>Left/Right move  Space toggle  Tab notes  Enter confirm  Esc cancel</code>".</p>
-    <div class="term">
-      <pre class="indent">
-    <span class="accent">? </span><span class="bold">Which migration target?</span> <span class="bold">(1/2)</span>
-        <span class="accent">Pick the database engine to run the migration against.</span>
-
-      <span class="accent bold">▸ </span><span class="bold">Postgres 16</span>  <span class="dim">|</span>    <span class="dim">Postgres 15</span>  <span class="dim">|</span>    <span class="dim">SQLite (dev only)</span>
-
-      <span class="bold">  Preview</span>
-        <span class="dim">Postgres 16 introduces incremental sort improvements and a more efficient</span>
-        <span class="dim">vacuum. Required for the upcoming partition pruning work.</span>
-
-      <span class="bold">  Notes: </span><span class="dim">&lt;empty&gt;</span>
-      <span class="dim">  Left/Right select  Tab notes  Enter confirm  Esc cancel</span></pre>
-    </div>
-    <p class="hint">Vertical fallback (when an option has a description, or there are &gt;3 options, or any label is &gt;20 chars):</p>
-    <div class="term">
-      <pre class="indent">
-    <span class="accent">? </span><span class="bold">Pick a migration strategy:</span>
-
-      <span class="accent">▸ </span><span class="bold">Forward-only with backfill</span>
-          <span class="dim">Apply the schema change live; backfill old rows in a follow-up.</span>
-      <span class="dim">○ </span>Online with shadow table
-          <span class="dim">Mirror writes to a shadow until copy-over completes.</span></pre>
-    </div>
-    <dl>
-      <dt>code</dt><dd><code>crates/forge-tui/src/ui/tool_call/interactions.rs::render_question_lines</code></dd>
-      <dt>multi-select</dt><dd>checkbox prefix <code>[x]</code> / <code>[ ]</code> appears before the label when <code>question.prompt.multi_select == true</code></dd>
+      <dt>renderer</dt><dd><code>crates/forge-tui/src/ui/prompt.rs::render</code> — draws the orange thick chrome itself; callers don't render a separate block.</dd>
+      <dt>state</dt><dd><code>crates/forge-tui/src/app/prompt.rs::PromptState</code> (per-prompt) on <code>UiSession.prompt_queue: VecDeque&lt;PromptState&gt;</code> (per-session FIFO).</dd>
+      <dt>keymap</dt><dd><code>crates/forge-tui/src/app/prompt.rs::handle_key_option_picker</code> / <code>handle_key_editing_input</code>. Top-level dispatch via <code>dispatch_key</code> called from <code>crates/forge-tui/src/app/keys.rs::dispatch_key_by_focus</code> when the active session has a queued prompt. Notes-kind keystrokes route to <code>App.input</code> editor directly.</dd>
+      <dt>response dispatch</dt><dd><code>crates/forge-tui/src/app/prompt.rs::submit_prompt</code> / <code>cancel_prompt</code> — builds <code>PermissionOutcome</code> / <code>QuestionOutcome</code> from the picked option's <code>action</code> + notes + edited_input, dispatches via <code>events::turn::dispatch_permission_outcome</code> / <code>dispatch_question_outcome</code>.</dd>
+      <dt>option construction</dt><dd><code>crates/forge-agent/src/forge_sdk_worker.rs::build_permission_options</code> — derives contextual options from <code>ctx.suggestions</code>; appends "Allow with edits" for editable tools and "Tell Claude something else" universally.</dd>
+      <dt>chat-input draft preservation</dt><dd>When a prompt arrives onto an empty queue, <code>snapshot_draft_if_needed</code> captures any in-flight chat-input text and clears the editor. When the last prompt resolves (queue empties), <code>restore_draft_if_empty_queue</code> puts it back verbatim.</dd>
     </dl>
   </div>
 </div>

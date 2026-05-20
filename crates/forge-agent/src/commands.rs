@@ -3,95 +3,51 @@
 //! `System(init)` arrives + on `/mode` slash submit) and by the
 //! worker (to assemble the Connected event payload at spawn time).
 
+use std::collections::HashSet;
+
+use forge_primitives::permission::PermissionMode;
 use forge_primitives::{ModeInfo, ModeState};
 
-use super::state::PermissionMode;
-
-const BASE_SUPPORTED_MODE_IDS: [PermissionMode; 4] = [
+/// Canonical MODE_OPTIONS order mirrored from upstream.
+const CANONICAL_ORDER: [PermissionMode; 6] = [
     PermissionMode::Ask,
     PermissionMode::AcceptEdits,
     PermissionMode::Plan,
     PermissionMode::DontAsk,
+    PermissionMode::Auto,
+    PermissionMode::BypassPermissions,
 ];
 
-fn unique_mode_ids(modes: Vec<PermissionMode>) -> Vec<PermissionMode> {
-    // Mirror upstream's MODE_OPTIONS ordering: default, acceptEdits,
-    // plan, dontAsk, auto, bypassPermissions. Filter to only present
-    // ids while preserving canonical order.
-    const CANONICAL_ORDER: [PermissionMode; 6] = [
-        PermissionMode::Ask,
-        PermissionMode::AcceptEdits,
-        PermissionMode::Plan,
-        PermissionMode::DontAsk,
-        PermissionMode::Auto,
-        PermissionMode::BypassPermissions,
-    ];
-    let mut seen: std::collections::HashSet<PermissionMode> =
-        std::collections::HashSet::with_capacity(modes.len());
-    for m in modes {
-        seen.insert(m);
-    }
-    CANONICAL_ORDER.into_iter().filter(|m| seen.contains(m)).collect()
-}
-
-/// Computes the supported-mode list from primitive inputs.
-/// Mirrors the upstream rules: BASE + Auto (if model supports it) +
-/// `BypassPermissions` (if session allows) + the current mode itself
-/// (so the active mode never disappears mid-session).
-fn computed_supported_mode_ids_from_inputs(
-    current_model_supports_auto_mode: bool,
-    supports_bypass_permissions_mode: bool,
-    current_mode: Option<PermissionMode>,
-) -> Vec<PermissionMode> {
-    let mut supported: Vec<PermissionMode> = BASE_SUPPORTED_MODE_IDS.to_vec();
-    if current_model_supports_auto_mode {
-        supported.push(PermissionMode::Auto);
-    }
-    if supports_bypass_permissions_mode {
-        supported.push(PermissionMode::BypassPermissions);
-    }
-    if let Some(mode) = current_mode {
-        supported.push(mode);
-    }
-    unique_mode_ids(supported)
-}
-
 /// Returns the supported-mode list filtered by the runtime-unavailable
-/// list (but keeping the current mode if it's still set).
+/// list (but keeping the current mode if it's still set). Mirrors the
+/// upstream rules: BASE + Auto (if model supports it) + BypassPermissions
+/// (if session allows) + the current mode itself (so the active mode
+/// never disappears mid-session).
 pub fn supported_mode_ids_filtered(
     current_model_supports_auto_mode: bool,
     supports_bypass_permissions_mode: bool,
     current_mode: Option<PermissionMode>,
     runtime_unavailable_mode_ids: &[PermissionMode],
 ) -> Vec<PermissionMode> {
-    let computed = computed_supported_mode_ids_from_inputs(
-        current_model_supports_auto_mode,
-        supports_bypass_permissions_mode,
-        current_mode,
-    );
-    computed
+    let mut seen: HashSet<PermissionMode> = CANONICAL_ORDER[..4].iter().copied().collect();
+    if current_model_supports_auto_mode {
+        seen.insert(PermissionMode::Auto);
+    }
+    if supports_bypass_permissions_mode {
+        seen.insert(PermissionMode::BypassPermissions);
+    }
+    if let Some(mode) = current_mode {
+        seen.insert(mode);
+    }
+    CANONICAL_ORDER
         .into_iter()
+        .filter(|m| seen.contains(m))
         .filter(|m| current_mode == Some(*m) || !runtime_unavailable_mode_ids.contains(m))
         .collect()
 }
 
-fn mode_info_for_id(mode: PermissionMode) -> ModeInfo {
-    ModeInfo {
-        id: mode.as_wire().to_owned(),
-        name: mode.display_name().to_owned(),
-        description: None,
-    }
-}
-
-/// Maps a supported-mode list into `ModeInfo` records ready for
-/// `ModeState.available_modes`.
-fn available_modes_from_supported(supported_mode_ids: &[PermissionMode]) -> Vec<ModeInfo> {
-    supported_mode_ids.iter().copied().map(mode_info_for_id).collect()
-}
-
 /// Composes a `ModeState` from the active mode + the resolved
-/// supported-mode list. Used by App-side `apply_mode_state_from_init`
-/// + `apply_optimistic_mode_change` + `apply_optimistic_model_change`.
+/// supported-mode list.
 pub fn build_mode_state_from_supported(
     mode: PermissionMode,
     supported_mode_ids: &[PermissionMode],
@@ -99,7 +55,14 @@ pub fn build_mode_state_from_supported(
     ModeState {
         current_mode_id: mode.as_wire().to_owned(),
         current_mode_name: mode.display_name().to_owned(),
-        available_modes: available_modes_from_supported(supported_mode_ids),
+        available_modes: supported_mode_ids
+            .iter()
+            .map(|m| ModeInfo {
+                id: m.as_wire().to_owned(),
+                name: m.display_name().to_owned(),
+                description: None,
+            })
+            .collect(),
     }
 }
 

@@ -34,6 +34,12 @@ const PASTE_SUFFIX: &str = "]";
 /// Character threshold above which pasted content is collapsed to a placeholder.
 pub const PASTE_PLACEHOLDER_CHAR_THRESHOLD: usize = 1000;
 
+/// Line threshold above which pasted content is collapsed to a placeholder,
+/// even when the total char count is below the char threshold. Keeps the
+/// chat input from devouring vertical space when the user pastes a tall
+/// but narrow block (e.g. a list).
+pub const PASTE_PLACEHOLDER_LINE_THRESHOLD: usize = 5;
+
 impl InputState {
     fn configure_editor(editor: &mut TextArea<'static>) {
         editor.set_wrap_mode(WrapMode::WordOrGlyph);

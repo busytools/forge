@@ -255,8 +255,8 @@ mod tests {
         let base = ToolCall {
             tool_call_id: "tu".to_owned(),
             title: "AskUserQuestion".to_owned(),
-            kind: "ask".to_owned(),
-            status: "pending".to_owned(),
+            kind: forge_primitives::ToolKind::Other,
+            status: forge_primitives::ToolCallStatus::Pending,
             content: Vec::new(),
             raw_input: None,
             raw_output: None,

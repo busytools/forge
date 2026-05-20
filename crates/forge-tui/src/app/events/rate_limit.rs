@@ -325,10 +325,9 @@ mod tests {
 
     #[test]
     fn near_threshold_without_overage_uses_softer_wording() {
-        // Wire shape from issue #34: AllowedWarning, surpassedThreshold > 0,
-        // isUsingOverage = false. User is past the threshold but not
-        // actually consuming overage — the loud "you've used 102%"
-        // wording over-states things.
+        // AllowedWarning + surpassedThreshold > 0 + isUsingOverage =
+        // false: user is past the threshold but not actually consuming
+        // overage — the loud "you've used 102%" wording over-states.
         let update = RateLimitUpdate {
             status: RateLimitStatus::AllowedWarning,
             resets_at: Some(1_741_280_000.0),

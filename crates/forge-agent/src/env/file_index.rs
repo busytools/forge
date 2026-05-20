@@ -50,19 +50,11 @@ pub enum WatchProgress {
     Rebuild,
 }
 
-/// Cancel guard for the streaming scan. Drop to abort the walker.
-pub struct ScanCancel(Arc<AtomicBool>);
+/// Cancel guard for a backgrounded scan or watch. Drop to flip the
+/// shared atomic that producers poll between batches / events.
+pub struct CancelToken(Arc<AtomicBool>);
 
-impl Drop for ScanCancel {
-    fn drop(&mut self) {
-        self.0.store(true, AtomicOrdering::Relaxed);
-    }
-}
-
-/// Cancel guard for the watcher. Drop to stop the notify thread.
-pub struct WatchCancel(Arc<AtomicBool>);
-
-impl Drop for WatchCancel {
+impl Drop for CancelToken {
     fn drop(&mut self) {
         self.0.store(true, AtomicOrdering::Relaxed);
     }
@@ -72,7 +64,7 @@ impl Drop for WatchCancel {
 /// receiver of [`ScanProgress`] batches (`Batch` until the walker
 /// finishes, then one terminal `Finished`) and a cancel handle.
 /// Dropping the cancel handle aborts the walker.
-pub fn start_scan(root: PathBuf, respect_gitignore: bool) -> (Receiver<ScanProgress>, ScanCancel) {
+pub fn start_scan(root: PathBuf, respect_gitignore: bool) -> (Receiver<ScanProgress>, CancelToken) {
     let cancel = Arc::new(AtomicBool::new(false));
     let cancel_clone = Arc::clone(&cancel);
     let (tx, rx) = mpsc::channel::<ScanProgress>();
@@ -99,7 +91,7 @@ pub fn start_scan(root: PathBuf, respect_gitignore: bool) -> (Receiver<ScanProgr
         }
         let _ = tx.send(ScanProgress::Finished);
     });
-    (rx, ScanCancel(cancel))
+    (rx, CancelToken(cancel))
 }
 
 /// Spawn a recursive filesystem watch rooted at `root`. Returns a
@@ -108,7 +100,7 @@ pub fn start_scan(root: PathBuf, respect_gitignore: bool) -> (Receiver<ScanProgr
 pub fn start_watch(
     root: PathBuf,
     respect_gitignore: bool,
-) -> (Receiver<WatchProgress>, WatchCancel) {
+) -> (Receiver<WatchProgress>, CancelToken) {
     let cancel = Arc::new(AtomicBool::new(false));
     let cancel_clone = Arc::clone(&cancel);
     let (tx, rx) = mpsc::channel::<WatchProgress>();
@@ -153,7 +145,7 @@ pub fn start_watch(
             }
         }
     });
-    (rx, WatchCancel(cancel))
+    (rx, CancelToken(cancel))
 }
 
 /// Synchronous walk that returns every candidate under `walk_root`.

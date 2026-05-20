@@ -59,96 +59,6 @@ pub(crate) fn map_available_models(
         .collect()
 }
 
-pub(crate) fn map_permission_request(
-    session_id: &str,
-    request: types::PermissionRequest,
-) -> (model::RequestPermissionRequest, String) {
-    let tool_call_id = request.tool_call.tool_call_id.clone();
-    let tool_call_meta = request.tool_call.meta.clone();
-    let tool_call_fields = convert_tool_call_to_fields(request.tool_call);
-    let mut tool_call_update = model::ToolCallUpdate::new(tool_call_id.clone(), tool_call_fields);
-    if let Some(meta) = tool_call_meta {
-        tool_call_update = tool_call_update.meta(meta);
-    }
-    let options = request
-        .options
-        .into_iter()
-        .map(|opt| {
-            let kind = match opt.kind.as_str() {
-                "allow_once" => model::PermissionOptionKind::AllowOnce,
-                "allow_session" => model::PermissionOptionKind::AllowSession,
-                "allow_always" => model::PermissionOptionKind::AllowAlways,
-                "reject_once" => model::PermissionOptionKind::RejectOnce,
-                "reject_always" => model::PermissionOptionKind::RejectAlways,
-                "question_choice" => model::PermissionOptionKind::QuestionChoice,
-                "plan_approve" => model::PermissionOptionKind::PlanApprove,
-                "plan_reject" => model::PermissionOptionKind::PlanReject,
-                _ => {
-                    tracing::warn!(
-                        "unknown permission option kind from bridge; defaulting to reject_once: session_id={} tool_call_id={} option_id={} option_name={} option_kind={}",
-                        session_id,
-                        tool_call_id,
-                        opt.option_id,
-                        opt.name,
-                        opt.kind
-                    );
-                    model::PermissionOptionKind::RejectOnce
-                }
-            };
-            model::PermissionOption::new(opt.option_id, opt.name, kind).description(opt.description)
-        })
-        .collect();
-    (
-        model::RequestPermissionRequest::new(
-            model::SessionId::new(session_id),
-            tool_call_update,
-            options,
-            request.display.filter(|d| !d.is_empty()),
-        ),
-        tool_call_id,
-    )
-}
-
-pub(crate) fn map_question_request(
-    session_id: &str,
-    request: types::QuestionRequest,
-) -> (model::RequestQuestionRequest, String) {
-    let tool_call_id = request.tool_call.tool_call_id.clone();
-    let tool_call_meta = request.tool_call.meta.clone();
-    let tool_call_fields = convert_tool_call_to_fields(request.tool_call);
-    let mut tool_call_update = model::ToolCallUpdate::new(tool_call_id.clone(), tool_call_fields);
-    if let Some(meta) = tool_call_meta {
-        tool_call_update = tool_call_update.meta(meta);
-    }
-
-    let prompt = model::QuestionPrompt::new(
-        request.prompt.question,
-        request.prompt.header,
-        request.prompt.multi_select,
-        request
-            .prompt
-            .options
-            .into_iter()
-            .map(|option| {
-                model::QuestionOption::new(option.option_id, option.label)
-                    .description(option.description)
-                    .preview(option.preview)
-            })
-            .collect(),
-    );
-
-    (
-        model::RequestQuestionRequest::new(
-            model::SessionId::new(session_id),
-            tool_call_update,
-            prompt,
-            usize::try_from(request.question_index).unwrap_or(0),
-            usize::try_from(request.total_questions).unwrap_or(0),
-        ),
-        tool_call_id,
-    )
-}
-
 pub(super) fn convert_content_block(content: types::ChunkContent) -> Option<model::ContentBlock> {
     match content {
         types::ChunkContent::Text { text } => {
@@ -186,21 +96,10 @@ pub(crate) fn convert_tool_call(tool_call: types::ToolCall) -> model::ToolCall {
     } = tool_call;
 
     let mut tc = model::ToolCall::new(tool_call_id, title)
-        .kind(convert_tool_kind(&kind))
-        .status(convert_tool_status(&status))
+        .kind(kind)
+        .status(status)
         .content(content.into_iter().filter_map(convert_tool_call_content).collect())
-        .locations(
-            locations
-                .into_iter()
-                .map(|loc| {
-                    let mut location = model::ToolCallLocation::new(loc.path);
-                    if let Some(line) = loc.line.and_then(|line| u32::try_from(line).ok()) {
-                        location = location.line(line);
-                    }
-                    location
-                })
-                .collect(),
-        );
+        .locations(locations);
 
     if let Some(raw_input) = raw_input {
         tc = tc.raw_input(raw_input);
@@ -234,47 +133,6 @@ pub(crate) fn convert_tool_call_update(update: types::ToolCallUpdate) -> model::
     out
 }
 
-pub(super) fn convert_tool_call_to_fields(
-    tool_call: types::ToolCall,
-) -> model::ToolCallUpdateFields {
-    let mut fields = model::ToolCallUpdateFields::new()
-        .title(tool_call.title)
-        .kind(convert_tool_kind(&tool_call.kind))
-        .status(convert_tool_status(&tool_call.status))
-        .content(
-            tool_call.content.into_iter().filter_map(convert_tool_call_content).collect::<Vec<_>>(),
-        )
-        .locations(
-            tool_call
-                .locations
-                .into_iter()
-                .map(|loc| {
-                    let mut location = model::ToolCallLocation::new(loc.path);
-                    if let Some(line) = loc.line.and_then(|line| u32::try_from(line).ok()) {
-                        location = location.line(line);
-                    }
-                    location
-                })
-                .collect::<Vec<_>>(),
-        );
-
-    if let Some(raw_input) = tool_call.raw_input {
-        fields = fields.raw_input(raw_input);
-    }
-
-    if let Some(raw_output) = tool_call.raw_output {
-        fields = fields.raw_output(serde_json::Value::String(raw_output));
-    }
-    if let Some(output_metadata) = tool_call.output_metadata {
-        fields = fields.output_metadata(output_metadata);
-    }
-    if let Some(task_metadata) = tool_call.task_metadata {
-        fields = fields.task_metadata(task_metadata);
-    }
-
-    fields
-}
-
 pub(super) fn convert_tool_call_update_fields(
     fields: types::ToolCallUpdateFields,
 ) -> model::ToolCallUpdateFields {
@@ -284,10 +142,10 @@ pub(super) fn convert_tool_call_update_fields(
         out = out.title(title);
     }
     if let Some(kind) = fields.kind {
-        out = out.kind(convert_tool_kind(&kind));
+        out = out.kind(kind);
     }
     if let Some(status) = fields.status {
-        out = out.status(convert_tool_status(&status));
+        out = out.status(status);
     }
     if let Some(content) = fields.content {
         out = out
@@ -306,18 +164,7 @@ pub(super) fn convert_tool_call_update_fields(
         out = out.task_metadata(task_metadata);
     }
     if let Some(locations) = fields.locations {
-        out = out.locations(
-            locations
-                .into_iter()
-                .map(|loc| {
-                    let mut location = model::ToolCallLocation::new(loc.path);
-                    if let Some(line) = loc.line.and_then(|line| u32::try_from(line).ok()) {
-                        location = location.line(line);
-                    }
-                    location
-                })
-                .collect::<Vec<_>>(),
-        );
+        out = out.locations(locations);
     }
 
     out
@@ -347,37 +194,9 @@ fn convert_tool_call_content(
     }
 }
 
-pub(super) fn convert_tool_kind(kind: &str) -> model::ToolKind {
-    match kind {
-        "read" => model::ToolKind::Read,
-        "edit" => model::ToolKind::Edit,
-        "delete" => model::ToolKind::Delete,
-        "move" => model::ToolKind::Move,
-        "execute" => model::ToolKind::Execute,
-        "search" => model::ToolKind::Search,
-        "fetch" => model::ToolKind::Fetch,
-        "switch_mode" => model::ToolKind::SwitchMode,
-        "other" => model::ToolKind::Other,
-        _ => model::ToolKind::Think,
-    }
-}
-
-pub(super) fn convert_tool_status(status: &str) -> model::ToolCallStatus {
-    match status {
-        "in_progress" => model::ToolCallStatus::InProgress,
-        "completed" => model::ToolCallStatus::Completed,
-        "failed" => model::ToolCallStatus::Failed,
-        "killed" => model::ToolCallStatus::Killed,
-        _ => model::ToolCallStatus::Pending,
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{
-        convert_tool_call, convert_tool_call_update_fields, map_available_models,
-        map_permission_request, map_question_request,
-    };
+    use super::{convert_tool_call, convert_tool_call_update_fields, map_available_models};
     use crate::agent::model;
     use forge_primitives as types;
 
@@ -433,132 +252,9 @@ mod tests {
     }
 
     #[test]
-    fn map_permission_request_preserves_display_metadata() {
-        let (request, tool_call_id) = map_permission_request(
-            "session-1",
-            types::PermissionRequest {
-                tool_call: types::ToolCall {
-                    tool_call_id: "tool-1".to_owned(),
-                    title: "Bash npm test".to_owned(),
-                    kind: "execute".to_owned(),
-                    status: "in_progress".to_owned(),
-                    content: Vec::new(),
-                    raw_input: None,
-                    raw_output: None,
-                    output_metadata: None,
-                    task_metadata: None,
-                    locations: Vec::new(),
-                    meta: None,
-                },
-                options: vec![types::PermissionOption {
-                    option_id: "allow".to_owned(),
-                    name: "Allow".to_owned(),
-                    description: None,
-                    kind: "allow_once".to_owned(),
-                }],
-                display: Some(types::PermissionDisplay {
-                    title: Some("Claude wants to run tests".to_owned()),
-                    display_name: Some("Run tests".to_owned()),
-                    description: Some("This command reads project files".to_owned()),
-                }),
-            },
-        );
-
-        assert_eq!(tool_call_id, "tool-1");
-        assert_eq!(
-            request.display,
-            Some(
-                model::PermissionDisplay::new()
-                    .title(Some("Claude wants to run tests".to_owned()))
-                    .display_name(Some("Run tests".to_owned()))
-                    .description(Some("This command reads project files".to_owned())),
-            )
-        );
-    }
-
-    #[test]
-    fn map_question_request_preserves_preview_and_annotation_shape() {
-        let (request, tool_call_id) = map_question_request(
-            "session-1",
-            types::QuestionRequest {
-                tool_call: types::ToolCall {
-                    tool_call_id: "tool-1".to_owned(),
-                    title: "Pick target".to_owned(),
-                    kind: "other".to_owned(),
-                    status: "in_progress".to_owned(),
-                    content: Vec::new(),
-                    raw_input: Some(serde_json::json!({ "source": "ask_user_question" })),
-                    raw_output: None,
-                    output_metadata: None,
-                    task_metadata: None,
-                    locations: Vec::new(),
-                    meta: Some(
-                        serde_json::json!({ "claudeCode": { "toolName": "AskUserQuestion" } }),
-                    ),
-                },
-                prompt: types::QuestionPrompt {
-                    question: "Where should this roll out?".to_owned(),
-                    header: "Target".to_owned(),
-                    multi_select: true,
-                    options: vec![
-                        types::QuestionOption {
-                            option_id: "question_0".to_owned(),
-                            label: "Staging".to_owned(),
-                            description: Some("Validate in staging first".to_owned()),
-                            preview: Some("Deploy to staging first.".to_owned()),
-                        },
-                        types::QuestionOption {
-                            option_id: "question_1".to_owned(),
-                            label: "Production".to_owned(),
-                            description: Some("Customer-facing rollout".to_owned()),
-                            preview: None,
-                        },
-                    ],
-                },
-                question_index: 1,
-                total_questions: 3,
-            },
-        );
-
-        assert_eq!(tool_call_id, "tool-1");
-        assert_eq!(
-            request,
-            model::RequestQuestionRequest::new(
-                model::SessionId::new("session-1"),
-                model::ToolCallUpdate::new(
-                    "tool-1",
-                    model::ToolCallUpdateFields::new()
-                        .title("Pick target")
-                        .kind(model::ToolKind::Other)
-                        .status(model::ToolCallStatus::InProgress)
-                        .content(Vec::new())
-                        .raw_input(serde_json::json!({ "source": "ask_user_question" }))
-                        .locations(Vec::new()),
-                )
-                .meta(serde_json::json!({ "claudeCode": { "toolName": "AskUserQuestion" } })),
-                model::QuestionPrompt::new(
-                    "Where should this roll out?",
-                    "Target",
-                    true,
-                    vec![
-                        model::QuestionOption::new("question_0", "Staging")
-                            .description(Some("Validate in staging first".to_owned()))
-                            .preview(Some("Deploy to staging first.".to_owned())),
-                        model::QuestionOption::new("question_1", "Production")
-                            .description(Some("Customer-facing rollout".to_owned()))
-                            .preview(None),
-                    ],
-                ),
-                1,
-                3,
-            )
-        );
-    }
-
-    #[test]
     fn convert_tool_call_update_fields_preserves_output_metadata() {
         let fields = convert_tool_call_update_fields(types::ToolCallUpdateFields {
-            status: Some("completed".to_owned()),
+            status: Some(types::ToolCallStatus::Completed),
             output_metadata: Some(types::ToolOutputMetadata {
                 bash: Some(types::BashOutputMetadata { assistant_auto_backgrounded: Some(true) }),
                 todo_write: Some(types::TodoWriteOutputMetadata {
@@ -580,11 +276,6 @@ mod tests {
                     )),
             )
         );
-    }
-
-    #[test]
-    fn convert_tool_status_maps_killed() {
-        assert_eq!(super::convert_tool_status("killed"), model::ToolCallStatus::Killed);
     }
 
     #[test]
@@ -616,8 +307,8 @@ mod tests {
         let tool_call = convert_tool_call(types::ToolCall {
             tool_call_id: "tool-task".to_owned(),
             title: "Agent task".to_owned(),
-            kind: "think".to_owned(),
-            status: "killed".to_owned(),
+            kind: types::ToolKind::Think,
+            status: types::ToolCallStatus::Killed,
             content: Vec::new(),
             raw_input: None,
             raw_output: None,
@@ -650,8 +341,8 @@ mod tests {
         let tool_call = convert_tool_call(types::ToolCall {
             tool_call_id: "tool-1".to_owned(),
             title: "Write src/main.rs".to_owned(),
-            kind: "edit".to_owned(),
-            status: "completed".to_owned(),
+            kind: types::ToolKind::Edit,
+            status: types::ToolCallStatus::Completed,
             content: vec![types::ToolCallContent::Diff {
                 new_path: "src/main.rs".to_owned(),
                 old: "old".to_owned(),
@@ -681,8 +372,8 @@ mod tests {
         let tool_call = convert_tool_call(types::ToolCall {
             tool_call_id: "tool-2".to_owned(),
             title: "ReadMcpResource docs file://manual.pdf".to_owned(),
-            kind: "read".to_owned(),
-            status: "completed".to_owned(),
+            kind: types::ToolKind::Read,
+            status: types::ToolCallStatus::Completed,
             content: vec![types::ToolCallContent::McpResource {
                 uri: "file://manual.pdf".to_owned(),
                 mime_type: Some("application/pdf".to_owned()),

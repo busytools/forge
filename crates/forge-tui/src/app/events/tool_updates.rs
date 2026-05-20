@@ -775,8 +775,6 @@ mod tests {
             last_measured_layout_epoch: 0,
             last_measured_layout_generation: 0,
             cache: BlockCache::default(),
-            pending_permission: None,
-            pending_question: None,
             collapsed_override: None,
             last_measured_y_in_msg: 0,
         }
@@ -811,8 +809,6 @@ mod tests {
             last_measured_layout_epoch: 0,
             last_measured_layout_generation: 0,
             cache: BlockCache::default(),
-            pending_permission: None,
-            pending_question: None,
             collapsed_override: None,
             last_measured_y_in_msg: 0,
         }

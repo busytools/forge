@@ -78,7 +78,7 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
     let (diff_overlay_event_tx, diff_overlay_event_rx) = std::sync::mpsc::channel();
     let (process_scan_event_tx, process_scan_event_rx) = std::sync::mpsc::channel();
     crate::app::git_diff::spawn_periodic_timer(git_diff_event_tx.clone());
-    crate::app::cli_version::spawn_fetch(Arc::clone(&workspace), cli_version_event_tx.clone());
+    crate::app::cli_version::spawn_fetch(cli_version_event_tx.clone());
     crate::app::process_scanner::spawn_ticker(process_scan_event_tx.clone());
     // Kick off the workspace's 30s account-usage poller. Fetches OAuth
     // usage for every [[accounts]] entry; results land in the
@@ -241,6 +241,7 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
         connection_started: false,
         startup_project: cli.project.clone(),
         replay_in_progress: false,
+        input_draft_snapshot: None,
     };
 
     if let Err(err) = super::config::initialize_shared_state(&mut app) {

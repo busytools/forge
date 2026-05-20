@@ -99,11 +99,6 @@ pub struct UiSession {
     /// local conversation history. Set by `/compact` once the
     /// command is accepted for bridge forwarding.
     pub pending_compact_clear: bool,
-    /// Tool call IDs with pending inline interactions, ordered by
-    /// arrival. The first entry is the focused interaction that
-    /// receives keyboard input. Up / Down arrow keys cycle focus
-    /// through the list.
-    pub pending_interaction_ids: Vec<String>,
     /// Set when a cancel notification succeeds; consumed on
     /// `TurnComplete` to render a red interruption hint in chat.
     pub cancelled_turn_pending_hint: bool,
@@ -258,7 +253,7 @@ pub struct UiSession {
 
     // ---- Todos ----
     /// Current todo list from Claude's `TodoWrite` tool calls.
-    /// Rendered by [`crate::ui::inspector_pane`] (right side).
+    /// Rendered by the inspector pane on the right side of the chat view.
     pub todos: Vec<TodoItem>,
     /// Whether the latest `TodoWrite` tool result carried
     /// `TodoWriteOutputMetadata.verification_nudge_needed = Some(true)`.
@@ -352,6 +347,10 @@ pub struct UiSession {
     /// state; switching the active session naturally swaps the
     /// editor because the accessor reads from this bucket.
     pub input: InputState,
+
+    /// Per-session FIFO queue of pending prompts. The dock shows
+    /// `prompt_queue.front()` when this session is active.
+    pub prompt_queue: std::collections::VecDeque<crate::app::prompt::PromptState>,
 }
 
 impl UiSession {
@@ -387,7 +386,6 @@ impl Default for UiSession {
             active_turn_assistant_message_idx: Option::default(),
             is_compacting: bool::default(),
             pending_compact_clear: bool::default(),
-            pending_interaction_ids: Vec::default(),
             cancelled_turn_pending_hint: bool::default(),
             pending_cancel: false,
             prompt_suggestion: Option::default(),
@@ -455,6 +453,7 @@ impl Default for UiSession {
             last_active_turn_height_state: Option::default(),
             last_chat_render_trace_state: Option::default(),
             input: InputState::default(),
+            prompt_queue: std::collections::VecDeque::new(),
         }
     }
 }

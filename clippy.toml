@@ -22,5 +22,9 @@ allow-indexing-slicing-in-tests = true
 # CLI tools deal with deep path nesting (e.g., ~/.config/claude_rust/...).
 absolute-paths-max-segments = 3
 
+# Bumped from default 7 to cover render/recursion fns with layout state
+# threaded as flat params. Workspace-internal; no public API impact.
+too-many-arguments-threshold = 9
+
 # Short identifiers common in CLI arg parsing, loops, and channel names.
 allowed-idents-below-min-chars = ["i", "j", "k", "x", "y", "z", "n", "s", "c", "op", "tx", "rx", "id", "ip", "os", "ex"]

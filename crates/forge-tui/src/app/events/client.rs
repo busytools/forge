@@ -145,12 +145,6 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         SessionUpdate::SlashCommandError { key, message } => {
             session::apply_session_update_slash_command_error(app, &key, &message);
         }
-        SessionUpdate::AuthCompleted { key } => {
-            session::apply_session_update_auth_completed(app, &key);
-        }
-        SessionUpdate::LogoutCompleted { key } => {
-            session::apply_session_update_logout_completed(app, &key);
-        }
         SessionUpdate::ServiceStatus { severity, message } => {
             session::apply_session_update_service_status(app, severity, &message);
         }
@@ -200,10 +194,18 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
             apply_session_update_runtime_reload_failed(app, &session_id, &message);
         }
         SessionUpdate::PermissionRequest { key, tool_id, request } => {
-            turn::apply_session_update_permission_request(app, &key, &tool_id, request);
+            if let Some(session) = app.session_mut(&key) {
+                let prompt = crate::app::prompt::PromptState::from_permission(tool_id, request);
+                crate::app::prompt::enqueue_prompt(session, prompt);
+            }
+            crate::app::prompt::snapshot_draft_if_needed(app);
         }
         SessionUpdate::QuestionRequest { key, tool_id, request } => {
-            turn::apply_session_update_question_request(app, &key, &tool_id, request);
+            if let Some(session) = app.session_mut(&key) {
+                let prompt = crate::app::prompt::PromptState::from_question(tool_id, request);
+                crate::app::prompt::enqueue_prompt(session, prompt);
+            }
+            crate::app::prompt::snapshot_draft_if_needed(app);
         }
         SessionUpdate::McpOperationError { error, .. } => {
             if is_active_or_global {
@@ -218,15 +220,6 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         }
         SessionUpdate::TurnError { key, message, class, terminal_reason } => {
             turn::apply_session_update_turn_error(app, &key, &message, class, terminal_reason);
-        }
-        SessionUpdate::UsageRefreshStarted { key } => {
-            crate::app::usage::apply_refresh_started_for(app, &key);
-        }
-        SessionUpdate::UsageSnapshotReceived { key, snapshot } => {
-            crate::app::usage::apply_refresh_success_for(app, &key, snapshot);
-        }
-        SessionUpdate::UsageRefreshFailed { key, message, source } => {
-            crate::app::usage::apply_refresh_failure_for(app, &key, message, source);
         }
         SessionUpdate::PluginsInventoryUpdated { cwd_raw, snapshot, claude_path } => {
             dispatch_if_cwd_matches(app, &cwd_raw, "plugins_inventory_dropped", |app| {
@@ -1692,5 +1685,80 @@ mod tests {
         );
         assert!(app.file_index_mut().entries.is_empty(), "stale entries cleared on restart");
         assert!(!app.file_index_mut().scan_finished, "scan_finished reset on restart");
+    }
+
+    /// `SessionUpdate::PermissionRequest` enqueues a `PromptState`
+    /// onto the target session's `prompt_queue`; the unified-prompt
+    /// dock reads from that queue.
+    #[test]
+    fn permission_request_event_enqueues_prompt_on_target_session() {
+        let mut app = App::test_default();
+        let (key_a, _key_b) = seed_two_sessions(&mut app);
+        let request = crate::app::prompt::tests::make_permission_request();
+        apply_session_update(
+            &mut app,
+            SessionUpdate::PermissionRequest {
+                key: key_a.clone(),
+                tool_id: "tc-evt".into(),
+                request,
+            },
+        );
+        let session = app.sessions.get(&key_a).expect("session a");
+        assert_eq!(session.prompt_queue.len(), 1, "prompt enqueued onto queue");
+        assert_eq!(
+            session.prompt_queue.front().expect("head").tool_id,
+            "tc-evt",
+            "queued prompt carries the event's tool_id"
+        );
+    }
+
+    /// Same shape as the permission test for `QuestionRequest`.
+    #[test]
+    fn question_request_event_enqueues_prompt_on_target_session() {
+        let mut app = App::test_default();
+        let (key_a, _key_b) = seed_two_sessions(&mut app);
+        let request = crate::app::prompt::tests::make_question_request(false);
+        apply_session_update(
+            &mut app,
+            SessionUpdate::QuestionRequest {
+                key: key_a.clone(),
+                tool_id: "tc-q-evt".into(),
+                request,
+            },
+        );
+        let session = app.sessions.get(&key_a).expect("session a");
+        assert_eq!(session.prompt_queue.len(), 1, "question prompt enqueued");
+        assert_eq!(
+            session.prompt_queue.front().expect("head").tool_id,
+            "tc-q-evt",
+            "queued question prompt carries the event's tool_id"
+        );
+    }
+
+    /// Background-session permission requests must enqueue onto the
+    /// target bucket's queue, not the active bucket's queue. Same
+    /// routing rule as the rest of the multiplexer.
+    #[test]
+    fn permission_request_event_enqueues_on_background_target_only() {
+        let mut app = App::test_default();
+        let (key_a, key_b) = seed_two_sessions(&mut app);
+        let request = crate::app::prompt::tests::make_permission_request();
+        apply_session_update(
+            &mut app,
+            SessionUpdate::PermissionRequest {
+                key: key_b.clone(),
+                tool_id: "tc-bg".into(),
+                request,
+            },
+        );
+        assert_eq!(
+            app.sessions.get(&key_b).expect("b").prompt_queue.len(),
+            1,
+            "background target enqueues onto its own queue"
+        );
+        assert!(
+            app.sessions.get(&key_a).expect("a").prompt_queue.is_empty(),
+            "active session must not receive a background bucket's prompt"
+        );
     }
 }

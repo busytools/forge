@@ -33,18 +33,8 @@ pub struct FileIndexState {
     pub scan_finished: bool,
     pub rebuild_pending: bool,
     scan_overrides: ScanOverrides,
-    pub scan: Option<FileIndexScanHandle>,
-    pub watch: Option<FileIndexWatchHandle>,
-}
-
-/// Cancel guard wrapping the agent's `ScanCancel`. Drop to abort.
-pub struct FileIndexScanHandle {
-    _drop_guard: env::ScanCancel,
-}
-
-/// Cancel guard wrapping the agent's `WatchCancel`. Drop to abort.
-pub struct FileIndexWatchHandle {
-    _drop_guard: env::WatchCancel,
+    pub scan: Option<env::CancelToken>,
+    pub watch: Option<env::CancelToken>,
 }
 
 pub enum FileIndexEvent {
@@ -296,7 +286,7 @@ fn spawn_scan(
     generation: u64,
     respect_gitignore: bool,
     event_tx: Sender<FileIndexEvent>,
-) -> FileIndexScanHandle {
+) -> env::CancelToken {
     let (rx, cancel) = env::start_scan(root, respect_gitignore);
     std::thread::spawn(move || {
         while let Ok(progress) = rx.recv() {
@@ -313,7 +303,7 @@ fn spawn_scan(
             }
         }
     });
-    FileIndexScanHandle { _drop_guard: cancel }
+    cancel
 }
 
 /// Spawn the agent-side watcher and a forwarding thread that wraps
@@ -325,7 +315,7 @@ fn spawn_watch(
     generation: u64,
     respect_gitignore: bool,
     event_tx: Sender<FileIndexEvent>,
-) -> FileIndexWatchHandle {
+) -> env::CancelToken {
     let (rx, cancel) = env::start_watch(root, respect_gitignore);
     std::thread::spawn(move || {
         while let Ok(progress) = rx.recv() {
@@ -342,7 +332,7 @@ fn spawn_watch(
             }
         }
     });
-    FileIndexWatchHandle { _drop_guard: cancel }
+    cancel
 }
 
 impl ScanOverrides {

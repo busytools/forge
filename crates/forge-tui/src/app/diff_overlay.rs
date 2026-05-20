@@ -19,7 +19,6 @@
 //! Mouse handling: see [`handle_mouse`].
 
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::mpsc as std_mpsc;
 
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
@@ -153,16 +152,10 @@ pub struct DiffOverlayEvent {
 /// [`forge_workspace::Workspace::scan_git_diff_hunks`] and posts a
 /// [`DiffOverlayEvent`] when the scan completes. Best-effort send —
 /// receiver going away (app shutdown) just drops the result.
-pub fn spawn_fetch(
-    workspace: Arc<forge_workspace::Workspace>,
-    cwd: PathBuf,
-    target: String,
-    seq: u64,
-    tx: std_mpsc::Sender<DiffOverlayEvent>,
-) {
+pub fn spawn_fetch(cwd: PathBuf, target: String, seq: u64, tx: std_mpsc::Sender<DiffOverlayEvent>) {
     tokio::task::spawn_local(async move {
         let ScanOutcome { files, scanner_ok, untracked_suppressed } =
-            workspace.scan_git_diff_hunks(&cwd, &target).await;
+            forge_workspace::env::git_diff::hunks::scan(&cwd, &target).await;
         let _ =
             tx.send(DiffOverlayEvent { cwd, target, files, scanner_ok, untracked_suppressed, seq });
     });
@@ -249,10 +242,6 @@ pub fn resolve_default_target(app: &App) -> DefaultTarget {
 /// directly; `open_default` builds on top of it for the auto-detect
 /// path.
 pub fn open_with_target(app: &mut App, target: String) {
-    let Some(workspace) = app.workspace.clone() else {
-        crate::app::slash::push_system_message(app, "Cannot open diff: workspace not ready.");
-        return;
-    };
     let Some(cwd_raw) = app.active_session().map(|s| s.cwd_raw.clone()) else {
         crate::app::slash::push_system_message(app, "Cannot open diff: no active session.");
         return;
@@ -267,7 +256,7 @@ pub fn open_with_target(app: &mut App, target: String) {
     // dropped by drain_events as superseded.
     app.diff_scan_seq = app.diff_scan_seq.wrapping_add(1);
     let seq = app.diff_scan_seq;
-    spawn_fetch(workspace, PathBuf::from(cwd_raw), target, seq, app.diff_overlay_event_tx.clone());
+    spawn_fetch(PathBuf::from(cwd_raw), target, seq, app.diff_overlay_event_tx.clone());
 }
 
 /// Auto-detect the diff target from the Inspector GIT snapshot and

@@ -20,7 +20,6 @@
 use std::process::Stdio;
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::{mpsc, oneshot};
@@ -30,7 +29,6 @@ use tracing::{debug, warn};
 use crate::Error;
 use crate::argv::build_args;
 use crate::options::{Options, WireTee};
-use crate::transport::AsyncWriter;
 
 /// Default upper bound on `close()` wait-for-exit. After this elapses,
 /// the child is SIGKILL'd. 5s is generous for a CLI that's draining
@@ -347,12 +345,12 @@ impl Subprocess {
         })
     }
 
-    /// Hand out a clonable [`AsyncWriter`] backed by the same writer
+    /// Hand out a clonable [`SharedWriter`] backed by the same writer
     /// task. Multiple clones can write concurrently; the writer task
     /// serialises onto the child's stdin in arrival order. Used by
     /// detached control-request dispatch so a slow callback can't
     /// block the reader / command loop.
-    pub(crate) fn clone_writer(&self) -> Arc<dyn AsyncWriter> {
+    pub(crate) fn clone_writer(&self) -> Arc<SharedWriter> {
         Arc::new(SharedWriter { writer_tx: self.writer_tx.clone() })
     }
 
@@ -441,13 +439,19 @@ impl Subprocess {
 /// Returned by [`Subprocess::clone_writer`]. Used by detached
 /// `control_request` dispatch.
 #[derive(Debug, Clone)]
-struct SharedWriter {
+pub(crate) struct SharedWriter {
     writer_tx: mpsc::UnboundedSender<WriterCmd>,
 }
 
-#[async_trait]
-impl AsyncWriter for SharedWriter {
-    async fn write_line(&self, line: &str) -> Result<(), Error> {
+impl SharedWriter {
+    /// Write one line of stream-json to the transport. Caller supplies
+    /// the trailing `\n`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Io`] on write failure or after the transport has
+    /// closed its write half.
+    pub(crate) async fn write_line(&self, line: &str) -> Result<(), Error> {
         let (ack_tx, ack_rx) = oneshot::channel();
         self.writer_tx.send(WriterCmd::Write(line.to_owned(), ack_tx)).map_err(|_| {
             Error::Io(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "SharedWriter task gone"))
@@ -460,7 +464,12 @@ impl AsyncWriter for SharedWriter {
         })?
     }
 
-    async fn end_input(&self) -> Result<(), Error> {
+    /// Close the write half so the remote sees EOF on stdin. Idempotent.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Io`] on flush failure.
+    pub(crate) async fn end_input(&self) -> Result<(), Error> {
         let (ack_tx, ack_rx) = oneshot::channel();
         // Writer task already exited (e.g. previous end_input or close)
         // → treat as no-op, matching `Subprocess::end_input`.

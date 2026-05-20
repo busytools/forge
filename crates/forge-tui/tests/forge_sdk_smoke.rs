@@ -407,7 +407,7 @@ async fn await_connected(
                 panic!("connection failed during smoke test: {message}");
             }
             other => {
-                eprintln!("e2e: pre-connected event: {}", other.event_name());
+                eprintln!("e2e: pre-connected event: {other:?}");
             }
         }
     }
@@ -460,7 +460,7 @@ async fn await_turn(
                 }
                 _ => {}
             },
-            other => eprintln!("e2e: event: {}", other.event_name()),
+            other => eprintln!("e2e: event: {other:?}"),
         }
     }
 }

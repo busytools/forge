@@ -14,39 +14,12 @@ pub struct QuestionOption {
     pub preview: Option<String>,
 }
 
-impl QuestionOption {
-    pub fn new(option_id: impl Into<String>, label: impl Into<String>) -> Self {
-        Self { option_id: option_id.into(), label: label.into(), description: None, preview: None }
-    }
-
-    pub fn description(mut self, description: Option<String>) -> Self {
-        self.description = description;
-        self
-    }
-
-    pub fn preview(mut self, preview: Option<String>) -> Self {
-        self.preview = preview;
-        self
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QuestionPrompt {
     pub question: String,
     pub header: String,
     pub multi_select: bool,
     pub options: Vec<QuestionOption>,
-}
-
-impl QuestionPrompt {
-    pub fn new(
-        question: impl Into<String>,
-        header: impl Into<String>,
-        multi_select: bool,
-        options: Vec<QuestionOption>,
-    ) -> Self {
-        Self { question: question.into(), header: header.into(), multi_select, options }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -61,22 +34,6 @@ pub struct QuestionRequest {
 pub struct QuestionAnnotation {
     pub preview: Option<String>,
     pub notes: Option<String>,
-}
-
-impl QuestionAnnotation {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn preview(mut self, preview: Option<String>) -> Self {
-        self.preview = preview;
-        self
-    }
-
-    pub fn notes(mut self, notes: Option<String>) -> Self {
-        self.notes = notes;
-        self
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

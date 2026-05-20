@@ -637,7 +637,9 @@ fn spawn_permission_response_forwarder(
                 return;
             };
             let selected_option = match &outcome {
-                forge_primitives::PermissionOutcome::Selected { option_id } => option_id.clone(),
+                forge_primitives::PermissionOutcome::Selected { option_id, .. } => {
+                    option_id.clone()
+                }
                 forge_primitives::PermissionOutcome::Cancelled => "cancelled".to_owned(),
             };
             let session_id_for_log = session_id.clone();

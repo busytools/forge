@@ -1,19 +1,15 @@
 /// Logical focus target that can claim directional key navigation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FocusTarget {
-    TodoList,
     Mention,
-    Permission,
     Help,
 }
 
 impl FocusTarget {
     const fn bit(self) -> u8 {
         match self {
-            Self::TodoList => 1 << 0,
-            Self::Mention => 1 << 1,
-            Self::Permission => 1 << 2,
-            Self::Help => 1 << 3,
+            Self::Mention => 1 << 0,
+            Self::Help => 1 << 1,
         }
     }
 }
@@ -22,9 +18,7 @@ impl FocusTarget {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusOwner {
     Input,
-    TodoList,
     Mention,
-    Permission,
     Help,
 }
 
@@ -54,9 +48,7 @@ impl FocusContext {
 impl From<FocusTarget> for FocusOwner {
     fn from(value: FocusTarget) -> Self {
         match value {
-            FocusTarget::TodoList => Self::TodoList,
             FocusTarget::Mention => Self::Mention,
-            FocusTarget::Permission => Self::Permission,
             FocusTarget::Help => Self::Help,
         }
     }
@@ -115,12 +107,8 @@ mod tests {
     #[test]
     fn latest_valid_claim_wins() {
         let mut mgr = FocusManager::default();
-        let ctx = FocusContext::empty()
-            .with(FocusTarget::TodoList)
-            .with(FocusTarget::Mention)
-            .with(FocusTarget::Permission);
-        mgr.claim(FocusTarget::TodoList, ctx);
-        mgr.claim(FocusTarget::Permission, ctx);
+        let ctx = FocusContext::empty().with(FocusTarget::Help).with(FocusTarget::Mention);
+        mgr.claim(FocusTarget::Help, ctx);
         mgr.claim(FocusTarget::Mention, ctx);
         assert_eq!(mgr.owner(ctx), FocusOwner::Mention);
     }
@@ -128,10 +116,10 @@ mod tests {
     #[test]
     fn invalid_claims_are_normalized_out() {
         let mut mgr = FocusManager::default();
-        let valid_ctx = FocusContext::empty().with(FocusTarget::TodoList);
+        let valid_ctx = FocusContext::empty().with(FocusTarget::Mention);
         let invalid_ctx = FocusContext::empty();
-        mgr.claim(FocusTarget::TodoList, valid_ctx);
-        assert_eq!(mgr.owner(valid_ctx), FocusOwner::TodoList);
+        mgr.claim(FocusTarget::Mention, valid_ctx);
+        assert_eq!(mgr.owner(valid_ctx), FocusOwner::Mention);
         mgr.normalize(invalid_ctx);
         assert_eq!(mgr.owner(invalid_ctx), FocusOwner::Input);
     }

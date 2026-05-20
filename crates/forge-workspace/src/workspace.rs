@@ -1097,78 +1097,6 @@ impl Workspace {
         handle.oauth_usage().await.map_err(|err| err.to_string())
     }
 
-    /// Scan the project at `cwd` and return a git-diff snapshot for
-    /// the Inspector pane's GIT section. Delegates to
-    /// [`forge_agent::env::git_diff::scan`] — exists as a workspace
-    /// method so the TUI never depends on `forge-agent` directly
-    /// (see CLAUDE.md placement guide).
-    ///
-    /// `prev` is the caller's most-recent snapshot for the same
-    /// `cwd`, used by the scanner to short-circuit the `gh pr list`
-    /// call when the branch hasn't changed. Pass `None` for cold
-    /// starts.
-    ///
-    /// Infallible: scanner errors collapse to
-    /// `GitDiffView::NoRepo` with structured WARN logs. Renderer
-    /// treats the returned snapshot as authoritative regardless of
-    /// which variant came back.
-    pub async fn scan_git_diff(
-        &self,
-        cwd: &std::path::Path,
-        prev: Option<&forge_agent::env::git_diff::GitDiffSnapshot>,
-    ) -> forge_agent::env::git_diff::GitDiffSnapshot {
-        forge_agent::env::git_diff::scan(cwd, prev).await
-    }
-
-    /// Scan the project at `cwd` and return per-file hunks for the
-    /// `/diff` overlay. Delegates to
-    /// [`forge_agent::env::git_diff::hunks::scan`] — same workspace-
-    /// as-facade pattern as [`Self::scan_git_diff`] so the TUI never
-    /// depends on `forge-agent` directly.
-    ///
-    /// `target` is passed verbatim to `git diff <target>`,
-    /// comparing the named ref against the working tree: `"HEAD"`
-    /// for working-tree-vs-HEAD (uncommitted only), `"main"` for
-    /// everything since `main` (committed + uncommitted), any other
-    /// ref / SHA for that comparison. NOT a `..` or `...` range
-    /// syntax — passing those would let git parse them as ranges
-    /// which yields a different (commit-vs-commit) diff.
-    /// Untracked files round-trip only when `target == "HEAD"`.
-    ///
-    /// Single-shot — no polling, no caching. Each call runs a fresh
-    /// scan against the working tree at the moment of invocation.
-    ///
-    /// Returns a [`forge_agent::env::git_diff::hunks::ScanOutcome`]
-    /// — `files` carries one entry per changed file (empty when the
-    /// tree is genuinely clean OR when the scanner crashed),
-    /// `scanner_ok` is `false` when at least one underlying `git`
-    /// subprocess hit Failed / Oversize. Callers MUST check
-    /// `scanner_ok` and surface a "scan failed" message rather than
-    /// rendering an empty `files` as a clean tree; subprocess
-    /// failures still emit structured WARN logs under the
-    /// `ENV_GIT` target for operator diagnosis.
-    pub async fn scan_git_diff_hunks(
-        &self,
-        cwd: &std::path::Path,
-        target: &str,
-    ) -> forge_agent::env::git_diff::hunks::ScanOutcome {
-        forge_agent::env::git_diff::hunks::scan(cwd, target).await
-    }
-
-    /// Probe the local `claude --version` and the latest published
-    /// version on npm in parallel, returning both via
-    /// [`forge_agent::env::cli_version::CliVersionInfo`]. Used by
-    /// the bottom-left account panel to render the forge + claude
-    /// version rows and the `↑ vX.Y.Z` update indicator.
-    ///
-    /// Infallible: each probe collapses to `None` on its half of the
-    /// struct when it fails (binary missing, no network, parse
-    /// failure, timeout); structured WARN logs surface the failure
-    /// without breaking the renderer.
-    pub async fn fetch_cli_version_info(&self) -> forge_agent::env::cli_version::CliVersionInfo {
-        forge_agent::env::cli_version::fetch_info().await
-    }
-
     /// OS PID of the `claude` subprocess bound to `key`. Returns
     /// `None` when the session has no live client (pre-spawn /
     /// post-disconnect / synthetic spawn bucket). The PID is stable
@@ -1177,38 +1105,6 @@ impl Workspace {
     /// keyed off this value.
     pub fn claude_pid(&self, key: &SessionKey) -> Option<u32> {
         self.agent_handle_for(key).and_then(|handle| handle.claude_pid())
-    }
-
-    /// Walk the descendants of `claude_pid` at the OS level and
-    /// return a sorted snapshot for the Inspector pane's PROCESSES
-    /// section. Delegates to
-    /// [`forge_agent::env::processes::scan`] — exists as a
-    /// workspace method so the TUI never depends on `forge-agent`
-    /// directly.
-    ///
-    /// Infallible: scanner failures (sysinfo errors, PID gone)
-    /// collapse to an empty snapshot. Renderer treats the returned
-    /// snapshot as authoritative regardless of how it was
-    /// populated.
-    ///
-    /// Synchronous because `sysinfo`'s refresh is a CPU-bound
-    /// system call rather than async I/O. The TUI's scanner ticker
-    /// is expected to call this from a `tokio::task::spawn_blocking`
-    /// to keep the runtime responsive — the workspace exposes the
-    /// raw function rather than wrapping it in spawn_blocking so
-    /// callers stay in control of their concurrency model.
-    ///
-    /// Associated function (no `self`): nothing here needs workspace
-    /// state, and call sites read `Workspace::scan_processes(pid)`.
-    pub fn scan_processes(claude_pid: u32) -> forge_agent::env::processes::ProcessSnapshot {
-        forge_agent::env::processes::scan(claude_pid)
-    }
-
-    /// Spawn the OS-native URL handler for `url`. Thin facade over
-    /// `forge_agent::env::browser::open_url` so forge-tui doesn't
-    /// reach for `std::process::Command` directly.
-    pub fn open_url_in_browser(url: &str) -> Result<(), String> {
-        forge_agent::env::browser::open_url(url)
     }
 
     /// Borrow the [`Arc<AgentHandle>`] registered against `key`.

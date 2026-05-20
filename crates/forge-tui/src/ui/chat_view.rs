@@ -23,7 +23,16 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     };
     let input_visual_lines = {
         let _t = app.perf.as_ref().map(|p| p.start("ui::input_visual_lines"));
-        input::visual_line_count(app, frame_area.width)
+        // The input box renders inside the chat column, not the full
+        // frame — when side panes are visible the chat column is
+        // narrower. Pass the chat column width so prompt wrapping math
+        // matches the actual render width.
+        let chat_w = layout::chat_column_width(
+            frame_area,
+            app.projects_pane_visible,
+            app.inspector_pane_visible,
+        );
+        input::visual_line_count(app, chat_w)
     };
     let areas = {
         let _t = app.perf.as_ref().map(|p| p.start("ui::layout"));

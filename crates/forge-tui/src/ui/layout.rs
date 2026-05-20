@@ -143,9 +143,10 @@ pub fn compute(
 
     // At Narrow tier (<120), no inline panes: peel a single row off
     // the top of the body for the top bar. Only allocate when the
-    // body has at least 2 rows so we keep at least one row of chat
-    // behind the top bar.
-    if area.width < MEDIUM_TIER_MIN_WIDTH && layout.body.height >= 2 {
+    // body has at least 3 rows so peeling leaves the body with at
+    // least 2 rows of chat behind the top bar — anything less and
+    // the chat surface becomes unusable.
+    if area.width < MEDIUM_TIER_MIN_WIDTH && layout.body.height >= 3 {
         let [top, rest] =
             Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(layout.body);
         layout.top_bar = Some(top);
@@ -160,6 +161,15 @@ pub fn compute(
 /// chat column). At Narrow tier or when both panes are hidden, the
 /// chat column takes the full area.
 #[allow(clippy::type_complexity)]
+/// Chat column width given the frame area and pane visibility. Used
+/// pre-layout so callers (e.g. visual_line_count) can size content
+/// using the actual width the chat column will end up with, not the
+/// full frame width.
+pub fn chat_column_width(area: Rect, pane_visible: bool, pane_right_visible: bool) -> u16 {
+    let (_, _, _, _, chat) = compute_horizontal_split(area, pane_visible, pane_right_visible);
+    chat.width
+}
+
 fn compute_horizontal_split(
     area: Rect,
     pane_visible: bool,
@@ -466,15 +476,16 @@ mod tests {
 
     #[test]
     fn narrow_tier_skips_top_bar_when_body_truly_too_short() {
-        // Compact-mode area (height < 8) with input+separator+help
-        // chewing 1+1+1=3 of the 4 rows leaves body.height=1. The
-        // skip guard refuses to peel another row off, so `top_bar`
-        // stays `None`.
+        // Compact-mode area (height < 8). input + help chew 1+1=2 of
+        // the 4 rows; the `Min(1)` body soaks up the leftover row,
+        // so body=2 before any peel. The skip-guard refuses to peel
+        // another row off — that would leave body=1, an unusable
+        // single chat row behind a top bar.
         let layout = compute(area(100, 4), 1, 1, true, true);
-        assert!(layout.body.height < 2, "fixture must produce a 1-row body");
+        assert_eq!(layout.body.height, 2, "fixture must produce a 2-row body");
         assert!(
             layout.top_bar.is_none(),
-            "top bar must skip when peeling would leave body with 0 rows"
+            "top bar must skip when peeling would leave body with <2 rows"
         );
     }
 

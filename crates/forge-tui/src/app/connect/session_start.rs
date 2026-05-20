@@ -8,8 +8,6 @@ pub(crate) enum SessionStartReason {
     Startup,
     NewSession,
     Resume,
-    Login,
-    Logout,
 }
 
 impl SessionStartReason {
@@ -18,8 +16,6 @@ impl SessionStartReason {
             Self::Startup => "startup",
             Self::NewSession => "new_session",
             Self::Resume => "resume",
-            Self::Login => "login",
-            Self::Logout => "logout",
         }
     }
 
@@ -27,33 +23,25 @@ impl SessionStartReason {
         match self {
             Self::Startup => "session_start_requested",
             Self::Resume => "session_resume_requested",
-            Self::NewSession | Self::Login | Self::Logout => "session_restart_requested",
+            Self::NewSession => "session_restart_requested",
         }
     }
 }
 
 pub(crate) fn session_launch_settings_for_reason(
     app: &App,
-    reason: SessionStartReason,
+    _reason: SessionStartReason,
 ) -> SessionLaunchSettings {
-    match reason {
-        SessionStartReason::Logout => SessionLaunchSettings::default(),
-        SessionStartReason::Startup
-        | SessionStartReason::NewSession
-        | SessionStartReason::Resume
-        | SessionStartReason::Login => {
-            let language = store::language(&app.config.committed_settings_document)
-                .ok()
-                .flatten()
-                .map(|value| value.trim().to_owned())
-                .filter(|value| !value.is_empty())
-                .filter(|value| language_input_validation_message(value).is_none());
-            SessionLaunchSettings {
-                language,
-                settings: Some(build_session_settings_object(app)),
-                agent_progress_summaries: Some(true),
-            }
-        }
+    let language = store::language(&app.config.committed_settings_document)
+        .ok()
+        .flatten()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .filter(|value| language_input_validation_message(value).is_none());
+    SessionLaunchSettings {
+        language,
+        settings: Some(build_session_settings_object(app)),
+        agent_progress_summaries: Some(true),
     }
 }
 
@@ -368,21 +356,6 @@ mod tests {
         let launch_settings = session_launch_settings_for_reason(&app, SessionStartReason::Startup);
 
         assert_eq!(launch_settings.language, None);
-    }
-
-    #[test]
-    fn logout_launch_settings_omit_all_overrides() {
-        let mut app = App::test_default();
-        store::set_model(&mut app.config.committed_settings_document, Some("haiku"));
-        store::set_default_permission_mode(
-            &mut app.config.committed_settings_document,
-            DefaultPermissionMode::Plan,
-        );
-        store::set_always_thinking_enabled(&mut app.config.committed_settings_document, true);
-
-        let launch_settings = session_launch_settings_for_reason(&app, SessionStartReason::Logout);
-
-        assert!(launch_settings.is_empty());
     }
 
     fn settings_object(launch_settings: &SessionLaunchSettings) -> &Map<String, Value> {

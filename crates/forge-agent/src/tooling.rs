@@ -2,8 +2,7 @@
 //! upstream's `agent-sdk/src/bridge/tooling.ts` (714 `LoC`).
 //!
 //! Three groups of helpers:
-//! 1. Front-of-tool: `create_tool_call`, `tool_title`, `normalize_tool_kind`,
-//!    `is_tool_use_block_type`, `TOOL_RESULT_TYPES`.
+//! 1. Front-of-tool: `create_tool_call`, `tool_title`, `normalize_tool_kind`.
 //! 2. Result extraction: `build_tool_result_fields` per-tool branches
 //!    (Bash / Read / Write / Edit / Agent / `ReadMcpResource`),
 //!    `normalize_tool_result_text`, `extract_text`,
@@ -15,7 +14,7 @@ use serde_json::{Map, Value, json};
 
 use forge_primitives::{
     BashOutputMetadata, ChunkContent, TodoWriteOutputMetadata, ToolCall, ToolCallContent,
-    ToolCallUpdateFields, ToolLocation, ToolOutputMetadata,
+    ToolCallLocation, ToolCallUpdateFields, ToolOutputMetadata,
 };
 
 // Tool-result preview-size cap. Only the preview limit surfaces in
@@ -37,7 +36,7 @@ fn preview_kilobyte_label() -> String {
 
 /// Block types the CLI uses for tool results. Mirrors upstream's
 /// `TOOL_RESULT_TYPES` set in tooling.ts:5.
-pub const TOOL_RESULT_TYPES: &[&str] = &[
+const TOOL_RESULT_TYPES: &[&str] = &[
     "tool_result",
     "tool_search_tool_result",
     "web_fetch_tool_result",
@@ -52,25 +51,22 @@ pub fn is_tool_result_block_type(block_type: &str) -> bool {
     TOOL_RESULT_TYPES.contains(&block_type)
 }
 
-pub fn is_tool_use_block_type(block_type: &str) -> bool {
-    matches!(block_type, "tool_use" | "server_tool_use" | "mcp_tool_use")
-}
-
-/// Mirrors `normalizeToolKind`. Maps tool name → kind string consumed
-/// by the TUI's tool-card renderer.
-fn normalize_tool_kind(name: &str) -> &'static str {
+/// Mirrors `normalizeToolKind`. Maps tool name to the typed
+/// `ToolKind` consumed by the TUI's tool-card renderer.
+fn normalize_tool_kind(name: &str) -> forge_primitives::ToolKind {
+    use forge_primitives::ToolKind;
     match name {
-        "Bash" => "execute",
-        "Read" | "ReadMcpResource" => "read",
-        "Write" | "Edit" => "edit",
-        "Delete" => "delete",
-        "Move" => "move",
-        "Glob" | "Grep" => "search",
-        "WebFetch" => "fetch",
-        "TodoWrite" => "other",
-        "ExitPlanMode" => "switch_mode",
+        "Bash" => ToolKind::Execute,
+        "Read" | "ReadMcpResource" => ToolKind::Read,
+        "Write" | "Edit" => ToolKind::Edit,
+        "Delete" => ToolKind::Delete,
+        "Move" => ToolKind::Move,
+        "Glob" | "Grep" => ToolKind::Search,
+        "WebFetch" => ToolKind::Fetch,
+        "TodoWrite" => ToolKind::Other,
+        "ExitPlanMode" => ToolKind::SwitchMode,
         // "Task" / "Agent" fall through to the "think" default.
-        _ => "think",
+        _ => ToolKind::Think,
     }
 }
 
@@ -173,9 +169,7 @@ pub fn create_tool_call(
     parent_tool_use_id: Option<&str>,
 ) -> ToolCall {
     let file_path = input.as_object().and_then(|r| r.get("file_path")).and_then(Value::as_str);
-    let locations = file_path
-        .map(|p| vec![ToolLocation { path: p.to_owned(), line: None }])
-        .unwrap_or_default();
+    let locations = file_path.map(|p| vec![ToolCallLocation::new(p)]).unwrap_or_default();
     let meta = json!({
         "claudeCode": {
             "toolName": name,
@@ -186,8 +180,8 @@ pub fn create_tool_call(
     ToolCall {
         tool_call_id: tool_use_id.to_owned(),
         title: tool_title(name, input),
-        kind: normalize_tool_kind(name).to_owned(),
-        status: "pending".to_owned(),
+        kind: normalize_tool_kind(name),
+        status: forge_primitives::ToolCallStatus::Pending,
         content: edit_diff_content(name, input),
         raw_input: Some(input.clone()),
         raw_output: None,
@@ -726,7 +720,11 @@ pub fn build_tool_result_fields(
 ) -> ToolCallUpdateFields {
     let tool_name = resolve_tool_name(base);
     let mut fields = ToolCallUpdateFields {
-        status: Some(if is_error { "failed".to_owned() } else { "completed".to_owned() }),
+        status: Some(if is_error {
+            forge_primitives::ToolCallStatus::Failed
+        } else {
+            forge_primitives::ToolCallStatus::Completed
+        }),
         ..Default::default()
     };
 
@@ -855,28 +853,29 @@ mod tests {
 
     #[test]
     fn create_tool_call_titles_per_tool() {
+        use forge_primitives::ToolKind;
         let bash = create_tool_call("tu1", "Bash", &json!({"command": "ls"}), None);
         assert_eq!(bash.title, "ls");
-        assert_eq!(bash.kind, "execute");
+        assert_eq!(bash.kind, ToolKind::Execute);
 
         let read = create_tool_call("tu2", "Read", &json!({"file_path": "/x"}), None);
         assert_eq!(read.title, "Read /x");
-        assert_eq!(read.kind, "read");
+        assert_eq!(read.kind, ToolKind::Read);
 
         let glob =
             create_tool_call("tu3", "Glob", &json!({"pattern": "*.rs", "path": "src"}), None);
         assert_eq!(glob.title, "Glob *.rs in src");
-        assert_eq!(glob.kind, "search");
+        assert_eq!(glob.kind, ToolKind::Search);
 
         let task = create_tool_call("tu4", "Task", &json!({}), None);
-        assert_eq!(task.kind, "think");
+        assert_eq!(task.kind, ToolKind::Think);
     }
 
     #[test]
     fn create_tool_call_locations_from_file_path() {
         let r = create_tool_call("tu", "Edit", &json!({"file_path": "/foo"}), None);
         assert_eq!(r.locations.len(), 1);
-        assert_eq!(r.locations[0].path, "/foo");
+        assert_eq!(r.locations[0].path, std::path::PathBuf::from("/foo"));
     }
 
     #[test]
@@ -943,7 +942,7 @@ mod tests {
             json!([{"type":"text","text":"<persisted-output>\n│ hello\n</persisted-output>"}]);
         let raw_result = json!({"stdout":"hello\n","stderr":"","interrupted":false});
         let f = build_tool_result_fields(false, Some(&raw_content), Some(&base), Some(&raw_result));
-        assert_eq!(f.status.as_deref(), Some("completed"));
+        assert_eq!(f.status, Some(forge_primitives::ToolCallStatus::Completed));
         assert_eq!(f.raw_output.as_deref(), Some("hello\n"));
         // generic content fallback wraps the bash output as text.
         let Some(ToolCallContent::Content { content: ChunkContent::Text { text } }) =

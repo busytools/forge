@@ -10,7 +10,6 @@ pub(crate) mod events;
 pub(crate) mod file_index;
 mod focus;
 pub(crate) mod git_diff;
-mod inline_interactions;
 pub(crate) mod input;
 mod input_submit;
 mod keys;
@@ -18,11 +17,10 @@ pub(crate) mod launchpad;
 pub(crate) mod mention;
 mod notify;
 pub(crate) mod paste_burst;
-mod permissions;
 pub(crate) mod plugins;
 pub(crate) mod process_scanner;
 pub(crate) mod processes;
-mod questions;
+pub(crate) mod prompt;
 mod selection;
 mod service_status_check;
 pub mod session;
@@ -46,11 +44,10 @@ pub use config::ConfigState;
 pub use connect::{create_app, start_connection};
 pub use diff_overlay::DiffOverlayState;
 pub use events::{apply_session_update, handle_terminal_event};
-#[cfg(feature = "testing")]
-pub use events::{handle_permission_request_event, handle_question_request_event};
 pub use focus::{FocusManager, FocusOwner, FocusTarget};
 pub use input::InputState;
 pub use launchpad::LaunchpadState;
+pub use prompt::{PromptMode, PromptSource, PromptState};
 pub(crate) use selection::normalize_selection;
 pub use service_status_check::start_service_status_check;
 pub(crate) use state::MarkdownRenderKey;
@@ -58,16 +55,15 @@ pub(crate) use state::cache_metrics;
 pub use state::{
     App, AppStatus, BlockCache, CacheMetrics, CachedMessageSegment, ChatMessage,
     ChatRenderTraceState, ChatViewport, ExtraUsage, HelpView, IncrementalMarkdown,
-    InlinePermission, InlineQuestion, InvalidationLevel, LayoutInvalidation, LoginHint, McpState,
-    MessageBlock, MessageRenderCache, MessageRenderCacheKey, MessageRenderSignature, MessageRole,
-    MessageUsage, ModeInfo, ModeState, NoticeBlock, NoticeDedupKey, NoticeStage, PaneHitTarget,
-    PasteSessionState, PendingCommandAck, RateLimitIncidentKey, RecentSessionInfo,
-    ScrollbarGeometry, SelectionKind, SelectionPoint, SelectionState, SessionTurnState,
-    SessionUsageState, SystemSeverity, TerminalSnapshotMode, TextBlock, TextBlockSpacing, TodoItem,
-    TodoStatus, ToolCallInfo, ToolCallScope, TurnNoticeLocation, TurnNoticeRef, UsageSnapshot,
-    UsageSourceKind, UsageSourceMode, UsageState, UsageWindow, WelcomeBlock,
-    compute_scrollbar_geometry, hash_text_block_content, hash_welcome_block_content,
-    is_execute_tool_name,
+    InvalidationLevel, LayoutInvalidation, LoginHint, McpState, MessageBlock, MessageRenderCache,
+    MessageRenderCacheKey, MessageRenderSignature, MessageRole, MessageUsage, ModeInfo, ModeState,
+    NoticeBlock, NoticeDedupKey, NoticeStage, PaneHitTarget, PasteSessionState, PendingCommandAck,
+    RateLimitIncidentKey, RecentSessionInfo, ScrollbarGeometry, SelectionKind, SelectionPoint,
+    SelectionState, SessionTurnState, SessionUsageState, SystemSeverity, TerminalSnapshotMode,
+    TextBlock, TextBlockSpacing, TodoItem, TodoStatus, ToolCallInfo, ToolCallScope,
+    TurnNoticeLocation, TurnNoticeRef, UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState,
+    UsageWindow, WelcomeBlock, compute_scrollbar_geometry, hash_text_block_content,
+    hash_welcome_block_content, is_execute_tool_name,
 };
 pub use view::ActiveView;
 
@@ -314,45 +310,36 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
 
     // --- Graceful shutdown ---
 
-    // Dismiss all pending inline permissions / questions (reject via
-    // last option / cancelled). Outcomes route through
-    // `Workspace::dispatch` — the workspace-side `SessionTask` pops
-    // the matching slot and the bridge forwards it to the agent.
+    // Cancel all queued prompts via the workspace dispatch path. The
+    // workspace-side `SessionTask` pops the matching slot and the
+    // bridge forwards `Cancelled` to the agent.
     let active_session_key = app.active_session_key.clone();
-    for tool_id in std::mem::take(app.pending_interaction_ids_mut()) {
-        let (perm_last_option_id, question_was_pending) = if let Some((mi, bi)) =
-            app.lookup_tool_call(&tool_id)
-            && let Some(MessageBlock::ToolCall(tc)) =
-                app.active_messages_mut().get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
-        {
-            let tc = tc.as_mut();
-            let perm_last = tc
-                .pending_permission
-                .take()
-                .and_then(|p| p.options.last().map(|opt| opt.option_id.clone()));
-            let question_taken = tc.pending_question.take().is_some();
-            (perm_last, question_taken)
-        } else {
-            (None, false)
-        };
-        let Some(session_key) = active_session_key.as_ref() else {
-            continue;
-        };
-        if let Some(option_id) = perm_last_option_id {
-            crate::app::events::turn::dispatch_permission_outcome(
-                app,
-                session_key,
-                &tool_id,
-                forge_primitives::PermissionOutcome::Selected { option_id },
-            );
-        }
-        if question_was_pending {
-            crate::app::events::turn::dispatch_question_outcome(
-                app,
-                session_key,
-                &tool_id,
-                forge_primitives::QuestionOutcome::Cancelled,
-            );
+    if let Some(session_key) = active_session_key.as_ref() {
+        let queued: Vec<crate::app::prompt::PromptState> =
+            if let Some(session) = app.session_mut(session_key) {
+                session.prompt_queue.drain(..).collect()
+            } else {
+                Vec::new()
+            };
+        for prompt in queued {
+            match prompt.source {
+                crate::app::prompt::PromptSource::Permission { .. } => {
+                    crate::app::events::turn::dispatch_permission_outcome(
+                        app,
+                        session_key,
+                        &prompt.tool_id,
+                        forge_primitives::PermissionOutcome::Cancelled,
+                    );
+                }
+                crate::app::prompt::PromptSource::Question { .. } => {
+                    crate::app::events::turn::dispatch_question_outcome(
+                        app,
+                        session_key,
+                        &prompt.tool_id,
+                        forge_primitives::QuestionOutcome::Cancelled,
+                    );
+                }
+            }
         }
     }
 
@@ -457,7 +444,10 @@ fn finalize_pending_paste_event(app: &mut App) {
     }
 
     let char_count = input::count_text_chars(&pasted);
-    if char_count > input::PASTE_PLACEHOLDER_CHAR_THRESHOLD {
+    let line_count = pasted.split(['\n', '\r']).count();
+    if char_count > input::PASTE_PLACEHOLDER_CHAR_THRESHOLD
+        || line_count > input::PASTE_PLACEHOLDER_LINE_THRESHOLD
+    {
         app.input_mut().insert_paste_block(&pasted);
         let idx = app.input().lines().get(app.input().cursor_row()).and_then(|line| {
             input::parse_paste_placeholder_before_cursor(line, app.input().cursor_col())
@@ -637,6 +627,30 @@ mod tests {
         finalize_pending_paste_event(&mut app);
 
         assert_eq!(app.input().lines(), vec!["x".repeat(1000)]);
+    }
+
+    #[test]
+    fn pending_paste_six_lines_under_char_threshold_collapses_to_placeholder() {
+        // Six short lines: ~12 chars total, well under the 1000-char
+        // threshold, but still over the 5-line threshold. Should
+        // collapse to a placeholder so the input box doesn't grow tall.
+        let mut app = App::test_default();
+        *app.pending_paste_text_mut() = "a\nb\nc\nd\ne\nf".to_owned();
+
+        finalize_pending_paste_event(&mut app);
+
+        assert_eq!(app.input().lines(), vec!["[Pasted Text 1 - 11 chars]"]);
+    }
+
+    #[test]
+    fn pending_paste_five_lines_stays_inline() {
+        // Five lines fits inline (right at the threshold = 5).
+        let mut app = App::test_default();
+        *app.pending_paste_text_mut() = "a\nb\nc\nd\ne".to_owned();
+
+        finalize_pending_paste_event(&mut app);
+
+        assert_eq!(app.input().lines(), vec!["a", "b", "c", "d", "e"]);
     }
 
     #[test]

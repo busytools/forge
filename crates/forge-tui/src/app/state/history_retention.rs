@@ -9,7 +9,7 @@ use super::messages::{
     ChatMessage, IncrementalMarkdown, MessageBlock, MessageRole, NoticeDedupKey, TextBlock,
     WelcomeBlock,
 };
-use super::tool_call_info::{InlinePermission, InlineQuestion, ToolCallInfo};
+use super::tool_call_info::ToolCallInfo;
 use super::types::{HistoryRetentionStats, MessageUsage};
 
 const HISTORY_HIDDEN_MARKER_PREFIX: &str = "Older messages hidden to keep memory bounded";
@@ -90,12 +90,10 @@ impl super::App {
         }
         msg.blocks.iter().any(|block| {
             if let MessageBlock::ToolCall(tc) = block {
-                tc.pending_permission.is_some()
-                    || tc.pending_question.is_some()
-                    || matches!(
-                        tc.status,
-                        model::ToolCallStatus::Pending | model::ToolCallStatus::InProgress
-                    )
+                matches!(
+                    tc.status,
+                    model::ToolCallStatus::Pending | model::ToolCallStatus::InProgress
+                )
             } else {
                 false
             }
@@ -142,38 +140,6 @@ impl super::App {
         total = total.saturating_add(tc.raw_input_bytes);
         for content in &tc.content {
             total = total.saturating_add(Self::measure_tool_content_bytes(content));
-        }
-        if let Some(permission) = &tc.pending_permission {
-            total = total.saturating_add(size_of::<InlinePermission>()).saturating_add(
-                permission.options.capacity().saturating_mul(size_of::<model::PermissionOption>()),
-            );
-            for option in &permission.options {
-                total = total
-                    .saturating_add(option.option_id.capacity())
-                    .saturating_add(option.name.capacity())
-                    .saturating_add(option.description.as_ref().map_or(0, String::capacity));
-            }
-        }
-        if let Some(question) = &tc.pending_question {
-            total = total
-                .saturating_add(size_of::<InlineQuestion>())
-                .saturating_add(question.prompt.question.capacity())
-                .saturating_add(question.prompt.header.capacity())
-                .saturating_add(
-                    question
-                        .prompt
-                        .options
-                        .capacity()
-                        .saturating_mul(size_of::<model::QuestionOption>()),
-                )
-                .saturating_add(question.notes.capacity());
-            for option in &question.prompt.options {
-                total = total
-                    .saturating_add(option.option_id.capacity())
-                    .saturating_add(option.label.capacity())
-                    .saturating_add(option.description.as_ref().map_or(0, String::capacity))
-                    .saturating_add(option.preview.as_ref().map_or(0, String::capacity));
-            }
         }
 
         total
@@ -359,7 +325,6 @@ impl super::App {
         self.clear_terminal_tool_call_tracking();
         self.active_task_ids_mut().clear();
 
-        let mut pending_interaction_ids = Vec::new();
         let mut terminal_tool_call_membership = HashSet::new();
         let mut terminal_tool_calls = Vec::new();
         let mut new_tool_call_index: std::collections::HashMap<String, (usize, usize)> =
@@ -375,14 +340,6 @@ impl super::App {
                         if terminal_tool_call_membership.insert(entry.clone()) {
                             terminal_tool_calls.push(entry);
                         }
-                    }
-                    if let Some(permission) = tc.pending_permission.as_mut() {
-                        permission.focused = false;
-                        pending_interaction_ids.push(tc.id.clone());
-                    }
-                    if let Some(question) = tc.pending_question.as_mut() {
-                        question.focused = false;
-                        pending_interaction_ids.push(tc.id.clone());
                     }
                 }
             }
@@ -422,33 +379,6 @@ impl super::App {
             self.active_task_ids_mut().insert(id);
         }
 
-        let interaction_set: HashSet<&str> =
-            pending_interaction_ids.iter().map(String::as_str).collect();
-        self.pending_interaction_ids_mut().retain(|id| interaction_set.contains(id.as_str()));
-        for id in pending_interaction_ids {
-            if !self.pending_interaction_ids().iter().any(|existing| existing == &id) {
-                self.pending_interaction_ids_mut().push(id);
-            }
-        }
-
-        if let Some(first_id) = self.pending_interaction_ids().first().cloned() {
-            self.claim_focus_target(super::super::focus::FocusTarget::Permission);
-            if let Some((msg_idx, block_idx)) = self.lookup_tool_call(&first_id)
-                && let Some(MessageBlock::ToolCall(tc)) = self
-                    .active_messages_mut()
-                    .get_mut(msg_idx)
-                    .and_then(|m| m.blocks.get_mut(block_idx))
-            {
-                if let Some(permission) = tc.pending_permission.as_mut() {
-                    permission.focused = true;
-                }
-                if let Some(question) = tc.pending_question.as_mut() {
-                    question.focused = true;
-                }
-            }
-        } else {
-            self.release_focus_target(super::super::focus::FocusTarget::Permission);
-        }
         self.normalize_focus_stack();
     }
 

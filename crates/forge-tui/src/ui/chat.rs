@@ -297,13 +297,10 @@ fn sync_active_turn_height_state(
     app.set_last_active_turn_height_state(next);
 }
 
-// Render fn — args are state + dimensions + scroll geometry. Bundling into a struct duplicates fields (App already holds them) without simplifying the call site.
-//
 // `mode_id`, `layout_generation`, `tools_collapsed` are loop-invariant
-// across `update_visual_heights`'s remeasure loops — callers snapshot
+// across `update_visual_heights`'s remeasure loops; callers snapshot
 // them once above the loop and pass references / Copy values in. This
 // avoids N String allocations on remeasure-heavy frames.
-#[allow(clippy::too_many_arguments)]
 fn measure_message_height_at(
     app: &mut App,
     base: SpinnerState,
@@ -430,8 +427,6 @@ fn sync_chat_layout(app: &mut App, area: Rect, base_spinner: SpinnerState) -> us
     content_height
 }
 
-// Render fn — args are state + dimensions + scroll geometry. Bundling into a struct duplicates fields (App already holds them) without simplifying the call site.
-#[allow(clippy::too_many_arguments)]
 fn build_scrolled_render_data(
     app: &mut App,
     base: SpinnerState,
@@ -490,8 +485,6 @@ fn build_scrolled_render_data(
 }
 
 /// Long content: smooth scroll + viewport culling.
-// Render fn — args are state + dimensions + scroll geometry. Bundling into a struct duplicates fields (App already holds them) without simplifying the call site.
-#[allow(clippy::too_many_arguments)]
 fn render_scrolled(
     frame: &mut Frame,
     area: Rect,
@@ -709,8 +702,6 @@ fn render_scrollbar_overlay(
 }
 /// Render only the visible message range into out (viewport culling).
 /// Returns the local scroll offset to pass to `Paragraph::scroll()`.
-// Render fn — args are state + dimensions + scroll geometry. Bundling into a struct duplicates fields (App already holds them) without simplifying the call site.
-#[allow(clippy::too_many_arguments)]
 fn render_culled_messages(
     app: &mut App,
     base: SpinnerState,
@@ -772,7 +763,7 @@ fn render_culled_messages(
             local_scroll = remaining_skip;
             structural_skip = 0;
         } else {
-            message::render_message_with_tools_collapsed_and_separator_and_layout_generation_with_mode(
+            message::render_message(
                 &mut app.active_messages_mut()[i],
                 &sp,
                 message::MessageRenderContext::new(
@@ -1438,12 +1429,18 @@ mod tests {
         let scroll = 60;
         let mut full_lines = Vec::new();
         let tools_collapsed = app.tools_collapsed;
-        message::render_message_with_tools_collapsed_and_separator(
+        message::render_message(
             &mut app.active_messages_mut()[0],
             &spinner,
-            width,
-            tools_collapsed,
-            false,
+            message::MessageRenderContext::new(
+                None,
+                width,
+                0,
+                message::MessageRenderOptions {
+                    tools_collapsed,
+                    include_trailing_separator: false,
+                },
+            ),
             &mut full_lines,
         );
         let full_preview = render_lines_from_paragraph(
@@ -1491,12 +1488,18 @@ mod tests {
         let scroll = 1;
         let mut full_lines = Vec::new();
         let tools_collapsed = app.tools_collapsed;
-        message::render_message_with_tools_collapsed_and_separator(
+        message::render_message(
             &mut app.active_messages_mut()[0],
             &spinner,
-            width,
-            tools_collapsed,
-            false,
+            message::MessageRenderContext::new(
+                None,
+                width,
+                0,
+                message::MessageRenderOptions {
+                    tools_collapsed,
+                    include_trailing_separator: false,
+                },
+            ),
             &mut full_lines,
         );
         let full_preview = render_lines_from_paragraph(
