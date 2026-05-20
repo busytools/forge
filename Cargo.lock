@@ -1146,6 +1146,7 @@ dependencies = [
  "thiserror 2.0.18",
  "time",
  "tokio",
+ "tokio-rustls 0.25.0",
  "tracing",
  "tracing-subscriber",
  "url",

@@ -116,7 +116,11 @@ async fn probe_installed() -> Option<String> {
 /// package, parse the JSON `version` field, return `MAJOR.MINOR.PATCH`.
 /// Same WARN-and-`None` failure shape as the local probe.
 async fn probe_latest() -> Option<String> {
-    let client = match reqwest::Client::builder().timeout(PROBE_TIMEOUT).build() {
+    let client = match crate::http_trust::with_extra_roots(
+        reqwest::Client::builder().timeout(PROBE_TIMEOUT),
+    )
+    .build()
+    {
         Ok(client) => client,
         Err(err) => {
             tracing::warn!(

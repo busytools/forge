@@ -49,7 +49,11 @@ struct IncidentComponent {
 /// would cascade through the UI's banner code; the structured logs
 /// give the same triage signal at lower cost.)
 pub async fn fetch_service_status() -> Option<ServiceIssue> {
-    let client = match reqwest::Client::builder().timeout(SERVICE_STATUS_TIMEOUT).build() {
+    let client = match crate::http_trust::with_extra_roots(
+        reqwest::Client::builder().timeout(SERVICE_STATUS_TIMEOUT),
+    )
+    .build()
+    {
         Ok(c) => c,
         Err(e) => {
             tracing::info!(

@@ -34,6 +34,7 @@ hudsucker = { workspace = true }
 hyper-proxy2 = { workspace = true }
 hyper-rustls = { workspace = true }
 hyper-util = { workspace = true }
+tokio-rustls = { workspace = true }
 rustls-pemfile = { workspace = true }
 rustls-pki-types = { workspace = true }
 webpki-roots = { workspace = true }

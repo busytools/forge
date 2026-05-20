@@ -51,6 +51,7 @@ use hyper_rustls::HttpsConnectorBuilder;
 use hyper_util::client::legacy::Client as HyperClient;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioExecutor;
+use tokio_rustls::TlsConnector;
 use parking_lot::Mutex;
 use serde_json::Value;
 use tokio::sync::oneshot;
@@ -133,23 +134,19 @@ pub async fn start() -> Result<ProxyHandle, Error> {
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
     // Single source of truth for the outbound TLS trust store: webpki
-    // roots plus any cert in NODE_EXTRA_CA_CERTS. This runs in both
-    // the chained and direct paths so the rewriter's TLS works behind
-    // any MITM proxy (mitmproxy, Zscaler, Palo Alto, corporate CA) —
-    // mirrors how Node honours NODE_EXTRA_CA_CERTS for `claude`.
-    let tls_config = build_outbound_tls_config()?;
-    let https = HttpsConnectorBuilder::new()
-        .with_tls_config(tls_config)
-        .https_or_http()
-        .enable_http1()
-        .build();
+    // roots plus any cert in NODE_EXTRA_CA_CERTS. Used by both the
+    // chained (proxy CONNECT-tunnel TLS) and direct (HttpsConnector
+    // TLS) paths so the rewriter works behind any MITM proxy
+    // (mitmproxy, Zscaler, Palo Alto, corporate CA) — mirrors how
+    // Node honours NODE_EXTRA_CA_CERTS for `claude`.
+    let tls_config = Arc::new(build_outbound_tls_config()?);
 
     if let Some(upstream_url) = &upstream_proxy_url {
         info!(
             upstream = %upstream_url,
             "wire-rewriter: chaining outbound HTTPS through upstream proxy (HTTPS_PROXY)"
         );
-        let client = build_chained_client(upstream_url, https)?;
+        let client = build_chained_client(upstream_url, Arc::clone(&tls_config))?;
         let proxy = ProxyBuilder::new()
             .with_listener(listener)
             .with_client(client)
@@ -165,6 +162,11 @@ pub async fn start() -> Result<ProxyHandle, Error> {
             }
         });
     } else {
+        let https = HttpsConnectorBuilder::new()
+            .with_tls_config((*tls_config).clone())
+            .https_or_http()
+            .enable_http1()
+            .build();
         let client = HyperClient::builder(TokioExecutor::new())
             .http1_title_case_headers(true)
             .http1_preserve_header_case(true)
@@ -213,23 +215,41 @@ fn detect_upstream_proxy_url() -> Option<String> {
 }
 
 /// Build a hyper client whose connector tunnels through the given
-/// upstream proxy URL. Takes the prebuilt HTTPS connector (already
-/// configured with the rewriter's trust store via
-/// [`build_outbound_tls_config`]) and wraps it in a ProxyConnector
-/// so HTTPS targets get CONNECT-tunnelled through the upstream
-/// proxy first.
+/// upstream proxy URL.
+///
+/// **Critical**: hyper-proxy2's `rustls-webpki` feature builds an
+/// internal `TlsConnector` with webpki-roots only — it ignores any
+/// TLS config attached to the inner connector. We override that
+/// internal connector via `set_tls()` so the in-tunnel TLS handshake
+/// (i.e. the TLS to api.anthropic.com routed through mitmproxy)
+/// uses OUR trust store (webpki + NODE_EXTRA_CA_CERTS). Without
+/// this, mitmproxy's MITM cert fails validation and every forwarded
+/// request 502s.
+///
+/// The inner connector is a plain `HttpConnector` because the proxy
+/// itself is `http://127.0.0.1:9002` — no TLS to the proxy, only
+/// in-tunnel TLS to the actual target.
 fn build_chained_client(
     upstream_url: &str,
-    https: HttpsConnector<HttpConnector>,
-) -> Result<HyperClient<ProxyConnector<HttpsConnector<HttpConnector>>, Body>, Error> {
+    tls_config: Arc<hudsucker::rustls::ClientConfig>,
+) -> Result<HyperClient<ProxyConnector<HttpConnector>, Body>, Error> {
     let proxy_uri = upstream_url.parse::<Uri>().map_err(|e| Error::Connection {
         reason: format!("wire-rewriter: HTTPS_PROXY={upstream_url:?} is not a valid URI: {e}"),
     })?;
     let upstream = UpstreamProxy::new(Intercept::All, proxy_uri);
-    let connector =
-        ProxyConnector::from_proxy(https, upstream).map_err(|e| Error::Connection {
+
+    let mut http = HttpConnector::new();
+    http.enforce_http(false);
+    let mut connector =
+        ProxyConnector::from_proxy(http, upstream).map_err(|e| Error::Connection {
             reason: format!("wire-rewriter: building upstream-proxy connector failed: {e}"),
         })?;
+    // Replace hyper-proxy2's default webpki-only TlsConnector with one
+    // built from our extended trust store. This is the line that lets
+    // the rewriter live behind a custom-CA MITM (mitmproxy, Zscaler,
+    // Palo Alto, corporate root).
+    connector.set_tls(Some(TlsConnector::from(tls_config)));
+
     Ok(HyperClient::builder(TokioExecutor::new())
         .http1_title_case_headers(true)
         .http1_preserve_header_case(true)
@@ -308,8 +328,6 @@ fn build_outbound_tls_config() -> Result<hudsucker::rustls::ClientConfig, Error>
         .with_no_client_auth())
 }
 
-/// Alias to keep the `build_chained_client` signature readable.
-type HttpsConnector<C> = hyper_rustls::HttpsConnector<C>;
 
 /// The HTTP handler. Statelessly inspects each request, rewrites if
 /// the host + path match a known channel, runs the defensive scan,

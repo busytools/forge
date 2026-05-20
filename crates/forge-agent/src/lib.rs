@@ -26,6 +26,7 @@ pub mod client;
 pub mod cloud;
 pub mod commands;
 pub mod env;
+pub mod http_trust;
 pub(crate) mod forge_sdk_bridge;
 pub(crate) mod forge_sdk_worker;
 pub mod logging;
