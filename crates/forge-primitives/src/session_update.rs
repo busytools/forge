@@ -18,7 +18,7 @@ pub enum ChunkContent {
 
 /// Typed tool-call category. Unknown wire values fall through to
 /// `Other` so a new CLI variant doesn't break decode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolKind {
     Read,
@@ -28,7 +28,6 @@ pub enum ToolKind {
     Execute,
     Search,
     Fetch,
-    #[default]
     Think,
     SwitchMode,
     #[serde(other)]
@@ -37,14 +36,13 @@ pub enum ToolKind {
 
 /// Lifecycle state of a tool call. Unknown wire values fall through
 /// to `Pending` so a new CLI variant doesn't break decode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolCallStatus {
     InProgress,
     Completed,
     Failed,
     Killed,
-    #[default]
     #[serde(other)]
     Pending,
 }

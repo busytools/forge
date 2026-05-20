@@ -14,16 +14,19 @@ fmt:
     cargo fmt
 
 # Lint everything (lib, tests, examples, bins) with warnings as errors.
+# Mirrors CI's `cargo clippy --all-targets --workspace -- -D warnings`.
 clippy:
-    cargo clippy --all-targets -- -D warnings
+    cargo clippy --all-targets --workspace -- -D warnings
 
 # Run the forge-sdk test suite via nextest.
 test:
     cargo nextest run -p forge-sdk
 
 # Run tests across the whole workspace (includes forge-test-harness replay).
+# Mirrors CI's `cargo nextest run --workspace --all-features` so feature-
+# gated test mods that CI runs aren't silently skipped locally.
 test-all:
-    cargo nextest run
+    cargo nextest run --workspace --all-features
 
 # Run wire-conformance replays against every committed baseline.
 conformance:
@@ -38,11 +41,10 @@ conformance-capture-sdk test:
     FORGE_WIRE_CAPTURE=1 cargo nextest run -p forge-test-harness \
         --no-capture --run-ignored only sdk_{{test}}
 
-# Build docs with warnings as errors (matches CI's `cargo doc --workspace`
-# step so a broken intra-doc link in any workspace crate fails locally,
-# not only on CI).
+# Build docs with warnings as errors. Mirrors CI's
+# `cargo doc --workspace --no-deps --all-features`.
 doc:
-    RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+    RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
 
 # Full pre-commit / pre-PR verification loop.
 check: fmt-check clippy test-all doc
