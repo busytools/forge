@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use forge_agent::AgentHandle;
-use forge_primitives::SessionId;
+use forge_primitives::{SessionId, WrappedPrompt};
 
 use crate::SessionKey;
 use crate::protocol::PendingInteractionSlot;
@@ -34,6 +34,23 @@ pub struct DomainSession {
     /// wire `tool_id` / `elicitation_id`. `SessionTask` pops on
     /// `Respond*` commands; bridge inserts on every `*Request` event.
     pub pending_interactions: HashMap<String, PendingInteractionSlot>,
+    /// Peer messages targeted at this session that arrived while the
+    /// session was still spawning (pre-Connected). Workspace's
+    /// `deliver_peer_prompt` pushes here when the target is sleeping
+    /// and a `Command::SpawnProject` is in flight; `SessionTask`
+    /// drains atomically on `AgentEvent::Connected` and re-dispatches
+    /// each as a regular `Command::Prompt`. Empty in steady state.
+    pub pending_peer_prompts: Vec<WrappedPrompt>,
+    /// Hop count of the most-recent peer wrapper the LLM is currently
+    /// processing. Stamped by `Workspace::deliver_peer_prompt` with
+    /// `max(current.unwrap_or(0), wrapped.hop)` BEFORE dispatching
+    /// `Command::Prompt`; cleared by `SessionTask` on `TurnComplete`.
+    /// Read by `WorkspaceFacade::peek_current_inbound_hop` so the
+    /// outbound ask/tell tools can stamp `hop = current + 1` on
+    /// forwarded messages without the LLM having to pass it. `None`
+    /// when the LLM is mid-turn on a user-initiated (not peer-
+    /// forwarded) prompt.
+    pub current_inbound_hop: Option<u8>,
 }
 
 impl DomainSession {
@@ -42,7 +59,14 @@ impl DomainSession {
     /// register a placeholder domain whose handle slot fills in once
     /// the spawn handler runs.
     pub fn new(key: SessionKey, conn: Option<Arc<AgentHandle>>) -> Self {
-        Self { key, session_id: None, conn, pending_interactions: HashMap::new() }
+        Self {
+            key,
+            session_id: None,
+            conn,
+            pending_interactions: HashMap::new(),
+            pending_peer_prompts: Vec::new(),
+            current_inbound_hop: None,
+        }
     }
 }
 
@@ -52,6 +76,8 @@ impl std::fmt::Debug for DomainSession {
             .field("key", &self.key)
             .field("session_id", &self.session_id)
             .field("pending_interactions_count", &self.pending_interactions.len())
+            .field("pending_peer_prompts_count", &self.pending_peer_prompts.len())
+            .field("current_inbound_hop", &self.current_inbound_hop)
             .finish_non_exhaustive()
     }
 }
