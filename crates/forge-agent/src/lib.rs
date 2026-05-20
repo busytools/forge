@@ -39,3 +39,10 @@ pub mod userdata;
 pub use agent::{Agent, AgentError, AgentHandle};
 pub use client::{AgentEvent, SessionLaunchSettings};
 pub use forge_primitives::permission::PermissionMode;
+
+/// Re-exported wire-classification rewriter proxy primitives, so
+/// `forge-workspace` doesn't need a direct `forge-sdk` dependency
+/// just to boot the proxy at startup.
+pub mod proxy {
+    pub use forge_sdk::transport::proxy::{ProxyHandle, start};
+}

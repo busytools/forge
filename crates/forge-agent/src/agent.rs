@@ -293,17 +293,26 @@ impl Agent {
     }
 
     /// Spawn a new agent runtime bound to `config_dir` with an
-    /// optional forge-account `display_name`. Both are stored on
-    /// the bridge as typed fields. `config_dir` is consulted by
-    /// every in-process accessor (oauth, settings, catalog scans)
-    /// and exported to the spawned `claude` subprocess as
+    /// optional forge-account `display_name` and optional wire-
+    /// classification rewriter `proxy`. All three are stored on the
+    /// bridge as typed fields. `config_dir` is consulted by every
+    /// in-process accessor (oauth, settings, catalog scans) and
+    /// exported to the spawned `claude` subprocess as
     /// `CLAUDE_CONFIG_DIR`. `display_name`, when set, is surfaced
     /// via [`crate::client::AgentEvent::StatusSnapshot`] so the TUI
-    /// renders which forge-account the bridge is bound to. Returns a handle
-    /// holding the command sender + events receiver + direct-
+    /// renders which forge-account the bridge is bound to. `proxy`,
+    /// when set, is stamped onto every `forge_sdk::Options`
+    /// constructed by spawn_session so the subprocess inherits
+    /// `HTTPS_PROXY` + `NODE_EXTRA_CA_CERTS` and its wire
+    /// classification gets normalised to `cli` shape. Returns a
+    /// handle holding the command sender + events receiver + direct-
     /// accessor passthroughs.
-    pub fn spawn(config_dir: PathBuf, display_name: Option<String>) -> AgentHandle {
-        let bridge = ForgeSdkBridge::new(config_dir, display_name);
+    pub fn spawn(
+        config_dir: PathBuf,
+        display_name: Option<String>,
+        proxy: Option<forge_sdk::transport::proxy::ProxyHandle>,
+    ) -> AgentHandle {
+        let bridge = ForgeSdkBridge::new(config_dir, display_name, proxy);
         let agent_event_rx = bridge.take_events().unwrap_or_else(|| mpsc::unbounded_channel().1);
 
         let (commands_tx, commands_rx) = mpsc::unbounded_channel::<AgentCommand>();

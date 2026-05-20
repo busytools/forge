@@ -24,6 +24,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use forge_sdk::Client;
+use forge_sdk::transport::proxy::ProxyHandle;
 use parking_lot::Mutex;
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
@@ -93,6 +94,13 @@ pub(crate) struct BridgeInner {
     /// present, surfaced via [`AgentEvent::StatusSnapshot`] so the
     /// TUI can render which forge-account the bridge is bound to.
     display_name: Option<String>,
+    /// Wire-classification rewriter proxy handle. Set by the
+    /// workspace at boot; threaded into every `forge_sdk::Options`
+    /// constructed by `forge_sdk_worker::build_options_with_callback`
+    /// so spawned subprocesses inherit `HTTPS_PROXY` +
+    /// `NODE_EXTRA_CA_CERTS`. `None` when `Agent::spawn` is called
+    /// directly without a workspace (smoke tests).
+    proxy: Option<ProxyHandle>,
 }
 
 impl ForgeSdkBridge {
@@ -105,7 +113,11 @@ impl ForgeSdkBridge {
     /// [`AgentEvent::StatusSnapshot`]. The internal event channel
     /// is created here; consumers grab the receiver once via
     /// [`ForgeSdkBridge::take_events`].
-    pub(crate) fn new(config_dir: PathBuf, display_name: Option<String>) -> Self {
+    pub(crate) fn new(
+        config_dir: PathBuf,
+        display_name: Option<String>,
+        proxy: Option<ProxyHandle>,
+    ) -> Self {
         let (event_tx, events_rx) = mpsc::unbounded_channel();
         Self {
             inner: Arc::new(BridgeInner {
@@ -117,8 +129,13 @@ impl ForgeSdkBridge {
                 session_id_slot: Arc::new(Mutex::new(String::new())),
                 config_dir,
                 display_name,
+                proxy,
             }),
         }
+    }
+
+    pub(crate) fn proxy(&self) -> Option<ProxyHandle> {
+        self.inner.proxy.clone()
     }
 
     pub(crate) fn event_tx(&self) -> &mpsc::UnboundedSender<AgentEvent> {
@@ -230,7 +247,7 @@ impl ForgeSdkBridge {
 #[cfg(any(test, feature = "testing"))]
 impl Default for ForgeSdkBridge {
     fn default() -> Self {
-        Self::new(PathBuf::from(TESTING_STUB_CONFIG_DIR), None)
+        Self::new(PathBuf::from(TESTING_STUB_CONFIG_DIR), None, None)
     }
 }
 
@@ -786,7 +803,7 @@ mod tests {
     use super::*;
 
     fn test_bridge() -> ForgeSdkBridge {
-        ForgeSdkBridge::new(PathBuf::from(TESTING_STUB_CONFIG_DIR), None)
+        ForgeSdkBridge::new(PathBuf::from(TESTING_STUB_CONFIG_DIR), None, None)
     }
 
     #[test]
