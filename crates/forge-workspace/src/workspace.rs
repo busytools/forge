@@ -379,8 +379,7 @@ impl Workspace {
             if let Some(existing) = handles.get(&session_key).cloned() {
                 existing
             } else {
-                let fresh =
-                    Arc::new(Mutex::new(DomainSession::new(session_key.clone(), None)));
+                let fresh = Arc::new(Mutex::new(DomainSession::new(session_key.clone(), None)));
                 handles.insert(session_key.clone(), Arc::clone(&fresh));
                 fresh
             }
@@ -395,9 +394,8 @@ impl Workspace {
             let workspace_arc: Arc<Self> = Arc::clone(self);
             let facade: Arc<dyn crate::mcp::peers::facade::WorkspaceFacade> =
                 Arc::new(workspace_arc);
-            let resolver = crate::mcp::peers::facade::CallerKeyResolver::from_domain(
-                Arc::clone(&domain_arc),
-            );
+            let resolver =
+                crate::mcp::peers::facade::CallerKeyResolver::from_domain(Arc::clone(&domain_arc));
             crate::mcp::peers::build_server(facade, resolver)
         };
 

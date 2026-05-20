@@ -43,10 +43,7 @@ pub mod facade;
 /// same `forge` server without touching the auto-approve fast-path
 /// in forge-sdk's `control_dispatch` (which matches the
 /// `mcp__forge__` prefix at the tool-name level).
-pub fn build_server(
-    facade: Arc<dyn WorkspaceFacade>,
-    caller_key: CallerKeyResolver,
-) -> McpServer {
+pub fn build_server(facade: Arc<dyn WorkspaceFacade>, caller_key: CallerKeyResolver) -> McpServer {
     let whoami = Whoami { facade: facade.clone(), caller_key: caller_key.clone() };
     let list_agents = ListAgents { facade: facade.clone() };
     let tell_agent = TellAgent { facade: facade.clone(), caller_key: caller_key.clone() };
@@ -722,7 +719,8 @@ mod tests {
         mock.peers.lock().push(fake_peer("forge")); // caller
         mock.peers.lock().push(fake_peer("granite-backend")); // target
         let facade = mock.into_arc();
-        let tool = TellAgent { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("forge")) };
+        let tool =
+            TellAgent { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("forge")) };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
@@ -744,7 +742,8 @@ mod tests {
         mock.peers.lock().push(fake_peer("forge"));
         // No 'missing' peer pre-loaded.
         let facade = mock.into_arc();
-        let tool = TellAgent { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("forge")) };
+        let tool =
+            TellAgent { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("forge")) };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
@@ -761,7 +760,8 @@ mod tests {
     async fn tell_agent_invalid_args_is_error() {
         let mock = MockWorkspaceFacade::new();
         let facade = mock.into_arc();
-        let tool = TellAgent { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("forge")) };
+        let tool =
+            TellAgent { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("forge")) };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
@@ -793,7 +793,10 @@ mod tests {
             ),
         );
         let facade = mock.into_arc();
-        let tool = TellAgent { facade: facade.clone(), caller_key: CallerKeyResolver::from_fixed(fake_key("forge")) };
+        let tool = TellAgent {
+            facade: facade.clone(),
+            caller_key: CallerKeyResolver::from_fixed(fake_key("forge")),
+        };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
@@ -822,7 +825,8 @@ mod tests {
         mock.peers.lock().push(fake_peer("forge"));
         mock.peers.lock().push(fake_peer("granite-backend"));
         let facade = mock.into_arc();
-        let tool = TellAgent { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("forge")) };
+        let tool =
+            TellAgent { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("forge")) };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
@@ -840,7 +844,8 @@ mod tests {
     fn tell_agent_metadata_shape() {
         let mock = MockWorkspaceFacade::new();
         let facade = mock.into_arc();
-        let tool = TellAgent { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("forge")) };
+        let tool =
+            TellAgent { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("forge")) };
         assert_eq!(tool.name(), "peers__tell_agent");
         assert!(tool.description().to_lowercase().contains("fire-and-forget"));
         let schema = tool.input_schema();
@@ -857,7 +862,8 @@ mod tests {
         mock.peers.lock().push(fake_peer("forge"));
         mock.peers.lock().push(fake_peer("granite-backend"));
         let facade = mock.into_arc();
-        let tool = AskAgent { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("forge")) };
+        let tool =
+            AskAgent { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("forge")) };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
@@ -882,7 +888,8 @@ mod tests {
         mock.peers.lock().push(fake_peer("forge"));
         mock.peers.lock().push(fake_peer("granite-backend"));
         let facade: Arc<dyn WorkspaceFacade> = mock.clone();
-        let tool = AskAgent { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("forge")) };
+        let tool =
+            AskAgent { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("forge")) };
         let _ = tool
             .call(ToolInput {
                 value: serde_json::json!({
@@ -911,7 +918,8 @@ mod tests {
         let mock = Arc::new(MockWorkspaceFacade::new());
         mock.peers.lock().push(fake_peer("forge"));
         let facade: Arc<dyn WorkspaceFacade> = mock.clone();
-        let tool = AskAgent { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("forge")) };
+        let tool =
+            AskAgent { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("forge")) };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
@@ -933,7 +941,8 @@ mod tests {
     async fn ask_agent_invalid_args_is_error() {
         let mock = MockWorkspaceFacade::new();
         let facade = mock.into_arc();
-        let tool = AskAgent { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("forge")) };
+        let tool =
+            AskAgent { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("forge")) };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
@@ -954,7 +963,8 @@ mod tests {
         // should stamp hop=4.
         *mock.current_inbound_hop.lock() = Some(3);
         let facade: Arc<dyn WorkspaceFacade> = mock.clone();
-        let tool = AskAgent { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("forge")) };
+        let tool =
+            AskAgent { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("forge")) };
         let _ = tool
             .call(ToolInput {
                 value: serde_json::json!({
@@ -973,7 +983,8 @@ mod tests {
     fn ask_agent_metadata_shape() {
         let mock = MockWorkspaceFacade::new();
         let facade = mock.into_arc();
-        let tool = AskAgent { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("forge")) };
+        let tool =
+            AskAgent { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("forge")) };
         assert_eq!(tool.name(), "peers__ask_agent");
         let schema = tool.input_schema();
         let required = schema["required"].as_array().expect("required field present");

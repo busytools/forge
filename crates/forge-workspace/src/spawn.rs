@@ -174,9 +174,7 @@ pub(crate) fn handle_deliver_peer_prompt(
         let mut handles = workspace.domain_handles.lock();
         let domain = handles
             .entry(synth_key.clone())
-            .or_insert_with(|| {
-                Arc::new(Mutex::new(DomainSession::new(synth_key.clone(), None)))
-            })
+            .or_insert_with(|| Arc::new(Mutex::new(DomainSession::new(synth_key.clone(), None))))
             .clone();
         drop(handles);
         let mut d = domain.lock();
