@@ -52,10 +52,10 @@ use hyper_rustls::HttpsConnectorBuilder;
 use hyper_util::client::legacy::Client as HyperClient;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioExecutor;
-use tokio_rustls::TlsConnector;
 use parking_lot::Mutex;
 use serde_json::Value;
 use tokio::sync::oneshot;
+use tokio_rustls::TlsConnector;
 use tracing::{debug, info, warn};
 
 use crate::Error;
@@ -124,9 +124,9 @@ pub async fn start() -> Result<ProxyHandle, Error> {
     let authority = load_authority(&cert_path, &key_path)?;
 
     // Bind to ephemeral port; OS picks a free one.
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.map_err(|e| {
-        Error::Connection { reason: format!("rewriter proxy bind failed: {e}") }
-    })?;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .map_err(|e| Error::Connection { reason: format!("rewriter proxy bind failed: {e}") })?;
     let listen_addr = listener.local_addr().map_err(|e| Error::Connection {
         reason: format!("rewriter proxy local_addr failed: {e}"),
     })?;
@@ -330,11 +330,8 @@ fn build_outbound_tls_config() -> Result<hudsucker::rustls::ClientConfig, Error>
         debug!("wire-rewriter: no extra-CA env var set; trust store is webpki-roots only");
     }
 
-    Ok(rustls::ClientConfig::builder()
-        .with_root_certificates(roots)
-        .with_no_client_auth())
+    Ok(rustls::ClientConfig::builder().with_root_certificates(roots).with_no_client_auth())
 }
-
 
 /// The HTTP handler. Statelessly inspects each request, rewrites if
 /// the host + path match a known channel, runs the defensive scan,
@@ -383,11 +380,7 @@ impl HttpHandler for Rewriter {
         }
     }
 
-    async fn handle_response(
-        &mut self,
-        _ctx: &HttpContext,
-        res: Response<Body>,
-    ) -> Response<Body> {
+    async fn handle_response(&mut self, _ctx: &HttpContext, res: Response<Body>) -> Response<Body> {
         // CRITICAL: do NOT buffer. /v1/messages is text/event-stream
         // (SSE); buffering hangs the turn loop because the CLI is
         // streaming-aware. Classification is request-only anyway, so

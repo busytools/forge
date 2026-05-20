@@ -64,11 +64,8 @@ fn walk(v: &Value, url_path: &str, json_path: &str, out: &mut Vec<Finding>) {
     match v {
         Value::Object(map) => {
             for (k, val) in map {
-                let sub_path = if json_path.is_empty() {
-                    format!(".{k}")
-                } else {
-                    format!("{json_path}.{k}")
-                };
+                let sub_path =
+                    if json_path.is_empty() { format!(".{k}") } else { format!("{json_path}.{k}") };
                 inspect_field(k, val, url_path, &sub_path, out);
                 walk(val, url_path, &sub_path, out);
             }
@@ -162,7 +159,11 @@ mod tests {
     fn detects_sdk_prefixed_value_anywhere() {
         let v = json!({ "nested": { "deep": "sdk-rs" } });
         let findings = scan(&v, "/anywhere");
-        assert!(findings.iter().any(|f| matches!(f.kind, FindingKind::SdkPrefixedValue) && f.value == "sdk-rs"));
+        assert!(
+            findings
+                .iter()
+                .any(|f| matches!(f.kind, FindingKind::SdkPrefixedValue) && f.value == "sdk-rs")
+        );
     }
 
     #[test]

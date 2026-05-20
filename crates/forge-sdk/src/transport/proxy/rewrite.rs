@@ -30,8 +30,7 @@ pub fn rewrite_bootstrap_query(query: &str) -> Option<String> {
     let parsed: Vec<(String, String)> = url::form_urlencoded::parse(query.as_bytes())
         .map(|(k, v)| (k.into_owned(), v.into_owned()))
         .collect();
-    let needs_rewrite =
-        parsed.iter().any(|(k, v)| k == "entrypoint" && v != "cli");
+    let needs_rewrite = parsed.iter().any(|(k, v)| k == "entrypoint" && v != "cli");
     if !needs_rewrite {
         return None;
     }
@@ -63,11 +62,7 @@ pub fn rewrite_user_agent(ua: &str) -> Option<String> {
     let prefix = &ua[..start];
     let inside = &ua[start + 1..end];
     let suffix = &ua[end + 1..];
-    let new_inside = if inside.starts_with("external") {
-        "external, cli"
-    } else {
-        "cli"
-    };
+    let new_inside = if inside.starts_with("external") { "external, cli" } else { "cli" };
     if new_inside == inside {
         return None;
     }
@@ -170,7 +165,7 @@ pub fn rewrite_statsig_features(body: &Bytes) -> Bytes {
 /// Rewrite a Datadog `/api/v2/logs` ingest body. Datadog encodes
 /// classification two ways: in the JSON body keys (handled by the
 /// recursive normaliser) AND in the `ddtags` comma-joined string
-/// (handled by [`rewrite_ddtags`]).
+/// (handled by `rewrite_ddtags`).
 #[must_use]
 pub fn rewrite_datadog_logs(body: &Bytes) -> Bytes {
     // First pass: drop any log entry tagged with a forge SDK protocol
@@ -278,7 +273,7 @@ const FORGE_ONLY_ANTHROPIC_BETAS: &[&str] = &[
 ];
 
 /// Rewrite an `anthropic-beta` header value: strip every flag in
-/// [`FORGE_ONLY_ANTHROPIC_BETAS`] from the comma-joined list,
+/// `FORGE_ONLY_ANTHROPIC_BETAS` from the comma-joined list,
 /// re-serialise the remainder. Returns `None` when nothing was
 /// stripped (header passes through unchanged).
 #[must_use]
@@ -551,7 +546,10 @@ mod tests {
         assert_eq!(ed["entrypoint"], "cli");
         assert_eq!(ed["client_type"], "cli");
         assert_eq!(ed["is_interactive"], true);
-        assert!(ed.get("agent_sdk_version").is_none(), "agent_sdk_version must be removed, not blanked");
+        assert!(
+            ed.get("agent_sdk_version").is_none(),
+            "agent_sdk_version must be removed, not blanked"
+        );
         assert_eq!(ed["other_field"], "untouched");
     }
 
@@ -675,7 +673,10 @@ mod tests {
         let mut v = json!({
             "events": [{ "event_data": { "entrypoint": "cli", "client_type": "cli", "is_interactive": true } }]
         });
-        assert!(!normalize_classification_fields(&mut v), "clean body should not be marked as changed");
+        assert!(
+            !normalize_classification_fields(&mut v),
+            "clean body should not be marked as changed"
+        );
     }
 
     #[test]
@@ -767,17 +768,14 @@ mod tests {
     #[test]
     fn finalize_string_pass_handles_unescaped_and_escaped_forms() {
         // Unescaped: bare JSON value containing sdk-cli
-        let raw =
-            Bytes::from_static(br#"{"entrypoint":"sdk-cli","other":"unrelated string"}"#);
+        let raw = Bytes::from_static(br#"{"entrypoint":"sdk-cli","other":"unrelated string"}"#);
         let out = finalize_string_pass(raw);
         let s = std::str::from_utf8(&out).unwrap();
         assert!(s.contains(r#""entrypoint":"cli""#));
         assert!(!s.contains("sdk-cli"));
 
         // Escaped: stringified JSON inside an outer JSON string
-        let raw = Bytes::from_static(
-            br#"{"wrapper":"{\"entrypoint\":\"sdk-cli\",\"x\":1}"}"#,
-        );
+        let raw = Bytes::from_static(br#"{"wrapper":"{\"entrypoint\":\"sdk-cli\",\"x\":1}"}"#);
         let out = finalize_string_pass(raw);
         let s = std::str::from_utf8(&out).unwrap();
         assert!(s.contains(r#"\"entrypoint\":\"cli\""#));
@@ -946,6 +944,9 @@ mod tests {
         let tags = parsed[0]["ddtags"].as_str().expect("string");
         assert!(tags.contains("entrypoint:cli"));
         assert!(tags.contains("other:keep"));
-        assert!(!tags.contains("agent_sdk_version"), "agent_sdk_version ddtag must be dropped: {tags}");
+        assert!(
+            !tags.contains("agent_sdk_version"),
+            "agent_sdk_version ddtag must be dropped: {tags}"
+        );
     }
 }

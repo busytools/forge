@@ -13,8 +13,7 @@ use std::path::{Path, PathBuf};
 
 use hudsucker::certificate_authority::RcgenAuthority;
 use hudsucker::rcgen::{
-    BasicConstraints, CertificateParams, DistinguishedName, DnType, IsCa, KeyPair,
-    KeyUsagePurpose,
+    BasicConstraints, CertificateParams, DistinguishedName, DnType, IsCa, KeyPair, KeyUsagePurpose,
 };
 
 use crate::Error;
@@ -92,12 +91,11 @@ pub fn ensure_ca() -> Result<(PathBuf, PathBuf), Error> {
     params.not_before = now - time::Duration::hours(1);
     params.not_after = now + time::Duration::days(3650);
 
-    let key_pair = KeyPair::generate().map_err(|e| Error::Connection {
-        reason: format!("generating CA key pair: {e}"),
-    })?;
-    let cert = params.self_signed(&key_pair).map_err(|e| Error::Connection {
-        reason: format!("self-signing CA: {e}"),
-    })?;
+    let key_pair = KeyPair::generate()
+        .map_err(|e| Error::Connection { reason: format!("generating CA key pair: {e}") })?;
+    let cert = params
+        .self_signed(&key_pair)
+        .map_err(|e| Error::Connection { reason: format!("self-signing CA: {e}") })?;
 
     std::fs::write(&cert_path, cert.pem()).map_err(|e| Error::Connection {
         reason: format!("writing CA cert to {}: {e}", cert_path.display()),
