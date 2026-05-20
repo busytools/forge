@@ -30,8 +30,8 @@ pub mod scan;
 
 pub use ca::{ca_paths, ensure_ca, load_authority};
 pub use rewrite::{
-    rewrite_bootstrap_query, rewrite_datadog_logs, rewrite_event_logging,
-    rewrite_statsig_features, rewrite_user_agent,
+    normalize_classification_fields, rewrite_bootstrap_query, rewrite_datadog_logs,
+    rewrite_event_logging, rewrite_statsig_features, rewrite_user_agent,
 };
 pub use scan::{Finding, FindingKind, scan, scan_and_warn};
 
@@ -46,6 +46,11 @@ use hudsucker::{
     builder::ProxyBuilder,
     hyper::{Request, Response, Uri, header},
 };
+use hyper_proxy2::{Intercept, Proxy as UpstreamProxy, ProxyConnector};
+use hyper_rustls::HttpsConnectorBuilder;
+use hyper_util::client::legacy::Client as HyperClient;
+use hyper_util::client::legacy::connect::HttpConnector;
+use hyper_util::rt::TokioExecutor;
 use parking_lot::Mutex;
 use serde_json::Value;
 use tokio::sync::oneshot;
@@ -95,12 +100,23 @@ impl ProxyHandle {
 /// port. Generates/loads the persistent CA, binds the listener,
 /// returns once the proxy is ready to serve.
 ///
+/// **Upstream-proxy chaining.** If `HTTPS_PROXY` (or `https_proxy`)
+/// is set in the parent environment at forge launch, the rewriter
+/// routes its own outbound HTTPS through that upstream proxy. This
+/// makes the mitmproxy-capture recipe symmetric: the same
+/// `HTTPS_PROXY=http://127.0.0.1:8080` + `NODE_EXTRA_CA_CERTS=…`
+/// env vars that capture traffic from a bare `claude` invocation
+/// also capture forge's rewritten output. Without chaining, the
+/// forge-spawned child speaks to forge's internal proxy and the
+/// user's mitmproxy sees nothing.
+///
 /// # Errors
 ///
 /// Returns [`Error::Connection`] for any setup failure: CA dir not
-/// writable, port-bind failure, TLS provider init failure, etc.
-/// Forge's policy is hard-fail (no session starts without a healthy
-/// proxy), so callers should propagate this error directly.
+/// writable, port-bind failure, TLS provider init failure, or
+/// invalid `HTTPS_PROXY` URL. Forge's policy is hard-fail (no
+/// session starts without a healthy proxy), so callers should
+/// propagate this error directly.
 pub async fn start() -> Result<ProxyHandle, Error> {
     let (cert_path, key_path) = ensure_ca()?;
     let authority = load_authority(&cert_path, &key_path)?;
@@ -113,26 +129,50 @@ pub async fn start() -> Result<ProxyHandle, Error> {
         reason: format!("rewriter proxy local_addr failed: {e}"),
     })?;
 
+    let upstream_proxy_url = detect_upstream_proxy_url();
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
-    let proxy = ProxyBuilder::new()
-        .with_listener(listener)
-        .with_rustls_client()
-        .with_ca(authority)
-        .with_http_handler(Rewriter)
-        .with_graceful_shutdown(async move {
-            let _ = shutdown_rx.await;
-        })
-        .build();
 
-    tokio::spawn(async move {
-        if let Err(e) = proxy.start().await {
-            warn!("wire-rewriter proxy exited with error: {e}");
-        }
-    });
+    if let Some(upstream_url) = &upstream_proxy_url {
+        info!(
+            upstream = %upstream_url,
+            "wire-rewriter: chaining outbound HTTPS through upstream proxy (HTTPS_PROXY)"
+        );
+        let client = build_chained_client(upstream_url)?;
+        let proxy = ProxyBuilder::new()
+            .with_listener(listener)
+            .with_client(client)
+            .with_ca(authority)
+            .with_http_handler(Rewriter)
+            .with_graceful_shutdown(async move {
+                let _ = shutdown_rx.await;
+            })
+            .build();
+        tokio::spawn(async move {
+            if let Err(e) = proxy.start().await {
+                warn!("wire-rewriter proxy exited with error: {e}");
+            }
+        });
+    } else {
+        let proxy = ProxyBuilder::new()
+            .with_listener(listener)
+            .with_rustls_client()
+            .with_ca(authority)
+            .with_http_handler(Rewriter)
+            .with_graceful_shutdown(async move {
+                let _ = shutdown_rx.await;
+            })
+            .build();
+        tokio::spawn(async move {
+            if let Err(e) = proxy.start().await {
+                warn!("wire-rewriter proxy exited with error: {e}");
+            }
+        });
+    }
 
     info!(
         listen_addr = %listen_addr,
         ca = %cert_path.display(),
+        upstream = upstream_proxy_url.as_deref().unwrap_or("(direct)"),
         "wire-classification rewriter proxy started"
     );
 
@@ -142,6 +182,113 @@ pub async fn start() -> Result<ProxyHandle, Error> {
         shutdown: Arc::new(Mutex::new(Some(shutdown_tx))),
     })
 }
+
+/// Read `HTTPS_PROXY` / `https_proxy` from env. Returns `None` if
+/// neither is set or the value is empty.
+fn detect_upstream_proxy_url() -> Option<String> {
+    for key in ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"] {
+        if let Ok(v) = std::env::var(key)
+            && !v.trim().is_empty()
+        {
+            return Some(v);
+        }
+    }
+    None
+}
+
+/// Build a hyper client whose connector tunnels through the given
+/// upstream proxy URL. Used by the rewriter when the parent env has
+/// `HTTPS_PROXY` set, so its outbound HTTPS goes to that proxy
+/// instead of directly to Anthropic / Datadog.
+///
+/// When `NODE_EXTRA_CA_CERTS` is set in the parent env, its certs
+/// are added to the trust store alongside webpki-roots — mirrors
+/// Node.js's behaviour so the same mitmproxy recipe that captures
+/// from a bare `claude` also captures from forge.
+fn build_chained_client(
+    upstream_url: &str,
+) -> Result<HyperClient<ProxyConnector<HttpsConnector<HttpConnector>>, Body>, Error> {
+    let proxy_uri = upstream_url.parse::<Uri>().map_err(|e| Error::Connection {
+        reason: format!("wire-rewriter: HTTPS_PROXY={upstream_url:?} is not a valid URI: {e}"),
+    })?;
+    let tls_config = build_outbound_tls_config()?;
+    let https = HttpsConnectorBuilder::new()
+        .with_tls_config(tls_config)
+        .https_or_http()
+        .enable_http1()
+        .build();
+    let upstream = UpstreamProxy::new(Intercept::All, proxy_uri);
+    let connector =
+        ProxyConnector::from_proxy(https, upstream).map_err(|e| Error::Connection {
+            reason: format!("wire-rewriter: building upstream-proxy connector failed: {e}"),
+        })?;
+    Ok(HyperClient::builder(TokioExecutor::new())
+        .http1_title_case_headers(true)
+        .http1_preserve_header_case(true)
+        .build(connector))
+}
+
+/// Construct a rustls `ClientConfig` for the rewriter's outbound TLS.
+/// Starts with webpki-roots; if `NODE_EXTRA_CA_CERTS` is set in env,
+/// every PEM cert in that file is added to the trust anchors. That
+/// mirrors how the `claude` CLI (via Node's TLS layer) extends its
+/// trust store, so the same env-var recipe works for both binaries.
+///
+/// `NODE_EXTRA_CA_CERTS` is a single-path env var (Node loads the
+/// file as a concatenated PEM bundle). Loading failures are non-
+/// fatal: we log a warn and continue with webpki-roots only.
+fn build_outbound_tls_config() -> Result<hudsucker::rustls::ClientConfig, Error> {
+    use hudsucker::rustls;
+    use rustls_pki_types::TrustAnchor;
+
+    let mut roots = rustls::RootCertStore::empty();
+    for ta in webpki_roots::TLS_SERVER_ROOTS {
+        roots.roots.push(TrustAnchor {
+            subject: ta.subject.clone(),
+            subject_public_key_info: ta.subject_public_key_info.clone(),
+            name_constraints: ta.name_constraints.clone(),
+        });
+    }
+
+    if let Ok(path) = std::env::var("NODE_EXTRA_CA_CERTS")
+        && !path.trim().is_empty()
+    {
+        match std::fs::read(&path) {
+            Ok(pem) => {
+                let mut slice = pem.as_slice();
+                let mut added = 0usize;
+                let mut errors = 0usize;
+                while let Some(cert) = rustls_pemfile::certs(&mut slice).next() {
+                    match cert {
+                        Ok(c) => match roots.add(c) {
+                            Ok(()) => added += 1,
+                            Err(_) => errors += 1,
+                        },
+                        Err(_) => errors += 1,
+                    }
+                }
+                info!(
+                    path = %path,
+                    added,
+                    errors,
+                    "wire-rewriter: extended trust store with NODE_EXTRA_CA_CERTS bundle"
+                );
+            }
+            Err(e) => warn!(
+                path = %path,
+                error = %e,
+                "wire-rewriter: NODE_EXTRA_CA_CERTS could not be read; continuing with webpki-roots only"
+            ),
+        }
+    }
+
+    Ok(rustls::ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth())
+}
+
+/// Alias to keep the `build_chained_client` signature readable.
+type HttpsConnector<C> = hyper_rustls::HttpsConnector<C>;
 
 /// The HTTP handler. Statelessly inspects each request, rewrites if
 /// the host + path match a known channel, runs the defensive scan,
@@ -193,6 +340,20 @@ impl HttpHandler for Rewriter {
 
 fn body_from_bytes(b: Bytes) -> Body {
     Body::from(Full::new(b))
+}
+
+/// Generic Anthropic-body rewriter: parses the body as JSON, applies
+/// the recursive classification normaliser, serialises back. Returns
+/// the original bytes on any parse failure or when the body wasn't
+/// modified.
+fn rewrite_anthropic_generic(body: &Bytes) -> Bytes {
+    let Ok(mut v) = serde_json::from_slice::<Value>(body) else {
+        return body.clone();
+    };
+    if !normalize_classification_fields(&mut v) {
+        return body.clone();
+    }
+    serde_json::to_vec(&v).map_or_else(|_| body.clone(), Bytes::from)
 }
 
 fn error_body(s: &'static str) -> Body {
@@ -266,6 +427,14 @@ async fn rewrite_request(req: Request<Body>) -> Result<Request<Body>, String> {
         rewrite_statsig_features(&body_bytes)
     } else if is_datadog && path.contains("/api/v2/logs") {
         rewrite_datadog_logs(&body_bytes)
+    } else if is_anthropic {
+        // Catch-all for unknown Anthropic endpoints. Applies the
+        // recursive normaliser so any classification field anywhere
+        // in a JSON body gets normalised, even when Anthropic adds
+        // new endpoints we don't have a per-path rewriter for. The
+        // normaliser is a no-op on bodies that contain no
+        // classification fields, so this is safe to blanket-apply.
+        rewrite_anthropic_generic(&body_bytes)
     } else {
         body_bytes
     };

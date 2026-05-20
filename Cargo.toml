@@ -61,7 +61,16 @@ which = "8.0.2"
 # See ~/.claude/memory/reference_claude_cli_integration_modes.md.
 # hudsucker re-exports rcgen + rustls + hyper, so we only need the
 # external surface bits (Bytes, http-body-util, url) directly.
+# hyper-proxy2 lets us chain forge's embedded proxy through an upstream
+# HTTP proxy (HTTPS_PROXY env), so the agent's mitmproxy-capture recipe
+# works identically for forge and the bare `claude` binary.
 hudsucker = { version = "0.22", default-features = false, features = ["rustls-client", "rcgen-ca"] }
+hyper-proxy2 = { version = "0.1", default-features = false, features = ["rustls-webpki"] }
+hyper-rustls = { version = "0.26", default-features = false, features = ["http1", "ring", "webpki-roots"] }
+hyper-util = { version = "0.1", features = ["client-legacy", "http1", "tokio"] }
+rustls-pemfile = "2"
+rustls-pki-types = "1"
+webpki-roots = "0.26"
 http-body-util = "0.1"
 bytes = "1"
 url = "2"

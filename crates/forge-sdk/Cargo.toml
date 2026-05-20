@@ -31,6 +31,12 @@ time = { workspace = true }
 # Wire-classification rewriter: MITM proxy that rewrites the CLI's
 # classification signals from sdk-cli shape to cli (interactive) shape.
 hudsucker = { workspace = true }
+hyper-proxy2 = { workspace = true }
+hyper-rustls = { workspace = true }
+hyper-util = { workspace = true }
+rustls-pemfile = { workspace = true }
+rustls-pki-types = { workspace = true }
+webpki-roots = { workspace = true }
 http-body-util = { workspace = true }
 bytes = { workspace = true }
 url = { workspace = true }

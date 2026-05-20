@@ -74,82 +74,85 @@ pub fn rewrite_user_agent(ua: &str) -> Option<String> {
     Some(format!("{prefix}({new_inside}){suffix}"))
 }
 
-/// Rewrite an `/api/event_logging/v2/batch` body. Walks
-/// `events[*].event_data`, normalises `entrypoint`, `client_type`,
-/// `is_interactive`, and removes `agent_sdk_version` when present.
+/// Recursively walk a JSON [`Value`] in place, normalising every
+/// classification field encountered (at any nesting depth). The brief
+/// documents the channels where these fields live; in practice
+/// telemetry payloads have nested wrappers and Anthropic occasionally
+/// adds new ones. Walking blindly catches drift the per-path rewrites
+/// would miss, and the cost is one tree traversal per body.
 ///
-/// On any JSON parse failure, returns the input unchanged (the proxy
-/// is best-effort at this layer; the defensive scan catches drift).
-#[must_use]
-pub fn rewrite_event_logging(body: &Bytes) -> Bytes {
-    let Ok(mut v) = serde_json::from_slice::<Value>(body) else {
-        return body.clone();
-    };
+/// Per-key behaviour:
+/// - `entrypoint` / `client_type` → set to `cli` when current string
+///   value isn't `cli` (or isn't a string at all — paranoid).
+/// - `is_interactive` → set to JSON `true` when not already `true`.
+/// - `agent_sdk_version` → key removed entirely (presence itself is a
+///   signal; blanking the value is insufficient).
+///
+/// Returns `true` if any change was made.
+pub fn normalize_classification_fields(value: &mut Value) -> bool {
     let mut changed = false;
-    if let Some(events) = v.get_mut("events").and_then(|e| e.as_array_mut()) {
-        for ev in events {
-            if let Some(ed) = ev.get_mut("event_data").and_then(|e| e.as_object_mut()) {
-                if ed.contains_key("entrypoint") {
-                    ed.insert("entrypoint".into(), Value::String("cli".into()));
-                    changed = true;
+    walk_normalize(value, &mut changed);
+    changed
+}
+
+fn walk_normalize(v: &mut Value, changed: &mut bool) {
+    match v {
+        Value::Object(map) => {
+            if map.shift_remove("agent_sdk_version").is_some() {
+                *changed = true;
+            }
+            for (k, val) in map.iter_mut() {
+                match k.as_str() {
+                    "entrypoint" | "client_type" if val.as_str() != Some("cli") => {
+                        *val = Value::String("cli".into());
+                        *changed = true;
+                    }
+                    "is_interactive" if val != &Value::Bool(true) => {
+                        *val = Value::Bool(true);
+                        *changed = true;
+                    }
+                    _ => {}
                 }
-                if ed.contains_key("client_type") {
-                    ed.insert("client_type".into(), Value::String("cli".into()));
-                    changed = true;
-                }
-                if ed.contains_key("is_interactive") {
-                    ed.insert("is_interactive".into(), Value::Bool(true));
-                    changed = true;
-                }
-                if ed.remove("agent_sdk_version").is_some() {
-                    changed = true;
-                }
+                walk_normalize(val, changed);
             }
         }
+        Value::Array(arr) => {
+            for item in arr.iter_mut() {
+                walk_normalize(item, changed);
+            }
+        }
+        _ => {}
     }
-    if !changed {
-        return body.clone();
-    }
-    match serde_json::to_vec(&v) {
-        Ok(buf) => Bytes::from(buf),
-        Err(_) => body.clone(),
-    }
+}
+
+/// Rewrite an `/api/event_logging/v2/batch` body via the recursive
+/// normaliser. Thin wrapper kept for call-site readability and
+/// because the proxy dispatches on URL path.
+#[must_use]
+pub fn rewrite_event_logging(body: &Bytes) -> Bytes {
+    rewrite_body_recursive(body)
 }
 
 /// Rewrite a Statsig (`/api/eval/sdk-...`) feature evaluation body.
-/// Normalises `attributes.entrypoint` to `cli`.
+/// Recursive normaliser handles `attributes.entrypoint` along with
+/// any other classification fields Anthropic adds to the payload.
 #[must_use]
 pub fn rewrite_statsig_features(body: &Bytes) -> Bytes {
-    let Ok(mut v) = serde_json::from_slice::<Value>(body) else {
-        return body.clone();
-    };
-    let mut changed = false;
-    if let Some(attrs) = v.get_mut("attributes").and_then(|a| a.as_object_mut())
-        && attrs.contains_key("entrypoint")
-    {
-        attrs.insert("entrypoint".into(), Value::String("cli".into()));
-        changed = true;
-    }
-    if !changed {
-        return body.clone();
-    }
-    match serde_json::to_vec(&v) {
-        Ok(buf) => Bytes::from(buf),
-        Err(_) => body.clone(),
-    }
+    rewrite_body_recursive(body)
 }
 
 /// Rewrite a Datadog `/api/v2/logs` ingest body. Datadog encodes
-/// fields two ways: in the body keys (`is_interactive`,
-/// `agent_sdk_version`) AND in the `ddtags` comma-joined string
-/// (`entrypoint:sdk-cli`, `client_type:sdk-cli`). Both surfaces need
-/// rewriting.
+/// classification two ways: in the JSON body keys (handled by the
+/// recursive normaliser) AND in the `ddtags` comma-joined string
+/// (handled by [`rewrite_ddtags`]).
 #[must_use]
 pub fn rewrite_datadog_logs(body: &Bytes) -> Bytes {
     let Ok(mut v) = serde_json::from_slice::<Value>(body) else {
         return body.clone();
     };
-    let mut changed = false;
+    let mut changed = normalize_classification_fields(&mut v);
+    // ddtags is a comma-joined string outside the normal JSON object
+    // shape, so it needs string-level rewriting.
     if let Some(events) = v.as_array_mut() {
         for ev in events {
             if let Some(tags) = ev.get("ddtags").and_then(|t| t.as_str()) {
@@ -161,36 +164,25 @@ pub fn rewrite_datadog_logs(body: &Bytes) -> Bytes {
                     changed = true;
                 }
             }
-            if let Some(obj) = ev.as_object_mut() {
-                if obj.contains_key("is_interactive") {
-                    obj.insert("is_interactive".into(), Value::Bool(true));
-                    changed = true;
-                }
-                if obj.remove("agent_sdk_version").is_some() {
-                    changed = true;
-                }
-                if let Some(s) = obj.get("entrypoint").and_then(|v| v.as_str())
-                    && s != "cli"
-                {
-                    obj.insert("entrypoint".into(), Value::String("cli".into()));
-                    changed = true;
-                }
-                if let Some(s) = obj.get("client_type").and_then(|v| v.as_str())
-                    && s != "cli"
-                {
-                    obj.insert("client_type".into(), Value::String("cli".into()));
-                    changed = true;
-                }
-            }
         }
     }
     if !changed {
         return body.clone();
     }
-    match serde_json::to_vec(&v) {
-        Ok(buf) => Bytes::from(buf),
-        Err(_) => body.clone(),
+    serde_json::to_vec(&v).map_or_else(|_| body.clone(), Bytes::from)
+}
+
+/// Generic body rewriter: parse, normalise classification fields
+/// recursively, serialise back. Used by every Anthropic body
+/// endpoint we touch.
+fn rewrite_body_recursive(body: &Bytes) -> Bytes {
+    let Ok(mut v) = serde_json::from_slice::<Value>(body) else {
+        return body.clone();
+    };
+    if !normalize_classification_fields(&mut v) {
+        return body.clone();
     }
+    serde_json::to_vec(&v).map_or_else(|_| body.clone(), Bytes::from)
 }
 
 fn rewrite_ddtags(tags: &str) -> String {
@@ -211,8 +203,13 @@ fn rewrite_ddtags(tags: &str) -> String {
             {
                 return "is_interactive:true".to_string();
             }
+            if part.starts_with("agent_sdk_version:") {
+                // Drop the tag entirely; presence itself is a signal.
+                return String::new();
+            }
             part.to_string()
         })
+        .filter(|p| !p.is_empty())
         .collect::<Vec<_>>()
         .join(",")
 }
@@ -384,5 +381,77 @@ mod tests {
         assert_eq!(out_st.as_ref(), body.as_ref());
         let out_dd = rewrite_datadog_logs(&body);
         assert_eq!(out_dd.as_ref(), body.as_ref());
+    }
+
+    #[test]
+    fn recursive_normalizer_handles_top_level_fields() {
+        let mut v = json!({
+            "entrypoint": "sdk-cli",
+            "client_type": "sdk-cli",
+            "is_interactive": false,
+            "agent_sdk_version": "0.15.1"
+        });
+        assert!(normalize_classification_fields(&mut v));
+        assert_eq!(v["entrypoint"], "cli");
+        assert_eq!(v["client_type"], "cli");
+        assert_eq!(v["is_interactive"], true);
+        assert!(v.get("agent_sdk_version").is_none());
+    }
+
+    #[test]
+    fn recursive_normalizer_handles_deeply_nested_fields() {
+        let mut v = json!({
+            "a": { "b": { "c": [
+                { "entrypoint": "sdk-cli" },
+                { "wrapper": { "inner": { "client_type": "sdk-py", "is_interactive": false } } },
+                { "agent_sdk_version": "0.15.1" }
+            ] } }
+        });
+        assert!(normalize_classification_fields(&mut v));
+        assert_eq!(v["a"]["b"]["c"][0]["entrypoint"], "cli");
+        assert_eq!(v["a"]["b"]["c"][1]["wrapper"]["inner"]["client_type"], "cli");
+        assert_eq!(v["a"]["b"]["c"][1]["wrapper"]["inner"]["is_interactive"], true);
+        assert!(v["a"]["b"]["c"][2].get("agent_sdk_version").is_none());
+    }
+
+    #[test]
+    fn recursive_normalizer_idempotent_on_clean_body() {
+        let mut v = json!({
+            "events": [{ "event_data": { "entrypoint": "cli", "client_type": "cli", "is_interactive": true } }]
+        });
+        assert!(!normalize_classification_fields(&mut v), "clean body should not be marked as changed");
+    }
+
+    #[test]
+    fn recursive_normalizer_removes_agent_sdk_version_at_any_depth() {
+        let mut v = json!({
+            "level1": {
+                "agent_sdk_version": "0.15.1",
+                "level2": {
+                    "agent_sdk_version": "0.15.1",
+                    "data": "keep"
+                }
+            },
+            "agent_sdk_version": "0.15.1"
+        });
+        assert!(normalize_classification_fields(&mut v));
+        assert!(v.get("agent_sdk_version").is_none());
+        assert!(v["level1"].get("agent_sdk_version").is_none());
+        assert!(v["level1"]["level2"].get("agent_sdk_version").is_none());
+        assert_eq!(v["level1"]["level2"]["data"], "keep");
+    }
+
+    #[test]
+    fn datadog_drops_agent_sdk_version_ddtag() {
+        let body = serde_json::to_vec(&json!([{
+            "ddtags": "entrypoint:sdk-cli,agent_sdk_version:0.15.1,other:keep"
+        }]))
+        .expect("encode");
+        let out = rewrite_datadog_logs(&Bytes::from(body));
+        let parsed: Value = serde_json::from_slice(&out).expect("decode");
+        let tags = parsed[0]["ddtags"].as_str().expect("string");
+        assert!(tags.contains("entrypoint:cli"));
+        assert!(tags.contains("other:keep"));
+        assert!(!tags.contains("agent_sdk_version"), "agent_sdk_version ddtag must be dropped: {tags}");
     }
 }
