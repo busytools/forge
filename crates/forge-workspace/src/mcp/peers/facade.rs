@@ -324,38 +324,17 @@ impl WorkspaceFacade for Arc<Workspace> {
     fn register_inflight_ask(&self, ask: InflightAsk) {
         let id = ask.correlation_id.clone();
         // CorrelationId is 8 hex chars = ~4B possibilities so
-        // collisions are improbable but realistic — and a collision
-        // that silently overwrote the prior entry would (a) leave
-        // the prior caller waiting on a reply that's now routed
-        // elsewhere, and (b) orphan the prior 30-min timer (it
-        // would fire later and clobber the NEW entry). Detect the
-        // collision, warn, and abort the prior timer so at least
-        // the new ask survives intact.
-        let prev_ask = self.inflight_asks.lock().insert(id.clone(), ask);
-        if prev_ask.is_some()
-            && let Some(prev_timer) = self.inflight_timers.lock().remove(&id)
-        {
-            prev_timer.abort();
+        // collisions are improbable but realistic. A silent overwrite
+        // would leave the prior caller waiting on a reply now routed
+        // elsewhere — warn loudly so a real collision is visible.
+        let prev = self.inflight_asks.lock().insert(id.clone(), ask);
+        if prev.is_some() {
             tracing::warn!(
                 target: "forge_workspace::mcp::peers::facade",
                 correlation_id = %id,
-                "register_inflight_ask: collision on correlation id — prior ask overwritten, prior timer aborted",
+                "register_inflight_ask: collision on correlation id — prior ask overwritten",
             );
         }
-        // 30-min timer: on expiry, Workspace::expire_inflight_ask
-        // removes the entry from inflight_asks + inflight_timers,
-        // bumps stats, and dispatches the dual-path notification.
-        // Timer holds a Weak<Workspace> so it can't keep the
-        // workspace alive after shutdown.
-        let weak = Arc::downgrade(self);
-        let id_for_timer = id.clone();
-        let timer = tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_secs(30 * 60)).await;
-            if let Some(workspace) = weak.upgrade() {
-                workspace.expire_inflight_ask(&id_for_timer);
-            }
-        });
-        self.inflight_timers.lock().insert(id, timer);
     }
 
     fn resolve_correlation(&self, id: &CorrelationId) -> Option<InflightAsk> {
@@ -363,22 +342,10 @@ impl WorkspaceFacade for Arc<Workspace> {
     }
 
     fn complete_inflight_ask(&self, id: &CorrelationId) -> Option<InflightAsk> {
-        // Take the ask out of the map first; whether the reply was a
-        // Reply or a LateReply, the entry is done either way and
-        // letting the 30-min timer fire a stale notification is the
-        // bug this method exists to prevent.
-        let ask = self.inflight_asks.lock().remove(id);
-        if ask.is_some() {
-            // Abort + remove the timer if still armed. Aborting from
-            // inside the timer's own task is a no-op (timer was the
-            // caller path), but the typical case here is "reply
-            // arrived before timeout", in which case the timer is
-            // still pending and abort+drop releases it cleanly.
-            if let Some(handle) = self.inflight_timers.lock().remove(id) {
-                handle.abort();
-            }
-        }
-        ask
+        // Reply arrived; remove from the inflight map so the
+        // outgoing-counter and the resolve_correlation lookup both
+        // reflect the closed state.
+        self.inflight_asks.lock().remove(id)
     }
 
     fn peek_current_inbound_hop(&self, caller: &SessionKey) -> Option<u8> {

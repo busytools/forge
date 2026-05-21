@@ -138,26 +138,13 @@ pub enum WrappedKind {
     /// Unsolicited `tell_agent` from sender (no reply expected),
     /// OR a degraded reply where `in_reply_to` didn't resolve.
     Message,
-    /// `tell_agent` that's a reply to an earlier ask which is still
-    /// `Pending` in `inflight_asks`.
+    /// `tell_agent` that's a reply to an earlier ask.
     Reply,
-    /// `tell_agent` that's a reply to an earlier ask which has
-    /// already moved to `TimedOut`. Caller sees the LateReply tag.
-    LateReply,
     /// forge-synthesised notice landing in the CALLER's chat when
-    /// their outbound ask timed out. Bracket text: `[Ask id=X to
-    /// agent 'B' (org 'O') timed out after 30 minutes ...]`.
-    CallerTimeoutNotice,
-    /// forge-synthesised notice landing in the RECIPIENT's chat when
-    /// an inbound ask they were processing has expired on the caller
-    /// side. Bracket text: `[Ask id=X from agent 'A' (org 'O') has
-    /// expired ...]`.
-    RecipientExpiredNotice,
-    /// forge-synthesised notice landing in the CALLER's chat when
-    /// delivery to the target failed (spawn failed, target crashed,
-    /// channel closed). Bracket text: `[Ask id=X to agent 'B' (org
-    /// 'O') failed to deliver: ...]`. The `body` carries the
-    /// human-readable failure reason.
+    /// delivery to the target failed (target crashed mid-flight,
+    /// session connection closed). Bracket text:
+    /// `[Ask id=X to agent 'B' (org 'O') failed to deliver: ...]`.
+    /// The `body` carries the human-readable failure reason.
     DeliveryFailureNotice,
 }
 
@@ -243,26 +230,6 @@ impl WrappedPrompt {
                 "[Reply id={} from agent '{}' (org '{}') to your earlier ask]\n\n{}",
                 self.correlation_id, self.sender_name, self.sender_org, self.body,
             ),
-            WrappedKind::LateReply => format!(
-                "[Late reply id={} from agent '{}' (org '{}') - your ask expired before this reply was sent]\n\n{}",
-                self.correlation_id, self.sender_name, self.sender_org, self.body,
-            ),
-            WrappedKind::CallerTimeoutNotice => {
-                let trailing =
-                    if self.body.is_empty() { String::new() } else { format!("\n\n{}", self.body) };
-                format!(
-                    "[Ask id={} to agent '{}' (org '{}') timed out after 30 minutes - no reply received. Any reply after this point will be tagged late.]{}",
-                    self.correlation_id, self.sender_name, self.sender_org, trailing,
-                )
-            }
-            WrappedKind::RecipientExpiredNotice => {
-                let trailing =
-                    if self.body.is_empty() { String::new() } else { format!("\n\n{}", self.body) };
-                format!(
-                    "[Ask id={} from agent '{}' (org '{}') has expired - any reply you produce will be tagged late.]{}",
-                    self.correlation_id, self.sender_name, self.sender_org, trailing,
-                )
-            }
             WrappedKind::DeliveryFailureNotice => format!(
                 "[Ask id={} to agent '{}' (org '{}') failed to deliver: {}]",
                 self.correlation_id, self.sender_name, self.sender_org, self.body,
@@ -385,12 +352,9 @@ mod tests {
     fn wrapper(kind: WrappedKind, sender: &str, org: &str, body: &str) -> WrappedPrompt {
         WrappedPrompt {
             correlation_id: CorrelationId(match kind {
-                WrappedKind::Question
-                | WrappedKind::Reply
-                | WrappedKind::LateReply
-                | WrappedKind::CallerTimeoutNotice
-                | WrappedKind::RecipientExpiredNotice
-                | WrappedKind::DeliveryFailureNotice => "q-7f3a92e0".to_owned(),
+                WrappedKind::Question | WrappedKind::Reply | WrappedKind::DeliveryFailureNotice => {
+                    "q-7f3a92e0".to_owned()
+                }
                 WrappedKind::Message => "t-c45a8f12".to_owned(),
             }),
             kind,
@@ -450,43 +414,6 @@ mod tests {
             "got: {prose}",
         );
         assert!(prose.ends_with("We use pgtemp for postgres fixtures."));
-    }
-
-    #[test]
-    fn wrapped_prompt_late_reply_prose_matches_mockup() {
-        let w = wrapper(WrappedKind::LateReply, "granite-backend", "Granite", "We use pgtemp.");
-        let prose = w.to_prose();
-        assert!(
-            prose.starts_with(
-                "[Late reply id=q-7f3a92e0 from agent 'granite-backend' (org 'Granite') - your ask expired before this reply was sent]",
-            ),
-            "got: {prose}",
-        );
-    }
-
-    #[test]
-    fn wrapped_prompt_caller_timeout_notice_prose() {
-        let w = wrapper(WrappedKind::CallerTimeoutNotice, "granite-backend", "Granite", "");
-        let prose = w.to_prose();
-        assert!(
-            prose.starts_with(
-                "[Ask id=q-7f3a92e0 to agent 'granite-backend' (org 'Granite') timed out after 30 minutes - no reply received.",
-            ),
-            "got: {prose}",
-        );
-        assert!(prose.ends_with("tagged late.]"), "no trailing body when empty; got: {prose}");
-    }
-
-    #[test]
-    fn wrapped_prompt_recipient_expired_notice_prose() {
-        let w = wrapper(WrappedKind::RecipientExpiredNotice, "forge", "Personal", "");
-        let prose = w.to_prose();
-        assert!(
-            prose.starts_with(
-                "[Ask id=q-7f3a92e0 from agent 'forge' (org 'Personal') has expired - any reply you produce will be tagged late.]",
-            ),
-            "got: {prose}",
-        );
     }
 
     #[test]

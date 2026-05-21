@@ -328,7 +328,7 @@ impl Tool for TellAgent {
         };
         let (kind, reply_target_key) =
             classify_tell(&*self.facade, &args.target, in_reply_to_id.as_ref());
-        let is_reply = matches!(kind, WrappedKind::Reply | WrappedKind::LateReply);
+        let is_reply = matches!(kind, WrappedKind::Reply);
 
         let correlation_id = CorrelationId::new_tell();
         let wrapped = WrappedPrompt {
