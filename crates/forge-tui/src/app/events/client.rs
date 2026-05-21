@@ -254,6 +254,9 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
                 session.peer_badges = stats;
             }
         }
+        SessionUpdate::WorkerStatusChanged { .. } => {
+            // TODO Task 16: route to projects-pane tree-child render.
+        }
         SessionUpdate::PeerEnvelopeAppended { session_id, wrapped } => {
             // Workspace no longer forges an SDK `Message::User`
             // carrying peer prose — it emits the typed envelope
