@@ -68,12 +68,32 @@ impl std::fmt::Debug for PendingInteractionSlot {
     }
 }
 
+/// Synchronous return from `Command::SpawnWorker` - the session_id
+/// that the new worker was issued and the tag value applied. Threaded
+/// back to the calling `workers__spawn` Tool impl via the oneshot
+/// receiver so the LLM sees `{session_id, tag}` in the tool result.
+#[derive(Debug, Clone)]
+pub struct WorkerSpawnReply {
+    pub session_id: String,
+    pub tag: String,
+}
+
+/// Mutation kind for a `SessionUpdate::WorkerStatusChanged` event.
+/// `Added` and `StatusChanged` carry a fresh `WorkerStatus` snapshot;
+/// `Removed` carries the last-known snapshot for symmetry but the TUI
+/// reducer treats it as a delete.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkerStatusAction {
+    Added,
+    Removed,
+    StatusChanged,
+}
+
 /// Command envelope: forge-tui -> forge-workspace.
 ///
 /// Every variant carries a `SessionKey` identifying the target
 /// session task. `Workspace::dispatch` fans the variant into the
 /// matching task's command receiver.
-#[derive(Debug)]
 pub enum Command {
     Prompt {
         key: SessionKey,
@@ -171,6 +191,35 @@ pub enum Command {
         target_project: String,
         wrapped: WrappedPrompt,
     },
+    /// Spawn a new worker session in `project_key`. Dispatched by
+    /// the `workers__spawn` MCP Tool impl after caller-tag validation.
+    /// `return_to` carries the spawn result back to the calling tool
+    /// invocation; `Ok((session_id, tag))` on success, `Err(message)`
+    /// on failure (e.g. tag-write failed; see spawn handler).
+    SpawnWorker {
+        project_key: crate::ProjectKey,
+        label: String,
+        charter: String,
+        spawned_by_session_id: String,
+        return_to: oneshot::Sender<Result<WorkerSpawnReply, String>>,
+    },
+    /// Close (terminate agent + remove from `live_workers`) the
+    /// worker identified by `label` in `project_key`. Dispatched by
+    /// the TUI's per-row close click. If duplicates exist, the latest-
+    /// spawned matching entry is removed.
+    CloseWorker {
+        project_key: crate::ProjectKey,
+        label: String,
+    },
+    /// Deliver a wrapped peer-style prompt to a worker. Same envelope
+    /// as `DeliverPeerPrompt` but addressed by worker label within
+    /// the caller's project rather than by cross-project name.
+    DeliverWorkerPrompt {
+        caller: SessionKey,
+        project_key: crate::ProjectKey,
+        target_label: String,
+        wrapped: WrappedPrompt,
+    },
 }
 
 impl Command {
@@ -195,7 +244,98 @@ impl Command {
             Self::SpawnProject { .. }
             | Self::SpawnSession { .. }
             | Self::StartDefault { .. }
-            | Self::DeliverPeerPrompt { .. } => None,
+            | Self::DeliverPeerPrompt { .. }
+            | Self::SpawnWorker { .. }
+            | Self::CloseWorker { .. }
+            | Self::DeliverWorkerPrompt { .. } => None,
+        }
+    }
+}
+
+impl std::fmt::Debug for Command {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Custom Debug: discriminant + routing key (and a few cheap
+        // identifying fields) only. `oneshot::Sender` on `SpawnWorker`
+        // isn't Debug, so deriving isn't an option; payloads can be
+        // bulky and aren't useful in trace output.
+        match self {
+            Self::Prompt { key, .. } => {
+                f.debug_struct("Prompt").field("key", key).finish_non_exhaustive()
+            }
+            Self::Cancel { key } => f.debug_struct("Cancel").field("key", key).finish(),
+            Self::SetMode { key, mode } => {
+                f.debug_struct("SetMode").field("key", key).field("mode", mode).finish()
+            }
+            Self::SetModel { key, model } => {
+                f.debug_struct("SetModel").field("key", key).field("model", model).finish()
+            }
+            Self::NewSession { key, cwd, .. } => f
+                .debug_struct("NewSession")
+                .field("key", key)
+                .field("cwd", cwd)
+                .finish_non_exhaustive(),
+            Self::ResumeSession { key, session_id, cwd, .. } => f
+                .debug_struct("ResumeSession")
+                .field("key", key)
+                .field("session_id", session_id)
+                .field("cwd", cwd)
+                .finish_non_exhaustive(),
+            Self::RespondPermission { key, tool_id, .. } => f
+                .debug_struct("RespondPermission")
+                .field("key", key)
+                .field("tool_id", tool_id)
+                .finish_non_exhaustive(),
+            Self::RespondQuestion { key, tool_id, .. } => f
+                .debug_struct("RespondQuestion")
+                .field("key", key)
+                .field("tool_id", tool_id)
+                .finish_non_exhaustive(),
+            Self::ReconnectMcpServer { key, server_name } => f
+                .debug_struct("ReconnectMcpServer")
+                .field("key", key)
+                .field("server_name", server_name)
+                .finish(),
+            Self::ToggleMcpServer { key, server_name, enabled } => f
+                .debug_struct("ToggleMcpServer")
+                .field("key", key)
+                .field("server_name", server_name)
+                .field("enabled", enabled)
+                .finish(),
+            Self::SpawnProject { project_name, .. } => f
+                .debug_struct("SpawnProject")
+                .field("project_name", project_name)
+                .finish_non_exhaustive(),
+            Self::SpawnSession { session_id, .. } => f
+                .debug_struct("SpawnSession")
+                .field("session_id", session_id)
+                .finish_non_exhaustive(),
+            Self::StartDefault { project_name, .. } => f
+                .debug_struct("StartDefault")
+                .field("project_name", project_name)
+                .finish_non_exhaustive(),
+            Self::DeliverPeerPrompt { caller, target_project, .. } => f
+                .debug_struct("DeliverPeerPrompt")
+                .field("caller", caller)
+                .field("target_project", target_project)
+                .finish_non_exhaustive(),
+            Self::SpawnWorker { project_key, label, spawned_by_session_id, .. } => f
+                .debug_struct("SpawnWorker")
+                .field("project_key", project_key)
+                .field("label", label)
+                .field("spawned_by_session_id", spawned_by_session_id)
+                .field("return_to", &"<oneshot::Sender>")
+                .finish_non_exhaustive(),
+            Self::CloseWorker { project_key, label } => f
+                .debug_struct("CloseWorker")
+                .field("project_key", project_key)
+                .field("label", label)
+                .finish(),
+            Self::DeliverWorkerPrompt { caller, project_key, target_label, .. } => f
+                .debug_struct("DeliverWorkerPrompt")
+                .field("caller", caller)
+                .field("project_key", project_key)
+                .field("target_label", target_label)
+                .finish_non_exhaustive(),
         }
     }
 }
@@ -380,6 +520,16 @@ pub enum SessionUpdate {
         key: SessionKey,
         stats: PeerInflightStats,
     },
+    /// Workspace pushed a change to `live_workers[project_key]`. The
+    /// TUI reducer updates the projects pane's tree-children based on
+    /// `action`. `status` is the snapshot at the moment of the change
+    /// (relevant for Added and StatusChanged; ignored for Removed but
+    /// carried for symmetry).
+    WorkerStatusChanged {
+        project_key: crate::ProjectKey,
+        action: WorkerStatusAction,
+        status: forge_primitives::WorkerStatus,
+    },
     /// A peer-coordination envelope arrived at session `session_id`.
     /// Carries the typed `WrappedPrompt` so the TUI reducer can build
     /// the chat-side echo from real fields instead of having the
@@ -433,6 +583,7 @@ impl SessionUpdate {
             | Self::PluginsInventoryRefreshFailed { .. }
             | Self::PluginsCliActionSucceeded { .. }
             | Self::PluginsCliActionFailed { .. }
+            | Self::WorkerStatusChanged { .. }
             | Self::FatalError(..) => None,
         }
     }
@@ -550,6 +701,12 @@ impl std::fmt::Debug for SessionUpdate {
                 .field("key", key)
                 .field("stats", stats)
                 .finish(),
+            Self::WorkerStatusChanged { project_key, action, status } => f
+                .debug_struct("WorkerStatusChanged")
+                .field("project_key", project_key)
+                .field("action", action)
+                .field("label", &status.label)
+                .finish_non_exhaustive(),
             Self::PeerEnvelopeAppended { session_id, wrapped } => f
                 .debug_struct("PeerEnvelopeAppended")
                 .field("session_id", session_id)
@@ -568,4 +725,42 @@ pub enum DispatchError {
     UnknownSession(SessionKey),
     #[error("session task for key {0:?} has closed its command channel")]
     SessionClosed(SessionKey),
+}
+
+#[cfg(test)]
+mod workers_command_tests {
+    use super::*;
+    use forge_primitives::{WorkerLiveness, WorkerStatus};
+    use std::time::SystemTime;
+
+    #[test]
+    fn worker_status_action_added_constructs() {
+        let action = WorkerStatusAction::Added;
+        assert!(format!("{action:?}").contains("Added"));
+    }
+
+    #[test]
+    fn worker_spawn_reply_constructs() {
+        let r = WorkerSpawnReply {
+            session_id: "abc".into(),
+            tag: "forge:worker:reviewer".into(),
+        };
+        assert_eq!(r.tag, "forge:worker:reviewer");
+    }
+
+    #[test]
+    fn worker_status_session_update_variant_compiles() {
+        let _u = SessionUpdate::WorkerStatusChanged {
+            project_key: crate::ProjectKey::new("test"),
+            action: WorkerStatusAction::Added,
+            status: WorkerStatus {
+                label: "reviewer".into(),
+                charter: "you are a reviewer".into(),
+                status: WorkerLiveness::Running,
+                session_id: "abc".into(),
+                spawned_at: SystemTime::UNIX_EPOCH,
+                spawned_by_session_id: "lead-uuid".into(),
+            },
+        };
+    }
 }

@@ -698,7 +698,10 @@ pub(crate) fn execute_command_via_handle(
         misrouted @ (Command::SpawnProject { .. }
         | Command::SpawnSession { .. }
         | Command::StartDefault { .. }
-        | Command::DeliverPeerPrompt { .. }) => {
+        | Command::DeliverPeerPrompt { .. }
+        | Command::SpawnWorker { .. }
+        | Command::CloseWorker { .. }
+        | Command::DeliverWorkerPrompt { .. }) => {
             tracing::warn!(
                 target: "forge_workspace::session_task",
                 key = %key.as_str(),
