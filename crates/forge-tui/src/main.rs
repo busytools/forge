@@ -76,6 +76,16 @@ fn run() -> anyhow::Result<()> {
             return Err(anyhow::anyhow!("forge: {err}"));
         }
 
+        // Synchronously warm the account-usage cache so the account
+        // picker has real tier data for every account before any
+        // project auto-spawn fires inside `create_app`. Bounded
+        // internally so a stuck probe can't stall startup beyond a
+        // few seconds. See `Workspace::warm_account_usage_cache`
+        // for the bug this prevents (cold-start tier-0 ties on
+        // forge.toml definition order picking rate-limited
+        // accounts).
+        workspace.warm_account_usage_cache().await;
+
         // Create the app (instant, no I/O). The TUI holds an
         // `Arc<Workspace>` clone; main keeps the original so it
         // can drain the pool after the event loop returns.

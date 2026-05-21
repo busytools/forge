@@ -80,10 +80,15 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
     crate::app::git_diff::spawn_periodic_timer(git_diff_event_tx.clone());
     crate::app::cli_version::spawn_fetch(cli_version_event_tx.clone());
     crate::app::process_scanner::spawn_ticker(process_scan_event_tx.clone());
-    // Kick off the workspace's 30s account-usage poller. Fetches OAuth
-    // usage for every [[accounts]] entry; results land in the
-    // workspace's account-usage cache and the TUI's bottom panel
-    // reads from there via `Workspace::usage_for`.
+    // Kick off the 60 s background account-usage poller. The first
+    // probe round was driven synchronously by `main` via
+    // `workspace.warm_account_usage_cache().await` BEFORE this
+    // function ran, so the account picker already has real tier
+    // data for every account when project auto-spawn fires below.
+    // Without that warm, every account ties at tier 0 (unknown-
+    // fresh) and the picker falls through to forge.toml definition
+    // order — a rate-limited account listed first gets picked over
+    // a healthy one listed later.
     workspace.start_usage_poller();
     let perf_path = match crate::logging::resolve_perf_path(cli) {
         Ok(path) => path,

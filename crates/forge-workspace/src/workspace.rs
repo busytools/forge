@@ -37,6 +37,16 @@ use crate::views::{ProjectView, SessionView};
 /// naturally.
 const USAGE_POLL_INTERVAL: Duration = Duration::from_secs(60);
 
+/// Time budget for `warm_account_usage_cache` to drive the first
+/// per-account usage probe synchronously at startup. Bounded so a
+/// stuck probe (network hang past the per-request 8 s timeout, or
+/// an unusually deep account list) can't stall the launchpad
+/// indefinitely. Accounts whose probe doesn't return within this
+/// window land in the same place they would have without the warm
+/// (no snapshot + maybe a last_error) and the picker uses whatever
+/// signal is available.
+const USAGE_WARMUP_BUDGET: Duration = Duration::from_secs(5);
+
 /// Multi-session orchestrator. Owns the project catalog snapshot
 /// loaded from `<config_dir>/forge.toml` and the pool of currently
 /// spawned [`forge_agent::Agent`] handles, one per active session.
@@ -545,17 +555,34 @@ impl Workspace {
         Ok(arc)
     }
 
-    /// Spawn the 30 s background account-usage poller. Fetches
+    /// Synchronously drive the first account-usage probe so the
+    /// account picker has real tier data before any project spawn
+    /// fires. Without this every account sits at tier 0 (unknown-
+    /// fresh) at cold start and the picker ties on `forge.toml`
+    /// definition order — a rate-limited account that happens to
+    /// come first in the file gets picked over a healthy one
+    /// further down the list, because there's no usage snapshot yet
+    /// to mark it as rate-limited.
+    ///
+    /// Bounded at [`USAGE_WARMUP_BUDGET`] so a hanging probe can't
+    /// stall startup. Accounts whose probe doesn't return in that
+    /// window stay at tier 0 (or earlier set_last_error tier) and
+    /// the picker falls back to definition order for them.
+    pub async fn warm_account_usage_cache(self: &Arc<Self>) {
+        let _ = tokio::time::timeout(USAGE_WARMUP_BUDGET, self.refresh_account_usage_once()).await;
+    }
+
+    /// Spawn the 60 s background account-usage poller. Fetches
     /// OAuth usage for every `[[accounts]]` entry via the per-
     /// account config-dir's credentials file (no Agent spawn
     /// required), writes each result into `AccountStateMap.by_key`.
     /// The TUI's bottom panel + the spawn-path picker both read
     /// from that cache.
     ///
-    /// Call once at construction. A `usage_poller_started` flag
-    /// guards against duplicate spawns — second and later calls
-    /// return without spawning so a forge-tui programming error
-    /// can't multiply the poll rate.
+    /// Call once at construction, AFTER `warm_account_usage_cache`.
+    /// A `usage_poller_started` flag guards against duplicate
+    /// spawns — second and later calls return without spawning so a
+    /// forge-tui programming error can't multiply the poll rate.
     pub fn start_usage_poller(self: &Arc<Self>) {
         if self.usage_poller_started.swap(true, std::sync::atomic::Ordering::AcqRel) {
             tracing::debug!(
@@ -568,11 +595,16 @@ impl Workspace {
         let span = tracing::info_span!("usage_poller");
         tokio::spawn(
             async move {
-                let mut interval = tokio::time::interval(USAGE_POLL_INTERVAL);
-                // First tick fires immediately — keep it so the cache
-                // warms within seconds of startup. Subsequent ticks
-                // honour `MissedTickBehavior::Skip` so a stalled fetch
-                // can't pile up backlogged refreshes.
+                // Skip the immediate-fire tick: `warm_account_usage_cache`
+                // already drove a synchronous first probe at startup.
+                // Firing again right away would burn another round of
+                // Anthropic-side per-IP rate limiter capacity for no
+                // gain. First tick of this interval lands one
+                // USAGE_POLL_INTERVAL after the warm completed.
+                let mut interval = tokio::time::interval_at(
+                    tokio::time::Instant::now() + USAGE_POLL_INTERVAL,
+                    USAGE_POLL_INTERVAL,
+                );
                 interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 loop {
                     interval.tick().await;
