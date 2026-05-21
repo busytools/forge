@@ -83,6 +83,32 @@ pub async fn oauth_usage(config_dir: &Path) -> Result<OauthUsage, OauthUsageErro
         .await
         .map_err(|error| OauthUsageError::Network(format!("body read: {error}")))?;
 
+    // Diagnostic tracing for the "Anthropic 429s us on the first
+    // probe" suspicion. Log status + a body suffix for every
+    // non-200 response so a triage can correlate "which account /
+    // when / what did the API actually say." Successful 200s are
+    // logged at trace level (high volume — 60 s poll × N accounts)
+    // with no body. config_dir is logged at the caller (workspace
+    // poll loop) so we don't repeat it here.
+    if status == 200 {
+        tracing::trace!(
+            target: "forge_agent::cloud::oauth_usage",
+            event_name = "oauth_usage_response",
+            status,
+            outcome = "ok",
+            body_bytes = body.len(),
+        );
+    } else {
+        tracing::warn!(
+            target: "forge_agent::cloud::oauth_usage",
+            event_name = "oauth_usage_response",
+            status,
+            outcome = "non_ok",
+            retry_after_secs = ?retry_after.map(|d| d.as_secs()),
+            body_suffix = %truncated_body_suffix(&body),
+        );
+    }
+
     match status {
         200 => serde_json::from_slice::<OauthUsage>(&body)
             .map_err(|error| OauthUsageError::Decode(error.to_string())),
