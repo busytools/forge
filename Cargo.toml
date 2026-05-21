@@ -27,6 +27,7 @@ time = { version = "0.3", features = ["parsing", "formatting"] }
 unicode-normalization = "0.1"
 regex = "1"
 parking_lot = "0.12"
+httpdate = "1.0"
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 tracing-appender = "0.2"
@@ -79,6 +80,7 @@ memchr = "2"
 
 # Workspace-internal crates
 forge-primitives = { path = "crates/forge-primitives", version = "=0.16.0" }
+forge-sdk = { path = "crates/forge-sdk", version = "=0.16.0" }
 forge-agent = { path = "crates/forge-agent", version = "=0.16.0" }
 forge-workspace = { path = "crates/forge-workspace", version = "=0.16.0" }
 

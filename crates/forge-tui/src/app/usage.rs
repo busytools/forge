@@ -104,7 +104,6 @@ mod tests {
     fn formats_day_scale_reset() {
         let target = SystemTime::now() + Duration::from_secs(4 * 24 * 60 * 60 + 12 * 60 * 60);
         let formatted = format_window_reset(&UsageWindow {
-            label: "7-day",
             utilization: 50.0,
             resets_at: Some(target),
             reset_description: None,
@@ -116,7 +115,6 @@ mod tests {
     #[test]
     fn prefers_reset_description_when_no_timestamp_exists() {
         let window = UsageWindow {
-            label: "7-day",
             utilization: 40.0,
             resets_at: None,
             reset_description: Some("Resets Feb 12 at 1:30pm (Asia/Calcutta)".to_owned()),

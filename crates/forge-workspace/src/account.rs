@@ -4,37 +4,31 @@
 //! every spawn; the chosen `AccountKey` becomes the spawned Agent's
 //! `CLAUDE_CONFIG_DIR` override.
 //!
-//! **Policy — tiered, rate-limit + probe-failure aware:**
+//! **Policy — two-tier filter + pin priority:**
 //!
-//! 1. **Unknown-fresh** (no usage snapshot AND no probe failure
-//!    recorded). Sorted first in forge.toml definition order so a
-//!    just-launched forge warms unprobed accounts before falling
-//!    back to budget-based selection.
-//! 2. **Available** (5h util < 100% AND 7d util < 100%). Within
-//!    this tier:
-//!    - Lowest 5h utilisation wins (most immediate headroom).
-//!    - Tie-break on lowest 7d utilisation.
-//!    - Final tie-break on forge.toml definition order.
-//! 3. **Rate-limited with data** (5h or 7d at 100%). Definition
-//!    order within the tier.
-//! 4. **Probe rate-limited** (`/api/oauth/usage` returned 429).
-//!    Account state is opaque — almost certainly hot. Demoted
-//!    below known-rate-limited because we'd rather pick the
-//!    devil-we-know.
-//! 5. **Probe failed transiently** (network / unknown HTTP).
-//!    Demoted below probe-rate-limited but above expired creds.
-//! 6. **Credentials broken** (Expired / Unauthorized). The
-//!    account literally cannot serve a request — last-resort
-//!    only, so the spawn at least returns something rather than
-//!    blocking on an empty pool.
+//! 1. **Usable** — usage is unknown, OR usage shows under 100% on
+//!    both windows, OR last probe failed transiently (network /
+//!    other HTTP). The picker can try this account; the spawned
+//!    `claude` either succeeds or surfaces its own rate-limit error
+//!    we can react to.
+//! 2. **Unusable** — usage shows 100% on at least one window, OR
+//!    `/api/oauth/usage` returned 429, OR credentials are expired /
+//!    unauthorized. Known to be either at the cap or unable to
+//!    authenticate.
 //!
-//! Tier 0 splits truly-cold (no probe yet) from perpetually-failing
-//! (probe failed) so a broken account doesn't pin at top-of-sort
-//! and starve the picker.
+//! Within each tier, `forge.toml` definition order wins. The pin is
+//! authoritative — the picker never load-balances on utilisation. A
+//! pin of `[Granite, Granite1, Personal]` means "pick Granite when
+//! it's usable; if Granite is at 100% or 429-throttled, fall through
+//! to Granite1; only reach Personal when both above are blocked."
 //!
-//! No LRU, no round-robin, no fallback outside the project's pin.
-//! Rate-limited accounts are visible in the panel bars so the user
-//! can manually broaden the pin or wait for the window to reset.
+//! If every account in the pin is Unusable, the picker still returns
+//! the first one in pin order so the spawn doesn't fail outright —
+//! the user gets visible feedback from the spawned subprocess's own
+//! 401/429 rather than from forge silently refusing.
+//!
+//! Rate-limited accounts are visible in the bottom-panel bars so the
+//! user can manually broaden the pin or wait for the window to reset.
 
 use std::path::PathBuf;
 
@@ -114,7 +108,7 @@ impl AccountStateMap {
     /// Empty map for the `testing` feature's `Workspace::testing_stub`.
     /// Production code paths reach this map only via account pickers
     /// (`pick_for_project`), which a test fixture should never exercise.
-    #[cfg(feature = "testing")]
+    #[cfg(any(test, feature = "testing"))]
     pub fn empty_for_test() -> Self {
         Self { ordered_keys: Vec::new(), by_key: std::collections::HashMap::new() }
     }
@@ -138,6 +132,40 @@ impl AccountStateMap {
             );
         }
         Self { ordered_keys, by_key }
+    }
+
+    /// Seed the in-memory map from a previously-persisted cache.
+    /// Each known account that appears in `cached` gets its `usage`
+    /// populated; unknown cache entries (account removed from
+    /// forge.toml) are ignored. Does NOT clear `last_error` or
+    /// `next_probe_at` — the cache is purely seed data; the live
+    /// poller still drives backoff. Used by `Workspace::new` to make
+    /// the launchpad picker non-empty on cold boot.
+    pub fn seed_from_cache(
+        &mut self,
+        cached: &std::collections::BTreeMap<String, crate::account_cache::CachedAccountUsage>,
+    ) {
+        for (name, entry) in cached {
+            let key = AccountKey(name.clone());
+            if let Some(state) = self.by_key.get_mut(&key) {
+                state.usage = Some(entry.snapshot.clone());
+            }
+        }
+    }
+
+    /// Snapshot the per-account `usage` for writing to the on-disk
+    /// cache. Accounts with no live snapshot are omitted so the cache
+    /// file doesn't grow placeholders.
+    pub fn snapshots_for_cache(
+        &self,
+    ) -> std::collections::BTreeMap<String, crate::account_cache::CachedAccountUsage> {
+        let mut out = std::collections::BTreeMap::new();
+        for (key, state) in &self.by_key {
+            if let Some(snapshot) = state.usage.clone() {
+                out.insert(key.0.clone(), crate::account_cache::CachedAccountUsage { snapshot });
+            }
+        }
+        out
     }
 
     /// Look up the on-disk config_dir for `key`. Used by the
@@ -193,7 +221,19 @@ impl AccountStateMap {
         if let Some(state) = self.by_key.get_mut(key) {
             state.last_error = Some(status);
             state.consecutive_failures = state.consecutive_failures.saturating_add(1);
-            let delay = retry_after.unwrap_or_else(|| backoff_delay(state.consecutive_failures));
+            // Anthropic returns `Retry-After: 0` on the /api/oauth/usage
+            // 429 path, which is "no specific hint" rather than "you can
+            // retry now". Trusting it literally schedules next_probe_at
+            // at the same instant and the next round re-trips the same
+            // rate limit — that's the burst-probe behaviour the warm
+            // loop kept hitting. Treat any sub-second hint as missing
+            // and fall through to the exponential default
+            // (starts at 30 s), so the leaky-bucket actually gets
+            // a chance to refill.
+            let delay = match retry_after {
+                Some(d) if d >= std::time::Duration::from_secs(1) => d,
+                _ => backoff_delay(state.consecutive_failures),
+            };
             state.next_probe_at = Some(std::time::Instant::now() + delay);
         }
     }
@@ -256,27 +296,17 @@ impl AccountStateMap {
             })
             .collect();
         candidates.sort_by(|a, b| {
+            // Priority-order policy: first account in pin order that
+            // isn't saturated (tier 2) wins. Tier still gates so a
+            // saturated first-pin account (tier 3+) cleanly falls
+            // through to the next pin entry that's healthier. Within
+            // a tier, ties always go to forge.toml definition order
+            // — no load-balancing on utilisation. The user's pin
+            // expresses intent; the picker just respects it and
+            // skips clearly-saturated accounts.
             let tier_a = tier_of(a.2, a.3);
             let tier_b = tier_of(b.2, b.3);
-            tier_a.cmp(&tier_b).then_with(|| {
-                // Within the same tier: known-vs-known sorts by 5h
-                // util ascending then 7d util ascending then
-                // definition order. Both-unknown + mixed (which the
-                // tier sort already segregated, defensive) fall
-                // through to definition order.
-                if let (Some(sa), Some(sb)) = (a.2, b.2) {
-                    let f_a = five_hour_util(sa);
-                    let f_b = five_hour_util(sb);
-                    let s_a = seven_day_util(sa);
-                    let s_b = seven_day_util(sb);
-                    f_a.partial_cmp(&f_b)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                        .then_with(|| s_a.partial_cmp(&s_b).unwrap_or(std::cmp::Ordering::Equal))
-                        .then_with(|| a.0.cmp(&b.0))
-                } else {
-                    a.0.cmp(&b.0)
-                }
-            })
+            tier_a.cmp(&tier_b).then_with(|| a.0.cmp(&b.0))
         });
         // Diagnostic log — one line per pick decision listing the
         // tier and probe state of every candidate so a future
@@ -322,40 +352,31 @@ impl AccountStateMap {
     }
 }
 
-/// Tier classification driving the sort. Lower = preferred.
+/// Two-tier classification driving the sort. Lower = preferred.
+/// Within a tier, `forge.toml` pin order is the tiebreak.
 ///
-/// - **0** Unknown-fresh: no usage snapshot yet AND no probe error
-///   recorded — picking warms the cache.
-/// - **1** Available: usage known, under 100% on both windows.
-/// - **2** Rate-limited (data-known): usage poll succeeded, account
-///   has hit 100% on at least one window.
-/// - **3** Probe rate-limited: the `/api/oauth/usage` endpoint
-///   itself returned 429. We can't see the usage, but a persistent
-///   probe-429 is a strong signal the account is hot — don't prefer
-///   it over accounts with healthy probes.
-/// - **4** Probe failed transiently (network / unknown HTTP): treat
-///   as unknown-fresh equivalent BUT demoted below available so a
-///   healthy-but-unprobed-account doesn't outrank a known-available
-///   one.
-/// - **5** Credentials broken (expired / unauthorized): the account
-///   literally cannot serve a request without re-login. Last-resort
-///   only.
+/// - **0** Usable: usage unknown (no probe yet), OR usage known
+///   under 100% on both windows, OR last probe failed transiently
+///   (network / unknown HTTP — we just don't know yet). The picker
+///   can try this account.
+/// - **1** Unusable: usage shows 100% on at least one window, OR
+///   `/api/oauth/usage` returned 429, OR credentials are expired /
+///   unauthorized. Either at the cap or unable to authenticate.
 ///
-/// Without the last_error consultation, accounts whose probe
-/// perpetually fails sit at tier 0 forever and dominate the sort —
-/// the picker keeps choosing them despite having no idea if they're
-/// actually usable.
+/// Collapsed from a six-tier system per user request — the simpler
+/// shape matches the mental model "skip rate-limited, pick first
+/// available in pin order."
 fn tier_of(usage: Option<&UsageSnapshot>, last_error: Option<UsageFetchStatus>) -> u8 {
-    match (usage, last_error) {
-        (Some(snapshot), _) if is_rate_limited(snapshot) => 2,
-        (Some(_), _) => 1,
-        // No usage yet — distinguish "still warming" from "probe
-        // failed". The error variant determines how badly we demote.
-        (None, None) => 0,
-        (None, Some(UsageFetchStatus::RateLimited)) => 3,
-        (None, Some(UsageFetchStatus::NetworkFailed | UsageFetchStatus::Other)) => 4,
-        (None, Some(UsageFetchStatus::Expired | UsageFetchStatus::Unauthorized)) => 5,
-    }
+    let saturated = usage.is_some_and(is_rate_limited);
+    let probe_blocked = matches!(
+        last_error,
+        Some(
+            UsageFetchStatus::RateLimited
+                | UsageFetchStatus::Expired
+                | UsageFetchStatus::Unauthorized
+        )
+    );
+    u8::from(saturated || probe_blocked)
 }
 
 /// True when either window has hit 100% utilisation. Such an account
@@ -426,13 +447,11 @@ mod tests {
             source: UsageSourceKind::Oauth,
             fetched_at: SystemTime::UNIX_EPOCH,
             five_hour: five_hour.map(|util| UsageWindow {
-                label: "5-hour",
                 utilization: util,
                 resets_at: None,
                 reset_description: None,
             }),
             seven_day: seven_day.map(|util| UsageWindow {
-                label: "7-day",
                 utilization: util,
                 resets_at: None,
                 reset_description: None,
@@ -444,28 +463,29 @@ mod tests {
     }
 
     #[test]
-    fn picks_account_with_lowest_five_hour_when_neither_rate_limited() {
-        // Subspace: 5h=80% — high
-        // Granite:  5h=10% — most headroom on the immediate window
-        // Both under both windows. Picker uses lowest 5h.
+    fn priority_order_picks_first_in_pin_when_both_available() {
+        // Subspace: 5h=80%
+        // Granite:  5h=10%
+        // Both under 100% on both windows → tier 2. Priority-order
+        // policy: first in pin order wins regardless of utilisation
+        // (the user's pin expresses intent; the picker respects it).
         let mut map = AccountStateMap::new(&[make_account("Subspace"), make_account("Granite")]);
         map.set_usage(&AccountKey("Subspace".to_owned()), snapshot(Some(80.0), Some(60.0)));
         map.set_usage(&AccountKey("Granite".to_owned()), snapshot(Some(10.0), Some(20.0)));
         let (picked, _) = map.pick_for_project(&["Subspace".to_owned(), "Granite".to_owned()]);
-        assert_eq!(picked.0, "Granite");
+        assert_eq!(picked.0, "Subspace", "first pin entry wins when both are healthy");
     }
 
     #[test]
-    fn five_hour_is_the_primary_sort_key() {
-        // Subspace: 5h=10%, 7d=90% — high 7d but immediate headroom
+    fn priority_order_respects_pin_order_when_first_pin_has_higher_seven_day() {
+        // Subspace: 5h=10%, 7d=90% — high 7d but still under 100%
         // Granite:  5h=50%, 7d=50%
-        // Neither is rate-limited (both 7d windows < 100%), so the
-        // 5h primary key wins for Subspace.
+        // Both tier 2. Priority-order: first in pin wins.
         let mut map = AccountStateMap::new(&[make_account("Subspace"), make_account("Granite")]);
         map.set_usage(&AccountKey("Subspace".to_owned()), snapshot(Some(10.0), Some(90.0)));
         map.set_usage(&AccountKey("Granite".to_owned()), snapshot(Some(50.0), Some(50.0)));
         let (picked, _) = map.pick_for_project(&["Subspace".to_owned(), "Granite".to_owned()]);
-        assert_eq!(picked.0, "Subspace");
+        assert_eq!(picked.0, "Subspace", "pin order over utilisation");
     }
 
     #[test]
@@ -553,14 +573,15 @@ mod tests {
     }
 
     #[test]
-    fn seven_day_tiebreak_when_five_hour_equal() {
-        // Both at 5h=50, tiebreaker is 7d. Granite has lower 7d so
-        // it wins despite the alphabetic ordering.
+    fn priority_order_ignores_seven_day_difference_when_both_available() {
+        // Both at 5h=50, different 7d. Old policy used 7d as a
+        // tiebreaker; the priority-order policy respects pin order
+        // — Subspace first → Subspace wins even with worse 7d.
         let mut map = AccountStateMap::new(&[make_account("Subspace"), make_account("Granite")]);
         map.set_usage(&AccountKey("Subspace".to_owned()), snapshot(Some(50.0), Some(70.0)));
         map.set_usage(&AccountKey("Granite".to_owned()), snapshot(Some(50.0), Some(30.0)));
         let (picked, _) = map.pick_for_project(&["Subspace".to_owned(), "Granite".to_owned()]);
-        assert_eq!(picked.0, "Granite");
+        assert_eq!(picked.0, "Subspace", "pin order over 7d util");
     }
 
     #[test]
@@ -588,38 +609,36 @@ mod tests {
     }
 
     #[test]
-    fn expired_credentials_demote_to_last_resort() {
-        // Granite1 has expired OAuth (literally can't serve a
-        // request); Personal has working probe but is fully rate-
-        // limited (tier 2). Personal still wins because tier 2
-        // ranks above tier 5 (Expired).
+    fn expired_creds_and_saturated_both_unusable_pin_order_decides() {
+        // Both accounts are unusable in different ways: Granite1's
+        // OAuth has expired, Personal is fully rate-limited. Under
+        // the two-tier model both fall into tier 1 (Unusable) so
+        // pin order decides — Granite1 wins as first in pin.
         let mut map = AccountStateMap::new(&[make_account("Granite1"), make_account("Personal")]);
         map.set_last_error(&AccountKey("Granite1".to_owned()), UsageFetchStatus::Expired, None);
         map.set_usage(&AccountKey("Personal".to_owned()), snapshot(Some(100.0), Some(100.0)));
         let (picked, _) = map.pick_for_project(&["Granite1".to_owned(), "Personal".to_owned()]);
-        assert_eq!(picked.0, "Personal", "rate-limited-but-callable beats expired-can't-serve");
+        assert_eq!(picked.0, "Granite1", "all-unusable falls back to pin order");
     }
 
     #[test]
-    fn fresh_unknown_still_wins_over_known_available() {
-        // True cold-cache case: no last_error, no usage. Granite
-        // has no probe attempt yet → tier 0 → preferred over
-        // Personal which has known-available usage (tier 1).
-        // Confirms the original "warm the cache" behaviour survives
-        // for accounts that haven't been polled yet.
+    fn unknown_and_available_both_usable_pin_order_decides() {
+        // Both accounts are in tier 0 (Usable) under the two-tier
+        // model — Granite is unprobed (unknown), Personal has known
+        // healthy usage. Pin order decides → Granite wins.
         let mut map = AccountStateMap::new(&[make_account("Granite"), make_account("Personal")]);
         map.set_usage(&AccountKey("Personal".to_owned()), snapshot(Some(30.0), Some(30.0)));
-        // Granite has no usage AND no last_error → tier 0.
         let (picked, _) = map.pick_for_project(&["Granite".to_owned(), "Personal".to_owned()]);
-        assert_eq!(picked.0, "Granite");
+        assert_eq!(picked.0, "Granite", "both usable → pin order");
     }
 
     #[test]
-    fn network_failure_demotes_below_available() {
-        // Granite probe failed with a network error (tier 4); Personal
-        // has a healthy probe at moderate utilisation (tier 1).
-        // Personal wins — we'd rather pick an account whose state
-        // we know than one whose state we don't.
+    fn network_failure_treated_as_usable_pin_order_decides() {
+        // Granite's probe failed transiently (network error) — we
+        // don't actually know it's saturated, so the two-tier model
+        // keeps it in tier 0 (Usable). Personal has a healthy probe
+        // also in tier 0. Both usable → pin order wins → Granite
+        // (first in pin).
         let mut map = AccountStateMap::new(&[make_account("Granite"), make_account("Personal")]);
         map.set_last_error(
             &AccountKey("Granite".to_owned()),
@@ -628,7 +647,7 @@ mod tests {
         );
         map.set_usage(&AccountKey("Personal".to_owned()), snapshot(Some(50.0), Some(50.0)));
         let (picked, _) = map.pick_for_project(&["Granite".to_owned(), "Personal".to_owned()]);
-        assert_eq!(picked.0, "Personal");
+        assert_eq!(picked.0, "Granite", "transient network error doesn't demote — pin order wins");
     }
 
     #[test]
@@ -699,12 +718,8 @@ mod tests {
     fn seven_day_util_takes_max_across_windows() {
         // seven_day = 30, seven_day_opus = 80 → binding = max = 80
         let mut s = snapshot(Some(20.0), Some(30.0));
-        s.seven_day_opus = Some(UsageWindow {
-            label: "7-day Opus",
-            utilization: 80.0,
-            resets_at: None,
-            reset_description: None,
-        });
+        s.seven_day_opus =
+            Some(UsageWindow { utilization: 80.0, resets_at: None, reset_description: None });
         assert!((seven_day_util(&s) - 80.0).abs() < f64::EPSILON);
     }
 

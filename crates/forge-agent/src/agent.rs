@@ -311,8 +311,9 @@ impl Agent {
         config_dir: PathBuf,
         display_name: Option<String>,
         proxy: Option<forge_sdk::transport::proxy::ProxyHandle>,
+        extra_mcp_servers: Vec<(String, forge_sdk::mcp::McpServer)>,
     ) -> AgentHandle {
-        let bridge = ForgeSdkBridge::new(config_dir, display_name, proxy);
+        let bridge = ForgeSdkBridge::new(config_dir, display_name, proxy, extra_mcp_servers);
         let agent_event_rx = bridge.take_events().unwrap_or_else(|| mpsc::unbounded_channel().1);
 
         let (commands_tx, commands_rx) = mpsc::unbounded_channel::<AgentCommand>();

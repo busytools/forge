@@ -31,6 +31,9 @@ pub(super) fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
             if try_toggle_tool_call_at_click(app, mouse) {
                 return;
             }
+            if try_toggle_peer_user_block_at_click(app, mouse) {
+                return;
+            }
             if let Some(pt) = mouse_point_to_selection(app, mouse) {
                 *app.selection_mut() = Some(super::super::SelectionState {
                     kind: pt.kind,
@@ -450,6 +453,84 @@ fn locate_tool_call_block_at_click(app: &App, mouse: MouseEvent) -> Option<(usiz
         msg_height = app.viewport().message_height(msg_idx),
         "click did not match any tool's recorded y-range",
     );
+    None
+}
+
+/// Peer-block (#114) inbound twin of [`try_toggle_tool_call_at_click`].
+/// Inbound peer envelopes are user-message TextBlocks (the workspace's
+/// synthetic Message::User echo, pattern-matched at render time by
+/// `peer_block::detect_inbound`). They don't have a `ToolCallInfo`
+/// to hang collapse state off of, so the relevant flag lives on
+/// `TextBlock::peer_collapsed_override` and the renderer stamps the
+/// same `peer_last_measured_y/height/width` triple a tool call gets.
+fn try_toggle_peer_user_block_at_click(app: &mut App, mouse: MouseEvent) -> bool {
+    let Some((msg_idx, block_idx)) = locate_peer_user_block_at_click(app, mouse) else {
+        return false;
+    };
+    let global_default = app.tools_collapsed;
+    let Some(MessageBlock::Text(text_block)) =
+        app.active_messages_mut()[msg_idx].blocks.get_mut(block_idx)
+    else {
+        return false;
+    };
+    let current = text_block.peer_collapsed_override.unwrap_or(global_default);
+    let new_collapsed = !current;
+    text_block.peer_collapsed_override = Some(new_collapsed);
+    app.invalidate_layout(crate::app::InvalidationLevel::MessageChanged(msg_idx));
+    tracing::debug!(
+        target: crate::logging::targets::APP_INPUT,
+        event_name = "peer_user_block_click_toggled",
+        msg_idx,
+        block_idx,
+        new_collapsed,
+        "click toggled per-row peer-block collapse override (inbound)"
+    );
+    true
+}
+
+/// Map the chat-area click to a `(msg_idx, block_idx)` pair for an
+/// inbound peer TextBlock. Same shape as
+/// [`locate_tool_call_block_at_click`] — walks `app.messages()[msg_idx].blocks`
+/// looking for `MessageBlock::Text` whose `peer_last_measured_height >
+/// 0` and whose recorded y-range contains the click.
+fn locate_peer_user_block_at_click(app: &App, mouse: MouseEvent) -> Option<(usize, usize)> {
+    let chat_area = app.rendered_chat_area;
+    if chat_area.width == 0 || chat_area.height == 0 {
+        return None;
+    }
+    if mouse.column < chat_area.x
+        || mouse.column >= chat_area.right()
+        || mouse.row < chat_area.y
+        || mouse.row >= chat_area.bottom()
+    {
+        return None;
+    }
+    let local_row = (mouse.row - chat_area.y) as usize;
+    let absolute_row = local_row.checked_add(app.viewport().scroll_offset)?;
+    if app.messages().is_empty() {
+        return None;
+    }
+    let msg_idx = app.viewport().find_first_visible(absolute_row);
+    if msg_idx >= app.messages().len() {
+        return None;
+    }
+    let msg_start = app.viewport().cumulative_height_before(msg_idx);
+    let row_within_msg = absolute_row.checked_sub(msg_start)?;
+    let width = chat_area.width;
+    for (block_idx, block) in app.messages()[msg_idx].blocks.iter().enumerate() {
+        let MessageBlock::Text(text_block) = block else {
+            continue;
+        };
+        if text_block.peer_last_measured_height == 0 || text_block.peer_last_measured_width != width
+        {
+            continue;
+        }
+        let y_start = text_block.peer_last_measured_y_in_msg;
+        let y_end = y_start.saturating_add(text_block.peer_last_measured_height);
+        if row_within_msg >= y_start && row_within_msg < y_end {
+            return Some((msg_idx, block_idx));
+        }
+    }
     None
 }
 

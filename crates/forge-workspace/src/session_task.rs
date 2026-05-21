@@ -147,6 +147,25 @@ impl SessionTask {
                     // forwarder tasks exit instead of waiting on
                     // tool_call_ids the new session will never produce.
                     self.domain.lock().pending_interactions.clear();
+                    // Expire any inflight peer asks targeting this
+                    // session's project: the OLD session UUID is gone
+                    // (the user just `/clear`-ed, `/new`-ed, logged
+                    // out, etc.), the NEW session has no knowledge of
+                    // any q-id that was pending against the previous
+                    // identity, so no reply will ever arrive. Mirrors
+                    // the drop-hook behavior in `impl Drop for
+                    // SessionTask` below — same `TargetConnectionFailed`
+                    // reason because semantically the original target
+                    // is unreachable. Fired BEFORE `rekey_to` so the
+                    // project lookup inside `expire_target_inflight`
+                    // still resolves against the about-to-be-replaced
+                    // key.
+                    if let Some(workspace) = self.workspace.upgrade() {
+                        workspace.expire_target_inflight(
+                            &self.key,
+                            crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
+                        );
+                    }
                     self.rekey_to(&real_key);
                     self.emit(SessionUpdate::SessionReplaced {
                         key: real_key,
@@ -181,6 +200,14 @@ impl SessionTask {
                         mode,
                         history,
                     });
+                    // Drain any peer prompts buffered while this
+                    // session was pre-Connected (pushed by
+                    // spawn::handle_deliver_peer_prompt when a peer
+                    // ask hit a sleeping target). Each gets
+                    // re-dispatched as a regular Command::Prompt so
+                    // the existing prompt-delivery path handles it
+                    // uniformly with user-typed prompts.
+                    self.drain_pending_peer_prompts();
                 }
             }
             AgentEvent::AuthRequired { method_name, method_description } => {
@@ -189,6 +216,18 @@ impl SessionTask {
             }
             AgentEvent::ConnectionFailed { message } => {
                 let key = self.spawn_key.clone().unwrap_or_else(|| self.key.clone());
+                // Expire any inflight peer asks targeting THIS session
+                // before emitting the user-visible ConnectionFailed.
+                // Each ask gets the dual-path failure notification to
+                // its caller (PeerAskFailed UI state + Command::Prompt
+                // with DeliveryFailureNotice). No 30-min wait when
+                // we know the target is gone.
+                if let Some(workspace) = self.workspace.upgrade() {
+                    workspace.expire_target_inflight(
+                        &key,
+                        crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
+                    );
+                }
                 self.emit(SessionUpdate::ConnectionFailed { key, message, fatal: false });
             }
             AgentEvent::PermissionRequest { session_id, request } => {
@@ -326,6 +365,15 @@ impl SessionTask {
                 self.emit(SessionUpdate::McpSnapshot { session_id, servers, error });
             }
             AgentEvent::SdkMessage { session_id, msg } => {
+                // Clear current_inbound_hop on turn boundary so the
+                // next user-initiated turn starts the outgoing peer
+                // chain at hop=1 instead of inheriting a stale
+                // forwarded-peer hop from the prior turn.
+                // `Message::Result` is the SDK's signal that the
+                // assistant turn has fully completed.
+                if matches!(msg, forge_primitives::Message::Result { .. }) {
+                    self.domain.lock().current_inbound_hop = None;
+                }
                 self.emit(SessionUpdate::ChatAppended { session_id, msg });
             }
             AgentEvent::HookObservation {
@@ -492,6 +540,80 @@ impl SessionTask {
         );
         self.key = real_key.clone();
     }
+
+    /// Drain `DomainSession.pending_peer_prompts` after the session's
+    /// first `Connected` event. Each buffered peer prompt is
+    /// re-dispatched as a normal `Command::Prompt` against
+    /// `self.key` (now the real claude session UUID after rekey).
+    /// The existing prompt-delivery path handles it identically to a
+    /// user-typed prompt — the only difference is the prose body
+    /// carries the `[Question id=q-…]` / `[Message id=t-…]` wrapper
+    /// that the chat renderer pattern-matches into a styled peer
+    /// block (lands in C16).
+    ///
+    /// Called once per session from the first-Connected arm of
+    /// [`Self::translate_event`]. No-op when there are no buffered
+    /// prompts.
+    fn drain_pending_peer_prompts(&self) {
+        let pending: Vec<crate::mcp::peers::types::WrappedPrompt> =
+            std::mem::take(&mut self.domain.lock().pending_peer_prompts);
+        if pending.is_empty() {
+            return;
+        }
+        let Some(workspace) = self.workspace.upgrade() else { return };
+        // Same sidebar-badge bookkeeping the running-target branch of
+        // `spawn::handle_deliver_peer_prompt` does: Question wrappers
+        // bump the recipient's incoming counter so the sidebar `·N↓`
+        // reflects the just-arrived ask. The wrappers we drain here
+        // were buffered when the target was sleeping, so the bump
+        // was deferred until now. Tells / Replies / notices don't
+        // bump — same rule as the running-target path.
+        let facade = crate::mcp::peers::facade::ProdWorkspaceFacade::from_arc(&workspace);
+        for wrapped in pending {
+            if matches!(wrapped.kind, crate::mcp::peers::types::WrappedKind::Question) {
+                facade.bump_inflight_stats(
+                    &self.key,
+                    crate::mcp::peers::facade::PeerStatsDelta::IncomingPlus1,
+                );
+            }
+            // Same typed peer-envelope echo the running-target
+            // dispatch path does. Fire BEFORE the LLM-side dispatch
+            // so the user-turn ordering is natural.
+            crate::spawn::push_peer_user_turn_into_chat(&workspace, &self.key, &wrapped);
+            let text = wrapped.to_prose();
+            if let Err(err) = workspace.dispatch(crate::protocol::Command::Prompt {
+                key: self.key.clone(),
+                text,
+                attachments: Vec::new(),
+            }) {
+                tracing::warn!(
+                    target: "forge_workspace::session_task",
+                    key = %self.key.as_str(),
+                    error = ?err,
+                    "drain_pending_peer_prompts: dispatch failed; prompt dropped"
+                );
+            }
+        }
+    }
+}
+
+/// Drop hook: on SessionTask exit (any reason — graceful close,
+/// crash, panic), expire every in-flight peer ask targeting this
+/// session. The expiration fires PeerAskFailed + a synthetic
+/// DeliveryFailureNotice prompt to each caller so they aren't left
+/// waiting on a session that no longer exists.
+///
+/// Uses the stored Weak<Workspace> reference so a Workspace drop
+/// before the task drops doesn't double-fire or panic.
+impl Drop for SessionTask {
+    fn drop(&mut self) {
+        if let Some(workspace) = self.workspace.upgrade() {
+            workspace.expire_target_inflight(
+                &self.key,
+                crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
+            );
+        }
+    }
 }
 
 /// Forward a `Command` straight to `handle`. Pure transport — no
@@ -575,7 +697,8 @@ pub(crate) fn execute_command_via_handle(
         // app-level branch; they never reach this helper.
         misrouted @ (Command::SpawnProject { .. }
         | Command::SpawnSession { .. }
-        | Command::StartDefault { .. }) => {
+        | Command::StartDefault { .. }
+        | Command::DeliverPeerPrompt { .. }) => {
             tracing::warn!(
                 target: "forge_workspace::session_task",
                 key = %key.as_str(),

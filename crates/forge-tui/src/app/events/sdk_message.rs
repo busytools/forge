@@ -260,6 +260,16 @@ fn handle_user(app: &mut App, msg: Message) {
         return;
     };
     walk_user_tool_results(app, &message.content);
+    // Peer-coordination user-turn echoes (#114). `Command::Prompt`
+    // dispatched via `Workspace::deliver_peer_prompt` injects the
+    // wrapped envelope into the target session's CLI as a user turn.
+    // The CLI echoes it back as `Message::User`, but the input-submit
+    // local-push convention (the typed-user case already pushed the
+    // bubble) doesn't apply here — no local typing happened, so the
+    // chat buffer never sees the user-turn unless we push it from
+    // the SDK echo. Detected via the peer-wrapper prefix so non-peer
+    // user echoes (the existing pattern) keep their no-push behavior.
+    push_peer_envelope_user_turn_if_present(app, &message.content);
     // Sub-agent tool_use_result envelopes carry parent_tool_use_id at
     // the message level — wire the implicit parent linkage so the
     // tool_call lifecycle picks up sub-agent results correctly.
@@ -275,6 +285,56 @@ fn handle_user(app: &mut App, msg: Message) {
             Some(&parsed.content),
             Some(result),
         );
+    }
+}
+
+/// Push a peer-wrapper-prefixed user turn into the chat buffer.
+///
+/// The detection key is `peer_block::detect_inbound` — same matcher
+/// the renderer uses, so any envelope shape recognised at render time
+/// is also pushed here. Falls through silently for plain user echoes
+/// (the dominant case) so we don't double-push the locally-pushed
+/// bubble.
+fn push_peer_envelope_user_turn_if_present(
+    app: &mut App,
+    content: &[forge_primitives::ContentBlock],
+) {
+    use crate::app::{ChatMessage, MessageBlock, MessageRole, TextBlock};
+    use forge_primitives::ContentBlock;
+
+    for block in content {
+        let ContentBlock::Text { text } = block else {
+            continue;
+        };
+        if crate::ui::peer_block::detect_inbound(text).is_none() {
+            continue;
+        }
+        let blocks = vec![MessageBlock::Text(TextBlock::from_complete(text))];
+        let msg = ChatMessage::new(MessageRole::User, blocks, None);
+        // When forge is mid-turn there's an empty assistant placeholder
+        // at the tail (input_submit::dispatch_prompt pushed it before
+        // the response stream started). A blind push appends the peer
+        // user-turn AFTER the placeholder, which sandwiches the chat
+        // visually: assistant placeholder up top, peer reply below,
+        // then the streamed response eventually fills the placeholder
+        // above the reply. Insert BEFORE the active placeholder so the
+        // chronology reads cleanly: [previous user] → [peer reply] →
+        // [assistant placeholder that will fill in].
+        let placeholder_idx = app.active_turn_assistant_message_idx();
+        match placeholder_idx {
+            Some(idx) if idx <= app.messages().len() => {
+                app.insert_message_tracked(idx, msg);
+                // Re-bind the active turn pointer: the placeholder is
+                // now one slot further down because we inserted before
+                // it.
+                app.set_active_turn_assistant_message_idx(Some(idx + 1));
+            }
+            _ => {
+                app.push_message_tracked(msg);
+            }
+        }
+        app.enforce_history_retention_tracked();
+        return;
     }
 }
 

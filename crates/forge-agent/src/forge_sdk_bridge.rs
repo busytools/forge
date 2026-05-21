@@ -101,6 +101,13 @@ pub(crate) struct BridgeInner {
     /// `NODE_EXTRA_CA_CERTS`. `None` when `Agent::spawn` is called
     /// directly without a workspace (smoke tests).
     proxy: Option<ProxyHandle>,
+    /// Forge-workspace-supplied in-process MCP servers attached at
+    /// every `spawn_session` call. Today this is the per-session
+    /// `forge` MCP server with the four peer-coordination tools;
+    /// future modules (worktree, memory, …) slot in alongside under
+    /// the same `forge` server name. Cheap to clone — each entry
+    /// is just a name + a few `Arc<dyn Tool>`s.
+    extra_mcp_servers: Vec<(String, forge_sdk::mcp::McpServer)>,
 }
 
 impl ForgeSdkBridge {
@@ -117,6 +124,7 @@ impl ForgeSdkBridge {
         config_dir: PathBuf,
         display_name: Option<String>,
         proxy: Option<ProxyHandle>,
+        extra_mcp_servers: Vec<(String, forge_sdk::mcp::McpServer)>,
     ) -> Self {
         let (event_tx, events_rx) = mpsc::unbounded_channel();
         Self {
@@ -130,12 +138,22 @@ impl ForgeSdkBridge {
                 config_dir,
                 display_name,
                 proxy,
+                extra_mcp_servers,
             }),
         }
     }
 
     pub(crate) fn proxy(&self) -> Option<ProxyHandle> {
         self.inner.proxy.clone()
+    }
+
+    /// Forge-workspace-supplied in-process MCP servers to attach to
+    /// every spawned `claude` subprocess (e.g. the `forge` server
+    /// carrying the peer-coordination tools — #114 v1). Cheap-clone
+    /// via the `McpServer`'s `Arc<dyn Tool>` internals; called once
+    /// per `spawn_session` invocation.
+    pub(crate) fn extra_mcp_servers(&self) -> Vec<(String, forge_sdk::mcp::McpServer)> {
+        self.inner.extra_mcp_servers.clone()
     }
 
     pub(crate) fn event_tx(&self) -> &mpsc::UnboundedSender<AgentEvent> {
@@ -247,7 +265,7 @@ impl ForgeSdkBridge {
 #[cfg(any(test, feature = "testing"))]
 impl Default for ForgeSdkBridge {
     fn default() -> Self {
-        Self::new(PathBuf::from(TESTING_STUB_CONFIG_DIR), None, None)
+        Self::new(PathBuf::from(TESTING_STUB_CONFIG_DIR), None, None, Vec::new())
     }
 }
 
@@ -803,7 +821,7 @@ mod tests {
     use super::*;
 
     fn test_bridge() -> ForgeSdkBridge {
-        ForgeSdkBridge::new(PathBuf::from(TESTING_STUB_CONFIG_DIR), None, None)
+        ForgeSdkBridge::new(PathBuf::from(TESTING_STUB_CONFIG_DIR), None, None, Vec::new())
     }
 
     #[test]

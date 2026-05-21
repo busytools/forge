@@ -71,7 +71,7 @@ pub async fn fetch_snapshot(conn: &crate::AgentHandle) -> Result<UsageSnapshot, 
 pub fn snapshot_from_payload(
     payload: super::oauth_usage::OauthUsage,
 ) -> Result<UsageSnapshot, OauthFetchError> {
-    let five_hour = map_window(payload.five_hour, "5-hour");
+    let five_hour = map_window(payload.five_hour);
     if five_hour.is_none() {
         return Err(OauthFetchError::Failed(
             "Claude OAuth usage response did not include the current session window.".to_owned(),
@@ -81,21 +81,17 @@ pub fn snapshot_from_payload(
         source: UsageSourceKind::Oauth,
         fetched_at: SystemTime::now(),
         five_hour,
-        seven_day: map_window(payload.seven_day, "7-day"),
-        seven_day_opus: map_window(payload.seven_day_opus, "7-day Opus"),
-        seven_day_sonnet: map_window(payload.seven_day_sonnet, "7-day Sonnet"),
+        seven_day: map_window(payload.seven_day),
+        seven_day_opus: map_window(payload.seven_day_opus),
+        seven_day_sonnet: map_window(payload.seven_day_sonnet),
         extra_usage: map_extra_usage(payload.extra_usage),
     })
 }
 
-fn map_window(
-    payload: Option<super::oauth_usage::OauthUsageWindow>,
-    label: &'static str,
-) -> Option<UsageWindow> {
+fn map_window(payload: Option<super::oauth_usage::OauthUsageWindow>) -> Option<UsageWindow> {
     let payload = payload?;
     let utilization = payload.utilization?;
     Some(UsageWindow {
-        label,
         utilization: utilization.clamp(0.0, 100.0),
         resets_at: payload.resets_at.as_ref().and_then(parse_timestamp_value),
         reset_description: None,

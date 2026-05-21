@@ -86,7 +86,6 @@ fn click_intent(lifecycle: SessionLifecycleState) -> ClickIntent {
 struct PickerRow {
     project_name: String,
     org: String,
-    account_hint: String,
     last_activity_label: String,
     lifecycle: SessionLifecycleState,
     /// Last connection error message if the row is in Failed state,
@@ -133,7 +132,6 @@ fn build_picker_rows(app: &App) -> Vec<PickerRow> {
             rows.push(PickerRow {
                 project_name: project.name.clone(),
                 org: org.clone(),
-                account_hint: project.primary_account_hint(),
                 last_activity_label,
                 lifecycle,
                 error,
@@ -391,15 +389,15 @@ fn push_project_row(
         ClickIntent::Block => Style::default().fg(theme::DIM),
     };
 
-    let name_width: usize = 14;
-    let hint_width: usize = 12;
+    // No account hint — the picker doesn't run until spawn, so
+    // showing a name here would imply a decision that hasn't
+    // happened. The actual account is chosen by `pick_for_project`
+    // against live usage data when the row is clicked.
+    let name_width: usize = 26;
     let right_width: usize = 10;
 
     let name_label = truncate_to(&row.project_name, name_width);
     let name_pad = name_width.saturating_sub(name_label.chars().count());
-    let hint_label = format!("({})", row.account_hint);
-    let hint_label = truncate_to(&hint_label, hint_width);
-    let hint_pad = hint_width.saturating_sub(hint_label.chars().count());
     let right_label = truncate_to(&row.last_activity_label, right_width);
 
     let dim = Style::default().fg(theme::DIM);
@@ -428,9 +426,6 @@ fn push_project_row(
         Span::raw(" ".to_owned()),
         Span::styled(name_label, name_style),
         Span::raw(" ".repeat(name_pad)),
-        Span::raw(" ".to_owned()),
-        Span::styled(hint_label, dim),
-        Span::raw(" ".repeat(hint_pad)),
         Span::raw("  ".to_owned()),
         Span::styled(format!("{right_label:>right_width$}"), dim),
     ]));
