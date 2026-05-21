@@ -41,19 +41,58 @@ const BODY_INDENT: &str = "   ";
 /// One inbound peer block parsed from the user-turn text.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum PeerInboundKind {
-    Question { id: String, from: String, org: String, hop: u8, hop_max: u8, body: String },
-    Message { id: String, from: String, org: String, hop: u8, hop_max: u8, body: String },
-    Reply { id: String, from: String, org: String, body: String },
-    LateReply { id: String, from: String, org: String, body: String },
+    Question {
+        id: String,
+        from: String,
+        org: String,
+        hop: u8,
+        hop_max: u8,
+        body: String,
+    },
+    Message {
+        id: String,
+        from: String,
+        org: String,
+        hop: u8,
+        hop_max: u8,
+        body: String,
+    },
+    Reply {
+        id: String,
+        from: String,
+        org: String,
+        body: String,
+    },
+    LateReply {
+        id: String,
+        from: String,
+        org: String,
+        body: String,
+    },
     /// `[Ask id=... to agent 'X' (org 'Y') timed out after 30 minutes - no reply received.]`
     /// Caller-side notice that their own ask hit the 30-min timer.
-    CallerTimeout { id: String, target: String, org: String, body: String },
+    CallerTimeout {
+        id: String,
+        target: String,
+        org: String,
+        body: String,
+    },
     /// `[Ask id=... from agent 'A' (org 'O') has expired - any reply you produce will be tagged late.]`
     /// Recipient-side notice that the caller's ask has been abandoned.
-    RecipientExpired { id: String, from: String, org: String, body: String },
+    RecipientExpired {
+        id: String,
+        from: String,
+        org: String,
+        body: String,
+    },
     /// `[Ask id=... to agent 'X' (org 'Y') failed to deliver: <reason>]`
     /// Caller-side delivery failure (spawn / connection / channel).
-    DeliveryFailure { id: String, target: String, org: String, reason: String },
+    DeliveryFailure {
+        id: String,
+        target: String,
+        org: String,
+        reason: String,
+    },
 }
 
 /// One outbound peer block parsed from a `mcp__forge__peers__*`
@@ -100,36 +139,19 @@ pub(crate) fn detect_inbound(text: &str) -> Option<PeerInboundKind> {
         let (hop_str, rest) = take_until(rest, " from agent ")?;
         let (from, org) = extract_from_agent_after(rest)?;
         let (hop, hop_max) = parse_hop(hop_str).unwrap_or((1, 10));
-        return Some(PeerInboundKind::Message {
-            id: id.to_owned(),
-            from,
-            org,
-            hop,
-            hop_max,
-            body,
-        });
+        return Some(PeerInboundKind::Message { id: id.to_owned(), from, org, hop, hop_max, body });
     }
 
     if let Some(rest) = header.strip_prefix("Reply id=") {
         let (id, rest) = take_until(rest, " from agent ")?;
         let (from, org) = extract_from_agent_after(rest)?;
-        return Some(PeerInboundKind::Reply {
-            id: id.to_owned(),
-            from,
-            org,
-            body,
-        });
+        return Some(PeerInboundKind::Reply { id: id.to_owned(), from, org, body });
     }
 
     if let Some(rest) = header.strip_prefix("Late reply id=") {
         let (id, rest) = take_until(rest, " from agent ")?;
         let (from, org) = extract_from_agent_after(rest)?;
-        return Some(PeerInboundKind::LateReply {
-            id: id.to_owned(),
-            from,
-            org,
-            body,
-        });
+        return Some(PeerInboundKind::LateReply { id: id.to_owned(), from, org, body });
     }
 
     if let Some(rest) = header.strip_prefix("Ask id=") {
@@ -139,12 +161,7 @@ pub(crate) fn detect_inbound(text: &str) -> Option<PeerInboundKind> {
         {
             let id = id_before(rest, " to agent ")?;
             let (target, org) = extract_from_agent_after(rest_to)?;
-            return Some(PeerInboundKind::CallerTimeout {
-                id: id.to_owned(),
-                target,
-                org,
-                body,
-            });
+            return Some(PeerInboundKind::CallerTimeout { id: id.to_owned(), target, org, body });
         }
         // Caller-side delivery failure — `to agent 'X' (org 'Y') failed to deliver: <reason>`
         if let Some(rest_to) = rest_after_id(rest, " to agent ")
@@ -172,12 +189,7 @@ pub(crate) fn detect_inbound(text: &str) -> Option<PeerInboundKind> {
         {
             let id = id_before(rest, " from agent ")?;
             let (from, org) = extract_from_agent_after(rest_from)?;
-            return Some(PeerInboundKind::RecipientExpired {
-                id: id.to_owned(),
-                from,
-                org,
-                body,
-            });
+            return Some(PeerInboundKind::RecipientExpired { id: id.to_owned(), from, org, body });
         }
     }
 
@@ -327,9 +339,10 @@ pub(crate) fn render_outbound(kind: &PeerOutboundKind) -> Vec<Line<'static>> {
     header.spans.push(Span::raw(BODY_INDENT));
     header.spans.push(Span::styled(icon.to_owned(), Style::default().fg(accent)));
     header.spans.push(Span::raw(" "));
-    header
-        .spans
-        .push(Span::styled(label.to_owned(), Style::default().fg(accent).add_modifier(Modifier::BOLD)));
+    header.spans.push(Span::styled(
+        label.to_owned(),
+        Style::default().fg(accent).add_modifier(Modifier::BOLD),
+    ));
     header.spans.push(Span::styled(" · ".to_owned(), Style::default().fg(theme::DIM)));
     header.spans.push(Span::styled(
         target.clone(),
@@ -410,8 +423,7 @@ fn push_body_lines(lines: &mut Vec<Line<'static>>, body: &str) {
     for raw_line in truncated.lines() {
         let mut line = Line::default();
         line.spans.push(Span::raw(BODY_INDENT));
-        line.spans
-            .push(Span::styled(raw_line.to_owned(), Style::default().fg(Color::Gray)));
+        line.spans.push(Span::styled(raw_line.to_owned(), Style::default().fg(Color::Gray)));
         lines.push(line);
     }
 }
@@ -657,11 +669,8 @@ mod tests {
         };
         let lines = render_inbound(&kind);
         // Concat all body lines (skip header + blank).
-        let body_text: String = lines
-            .iter()
-            .skip(2)
-            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
-            .collect();
+        let body_text: String =
+            lines.iter().skip(2).flat_map(|l| l.spans.iter().map(|s| s.content.as_ref())).collect();
         assert!(
             body_text.contains('\u{2026}'),
             "truncation marker should appear in long body: {body_text:?}"

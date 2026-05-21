@@ -657,8 +657,9 @@ fn peer_badge_spans(
 
     // Failure badges fade after 60 s. `last_failure_at` is `None`
     // when no failure has ever fired for this session.
-    let failures_fresh = last_failure_at
-        .is_some_and(|when| now.checked_duration_since(when).is_some_and(|d| d < PEER_FAILURE_FADE));
+    let failures_fresh = last_failure_at.is_some_and(|when| {
+        now.checked_duration_since(when).is_some_and(|d| d < PEER_FAILURE_FADE)
+    });
     if failures_fresh {
         if stats.timed_out > 0 {
             push(Span::styled(
@@ -1450,12 +1451,8 @@ mod tests {
 
     #[test]
     fn peer_badge_spans_renders_outgoing_and_incoming() {
-        let stats = PeerInflightStats {
-            outgoing: 2,
-            incoming: 1,
-            timed_out: 0,
-            delivery_failed: 0,
-        };
+        let stats =
+            PeerInflightStats { outgoing: 2, incoming: 1, timed_out: 0, delivery_failed: 0 };
         let (spans, width) = peer_badge_spans(&stats, None, Instant::now());
         let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.contains("\u{2191}"), "outgoing arrow present: {text}");
@@ -1468,12 +1465,8 @@ mod tests {
 
     #[test]
     fn peer_badge_spans_shows_failures_when_fresh() {
-        let stats = PeerInflightStats {
-            outgoing: 0,
-            incoming: 0,
-            timed_out: 1,
-            delivery_failed: 1,
-        };
+        let stats =
+            PeerInflightStats { outgoing: 0, incoming: 0, timed_out: 1, delivery_failed: 1 };
         let now = Instant::now();
         let (spans, _) = peer_badge_spans(&stats, Some(now), now);
         let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
@@ -1483,12 +1476,8 @@ mod tests {
 
     #[test]
     fn peer_badge_spans_fades_failures_after_60s() {
-        let stats = PeerInflightStats {
-            outgoing: 0,
-            incoming: 0,
-            timed_out: 1,
-            delivery_failed: 1,
-        };
+        let stats =
+            PeerInflightStats { outgoing: 0, incoming: 0, timed_out: 1, delivery_failed: 1 };
         // Simulate `now` being 61 s past the failure timestamp by
         // pinning `last_failure_at` to a synthetic Instant and using
         // a `now` that's just after the fade window. Instant doesn't
