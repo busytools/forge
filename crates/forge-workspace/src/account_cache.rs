@@ -25,19 +25,13 @@ use std::path::{Path, PathBuf};
 use forge_primitives::usage::UsageSnapshot;
 use serde::{Deserialize, Serialize};
 
-const CACHE_SCHEMA_VERSION: u32 = 1;
+const CACHE_SCHEMA_VERSION: u8 = 1;
 const STATE_FILE_RELATIVE_PATH: &str = "forge-state.toml";
 
 /// Per-account cache entry stored on disk.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct CachedAccountUsage {
     pub snapshot: UsageSnapshot,
-    /// When the snapshot was written to disk (wall-clock SystemTime).
-    /// Not used for staleness gating today — the cache is purely seed
-    /// data and the poller refreshes regardless. Kept so a future
-    /// "refuse to use snapshots older than N hours" policy can be
-    /// added without a state-file schema bump.
-    pub cached_at: std::time::SystemTime,
 }
 
 /// Versioned on-disk state document. `version` mismatch on read
@@ -49,8 +43,6 @@ pub(crate) struct CachedAccountUsage {
 /// ```toml
 /// version = 1
 ///
-/// [account_usage.Granite]
-/// cached_at = { secs_since_epoch = 1779356400, nanos_since_epoch = 0 }
 /// [account_usage.Granite.snapshot]
 /// source = "Oauth"
 /// fetched_at = { secs_since_epoch = 1779356400, nanos_since_epoch = 0 }
@@ -62,7 +54,7 @@ pub(crate) struct CachedAccountUsage {
 /// without bumping the schema version.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub(crate) struct ForgeState {
-    version: u32,
+    version: u8,
     /// Account display name → cached snapshot. `BTreeMap` so the
     /// TOML serialisation is deterministic for diffing.
     #[serde(default)]
@@ -188,7 +180,6 @@ mod tests {
             source: UsageSourceKind::Oauth,
             fetched_at: SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000),
             five_hour: Some(UsageWindow {
-                label: "5-hour",
                 utilization: 42.0,
                 resets_at: None,
                 reset_description: None,
@@ -198,6 +189,10 @@ mod tests {
             seven_day_sonnet: None,
             extra_usage: None,
         }
+    }
+
+    fn fixture_entry() -> CachedAccountUsage {
+        CachedAccountUsage { snapshot: fake_snapshot() }
     }
 
     #[test]
@@ -211,10 +206,7 @@ mod tests {
     fn round_trip_preserves_snapshot() {
         let dir = tempdir().expect("tempdir");
         let mut entries = std::collections::BTreeMap::new();
-        entries.insert(
-            "Granite".to_owned(),
-            CachedAccountUsage { snapshot: fake_snapshot(), cached_at: SystemTime::UNIX_EPOCH },
-        );
+        entries.insert("Granite".to_owned(), fixture_entry());
         store(dir.path(), &entries);
 
         let loaded = load(dir.path());
@@ -239,5 +231,44 @@ mod tests {
         std::fs::write(&path, "not = toml = at all").expect("write");
         let loaded = load(dir.path());
         assert!(loaded.account_usage.is_empty());
+    }
+
+    /// I3 — `store` uses tmp-file + atomic rename so a crash between
+    /// write and rename leaves the previous on-disk state intact
+    /// rather than a partial file. Verify the tmp suffix isn't left
+    /// behind after a successful write.
+    #[test]
+    fn store_uses_atomic_rename_and_leaves_no_tmp_file() {
+        let dir = tempdir().expect("tempdir");
+        let mut entries = std::collections::BTreeMap::new();
+        entries.insert("Granite".to_owned(), fixture_entry());
+        store(dir.path(), &entries);
+
+        let canonical = state_path(dir.path());
+        assert!(canonical.exists(), "canonical state file present");
+
+        let tmp = canonical.with_extension("toml.tmp");
+        assert!(!tmp.exists(), "tmp suffix file cleaned up after atomic rename");
+    }
+
+    /// I3 — repeated `store` calls overwrite the previous file cleanly
+    /// (atomic rename replaces in place; no append, no duplicate).
+    #[test]
+    fn store_overwrites_existing_file() {
+        let dir = tempdir().expect("tempdir");
+        let mut entries = std::collections::BTreeMap::new();
+
+        entries.insert("Granite".to_owned(), fixture_entry());
+        store(dir.path(), &entries);
+        let len_before = std::fs::read(state_path(dir.path())).expect("read1").len();
+
+        entries.clear();
+        entries.insert("Subspace".to_owned(), fixture_entry());
+        store(dir.path(), &entries);
+        let after = std::fs::read_to_string(state_path(dir.path())).expect("read2");
+
+        assert!(after.contains("Subspace"), "new entry present");
+        assert!(!after.contains("Granite"), "old entry replaced");
+        let _ = len_before; // both writes succeeded
     }
 }

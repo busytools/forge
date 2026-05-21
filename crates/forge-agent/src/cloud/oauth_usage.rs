@@ -40,14 +40,20 @@ const OAUTH_TIMEOUT: Duration = Duration::from_secs(8);
 /// fallback would actively lie to Anthropic about which version is
 /// running and drift over time, defeating the point of matching
 /// reality on the wire.
-fn canonical_user_agent() -> Result<&'static str, OauthUsageError> {
+async fn canonical_user_agent() -> Result<&'static str, OauthUsageError> {
     static UA: OnceLock<String> = OnceLock::new();
     if let Some(cached) = UA.get() {
         return Ok(cached);
     }
-    let version = forge_sdk::transport::process::query_cli_version("claude").map_err(|e| {
-        OauthUsageError::Network(format!("claude --version probe failed for UA: {e}"))
-    })?;
+    let version =
+        tokio::task::spawn_blocking(|| forge_sdk::transport::process::query_cli_version("claude"))
+            .await
+            .map_err(|e| {
+                OauthUsageError::Network(format!("UA probe spawn_blocking panicked: {e}"))
+            })?
+            .map_err(|e| {
+                OauthUsageError::Network(format!("claude --version probe failed for UA: {e}"))
+            })?;
     let ua = format!("claude-cli/{version} (external, cli)");
     // get_or_init isn't `Result`-friendly. set/get pair: if another
     // caller raced us and set first, our `set` errors out and we
@@ -81,7 +87,7 @@ pub async fn oauth_usage(config_dir: &Path) -> Result<OauthUsage, OauthUsageErro
     // out-of-band from our probe. Trust the upstream API response
     // (401 → Unauthorized, anything else → live) instead of the
     // on-disk timestamp.
-    let headers = oauth_headers(&credentials.access_token)?;
+    let headers = oauth_headers(&credentials.access_token).await?;
     let client = crate::http_trust::with_extra_roots(
         reqwest::Client::builder().timeout(OAUTH_TIMEOUT).default_headers(headers),
     )
@@ -105,8 +111,7 @@ pub async fn oauth_usage(config_dir: &Path) -> Result<OauthUsage, OauthUsageErro
             .headers()
             .get(reqwest::header::RETRY_AFTER)
             .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.trim().parse::<u64>().ok())
-            .map(Duration::from_secs)
+            .and_then(parse_retry_after)
     } else {
         None
     };
@@ -150,18 +155,33 @@ pub async fn oauth_usage(config_dir: &Path) -> Result<OauthUsage, OauthUsageErro
     }
 }
 
-fn oauth_headers(access_token: &str) -> Result<HeaderMap, OauthUsageError> {
+async fn oauth_headers(access_token: &str) -> Result<HeaderMap, OauthUsageError> {
     let mut headers = HeaderMap::new();
     headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
     headers.insert("anthropic-beta", HeaderValue::from_static(OAUTH_BETA_HEADER));
-    let ua = HeaderValue::from_str(canonical_user_agent()?)
+    let ua = HeaderValue::from_str(canonical_user_agent().await?)
         .map_err(|error| OauthUsageError::Network(format!("bad UA header: {error}")))?;
     headers.insert(USER_AGENT, ua);
     let bearer = HeaderValue::from_str(&format!("Bearer {access_token}"))
         .map_err(|error| OauthUsageError::Network(format!("bad bearer header: {error}")))?;
     headers.insert(AUTHORIZATION, bearer);
     Ok(headers)
+}
+
+/// RFC 7231 §7.1.3 `Retry-After` accepts either delta-seconds
+/// (`"120"`) or an HTTP-date (`"Wed, 21 Oct 2015 07:28:00 GMT"`).
+/// Anthropic emits the integer form today, but the spec leaves the
+/// HTTP-date form open and proxies / CDNs in the path may swap shapes.
+/// Try the integer form first; fall back to httpdate parsing and
+/// compute the delta from `now`.
+fn parse_retry_after(raw: &str) -> Option<Duration> {
+    let trimmed = raw.trim();
+    if let Ok(secs) = trimmed.parse::<u64>() {
+        return Some(Duration::from_secs(secs));
+    }
+    let when = httpdate::parse_http_date(trimmed).ok()?;
+    when.duration_since(std::time::SystemTime::now()).ok()
 }
 
 fn truncated_body_suffix(body: &[u8]) -> String {
@@ -183,6 +203,37 @@ fn truncated_body_suffix(body: &[u8]) -> String {
 mod tests {
 
     use super::*;
+
+    #[test]
+    fn retry_after_integer_seconds_round_trip() {
+        assert_eq!(parse_retry_after("0"), Some(Duration::from_secs(0)));
+        assert_eq!(parse_retry_after("  120  "), Some(Duration::from_secs(120)));
+        assert_eq!(parse_retry_after("3600"), Some(Duration::from_secs(3600)));
+    }
+
+    #[test]
+    fn retry_after_http_date_returns_delta_from_now() {
+        // ~1 hour in the future, formatted in HTTP-date format
+        let target = std::time::SystemTime::now() + Duration::from_secs(3600);
+        let formatted = httpdate::fmt_http_date(target);
+        let parsed = parse_retry_after(&formatted).expect("http-date parses");
+        // The parsed delta should be close to 1 hour (allow ±5 s drift).
+        assert!(parsed.as_secs() >= 3595 && parsed.as_secs() <= 3605, "got {parsed:?}");
+    }
+
+    #[test]
+    fn retry_after_past_http_date_returns_none() {
+        // HTTP-date in the past — duration_since(now) returns Err → None.
+        let past = std::time::SystemTime::now() - Duration::from_secs(3600);
+        let formatted = httpdate::fmt_http_date(past);
+        assert!(parse_retry_after(&formatted).is_none());
+    }
+
+    #[test]
+    fn retry_after_garbage_returns_none() {
+        assert!(parse_retry_after("not a duration").is_none());
+        assert!(parse_retry_after("").is_none());
+    }
 
     #[test]
     fn decodes_sparse_oauth_payload() {

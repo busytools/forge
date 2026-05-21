@@ -385,11 +385,25 @@ impl WorkspaceFacade for ProdWorkspaceFacade {
 }
 
 fn apply_delta(stats: &mut PeerInflightStats, delta: PeerStatsDelta) {
+    // `saturating_sub` floors at 0, but reaching 0 from a Minus1 path
+    // means our bookkeeping ran a Minus without a matching Plus — a
+    // logic bug worth surfacing instead of swallowing.
+    fn sub(name: &str, field: &mut usize) {
+        if *field == 0 {
+            tracing::warn!(
+                target: "forge_workspace::mcp::peers::facade",
+                counter = name,
+                "peer stats underflow — Minus1 without matching Plus1 (bookkeeping bug)",
+            );
+        } else {
+            *field -= 1;
+        }
+    }
     match delta {
         PeerStatsDelta::OutgoingPlus1 => stats.outgoing = stats.outgoing.saturating_add(1),
-        PeerStatsDelta::OutgoingMinus1 => stats.outgoing = stats.outgoing.saturating_sub(1),
+        PeerStatsDelta::OutgoingMinus1 => sub("outgoing", &mut stats.outgoing),
         PeerStatsDelta::IncomingPlus1 => stats.incoming = stats.incoming.saturating_add(1),
-        PeerStatsDelta::IncomingMinus1 => stats.incoming = stats.incoming.saturating_sub(1),
+        PeerStatsDelta::IncomingMinus1 => sub("incoming", &mut stats.incoming),
         PeerStatsDelta::TimedOutPlus1 => stats.timed_out = stats.timed_out.saturating_add(1),
         PeerStatsDelta::DeliveryFailedPlus1 => {
             stats.delivery_failed = stats.delivery_failed.saturating_add(1);

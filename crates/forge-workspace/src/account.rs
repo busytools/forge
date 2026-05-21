@@ -162,13 +162,7 @@ impl AccountStateMap {
         let mut out = std::collections::BTreeMap::new();
         for (key, state) in &self.by_key {
             if let Some(snapshot) = state.usage.clone() {
-                out.insert(
-                    key.0.clone(),
-                    crate::account_cache::CachedAccountUsage {
-                        snapshot,
-                        cached_at: std::time::SystemTime::now(),
-                    },
-                );
+                out.insert(key.0.clone(), crate::account_cache::CachedAccountUsage { snapshot });
             }
         }
         out
@@ -344,7 +338,7 @@ impl AccountStateMap {
             },
             |(_, k, _, _)| (*k).clone(),
         );
-        tracing::info!(
+        tracing::debug!(
             target: "forge_workspace::account",
             event_name = "account_picked",
             message = "account picker decision",
@@ -453,13 +447,11 @@ mod tests {
             source: UsageSourceKind::Oauth,
             fetched_at: SystemTime::UNIX_EPOCH,
             five_hour: five_hour.map(|util| UsageWindow {
-                label: "5-hour",
                 utilization: util,
                 resets_at: None,
                 reset_description: None,
             }),
             seven_day: seven_day.map(|util| UsageWindow {
-                label: "7-day",
                 utilization: util,
                 resets_at: None,
                 reset_description: None,
@@ -726,12 +718,8 @@ mod tests {
     fn seven_day_util_takes_max_across_windows() {
         // seven_day = 30, seven_day_opus = 80 → binding = max = 80
         let mut s = snapshot(Some(20.0), Some(30.0));
-        s.seven_day_opus = Some(UsageWindow {
-            label: "7-day Opus",
-            utilization: 80.0,
-            resets_at: None,
-            reset_description: None,
-        });
+        s.seven_day_opus =
+            Some(UsageWindow { utilization: 80.0, resets_at: None, reset_description: None });
         assert!((seven_day_util(&s) - 80.0).abs() < f64::EPSILON);
     }
 

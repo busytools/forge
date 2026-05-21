@@ -28,21 +28,13 @@ impl UsageSourceKind {
 }
 
 /// One named usage window inside a snapshot (5-hour, 7-day, etc.).
+/// The window's identity (5-hour vs 7-day vs 7-day-opus) is implicit
+/// in which `UsageSnapshot` field holds the value — no in-struct label.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UsageWindow {
-    /// Window name used by the mapper at construction; not read by
-    /// the renderer (the window's identity is implicit in which
-    /// `UsageSnapshot` field holds it). Skipped during cache round-
-    /// trip so the lifetime stays `&'static`.
-    #[serde(skip, default = "empty_static_str")]
-    pub label: &'static str,
     pub utilization: f64,
     pub resets_at: Option<std::time::SystemTime>,
     pub reset_description: Option<String>,
-}
-
-fn empty_static_str() -> &'static str {
-    ""
 }
 
 /// Bonus / overage credits view returned alongside the per-window

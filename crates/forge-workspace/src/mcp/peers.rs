@@ -442,7 +442,10 @@ fn format_deliver_error(target: &str, err: &facade::DeliverError) -> String {
 fn chrono_rfc3339_now() -> String {
     use time::OffsetDateTime;
     use time::format_description::well_known::Rfc3339;
-    OffsetDateTime::now_utc().format(&Rfc3339).unwrap_or_else(|_| "0".to_owned())
+    OffsetDateTime::now_utc().format(&Rfc3339).unwrap_or_else(|err| {
+        tracing::warn!(error = %err, "rfc3339 format failed; emitting epoch sentinel");
+        "1970-01-01T00:00:00Z".to_owned()
+    })
 }
 
 /// `peers__ask_agent` — async question to another agent. Returns

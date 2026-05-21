@@ -159,14 +159,11 @@ pub(crate) fn detect_inbound(text: &str) -> Option<PeerInboundKind> {
             && header.contains("failed to deliver:")
         {
             let id = id_before(rest, " to agent ")?;
-            let (target, org_and_reason) = extract_from_agent_after_with_trailer(rest_to)?;
-            // org_and_reason is "<rest after closing paren>" i.e.
-            // " failed to deliver: <reason>"
-            let reason = org_and_reason
+            let (target, org, trailing) = extract_from_agent_after_with_trailer(rest_to)?;
+            let reason = trailing
                 .split_once("failed to deliver:")
                 .map(|(_, after)| after.trim().to_owned())
                 .unwrap_or_default();
-            let org = org_and_reason.split('|').next().unwrap_or("?").to_owned();
             return Some(PeerInboundKind::DeliveryFailure {
                 id: id.to_owned(),
                 target,
@@ -530,14 +527,14 @@ fn extract_from_agent_after(rest: &str) -> Option<(String, String)> {
     Some((name.to_owned(), org.to_owned()))
 }
 
-/// Same as `extract_from_agent_after` but returns the trailer (what
-/// comes after `')`) joined with the org via `|`. Used by the
-/// delivery-failure parser which needs both fields.
-fn extract_from_agent_after_with_trailer(rest: &str) -> Option<(String, String)> {
+/// Same as `extract_from_agent_after` but also returns the trailer —
+/// the substring after `')`. Used by the delivery-failure parser
+/// which needs name, org, AND the trailing reason text.
+fn extract_from_agent_after_with_trailer(rest: &str) -> Option<(String, String, String)> {
     let after_open = rest.strip_prefix('\'')?;
     let (name, after_name) = take_until(after_open, "' (org '")?;
     let (org, trailing) = take_until(after_name, "')")?;
-    Some((name.to_owned(), format!("{org}|{trailing}")))
+    Some((name.to_owned(), org.to_owned(), trailing.to_owned()))
 }
 
 /// Parse `k/M` into `(k, M)`. Tolerates bad input.
@@ -666,6 +663,104 @@ mod tests {
                 assert_eq!(id, "q-d31fa8a3");
                 assert_eq!(target, "granite-liq-bot");
                 assert!(reason.contains("rate-limited"), "got: {reason}");
+            }
+            other => panic!("expected DeliveryFailure, got {other:?}"),
+        }
+    }
+
+    /// I3 — cross-crate roundtrip guard. workspace's
+    /// `WrappedPrompt::to_prose` (emitter) and forge-tui's
+    /// `detect_inbound` (parser) hand-roll the same wire format in two
+    /// crates. Without a roundtrip test, schema drift goes silent: a
+    /// new field on one side keeps the other side's tests green while
+    /// the live chat block stops rendering. These tests build a typed
+    /// `WrappedPrompt` in workspace, emit it via `to_prose`, then feed
+    /// the result to `detect_inbound` and assert the parsed kind
+    /// matches what was emitted.
+    #[test]
+    fn roundtrip_question_to_prose_through_detect_inbound() {
+        use forge_workspace::mcp::peers::types::{CorrelationId, WrappedKind, WrappedPrompt};
+        let w = WrappedPrompt {
+            correlation_id: CorrelationId::from_external("q-7f3a92e0").expect("valid id"),
+            kind: WrappedKind::Question,
+            sender_name: "forge".to_owned(),
+            sender_org: "Personal".to_owned(),
+            hop: 1,
+            hop_limit: 10,
+            body: "What's the test setup look like?".to_owned(),
+        };
+        let kind = detect_inbound(&w.to_prose()).expect("roundtrip parses");
+        match kind {
+            PeerInboundKind::Question { id, from, org, hop, hop_max, body } => {
+                assert_eq!(id, "q-7f3a92e0");
+                assert_eq!(from, "forge");
+                assert_eq!(org, "Personal");
+                assert_eq!(hop, 1);
+                assert_eq!(hop_max, 10);
+                assert_eq!(body, "What's the test setup look like?");
+            }
+            other => panic!("expected Question, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn roundtrip_message_to_prose_through_detect_inbound() {
+        use forge_workspace::mcp::peers::types::{CorrelationId, WrappedKind, WrappedPrompt};
+        let w = WrappedPrompt {
+            correlation_id: CorrelationId::from_external("t-c45a8f12").expect("valid id"),
+            kind: WrappedKind::Message,
+            sender_name: "forge".to_owned(),
+            sender_org: "Personal".to_owned(),
+            hop: 1,
+            hop_limit: 10,
+            body: "FYI I just pushed the rewriter cleanup.".to_owned(),
+        };
+        let kind = detect_inbound(&w.to_prose()).expect("roundtrip parses");
+        assert!(matches!(kind, PeerInboundKind::Message { .. }));
+    }
+
+    #[test]
+    fn roundtrip_reply_to_prose_through_detect_inbound() {
+        use forge_workspace::mcp::peers::types::{CorrelationId, WrappedKind, WrappedPrompt};
+        let w = WrappedPrompt {
+            correlation_id: CorrelationId::from_external("q-7f3a92e0").expect("valid id"),
+            kind: WrappedKind::Reply,
+            sender_name: "granite-backend".to_owned(),
+            sender_org: "Granite".to_owned(),
+            hop: 0,
+            hop_limit: 10,
+            body: "We use pgtemp.".to_owned(),
+        };
+        let kind = detect_inbound(&w.to_prose()).expect("roundtrip parses");
+        match kind {
+            PeerInboundKind::Reply { id, from, org, body } => {
+                assert_eq!(id, "q-7f3a92e0");
+                assert_eq!(from, "granite-backend");
+                assert_eq!(org, "Granite");
+                assert_eq!(body, "We use pgtemp.");
+            }
+            other => panic!("expected Reply, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn roundtrip_delivery_failure_through_detect_inbound() {
+        use forge_workspace::mcp::peers::types::{CorrelationId, WrappedKind, WrappedPrompt};
+        let w = WrappedPrompt {
+            correlation_id: CorrelationId::from_external("q-d31fa8a3").expect("valid id"),
+            kind: WrappedKind::DeliveryFailureNotice,
+            sender_name: "granite-liq-bot".to_owned(),
+            sender_org: "Granite".to_owned(),
+            hop: 0,
+            hop_limit: 10,
+            body: "target session connection lost".to_owned(),
+        };
+        let kind = detect_inbound(&w.to_prose()).expect("roundtrip parses");
+        match kind {
+            PeerInboundKind::DeliveryFailure { id, target, reason, .. } => {
+                assert_eq!(id, "q-d31fa8a3");
+                assert_eq!(target, "granite-liq-bot");
+                assert!(reason.contains("connection lost"), "got: {reason}");
             }
             other => panic!("expected DeliveryFailure, got {other:?}"),
         }
