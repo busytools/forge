@@ -319,9 +319,11 @@ mod tests {
             "FYI I just pushed the rewriter cleanup.",
         );
         let prose = w.to_prose();
-        assert!(prose.starts_with(
-            "[Message id=t-c45a8f12 hop=1/10 from agent 'forge' (org 'Personal')]"
-        ));
+        assert!(
+            prose.starts_with(
+                "[Message id=t-c45a8f12 hop=1/10 from agent 'forge' (org 'Personal')]"
+            )
+        );
     }
 
     #[test]

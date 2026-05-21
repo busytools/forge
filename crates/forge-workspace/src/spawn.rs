@@ -507,4 +507,100 @@ config_dir = "~/.claude-subspace"
             }
         }
     }
+
+    fn fixture_wrapped() -> WrappedPrompt {
+        WrappedPrompt {
+            correlation_id: crate::mcp::peers::types::CorrelationId::new_tell(),
+            kind: crate::mcp::peers::types::WrappedKind::Message,
+            sender_name: "forge".to_owned(),
+            sender_org: "Default".to_owned(),
+            hop: 1,
+            hop_limit: 10,
+            body: "fyi".to_owned(),
+        }
+    }
+
+    /// I3 — `handle_deliver_peer_prompt` for an unknown target must
+    /// not panic and must not emit a fatal envelope. The tool itself
+    /// rejects unknown targets synchronously via `DeliverError::UnknownTarget`;
+    /// the spawn path's defensive branch is the second line of defence
+    /// when an LLM races a forge.toml reload.
+    #[tokio::test]
+    async fn handle_deliver_peer_prompt_unknown_target_is_no_op() {
+        let dir = tempdir().expect("tempdir");
+        write_forge_toml(dir.path());
+        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        let mut rx = workspace.subscribe().expect("subscribe");
+
+        let caller = SessionKey::from_str_for_test("caller-1");
+        handle_deliver_peer_prompt(
+            &workspace,
+            caller,
+            "no-such-project".to_owned(),
+            fixture_wrapped(),
+        );
+
+        while let Ok(update) = rx.try_recv() {
+            assert!(
+                !matches!(update, SessionUpdate::FatalError(_)),
+                "unknown target must not emit FatalError"
+            );
+        }
+    }
+
+    /// I3 — `handle_deliver_peer_prompt` against a sleeping known
+    /// project buffers the prompt in the target's pending list and
+    /// triggers a SpawnProject. The pending list grows by one.
+    #[tokio::test]
+    async fn handle_deliver_peer_prompt_sleeping_target_buffers_prompt() {
+        let dir = tempdir().expect("tempdir");
+        fs::write(
+            dir.path().join("forge.toml"),
+            r#"
+[[orgs]]
+name = "Default"
+accounts = ["Subspace"]
+
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+auto_start = true
+
+[[orgs.projects]]
+name = "granite-backend"
+path = "~/Projects/granite-backend"
+auto_start = false
+
+[[accounts]]
+display_name = "Subspace"
+config_dir = "~/.claude-subspace"
+"#,
+        )
+        .expect("write forge.toml");
+        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        let caller = SessionKey::from_str_for_test("caller-sleep");
+        let w = fixture_wrapped();
+
+        handle_deliver_peer_prompt(&workspace, caller, "granite-backend".to_owned(), w.clone());
+
+        // Sleeping branch parks the wrapped at a synthetic
+        // `__spawn_granite-backend__` key, then dispatches
+        // SpawnProject which (synchronously inside dispatch)
+        // migrates the buffered state onto the real resolved
+        // session key. Either way, EXACTLY ONE DomainSession in
+        // the workspace must carry our wrapped prompt — assert
+        // on the typed correlation id rather than the key path.
+        let handles = workspace.domain_handles.lock();
+        let total: usize = handles
+            .values()
+            .map(|d| {
+                d.lock()
+                    .pending_peer_prompts
+                    .iter()
+                    .filter(|p| p.correlation_id == w.correlation_id)
+                    .count()
+            })
+            .sum();
+        assert_eq!(total, 1, "wrapped prompt buffered exactly once across handles");
+    }
 }

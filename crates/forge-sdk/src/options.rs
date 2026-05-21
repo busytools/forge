@@ -598,4 +598,31 @@ mod tests_options_build {
             .build();
         assert!(opts.can_use_tool.is_some());
     }
+
+    #[test]
+    fn auto_approve_tool_predicate_exact_prefix_match() {
+        // The control_dispatch fast-path invokes the predicate with
+        // the raw tool name. Verify a prefix-based predicate matches
+        // exactly the names the caller intends and nothing else.
+        let opts = OptionsBuilder::new()
+            .auto_approve_tool(|name: &str| name.starts_with("mcp__forge__"))
+            .build();
+        let pred = opts.auto_approve_tool.expect("predicate stored");
+        assert!(pred("mcp__forge__peers__whoami"));
+        assert!(pred("mcp__forge__peers__ask_agent"));
+        assert!(pred("mcp__forge__"));
+        // Sibling prefixes must NOT match (no partial-string fuzz).
+        assert!(!pred("mcp__forgery__steal_secrets"));
+        assert!(!pred("mcp__forge"));
+        assert!(!pred("Bash"));
+        assert!(!pred("Read"));
+        // Empty string mustn't accidentally match.
+        assert!(!pred(""));
+    }
+
+    #[test]
+    fn auto_approve_tool_default_is_none() {
+        let opts = OptionsBuilder::new().build();
+        assert!(opts.auto_approve_tool.is_none());
+    }
 }

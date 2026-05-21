@@ -641,9 +641,13 @@ impl Workspace {
     /// whether the live probe succeeds.
     pub fn spawn_initial_account_probe(self: &Arc<Self>) {
         let workspace = Arc::clone(self);
-        tokio::spawn(async move {
-            workspace.refresh_account_usage_once().await;
-        });
+        let span = tracing::info_span!("initial_account_probe");
+        tokio::spawn(
+            async move {
+                workspace.refresh_account_usage_once().await;
+            }
+            .instrument(span),
+        );
     }
 
     /// Spawn the 60 s background account-usage poller. Fetches
@@ -774,7 +778,22 @@ impl Workspace {
         if any_success {
             let snapshots = self.accounts.lock().snapshots_for_cache();
             let account_count = snapshots.len();
-            crate::account_cache::store(&self.config_dir, &snapshots);
+            let config_dir = self.config_dir.clone();
+            // toml::to_string_pretty + std::fs::write/rename are sync;
+            // hop to spawn_blocking so a slow disk doesn't park a tokio
+            // worker (file is tiny so latency is sub-ms on a healthy
+            // disk, but the pattern is wrong otherwise).
+            let join = tokio::task::spawn_blocking(move || {
+                crate::account_cache::store(&config_dir, &snapshots);
+            })
+            .await;
+            if let Err(err) = join {
+                tracing::warn!(
+                    target: "forge_workspace::account_cache",
+                    error = %err,
+                    "account_cache::store spawn_blocking task panicked",
+                );
+            }
             tracing::info!(
                 target: "forge_workspace::account_cache",
                 event_name = "account_cache_written",
@@ -2269,5 +2288,138 @@ config_dir = "~/.claude-personal"
             classify_oauth_usage_error(&OauthUsageError::Decode("bad json".to_owned())),
             UsageFetchStatus::Other,
         );
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // I3 — peer-MCP lifecycle tests
+    // ─────────────────────────────────────────────────────────────────
+
+    fn forge_toml_with_two_projects() -> tempfile::TempDir {
+        let dir = tempdir().expect("tempdir");
+        fs::write(
+            dir.path().join("forge.toml"),
+            r#"
+[[orgs]]
+name = "Default"
+accounts = ["Subspace"]
+
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+auto_start = true
+
+[[orgs.projects]]
+name = "granite-backend"
+path = "~/Projects/granite-backend"
+auto_start = false
+
+[[accounts]]
+display_name = "Subspace"
+config_dir = "~/.claude-subspace"
+"#,
+        )
+        .expect("write forge.toml");
+        dir
+    }
+
+    /// expire_inflight_ask_failed removes the entry from inflight_asks,
+    /// fires the DeliveryFailed stat bump, and dispatches a
+    /// DeliveryFailureNotice wrapper. Idempotent — a second call on the
+    /// same id is a no-op.
+    #[tokio::test]
+    async fn expire_inflight_ask_failed_removes_entry_and_is_idempotent() {
+        use crate::mcp::peers::types::{CorrelationId, InflightAsk, PeerFailureReason};
+        let dir = forge_toml_with_two_projects();
+        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+
+        let caller = SessionKey::from_str_for_test("caller-1");
+        let id = CorrelationId::new_ask();
+        workspace.inflight_asks.lock().insert(
+            id.clone(),
+            InflightAsk {
+                correlation_id: id.clone(),
+                caller: caller.clone(),
+                caller_project: "forge".to_owned(),
+                caller_org: "Default".to_owned(),
+                target_project: "granite-backend".to_owned(),
+            },
+        );
+        assert!(workspace.inflight_asks.lock().contains_key(&id));
+
+        workspace.expire_inflight_ask_failed(&id, PeerFailureReason::TargetConnectionFailed);
+        assert!(!workspace.inflight_asks.lock().contains_key(&id), "entry removed after expire");
+
+        // Idempotent — second call on the same id is a no-op.
+        workspace.expire_inflight_ask_failed(&id, PeerFailureReason::TargetConnectionFailed);
+        assert!(!workspace.inflight_asks.lock().contains_key(&id));
+    }
+
+    /// expire_inflight_ask_failed dispatches `PeerInflightStatsChanged`
+    /// for the delivery-failed bookkeeping and removes the entry.
+    /// expire_target_inflight is a thin loop over this per-id path; in
+    /// production it resolves the closing session's project via
+    /// `list_projects` (catalog-backed), so an in-memory test that
+    /// never writes to disk would early-return on project lookup. We
+    /// exercise the per-id unit instead.
+    #[tokio::test]
+    async fn expire_inflight_ask_failed_dispatches_failure_notice() {
+        use crate::mcp::peers::types::{CorrelationId, InflightAsk, PeerFailureReason};
+        let dir = forge_toml_with_two_projects();
+        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        let mut rx = workspace.subscribe().expect("subscribe");
+
+        let caller = SessionKey::from_str_for_test("caller-notice");
+        let id = CorrelationId::new_ask();
+        workspace.inflight_asks.lock().insert(
+            id.clone(),
+            InflightAsk {
+                correlation_id: id.clone(),
+                caller: caller.clone(),
+                caller_project: "forge".to_owned(),
+                caller_org: "Default".to_owned(),
+                target_project: "granite-backend".to_owned(),
+            },
+        );
+
+        workspace.expire_inflight_ask_failed(&id, PeerFailureReason::TargetConnectionFailed);
+
+        let mut saw_stats = false;
+        while let Ok(update) = rx.try_recv() {
+            if matches!(update, SessionUpdate::PeerInflightStatsChanged { .. }) {
+                saw_stats = true;
+            }
+        }
+        assert!(saw_stats, "PeerInflightStatsChanged fires for delivery_failed bump");
+        assert!(!workspace.inflight_asks.lock().contains_key(&id));
+    }
+
+    /// Workspace::dispatch(Command::DeliverPeerPrompt) routes to the
+    /// command channel without panicking. The full spawn-path handling
+    /// is exercised in the spawn::handle_deliver_peer_prompt test.
+    #[tokio::test]
+    async fn dispatch_command_deliver_peer_prompt_routes_cleanly() {
+        use crate::mcp::peers::types::{CorrelationId, WrappedKind, WrappedPrompt};
+        let dir = forge_toml_with_two_projects();
+        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+
+        let caller = SessionKey::from_str_for_test("caller-dispatch");
+        let wrapped = WrappedPrompt {
+            correlation_id: CorrelationId::new_tell(),
+            kind: WrappedKind::Message,
+            sender_name: "forge".to_owned(),
+            sender_org: "Default".to_owned(),
+            hop: 1,
+            hop_limit: 10,
+            body: "fyi".to_owned(),
+        };
+        // The command channel is the workspace's main dispatch bus —
+        // routing to an unknown target still queues, the spawn handler
+        // is the one that rejects. Smoke: dispatch returns Ok.
+        let result = workspace.dispatch(crate::protocol::Command::DeliverPeerPrompt {
+            caller,
+            target_project: "granite-backend".to_owned(),
+            wrapped,
+        });
+        assert!(result.is_ok(), "dispatch routed cleanly: {result:?}");
     }
 }
