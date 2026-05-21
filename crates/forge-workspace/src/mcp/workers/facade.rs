@@ -4,11 +4,15 @@
 //!
 //! The production impl (`ProdWorkerFacade`) lands in Task 7.
 
+use std::sync::{Arc, Weak};
+
 use forge_primitives::WorkerStatus;
 
 use crate::SessionKey;
 use crate::mcp::peers::types::{CorrelationId, InflightAsk, WrappedPrompt};
-use crate::protocol::WorkerSpawnReply;
+use crate::mcp::workers::types::WorkerEntry;
+use crate::protocol::{Command, WorkerSpawnReply};
+use crate::workspace::Workspace;
 
 /// Synchronous decision from `deliver_worker_prompt` - whether the
 /// target was found (delivered) or unknown (label has no live
@@ -104,6 +108,145 @@ pub trait WorkerFacade: Send + Sync {
     /// Returns the removed ask so the caller can inspect its
     /// metadata, or `None` when the entry was already gone.
     fn complete_inflight_ask(&self, id: &CorrelationId) -> Option<InflightAsk>;
+}
+
+/// Production impl. Holds a `Weak<Workspace>` so construction doesn't
+/// close a strong cycle through the Workspace -> bridge -> MCP ->
+/// Tool -> facade -> Workspace path. Every method starts with
+/// `upgrade()` and short-circuits when the workspace has been
+/// dropped (only possible during shutdown).
+pub struct ProdWorkerFacade {
+    workspace: Weak<Workspace>,
+}
+
+impl ProdWorkerFacade {
+    #[must_use]
+    pub fn from_arc(workspace: &Arc<Workspace>) -> Arc<dyn WorkerFacade> {
+        Arc::new(Self { workspace: Arc::downgrade(workspace) })
+    }
+}
+
+#[async_trait::async_trait]
+impl WorkerFacade for ProdWorkerFacade {
+    fn caller_project(&self, caller: &SessionKey) -> Option<CallerProject> {
+        let ws = self.workspace.upgrade()?;
+        for view in ws.list_projects() {
+            // Lead = the first session in the project's session list.
+            if view.sessions.first().is_some_and(|s| s.session == *caller) {
+                return Some(CallerProject { project_key: view.key, is_lead: true });
+            }
+            // Worker = entry in live_workers.
+            if ws.list_live_workers(&view.key).iter().any(|w| w.session_key == *caller) {
+                return Some(CallerProject { project_key: view.key, is_lead: false });
+            }
+        }
+        None
+    }
+
+    async fn spawn_worker(
+        &self,
+        caller: &SessionKey,
+        label: String,
+        charter: String,
+    ) -> Result<WorkerSpawnReply, WorkerSpawnError> {
+        let cp = self.caller_project(caller).ok_or(WorkerSpawnError::UnknownCallerProject)?;
+        if !cp.is_lead {
+            return Err(WorkerSpawnError::NotLeadCaller);
+        }
+        if label.trim().is_empty() {
+            return Err(WorkerSpawnError::EmptyLabel);
+        }
+        if charter.trim().is_empty() {
+            return Err(WorkerSpawnError::EmptyCharter);
+        }
+        let ws = self.workspace.upgrade().ok_or_else(|| WorkerSpawnError::DispatchFailed {
+            message: "workspace dropped".into(),
+        })?;
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let cmd = Command::SpawnWorker {
+            project_key: cp.project_key,
+            label,
+            charter,
+            spawned_by_session_id: caller.as_str().to_owned(),
+            return_to: tx,
+        };
+        if let Err(err) = ws.dispatch(cmd) {
+            return Err(WorkerSpawnError::DispatchFailed {
+                message: format!("dispatch failed: {err:?}"),
+            });
+        }
+        match rx.await {
+            Ok(Ok(reply)) => Ok(reply),
+            Ok(Err(message)) => Err(WorkerSpawnError::DispatchFailed { message }),
+            Err(_) => Err(WorkerSpawnError::DispatchFailed {
+                message: "spawn handler dropped reply channel".into(),
+            }),
+        }
+    }
+
+    fn list_workers(&self, caller: &SessionKey) -> Vec<WorkerStatus> {
+        let Some(cp) = self.caller_project(caller) else {
+            return Vec::new();
+        };
+        let Some(ws) = self.workspace.upgrade() else {
+            return Vec::new();
+        };
+        ws.list_live_workers(&cp.project_key).iter().map(WorkerEntry::to_status).collect()
+    }
+
+    fn deliver_worker_prompt(
+        &self,
+        caller: &SessionKey,
+        target_label: &str,
+        wrapped: WrappedPrompt,
+    ) -> Result<WorkerTargetStatus, WorkerDeliverError> {
+        if wrapped.hop > wrapped.hop_limit {
+            return Err(WorkerDeliverError::HopLimitExceeded {
+                hop: wrapped.hop,
+                limit: wrapped.hop_limit,
+            });
+        }
+        let cp = self.caller_project(caller).ok_or_else(|| WorkerDeliverError::UnknownLabel {
+            project_key: "<unknown>".into(),
+            label: target_label.into(),
+        })?;
+        let Some(ws) = self.workspace.upgrade() else {
+            return Err(WorkerDeliverError::UnknownLabel {
+                project_key: cp.project_key.as_str().into(),
+                label: target_label.into(),
+            });
+        };
+        let known = ws.list_live_workers(&cp.project_key).iter().any(|w| w.label == target_label);
+        if !known {
+            return Err(WorkerDeliverError::UnknownLabel {
+                project_key: cp.project_key.as_str().into(),
+                label: target_label.into(),
+            });
+        }
+        if let Err(err) = ws.dispatch(Command::DeliverWorkerPrompt {
+            caller: caller.clone(),
+            project_key: cp.project_key,
+            target_label: target_label.into(),
+            wrapped,
+        }) {
+            tracing::warn!(
+                target: "forge_workspace::mcp::workers",
+                error = ?err,
+                "Command::DeliverWorkerPrompt dispatch failed"
+            );
+        }
+        Ok(WorkerTargetStatus::Delivered)
+    }
+
+    fn register_inflight_ask(&self, ask: InflightAsk) {
+        let Some(ws) = self.workspace.upgrade() else { return };
+        ws.inflight_asks.lock().insert(ask.correlation_id.clone(), ask);
+    }
+
+    fn complete_inflight_ask(&self, id: &CorrelationId) -> Option<InflightAsk> {
+        let ws = self.workspace.upgrade()?;
+        ws.inflight_asks.lock().remove(id)
+    }
 }
 
 /// Mock for unit-testing the four Tool impls. Captures every
