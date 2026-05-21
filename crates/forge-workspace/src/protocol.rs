@@ -380,8 +380,17 @@ pub enum SessionUpdate {
         key: SessionKey,
         stats: PeerInflightStats,
     },
-    /// An outgoing ask hit its 30-min timeout without a reply. UI
-    /// reducer arm clears the matching ASKED row (when the Inspector
+    /// A peer-coordination envelope arrived at session `session_id`.
+    /// Carries the typed `WrappedPrompt` so the TUI reducer can build
+    /// the chat-side echo from real fields instead of having the
+    /// workspace forge a `Message::User` carrying prose for the TUI to
+    /// re-parse (audit I11). The recipient's LLM still receives the
+    /// prose via a separate `Command::Prompt` dispatch — that's the
+    /// CLI's input channel and stays text-shaped.
+    PeerEnvelopeAppended {
+        session_id: String,
+        wrapped: crate::mcp::peers::types::WrappedPrompt,
+    },
     FatalError(AppError),
 }
 
@@ -414,7 +423,8 @@ impl SessionUpdate {
             | Self::StatusSnapshot { session_id, .. }
             | Self::OauthCredentialsSnapshot { session_id, .. }
             | Self::ContextUsageSnapshot { session_id, .. }
-            | Self::McpSnapshot { session_id, .. } => {
+            | Self::McpSnapshot { session_id, .. }
+            | Self::PeerEnvelopeAppended { session_id, .. } => {
                 Some(SessionKey::from_session_id(session_id.clone()))
             }
             Self::KeyRenamed { .. }
@@ -540,6 +550,12 @@ impl std::fmt::Debug for SessionUpdate {
                 .field("key", key)
                 .field("stats", stats)
                 .finish(),
+            Self::PeerEnvelopeAppended { session_id, wrapped } => f
+                .debug_struct("PeerEnvelopeAppended")
+                .field("session_id", session_id)
+                .field("correlation_id", &wrapped.correlation_id)
+                .field("kind", &wrapped.kind)
+                .finish_non_exhaustive(),
             Self::FatalError(err) => f.debug_struct("FatalError").field("error", err).finish(),
         }
     }

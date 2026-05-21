@@ -254,6 +254,28 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
                 session.peer_badges = stats;
             }
         }
+        SessionUpdate::PeerEnvelopeAppended { session_id, wrapped } => {
+            // Workspace no longer forges an SDK `Message::User`
+            // carrying peer prose — it emits the typed envelope
+            // here and the TUI builds the synthetic chat-side
+            // user-turn from real fields. The prose is the same
+            // string the recipient's LLM sees via Command::Prompt,
+            // so the existing `peer_block::detect_inbound` matcher
+            // in the SDK-message reducer still recognises it.
+            let synthetic = forge_primitives::Message::User {
+                message: forge_primitives::UserEnvelope {
+                    role: "user".to_owned(),
+                    content: vec![forge_primitives::ContentBlock::Text {
+                        text: wrapped.to_prose(),
+                    }],
+                },
+                session_id: session_id.clone(),
+                parent_tool_use_id: None,
+                uuid: None,
+                tool_use_result: None,
+            };
+            apply_session_update_chat_appended(app, &session_id, synthetic);
+        }
     }
     if is_active_or_global {
         app.needs_redraw = true;

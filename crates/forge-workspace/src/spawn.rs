@@ -140,17 +140,16 @@ pub(crate) fn handle_deliver_peer_prompt(
             facade.bump_inflight_stats(&target_key, PeerStatsDelta::IncomingPlus1);
         }
 
+        // Fire the typed peer-envelope echo BEFORE the LLM-side
+        // dispatch so the user-turn block renders in the right
+        // order regardless of which event the TUI reducer drains
+        // first. The CLI doesn't echo stdin-injected prompts back
+        // on stream-json output (only tool_result-bearing user
+        // envelopes come back), so the TUI gets no inbound user-turn
+        // signal from the SDK side — `PeerEnvelopeAppended` is how
+        // the TUI knows to render the peer block.
+        push_peer_user_turn_into_chat(workspace, &target_key, &wrapped);
         let text = wrapped.to_prose();
-        // Synthesize the user-turn echo so the target's chat history
-        // shows the inbound envelope. The CLI does NOT echo prompts
-        // injected via stdin back on stream-json (only tool_result-
-        // bearing user envelopes come back), so the TUI's
-        // `peer_block::detect_inbound` matcher in `handle_user` never
-        // sees the peer wrapper without this synthetic emit. Fire
-        // BEFORE the Command::Prompt dispatch so the ordering in the
-        // chat buffer (user-turn → assistant response) stays natural
-        // regardless of which lands at the TUI reducer first.
-        push_peer_user_turn_into_chat(workspace, &target_key, &text);
         if let Err(err) = workspace.dispatch(Command::Prompt {
             key: target_key.clone(),
             text,
@@ -231,33 +230,24 @@ fn stamp_inbound_hop(workspace: &Workspace, target_key: &SessionKey, hop: u8) {
     }
 }
 
-/// Synthesize a `Message::User` carrying the wrapped peer prose and
-/// emit it as a `SessionUpdate::ChatAppended` so the target session's
-/// chat buffer shows the inbound user-turn. The CLI does NOT echo
-/// stdin-injected user prompts back on stream-json output (it only
-/// echoes tool_result-bearing user envelopes), so without this push
-/// the TUI's `peer_block::detect_inbound` matcher in
-/// `sdk_message::handle_user` never sees the peer wrapper text. Used
-/// by both the running-target dispatch path (here in spawn.rs) and
-/// the drain-on-spawn path (in session_task.rs).
+/// Emit a typed `PeerEnvelopeAppended` so the target session's TUI
+/// chat buffer shows the inbound peer user-turn. The TUI reducer
+/// builds the chat-side echo directly from the `WrappedPrompt`'s
+/// typed fields — workspace no longer forges an SDK `Message::User`
+/// frame (audit I11).
+///
+/// Note: this only affects the TUI's visible chat echo. The
+/// recipient's `claude` subprocess still receives the prose via a
+/// separate `Command::Prompt` dispatch — the CLI's input channel
+/// is text-shaped and stays that way.
 pub(crate) fn push_peer_user_turn_into_chat(
     workspace: &Workspace,
     target_key: &SessionKey,
-    text: &str,
+    wrapped: &WrappedPrompt,
 ) {
-    let synthetic = forge_primitives::Message::User {
-        message: forge_primitives::UserEnvelope {
-            role: "user".to_owned(),
-            content: vec![forge_primitives::ContentBlock::Text { text: text.to_owned() }],
-        },
+    let _ = workspace.update_sender().send(SessionUpdate::PeerEnvelopeAppended {
         session_id: target_key.as_str().to_owned(),
-        parent_tool_use_id: None,
-        uuid: None,
-        tool_use_result: None,
-    };
-    let _ = workspace.update_sender().send(SessionUpdate::ChatAppended {
-        session_id: target_key.as_str().to_owned(),
-        msg: synthetic,
+        wrapped: wrapped.clone(),
     });
 }
 

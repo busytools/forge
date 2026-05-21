@@ -614,8 +614,8 @@ impl Workspace {
                     crate::mcp::peers::facade::PeerStatsDelta::IncomingPlus1,
                 );
             }
+            crate::spawn::push_peer_user_turn_into_chat(self, session_key, &wrapped);
             let text = wrapped.to_prose();
-            crate::spawn::push_peer_user_turn_into_chat(self, session_key, &text);
             if let Err(err) = self.dispatch(crate::protocol::Command::Prompt {
                 key: session_key.clone(),
                 text,

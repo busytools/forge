@@ -576,14 +576,11 @@ impl SessionTask {
                     crate::mcp::peers::facade::PeerStatsDelta::IncomingPlus1,
                 );
             }
+            // Same typed peer-envelope echo the running-target
+            // dispatch path does. Fire BEFORE the LLM-side dispatch
+            // so the user-turn ordering is natural.
+            crate::spawn::push_peer_user_turn_into_chat(&workspace, &self.key, &wrapped);
             let text = wrapped.to_prose();
-            // Same synthetic user-turn push the running-target dispatch
-            // path does: claude CLI doesn't echo stdin-injected prompts
-            // back on stream-json, so the TUI never sees the wrapper
-            // text unless we push it ourselves. Without this the
-            // recipient's chat shows the assistant's tool calls but
-            // no inbound user-turn block.
-            crate::spawn::push_peer_user_turn_into_chat(&workspace, &self.key, &text);
             if let Err(err) = workspace.dispatch(crate::protocol::Command::Prompt {
                 key: self.key.clone(),
                 text,
