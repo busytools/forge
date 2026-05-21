@@ -237,6 +237,17 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     render_identity_block(frame, area, app, current_y);
     current_y += identity_height + 2;
 
+    // Global account-usage warm-up banner. Appears between the
+    // identity block and the picker while the workspace's warm
+    // loop is probing accounts. Single row, dim-yellow, says
+    // "Loading account usage data... (N/M loaded · attempt K)".
+    // Auto-clears when `account_warm_in_progress` flips to false.
+    if app.account_warm_in_progress {
+        let banner_area = Rect { x: area.x, y: current_y, width: area.width, height: 1 };
+        render_account_warm_banner(frame, banner_area, app);
+        current_y += 2;
+    }
+
     let picker_x = area.x + area.width.saturating_sub(picker_outer_width) / 2;
     let picker_area = Rect {
         x: picker_x,
@@ -487,6 +498,33 @@ fn spinner_glyph(style: SpinnerStyle, opened_at: std::time::Instant) -> char {
     let elapsed_ms = opened_at.elapsed().as_millis();
     let frame_idx = ((elapsed_ms / cadence) as usize) % frames.len();
     frames[frame_idx]
+}
+
+/// Global account-warm-up banner. Single-row, centred,
+/// dim-yellow with a spinner glyph. Reads
+/// `App::account_warm_in_progress / loaded / total / attempt` —
+/// the workspace's `AccountWarmStateChanged` reducer keeps those
+/// fields in sync.
+fn render_account_warm_banner(frame: &mut Frame, area: Rect, app: &App) {
+    // Same Braille spinner sequence used elsewhere in the TUI;
+    // tick is driven by `app.spinner_frame` which the render loop
+    // advances on every `SPINNER_FRAME_INTERVAL`.
+    const FRAMES: &[char] = &[
+        '\u{280B}', '\u{2819}', '\u{2839}', '\u{2838}', '\u{283C}', '\u{2834}', '\u{2826}',
+        '\u{2827}', '\u{2807}', '\u{280F}',
+    ];
+    let spinner = FRAMES[app.spinner_frame % FRAMES.len()];
+    let text = if app.account_warm_total > 0 {
+        format!(
+            "{spinner} Loading account usage data… ({}/{} loaded · attempt {})",
+            app.account_warm_loaded, app.account_warm_total, app.account_warm_attempt,
+        )
+    } else {
+        format!("{spinner} Loading account usage data…")
+    };
+    let line = Line::from(Span::styled(text, Style::default().fg(theme::STATUS_WARNING)));
+    let para = Paragraph::new(line).alignment(ratatui::layout::Alignment::Center);
+    frame.render_widget(para, area);
 }
 
 fn render_footer(frame: &mut Frame, area: Rect, app: &App, rows: &[PickerRow]) {

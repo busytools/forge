@@ -37,16 +37,6 @@ use crate::views::{ProjectView, SessionView};
 /// naturally.
 const USAGE_POLL_INTERVAL: Duration = Duration::from_secs(60);
 
-/// Time budget for `warm_account_usage_cache` to drive the first
-/// per-account usage probe synchronously at startup. Bounded so a
-/// stuck probe (network hang past the per-request 8 s timeout, or
-/// an unusually deep account list) can't stall the launchpad
-/// indefinitely. Accounts whose probe doesn't return within this
-/// window land in the same place they would have without the warm
-/// (no snapshot + maybe a last_error) and the picker uses whatever
-/// signal is available.
-const USAGE_WARMUP_BUDGET: Duration = Duration::from_secs(5);
-
 /// Multi-session orchestrator. Owns the project catalog snapshot
 /// loaded from `<config_dir>/forge.toml` and the pool of currently
 /// spawned [`forge_agent::Agent`] handles, one per active session.
@@ -116,6 +106,18 @@ pub struct Workspace {
     /// Set the first time [`Self::start_usage_poller`] runs. Subsequent
     /// calls early-return to avoid spawning duplicate poller tasks.
     usage_poller_started: std::sync::atomic::AtomicBool,
+    /// `true` once [`Self::warm_account_usage_cache`] has loaded a
+    /// usage snapshot for EVERY configured account. Spawn paths
+    /// (auto_start + user-initiated) gate on this so the picker
+    /// always has real tier data when it runs. Flipped to `true` by
+    /// the warm-up retry loop after the round where all accounts
+    /// have a snapshot.
+    pub(crate) account_warm_completed: std::sync::atomic::AtomicBool,
+    /// Wakeup channel for the gate above. Warm-up's success
+    /// transition fires `notify_waiters()`; spawn paths await
+    /// `notified().await` (with a fast-path early-out when the
+    /// atomic is already true).
+    pub(crate) account_warm_complete: std::sync::Arc<tokio::sync::Notify>,
     /// Wire-classification rewriter proxy started at workspace boot.
     /// Stamped onto every `Agent::spawn` so spawned subprocesses
     /// inherit `HTTPS_PROXY` + `NODE_EXTRA_CA_CERTS` and their wire
@@ -205,6 +207,8 @@ impl Workspace {
             inflight_timers: Mutex::new(HashMap::new()),
             peer_stats: Mutex::new(HashMap::new()),
             usage_poller_started: std::sync::atomic::AtomicBool::new(false),
+            account_warm_completed: std::sync::atomic::AtomicBool::new(false),
+            account_warm_complete: std::sync::Arc::new(tokio::sync::Notify::new()),
             proxy: Some(proxy),
         })
     }
@@ -568,57 +572,104 @@ impl Workspace {
     /// stall startup. Accounts whose probe doesn't return in that
     /// window stay at tier 0 (or earlier set_last_error tier) and
     /// the picker falls back to definition order for them.
-    pub async fn warm_account_usage_cache(self: &Arc<Self>) {
+    pub fn spawn_account_warm_loop(self: &Arc<Self>) {
+        let workspace = Arc::clone(self);
+        tokio::spawn(async move {
+            workspace.run_account_warm_loop().await;
+        });
+    }
+
+    /// Retry-until-success warm-up. Probes every configured account;
+    /// any that didn't get a snapshot (typically because
+    /// `/api/oauth/usage` 429'd the request) gets re-probed after a
+    /// backoff sleep. Bypasses the per-account backoff window
+    /// between rounds because this loop owns the cadence end-to-end
+    /// — the outer exponential sleep is the only pacing.
+    ///
+    /// Backoff: 1s → 2s → 4s → 8s → 16s → 30s → 60s → capped at
+    /// 60s. Infinite retries; the user picked "until success" so a
+    /// long Anthropic IP throttle is just a slower startup.
+    ///
+    /// Emits `SessionUpdate::AccountWarmStateChanged` at start, on
+    /// each retry, and on completion so the launchpad banner can
+    /// render progress.
+    async fn run_account_warm_loop(self: Arc<Self>) {
         let start = std::time::Instant::now();
+        let total = self.accounts.lock().ordered_keys.len();
         tracing::info!(
             target: "forge_workspace::workspace",
             event_name = "warm_account_usage_cache_start",
-            budget_secs = USAGE_WARMUP_BUDGET.as_secs(),
-            "starting synchronous account-usage warm-up before launching the launchpad / auto-spawn"
+            total_accounts = total,
+            "background account-usage warm-up started; spawns will defer until every account has a snapshot"
         );
-        let completed_within_budget =
-            tokio::time::timeout(USAGE_WARMUP_BUDGET, self.refresh_account_usage_once())
-                .await
-                .is_ok();
-        // Snapshot what each configured account looks like after the
-        // warm so a triage can see exactly what tier the picker will
-        // see when the first SpawnProject fires.
-        let summary: Vec<String> = {
-            let accounts = self.accounts.lock();
-            accounts
-                .ordered_keys
-                .iter()
-                .map(|key| {
-                    let state = accounts.by_key.get(key);
-                    let usage = state.and_then(|s| s.usage.as_ref());
-                    let last_error = state.and_then(|s| s.last_error);
-                    let usage_str = match usage {
-                        None => "no-snapshot".to_owned(),
-                        Some(s) => format!(
-                            "5h={:.0}%/7d={:.0}%",
-                            s.five_hour.as_ref().map_or(0.0, |w| w.utilization),
-                            [
-                                s.seven_day.as_ref().map(|w| w.utilization),
-                                s.seven_day_opus.as_ref().map(|w| w.utilization),
-                                s.seven_day_sonnet.as_ref().map(|w| w.utilization),
-                            ]
-                            .into_iter()
-                            .flatten()
-                            .fold(0.0_f64, f64::max),
-                        ),
-                    };
-                    format!("{}={usage_str}/err={last_error:?}", key.0)
-                })
-                .collect()
-        };
-        tracing::info!(
-            target: "forge_workspace::workspace",
-            event_name = "warm_account_usage_cache_done",
-            duration_ms = start.elapsed().as_millis() as u64,
-            completed_within_budget,
-            accounts = ?summary,
-            "account-usage warm-up finished; account picker will see this state"
-        );
+        let _ = self.update_tx.send(SessionUpdate::AccountWarmStateChanged {
+            in_progress: true,
+            loaded: 0,
+            total,
+            attempt: 0,
+        });
+        let mut attempt: u32 = 0;
+        let mut backoff = Duration::from_secs(1);
+        const MAX_BACKOFF: Duration = Duration::from_secs(60);
+        loop {
+            attempt = attempt.saturating_add(1);
+            // Probe everyone this round regardless of per-account
+            // backoff: the outer-loop sleep below is the pacing we
+            // want.
+            self.accounts.lock().clear_probe_backoff_for_all();
+            self.refresh_account_usage_once().await;
+            let (loaded, current_total) = self.accounts.lock().account_load_status();
+            let _ = self.update_tx.send(SessionUpdate::AccountWarmStateChanged {
+                in_progress: loaded < current_total,
+                loaded,
+                total: current_total,
+                attempt,
+            });
+            if loaded >= current_total {
+                self.account_warm_completed.store(true, std::sync::atomic::Ordering::SeqCst);
+                self.account_warm_complete.notify_waiters();
+                tracing::info!(
+                    target: "forge_workspace::workspace",
+                    event_name = "warm_account_usage_cache_done",
+                    duration_ms = start.elapsed().as_millis() as u64,
+                    attempts = attempt,
+                    loaded,
+                    total = current_total,
+                    "account-usage warm-up complete; every account has a usage snapshot"
+                );
+                return;
+            }
+            tracing::info!(
+                target: "forge_workspace::workspace",
+                event_name = "warm_account_usage_cache_retry",
+                attempt,
+                loaded,
+                total = current_total,
+                next_backoff_secs = backoff.as_secs(),
+                "warm-up incomplete; sleeping before the next retry"
+            );
+            tokio::time::sleep(backoff).await;
+            backoff = (backoff.saturating_mul(2)).min(MAX_BACKOFF);
+        }
+    }
+
+    /// Await the warm-up's success transition. Spawn paths call this
+    /// before invoking `pick_for_project` so the picker always sees
+    /// real tier data instead of cold-cache tier-0 ties. Fast-path
+    /// early-return when the warm flag is already true.
+    pub async fn wait_for_account_warm_complete(self: &Arc<Self>) {
+        if self.account_warm_completed.load(std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
+        // Subscribe to the Notify FIRST, then re-check the flag.
+        // Doing it in the other order would race the
+        // store/notify pair in the warm loop and leave us
+        // waiting forever for a notify that already fired.
+        let notified = self.account_warm_complete.notified();
+        if self.account_warm_completed.load(std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
+        notified.await;
     }
 
     /// Spawn the 60 s background account-usage poller. Fetches
@@ -1831,6 +1882,8 @@ impl Workspace {
             inflight_timers: Mutex::new(HashMap::new()),
             peer_stats: Mutex::new(HashMap::new()),
             usage_poller_started: std::sync::atomic::AtomicBool::new(false),
+            account_warm_completed: std::sync::atomic::AtomicBool::new(false),
+            account_warm_complete: std::sync::Arc::new(tokio::sync::Notify::new()),
             // testing_stub skips Workspace::new and therefore the
             // proxy boot. Tests don't drive real subprocesses.
             proxy: None,

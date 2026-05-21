@@ -206,6 +206,31 @@ impl AccountStateMap {
         state.next_probe_at.is_none_or(|t| t <= std::time::Instant::now())
     }
 
+    /// Force every account back into the probe-now window. Used by
+    /// `warm_account_usage_cache` between retry attempts so an
+    /// account that 429-ed earlier doesn't sit through the backoff
+    /// schedule before we re-probe — the warm loop owns the cadence
+    /// via its own outer exponential backoff.
+    pub fn clear_probe_backoff_for_all(&mut self) {
+        for state in self.by_key.values_mut() {
+            state.next_probe_at = None;
+        }
+    }
+
+    /// Return `(loaded, total)` — how many accounts have a usage
+    /// snapshot vs how many are configured. Used by the warm-up
+    /// retry loop to decide whether another pass is needed and by
+    /// the launchpad banner to render "(N/M loaded)".
+    pub fn account_load_status(&self) -> (usize, usize) {
+        let total = self.ordered_keys.len();
+        let loaded = self
+            .ordered_keys
+            .iter()
+            .filter(|k| self.by_key.get(k).is_some_and(|s| s.usage.is_some()))
+            .count();
+        (loaded, total)
+    }
+
     /// Look up the cached usage snapshot for `key`. `None` when the
     /// poller hasn't yet succeeded for this account.
     pub fn usage(&self, key: &AccountKey) -> Option<&UsageSnapshot> {

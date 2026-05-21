@@ -76,15 +76,14 @@ fn run() -> anyhow::Result<()> {
             return Err(anyhow::anyhow!("forge: {err}"));
         }
 
-        // Synchronously warm the account-usage cache so the account
-        // picker has real tier data for every account before any
-        // project auto-spawn fires inside `create_app`. Bounded
-        // internally so a stuck probe can't stall startup beyond a
-        // few seconds. See `Workspace::warm_account_usage_cache`
-        // for the bug this prevents (cold-start tier-0 ties on
-        // forge.toml definition order picking rate-limited
-        // accounts).
-        workspace.warm_account_usage_cache().await;
+        // Kick off the retry-until-success account-usage warm-up in
+        // the background. Spawns + the launchpad's banner gate on
+        // `wait_for_account_warm_complete`. The TUI renders right
+        // away with a "loading account usage data..." banner; once
+        // every account has a snapshot, the banner clears and any
+        // deferred auto_start projects spawn with correctly-picked
+        // accounts.
+        workspace.spawn_account_warm_loop();
 
         // Create the app (instant, no I/O). The TUI holds an
         // `Arc<Workspace>` clone; main keeps the original so it

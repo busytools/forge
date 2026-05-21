@@ -402,6 +402,23 @@ pub enum SessionUpdate {
         correlation_id: CorrelationId,
         reason: PeerFailureReason,
     },
+    /// Account-usage warm-up progress. Emitted at warm-up start,
+    /// after every retry probe round, and once on completion.
+    /// Launchpad reads this to render the global "loading account
+    /// usage data..." banner. App-level (no session key).
+    AccountWarmStateChanged {
+        /// `false` once every configured account has a usage
+        /// snapshot. While `true`, spawn paths defer; the launchpad
+        /// renders the banner.
+        in_progress: bool,
+        /// Number of accounts with a snapshot at this moment.
+        loaded: usize,
+        /// Total configured accounts (denominator of "(N/M loaded)").
+        total: usize,
+        /// 0 at first emit (warm starting), 1+ for each completed
+        /// probe round.
+        attempt: u32,
+    },
     FatalError(AppError),
 }
 
@@ -446,7 +463,8 @@ impl SessionUpdate {
             | Self::PluginsInventoryRefreshFailed { .. }
             | Self::PluginsCliActionSucceeded { .. }
             | Self::PluginsCliActionFailed { .. }
-            | Self::FatalError(..) => None,
+            | Self::FatalError(..)
+            | Self::AccountWarmStateChanged { .. } => None,
         }
     }
 }
@@ -573,6 +591,13 @@ impl std::fmt::Debug for SessionUpdate {
                 .field("caller_key", caller_key)
                 .field("correlation_id", correlation_id)
                 .field("reason", reason)
+                .finish(),
+            Self::AccountWarmStateChanged { in_progress, loaded, total, attempt } => f
+                .debug_struct("AccountWarmStateChanged")
+                .field("in_progress", in_progress)
+                .field("loaded", loaded)
+                .field("total", total)
+                .field("attempt", attempt)
                 .finish(),
             Self::FatalError(err) => f.debug_struct("FatalError").field("error", err).finish(),
         }

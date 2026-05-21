@@ -244,6 +244,10 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
         fps_ema: None,
         last_frame_at: None,
         connection_started: false,
+        account_warm_in_progress: false,
+        account_warm_loaded: 0,
+        account_warm_total: 0,
+        account_warm_attempt: 0,
         startup_project: cli.project.clone(),
         replay_in_progress: false,
         input_draft_snapshot: None,
@@ -303,23 +307,32 @@ pub fn start_connection(app: &mut App) {
     if app.active_view == crate::app::ActiveView::Launchpad {
         let auto_start = workspace.auto_start_project_names();
         for project_name in auto_start {
-            // Every project goes through `SpawnProject` — no
-            // `StartDefault`, since the launchpad doesn't pick a
-            // focused tab. The chat view never mounts until the
-            // user picks a row.
-            let cmd = forge_workspace::Command::SpawnProject {
-                project_name: project_name.clone(),
-                launch_settings: launch_settings.clone(),
-            };
-            if let Err(err) = workspace.dispatch(cmd) {
-                tracing::error!(
-                    target: crate::logging::targets::BRIDGE_LIFECYCLE,
-                    event_name = "launchpad_auto_start_dispatch_failed",
-                    error = %err,
-                    project = %project_name,
-                    "launchpad auto_start dispatch failed",
-                );
-            }
+            // Defer the dispatch until the account-warm loop has
+            // probed every account and the picker can see real tier
+            // data. Without this, every account ties at tier 0
+            // (no snapshot yet) and `pick_for_project` falls
+            // through to forge.toml definition order — a
+            // rate-limited account listed first wins over a healthy
+            // account listed later.
+            let workspace_for_spawn = std::sync::Arc::clone(workspace);
+            let project_name_for_spawn = project_name.clone();
+            let launch_settings_for_spawn = launch_settings.clone();
+            tokio::spawn(async move {
+                workspace_for_spawn.wait_for_account_warm_complete().await;
+                let cmd = forge_workspace::Command::SpawnProject {
+                    project_name: project_name_for_spawn.clone(),
+                    launch_settings: launch_settings_for_spawn,
+                };
+                if let Err(err) = workspace_for_spawn.dispatch(cmd) {
+                    tracing::error!(
+                        target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                        event_name = "launchpad_auto_start_dispatch_failed",
+                        error = %err,
+                        project = %project_name_for_spawn,
+                        "launchpad auto_start dispatch failed after warm",
+                    );
+                }
+            });
         }
         return;
     }
@@ -343,26 +356,35 @@ pub fn start_connection(app: &mut App) {
         // Only the first project gets `StartDefault` semantics
         // (which sets it as the focused tab); the rest go via
         // `SpawnProject` and land in the Projects pane silently.
-        let cmd = if i == 0 {
-            forge_workspace::Command::StartDefault {
-                project_name: project_name.clone(),
-                launch_settings: launch_settings.clone(),
+        // Same warm-up deferral as the launchpad branch above — the
+        // picker needs real tier data before it runs.
+        let workspace_for_spawn = std::sync::Arc::clone(workspace);
+        let project_name_for_spawn = project_name.clone();
+        let launch_settings_for_spawn = launch_settings.clone();
+        let is_first = i == 0;
+        tokio::spawn(async move {
+            workspace_for_spawn.wait_for_account_warm_complete().await;
+            let cmd = if is_first {
+                forge_workspace::Command::StartDefault {
+                    project_name: project_name_for_spawn.clone(),
+                    launch_settings: launch_settings_for_spawn,
+                }
+            } else {
+                forge_workspace::Command::SpawnProject {
+                    project_name: project_name_for_spawn.clone().unwrap_or_default(),
+                    launch_settings: launch_settings_for_spawn,
+                }
+            };
+            if let Err(err) = workspace_for_spawn.dispatch(cmd) {
+                tracing::error!(
+                    target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                    event_name = "start_connection_dispatch_failed",
+                    error = %err,
+                    project = ?project_name_for_spawn,
+                    "auto_start dispatch failed after warm",
+                );
             }
-        } else {
-            forge_workspace::Command::SpawnProject {
-                project_name: project_name.clone().unwrap_or_default(),
-                launch_settings: launch_settings.clone(),
-            }
-        };
-        if let Err(err) = workspace.dispatch(cmd) {
-            tracing::error!(
-                target: crate::logging::targets::BRIDGE_LIFECYCLE,
-                event_name = "start_connection_dispatch_failed",
-                error = %err,
-                project = ?project_name,
-                "auto_start dispatch failed",
-            );
-        }
+        });
     }
 }
 
