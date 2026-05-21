@@ -26,8 +26,9 @@ pub use types::WorkerEntry;
 /// same `forge` name; task 12 reconciles registration so both sets
 /// of tools surface together.
 pub fn build_server(facade: Arc<dyn WorkerFacade>, caller_key: CallerKeyResolver) -> McpServer {
-    let spawn = Spawn { facade, caller_key };
-    McpServerBuilder::new("forge", env!("CARGO_PKG_VERSION")).tool(spawn).build()
+    let spawn = Spawn { facade: facade.clone(), caller_key: caller_key.clone() };
+    let list = List { facade, caller_key };
+    McpServerBuilder::new("forge", env!("CARGO_PKG_VERSION")).tool(spawn).tool(list).build()
 }
 
 /// `workers__spawn` - lead-only. Allocates a new SessionTask in the
@@ -136,6 +137,54 @@ fn format_spawn_error(err: &WorkerSpawnError) -> String {
         }
         WorkerSpawnError::DispatchFailed { message } => {
             format!("worker spawn failed: {message}")
+        }
+    }
+}
+
+/// `workers__list` - any-caller snapshot of every worker live in the
+/// caller's project. Returns a JSON array of `WorkerStatus`.
+///
+/// Used by the LLM to discover the local worker pool before calling
+/// `workers__tell` / `workers__ask`. Returns an empty array when the
+/// project has no live workers (or when the caller resolves to no
+/// known project, which should never happen in practice).
+pub(crate) struct List {
+    pub(crate) facade: Arc<dyn WorkerFacade>,
+    pub(crate) caller_key: CallerKeyResolver,
+}
+
+#[async_trait::async_trait]
+impl Tool for List {
+    #[allow(clippy::unnecessary_literal_bound)]
+    fn name(&self) -> &str {
+        "workers__list"
+    }
+
+    #[allow(clippy::unnecessary_literal_bound)]
+    fn description(&self) -> &str {
+        "List every worker currently live in YOUR project. Returns a \
+         JSON array of worker snapshots (label, full charter, status, \
+         session_id, spawned_at, spawned_by_session_id). Both lead and \
+         worker sessions may call this; workers see the same set as \
+         the lead. Use the labels from this output as targets for \
+         workers__tell / workers__ask. An empty array means no workers \
+         are live in your project. Takes no arguments."
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {},
+            "additionalProperties": false,
+        })
+    }
+
+    async fn call(&self, _input: ToolInput) -> ToolOutput {
+        let caller_key = self.caller_key.current();
+        let workers = self.facade.list_workers(&caller_key);
+        match serde_json::to_string_pretty(&workers) {
+            Ok(json) => ToolOutput::text(json),
+            Err(err) => tool_error(format!("worker-list serialization failed: {err}")),
         }
     }
 }
@@ -272,5 +321,101 @@ mod tests {
         let required = schema["required"].as_array().expect("required field present");
         assert!(required.iter().any(|v| v == "label"));
         assert!(required.iter().any(|v| v == "charter"));
+    }
+
+    fn fake_worker(label: &str, charter: &str) -> forge_primitives::WorkerStatus {
+        forge_primitives::WorkerStatus {
+            label: label.to_owned(),
+            charter: charter.to_owned(),
+            status: forge_primitives::WorkerLiveness::Running,
+            session_id: format!("session-{label}"),
+            spawned_at: std::time::SystemTime::UNIX_EPOCH,
+            spawned_by_session_id: "lead-uuid".to_owned(),
+        }
+    }
+
+    #[tokio::test]
+    async fn list_returns_workers_for_caller_project() {
+        let mock = MockWorkerFacade::new();
+        let caller = fake_key("lead-key");
+        mock.callers.lock().insert(caller.clone(), lead_caller("forge"));
+        mock.workers.lock().insert(
+            "forge".into(),
+            vec![
+                fake_worker("reviewer", "Review every diff."),
+                fake_worker("tester", "Run all tests after changes."),
+            ],
+        );
+        let facade = mock.into_arc();
+        let tool = List { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
+        let output = tool.call(ToolInput { value: serde_json::json!({}) }).await;
+        assert!(!output.is_error, "list happy path should not error: {:?}", output.blocks);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&output.blocks[0].text).expect("valid JSON");
+        let arr = parsed.as_array().expect("output is array");
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["label"], "reviewer");
+        assert_eq!(arr[0]["charter"], "Review every diff.");
+        assert_eq!(arr[1]["label"], "tester");
+    }
+
+    #[tokio::test]
+    async fn list_returns_empty_array_when_no_workers() {
+        let mock = MockWorkerFacade::new();
+        let caller = fake_key("lead-key");
+        mock.callers.lock().insert(caller.clone(), lead_caller("forge"));
+        // No workers pre-loaded for "forge".
+        let facade = mock.into_arc();
+        let tool = List { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
+        let output = tool.call(ToolInput { value: serde_json::json!({}) }).await;
+        assert!(!output.is_error);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&output.blocks[0].text).expect("valid JSON");
+        assert_eq!(parsed.as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn list_returns_empty_when_caller_unresolved() {
+        let mock = MockWorkerFacade::new();
+        // No caller mapping pre-loaded - resolves to None, facade
+        // returns an empty Vec.
+        let facade = mock.into_arc();
+        let tool =
+            List { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("ghost-key")) };
+        let output = tool.call(ToolInput { value: serde_json::json!({}) }).await;
+        assert!(!output.is_error);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&output.blocks[0].text).expect("valid JSON");
+        assert_eq!(parsed.as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn list_works_for_worker_callers_too() {
+        // Workers can list - the spec says caller is "any". The mock
+        // returns the same project's worker set regardless of lead vs
+        // worker, mirroring production semantics.
+        let mock = MockWorkerFacade::new();
+        let caller = fake_key("worker-key");
+        mock.callers.lock().insert(caller.clone(), worker_caller("forge"));
+        mock.workers.lock().insert("forge".into(), vec![fake_worker("reviewer", "charter")]);
+        let facade = mock.into_arc();
+        let tool = List { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
+        let output = tool.call(ToolInput { value: serde_json::json!({}) }).await;
+        assert!(!output.is_error);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&output.blocks[0].text).expect("valid JSON");
+        assert_eq!(parsed.as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn list_metadata_shape() {
+        let mock = MockWorkerFacade::new();
+        let facade = mock.into_arc();
+        let tool = List { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("k")) };
+        assert_eq!(tool.name(), "workers__list");
+        assert!(tool.description().to_lowercase().contains("list"));
+        let schema = tool.input_schema();
+        assert_eq!(schema["type"], "object");
+        assert!(schema["properties"].as_object().unwrap().is_empty());
     }
 }
