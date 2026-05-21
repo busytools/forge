@@ -155,9 +155,10 @@ impl Workspace {
         // catalog merge is a separate concern.
         let catalog_entries = forge_agent::userdata::catalog::scan::list_sessions(
             &config_dir,
-            None, // every project in the catalog
-            None, // no limit
+            None,  // every project in the catalog
+            None,  // no limit
             0,
+            false, // hide worker-tagged sessions from default catalog
         )
         .await;
 

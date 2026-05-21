@@ -371,7 +371,7 @@ async fn list_recent_sessions(
     use forge_primitives::SessionListEntry;
     const MAX_RECENT: usize = 50;
     let dir = if cwd.is_empty() { None } else { Some(cwd) };
-    crate::userdata::catalog::scan::list_sessions(config_dir, dir, Some(MAX_RECENT), 0)
+    crate::userdata::catalog::scan::list_sessions(config_dir, dir, Some(MAX_RECENT), 0, false)
         .await
         .into_iter()
         .map(|info| SessionListEntry {

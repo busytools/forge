@@ -22,7 +22,7 @@ use serde_json::Value;
 use unicode_normalization::UnicodeNormalization;
 use uuid::Uuid;
 
-use forge_primitives::{SDKSessionInfo, SessionMessage, SessionMessageKind};
+use forge_primitives::{FORGE_WORKER_TAG_PREFIX, SDKSessionInfo, SessionMessage, SessionMessageKind};
 use forge_sdk::projects_dir_for;
 
 /// True if `s` is a canonical 8-4-4-4-12 hyphenated UUID. The length
@@ -353,11 +353,20 @@ const LIST_SESSIONS_MAX_CONCURRENT: usize = 16;
 /// # Panics
 ///
 /// Never — filesystem errors fall through and produce an empty Vec.
+/// True when `info` represents a worker session that should be
+/// hidden from default `list_sessions` / session-picker / resolver
+/// output. Callers opt in via `include_workers = true` to see them.
+#[must_use]
+pub fn should_exclude_worker_tag(info: &SDKSessionInfo) -> bool {
+    info.tag.as_deref().is_some_and(|t| t.starts_with(FORGE_WORKER_TAG_PREFIX))
+}
+
 pub async fn list_sessions(
     config_dir: &Path,
     directory: Option<&str>,
     limit: Option<usize>,
     offset: usize,
+    include_workers: bool,
 ) -> Vec<SDKSessionInfo> {
     let search_dirs: Vec<PathBuf> = if let Some(dir) = directory {
         vec![project_dir_for(config_dir, dir)]
@@ -412,6 +421,11 @@ pub async fn list_sessions(
     }
 
     entries.sort_by_key(|e| std::cmp::Reverse(e.last_modified));
+    let entries: Vec<SDKSessionInfo> = if include_workers {
+        entries
+    } else {
+        entries.into_iter().filter(|info| !should_exclude_worker_tag(info)).collect()
+    };
     let end = limit.map_or(entries.len(), |l| offset.saturating_add(l));
     entries.into_iter().skip(offset).take(end.saturating_sub(offset)).collect()
 }
@@ -1078,6 +1092,51 @@ mod tests {
         let msgs = parse_session_messages(jsonl.as_bytes());
         assert_eq!(msgs.len(), 1, "non-queued_command attachment must be skipped");
         assert!(matches!(msgs[0].kind, SessionMessageKind::Assistant));
+    }
+
+    fn session_info_with_tag(session_id: &str, tag: Option<&str>) -> SDKSessionInfo {
+        SDKSessionInfo {
+            session_id: session_id.to_string(),
+            summary: "test".to_string(),
+            last_modified: 0,
+            file_size: None,
+            custom_title: None,
+            first_prompt: None,
+            git_branch: None,
+            cwd: None,
+            tag: tag.map(str::to_string),
+            created_at: None,
+        }
+    }
+
+    #[test]
+    fn parse_session_info_filter_excludes_worker_tag_by_default() {
+        let content = "{\"type\":\"user\",\"timestamp\":\"2026-04-22T00:00:00.000Z\",\"message\":{\"content\":\"hi\"}}\n{\"type\":\"tag\",\"tag\":\"forge:worker:reviewer\"}\n".to_string();
+        let lite = LiteSessionFile {
+            mtime: 0,
+            size: content.len() as u64,
+            head: content.clone(),
+            tail: content,
+        };
+        let info = parse_session_info_from_lite("abc", &lite, None).expect("some");
+        assert_eq!(info.tag.as_deref(), Some("forge:worker:reviewer"));
+        // The session is still parseable - filtering happens at the
+        // list_sessions caller layer, not here.
+        assert!(should_exclude_worker_tag(&info));
+    }
+
+    #[test]
+    fn should_exclude_worker_tag_recognises_prefix() {
+        let info = session_info_with_tag("s1", Some("forge:worker:reviewer"));
+        assert!(should_exclude_worker_tag(&info));
+    }
+
+    #[test]
+    fn should_exclude_worker_tag_passes_lead_and_untagged() {
+        let lead = session_info_with_tag("s1", Some("forge:lead"));
+        let untagged = session_info_with_tag("s2", None);
+        assert!(!should_exclude_worker_tag(&lead));
+        assert!(!should_exclude_worker_tag(&untagged));
     }
 
     #[test]
