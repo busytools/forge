@@ -241,11 +241,26 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
                 crate::app::plugins::apply_cli_action_failure(app, message);
             });
         }
-        SessionUpdate::PeerInflightStatsChanged { .. }
-        | SessionUpdate::PeerAskTimedOut { .. }
-        | SessionUpdate::PeerAskFailed { .. } => {
-            // TODO(C16): wire sidebar peer-activity badge + counts on
-            // UiSession.peer_badges. No-op until the badge field lands.
+        SessionUpdate::PeerInflightStatsChanged { key, stats } => {
+            if let Some(session) = app.session_mut(&key) {
+                // Track when the failure counters last incremented so
+                // the projects_pane render can fade those indicators
+                // after 60 s.
+                if stats.timed_out > session.peer_badges.timed_out
+                    || stats.delivery_failed > session.peer_badges.delivery_failed
+                {
+                    session.peer_badges_last_failure_at = Some(std::time::Instant::now());
+                }
+                session.peer_badges = stats;
+            }
+        }
+        SessionUpdate::PeerAskTimedOut { .. } | SessionUpdate::PeerAskFailed { .. } => {
+            // Stats updates flow via PeerInflightStatsChanged from
+            // the workspace's bump_inflight_stats. These two events
+            // are UI-state-only — currently only used to drive a
+            // redraw + (future) chat-injection animation. The
+            // existing `is_active_or_global` redraw flag at the
+            // bottom of this fn handles the redraw for free.
         }
     }
     if is_active_or_global {

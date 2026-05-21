@@ -14,8 +14,9 @@
 //! identifier so click routing keeps working regardless of
 //! truncation.
 
-use std::time::SystemTime;
+use std::time::{Instant, SystemTime};
 
+use forge_primitives::PeerInflightStats;
 use forge_workspace::ProjectView;
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -273,8 +274,18 @@ pub fn render_overlay(frame: &mut Frame, area: Rect, app: &mut App, projects: &[
 /// Tree connectors mirror the GIT / PROCESSES sections (`├─` /
 /// `└─`) so the inspector + projects pane read as one consistent
 /// visual language across the workspace.
-type RowMeta<'p> =
-    (&'p ProjectView, Option<(forge_workspace::SessionKey, SessionLifecycleState, bool)>);
+type LiveRowMeta = (forge_workspace::SessionKey, SessionLifecycleState, bool, PeerBadgeInput);
+type RowMeta<'p> = (&'p ProjectView, Option<LiveRowMeta>);
+
+/// Snapshot of the peer-activity counters + last-failure timestamp
+/// captured from the row's `UiSession` bucket before row rendering.
+/// Passed into [`append_org_project_row`] so the badge spans can be
+/// inlined without re-borrowing `app.sessions`.
+#[derive(Clone, Default)]
+struct PeerBadgeInput {
+    stats: PeerInflightStats,
+    last_failure_at: Option<Instant>,
+}
 
 fn append_project_rows(
     lines: &mut Vec<Line<'static>>,
@@ -287,9 +298,15 @@ fn append_project_rows(
     let lifecycle_for = |key: &forge_workspace::SessionKey| -> SessionLifecycleState {
         app.sessions.get(key).map_or(SessionLifecycleState::default(), |s| s.lifecycle_state)
     };
+    let badges_for = |key: &forge_workspace::SessionKey| -> PeerBadgeInput {
+        app.sessions.get(key).map_or_else(PeerBadgeInput::default, |s| PeerBadgeInput {
+            stats: s.peer_badges.clone(),
+            last_failure_at: s.peer_badges_last_failure_at,
+        })
+    };
 
     // Bucket projects by org name. Each bucket is a Vec of
-    // (project, optional live session key, lifecycle, is_focused).
+    // (project, optional live session metadata + peer badges).
     let mut by_org: std::collections::BTreeMap<String, Vec<RowMeta<'_>>> =
         std::collections::BTreeMap::new();
     for project in projects {
@@ -304,7 +321,8 @@ fn append_project_rows(
             .map(|_| (spawn_synthetic.clone(), lifecycle_for(&spawn_synthetic)));
         let live = live_session.or(synthetic).map(|(key, lifecycle)| {
             let is_focused = Some(&key) == active_session_key.as_ref();
-            (key, lifecycle, is_focused)
+            let badges = badges_for(&key);
+            (key, lifecycle, is_focused, badges)
         });
         by_org.entry(project.org.clone()).or_default().push((project, live));
     }
@@ -379,32 +397,43 @@ fn append_org_project_row(
     area: Rect,
     app: &mut App,
     project: &ProjectView,
-    live: Option<&(forge_workspace::SessionKey, SessionLifecycleState, bool)>,
+    live: Option<&LiveRowMeta>,
     is_last: bool,
     spinner_frame: usize,
     now: SystemTime,
 ) {
     let row_y = area.y + line_count_as_u16(lines);
     let connector = if is_last { "\u{2514}\u{2500} " } else { "\u{251C}\u{2500} " };
-    let name_budget = name_budget_org_row(area.width);
+    let total_name_budget = name_budget_org_row(area.width);
 
     let mut spans: Vec<Span<'static>> = Vec::new();
     spans.push(Span::raw(" "));
     spans.push(Span::styled(connector.to_owned(), Style::default().fg(theme::DIM)));
 
-    if let Some((session_key, lifecycle, is_focused)) = live {
+    if let Some((session_key, lifecycle, is_focused, badge_input)) = live {
         let (glyph, glyph_color) = glyph_for_lifecycle(*lifecycle, *is_focused, spinner_frame);
         let name_style = if *is_focused {
             Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)
         } else {
             Style::default().add_modifier(Modifier::BOLD)
         };
+        // Reserve room for the peer-activity badge cluster between
+        // the name and the close button so the badges sit flush
+        // against the right column rather than off-screen on narrow
+        // panes.
+        let (badge_spans, badge_width) =
+            peer_badge_spans(&badge_input.stats, badge_input.last_failure_at, Instant::now());
+        let name_budget = total_name_budget.saturating_sub(badge_width);
         let label = truncate_with_ellipsis(project.name.as_str(), name_budget);
         let label_pad = name_budget.saturating_sub(label.chars().count());
         spans.push(Span::styled(glyph, Style::default().fg(glyph_color)));
         spans.push(Span::raw(" "));
         spans.push(Span::styled(label, name_style));
         spans.push(Span::raw(" ".repeat(label_pad)));
+        // Peer-activity badges (·N↑ outgoing, ·N↓ incoming, ·N⌛
+        // timed-out, ·N✕ delivery-failed). Failure badges fade after
+        // 60 s so the sidebar doesn't stay red after a single hiccup.
+        spans.extend(badge_spans);
         // 1-col separator before the button — matches the 1-col
         // separator before the `time` column on idle rows.
         spans.push(Span::raw(" "));
@@ -452,8 +481,12 @@ fn append_org_project_row(
         // emoji column on active rows (emoji = 2 cells; time = 3
         // chars; the 1-col pad here equalises them in the same x
         // position). Plus the standard 1-col right gutter.
-        let label = truncate_with_ellipsis(project.name.as_str(), name_budget);
-        let label_pad = name_budget.saturating_sub(label.chars().count());
+        //
+        // No badge column on idle rows — peer in-flight state lives
+        // on the live `UiSession` bucket, and a sleeping project has
+        // no bucket to read from. Full width goes to the name.
+        let label = truncate_with_ellipsis(project.name.as_str(), total_name_budget);
+        let label_pad = total_name_budget.saturating_sub(label.chars().count());
         let time =
             format_relative_time(project.sessions.first().and_then(|s| s.last_activity), now);
         spans.push(Span::styled("\u{25CB}".to_owned(), Style::default().fg(theme::DIM)));
@@ -573,6 +606,75 @@ fn glyph_for_lifecycle(
         | SessionLifecycleState::Failed
         | SessionLifecycleState::LoggedOut => ("·".to_owned(), theme::DIM),
     }
+}
+
+/// Duration after which transient failure badges (`·N⌛` / `·N✕`)
+/// fade off the row. Counted from `peer_badges_last_failure_at`,
+/// which is stamped each time the workspace reports a fresh
+/// `timed_out` or `delivery_failed` increment. Cumulative
+/// outgoing/incoming counts have no fade — they reflect live state
+/// while the in-flight asks are pending.
+const PEER_FAILURE_FADE: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Build the peer-activity badge cluster spans for a row. Returns the
+/// spans plus the printed width so the caller can shrink `name_budget`
+/// before truncating the project label — without this, badges on a
+/// narrow pane would either push the close button off-screen or land
+/// on top of the label.
+///
+/// Visual order matches the brainstorm spec: outgoing → incoming →
+/// timed-out → delivery-failed. Each badge is `·<count><glyph>` and
+/// gets a single foreground colour. Counts of 0 are omitted entirely
+/// rather than rendered as `·0↑` (the goal is "noise only when there's
+/// activity"). Failure badges (`⌛`, `✕`) disappear after
+/// [`PEER_FAILURE_FADE`] so a one-time spawn hiccup doesn't keep the
+/// sidebar painted red until the session is closed.
+fn peer_badge_spans(
+    stats: &PeerInflightStats,
+    last_failure_at: Option<Instant>,
+    now: Instant,
+) -> (Vec<Span<'static>>, usize) {
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut width: usize = 0;
+
+    let mut push = |span: Span<'static>| {
+        width += span.content.chars().count();
+        spans.push(span);
+    };
+
+    if stats.outgoing > 0 {
+        push(Span::styled(
+            format!("\u{00b7}{}\u{2191}", stats.outgoing),
+            Style::default().fg(theme::DIM),
+        ));
+    }
+    if stats.incoming > 0 {
+        push(Span::styled(
+            format!("\u{00b7}{}\u{2193}", stats.incoming),
+            Style::default().fg(theme::DIM),
+        ));
+    }
+
+    // Failure badges fade after 60 s. `last_failure_at` is `None`
+    // when no failure has ever fired for this session.
+    let failures_fresh = last_failure_at
+        .is_some_and(|when| now.checked_duration_since(when).is_some_and(|d| d < PEER_FAILURE_FADE));
+    if failures_fresh {
+        if stats.timed_out > 0 {
+            push(Span::styled(
+                format!("\u{00b7}{}\u{231b}", stats.timed_out),
+                Style::default().fg(theme::STATUS_WARNING),
+            ));
+        }
+        if stats.delivery_failed > 0 {
+            push(Span::styled(
+                format!("\u{00b7}{}\u{2715}", stats.delivery_failed),
+                Style::default().fg(theme::STATUS_ERROR),
+            ));
+        }
+    }
+
+    (spans, width)
 }
 
 // ---------------------------------------------------------------
@@ -1336,6 +1438,73 @@ mod tests {
         assert_eq!(bar_cells_for(24), 11);
         // Narrower than the chrome+floor: clamps to 6.
         assert_eq!(bar_cells_for(10), 6);
+    }
+
+    #[test]
+    fn peer_badge_spans_empty_when_no_activity() {
+        let stats = PeerInflightStats::default();
+        let (spans, width) = peer_badge_spans(&stats, None, Instant::now());
+        assert!(spans.is_empty(), "no badges expected for default stats");
+        assert_eq!(width, 0);
+    }
+
+    #[test]
+    fn peer_badge_spans_renders_outgoing_and_incoming() {
+        let stats = PeerInflightStats {
+            outgoing: 2,
+            incoming: 1,
+            timed_out: 0,
+            delivery_failed: 0,
+        };
+        let (spans, width) = peer_badge_spans(&stats, None, Instant::now());
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("\u{2191}"), "outgoing arrow present: {text}");
+        assert!(text.contains("\u{2193}"), "incoming arrow present: {text}");
+        assert!(text.contains('2'), "outgoing count present: {text}");
+        assert!(text.contains('1'), "incoming count present: {text}");
+        // ·2↑·1↓ — 6 chars (· and arrow each count as 1 char).
+        assert_eq!(width, 6);
+    }
+
+    #[test]
+    fn peer_badge_spans_shows_failures_when_fresh() {
+        let stats = PeerInflightStats {
+            outgoing: 0,
+            incoming: 0,
+            timed_out: 1,
+            delivery_failed: 1,
+        };
+        let now = Instant::now();
+        let (spans, _) = peer_badge_spans(&stats, Some(now), now);
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("\u{231b}"), "timeout glyph present when fresh: {text}");
+        assert!(text.contains("\u{2715}"), "failure glyph present when fresh: {text}");
+    }
+
+    #[test]
+    fn peer_badge_spans_fades_failures_after_60s() {
+        let stats = PeerInflightStats {
+            outgoing: 0,
+            incoming: 0,
+            timed_out: 1,
+            delivery_failed: 1,
+        };
+        // Simulate `now` being 61 s past the failure timestamp by
+        // pinning `last_failure_at` to a synthetic Instant and using
+        // a `now` that's just after the fade window. Instant doesn't
+        // accept arbitrary offsets, but `Instant::now() - 61s` is
+        // valid via checked_sub.
+        let later = Instant::now();
+        let earlier = later.checked_sub(PEER_FAILURE_FADE + std::time::Duration::from_secs(1));
+        let Some(stamped) = earlier else {
+            // System clock can't go back that far on this platform;
+            // skip the fade-window assertion rather than panic.
+            return;
+        };
+        let (spans, _) = peer_badge_spans(&stats, Some(stamped), later);
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(!text.contains("\u{231b}"), "timeout glyph faded after 60 s: {text}");
+        assert!(!text.contains("\u{2715}"), "failure glyph faded after 60 s: {text}");
     }
 
     #[test]
