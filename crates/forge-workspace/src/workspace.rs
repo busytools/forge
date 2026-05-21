@@ -1982,6 +1982,42 @@ impl Workspace {
             );
         }
     }
+
+    /// Expire every in-flight ask whose `target_project` matches the
+    /// `<project_key>::<label>` composite for a closed worker.
+    ///
+    /// Worker-bound asks stamp this composite onto `InflightAsk.target_project`
+    /// (see `crate::mcp::workers::worker_target_project_key`); when a
+    /// worker is closed via `handle_close_worker`, the per-session
+    /// connection-failed expiry (`expire_target_inflight`) would never
+    /// match because that path looks up the project by session-key
+    /// presence in the catalog and matches on the project's plain
+    /// name. The composite key path covers worker-bound traffic
+    /// specifically.
+    ///
+    /// Each matching ask is rolled through `expire_inflight_ask_failed`
+    /// so the caller's LLM receives the same `DeliveryFailureNotice`
+    /// turn it would for any other target loss.
+    pub(crate) fn expire_inflight_for_closed_worker(
+        self: &Arc<Self>,
+        project_key: &crate::ProjectKey,
+        label: &str,
+    ) {
+        let composite = crate::mcp::workers::worker_target_project_key(project_key.as_str(), label);
+        let ids_to_expire: Vec<CorrelationId> = {
+            let asks = self.inflight_asks.lock();
+            asks.iter()
+                .filter(|(_, ask)| ask.target_project == composite)
+                .map(|(id, _)| id.clone())
+                .collect()
+        };
+        for id in ids_to_expire {
+            self.expire_inflight_ask_failed(
+                &id,
+                crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
+            );
+        }
+    }
 }
 
 #[cfg(any(test, feature = "testing"))]

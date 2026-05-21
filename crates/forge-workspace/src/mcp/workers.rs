@@ -22,6 +22,17 @@ pub use types::WorkerEntry;
 /// Mirrors the peer-MCP value (#114 v1 brainstorm locked at 10).
 const HOP_LIMIT: u8 = 10;
 
+/// Composite key stored in `InflightAsk.target_project` for worker-
+/// bound asks. The `::` separator can never appear in a real project
+/// name (forge.toml validation rejects it), so this shape is
+/// distinguishable from peer-MCP's plain-project-name fill at zero
+/// schema cost. `expire_inflight_for_closed_worker` matches on the
+/// composite when a worker's session is torn down.
+#[must_use]
+pub(crate) fn worker_target_project_key(project_key: &str, label: &str) -> String {
+    format!("{project_key}::{label}")
+}
+
 /// Build a standalone `forge` MCP server carrying only the four
 /// workers-coordination tools. Used in tests for isolated workers-MCP
 /// coverage; the production build_site uses
@@ -394,6 +405,22 @@ impl Tool for Ask {
             body: args.question,
         };
 
+        // Resolve the caller's project so we can stamp a composite
+        // `target_project` field on the InflightAsk that is unique to
+        // worker traffic. Worker labels are scoped to a project, so
+        // `<project_key>::<label>` is the natural disambiguator -
+        // and the `::` separator can never appear in a real project
+        // name (it's a forge.toml validation constraint), so the
+        // composite cannot collide with the peer-MCP target_project
+        // shape (a bare project name). expire_inflight_*_for_worker
+        // matches on this composite when a worker closes.
+        let caller_project_key = self
+            .facade
+            .caller_project(&caller_key)
+            .map(|cp| cp.project_key.as_str().to_owned())
+            .unwrap_or_default();
+        let target_project_composite = worker_target_project_key(&caller_project_key, &args.label);
+
         // Register the inflight ask BEFORE dispatching delivery so a
         // fast-path worker (idle, processes the prompt immediately on
         // its next turn) can't fire a reply that hits
@@ -404,9 +431,9 @@ impl Tool for Ask {
         self.facade.register_inflight_ask(InflightAsk {
             correlation_id: correlation_id.clone(),
             caller: caller_key.clone(),
-            caller_project: caller_key.as_str().to_owned(),
+            caller_project: caller_project_key,
             caller_org: String::new(),
-            target_project: args.label.clone(),
+            target_project: target_project_composite,
         });
 
         match self.facade.deliver_worker_prompt(&caller_key, &args.label, wrapped) {

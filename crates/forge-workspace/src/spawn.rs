@@ -496,7 +496,17 @@ pub(crate) fn handle_spawn_worker(
 /// session (terminates the claude subprocess), and emit a `Removed`
 /// status event. JSONL on disk is NOT deleted - "close" only means
 /// "remove from in-memory live state".
-pub(crate) fn handle_close_worker(workspace: &Workspace, project_key: &ProjectKey, label: &str) {
+///
+/// Worker-bound asks whose `target_project` composite
+/// (`<project_key>::<label>`) names the closed worker are expired
+/// via `Workspace::expire_inflight_for_closed_worker` so their
+/// caller's LLM receives a `DeliveryFailureNotice` instead of
+/// waiting forever for a reply.
+pub(crate) fn handle_close_worker(
+    workspace: &Arc<Workspace>,
+    project_key: &ProjectKey,
+    label: &str,
+) {
     let Some(entry) = workspace.remove_latest_worker(project_key, label) else {
         tracing::warn!(
             target: "forge_workspace::spawn",
@@ -508,6 +518,7 @@ pub(crate) fn handle_close_worker(workspace: &Workspace, project_key: &ProjectKe
     };
     let status = entry.to_status();
     workspace.release_session(&entry.session_key);
+    workspace.expire_inflight_for_closed_worker(project_key, label);
     let _ = workspace.update_tx().send(SessionUpdate::WorkerStatusChanged {
         project_key: project_key.clone(),
         action: WorkerStatusAction::Removed,
@@ -911,5 +922,44 @@ config_dir = "~/.claude-subspace"
         );
         assert!(a.as_str().starts_with("__spawn_worker_forge_reviewer_"));
         assert!(b.as_str().starts_with("__spawn_worker_forge_reviewer_"));
+    }
+
+    /// Regression for C4: closing a worker must expire every
+    /// inflight ask whose `target_project` composite names that
+    /// worker. Pre-fix `target_project` carried the bare label,
+    /// which never matched the project-name path in
+    /// `expire_target_inflight` and the asks leaked forever. The
+    /// new `expire_inflight_for_closed_worker` keyed on
+    /// `<project_key>::<label>` covers worker-bound traffic.
+    #[tokio::test]
+    async fn close_worker_expires_inflight_asks_addressed_to_it() {
+        use crate::mcp::peers::types::{CorrelationId, InflightAsk};
+        let (workspace, _rx) = Workspace::testing_stub();
+        let project = ProjectKey::new("forge");
+        workspace.insert_live_worker(&project, fake_worker_entry("reviewer", "worker-1"));
+
+        // Stamp an inflight ask using the same composite the workers
+        // Ask Tool would produce.
+        let cid = CorrelationId::new_ask();
+        let composite =
+            crate::mcp::workers::worker_target_project_key(project.as_str(), "reviewer");
+        workspace.inflight_asks.lock().insert(
+            cid.clone(),
+            InflightAsk {
+                correlation_id: cid.clone(),
+                caller: SessionKey::from_session_id("lead-uuid"),
+                caller_project: project.as_str().to_owned(),
+                caller_org: String::new(),
+                target_project: composite,
+            },
+        );
+        assert_eq!(workspace.inflight_asks.lock().len(), 1);
+
+        handle_close_worker(&workspace, &project, "reviewer");
+
+        assert!(
+            workspace.inflight_asks.lock().is_empty(),
+            "ask must be expired when the worker it targets closes"
+        );
     }
 }
