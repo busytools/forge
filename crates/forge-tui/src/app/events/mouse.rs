@@ -564,6 +564,7 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
                     | PaneHitTarget::CloseSession { .. }
                     | PaneHitTarget::InspectorGitOpenDiff { .. }
                     | PaneHitTarget::CopySessionId { .. }
+                    | PaneHitTarget::CloseWorker { .. }
             ) && t.contains(mouse.column, mouse.row)
         })
         .cloned();
@@ -607,7 +608,14 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
                 copy_session_id_to_clipboard(&session_id);
                 return true;
             }
-            PaneHitTarget::ProjectHeader { .. } | PaneHitTarget::SessionRow { .. } => {}
+            PaneHitTarget::CloseWorker { project_key, label, .. } => {
+                close_worker(app, &project_key, &label);
+                app.needs_redraw = true;
+                return true;
+            }
+            PaneHitTarget::ProjectHeader { .. }
+            | PaneHitTarget::SessionRow { .. }
+            | PaneHitTarget::WorkerRow { .. } => {}
         }
     }
 
@@ -635,6 +643,12 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
                 app.needs_redraw = true;
                 true
             }
+            PaneHitTarget::WorkerRow { session_key, .. } => {
+                switch_to_worker(app, session_key);
+                app.projects_pane_overlay_open = false;
+                app.needs_redraw = true;
+                true
+            }
             // x+y-bounded glyphs handled above; reaching them here
             // means the y-only fallback matched a row stamped on
             // the same band as the glyph but the click missed the
@@ -645,7 +659,8 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
             | PaneHitTarget::OverlayClose { .. }
             | PaneHitTarget::CloseSession { .. }
             | PaneHitTarget::InspectorGitOpenDiff { .. }
-            | PaneHitTarget::CopySessionId { .. } => true,
+            | PaneHitTarget::CopySessionId { .. }
+            | PaneHitTarget::CloseWorker { .. } => true,
         };
     }
 
@@ -673,6 +688,10 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
             switch_to_session_or_spawn(app, session_key);
             true
         }
+        PaneHitTarget::WorkerRow { session_key, .. } => {
+            switch_to_worker(app, session_key);
+            true
+        }
         // x+y-bounded glyphs are checked first; here for exhaustive
         // matching only.
         PaneHitTarget::TopBarIcon { .. }
@@ -680,7 +699,8 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
         | PaneHitTarget::OverlayClose { .. }
         | PaneHitTarget::CloseSession { .. }
         | PaneHitTarget::InspectorGitOpenDiff { .. }
-        | PaneHitTarget::CopySessionId { .. } => true,
+        | PaneHitTarget::CopySessionId { .. }
+        | PaneHitTarget::CloseWorker { .. } => true,
     }
 }
 
@@ -726,6 +746,48 @@ fn close_session(app: &mut App, session_key: &forge_workspace::SessionKey) {
         } else {
             app.active_session_key = None;
         }
+    }
+}
+
+/// Close a worker via the workspace command bus. Workspace removes
+/// the worker entry from `live_workers`, releases the underlying
+/// session, and emits a `SessionUpdate::WorkerStatusChanged { Removed,
+/// .. }` so the projects pane re-renders without the row.
+fn close_worker(app: &mut App, project_key: &forge_workspace::ProjectKey, label: &str) {
+    let Some(workspace) = app.workspace.as_ref() else {
+        return;
+    };
+    if let Err(err) = workspace.dispatch(forge_workspace::Command::CloseWorker {
+        project_key: project_key.clone(),
+        label: label.to_owned(),
+    }) {
+        tracing::warn!(
+            target: crate::logging::targets::APP_SESSION,
+            project = %project_key.as_str(),
+            label = %label,
+            error = %err,
+            "close_worker: dispatch failed",
+        );
+    }
+}
+
+/// Switch the active session to a worker's chat. The worker's
+/// `SessionKey` lives in `app.sessions` once Connected has landed
+/// for the worker session (workers spawn through the standard
+/// session lifecycle, same as project leads).
+fn switch_to_worker(app: &mut App, session_key: forge_workspace::SessionKey) {
+    if app.sessions.contains_key(&session_key) {
+        app.switch_active_session(session_key);
+    } else {
+        // Spawning window: the worker's WorkerEntry has a session_key
+        // but the bucket isn't in app.sessions yet because Connected
+        // hasn't fired. Refuse the click silently — the next click
+        // after the worker lands its bucket will succeed.
+        tracing::debug!(
+            target: crate::logging::targets::APP_SESSION,
+            session_id = %session_key.as_str(),
+            "switch_to_worker: bucket not yet present, click ignored",
+        );
     }
 }
 
@@ -940,6 +1002,58 @@ mod tests {
             app.active_session_key.as_ref(),
             Some(&spawn_synth),
             "non-spawning synthetic bucket should still be switchable",
+        );
+    }
+
+    /// Worker-row mouse click switches the active session to the
+    /// worker's bucket. The worker bucket must exist in `app.sessions`
+    /// already (Connected has landed); switch is a no-op otherwise.
+    #[test]
+    fn switch_to_worker_swaps_active_session_when_bucket_exists() {
+        let mut app = App::test_default();
+        let worker_key = forge_workspace::SessionKey::from_session_id("worker-uuid");
+        let bucket = UiSession::new(worker_key.clone());
+        app.sessions.insert(worker_key.clone(), bucket);
+
+        switch_to_worker(&mut app, worker_key.clone());
+        assert_eq!(
+            app.active_session_key.as_ref(),
+            Some(&worker_key),
+            "worker bucket should become the active session",
+        );
+    }
+
+    /// Worker row click without a backing bucket is a silent no-op
+    /// (the Spawning window between SpawnWorker dispatch and the
+    /// worker's first `Connected` event).
+    #[test]
+    fn switch_to_worker_silent_when_no_bucket() {
+        let mut app = App::test_default();
+        let initial_active = app.active_session_key.clone();
+        let unknown = forge_workspace::SessionKey::from_session_id("not-in-sessions");
+        switch_to_worker(&mut app, unknown);
+        assert_eq!(
+            app.active_session_key, initial_active,
+            "missing-bucket worker click must not change active session",
+        );
+    }
+
+    /// CloseWorker click dispatches `Command::CloseWorker` to the
+    /// workspace. The stub workspace swallows the dispatch so the
+    /// test only verifies the helper doesn't panic and the active
+    /// session doesn't change as a side effect.
+    #[test]
+    fn close_worker_dispatch_is_idempotent_on_test_stub() {
+        let mut app = App::test_default();
+        let initial_active = app.active_session_key.clone();
+        close_worker(
+            &mut app,
+            &forge_workspace::ProjectKey::new_for_test("forge"),
+            "reviewer",
+        );
+        assert_eq!(
+            app.active_session_key, initial_active,
+            "close_worker dispatch is fire-and-forget",
         );
     }
 }
