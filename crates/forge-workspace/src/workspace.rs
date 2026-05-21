@@ -569,7 +569,56 @@ impl Workspace {
     /// window stay at tier 0 (or earlier set_last_error tier) and
     /// the picker falls back to definition order for them.
     pub async fn warm_account_usage_cache(self: &Arc<Self>) {
-        let _ = tokio::time::timeout(USAGE_WARMUP_BUDGET, self.refresh_account_usage_once()).await;
+        let start = std::time::Instant::now();
+        tracing::info!(
+            target: "forge_workspace::workspace",
+            event_name = "warm_account_usage_cache_start",
+            budget_secs = USAGE_WARMUP_BUDGET.as_secs(),
+            "starting synchronous account-usage warm-up before launching the launchpad / auto-spawn"
+        );
+        let completed_within_budget =
+            tokio::time::timeout(USAGE_WARMUP_BUDGET, self.refresh_account_usage_once())
+                .await
+                .is_ok();
+        // Snapshot what each configured account looks like after the
+        // warm so a triage can see exactly what tier the picker will
+        // see when the first SpawnProject fires.
+        let summary: Vec<String> = {
+            let accounts = self.accounts.lock();
+            accounts
+                .ordered_keys
+                .iter()
+                .map(|key| {
+                    let state = accounts.by_key.get(key);
+                    let usage = state.and_then(|s| s.usage.as_ref());
+                    let last_error = state.and_then(|s| s.last_error);
+                    let usage_str = match usage {
+                        None => "no-snapshot".to_owned(),
+                        Some(s) => format!(
+                            "5h={:.0}%/7d={:.0}%",
+                            s.five_hour.as_ref().map_or(0.0, |w| w.utilization),
+                            [
+                                s.seven_day.as_ref().map(|w| w.utilization),
+                                s.seven_day_opus.as_ref().map(|w| w.utilization),
+                                s.seven_day_sonnet.as_ref().map(|w| w.utilization),
+                            ]
+                            .into_iter()
+                            .flatten()
+                            .fold(0.0_f64, f64::max),
+                        ),
+                    };
+                    format!("{}={usage_str}/err={last_error:?}", key.0)
+                })
+                .collect()
+        };
+        tracing::info!(
+            target: "forge_workspace::workspace",
+            event_name = "warm_account_usage_cache_done",
+            duration_ms = start.elapsed().as_millis() as u64,
+            completed_within_budget,
+            accounts = ?summary,
+            "account-usage warm-up finished; account picker will see this state"
+        );
     }
 
     /// Spawn the 60 s background account-usage poller. Fetches

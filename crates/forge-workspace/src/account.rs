@@ -308,7 +308,7 @@ impl AccountStateMap {
             },
             |(_, k, _, _)| (*k).clone(),
         );
-        tracing::debug!(
+        tracing::info!(
             target: "forge_workspace::account",
             event_name = "account_picked",
             message = "account picker decision",
