@@ -4,6 +4,7 @@
 //!
 //! See `docs/superpowers/specs/2026-05-21-workers-mcp-design.md`.
 
+pub mod facade;
 pub mod types;
 
 pub use types::WorkerEntry;
