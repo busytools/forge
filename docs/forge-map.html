@@ -280,7 +280,7 @@
   <p>
     Visual truth doc for forge-tui. <strong>Current implemented state only — no future ideas, no aspirational sketches.</strong> Every UI surface the running TUI can render today is captured here, regardless of when in a session each one is actually visible. Anything new arrives in the same PR that lands the code change.
   </p>
-  <p class="meta">v0.15.1 baseline · 2026-05-12 · open in any modern browser</p>
+  <p class="meta">v0.16.0 baseline · 2026-05-21 · open in any modern browser</p>
 </header>
 
 <nav class="toc">
@@ -289,6 +289,7 @@
   <a href="#launchpad">Launchpad</a>
   <a href="#chat">Chat</a>
   <a href="#tools">Tool calls</a>
+  <a href="#peers">Peer MCP</a>
   <a href="#input">Input + autocomplete</a>
   <a href="#prompts">Permission &amp; question prompts</a>
   <a href="#help">Help</a>
@@ -946,6 +947,157 @@ chat continues here…
     <dl>
       <dt>code</dt><dd><code>crates/forge-tui/src/ui/tool_call/standard.rs</code> · <code>matches!(tc.sdk_tool_name.as_str(), "Agent" | "Task")</code> selects the longer summary limit</dd>
       <dt>backgrounded badges</dt><dd>via <code>tool_output_badge_spans</code> — <code>  [backgrounded]</code> when <code>task_metadata.is_backgrounded == Some(true)</code> · <code>  [assistant backgrounded]</code> for Bash that the assistant auto-backgrounded (signalled in <code>BashOutputMetadata.assistant_auto_backgrounded</code>)</dd>
+    </dl>
+  </div>
+</div>
+
+<!-- ============================================================== -->
+<h2 class="section-title" id="peers">Peer MCP — cross-agent coordination</h2>
+
+<p class="intro">
+  Every spawned <code>claude</code> child gets an in-process MCP server (<code>mcp__forge__*</code>) exposing four tools — <code>peers__whoami</code>, <code>peers__list_agents</code>, <code>peers__tell_agent</code>, <code>peers__ask_agent</code>. The forge.toml project name is the agent identity (one session per project). When the LLM in project <strong>A</strong> calls <code>ask_agent</code>, forge wraps the prompt in a bracket-prefixed envelope (e.g. <code>[Question id=q-XXXXXXXX hop=1/10 from agent 'A' (org 'Personal') - reply with tell_agent in_reply_to=q-XXXXXXXX]</code>) and dispatches it as a synthetic user turn to project <strong>B</strong>. B's reply lands as another wrapped envelope on A's chat. The chat renderer pattern-matches the wrappers at render time and shows a styled <a href="#peer-block">peer block</a> instead of the raw bracket prose.
+</p>
+<p class="intro">
+  Tool calls for <code>mcp__forge__peers__*</code> are auto-approved by <code>forge-sdk::control_dispatch</code> — the LLM never sees a permission prompt for peer coordination. The default tool-use card is suppressed via <code>hidden: true</code> on <code>ToolCallInfo</code> so the chat shows the styled <a href="#peer-block">outbound peer block</a> in its place. See the <a href="#projects-pane">Projects pane</a> for the per-row in-flight badge cluster.
+</p>
+
+<div class="surface" id="peer-block">
+  <div class="surface-head">
+    <h4>Outbound peer block — replaces the default tool_use card for <code>ask_agent</code> / <code>tell_agent</code></h4>
+    <div class="when">visible: every <code>mcp__forge__peers__ask_agent</code> / <code>mcp__forge__peers__tell_agent</code> tool call the LLM emits</div>
+  </div>
+  <div class="surface-body">
+    <p>Single header line + body lines indented 3 cols. Arrow icon is <code>→</code> in RUST_ORANGE (ask) or SUBAGENT_TOKEN light-blue (tell). The body preview is truncated at 200 chars with a trailing <code>…</code>; pending correlation id renders as <code>q-…</code> until the tool result arrives and the renderer can pull the real id.</p>
+    <div class="term">
+      <pre class="indent">
+   <span class="accent">→</span> <span class="accent bold">ask</span> <span class="dim">·</span> <span class="accent bold">granite-backend</span> <span class="dim">·</span> <span class="dim">q-7f3a92e0</span>
+
+   <span class="dim">What's the test setup look like in this project?</span>
+
+   <span class="subagent">→</span> <span class="subagent bold">tell</span> <span class="dim">·</span> <span class="accent bold">forge</span> <span class="dim">·</span> <span class="dim">t-c45a8f12</span>
+
+   <span class="dim">FYI I just pushed the rewriter cleanup.</span></pre>
+    </div>
+    <dl>
+      <dt>code</dt><dd><code>crates/forge-tui/src/ui/peer_block.rs::detect_outbound</code> + <code>render_outbound</code> · invoked from <code>ui::message::append_assistant_tool_block</code> before the default tool-use card path</dd>
+      <dt>arguments read</dt><dd><code>target</code> from <code>raw_input.target</code> · body from <code>raw_input.prompt</code> (ask) / <code>raw_input.message</code> (tell) · correlation id pulled from the tool result's JSON (<code>"correlation_id": "q-XXXXXXXX"</code>) when it lands; <code>q-…</code> placeholder until then</dd>
+      <dt>suppression</dt><dd><code>crates/forge-tui/src/ui/tool_call.rs</code> sets <code>ToolCallInfo.hidden = true</code> for any tool whose name starts with <code>mcp__forge__peers__</code>, matching the existing TodoWrite pattern</dd>
+    </dl>
+  </div>
+</div>
+
+<div class="surface">
+  <div class="surface-head">
+    <h4>Inbound peer blocks — replace the default user-message rendering for wrapped envelopes</h4>
+    <div class="when">visible: every user-turn message whose text starts with a recognised peer envelope (<code>[Question id=...]</code>, <code>[Message id=...]</code>, <code>[Reply id=...]</code>, <code>[Late reply id=...]</code>, <code>[Ask id=... to agent ... timed out ...]</code>, <code>[Ask id=... from agent ... has expired ...]</code>, <code>[Ask id=... to agent ... failed to deliver: ...]</code>)</div>
+  </div>
+  <div class="surface-body">
+    <p>Same shape as the outbound block — header line with leading icon + colored label + DIM-separated metadata, body lines indented 3 cols in dim gray. Seven variants, each with its own icon + accent. Inbound envelopes that don't match any of the prefixes fall through to the default user-message rendering, so malformed wrappers don't break the chat.</p>
+    <div class="term">
+      <pre class="indent">
+   <span class="accent">◀</span> <span class="accent bold">question</span> <span class="dim">·</span> <span class="accent bold">forge</span> <span class="dim">·</span> <span class="dim">q-7f3a92e0</span> <span class="dim">·</span> <span class="dim">hop 1/10</span> <span class="dim">·</span> <span class="dim">(Personal)</span>
+
+   <span class="dim">What's the test setup look like?</span>
+
+   <span class="subagent">◀</span> <span class="subagent bold">message</span> <span class="dim">·</span> <span class="accent bold">forge</span> <span class="dim">·</span> <span class="dim">t-c45a8f12</span> <span class="dim">·</span> <span class="dim">(Personal)</span>
+
+   <span class="dim">FYI I just pushed the rewriter cleanup.</span>
+
+   <span class="success">◀</span> <span class="success bold">reply</span> <span class="dim">·</span> <span class="accent bold">granite-backend</span> <span class="dim">·</span> <span class="dim">q-7f3a92e0</span> <span class="dim">·</span> <span class="dim">(Granite)</span>
+
+   <span class="dim">We use pgtemp for ephemeral postgres in CI.</span>
+
+   <span class="success">◀</span> <span class="success bold">reply</span> <span class="dim">·</span> <span class="accent bold">granite-backend</span> <span class="dim">·</span> <span class="dim">q-7f3a92e0</span> <span class="warning">·</span> <span class="warning">⌛ late</span> <span class="dim">·</span> <span class="dim">(Granite)</span>
+
+   <span class="dim">Sorry for the delay — the original ask had already expired.</span>
+
+   <span class="error">⚠</span> <span class="error bold">timeout</span> <span class="dim">·</span> <span class="accent bold">ask to granite-backend</span> <span class="dim">·</span> <span class="dim">q-7f3a92e0</span> <span class="dim">·</span> <span class="dim">no reply after 30 min</span> <span class="dim">·</span> <span class="dim">(Granite)</span>
+
+   <span class="warning">⏱</span> <span class="warning bold">ask expired</span> <span class="dim">·</span> <span class="accent bold">forge</span> <span class="dim">·</span> <span class="dim">q-7f3a92e0</span> <span class="dim">·</span> <span class="dim">your reply will be tagged late</span> <span class="dim">·</span> <span class="dim">(Personal)</span>
+
+   <span class="error">⚠</span> <span class="error bold">failed to deliver</span> <span class="dim">·</span> <span class="accent bold">granite-liq-bot</span> <span class="dim">·</span> <span class="dim">q-d31fa8a3</span> <span class="dim">·</span> <span class="dim">(Granite)</span>
+
+   <span class="dim">target spawn failed: all pinned accounts are rate-limited</span></pre>
+    </div>
+    <dl>
+      <dt>code</dt><dd><code>crates/forge-tui/src/ui/peer_block.rs::detect_inbound</code> + <code>render_inbound</code> · invoked from <code>ui::message::append_user_blocks</code> before the default text rendering</dd>
+      <dt>variants</dt><dd><code>Question</code> · <code>Message</code> · <code>Reply</code> · <code>LateReply</code> (carries <code>⌛ late</code> warning chip) · <code>CallerTimeout</code> (caller-side; the 30 min timer expired) · <code>RecipientExpired</code> (recipient-side; the caller's ask is no longer pending) · <code>DeliveryFailure</code> (caller-side; spawn / channel / connection error)</dd>
+      <dt>parser shape</dt><dd>pure prefix string-match + manual field extraction (<code>take_until</code>, <code>rest_after_id</code>, <code>id_before</code>, <code>extract_from_agent_after</code>). No regex. Malformed envelopes fall through to the default user-message rendering rather than erroring</dd>
+      <dt>body truncation</dt><dd>truncates at 200 chars + trailing <code>…</code>; multi-line bodies keep their newlines so the rendered block reads as multi-line prose</dd>
+    </dl>
+  </div>
+</div>
+
+<div class="surface">
+  <div class="surface-head">
+    <h4>Sidebar peer-activity badges (Projects pane)</h4>
+    <div class="when">visible: per-row on every live (active) project row in the <a href="#projects-pane">Projects pane</a> when any of the four counters is non-zero</div>
+  </div>
+  <div class="surface-body">
+    <p>Badge cluster between the project name and the close <code> x </code> button. Each badge is <code>·N</code> + glyph; counts of 0 are omitted entirely (the goal is "noise only when there's activity"). Failure badges (<code>⌛</code>, <code>✕</code>) disappear 60 s after the counter last incremented so a one-time spawn hiccup doesn't paint the sidebar red forever.</p>
+    <div class="term">
+      <pre class="indent">
+ <span class="dim">└─ </span><span class="accent">⠋</span> <span class="accent bold">forge</span> <span class="dim">·2↑·1↓</span>             <span class="user-band"> x </span>
+ <span class="dim">└─ </span><span class="accent">⠋</span> <span class="accent bold">granite-backend</span> <span class="dim">·1↓</span><span class="warning">·1⌛</span> <span class="user-band"> x </span>
+ <span class="dim">└─ </span><span class="accent">⠋</span> <span class="accent bold">granite-liq-bot</span> <span class="error">·1✕</span>     <span class="user-band"> x </span></pre>
+    </div>
+    <table>
+      <thead>
+        <tr><th>Badge</th><th>Source field</th><th>Color</th><th>Meaning</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>·N↑</code></td><td><code>PeerInflightStats.outgoing</code></td><td>DIM</td><td>Asks this session sent that are still awaiting reply</td></tr>
+        <tr><td><code>·N↓</code></td><td><code>PeerInflightStats.incoming</code></td><td>DIM</td><td>Asks this session received that are still awaiting our reply</td></tr>
+        <tr><td><code>·N⌛</code></td><td><code>PeerInflightStats.timed_out</code></td><td>STATUS_WARNING</td><td>Asks this session sent that timed out (30-min default). Fades after 60 s.</td></tr>
+        <tr><td><code>·N✕</code></td><td><code>PeerInflightStats.delivery_failed</code></td><td>STATUS_ERROR</td><td>Asks this session sent that failed to deliver (spawn / channel / connection error). Fades after 60 s.</td></tr>
+      </tbody>
+    </table>
+    <dl>
+      <dt>code</dt><dd><code>crates/forge-tui/src/ui/projects_pane.rs::peer_badge_spans</code> · called from <code>append_org_project_row</code> · reads <code>UiSession.peer_badges</code> + <code>peer_badges_last_failure_at</code></dd>
+      <dt>wire</dt><dd><code>SessionUpdate::PeerInflightStatsChanged { key, stats }</code> from <code>forge-workspace</code> · reducer arm in <code>crates/forge-tui/src/app/events/client.rs</code> stamps both fields atomically</dd>
+      <dt>fade window</dt><dd><code>PEER_FAILURE_FADE = Duration::from_secs(60)</code> · failure badges (<code>·N⌛</code> / <code>·N✕</code>) hide once <code>now - peer_badges_last_failure_at &gt;= 60 s</code></dd>
+      <dt>idle rows</dt><dd>no badge column. Sleeping projects have no <code>UiSession</code> bucket to read peer state from; the full name column gets the budget instead</dd>
+    </dl>
+  </div>
+</div>
+
+<div class="surface">
+  <div class="surface-head">
+    <h4>Tools exposed by the <code>mcp__forge__</code> server</h4>
+    <div class="when">scope: every spawned <code>claude</code> child. Auto-approved (no permission prompt)</div>
+  </div>
+  <div class="surface-body">
+    <table>
+      <thead>
+        <tr><th>Tool</th><th>Inputs</th><th>Semantics</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>peers__whoami</code></td>
+          <td>—</td>
+          <td>Returns the caller's own <code>PeerStatus</code> (project name, org, cwd, current model, in-flight outgoing/incoming counts).</td>
+        </tr>
+        <tr>
+          <td><code>peers__list_agents</code></td>
+          <td>—</td>
+          <td>Returns every project listed in <code>forge.toml</code> with its current liveness (running / sleeping / failed), current model, and in-flight counters. The caller's own row is included so the LLM can reason about its own identity in the list.</td>
+        </tr>
+        <tr>
+          <td><code>peers__tell_agent</code></td>
+          <td><code>target: string</code> · <code>message: string</code> · <code>in_reply_to: Option&lt;string&gt;</code></td>
+          <td>Fire-and-forget message. Returns immediately with the synthesised <code>correlation_id</code> (<code>t-XXXXXXXX</code>). When <code>in_reply_to</code> is set, the workspace looks up the matching ask: replies to a still-pending ask render as <code>Reply</code>; replies to a timed-out ask render as <code>LateReply</code>; replies whose target doesn't match (LLM hallucinated the wrong target) or whose id doesn't exist demote to <code>Message</code> with a warn log.</td>
+        </tr>
+        <tr>
+          <td><code>peers__ask_agent</code></td>
+          <td><code>target: string</code> · <code>prompt: string</code></td>
+          <td>Returns immediately with a <code>correlation_id</code> (<code>q-XXXXXXXX</code>) and the ask transitions to in-flight. The reply lands as a synthetic user turn on the caller via the <code>[Reply ...]</code> envelope. A 30-min timer fires <code>SessionUpdate::PeerAskTimedOut</code> + a wrapped <code>[Ask ... timed out ...]</code> envelope to both caller and recipient when no reply lands. <code>HopLimitExceeded</code> and <code>UnknownTarget</code> return <code>is_error: true</code> synchronously; async failures (target spawn failed / channel closed / target connection died) fire <code>SessionUpdate::PeerAskFailed</code> + a wrapped <code>[Ask ... failed to deliver: ...]</code> envelope.</td>
+        </tr>
+      </tbody>
+    </table>
+    <dl>
+      <dt>code</dt><dd><code>crates/forge-workspace/src/mcp/peers.rs</code> for the four Tool impls + <code>build_server</code> factory · <code>crates/forge-workspace/src/mcp/peers/facade.rs</code> for the <code>WorkspaceFacade</code> trait the tools call through · attached per-session via <code>crates/forge-agent/src/forge_sdk_worker.rs::build_options_with_callback</code></dd>
+      <dt>auto-approve</dt><dd><code>crates/forge-sdk/src/control_dispatch.rs</code> fast-paths <code>tool_name.starts_with("mcp__forge__")</code> to <code>PermissionDecision::allow()</code> before the standard permission policy</dd>
+      <dt>hop limit</dt><dd>default 10 hops. <code>Workspace::deliver_peer_prompt</code> stamps <code>DomainSession.current_inbound_hop = max(current, wrapped.hop)</code> synchronously before dispatching <code>Command::Prompt</code>; <code>SessionTask</code> reads the value when building the next outbound wrapper and clears it on <code>Message::Result</code> (turn boundary)</dd>
     </dl>
   </div>
 </div>
