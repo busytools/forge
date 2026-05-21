@@ -147,6 +147,25 @@ impl SessionTask {
                     // forwarder tasks exit instead of waiting on
                     // tool_call_ids the new session will never produce.
                     self.domain.lock().pending_interactions.clear();
+                    // Expire any inflight peer asks targeting this
+                    // session's project: the OLD session UUID is gone
+                    // (the user just `/clear`-ed, `/new`-ed, logged
+                    // out, etc.), the NEW session has no knowledge of
+                    // any q-id that was pending against the previous
+                    // identity, so no reply will ever arrive. Mirrors
+                    // the drop-hook behavior in `impl Drop for
+                    // SessionTask` below — same `TargetConnectionFailed`
+                    // reason because semantically the original target
+                    // is unreachable. Fired BEFORE `rekey_to` so the
+                    // project lookup inside `expire_target_inflight`
+                    // still resolves against the about-to-be-replaced
+                    // key.
+                    if let Some(workspace) = self.workspace.upgrade() {
+                        workspace.expire_target_inflight(
+                            &self.key,
+                            &forge_primitives::PeerFailureReason::TargetConnectionFailed,
+                        );
+                    }
                     self.rekey_to(&real_key);
                     self.emit(SessionUpdate::SessionReplaced {
                         key: real_key,
