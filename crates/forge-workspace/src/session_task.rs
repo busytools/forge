@@ -163,7 +163,7 @@ impl SessionTask {
                     if let Some(workspace) = self.workspace.upgrade() {
                         workspace.expire_target_inflight(
                             &self.key,
-                            forge_primitives::PeerFailureReason::TargetConnectionFailed,
+                            crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
                         );
                     }
                     self.rekey_to(&real_key);
@@ -225,7 +225,7 @@ impl SessionTask {
                 if let Some(workspace) = self.workspace.upgrade() {
                     workspace.expire_target_inflight(
                         &key,
-                        forge_primitives::PeerFailureReason::TargetConnectionFailed,
+                        crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
                     );
                 }
                 self.emit(SessionUpdate::ConnectionFailed { key, message, fatal: false });
@@ -555,7 +555,7 @@ impl SessionTask {
     /// [`Self::translate_event`]. No-op when there are no buffered
     /// prompts.
     fn drain_pending_peer_prompts(&self) {
-        let pending: Vec<forge_primitives::WrappedPrompt> =
+        let pending: Vec<crate::mcp::peers::types::WrappedPrompt> =
             std::mem::take(&mut self.domain.lock().pending_peer_prompts);
         if pending.is_empty() {
             return;
@@ -570,7 +570,7 @@ impl SessionTask {
         // bump — same rule as the running-target path.
         let facade = crate::mcp::peers::facade::ProdWorkspaceFacade::from_arc(&workspace);
         for wrapped in pending {
-            if matches!(wrapped.kind, forge_primitives::WrappedKind::Question) {
+            if matches!(wrapped.kind, crate::mcp::peers::types::WrappedKind::Question) {
                 facade.bump_inflight_stats(
                     &self.key,
                     crate::mcp::peers::facade::PeerStatsDelta::IncomingPlus1,
@@ -613,7 +613,7 @@ impl Drop for SessionTask {
         if let Some(workspace) = self.workspace.upgrade() {
             workspace.expire_target_inflight(
                 &self.key,
-                forge_primitives::PeerFailureReason::TargetConnectionFailed,
+                crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
             );
         }
     }

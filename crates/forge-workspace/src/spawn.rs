@@ -14,11 +14,11 @@
 use std::sync::Arc;
 
 use forge_agent::client::SessionLaunchSettings;
-use forge_primitives::WrappedPrompt;
 use parking_lot::Mutex;
 
 use crate::domain_session::DomainSession;
 use crate::mcp::peers::facade::PeerStatsDelta;
+use crate::mcp::peers::types::WrappedPrompt;
 use crate::protocol::{Command, SessionUpdate};
 use crate::workspace::Workspace;
 use crate::{SessionKey, SessionTarget};
@@ -135,7 +135,7 @@ pub(crate) fn handle_deliver_peer_prompt(
         // / Delivery-failure all flow through this dispatch path too,
         // but none of them are "awaiting reply" semantically, so they
         // would never decrement and would leave the badge stuck.
-        if matches!(wrapped.kind, forge_primitives::WrappedKind::Question) {
+        if matches!(wrapped.kind, crate::mcp::peers::types::WrappedKind::Question) {
             let facade = crate::mcp::peers::facade::ProdWorkspaceFacade::from_arc(workspace);
             facade.bump_inflight_stats(&target_key, PeerStatsDelta::IncomingPlus1);
         }

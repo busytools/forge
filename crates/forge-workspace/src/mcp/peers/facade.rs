@@ -24,8 +24,10 @@
 
 use std::sync::{Arc, Weak};
 
-use forge_primitives::{
-    CorrelationId, InflightAsk, PeerInflightStats, PeerLiveness, PeerStatus, WrappedPrompt,
+use forge_primitives::PeerInflightStats;
+
+use crate::mcp::peers::types::{
+    CorrelationId, InflightAsk, PeerLiveness, PeerStatus, WrappedPrompt,
 };
 use tracing::warn;
 
@@ -506,7 +508,7 @@ impl WorkspaceFacade for MockWorkspaceFacade {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use forge_primitives::WrappedKind;
+    use crate::mcp::peers::types::WrappedKind;
     use std::path::PathBuf;
 
     fn fake_key(s: &str) -> SessionKey {

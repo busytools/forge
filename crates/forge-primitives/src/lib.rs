@@ -92,10 +92,7 @@ pub use messages::{
     RateLimitType, StopReason, TaskNotificationStatus, TaskUsage, Usage, UserEnvelope,
 };
 pub use options::{SdkPluginConfig, SystemPromptKind};
-pub use peers::{
-    CorrelationId, InflightAsk, PeerFailureReason, PeerInflightStats, PeerLiveness, PeerStatus,
-    WrappedKind, WrappedPrompt,
-};
+pub use peers::PeerInflightStats;
 pub use permission::PermissionMode;
 pub use permission_ui::{
     PermissionDisplay, PermissionOption, PermissionOutcome, PermissionRequest,

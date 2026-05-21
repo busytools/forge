@@ -8,9 +8,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::Result;
 use forge_agent::AgentHandle;
 use forge_agent::client::SessionLaunchSettings;
-use forge_primitives::{
-    CorrelationId, InflightAsk, PeerInflightStats, SDKSessionInfo, WrappedKind, WrappedPrompt,
-};
+use forge_primitives::{PeerInflightStats, SDKSessionInfo};
+
+use crate::mcp::peers::types::{CorrelationId, InflightAsk, WrappedKind, WrappedPrompt};
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
 use tracing::Instrument;
@@ -1546,7 +1546,7 @@ impl Workspace {
     pub(crate) fn expire_target_inflight(
         self: &Arc<Self>,
         closing_key: &SessionKey,
-        reason: forge_primitives::PeerFailureReason,
+        reason: crate::mcp::peers::types::PeerFailureReason,
     ) {
         // Find the project this closing session belongs to. If we can't
         // (caller raced with config-reload; defensive only), there's
@@ -1583,7 +1583,7 @@ impl Workspace {
     pub(crate) fn expire_inflight_ask_failed(
         self: &Arc<Self>,
         id: &CorrelationId,
-        reason: forge_primitives::PeerFailureReason,
+        reason: crate::mcp::peers::types::PeerFailureReason,
     ) {
         let ask = {
             let mut asks = self.inflight_asks.lock();
@@ -1617,7 +1617,7 @@ impl Workspace {
         // Body carries the human-readable failure reason — caller
         // chat block surfaces it underneath the bracket header.
         let body = match &reason {
-            forge_primitives::PeerFailureReason::TargetConnectionFailed => {
+            crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed => {
                 "target session connection lost".to_owned()
             }
         };

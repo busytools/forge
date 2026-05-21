@@ -10,9 +10,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use forge_agent::AgentHandle;
-use forge_primitives::{SessionId, WrappedPrompt};
+use forge_primitives::SessionId;
 
 use crate::SessionKey;
+use crate::mcp::peers::types::WrappedPrompt;
 use crate::protocol::PendingInteractionSlot;
 
 /// Workspace's owned per-session state. One `DomainSession` per

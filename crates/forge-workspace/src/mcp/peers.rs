@@ -21,14 +21,15 @@
 
 use std::sync::Arc;
 
-use forge_primitives::{CorrelationId, InflightAsk, WrappedKind, WrappedPrompt};
 use forge_sdk::mcp::server::{McpServer, McpServerBuilder};
 use forge_sdk::mcp::tool::{Tool, ToolInput, ToolOutput};
 
 use crate::SessionKey;
 use crate::mcp::peers::facade::{CallerKeyResolver, PeerStatsDelta, WorkspaceFacade};
+use crate::mcp::peers::types::{CorrelationId, InflightAsk, WrappedKind, WrappedPrompt};
 
 pub mod facade;
+pub mod types;
 
 /// Build the per-session `forge` MCP server with all four peer tools
 /// closure-bound to `caller_key`. Called from
@@ -620,7 +621,7 @@ impl Tool for AskAgent {
 mod tests {
     use super::*;
     use crate::mcp::peers::facade::MockWorkspaceFacade;
-    use forge_primitives::{InflightAsk, PeerLiveness, PeerStatus};
+    use crate::mcp::peers::types::{InflightAsk, PeerLiveness, PeerStatus};
 
     fn fake_key(s: &str) -> SessionKey {
         SessionKey::from_session_id(s)

@@ -37,11 +37,12 @@ use forge_primitives::question::{QuestionOutcome, QuestionRequest};
 use forge_primitives::runtime::{AvailableModel, CurrentModel, ModeState, TerminalReason};
 use forge_primitives::{
     AccountInfo, ForgeAccountIdentity, ImageAttachment, McpOperationError, McpServerStatus,
-    Message, PeerInflightStats, SessionId, SessionListEntry, WrappedPrompt,
+    Message, PeerInflightStats, SessionId, SessionListEntry,
 };
 use tokio::sync::oneshot;
 
 use crate::SessionKey;
+use crate::mcp::peers::types::WrappedPrompt;
 
 // `TurnErrorClass` lives in forge-primitives so the classifier (in
 // forge-agent) and consumers (in forge-tui, via this protocol module)
