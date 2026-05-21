@@ -562,14 +562,26 @@ fn build_options_with_callback(
     // When the `forge` MCP server is attached, inject a trust
     // instruction into the spawned session's system prompt so the
     // LLM treats peer-wrapped user-turns as user-authorized context
-    // rather than untrusted prompt injection — and so it doesn't
+    // rather than untrusted prompt injection - and so it doesn't
     // ask the user for permission before invoking the peer tools.
     // Skips the inject entirely when no forge MCP is attached
-    // (matches the "only when MCP is included" intent — keeps the
+    // (matches the "only when MCP is included" intent - keeps the
     // append text out of every other CLI spawn).
+    //
+    // Worker sessions append the LLM-supplied `charter` after the
+    // trust prompt (one blank line between them). The charter
+    // defines the worker's persona / goal; the trust prompt covers
+    // the forge MCP coordination semantics that every forge session
+    // needs.
     if has_forge_mcp {
+        let append = match launch_settings.charter.as_deref() {
+            Some(charter) if !charter.trim().is_empty() => {
+                format!("{FORGE_MCP_TRUST_SYSTEM_PROMPT}\n\n{charter}")
+            }
+            _ => FORGE_MCP_TRUST_SYSTEM_PROMPT.to_owned(),
+        };
         b = b.system_prompt(forge_sdk::SystemPromptKind::Preset {
-            append: Some(FORGE_MCP_TRUST_SYSTEM_PROMPT.to_owned()),
+            append: Some(append),
             exclude_dynamic_sections: None,
         });
     }

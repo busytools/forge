@@ -179,6 +179,17 @@ impl SessionTask {
                 } else {
                     self.rekey_to(&real_key);
                     self.connected_once = true;
+                    // Worker sessions need their tag JSONL row
+                    // written BEFORE the LLM-side dispatch opens (so
+                    // a concurrent catalog scan can't see the
+                    // untagged worker file and pick it as a lead).
+                    // The workspace helper checks live_workers for a
+                    // matching entry; for leads + non-worker sessions
+                    // this is a no-op. Tag failure rolls the worker
+                    // entry back (release session + emit Removed).
+                    if let Some(workspace) = self.workspace.upgrade() {
+                        workspace.apply_worker_tag_or_rollback(&real_key, &cwd);
+                    }
                     // First Connected: emit KeyRenamed { from:
                     // spawn_key, to: real_key } so the TUI migrates
                     // its synthetic spawn bucket onto the real

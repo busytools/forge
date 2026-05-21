@@ -19,7 +19,8 @@ use parking_lot::Mutex;
 use crate::domain_session::DomainSession;
 use crate::mcp::peers::facade::PeerStatsDelta;
 use crate::mcp::peers::types::WrappedPrompt;
-use crate::protocol::{Command, SessionUpdate};
+use crate::protocol::{Command, SessionUpdate, WorkerSpawnReply, WorkerStatusAction};
+use crate::target::ProjectKey;
 use crate::workspace::Workspace;
 use crate::{SessionKey, SessionTarget};
 
@@ -369,6 +370,220 @@ pub(crate) fn handle_start_default(
     }
 }
 
+/// Handle a `Command::SpawnWorker`: insert a `Spawning` worker entry
+/// in `live_workers[project_key]`, dispatch a fresh-session spawn
+/// via `SessionTarget::FreshInProject` with the charter threaded
+/// onto `SessionLaunchSettings`, then reply on `return_to` with the
+/// synthetic session_id + the tag value. The Connected handler in
+/// `session_task::translate_event` writes the actual JSONL tag row
+/// and transitions the entry from Spawning to Running (or rolls back
+/// on tag-write failure).
+///
+/// The synth_key reply works because the LLM's `workers__spawn`
+/// caller doesn't USE the session_id to address subsequent calls
+/// (those go by label); the field exists in `WorkerStatus` for v2
+/// describe-by-id workflows and to give the caller a stable
+/// identifier to log. The synth -> real rekey is handled inside
+/// `Workspace::migrate_session_task`, which also fixes up
+/// `live_workers[project_key]`'s `session_key` field in lockstep.
+pub(crate) fn handle_spawn_worker(
+    workspace: &Arc<Workspace>,
+    project_key: ProjectKey,
+    label: &str,
+    charter: String,
+    spawned_by_session_id: String,
+    return_to: tokio::sync::oneshot::Sender<Result<WorkerSpawnReply, String>>,
+) {
+    // Verify the project exists before claiming a synth key.
+    let projects = workspace.list_projects();
+    let Some(_view) = projects.iter().find(|v| v.key == project_key) else {
+        let _ = return_to.send(Err(format!("project not found: {}", project_key.as_str())));
+        return;
+    };
+
+    // Synthesize a pool key for the not-yet-spawned worker. The
+    // SessionTask rekeys this onto the real claude-issued UUID on
+    // first Connected; migrate_session_task also rewrites the
+    // matching WorkerEntry's session_key in lockstep.
+    let synth_key = SessionKey::from_session_id(format!(
+        "__spawn_worker_{}_{}__",
+        project_key.as_str(),
+        label,
+    ));
+    let tag = forge_primitives::worker_tag(label);
+
+    // Insert WorkerEntry as Spawning BEFORE the agent spawn so the
+    // Connected handler can find the entry via worker_lookup_for_session
+    // when it fires (worker_lookup_for_session reads live_workers).
+    let entry = crate::mcp::workers::types::WorkerEntry {
+        label: label.to_owned(),
+        charter: charter.clone(),
+        session_key: synth_key.clone(),
+        status: forge_primitives::WorkerLiveness::Spawning,
+        spawned_at: std::time::SystemTime::now(),
+        spawned_by_session_id,
+    };
+    workspace.insert_live_worker(&project_key, entry.clone());
+    try_emit(
+        workspace,
+        "spawn_worker::WorkerStatusChanged::Added",
+        SessionUpdate::WorkerStatusChanged {
+            project_key: project_key.clone(),
+            action: WorkerStatusAction::Added,
+            status: entry.to_status(),
+        },
+    );
+
+    // Spawn the fresh session under the picked account. The charter
+    // is threaded onto SessionLaunchSettings.charter; the spawn path
+    // (forge_sdk_worker::build_options_with_callback) appends it to
+    // the system prompt via --append-system-prompt.
+    let settings = SessionLaunchSettings { charter: Some(charter), ..Default::default() };
+    let target = SessionTarget::FreshInProject {
+        project_key: project_key.clone(),
+        synth_key: synth_key.clone(),
+    };
+    match workspace.get_agent_handle_with_spawn_key(target, settings, Some(synth_key.clone())) {
+        Ok(_handle) => {
+            tracing::info!(
+                target: "forge_workspace::spawn",
+                project = %project_key.as_str(),
+                label = %label,
+                spawn_key = %synth_key.as_str(),
+                "spawn task started for worker"
+            );
+            // Reply to the LLM optimistically with the synth key.
+            // The LLM addresses subsequent calls by label; the
+            // session_id field is informational. Real session UUID
+            // lands on Connected via the rekey machinery.
+            let _ = return_to.send(Ok(WorkerSpawnReply {
+                session_id: synth_key.as_str().to_owned(),
+                tag,
+            }));
+        }
+        Err(err) => {
+            tracing::error!(
+                target: "forge_workspace::spawn",
+                project = %project_key.as_str(),
+                label = %label,
+                error = %err,
+                "spawn_worker: get_agent_handle failed"
+            );
+            // Roll back the live_workers entry we just inserted.
+            let removed = workspace.remove_latest_worker(&project_key, label);
+            if let Some(rolled) = removed {
+                try_emit(
+                    workspace,
+                    "spawn_worker::WorkerStatusChanged::Removed",
+                    SessionUpdate::WorkerStatusChanged {
+                        project_key,
+                        action: WorkerStatusAction::Removed,
+                        status: rolled.to_status(),
+                    },
+                );
+            }
+            let _ = return_to.send(Err(format!("agent spawn failed: {err}")));
+        }
+    }
+}
+
+/// Handle a `Command::CloseWorker`: remove the latest-spawned worker
+/// matching `label` from `live_workers[project_key]`, release its
+/// session (terminates the claude subprocess), and emit a `Removed`
+/// status event. JSONL on disk is NOT deleted - "close" only means
+/// "remove from in-memory live state".
+pub(crate) fn handle_close_worker(workspace: &Workspace, project_key: &ProjectKey, label: &str) {
+    let Some(entry) = workspace.remove_latest_worker(project_key, label) else {
+        tracing::warn!(
+            target: "forge_workspace::spawn",
+            project = %project_key.as_str(),
+            label = %label,
+            "handle_close_worker: no matching live worker"
+        );
+        return;
+    };
+    let status = entry.to_status();
+    workspace.release_session(&entry.session_key);
+    let _ = workspace.update_tx().send(SessionUpdate::WorkerStatusChanged {
+        project_key: project_key.clone(),
+        action: WorkerStatusAction::Removed,
+        status,
+    });
+}
+
+/// Handle a `Command::DeliverWorkerPrompt`: route a wrapped peer-style
+/// envelope to the worker matching `target_label` in the caller's
+/// project. Latest-spawned-wins on duplicate labels. Hop stamping on
+/// the target's DomainSession + the typed PeerEnvelopeAppended echo
+/// follow the same pattern as `handle_deliver_peer_prompt` - workers
+/// reuse the peer envelope verbatim so the TUI's chat render is
+/// identical between the two paths.
+///
+/// Unlike `handle_deliver_peer_prompt`, this handler never buffers +
+/// auto-spawns: workers are only addressable while live. If the
+/// target label vanished between the dispatch and the handler firing
+/// (worker closed, lead cascade fired), the prompt is dropped with a
+/// warn log.
+pub(crate) fn handle_deliver_worker_prompt(
+    workspace: &Arc<Workspace>,
+    _caller: SessionKey,
+    project_key: &ProjectKey,
+    target_label: &str,
+    wrapped: WrappedPrompt,
+) {
+    // Latest-spawned matching label wins (mirrors the addressing rule
+    // in workers__tell / workers__ask).
+    let Some(entry) = workspace
+        .list_live_workers(project_key)
+        .into_iter()
+        .rev()
+        .find(|w| w.label == target_label)
+    else {
+        tracing::warn!(
+            target: "forge_workspace::spawn",
+            project = %project_key.as_str(),
+            label = %target_label,
+            "deliver_worker_prompt: no matching live worker (target gone since dispatch)"
+        );
+        return;
+    };
+    let target_key = entry.session_key.clone();
+
+    // Stamp current_inbound_hop so any tools the target's LLM fires
+    // during the resulting turn observe the correct ambient hop.
+    stamp_inbound_hop(workspace, &target_key, wrapped.hop);
+
+    // Bump target's incoming counter for Question kind only (matches
+    // peer behavior - the sidebar badge tracks awaiting-reply asks).
+    if matches!(wrapped.kind, crate::mcp::peers::types::WrappedKind::Question) {
+        let facade = crate::mcp::peers::facade::ProdWorkspaceFacade::from_arc(workspace);
+        facade.bump_inflight_stats(&target_key, PeerStatsDelta::IncomingPlus1);
+    }
+
+    // Fire the typed peer-envelope echo BEFORE the LLM-side dispatch
+    // so the user-turn block renders in the right order regardless
+    // of which event the TUI reducer drains first. Compute the prose
+    // body BEFORE the move into PeerEnvelopeAppended so we consume
+    // `wrapped` exactly once (the push_peer_user_turn_into_chat helper
+    // takes `&WrappedPrompt` and clones internally).
+    let text = wrapped.to_prose();
+    push_peer_user_turn_into_chat(workspace, &target_key, &wrapped);
+    drop(wrapped);
+    if let Err(err) = workspace.dispatch(Command::Prompt {
+        key: target_key,
+        text,
+        attachments: Vec::new(),
+    }) {
+        tracing::warn!(
+            target: "forge_workspace::spawn",
+            project = %project_key.as_str(),
+            label = %target_label,
+            error = ?err,
+            "DeliverWorkerPrompt dispatch to worker failed"
+        );
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
@@ -602,5 +817,68 @@ config_dir = "~/.claude-subspace"
             })
             .sum();
         assert_eq!(total, 1, "wrapped prompt buffered exactly once across handles");
+    }
+
+    fn fake_worker_entry(label: &str, key: &str) -> crate::mcp::workers::types::WorkerEntry {
+        crate::mcp::workers::types::WorkerEntry {
+            label: label.into(),
+            charter: "c".into(),
+            session_key: SessionKey::from_session_id(key),
+            status: forge_primitives::WorkerLiveness::Running,
+            spawned_at: std::time::SystemTime::UNIX_EPOCH,
+            spawned_by_session_id: "lead-uuid".into(),
+        }
+    }
+
+    /// `handle_close_worker` removes the worker entry, releases the
+    /// session, and emits `WorkerStatusChanged { Removed }`. The
+    /// label-targeting picks the latest-spawned duplicate.
+    #[tokio::test]
+    async fn close_worker_removes_entry_and_emits_removed() {
+        let (workspace, mut rx) = Workspace::testing_stub();
+        let project = ProjectKey::new("forge");
+        workspace.insert_live_worker(&project, fake_worker_entry("r1", "worker-1"));
+
+        handle_close_worker(&workspace, &project, "r1");
+
+        assert!(workspace.list_live_workers(&project).is_empty());
+        let mut saw_removed = false;
+        while let Ok(update) = rx.try_recv() {
+            if let SessionUpdate::WorkerStatusChanged { action, .. } = update
+                && action == WorkerStatusAction::Removed
+            {
+                saw_removed = true;
+            }
+        }
+        assert!(saw_removed, "Removed event was emitted");
+    }
+
+    /// `handle_close_worker` for an unknown label logs but does not
+    /// panic and emits no events. Defensive branch when the TUI's
+    /// click races a lead-cascade or a concurrent close.
+    #[tokio::test]
+    async fn close_worker_unknown_label_is_noop() {
+        let (workspace, mut rx) = Workspace::testing_stub();
+        let project = ProjectKey::new("forge");
+
+        handle_close_worker(&workspace, &project, "missing");
+
+        assert!(rx.try_recv().is_err(), "no events emitted for unknown label");
+    }
+
+    /// `handle_deliver_worker_prompt` is a no-op when the target
+    /// label has no live worker. Mirrors the close_worker_unknown
+    /// branch - the upstream Tool gate (workers__tell facade)
+    /// rejects synchronously; the spawn handler is defence in depth.
+    #[tokio::test]
+    async fn deliver_worker_prompt_unknown_label_is_noop() {
+        let (workspace, _rx) = Workspace::testing_stub();
+        let project = ProjectKey::new("forge");
+        let caller = SessionKey::from_str_for_test("caller-1");
+
+        handle_deliver_worker_prompt(&workspace, caller, &project, "missing", fixture_wrapped());
+        // No panic, no dispatch attempted. (We can't easily observe
+        // "no dispatch" without a stubbed dispatch; the absence of a
+        // panic + dropped channels is the test.)
     }
 }

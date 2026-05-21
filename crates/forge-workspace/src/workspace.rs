@@ -505,6 +505,26 @@ impl Workspace {
                 let cwd = self.session_cwd_for(&key).unwrap_or_default();
                 handle.resume_session(key.as_str().to_owned(), cwd, settings)?;
             }
+            SessionTarget::FreshInProject { project_key, .. } => {
+                // Worker spawn: a fresh session in the project's cwd.
+                // Skip the lead-resume path so each worker is a new
+                // claude-issued session UUID (the lead lives untouched).
+                let project = self
+                    .config
+                    .projects
+                    .iter()
+                    .find(|p| {
+                        forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+                            &p.path.to_string_lossy(),
+                        )) == project_key.as_str()
+                    })
+                    .ok_or_else(|| WorkspaceError::ProjectNotFound {
+                        name: project_key.as_str().to_owned(),
+                        path: self.config_dir.join("forge.toml"),
+                    })?;
+                let cwd = project.path.to_string_lossy().to_string();
+                handle.new_session(cwd, settings)?;
+            }
         }
 
         let arc = Arc::new(handle);
@@ -849,6 +869,7 @@ impl Workspace {
                 Ok(self.lead_session_key_for(project))
             }
             SessionTarget::Session(key) => Ok(key.clone()),
+            SessionTarget::FreshInProject { synth_key, .. } => Ok(synth_key.clone()),
         }
     }
 
@@ -884,6 +905,19 @@ impl Workspace {
                 });
                 matched.unwrap_or_else(|| self.config.default_project().accounts.clone())
             }
+            SessionTarget::FreshInProject { project_key, .. } => self
+                .config
+                .projects
+                .iter()
+                .find(|p| {
+                    forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+                        &p.path.to_string_lossy(),
+                    )) == project_key.as_str()
+                })
+                .map_or_else(
+                    || self.config.default_project().accounts.clone(),
+                    |p| p.accounts.clone(),
+                ),
         }
     }
 
@@ -1164,6 +1198,53 @@ impl Workspace {
                     let _enter = span.enter();
                     spawn::handle_deliver_peer_prompt(self, caller, target_project, wrapped);
                 }
+                Command::SpawnWorker {
+                    project_key,
+                    label,
+                    charter,
+                    spawned_by_session_id,
+                    return_to,
+                } => {
+                    let span = tracing::info_span!(
+                        "spawn_worker",
+                        project = %project_key.as_str(),
+                        label = %label,
+                    );
+                    let _enter = span.enter();
+                    spawn::handle_spawn_worker(
+                        self,
+                        project_key,
+                        &label,
+                        charter,
+                        spawned_by_session_id,
+                        return_to,
+                    );
+                }
+                Command::CloseWorker { project_key, label } => {
+                    let span = tracing::info_span!(
+                        "close_worker",
+                        project = %project_key.as_str(),
+                        label = %label,
+                    );
+                    let _enter = span.enter();
+                    spawn::handle_close_worker(self, &project_key, &label);
+                }
+                Command::DeliverWorkerPrompt { caller, project_key, target_label, wrapped } => {
+                    let span = tracing::info_span!(
+                        "deliver_worker_prompt",
+                        project = %project_key.as_str(),
+                        label = %target_label,
+                        correlation_id = %wrapped.correlation_id,
+                    );
+                    let _enter = span.enter();
+                    spawn::handle_deliver_worker_prompt(
+                        self,
+                        caller,
+                        &project_key,
+                        &target_label,
+                        wrapped,
+                    );
+                }
                 other => {
                     tracing::warn!(
                         target: "forge_workspace",
@@ -1250,7 +1331,43 @@ impl Workspace {
     /// subprocess exits once the consumer (forge-tui's bucket) also
     /// drops its reference. No-op when the key isn't in the pool.
     /// Called from forge-tui's per-row "close" action.
+    ///
+    /// **Lead cascade**: when `session_key` is the lead of any project
+    /// (i.e. `sessions[0]` of a `ProjectView`), every live worker
+    /// under that project is released first. Workers' JSONLs persist
+    /// on disk; only the in-memory live state + the running claude
+    /// subprocesses are torn down. The split into a non-cascading
+    /// `release_session_inner` keeps the recursion bounded - the
+    /// per-worker release calls into the inner method directly.
     pub fn release_session(&self, session_key: &SessionKey) {
+        // Detect lead cascade: is this session the first (lead)
+        // session of any project? `list_projects` produces the same
+        // ordering forge-tui consumes - sessions[0] is the lead - so
+        // we can rely on that contract here.
+        let cascade_project = self
+            .list_projects()
+            .into_iter()
+            .find(|view| view.sessions.first().is_some_and(|s| s.session == *session_key))
+            .map(|view| view.key);
+        if let Some(project_key) = cascade_project {
+            for entry in self.drain_live_workers(&project_key) {
+                let status = entry.to_status();
+                let _ = self.update_tx.send(SessionUpdate::WorkerStatusChanged {
+                    project_key: project_key.clone(),
+                    action: crate::protocol::WorkerStatusAction::Removed,
+                    status,
+                });
+                self.release_session_inner(&entry.session_key);
+            }
+        }
+        self.release_session_inner(session_key);
+    }
+
+    /// Non-cascading session release. Removes the pool entry, command
+    /// sender, and domain handle for `session_key`. Split out so the
+    /// lead-cascade path in `release_session` can release worker
+    /// sessions without re-triggering the cascade check.
+    fn release_session_inner(&self, session_key: &SessionKey) {
         let removed = self.pool.lock().remove(session_key);
         drop(removed);
         let _ = self.command_senders.lock().remove(session_key);
@@ -1302,6 +1419,110 @@ impl Workspace {
         project_key: &ProjectKey,
     ) -> Vec<crate::mcp::workers::types::WorkerEntry> {
         self.live_workers.lock().remove(project_key).unwrap_or_default()
+    }
+
+    /// Locate `(project_key, label)` for any worker matching `session_key`
+    /// across every project's `live_workers`. Used by the Connected
+    /// handler in `SessionTask::translate_event` to decide whether a
+    /// just-connected session is a worker (and what tag to write).
+    /// `None` when the session is a lead (or not a worker at all).
+    pub fn worker_lookup_for_session(
+        &self,
+        session_key: &SessionKey,
+    ) -> Option<(ProjectKey, String)> {
+        let workers = self.live_workers.lock();
+        for (project_key, entries) in workers.iter() {
+            if let Some(entry) = entries.iter().find(|e| e.session_key == *session_key) {
+                return Some((project_key.clone(), entry.label.clone()));
+            }
+        }
+        None
+    }
+
+    /// Tag a worker session's JSONL with `forge:worker:<label>` and
+    /// transition its `WorkerEntry` from `Spawning` to `Running`. On
+    /// tag-write failure the worker is rolled back: removed from
+    /// `live_workers`, its session released, a `Removed` status event
+    /// emitted. Called from `SessionTask::translate_event` immediately
+    /// after the first `Connected` rekey lands so the tag row appears
+    /// before the LLM-side dispatch loop opens.
+    ///
+    /// `cwd` is the worker's project path (the `directory` discriminator
+    /// `tag_session` uses to find the right `.jsonl` when CONFIG_DIR
+    /// hosts multiple project directories).
+    ///
+    /// Idempotent — calling twice for the same session_key is a no-op
+    /// if the entry is already `Running`.
+    pub(crate) fn apply_worker_tag_or_rollback(
+        self: &Arc<Self>,
+        session_key: &SessionKey,
+        cwd: &str,
+    ) {
+        let Some((project_key, label)) = self.worker_lookup_for_session(session_key) else {
+            return;
+        };
+        // Resolve the per-account config_dir for this session via the
+        // bridge so the tag-write lands under the right account's
+        // projects/ tree.
+        let Some(config_dir) = self.config_dir_for(session_key) else {
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                session_id = %session_key.as_str(),
+                "apply_worker_tag: no agent registered; cannot resolve config_dir"
+            );
+            return;
+        };
+        let tag = forge_primitives::worker_tag(&label);
+        match forge_agent::userdata::catalog::mutations::tag_session(
+            &config_dir,
+            session_key.as_str(),
+            Some(&tag),
+            Some(cwd),
+        ) {
+            Ok(()) => {
+                // Transition the entry to Running + emit StatusChanged.
+                let updated_status = {
+                    let mut workers = self.live_workers.lock();
+                    workers
+                        .get_mut(&project_key)
+                        .and_then(|entries| {
+                            entries
+                                .iter_mut()
+                                .find(|e| e.session_key == *session_key)
+                                .map(|entry| {
+                                    entry.status = forge_primitives::WorkerLiveness::Running;
+                                    entry.to_status()
+                                })
+                        })
+                };
+                if let Some(status) = updated_status {
+                    let _ = self.update_tx.send(SessionUpdate::WorkerStatusChanged {
+                        project_key,
+                        action: crate::protocol::WorkerStatusAction::StatusChanged,
+                        status,
+                    });
+                }
+            }
+            Err(err) => {
+                tracing::warn!(
+                    target: "forge_workspace::workspace",
+                    session_id = %session_key.as_str(),
+                    label = %label,
+                    error = ?err,
+                    "tag_session failed for worker; rolling back spawn"
+                );
+                let removed = self.remove_latest_worker(&project_key, &label);
+                if let Some(entry) = removed {
+                    let status = entry.to_status();
+                    let _ = self.update_tx.send(SessionUpdate::WorkerStatusChanged {
+                        project_key,
+                        action: crate::protocol::WorkerStatusAction::Removed,
+                        status,
+                    });
+                }
+                self.release_session(session_key);
+            }
+        }
     }
 
     // ---- Refresh helpers (workspace → agent) ----
@@ -1602,6 +1823,21 @@ impl Workspace {
         if let Some(domain) = handles.remove(from) {
             domain.lock().key = to.clone();
             handles.insert(to.clone(), domain);
+        }
+        drop((pool, senders, handles));
+        // Worker entries are keyed by `session_key` which initially
+        // matches the synthetic spawn key; rekey here so subsequent
+        // lookups (close-worker by label, deliver-worker-prompt) find
+        // the worker under its real claude-issued UUID.
+        {
+            let mut workers = self.live_workers.lock();
+            for entries in workers.values_mut() {
+                for entry in entries.iter_mut() {
+                    if entry.session_key == *from {
+                        entry.session_key = to.clone();
+                    }
+                }
+            }
         }
         true
     }
@@ -2546,5 +2782,143 @@ mod workers_state_tests {
         let drained = ws.drain_live_workers(&project);
         assert_eq!(drained.len(), 2);
         assert!(ws.list_live_workers(&project).is_empty());
+    }
+
+    /// `migrate_session_task` rewrites every matching WorkerEntry's
+    /// `session_key` field in lockstep with the pool / command_senders
+    /// / domain_handles maps. Without this fix-up, `close_worker` and
+    /// `deliver_worker_prompt` would address the wrong session after
+    /// the synth -> real rekey on first Connected.
+    #[test]
+    fn migrate_session_task_rekeys_live_workers() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let project = ProjectKey::new("forge");
+        let from = SessionKey::from_session_id("__spawn_worker_forge_r__");
+        let to = SessionKey::from_session_id("real-uuid");
+        ws.insert_live_worker(&project, fake_entry("r", from.as_str()));
+        // Seed the three maps at `from` so migrate doesn't short-circuit
+        // on the "not registered" branch.
+        ws.command_senders
+            .lock()
+            .insert(from.clone(), tokio::sync::mpsc::unbounded_channel::<Command>().0);
+        ws.register_domain_session(from.clone(), None);
+
+        let migrated = ws.migrate_session_task(&from, &to);
+        assert!(migrated, "migrate succeeded");
+        let entries = ws.list_live_workers(&project);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].session_key.as_str(), "real-uuid");
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+mod release_session_cascade_tests {
+    use super::*;
+    use crate::mcp::workers::types::WorkerEntry;
+    use forge_primitives::WorkerLiveness;
+    use std::fs;
+    use std::time::SystemTime;
+    use tempfile::tempdir;
+
+    fn fake_entry(label: &str, key: &str) -> WorkerEntry {
+        WorkerEntry {
+            label: label.into(),
+            charter: "test charter".into(),
+            session_key: SessionKey::from_session_id(key),
+            status: WorkerLiveness::Running,
+            spawned_at: SystemTime::UNIX_EPOCH,
+            spawned_by_session_id: "lead-uuid".into(),
+        }
+    }
+
+    fn make_workspace_dir() -> tempfile::TempDir {
+        let dir = tempdir().expect("tempdir");
+        fs::write(
+            dir.path().join("forge.toml"),
+            r#"
+[[orgs]]
+name = "Default"
+accounts = ["Subspace"]
+
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+auto_start = true
+
+[[accounts]]
+display_name = "Subspace"
+config_dir = "~/.claude-subspace"
+"#,
+        )
+        .expect("write forge.toml");
+        dir
+    }
+
+    /// `release_session` cascades worker termination when the released
+    /// session is a project's lead. Workers' JSONLs persist on disk
+    /// (we don't delete them); only the in-memory live_workers
+    /// entries + the running session subprocesses are torn down.
+    #[tokio::test]
+    async fn release_session_on_lead_cascades_workers() {
+        let dir = make_workspace_dir();
+        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        let mut rx = workspace.subscribe().expect("subscribe");
+
+        // Seed the catalog with a lead session at the project key so
+        // `list_projects` reports a session matching `lead_key`.
+        let project = workspace.list_projects().into_iter().next().expect("forge project");
+        let project_key = project.key.clone();
+        let lead_key = SessionKey::from_session_id("lead-uuid");
+        workspace.record_connected_session(
+            &project.path.to_string_lossy(),
+            lead_key.as_str(),
+            None,
+        );
+
+        // Insert two workers under the project.
+        workspace.insert_live_worker(&project_key, fake_entry("r1", "worker-1"));
+        workspace.insert_live_worker(&project_key, fake_entry("r2", "worker-2"));
+        assert_eq!(workspace.list_live_workers(&project_key).len(), 2);
+
+        // Release the lead. Cascade fires before the lead release
+        // itself; workers' live_workers entries are gone afterward.
+        workspace.release_session(&lead_key);
+        assert!(
+            workspace.list_live_workers(&project_key).is_empty(),
+            "workers must be cascade-closed"
+        );
+
+        // Drain the channel and confirm we saw a Removed
+        // WorkerStatusChanged for each worker.
+        let mut removed_count = 0;
+        while let Ok(update) = rx.try_recv() {
+            if let SessionUpdate::WorkerStatusChanged { action, .. } = update
+                && action == crate::protocol::WorkerStatusAction::Removed
+            {
+                removed_count += 1;
+            }
+        }
+        assert_eq!(removed_count, 2, "two Removed events fire for the two workers");
+    }
+
+    /// `release_session` on a non-lead (or unknown) session is a plain
+    /// release with NO cascade. Confirms the cascade is gated on
+    /// "session is a lead of some project."
+    #[tokio::test]
+    async fn release_session_on_non_lead_does_not_cascade() {
+        let dir = make_workspace_dir();
+        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+
+        let project_key = workspace.list_projects().into_iter().next().expect("forge").key;
+        workspace.insert_live_worker(&project_key, fake_entry("r1", "worker-1"));
+
+        let unknown = SessionKey::from_session_id("unknown-session");
+        workspace.release_session(&unknown);
+        assert_eq!(
+            workspace.list_live_workers(&project_key).len(),
+            1,
+            "non-lead release must not cascade"
+        );
     }
 }
