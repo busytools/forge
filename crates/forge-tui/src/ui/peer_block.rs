@@ -105,7 +105,7 @@ pub(crate) enum PeerOutboundKind {
         body: String,
         correlation_id: Option<String>,
     },
-    /// `workers__spawn` — distinct from Ask/Tell because there's no
+    /// `workers__spawn` - distinct from Ask/Tell because there's no
     /// pre-existing target to address; the call creates a new worker.
     /// Body carries the charter so the chat row reads as
     /// `→ spawn <label>` followed by the charter prose.
@@ -113,7 +113,7 @@ pub(crate) enum PeerOutboundKind {
         label: String,
         charter: String,
     },
-    /// `workers__list` — no arguments, no body; one-line header.
+    /// `workers__list` - no arguments, no body; one-line header.
     WorkerList,
 }
 
@@ -386,7 +386,7 @@ pub(crate) fn render_inbound(kind: &PeerInboundKind, collapsed: bool) -> Vec<Lin
 /// Used by the chat renderer for `mcp__forge__peers__*` and
 /// `mcp__forge__workers__*` tool_use cards in place of the default
 /// tool-card rendering. Same tool-card shape as [`render_inbound`].
-/// The `family` field on the kind picks the labelling — workers
+/// The `family` field on the kind picks the labelling - workers
 /// rows read as `worker ask`, peers rows read as `peer ask`, etc.
 pub(crate) fn render_outbound(kind: &PeerOutboundKind, collapsed: bool) -> Vec<Line<'static>> {
     match kind {
@@ -1031,7 +1031,7 @@ mod tests {
     fn render_outbound_workers_list_is_header_only() {
         let kind = PeerOutboundKind::WorkerList;
         let lines = render_outbound(&kind, false);
-        // No args + no body means no tree children — just the header row.
+        // No args + no body means no tree children - just the header row.
         assert_eq!(lines.len(), 1, "workers__list is a header-only block");
         let header_text: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(header_text.contains("worker list"));

@@ -477,7 +477,7 @@ impl Workspace {
         // (`workers__*`) tool groups surfaced together. The CLI
         // rejects duplicate-name MCP servers, so peers and workers
         // must share the `forge` namespace. CallerKeyResolver reads
-        // `domain.key` through the shared Arc — when SessionTask
+        // `domain.key` through the shared Arc - when SessionTask
         // migrates the key from synthetic to real on Connected, the
         // resolver tracks for both tool groups.
         let forge_server = {
@@ -1481,7 +1481,7 @@ impl Workspace {
     /// `tag_session` uses to find the right `.jsonl` when CONFIG_DIR
     /// hosts multiple project directories).
     ///
-    /// Idempotent — calling twice for the same session_key is a no-op
+    /// Idempotent - calling twice for the same session_key is a no-op
     /// if the entry is already `Running`.
     pub(crate) fn apply_worker_tag_or_rollback(
         self: &Arc<Self>,

@@ -781,7 +781,7 @@ fn switch_to_worker(app: &mut App, session_key: forge_workspace::SessionKey) {
     } else {
         // Spawning window: the worker's WorkerEntry has a session_key
         // but the bucket isn't in app.sessions yet because Connected
-        // hasn't fired. Refuse the click silently — the next click
+        // hasn't fired. Refuse the click silently - the next click
         // after the worker lands its bucket will succeed.
         tracing::debug!(
             target: crate::logging::targets::APP_SESSION,

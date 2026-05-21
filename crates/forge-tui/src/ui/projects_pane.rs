@@ -1599,6 +1599,99 @@ mod tests {
         assert_eq!(ACCOUNT_PANEL_HEIGHT, 19);
     }
 
+    /// A project with no live workers must produce zero tree-child
+    /// rows and stamp no hit targets. Renders are driven directly
+    /// from `workspace.list_live_workers`; the renderer's job is to
+    /// branch cleanly on `is_empty`.
+    #[test]
+    fn worker_tree_children_render_no_rows_when_zero_workers() {
+        use crate::app::PaneHitTarget;
+        use forge_workspace::ProjectKey;
+
+        let mut app = App::test_default();
+        let project_key = ProjectKey::new_for_test("forge");
+        let project =
+            ProjectView::new_for_test(project_key.clone(), "forge", "~/Projects/forge", Vec::new());
+        let area = Rect { x: 0, y: 0, width: 32, height: 20 };
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        append_worker_tree_children(&mut lines, area, &mut app, &project);
+
+        assert!(lines.is_empty(), "zero workers must render zero rows");
+        let workers_targets: Vec<_> = app
+            .pane_hit_targets
+            .iter()
+            .filter(|t| {
+                matches!(t, PaneHitTarget::CloseWorker { .. } | PaneHitTarget::WorkerRow { .. })
+            })
+            .collect();
+        assert!(workers_targets.is_empty(), "zero workers stamps no hit targets");
+    }
+
+    /// `WorkerStatusChanged { Removed }` only flags a redraw - the
+    /// authoritative `live_workers` map lives on the workspace, so
+    /// the next render reads it directly. This test asserts the
+    /// pipeline shape: after the reducer fires AND the worker is
+    /// dropped from `live_workers`, a subsequent render sees zero
+    /// rows.
+    #[test]
+    fn worker_removed_reducer_drives_redraw_and_subsequent_render_omits_worker() {
+        use crate::app::events::apply_session_update;
+        use forge_workspace::ProjectKey;
+        use forge_workspace::SessionKey;
+        use forge_workspace::mcp::workers::types::WorkerEntry;
+        use forge_workspace::protocol::{SessionUpdate, WorkerStatusAction};
+        use std::time::SystemTime;
+
+        let mut app = App::test_default();
+        let workspace = app.workspace.clone().expect("workspace stub");
+        let project_key = ProjectKey::new_for_test("forge");
+        let entry = WorkerEntry {
+            label: "reviewer".into(),
+            charter: "be sharp".into(),
+            session_key: SessionKey::from_session_id("worker-1"),
+            status: forge_primitives::WorkerLiveness::Running,
+            spawned_at: SystemTime::UNIX_EPOCH,
+            spawned_by_session_id: "lead".into(),
+        };
+        workspace.insert_live_worker(&project_key, entry.clone());
+
+        // Baseline: render should show one row.
+        {
+            let project = ProjectView::new_for_test(
+                project_key.clone(),
+                "forge",
+                "~/Projects/forge",
+                Vec::new(),
+            );
+            let area = Rect { x: 0, y: 0, width: 32, height: 20 };
+            let mut lines: Vec<Line<'static>> = Vec::new();
+            append_worker_tree_children(&mut lines, area, &mut app, &project);
+            assert_eq!(lines.len(), 1, "baseline: one worker = one row");
+        }
+
+        // Drop the worker from the source of truth, then fire the
+        // Removed reducer the way the workspace would.
+        workspace.remove_latest_worker(&project_key, "reviewer");
+        app.needs_redraw = false;
+        apply_session_update(
+            &mut app,
+            SessionUpdate::WorkerStatusChanged {
+                project_key: project_key.clone(),
+                action: WorkerStatusAction::Removed,
+                status: entry.to_status(),
+            },
+        );
+        assert!(app.needs_redraw, "Removed reducer must request a redraw");
+
+        // Next render reads list_live_workers directly: zero rows.
+        let project =
+            ProjectView::new_for_test(project_key, "forge", "~/Projects/forge", Vec::new());
+        let area = Rect { x: 0, y: 0, width: 32, height: 20 };
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        append_worker_tree_children(&mut lines, area, &mut app, &project);
+        assert!(lines.is_empty(), "after Removed, render shows no worker rows");
+    }
+
     #[test]
     fn worker_tree_children_render_with_glyphs_and_close_affordance() {
         use crate::app::PaneHitTarget;

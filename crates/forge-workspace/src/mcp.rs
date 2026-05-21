@@ -7,7 +7,7 @@
 //!   Tools are named `peers__ask_agent`, `peers__tell_agent`,
 //!   `peers__list_agents`, `peers__whoami`. From the LLM's view they
 //!   render as `mcp__forge__peers__ask_agent` and similar.
-//! - `workers` — project-internal child-agent coordination (spawn /
+//! - `workers` - project-internal child-agent coordination (spawn /
 //!   list / tell / ask). Tools render as `mcp__forge__workers__<name>`.
 //!
 //! Future submodules slot in alongside these (e.g. `worktree`,
