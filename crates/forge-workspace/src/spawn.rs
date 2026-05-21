@@ -142,6 +142,16 @@ pub(crate) fn handle_deliver_peer_prompt(
         }
 
         let text = wrapped.to_prose();
+        // Synthesize the user-turn echo so the target's chat history
+        // shows the inbound envelope. The CLI does NOT echo prompts
+        // injected via stdin back on stream-json (only tool_result-
+        // bearing user envelopes come back), so the TUI's
+        // `peer_block::detect_inbound` matcher in `handle_user` never
+        // sees the peer wrapper without this synthetic emit. Fire
+        // BEFORE the Command::Prompt dispatch so the ordering in the
+        // chat buffer (user-turn → assistant response) stays natural
+        // regardless of which lands at the TUI reducer first.
+        push_peer_user_turn_into_chat(workspace, &target_key, &text);
         if let Err(err) = workspace.dispatch(Command::Prompt {
             key: target_key.clone(),
             text,
@@ -220,6 +230,36 @@ fn stamp_inbound_hop(workspace: &Workspace, target_key: &SessionKey, hop: u8) {
         let current = d.current_inbound_hop.unwrap_or(0);
         d.current_inbound_hop = Some(current.max(hop));
     }
+}
+
+/// Synthesize a `Message::User` carrying the wrapped peer prose and
+/// emit it as a `SessionUpdate::ChatAppended` so the target session's
+/// chat buffer shows the inbound user-turn. The CLI does NOT echo
+/// stdin-injected user prompts back on stream-json output (it only
+/// echoes tool_result-bearing user envelopes), so without this push
+/// the TUI's `peer_block::detect_inbound` matcher in
+/// `sdk_message::handle_user` never sees the peer wrapper text. Used
+/// by both the running-target dispatch path (here in spawn.rs) and
+/// the drain-on-spawn path (in session_task.rs).
+pub(crate) fn push_peer_user_turn_into_chat(
+    workspace: &Workspace,
+    target_key: &SessionKey,
+    text: &str,
+) {
+    let synthetic = forge_primitives::Message::User {
+        message: forge_primitives::UserEnvelope {
+            role: "user".to_owned(),
+            content: vec![forge_primitives::ContentBlock::Text { text: text.to_owned() }],
+        },
+        session_id: target_key.as_str().to_owned(),
+        parent_tool_use_id: None,
+        uuid: None,
+        tool_use_result: None,
+    };
+    let _ = workspace.update_sender().send(SessionUpdate::ChatAppended {
+        session_id: target_key.as_str().to_owned(),
+        msg: synthetic,
+    });
 }
 
 /// Spawn for a non-lead session row. Synthesizes
