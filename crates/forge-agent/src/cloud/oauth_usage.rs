@@ -13,6 +13,7 @@
 //! sometimes a numeric epoch).
 
 use std::path::Path;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue, USER_AGENT};
@@ -26,6 +27,37 @@ use super::oauth_credentials::load_oauth_credentials;
 const OAUTH_USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 const OAUTH_BETA_HEADER: &str = "oauth-2025-04-20";
 const OAUTH_TIMEOUT: Duration = Duration::from_secs(8);
+
+/// Canonical `User-Agent` Anthropic expects on /api/oauth/usage —
+/// matches what the spawned `claude` subprocess sends on /v1/messages
+/// after the wire-rewriter normalises it. Non-canonical UAs
+/// (e.g. `forge-sdk/X.Y.Z`) get 429'd aggressively by Anthropic's
+/// per-IP rate limiter, even on the first probe of an idle account.
+/// Format: `claude-cli/<version> (external, cli)`. Version is probed
+/// once via `claude --version` and cached. If the probe ever fails
+/// (claude not on PATH, exec error) we propagate that as a probe
+/// error so the caller's backoff path engages — a stale pinned
+/// fallback would actively lie to Anthropic about which version is
+/// running and drift over time, defeating the point of matching
+/// reality on the wire.
+fn canonical_user_agent() -> Result<&'static str, OauthUsageError> {
+    static UA: OnceLock<String> = OnceLock::new();
+    if let Some(cached) = UA.get() {
+        return Ok(cached);
+    }
+    let version = forge_sdk::transport::process::query_cli_version("claude").map_err(|e| {
+        OauthUsageError::Network(format!("claude --version probe failed for UA: {e}"))
+    })?;
+    let ua = format!("claude-cli/{version} (external, cli)");
+    // get_or_init isn't `Result`-friendly. set/get pair: if another
+    // caller raced us and set first, our `set` errors out and we
+    // read theirs via `get` below — value is identical (same probe
+    // result for the same machine) so the race is benign.
+    let _ = UA.set(ua);
+    UA.get().map(String::as_str).ok_or_else(|| {
+        OauthUsageError::Network("UA cache disappeared after set; impossible".to_owned())
+    })
+}
 
 /// Fetch the live OAuth usage payload from the Anthropic API using
 /// the bearer in `<config_dir>/.credentials.json` (or, on macOS, the
@@ -123,10 +155,9 @@ fn oauth_headers(access_token: &str) -> Result<HeaderMap, OauthUsageError> {
     headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
     headers.insert("anthropic-beta", HeaderValue::from_static(OAUTH_BETA_HEADER));
-    headers.insert(
-        USER_AGENT,
-        HeaderValue::from_static(concat!("forge-sdk/", env!("CARGO_PKG_VERSION"))),
-    );
+    let ua = HeaderValue::from_str(canonical_user_agent()?)
+        .map_err(|error| OauthUsageError::Network(format!("bad UA header: {error}")))?;
+    headers.insert(USER_AGENT, ua);
     let bearer = HeaderValue::from_str(&format!("Bearer {access_token}"))
         .map_err(|error| OauthUsageError::Network(format!("bad bearer header: {error}")))?;
     headers.insert(AUTHORIZATION, bearer);
