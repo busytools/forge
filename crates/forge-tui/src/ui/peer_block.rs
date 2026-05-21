@@ -29,11 +29,6 @@ use crate::ui::theme;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
-/// Maximum chars of the prose body to inline in a styled block.
-/// Longer bodies get truncated with `…`; the user clicks-to-expand
-/// (TODO: not yet wired — for now the truncation is permanent).
-const BODY_TRUNCATE: usize = 200;
-
 /// One inbound peer block parsed from the user-turn text.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum PeerInboundKind {
@@ -470,25 +465,20 @@ fn dim_meta(fragments: &[String]) -> Vec<Span<'static>> {
 
 /// Push the body lines under `│  ` / `└─ ` tree connectors —
 /// matches `tool_call::standard::render_tool_content`'s pipe / corner
-/// glyph pair. Truncates at `BODY_TRUNCATE` chars with an ellipsis.
+/// glyph pair. Renders the FULL body when expanded — no truncation;
+/// the collapsed summary (see [`push_collapsed_summary`]) is the only
+/// place we truncate, and only to fit a single summary row.
 /// When the body is empty, pushes nothing so the header stands alone.
 fn push_tree_body_lines(lines: &mut Vec<Line<'static>>, body: &str) {
     let body = body.trim();
     if body.is_empty() {
         return;
     }
-    let truncated: String = if body.chars().count() > BODY_TRUNCATE {
-        let mut s: String = body.chars().take(BODY_TRUNCATE).collect();
-        s.push('\u{2026}');
-        s
-    } else {
-        body.to_owned()
-    };
 
     let pipe_style = Style::default().fg(theme::DIM);
     let body_text_style = Style::default().fg(Color::Gray);
 
-    let body_lines: Vec<&str> = truncated.lines().collect();
+    let body_lines: Vec<&str> = body.lines().collect();
     let last_idx = body_lines.len().saturating_sub(1);
     for (idx, raw_line) in body_lines.iter().enumerate() {
         let prefix = if idx == last_idx {
@@ -733,24 +723,27 @@ mod tests {
         assert!(header_text.contains("q-…"));
     }
 
+    /// Expanded view must render the FULL body — no truncation,
+    /// no ellipsis. Truncation only lives in the collapsed summary.
     #[test]
-    fn body_truncates_at_threshold() {
-        let body = "x".repeat(BODY_TRUNCATE + 50);
+    fn expanded_body_is_not_truncated() {
+        let body = "x".repeat(500);
         let kind = PeerInboundKind::Reply {
             id: "q-1".to_owned(),
             from: "a".to_owned(),
             org: "o".to_owned(),
-            body,
+            body: body.clone(),
         };
         let lines = render_inbound(&kind, false);
-        // Concat all body lines (header is line 0; tree-prefixed rows
-        // follow). Truncation marker should land in there somewhere.
         let body_text: String =
             lines.iter().skip(1).flat_map(|l| l.spans.iter().map(|s| s.content.as_ref())).collect();
         assert!(
-            body_text.contains('\u{2026}'),
-            "truncation marker should appear in long body: {body_text:?}"
+            !body_text.contains('\u{2026}'),
+            "expanded body must not contain a truncation ellipsis: {body_text:?}"
         );
+        // The full 500-char run should appear somewhere in the body
+        // rows (it's a single line so it lands on one row).
+        assert!(body_text.contains(body.as_str()), "expanded body must contain the full prose");
     }
 
     /// Collapsed inbound block should be exactly 2 lines: header +
