@@ -52,7 +52,15 @@ while [ $# -gt 0 ]; do
 done
 
 FORGE_CA_PATH="${FORGE_CA_PATH:-$HOME/Library/Application Support/forge-tui/ca/ca-cert.pem}"
-FORGE_CA_NAME="forge-tui"
+# `security find-certificate -c <name>` matches the CN field only,
+# not the O (organisation). forge's CA carries:
+#   subject = CN="forge wire-classification rewriter", O="forge-tui"
+# so the lookup MUST use the CN. Matching by O silently returns
+# nothing — the script then thinks the cert is missing and triggers
+# a fresh `security add-trusted-cert` (Touch ID prompt) on every run.
+# See ~/.claude/memory/til/2026-05-21-macos-26-trust-settings-admin-write-locked.md
+# for the empirical proof.
+FORGE_CA_CN="forge wire-classification rewriter"
 KEYCHAIN="/Library/Keychains/System.keychain"
 
 log_info()    { printf '\033[0;34m[INFO]\033[0m %s\n' "$*"; }
@@ -61,7 +69,7 @@ log_success() { printf '\033[0;32m[OK]\033[0m %s\n' "$*"; }
 die()         { printf '\033[0;31m[ERROR]\033[0m %s\n' "$*" >&2; exit 1; }
 
 is_ca_trusted() {
-    security find-certificate -c "$FORGE_CA_NAME" "$KEYCHAIN" >/dev/null 2>&1
+    security find-certificate -c "$FORGE_CA_CN" "$KEYCHAIN" >/dev/null 2>&1
 }
 
 case "$MODE" in
@@ -83,7 +91,7 @@ case "$MODE" in
             exit 0
         fi
         log_info "Removing forge CA from System keychain (Touch ID / sudo prompt)"
-        if sudo security delete-certificate -c "$FORGE_CA_NAME" "$KEYCHAIN"; then
+        if sudo security delete-certificate -c "$FORGE_CA_CN" "$KEYCHAIN"; then
             log_success "forge CA removed from System keychain"
         else
             die "Failed to remove forge CA"
@@ -111,7 +119,7 @@ if [[ -z "$disk_fp" ]]; then
 fi
 
 # All forge-tui certs in keychain, their SHA-256s.
-keychain_fps=$(/usr/bin/security find-certificate -c "$FORGE_CA_NAME" -a -Z "$KEYCHAIN" 2>/dev/null \
+keychain_fps=$(/usr/bin/security find-certificate -c "$FORGE_CA_CN" -a -Z "$KEYCHAIN" 2>/dev/null \
     | awk '/^SHA-256 hash:/ {print $NF}')
 kfp_count=$(printf '%s' "$keychain_fps" | grep -c . || true)
 
@@ -133,7 +141,7 @@ fi
 
 # Drop any existing forge-tui certs (handles drift + multi-copy).
 while is_ca_trusted; do
-    if ! sudo /usr/bin/security delete-certificate -c "$FORGE_CA_NAME" "$KEYCHAIN" >/dev/null 2>&1; then
+    if ! sudo /usr/bin/security delete-certificate -c "$FORGE_CA_CN" "$KEYCHAIN" >/dev/null 2>&1; then
         log_warn "Failed to remove a stale forge CA copy; continuing"
         break
     fi
