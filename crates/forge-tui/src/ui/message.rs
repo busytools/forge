@@ -395,7 +395,18 @@ fn append_assistant_tool_block(
         }
         let collapsed = tc.collapsed_override.unwrap_or(render_context.options.tools_collapsed);
         let lines = peer_block::render_outbound(&kind, collapsed);
+        // Same hit-target stamping the standard tool-call branch
+        // below does so `mouse::locate_tool_call_block_at_click` can
+        // map a click on a peer row back to this ToolCallInfo and
+        // flip `collapsed_override`. Without these fields set the
+        // hit-test in mouse.rs short-circuits at `last_measured_height
+        // == 0` and the click falls through to text selection.
+        let y_in_msg = layout.height;
+        let height = rendered_lines_height(&lines, render_context.width);
         layout.push_wrapped_lines(lines, render_context.width);
+        tc.last_measured_y_in_msg = y_in_msg;
+        tc.last_measured_height = height;
+        tc.last_measured_width = render_context.width;
         state.has_body_content = true;
         state.has_visible_content = true;
         state.prev_was_tool = true;
