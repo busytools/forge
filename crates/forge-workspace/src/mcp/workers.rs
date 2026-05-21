@@ -10,7 +10,7 @@ use forge_sdk::mcp::server::{McpServer, McpServerBuilder};
 use forge_sdk::mcp::tool::{Tool, ToolInput, ToolOutput, ToolOutputBlock};
 
 use crate::mcp::peers::facade::CallerKeyResolver;
-use crate::mcp::peers::types::{CorrelationId, WrappedKind, WrappedPrompt};
+use crate::mcp::peers::types::{CorrelationId, InflightAsk, WrappedKind, WrappedPrompt};
 use crate::mcp::workers::facade::{WorkerDeliverError, WorkerFacade, WorkerSpawnError};
 
 pub mod facade;
@@ -33,11 +33,13 @@ const HOP_LIMIT: u8 = 10;
 pub fn build_server(facade: Arc<dyn WorkerFacade>, caller_key: CallerKeyResolver) -> McpServer {
     let spawn = Spawn { facade: facade.clone(), caller_key: caller_key.clone() };
     let list = List { facade: facade.clone(), caller_key: caller_key.clone() };
-    let tell = Tell { facade, caller_key };
+    let tell = Tell { facade: facade.clone(), caller_key: caller_key.clone() };
+    let ask = Ask { facade, caller_key };
     McpServerBuilder::new("forge", env!("CARGO_PKG_VERSION"))
         .tool(spawn)
         .tool(list)
         .tool(tell)
+        .tool(ask)
         .build()
 }
 
@@ -301,6 +303,126 @@ fn format_deliver_error(label: &str, err: &WorkerDeliverError) -> String {
             "hop limit exceeded forwarding to worker '{label}' ({hop}/{limit}). The \
              chain has reached its maximum depth - your message will not be forwarded."
         ),
+    }
+}
+
+/// `workers__ask` - async question to a worker in the caller's
+/// project. Returns immediately with a correlation_id; the reply
+/// lands later as a fresh user-turn injection in the caller's chat
+/// when the target worker replies. Mirrors peer-MCP's AskAgent
+/// behavior (return immediately, reply arrives asynchronously).
+///
+/// Arguments:
+/// - `label` (string, required) - worker label from `workers__list`
+/// - `question` (string, required) - the question body
+///
+/// Returns a JSON object with `correlation_id` (starts with `q-`)
+/// and a `delivered` status string.
+pub(crate) struct Ask {
+    pub(crate) facade: Arc<dyn WorkerFacade>,
+    pub(crate) caller_key: CallerKeyResolver,
+}
+
+#[derive(serde::Deserialize)]
+struct AskArgs {
+    label: String,
+    question: String,
+}
+
+#[async_trait::async_trait]
+impl Tool for Ask {
+    #[allow(clippy::unnecessary_literal_bound)]
+    fn name(&self) -> &str {
+        "workers__ask"
+    }
+
+    #[allow(clippy::unnecessary_literal_bound)]
+    fn description(&self) -> &str {
+        "Ask a worker in YOUR project a question and receive their \
+         reply asynchronously. Returns IMMEDIATELY with a \
+         correlation_id (e.g. q-7f3a92e0); this tool does NOT wait \
+         for the reply. The worker's LLM will see your question as a \
+         new user turn, do its work, and respond. The reply lands as \
+         a fresh user turn in YOUR chat whenever it's ready - finish \
+         your current turn naturally and continue with other work. \
+         Multiple asks can run in parallel - fire several workers__ask \
+         calls in one turn and the replies arrive independently. \
+         Available to both lead and worker callers. If multiple \
+         workers share the label, addressing picks the latest-spawned. \
+         Run workers__list first to confirm the label and that the \
+         worker is live."
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "label": {
+                    "type": "string",
+                    "description": "Worker label from workers__list. Case-sensitive. If multiple workers share the label, the latest-spawned receives the question.",
+                },
+                "question": {
+                    "type": "string",
+                    "description": "Question body. Rendered as a new user turn in the worker's chat - write it as a direct request. Include enough context for the worker to answer without further round-trips.",
+                },
+            },
+            "required": ["label", "question"],
+            "additionalProperties": false,
+        })
+    }
+
+    async fn call(&self, input: ToolInput) -> ToolOutput {
+        let args: AskArgs = match serde_json::from_value(input.value) {
+            Ok(a) => a,
+            Err(err) => return tool_error(format!("invalid arguments: {err}")),
+        };
+
+        let caller_key = self.caller_key.current();
+        let correlation_id = CorrelationId::new_ask();
+
+        let wrapped = WrappedPrompt {
+            correlation_id: correlation_id.clone(),
+            kind: WrappedKind::Question,
+            sender_name: caller_key.as_str().to_owned(),
+            sender_org: String::new(),
+            hop: 1,
+            hop_limit: HOP_LIMIT,
+            body: args.question,
+        };
+
+        // Register the inflight ask BEFORE dispatching delivery so a
+        // fast-path worker (idle, processes the prompt immediately on
+        // its next turn) can't fire a reply that hits
+        // `resolve_correlation` before the ask is in the map. On
+        // dispatch failure we roll back the registration so the
+        // inflight map doesn't leak. Same race-safety pattern as
+        // peer-MCP's AskAgent.
+        self.facade.register_inflight_ask(InflightAsk {
+            correlation_id: correlation_id.clone(),
+            caller: caller_key.clone(),
+            caller_project: caller_key.as_str().to_owned(),
+            caller_org: String::new(),
+            target_project: args.label.clone(),
+        });
+
+        match self.facade.deliver_worker_prompt(&caller_key, &args.label, wrapped) {
+            Ok(_) => {
+                let body = serde_json::json!({
+                    "correlation_id": correlation_id.as_str(),
+                    "status": "delivered",
+                });
+                match serde_json::to_string_pretty(&body) {
+                    Ok(json) => ToolOutput::text(json),
+                    Err(err) => tool_error(format!("response serialization failed: {err}")),
+                }
+            }
+            Err(err) => {
+                // Rollback: the dispatch never reached the worker so
+                // the inflight_asks entry would otherwise leak.
+                self.facade.complete_inflight_ask(&correlation_id);
+                tool_error(format_deliver_error(&args.label, &err))
+            }
+        }
     }
 }
 
@@ -632,5 +754,133 @@ mod tests {
         let required = schema["required"].as_array().expect("required field present");
         assert!(required.iter().any(|v| v == "label"));
         assert!(required.iter().any(|v| v == "message"));
+    }
+
+    #[tokio::test]
+    async fn ask_registers_inflight_and_dispatches() {
+        let mock = Arc::new(MockWorkerFacade::new());
+        let caller = fake_key("lead-key");
+        mock.callers.lock().insert(caller.clone(), lead_caller("forge"));
+        mock.workers.lock().insert("forge".into(), vec![fake_worker("reviewer", "charter")]);
+        let facade: Arc<dyn WorkerFacade> = mock.clone();
+        let tool = Ask { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({
+                    "label": "reviewer",
+                    "question": "What's the toolchain?",
+                }),
+            })
+            .await;
+        assert!(!output.is_error, "ask happy path should not error: {:?}", output.blocks);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&output.blocks[0].text).expect("valid JSON");
+        let id = parsed["correlation_id"].as_str().expect("correlation_id present");
+        assert!(id.starts_with("q-"), "ask ids prefix q-, got {id}");
+
+        // Registration + dispatch both happened.
+        assert_eq!(mock.inflight.lock().len(), 1, "inflight ask registered");
+        let dispatched = mock.deliver_calls.lock();
+        assert_eq!(dispatched.len(), 1, "exactly one deliver dispatch");
+        assert_eq!(dispatched[0].1, "reviewer");
+        assert!(matches!(dispatched[0].2.kind, WrappedKind::Question));
+    }
+
+    #[tokio::test]
+    async fn ask_unknown_label_rolls_back_inflight() {
+        let mock = Arc::new(MockWorkerFacade::new());
+        let caller = fake_key("lead-key");
+        mock.callers.lock().insert(caller.clone(), lead_caller("forge"));
+        // No 'missing' worker pre-loaded.
+        mock.workers.lock().insert("forge".into(), vec![]);
+        let facade: Arc<dyn WorkerFacade> = mock.clone();
+        let tool = Ask { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({
+                    "label": "missing",
+                    "question": "hi",
+                }),
+            })
+            .await;
+        assert!(output.is_error);
+        // Race-safety: register-before-dispatch means the entry was
+        // briefly there, but the failure-rollback removed it.
+        assert_eq!(
+            mock.inflight.lock().len(),
+            0,
+            "failed delivery must roll back the inflight registration"
+        );
+        assert_eq!(mock.deliver_calls.lock().len(), 0, "no deliver dispatch when label unknown");
+    }
+
+    #[tokio::test]
+    async fn ask_worker_caller_succeeds() {
+        // Workers may also ask other workers.
+        let mock = Arc::new(MockWorkerFacade::new());
+        let caller = fake_key("worker-key");
+        mock.callers.lock().insert(caller.clone(), worker_caller("forge"));
+        mock.workers.lock().insert("forge".into(), vec![fake_worker("peer-worker", "charter")]);
+        let facade: Arc<dyn WorkerFacade> = mock.clone();
+        let tool = Ask { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({
+                    "label": "peer-worker",
+                    "question": "anything new?",
+                }),
+            })
+            .await;
+        assert!(!output.is_error);
+        assert_eq!(mock.inflight.lock().len(), 1);
+        assert_eq!(mock.deliver_calls.lock().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn ask_invalid_args_is_error() {
+        let mock = Arc::new(MockWorkerFacade::new());
+        mock.callers.lock().insert(fake_key("lead-key"), lead_caller("forge"));
+        let facade: Arc<dyn WorkerFacade> = mock.clone();
+        let tool = Ask { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("lead-key")) };
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({
+                    // missing required 'question'
+                    "label": "reviewer",
+                }),
+            })
+            .await;
+        assert!(output.is_error);
+        // Schema-level rejection happens before any registration.
+        assert_eq!(mock.inflight.lock().len(), 0);
+    }
+
+    #[test]
+    fn ask_metadata_shape() {
+        let mock = MockWorkerFacade::new();
+        let facade = mock.into_arc();
+        let tool = Ask { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("k")) };
+        assert_eq!(tool.name(), "workers__ask");
+        assert!(tool.description().to_lowercase().contains("asynchronous"));
+        let schema = tool.input_schema();
+        let required = schema["required"].as_array().expect("required field present");
+        assert!(required.iter().any(|v| v == "label"));
+        assert!(required.iter().any(|v| v == "question"));
+    }
+
+    #[test]
+    fn build_server_registers_all_four_workers_tools() {
+        let mock = MockWorkerFacade::new();
+        let facade = mock.into_arc();
+        let server = build_server(facade, CallerKeyResolver::from_fixed(fake_key("test")));
+        let debug = format!("{server:?}");
+        for expected in
+            ["workers__spawn", "workers__list", "workers__tell", "workers__ask"]
+        {
+            assert!(
+                debug.contains(expected),
+                "build_server must include {expected}; debug: {debug}",
+            );
+        }
     }
 }
