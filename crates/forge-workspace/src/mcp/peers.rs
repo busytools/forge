@@ -92,13 +92,13 @@ impl Tool for Whoami {
 
     #[allow(clippy::unnecessary_literal_bound)]
     fn description(&self) -> &str {
-        "Returns YOUR identity as a forge agent: project name, organization \
-         (the [[orgs]] entry from forge.toml), filesystem path, current \
-         liveness status, model (when running), and current in-flight \
-         peer-message counters. Useful when you need to refer to yourself \
-         in a message to a peer agent, or when an ask wrapper says \
-         'from agent X' and you want to confirm what X resolves to. \
-         Takes no arguments."
+        "Returns your own forge-agent identity (project name, organization, \
+         filesystem path, current model, and your in-flight peer-message \
+         counters). Useful when an inbound wrapper says 'from/to agent X' \
+         and you want to confirm whether X is you, or when you need to \
+         refer to yourself in a message to another agent. Identity is \
+         stable for the session — most callers will not need to call this \
+         more than once. Takes no arguments."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -156,14 +156,31 @@ impl Tool for ListAgents {
 
     #[allow(clippy::unnecessary_literal_bound)]
     fn description(&self) -> &str {
-        "List all forge agents (= projects loaded from forge.toml). Returns \
-         each agent's name, organization, filesystem path, current status \
-         (running / sleeping / failed), model when running, and per-agent \
-         in-flight peer-message counters (asks awaiting reply both \
-         incoming and outgoing). Use this BEFORE peers__ask_agent or \
-         peers__tell_agent to discover which agents you can talk to and \
-         to gauge whether they're already busy. Sleeping agents are still \
-         callable - they auto-spawn on ask/tell. Takes no arguments."
+        "Discover which forge agents (projects loaded from forge.toml) you \
+         can talk to via peers__ask_agent / peers__tell_agent. Returns each \
+         agent's project name, organization, filesystem path, current \
+         liveness (running / sleeping / failed), model when running, and \
+         in-flight peer-message counters (asks awaiting reply, both \
+         incoming and outgoing). \
+         \
+         CROSS-PROJECT RULE (mutations only): whenever the user asks you \
+         to CHANGE state in a project other than your own — edit files, \
+         run a command, file an issue, push a branch, anything with side \
+         effects — call this tool FIRST. If the target project appears in \
+         the result, do NOT cd into it and mutate its files directly. \
+         Hand the work off via peers__ask_agent (when you need an answer \
+         or confirmation back) or peers__tell_agent (for a notification \
+         or fire-and-forget hand-off). Each agent owns its own repo; \
+         stay in your lane and let the peer execute the change. \
+         \
+         Reading another project's files for context is fine — sometimes \
+         scanning the source yourself gives a sharper answer than waiting \
+         on an ask. The constraint is only on writes / state changes. \
+         \
+         Call this before asking or telling so you use the right project \
+         name — a misspelled target returns an immediate error listing \
+         the valid set. Sleeping agents are still callable; they \
+         auto-spawn on the first ask or tell. Takes no arguments."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -235,15 +252,27 @@ impl Tool for TellAgent {
 
     #[allow(clippy::unnecessary_literal_bound)]
     fn description(&self) -> &str {
-        "Send a fire-and-forget message to another forge agent (project), \
-         OR reply to a peers__ask_agent you received earlier. Returns \
-         immediately with a correlation_id. To REPLY to an incoming ask: \
-         set in_reply_to to the correlation_id from the original ask's \
-         wrapper. To send unsolicited: omit in_reply_to. The target sees \
-         this as a new user-turn injection in its chat. No reply is \
-         expected from the target. Auto-spawns the target if it's \
-         sleeping. Hop count is stamped by forge automatically - you do \
-         not pass it."
+        "Send a one-way message to another forge agent (project). Returns \
+         immediately with a correlation_id; no reply is expected from the \
+         target. Two shapes: (1) REPLY to an inbound peers__ask_agent — \
+         set in_reply_to to the correlation_id from that ask's wrapper, \
+         and the original asker sees your message rendered as a Reply; \
+         (2) UNSOLICITED — omit in_reply_to to send standalone prose \
+         (announcements, FYI, hand-offs). The target sees the message as \
+         a new user turn in its chat and may respond by sending another \
+         tell, asking you back via peers__ask_agent, or simply continuing \
+         its own work. Auto-spawns the target if it's currently sleeping. \
+         Hop count is stamped by forge automatically — do not pass it as \
+         an argument. \
+         \
+         Use this (instead of mutating another project's files directly) \
+         whenever the user asks you to notify or hand off work to another \
+         forge project — e.g. \"let granite-backend know the rewriter \
+         cleanup landed\", \"tell forge to pick this up next session\". \
+         The target's own agent will integrate the news inside its own \
+         chat context. Reading the target's files for your own context is \
+         still allowed; only state changes / hand-offs go through this \
+         tool. Run peers__list_agents first to confirm the target name."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -252,15 +281,15 @@ impl Tool for TellAgent {
             "properties": {
                 "target": {
                     "type": "string",
-                    "description": "Project name of the agent to deliver to.",
+                    "description": "Project name of the target agent. Must match an entry from peers__list_agents — case-sensitive. A misspelled name returns an error listing valid options.",
                 },
                 "message": {
                     "type": "string",
-                    "description": "The message body the recipient agent will see.",
+                    "description": "The message body. Rendered as a new user-turn in the target's chat, so write it as you'd address the target directly.",
                 },
                 "in_reply_to": {
                     "type": "string",
-                    "description": "Optional correlation_id of an earlier ask this replies to.",
+                    "description": "Optional. Set to the correlation_id of an inbound peers__ask_agent to mark this as a reply (the original asker will see it rendered as a Reply). Omit for unsolicited messages.",
                 },
             },
             "required": ["target", "message"],
@@ -447,17 +476,34 @@ impl Tool for AskAgent {
 
     #[allow(clippy::unnecessary_literal_bound)]
     fn description(&self) -> &str {
-        "Send a question to another forge agent (project) and get a reply \
-         back asynchronously. Returns immediately with a correlation_id; \
-         does NOT wait for the reply. The target's LLM will respond by \
-         calling peers__tell_agent with in_reply_to=<this correlation_id>. \
-         The reply lands in YOUR chat as a new user-turn injection - you'll \
-         see it whenever the target finishes its work and responds. If the \
-         target is currently sleeping, it auto-spawns; you may see latency. \
-         Multiple asks can run in parallel - fire several ask_agent calls \
-         in one turn, each reply arrives independently. Failure modes \
-         return is_error: true (target not in forge.toml, hop limit \
-         exceeded). Hop count is managed by forge automatically."
+        "Ask another forge agent (project) a question and receive their \
+         reply asynchronously. Returns IMMEDIATELY with a correlation_id \
+         (e.g. q-7f3a92e0); this tool does NOT wait for the reply. The \
+         target's LLM will see your prompt as a new user turn, do its \
+         work — possibly seconds, possibly minutes — and respond by \
+         calling peers__tell_agent with in_reply_to set to your \
+         correlation_id. That reply lands as a fresh user turn in YOUR \
+         chat whenever it's ready, so finish your current turn naturally \
+         and continue with other work; the reply will surface on its own. \
+         Multiple asks can run in parallel — fire several ask_agent calls \
+         in one turn and the replies arrive independently, each carrying \
+         its own correlation_id you can thread back. Synchronous errors \
+         (target not in forge.toml, hop limit exceeded) return \
+         is_error: true; later-detected delivery failures arrive as a \
+         '[Ask ... failed to deliver: ...]' envelope in your chat. \
+         Auto-spawns sleeping targets (expect extra latency on the first \
+         ask). Hop count is stamped automatically — do not pass it. \
+         \
+         Use this whenever you need another forge project to TAKE AN \
+         ACTION or give you an authoritative answer that only its own \
+         agent should produce — running a build there, kicking off a \
+         migration there, confirming whether a deploy landed, asking it \
+         to review a design from its own context. Reading the target's \
+         files for your own context is fine and often quicker than \
+         waiting on an ask; the rule is only that state changes happen \
+         through the target's own agent, via this tool. Run \
+         peers__list_agents first to confirm the target name and that \
+         it's a known peer."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -466,15 +512,15 @@ impl Tool for AskAgent {
             "properties": {
                 "target": {
                     "type": "string",
-                    "description": "Project name of the agent to ask.",
+                    "description": "Project name of the target agent. Must match an entry from peers__list_agents — case-sensitive. A misspelled name returns an error listing valid options.",
                 },
                 "prompt": {
                     "type": "string",
-                    "description": "The question body the target agent will see.",
+                    "description": "The question body. Rendered as a new user-turn in the target's chat — write it as a direct request to the target. Include enough context that the target can answer without further round-trips.",
                 },
                 "in_reply_to": {
                     "type": "string",
-                    "description": "Optional correlation_id of an earlier message this ask threads onto.",
+                    "description": "Optional. Set if this ask threads onto an earlier peer message (e.g. asking a follow-up after a tell). Most asks start a fresh thread and omit this field.",
                 },
             },
             "required": ["target", "prompt"],
@@ -847,7 +893,10 @@ mod tests {
         let tool =
             TellAgent { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("forge")) };
         assert_eq!(tool.name(), "peers__tell_agent");
-        assert!(tool.description().to_lowercase().contains("fire-and-forget"));
+        assert!(
+            tool.description().to_lowercase().contains("one-way"),
+            "tell_agent description should signal its one-way semantics",
+        );
         let schema = tool.input_schema();
         assert_eq!(schema["type"], "object");
         let required = schema["required"].as_array().expect("required field present");
