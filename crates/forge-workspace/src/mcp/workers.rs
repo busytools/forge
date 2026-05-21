@@ -10,12 +10,17 @@ use forge_sdk::mcp::server::{McpServer, McpServerBuilder};
 use forge_sdk::mcp::tool::{Tool, ToolInput, ToolOutput, ToolOutputBlock};
 
 use crate::mcp::peers::facade::CallerKeyResolver;
-use crate::mcp::workers::facade::{WorkerFacade, WorkerSpawnError};
+use crate::mcp::peers::types::{CorrelationId, WrappedKind, WrappedPrompt};
+use crate::mcp::workers::facade::{WorkerDeliverError, WorkerFacade, WorkerSpawnError};
 
 pub mod facade;
 pub mod types;
 
 pub use types::WorkerEntry;
+
+/// Default hop limit for forwarded ask/tell chains within a project.
+/// Mirrors the peer-MCP value (#114 v1 brainstorm locked at 10).
+const HOP_LIMIT: u8 = 10;
 
 /// Build the per-session workers MCP server with all four workers
 /// tools closure-bound to `caller_key`. Server is named `forge` so
@@ -27,8 +32,13 @@ pub use types::WorkerEntry;
 /// of tools surface together.
 pub fn build_server(facade: Arc<dyn WorkerFacade>, caller_key: CallerKeyResolver) -> McpServer {
     let spawn = Spawn { facade: facade.clone(), caller_key: caller_key.clone() };
-    let list = List { facade, caller_key };
-    McpServerBuilder::new("forge", env!("CARGO_PKG_VERSION")).tool(spawn).tool(list).build()
+    let list = List { facade: facade.clone(), caller_key: caller_key.clone() };
+    let tell = Tell { facade, caller_key };
+    McpServerBuilder::new("forge", env!("CARGO_PKG_VERSION"))
+        .tool(spawn)
+        .tool(list)
+        .tool(tell)
+        .build()
 }
 
 /// `workers__spawn` - lead-only. Allocates a new SessionTask in the
@@ -186,6 +196,111 @@ impl Tool for List {
             Ok(json) => ToolOutput::text(json),
             Err(err) => tool_error(format!("worker-list serialization failed: {err}")),
         }
+    }
+}
+
+/// `workers__tell` - fire-and-forget message to a worker in the
+/// caller's project, addressed by label. If multiple workers share
+/// the label, the latest-spawned wins (resolved by the facade).
+///
+/// Arguments:
+/// - `label` (string, required) - worker label from `workers__list`
+/// - `message` (string, required) - the message body
+///
+/// Returns a JSON object with `correlation_id` and a `delivered`
+/// status string for symmetry with peer-MCP's tell.
+pub(crate) struct Tell {
+    pub(crate) facade: Arc<dyn WorkerFacade>,
+    pub(crate) caller_key: CallerKeyResolver,
+}
+
+#[derive(serde::Deserialize)]
+struct TellArgs {
+    label: String,
+    message: String,
+}
+
+#[async_trait::async_trait]
+impl Tool for Tell {
+    #[allow(clippy::unnecessary_literal_bound)]
+    fn name(&self) -> &str {
+        "workers__tell"
+    }
+
+    #[allow(clippy::unnecessary_literal_bound)]
+    fn description(&self) -> &str {
+        "Send a fire-and-forget message to a worker in YOUR project by \
+         label. The message lands as a new user turn in the worker's \
+         chat, rendered as an incoming-from-<caller> block. No reply is \
+         awaited; use workers__ask if you need an answer back. If \
+         multiple workers share the same label, addressing picks the \
+         latest-spawned. Available to both lead and worker callers. \
+         Run workers__list first to confirm the label and that the \
+         worker is live."
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "label": {
+                    "type": "string",
+                    "description": "Worker label from workers__list. Case-sensitive. If multiple workers share the label, the latest-spawned receives the message.",
+                },
+                "message": {
+                    "type": "string",
+                    "description": "Message body. Rendered as a new user turn in the worker's chat - write it as direct instructions or context to the worker.",
+                },
+            },
+            "required": ["label", "message"],
+            "additionalProperties": false,
+        })
+    }
+
+    async fn call(&self, input: ToolInput) -> ToolOutput {
+        let args: TellArgs = match serde_json::from_value(input.value) {
+            Ok(a) => a,
+            Err(err) => return tool_error(format!("invalid arguments: {err}")),
+        };
+
+        let caller_key = self.caller_key.current();
+        let correlation_id = CorrelationId::new_tell();
+        let wrapped = WrappedPrompt {
+            correlation_id: correlation_id.clone(),
+            kind: WrappedKind::Message,
+            sender_name: caller_key.as_str().to_owned(),
+            sender_org: String::new(),
+            hop: 1,
+            hop_limit: HOP_LIMIT,
+            body: args.message,
+        };
+
+        match self.facade.deliver_worker_prompt(&caller_key, &args.label, wrapped) {
+            Ok(_) => {
+                let body = serde_json::json!({
+                    "correlation_id": correlation_id.as_str(),
+                    "status": "delivered",
+                });
+                match serde_json::to_string_pretty(&body) {
+                    Ok(json) => ToolOutput::text(json),
+                    Err(err) => tool_error(format!("response serialization failed: {err}")),
+                }
+            }
+            Err(err) => tool_error(format_deliver_error(&args.label, &err)),
+        }
+    }
+}
+
+fn format_deliver_error(label: &str, err: &WorkerDeliverError) -> String {
+    match err {
+        WorkerDeliverError::UnknownLabel { project_key, .. } => format!(
+            "no live worker with label '{label}' in project '{project_key}'. Call \
+             workers__list to discover the current worker pool."
+        ),
+        WorkerDeliverError::HopLimitExceeded { hop, limit } => format!(
+            "hop limit exceeded forwarding to worker '{label}' ({hop}/{limit}). The \
+             chain has reached its maximum depth - your message will not be forwarded."
+        ),
     }
 }
 
@@ -417,5 +532,105 @@ mod tests {
         let schema = tool.input_schema();
         assert_eq!(schema["type"], "object");
         assert!(schema["properties"].as_object().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn tell_dispatches_when_label_matches() {
+        let mock = Arc::new(MockWorkerFacade::new());
+        let caller = fake_key("lead-key");
+        mock.callers.lock().insert(caller.clone(), lead_caller("forge"));
+        mock.workers.lock().insert("forge".into(), vec![fake_worker("reviewer", "charter")]);
+        let facade: Arc<dyn WorkerFacade> = mock.clone();
+        let tool = Tell { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({
+                    "label": "reviewer",
+                    "message": "Please look at PR #42.",
+                }),
+            })
+            .await;
+        assert!(!output.is_error, "tell happy path should not error: {:?}", output.blocks);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&output.blocks[0].text).expect("valid JSON");
+        let id = parsed["correlation_id"].as_str().expect("correlation_id present");
+        assert!(id.starts_with("t-"), "tell ids prefix t-, got {id}");
+        let dispatched = mock.deliver_calls.lock();
+        assert_eq!(dispatched.len(), 1, "exactly one deliver dispatch");
+        assert_eq!(dispatched[0].1, "reviewer");
+        assert!(matches!(dispatched[0].2.kind, WrappedKind::Message));
+    }
+
+    #[tokio::test]
+    async fn tell_unknown_label_is_error() {
+        let mock = Arc::new(MockWorkerFacade::new());
+        let caller = fake_key("lead-key");
+        mock.callers.lock().insert(caller.clone(), lead_caller("forge"));
+        mock.workers.lock().insert("forge".into(), vec![]);
+        let facade: Arc<dyn WorkerFacade> = mock.clone();
+        let tool = Tell { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({
+                    "label": "missing",
+                    "message": "hi",
+                }),
+            })
+            .await;
+        assert!(output.is_error);
+        assert!(output.blocks[0].text.contains("missing"));
+        assert_eq!(mock.deliver_calls.lock().len(), 0, "no dispatch when label unknown");
+    }
+
+    #[tokio::test]
+    async fn tell_worker_caller_succeeds() {
+        // Any caller (lead OR worker) may use workers__tell.
+        let mock = Arc::new(MockWorkerFacade::new());
+        let caller = fake_key("worker-key");
+        mock.callers.lock().insert(caller.clone(), worker_caller("forge"));
+        mock.workers.lock().insert("forge".into(), vec![fake_worker("peer-worker", "charter")]);
+        let facade: Arc<dyn WorkerFacade> = mock.clone();
+        let tool = Tell { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({
+                    "label": "peer-worker",
+                    "message": "hi from a fellow worker",
+                }),
+            })
+            .await;
+        assert!(!output.is_error, "worker callers may tell other workers");
+        assert_eq!(mock.deliver_calls.lock().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn tell_invalid_args_is_error() {
+        let mock = MockWorkerFacade::new();
+        mock.callers.lock().insert(fake_key("lead-key"), lead_caller("forge"));
+        let facade = mock.into_arc();
+        let tool = Tell { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("lead-key")) };
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({
+                    // missing required 'message'
+                    "label": "reviewer",
+                }),
+            })
+            .await;
+        assert!(output.is_error);
+        assert!(output.blocks[0].text.to_lowercase().contains("invalid"));
+    }
+
+    #[test]
+    fn tell_metadata_shape() {
+        let mock = MockWorkerFacade::new();
+        let facade = mock.into_arc();
+        let tool = Tell { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("k")) };
+        assert_eq!(tool.name(), "workers__tell");
+        assert!(tool.description().to_lowercase().contains("fire-and-forget"));
+        let schema = tool.input_schema();
+        let required = schema["required"].as_array().expect("required field present");
+        assert!(required.iter().any(|v| v == "label"));
+        assert!(required.iter().any(|v| v == "message"));
     }
 }
