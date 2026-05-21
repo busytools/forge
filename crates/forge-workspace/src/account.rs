@@ -4,41 +4,31 @@
 //! every spawn; the chosen `AccountKey` becomes the spawned Agent's
 //! `CLAUDE_CONFIG_DIR` override.
 //!
-//! **Policy — pin priority with rate-limit + probe-failure skip:**
+//! **Policy — two-tier filter + pin priority:**
 //!
-//! Sort all candidates by tier, then by `forge.toml` definition
-//! order within the tier. The pin is authoritative — the picker
-//! never load-balances on utilisation. A pin of
-//! `[Granite, Granite1, Personal]` means "always pick Granite when
-//! it's healthy; only fall through to Granite1 when Granite is
-//! saturated; only reach Personal when both above are blocked."
+//! 1. **Usable** — usage is unknown, OR usage shows under 100% on
+//!    both windows, OR last probe failed transiently (network /
+//!    other HTTP). The picker can try this account; the spawned
+//!    `claude` either succeeds or surfaces its own rate-limit error
+//!    we can react to.
+//! 2. **Unusable** — usage shows 100% on at least one window, OR
+//!    `/api/oauth/usage` returned 429, OR credentials are expired /
+//!    unauthorized. Known to be either at the cap or unable to
+//!    authenticate.
 //!
-//! Tiers (lower = preferred):
+//! Within each tier, `forge.toml` definition order wins. The pin is
+//! authoritative — the picker never load-balances on utilisation. A
+//! pin of `[Granite, Granite1, Personal]` means "pick Granite when
+//! it's usable; if Granite is at 100% or 429-throttled, fall through
+//! to Granite1; only reach Personal when both above are blocked."
 //!
-//! 1. **Unknown-fresh** (no usage snapshot AND no probe failure
-//!    recorded). Picks warm the cache.
-//! 2. **Available** (5h util < 100% AND 7d util < 100%). The
-//!    normal "use this one" tier.
-//! 3. **Rate-limited with data** (5h or 7d at 100%). Cleanly
-//!    skipped in favour of any healthier pin entry.
-//! 4. **Probe rate-limited** (`/api/oauth/usage` returned 429).
-//!    Account state is opaque — almost certainly hot. Demoted
-//!    below known-rate-limited because we'd rather pick the
-//!    devil-we-know.
-//! 5. **Probe failed transiently** (network / unknown HTTP).
-//!    Demoted below probe-rate-limited but above expired creds.
-//! 6. **Credentials broken** (Expired / Unauthorized). The
-//!    account literally cannot serve a request — last-resort
-//!    only, so the spawn at least returns something rather than
-//!    blocking on an empty pool.
+//! If every account in the pin is Unusable, the picker still returns
+//! the first one in pin order so the spawn doesn't fail outright —
+//! the user gets visible feedback from the spawned subprocess's own
+//! 401/429 rather than from forge silently refusing.
 //!
-//! Tier 0 splits truly-cold (no probe yet) from perpetually-failing
-//! (probe failed) so a broken account doesn't pin at top-of-sort
-//! and starve the picker.
-//!
-//! No LRU, no round-robin, no fallback outside the project's pin.
-//! Rate-limited accounts are visible in the panel bars so the user
-//! can manually broaden the pin or wait for the window to reset.
+//! Rate-limited accounts are visible in the bottom-panel bars so the
+//! user can manually broaden the pin or wait for the window to reset.
 
 use std::path::PathBuf;
 
@@ -368,40 +358,31 @@ impl AccountStateMap {
     }
 }
 
-/// Tier classification driving the sort. Lower = preferred.
+/// Two-tier classification driving the sort. Lower = preferred.
+/// Within a tier, `forge.toml` pin order is the tiebreak.
 ///
-/// - **0** Unknown-fresh: no usage snapshot yet AND no probe error
-///   recorded — picking warms the cache.
-/// - **1** Available: usage known, under 100% on both windows.
-/// - **2** Rate-limited (data-known): usage poll succeeded, account
-///   has hit 100% on at least one window.
-/// - **3** Probe rate-limited: the `/api/oauth/usage` endpoint
-///   itself returned 429. We can't see the usage, but a persistent
-///   probe-429 is a strong signal the account is hot — don't prefer
-///   it over accounts with healthy probes.
-/// - **4** Probe failed transiently (network / unknown HTTP): treat
-///   as unknown-fresh equivalent BUT demoted below available so a
-///   healthy-but-unprobed-account doesn't outrank a known-available
-///   one.
-/// - **5** Credentials broken (expired / unauthorized): the account
-///   literally cannot serve a request without re-login. Last-resort
-///   only.
+/// - **0** Usable: usage unknown (no probe yet), OR usage known
+///   under 100% on both windows, OR last probe failed transiently
+///   (network / unknown HTTP — we just don't know yet). The picker
+///   can try this account.
+/// - **1** Unusable: usage shows 100% on at least one window, OR
+///   `/api/oauth/usage` returned 429, OR credentials are expired /
+///   unauthorized. Either at the cap or unable to authenticate.
 ///
-/// Without the last_error consultation, accounts whose probe
-/// perpetually fails sit at tier 0 forever and dominate the sort —
-/// the picker keeps choosing them despite having no idea if they're
-/// actually usable.
+/// Collapsed from a six-tier system per user request — the simpler
+/// shape matches the mental model "skip rate-limited, pick first
+/// available in pin order."
 fn tier_of(usage: Option<&UsageSnapshot>, last_error: Option<UsageFetchStatus>) -> u8 {
-    match (usage, last_error) {
-        (Some(snapshot), _) if is_rate_limited(snapshot) => 2,
-        (Some(_), _) => 1,
-        // No usage yet — distinguish "still warming" from "probe
-        // failed". The error variant determines how badly we demote.
-        (None, None) => 0,
-        (None, Some(UsageFetchStatus::RateLimited)) => 3,
-        (None, Some(UsageFetchStatus::NetworkFailed | UsageFetchStatus::Other)) => 4,
-        (None, Some(UsageFetchStatus::Expired | UsageFetchStatus::Unauthorized)) => 5,
-    }
+    let saturated = usage.is_some_and(is_rate_limited);
+    let probe_blocked = matches!(
+        last_error,
+        Some(
+            UsageFetchStatus::RateLimited
+                | UsageFetchStatus::Expired
+                | UsageFetchStatus::Unauthorized
+        )
+    );
+    if saturated || probe_blocked { 1 } else { 0 }
 }
 
 /// True when either window has hit 100% utilisation. Such an account
@@ -636,38 +617,36 @@ mod tests {
     }
 
     #[test]
-    fn expired_credentials_demote_to_last_resort() {
-        // Granite1 has expired OAuth (literally can't serve a
-        // request); Personal has working probe but is fully rate-
-        // limited (tier 2). Personal still wins because tier 2
-        // ranks above tier 5 (Expired).
+    fn expired_creds_and_saturated_both_unusable_pin_order_decides() {
+        // Both accounts are unusable in different ways: Granite1's
+        // OAuth has expired, Personal is fully rate-limited. Under
+        // the two-tier model both fall into tier 1 (Unusable) so
+        // pin order decides — Granite1 wins as first in pin.
         let mut map = AccountStateMap::new(&[make_account("Granite1"), make_account("Personal")]);
         map.set_last_error(&AccountKey("Granite1".to_owned()), UsageFetchStatus::Expired, None);
         map.set_usage(&AccountKey("Personal".to_owned()), snapshot(Some(100.0), Some(100.0)));
         let (picked, _) = map.pick_for_project(&["Granite1".to_owned(), "Personal".to_owned()]);
-        assert_eq!(picked.0, "Personal", "rate-limited-but-callable beats expired-can't-serve");
+        assert_eq!(picked.0, "Granite1", "all-unusable falls back to pin order");
     }
 
     #[test]
-    fn fresh_unknown_still_wins_over_known_available() {
-        // True cold-cache case: no last_error, no usage. Granite
-        // has no probe attempt yet → tier 0 → preferred over
-        // Personal which has known-available usage (tier 1).
-        // Confirms the original "warm the cache" behaviour survives
-        // for accounts that haven't been polled yet.
+    fn unknown_and_available_both_usable_pin_order_decides() {
+        // Both accounts are in tier 0 (Usable) under the two-tier
+        // model — Granite is unprobed (unknown), Personal has known
+        // healthy usage. Pin order decides → Granite wins.
         let mut map = AccountStateMap::new(&[make_account("Granite"), make_account("Personal")]);
         map.set_usage(&AccountKey("Personal".to_owned()), snapshot(Some(30.0), Some(30.0)));
-        // Granite has no usage AND no last_error → tier 0.
         let (picked, _) = map.pick_for_project(&["Granite".to_owned(), "Personal".to_owned()]);
-        assert_eq!(picked.0, "Granite");
+        assert_eq!(picked.0, "Granite", "both usable → pin order");
     }
 
     #[test]
-    fn network_failure_demotes_below_available() {
-        // Granite probe failed with a network error (tier 4); Personal
-        // has a healthy probe at moderate utilisation (tier 1).
-        // Personal wins — we'd rather pick an account whose state
-        // we know than one whose state we don't.
+    fn network_failure_treated_as_usable_pin_order_decides() {
+        // Granite's probe failed transiently (network error) — we
+        // don't actually know it's saturated, so the two-tier model
+        // keeps it in tier 0 (Usable). Personal has a healthy probe
+        // also in tier 0. Both usable → pin order wins → Granite
+        // (first in pin).
         let mut map = AccountStateMap::new(&[make_account("Granite"), make_account("Personal")]);
         map.set_last_error(
             &AccountKey("Granite".to_owned()),
@@ -676,7 +655,7 @@ mod tests {
         );
         map.set_usage(&AccountKey("Personal".to_owned()), snapshot(Some(50.0), Some(50.0)));
         let (picked, _) = map.pick_for_project(&["Granite".to_owned(), "Personal".to_owned()]);
-        assert_eq!(picked.0, "Personal");
+        assert_eq!(picked.0, "Granite", "transient network error doesn't demote — pin order wins");
     }
 
     #[test]

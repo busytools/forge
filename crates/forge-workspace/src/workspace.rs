@@ -698,7 +698,15 @@ impl Workspace {
         // no point rewriting the file with the same contents.
         if any_success {
             let snapshots = self.accounts.lock().snapshots_for_cache();
+            let account_count = snapshots.len();
             crate::account_cache::store(&self.config_dir, &snapshots);
+            tracing::info!(
+                target: "forge_workspace::account_cache",
+                event_name = "account_cache_written",
+                accounts = account_count,
+                path = %crate::account_cache::state_path(&self.config_dir).display(),
+                "forge-state.toml updated after successful poll round",
+            );
         }
     }
 
