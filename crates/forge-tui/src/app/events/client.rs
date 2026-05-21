@@ -262,17 +262,6 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
             // existing `is_active_or_global` redraw flag at the
             // bottom of this fn handles the redraw for free.
         }
-        SessionUpdate::AccountWarmStateChanged { in_progress, loaded, total, attempt } => {
-            // Mirror the workspace's warm progress into App state so
-            // the launchpad can render the "Loading account usage
-            // data..." banner. App-global event — flip needs_redraw
-            // via the is_active_or_global flag at the bottom of this
-            // fn.
-            app.account_warm_in_progress = in_progress;
-            app.account_warm_loaded = loaded;
-            app.account_warm_total = total;
-            app.account_warm_attempt = attempt;
-        }
     }
     if is_active_or_global {
         app.needs_redraw = true;

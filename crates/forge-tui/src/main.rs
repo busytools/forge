@@ -76,14 +76,12 @@ fn run() -> anyhow::Result<()> {
             return Err(anyhow::anyhow!("forge: {err}"));
         }
 
-        // Kick off the retry-until-success account-usage warm-up in
-        // the background. Spawns + the launchpad's banner gate on
-        // `wait_for_account_warm_complete`. The TUI renders right
-        // away with a "loading account usage data..." banner; once
-        // every account has a snapshot, the banner clears and any
-        // deferred auto_start projects spawn with correctly-picked
-        // accounts.
-        workspace.spawn_account_warm_loop();
+        // Kick off a single live account-usage probe in the background.
+        // The on-disk forge-state.toml has already seeded the in-memory
+        // map at `Workspace::new`; this fires the live refresh so the
+        // numbers are current. The 60 s poller starts after, run by
+        // `start_usage_poller` from forge-tui's connect path.
+        workspace.spawn_initial_account_probe();
 
         // Create the app (instant, no I/O). The TUI holds an
         // `Arc<Workspace>` clone; main keeps the original so it

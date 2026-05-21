@@ -140,6 +140,46 @@ impl AccountStateMap {
         Self { ordered_keys, by_key }
     }
 
+    /// Seed the in-memory map from a previously-persisted cache.
+    /// Each known account that appears in `cached` gets its `usage`
+    /// populated; unknown cache entries (account removed from
+    /// forge.toml) are ignored. Does NOT clear `last_error` or
+    /// `next_probe_at` — the cache is purely seed data; the live
+    /// poller still drives backoff. Used by `Workspace::new` to make
+    /// the launchpad picker non-empty on cold boot.
+    pub fn seed_from_cache(
+        &mut self,
+        cached: &std::collections::BTreeMap<String, crate::account_cache::CachedAccountUsage>,
+    ) {
+        for (name, entry) in cached {
+            let key = AccountKey(name.clone());
+            if let Some(state) = self.by_key.get_mut(&key) {
+                state.usage = Some(entry.snapshot.clone());
+            }
+        }
+    }
+
+    /// Snapshot the per-account `usage` for writing to the on-disk
+    /// cache. Accounts with no live snapshot are omitted so the cache
+    /// file doesn't grow placeholders.
+    pub fn snapshots_for_cache(
+        &self,
+    ) -> std::collections::BTreeMap<String, crate::account_cache::CachedAccountUsage> {
+        let mut out = std::collections::BTreeMap::new();
+        for (key, state) in &self.by_key {
+            if let Some(snapshot) = state.usage.clone() {
+                out.insert(
+                    key.0.clone(),
+                    crate::account_cache::CachedAccountUsage {
+                        snapshot,
+                        cached_at: std::time::SystemTime::now(),
+                    },
+                );
+            }
+        }
+        out
+    }
+
     /// Look up the on-disk config_dir for `key`. Used by the
     /// background poller (which reads OAuth credentials from disk
     /// without spawning an Agent) and by the spawn path (which
@@ -193,7 +233,19 @@ impl AccountStateMap {
         if let Some(state) = self.by_key.get_mut(key) {
             state.last_error = Some(status);
             state.consecutive_failures = state.consecutive_failures.saturating_add(1);
-            let delay = retry_after.unwrap_or_else(|| backoff_delay(state.consecutive_failures));
+            // Anthropic returns `Retry-After: 0` on the /api/oauth/usage
+            // 429 path, which is "no specific hint" rather than "you can
+            // retry now". Trusting it literally schedules next_probe_at
+            // at the same instant and the next round re-trips the same
+            // rate limit — that's the burst-probe behaviour the warm
+            // loop kept hitting. Treat any sub-second hint as missing
+            // and fall through to the exponential default
+            // (starts at 30 s), so the leaky-bucket actually gets
+            // a chance to refill.
+            let delay = match retry_after {
+                Some(d) if d >= std::time::Duration::from_secs(1) => d,
+                _ => backoff_delay(state.consecutive_failures),
+            };
             state.next_probe_at = Some(std::time::Instant::now() + delay);
         }
     }
@@ -204,31 +256,6 @@ impl AccountStateMap {
     pub fn should_probe_now(&self, key: &AccountKey) -> bool {
         let Some(state) = self.by_key.get(key) else { return true };
         state.next_probe_at.is_none_or(|t| t <= std::time::Instant::now())
-    }
-
-    /// Force every account back into the probe-now window. Used by
-    /// `warm_account_usage_cache` between retry attempts so an
-    /// account that 429-ed earlier doesn't sit through the backoff
-    /// schedule before we re-probe — the warm loop owns the cadence
-    /// via its own outer exponential backoff.
-    pub fn clear_probe_backoff_for_all(&mut self) {
-        for state in self.by_key.values_mut() {
-            state.next_probe_at = None;
-        }
-    }
-
-    /// Return `(loaded, total)` — how many accounts have a usage
-    /// snapshot vs how many are configured. Used by the warm-up
-    /// retry loop to decide whether another pass is needed and by
-    /// the launchpad banner to render "(N/M loaded)".
-    pub fn account_load_status(&self) -> (usize, usize) {
-        let total = self.ordered_keys.len();
-        let loaded = self
-            .ordered_keys
-            .iter()
-            .filter(|k| self.by_key.get(k).is_some_and(|s| s.usage.is_some()))
-            .count();
-        (loaded, total)
     }
 
     /// Look up the cached usage snapshot for `key`. `None` when the

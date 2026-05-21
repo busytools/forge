@@ -421,15 +421,6 @@ pub struct App {
     /// Timestamp of the previous presented frame.
     pub last_frame_at: Option<Instant>,
     pub connection_started: bool,
-    /// Account-usage warm-up progress mirrored from
-    /// `SessionUpdate::AccountWarmStateChanged`. `in_progress`
-    /// drives the launchpad's "Loading account usage data..."
-    /// banner; deferred auto_start spawns fire on the workspace
-    /// side as soon as it flips to `false`.
-    pub account_warm_in_progress: bool,
-    pub account_warm_loaded: usize,
-    pub account_warm_total: usize,
-    pub account_warm_attempt: u32,
     /// Project name from the CLI's positional `<PROJECT>` argument, if
     /// any. `None` means open the `default = true` project.
     /// Forwarded to [`forge_workspace::SessionTarget::Named`] when the
@@ -2193,10 +2184,6 @@ impl App {
             fps_ema: None,
             last_frame_at: None,
             connection_started: false,
-            account_warm_in_progress: false,
-            account_warm_loaded: 0,
-            account_warm_total: 0,
-            account_warm_attempt: 0,
             startup_project: None,
             replay_in_progress: false,
             input_draft_snapshot: None,

@@ -58,6 +58,7 @@
 //! name so TUI can keep its dep graph clean.
 
 mod account;
+mod account_cache;
 mod config;
 mod domain_session;
 mod error;

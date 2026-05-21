@@ -86,7 +86,6 @@ fn click_intent(lifecycle: SessionLifecycleState) -> ClickIntent {
 struct PickerRow {
     project_name: String,
     org: String,
-    account_hint: String,
     last_activity_label: String,
     lifecycle: SessionLifecycleState,
     /// Last connection error message if the row is in Failed state,
@@ -133,7 +132,6 @@ fn build_picker_rows(app: &App) -> Vec<PickerRow> {
             rows.push(PickerRow {
                 project_name: project.name.clone(),
                 org: org.clone(),
-                account_hint: project.primary_account_hint(),
                 last_activity_label,
                 lifecycle,
                 error,
@@ -236,17 +234,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     render_identity_block(frame, area, app, current_y);
     current_y += identity_height + 2;
-
-    // Global account-usage warm-up banner. Appears between the
-    // identity block and the picker while the workspace's warm
-    // loop is probing accounts. Single row, dim-yellow, says
-    // "Loading account usage data... (N/M loaded · attempt K)".
-    // Auto-clears when `account_warm_in_progress` flips to false.
-    if app.account_warm_in_progress {
-        let banner_area = Rect { x: area.x, y: current_y, width: area.width, height: 1 };
-        render_account_warm_banner(frame, banner_area, app);
-        current_y += 2;
-    }
 
     let picker_x = area.x + area.width.saturating_sub(picker_outer_width) / 2;
     let picker_area = Rect {
@@ -402,15 +389,15 @@ fn push_project_row(
         ClickIntent::Block => Style::default().fg(theme::DIM),
     };
 
-    let name_width: usize = 14;
-    let hint_width: usize = 12;
+    // No account hint — the picker doesn't run until spawn, so
+    // showing a name here would imply a decision that hasn't
+    // happened. The actual account is chosen by `pick_for_project`
+    // against live usage data when the row is clicked.
+    let name_width: usize = 26;
     let right_width: usize = 10;
 
     let name_label = truncate_to(&row.project_name, name_width);
     let name_pad = name_width.saturating_sub(name_label.chars().count());
-    let hint_label = format!("({})", row.account_hint);
-    let hint_label = truncate_to(&hint_label, hint_width);
-    let hint_pad = hint_width.saturating_sub(hint_label.chars().count());
     let right_label = truncate_to(&row.last_activity_label, right_width);
 
     let dim = Style::default().fg(theme::DIM);
@@ -439,9 +426,6 @@ fn push_project_row(
         Span::raw(" ".to_owned()),
         Span::styled(name_label, name_style),
         Span::raw(" ".repeat(name_pad)),
-        Span::raw(" ".to_owned()),
-        Span::styled(hint_label, dim),
-        Span::raw(" ".repeat(hint_pad)),
         Span::raw("  ".to_owned()),
         Span::styled(format!("{right_label:>right_width$}"), dim),
     ]));
@@ -498,33 +482,6 @@ fn spinner_glyph(style: SpinnerStyle, opened_at: std::time::Instant) -> char {
     let elapsed_ms = opened_at.elapsed().as_millis();
     let frame_idx = ((elapsed_ms / cadence) as usize) % frames.len();
     frames[frame_idx]
-}
-
-/// Global account-warm-up banner. Single-row, centred,
-/// dim-yellow with a spinner glyph. Reads
-/// `App::account_warm_in_progress / loaded / total / attempt` —
-/// the workspace's `AccountWarmStateChanged` reducer keeps those
-/// fields in sync.
-fn render_account_warm_banner(frame: &mut Frame, area: Rect, app: &App) {
-    // Same Braille spinner sequence used elsewhere in the TUI;
-    // tick is driven by `app.spinner_frame` which the render loop
-    // advances on every `SPINNER_FRAME_INTERVAL`.
-    const FRAMES: &[char] = &[
-        '\u{280B}', '\u{2819}', '\u{2839}', '\u{2838}', '\u{283C}', '\u{2834}', '\u{2826}',
-        '\u{2827}', '\u{2807}', '\u{280F}',
-    ];
-    let spinner = FRAMES[app.spinner_frame % FRAMES.len()];
-    let text = if app.account_warm_total > 0 {
-        format!(
-            "{spinner} Loading account usage data… ({}/{} loaded · attempt {})",
-            app.account_warm_loaded, app.account_warm_total, app.account_warm_attempt,
-        )
-    } else {
-        format!("{spinner} Loading account usage data…")
-    };
-    let line = Line::from(Span::styled(text, Style::default().fg(theme::STATUS_WARNING)));
-    let para = Paragraph::new(line).alignment(ratatui::layout::Alignment::Center);
-    frame.render_widget(para, area);
 }
 
 fn render_footer(frame: &mut Frame, area: Rect, app: &App, rows: &[PickerRow]) {

@@ -106,18 +106,6 @@ pub struct Workspace {
     /// Set the first time [`Self::start_usage_poller`] runs. Subsequent
     /// calls early-return to avoid spawning duplicate poller tasks.
     usage_poller_started: std::sync::atomic::AtomicBool,
-    /// `true` once [`Self::warm_account_usage_cache`] has loaded a
-    /// usage snapshot for EVERY configured account. Spawn paths
-    /// (auto_start + user-initiated) gate on this so the picker
-    /// always has real tier data when it runs. Flipped to `true` by
-    /// the warm-up retry loop after the round where all accounts
-    /// have a snapshot.
-    pub(crate) account_warm_completed: std::sync::atomic::AtomicBool,
-    /// Wakeup channel for the gate above. Warm-up's success
-    /// transition fires `notify_waiters()`; spawn paths await
-    /// `notified().await` (with a fast-path early-out when the
-    /// atomic is already true).
-    pub(crate) account_warm_complete: std::sync::Arc<tokio::sync::Notify>,
     /// Wire-classification rewriter proxy started at workspace boot.
     /// Stamped onto every `Agent::spawn` so spawned subprocesses
     /// inherit `HTTPS_PROXY` + `NODE_EXTRA_CA_CERTS` and their wire
@@ -190,7 +178,18 @@ impl Workspace {
         // descending; the per-project Vec inherits that ordering thanks
         // to push order being preserved.
 
-        let accounts = AccountStateMap::new(&config.accounts);
+        let mut accounts = AccountStateMap::new(&config.accounts);
+
+        // Seed account usage from the on-disk forge-state.toml so
+        // the launchpad picker has tier data immediately at cold
+        // boot. Anthropic's /api/oauth/usage rate-limiter can stall
+        // the first live probe for 30 s+; without seed data every
+        // account ties at tier 0 (unknown-fresh) during that window.
+        // The 60 s background poller refreshes these snapshots in
+        // the background — the cache is purely "last known value"
+        // seed.
+        let state = crate::account_cache::load(&config_dir);
+        accounts.seed_from_cache(&state.account_usage);
 
         let (update_tx, update_rx) = mpsc::unbounded_channel::<SessionUpdate>();
         Ok(Self {
@@ -207,8 +206,6 @@ impl Workspace {
             inflight_timers: Mutex::new(HashMap::new()),
             peer_stats: Mutex::new(HashMap::new()),
             usage_poller_started: std::sync::atomic::AtomicBool::new(false),
-            account_warm_completed: std::sync::atomic::AtomicBool::new(false),
-            account_warm_complete: std::sync::Arc::new(tokio::sync::Notify::new()),
             proxy: Some(proxy),
         })
     }
@@ -559,117 +556,19 @@ impl Workspace {
         Ok(arc)
     }
 
-    /// Synchronously drive the first account-usage probe so the
-    /// account picker has real tier data before any project spawn
-    /// fires. Without this every account sits at tier 0 (unknown-
-    /// fresh) at cold start and the picker ties on `forge.toml`
-    /// definition order — a rate-limited account that happens to
-    /// come first in the file gets picked over a healthy one
-    /// further down the list, because there's no usage snapshot yet
-    /// to mark it as rate-limited.
-    ///
-    /// Bounded at [`USAGE_WARMUP_BUDGET`] so a hanging probe can't
-    /// stall startup. Accounts whose probe doesn't return in that
-    /// window stay at tier 0 (or earlier set_last_error tier) and
-    /// the picker falls back to definition order for them.
-    pub fn spawn_account_warm_loop(self: &Arc<Self>) {
+    /// Kick off a single live account-usage probe in the background.
+    /// Called once at startup, after `Workspace::new` has seeded the
+    /// in-memory map from the on-disk cache. The 60 s background
+    /// poller takes over from here. There is no retry-until-success
+    /// loop — Anthropic's per-IP rate-limiter on `/api/oauth/usage`
+    /// makes bursting counterproductive, and the on-disk cache means
+    /// the launchpad picker has tier data immediately regardless of
+    /// whether the live probe succeeds.
+    pub fn spawn_initial_account_probe(self: &Arc<Self>) {
         let workspace = Arc::clone(self);
         tokio::spawn(async move {
-            workspace.run_account_warm_loop().await;
+            workspace.refresh_account_usage_once().await;
         });
-    }
-
-    /// Retry-until-success warm-up. Probes every configured account;
-    /// any that didn't get a snapshot (typically because
-    /// `/api/oauth/usage` 429'd the request) gets re-probed after a
-    /// backoff sleep. Bypasses the per-account backoff window
-    /// between rounds because this loop owns the cadence end-to-end
-    /// — the outer exponential sleep is the only pacing.
-    ///
-    /// Backoff: 1s → 2s → 4s → 8s → 16s → 30s → 60s → capped at
-    /// 60s. Infinite retries; the user picked "until success" so a
-    /// long Anthropic IP throttle is just a slower startup.
-    ///
-    /// Emits `SessionUpdate::AccountWarmStateChanged` at start, on
-    /// each retry, and on completion so the launchpad banner can
-    /// render progress.
-    async fn run_account_warm_loop(self: Arc<Self>) {
-        let start = std::time::Instant::now();
-        let total = self.accounts.lock().ordered_keys.len();
-        tracing::info!(
-            target: "forge_workspace::workspace",
-            event_name = "warm_account_usage_cache_start",
-            total_accounts = total,
-            "background account-usage warm-up started; spawns will defer until every account has a snapshot"
-        );
-        let _ = self.update_tx.send(SessionUpdate::AccountWarmStateChanged {
-            in_progress: true,
-            loaded: 0,
-            total,
-            attempt: 0,
-        });
-        let mut attempt: u32 = 0;
-        let mut backoff = Duration::from_secs(1);
-        const MAX_BACKOFF: Duration = Duration::from_secs(60);
-        loop {
-            attempt = attempt.saturating_add(1);
-            // Probe everyone this round regardless of per-account
-            // backoff: the outer-loop sleep below is the pacing we
-            // want.
-            self.accounts.lock().clear_probe_backoff_for_all();
-            self.refresh_account_usage_once().await;
-            let (loaded, current_total) = self.accounts.lock().account_load_status();
-            let _ = self.update_tx.send(SessionUpdate::AccountWarmStateChanged {
-                in_progress: loaded < current_total,
-                loaded,
-                total: current_total,
-                attempt,
-            });
-            if loaded >= current_total {
-                self.account_warm_completed.store(true, std::sync::atomic::Ordering::SeqCst);
-                self.account_warm_complete.notify_waiters();
-                tracing::info!(
-                    target: "forge_workspace::workspace",
-                    event_name = "warm_account_usage_cache_done",
-                    duration_ms = start.elapsed().as_millis() as u64,
-                    attempts = attempt,
-                    loaded,
-                    total = current_total,
-                    "account-usage warm-up complete; every account has a usage snapshot"
-                );
-                return;
-            }
-            tracing::info!(
-                target: "forge_workspace::workspace",
-                event_name = "warm_account_usage_cache_retry",
-                attempt,
-                loaded,
-                total = current_total,
-                next_backoff_secs = backoff.as_secs(),
-                "warm-up incomplete; sleeping before the next retry"
-            );
-            tokio::time::sleep(backoff).await;
-            backoff = (backoff.saturating_mul(2)).min(MAX_BACKOFF);
-        }
-    }
-
-    /// Await the warm-up's success transition. Spawn paths call this
-    /// before invoking `pick_for_project` so the picker always sees
-    /// real tier data instead of cold-cache tier-0 ties. Fast-path
-    /// early-return when the warm flag is already true.
-    pub async fn wait_for_account_warm_complete(self: &Arc<Self>) {
-        if self.account_warm_completed.load(std::sync::atomic::Ordering::SeqCst) {
-            return;
-        }
-        // Subscribe to the Notify FIRST, then re-check the flag.
-        // Doing it in the other order would race the
-        // store/notify pair in the warm loop and leave us
-        // waiting forever for a notify that already fired.
-        let notified = self.account_warm_complete.notified();
-        if self.account_warm_completed.load(std::sync::atomic::Ordering::SeqCst) {
-            return;
-        }
-        notified.await;
     }
 
     /// Spawn the 60 s background account-usage poller. Fetches
@@ -679,7 +578,7 @@ impl Workspace {
     /// The TUI's bottom panel + the spawn-path picker both read
     /// from that cache.
     ///
-    /// Call once at construction, AFTER `warm_account_usage_cache`.
+    /// Call once at construction, AFTER `spawn_initial_account_probe`.
     /// A `usage_poller_started` flag guards against duplicate
     /// spawns — second and later calls return without spawning so a
     /// forge-tui programming error can't multiply the poll rate.
@@ -695,12 +594,11 @@ impl Workspace {
         let span = tracing::info_span!("usage_poller");
         tokio::spawn(
             async move {
-                // Skip the immediate-fire tick: `warm_account_usage_cache`
-                // already drove a synchronous first probe at startup.
-                // Firing again right away would burn another round of
-                // Anthropic-side per-IP rate limiter capacity for no
-                // gain. First tick of this interval lands one
-                // USAGE_POLL_INTERVAL after the warm completed.
+                // Skip the immediate-fire tick: `spawn_initial_account_probe`
+                // already drove the live boot probe. Firing again right
+                // away would burn another round of Anthropic-side per-IP
+                // rate-limiter capacity for no gain. First tick of this
+                // interval lands one USAGE_POLL_INTERVAL after boot.
                 let mut interval = tokio::time::interval_at(
                     tokio::time::Instant::now() + USAGE_POLL_INTERVAL,
                     USAGE_POLL_INTERVAL,
@@ -747,12 +645,14 @@ impl Workspace {
         // and produce HTTP 429s even well under the user's own quota.
         // Serial execution staggers requests by per-probe latency
         // (~hundreds of ms), within the 60 s poll interval.
+        let mut any_success = false;
         for (key, dir) in entries {
             let fetch_result = forge_agent::cloud::oauth_usage::oauth_usage(&dir).await;
             match fetch_result {
                 Ok(payload) => match forge_agent::cloud::oauth::snapshot_from_payload(payload) {
                     Ok(snapshot) => {
                         self.accounts.lock().set_usage(&key, snapshot);
+                        any_success = true;
                     }
                     Err(err) => {
                         self.accounts.lock().set_last_error(
@@ -790,6 +690,15 @@ impl Workspace {
                     );
                 }
             }
+        }
+
+        // Persist the snapshot to disk so the next forge launch's
+        // launchpad picker has seed data even if Anthropic 429s the
+        // first probe. Skipped when no probe succeeded this round —
+        // no point rewriting the file with the same contents.
+        if any_success {
+            let snapshots = self.accounts.lock().snapshots_for_cache();
+            crate::account_cache::store(&self.config_dir, &snapshots);
         }
     }
 
@@ -1882,8 +1791,6 @@ impl Workspace {
             inflight_timers: Mutex::new(HashMap::new()),
             peer_stats: Mutex::new(HashMap::new()),
             usage_poller_started: std::sync::atomic::AtomicBool::new(false),
-            account_warm_completed: std::sync::atomic::AtomicBool::new(false),
-            account_warm_complete: std::sync::Arc::new(tokio::sync::Notify::new()),
             // testing_stub skips Workspace::new and therefore the
             // proxy boot. Tests don't drive real subprocesses.
             proxy: None,
