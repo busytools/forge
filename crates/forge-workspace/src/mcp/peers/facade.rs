@@ -205,8 +205,18 @@ pub trait WorkspaceFacade: Send + Sync {
 
     /// Look up an `InflightAsk` by correlation_id. Used by `tell_agent`
     /// to classify replies (Pending → Reply, TimedOut → LateReply,
-    /// not-found → Message).
+    /// not-found → Message). Read-only — does NOT remove the ask
+    /// from the inflight map.
     fn resolve_correlation(&self, id: &CorrelationId) -> Option<InflightAsk>;
+
+    /// Atomically remove an `InflightAsk` from the inflight map AND
+    /// abort its 30-min timer. Called by `tell_agent` after a
+    /// successful Reply / LateReply dispatch so the timer doesn't
+    /// fire a stale timeout notification minutes after the reply
+    /// landed. Returns the removed ask so the caller can inspect
+    /// status / caller / etc., or `None` when the entry was already
+    /// gone (timer beat the reply by milliseconds — rare).
+    fn complete_inflight_ask(&self, id: &CorrelationId) -> Option<InflightAsk>;
 
     /// Read the caller's ambient `current_inbound_hop` from its
     /// DomainSession. Returns `Some(hop)` when the caller's LLM is
@@ -357,6 +367,25 @@ impl WorkspaceFacade for Arc<Workspace> {
         self.inflight_asks.lock().get(id).cloned()
     }
 
+    fn complete_inflight_ask(&self, id: &CorrelationId) -> Option<InflightAsk> {
+        // Take the ask out of the map first; whether the reply was a
+        // Reply or a LateReply, the entry is done either way and
+        // letting the 30-min timer fire a stale notification is the
+        // bug this method exists to prevent.
+        let ask = self.inflight_asks.lock().remove(id);
+        if ask.is_some() {
+            // Abort + remove the timer if still armed. Aborting from
+            // inside the timer's own task is a no-op (timer was the
+            // caller path), but the typical case here is "reply
+            // arrived before timeout", in which case the timer is
+            // still pending and abort+drop releases it cleanly.
+            if let Some(handle) = self.inflight_timers.lock().remove(id) {
+                handle.abort();
+            }
+        }
+        ask
+    }
+
     fn peek_current_inbound_hop(&self, caller: &SessionKey) -> Option<u8> {
         let handles = self.domain_handles.lock();
         let domain = handles.get(caller)?;
@@ -482,6 +511,10 @@ impl WorkspaceFacade for MockWorkspaceFacade {
 
     fn resolve_correlation(&self, id: &CorrelationId) -> Option<InflightAsk> {
         self.inflight.lock().get(id).cloned()
+    }
+
+    fn complete_inflight_ask(&self, id: &CorrelationId) -> Option<InflightAsk> {
+        self.inflight.lock().remove(id)
     }
 
     fn peek_current_inbound_hop(&self, _caller: &SessionKey) -> Option<u8> {

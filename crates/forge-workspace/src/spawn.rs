@@ -129,10 +129,17 @@ pub(crate) fn handle_deliver_peer_prompt(
         // dispatch so any tools the target's LLM fires on the resulting
         // turn read the correct ambient hop via peek_current_inbound_hop.
         stamp_inbound_hop(workspace, &target_key, wrapped.hop);
-        // Bump target's incoming counter (sidebar badge).
-        let workspace_arc: Arc<Workspace> = Arc::clone(workspace);
-        let facade: Arc<dyn WorkspaceFacade> = Arc::new(workspace_arc);
-        facade.bump_inflight_stats(&target_key, PeerStatsDelta::IncomingPlus1);
+        // Bump target's incoming counter (sidebar badge) — only for
+        // `Question` wrappers (an ask expecting a reply). Tells /
+        // Replies / Late-replies / Caller-timeout / Recipient-expired
+        // / Delivery-failure all flow through this dispatch path too,
+        // but none of them are "awaiting reply" semantically, so they
+        // would never decrement and would leave the badge stuck.
+        if matches!(wrapped.kind, forge_primitives::WrappedKind::Question) {
+            let workspace_arc: Arc<Workspace> = Arc::clone(workspace);
+            let facade: Arc<dyn WorkspaceFacade> = Arc::new(workspace_arc);
+            facade.bump_inflight_stats(&target_key, PeerStatsDelta::IncomingPlus1);
+        }
 
         let text = wrapped.to_prose();
         if let Err(err) = workspace.dispatch(Command::Prompt {

@@ -317,6 +317,7 @@ impl Tool for TellAgent {
         let in_reply_to_id = args.in_reply_to.as_ref().map(|s| CorrelationId(s.clone()));
         let (kind, reply_target_key) =
             classify_tell(&*self.facade, &args.target, in_reply_to_id.as_ref());
+        let is_reply = matches!(kind, WrappedKind::Reply | WrappedKind::LateReply);
 
         let correlation_id = CorrelationId::new_tell();
         let wrapped = WrappedPrompt {
@@ -326,7 +327,7 @@ impl Tool for TellAgent {
             sender_org: identity.org,
             hop: outgoing_hop,
             hop_limit: HOP_LIMIT,
-            in_reply_to: in_reply_to_id,
+            in_reply_to: in_reply_to_id.clone(),
             body: args.message,
         };
 
@@ -336,10 +337,18 @@ impl Tool for TellAgent {
                 Err(err) => return tool_error(format_deliver_error(&args.target, &err)),
             };
 
-        // For replies that resolved cleanly, decrement the caller's
-        // incoming counter (this incoming ask is now closed) and the
-        // original asker's outgoing counter (their ask got a reply).
+        // For replies that resolved cleanly:
+        //   1. Remove the InflightAsk from the workspace map (and
+        //      abort its 30-min timer) so we don't see a stale
+        //      timeout notification minutes later for an ask that
+        //      was actually replied to.
+        //   2. Decrement the caller's incoming counter (this incoming
+        //      ask is now closed) and the original asker's outgoing
+        //      counter (their ask got a reply).
         if let Some(target_session_key) = reply_target_key {
+            if is_reply && let Some(id) = in_reply_to_id.as_ref() {
+                self.facade.complete_inflight_ask(id);
+            }
             self.facade.bump_inflight_stats(&caller_key, PeerStatsDelta::IncomingMinus1);
             self.facade.bump_inflight_stats(&target_session_key, PeerStatsDelta::OutgoingMinus1);
         }
