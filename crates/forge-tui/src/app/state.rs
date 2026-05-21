@@ -140,6 +140,26 @@ pub enum PaneHitTarget {
     /// handler doesn't have to look it up again (and so a session
     /// switch between render and click can't write the wrong id).
     CopySessionId { session_id: String, y: u16, height: u16, x_start: u16, x_end: u16 },
+    /// `×` close button on a worker tree-child row. Click dispatches
+    /// `Command::CloseWorker { project_key, label }`.
+    CloseWorker {
+        project_key: forge_workspace::ProjectKey,
+        label: String,
+        y: u16,
+        height: u16,
+        x_start: u16,
+        x_end: u16,
+    },
+    /// Label area of a worker tree-child row. Click switches focus to
+    /// the worker's chat (same gesture as a project-row click, but the
+    /// destination is the worker's `SessionKey` not the lead's).
+    WorkerRow {
+        project_key: forge_workspace::ProjectKey,
+        label: String,
+        session_key: forge_workspace::SessionKey,
+        y: u16,
+        height: u16,
+    },
 }
 
 impl PaneHitTarget {
@@ -158,7 +178,9 @@ impl PaneHitTarget {
             | Self::OverlayClose { y, height, .. }
             | Self::CloseSession { y, height, .. }
             | Self::InspectorGitOpenDiff { y, height, .. }
-            | Self::CopySessionId { y, height, .. } => (*y, *height),
+            | Self::CopySessionId { y, height, .. }
+            | Self::CloseWorker { y, height, .. }
+            | Self::WorkerRow { y, height, .. } => (*y, *height),
         };
         (start..start.saturating_add(height)).contains(&y)
     }
@@ -172,13 +194,14 @@ impl PaneHitTarget {
             return false;
         }
         match self {
-            Self::ProjectHeader { .. } | Self::SessionRow { .. } => true,
+            Self::ProjectHeader { .. } | Self::SessionRow { .. } | Self::WorkerRow { .. } => true,
             Self::TopBarIcon { x_start, x_end, .. }
             | Self::InspectorTopBarIcon { x_start, x_end, .. }
             | Self::OverlayClose { x_start, x_end, .. }
             | Self::CloseSession { x_start, x_end, .. }
             | Self::InspectorGitOpenDiff { x_start, x_end, .. }
-            | Self::CopySessionId { x_start, x_end, .. } => (*x_start..*x_end).contains(&x),
+            | Self::CopySessionId { x_start, x_end, .. }
+            | Self::CloseWorker { x_start, x_end, .. } => (*x_start..*x_end).contains(&x),
         }
     }
 }

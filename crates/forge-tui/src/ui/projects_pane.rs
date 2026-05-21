@@ -138,7 +138,9 @@ fn shift_body_hit_targets(app: &mut App, start_idx: usize, body_top: u16, offset
         match target {
             crate::app::PaneHitTarget::ProjectHeader { y, height, .. }
             | crate::app::PaneHitTarget::SessionRow { y, height, .. }
-            | crate::app::PaneHitTarget::CloseSession { y, height, .. } => {
+            | crate::app::PaneHitTarget::CloseSession { y, height, .. }
+            | crate::app::PaneHitTarget::CloseWorker { y, height, .. }
+            | crate::app::PaneHitTarget::WorkerRow { y, height, .. } => {
                 if let Some(new_y) = y.checked_sub(offset) {
                     if new_y < body_top {
                         *height = 0;
@@ -364,6 +366,7 @@ fn append_project_rows(
                 spinner_frame,
                 now,
             );
+            append_worker_tree_children(lines, area, app, project);
             // Deadzone gap row between adjacent projects in the
             // same org — emits the `│  ` tree continuation so the
             // connector lines visually link across the breathing
@@ -501,6 +504,97 @@ fn append_org_project_row(
             project_name: project.key.as_str().to_owned(),
             y: row_y,
             height: 1,
+        });
+    }
+}
+
+/// Append worker tree-children rows immediately below a project's
+/// row. Each row carries the worker's label, a tree-glyph connector
+/// (`├─` or `└─` styled DIM), and a trailing `×` close affordance
+/// right-justified to match the project's `x` button column. Hit
+/// targets get stamped for both the label area (switches focus to
+/// the worker's chat) and the `×` (dispatches `Command::CloseWorker`).
+///
+/// Source of truth is `workspace.list_live_workers(project_key)`;
+/// the TUI never caches this so the snapshot stays fresh between
+/// `SessionUpdate::WorkerStatusChanged` events.
+fn append_worker_tree_children(
+    lines: &mut Vec<Line<'static>>,
+    area: Rect,
+    app: &mut App,
+    project: &ProjectView,
+) {
+    let Some(workspace) = app.workspace.as_ref() else {
+        return;
+    };
+    let workers = workspace.list_live_workers(&project.key);
+    if workers.is_empty() {
+        return;
+    }
+
+    let worker_count = workers.len();
+    // Chrome: ` │  └─ <label>            ×  ` -> 2 left-indent + 3
+    // tree connector + 1 sep + label + pad + 1 close + 2 right
+    // gutter (matches the active project row's close-button column).
+    let total_width = usize::from(area.width);
+    let label_budget = total_width.saturating_sub(2 + 3 + 1 + 3 + 1);
+    for (idx, worker) in workers.iter().enumerate() {
+        let row_y = area.y + line_count_as_u16(lines);
+        let is_last = idx + 1 == worker_count;
+        let tree_glyph = if is_last { "\u{2514}\u{2500} " } else { "\u{251C}\u{2500} " };
+        let label = truncate_with_ellipsis(worker.label.as_str(), label_budget);
+        let label_pad = label_budget.saturating_sub(label.chars().count());
+        let label_style = match worker.status {
+            forge_primitives::WorkerLiveness::Running => Style::default(),
+            forge_primitives::WorkerLiveness::Spawning => Style::default().fg(theme::DIM),
+        };
+
+        // Left-indent (1) + `│  ` (3) so the worker's tree connector
+        // hangs off the active project's column rather than the org
+        // column. Then connector, label, pad, close button, gutter.
+        // Close affordance: ` x ` 3-cell button on USER_MSG_BG slate.
+        // Same shape and column as the active project row's close
+        // button so the worker rows visually align with the parent.
+        let spans: Vec<Span<'static>> = vec![
+            Span::raw(" "),
+            Span::styled("\u{2502}  ".to_owned(), Style::default().fg(theme::DIM)),
+            Span::styled(tree_glyph.to_owned(), Style::default().fg(theme::DIM)),
+            Span::styled(label, label_style),
+            Span::raw(" ".repeat(label_pad)),
+            Span::raw(" "),
+            Span::styled(
+                " x ".to_owned(),
+                Style::default()
+                    .fg(Color::Gray)
+                    .bg(theme::USER_MSG_BG)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" "),
+        ];
+        lines.push(Line::from(spans));
+
+        // Hit targets. The label area covers the row from x_start at
+        // the indent + connector through to before the close button.
+        // Click on it switches focus to the worker's chat session.
+        // The trailing 3-cell ` x ` button + 1-cell tolerance each
+        // side dispatches the close command (mirrors `CloseSession`).
+        app.pane_hit_targets.push(PaneHitTarget::WorkerRow {
+            project_key: project.key.clone(),
+            label: worker.label.clone(),
+            session_key: worker.session_key.clone(),
+            y: row_y,
+            height: 1,
+        });
+        let row_right = area.x.saturating_add(area.width);
+        let close_x_start = row_right.saturating_sub(5);
+        let close_x_end = row_right.saturating_sub(1);
+        app.pane_hit_targets.push(PaneHitTarget::CloseWorker {
+            project_key: project.key.clone(),
+            label: worker.label.clone(),
+            y: row_y,
+            height: 1,
+            x_start: close_x_start,
+            x_end: close_x_end,
         });
     }
 }
@@ -1503,5 +1597,75 @@ mod tests {
         // so a change to row count surfaces here too, not only at
         // runtime.
         assert_eq!(ACCOUNT_PANEL_HEIGHT, 19);
+    }
+
+    #[test]
+    fn worker_tree_children_render_with_glyphs_and_close_affordance() {
+        use crate::app::PaneHitTarget;
+        use forge_workspace::ProjectKey;
+        use forge_workspace::SessionKey;
+        use forge_workspace::mcp::workers::types::WorkerEntry;
+        use std::time::SystemTime;
+
+        let mut app = App::test_default();
+        let workspace =
+            app.workspace.clone().expect("test_default seeds a workspace stub");
+        let project_key = ProjectKey::new_for_test("forge");
+        workspace.insert_live_worker(
+            &project_key,
+            WorkerEntry {
+                label: "reviewer".into(),
+                charter: "be sharp".into(),
+                session_key: SessionKey::from_session_id("worker-1"),
+                status: forge_primitives::WorkerLiveness::Running,
+                spawned_at: SystemTime::UNIX_EPOCH,
+                spawned_by_session_id: "lead".into(),
+            },
+        );
+        workspace.insert_live_worker(
+            &project_key,
+            WorkerEntry {
+                label: "doc-writer".into(),
+                charter: "tone".into(),
+                session_key: SessionKey::from_session_id("worker-2"),
+                status: forge_primitives::WorkerLiveness::Spawning,
+                spawned_at: SystemTime::UNIX_EPOCH,
+                spawned_by_session_id: "lead".into(),
+            },
+        );
+
+        let project = ProjectView::new_for_test(
+            project_key.clone(),
+            "forge",
+            "~/Projects/forge",
+            Vec::new(),
+        );
+        let area = Rect { x: 0, y: 0, width: 32, height: 20 };
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        append_worker_tree_children(&mut lines, area, &mut app, &project);
+
+        assert_eq!(lines.len(), 2, "two worker rows");
+        let row0: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        let row1: String = lines[1].spans.iter().map(|s| s.content.as_ref()).collect();
+        // First row → not-last → `├─`. Second row → last → `└─`.
+        assert!(row0.contains("\u{251C}\u{2500}"), "first row has ├─: {row0:?}");
+        assert!(row1.contains("\u{2514}\u{2500}"), "last row has └─: {row1:?}");
+        assert!(row0.contains("reviewer"), "first row has reviewer label: {row0:?}");
+        assert!(row1.contains("doc-writer"), "last row has doc-writer label: {row1:?}");
+        assert!(row0.contains(" x "), "first row has close button glyph: {row0:?}");
+        assert!(row1.contains(" x "), "last row has close button glyph: {row1:?}");
+
+        // One CloseWorker + one WorkerRow per row → 4 hit targets.
+        let workers_targets: Vec<_> = app
+            .pane_hit_targets
+            .iter()
+            .filter(|t| {
+                matches!(
+                    t,
+                    PaneHitTarget::CloseWorker { .. } | PaneHitTarget::WorkerRow { .. }
+                )
+            })
+            .collect();
+        assert_eq!(workers_targets.len(), 4, "expected 4 worker targets, got {workers_targets:?}");
     }
 }
