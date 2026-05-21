@@ -506,6 +506,55 @@ chat continues here…
   </div>
 </div>
 
+<div class="surface" id="projects-pane-workers">
+  <div class="surface-head">
+    <h4>Worker tree-children (Projects pane)</h4>
+    <div class="when">visible: per project in the <a href="#projects-pane">Projects pane</a> when <code>Workspace.live_workers[project_key]</code> is non-empty. Rendered at every tier (Wide / Medium / Narrow overlay).</div>
+  </div>
+  <div class="surface-body">
+    <p>When a project's lead has spawned workers via <code>mcp__forge__workers__spawn(label, charter)</code>, the projects pane renders them as indented tree-children immediately below the lead row. Worker rows are flat regardless of who spawned them (a worker spawning a sub-worker still appears as a sibling under the same project). Tree-by-spawner is deferred to v2.</p>
+    <div class="term">
+      <pre class="indent">
+  <span class="accent-bold">PROJECTS</span>
+  <span class="dim">─────────────────────────</span>
+
+  <span class="accent-bold">  forge</span>                  <span class="user-band"> x </span>
+  <span class="dim">  ├─ reviewer</span>          <span class="user-band"> x </span>
+  <span class="dim">  ├─ helper-of-reviewer</span> <span class="user-band"> x </span>
+  <span class="dim">  ├─ migrator</span>           <span class="user-band"> x </span>
+  <span class="dim">  └─ doc-writer</span>         <span class="user-band"> x </span>
+  <span class="bold">  subspace</span>               <span class="user-band"> x </span>
+  <span class="dim">  └─ test-runner</span>        <span class="user-band"> x </span>
+  <span class="bold">  aware</span>                  <span class="user-band"> x </span>
+</pre>
+    </div>
+    <dl>
+      <dt>tree glyph</dt><dd>box-drawing chars in <code>DIM</code>: <code>├─</code> for every entry except the last, <code>└─</code> for the last. Whole prefix renders <code>theme::DIM</code> to recede behind the worker label.</dd>
+      <dt>label</dt><dd>worker's user-supplied <code>label</code> from <code>workers__spawn</code> (the same value that becomes the <code>forge:worker:&lt;label&gt;</code> JSONL tag). Rendered with default fg for <code>Running</code>; <code>DIM</code> for <code>Spawning</code>. Head-truncated with trailing <code>...</code> when overflowing the pane width.</dd>
+      <dt>close affordance</dt><dd>per-row <code>x</code> button right-justified at the row's right edge (mirrors the lead-row close button). Click dispatches <code>Command::CloseWorker { project_key, label }</code>; workspace removes the entry from <code>live_workers</code> and releases the worker's <code>SessionTask</code>. <strong>JSONL on disk is not deleted</strong>: close means "remove from in-memory live state", never "delete from audit trail".</dd>
+      <dt>label click</dt><dd>switches active session to that worker's chat. Routes through <code>App::switch_to_worker</code> which resolves the worker's <code>SessionKey</code> from <code>live_workers</code> and falls through to the standard <code>switch_active_session</code>.</dd>
+      <dt>state source</dt><dd><code>WorkerStatus { label, charter, status: Spawning | Running, session_id, spawned_at, spawned_by_session_id }</code> from <code>forge-primitives::workers</code>. Workspace tracks the live set in <code>live_workers: Mutex&lt;HashMap&lt;ProjectKey, Vec&lt;WorkerEntry&gt;&gt;&gt;</code> and emits <code>SessionUpdate::WorkerStatusChanged { project_key, action: Added | Removed | StatusChanged, status }</code> on every transition.</dd>
+      <dt>lifetime</dt><dd>workers are process-lifetime only. <code>forge</code> restart drops the entire <code>live_workers</code> map; the projects pane has zero tree-children at launch. Existing JSONLs survive but are excluded from <code>/resume</code> by default (catalog scan filters <code>forge:worker:*</code> tags unless <code>include_workers: true</code> is passed).</dd>
+      <dt>code</dt><dd><code>crates/forge-tui/src/ui/projects_pane.rs</code> for tree-glyph rendering + per-row close hit-target stamping (<code>PaneHitTarget::CloseWorker { project_key, label, y, height, x_start, x_end }</code>) · click routing in <code>crates/forge-tui/src/app/events/mouse.rs</code> · focus switch in <code>crates/forge-tui/src/app/switch.rs::switch_to_worker</code></dd>
+    </dl>
+  </div>
+</div>
+
+<div class="surface" id="projects-pane-lead-cascade">
+  <div class="surface-head">
+    <h4>Lead row close: worker cascade</h4>
+    <div class="when">behavior: triggered whenever the lead row's existing <code>x</code> button is clicked on a project that has live workers</div>
+  </div>
+  <div class="surface-body">
+    <p>The lead row's close button is unchanged in shape: it still dispatches the standard close-session path via <code>PaneHitTarget::CloseSession</code>. The cascade lives inside <code>Workspace::release_session</code>: when the session being released is a lead AND <code>live_workers[project_key]</code> is non-empty, the workspace releases every worker's <code>SessionTask</code> sequentially first, then falls through to the existing lead release path. From the user's perspective this is synchronous: the lead does not return to <code>Sleeping</code> until every worker is gone, which prevents stale <code>Command::DeliverWorkerPrompt</code> dispatches to a freshly-killed lead.</p>
+    <p>No new <code>Command</code> variant. No new TUI code path. The cascade is observable as a burst of <code>SessionUpdate::WorkerStatusChanged { action: Removed }</code> events (one per worker), followed by the lead's own lifecycle transition. All JSONLs persist on disk; close means "remove from in-memory live state", never "delete from audit trail".</p>
+    <dl>
+      <dt>code</dt><dd><code>crates/forge-workspace/src/workspace.rs::release_session</code> (cascade arm) · existing TUI close-button handler in <code>crates/forge-tui/src/app/events/mouse.rs</code> is unchanged</dd>
+      <dt>ordering</dt><dd>workers released sequentially (one at a time, not in parallel) so any in-flight <code>DeliverWorkerPrompt</code> drains cleanly before the next release begins. Lead's own release happens last.</dd>
+    </dl>
+  </div>
+</div>
+
 <div class="surface" id="inspector-pane">
   <div class="surface-head">
     <h4>Inspector pane (Wide / Medium / Narrow tiers)</h4>
