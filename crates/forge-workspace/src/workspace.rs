@@ -134,6 +134,29 @@ pub(crate) struct PooledAgent {
     pub account: AccountKey,
 }
 
+/// Pick the lead session for a project from a list of candidates.
+///
+/// Order of preference:
+/// 1. Latest by `last_modified` with `tag == forge:lead`.
+/// 2. Latest by `last_modified` with no tag (lazy-migration fallback
+///    so sessions that predate the workers feature stay reachable).
+/// 3. `None` (caller spawns fresh).
+///
+/// `forge:worker:*`-tagged sessions are explicitly skipped: they are
+/// not leads. Workers are typically already filtered upstream by
+/// `list_sessions(..., include_workers = false)`, but this helper's
+/// own filter ensures correctness if a caller passes
+/// `include_workers = true`.
+#[must_use]
+pub fn resolve_lead_session(sessions: &[SDKSessionInfo]) -> Option<&SDKSessionInfo> {
+    let latest_with =
+        |pred: fn(&&SDKSessionInfo) -> bool| -> Option<&SDKSessionInfo> {
+            sessions.iter().filter(pred).max_by_key(|s| s.last_modified)
+        };
+    latest_with(|s| s.tag.as_deref() == Some(forge_primitives::FORGE_LEAD_TAG))
+        .or_else(|| latest_with(|s| s.tag.is_none()))
+}
+
 impl Workspace {
     /// Builds a Workspace, runs the catalog scan, and loads
     /// `<config_dir>/forge.toml`. Errors if `forge.toml` is missing
@@ -950,14 +973,16 @@ impl Workspace {
     /// on-disk catalog has one, else `None`. Drives the resume-first
     /// behaviour in [`Self::get_agent_handle`]: project-rooted targets
     /// (`Default` / `Named`) resume the lead when it exists and fall
-    /// back to a fresh session otherwise.
+    /// back to a fresh session otherwise. Picks via [`resolve_lead_session`]:
+    /// latest `forge:lead`-tagged session beats untagged; `forge:worker:*`
+    /// sessions are skipped entirely.
     fn try_lead_session_id_for(&self, project: &LoadedProject) -> Option<SessionKey> {
         let key = ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(
             Some(&project.path.to_string_lossy()),
         ));
         let catalog = self.catalog.lock();
         let entries = catalog.get(&key)?;
-        let lead = entries.first()?;
+        let lead = resolve_lead_session(entries)?;
         Some(SessionKey::from_session_id(lead.session_id.clone()))
     }
 
@@ -2034,6 +2059,83 @@ impl Workspace {
             proxy: None,
         };
         (Arc::new(workspace), update_rx)
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+mod resolver_tests {
+    use super::*;
+
+    fn mk_session(id: &str, tag: Option<&str>, mtime: u64) -> SDKSessionInfo {
+        SDKSessionInfo {
+            session_id: id.to_owned(),
+            summary: format!("session {id}"),
+            last_modified: mtime,
+            file_size: None,
+            custom_title: None,
+            first_prompt: None,
+            git_branch: None,
+            cwd: None,
+            tag: tag.map(str::to_owned),
+            created_at: None,
+        }
+    }
+
+    #[test]
+    fn resolver_prefers_forge_lead_over_untagged() {
+        // Untagged session is newer, but the lead tag wins regardless.
+        let sessions = vec![
+            mk_session("untagged-newer", None, 200),
+            mk_session("tagged-older", Some(forge_primitives::FORGE_LEAD_TAG), 100),
+        ];
+        let picked = resolve_lead_session(&sessions).expect("some");
+        assert_eq!(picked.session_id, "tagged-older");
+    }
+
+    #[test]
+    fn resolver_falls_back_to_untagged_when_no_lead_tag() {
+        let sessions = vec![mk_session("legacy", None, 100)];
+        let picked = resolve_lead_session(&sessions).expect("some");
+        assert_eq!(picked.session_id, "legacy");
+    }
+
+    #[test]
+    fn resolver_skips_forge_worker_tagged_sessions() {
+        // Worker tag must never win, even when it's the only candidate
+        // and its mtime is overwhelmingly newer than anything else.
+        let worker = forge_primitives::worker_tag("reviewer");
+        let sessions = vec![mk_session("worker", Some(&worker), 999)];
+        assert!(resolve_lead_session(&sessions).is_none());
+    }
+
+    #[test]
+    fn resolver_picks_latest_lead_when_multiple() {
+        let sessions = vec![
+            mk_session("old-lead", Some(forge_primitives::FORGE_LEAD_TAG), 100),
+            mk_session("new-lead", Some(forge_primitives::FORGE_LEAD_TAG), 200),
+        ];
+        let picked = resolve_lead_session(&sessions).expect("some");
+        assert_eq!(picked.session_id, "new-lead");
+    }
+
+    #[test]
+    fn resolver_picks_latest_untagged_when_no_lead_and_workers_present() {
+        // Workers (with newer mtime) must be filtered out; the
+        // resolver returns the latest UNTAGGED entry.
+        let worker = forge_primitives::worker_tag("reviewer");
+        let sessions = vec![
+            mk_session("old-untagged", None, 50),
+            mk_session("new-untagged", None, 100),
+            mk_session("worker", Some(&worker), 999),
+        ];
+        let picked = resolve_lead_session(&sessions).expect("some");
+        assert_eq!(picked.session_id, "new-untagged");
+    }
+
+    #[test]
+    fn resolver_returns_none_for_empty() {
+        assert!(resolve_lead_session(&[]).is_none());
     }
 }
 
