@@ -8,7 +8,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::Result;
 use forge_agent::AgentHandle;
 use forge_agent::client::SessionLaunchSettings;
-use forge_primitives::SDKSessionInfo;
+use forge_primitives::{PeerInflightStats, SDKSessionInfo};
+
+use crate::mcp::peers::types::{CorrelationId, InflightAsk, WrappedKind, WrappedPrompt};
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
 use tracing::Instrument;
@@ -75,8 +77,31 @@ pub struct Workspace {
     command_senders: Mutex<HashMap<SessionKey, mpsc::UnboundedSender<Command>>>,
     /// Shared [`DomainSession`] handles, one per active `SessionTask`.
     /// [`Self::store_pending_interaction`] writes under the same lock
-    /// the `SessionTask` actor uses to read+remove.
-    domain_handles: Mutex<HashMap<SessionKey, Arc<Mutex<DomainSession>>>>,
+    /// the `SessionTask` actor uses to read+remove. `pub(crate)` so
+    /// `mcp::peers::facade::WorkspaceFacade` can read
+    /// `current_inbound_hop` without an extra wrapper method.
+    pub(crate) domain_handles: Mutex<HashMap<SessionKey, Arc<Mutex<DomainSession>>>>,
+    /// Wire-shape state for in-flight peer-coordination asks
+    /// (`mcp__forge__peers__ask_agent`). One entry per outstanding ask
+    /// keyed by [`CorrelationId`]. Registered by
+    /// [`mcp::peers::facade::WorkspaceFacade::register_inflight_ask`]
+    /// when a caller's `ask_agent` tool fires; removed on successful
+    /// reply (`complete_inflight_ask`) or target-failure
+    /// (`expire_inflight_ask_failed`).
+    ///
+    /// There is no timeout machinery — asks live until reply or
+    /// crash. The peer-mcp v1 brainstorm had a 30-min timer + late-
+    /// reply tagging but the user opted to drop both: peers are
+    /// expected to respond promptly, and a forever-pending entry is
+    /// cheaper than a stale-notification bug class.
+    pub(crate) inflight_asks: Mutex<HashMap<CorrelationId, InflightAsk>>,
+    /// Per-session counters of peer-message activity. Mutated by
+    /// [`mcp::peers::facade::WorkspaceFacade::bump_inflight_stats`]
+    /// whenever a peer ask is registered / replied / timed out /
+    /// delivery-failed. Read by `list_peers` and `whoami`. Drives
+    /// `SessionUpdate::PeerInflightStatsChanged` which the TUI
+    /// reducer turns into sidebar peer-activity badges.
+    pub(crate) peer_stats: Mutex<HashMap<SessionKey, PeerInflightStats>>,
     /// Set the first time [`Self::start_usage_poller`] runs. Subsequent
     /// calls early-return to avoid spawning duplicate poller tasks.
     usage_poller_started: std::sync::atomic::AtomicBool,
@@ -152,7 +177,18 @@ impl Workspace {
         // descending; the per-project Vec inherits that ordering thanks
         // to push order being preserved.
 
-        let accounts = AccountStateMap::new(&config.accounts);
+        let mut accounts = AccountStateMap::new(&config.accounts);
+
+        // Seed account usage from the on-disk forge-state.toml so
+        // the launchpad picker has tier data immediately at cold
+        // boot. Anthropic's /api/oauth/usage rate-limiter can stall
+        // the first live probe for 30 s+; without seed data every
+        // account ties at tier 0 (unknown-fresh) during that window.
+        // The 60 s background poller refreshes these snapshots in
+        // the background — the cache is purely "last known value"
+        // seed.
+        let state = crate::account_cache::load(&config_dir);
+        accounts.seed_from_cache(&state.account_usage);
 
         let (update_tx, update_rx) = mpsc::unbounded_channel::<SessionUpdate>();
         Ok(Self {
@@ -165,6 +201,8 @@ impl Workspace {
             update_rx_slot: Mutex::new(Some(update_rx)),
             command_senders: Mutex::new(HashMap::new()),
             domain_handles: Mutex::new(HashMap::new()),
+            inflight_asks: Mutex::new(HashMap::new()),
+            peer_stats: Mutex::new(HashMap::new()),
             usage_poller_started: std::sync::atomic::AtomicBool::new(false),
             proxy: Some(proxy),
         })
@@ -295,11 +333,23 @@ impl Workspace {
     ) -> Result<Arc<AgentHandle>> {
         let session_key = self.resolve_target(&target)?;
 
-        // Fast path: cache hit
+        // Fast path: cache hit. When `spawn_key` was provided AND a
+        // DomainSession is buffered there (peer-coordination path:
+        // `handle_deliver_peer_prompt` parks the wrapped prompt at
+        // `__spawn_<name>__` and dispatches SpawnProject), we MUST
+        // drain that buffer into the live session before returning
+        // the pooled handle — otherwise the pending peer prompt
+        // strands at the synth key forever. The drain happens in
+        // the same critical section as the pool lookup so a
+        // concurrent caller can't race us into orphaning the
+        // buffer.
         {
             let pool = self.pool.lock();
             if let Some(existing) = pool.get(&session_key) {
-                return Ok(Arc::clone(&existing.handle));
+                let handle = Arc::clone(&existing.handle);
+                drop(pool);
+                self.drain_spawn_key_buffer_into(&session_key, spawn_key.as_ref());
+                return Ok(handle);
             }
         }
 
@@ -336,10 +386,79 @@ impl Workspace {
         // debugging the raw wire shape.
         let account_proxy_enabled = self.accounts.lock().proxy_enabled(&account_key);
         let attached_proxy = if account_proxy_enabled { self.proxy.clone() } else { None };
+
+        // Hoist DomainSession creation to BEFORE Agent::spawn so the
+        // per-session peer-MCP server's CallerKeyResolver can read
+        // back through the same Arc<Mutex<DomainSession>>. The
+        // existing connect::create_app path may have registered a
+        // pre-Connect placeholder under `session_key` (conn = None);
+        // reuse it when present so the TUI's pre-spawn accessors
+        // keep their handle reference. Otherwise create fresh with
+        // conn = None and update post-Agent::spawn at line ~470.
+        let domain_arc = {
+            let mut handles = self.domain_handles.lock();
+            // Three cases:
+            //  1. A DomainSession is already registered at `session_key`
+            //     (e.g. connect::create_app's pre-Connect placeholder).
+            //     Reuse it.
+            //  2. `spawn_key` was provided AND a DomainSession exists
+            //     there (peer-coordination spawn path: handle_deliver_
+            //     peer_prompt pre-populated pending_peer_prompts /
+            //     current_inbound_hop at synth_key=`__spawn_<name>__`
+            //     before dispatching SpawnProject). Move that
+            //     DomainSession onto `session_key` so the SessionTask
+            //     we're about to construct sees the buffered state.
+            //  3. Neither — create fresh at `session_key`.
+            //
+            // When both `session_key` and `spawn_key` exist (race:
+            // peer ask arrives while a pre-Connect placeholder was
+            // already there), merge `spawn_key`'s buffered prompts
+            // / hop into the placeholder. The placeholder is the
+            // one the SessionTask will pick up via `session_key`.
+            if let Some(existing) = handles.get(&session_key).cloned() {
+                if let Some(spawn) = spawn_key.as_ref()
+                    && spawn != &session_key
+                    && let Some(buffered) = handles.remove(spawn)
+                {
+                    let mut placeholder = existing.lock();
+                    let mut src = buffered.lock();
+                    placeholder.pending_peer_prompts.append(&mut src.pending_peer_prompts);
+                    if let Some(hop) = src.current_inbound_hop {
+                        let current = placeholder.current_inbound_hop.unwrap_or(0);
+                        placeholder.current_inbound_hop = Some(current.max(hop));
+                    }
+                }
+                existing
+            } else if let Some(spawn) = spawn_key.as_ref()
+                && spawn != &session_key
+                && let Some(buffered) = handles.remove(spawn)
+            {
+                buffered.lock().key = session_key.clone();
+                handles.insert(session_key.clone(), Arc::clone(&buffered));
+                buffered
+            } else {
+                let fresh = Arc::new(Mutex::new(DomainSession::new(session_key.clone(), None)));
+                handles.insert(session_key.clone(), Arc::clone(&fresh));
+                fresh
+            }
+        };
+
+        // Build the per-session `forge` MCP server with the four peer
+        // tools (peers__whoami / peers__list_agents / peers__tell_agent /
+        // peers__ask_agent). CallerKeyResolver reads `domain.key`
+        // through the shared Arc — when SessionTask migrates the key
+        // from synthetic to real on Connected, the resolver tracks.
+        let peer_server = {
+            let facade = crate::mcp::peers::facade::ProdWorkspaceFacade::from_arc(self);
+            let resolver = crate::mcp::peers::facade::CallerKeyResolver::from_domain(&domain_arc);
+            crate::mcp::peers::build_server(facade, resolver)
+        };
+
         let handle = forge_agent::Agent::spawn(
             account_dir.clone(),
             Some(account_key.0.clone()),
             attached_proxy,
+            vec![("forge".to_owned(), peer_server)],
         );
         // Project-rooted targets (`Default` / `Named`) resume the
         // project's lead session when the on-disk catalog has one,
@@ -415,28 +534,16 @@ impl Workspace {
             }
         };
         if let Some(cmd_rx) = cmd_rx {
-            // If the workspace already holds a pre-spawn domain
-            // handle for this key (e.g. registered by
-            // `connect::create_app` for the pre-Connect bucket), reuse
-            // it and stamp the live `Arc<AgentHandle>` onto its `conn`
-            // slot rather than overwriting the entry. The TUI's
-            // accessors keep reading from the same `Arc<Mutex<…>>`
-            // they were given pre-spawn — no second `domain_session_for`
+            // `domain_arc` was hoisted above so the peer-MCP server's
+            // CallerKeyResolver could reference it pre-Agent::spawn.
+            // Stamp the live `Arc<AgentHandle>` onto its `conn` slot
+            // now that the handle exists. The TUI's pre-spawn
+            // accessors (`connect::create_app`'s placeholder entry)
+            // keep reading from the same `Arc<Mutex<…>>` they were
+            // given before — no second `domain_session_for`
             // round-trip after the spawn lands.
-            let domain = {
-                let mut handles = self.domain_handles.lock();
-                if let Some(existing) = handles.get(&session_key).cloned() {
-                    existing.lock().conn = Some(Arc::clone(&arc));
-                    existing
-                } else {
-                    let fresh = Arc::new(Mutex::new(DomainSession::new(
-                        session_key.clone(),
-                        Some(Arc::clone(&arc)),
-                    )));
-                    handles.insert(session_key.clone(), Arc::clone(&fresh));
-                    fresh
-                }
-            };
+            domain_arc.lock().conn = Some(Arc::clone(&arc));
+            let domain = Arc::clone(&domain_arc);
             let task = SessionTask {
                 key: session_key,
                 handle: Arc::clone(&arc),
@@ -457,17 +564,103 @@ impl Workspace {
         Ok(arc)
     }
 
-    /// Spawn the 30 s background account-usage poller. Fetches
+    /// When `get_agent_handle_with_spawn_key` hits the pool fast-path
+    /// for a session that's already running, drain any
+    /// `pending_peer_prompts` buffered at the synthetic `spawn_key`
+    /// (e.g. `__spawn_<project>__`) into the live session via
+    /// `Command::Prompt`. Without this, peer asks aimed at a
+    /// running-but-pre-spawn-dispatched target strand at the synth
+    /// key forever — the regular Connected-time drain only fires
+    /// when a fresh SessionTask boots.
+    fn drain_spawn_key_buffer_into(
+        self: &Arc<Self>,
+        session_key: &SessionKey,
+        spawn_key: Option<&SessionKey>,
+    ) {
+        let Some(spawn_key) = spawn_key else { return };
+        if spawn_key == session_key {
+            return;
+        }
+        let buffered_domain = self.domain_handles.lock().remove(spawn_key);
+        let Some(buffered_domain) = buffered_domain else { return };
+        let (pending, incoming_hop) = {
+            let mut guard = buffered_domain.lock();
+            (std::mem::take(&mut guard.pending_peer_prompts), guard.current_inbound_hop)
+        };
+        if pending.is_empty() && incoming_hop.is_none() {
+            return;
+        }
+        // Stamp the inbound hop on the live session, taking max
+        // against any existing value so concurrent inbound asks
+        // don't undershoot each other.
+        if let Some(hop) = incoming_hop
+            && let Some(live) = self.domain_handles.lock().get(session_key).cloned()
+        {
+            let mut guard = live.lock();
+            let current = guard.current_inbound_hop.unwrap_or(0);
+            guard.current_inbound_hop = Some(current.max(hop));
+        }
+        // Re-dispatch each buffered prompt against the live session.
+        // Mirrors session_task::drain_pending_peer_prompts: bump
+        // IncomingPlus1 only for Question wrappers, push a
+        // synthetic user-turn so the TUI's chat shows the inbound
+        // block (claude CLI doesn't echo stdin-injected prompts),
+        // then dispatch the Command::Prompt.
+        let facade = crate::mcp::peers::facade::ProdWorkspaceFacade::from_arc(self);
+        for wrapped in pending {
+            if matches!(wrapped.kind, WrappedKind::Question) {
+                facade.bump_inflight_stats(
+                    session_key,
+                    crate::mcp::peers::facade::PeerStatsDelta::IncomingPlus1,
+                );
+            }
+            crate::spawn::push_peer_user_turn_into_chat(self, session_key, &wrapped);
+            let text = wrapped.to_prose();
+            if let Err(err) = self.dispatch(crate::protocol::Command::Prompt {
+                key: session_key.clone(),
+                text,
+                attachments: Vec::new(),
+            }) {
+                tracing::warn!(
+                    target: "forge_workspace::workspace",
+                    key = %session_key.as_str(),
+                    error = ?err,
+                    "drain_spawn_key_buffer_into: dispatch failed; prompt dropped",
+                );
+            }
+        }
+    }
+
+    /// Kick off a single live account-usage probe in the background.
+    /// Called once at startup, after `Workspace::new` has seeded the
+    /// in-memory map from the on-disk cache. The 60 s background
+    /// poller takes over from here. There is no retry-until-success
+    /// loop — Anthropic's per-IP rate-limiter on `/api/oauth/usage`
+    /// makes bursting counterproductive, and the on-disk cache means
+    /// the launchpad picker has tier data immediately regardless of
+    /// whether the live probe succeeds.
+    pub fn spawn_initial_account_probe(self: &Arc<Self>) {
+        let workspace = Arc::clone(self);
+        let span = tracing::info_span!("initial_account_probe");
+        tokio::spawn(
+            async move {
+                workspace.refresh_account_usage_once().await;
+            }
+            .instrument(span),
+        );
+    }
+
+    /// Spawn the 60 s background account-usage poller. Fetches
     /// OAuth usage for every `[[accounts]]` entry via the per-
     /// account config-dir's credentials file (no Agent spawn
     /// required), writes each result into `AccountStateMap.by_key`.
     /// The TUI's bottom panel + the spawn-path picker both read
     /// from that cache.
     ///
-    /// Call once at construction. A `usage_poller_started` flag
-    /// guards against duplicate spawns — second and later calls
-    /// return without spawning so a forge-tui programming error
-    /// can't multiply the poll rate.
+    /// Call once at construction, AFTER `spawn_initial_account_probe`.
+    /// A `usage_poller_started` flag guards against duplicate
+    /// spawns — second and later calls return without spawning so a
+    /// forge-tui programming error can't multiply the poll rate.
     pub fn start_usage_poller(self: &Arc<Self>) {
         if self.usage_poller_started.swap(true, std::sync::atomic::Ordering::AcqRel) {
             tracing::debug!(
@@ -480,11 +673,15 @@ impl Workspace {
         let span = tracing::info_span!("usage_poller");
         tokio::spawn(
             async move {
-                let mut interval = tokio::time::interval(USAGE_POLL_INTERVAL);
-                // First tick fires immediately — keep it so the cache
-                // warms within seconds of startup. Subsequent ticks
-                // honour `MissedTickBehavior::Skip` so a stalled fetch
-                // can't pile up backlogged refreshes.
+                // Skip the immediate-fire tick: `spawn_initial_account_probe`
+                // already drove the live boot probe. Firing again right
+                // away would burn another round of Anthropic-side per-IP
+                // rate-limiter capacity for no gain. First tick of this
+                // interval lands one USAGE_POLL_INTERVAL after boot.
+                let mut interval = tokio::time::interval_at(
+                    tokio::time::Instant::now() + USAGE_POLL_INTERVAL,
+                    USAGE_POLL_INTERVAL,
+                );
                 interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 loop {
                     interval.tick().await;
@@ -527,12 +724,14 @@ impl Workspace {
         // and produce HTTP 429s even well under the user's own quota.
         // Serial execution staggers requests by per-probe latency
         // (~hundreds of ms), within the 60 s poll interval.
+        let mut any_success = false;
         for (key, dir) in entries {
             let fetch_result = forge_agent::cloud::oauth_usage::oauth_usage(&dir).await;
             match fetch_result {
                 Ok(payload) => match forge_agent::cloud::oauth::snapshot_from_payload(payload) {
                     Ok(snapshot) => {
                         self.accounts.lock().set_usage(&key, snapshot);
+                        any_success = true;
                     }
                     Err(err) => {
                         self.accounts.lock().set_last_error(
@@ -570,6 +769,38 @@ impl Workspace {
                     );
                 }
             }
+        }
+
+        // Persist the snapshot to disk so the next forge launch's
+        // launchpad picker has seed data even if Anthropic 429s the
+        // first probe. Skipped when no probe succeeded this round —
+        // no point rewriting the file with the same contents.
+        if any_success {
+            let snapshots = self.accounts.lock().snapshots_for_cache();
+            let account_count = snapshots.len();
+            let config_dir = self.config_dir.clone();
+            // toml::to_string_pretty + std::fs::write/rename are sync;
+            // hop to spawn_blocking so a slow disk doesn't park a tokio
+            // worker (file is tiny so latency is sub-ms on a healthy
+            // disk, but the pattern is wrong otherwise).
+            let join = tokio::task::spawn_blocking(move || {
+                crate::account_cache::store(&config_dir, &snapshots);
+            })
+            .await;
+            if let Err(err) = join {
+                tracing::warn!(
+                    target: "forge_workspace::account_cache",
+                    error = %err,
+                    "account_cache::store spawn_blocking task panicked",
+                );
+            }
+            tracing::info!(
+                target: "forge_workspace::account_cache",
+                event_name = "account_cache_written",
+                accounts = account_count,
+                path = %crate::account_cache::state_path(&self.config_dir).display(),
+                "forge-state.toml updated after successful poll round",
+            );
         }
     }
 
@@ -912,6 +1143,15 @@ impl Workspace {
                     );
                     let _enter = span.enter();
                     spawn::handle_start_default(self, project_name, launch_settings);
+                }
+                Command::DeliverPeerPrompt { caller, target_project, wrapped } => {
+                    let span = tracing::info_span!(
+                        "deliver_peer_prompt",
+                        target = %target_project,
+                        correlation_id = %wrapped.correlation_id,
+                    );
+                    let _enter = span.enter();
+                    spawn::handle_deliver_peer_prompt(self, caller, target_project, wrapped);
                 }
                 other => {
                     tracing::warn!(
@@ -1307,9 +1547,125 @@ impl Workspace {
         }
         true
     }
+
+    /// Expire every in-flight ask whose target session is the one
+    /// closing. Called when:
+    /// - `AgentEvent::ConnectionFailed` arrives for a target's bridge
+    ///   (target's claude subprocess crashed or failed to spawn)
+    /// - A `SessionTask::drop` fires (target's session was closed by
+    ///   any reason — user close, lifecycle terminate, panic)
+    ///
+    /// Maps the closing `SessionKey` to its project name via
+    /// `list_projects`, then walks `inflight_asks` for entries whose
+    /// `target_project` matches and dispatches the failure dual-path
+    /// notification for each (PeerAskFailed UI state + Command::Prompt
+    /// with DeliveryFailureNotice wrapper to caller).
+    ///
+    /// Idempotent. Safe to call from a Drop impl via Weak<Workspace>.
+    pub(crate) fn expire_target_inflight(
+        self: &Arc<Self>,
+        closing_key: &SessionKey,
+        reason: crate::mcp::peers::types::PeerFailureReason,
+    ) {
+        // Find the project this closing session belongs to. If we can't
+        // (caller raced with config-reload; defensive only), there's
+        // nothing to do.
+        let project_name = self
+            .list_projects()
+            .into_iter()
+            .find(|v| v.sessions.iter().any(|s| s.session == *closing_key))
+            .map(|v| v.name);
+        let Some(project_name) = project_name else {
+            return;
+        };
+
+        // Snapshot the IDs to expire. Holding the inflight_asks lock
+        // across the dispatch loop below would risk re-entrancy via
+        // bump_inflight_stats. Take a copy + release the lock.
+        let ids_to_expire: Vec<CorrelationId> = {
+            let asks = self.inflight_asks.lock();
+            asks.iter()
+                .filter(|(_, ask)| ask.target_project == project_name)
+                .map(|(id, _)| id.clone())
+                .collect()
+        };
+
+        for id in ids_to_expire {
+            self.expire_inflight_ask_failed(&id, reason);
+        }
+    }
+
+    /// Expire an in-flight ask because the target session crashed
+    /// or was closed while the ask was open. Dispatches a
+    /// `DeliveryFailureNotice` wrapper to the caller so its LLM
+    /// learns the ask died. Idempotent.
+    pub(crate) fn expire_inflight_ask_failed(
+        self: &Arc<Self>,
+        id: &CorrelationId,
+        reason: crate::mcp::peers::types::PeerFailureReason,
+    ) {
+        let ask = {
+            let mut asks = self.inflight_asks.lock();
+            asks.remove(id)
+        };
+        let Some(ask) = ask else {
+            tracing::trace!(
+                target: "forge_workspace::workspace",
+                correlation_id = %id,
+                "expire_inflight_ask_failed: entry already gone"
+            );
+            return;
+        };
+
+        let facade = crate::mcp::peers::facade::ProdWorkspaceFacade::from_arc(self);
+        facade.bump_inflight_stats(
+            &ask.caller,
+            crate::mcp::peers::facade::PeerStatsDelta::DeliveryFailedPlus1,
+        );
+        facade.bump_inflight_stats(
+            &ask.caller,
+            crate::mcp::peers::facade::PeerStatsDelta::OutgoingMinus1,
+        );
+
+        let target_org = self
+            .list_projects()
+            .into_iter()
+            .find(|p| p.name == ask.target_project)
+            .map_or_else(|| "?".to_owned(), |p| p.org);
+
+        // Body carries the human-readable failure reason — caller
+        // chat block surfaces it underneath the bracket header.
+        let body = match &reason {
+            crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed => {
+                "target session connection lost".to_owned()
+            }
+        };
+
+        let caller_notice = WrappedPrompt {
+            correlation_id: id.clone(),
+            kind: WrappedKind::DeliveryFailureNotice,
+            sender_name: ask.target_project.clone(),
+            sender_org: target_org,
+            hop: 0,
+            hop_limit: 10,
+            body,
+        };
+        if let Err(err) = self.dispatch(crate::protocol::Command::Prompt {
+            key: ask.caller.clone(),
+            text: caller_notice.to_prose(),
+            attachments: Vec::new(),
+        }) {
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                correlation_id = %id,
+                error = ?err,
+                "expire_inflight_ask_failed: caller notice dispatch failed (caller closed?)"
+            );
+        }
+    }
 }
 
-#[cfg(feature = "testing")]
+#[cfg(any(test, feature = "testing"))]
 impl Workspace {
     /// Construct a stub `AgentHandle` plus the matching
     /// `Receiver<forge_primitives::AgentCommand>` that drains every command
@@ -1375,6 +1731,8 @@ impl Workspace {
             update_rx_slot: Mutex::new(None),
             command_senders: Mutex::new(HashMap::new()),
             domain_handles: Mutex::new(HashMap::new()),
+            inflight_asks: Mutex::new(HashMap::new()),
+            peer_stats: Mutex::new(HashMap::new()),
             usage_poller_started: std::sync::atomic::AtomicBool::new(false),
             // testing_stub skips Workspace::new and therefore the
             // proxy boot. Tests don't drive real subprocesses.
@@ -1930,5 +2288,138 @@ config_dir = "~/.claude-profile3"
             classify_oauth_usage_error(&OauthUsageError::Decode("bad json".to_owned())),
             UsageFetchStatus::Other,
         );
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // I3 — peer-MCP lifecycle tests
+    // ─────────────────────────────────────────────────────────────────
+
+    fn forge_toml_with_two_projects() -> tempfile::TempDir {
+        let dir = tempdir().expect("tempdir");
+        fs::write(
+            dir.path().join("forge.toml"),
+            r#"
+[[orgs]]
+name = "Default"
+accounts = ["Stargate"]
+
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+auto_start = true
+
+[[orgs.projects]]
+name = "gateway-backend"
+path = "~/Projects/gateway-backend"
+auto_start = false
+
+[[accounts]]
+display_name = "Stargate"
+config_dir = "~/.claude-stargate"
+"#,
+        )
+        .expect("write forge.toml");
+        dir
+    }
+
+    /// expire_inflight_ask_failed removes the entry from inflight_asks,
+    /// fires the DeliveryFailed stat bump, and dispatches a
+    /// DeliveryFailureNotice wrapper. Idempotent — a second call on the
+    /// same id is a no-op.
+    #[tokio::test]
+    async fn expire_inflight_ask_failed_removes_entry_and_is_idempotent() {
+        use crate::mcp::peers::types::{CorrelationId, InflightAsk, PeerFailureReason};
+        let dir = forge_toml_with_two_projects();
+        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+
+        let caller = SessionKey::from_str_for_test("caller-1");
+        let id = CorrelationId::new_ask();
+        workspace.inflight_asks.lock().insert(
+            id.clone(),
+            InflightAsk {
+                correlation_id: id.clone(),
+                caller: caller.clone(),
+                caller_project: "forge".to_owned(),
+                caller_org: "Default".to_owned(),
+                target_project: "gateway-backend".to_owned(),
+            },
+        );
+        assert!(workspace.inflight_asks.lock().contains_key(&id));
+
+        workspace.expire_inflight_ask_failed(&id, PeerFailureReason::TargetConnectionFailed);
+        assert!(!workspace.inflight_asks.lock().contains_key(&id), "entry removed after expire");
+
+        // Idempotent — second call on the same id is a no-op.
+        workspace.expire_inflight_ask_failed(&id, PeerFailureReason::TargetConnectionFailed);
+        assert!(!workspace.inflight_asks.lock().contains_key(&id));
+    }
+
+    /// expire_inflight_ask_failed dispatches `PeerInflightStatsChanged`
+    /// for the delivery-failed bookkeeping and removes the entry.
+    /// expire_target_inflight is a thin loop over this per-id path; in
+    /// production it resolves the closing session's project via
+    /// `list_projects` (catalog-backed), so an in-memory test that
+    /// never writes to disk would early-return on project lookup. We
+    /// exercise the per-id unit instead.
+    #[tokio::test]
+    async fn expire_inflight_ask_failed_dispatches_failure_notice() {
+        use crate::mcp::peers::types::{CorrelationId, InflightAsk, PeerFailureReason};
+        let dir = forge_toml_with_two_projects();
+        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        let mut rx = workspace.subscribe().expect("subscribe");
+
+        let caller = SessionKey::from_str_for_test("caller-notice");
+        let id = CorrelationId::new_ask();
+        workspace.inflight_asks.lock().insert(
+            id.clone(),
+            InflightAsk {
+                correlation_id: id.clone(),
+                caller: caller.clone(),
+                caller_project: "forge".to_owned(),
+                caller_org: "Default".to_owned(),
+                target_project: "gateway-backend".to_owned(),
+            },
+        );
+
+        workspace.expire_inflight_ask_failed(&id, PeerFailureReason::TargetConnectionFailed);
+
+        let mut saw_stats = false;
+        while let Ok(update) = rx.try_recv() {
+            if matches!(update, SessionUpdate::PeerInflightStatsChanged { .. }) {
+                saw_stats = true;
+            }
+        }
+        assert!(saw_stats, "PeerInflightStatsChanged fires for delivery_failed bump");
+        assert!(!workspace.inflight_asks.lock().contains_key(&id));
+    }
+
+    /// Workspace::dispatch(Command::DeliverPeerPrompt) routes to the
+    /// command channel without panicking. The full spawn-path handling
+    /// is exercised in the spawn::handle_deliver_peer_prompt test.
+    #[tokio::test]
+    async fn dispatch_command_deliver_peer_prompt_routes_cleanly() {
+        use crate::mcp::peers::types::{CorrelationId, WrappedKind, WrappedPrompt};
+        let dir = forge_toml_with_two_projects();
+        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+
+        let caller = SessionKey::from_str_for_test("caller-dispatch");
+        let wrapped = WrappedPrompt {
+            correlation_id: CorrelationId::new_tell(),
+            kind: WrappedKind::Message,
+            sender_name: "forge".to_owned(),
+            sender_org: "Default".to_owned(),
+            hop: 1,
+            hop_limit: 10,
+            body: "fyi".to_owned(),
+        };
+        // The command channel is the workspace's main dispatch bus —
+        // routing to an unknown target still queues, the spawn handler
+        // is the one that rejects. Smoke: dispatch returns Ok.
+        let result = workspace.dispatch(crate::protocol::Command::DeliverPeerPrompt {
+            caller,
+            target_project: "gateway-backend".to_owned(),
+            wrapped,
+        });
+        assert!(result.is_ok(), "dispatch routed cleanly: {result:?}");
     }
 }

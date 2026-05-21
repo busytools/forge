@@ -149,7 +149,7 @@ impl LoadedConfig {
     /// project (e.g. `default_project`) will panic when called on
     /// this value — tests that only need `domain_handles` access
     /// never reach those paths.
-    #[cfg(feature = "testing")]
+    #[cfg(any(test, feature = "testing"))]
     pub(crate) fn empty_for_test() -> Self {
         Self {
             orgs: Vec::new(),

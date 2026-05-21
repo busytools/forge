@@ -54,6 +54,7 @@ use forge_primitives::{PermissionDecision, ToolPermissionContext};
 pub(crate) struct ControlDispatchHandle {
     writer: Arc<SharedWriter>,
     can_use_tool: Option<Arc<dyn CanUseToolCallback>>,
+    auto_approve_tool: Option<crate::options::AutoApproveToolPredicate>,
     mcp_hosts: McpHosts,
     hook_callbacks: HashMap<String, Arc<dyn ErasedHookCallback>>,
     session_id: crate::client::runtime::SharedSessionId,
@@ -64,6 +65,7 @@ impl std::fmt::Debug for ControlDispatchHandle {
         f.debug_struct("ControlDispatchHandle")
             .field("writer", &self.writer)
             .field("can_use_tool", &self.can_use_tool.as_ref().map(|_| "<callback>"))
+            .field("auto_approve_tool", &self.auto_approve_tool.as_ref().map(|_| "<predicate>"))
             .field("mcp_hosts", &self.mcp_hosts)
             .field("hook_callbacks", &format!("<{} hooks>", self.hook_callbacks.len()))
             .field("session_id", &"<shared>")
@@ -75,11 +77,12 @@ impl ControlDispatchHandle {
     pub(crate) fn new(
         writer: Arc<SharedWriter>,
         can_use_tool: Option<Arc<dyn CanUseToolCallback>>,
+        auto_approve_tool: Option<crate::options::AutoApproveToolPredicate>,
         mcp_hosts: McpHosts,
         hook_callbacks: HashMap<String, Arc<dyn ErasedHookCallback>>,
         session_id: crate::client::runtime::SharedSessionId,
     ) -> Self {
-        Self { writer, can_use_tool, mcp_hosts, hook_callbacks, session_id }
+        Self { writer, can_use_tool, auto_approve_tool, mcp_hosts, hook_callbacks, session_id }
     }
 
     /// Capture a session id from an incoming Message. No-op once a
@@ -145,35 +148,53 @@ impl ControlDispatchHandle {
                     description,
                 },
             ) => {
-                let suggestions: Vec<forge_primitives::PermissionUpdate> = permission_suggestions
-                    .iter()
-                    .filter_map(|v| match serde_json::from_value(v.clone()) {
-                        Ok(s) => Some(s),
-                        Err(e) => {
-                            tracing::warn!(
-                                error = %e,
-                                raw = %v,
-                                "permission_suggestion failed to decode; dropping (CLI schema drift?)"
-                            );
-                            None
-                        }
-                    })
-                    .collect();
-                let ctx = ToolPermissionContext::new(
-                    tool_name.clone(),
-                    input.clone(),
-                    tool_use_id.clone(),
-                    agent_id.clone(),
-                )
-                .with_suggestions(suggestions)
-                .with_display(
-                    blocked_path.clone(),
-                    decision_reason.clone(),
-                    title.clone(),
-                    display_name.clone(),
-                    description.clone(),
-                );
-                cb.call(ctx).await
+                // Auto-approve fast-path. When the caller configured
+                // an `auto_approve_tool` predicate on Options
+                // (typically: "any tool whose name starts with
+                // mcp__<server>__ for one of my in-process MCP
+                // servers"), tools that match skip the permission
+                // prompt. The predicate's call sites stay in the
+                // configurator (forge-agent / forge-workspace) so
+                // forge-sdk doesn't hardcode server names.
+                if self.auto_approve_tool.as_ref().is_some_and(|p| p(tool_name)) {
+                    tracing::trace!(
+                        target: "forge_sdk::control_dispatch",
+                        tool_name = %tool_name,
+                        "auto-approving via Options::auto_approve_tool predicate"
+                    );
+                    PermissionDecision::allow()
+                } else {
+                    let suggestions: Vec<forge_primitives::PermissionUpdate> =
+                        permission_suggestions
+                            .iter()
+                            .filter_map(|v| match serde_json::from_value(v.clone()) {
+                                Ok(s) => Some(s),
+                                Err(e) => {
+                                    tracing::warn!(
+                                        error = %e,
+                                        raw = %v,
+                                        "permission_suggestion failed to decode; dropping (CLI schema drift?)"
+                                    );
+                                    None
+                                }
+                            })
+                            .collect();
+                    let ctx = ToolPermissionContext::new(
+                        tool_name.clone(),
+                        input.clone(),
+                        tool_use_id.clone(),
+                        agent_id.clone(),
+                    )
+                    .with_suggestions(suggestions)
+                    .with_display(
+                        blocked_path.clone(),
+                        decision_reason.clone(),
+                        title.clone(),
+                        display_name.clone(),
+                        description.clone(),
+                    );
+                    cb.call(ctx).await
+                }
             }
             (None, ControlRequestKind::CanUseTool { .. }) => {
                 PermissionDecision::deny("no permission callback registered")

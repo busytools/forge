@@ -37,11 +37,12 @@ use forge_primitives::question::{QuestionOutcome, QuestionRequest};
 use forge_primitives::runtime::{AvailableModel, CurrentModel, ModeState, TerminalReason};
 use forge_primitives::{
     AccountInfo, ForgeAccountIdentity, ImageAttachment, McpOperationError, McpServerStatus,
-    Message, SessionId, SessionListEntry,
+    Message, PeerInflightStats, SessionId, SessionListEntry,
 };
 use tokio::sync::oneshot;
 
 use crate::SessionKey;
+use crate::mcp::peers::types::WrappedPrompt;
 
 // `TurnErrorClass` lives in forge-primitives so the classifier (in
 // forge-agent) and consumers (in forge-tui, via this protocol module)
@@ -149,6 +150,27 @@ pub enum Command {
         project_name: Option<String>,
         launch_settings: SessionLaunchSettings,
     },
+    /// Peer-coordination delivery (#114 v1). Dispatched by the
+    /// `mcp__forge__peers__ask_agent` / `peers__tell_agent` tool
+    /// impls via `WorkspaceFacade::deliver_peer_prompt`. Routed to
+    /// `spawn::handle_deliver_peer_prompt` which: (a) resolves
+    /// `target_project` to a `SessionKey`; (b) if target is running,
+    /// stamps `current_inbound_hop` on target's DomainSession and
+    /// dispatches a plain `Command::Prompt` carrying the wrapper
+    /// prose; (c) if sleeping, buffers `wrapped` in target's
+    /// `pending_peer_prompts` and dispatches `Command::SpawnProject`;
+    /// (d) on `target_project` not in forge.toml, fires the dual-path
+    /// `PeerAskFailed` notification back to caller.
+    ///
+    /// App-level command (`key()` returns `None`); workspace routes
+    /// to the App-level handler in `spawn.rs`. The `caller` field is
+    /// the source session's key for routing failure notifications and
+    /// for in_reply_to validation lookups.
+    DeliverPeerPrompt {
+        caller: SessionKey,
+        target_project: String,
+        wrapped: WrappedPrompt,
+    },
 }
 
 impl Command {
@@ -170,9 +192,10 @@ impl Command {
             | Self::RespondQuestion { key, .. }
             | Self::ReconnectMcpServer { key, .. }
             | Self::ToggleMcpServer { key, .. } => Some(key),
-            Self::SpawnProject { .. } | Self::SpawnSession { .. } | Self::StartDefault { .. } => {
-                None
-            }
+            Self::SpawnProject { .. }
+            | Self::SpawnSession { .. }
+            | Self::StartDefault { .. }
+            | Self::DeliverPeerPrompt { .. } => None,
         }
     }
 }
@@ -348,6 +371,26 @@ pub enum SessionUpdate {
         cwd_raw: String,
         message: String,
     },
+    /// Peer-coordination ask in-flight stats changed for `key`. Fired
+    /// whenever `bump_inflight_stats` mutates the session's
+    /// `PeerInflightStats` (ask sent, reply received, timeout, delivery
+    /// failure). TUI reducer arm updates the sidebar peer-activity
+    /// badge in the Projects pane.
+    PeerInflightStatsChanged {
+        key: SessionKey,
+        stats: PeerInflightStats,
+    },
+    /// A peer-coordination envelope arrived at session `session_id`.
+    /// Carries the typed `WrappedPrompt` so the TUI reducer can build
+    /// the chat-side echo from real fields instead of having the
+    /// workspace forge a `Message::User` carrying prose for the TUI to
+    /// re-parse (audit I11). The recipient's LLM still receives the
+    /// prose via a separate `Command::Prompt` dispatch — that's the
+    /// CLI's input channel and stays text-shaped.
+    PeerEnvelopeAppended {
+        session_id: String,
+        wrapped: crate::mcp::peers::types::WrappedPrompt,
+    },
     FatalError(AppError),
 }
 
@@ -371,7 +414,8 @@ impl SessionUpdate {
             | Self::TurnCancelled { key }
             | Self::TurnError { key, .. }
             | Self::ForgeAccountIdentity { key, .. }
-            | Self::SessionsListed { key, .. } => Some(key.clone()),
+            | Self::SessionsListed { key, .. }
+            | Self::PeerInflightStatsChanged { key, .. } => Some(key.clone()),
             Self::RuntimeReloadCompleted { session_id }
             | Self::RuntimeReloadFailed { session_id, .. }
             | Self::ChatAppended { session_id, .. }
@@ -379,7 +423,8 @@ impl SessionUpdate {
             | Self::StatusSnapshot { session_id, .. }
             | Self::OauthCredentialsSnapshot { session_id, .. }
             | Self::ContextUsageSnapshot { session_id, .. }
-            | Self::McpSnapshot { session_id, .. } => {
+            | Self::McpSnapshot { session_id, .. }
+            | Self::PeerEnvelopeAppended { session_id, .. } => {
                 Some(SessionKey::from_session_id(session_id.clone()))
             }
             Self::KeyRenamed { .. }
@@ -499,6 +544,17 @@ impl std::fmt::Debug for SessionUpdate {
             Self::PluginsCliActionFailed { cwd_raw, .. } => f
                 .debug_struct("PluginsCliActionFailed")
                 .field("cwd_raw", cwd_raw)
+                .finish_non_exhaustive(),
+            Self::PeerInflightStatsChanged { key, stats } => f
+                .debug_struct("PeerInflightStatsChanged")
+                .field("key", key)
+                .field("stats", stats)
+                .finish(),
+            Self::PeerEnvelopeAppended { session_id, wrapped } => f
+                .debug_struct("PeerEnvelopeAppended")
+                .field("session_id", session_id)
+                .field("correlation_id", &wrapped.correlation_id)
+                .field("kind", &wrapped.kind)
                 .finish_non_exhaustive(),
             Self::FatalError(err) => f.debug_struct("FatalError").field("error", err).finish(),
         }

@@ -1092,6 +1092,7 @@ dependencies = [
  "forge-sdk",
  "futures",
  "hex",
+ "httpdate",
  "ignore",
  "notify",
  "parking_lot",
@@ -1119,6 +1120,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -1209,17 +1211,21 @@ name = "forge-workspace"
 version = "0.16.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "dirs",
  "forge-agent",
  "forge-primitives",
+ "forge-sdk",
  "parking_lot",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
+ "time",
  "tokio",
  "toml",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

@@ -241,6 +241,41 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
                 crate::app::plugins::apply_cli_action_failure(app, message);
             });
         }
+        SessionUpdate::PeerInflightStatsChanged { key, stats } => {
+            if let Some(session) = app.session_mut(&key) {
+                // Track when the failure counters last incremented so
+                // the projects_pane render can fade those indicators
+                // after 60 s.
+                if stats.timed_out > session.peer_badges.timed_out
+                    || stats.delivery_failed > session.peer_badges.delivery_failed
+                {
+                    session.peer_badges_last_failure_at = Some(std::time::Instant::now());
+                }
+                session.peer_badges = stats;
+            }
+        }
+        SessionUpdate::PeerEnvelopeAppended { session_id, wrapped } => {
+            // Workspace no longer forges an SDK `Message::User`
+            // carrying peer prose — it emits the typed envelope
+            // here and the TUI builds the synthetic chat-side
+            // user-turn from real fields. The prose is the same
+            // string the recipient's LLM sees via Command::Prompt,
+            // so the existing `peer_block::detect_inbound` matcher
+            // in the SDK-message reducer still recognises it.
+            let synthetic = forge_primitives::Message::User {
+                message: forge_primitives::UserEnvelope {
+                    role: "user".to_owned(),
+                    content: vec![forge_primitives::ContentBlock::Text {
+                        text: wrapped.to_prose(),
+                    }],
+                },
+                session_id: session_id.clone(),
+                parent_tool_use_id: None,
+                uuid: None,
+                tool_use_result: None,
+            };
+            apply_session_update_chat_appended(app, &session_id, synthetic);
+        }
     }
     if is_active_or_global {
         app.needs_redraw = true;

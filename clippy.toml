@@ -24,7 +24,9 @@ absolute-paths-max-segments = 3
 
 # Bumped from default 7 to cover render/recursion fns with layout state
 # threaded as flat params. Workspace-internal; no public API impact.
-too-many-arguments-threshold = 9
+# 2026-05-21: bumped 9 -> 10 for `build_options_with_callback` gaining
+# `extra_mcp_servers` (#114 peer-coordination plumbing).
+too-many-arguments-threshold = 10
 
 # Short identifiers common in CLI arg parsing, loops, and channel names.
 allowed-idents-below-min-chars = ["i", "j", "k", "x", "y", "z", "n", "s", "c", "op", "tx", "rx", "id", "ip", "os", "ex"]

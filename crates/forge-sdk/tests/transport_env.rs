@@ -110,12 +110,32 @@ async fn options_env_can_set_entrypoint_and_is_preserved() {
 
 #[tokio::test]
 async fn spawn_does_not_set_proxy_env_when_proxy_absent() {
+    // The SDK must not ADD or REWRITE proxy/CA env vars when
+    // Options::proxy is None. The child inherits the parent's
+    // environment by default — if the parent shell already exports
+    // HTTPS_PROXY (e.g. when this test runs inside a forge session
+    // whose own subprocess has those vars stamped), the child sees
+    // them too. Assert the SDK didn't add them above the parent
+    // baseline: the child's value must either be absent or equal to
+    // the parent's value.
+    let parent_https = std::env::var("HTTPS_PROXY").ok();
+    let parent_http = std::env::var("HTTP_PROXY").ok();
+    let parent_ca = std::env::var("NODE_EXTRA_CA_CERTS").ok();
     let env = spawn_and_capture_env(|b| b).await;
-    assert!(!env.contains_key("HTTPS_PROXY"), "no HTTPS_PROXY without Options::proxy");
-    assert!(!env.contains_key("HTTP_PROXY"), "no HTTP_PROXY without Options::proxy");
-    assert!(
-        !env.contains_key("NODE_EXTRA_CA_CERTS"),
-        "no NODE_EXTRA_CA_CERTS without Options::proxy"
+    assert_eq!(
+        env.get("HTTPS_PROXY").cloned(),
+        parent_https,
+        "SDK must not add/rewrite HTTPS_PROXY without Options::proxy"
+    );
+    assert_eq!(
+        env.get("HTTP_PROXY").cloned(),
+        parent_http,
+        "SDK must not add/rewrite HTTP_PROXY without Options::proxy"
+    );
+    assert_eq!(
+        env.get("NODE_EXTRA_CA_CERTS").cloned(),
+        parent_ca,
+        "SDK must not add/rewrite NODE_EXTRA_CA_CERTS without Options::proxy"
     );
 }
 

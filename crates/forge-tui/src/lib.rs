@@ -62,7 +62,7 @@ pub struct Cli {
     pub project: Option<String>,
 
     /// Generate a shell completion script and print to stdout, then
-    /// exit. Hidden from --help; called by install-forge.sh.
+    /// exit. Hidden from --help; called by `scripts/install.sh`.
     #[arg(long, value_name = "SHELL", hide = true)]
     pub generate_completion: Option<clap_complete::Shell>,
 

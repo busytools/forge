@@ -3,6 +3,7 @@ use crate::app::{
     MessageBlock, MessageRenderCache, MessageRenderCacheKey, MessageRenderSignature, MessageRole,
     SystemSeverity, TextBlock, WelcomeBlock, hash_text_block_content, hash_welcome_block_content,
 };
+use crate::ui::peer_block;
 use crate::ui::theme;
 use crate::ui::tool_call;
 use ratatui::style::{Color, Modifier, Style};
@@ -175,7 +176,12 @@ fn build_message_layout(
 
     match msg.role {
         MessageRole::Welcome => append_welcome_blocks(msg, render_context.width, &mut layout),
-        MessageRole::User => append_user_blocks(msg, render_context.width, &mut layout),
+        MessageRole::User => append_user_blocks(
+            msg,
+            render_context.width,
+            render_context.options.tools_collapsed,
+            &mut layout,
+        ),
         MessageRole::Assistant => {
             append_assistant_blocks(msg, spinner, render_context, &mut layout);
         }
@@ -198,10 +204,43 @@ fn append_welcome_blocks(msg: &mut ChatMessage, width: u16, layout: &mut Message
     }
 }
 
-fn append_user_blocks(msg: &mut ChatMessage, width: u16, layout: &mut MessageLayout) {
+fn append_user_blocks(
+    msg: &mut ChatMessage,
+    width: u16,
+    tools_collapsed: bool,
+    layout: &mut MessageLayout,
+) {
     for block in &mut msg.blocks {
         match block {
             MessageBlock::Text(block) => {
+                // Peer-coordination wrappers (#114) — when the
+                // workspace injects a `[Question id=…]` /
+                // `[Reply id=…]` / etc. user-turn, render a styled
+                // peer block instead of the default user bubble.
+                // Collapse state mirrors the global tool-card
+                // preference so Ctrl+X flips peer rows and tool rows
+                // together. Inbound peer turns don't (yet) have a
+                // per-row override the way ToolCallInfo does — the
+                // global default is the only knob.
+                if let Some(kind) = peer_block::detect_inbound(&block.text) {
+                    let trailing_gap = block.trailing_blank_lines();
+                    let collapsed = block.peer_collapsed_override.unwrap_or(tools_collapsed);
+                    let lines = peer_block::render_inbound(&kind, collapsed);
+                    let y_in_msg = layout.height;
+                    let height = rendered_lines_height(&lines, width);
+                    layout.push_wrapped_lines(lines, width);
+                    // Stamp hit-target fields so `mouse::locate_
+                    // peer_user_block_at_click` can route clicks on
+                    // this inbound peer row back to this TextBlock
+                    // and flip `peer_collapsed_override`.
+                    block.peer_last_measured_y_in_msg = y_in_msg;
+                    block.peer_last_measured_height = height;
+                    block.peer_last_measured_width = width;
+                    for _ in 0..trailing_gap {
+                        layout.push_blank();
+                    }
+                    continue;
+                }
                 let trailing_gap = block.trailing_blank_lines();
                 let rendered = text_block_layout(block, width, Some(theme::USER_MSG_BG), true);
                 layout.push_lines(rendered.lines, rendered.height, rendered.wrapped_lines);
@@ -350,6 +389,37 @@ fn append_assistant_tool_block(
     state: &mut AssistantLayoutState,
 ) {
     if tc.hidden_unless_focused_interaction() {
+        return;
+    }
+    // Peer-coordination outbound (#114) — replace the default
+    // tool_use card for `mcp__forge__peers__ask_agent` /
+    // `peers__tell_agent` with a styled peer block in the same
+    // tool-card shape (status icon + kind label + tree body).
+    // Collapse state follows the standard tool-call rule: per-tc
+    // `collapsed_override` wins, otherwise the global default.
+    // Click-to-toggle on peer rows currently piggybacks on the
+    // existing tool-call row hit-test in mouse.rs.
+    if let Some(kind) = peer_block::detect_outbound(tc) {
+        if !state.prev_was_tool && state.has_body_content {
+            layout.push_blank();
+        }
+        let collapsed = tc.collapsed_override.unwrap_or(render_context.options.tools_collapsed);
+        let lines = peer_block::render_outbound(&kind, collapsed);
+        // Same hit-target stamping the standard tool-call branch
+        // below does so `mouse::locate_tool_call_block_at_click` can
+        // map a click on a peer row back to this ToolCallInfo and
+        // flip `collapsed_override`. Without these fields set the
+        // hit-test in mouse.rs short-circuits at `last_measured_height
+        // == 0` and the click falls through to text selection.
+        let y_in_msg = layout.height;
+        let height = rendered_lines_height(&lines, render_context.width);
+        layout.push_wrapped_lines(lines, render_context.width);
+        tc.last_measured_y_in_msg = y_in_msg;
+        tc.last_measured_height = height;
+        tc.last_measured_width = render_context.width;
+        state.has_body_content = true;
+        state.has_visible_content = true;
+        state.prev_was_tool = true;
         return;
     }
     if !state.prev_was_tool && state.has_body_content {
@@ -755,6 +825,11 @@ fn hash_message_block_into<H: std::hash::Hasher>(
             block_tag::TEXT.hash(hasher);
             hash_text_block_content(&block.text, block.trailing_spacing).hash(hasher);
             block.trailing_spacing.hash(hasher);
+            // Peer-block collapse state (#114). Without this in the
+            // signature, flipping `peer_collapsed_override` from a
+            // click handler is a no-op visually because the message
+            // render cache reuses the previous layout.
+            block.peer_collapsed_override.hash(hasher);
         }
         MessageBlock::Notice(block) => {
             block_tag::NOTICE.hash(hasher);

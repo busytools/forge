@@ -135,6 +135,10 @@ fn append_resume_user_message_chunk(app: &mut App, chunk: &model::ContentChunk) 
                 cache: BlockCache::default(),
                 markdown: incr,
                 trailing_spacing: TextBlockSpacing::default(),
+                peer_collapsed_override: None,
+                peer_last_measured_y_in_msg: 0,
+                peer_last_measured_height: 0,
+                peer_last_measured_width: 0,
             }));
         }
         let last_idx = app.messages().len().saturating_sub(1);
@@ -151,6 +155,10 @@ fn append_resume_user_message_chunk(app: &mut App, chunk: &model::ContentChunk) 
             cache: BlockCache::default(),
             markdown: incr,
             trailing_spacing: TextBlockSpacing::default(),
+            peer_collapsed_override: None,
+            peer_last_measured_y_in_msg: 0,
+            peer_last_measured_height: 0,
+            peer_last_measured_width: 0,
         })],
         None,
     ));

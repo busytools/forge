@@ -80,10 +80,10 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
     crate::app::git_diff::spawn_periodic_timer(git_diff_event_tx.clone());
     crate::app::cli_version::spawn_fetch(cli_version_event_tx.clone());
     crate::app::process_scanner::spawn_ticker(process_scan_event_tx.clone());
-    // Kick off the workspace's 30s account-usage poller. Fetches OAuth
-    // usage for every [[accounts]] entry; results land in the
-    // workspace's account-usage cache and the TUI's bottom panel
-    // reads from there via `Workspace::usage_for`.
+    // Kick off the 60 s background account-usage poller. Boot
+    // seeded from forge-state.toml in `Workspace::new`; `main`
+    // fired a single live probe via `spawn_initial_account_probe`;
+    // the poller carries the refresh cadence from here on.
     workspace.start_usage_poller();
     let perf_path = match crate::logging::resolve_perf_path(cli) {
         Ok(path) => path,
@@ -292,16 +292,16 @@ pub fn start_connection(app: &mut App) {
     );
 
     // Launchpad branch: the user invoked `forge` without an argv, so
-    // no project is focused. Every `auto_start = true` project warms
-    // up while the picker is shown — picking an already-spawned row
-    // is instant.
+    // no project is focused. Every `auto_start = true` project spawns
+    // immediately. The account picker consults whatever usage data
+    // is currently in memory (loaded from the on-disk cache at boot,
+    // refreshed by the 60s background poller). No warm-gate — when
+    // the cache is empty (cold install) the picker falls through to
+    // forge.toml definition order; once data lands, subsequent spawns
+    // see the right tier.
     if app.active_view == crate::app::ActiveView::Launchpad {
         let auto_start = workspace.auto_start_project_names();
         for project_name in auto_start {
-            // Every project goes through `SpawnProject` — no
-            // `StartDefault`, since the launchpad doesn't pick a
-            // focused tab. The chat view never mounts until the
-            // user picks a row.
             let cmd = forge_workspace::Command::SpawnProject {
                 project_name: project_name.clone(),
                 launch_settings: launch_settings.clone(),
@@ -338,6 +338,7 @@ pub fn start_connection(app: &mut App) {
         // Only the first project gets `StartDefault` semantics
         // (which sets it as the focused tab); the rest go via
         // `SpawnProject` and land in the Projects pane silently.
+        // No warm-up gating — see launchpad branch above.
         let cmd = if i == 0 {
             forge_workspace::Command::StartDefault {
                 project_name: project_name.clone(),

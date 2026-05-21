@@ -172,8 +172,9 @@ pub fn resolve_perf_path(cli: &Cli) -> anyhow::Result<Option<PathBuf>> {
         return Ok(Some(path));
     }
     // With `--features perf` compiled in (the default for production
-    // builds via dotfiles' install-forge.sh), produce a perf log at
-    // the standard sidecar path. Without the feature, stay silent.
+    // builds via `just install` / `scripts/install.sh`), produce a
+    // perf log at the standard sidecar path. Without the feature,
+    // stay silent.
     if !cfg!(feature = "perf") {
         return Ok(None);
     }
