@@ -35,6 +35,20 @@ use crate::views::{ProjectView, SessionView};
 /// naturally.
 const USAGE_POLL_INTERVAL: Duration = Duration::from_secs(60);
 
+/// Max attempts for `tag_session_with_retry` to find the worker's
+/// `<session_id>.jsonl` and append the tag row. claude CLI writes the
+/// file lazily on first message - typically within ~100 ms-2 s of
+/// `Connected` - so 30 attempts at 100 ms = ~3 s wall caps the window
+/// generously without burning resources on a session that legitimately
+/// never wrote anything.
+const WORKER_TAG_RETRY_ATTEMPTS: u32 = 30;
+
+/// Delay between `tag_session` retry attempts when the JSONL is not yet
+/// on disk. 100 ms is short enough to land within one or two ticks of
+/// claude's first write and large enough that 30 retries cap the total
+/// wait at a few seconds.
+const WORKER_TAG_RETRY_DELAY: Duration = Duration::from_millis(100);
+
 /// Multi-session orchestrator. Owns the project catalog snapshot
 /// loaded from `<config_dir>/forge.toml` and the pool of currently
 /// spawned [`forge_agent::Agent`] handles, one per active session.
@@ -1481,6 +1495,15 @@ impl Workspace {
     /// `tag_session` uses to find the right `.jsonl` when CONFIG_DIR
     /// hosts multiple project directories).
     ///
+    /// The tag-write races against claude CLI's first JSONL write: at
+    /// the moment `Connected` fires, claude has acknowledged bootstrap
+    /// but typically hasn't written the `system/init` row to disk yet,
+    /// so `tag_session` would see `Io(NotFound)` from `find_session_file`.
+    /// We retry on `NotFound` with a 100 ms backoff up to 30 attempts
+    /// (~3 s wall) and only roll back if the file genuinely never lands
+    /// or another error variant surfaces. To keep `translate_event`
+    /// synchronous, the retry loop runs in a detached tokio task.
+    ///
     /// Idempotent - calling twice for the same session_key is a no-op
     /// if the entry is already `Running`.
     pub(crate) fn apply_worker_tag_or_rollback(
@@ -1502,52 +1525,61 @@ impl Workspace {
             );
             return;
         };
-        let tag = forge_primitives::worker_tag(&label);
-        match forge_agent::userdata::catalog::mutations::tag_session(
-            &config_dir,
-            session_key.as_str(),
-            Some(&tag),
-            Some(cwd),
-        ) {
-            Ok(()) => {
-                // Transition the entry to Running + emit StatusChanged.
-                let updated_status = {
-                    let mut workers = self.live_workers.lock();
-                    workers.get_mut(&project_key).and_then(|entries| {
-                        entries.iter_mut().find(|e| e.session_key == *session_key).map(|entry| {
-                            entry.status = forge_primitives::WorkerLiveness::Running;
-                            entry.to_status()
+        let workspace = Arc::clone(self);
+        let session_key = session_key.clone();
+        let cwd = cwd.to_owned();
+        tokio::spawn(async move {
+            let tag = forge_primitives::worker_tag(&label);
+            let result = tag_session_with_retry(
+                &config_dir,
+                session_key.as_str(),
+                &tag,
+                &cwd,
+                WORKER_TAG_RETRY_ATTEMPTS,
+                WORKER_TAG_RETRY_DELAY,
+            )
+            .await;
+            match result {
+                Ok(()) => {
+                    // Transition the entry to Running + emit StatusChanged.
+                    let updated_status = {
+                        let mut workers = workspace.live_workers.lock();
+                        workers.get_mut(&project_key).and_then(|entries| {
+                            entries.iter_mut().find(|e| e.session_key == session_key).map(|entry| {
+                                entry.status = forge_primitives::WorkerLiveness::Running;
+                                entry.to_status()
+                            })
                         })
-                    })
-                };
-                if let Some(status) = updated_status {
-                    let _ = self.update_tx.send(SessionUpdate::WorkerStatusChanged {
-                        project_key,
-                        action: crate::protocol::WorkerStatusAction::StatusChanged,
-                        status,
-                    });
+                    };
+                    if let Some(status) = updated_status {
+                        let _ = workspace.update_tx.send(SessionUpdate::WorkerStatusChanged {
+                            project_key,
+                            action: crate::protocol::WorkerStatusAction::StatusChanged,
+                            status,
+                        });
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        target: "forge_workspace::workspace",
+                        session_id = %session_key.as_str(),
+                        label = %label,
+                        error = ?err,
+                        "tag_session failed for worker after retries; rolling back spawn"
+                    );
+                    let removed = workspace.remove_latest_worker(&project_key, &label);
+                    if let Some(entry) = removed {
+                        let status = entry.to_status();
+                        let _ = workspace.update_tx.send(SessionUpdate::WorkerStatusChanged {
+                            project_key,
+                            action: crate::protocol::WorkerStatusAction::Removed,
+                            status,
+                        });
+                    }
+                    workspace.release_session(&session_key);
                 }
             }
-            Err(err) => {
-                tracing::warn!(
-                    target: "forge_workspace::workspace",
-                    session_id = %session_key.as_str(),
-                    label = %label,
-                    error = ?err,
-                    "tag_session failed for worker; rolling back spawn"
-                );
-                let removed = self.remove_latest_worker(&project_key, &label);
-                if let Some(entry) = removed {
-                    let status = entry.to_status();
-                    let _ = self.update_tx.send(SessionUpdate::WorkerStatusChanged {
-                        project_key,
-                        action: crate::protocol::WorkerStatusAction::Removed,
-                        status,
-                    });
-                }
-                self.release_session(session_key);
-            }
-        }
+        });
     }
 
     // ---- Refresh helpers (workspace → agent) ----
@@ -2096,6 +2128,54 @@ impl Workspace {
         };
         (Arc::new(workspace), update_rx)
     }
+}
+
+/// Wrap `mutations::tag_session` with a retry loop scoped to the JSONL-
+/// not-yet-on-disk race after `Connected`. claude CLI creates
+/// `<session_id>.jsonl` lazily on its first message; until that lands,
+/// `find_session_file` returns `None` and `tag_session` surfaces
+/// `Io(NotFound)`. We retry only on that variant - any other error
+/// (permission denied, disk full, invalid UUID, encode error) propagates
+/// immediately. The async `tokio::time::sleep` is mandatory: this runs
+/// in a tokio task spawned from `apply_worker_tag_or_rollback`, never on
+/// a blocking thread.
+async fn tag_session_with_retry(
+    config_dir: &std::path::Path,
+    session_id: &str,
+    tag: &str,
+    directory: &str,
+    max_attempts: u32,
+    delay: Duration,
+) -> Result<(), forge_sdk::Error> {
+    let mut last_err: Option<forge_sdk::Error> = None;
+    for attempt in 0..max_attempts {
+        match forge_agent::userdata::catalog::mutations::tag_session(
+            config_dir,
+            session_id,
+            Some(tag),
+            Some(directory),
+        ) {
+            Ok(()) => return Ok(()),
+            Err(forge_sdk::Error::Io(io_err)) if io_err.kind() == std::io::ErrorKind::NotFound => {
+                last_err = Some(forge_sdk::Error::Io(io_err));
+                tracing::trace!(
+                    target: "forge_workspace::workspace",
+                    session_id = %session_id,
+                    attempt = attempt + 1,
+                    max_attempts,
+                    "tag_session: JSONL not yet on disk, retrying"
+                );
+                tokio::time::sleep(delay).await;
+            }
+            Err(other) => return Err(other),
+        }
+    }
+    Err(last_err.unwrap_or_else(|| {
+        forge_sdk::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("session {session_id} not found after {max_attempts} attempts"),
+        ))
+    }))
 }
 
 #[cfg(test)]
@@ -3102,6 +3182,135 @@ config_dir = "~/.claude-subspace"
         assert!(
             workspace.list_live_workers(&project_key).is_empty(),
             "lead release must cascade even when a worker sits at catalog[0]"
+        );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+mod tag_retry_tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    /// Build the on-disk `<config_dir>/projects/<sanitized_cwd>/`
+    /// directory `tag_session` expects and return the path the JSONL
+    /// would land at. Caller decides when to actually create the file.
+    fn jsonl_path_for(
+        config_dir: &std::path::Path,
+        cwd: &std::path::Path,
+        session_id: &str,
+    ) -> std::path::PathBuf {
+        let sanitized = forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+            &cwd.to_string_lossy(),
+        ));
+        let project_dir = forge_sdk::projects_dir_for(config_dir).join(&sanitized);
+        fs::create_dir_all(&project_dir).expect("project dir");
+        project_dir.join(format!("{session_id}.jsonl"))
+    }
+
+    /// JSONL exists from the start: tag_session_with_retry succeeds on
+    /// the first attempt and appends a tag row.
+    #[tokio::test]
+    async fn succeeds_immediately_when_jsonl_exists() {
+        let cfg = tempdir().expect("cfg");
+        let cwd = tempdir().expect("cwd");
+        let session_id = "550e8400-e29b-41d4-a716-446655440001";
+        let path = jsonl_path_for(cfg.path(), cwd.path(), session_id);
+        fs::write(&path, "").expect("seed jsonl");
+
+        let result = tag_session_with_retry(
+            cfg.path(),
+            session_id,
+            "forge:worker:smoke",
+            &cwd.path().to_string_lossy(),
+            5,
+            Duration::from_millis(10),
+        )
+        .await;
+        assert!(result.is_ok(), "tag should succeed: {result:?}");
+        let body = fs::read_to_string(&path).expect("read");
+        assert!(body.contains("\"tag\":\"forge:worker:smoke\""), "tag row appended: {body:?}");
+    }
+
+    /// JSONL appears after a few attempts: retry loop wins. Spawns the
+    /// retry, sleeps long enough for it to hit `NotFound` once or twice,
+    /// then creates the file and observes a successful tag.
+    #[tokio::test]
+    async fn retries_until_jsonl_appears() {
+        let cfg = tempdir().expect("cfg");
+        let cwd = tempdir().expect("cwd");
+        let session_id = "550e8400-e29b-41d4-a716-446655440002";
+        let path = jsonl_path_for(cfg.path(), cwd.path(), session_id);
+        // File doesn't exist yet; create it after a brief delay.
+        let path_clone = path.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(120)).await;
+            fs::write(&path_clone, "").expect("create jsonl");
+        });
+
+        let result = tag_session_with_retry(
+            cfg.path(),
+            session_id,
+            "forge:worker:smoke",
+            &cwd.path().to_string_lossy(),
+            30,
+            Duration::from_millis(50),
+        )
+        .await;
+        assert!(result.is_ok(), "retry should win: {result:?}");
+        let body = fs::read_to_string(&path).expect("read");
+        assert!(body.contains("\"tag\":\"forge:worker:smoke\""), "tag row appended: {body:?}");
+    }
+
+    /// JSONL never appears: retry exhausts and surfaces NotFound.
+    #[tokio::test]
+    async fn gives_up_after_max_attempts() {
+        let cfg = tempdir().expect("cfg");
+        let cwd = tempdir().expect("cwd");
+        let session_id = "550e8400-e29b-41d4-a716-446655440003";
+        let _path = jsonl_path_for(cfg.path(), cwd.path(), session_id);
+        // Don't create the JSONL.
+
+        let result = tag_session_with_retry(
+            cfg.path(),
+            session_id,
+            "forge:worker:smoke",
+            &cwd.path().to_string_lossy(),
+            3,
+            Duration::from_millis(10),
+        )
+        .await;
+        match result {
+            Err(forge_sdk::Error::Io(io_err)) => {
+                assert_eq!(io_err.kind(), std::io::ErrorKind::NotFound);
+            }
+            other => panic!("expected Io(NotFound), got {other:?}"),
+        }
+    }
+
+    /// Invalid UUID is a non-NotFound error: must propagate immediately
+    /// without retrying.
+    #[tokio::test]
+    async fn invalid_uuid_propagates_without_retry() {
+        let cfg = tempdir().expect("cfg");
+        let cwd = tempdir().expect("cwd");
+        let start = std::time::Instant::now();
+        let result = tag_session_with_retry(
+            cfg.path(),
+            "not-a-valid-uuid",
+            "forge:worker:smoke",
+            &cwd.path().to_string_lossy(),
+            30,
+            Duration::from_millis(500),
+        )
+        .await;
+        let elapsed = start.elapsed();
+        assert!(matches!(result, Err(forge_sdk::Error::MessageParse { .. })));
+        // Should NOT have slept through 30 * 500ms = 15s of retries.
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "non-NotFound errors must skip retry: {elapsed:?}"
         );
     }
 }

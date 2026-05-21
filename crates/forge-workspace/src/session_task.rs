@@ -187,6 +187,14 @@ impl SessionTask {
                     // matching entry; for leads + non-worker sessions
                     // this is a no-op. Tag failure rolls the worker
                     // entry back (release session + emit Removed).
+                    //
+                    // TODO: lead sessions are currently never tagged
+                    // with `forge:lead`. The resolver falls back to
+                    // latest untagged so existing behaviour works, but
+                    // explicit lead tagging is a spec gap we should
+                    // close (apply the same retry pattern via a
+                    // sibling `apply_lead_tag_or_warn` that does NOT
+                    // roll back on failure - just warns).
                     if let Some(workspace) = self.workspace.upgrade() {
                         workspace.apply_worker_tag_or_rollback(&real_key, &cwd);
                     }
