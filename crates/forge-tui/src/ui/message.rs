@@ -224,8 +224,18 @@ fn append_user_blocks(
                 // global default is the only knob.
                 if let Some(kind) = peer_block::detect_inbound(&block.text) {
                     let trailing_gap = block.trailing_blank_lines();
-                    let lines = peer_block::render_inbound(&kind, tools_collapsed);
+                    let collapsed = block.peer_collapsed_override.unwrap_or(tools_collapsed);
+                    let lines = peer_block::render_inbound(&kind, collapsed);
+                    let y_in_msg = layout.height;
+                    let height = rendered_lines_height(&lines, width);
                     layout.push_wrapped_lines(lines, width);
+                    // Stamp hit-target fields so `mouse::locate_
+                    // peer_user_block_at_click` can route clicks on
+                    // this inbound peer row back to this TextBlock
+                    // and flip `peer_collapsed_override`.
+                    block.peer_last_measured_y_in_msg = y_in_msg;
+                    block.peer_last_measured_height = height;
+                    block.peer_last_measured_width = width;
                     for _ in 0..trailing_gap {
                         layout.push_blank();
                     }

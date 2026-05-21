@@ -332,8 +332,11 @@ pub(crate) fn render_outbound(kind: &PeerOutboundKind, collapsed: bool) -> Vec<L
     )
 }
 
-/// Leading kind-icon glyphs for the header row.
-const INBOUND_ICON: &str = "\u{25c0}"; // ◀
+/// Leading kind-icon glyphs for the header row. Outbound + inbound
+/// are paired arrows pointing in opposite directions — same glyph
+/// family so the two row shapes read as a consistent pair rather
+/// than mixing arrow + triangle styles.
+const INBOUND_ICON: &str = "\u{2190}"; // ←
 const OUTBOUND_ICON: &str = "\u{2192}"; // →
 
 /// Status-icon classification — drives the leading glyph + colour.

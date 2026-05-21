@@ -64,6 +64,10 @@ fn assistant_message_with_cache(text: &str) -> ChatMessage {
             cache,
             markdown: forge_tui::app::IncrementalMarkdown::from_complete(text),
             trailing_spacing: TextBlockSpacing::None,
+            peer_collapsed_override: None,
+            peer_last_measured_y_in_msg: 0,
+            peer_last_measured_height: 0,
+            peer_last_measured_width: 0,
         })],
         None,
     )

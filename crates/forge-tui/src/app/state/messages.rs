@@ -389,6 +389,26 @@ pub struct TextBlock {
     /// metadata directly so spacing, height measurement, and scroll skipping all
     /// agree without mutating source text.
     pub trailing_spacing: TextBlockSpacing,
+    /// Peer-coordination collapse override (#114). `Some(true)` /
+    /// `Some(false)` pins this block's peer-envelope collapse state
+    /// regardless of the global `app.tools_collapsed`. `None` ⇒
+    /// follow the global default. Set by the mouse click handler
+    /// when the user toggles an inbound peer row. Always `None` for
+    /// non-peer text blocks.
+    pub peer_collapsed_override: Option<bool>,
+    /// Row offset within the rendered message at which the peer
+    /// block starts (post-layout). Stamped each frame by the user-
+    /// block renderer when a peer envelope is detected. Used by
+    /// `mouse::locate_peer_user_block_at_click` to find the clicked
+    /// block. Zero for non-peer text blocks.
+    pub peer_last_measured_y_in_msg: usize,
+    /// Row count of the rendered peer block. Same provenance + use
+    /// as `peer_last_measured_y_in_msg`. Zero ⇒ no hit-test target.
+    pub peer_last_measured_height: usize,
+    /// Width the peer block was laid out at. Used to invalidate the
+    /// hit-target when the chat area resizes (a stale rect from a
+    /// previous width would mis-route clicks).
+    pub peer_last_measured_width: u16,
 }
 
 impl TextBlock {
@@ -398,6 +418,10 @@ impl TextBlock {
             text,
             cache: BlockCache::default(),
             trailing_spacing: TextBlockSpacing::None,
+            peer_collapsed_override: None,
+            peer_last_measured_y_in_msg: 0,
+            peer_last_measured_height: 0,
+            peer_last_measured_width: 0,
         }
     }
 
