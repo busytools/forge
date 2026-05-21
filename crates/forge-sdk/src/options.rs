@@ -20,6 +20,11 @@ pub use forge_primitives::{PermissionMode, SdkPluginConfig, SubagentDefinition, 
 /// lines without a trailing newline.
 pub type WireTee = Arc<dyn Fn(&str) + Send + Sync>;
 
+/// Predicate used by [`Options::auto_approve_tool`] to short-circuit
+/// the permission flow for trusted tool names (e.g. forge's own
+/// in-process MCP server prefixes).
+pub type AutoApproveToolPredicate = Arc<dyn Fn(&str) -> bool + Send + Sync>;
+
 /// Configuration for one `Client` invocation.
 ///
 /// Construct via [`OptionsBuilder`] rather than populating directly.
@@ -38,6 +43,17 @@ pub struct Options {
     /// Optional permission callback. When set, the `claude` binary asks
     /// this callback before invoking any tool.
     pub can_use_tool: Option<Arc<dyn CanUseToolCallback>>,
+    /// Optional auto-approve predicate. When the CLI asks via
+    /// `can_use_tool` whether a particular tool can run, forge-sdk
+    /// consults this predicate first; tools that match are
+    /// auto-approved without invoking the `can_use_tool` callback.
+    /// Caller (forge-workspace via forge-agent) typically supplies a
+    /// closure that auto-approves any tool whose name starts with the
+    /// `mcp__<server>__` prefix of one of its in-process MCP servers
+    /// (e.g. `mcp__forge__peers__ask_agent`) — those servers are
+    /// already opted into by the user's forge.toml so a permission
+    /// prompt would just be noise.
+    pub auto_approve_tool: Option<AutoApproveToolPredicate>,
     /// In-process MCP servers. Each entry maps a server name (used in the
     /// `mcp__<server>__<tool>` prefix the model sees) to a built
     /// [`McpServer`].
@@ -145,6 +161,7 @@ impl Default for Options {
             model: None,
             permission_mode: PermissionMode::Ask,
             can_use_tool: None,
+            auto_approve_tool: None,
             mcp_servers: Vec::new(),
             external_mcp_servers: HashMap::new(),
             hooks: Hooks::default(),
@@ -271,6 +288,7 @@ impl std::fmt::Debug for Options {
             .field("model", &self.model)
             .field("permission_mode", &self.permission_mode)
             .field("can_use_tool", &self.can_use_tool.as_ref().map(|_| "<callback>"))
+            .field("auto_approve_tool", &self.auto_approve_tool.as_ref().map(|_| "<predicate>"))
             .field("mcp_servers", &format!("<{} servers>", self.mcp_servers.len()))
             .field(
                 "external_mcp_servers",
@@ -361,6 +379,19 @@ impl OptionsBuilder {
         C: CanUseToolCallback + 'static,
     {
         self.inner.can_use_tool = Some(Arc::new(callback));
+        self
+    }
+
+    /// Auto-approve any tool whose name satisfies the predicate.
+    /// forge-sdk consults this before invoking `can_use_tool`; the
+    /// permission flow short-circuits with an allow decision for
+    /// matches. Caller typically passes a closure that checks
+    /// `mcp__<server>__` prefixes for its in-process MCP servers.
+    pub fn auto_approve_tool<F>(mut self, predicate: F) -> Self
+    where
+        F: Fn(&str) -> bool + Send + Sync + 'static,
+    {
+        self.inner.auto_approve_tool = Some(Arc::new(predicate));
         self
     }
 

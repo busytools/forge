@@ -142,6 +142,7 @@ impl Client {
         let dispatch = ControlDispatchHandle::new(
             writer.clone(),
             options.can_use_tool.clone(),
+            options.auto_approve_tool.clone(),
             mcp_hosts,
             hook_callbacks,
             session_id.clone(),

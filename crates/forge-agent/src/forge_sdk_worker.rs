@@ -534,14 +534,28 @@ fn build_options_with_callback(
         .can_use_tool(callback)
         .hooks(observation_hooks)
         .permission_prompt_tool_name("stdio");
-    // Forge-workspace-supplied in-process MCP servers. Today this is
-    // the `forge` server carrying the four peer-coordination tools
-    // (#114 v1: peers__whoami / peers__list_agents / peers__tell_agent /
-    // peers__ask_agent). Each spawned `claude` subprocess sees them as
-    // `mcp__<server_name>__<tool_name>` and the auto-approve fast-path
-    // (lands in C10) skips the permission prompt for any tool whose
-    // name starts with `mcp__forge__`.
+    // Forge-workspace-supplied in-process MCP servers. Today the
+    // only one is `forge` (carrying the four peer-coordination
+    // tools); future modules (worktree, memory) will hang under
+    // their own names. Each spawned `claude` subprocess sees them
+    // as `mcp__<server_name>__<tool_name>`.
+    //
+    // Derive the auto-approve predicate from the live server names
+    // — anything matching a registered server prefix is opted-in
+    // by definition (the user already configured the server in
+    // forge.toml). forge-sdk's control_dispatch consults the
+    // predicate before invoking can_use_tool, so no permission
+    // prompt fires for these calls. Audit I6: keeps the prefix
+    // knowledge with the configurator instead of hardcoded in
+    // forge-sdk.
     let has_forge_mcp = extra_mcp_servers.iter().any(|(name, _)| name == "forge");
+    let auto_approve_prefixes: Vec<String> =
+        extra_mcp_servers.iter().map(|(name, _)| format!("mcp__{name}__")).collect();
+    if !auto_approve_prefixes.is_empty() {
+        b = b.auto_approve_tool(move |tool_name: &str| {
+            auto_approve_prefixes.iter().any(|p| tool_name.starts_with(p.as_str()))
+        });
+    }
     for (name, server) in extra_mcp_servers {
         b = b.mcp_server(name, server);
     }
