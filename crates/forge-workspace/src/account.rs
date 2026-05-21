@@ -108,7 +108,7 @@ impl AccountStateMap {
     /// Empty map for the `testing` feature's `Workspace::testing_stub`.
     /// Production code paths reach this map only via account pickers
     /// (`pick_for_project`), which a test fixture should never exercise.
-    #[cfg(feature = "testing")]
+    #[cfg(any(test, feature = "testing"))]
     pub fn empty_for_test() -> Self {
         Self { ordered_keys: Vec::new(), by_key: std::collections::HashMap::new() }
     }
@@ -382,7 +382,7 @@ fn tier_of(usage: Option<&UsageSnapshot>, last_error: Option<UsageFetchStatus>) 
                 | UsageFetchStatus::Unauthorized
         )
     );
-    if saturated || probe_blocked { 1 } else { 0 }
+    u8::from(saturated || probe_blocked)
 }
 
 /// True when either window has hit 100% utilisation. Such an account

@@ -59,14 +59,24 @@ impl CorrelationId {
         &self.0
     }
 
-    /// True iff this id was minted by `new_ask` (or has the `q-` prefix).
-    pub fn is_ask(&self) -> bool {
-        self.0.starts_with("q-")
-    }
-
-    /// True iff this id was minted by `new_tell` (or has the `t-` prefix).
-    pub fn is_tell(&self) -> bool {
-        self.0.starts_with("t-")
+    /// Validate an LLM-supplied correlation id at the tool boundary.
+    /// Format: `q-` or `t-` prefix + 8 lowercase hex characters.
+    /// Returns None on any deviation — tools reject the call with
+    /// is_error instead of letting a malformed id miss the inflight
+    /// map silently (which would degrade a Reply to a Message and
+    /// hide the actual problem).
+    pub fn from_external(s: &str) -> Option<Self> {
+        if s.len() != 10 {
+            return None;
+        }
+        let prefix_ok = s.starts_with("q-") || s.starts_with("t-");
+        if !prefix_ok {
+            return None;
+        }
+        if !s[2..].chars().all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)) {
+            return None;
+        }
+        Some(Self(s.to_owned()))
     }
 }
 
@@ -96,49 +106,23 @@ pub enum PeerLiveness {
     /// Configured in forge.toml but not currently spawned. Ask/tell
     /// will auto-spawn it via `Command::SpawnProject`.
     Sleeping,
-    /// A recent spawn or connection attempt failed; the project is
-    /// known to forge but not currently reachable. The next ask/tell
-    /// will retry the spawn.
-    Failed,
 }
 
-/// Reason why a peer message couldn't be delivered or got expired.
-/// Either returned synchronously via `DeliverError` from the tool
-/// impl, or carried in `SessionUpdate::PeerAskFailed` for async
-/// failures detected after the tool already returned ok.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Reason why a peer message couldn't be delivered. Carried in
+/// `SessionUpdate::PeerAskFailed` for async failures detected after
+/// the tool already returned ok.
+///
+/// v1 only ever surfaces `TargetConnectionFailed` (the
+/// `SessionTask::drop` + `ConnectionFailed` paths). Spawn-failure
+/// and channel-closure variants are future-only and removed here
+/// rather than carried as dead code.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PeerFailureReason {
-    /// Sleeping target's auto-spawn attempt failed (account picker
-    /// exhausted, settings invalid, etc.). The `reason` string is
-    /// LLM-readable detail.
-    TargetSpawnFailed { reason: String },
     /// Target's session task crashed or was closed while the ask was
     /// in flight (caught via `SessionUpdate::ConnectionFailed` or
     /// `SessionTask::drop`).
     TargetConnectionFailed,
-    /// Target's `command_sender` channel returned an error on send
-    /// (typically during teardown). Distinct from `TargetConnectionFailed`
-    /// only when the session-task hasn't formally signalled close yet.
-    ChannelClosed,
-}
-
-/// Lifecycle status of an in-flight ask tracked in the workspace's
-/// `inflight_asks` map.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum InflightStatus {
-    /// Ask is open; awaiting reply within the 30-min budget.
-    Pending,
-    /// Ask exceeded its 30-min budget without a reply. Late replies
-    /// are still delivered to the caller, tagged as `LateReply`.
-    TimedOut,
-    /// Recipient delivered a reply via `tell_agent { in_reply_to }`
-    /// while the ask was still `Pending`.
-    Replied,
-    /// Target session was confirmed dead before a reply could arrive
-    /// (auto-expired via `expire_target_inflight`).
-    TargetFailed,
 }
 
 /// Wire kind of a peer message. The full prose wrapper (with id /
@@ -178,9 +162,9 @@ pub enum WrappedKind {
 }
 
 /// One in-flight peer ask tracked at the workspace level. Lives in
-/// `Workspace.inflight_asks` keyed by `correlation_id`. Updated when
-/// the timer fires, when a reply lands, when the target's session
-/// ends, etc.
+/// `Workspace.inflight_asks` keyed by `correlation_id`; presence in
+/// the map is the lifecycle signal — the entry is removed on reply,
+/// timeout, or target-failure.
 ///
 /// Note: the tokio `JoinHandle` for the 30-min timer lives in a
 /// SEPARATE `Workspace.inflight_timers` HashMap (keeps forge-primitives
@@ -192,11 +176,6 @@ pub struct InflightAsk {
     pub caller_project: String,
     pub caller_org: String,
     pub target_project: String,
-    pub queued_at: SystemTime,
-    pub timeout_at: SystemTime,
-    pub hop: u8,
-    pub hop_limit: u8,
-    pub status: InflightStatus,
 }
 
 /// The complete content of an outgoing or inbound peer message. Built
@@ -230,7 +209,6 @@ pub struct WrappedPrompt {
     pub sender_org: String,
     pub hop: u8,
     pub hop_limit: u8,
-    pub in_reply_to: Option<CorrelationId>,
     pub body: String,
 }
 
@@ -304,10 +282,8 @@ pub struct PeerStatus {
     pub org: String,
     /// Filesystem path to the project root.
     pub path: PathBuf,
-    /// Current liveness — `Running` / `Sleeping` / `Failed`.
+    /// Current liveness — `Running` / `Sleeping`.
     pub status: PeerLiveness,
-    /// Current model if the session is running, else `None`.
-    pub model: Option<String>,
     /// Count of asks this session has received from peers that
     /// haven't been replied to yet.
     pub in_flight_incoming: usize,
@@ -346,8 +322,6 @@ mod tests {
         let id = CorrelationId::new_ask();
         assert!(id.as_str().starts_with("q-"), "expected q- prefix, got: {id}");
         assert_eq!(id.as_str().len(), 10, "expected q- + 8 hex chars, got: {id}");
-        assert!(id.is_ask());
-        assert!(!id.is_tell());
     }
 
     #[test]
@@ -355,8 +329,31 @@ mod tests {
         let id = CorrelationId::new_tell();
         assert!(id.as_str().starts_with("t-"), "expected t- prefix, got: {id}");
         assert_eq!(id.as_str().len(), 10, "expected t- + 8 hex chars, got: {id}");
-        assert!(id.is_tell());
-        assert!(!id.is_ask());
+    }
+
+    #[test]
+    fn correlation_id_from_external_validates_shape() {
+        // Happy path: valid q- and t- ids round-trip.
+        assert_eq!(
+            CorrelationId::from_external("q-abcd1234"),
+            Some(CorrelationId("q-abcd1234".to_owned())),
+        );
+        assert_eq!(
+            CorrelationId::from_external("t-deadbeef"),
+            Some(CorrelationId("t-deadbeef".to_owned())),
+        );
+        // Wrong prefix.
+        assert_eq!(CorrelationId::from_external("x-abcd1234"), None);
+        assert_eq!(CorrelationId::from_external("qabcd1234"), None);
+        // Wrong length.
+        assert_eq!(CorrelationId::from_external("q-abc"), None);
+        assert_eq!(CorrelationId::from_external("q-abcd12345"), None);
+        // Uppercase hex.
+        assert_eq!(CorrelationId::from_external("q-ABCD1234"), None);
+        // Non-hex.
+        assert_eq!(CorrelationId::from_external("q-zzzzzzzz"), None);
+        // Empty.
+        assert_eq!(CorrelationId::from_external(""), None);
     }
 
     #[test]
@@ -401,7 +398,6 @@ mod tests {
             sender_org: org.to_owned(),
             hop: 1,
             hop_limit: 10,
-            in_reply_to: None,
             body: body.to_owned(),
         }
     }
@@ -521,7 +517,7 @@ mod tests {
 
     #[test]
     fn peer_failure_reason_serde_round_trip() {
-        let r = PeerFailureReason::TargetSpawnFailed { reason: "ratelimited".to_owned() };
+        let r = PeerFailureReason::TargetConnectionFailed;
         let json = serde_json::to_string(&r).expect("serialize");
         let back: PeerFailureReason = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(r, back);

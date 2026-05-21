@@ -425,15 +425,15 @@ fn render_peer_card(
 /// have no prose body) don't render an orphan `└─ click to expand`
 /// row pointing at nothing.
 fn push_collapsed_summary(lines: &mut Vec<Line<'static>>, body: &str) {
-    let body = body.trim();
-    if body.is_empty() {
-        return;
-    }
     // First non-blank line, truncated to a short width so the summary
     // fits on one terminal row. Matches the standard tool card's
     // collapsed summary length (`DEFAULT_COLLAPSED_TEXT_SUMMARY_LIMIT`
     // = 60 chars).
     const SUMMARY_LIMIT: usize = 60;
+    let body = body.trim();
+    if body.is_empty() {
+        return;
+    }
     let head = body.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
     let summary: String = if head.chars().count() > SUMMARY_LIMIT {
         let mut s: String = head.chars().take(SUMMARY_LIMIT).collect();

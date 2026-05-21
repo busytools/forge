@@ -25,8 +25,7 @@
 use std::sync::Arc;
 
 use forge_primitives::{
-    CorrelationId, InflightAsk, PeerFailureReason, PeerInflightStats, PeerLiveness, PeerStatus,
-    WrappedPrompt,
+    CorrelationId, InflightAsk, PeerInflightStats, PeerLiveness, PeerStatus, WrappedPrompt,
 };
 use tracing::warn;
 
@@ -125,18 +124,12 @@ pub enum TargetStatus {
     QueuedForSpawn,
 }
 
-/// Why a `deliver_peer_prompt` call failed.
+/// Why a `deliver_peer_prompt` call failed synchronously.
 ///
-/// `UnknownTarget` and `HopLimitExceeded` fire synchronously inside
-/// `deliver_peer_prompt` and the calling tool maps both to
-/// `is_error: true` on the MCP response.
-///
-/// `DeliveryFailed` is for the async case (the dispatch returned ok
-/// but later delivery hit a problem — target's session task closed,
-/// channel errored on send). The actual async detection happens in
-/// the workspace command bus path and surfaces via a separate
-/// `SessionUpdate::PeerAskFailed` rather than a return value here.
-/// Wired in C13.
+/// Async delivery failures (target session crashes mid-flight) flow
+/// through `Workspace::expire_target_inflight` and surface to the
+/// caller via a synthetic `DeliveryFailureNotice` wrapper — not
+/// through this enum.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DeliverError {
     /// No project named `name` in forge.toml.
@@ -144,10 +137,6 @@ pub enum DeliverError {
     /// Outgoing hop exceeds the limit (default 10 — see #114 v1
     /// brainstorm). The chain stops here; tool returns `is_error`.
     HopLimitExceeded { hop: u8, limit: u8 },
-    /// Async delivery failure. Currently never returned synchronously
-    /// (kept here for symmetry; surfaces via
-    /// `SessionUpdate::PeerAskFailed` instead).
-    DeliveryFailed { reason: PeerFailureReason },
 }
 
 /// Per-session counter delta the tools push into the workspace's
@@ -260,10 +249,6 @@ impl WorkspaceFacade for Arc<Workspace> {
                     org: view.org,
                     path: view.path,
                     status: liveness,
-                    // v1: model is not yet plumbed through to the
-                    // facade (DomainSession doesn't carry it). Leave
-                    // None until #114 follow-on wires it.
-                    model: None,
                     in_flight_incoming: counts.incoming,
                     in_flight_outgoing: counts.outgoing,
                     spawned_at,
@@ -338,20 +323,30 @@ impl WorkspaceFacade for Arc<Workspace> {
 
     fn register_inflight_ask(&self, ask: InflightAsk) {
         let id = ask.correlation_id.clone();
-        self.inflight_asks.lock().insert(id.clone(), ask);
-        // 30-min timer per #114 v1 brainstorm. On expiry the timer
-        // fires Workspace::expire_inflight_ask which:
-        //   1. Marks the ask TimedOut
-        //   2. Removes from the inflight_asks + inflight_timers maps
-        //   3. Bumps caller's TimedOutPlus1 + OutgoingMinus1 stats
-        //   4. Emits SessionUpdate::PeerAskTimedOut for UI badges
-        //   5. Dispatches dual-path Command::Prompt notifications
-        //      (CallerTimeoutNotice to the caller; RecipientExpiredNotice
-        //      to the recipient, when its session is still alive)
-        //
-        // The timer holds a Weak<Workspace> to avoid a cycle. When
-        // the workspace is dropped before the timer fires the upgrade
-        // returns None and the timer exits silently.
+        // CorrelationId is 8 hex chars = ~4B possibilities so
+        // collisions are improbable but realistic — and a collision
+        // that silently overwrote the prior entry would (a) leave
+        // the prior caller waiting on a reply that's now routed
+        // elsewhere, and (b) orphan the prior 30-min timer (it
+        // would fire later and clobber the NEW entry). Detect the
+        // collision, warn, and abort the prior timer so at least
+        // the new ask survives intact.
+        let prev_ask = self.inflight_asks.lock().insert(id.clone(), ask);
+        if prev_ask.is_some()
+            && let Some(prev_timer) = self.inflight_timers.lock().remove(&id)
+        {
+            prev_timer.abort();
+            tracing::warn!(
+                target: "forge_workspace::mcp::peers::facade",
+                correlation_id = %id,
+                "register_inflight_ask: collision on correlation id — prior ask overwritten, prior timer aborted",
+            );
+        }
+        // 30-min timer: on expiry, Workspace::expire_inflight_ask
+        // removes the entry from inflight_asks + inflight_timers,
+        // bumps stats, and dispatches the dual-path notification.
+        // Timer holds a Weak<Workspace> so it can't keep the
+        // workspace alive after shutdown.
         let weak = Arc::downgrade(self);
         let id_for_timer = id.clone();
         let timer = tokio::spawn(async move {
@@ -436,6 +431,8 @@ pub struct MockWorkspaceFacade {
     pub deliver_calls: parking_lot::Mutex<Vec<(SessionKey, String, WrappedPrompt)>>,
     /// Captured calls to `register_inflight_ask`.
     pub register_calls: parking_lot::Mutex<Vec<InflightAsk>>,
+    /// Captured calls to `complete_inflight_ask`.
+    pub complete_calls: parking_lot::Mutex<Vec<CorrelationId>>,
     /// Captured calls to `bump_inflight_stats`.
     pub bump_calls: parking_lot::Mutex<Vec<(SessionKey, PeerStatsDelta)>>,
     /// Pre-loaded `InflightAsk`s that `resolve_correlation` may return.
@@ -497,7 +494,7 @@ impl WorkspaceFacade for MockWorkspaceFacade {
             TargetStatus::QueuedForSpawn,
             |p| match p.status {
                 PeerLiveness::Running => TargetStatus::Delivered,
-                PeerLiveness::Sleeping | PeerLiveness::Failed => TargetStatus::QueuedForSpawn,
+                PeerLiveness::Sleeping => TargetStatus::QueuedForSpawn,
             },
         );
         self.deliver_calls.lock().push((caller.clone(), target_project.to_owned(), wrapped));
@@ -514,6 +511,7 @@ impl WorkspaceFacade for MockWorkspaceFacade {
     }
 
     fn complete_inflight_ask(&self, id: &CorrelationId) -> Option<InflightAsk> {
+        self.complete_calls.lock().push(id.clone());
         self.inflight.lock().remove(id)
     }
 
@@ -531,7 +529,6 @@ mod tests {
     use super::*;
     use forge_primitives::WrappedKind;
     use std::path::PathBuf;
-    use std::time::SystemTime;
 
     fn fake_key(s: &str) -> SessionKey {
         // Tests use the production constructor (no test-helpers feature
@@ -546,7 +543,6 @@ mod tests {
             org: "TestOrg".to_owned(),
             path: PathBuf::from(format!("/tmp/{name}")),
             status: liveness,
-            model: None,
             in_flight_incoming: 0,
             in_flight_outgoing: 0,
             spawned_at: None,
@@ -561,7 +557,6 @@ mod tests {
             sender_org: "Personal".to_owned(),
             hop,
             hop_limit,
-            in_reply_to: None,
             body: "hi".to_owned(),
         }
     }
@@ -627,11 +622,6 @@ mod tests {
             caller_project: "alpha".to_owned(),
             caller_org: "Test".to_owned(),
             target_project: "beta".to_owned(),
-            queued_at: SystemTime::UNIX_EPOCH,
-            timeout_at: SystemTime::UNIX_EPOCH,
-            hop: 1,
-            hop_limit: 10,
-            status: forge_primitives::InflightStatus::Pending,
         };
         mock.register_inflight_ask(ask.clone());
         let back = mock.resolve_correlation(&ask.correlation_id);
@@ -693,12 +683,12 @@ mod tests {
         let mock = MockWorkspaceFacade::new();
         mock.peers.lock().push(fake_peer("beta", PeerLiveness::Running));
         *mock.force_deliver_error.lock() =
-            Some(DeliverError::DeliveryFailed { reason: PeerFailureReason::ChannelClosed });
+            Some(DeliverError::UnknownTarget { name: "forced".to_owned() });
         let caller = fake_key("alpha");
         let result = mock.deliver_peer_prompt(&caller, "beta", fake_wrapped(1, 10));
         assert!(matches!(
             result,
-            Err(DeliverError::DeliveryFailed { reason: PeerFailureReason::ChannelClosed })
+            Err(DeliverError::UnknownTarget { ref name }) if name == "forced"
         ));
     }
 }

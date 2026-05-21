@@ -163,7 +163,7 @@ impl SessionTask {
                     if let Some(workspace) = self.workspace.upgrade() {
                         workspace.expire_target_inflight(
                             &self.key,
-                            &forge_primitives::PeerFailureReason::TargetConnectionFailed,
+                            forge_primitives::PeerFailureReason::TargetConnectionFailed,
                         );
                     }
                     self.rekey_to(&real_key);
@@ -225,7 +225,7 @@ impl SessionTask {
                 if let Some(workspace) = self.workspace.upgrade() {
                     workspace.expire_target_inflight(
                         &key,
-                        &forge_primitives::PeerFailureReason::TargetConnectionFailed,
+                        forge_primitives::PeerFailureReason::TargetConnectionFailed,
                     );
                 }
                 self.emit(SessionUpdate::ConnectionFailed { key, message, fatal: false });
@@ -614,7 +614,7 @@ impl Drop for SessionTask {
         if let Some(workspace) = self.workspace.upgrade() {
             workspace.expire_target_inflight(
                 &self.key,
-                &forge_primitives::PeerFailureReason::TargetConnectionFailed,
+                forge_primitives::PeerFailureReason::TargetConnectionFailed,
             );
         }
     }

@@ -46,4 +46,10 @@ dirs = { workspace = true }
 
 [dev-dependencies]
 forge-agent = { workspace = true, features = ["testing"] }
+# `test-helpers` exposes `SessionKey::from_str_for_test` cross-crate;
+# without this dev-dep override the workspace's own lib tests fail to
+# compile because they reach the feature-gated constructor from
+# `forge_primitives::SessionKey`. Mirroring the same hop the testing
+# feature does for forge-agent.
+forge-primitives = { workspace = true, features = ["test-helpers"] }
 tempfile = { workspace = true }

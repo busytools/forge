@@ -9,8 +9,7 @@ use anyhow::Result;
 use forge_agent::AgentHandle;
 use forge_agent::client::SessionLaunchSettings;
 use forge_primitives::{
-    CorrelationId, InflightAsk, InflightStatus, PeerInflightStats, SDKSessionInfo, WrappedKind,
-    WrappedPrompt,
+    CorrelationId, InflightAsk, PeerInflightStats, SDKSessionInfo, WrappedKind, WrappedPrompt,
 };
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
@@ -335,11 +334,23 @@ impl Workspace {
     ) -> Result<Arc<AgentHandle>> {
         let session_key = self.resolve_target(&target)?;
 
-        // Fast path: cache hit
+        // Fast path: cache hit. When `spawn_key` was provided AND a
+        // DomainSession is buffered there (peer-coordination path:
+        // `handle_deliver_peer_prompt` parks the wrapped prompt at
+        // `__spawn_<name>__` and dispatches SpawnProject), we MUST
+        // drain that buffer into the live session before returning
+        // the pooled handle — otherwise the pending peer prompt
+        // strands at the synth key forever. The drain happens in
+        // the same critical section as the pool lookup so a
+        // concurrent caller can't race us into orphaning the
+        // buffer.
         {
             let pool = self.pool.lock();
             if let Some(existing) = pool.get(&session_key) {
-                return Ok(Arc::clone(&existing.handle));
+                let handle = Arc::clone(&existing.handle);
+                drop(pool);
+                self.drain_spawn_key_buffer_into(&session_key, spawn_key.as_ref());
+                return Ok(handle);
             }
         }
 
@@ -554,6 +565,74 @@ impl Workspace {
         }
 
         Ok(arc)
+    }
+
+    /// When `get_agent_handle_with_spawn_key` hits the pool fast-path
+    /// for a session that's already running, drain any
+    /// `pending_peer_prompts` buffered at the synthetic `spawn_key`
+    /// (e.g. `__spawn_<project>__`) into the live session via
+    /// `Command::Prompt`. Without this, peer asks aimed at a
+    /// running-but-pre-spawn-dispatched target strand at the synth
+    /// key forever — the regular Connected-time drain only fires
+    /// when a fresh SessionTask boots.
+    fn drain_spawn_key_buffer_into(
+        self: &Arc<Self>,
+        session_key: &SessionKey,
+        spawn_key: Option<&SessionKey>,
+    ) {
+        let Some(spawn_key) = spawn_key else { return };
+        if spawn_key == session_key {
+            return;
+        }
+        let buffered_domain = self.domain_handles.lock().remove(spawn_key);
+        let Some(buffered_domain) = buffered_domain else { return };
+        let (pending, incoming_hop) = {
+            let mut guard = buffered_domain.lock();
+            (std::mem::take(&mut guard.pending_peer_prompts), guard.current_inbound_hop)
+        };
+        if pending.is_empty() && incoming_hop.is_none() {
+            return;
+        }
+        // Stamp the inbound hop on the live session, taking max
+        // against any existing value so concurrent inbound asks
+        // don't undershoot each other.
+        if let Some(hop) = incoming_hop
+            && let Some(live) = self.domain_handles.lock().get(session_key).cloned()
+        {
+            let mut guard = live.lock();
+            let current = guard.current_inbound_hop.unwrap_or(0);
+            guard.current_inbound_hop = Some(current.max(hop));
+        }
+        // Re-dispatch each buffered prompt against the live session.
+        // Mirrors session_task::drain_pending_peer_prompts: bump
+        // IncomingPlus1 only for Question wrappers, push a
+        // synthetic user-turn so the TUI's chat shows the inbound
+        // block (claude CLI doesn't echo stdin-injected prompts),
+        // then dispatch the Command::Prompt.
+        let facade: Arc<dyn crate::mcp::peers::facade::WorkspaceFacade> =
+            Arc::new(Arc::clone(self));
+        for wrapped in pending {
+            if matches!(wrapped.kind, WrappedKind::Question) {
+                facade.bump_inflight_stats(
+                    session_key,
+                    crate::mcp::peers::facade::PeerStatsDelta::IncomingPlus1,
+                );
+            }
+            let text = wrapped.to_prose();
+            crate::spawn::push_peer_user_turn_into_chat(self, session_key, &text);
+            if let Err(err) = self.dispatch(crate::protocol::Command::Prompt {
+                key: session_key.clone(),
+                text,
+                attachments: Vec::new(),
+            }) {
+                tracing::warn!(
+                    target: "forge_workspace::workspace",
+                    key = %session_key.as_str(),
+                    error = ?err,
+                    "drain_spawn_key_buffer_into: dispatch failed; prompt dropped",
+                );
+            }
+        }
     }
 
     /// Kick off a single live account-usage probe in the background.
@@ -1491,25 +1570,6 @@ impl Workspace {
         // no-op. Remove from the map either way to keep state clean.
         self.inflight_timers.lock().remove(id);
 
-        // Skip the rest if the ask was already in a terminal state
-        // (concurrent race; should be rare).
-        if !matches!(ask.status, InflightStatus::Pending) {
-            tracing::debug!(
-                target: "forge_workspace::workspace",
-                correlation_id = %id,
-                status = ?ask.status,
-                "expire_inflight_ask: ask was not Pending; skipping notifications"
-            );
-            return;
-        }
-
-        // Emit UI-state event.
-        let _ = self.update_tx().send(crate::protocol::SessionUpdate::PeerAskTimedOut {
-            caller_key: ask.caller.clone(),
-            target_key: None,
-            correlation_id: id.clone(),
-        });
-
         // Update stats counters on the caller side.
         let facade: Arc<dyn crate::mcp::peers::facade::WorkspaceFacade> =
             Arc::new(Arc::clone(self));
@@ -1541,7 +1601,6 @@ impl Workspace {
             sender_org: target_org,
             hop: 0,
             hop_limit: 10,
-            in_reply_to: None,
             body: String::new(),
         };
         if let Err(err) = self.dispatch(crate::protocol::Command::Prompt {
@@ -1574,7 +1633,6 @@ impl Workspace {
                 sender_org: ask.caller_org.clone(),
                 hop: 0,
                 hop_limit: 10,
-                in_reply_to: None,
                 body: String::new(),
             };
             if let Err(err) = self.dispatch(crate::protocol::Command::Prompt {
@@ -1609,7 +1667,7 @@ impl Workspace {
     pub(crate) fn expire_target_inflight(
         self: &Arc<Self>,
         closing_key: &SessionKey,
-        reason: &forge_primitives::PeerFailureReason,
+        reason: forge_primitives::PeerFailureReason,
     ) {
         // Find the project this closing session belongs to. If we can't
         // (caller raced with config-reload; defensive only), there's
@@ -1639,15 +1697,14 @@ impl Workspace {
         }
     }
 
-    /// Expire an in-flight ask because of a delivery failure (target
-    /// crashed, spawn failed, channel closed). Same shape as
-    /// `expire_inflight_ask` but emits the failure variant instead of
-    /// the timeout variant on both paths (SessionUpdate +
-    /// Command::Prompt wrapper). Idempotent.
+    /// Expire an in-flight ask because the target session crashed
+    /// or was closed while the ask was open. Dispatches a
+    /// `DeliveryFailureNotice` wrapper to the caller so its LLM
+    /// learns the ask died. Idempotent.
     pub(crate) fn expire_inflight_ask_failed(
         self: &Arc<Self>,
         id: &CorrelationId,
-        reason: &forge_primitives::PeerFailureReason,
+        reason: forge_primitives::PeerFailureReason,
     ) {
         let ask = {
             let mut asks = self.inflight_asks.lock();
@@ -1662,16 +1719,6 @@ impl Workspace {
             return;
         };
         self.inflight_timers.lock().remove(id);
-
-        if !matches!(ask.status, InflightStatus::Pending) {
-            return;
-        }
-
-        let _ = self.update_tx().send(crate::protocol::SessionUpdate::PeerAskFailed {
-            caller_key: ask.caller.clone(),
-            correlation_id: id.clone(),
-            reason: reason.clone(),
-        });
 
         let facade: Arc<dyn crate::mcp::peers::facade::WorkspaceFacade> =
             Arc::new(Arc::clone(self));
@@ -1693,14 +1740,8 @@ impl Workspace {
         // Body carries the human-readable failure reason — caller
         // chat block surfaces it underneath the bracket header.
         let body = match &reason {
-            forge_primitives::PeerFailureReason::TargetSpawnFailed { reason: r } => {
-                format!("target spawn failed: {r}")
-            }
             forge_primitives::PeerFailureReason::TargetConnectionFailed => {
                 "target session connection lost".to_owned()
-            }
-            forge_primitives::PeerFailureReason::ChannelClosed => {
-                "target session command channel closed".to_owned()
             }
         };
 
@@ -1711,7 +1752,6 @@ impl Workspace {
             sender_org: target_org,
             hop: 0,
             hop_limit: 10,
-            in_reply_to: None,
             body,
         };
         if let Err(err) = self.dispatch(crate::protocol::Command::Prompt {
@@ -1729,7 +1769,7 @@ impl Workspace {
     }
 }
 
-#[cfg(feature = "testing")]
+#[cfg(any(test, feature = "testing"))]
 impl Workspace {
     /// Construct a stub `AgentHandle` plus the matching
     /// `Receiver<forge_primitives::AgentCommand>` that drains every command

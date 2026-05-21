@@ -93,8 +93,8 @@ pub use messages::{
 };
 pub use options::{SdkPluginConfig, SystemPromptKind};
 pub use peers::{
-    CorrelationId, InflightAsk, InflightStatus, PeerFailureReason, PeerInflightStats, PeerLiveness,
-    PeerStatus, WrappedKind, WrappedPrompt,
+    CorrelationId, InflightAsk, PeerFailureReason, PeerInflightStats, PeerLiveness, PeerStatus,
+    WrappedKind, WrappedPrompt,
 };
 pub use permission::PermissionMode;
 pub use permission_ui::{

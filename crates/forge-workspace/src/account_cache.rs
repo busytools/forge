@@ -137,8 +137,7 @@ pub(crate) fn store(
     config_dir: &Path,
     entries: &std::collections::BTreeMap<String, CachedAccountUsage>,
 ) {
-    let state =
-        ForgeState { version: CACHE_SCHEMA_VERSION, account_usage: entries.clone() };
+    let state = ForgeState { version: CACHE_SCHEMA_VERSION, account_usage: entries.clone() };
     let path = state_path(config_dir);
     let serialised = match toml::to_string_pretty(&state) {
         Ok(s) => s,

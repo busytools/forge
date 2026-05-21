@@ -21,7 +21,7 @@
 
 use std::sync::Arc;
 
-use forge_primitives::{CorrelationId, InflightAsk, InflightStatus, WrappedKind, WrappedPrompt};
+use forge_primitives::{CorrelationId, InflightAsk, WrappedKind, WrappedPrompt};
 use forge_sdk::mcp::server::{McpServer, McpServerBuilder};
 use forge_sdk::mcp::tool::{Tool, ToolInput, ToolOutput};
 
@@ -55,11 +55,6 @@ pub fn build_server(facade: Arc<dyn WorkspaceFacade>, caller_key: CallerKeyResol
         .tool(ask_agent)
         .build()
 }
-
-/// Per-ask budget for the 30-minute reply timer (#114 v1 brainstorm).
-/// Wired in C12; for now this constant is the inflight_ask shape's
-/// `timeout_at` calculation.
-const ASK_TIMEOUT_SECS: u64 = 30 * 60;
 
 /// Default hop limit for forwarded ask/tell chains (#114 v1 brainstorm
 /// locked at 10). Bumped at each forward; refused past the limit by
@@ -314,7 +309,23 @@ impl Tool for TellAgent {
         let inbound_hop = self.facade.peek_current_inbound_hop(&caller_key).unwrap_or(0);
         let outgoing_hop = inbound_hop.saturating_add(1);
 
-        let in_reply_to_id = args.in_reply_to.as_ref().map(|s| CorrelationId(s.clone()));
+        // Validate LLM-supplied in_reply_to at the tool boundary. A
+        // malformed id (wrong prefix, wrong length, non-hex,
+        // uppercase) would otherwise miss the inflight-map lookup
+        // silently and degrade to a Message, hiding the actual
+        // problem. Reject with is_error so the LLM can see + fix.
+        let in_reply_to_id = match args.in_reply_to.as_deref() {
+            None => None,
+            Some(s) => match CorrelationId::from_external(s) {
+                Some(id) => Some(id),
+                None => {
+                    return tool_error(format!(
+                        "in_reply_to {s:?} is not a well-formed correlation id \
+                         (expected q-XXXXXXXX or t-XXXXXXXX, 8 lowercase hex chars)"
+                    ));
+                }
+            },
+        };
         let (kind, reply_target_key) =
             classify_tell(&*self.facade, &args.target, in_reply_to_id.as_ref());
         let is_reply = matches!(kind, WrappedKind::Reply | WrappedKind::LateReply);
@@ -327,7 +338,6 @@ impl Tool for TellAgent {
             sender_org: identity.org,
             hop: outgoing_hop,
             hop_limit: HOP_LIMIT,
-            in_reply_to: in_reply_to_id.clone(),
             body: args.message,
         };
 
@@ -401,13 +411,11 @@ fn classify_tell(
         );
         return (WrappedKind::Message, None);
     }
-    let kind = match ask.status {
-        InflightStatus::Pending => WrappedKind::Reply,
-        InflightStatus::TimedOut => WrappedKind::LateReply,
-        // Already replied or target-failed: degraded.
-        _ => return (WrappedKind::Message, None),
-    };
-    (kind, Some(ask.caller))
+    // Presence in inflight_asks is the lifecycle signal — entry
+    // exists ⇒ ask is open. Timeout / target-failure paths remove
+    // the entry; late replies after that lookup-miss fall through
+    // to the WrappedKind::Message degraded path at the call site.
+    (WrappedKind::Reply, Some(ask.caller))
 }
 
 fn tool_error(text: String) -> ToolOutput {
@@ -424,9 +432,6 @@ fn format_deliver_error(target: &str, err: &facade::DeliverError) -> String {
             "hop limit exceeded forwarding to '{target}' ({hop}/{limit}). The peer chain \
              has reached its maximum depth - your message will not be forwarded."
         ),
-        facade::DeliverError::DeliveryFailed { reason } => {
-            format!("delivery to '{target}' failed: {reason:?}")
-        }
     }
 }
 
@@ -472,8 +477,6 @@ pub(crate) struct AskAgent {
 struct AskArgs {
     target: String,
     prompt: String,
-    #[serde(default)]
-    in_reply_to: Option<String>,
 }
 
 #[async_trait::async_trait]
@@ -555,7 +558,6 @@ impl Tool for AskAgent {
         let outgoing_hop = inbound_hop.saturating_add(1);
 
         let correlation_id = CorrelationId::new_ask();
-        let in_reply_to_id = args.in_reply_to.as_ref().map(|s| CorrelationId(s.clone()));
 
         let wrapped = WrappedPrompt {
             correlation_id: correlation_id.clone(),
@@ -564,37 +566,40 @@ impl Tool for AskAgent {
             sender_org: identity.org.clone(),
             hop: outgoing_hop,
             hop_limit: HOP_LIMIT,
-            in_reply_to: in_reply_to_id,
             body: args.prompt,
         };
 
-        let target_status =
-            match self.facade.deliver_peer_prompt(&caller_key, &args.target, wrapped) {
-                Ok(s) => s,
-                Err(err) => return tool_error(format_deliver_error(&args.target, &err)),
-            };
-
-        // Register the inflight ask AFTER delivery succeeds. The 30-min
-        // timer is armed inside register_inflight_ask in C12; today
-        // register only writes the inflight_asks map + a placeholder
-        // timer task.
-        let queued_at = std::time::SystemTime::now();
-        let timeout_at = queued_at
-            .checked_add(std::time::Duration::from_secs(ASK_TIMEOUT_SECS))
-            .unwrap_or(queued_at);
+        // Register the inflight ask BEFORE dispatching delivery so a
+        // fast-path recipient (running session, idle, processes the
+        // prompt immediately on its next turn) can't fire a
+        // `tell_agent { in_reply_to: q-X }` reply that hits
+        // `resolve_correlation` before the ask is in the map. Without
+        // this order, the reply degrades silently to
+        // `WrappedKind::Message`, the original ask is never marked
+        // Replied, and the 30-min timer eventually fires
+        // `CallerTimeoutNotice` for an ask that DID get answered.
+        // On dispatch failure we roll back the registration so the
+        // sidebar outgoing-counter / inflight map don't leak.
         self.facade.register_inflight_ask(InflightAsk {
             correlation_id: correlation_id.clone(),
             caller: caller_key.clone(),
             caller_project: identity.name.clone(),
             caller_org: identity.org.clone(),
             target_project: args.target.clone(),
-            queued_at,
-            timeout_at,
-            hop: outgoing_hop,
-            hop_limit: HOP_LIMIT,
-            status: InflightStatus::Pending,
         });
         self.facade.bump_inflight_stats(&caller_key, PeerStatsDelta::OutgoingPlus1);
+        let target_status =
+            match self.facade.deliver_peer_prompt(&caller_key, &args.target, wrapped) {
+                Ok(s) => s,
+                Err(err) => {
+                    // Rollback: the dispatch never reached the
+                    // recipient so the caller's outstanding-counter
+                    // and inflight_asks entry would otherwise leak.
+                    self.facade.complete_inflight_ask(&correlation_id);
+                    self.facade.bump_inflight_stats(&caller_key, PeerStatsDelta::OutgoingMinus1);
+                    return tool_error(format_deliver_error(&args.target, &err));
+                }
+            };
 
         let body = serde_json::json!({
             "correlation_id": correlation_id.as_str(),
@@ -627,7 +632,6 @@ mod tests {
             org: "TestOrg".to_owned(),
             path: std::path::PathBuf::from(format!("/tmp/{name}")),
             status: PeerLiveness::Running,
-            model: Some("claude-opus-4-7".to_owned()),
             in_flight_incoming: 0,
             in_flight_outgoing: 0,
             spawned_at: None,
@@ -703,7 +707,6 @@ mod tests {
             org: "Granite".to_owned(),
             path: std::path::PathBuf::from("/tmp/granite-backend"),
             status: PeerLiveness::Sleeping,
-            model: None,
             in_flight_incoming: 0,
             in_flight_outgoing: 0,
             spawned_at: None,
@@ -751,20 +754,13 @@ mod tests {
         caller_key_str: &str,
         caller_project: &str,
         target_project: &str,
-        status: InflightStatus,
     ) -> InflightAsk {
-        use std::time::SystemTime;
         InflightAsk {
             correlation_id: CorrelationId(correlation_id.to_owned()),
             caller: fake_key(caller_key_str),
             caller_project: caller_project.to_owned(),
             caller_org: "TestOrg".to_owned(),
             target_project: target_project.to_owned(),
-            queued_at: SystemTime::UNIX_EPOCH,
-            timeout_at: SystemTime::UNIX_EPOCH,
-            hop: 1,
-            hop_limit: 10,
-            status,
         }
     }
 
@@ -844,7 +840,6 @@ mod tests {
                 "granite-backend", // original caller's session key
                 "granite-backend", // original caller's project
                 "forge",           // target the original ask went to (now the replying agent)
-                InflightStatus::Pending,
             ),
         );
         let facade = mock.into_arc();
@@ -882,6 +877,34 @@ mod tests {
         let facade = mock.into_arc();
         let tool =
             TellAgent { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("forge")) };
+        // Valid-shape but never-registered id — exercises the
+        // "lookup miss → degrade to Message" path. Malformed-id
+        // input (wrong case, wrong length) takes the
+        // CorrelationId::from_external rejection path instead and
+        // is covered by tell_agent_in_reply_to_malformed_is_error.
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({
+                    "target": "granite-backend",
+                    "message": "Hi.",
+                    "in_reply_to": "q-00000000",
+                }),
+            })
+            .await;
+        assert!(!output.is_error, "valid-shape unknown id degrades to Message, not error");
+    }
+
+    #[tokio::test]
+    async fn tell_agent_in_reply_to_malformed_is_error() {
+        // Uppercase hex isn't well-formed (`from_external` rejects).
+        // Without this guard the lookup misses silently and the
+        // reply degrades to a Message — hiding the LLM's bug.
+        let mock = MockWorkspaceFacade::new();
+        mock.peers.lock().push(fake_peer("forge"));
+        mock.peers.lock().push(fake_peer("granite-backend"));
+        let facade = mock.into_arc();
+        let tool =
+            TellAgent { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("forge")) };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
@@ -891,8 +914,11 @@ mod tests {
                 }),
             })
             .await;
-        // Degrades to Message, doesn't error.
-        assert!(!output.is_error);
+        assert!(output.is_error, "malformed in_reply_to must surface as is_error");
+        assert!(
+            output.blocks[0].text.contains("well-formed"),
+            "error body should mention the validation failure",
+        );
     }
 
     #[test]
@@ -959,12 +985,9 @@ mod tests {
 
         assert_eq!(mock.register_calls.lock().len(), 1, "inflight ask should be registered");
         let registered = &mock.register_calls.lock()[0];
-        assert!(registered.correlation_id.is_ask());
+        assert!(registered.correlation_id.as_str().starts_with("q-"));
         assert_eq!(registered.target_project, "granite-backend");
         assert_eq!(registered.caller_project, "forge");
-        assert_eq!(registered.hop, 1);
-        assert_eq!(registered.hop_limit, 10);
-        assert_eq!(registered.status, InflightStatus::Pending);
 
         let bumps = mock.bump_calls.lock();
         assert_eq!(bumps.len(), 1, "exactly one stats bump per ask");
@@ -988,11 +1011,22 @@ mod tests {
             .await;
         assert!(output.is_error);
         assert!(output.blocks[0].text.contains("missing"));
-        assert!(
-            mock.register_calls.lock().is_empty(),
-            "failed delivery must NOT register an inflight ask",
-        );
-        assert!(mock.bump_calls.lock().is_empty(), "failed delivery must NOT bump stats");
+        // The race-fix in `AskAgent::call` registers the ask BEFORE
+        // dispatching delivery so a fast-path recipient can't beat
+        // the registration. When delivery fails (as it does here on
+        // UnknownTarget), we ROLL BACK the registration via
+        // `complete_inflight_ask` and `OutgoingMinus1` so the inflight
+        // map and sidebar counter both return to their pre-call
+        // state. Net observable effect: register +1 / complete -1
+        // and stats +1 / -1, all paired.
+        let register_count = mock.register_calls.lock().len();
+        let complete_count = mock.complete_calls.lock().len();
+        assert_eq!(register_count, 1, "race-safety: ask is registered before delivery dispatch");
+        assert_eq!(complete_count, 1, "rollback: failed delivery removes the just-registered ask");
+        let bumps = mock.bump_calls.lock();
+        assert_eq!(bumps.len(), 2, "stats bump + rollback");
+        assert_eq!(bumps[0].1, PeerStatsDelta::OutgoingPlus1);
+        assert_eq!(bumps[1].1, PeerStatsDelta::OutgoingMinus1);
     }
 
     #[tokio::test]

@@ -254,14 +254,6 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
                 session.peer_badges = stats;
             }
         }
-        SessionUpdate::PeerAskTimedOut { .. } | SessionUpdate::PeerAskFailed { .. } => {
-            // Stats updates flow via PeerInflightStatsChanged from
-            // the workspace's bump_inflight_stats. These two events
-            // are UI-state-only — currently only used to drive a
-            // redraw + (future) chat-injection animation. The
-            // existing `is_active_or_global` redraw flag at the
-            // bottom of this fn handles the redraw for free.
-        }
     }
     if is_active_or_global {
         app.needs_redraw = true;

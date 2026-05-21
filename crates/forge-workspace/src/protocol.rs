@@ -36,9 +36,8 @@ use forge_primitives::plugins::{PluginsCliActionSuccess, PluginsInventorySnapsho
 use forge_primitives::question::{QuestionOutcome, QuestionRequest};
 use forge_primitives::runtime::{AvailableModel, CurrentModel, ModeState, TerminalReason};
 use forge_primitives::{
-    AccountInfo, CorrelationId, ForgeAccountIdentity, ImageAttachment, McpOperationError,
-    McpServerStatus, Message, PeerFailureReason, PeerInflightStats, SessionId, SessionListEntry,
-    WrappedPrompt,
+    AccountInfo, ForgeAccountIdentity, ImageAttachment, McpOperationError, McpServerStatus,
+    Message, PeerInflightStats, SessionId, SessionListEntry, WrappedPrompt,
 };
 use tokio::sync::oneshot;
 
@@ -382,26 +381,6 @@ pub enum SessionUpdate {
     },
     /// An outgoing ask hit its 30-min timeout without a reply. UI
     /// reducer arm clears the matching ASKED row (when the Inspector
-    /// surface lands as a follow-on) and bumps the timed-out counter
-    /// on the sidebar badge. The wrapped LLM-side notification (the
-    /// chat block the caller's LLM sees) is dispatched separately as
-    /// a synthetic `Command::Prompt`; this variant is UI-state only.
-    PeerAskTimedOut {
-        caller_key: SessionKey,
-        target_key: Option<SessionKey>,
-        correlation_id: CorrelationId,
-    },
-    /// An outgoing ask failed to deliver via any reason in
-    /// `PeerFailureReason` (target spawn failed, target connection
-    /// failed mid-flight, channel closed). UI reducer arm bumps the
-    /// delivery-failed counter on the caller's sidebar badge. The
-    /// wrapped LLM-side notification is dispatched separately as a
-    /// synthetic `Command::Prompt`; this variant is UI-state only.
-    PeerAskFailed {
-        caller_key: SessionKey,
-        correlation_id: CorrelationId,
-        reason: PeerFailureReason,
-    },
     FatalError(AppError),
 }
 
@@ -427,9 +406,6 @@ impl SessionUpdate {
             | Self::ForgeAccountIdentity { key, .. }
             | Self::SessionsListed { key, .. }
             | Self::PeerInflightStatsChanged { key, .. } => Some(key.clone()),
-            Self::PeerAskTimedOut { caller_key, .. } | Self::PeerAskFailed { caller_key, .. } => {
-                Some(caller_key.clone())
-            }
             Self::RuntimeReloadCompleted { session_id }
             | Self::RuntimeReloadFailed { session_id, .. }
             | Self::ChatAppended { session_id, .. }
@@ -562,17 +538,6 @@ impl std::fmt::Debug for SessionUpdate {
                 .debug_struct("PeerInflightStatsChanged")
                 .field("key", key)
                 .field("stats", stats)
-                .finish(),
-            Self::PeerAskTimedOut { caller_key, correlation_id, .. } => f
-                .debug_struct("PeerAskTimedOut")
-                .field("caller_key", caller_key)
-                .field("correlation_id", correlation_id)
-                .finish_non_exhaustive(),
-            Self::PeerAskFailed { caller_key, correlation_id, reason } => f
-                .debug_struct("PeerAskFailed")
-                .field("caller_key", caller_key)
-                .field("correlation_id", correlation_id)
-                .field("reason", reason)
                 .finish(),
             Self::FatalError(err) => f.debug_struct("FatalError").field("error", err).finish(),
         }
