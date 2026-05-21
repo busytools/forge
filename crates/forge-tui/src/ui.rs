@@ -14,6 +14,7 @@ pub mod launchpad;
 pub(crate) mod layout;
 mod markdown;
 mod message;
+mod peer_block;
 pub mod projects_pane;
 pub(crate) mod prompt;
 pub(crate) mod theme;

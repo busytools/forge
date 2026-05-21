@@ -3,6 +3,7 @@ use crate::app::{
     MessageBlock, MessageRenderCache, MessageRenderCacheKey, MessageRenderSignature, MessageRole,
     SystemSeverity, TextBlock, WelcomeBlock, hash_text_block_content, hash_welcome_block_content,
 };
+use crate::ui::peer_block;
 use crate::ui::theme;
 use crate::ui::tool_call;
 use ratatui::style::{Color, Modifier, Style};
@@ -202,6 +203,19 @@ fn append_user_blocks(msg: &mut ChatMessage, width: u16, layout: &mut MessageLay
     for block in &mut msg.blocks {
         match block {
             MessageBlock::Text(block) => {
+                // Peer-coordination wrappers (#114) — when the
+                // workspace injects a `[Question id=…]` /
+                // `[Reply id=…]` / etc. user-turn, render a styled
+                // peer block instead of the default user bubble.
+                if let Some(kind) = peer_block::detect_inbound(&block.text) {
+                    let trailing_gap = block.trailing_blank_lines();
+                    let lines = peer_block::render_inbound(&kind);
+                    layout.push_wrapped_lines(lines, width);
+                    for _ in 0..trailing_gap {
+                        layout.push_blank();
+                    }
+                    continue;
+                }
                 let trailing_gap = block.trailing_blank_lines();
                 let rendered = text_block_layout(block, width, Some(theme::USER_MSG_BG), true);
                 layout.push_lines(rendered.lines, rendered.height, rendered.wrapped_lines);
@@ -350,6 +364,20 @@ fn append_assistant_tool_block(
     state: &mut AssistantLayoutState,
 ) {
     if tc.hidden_unless_focused_interaction() {
+        return;
+    }
+    // Peer-coordination outbound (#114) — replace the default
+    // tool_use card for `mcp__forge__peers__ask_agent` /
+    // `peers__tell_agent` with a one-line styled peer block.
+    if let Some(kind) = peer_block::detect_outbound(tc) {
+        if !state.prev_was_tool && state.has_body_content {
+            layout.push_blank();
+        }
+        let lines = peer_block::render_outbound(&kind);
+        layout.push_wrapped_lines(lines, render_context.width);
+        state.has_body_content = true;
+        state.has_visible_content = true;
+        state.prev_was_tool = true;
         return;
     }
     if !state.prev_was_tool && state.has_body_content {
