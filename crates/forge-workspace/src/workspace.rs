@@ -376,8 +376,45 @@ impl Workspace {
         // conn = None and update post-Agent::spawn at line ~470.
         let domain_arc = {
             let mut handles = self.domain_handles.lock();
+            // Three cases:
+            //  1. A DomainSession is already registered at `session_key`
+            //     (e.g. connect::create_app's pre-Connect placeholder).
+            //     Reuse it.
+            //  2. `spawn_key` was provided AND a DomainSession exists
+            //     there (peer-coordination spawn path: handle_deliver_
+            //     peer_prompt pre-populated pending_peer_prompts /
+            //     current_inbound_hop at synth_key=`__spawn_<name>__`
+            //     before dispatching SpawnProject). Move that
+            //     DomainSession onto `session_key` so the SessionTask
+            //     we're about to construct sees the buffered state.
+            //  3. Neither — create fresh at `session_key`.
+            //
+            // When both `session_key` and `spawn_key` exist (race:
+            // peer ask arrives while a pre-Connect placeholder was
+            // already there), merge `spawn_key`'s buffered prompts
+            // / hop into the placeholder. The placeholder is the
+            // one the SessionTask will pick up via `session_key`.
             if let Some(existing) = handles.get(&session_key).cloned() {
+                if let Some(spawn) = spawn_key.as_ref()
+                    && spawn != &session_key
+                    && let Some(buffered) = handles.remove(spawn)
+                {
+                    let mut placeholder = existing.lock();
+                    let mut src = buffered.lock();
+                    placeholder.pending_peer_prompts.append(&mut src.pending_peer_prompts);
+                    if let Some(hop) = src.current_inbound_hop {
+                        let current = placeholder.current_inbound_hop.unwrap_or(0);
+                        placeholder.current_inbound_hop = Some(current.max(hop));
+                    }
+                }
                 existing
+            } else if let Some(spawn) = spawn_key.as_ref()
+                && spawn != &session_key
+                && let Some(buffered) = handles.remove(spawn)
+            {
+                buffered.lock().key = session_key.clone();
+                handles.insert(session_key.clone(), Arc::clone(&buffered));
+                buffered
             } else {
                 let fresh = Arc::new(Mutex::new(DomainSession::new(session_key.clone(), None)));
                 handles.insert(session_key.clone(), Arc::clone(&fresh));
