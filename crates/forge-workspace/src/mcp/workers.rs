@@ -22,25 +22,29 @@ pub use types::WorkerEntry;
 /// Mirrors the peer-MCP value (#114 v1 brainstorm locked at 10).
 const HOP_LIMIT: u8 = 10;
 
-/// Build the per-session workers MCP server with all four workers
-/// tools closure-bound to `caller_key`. Server is named `forge` so
-/// tool names render to the LLM as `mcp__forge__workers__<name>` -
-/// matching the spec namespace and the auto-approve fast-path in
-/// `forge-sdk`'s `control_dispatch` which matches `mcp__forge__`
-/// at the tool-name level. The peer-coordination server uses the
-/// same `forge` name; task 12 reconciles registration so both sets
-/// of tools surface together.
+/// Build a standalone `forge` MCP server carrying only the four
+/// workers-coordination tools. Used in tests for isolated workers-MCP
+/// coverage; the production build_site uses
+/// [`crate::mcp::build_forge_server`] which combines peers + workers
+/// into one server (the CLI rejects duplicate-name MCP servers, so
+/// both modules must register their tools through a single builder).
 pub fn build_server(facade: Arc<dyn WorkerFacade>, caller_key: CallerKeyResolver) -> McpServer {
+    add_tools(McpServerBuilder::new("forge", env!("CARGO_PKG_VERSION")), facade, caller_key).build()
+}
+
+/// Attach the four workers-coordination tools to an existing
+/// [`McpServerBuilder`]. The parent module's `build_forge_server`
+/// calls this to share the `forge` server name with peers' tools.
+pub(crate) fn add_tools(
+    builder: McpServerBuilder,
+    facade: Arc<dyn WorkerFacade>,
+    caller_key: CallerKeyResolver,
+) -> McpServerBuilder {
     let spawn = Spawn { facade: facade.clone(), caller_key: caller_key.clone() };
     let list = List { facade: facade.clone(), caller_key: caller_key.clone() };
     let tell = Tell { facade: facade.clone(), caller_key: caller_key.clone() };
     let ask = Ask { facade, caller_key };
-    McpServerBuilder::new("forge", env!("CARGO_PKG_VERSION"))
-        .tool(spawn)
-        .tool(list)
-        .tool(tell)
-        .tool(ask)
-        .build()
+    builder.tool(spawn).tool(list).tool(tell).tool(ask)
 }
 
 /// `workers__spawn` - lead-only. Allocates a new SessionTask in the

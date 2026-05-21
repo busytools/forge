@@ -450,22 +450,26 @@ impl Workspace {
             }
         };
 
-        // Build the per-session `forge` MCP server with the four peer
-        // tools (peers__whoami / peers__list_agents / peers__tell_agent /
-        // peers__ask_agent). CallerKeyResolver reads `domain.key`
-        // through the shared Arc — when SessionTask migrates the key
-        // from synthetic to real on Connected, the resolver tracks.
-        let peer_server = {
-            let facade = crate::mcp::peers::facade::ProdWorkspaceFacade::from_arc(self);
+        // Build the per-session `forge` MCP server. ONE server name,
+        // both peer-coordination (`peers__*`) and worker-coordination
+        // (`workers__*`) tool groups surfaced together. The CLI
+        // rejects duplicate-name MCP servers, so peers and workers
+        // must share the `forge` namespace. CallerKeyResolver reads
+        // `domain.key` through the shared Arc — when SessionTask
+        // migrates the key from synthetic to real on Connected, the
+        // resolver tracks for both tool groups.
+        let forge_server = {
+            let workspace_facade = crate::mcp::peers::facade::ProdWorkspaceFacade::from_arc(self);
+            let worker_facade = crate::mcp::workers::facade::ProdWorkerFacade::from_arc(self);
             let resolver = crate::mcp::peers::facade::CallerKeyResolver::from_domain(&domain_arc);
-            crate::mcp::peers::build_server(facade, resolver)
+            crate::mcp::build_forge_server(workspace_facade, worker_facade, resolver)
         };
 
         let handle = forge_agent::Agent::spawn(
             account_dir.clone(),
             Some(account_key.0.clone()),
             attached_proxy,
-            vec![("forge".to_owned(), peer_server)],
+            vec![("forge".to_owned(), forge_server)],
         );
         // Project-rooted targets (`Default` / `Named`) resume the
         // project's lead session when the on-disk catalog has one,

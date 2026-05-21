@@ -622,6 +622,12 @@ mod tests_options_build {
         let pred = opts.auto_approve_tool.expect("predicate stored");
         assert!(pred("mcp__forge__peers__whoami"));
         assert!(pred("mcp__forge__peers__ask_agent"));
+        // Workers tools live under the same `mcp__forge__` namespace
+        // — auto-approve must cover them with one predicate.
+        assert!(pred("mcp__forge__workers__spawn"));
+        assert!(pred("mcp__forge__workers__list"));
+        assert!(pred("mcp__forge__workers__tell"));
+        assert!(pred("mcp__forge__workers__ask"));
         assert!(pred("mcp__forge__"));
         // Sibling prefixes must NOT match (no partial-string fuzz).
         assert!(!pred("mcp__forgery__steal_secrets"));

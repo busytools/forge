@@ -31,30 +31,30 @@ use crate::mcp::peers::types::{CorrelationId, InflightAsk, WrappedKind, WrappedP
 pub mod facade;
 pub mod types;
 
-/// Build the per-session `forge` MCP server with all four peer tools
-/// closure-bound to `caller_key`. Called from
-/// `forge_agent::forge_sdk_worker::build_options_with_callback` (lands
-/// in C9) once per spawned session, so each `claude` subprocess sees
-/// its own identity via `peers__whoami` and addresses other agents
-/// via `peers__ask_agent` / `peers__tell_agent`.
-///
-/// The server is named `forge`. Tool names carry the `peers__` prefix
-/// so they render to the LLM as `mcp__forge__peers__<name>`. Future
-/// modules (worktree, memory, …) slot in alongside `peers` under the
-/// same `forge` server without touching the auto-approve fast-path
-/// in forge-sdk's `control_dispatch` (which matches the
-/// `mcp__forge__` prefix at the tool-name level).
+/// Build a standalone `forge` MCP server carrying only the four
+/// peer-coordination tools. Used in tests for isolated peer-MCP
+/// coverage; the production build_site uses
+/// [`crate::mcp::build_forge_server`] which combines peers + workers
+/// into one server (the CLI rejects duplicate-name MCP servers, so
+/// both modules must register their tools through a single
+/// builder).
 pub fn build_server(facade: Arc<dyn WorkspaceFacade>, caller_key: CallerKeyResolver) -> McpServer {
+    add_tools(McpServerBuilder::new("forge", env!("CARGO_PKG_VERSION")), facade, caller_key).build()
+}
+
+/// Attach the four peer-coordination tools to an existing
+/// [`McpServerBuilder`]. The parent module's `build_forge_server`
+/// calls this to share the `forge` server name with workers' tools.
+pub(crate) fn add_tools(
+    builder: McpServerBuilder,
+    facade: Arc<dyn WorkspaceFacade>,
+    caller_key: CallerKeyResolver,
+) -> McpServerBuilder {
     let whoami = Whoami { facade: facade.clone(), caller_key: caller_key.clone() };
     let list_agents = ListAgents { facade: facade.clone() };
     let tell_agent = TellAgent { facade: facade.clone(), caller_key: caller_key.clone() };
     let ask_agent = AskAgent { facade, caller_key };
-    McpServerBuilder::new("forge", env!("CARGO_PKG_VERSION"))
-        .tool(whoami)
-        .tool(list_agents)
-        .tool(tell_agent)
-        .tool(ask_agent)
-        .build()
+    builder.tool(whoami).tool(list_agents).tool(tell_agent).tool(ask_agent)
 }
 
 /// Default hop limit for forwarded ask/tell chains (#114 v1 brainstorm
