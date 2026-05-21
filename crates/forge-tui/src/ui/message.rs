@@ -176,7 +176,12 @@ fn build_message_layout(
 
     match msg.role {
         MessageRole::Welcome => append_welcome_blocks(msg, render_context.width, &mut layout),
-        MessageRole::User => append_user_blocks(msg, render_context.width, &mut layout),
+        MessageRole::User => append_user_blocks(
+            msg,
+            render_context.width,
+            render_context.options.tools_collapsed,
+            &mut layout,
+        ),
         MessageRole::Assistant => {
             append_assistant_blocks(msg, spinner, render_context, &mut layout);
         }
@@ -199,7 +204,12 @@ fn append_welcome_blocks(msg: &mut ChatMessage, width: u16, layout: &mut Message
     }
 }
 
-fn append_user_blocks(msg: &mut ChatMessage, width: u16, layout: &mut MessageLayout) {
+fn append_user_blocks(
+    msg: &mut ChatMessage,
+    width: u16,
+    tools_collapsed: bool,
+    layout: &mut MessageLayout,
+) {
     for block in &mut msg.blocks {
         match block {
             MessageBlock::Text(block) => {
@@ -207,9 +217,14 @@ fn append_user_blocks(msg: &mut ChatMessage, width: u16, layout: &mut MessageLay
                 // workspace injects a `[Question id=…]` /
                 // `[Reply id=…]` / etc. user-turn, render a styled
                 // peer block instead of the default user bubble.
+                // Collapse state mirrors the global tool-card
+                // preference so Ctrl+X flips peer rows and tool rows
+                // together. Inbound peer turns don't (yet) have a
+                // per-row override the way ToolCallInfo does — the
+                // global default is the only knob.
                 if let Some(kind) = peer_block::detect_inbound(&block.text) {
                     let trailing_gap = block.trailing_blank_lines();
-                    let lines = peer_block::render_inbound(&kind);
+                    let lines = peer_block::render_inbound(&kind, tools_collapsed);
                     layout.push_wrapped_lines(lines, width);
                     for _ in 0..trailing_gap {
                         layout.push_blank();
@@ -368,12 +383,18 @@ fn append_assistant_tool_block(
     }
     // Peer-coordination outbound (#114) — replace the default
     // tool_use card for `mcp__forge__peers__ask_agent` /
-    // `peers__tell_agent` with a one-line styled peer block.
+    // `peers__tell_agent` with a styled peer block in the same
+    // tool-card shape (status icon + kind label + tree body).
+    // Collapse state follows the standard tool-call rule: per-tc
+    // `collapsed_override` wins, otherwise the global default.
+    // Click-to-toggle on peer rows currently piggybacks on the
+    // existing tool-call row hit-test in mouse.rs.
     if let Some(kind) = peer_block::detect_outbound(tc) {
         if !state.prev_was_tool && state.has_body_content {
             layout.push_blank();
         }
-        let lines = peer_block::render_outbound(&kind);
+        let collapsed = tc.collapsed_override.unwrap_or(render_context.options.tools_collapsed);
+        let lines = peer_block::render_outbound(&kind, collapsed);
         layout.push_wrapped_lines(lines, render_context.width);
         state.has_body_content = true;
         state.has_visible_content = true;

@@ -34,10 +34,6 @@ use ratatui::text::{Line, Span};
 /// (TODO: not yet wired — for now the truncation is permanent).
 const BODY_TRUNCATE: usize = 200;
 
-/// Indentation applied to the body lines (3 spaces — matches the
-/// mockup's `   ` prefix on the muted body rows).
-const BODY_INDENT: &str = "   ";
-
 /// One inbound peer block parsed from the user-turn text.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum PeerInboundKind {
@@ -218,192 +214,265 @@ pub(crate) fn detect_outbound(tc: &ToolCallInfo) -> Option<PeerOutboundKind> {
 /// Build the styled lines for an inbound peer block. The chat
 /// renderer calls this after `detect_inbound` matches and SKIPS the
 /// default user-message rendering for the same text.
-pub(crate) fn render_inbound(kind: &PeerInboundKind) -> Vec<Line<'static>> {
+///
+/// Visual shape mirrors a standard tool-call card: header
+/// `  <status> <kind-icon-bold> <kind-label-bold> <sender bold orange> <meta dim…>`
+/// then body lines under `  │  ` / `  └─ ` tree connectors —
+/// peer rows visually rhyme with the tool rows above and below them.
+pub(crate) fn render_inbound(kind: &PeerInboundKind, collapsed: bool) -> Vec<Line<'static>> {
     match kind {
-        PeerInboundKind::Question { id, from, org, hop, hop_max, body } => render_inbound_block(
-            "\u{25c0}",
+        PeerInboundKind::Question { id, from, org, hop, hop_max, body } => render_peer_card(
+            PeerCardStatus::Ok,
+            INBOUND_ICON,
             theme::RUST_ORANGE,
             "question",
-            &[
-                ("from", from.clone(), Some(theme::RUST_ORANGE), true),
-                ("·", " · ".to_owned(), Some(theme::DIM), false),
-                ("id", id.clone(), Some(theme::DIM), false),
-                ("·", " · ".to_owned(), Some(theme::DIM), false),
-                ("hop", format!("hop {hop}/{hop_max}"), Some(theme::DIM), false),
-                ("·", " · ".to_owned(), Some(theme::DIM), false),
-                ("org", format!("({org})"), Some(theme::DIM), false),
-            ],
+            from,
+            &dim_meta(&[format!("· {id}"), format!("· hop {hop}/{hop_max}"), format!("· ({org})")]),
             body,
+            collapsed,
         ),
-        PeerInboundKind::Message { id, from, org, body, .. } => render_inbound_block(
-            "\u{25c0}",
+        PeerInboundKind::Message { id, from, org, body, .. } => render_peer_card(
+            PeerCardStatus::Ok,
+            INBOUND_ICON,
             theme::SUBAGENT_TOKEN,
             "message",
-            &[
-                ("from", from.clone(), Some(theme::RUST_ORANGE), true),
-                ("·", " · ".to_owned(), Some(theme::DIM), false),
-                ("id", id.clone(), Some(theme::DIM), false),
-                ("·", " · ".to_owned(), Some(theme::DIM), false),
-                ("org", format!("({org})"), Some(theme::DIM), false),
-            ],
+            from,
+            &dim_meta(&[format!("· {id}"), format!("· ({org})")]),
             body,
+            collapsed,
         ),
-        PeerInboundKind::Reply { id, from, org, body } => render_inbound_block(
-            "\u{25c0}",
+        PeerInboundKind::Reply { id, from, org, body } => render_peer_card(
+            PeerCardStatus::Ok,
+            INBOUND_ICON,
             Color::Green,
             "reply",
-            &[
-                ("from", from.clone(), Some(theme::RUST_ORANGE), true),
-                ("·", " · ".to_owned(), Some(theme::DIM), false),
-                ("id", id.clone(), Some(theme::DIM), false),
-                ("·", " · ".to_owned(), Some(theme::DIM), false),
-                ("org", format!("({org})"), Some(theme::DIM), false),
-            ],
+            from,
+            &dim_meta(&[format!("· {id}"), format!("· ({org})")]),
             body,
+            collapsed,
         ),
-        PeerInboundKind::LateReply { id, from, org, body } => render_inbound_block(
-            "\u{25c0}",
-            Color::Green,
-            "reply",
-            &[
-                ("from", from.clone(), Some(theme::RUST_ORANGE), true),
-                ("·", " · ".to_owned(), Some(theme::DIM), false),
-                ("id", id.clone(), Some(theme::DIM), false),
-                ("·", " · ".to_owned(), Some(theme::STATUS_WARNING), false),
-                ("late", "\u{231b} late".to_owned(), Some(theme::STATUS_WARNING), false),
-                ("·", " · ".to_owned(), Some(theme::DIM), false),
-                ("org", format!("({org})"), Some(theme::DIM), false),
-            ],
-            body,
-        ),
-        PeerInboundKind::CallerTimeout { id, target, org, body } => render_inbound_block(
-            "\u{26a0}",
+        PeerInboundKind::LateReply { id, from, org, body } => {
+            let mut meta = dim_meta(&[format!("· {id}")]);
+            meta.push(Span::styled(" · ".to_owned(), Style::default().fg(theme::DIM)));
+            meta.push(Span::styled(
+                "\u{231b} late".to_owned(),
+                Style::default().fg(theme::STATUS_WARNING),
+            ));
+            meta.push(Span::styled(format!(" · ({org})"), Style::default().fg(theme::DIM)));
+            render_peer_card(
+                PeerCardStatus::Warning,
+                INBOUND_ICON,
+                Color::Green,
+                "reply",
+                from,
+                &meta,
+                body,
+                collapsed,
+            )
+        }
+        PeerInboundKind::CallerTimeout { id, target, org, body } => render_peer_card(
+            PeerCardStatus::Warning,
+            INBOUND_ICON,
             theme::STATUS_ERROR,
-            "timeout",
-            &[
-                ("to", format!("ask to {target}"), Some(theme::RUST_ORANGE), true),
-                ("·", " · ".to_owned(), Some(theme::DIM), false),
-                ("id", id.clone(), Some(theme::DIM), false),
-                ("·", " · ".to_owned(), Some(theme::DIM), false),
-                ("reason", "no reply after 30 min".to_owned(), Some(theme::DIM), false),
-                ("·", " · ".to_owned(), Some(theme::DIM), false),
-                ("org", format!("({org})"), Some(theme::DIM), false),
-            ],
+            "ask timed out",
+            target,
+            &dim_meta(&[
+                format!("· {id}"),
+                "· no reply after 30 min".to_owned(),
+                format!("· ({org})"),
+            ]),
             body,
+            collapsed,
         ),
-        PeerInboundKind::RecipientExpired { id, from, org, body } => render_inbound_block(
-            "\u{23f1}",
+        PeerInboundKind::RecipientExpired { id, from, org, body } => render_peer_card(
+            PeerCardStatus::Warning,
+            INBOUND_ICON,
             theme::STATUS_WARNING,
             "ask expired",
-            &[
-                ("from", from.clone(), Some(theme::RUST_ORANGE), true),
-                ("·", " · ".to_owned(), Some(theme::DIM), false),
-                ("id", id.clone(), Some(theme::DIM), false),
-                ("·", " · ".to_owned(), Some(theme::DIM), false),
-                ("note", "your reply will be tagged late".to_owned(), Some(theme::DIM), false),
-                ("·", " · ".to_owned(), Some(theme::DIM), false),
-                ("org", format!("({org})"), Some(theme::DIM), false),
-            ],
+            from,
+            &dim_meta(&[
+                format!("· {id}"),
+                "· your reply will be tagged late".to_owned(),
+                format!("· ({org})"),
+            ]),
             body,
+            collapsed,
         ),
-        PeerInboundKind::DeliveryFailure { id, target, org, reason } => render_inbound_block(
-            "\u{26a0}",
+        PeerInboundKind::DeliveryFailure { id, target, org, reason } => render_peer_card(
+            PeerCardStatus::Error,
+            INBOUND_ICON,
             theme::STATUS_ERROR,
             "failed to deliver",
-            &[
-                ("to", target.clone(), Some(theme::RUST_ORANGE), true),
-                ("·", " · ".to_owned(), Some(theme::DIM), false),
-                ("id", id.clone(), Some(theme::DIM), false),
-                ("·", " · ".to_owned(), Some(theme::DIM), false),
-                ("org", format!("({org})"), Some(theme::DIM), false),
-            ],
+            target,
+            &dim_meta(&[format!("· {id}"), format!("· ({org})")]),
             reason,
+            collapsed,
         ),
     }
 }
 
 /// Build the styled lines for an outbound peer block. Used by the
 /// chat renderer for `mcp__forge__peers__*` tool_use cards instead
-/// of the default tool-card rendering.
-pub(crate) fn render_outbound(kind: &PeerOutboundKind) -> Vec<Line<'static>> {
-    let (icon, accent, label, target, body, id) = match kind {
+/// of the default tool-card rendering. Same tool-card shape as
+/// [`render_inbound`].
+pub(crate) fn render_outbound(kind: &PeerOutboundKind, collapsed: bool) -> Vec<Line<'static>> {
+    let (accent, label, target, body, id) = match kind {
         PeerOutboundKind::Ask { target, body, correlation_id } => {
-            ("\u{2192}", theme::RUST_ORANGE, "ask", target, body, correlation_id)
+            (theme::RUST_ORANGE, "ask", target, body, correlation_id)
         }
         PeerOutboundKind::Tell { target, body, correlation_id } => {
-            ("\u{2192}", theme::SUBAGENT_TOKEN, "tell", target, body, correlation_id)
+            (theme::SUBAGENT_TOKEN, "tell", target, body, correlation_id)
         }
     };
-
-    let mut header = Line::default();
-    header.spans.push(Span::raw(BODY_INDENT));
-    header.spans.push(Span::styled(icon.to_owned(), Style::default().fg(accent)));
-    header.spans.push(Span::raw(" "));
-    header.spans.push(Span::styled(
-        label.to_owned(),
-        Style::default().fg(accent).add_modifier(Modifier::BOLD),
-    ));
-    header.spans.push(Span::styled(" · ".to_owned(), Style::default().fg(theme::DIM)));
-    header.spans.push(Span::styled(
-        target.clone(),
-        Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
-    ));
-    header.spans.push(Span::styled(" · ".to_owned(), Style::default().fg(theme::DIM)));
     let id_label = id.clone().unwrap_or_else(|| "q-…".to_owned());
-    header.spans.push(Span::styled(id_label, Style::default().fg(theme::DIM)));
-
-    let mut lines = vec![header];
-    push_body_lines(&mut lines, body);
-    lines
+    render_peer_card(
+        PeerCardStatus::Ok,
+        OUTBOUND_ICON,
+        accent,
+        label,
+        target,
+        &dim_meta(&[format!("· {id_label}")]),
+        body,
+        collapsed,
+    )
 }
 
-/// Internal renderer for inbound styled blocks. The mockup's pattern:
-/// `<icon> <label> · <field1> · <field2> · …` on line 1, body
-/// indented + dimmed on subsequent lines.
-fn render_inbound_block(
-    icon: &str,
-    accent: Color,
+/// Leading kind-icon glyphs for the header row.
+const INBOUND_ICON: &str = "\u{25c0}"; // ◀
+const OUTBOUND_ICON: &str = "\u{2192}"; // →
+
+/// Status-icon classification — drives the leading glyph + colour.
+/// Mirrors the standard tool card's `✓` / `⚠` / `✗` semantics so a
+/// glance picks up "happy / heads-up / broken" without reading the
+/// label.
+#[derive(Copy, Clone)]
+enum PeerCardStatus {
+    Ok,
+    Warning,
+    Error,
+}
+
+impl PeerCardStatus {
+    const fn glyph(self) -> &'static str {
+        match self {
+            Self::Ok => "\u{2713}",      // ✓
+            Self::Warning => "\u{26a0}", // ⚠
+            Self::Error => "\u{2717}",   // ✗
+        }
+    }
+
+    const fn color(self) -> Color {
+        match self {
+            Self::Ok => Color::Green,
+            Self::Warning => theme::STATUS_WARNING,
+            Self::Error => theme::STATUS_ERROR,
+        }
+    }
+}
+
+/// Tool-card-shaped renderer shared by inbound + outbound peer
+/// blocks. Header layout matches `tool_call::standard::render_tool_call_title`:
+///
+/// `  <status> <kind-icon BOLD coloured> <kind-label BOLD coloured> <name BOLD orange> <meta dim…>`
+///
+/// Body lines are pushed under `  │  ` / `  └─ ` tree connectors —
+/// same glyph pair the standard tool card uses, so peer rows visually
+/// rhyme with adjacent tool rows. When the body is empty (notice
+/// variants without a trailing prose body), the header line stands
+/// on its own with no tree underneath.
+fn render_peer_card(
+    status: PeerCardStatus,
+    kind_icon: &str,
+    kind_color: Color,
     label: &str,
-    fields: &[(&str, String, Option<Color>, bool)],
+    name: &str,
+    meta_spans: &[Span<'static>],
     body: &str,
+    collapsed: bool,
 ) -> Vec<Line<'static>> {
     let mut header = Line::default();
-    header.spans.push(Span::raw(BODY_INDENT));
-    header.spans.push(Span::styled(icon.to_owned(), Style::default().fg(accent)));
+    header.spans.push(Span::raw("  "));
+    header.spans.push(Span::styled(status.glyph().to_owned(), Style::default().fg(status.color())));
+    header.spans.push(Span::raw(" "));
+    header.spans.push(Span::styled(
+        kind_icon.to_owned(),
+        Style::default().fg(kind_color).add_modifier(Modifier::BOLD),
+    ));
     header.spans.push(Span::raw(" "));
     header.spans.push(Span::styled(
         label.to_owned(),
-        Style::default().fg(accent).add_modifier(Modifier::BOLD),
+        Style::default().fg(kind_color).add_modifier(Modifier::BOLD),
     ));
-    header.spans.push(Span::styled(" · ".to_owned(), Style::default().fg(theme::DIM)));
-    let mut first = true;
-    for (_k, value, color, bold) in fields {
-        if value.trim() == "·" {
-            continue;
-        }
-        if !first && !value.starts_with('·') {
-            // Caller already inserted explicit separator spans —
-            // skip auto-separator insertion to keep things simple.
-        }
-        let mut style = Style::default();
-        if let Some(c) = color {
-            style = style.fg(*c);
-        }
-        if *bold {
-            style = style.add_modifier(Modifier::BOLD);
-        }
-        header.spans.push(Span::styled(value.clone(), style));
-        first = false;
+    header.spans.push(Span::raw(" "));
+    header.spans.push(Span::styled(
+        name.to_owned(),
+        Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
+    ));
+    for span in meta_spans {
+        header.spans.push(span.clone());
     }
 
     let mut lines = vec![header];
-    push_body_lines(&mut lines, body);
+    if collapsed {
+        push_collapsed_summary(&mut lines, body);
+    } else {
+        push_tree_body_lines(&mut lines, body);
+    }
     lines
 }
 
-/// Push the body lines (indented, muted). Truncates at
-/// `BODY_TRUNCATE` chars with an ellipsis.
-fn push_body_lines(lines: &mut Vec<Line<'static>>, body: &str) {
+/// One-line collapsed summary that matches the standard tool-card
+/// shape: `  └─ <first line of body, truncated>  click or ctrl+x to expand`.
+/// Skips entirely when the body is empty so notice variants (which
+/// have no prose body) don't render an orphan `└─ click to expand`
+/// row pointing at nothing.
+fn push_collapsed_summary(lines: &mut Vec<Line<'static>>, body: &str) {
+    let body = body.trim();
+    if body.is_empty() {
+        return;
+    }
+    // First non-blank line, truncated to a short width so the summary
+    // fits on one terminal row. Matches the standard tool card's
+    // collapsed summary length (`DEFAULT_COLLAPSED_TEXT_SUMMARY_LIMIT`
+    // = 60 chars).
+    const SUMMARY_LIMIT: usize = 60;
+    let head = body.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+    let summary: String = if head.chars().count() > SUMMARY_LIMIT {
+        let mut s: String = head.chars().take(SUMMARY_LIMIT).collect();
+        s.push('\u{2026}');
+        s
+    } else {
+        head.to_owned()
+    };
+
+    let dim = Style::default().fg(theme::DIM);
+    let mut line = Line::default();
+    line.spans.push(Span::styled("  \u{2514}\u{2500} ".to_owned(), dim));
+    line.spans.push(Span::styled(summary, dim));
+    line.spans.push(Span::styled("  click or ctrl+x to expand".to_owned(), dim));
+    lines.push(line);
+}
+
+/// Build a flat list of DIM spans for a series of metadata fragments
+/// shown in the header (e.g. `· q-7f3a92e0`, `· hop 1/10`, `· (Org)`).
+/// Each fragment is rendered with the dim theme colour; the caller is
+/// expected to embed the `·` separator prefix in the fragment string
+/// itself. A single leading space precedes each fragment so they
+/// visually separate from the bold name span.
+fn dim_meta(fragments: &[String]) -> Vec<Span<'static>> {
+    let mut spans = Vec::with_capacity(fragments.len() * 2);
+    for fragment in fragments {
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(fragment.clone(), Style::default().fg(theme::DIM)));
+    }
+    spans
+}
+
+/// Push the body lines under `│  ` / `└─ ` tree connectors —
+/// matches `tool_call::standard::render_tool_content`'s pipe / corner
+/// glyph pair. Truncates at `BODY_TRUNCATE` chars with an ellipsis.
+/// When the body is empty, pushes nothing so the header stands alone.
+fn push_tree_body_lines(lines: &mut Vec<Line<'static>>, body: &str) {
     let body = body.trim();
     if body.is_empty() {
         return;
@@ -416,15 +485,21 @@ fn push_body_lines(lines: &mut Vec<Line<'static>>, body: &str) {
         body.to_owned()
     };
 
-    // Push a blank for spacing then each body line. We respect any
-    // existing newlines in the body so the recipient's LLM sees a
-    // multi-line prompt as multi-line in the rendered block too.
-    lines.push(Line::default());
-    for raw_line in truncated.lines() {
-        let mut line = Line::default();
-        line.spans.push(Span::raw(BODY_INDENT));
-        line.spans.push(Span::styled(raw_line.to_owned(), Style::default().fg(Color::Gray)));
-        lines.push(line);
+    let pipe_style = Style::default().fg(theme::DIM);
+    let body_text_style = Style::default().fg(Color::Gray);
+
+    let body_lines: Vec<&str> = truncated.lines().collect();
+    let last_idx = body_lines.len().saturating_sub(1);
+    for (idx, raw_line) in body_lines.iter().enumerate() {
+        let prefix = if idx == last_idx {
+            "  \u{2514}\u{2500} " // └─
+        } else {
+            "  \u{2502}  " // │
+        };
+        lines.push(Line::from(vec![
+            Span::styled(prefix.to_owned(), pipe_style),
+            Span::styled((*raw_line).to_owned(), body_text_style),
+        ]));
     }
 }
 
@@ -620,7 +695,7 @@ mod tests {
             hop_max: 10,
             body: "What's the setup?".to_owned(),
         };
-        let lines = render_inbound(&kind);
+        let lines = render_inbound(&kind, false);
         assert!(!lines.is_empty(), "non-empty");
         // First line is the header with the question icon + label.
         let header_text: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
@@ -636,7 +711,7 @@ mod tests {
             body: "What's the test setup?".to_owned(),
             correlation_id: Some("q-7f3a92e0".to_owned()),
         };
-        let lines = render_outbound(&kind);
+        let lines = render_outbound(&kind, false);
         assert!(!lines.is_empty());
         let header_text: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(header_text.contains("ask"), "header has label: {header_text}");
@@ -651,7 +726,7 @@ mod tests {
             body: "fyi".to_owned(),
             correlation_id: None,
         };
-        let lines = render_outbound(&kind);
+        let lines = render_outbound(&kind, false);
         let header_text: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(header_text.contains("tell"));
         // Pending id placeholder.
@@ -667,13 +742,48 @@ mod tests {
             org: "o".to_owned(),
             body,
         };
-        let lines = render_inbound(&kind);
-        // Concat all body lines (skip header + blank).
+        let lines = render_inbound(&kind, false);
+        // Concat all body lines (header is line 0; tree-prefixed rows
+        // follow). Truncation marker should land in there somewhere.
         let body_text: String =
-            lines.iter().skip(2).flat_map(|l| l.spans.iter().map(|s| s.content.as_ref())).collect();
+            lines.iter().skip(1).flat_map(|l| l.spans.iter().map(|s| s.content.as_ref())).collect();
         assert!(
             body_text.contains('\u{2026}'),
             "truncation marker should appear in long body: {body_text:?}"
         );
+    }
+
+    /// Collapsed inbound block should be exactly 2 lines: header +
+    /// `  └─ <summary> click or ctrl+x to expand`.
+    #[test]
+    fn render_inbound_collapsed_shape() {
+        let kind = PeerInboundKind::Question {
+            id: "q-1".to_owned(),
+            from: "forge".to_owned(),
+            org: "Personal".to_owned(),
+            hop: 1,
+            hop_max: 10,
+            body: "Line 1\nLine 2\nLine 3".to_owned(),
+        };
+        let lines = render_inbound(&kind, true);
+        assert_eq!(lines.len(), 2, "collapsed = header + summary row");
+        let last_text: String = lines[1].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(last_text.starts_with("  \u{2514}\u{2500} "), "tree corner present: {last_text}");
+        assert!(last_text.contains("click or ctrl+x to expand"), "expand hint: {last_text}");
+        assert!(last_text.contains("Line 1"), "summary shows first body line: {last_text}");
+        assert!(!last_text.contains("Line 2"), "summary stops at first body line: {last_text}");
+    }
+
+    #[test]
+    fn render_outbound_collapsed_shape() {
+        let kind = PeerOutboundKind::Ask {
+            target: "granite-backend".to_owned(),
+            body: "Long prompt\nspanning\nmultiple lines".to_owned(),
+            correlation_id: Some("q-1".to_owned()),
+        };
+        let lines = render_outbound(&kind, true);
+        assert_eq!(lines.len(), 2);
+        let last_text: String = lines[1].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(last_text.contains("click or ctrl+x to expand"));
     }
 }
