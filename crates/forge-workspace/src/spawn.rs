@@ -18,7 +18,7 @@ use forge_primitives::WrappedPrompt;
 use parking_lot::Mutex;
 
 use crate::domain_session::DomainSession;
-use crate::mcp::peers::facade::{PeerStatsDelta, WorkspaceFacade};
+use crate::mcp::peers::facade::PeerStatsDelta;
 use crate::protocol::{Command, SessionUpdate};
 use crate::workspace::Workspace;
 use crate::{SessionKey, SessionTarget};
@@ -136,8 +136,7 @@ pub(crate) fn handle_deliver_peer_prompt(
         // but none of them are "awaiting reply" semantically, so they
         // would never decrement and would leave the badge stuck.
         if matches!(wrapped.kind, forge_primitives::WrappedKind::Question) {
-            let workspace_arc: Arc<Workspace> = Arc::clone(workspace);
-            let facade: Arc<dyn WorkspaceFacade> = Arc::new(workspace_arc);
+            let facade = crate::mcp::peers::facade::ProdWorkspaceFacade::from_arc(workspace);
             facade.bump_inflight_stats(&target_key, PeerStatsDelta::IncomingPlus1);
         }
 

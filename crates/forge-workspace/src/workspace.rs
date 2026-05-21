@@ -449,9 +449,7 @@ impl Workspace {
         // through the shared Arc — when SessionTask migrates the key
         // from synthetic to real on Connected, the resolver tracks.
         let peer_server = {
-            let workspace_arc: Arc<Self> = Arc::clone(self);
-            let facade: Arc<dyn crate::mcp::peers::facade::WorkspaceFacade> =
-                Arc::new(workspace_arc);
+            let facade = crate::mcp::peers::facade::ProdWorkspaceFacade::from_arc(self);
             let resolver = crate::mcp::peers::facade::CallerKeyResolver::from_domain(&domain_arc);
             crate::mcp::peers::build_server(facade, resolver)
         };
@@ -608,8 +606,7 @@ impl Workspace {
         // synthetic user-turn so the TUI's chat shows the inbound
         // block (claude CLI doesn't echo stdin-injected prompts),
         // then dispatch the Command::Prompt.
-        let facade: Arc<dyn crate::mcp::peers::facade::WorkspaceFacade> =
-            Arc::new(Arc::clone(self));
+        let facade = crate::mcp::peers::facade::ProdWorkspaceFacade::from_arc(self);
         for wrapped in pending {
             if matches!(wrapped.kind, WrappedKind::Question) {
                 facade.bump_inflight_stats(
@@ -1601,8 +1598,7 @@ impl Workspace {
             return;
         };
 
-        let facade: Arc<dyn crate::mcp::peers::facade::WorkspaceFacade> =
-            Arc::new(Arc::clone(self));
+        let facade = crate::mcp::peers::facade::ProdWorkspaceFacade::from_arc(self);
         facade.bump_inflight_stats(
             &ask.caller,
             crate::mcp::peers::facade::PeerStatsDelta::DeliveryFailedPlus1,

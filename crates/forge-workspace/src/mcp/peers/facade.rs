@@ -22,7 +22,7 @@
 //! inside their `Tool::call` body but the facade calls themselves
 //! return synchronously after a mutex acquire.
 
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use forge_primitives::{
     CorrelationId, InflightAsk, PeerInflightStats, PeerLiveness, PeerStatus, WrappedPrompt,
@@ -222,21 +222,36 @@ pub trait WorkspaceFacade: Send + Sync {
     fn bump_inflight_stats(&self, key: &SessionKey, delta: PeerStatsDelta);
 }
 
-/// Production impl. Trait is implemented on `Arc<Workspace>` (not
-/// plain `Workspace`) because `Workspace::dispatch` takes
-/// `self: &Arc<Self>` — it internally `Arc::clone`s self for spawned
-/// SessionTasks. The tools hold an `Arc<dyn WorkspaceFacade>` built
-/// from `Arc::new(MyArc) as Arc<dyn WorkspaceFacade>` via the
-/// `build_server` factory (lands in C5).
-impl WorkspaceFacade for Arc<Workspace> {
+/// Production impl. Holds a `Weak<Workspace>` rather than
+/// `Arc<Workspace>` so the construction sites
+/// (`Arc::new(weak) as Arc<dyn WorkspaceFacade>`) don't close the
+/// Workspace → pool → AgentHandle → bridge → MCP → Tool → facade
+/// → Workspace strong cycle. Audit C7.
+///
+/// Every trait method starts with `upgrade()`. When the workspace
+/// has been dropped (only possible if `Workspace::shutdown` has run
+/// and tools are firing during teardown), each method short-circuits
+/// to a sensible "workspace gone" fallback — typically returning a
+/// default, an error variant, or a no-op. The recipient session is
+/// dying anyway; the LLM call won't have anywhere to land.
+pub struct ProdWorkspaceFacade(pub Weak<Workspace>);
+
+impl ProdWorkspaceFacade {
+    /// Construct from a strong reference. Downgrades immediately so
+    /// the facade never closes a cycle through its own holdings.
+    pub fn from_arc(workspace: &Arc<Workspace>) -> Arc<dyn WorkspaceFacade> {
+        Arc::new(Self(Arc::downgrade(workspace)))
+    }
+}
+
+impl WorkspaceFacade for ProdWorkspaceFacade {
     fn list_peers(&self) -> Vec<PeerStatus> {
-        let projects = self.list_projects();
-        let stat_counters = self.peer_stats.lock();
+        let Some(ws) = self.0.upgrade() else { return Vec::new() };
+        let projects = ws.list_projects();
+        let stat_counters = ws.peer_stats.lock();
         projects
             .into_iter()
             .map(|view| {
-                // Lead session = first entry. `is_open == true` means
-                // an Agent is in the workspace pool for that session.
                 let lead = view.sessions.first();
                 let liveness = lead.map_or(PeerLiveness::Sleeping, |s| {
                     if s.is_open { PeerLiveness::Running } else { PeerLiveness::Sleeping }
@@ -258,16 +273,27 @@ impl WorkspaceFacade for Arc<Workspace> {
     }
 
     fn whoami(&self, caller: &SessionKey) -> Option<PeerStatus> {
-        self.list_peers().into_iter().find(|p| {
-            // Match by looking up which project has a session matching
-            // the caller key. `list_peers` already filtered to projects
-            // in forge.toml; we just need to find the one whose
-            // lead-session key matches.
-            self.list_projects()
-                .iter()
-                .find(|v| v.name == p.name)
-                .and_then(|v| v.sessions.first())
-                .is_some_and(|s| s.session == *caller)
+        let ws = self.0.upgrade()?;
+        let projects = ws.list_projects();
+        let stat_counters = ws.peer_stats.lock();
+        projects.into_iter().find_map(|view| {
+            let lead = view.sessions.first()?;
+            if lead.session != *caller {
+                return None;
+            }
+            let counts = stat_counters.get(&lead.session).cloned().unwrap_or_default();
+            let liveness =
+                if lead.is_open { PeerLiveness::Running } else { PeerLiveness::Sleeping };
+            let spawned_at = if lead.is_open { lead.last_activity } else { None };
+            Some(PeerStatus {
+                name: view.name,
+                org: view.org,
+                path: view.path,
+                status: liveness,
+                in_flight_incoming: counts.incoming,
+                in_flight_outgoing: counts.outgoing,
+                spawned_at,
+            })
         })
     }
 
@@ -277,37 +303,26 @@ impl WorkspaceFacade for Arc<Workspace> {
         target_project: &str,
         wrapped: WrappedPrompt,
     ) -> Result<TargetStatus, DeliverError> {
-        // Hop limit check first — cheapest; doesn't need a project
-        // lookup.
         if wrapped.hop > wrapped.hop_limit {
             return Err(DeliverError::HopLimitExceeded {
                 hop: wrapped.hop,
                 limit: wrapped.hop_limit,
             });
         }
-
-        // Resolve the target project.
-        let project = self
+        let Some(ws) = self.0.upgrade() else {
+            return Err(DeliverError::UnknownTarget { name: target_project.to_owned() });
+        };
+        let project = ws
             .list_projects()
             .into_iter()
             .find(|v| v.name == target_project)
             .ok_or_else(|| DeliverError::UnknownTarget { name: target_project.to_owned() })?;
-
-        // Decide immediate-vs-queued based on lead session liveness.
         let target_status = project
             .sessions
             .first()
             .filter(|s| s.is_open)
             .map_or(TargetStatus::QueuedForSpawn, |_| TargetStatus::Delivered);
-
-        // Dispatch the workspace command. The actual delivery logic
-        // (stamp current_inbound_hop, dispatch Command::Prompt or
-        // buffer-and-SpawnProject) lives in spawn.rs's handler — that
-        // lands in C11. Until then, the dispatch falls through the
-        // App-level `other =>` arm in `Workspace::dispatch` and
-        // logs a warn; the tool still returns the right
-        // immediate-decision value to the LLM.
-        if let Err(err) = self.dispatch(Command::DeliverPeerPrompt {
+        if let Err(err) = ws.dispatch(Command::DeliverPeerPrompt {
             caller: caller.clone(),
             target_project: target_project.to_owned(),
             wrapped,
@@ -322,12 +337,9 @@ impl WorkspaceFacade for Arc<Workspace> {
     }
 
     fn register_inflight_ask(&self, ask: InflightAsk) {
+        let Some(ws) = self.0.upgrade() else { return };
         let id = ask.correlation_id.clone();
-        // CorrelationId is 8 hex chars = ~4B possibilities so
-        // collisions are improbable but realistic. A silent overwrite
-        // would leave the prior caller waiting on a reply now routed
-        // elsewhere — warn loudly so a real collision is visible.
-        let prev = self.inflight_asks.lock().insert(id.clone(), ask);
+        let prev = ws.inflight_asks.lock().insert(id.clone(), ask);
         if prev.is_some() {
             tracing::warn!(
                 target: "forge_workspace::mcp::peers::facade",
@@ -338,32 +350,32 @@ impl WorkspaceFacade for Arc<Workspace> {
     }
 
     fn resolve_correlation(&self, id: &CorrelationId) -> Option<InflightAsk> {
-        self.inflight_asks.lock().get(id).cloned()
+        let ws = self.0.upgrade()?;
+        ws.inflight_asks.lock().get(id).cloned()
     }
 
     fn complete_inflight_ask(&self, id: &CorrelationId) -> Option<InflightAsk> {
-        // Reply arrived; remove from the inflight map so the
-        // outgoing-counter and the resolve_correlation lookup both
-        // reflect the closed state.
-        self.inflight_asks.lock().remove(id)
+        let ws = self.0.upgrade()?;
+        ws.inflight_asks.lock().remove(id)
     }
 
     fn peek_current_inbound_hop(&self, caller: &SessionKey) -> Option<u8> {
-        let handles = self.domain_handles.lock();
+        let ws = self.0.upgrade()?;
+        let handles = ws.domain_handles.lock();
         let domain = handles.get(caller)?;
         let guard = domain.lock();
         guard.current_inbound_hop
     }
 
     fn bump_inflight_stats(&self, key: &SessionKey, delta: PeerStatsDelta) {
+        let Some(ws) = self.0.upgrade() else { return };
         let stats_snapshot = {
-            let mut stats = self.peer_stats.lock();
+            let mut stats = ws.peer_stats.lock();
             let entry = stats.entry(key.clone()).or_default();
             apply_delta(entry, delta);
             entry.clone()
         };
-        // Best-effort emit; receiver is closed only during shutdown.
-        let _ = self.update_sender().send(SessionUpdate::PeerInflightStatsChanged {
+        let _ = ws.update_sender().send(SessionUpdate::PeerInflightStatsChanged {
             key: key.clone(),
             stats: stats_snapshot,
         });

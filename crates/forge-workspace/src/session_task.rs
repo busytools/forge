@@ -568,8 +568,7 @@ impl SessionTask {
         // were buffered when the target was sleeping, so the bump
         // was deferred until now. Tells / Replies / notices don't
         // bump — same rule as the running-target path.
-        let facade: std::sync::Arc<dyn crate::mcp::peers::facade::WorkspaceFacade> =
-            std::sync::Arc::new(std::sync::Arc::clone(&workspace));
+        let facade = crate::mcp::peers::facade::ProdWorkspaceFacade::from_arc(&workspace);
         for wrapped in pending {
             if matches!(wrapped.kind, forge_primitives::WrappedKind::Question) {
                 facade.bump_inflight_stats(
