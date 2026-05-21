@@ -741,10 +741,7 @@ mod workers_command_tests {
 
     #[test]
     fn worker_spawn_reply_constructs() {
-        let r = WorkerSpawnReply {
-            session_id: "abc".into(),
-            tag: "forge:worker:reviewer".into(),
-        };
+        let r = WorkerSpawnReply { session_id: "abc".into(), tag: "forge:worker:reviewer".into() };
         assert_eq!(r.tag, "forge:worker:reviewer");
     }
 

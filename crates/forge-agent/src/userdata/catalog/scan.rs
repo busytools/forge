@@ -22,7 +22,9 @@ use serde_json::Value;
 use unicode_normalization::UnicodeNormalization;
 use uuid::Uuid;
 
-use forge_primitives::{FORGE_WORKER_TAG_PREFIX, SDKSessionInfo, SessionMessage, SessionMessageKind};
+use forge_primitives::{
+    FORGE_WORKER_TAG_PREFIX, SDKSessionInfo, SessionMessage, SessionMessageKind,
+};
 use forge_sdk::projects_dir_for;
 
 /// True if `s` is a canonical 8-4-4-4-12 hyphenated UUID. The length

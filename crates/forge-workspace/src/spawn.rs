@@ -405,11 +405,8 @@ pub(crate) fn handle_spawn_worker(
     // SessionTask rekeys this onto the real claude-issued UUID on
     // first Connected; migrate_session_task also rewrites the
     // matching WorkerEntry's session_key in lockstep.
-    let synth_key = SessionKey::from_session_id(format!(
-        "__spawn_worker_{}_{}__",
-        project_key.as_str(),
-        label,
-    ));
+    let synth_key =
+        SessionKey::from_session_id(format!("__spawn_worker_{}_{}__", project_key.as_str(), label));
     let tag = forge_primitives::worker_tag(label);
 
     // Insert WorkerEntry as Spawning BEFORE the agent spawn so the
@@ -456,10 +453,8 @@ pub(crate) fn handle_spawn_worker(
             // The LLM addresses subsequent calls by label; the
             // session_id field is informational. Real session UUID
             // lands on Connected via the rekey machinery.
-            let _ = return_to.send(Ok(WorkerSpawnReply {
-                session_id: synth_key.as_str().to_owned(),
-                tag,
-            }));
+            let _ = return_to
+                .send(Ok(WorkerSpawnReply { session_id: synth_key.as_str().to_owned(), tag }));
         }
         Err(err) => {
             tracing::error!(
@@ -569,11 +564,9 @@ pub(crate) fn handle_deliver_worker_prompt(
     let text = wrapped.to_prose();
     push_peer_user_turn_into_chat(workspace, &target_key, &wrapped);
     drop(wrapped);
-    if let Err(err) = workspace.dispatch(Command::Prompt {
-        key: target_key,
-        text,
-        attachments: Vec::new(),
-    }) {
+    if let Err(err) =
+        workspace.dispatch(Command::Prompt { key: target_key, text, attachments: Vec::new() })
+    {
         tracing::warn!(
             target: "forge_workspace::spawn",
             project = %project_key.as_str(),

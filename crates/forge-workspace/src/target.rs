@@ -53,8 +53,5 @@ pub enum SessionTarget {
     /// synthetic spawn key (the same one passed via `spawn_key`); the
     /// SessionTask rekeys onto the real claude-issued UUID on its
     /// first `Connected`.
-    FreshInProject {
-        project_key: ProjectKey,
-        synth_key: SessionKey,
-    },
+    FreshInProject { project_key: ProjectKey, synth_key: SessionKey },
 }

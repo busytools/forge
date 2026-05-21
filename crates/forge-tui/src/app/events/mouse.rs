@@ -1046,11 +1046,7 @@ mod tests {
     fn close_worker_dispatch_is_idempotent_on_test_stub() {
         let mut app = App::test_default();
         let initial_active = app.active_session_key.clone();
-        close_worker(
-            &mut app,
-            &forge_workspace::ProjectKey::new_for_test("forge"),
-            "reviewer",
-        );
+        close_worker(&mut app, &forge_workspace::ProjectKey::new_for_test("forge"), "reviewer");
         assert_eq!(
             app.active_session_key, initial_active,
             "close_worker dispatch is fire-and-forget",

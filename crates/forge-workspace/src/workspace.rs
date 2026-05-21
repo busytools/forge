@@ -149,10 +149,9 @@ pub(crate) struct PooledAgent {
 /// `include_workers = true`.
 #[must_use]
 pub fn resolve_lead_session(sessions: &[SDKSessionInfo]) -> Option<&SDKSessionInfo> {
-    let latest_with =
-        |pred: fn(&&SDKSessionInfo) -> bool| -> Option<&SDKSessionInfo> {
-            sessions.iter().filter(pred).max_by_key(|s| s.last_modified)
-        };
+    let latest_with = |pred: fn(&&SDKSessionInfo) -> bool| -> Option<&SDKSessionInfo> {
+        sessions.iter().filter(pred).max_by_key(|s| s.last_modified)
+    };
     latest_with(|s| s.tag.as_deref() == Some(forge_primitives::FORGE_LEAD_TAG))
         .or_else(|| latest_with(|s| s.tag.is_none()))
 }
@@ -183,8 +182,8 @@ impl Workspace {
         // catalog merge is a separate concern.
         let catalog_entries = forge_agent::userdata::catalog::scan::list_sessions(
             &config_dir,
-            None,  // every project in the catalog
-            None,  // no limit
+            None, // every project in the catalog
+            None, // no limit
             0,
             false, // hide worker-tagged sessions from default catalog
         )
@@ -1508,17 +1507,12 @@ impl Workspace {
                 // Transition the entry to Running + emit StatusChanged.
                 let updated_status = {
                     let mut workers = self.live_workers.lock();
-                    workers
-                        .get_mut(&project_key)
-                        .and_then(|entries| {
-                            entries
-                                .iter_mut()
-                                .find(|e| e.session_key == *session_key)
-                                .map(|entry| {
-                                    entry.status = forge_primitives::WorkerLiveness::Running;
-                                    entry.to_status()
-                                })
+                    workers.get_mut(&project_key).and_then(|entries| {
+                        entries.iter_mut().find(|e| e.session_key == *session_key).map(|entry| {
+                            entry.status = forge_primitives::WorkerLiveness::Running;
+                            entry.to_status()
                         })
+                    })
                 };
                 if let Some(status) = updated_status {
                     let _ = self.update_tx.send(SessionUpdate::WorkerStatusChanged {

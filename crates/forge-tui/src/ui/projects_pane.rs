@@ -1608,8 +1608,7 @@ mod tests {
         use std::time::SystemTime;
 
         let mut app = App::test_default();
-        let workspace =
-            app.workspace.clone().expect("test_default seeds a workspace stub");
+        let workspace = app.workspace.clone().expect("test_default seeds a workspace stub");
         let project_key = ProjectKey::new_for_test("forge");
         workspace.insert_live_worker(
             &project_key,
@@ -1634,12 +1633,8 @@ mod tests {
             },
         );
 
-        let project = ProjectView::new_for_test(
-            project_key.clone(),
-            "forge",
-            "~/Projects/forge",
-            Vec::new(),
-        );
+        let project =
+            ProjectView::new_for_test(project_key.clone(), "forge", "~/Projects/forge", Vec::new());
         let area = Rect { x: 0, y: 0, width: 32, height: 20 };
         let mut lines: Vec<Line<'static>> = Vec::new();
         append_worker_tree_children(&mut lines, area, &mut app, &project);
@@ -1660,10 +1655,7 @@ mod tests {
             .pane_hit_targets
             .iter()
             .filter(|t| {
-                matches!(
-                    t,
-                    PaneHitTarget::CloseWorker { .. } | PaneHitTarget::WorkerRow { .. }
-                )
+                matches!(t, PaneHitTarget::CloseWorker { .. } | PaneHitTarget::WorkerRow { .. })
             })
             .collect();
         assert_eq!(workers_targets.len(), 4, "expected 4 worker targets, got {workers_targets:?}");

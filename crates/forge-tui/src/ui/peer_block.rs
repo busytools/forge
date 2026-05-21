@@ -109,7 +109,10 @@ pub(crate) enum PeerOutboundKind {
     /// pre-existing target to address; the call creates a new worker.
     /// Body carries the charter so the chat row reads as
     /// `→ spawn <label>` followed by the charter prose.
-    WorkerSpawn { label: String, charter: String },
+    WorkerSpawn {
+        label: String,
+        charter: String,
+    },
     /// `workers__list` — no arguments, no body; one-line header.
     WorkerList,
 }

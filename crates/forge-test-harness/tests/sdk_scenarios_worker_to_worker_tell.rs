@@ -21,7 +21,5 @@ async fn worker_to_worker_tell_scenario() {
     //
     // Until the baseline exists, fail loudly if the test is ever
     // un-ignored without the body being populated.
-    panic!(
-        "worker_to_worker_tell_scenario: baseline not yet captured - populate harness body"
-    );
+    panic!("worker_to_worker_tell_scenario: baseline not yet captured - populate harness body");
 }

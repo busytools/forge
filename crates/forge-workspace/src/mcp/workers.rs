@@ -458,7 +458,8 @@ mod tests {
             tag: "forge:worker:reviewer".into(),
         }));
         let facade = mock.into_arc();
-        let tool = Spawn { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("lead-key")) };
+        let tool =
+            Spawn { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("lead-key")) };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
@@ -502,7 +503,8 @@ mod tests {
         let mock = MockWorkerFacade::new();
         mock.callers.lock().insert(fake_key("lead-key"), lead_caller("forge"));
         let facade = mock.into_arc();
-        let tool = Spawn { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("lead-key")) };
+        let tool =
+            Spawn { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("lead-key")) };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
@@ -520,7 +522,8 @@ mod tests {
         let mock = MockWorkerFacade::new();
         mock.callers.lock().insert(fake_key("lead-key"), lead_caller("forge"));
         let facade = mock.into_arc();
-        let tool = Spawn { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("lead-key")) };
+        let tool =
+            Spawn { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("lead-key")) };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
@@ -538,7 +541,8 @@ mod tests {
         let mock = MockWorkerFacade::new();
         mock.callers.lock().insert(fake_key("lead-key"), lead_caller("forge"));
         let facade = mock.into_arc();
-        let tool = Spawn { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("lead-key")) };
+        let tool =
+            Spawn { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("lead-key")) };
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
@@ -878,9 +882,7 @@ mod tests {
         let facade = mock.into_arc();
         let server = build_server(facade, CallerKeyResolver::from_fixed(fake_key("test")));
         let debug = format!("{server:?}");
-        for expected in
-            ["workers__spawn", "workers__list", "workers__tell", "workers__ask"]
-        {
+        for expected in ["workers__spawn", "workers__list", "workers__tell", "workers__ask"] {
             assert!(
                 debug.contains(expected),
                 "build_server must include {expected}; debug: {debug}",
