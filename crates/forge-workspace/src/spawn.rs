@@ -405,8 +405,17 @@ pub(crate) fn handle_spawn_worker(
     // SessionTask rekeys this onto the real claude-issued UUID on
     // first Connected; migrate_session_task also rewrites the
     // matching WorkerEntry's session_key in lockstep.
-    let synth_key =
-        SessionKey::from_session_id(format!("__spawn_worker_{}_{}__", project_key.as_str(), label));
+    //
+    // A v4 uuid suffix makes the key unique across concurrent spawns
+    // of the same label - two `spawn_worker(label="reviewer")` calls
+    // would otherwise collide on the pool / command_senders /
+    // domain_handles maps and only one would survive.
+    let synth_key = SessionKey::from_session_id(format!(
+        "__spawn_worker_{}_{}_{}__",
+        project_key.as_str(),
+        label,
+        uuid::Uuid::new_v4().simple()
+    ));
     let tag = forge_primitives::worker_tag(label);
 
     // Insert WorkerEntry as Spawning BEFORE the agent spawn so the
@@ -873,5 +882,34 @@ config_dir = "~/.claude-subspace"
         // No panic, no dispatch attempted. (We can't easily observe
         // "no dispatch" without a stubbed dispatch; the absence of a
         // panic + dropped channels is the test.)
+    }
+
+    /// Regression for C2: concurrent spawns of the same label must
+    /// produce different synth_keys. The synth_key formula mixes a
+    /// v4 uuid suffix into the label so collisions on the
+    /// pool / command_senders / domain_handles maps cannot happen.
+    /// We probe the formula directly because the full spawn path
+    /// requires a real claude subprocess; the formula is the
+    /// invariant the rest of the spawn handler relies on.
+    #[test]
+    fn synth_key_for_duplicate_label_is_unique() {
+        let project = ProjectKey::new("forge");
+        let mk = |label: &str| -> SessionKey {
+            SessionKey::from_session_id(format!(
+                "__spawn_worker_{}_{}_{}__",
+                project.as_str(),
+                label,
+                uuid::Uuid::new_v4().simple()
+            ))
+        };
+        let a = mk("reviewer");
+        let b = mk("reviewer");
+        assert_ne!(
+            a.as_str(),
+            b.as_str(),
+            "two same-label spawns must produce different synth keys"
+        );
+        assert!(a.as_str().starts_with("__spawn_worker_forge_reviewer_"));
+        assert!(b.as_str().starts_with("__spawn_worker_forge_reviewer_"));
     }
 }
