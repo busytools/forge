@@ -75,6 +75,11 @@ pub struct Workspace {
     /// [`Self::get_agent_handle`] spawns the first `SessionTask` for a
     /// key; cleared on [`Self::release_session`] and [`Self::shutdown`].
     command_senders: Mutex<HashMap<SessionKey, mpsc::UnboundedSender<Command>>>,
+    /// Per-project list of live worker sessions. In-memory only -
+    /// wiped on forge restart by design (workers are ephemeral at the
+    /// forge UI level; their JSONLs persist on disk). Mutated via
+    /// `insert_live_worker` / `remove_latest_worker` / `drain_live_workers`.
+    live_workers: Mutex<HashMap<ProjectKey, Vec<crate::mcp::workers::types::WorkerEntry>>>,
     /// Shared [`DomainSession`] handles, one per active `SessionTask`.
     /// [`Self::store_pending_interaction`] writes under the same lock
     /// the `SessionTask` actor uses to read+remove. `pub(crate)` so
@@ -201,6 +206,7 @@ impl Workspace {
             update_tx,
             update_rx_slot: Mutex::new(Some(update_rx)),
             command_senders: Mutex::new(HashMap::new()),
+            live_workers: Mutex::new(HashMap::new()),
             domain_handles: Mutex::new(HashMap::new()),
             inflight_asks: Mutex::new(HashMap::new()),
             peer_stats: Mutex::new(HashMap::new()),
@@ -1247,6 +1253,53 @@ impl Workspace {
         let _ = self.domain_handles.lock().remove(session_key);
     }
 
+    // ---- Live workers (project-internal child-agent coordination) ----
+
+    /// Snapshot the live workers for `project_key`. Returns an empty
+    /// Vec when no workers exist (rather than `None`) so the TUI tree-
+    /// child render can branch only on `is_empty`.
+    #[must_use]
+    pub fn list_live_workers(
+        &self,
+        project_key: &ProjectKey,
+    ) -> Vec<crate::mcp::workers::types::WorkerEntry> {
+        self.live_workers.lock().get(project_key).cloned().unwrap_or_default()
+    }
+
+    /// Insert a worker entry into `live_workers[project_key]`. Duplicate
+    /// labels are allowed; addressing by label uses latest-spawned wins
+    /// (see `remove_latest_worker`).
+    pub fn insert_live_worker(
+        &self,
+        project_key: &ProjectKey,
+        entry: crate::mcp::workers::types::WorkerEntry,
+    ) {
+        self.live_workers.lock().entry(project_key.clone()).or_default().push(entry);
+    }
+
+    /// Remove the latest-spawned worker matching `label` from
+    /// `live_workers[project_key]`. Returns the removed entry, or
+    /// `None` when no match exists.
+    pub fn remove_latest_worker(
+        &self,
+        project_key: &ProjectKey,
+        label: &str,
+    ) -> Option<crate::mcp::workers::types::WorkerEntry> {
+        let mut map = self.live_workers.lock();
+        let entries = map.get_mut(project_key)?;
+        let last_match_idx = entries.iter().rposition(|e| e.label == label)?;
+        Some(entries.remove(last_match_idx))
+    }
+
+    /// Drain every worker entry for `project_key` and return them in
+    /// insertion order.
+    pub fn drain_live_workers(
+        &self,
+        project_key: &ProjectKey,
+    ) -> Vec<crate::mcp::workers::types::WorkerEntry> {
+        self.live_workers.lock().remove(project_key).unwrap_or_default()
+    }
+
     // ---- Refresh helpers (workspace → agent) ----
     //
     // These five methods are query-style: TUI says "re-emit state X
@@ -1731,6 +1784,7 @@ impl Workspace {
             update_tx,
             update_rx_slot: Mutex::new(None),
             command_senders: Mutex::new(HashMap::new()),
+            live_workers: Mutex::new(HashMap::new()),
             domain_handles: Mutex::new(HashMap::new()),
             inflight_asks: Mutex::new(HashMap::new()),
             peer_stats: Mutex::new(HashMap::new()),
@@ -2422,5 +2476,71 @@ config_dir = "~/.claude-subspace"
             wrapped,
         });
         assert!(result.is_ok(), "dispatch routed cleanly: {result:?}");
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+mod workers_state_tests {
+    use super::*;
+    use crate::mcp::workers::types::WorkerEntry;
+    use forge_primitives::WorkerLiveness;
+    use std::time::SystemTime;
+
+    fn fake_entry(label: &str, key: &str) -> WorkerEntry {
+        WorkerEntry {
+            label: label.into(),
+            charter: "test charter".into(),
+            session_key: SessionKey::from_session_id(key),
+            status: WorkerLiveness::Running,
+            spawned_at: SystemTime::UNIX_EPOCH,
+            spawned_by_session_id: "lead-uuid".into(),
+        }
+    }
+
+    #[test]
+    fn live_workers_starts_empty() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let project = ProjectKey::new("forge");
+        assert!(ws.list_live_workers(&project).is_empty());
+    }
+
+    #[test]
+    fn insert_then_list_returns_entry() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let project = ProjectKey::new("forge");
+        ws.insert_live_worker(&project, fake_entry("reviewer", "abc"));
+        let entries = ws.list_live_workers(&project);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].label, "reviewer");
+    }
+
+    #[test]
+    fn remove_latest_by_label_picks_most_recent_duplicate() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let project = ProjectKey::new("forge");
+        ws.insert_live_worker(&project, fake_entry("dup", "old"));
+        ws.insert_live_worker(&project, fake_entry("dup", "new"));
+        let removed = ws.remove_latest_worker(&project, "dup");
+        assert_eq!(removed.unwrap().session_key.as_str(), "new");
+        assert_eq!(ws.list_live_workers(&project).len(), 1);
+    }
+
+    #[test]
+    fn remove_returns_none_when_missing() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let project = ProjectKey::new("forge");
+        assert!(ws.remove_latest_worker(&project, "missing").is_none());
+    }
+
+    #[test]
+    fn drain_for_project_clears_and_returns_all() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let project = ProjectKey::new("forge");
+        ws.insert_live_worker(&project, fake_entry("a", "k1"));
+        ws.insert_live_worker(&project, fake_entry("b", "k2"));
+        let drained = ws.drain_live_workers(&project);
+        assert_eq!(drained.len(), 2);
+        assert!(ws.list_live_workers(&project).is_empty());
     }
 }

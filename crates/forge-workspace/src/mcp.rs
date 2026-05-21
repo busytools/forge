@@ -14,3 +14,4 @@
 //! `mcp__forge__` prefix at the tool-name level).
 
 pub mod peers;
+pub mod workers;
