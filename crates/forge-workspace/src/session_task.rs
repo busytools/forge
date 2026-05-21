@@ -542,7 +542,22 @@ impl SessionTask {
             return;
         }
         let Some(workspace) = self.workspace.upgrade() else { return };
+        // Same sidebar-badge bookkeeping the running-target branch of
+        // `spawn::handle_deliver_peer_prompt` does: Question wrappers
+        // bump the recipient's incoming counter so the sidebar `·N↓`
+        // reflects the just-arrived ask. The wrappers we drain here
+        // were buffered when the target was sleeping, so the bump
+        // was deferred until now. Tells / Replies / notices don't
+        // bump — same rule as the running-target path.
+        let facade: std::sync::Arc<dyn crate::mcp::peers::facade::WorkspaceFacade> =
+            std::sync::Arc::new(std::sync::Arc::clone(&workspace));
         for wrapped in pending {
+            if matches!(wrapped.kind, forge_primitives::WrappedKind::Question) {
+                facade.bump_inflight_stats(
+                    &self.key,
+                    crate::mcp::peers::facade::PeerStatsDelta::IncomingPlus1,
+                );
+            }
             let text = wrapped.to_prose();
             if let Err(err) = workspace.dispatch(crate::protocol::Command::Prompt {
                 key: self.key.clone(),
