@@ -40,9 +40,7 @@ async fn worker_to_worker_tell_scenario() {
     let project_key = forge_workspace::ProjectKey::new_for_test("forge");
 
     let mock = MockWorkerFacade::new();
-    mock.callers
-        .lock()
-        .insert(caller_key.clone(), CallerProject { project_key, is_lead: true });
+    mock.callers.lock().insert(caller_key.clone(), CallerProject { project_key, is_lead: true });
     *mock.spawn_reply.lock() = Some(Ok(WorkerSpawnReply {
         session_id: "beta-session-uuid-stub".into(),
         tag: forge_primitives::worker_tag("beta"),

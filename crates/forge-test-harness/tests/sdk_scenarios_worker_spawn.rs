@@ -44,9 +44,7 @@ async fn worker_spawn_scenario() {
     let project_key = forge_workspace::ProjectKey::new_for_test("forge");
 
     let mock = MockWorkerFacade::new();
-    mock.callers
-        .lock()
-        .insert(caller_key.clone(), CallerProject { project_key, is_lead: true });
+    mock.callers.lock().insert(caller_key.clone(), CallerProject { project_key, is_lead: true });
     // Preloaded spawn reply: the mock returns this synthetic
     // {session_id, tag} as if a real worker had been spawned.
     *mock.spawn_reply.lock() = Some(Ok(WorkerSpawnReply {
