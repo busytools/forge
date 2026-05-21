@@ -4,19 +4,23 @@
 //! every spawn; the chosen `AccountKey` becomes the spawned Agent's
 //! `CLAUDE_CONFIG_DIR` override.
 //!
-//! **Policy — tiered, rate-limit + probe-failure aware:**
+//! **Policy — pin priority with rate-limit + probe-failure skip:**
+//!
+//! Sort all candidates by tier, then by `forge.toml` definition
+//! order within the tier. The pin is authoritative — the picker
+//! never load-balances on utilisation. A pin of
+//! `[Granite, Granite1, Personal]` means "always pick Granite when
+//! it's healthy; only fall through to Granite1 when Granite is
+//! saturated; only reach Personal when both above are blocked."
+//!
+//! Tiers (lower = preferred):
 //!
 //! 1. **Unknown-fresh** (no usage snapshot AND no probe failure
-//!    recorded). Sorted first in forge.toml definition order so a
-//!    just-launched forge warms unprobed accounts before falling
-//!    back to budget-based selection.
-//! 2. **Available** (5h util < 100% AND 7d util < 100%). Within
-//!    this tier:
-//!    - Lowest 5h utilisation wins (most immediate headroom).
-//!    - Tie-break on lowest 7d utilisation.
-//!    - Final tie-break on forge.toml definition order.
-//! 3. **Rate-limited with data** (5h or 7d at 100%). Definition
-//!    order within the tier.
+//!    recorded). Picks warm the cache.
+//! 2. **Available** (5h util < 100% AND 7d util < 100%). The
+//!    normal "use this one" tier.
+//! 3. **Rate-limited with data** (5h or 7d at 100%). Cleanly
+//!    skipped in favour of any healthier pin entry.
 //! 4. **Probe rate-limited** (`/api/oauth/usage` returned 429).
 //!    Account state is opaque — almost certainly hot. Demoted
 //!    below known-rate-limited because we'd rather pick the
@@ -308,27 +312,17 @@ impl AccountStateMap {
             })
             .collect();
         candidates.sort_by(|a, b| {
+            // Priority-order policy: first account in pin order that
+            // isn't saturated (tier 2) wins. Tier still gates so a
+            // saturated first-pin account (tier 3+) cleanly falls
+            // through to the next pin entry that's healthier. Within
+            // a tier, ties always go to forge.toml definition order
+            // — no load-balancing on utilisation. The user's pin
+            // expresses intent; the picker just respects it and
+            // skips clearly-saturated accounts.
             let tier_a = tier_of(a.2, a.3);
             let tier_b = tier_of(b.2, b.3);
-            tier_a.cmp(&tier_b).then_with(|| {
-                // Within the same tier: known-vs-known sorts by 5h
-                // util ascending then 7d util ascending then
-                // definition order. Both-unknown + mixed (which the
-                // tier sort already segregated, defensive) fall
-                // through to definition order.
-                if let (Some(sa), Some(sb)) = (a.2, b.2) {
-                    let f_a = five_hour_util(sa);
-                    let f_b = five_hour_util(sb);
-                    let s_a = seven_day_util(sa);
-                    let s_b = seven_day_util(sb);
-                    f_a.partial_cmp(&f_b)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                        .then_with(|| s_a.partial_cmp(&s_b).unwrap_or(std::cmp::Ordering::Equal))
-                        .then_with(|| a.0.cmp(&b.0))
-                } else {
-                    a.0.cmp(&b.0)
-                }
-            })
+            tier_a.cmp(&tier_b).then_with(|| a.0.cmp(&b.0))
         });
         // Diagnostic log — one line per pick decision listing the
         // tier and probe state of every candidate so a future
@@ -496,28 +490,29 @@ mod tests {
     }
 
     #[test]
-    fn picks_account_with_lowest_five_hour_when_neither_rate_limited() {
-        // Subspace: 5h=80% — high
-        // Granite:  5h=10% — most headroom on the immediate window
-        // Both under both windows. Picker uses lowest 5h.
+    fn priority_order_picks_first_in_pin_when_both_available() {
+        // Subspace: 5h=80%
+        // Granite:  5h=10%
+        // Both under 100% on both windows → tier 2. Priority-order
+        // policy: first in pin order wins regardless of utilisation
+        // (the user's pin expresses intent; the picker respects it).
         let mut map = AccountStateMap::new(&[make_account("Subspace"), make_account("Granite")]);
         map.set_usage(&AccountKey("Subspace".to_owned()), snapshot(Some(80.0), Some(60.0)));
         map.set_usage(&AccountKey("Granite".to_owned()), snapshot(Some(10.0), Some(20.0)));
         let (picked, _) = map.pick_for_project(&["Subspace".to_owned(), "Granite".to_owned()]);
-        assert_eq!(picked.0, "Granite");
+        assert_eq!(picked.0, "Subspace", "first pin entry wins when both are healthy");
     }
 
     #[test]
-    fn five_hour_is_the_primary_sort_key() {
-        // Subspace: 5h=10%, 7d=90% — high 7d but immediate headroom
+    fn priority_order_respects_pin_order_when_first_pin_has_higher_seven_day() {
+        // Subspace: 5h=10%, 7d=90% — high 7d but still under 100%
         // Granite:  5h=50%, 7d=50%
-        // Neither is rate-limited (both 7d windows < 100%), so the
-        // 5h primary key wins for Subspace.
+        // Both tier 2. Priority-order: first in pin wins.
         let mut map = AccountStateMap::new(&[make_account("Subspace"), make_account("Granite")]);
         map.set_usage(&AccountKey("Subspace".to_owned()), snapshot(Some(10.0), Some(90.0)));
         map.set_usage(&AccountKey("Granite".to_owned()), snapshot(Some(50.0), Some(50.0)));
         let (picked, _) = map.pick_for_project(&["Subspace".to_owned(), "Granite".to_owned()]);
-        assert_eq!(picked.0, "Subspace");
+        assert_eq!(picked.0, "Subspace", "pin order over utilisation");
     }
 
     #[test]
@@ -605,14 +600,15 @@ mod tests {
     }
 
     #[test]
-    fn seven_day_tiebreak_when_five_hour_equal() {
-        // Both at 5h=50, tiebreaker is 7d. Granite has lower 7d so
-        // it wins despite the alphabetic ordering.
+    fn priority_order_ignores_seven_day_difference_when_both_available() {
+        // Both at 5h=50, different 7d. Old policy used 7d as a
+        // tiebreaker; the priority-order policy respects pin order
+        // — Subspace first → Subspace wins even with worse 7d.
         let mut map = AccountStateMap::new(&[make_account("Subspace"), make_account("Granite")]);
         map.set_usage(&AccountKey("Subspace".to_owned()), snapshot(Some(50.0), Some(70.0)));
         map.set_usage(&AccountKey("Granite".to_owned()), snapshot(Some(50.0), Some(30.0)));
         let (picked, _) = map.pick_for_project(&["Subspace".to_owned(), "Granite".to_owned()]);
-        assert_eq!(picked.0, "Granite");
+        assert_eq!(picked.0, "Subspace", "pin order over 7d util");
     }
 
     #[test]
