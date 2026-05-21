@@ -825,6 +825,11 @@ fn hash_message_block_into<H: std::hash::Hasher>(
             block_tag::TEXT.hash(hasher);
             hash_text_block_content(&block.text, block.trailing_spacing).hash(hasher);
             block.trailing_spacing.hash(hasher);
+            // Peer-block collapse state (#114). Without this in the
+            // signature, flipping `peer_collapsed_override` from a
+            // click handler is a no-op visually because the message
+            // render cache reuses the previous layout.
+            block.peer_collapsed_override.hash(hasher);
         }
         MessageBlock::Notice(block) => {
             block_tag::NOTICE.hash(hasher);

@@ -310,7 +310,29 @@ fn push_peer_envelope_user_turn_if_present(
             continue;
         }
         let blocks = vec![MessageBlock::Text(TextBlock::from_complete(text))];
-        app.push_message_tracked(ChatMessage::new(MessageRole::User, blocks, None));
+        let msg = ChatMessage::new(MessageRole::User, blocks, None);
+        // When forge is mid-turn there's an empty assistant placeholder
+        // at the tail (input_submit::dispatch_prompt pushed it before
+        // the response stream started). A blind push appends the peer
+        // user-turn AFTER the placeholder, which sandwiches the chat
+        // visually: assistant placeholder up top, peer reply below,
+        // then the streamed response eventually fills the placeholder
+        // above the reply. Insert BEFORE the active placeholder so the
+        // chronology reads cleanly: [previous user] → [peer reply] →
+        // [assistant placeholder that will fill in].
+        let placeholder_idx = app.active_turn_assistant_message_idx();
+        match placeholder_idx {
+            Some(idx) if idx <= app.messages().len() => {
+                app.insert_message_tracked(idx, msg);
+                // Re-bind the active turn pointer: the placeholder is
+                // now one slot further down because we inserted before
+                // it.
+                app.set_active_turn_assistant_message_idx(Some(idx + 1));
+            }
+            _ => {
+                app.push_message_tracked(msg);
+            }
+        }
         app.enforce_history_retention_tracked();
         return;
     }
