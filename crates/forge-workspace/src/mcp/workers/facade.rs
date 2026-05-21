@@ -130,14 +130,19 @@ impl ProdWorkerFacade {
 impl WorkerFacade for ProdWorkerFacade {
     fn caller_project(&self, caller: &SessionKey) -> Option<CallerProject> {
         let ws = self.workspace.upgrade()?;
+        // live_workers is the authoritative "child agent" registry;
+        // a session is a worker iff it appears there. A session is a
+        // lead iff it appears in the project's catalog AND is NOT in
+        // live_workers. The catalog can index worker sessions once
+        // their Connected fires, so `sessions.first()` is not a
+        // reliable lead marker - read live_workers first.
         for view in ws.list_projects() {
-            // Lead = the first session in the project's session list.
-            if view.sessions.first().is_some_and(|s| s.session == *caller) {
-                return Some(CallerProject { project_key: view.key, is_lead: true });
-            }
-            // Worker = entry in live_workers.
-            if ws.list_live_workers(&view.key).iter().any(|w| w.session_key == *caller) {
+            let live = ws.list_live_workers(&view.key);
+            if live.iter().any(|w| w.session_key == *caller) {
                 return Some(CallerProject { project_key: view.key, is_lead: false });
+            }
+            if view.sessions.iter().any(|s| s.session == *caller) {
+                return Some(CallerProject { project_key: view.key, is_lead: true });
             }
         }
         None

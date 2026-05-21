@@ -1356,23 +1356,29 @@ impl Workspace {
     /// drops its reference. No-op when the key isn't in the pool.
     /// Called from forge-tui's per-row "close" action.
     ///
-    /// **Lead cascade**: when `session_key` is the lead of any project
-    /// (i.e. `sessions[0]` of a `ProjectView`), every live worker
-    /// under that project is released first. Workers' JSONLs persist
-    /// on disk; only the in-memory live state + the running claude
-    /// subprocesses are torn down. The split into a non-cascading
-    /// `release_session_inner` keeps the recursion bounded - the
-    /// per-worker release calls into the inner method directly.
+    /// **Lead cascade**: when `session_key` is a project's lead - it
+    /// appears in the project's catalog AND is NOT in
+    /// `live_workers[project]` - every live worker under that project
+    /// is released first. Workers' JSONLs persist on disk; only the
+    /// in-memory live state + the running claude subprocesses are
+    /// torn down. The split into a non-cascading `release_session_inner`
+    /// keeps the recursion bounded - the per-worker release calls
+    /// into the inner method directly.
+    ///
+    /// The "in-catalog AND not-in-live_workers" rule is the
+    /// discriminator (rather than `sessions.first()`): the catalog
+    /// also indexes worker sessions once their Connected fires, so
+    /// `sessions[0]` is not a reliable lead marker after a worker
+    /// reaches Running. `live_workers` is the authoritative
+    /// "this session is a child agent" registry.
     pub fn release_session(&self, session_key: &SessionKey) {
-        // Detect lead cascade: is this session the first (lead)
-        // session of any project? `list_projects` produces the same
-        // ordering forge-tui consumes - sessions[0] is the lead - so
-        // we can rely on that contract here.
-        let cascade_project = self
-            .list_projects()
-            .into_iter()
-            .find(|view| view.sessions.first().is_some_and(|s| s.session == *session_key))
-            .map(|view| view.key);
+        let cascade_project = self.list_projects().into_iter().find(|view| {
+            let in_catalog = view.sessions.iter().any(|s| s.session == *session_key);
+            let is_worker =
+                self.list_live_workers(&view.key).iter().any(|w| w.session_key == *session_key);
+            in_catalog && !is_worker
+        });
+        let cascade_project = cascade_project.map(|view| view.key);
         if let Some(project_key) = cascade_project {
             for entry in self.drain_live_workers(&project_key) {
                 let status = entry.to_status();
@@ -3015,6 +3021,51 @@ config_dir = "~/.claude-subspace"
             workspace.list_live_workers(&project_key).len(),
             1,
             "non-lead release must not cascade"
+        );
+    }
+
+    /// Regression for C1: when a worker's Connected fires it lands
+    /// at `catalog[project][0]` via `record_connected_session`. If
+    /// cascade detection uses `sessions.first()` as the lead marker,
+    /// it picks up the worker (not the lead) and releasing the real
+    /// lead silently stops cascading. The fix consults
+    /// `live_workers` to discriminate: a session is a lead iff it
+    /// appears in the catalog AND not in live_workers.
+    #[tokio::test]
+    async fn release_session_cascades_when_worker_sits_at_catalog_head() {
+        let dir = make_workspace_dir();
+        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+
+        let project = workspace.list_projects().into_iter().next().expect("forge project");
+        let project_key = project.key.clone();
+        let project_path = project.path.to_string_lossy().into_owned();
+
+        // Seed the lead FIRST, then the worker. record_connected_session
+        // inserts at index 0, so after both calls catalog[0] is the
+        // worker and catalog[1] is the lead - the exact shape that
+        // breaks the old `sessions.first()` discriminator.
+        let lead_key = SessionKey::from_session_id("lead-uuid");
+        let worker_key = SessionKey::from_session_id("worker-uuid");
+        workspace.record_connected_session(&project_path, lead_key.as_str(), None);
+        workspace.record_connected_session(&project_path, worker_key.as_str(), None);
+        workspace.insert_live_worker(&project_key, fake_entry("reviewer", worker_key.as_str()));
+
+        // Sanity: catalog head is the worker, not the lead.
+        let projects_now = workspace.list_projects();
+        let first_session = &projects_now[0].sessions[0].session;
+        assert_eq!(
+            first_session, &worker_key,
+            "catalog[0] must be the worker for the regression to bite"
+        );
+
+        // Release the LEAD. Pre-fix this fell through to a no-op
+        // because the cascade check (`sessions.first() == lead_key`)
+        // failed - the head was the worker.
+        workspace.release_session(&lead_key);
+
+        assert!(
+            workspace.list_live_workers(&project_key).is_empty(),
+            "lead release must cascade even when a worker sits at catalog[0]"
         );
     }
 }
