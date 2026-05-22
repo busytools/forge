@@ -35,6 +35,23 @@ use crate::views::{ProjectView, SessionView};
 /// naturally.
 const USAGE_POLL_INTERVAL: Duration = Duration::from_secs(60);
 
+/// Max attempts for `tag_session_with_retry` to find the worker's
+/// `<session_id>.jsonl` and append the tag row. claude CLI writes the
+/// file lazily on the first user turn - workers with an `initial_prompt`
+/// usually land within ~100 ms-2 s of `Connected`. 30 attempts at
+/// 100 ms = ~3 s wall caps the window generously without burning
+/// resources. Idle-spawned workers (no prompt) never produce a JSONL
+/// at all until the first `DeliverWorkerPrompt`; for those we exit
+/// the retry with `Io(NotFound)`, mark the entry `needs_tag = true`,
+/// and retry opportunistically when the first turn arrives.
+const WORKER_TAG_RETRY_ATTEMPTS: u32 = 30;
+
+/// Delay between `tag_session` retry attempts when the JSONL is not
+/// yet on disk. 100 ms is short enough to land within one or two ticks
+/// of claude's first write and large enough that 30 retries cap the
+/// total wait at a few seconds.
+const WORKER_TAG_RETRY_DELAY: Duration = Duration::from_millis(100);
+
 /// Multi-session orchestrator. Owns the project catalog snapshot
 /// loaded from `<config_dir>/forge.toml` and the pool of currently
 /// spawned [`forge_agent::Agent`] handles, one per active session.
@@ -75,6 +92,11 @@ pub struct Workspace {
     /// [`Self::get_agent_handle`] spawns the first `SessionTask` for a
     /// key; cleared on [`Self::release_session`] and [`Self::shutdown`].
     command_senders: Mutex<HashMap<SessionKey, mpsc::UnboundedSender<Command>>>,
+    /// Per-project list of live worker sessions. In-memory only -
+    /// wiped on forge restart by design (workers are ephemeral at the
+    /// forge UI level; their JSONLs persist on disk). Mutated via
+    /// `insert_live_worker` / `remove_latest_worker` / `drain_live_workers`.
+    live_workers: Mutex<HashMap<ProjectKey, Vec<crate::mcp::workers::types::WorkerEntry>>>,
     /// Shared [`DomainSession`] handles, one per active `SessionTask`.
     /// [`Self::store_pending_interaction`] writes under the same lock
     /// the `SessionTask` actor uses to read+remove. `pub(crate)` so
@@ -129,6 +151,28 @@ pub(crate) struct PooledAgent {
     pub account: AccountKey,
 }
 
+/// Pick the lead session for a project from a list of candidates.
+///
+/// Order of preference:
+/// 1. Latest by `last_modified` with `tag == forge:lead`.
+/// 2. Latest by `last_modified` with no tag (lazy-migration fallback
+///    so sessions that predate the workers feature stay reachable).
+/// 3. `None` (caller spawns fresh).
+///
+/// `forge:worker:*`-tagged sessions are explicitly skipped: they are
+/// not leads. Workers are typically already filtered upstream by
+/// `list_sessions(..., include_workers = false)`, but this helper's
+/// own filter ensures correctness if a caller passes
+/// `include_workers = true`.
+#[must_use]
+pub fn resolve_lead_session(sessions: &[SDKSessionInfo]) -> Option<&SDKSessionInfo> {
+    let latest_with = |pred: fn(&&SDKSessionInfo) -> bool| -> Option<&SDKSessionInfo> {
+        sessions.iter().filter(pred).max_by_key(|s| s.last_modified)
+    };
+    latest_with(|s| s.tag.as_deref() == Some(forge_primitives::FORGE_LEAD_TAG))
+        .or_else(|| latest_with(|s| s.tag.is_none()))
+}
+
 impl Workspace {
     /// Builds a Workspace, runs the catalog scan, and loads
     /// `<config_dir>/forge.toml`. Errors if `forge.toml` is missing
@@ -158,6 +202,7 @@ impl Workspace {
             None, // every project in the catalog
             None, // no limit
             0,
+            false, // hide worker-tagged sessions from default catalog
         )
         .await;
 
@@ -200,6 +245,7 @@ impl Workspace {
             update_tx,
             update_rx_slot: Mutex::new(Some(update_rx)),
             command_senders: Mutex::new(HashMap::new()),
+            live_workers: Mutex::new(HashMap::new()),
             domain_handles: Mutex::new(HashMap::new()),
             inflight_asks: Mutex::new(HashMap::new()),
             peer_stats: Mutex::new(HashMap::new()),
@@ -443,22 +489,26 @@ impl Workspace {
             }
         };
 
-        // Build the per-session `forge` MCP server with the four peer
-        // tools (peers__whoami / peers__list_agents / peers__tell_agent /
-        // peers__ask_agent). CallerKeyResolver reads `domain.key`
-        // through the shared Arc — when SessionTask migrates the key
-        // from synthetic to real on Connected, the resolver tracks.
-        let peer_server = {
-            let facade = crate::mcp::peers::facade::ProdWorkspaceFacade::from_arc(self);
+        // Build the per-session `forge` MCP server. ONE server name,
+        // both peer-coordination (`peers__*`) and worker-coordination
+        // (`workers__*`) tool groups surfaced together. The CLI
+        // rejects duplicate-name MCP servers, so peers and workers
+        // must share the `forge` namespace. CallerKeyResolver reads
+        // `domain.key` through the shared Arc - when SessionTask
+        // migrates the key from synthetic to real on Connected, the
+        // resolver tracks for both tool groups.
+        let forge_server = {
+            let workspace_facade = crate::mcp::peers::facade::ProdWorkspaceFacade::from_arc(self);
+            let worker_facade = crate::mcp::workers::facade::ProdWorkerFacade::from_arc(self);
             let resolver = crate::mcp::peers::facade::CallerKeyResolver::from_domain(&domain_arc);
-            crate::mcp::peers::build_server(facade, resolver)
+            crate::mcp::build_forge_server(workspace_facade, worker_facade, resolver)
         };
 
         let handle = forge_agent::Agent::spawn(
             account_dir.clone(),
             Some(account_key.0.clone()),
             attached_proxy,
-            vec![("forge".to_owned(), peer_server)],
+            vec![("forge".to_owned(), forge_server)],
         );
         // Project-rooted targets (`Default` / `Named`) resume the
         // project's lead session when the on-disk catalog has one,
@@ -493,6 +543,26 @@ impl Workspace {
                 // bridge surface ConnectionFailed.
                 let cwd = self.session_cwd_for(&key).unwrap_or_default();
                 handle.resume_session(key.as_str().to_owned(), cwd, settings)?;
+            }
+            SessionTarget::FreshInProject { project_key, .. } => {
+                // Worker spawn: a fresh session in the project's cwd.
+                // Skip the lead-resume path so each worker is a new
+                // claude-issued session UUID (the lead lives untouched).
+                let project = self
+                    .config
+                    .projects
+                    .iter()
+                    .find(|p| {
+                        forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+                            &p.path.to_string_lossy(),
+                        )) == project_key.as_str()
+                    })
+                    .ok_or_else(|| WorkspaceError::ProjectNotFound {
+                        name: project_key.as_str().to_owned(),
+                        path: self.config_dir.join("forge.toml"),
+                    })?;
+                let cwd = project.path.to_string_lossy().to_string();
+                handle.new_session(cwd, settings)?;
             }
         }
 
@@ -838,6 +908,7 @@ impl Workspace {
                 Ok(self.lead_session_key_for(project))
             }
             SessionTarget::Session(key) => Ok(key.clone()),
+            SessionTarget::FreshInProject { synth_key, .. } => Ok(synth_key.clone()),
         }
     }
 
@@ -873,6 +944,19 @@ impl Workspace {
                 });
                 matched.unwrap_or_else(|| self.config.default_project().accounts.clone())
             }
+            SessionTarget::FreshInProject { project_key, .. } => self
+                .config
+                .projects
+                .iter()
+                .find(|p| {
+                    forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+                        &p.path.to_string_lossy(),
+                    )) == project_key.as_str()
+                })
+                .map_or_else(
+                    || self.config.default_project().accounts.clone(),
+                    |p| p.accounts.clone(),
+                ),
         }
     }
 
@@ -905,14 +989,16 @@ impl Workspace {
     /// on-disk catalog has one, else `None`. Drives the resume-first
     /// behaviour in [`Self::get_agent_handle`]: project-rooted targets
     /// (`Default` / `Named`) resume the lead when it exists and fall
-    /// back to a fresh session otherwise.
+    /// back to a fresh session otherwise. Picks via [`resolve_lead_session`]:
+    /// latest `forge:lead`-tagged session beats untagged; `forge:worker:*`
+    /// sessions are skipped entirely.
     fn try_lead_session_id_for(&self, project: &LoadedProject) -> Option<SessionKey> {
         let key = ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(
             Some(&project.path.to_string_lossy()),
         ));
         let catalog = self.catalog.lock();
         let entries = catalog.get(&key)?;
-        let lead = entries.first()?;
+        let lead = resolve_lead_session(entries)?;
         Some(SessionKey::from_session_id(lead.session_id.clone()))
     }
 
@@ -1153,6 +1239,53 @@ impl Workspace {
                     let _enter = span.enter();
                     spawn::handle_deliver_peer_prompt(self, caller, target_project, wrapped);
                 }
+                Command::SpawnWorker {
+                    project_key,
+                    label,
+                    charter,
+                    spawned_by_session_id,
+                    return_to,
+                } => {
+                    let span = tracing::info_span!(
+                        "spawn_worker",
+                        project = %project_key.as_str(),
+                        label = %label,
+                    );
+                    let _enter = span.enter();
+                    spawn::handle_spawn_worker(
+                        self,
+                        project_key,
+                        &label,
+                        charter,
+                        spawned_by_session_id,
+                        return_to,
+                    );
+                }
+                Command::CloseWorker { project_key, label } => {
+                    let span = tracing::info_span!(
+                        "close_worker",
+                        project = %project_key.as_str(),
+                        label = %label,
+                    );
+                    let _enter = span.enter();
+                    spawn::handle_close_worker(self, &project_key, &label);
+                }
+                Command::DeliverWorkerPrompt { caller, project_key, target_label, wrapped } => {
+                    let span = tracing::info_span!(
+                        "deliver_worker_prompt",
+                        project = %project_key.as_str(),
+                        label = %target_label,
+                        correlation_id = %wrapped.correlation_id,
+                    );
+                    let _enter = span.enter();
+                    spawn::handle_deliver_worker_prompt(
+                        self,
+                        caller,
+                        &project_key,
+                        &target_label,
+                        wrapped,
+                    );
+                }
                 other => {
                     tracing::warn!(
                         target: "forge_workspace",
@@ -1239,11 +1372,373 @@ impl Workspace {
     /// subprocess exits once the consumer (forge-tui's bucket) also
     /// drops its reference. No-op when the key isn't in the pool.
     /// Called from forge-tui's per-row "close" action.
+    ///
+    /// **Lead cascade**: when `session_key` is a project's lead - it
+    /// appears in the project's catalog AND is NOT in
+    /// `live_workers[project]` - every live worker under that project
+    /// is released first. Workers' JSONLs persist on disk; only the
+    /// in-memory live state + the running claude subprocesses are
+    /// torn down. The split into a non-cascading `release_session_inner`
+    /// keeps the recursion bounded - the per-worker release calls
+    /// into the inner method directly.
+    ///
+    /// The "in-catalog AND not-in-live_workers" rule is the
+    /// discriminator (rather than `sessions.first()`): the catalog
+    /// also indexes worker sessions once their Connected fires, so
+    /// `sessions[0]` is not a reliable lead marker after a worker
+    /// reaches Running. `live_workers` is the authoritative
+    /// "this session is a child agent" registry.
     pub fn release_session(&self, session_key: &SessionKey) {
+        let cascade_project = self.list_projects().into_iter().find(|view| {
+            let in_catalog = view.sessions.iter().any(|s| s.session == *session_key);
+            let is_worker =
+                self.list_live_workers(&view.key).iter().any(|w| w.session_key == *session_key);
+            in_catalog && !is_worker
+        });
+        let cascade_project = cascade_project.map(|view| view.key);
+        if let Some(project_key) = cascade_project {
+            for entry in self.drain_live_workers(&project_key) {
+                let status = entry.to_status();
+                let _ = self.update_tx.send(SessionUpdate::WorkerStatusChanged {
+                    project_key: project_key.clone(),
+                    action: crate::protocol::WorkerStatusAction::Removed,
+                    status,
+                });
+                self.release_session_inner(&entry.session_key);
+            }
+        }
+        self.release_session_inner(session_key);
+    }
+
+    /// Non-cascading session release. Removes the pool entry, command
+    /// sender, and domain handle for `session_key`. Split out so the
+    /// lead-cascade path in `release_session` can release worker
+    /// sessions without re-triggering the cascade check.
+    fn release_session_inner(&self, session_key: &SessionKey) {
         let removed = self.pool.lock().remove(session_key);
         drop(removed);
         let _ = self.command_senders.lock().remove(session_key);
         let _ = self.domain_handles.lock().remove(session_key);
+    }
+
+    // ---- Live workers (project-internal child-agent coordination) ----
+
+    /// Snapshot the live workers for `project_key`. Returns an empty
+    /// Vec when no workers exist (rather than `None`) so the TUI tree-
+    /// child render can branch only on `is_empty`.
+    #[must_use]
+    pub fn list_live_workers(
+        &self,
+        project_key: &ProjectKey,
+    ) -> Vec<crate::mcp::workers::types::WorkerEntry> {
+        self.live_workers.lock().get(project_key).cloned().unwrap_or_default()
+    }
+
+    /// Snapshot every live worker's session_key across every project.
+    /// Used by the TUI's `find_running_bucket_for_path` to exclude
+    /// worker buckets from project-row click routing without depending
+    /// on `list_projects()` for enumeration.
+    #[must_use]
+    pub fn all_live_worker_session_keys(&self) -> Vec<SessionKey> {
+        self.live_workers
+            .lock()
+            .values()
+            .flat_map(|entries| entries.iter().map(|e| e.session_key.clone()))
+            .collect()
+    }
+
+    /// Insert a worker entry into `live_workers[project_key]`. Duplicate
+    /// labels are allowed; addressing by label uses latest-spawned wins
+    /// (see `remove_latest_worker`).
+    pub fn insert_live_worker(
+        &self,
+        project_key: &ProjectKey,
+        entry: crate::mcp::workers::types::WorkerEntry,
+    ) {
+        self.live_workers.lock().entry(project_key.clone()).or_default().push(entry);
+    }
+
+    /// Remove the latest-spawned worker matching `label` from
+    /// `live_workers[project_key]`. Returns the removed entry, or
+    /// `None` when no match exists.
+    pub fn remove_latest_worker(
+        &self,
+        project_key: &ProjectKey,
+        label: &str,
+    ) -> Option<crate::mcp::workers::types::WorkerEntry> {
+        let mut map = self.live_workers.lock();
+        let entries = map.get_mut(project_key)?;
+        let last_match_idx = entries.iter().rposition(|e| e.label == label)?;
+        Some(entries.remove(last_match_idx))
+    }
+
+    /// Drain every worker entry for `project_key` and return them in
+    /// insertion order.
+    pub fn drain_live_workers(
+        &self,
+        project_key: &ProjectKey,
+    ) -> Vec<crate::mcp::workers::types::WorkerEntry> {
+        self.live_workers.lock().remove(project_key).unwrap_or_default()
+    }
+
+    /// Locate `(project_key, label)` for any worker matching `session_key`
+    /// across every project's `live_workers`. Used by the Connected
+    /// handler in `SessionTask::translate_event` to decide whether a
+    /// just-connected session is a worker (and what tag to write).
+    /// `None` when the session is a lead (or not a worker at all).
+    pub fn worker_lookup_for_session(
+        &self,
+        session_key: &SessionKey,
+    ) -> Option<(ProjectKey, String)> {
+        let workers = self.live_workers.lock();
+        for (project_key, entries) in workers.iter() {
+            if let Some(entry) = entries.iter().find(|e| e.session_key == *session_key) {
+                return Some((project_key.clone(), entry.label.clone()));
+            }
+        }
+        None
+    }
+
+    /// Tag a worker session's JSONL with `forge:worker:<label>` and
+    /// transition its `WorkerEntry` from `Spawning` to `Running`.
+    /// Called from `SessionTask::translate_event` immediately after the
+    /// first `Connected` rekey lands.
+    ///
+    /// `cwd` is the worker's project path (the `directory` discriminator
+    /// `tag_session` uses to find the right `.jsonl` when CONFIG_DIR
+    /// hosts multiple project directories).
+    ///
+    /// The tag-write races against claude CLI's first JSONL write. For
+    /// workers spawned with an `initial_prompt`, the file lands within
+    /// ~100 ms-2 s of `Connected`, so a 30 x 100 ms retry loop reliably
+    /// catches it. For idle-spawned workers (no prompt) claude doesn't
+    /// create the JSONL at all until the first user turn arrives later,
+    /// so the retry will exhaust with `Io(NotFound)`. That's NOT a
+    /// rollback condition - we keep the worker live (it's fully
+    /// functional from `live_workers`), transition to `Running`, mark
+    /// the entry `needs_tag = true`, and emit `StatusChanged`. The
+    /// opportunistic retry on first `DeliverWorkerPrompt`
+    /// (see `spawn::handle_deliver_worker_prompt`) catches it once
+    /// claude is processing the turn.
+    ///
+    /// Other errors (permission denied, disk full, invalid UUID) still
+    /// indicate the worker can't be properly tracked on disk, so we
+    /// roll back: remove from `live_workers`, release the session, emit
+    /// a `Removed` status event.
+    ///
+    /// The tag-write runs in a detached tokio task to keep
+    /// `translate_event` synchronous.
+    ///
+    /// Idempotent - calling twice for the same session_key is a no-op
+    /// if the entry is already `Running`.
+    pub(crate) fn apply_worker_tag_or_rollback(
+        self: &Arc<Self>,
+        session_key: &SessionKey,
+        cwd: &str,
+    ) {
+        let Some((project_key, label)) = self.worker_lookup_for_session(session_key) else {
+            return;
+        };
+        // Resolve the per-account config_dir for this session via the
+        // bridge so the tag-write lands under the right account's
+        // projects/ tree.
+        let Some(config_dir) = self.config_dir_for(session_key) else {
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                session_id = %session_key.as_str(),
+                "apply_worker_tag: no agent registered; cannot resolve config_dir"
+            );
+            return;
+        };
+        self.apply_worker_tag_or_rollback_with_config_dir(
+            session_key,
+            &project_key,
+            &label,
+            cwd,
+            &config_dir,
+        );
+    }
+
+    /// Testable inner of [`Self::apply_worker_tag_or_rollback`] that
+    /// takes the resolved `config_dir` directly. The production caller
+    /// resolves via `config_dir_for`; unit tests pass a tempdir to
+    /// exercise the retry / rollback / deferred branches without
+    /// having to register a full `AgentHandle`.
+    pub(crate) fn apply_worker_tag_or_rollback_with_config_dir(
+        self: &Arc<Self>,
+        session_key: &SessionKey,
+        project_key: &ProjectKey,
+        label: &str,
+        cwd: &str,
+        config_dir: &std::path::Path,
+    ) {
+        let workspace = Arc::clone(self);
+        let project_key = project_key.clone();
+        let session_key = session_key.clone();
+        let label = label.to_owned();
+        let cwd = cwd.to_owned();
+        let config_dir = config_dir.to_path_buf();
+        tokio::spawn(async move {
+            let tag = forge_primitives::worker_tag(&label);
+            let result = tag_session_with_retry(
+                &config_dir,
+                session_key.as_str(),
+                &tag,
+                &cwd,
+                WORKER_TAG_RETRY_ATTEMPTS,
+                WORKER_TAG_RETRY_DELAY,
+            )
+            .await;
+            match result {
+                Ok(()) => {
+                    transition_worker_to_running(
+                        &workspace,
+                        &project_key,
+                        &session_key,
+                        TagWriteResult::Succeeded,
+                    );
+                }
+                Err(forge_sdk::Error::Io(io_err))
+                    if io_err.kind() == std::io::ErrorKind::NotFound =>
+                {
+                    tracing::warn!(
+                        target: "forge_workspace::workspace",
+                        session_id = %session_key.as_str(),
+                        label = %label,
+                        "tag_session_deferred: JSONL not yet on disk after retries; worker stays Running, tag will retry on first turn"
+                    );
+                    transition_worker_to_running(
+                        &workspace,
+                        &project_key,
+                        &session_key,
+                        TagWriteResult::DeferredNotFound,
+                    );
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        target: "forge_workspace::workspace",
+                        session_id = %session_key.as_str(),
+                        label = %label,
+                        error = ?err,
+                        "tag_session failed for worker (non-NotFound); rolling back spawn"
+                    );
+                    let removed = workspace.remove_latest_worker(&project_key, &label);
+                    if let Some(entry) = removed {
+                        let status = entry.to_status();
+                        let _ = workspace.update_tx.send(SessionUpdate::WorkerStatusChanged {
+                            project_key,
+                            action: crate::protocol::WorkerStatusAction::Removed,
+                            status,
+                        });
+                    }
+                    workspace.release_session(&session_key);
+                }
+            }
+        });
+    }
+
+    /// Opportunistically retry the JSONL tag-write for a worker whose
+    /// `needs_tag` flag is set. Called by
+    /// `spawn::handle_deliver_worker_prompt` when a `DeliverWorkerPrompt`
+    /// arrives for a worker that was spawned idle (no `initial_prompt`)
+    /// and therefore had no JSONL at `Connected`. By the time the first
+    /// turn fires, claude is writing the JSONL, so the tag-write should
+    /// succeed within a turn or two.
+    ///
+    /// On success: clear `needs_tag` and emit
+    /// `WorkerStatusChanged { StatusChanged }`.
+    ///
+    /// On failure (any kind): log warn, leave `needs_tag = true` so the
+    /// next turn retries again. Never rolls back - the worker stays
+    /// functional regardless of the tag's on-disk state.
+    pub(crate) fn retry_worker_tag_opportunistic(
+        self: &Arc<Self>,
+        project_key: &ProjectKey,
+        session_key: &SessionKey,
+        label: &str,
+        cwd: &str,
+    ) {
+        let Some(config_dir) = self.config_dir_for(session_key) else {
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                session_id = %session_key.as_str(),
+                "retry_worker_tag: no agent registered; cannot resolve config_dir"
+            );
+            return;
+        };
+        self.retry_worker_tag_opportunistic_with_config_dir(
+            project_key,
+            session_key,
+            label,
+            cwd,
+            &config_dir,
+        );
+    }
+
+    /// Testable inner of [`Self::retry_worker_tag_opportunistic`] that
+    /// takes the resolved `config_dir` directly. Same shape as the
+    /// `_with_config_dir` variant of `apply_worker_tag_or_rollback`.
+    pub(crate) fn retry_worker_tag_opportunistic_with_config_dir(
+        self: &Arc<Self>,
+        project_key: &ProjectKey,
+        session_key: &SessionKey,
+        label: &str,
+        cwd: &str,
+        config_dir: &std::path::Path,
+    ) {
+        let workspace = Arc::clone(self);
+        let project_key = project_key.clone();
+        let session_key = session_key.clone();
+        let label = label.to_owned();
+        let cwd = cwd.to_owned();
+        let config_dir = config_dir.to_path_buf();
+        tokio::spawn(async move {
+            let tag = forge_primitives::worker_tag(&label);
+            let result = tag_session_with_retry(
+                &config_dir,
+                session_key.as_str(),
+                &tag,
+                &cwd,
+                WORKER_TAG_RETRY_ATTEMPTS,
+                WORKER_TAG_RETRY_DELAY,
+            )
+            .await;
+            match result {
+                Ok(()) => {
+                    let updated_status = {
+                        let mut workers = workspace.live_workers.lock();
+                        workers.get_mut(&project_key).and_then(|entries| {
+                            entries.iter_mut().find(|e| e.session_key == session_key).map(|entry| {
+                                entry.needs_tag = false;
+                                entry.to_status()
+                            })
+                        })
+                    };
+                    if let Some(status) = updated_status {
+                        tracing::info!(
+                            target: "forge_workspace::workspace",
+                            session_id = %session_key.as_str(),
+                            label = %label,
+                            "tag_session_retry: deferred tag-write succeeded on opportunistic retry"
+                        );
+                        let _ = workspace.update_tx.send(SessionUpdate::WorkerStatusChanged {
+                            project_key,
+                            action: crate::protocol::WorkerStatusAction::StatusChanged,
+                            status,
+                        });
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        target: "forge_workspace::workspace",
+                        session_id = %session_key.as_str(),
+                        label = %label,
+                        error = ?err,
+                        "tag_session_retry: opportunistic retry failed; will try again on next turn"
+                    );
+                }
+            }
+        });
     }
 
     // ---- Refresh helpers (workspace → agent) ----
@@ -1545,6 +2040,21 @@ impl Workspace {
             domain.lock().key = to.clone();
             handles.insert(to.clone(), domain);
         }
+        drop((pool, senders, handles));
+        // Worker entries are keyed by `session_key` which initially
+        // matches the synthetic spawn key; rekey here so subsequent
+        // lookups (close-worker by label, deliver-worker-prompt) find
+        // the worker under its real claude-issued UUID.
+        {
+            let mut workers = self.live_workers.lock();
+            for entries in workers.values_mut() {
+                for entry in entries.iter_mut() {
+                    if entry.session_key == *from {
+                        entry.session_key = to.clone();
+                    }
+                }
+            }
+        }
         true
     }
 
@@ -1663,6 +2173,42 @@ impl Workspace {
             );
         }
     }
+
+    /// Expire every in-flight ask whose `target_project` matches the
+    /// `<project_key>::<label>` composite for a closed worker.
+    ///
+    /// Worker-bound asks stamp this composite onto `InflightAsk.target_project`
+    /// (see `crate::mcp::workers::worker_target_project_key`); when a
+    /// worker is closed via `handle_close_worker`, the per-session
+    /// connection-failed expiry (`expire_target_inflight`) would never
+    /// match because that path looks up the project by session-key
+    /// presence in the catalog and matches on the project's plain
+    /// name. The composite key path covers worker-bound traffic
+    /// specifically.
+    ///
+    /// Each matching ask is rolled through `expire_inflight_ask_failed`
+    /// so the caller's LLM receives the same `DeliveryFailureNotice`
+    /// turn it would for any other target loss.
+    pub(crate) fn expire_inflight_for_closed_worker(
+        self: &Arc<Self>,
+        project_key: &crate::ProjectKey,
+        label: &str,
+    ) {
+        let composite = crate::mcp::workers::worker_target_project_key(project_key.as_str(), label);
+        let ids_to_expire: Vec<CorrelationId> = {
+            let asks = self.inflight_asks.lock();
+            asks.iter()
+                .filter(|(_, ask)| ask.target_project == composite)
+                .map(|(id, _)| id.clone())
+                .collect()
+        };
+        for id in ids_to_expire {
+            self.expire_inflight_ask_failed(
+                &id,
+                crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
+            );
+        }
+    }
 }
 
 #[cfg(any(test, feature = "testing"))]
@@ -1730,6 +2276,7 @@ impl Workspace {
             update_tx,
             update_rx_slot: Mutex::new(None),
             command_senders: Mutex::new(HashMap::new()),
+            live_workers: Mutex::new(HashMap::new()),
             domain_handles: Mutex::new(HashMap::new()),
             inflight_asks: Mutex::new(HashMap::new()),
             peer_stats: Mutex::new(HashMap::new()),
@@ -1739,6 +2286,173 @@ impl Workspace {
             proxy: None,
         };
         (Arc::new(workspace), update_rx)
+    }
+}
+
+/// Discriminator for how a successful `apply_worker_tag_or_rollback`
+/// arm decided to transition a worker to `Running`. The `Succeeded`
+/// arm clears `needs_tag`; the `DeferredNotFound` arm keeps it set
+/// so the opportunistic retry on first `DeliverWorkerPrompt` knows
+/// to try again.
+#[derive(Clone, Copy)]
+enum TagWriteResult {
+    /// Tag row was appended to the JSONL on disk.
+    Succeeded,
+    /// JSONL never appeared during the retry window. Worker stays
+    /// live with `needs_tag = true` for opportunistic retry later.
+    DeferredNotFound,
+}
+
+/// Shared transition: flip a worker's status to `Running`, update
+/// `needs_tag` according to the tag-write outcome, and emit
+/// `WorkerStatusChanged { StatusChanged }`. Idempotent.
+fn transition_worker_to_running(
+    workspace: &Arc<Workspace>,
+    project_key: &ProjectKey,
+    session_key: &SessionKey,
+    result: TagWriteResult,
+) {
+    let updated_status = {
+        let mut workers = workspace.live_workers.lock();
+        workers.get_mut(project_key).and_then(|entries| {
+            entries.iter_mut().find(|e| e.session_key == *session_key).map(|entry| {
+                entry.status = forge_primitives::WorkerLiveness::Running;
+                entry.needs_tag = matches!(result, TagWriteResult::DeferredNotFound);
+                entry.to_status()
+            })
+        })
+    };
+    if let Some(status) = updated_status {
+        let _ = workspace.update_tx.send(SessionUpdate::WorkerStatusChanged {
+            project_key: project_key.clone(),
+            action: crate::protocol::WorkerStatusAction::StatusChanged,
+            status,
+        });
+    }
+}
+
+/// Wrap `mutations::tag_session` with a retry loop scoped to the JSONL-
+/// not-yet-on-disk race after `Connected`. claude CLI creates
+/// `<session_id>.jsonl` lazily; until that lands, `find_session_file`
+/// returns `None` and `tag_session` surfaces `Io(NotFound)`. We retry
+/// only on that variant - any other error (permission denied, disk
+/// full, invalid UUID, encode error) propagates immediately. The async
+/// `tokio::time::sleep` is mandatory: this runs in a tokio task spawned
+/// from `apply_worker_tag_or_rollback` (or `retry_worker_tag_opportunistic`),
+/// never on a blocking thread.
+async fn tag_session_with_retry(
+    config_dir: &std::path::Path,
+    session_id: &str,
+    tag: &str,
+    directory: &str,
+    max_attempts: u32,
+    delay: Duration,
+) -> Result<(), forge_sdk::Error> {
+    let mut last_err: Option<forge_sdk::Error> = None;
+    for attempt in 0..max_attempts {
+        match forge_agent::userdata::catalog::mutations::tag_session(
+            config_dir,
+            session_id,
+            Some(tag),
+            Some(directory),
+        ) {
+            Ok(()) => return Ok(()),
+            Err(forge_sdk::Error::Io(io_err)) if io_err.kind() == std::io::ErrorKind::NotFound => {
+                last_err = Some(forge_sdk::Error::Io(io_err));
+                tracing::trace!(
+                    target: "forge_workspace::workspace",
+                    session_id = %session_id,
+                    attempt = attempt + 1,
+                    max_attempts,
+                    "tag_session: JSONL not yet on disk, retrying"
+                );
+                tokio::time::sleep(delay).await;
+            }
+            Err(other) => return Err(other),
+        }
+    }
+    Err(last_err.unwrap_or_else(|| {
+        forge_sdk::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("session {session_id} not found after {max_attempts} attempts"),
+        ))
+    }))
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+mod resolver_tests {
+    use super::*;
+
+    fn mk_session(id: &str, tag: Option<&str>, mtime: u64) -> SDKSessionInfo {
+        SDKSessionInfo {
+            session_id: id.to_owned(),
+            summary: format!("session {id}"),
+            last_modified: mtime,
+            file_size: None,
+            custom_title: None,
+            first_prompt: None,
+            git_branch: None,
+            cwd: None,
+            tag: tag.map(str::to_owned),
+            created_at: None,
+        }
+    }
+
+    #[test]
+    fn resolver_prefers_forge_lead_over_untagged() {
+        // Untagged session is newer, but the lead tag wins regardless.
+        let sessions = vec![
+            mk_session("untagged-newer", None, 200),
+            mk_session("tagged-older", Some(forge_primitives::FORGE_LEAD_TAG), 100),
+        ];
+        let picked = resolve_lead_session(&sessions).expect("some");
+        assert_eq!(picked.session_id, "tagged-older");
+    }
+
+    #[test]
+    fn resolver_falls_back_to_untagged_when_no_lead_tag() {
+        let sessions = vec![mk_session("legacy", None, 100)];
+        let picked = resolve_lead_session(&sessions).expect("some");
+        assert_eq!(picked.session_id, "legacy");
+    }
+
+    #[test]
+    fn resolver_skips_forge_worker_tagged_sessions() {
+        // Worker tag must never win, even when it's the only candidate
+        // and its mtime is overwhelmingly newer than anything else.
+        let worker = forge_primitives::worker_tag("reviewer");
+        let sessions = vec![mk_session("worker", Some(&worker), 999)];
+        assert!(resolve_lead_session(&sessions).is_none());
+    }
+
+    #[test]
+    fn resolver_picks_latest_lead_when_multiple() {
+        let sessions = vec![
+            mk_session("old-lead", Some(forge_primitives::FORGE_LEAD_TAG), 100),
+            mk_session("new-lead", Some(forge_primitives::FORGE_LEAD_TAG), 200),
+        ];
+        let picked = resolve_lead_session(&sessions).expect("some");
+        assert_eq!(picked.session_id, "new-lead");
+    }
+
+    #[test]
+    fn resolver_picks_latest_untagged_when_no_lead_and_workers_present() {
+        // Workers (with newer mtime) must be filtered out; the
+        // resolver returns the latest UNTAGGED entry.
+        let worker = forge_primitives::worker_tag("reviewer");
+        let sessions = vec![
+            mk_session("old-untagged", None, 50),
+            mk_session("new-untagged", None, 100),
+            mk_session("worker", Some(&worker), 999),
+        ];
+        let picked = resolve_lead_session(&sessions).expect("some");
+        assert_eq!(picked.session_id, "new-untagged");
+    }
+
+    #[test]
+    fn resolver_returns_none_for_empty() {
+        assert!(resolve_lead_session(&[]).is_none());
     }
 }
 
@@ -2421,5 +3135,562 @@ config_dir = "~/.claude-stargate"
             wrapped,
         });
         assert!(result.is_ok(), "dispatch routed cleanly: {result:?}");
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+mod workers_state_tests {
+    use super::*;
+    use crate::mcp::workers::types::WorkerEntry;
+    use forge_primitives::WorkerLiveness;
+    use std::time::SystemTime;
+
+    fn fake_entry(label: &str, key: &str) -> WorkerEntry {
+        WorkerEntry {
+            label: label.into(),
+            charter: "test charter".into(),
+            session_key: SessionKey::from_session_id(key),
+            status: WorkerLiveness::Running,
+            spawned_at: SystemTime::UNIX_EPOCH,
+            spawned_by_session_id: "lead-uuid".into(),
+            needs_tag: false,
+        }
+    }
+
+    #[test]
+    fn live_workers_starts_empty() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let project = ProjectKey::new("forge");
+        assert!(ws.list_live_workers(&project).is_empty());
+    }
+
+    #[test]
+    fn insert_then_list_returns_entry() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let project = ProjectKey::new("forge");
+        ws.insert_live_worker(&project, fake_entry("reviewer", "abc"));
+        let entries = ws.list_live_workers(&project);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].label, "reviewer");
+    }
+
+    #[test]
+    fn remove_latest_by_label_picks_most_recent_duplicate() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let project = ProjectKey::new("forge");
+        ws.insert_live_worker(&project, fake_entry("dup", "old"));
+        ws.insert_live_worker(&project, fake_entry("dup", "new"));
+        let removed = ws.remove_latest_worker(&project, "dup");
+        assert_eq!(removed.unwrap().session_key.as_str(), "new");
+        assert_eq!(ws.list_live_workers(&project).len(), 1);
+    }
+
+    #[test]
+    fn remove_returns_none_when_missing() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let project = ProjectKey::new("forge");
+        assert!(ws.remove_latest_worker(&project, "missing").is_none());
+    }
+
+    #[test]
+    fn drain_for_project_clears_and_returns_all() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let project = ProjectKey::new("forge");
+        ws.insert_live_worker(&project, fake_entry("a", "k1"));
+        ws.insert_live_worker(&project, fake_entry("b", "k2"));
+        let drained = ws.drain_live_workers(&project);
+        assert_eq!(drained.len(), 2);
+        assert!(ws.list_live_workers(&project).is_empty());
+    }
+
+    /// `migrate_session_task` rewrites every matching WorkerEntry's
+    /// `session_key` field in lockstep with the pool / command_senders
+    /// / domain_handles maps. Without this fix-up, `close_worker` and
+    /// `deliver_worker_prompt` would address the wrong session after
+    /// the synth -> real rekey on first Connected.
+    #[test]
+    fn migrate_session_task_rekeys_live_workers() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let project = ProjectKey::new("forge");
+        let from = SessionKey::from_session_id("__spawn_worker_forge_r__");
+        let to = SessionKey::from_session_id("real-uuid");
+        ws.insert_live_worker(&project, fake_entry("r", from.as_str()));
+        // Seed the three maps at `from` so migrate doesn't short-circuit
+        // on the "not registered" branch.
+        ws.command_senders
+            .lock()
+            .insert(from.clone(), tokio::sync::mpsc::unbounded_channel::<Command>().0);
+        ws.register_domain_session(from.clone(), None);
+
+        let migrated = ws.migrate_session_task(&from, &to);
+        assert!(migrated, "migrate succeeded");
+        let entries = ws.list_live_workers(&project);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].session_key.as_str(), "real-uuid");
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+mod release_session_cascade_tests {
+    use super::*;
+    use crate::mcp::workers::types::WorkerEntry;
+    use forge_primitives::WorkerLiveness;
+    use std::fs;
+    use std::time::SystemTime;
+    use tempfile::tempdir;
+
+    fn fake_entry(label: &str, key: &str) -> WorkerEntry {
+        WorkerEntry {
+            label: label.into(),
+            charter: "test charter".into(),
+            session_key: SessionKey::from_session_id(key),
+            status: WorkerLiveness::Running,
+            spawned_at: SystemTime::UNIX_EPOCH,
+            spawned_by_session_id: "lead-uuid".into(),
+            needs_tag: false,
+        }
+    }
+
+    fn make_workspace_dir() -> tempfile::TempDir {
+        let dir = tempdir().expect("tempdir");
+        fs::write(
+            dir.path().join("forge.toml"),
+            r#"
+[[orgs]]
+name = "Default"
+accounts = ["Stargate"]
+
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+auto_start = true
+
+[[accounts]]
+display_name = "Stargate"
+config_dir = "~/.claude-stargate"
+"#,
+        )
+        .expect("write forge.toml");
+        dir
+    }
+
+    /// `release_session` cascades worker termination when the released
+    /// session is a project's lead. Workers' JSONLs persist on disk
+    /// (we don't delete them); only the in-memory live_workers
+    /// entries + the running session subprocesses are torn down.
+    #[tokio::test]
+    async fn release_session_on_lead_cascades_workers() {
+        let dir = make_workspace_dir();
+        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        let mut rx = workspace.subscribe().expect("subscribe");
+
+        // Seed the catalog with a lead session at the project key so
+        // `list_projects` reports a session matching `lead_key`.
+        let project = workspace.list_projects().into_iter().next().expect("forge project");
+        let project_key = project.key.clone();
+        let lead_key = SessionKey::from_session_id("lead-uuid");
+        workspace.record_connected_session(
+            &project.path.to_string_lossy(),
+            lead_key.as_str(),
+            None,
+        );
+
+        // Insert two workers under the project.
+        workspace.insert_live_worker(&project_key, fake_entry("r1", "worker-1"));
+        workspace.insert_live_worker(&project_key, fake_entry("r2", "worker-2"));
+        assert_eq!(workspace.list_live_workers(&project_key).len(), 2);
+
+        // Release the lead. Cascade fires before the lead release
+        // itself; workers' live_workers entries are gone afterward.
+        workspace.release_session(&lead_key);
+        assert!(
+            workspace.list_live_workers(&project_key).is_empty(),
+            "workers must be cascade-closed"
+        );
+
+        // Drain the channel and confirm we saw a Removed
+        // WorkerStatusChanged for each worker.
+        let mut removed_count = 0;
+        while let Ok(update) = rx.try_recv() {
+            if let SessionUpdate::WorkerStatusChanged { action, .. } = update
+                && action == crate::protocol::WorkerStatusAction::Removed
+            {
+                removed_count += 1;
+            }
+        }
+        assert_eq!(removed_count, 2, "two Removed events fire for the two workers");
+    }
+
+    /// `release_session` on a non-lead (or unknown) session is a plain
+    /// release with NO cascade. Confirms the cascade is gated on
+    /// "session is a lead of some project."
+    #[tokio::test]
+    async fn release_session_on_non_lead_does_not_cascade() {
+        let dir = make_workspace_dir();
+        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+
+        let project_key = workspace.list_projects().into_iter().next().expect("forge").key;
+        workspace.insert_live_worker(&project_key, fake_entry("r1", "worker-1"));
+
+        let unknown = SessionKey::from_session_id("unknown-session");
+        workspace.release_session(&unknown);
+        assert_eq!(
+            workspace.list_live_workers(&project_key).len(),
+            1,
+            "non-lead release must not cascade"
+        );
+    }
+
+    /// Regression for C1: when a worker's Connected fires it lands
+    /// at `catalog[project][0]` via `record_connected_session`. If
+    /// cascade detection uses `sessions.first()` as the lead marker,
+    /// it picks up the worker (not the lead) and releasing the real
+    /// lead silently stops cascading. The fix consults
+    /// `live_workers` to discriminate: a session is a lead iff it
+    /// appears in the catalog AND not in live_workers.
+    #[tokio::test]
+    async fn release_session_cascades_when_worker_sits_at_catalog_head() {
+        let dir = make_workspace_dir();
+        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+
+        let project = workspace.list_projects().into_iter().next().expect("forge project");
+        let project_key = project.key.clone();
+        let project_path = project.path.to_string_lossy().into_owned();
+
+        // Seed the lead FIRST, then the worker. record_connected_session
+        // inserts at index 0, so after both calls catalog[0] is the
+        // worker and catalog[1] is the lead - the exact shape that
+        // breaks the old `sessions.first()` discriminator.
+        let lead_key = SessionKey::from_session_id("lead-uuid");
+        let worker_key = SessionKey::from_session_id("worker-uuid");
+        workspace.record_connected_session(&project_path, lead_key.as_str(), None);
+        workspace.record_connected_session(&project_path, worker_key.as_str(), None);
+        workspace.insert_live_worker(&project_key, fake_entry("reviewer", worker_key.as_str()));
+
+        // Sanity: catalog head is the worker, not the lead.
+        let projects_now = workspace.list_projects();
+        let first_session = &projects_now[0].sessions[0].session;
+        assert_eq!(
+            first_session, &worker_key,
+            "catalog[0] must be the worker for the regression to bite"
+        );
+
+        // Release the LEAD. Pre-fix this fell through to a no-op
+        // because the cascade check (`sessions.first() == lead_key`)
+        // failed - the head was the worker.
+        workspace.release_session(&lead_key);
+
+        assert!(
+            workspace.list_live_workers(&project_key).is_empty(),
+            "lead release must cascade even when a worker sits at catalog[0]"
+        );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+mod tag_retry_tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    /// Build the on-disk `<config_dir>/projects/<sanitized_cwd>/`
+    /// directory `tag_session` expects and return the path the JSONL
+    /// would land at. Caller decides when to actually create the file.
+    fn jsonl_path_for(
+        config_dir: &std::path::Path,
+        cwd: &std::path::Path,
+        session_id: &str,
+    ) -> std::path::PathBuf {
+        let sanitized = forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+            &cwd.to_string_lossy(),
+        ));
+        let project_dir = forge_sdk::projects_dir_for(config_dir).join(&sanitized);
+        fs::create_dir_all(&project_dir).expect("project dir");
+        project_dir.join(format!("{session_id}.jsonl"))
+    }
+
+    /// JSONL exists from the start: tag_session_with_retry succeeds on
+    /// the first attempt and appends a tag row.
+    #[tokio::test]
+    async fn succeeds_immediately_when_jsonl_exists() {
+        let cfg = tempdir().expect("cfg");
+        let cwd = tempdir().expect("cwd");
+        let session_id = "550e8400-e29b-41d4-a716-446655440001";
+        let path = jsonl_path_for(cfg.path(), cwd.path(), session_id);
+        fs::write(&path, "").expect("seed jsonl");
+
+        let result = tag_session_with_retry(
+            cfg.path(),
+            session_id,
+            "forge:worker:smoke",
+            &cwd.path().to_string_lossy(),
+            5,
+            Duration::from_millis(10),
+        )
+        .await;
+        assert!(result.is_ok(), "tag should succeed: {result:?}");
+        let body = fs::read_to_string(&path).expect("read");
+        assert!(body.contains("\"tag\":\"forge:worker:smoke\""), "tag row appended: {body:?}");
+    }
+
+    /// JSONL appears after a few attempts: retry loop wins. Spawns the
+    /// retry, sleeps long enough for it to hit `NotFound` once or twice,
+    /// then creates the file and observes a successful tag.
+    #[tokio::test]
+    async fn retries_until_jsonl_appears() {
+        let cfg = tempdir().expect("cfg");
+        let cwd = tempdir().expect("cwd");
+        let session_id = "550e8400-e29b-41d4-a716-446655440002";
+        let path = jsonl_path_for(cfg.path(), cwd.path(), session_id);
+        // File doesn't exist yet; create it after a brief delay.
+        let path_clone = path.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(120)).await;
+            fs::write(&path_clone, "").expect("create jsonl");
+        });
+
+        let result = tag_session_with_retry(
+            cfg.path(),
+            session_id,
+            "forge:worker:smoke",
+            &cwd.path().to_string_lossy(),
+            30,
+            Duration::from_millis(50),
+        )
+        .await;
+        assert!(result.is_ok(), "retry should win: {result:?}");
+        let body = fs::read_to_string(&path).expect("read");
+        assert!(body.contains("\"tag\":\"forge:worker:smoke\""), "tag row appended: {body:?}");
+    }
+
+    /// JSONL never appears: retry exhausts and surfaces NotFound.
+    #[tokio::test]
+    async fn gives_up_after_max_attempts() {
+        let cfg = tempdir().expect("cfg");
+        let cwd = tempdir().expect("cwd");
+        let session_id = "550e8400-e29b-41d4-a716-446655440003";
+        let _path = jsonl_path_for(cfg.path(), cwd.path(), session_id);
+        // Don't create the JSONL.
+
+        let result = tag_session_with_retry(
+            cfg.path(),
+            session_id,
+            "forge:worker:smoke",
+            &cwd.path().to_string_lossy(),
+            3,
+            Duration::from_millis(10),
+        )
+        .await;
+        match result {
+            Err(forge_sdk::Error::Io(io_err)) => {
+                assert_eq!(io_err.kind(), std::io::ErrorKind::NotFound);
+            }
+            other => panic!("expected Io(NotFound), got {other:?}"),
+        }
+    }
+
+    /// Invalid UUID is a non-NotFound error: must propagate immediately
+    /// without retrying.
+    #[tokio::test]
+    async fn invalid_uuid_propagates_without_retry() {
+        let cfg = tempdir().expect("cfg");
+        let cwd = tempdir().expect("cwd");
+        let start = std::time::Instant::now();
+        let result = tag_session_with_retry(
+            cfg.path(),
+            "not-a-valid-uuid",
+            "forge:worker:smoke",
+            &cwd.path().to_string_lossy(),
+            30,
+            Duration::from_millis(500),
+        )
+        .await;
+        let elapsed = start.elapsed();
+        assert!(matches!(result, Err(forge_sdk::Error::MessageParse { .. })));
+        // Should NOT have slept through 30 * 500ms = 15s of retries.
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "non-NotFound errors must skip retry: {elapsed:?}"
+        );
+    }
+
+    fn fake_spawning_entry(
+        label: &str,
+        key: &str,
+        needs_tag: bool,
+    ) -> crate::mcp::workers::types::WorkerEntry {
+        crate::mcp::workers::types::WorkerEntry {
+            label: label.into(),
+            charter: "test".into(),
+            session_key: SessionKey::from_session_id(key),
+            status: forge_primitives::WorkerLiveness::Spawning,
+            spawned_at: std::time::SystemTime::UNIX_EPOCH,
+            spawned_by_session_id: "lead".into(),
+            needs_tag,
+        }
+    }
+
+    /// `apply_worker_tag_or_rollback_with_config_dir`: when the JSONL
+    /// never appears, the retry exhausts with NotFound, but the worker
+    /// stays in `live_workers` (NO rollback), transitions to Running,
+    /// and `needs_tag` remains true so the opportunistic retry on the
+    /// first turn can try again. A single `StatusChanged` event fires.
+    #[tokio::test]
+    async fn notfound_keeps_worker_with_needs_tag_flag() {
+        let (workspace, mut rx) = Workspace::testing_stub();
+        let project_key = ProjectKey::new("forge");
+        let session_id = "550e8400-e29b-41d4-a716-446655440010";
+        let session_key = SessionKey::from_session_id(session_id);
+        workspace.insert_live_worker(&project_key, fake_spawning_entry("idle", session_id, true));
+
+        let cfg = tempdir().expect("cfg");
+        let cwd = tempdir().expect("cwd");
+        // Do NOT create the JSONL: tag_session will see NotFound every
+        // attempt and the retry will exhaust.
+        let _path = jsonl_path_for(cfg.path(), cwd.path(), session_id);
+
+        // Use a tight retry budget so the test completes quickly. The
+        // _with_config_dir entry point spawns the detached tokio task
+        // internally - we override the constants by calling
+        // tag_session_with_retry directly here would be cheating; this
+        // test verifies the wrapper's classification + transition logic.
+        workspace.apply_worker_tag_or_rollback_with_config_dir(
+            &session_key,
+            &project_key,
+            "idle",
+            &cwd.path().to_string_lossy(),
+            cfg.path(),
+        );
+
+        // The detached task takes ~3s (30 x 100ms) to exhaust against an
+        // absent JSONL. Wait for the StatusChanged that signals it ran
+        // through the deferred-NotFound branch.
+        let status_changed = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match rx.recv().await {
+                    Some(SessionUpdate::WorkerStatusChanged { action, status, .. }) => {
+                        if matches!(action, crate::protocol::WorkerStatusAction::StatusChanged) {
+                            return Some(status);
+                        }
+                        if matches!(action, crate::protocol::WorkerStatusAction::Removed) {
+                            return None;
+                        }
+                    }
+                    Some(_) => {}
+                    None => return None,
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for StatusChanged");
+
+        let status = status_changed.expect("expected StatusChanged, not Removed (rollback)");
+        assert_eq!(status.label, "idle");
+        assert!(matches!(status.status, forge_primitives::WorkerLiveness::Running));
+
+        // Worker entry should remain in live_workers with needs_tag=true.
+        let entries = workspace.list_live_workers(&project_key);
+        assert_eq!(entries.len(), 1, "worker must NOT have been rolled back");
+        assert_eq!(entries[0].label, "idle");
+        assert!(entries[0].needs_tag, "needs_tag stays true so opportunistic retry can fire");
+        assert!(matches!(entries[0].status, forge_primitives::WorkerLiveness::Running));
+    }
+
+    /// `apply_worker_tag_or_rollback_with_config_dir`: when the JSONL
+    /// exists from the start, the retry succeeds on the first attempt,
+    /// the worker transitions to Running, and `needs_tag` is cleared.
+    #[tokio::test]
+    async fn jsonl_present_clears_needs_tag() {
+        let (workspace, mut rx) = Workspace::testing_stub();
+        let project_key = ProjectKey::new("forge");
+        let session_id = "550e8400-e29b-41d4-a716-446655440011";
+        let session_key = SessionKey::from_session_id(session_id);
+        workspace.insert_live_worker(
+            &project_key,
+            fake_spawning_entry("prompt-driven", session_id, true),
+        );
+
+        let cfg = tempdir().expect("cfg");
+        let cwd = tempdir().expect("cwd");
+        let path = jsonl_path_for(cfg.path(), cwd.path(), session_id);
+        fs::write(&path, "").expect("seed jsonl");
+
+        workspace.apply_worker_tag_or_rollback_with_config_dir(
+            &session_key,
+            &project_key,
+            "prompt-driven",
+            &cwd.path().to_string_lossy(),
+            cfg.path(),
+        );
+
+        // Wait for the StatusChanged emit.
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while let Some(update) = rx.recv().await {
+                if let SessionUpdate::WorkerStatusChanged { action, .. } = update
+                    && matches!(action, crate::protocol::WorkerStatusAction::StatusChanged)
+                {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("StatusChanged emit within budget");
+
+        let entries = workspace.list_live_workers(&project_key);
+        assert_eq!(entries.len(), 1);
+        assert!(!entries[0].needs_tag, "needs_tag cleared on successful tag-write");
+        assert!(matches!(entries[0].status, forge_primitives::WorkerLiveness::Running));
+        let body = fs::read_to_string(&path).expect("read jsonl");
+        assert!(body.contains("\"tag\":\"forge:worker:prompt-driven\""));
+    }
+
+    /// `retry_worker_tag_opportunistic_with_config_dir` on a worker
+    /// whose `needs_tag` is true: when the JSONL is present, the
+    /// retry succeeds, the flag is cleared, and a single
+    /// `StatusChanged` event fires.
+    #[tokio::test]
+    async fn opportunistic_retry_clears_flag_when_jsonl_appears() {
+        let (workspace, mut rx) = Workspace::testing_stub();
+        let project_key = ProjectKey::new("forge");
+        let session_id = "550e8400-e29b-41d4-a716-446655440012";
+        let session_key = SessionKey::from_session_id(session_id);
+        // Pre-state: worker is Running but needs_tag=true (it landed
+        // here via the deferred-NotFound branch earlier).
+        let mut entry = fake_spawning_entry("idle", session_id, true);
+        entry.status = forge_primitives::WorkerLiveness::Running;
+        workspace.insert_live_worker(&project_key, entry);
+
+        let cfg = tempdir().expect("cfg");
+        let cwd = tempdir().expect("cwd");
+        let path = jsonl_path_for(cfg.path(), cwd.path(), session_id);
+        fs::write(&path, "").expect("seed jsonl (claude has now written one)");
+
+        workspace.retry_worker_tag_opportunistic_with_config_dir(
+            &project_key,
+            &session_key,
+            "idle",
+            &cwd.path().to_string_lossy(),
+            cfg.path(),
+        );
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while let Some(update) = rx.recv().await {
+                if let SessionUpdate::WorkerStatusChanged { action, .. } = update
+                    && matches!(action, crate::protocol::WorkerStatusAction::StatusChanged)
+                {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("StatusChanged within budget");
+
+        let entries = workspace.list_live_workers(&project_key);
+        assert!(!entries[0].needs_tag, "needs_tag cleared on opportunistic retry success");
+        let body = fs::read_to_string(&path).expect("read jsonl");
+        assert!(body.contains("\"tag\":\"forge:worker:idle\""));
     }
 }

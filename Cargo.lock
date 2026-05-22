@@ -1163,6 +1163,7 @@ dependencies = [
  "async-trait",
  "forge-primitives",
  "forge-sdk",
+ "forge-workspace",
  "parking_lot",
  "regex",
  "serde_json",

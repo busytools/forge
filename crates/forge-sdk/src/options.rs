@@ -440,6 +440,18 @@ impl OptionsBuilder {
         self
     }
 
+    /// Set the worker charter as an appended system prompt. Sugar for
+    /// `system_prompt(SystemPromptKind::Preset { append: Some(text), ... })`
+    /// used by the workers MCP spawn path where the caller never wants
+    /// to replace the CLI's default prompt, only append to it.
+    pub fn append_system_prompt(mut self, text: impl Into<String>) -> Self {
+        self.inner.system_prompt = Some(SystemPromptKind::Preset {
+            append: Some(text.into()),
+            exclude_dynamic_sections: None,
+        });
+        self
+    }
+
     /// Cap the turn count.
     pub fn max_turns(mut self, n: u64) -> Self {
         self.inner.max_turns = Some(n);
@@ -610,6 +622,12 @@ mod tests_options_build {
         let pred = opts.auto_approve_tool.expect("predicate stored");
         assert!(pred("mcp__forge__peers__whoami"));
         assert!(pred("mcp__forge__peers__ask_agent"));
+        // Workers tools live under the same `mcp__forge__` namespace
+        // - auto-approve must cover them with one predicate.
+        assert!(pred("mcp__forge__workers__spawn"));
+        assert!(pred("mcp__forge__workers__list"));
+        assert!(pred("mcp__forge__workers__tell"));
+        assert!(pred("mcp__forge__workers__ask"));
         assert!(pred("mcp__forge__"));
         // Sibling prefixes must NOT match (no partial-string fuzz).
         assert!(!pred("mcp__forgery__steal_secrets"));
@@ -624,5 +642,30 @@ mod tests_options_build {
     fn auto_approve_tool_default_is_none() {
         let opts = OptionsBuilder::new().build();
         assert!(opts.auto_approve_tool.is_none());
+    }
+
+    #[test]
+    fn append_system_prompt_builder_sets_preset_append() {
+        let opts = OptionsBuilder::new().append_system_prompt("charter text").build();
+        match opts.system_prompt {
+            Some(SystemPromptKind::Preset { append: Some(text), .. }) => {
+                assert_eq!(text, "charter text");
+            }
+            other => panic!("expected Preset{{ append: Some(_) }}, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn append_system_prompt_builder_overrides_prior_system_prompt() {
+        let opts = OptionsBuilder::new()
+            .system_prompt(SystemPromptKind::Inline("ignored".into()))
+            .append_system_prompt("wins")
+            .build();
+        match opts.system_prompt {
+            Some(SystemPromptKind::Preset { append: Some(text), .. }) => {
+                assert_eq!(text, "wins");
+            }
+            other => panic!("expected Preset overriding Inline, got {other:?}"),
+        }
     }
 }
