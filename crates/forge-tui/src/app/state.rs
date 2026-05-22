@@ -500,11 +500,32 @@ impl App {
         self.sessions.get_mut(key)
     }
 
-    /// Find a session bucket whose `cwd_raw` matches `path`. Used
-    /// by the launchpad-click and projects-pane-click handlers to
+    /// Find the LEAD session bucket whose `cwd_raw` matches `path`.
+    /// Used by the launchpad-click and projects-pane-click handlers to
     /// land the user on the resumed bucket for a project.
+    ///
+    /// Workers spawned via mcp__forge__workers__spawn share the
+    /// project's `cwd_raw`, so a naive iter().find() can return a
+    /// worker bucket non-deterministically (HashMap order). Cross-
+    /// reference workspace.live_workers and exclude any session key
+    /// that appears there so the projects-pane click always returns
+    /// the lead.
     pub fn find_running_bucket_for_path(&self, path: &str) -> Option<forge_workspace::SessionKey> {
-        self.sessions.iter().find(|(_, s)| s.cwd_raw.as_str() == path).map(|(k, _)| k.clone())
+        let worker_keys: std::collections::HashSet<forge_workspace::SessionKey> = self
+            .workspace
+            .as_ref()
+            .map(|ws| {
+                ws.list_projects()
+                    .iter()
+                    .flat_map(|p| ws.list_live_workers(&p.key).into_iter())
+                    .map(|w| w.session_key)
+                    .collect()
+            })
+            .unwrap_or_default();
+        self.sessions
+            .iter()
+            .find(|(k, s)| s.cwd_raw.as_str() == path && !worker_keys.contains(k))
+            .map(|(k, _)| k.clone())
     }
 
     /// Read access to the active session's input editor. Each session
