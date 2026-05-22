@@ -533,11 +533,13 @@ fn append_worker_tree_children(
     }
 
     let worker_count = workers.len();
-    // Chrome: ` │  └─ <label>            ×  ` -> 2 left-indent + 3
-    // tree connector + 1 sep + label + pad + 1 close + 2 right
-    // gutter (matches the active project row's close-button column).
+    // Chrome: ` │  └─ <label> <pad> <sp> x  ` ->
+    // 1 left pad + 3 vertical indent + 3 tree connector + label + pad
+    // + 1 sep + 3 close (` x `) + 1 right gutter = 12 cells of chrome.
+    // Matches the active project row's close-button column so worker
+    // and lead `x` glyphs line up vertically.
     let total_width = usize::from(area.width);
-    let label_budget = total_width.saturating_sub(2 + 3 + 1 + 3 + 1);
+    let label_budget = total_width.saturating_sub(1 + 3 + 3 + 1 + 3 + 1);
     for (idx, worker) in workers.iter().enumerate() {
         let row_y = area.y + line_count_as_u16(lines);
         let is_last = idx + 1 == worker_count;
