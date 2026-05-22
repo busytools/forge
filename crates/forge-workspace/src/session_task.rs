@@ -179,14 +179,35 @@ impl SessionTask {
                 } else {
                     self.rekey_to(&real_key);
                     self.connected_once = true;
-                    // Worker sessions need their tag JSONL row
-                    // written BEFORE the LLM-side dispatch opens (so
-                    // a concurrent catalog scan can't see the
-                    // untagged worker file and pick it as a lead).
-                    // The workspace helper checks live_workers for a
-                    // matching entry; for leads + non-worker sessions
-                    // this is a no-op. Tag failure rolls the worker
-                    // entry back (release session + emit Removed).
+                    // Worker sessions get their tag JSONL row written
+                    // by `apply_worker_tag_or_rollback`, which spawns
+                    // a detached tokio task. The helper checks
+                    // live_workers for a matching entry; for leads +
+                    // non-worker sessions this is a no-op.
+                    //
+                    // The detached task does an initial retry loop on
+                    // `Io(NotFound)` (claude writes the JSONL lazily
+                    // on first turn, so an idle-spawned worker has no
+                    // file at Connected). If retries exhaust on
+                    // NotFound, the worker still transitions to
+                    // Running with `needs_tag = true`; the
+                    // opportunistic retry in
+                    // `handle_deliver_worker_prompt` catches the tag
+                    // when the first turn arrives. Non-NotFound
+                    // errors (permission denied, disk full, etc.) DO
+                    // roll back: release session + emit Removed.
+                    //
+                    // Brief window between Connected and the eventual
+                    // tag-write: a concurrent catalog scan could see
+                    // the JSONL untagged. The resolver's
+                    // `latest(forge:lead) -> latest(untagged)` order
+                    // means an idle worker without a JSONL is invisible
+                    // (no on-disk file yet) but a USED worker
+                    // (post-first-turn, pre-tag-landing) is briefly
+                    // race-visible. In practice the
+                    // `should_exclude_worker_tag` filter + the
+                    // opportunistic retry close the gap on the next
+                    // turn or scan.
                     //
                     // TODO: lead sessions are currently never tagged
                     // with `forge:lead`. The resolver falls back to

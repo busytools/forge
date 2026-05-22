@@ -1434,6 +1434,19 @@ impl Workspace {
         self.live_workers.lock().get(project_key).cloned().unwrap_or_default()
     }
 
+    /// Snapshot every live worker's session_key across every project.
+    /// Used by the TUI's `find_running_bucket_for_path` to exclude
+    /// worker buckets from project-row click routing without depending
+    /// on `list_projects()` for enumeration.
+    #[must_use]
+    pub fn all_live_worker_session_keys(&self) -> Vec<SessionKey> {
+        self.live_workers
+            .lock()
+            .values()
+            .flat_map(|entries| entries.iter().map(|e| e.session_key.clone()))
+            .collect()
+    }
+
     /// Insert a worker entry into `live_workers[project_key]`. Duplicate
     /// labels are allowed; addressing by label uses latest-spawned wins
     /// (see `remove_latest_worker`).

@@ -514,13 +514,7 @@ impl App {
         let worker_keys: std::collections::HashSet<forge_workspace::SessionKey> = self
             .workspace
             .as_ref()
-            .map(|ws| {
-                ws.list_projects()
-                    .iter()
-                    .flat_map(|p| ws.list_live_workers(&p.key).into_iter())
-                    .map(|w| w.session_key)
-                    .collect()
-            })
+            .map(|ws| ws.all_live_worker_session_keys().into_iter().collect())
             .unwrap_or_default();
         self.sessions
             .iter()
@@ -2582,6 +2576,56 @@ mod tests {
     fn find_running_bucket_for_path_returns_none_when_no_match() {
         let app = App::test_default();
         assert!(app.find_running_bucket_for_path("/Users/vedhavyas/Projects/forge").is_none());
+    }
+
+    /// Regression for commit 23f46b8: when a worker session shares
+    /// the project's cwd_raw with the lead, `find_running_bucket_
+    /// for_path` must return the lead's session_key, never the
+    /// worker's. Before the fix, HashMap iteration order could
+    /// surface either bucket non-deterministically and the projects-
+    /// pane click landed on a worker instead of going back to the
+    /// lead.
+    #[test]
+    fn find_running_bucket_for_path_excludes_worker_session_keys() {
+        use forge_workspace::mcp::workers::types::WorkerEntry;
+        use forge_workspace::{ProjectKey, SessionKey};
+
+        let mut app = App::test_default();
+        let project_path = "/Users/vedhavyas/Projects/forge";
+
+        let lead_key = SessionKey::from_str_for_test("aaaaaaaa-1111-2222-3333-444444444444");
+        let worker_key = SessionKey::from_str_for_test("bbbbbbbb-1111-2222-3333-444444444444");
+
+        let mut lead_bucket = crate::app::session::UiSession::new(lead_key.clone());
+        lead_bucket.cwd_raw = project_path.to_owned();
+        app.sessions.insert(lead_key.clone(), lead_bucket);
+
+        let mut worker_bucket = crate::app::session::UiSession::new(worker_key.clone());
+        worker_bucket.cwd_raw = project_path.to_owned();
+        app.sessions.insert(worker_key.clone(), worker_bucket);
+
+        // Inject the worker into the workspace's live_workers map so
+        // the filter inside find_running_bucket_for_path sees it.
+        let workspace = app.workspace.as_ref().expect("test_default wires a workspace");
+        let project_key = ProjectKey::new_for_test("-Users-vedhavyas-Projects-forge");
+        workspace.insert_live_worker(
+            &project_key,
+            WorkerEntry {
+                label: "test-worker".to_owned(),
+                charter: "noop".to_owned(),
+                session_key: worker_key.clone(),
+                status: forge_primitives::WorkerLiveness::Running,
+                spawned_at: std::time::SystemTime::UNIX_EPOCH,
+                spawned_by_session_id: lead_key.as_str().to_owned(),
+                needs_tag: false,
+            },
+        );
+
+        let picked = app
+            .find_running_bucket_for_path(project_path)
+            .expect("lead bucket should match even with a worker at the same cwd");
+        assert_eq!(picked, lead_key, "lead must be returned; worker must be excluded");
+        assert_ne!(picked, worker_key);
     }
 
     // BlockCache
