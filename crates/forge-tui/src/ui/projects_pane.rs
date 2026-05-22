@@ -359,11 +359,18 @@ fn append_project_rows(
         // this project - either as the lead OR as one of its
         // workers. The lead's bucket has cwd_raw matching the
         // project path; a worker's bucket likewise sits under the
-        // project (via `live_workers[project.key]`). Decoupling
-        // is_focused from the `live` key lets the project row stay
-        // highlighted while the user is on a worker tree-child.
+        // project (via `live_workers[project.key]`); and the
+        // catalog tracks the session_key explicitly. Match any of
+        // the three signals so snapshot tests (which don't seed
+        // cwd_raw on test UiSessions) and the production hot path
+        // both highlight correctly.
         let is_active_project = active_session_key.as_ref().is_some_and(|k| {
-            app.sessions.get(k).is_some_and(|s| s.cwd_raw.as_str() == project_path_str.as_str())
+            let cwd_match = app
+                .sessions
+                .get(k)
+                .is_some_and(|s| s.cwd_raw.as_str() == project_path_str.as_str());
+            let catalog_match = project.sessions.iter().any(|s| s.session == *k);
+            cwd_match || catalog_match
         });
         let live = live_session.or(synthetic).map(|(key, lifecycle)| {
             let badges = badges_for(&key);
