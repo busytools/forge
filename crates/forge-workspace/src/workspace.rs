@@ -37,16 +37,19 @@ const USAGE_POLL_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Max attempts for `tag_session_with_retry` to find the worker's
 /// `<session_id>.jsonl` and append the tag row. claude CLI writes the
-/// file lazily on first message - typically within ~100 ms-2 s of
-/// `Connected` - so 30 attempts at 100 ms = ~3 s wall caps the window
-/// generously without burning resources on a session that legitimately
-/// never wrote anything.
+/// file lazily on the first user turn - workers with an `initial_prompt`
+/// usually land within ~100 ms-2 s of `Connected`. 30 attempts at
+/// 100 ms = ~3 s wall caps the window generously without burning
+/// resources. Idle-spawned workers (no prompt) never produce a JSONL
+/// at all until the first `DeliverWorkerPrompt`; for those we exit
+/// the retry with `Io(NotFound)`, mark the entry `needs_tag = true`,
+/// and retry opportunistically when the first turn arrives.
 const WORKER_TAG_RETRY_ATTEMPTS: u32 = 30;
 
-/// Delay between `tag_session` retry attempts when the JSONL is not yet
-/// on disk. 100 ms is short enough to land within one or two ticks of
-/// claude's first write and large enough that 30 retries cap the total
-/// wait at a few seconds.
+/// Delay between `tag_session` retry attempts when the JSONL is not
+/// yet on disk. 100 ms is short enough to land within one or two ticks
+/// of claude's first write and large enough that 30 retries cap the
+/// total wait at a few seconds.
 const WORKER_TAG_RETRY_DELAY: Duration = Duration::from_millis(100);
 
 /// Multi-session orchestrator. Owns the project catalog snapshot
@@ -1484,25 +1487,34 @@ impl Workspace {
     }
 
     /// Tag a worker session's JSONL with `forge:worker:<label>` and
-    /// transition its `WorkerEntry` from `Spawning` to `Running`. On
-    /// tag-write failure the worker is rolled back: removed from
-    /// `live_workers`, its session released, a `Removed` status event
-    /// emitted. Called from `SessionTask::translate_event` immediately
-    /// after the first `Connected` rekey lands so the tag row appears
-    /// before the LLM-side dispatch loop opens.
+    /// transition its `WorkerEntry` from `Spawning` to `Running`.
+    /// Called from `SessionTask::translate_event` immediately after the
+    /// first `Connected` rekey lands.
     ///
     /// `cwd` is the worker's project path (the `directory` discriminator
     /// `tag_session` uses to find the right `.jsonl` when CONFIG_DIR
     /// hosts multiple project directories).
     ///
-    /// The tag-write races against claude CLI's first JSONL write: at
-    /// the moment `Connected` fires, claude has acknowledged bootstrap
-    /// but typically hasn't written the `system/init` row to disk yet,
-    /// so `tag_session` would see `Io(NotFound)` from `find_session_file`.
-    /// We retry on `NotFound` with a 100 ms backoff up to 30 attempts
-    /// (~3 s wall) and only roll back if the file genuinely never lands
-    /// or another error variant surfaces. To keep `translate_event`
-    /// synchronous, the retry loop runs in a detached tokio task.
+    /// The tag-write races against claude CLI's first JSONL write. For
+    /// workers spawned with an `initial_prompt`, the file lands within
+    /// ~100 ms-2 s of `Connected`, so a 30 x 100 ms retry loop reliably
+    /// catches it. For idle-spawned workers (no prompt) claude doesn't
+    /// create the JSONL at all until the first user turn arrives later,
+    /// so the retry will exhaust with `Io(NotFound)`. That's NOT a
+    /// rollback condition - we keep the worker live (it's fully
+    /// functional from `live_workers`), transition to `Running`, mark
+    /// the entry `needs_tag = true`, and emit `StatusChanged`. The
+    /// opportunistic retry on first `DeliverWorkerPrompt`
+    /// (see `spawn::handle_deliver_worker_prompt`) catches it once
+    /// claude is processing the turn.
+    ///
+    /// Other errors (permission denied, disk full, invalid UUID) still
+    /// indicate the worker can't be properly tracked on disk, so we
+    /// roll back: remove from `live_workers`, release the session, emit
+    /// a `Removed` status event.
+    ///
+    /// The tag-write runs in a detached tokio task to keep
+    /// `translate_event` synchronous.
     ///
     /// Idempotent - calling twice for the same session_key is a no-op
     /// if the entry is already `Running`.
@@ -1525,9 +1537,34 @@ impl Workspace {
             );
             return;
         };
+        self.apply_worker_tag_or_rollback_with_config_dir(
+            session_key,
+            &project_key,
+            &label,
+            cwd,
+            &config_dir,
+        );
+    }
+
+    /// Testable inner of [`Self::apply_worker_tag_or_rollback`] that
+    /// takes the resolved `config_dir` directly. The production caller
+    /// resolves via `config_dir_for`; unit tests pass a tempdir to
+    /// exercise the retry / rollback / deferred branches without
+    /// having to register a full `AgentHandle`.
+    pub(crate) fn apply_worker_tag_or_rollback_with_config_dir(
+        self: &Arc<Self>,
+        session_key: &SessionKey,
+        project_key: &ProjectKey,
+        label: &str,
+        cwd: &str,
+        config_dir: &std::path::Path,
+    ) {
         let workspace = Arc::clone(self);
+        let project_key = project_key.clone();
         let session_key = session_key.clone();
+        let label = label.to_owned();
         let cwd = cwd.to_owned();
+        let config_dir = config_dir.to_path_buf();
         tokio::spawn(async move {
             let tag = forge_primitives::worker_tag(&label);
             let result = tag_session_with_retry(
@@ -1541,17 +1578,136 @@ impl Workspace {
             .await;
             match result {
                 Ok(()) => {
-                    // Transition the entry to Running + emit StatusChanged.
+                    transition_worker_to_running(
+                        &workspace,
+                        &project_key,
+                        &session_key,
+                        TagWriteResult::Succeeded,
+                    );
+                }
+                Err(forge_sdk::Error::Io(io_err))
+                    if io_err.kind() == std::io::ErrorKind::NotFound =>
+                {
+                    tracing::warn!(
+                        target: "forge_workspace::workspace",
+                        session_id = %session_key.as_str(),
+                        label = %label,
+                        "tag_session_deferred: JSONL not yet on disk after retries; worker stays Running, tag will retry on first turn"
+                    );
+                    transition_worker_to_running(
+                        &workspace,
+                        &project_key,
+                        &session_key,
+                        TagWriteResult::DeferredNotFound,
+                    );
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        target: "forge_workspace::workspace",
+                        session_id = %session_key.as_str(),
+                        label = %label,
+                        error = ?err,
+                        "tag_session failed for worker (non-NotFound); rolling back spawn"
+                    );
+                    let removed = workspace.remove_latest_worker(&project_key, &label);
+                    if let Some(entry) = removed {
+                        let status = entry.to_status();
+                        let _ = workspace.update_tx.send(SessionUpdate::WorkerStatusChanged {
+                            project_key,
+                            action: crate::protocol::WorkerStatusAction::Removed,
+                            status,
+                        });
+                    }
+                    workspace.release_session(&session_key);
+                }
+            }
+        });
+    }
+
+    /// Opportunistically retry the JSONL tag-write for a worker whose
+    /// `needs_tag` flag is set. Called by
+    /// `spawn::handle_deliver_worker_prompt` when a `DeliverWorkerPrompt`
+    /// arrives for a worker that was spawned idle (no `initial_prompt`)
+    /// and therefore had no JSONL at `Connected`. By the time the first
+    /// turn fires, claude is writing the JSONL, so the tag-write should
+    /// succeed within a turn or two.
+    ///
+    /// On success: clear `needs_tag` and emit
+    /// `WorkerStatusChanged { StatusChanged }`.
+    ///
+    /// On failure (any kind): log warn, leave `needs_tag = true` so the
+    /// next turn retries again. Never rolls back - the worker stays
+    /// functional regardless of the tag's on-disk state.
+    pub(crate) fn retry_worker_tag_opportunistic(
+        self: &Arc<Self>,
+        project_key: &ProjectKey,
+        session_key: &SessionKey,
+        label: &str,
+        cwd: &str,
+    ) {
+        let Some(config_dir) = self.config_dir_for(session_key) else {
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                session_id = %session_key.as_str(),
+                "retry_worker_tag: no agent registered; cannot resolve config_dir"
+            );
+            return;
+        };
+        self.retry_worker_tag_opportunistic_with_config_dir(
+            project_key,
+            session_key,
+            label,
+            cwd,
+            &config_dir,
+        );
+    }
+
+    /// Testable inner of [`Self::retry_worker_tag_opportunistic`] that
+    /// takes the resolved `config_dir` directly. Same shape as the
+    /// `_with_config_dir` variant of `apply_worker_tag_or_rollback`.
+    pub(crate) fn retry_worker_tag_opportunistic_with_config_dir(
+        self: &Arc<Self>,
+        project_key: &ProjectKey,
+        session_key: &SessionKey,
+        label: &str,
+        cwd: &str,
+        config_dir: &std::path::Path,
+    ) {
+        let workspace = Arc::clone(self);
+        let project_key = project_key.clone();
+        let session_key = session_key.clone();
+        let label = label.to_owned();
+        let cwd = cwd.to_owned();
+        let config_dir = config_dir.to_path_buf();
+        tokio::spawn(async move {
+            let tag = forge_primitives::worker_tag(&label);
+            let result = tag_session_with_retry(
+                &config_dir,
+                session_key.as_str(),
+                &tag,
+                &cwd,
+                WORKER_TAG_RETRY_ATTEMPTS,
+                WORKER_TAG_RETRY_DELAY,
+            )
+            .await;
+            match result {
+                Ok(()) => {
                     let updated_status = {
                         let mut workers = workspace.live_workers.lock();
                         workers.get_mut(&project_key).and_then(|entries| {
                             entries.iter_mut().find(|e| e.session_key == session_key).map(|entry| {
-                                entry.status = forge_primitives::WorkerLiveness::Running;
+                                entry.needs_tag = false;
                                 entry.to_status()
                             })
                         })
                     };
                     if let Some(status) = updated_status {
+                        tracing::info!(
+                            target: "forge_workspace::workspace",
+                            session_id = %session_key.as_str(),
+                            label = %label,
+                            "tag_session_retry: deferred tag-write succeeded on opportunistic retry"
+                        );
                         let _ = workspace.update_tx.send(SessionUpdate::WorkerStatusChanged {
                             project_key,
                             action: crate::protocol::WorkerStatusAction::StatusChanged,
@@ -1565,18 +1721,8 @@ impl Workspace {
                         session_id = %session_key.as_str(),
                         label = %label,
                         error = ?err,
-                        "tag_session failed for worker after retries; rolling back spawn"
+                        "tag_session_retry: opportunistic retry failed; will try again on next turn"
                     );
-                    let removed = workspace.remove_latest_worker(&project_key, &label);
-                    if let Some(entry) = removed {
-                        let status = entry.to_status();
-                        let _ = workspace.update_tx.send(SessionUpdate::WorkerStatusChanged {
-                            project_key,
-                            action: crate::protocol::WorkerStatusAction::Removed,
-                            status,
-                        });
-                    }
-                    workspace.release_session(&session_key);
                 }
             }
         });
@@ -2130,15 +2276,57 @@ impl Workspace {
     }
 }
 
+/// Discriminator for how a successful `apply_worker_tag_or_rollback`
+/// arm decided to transition a worker to `Running`. The `Succeeded`
+/// arm clears `needs_tag`; the `DeferredNotFound` arm keeps it set
+/// so the opportunistic retry on first `DeliverWorkerPrompt` knows
+/// to try again.
+#[derive(Clone, Copy)]
+enum TagWriteResult {
+    /// Tag row was appended to the JSONL on disk.
+    Succeeded,
+    /// JSONL never appeared during the retry window. Worker stays
+    /// live with `needs_tag = true` for opportunistic retry later.
+    DeferredNotFound,
+}
+
+/// Shared transition: flip a worker's status to `Running`, update
+/// `needs_tag` according to the tag-write outcome, and emit
+/// `WorkerStatusChanged { StatusChanged }`. Idempotent.
+fn transition_worker_to_running(
+    workspace: &Arc<Workspace>,
+    project_key: &ProjectKey,
+    session_key: &SessionKey,
+    result: TagWriteResult,
+) {
+    let updated_status = {
+        let mut workers = workspace.live_workers.lock();
+        workers.get_mut(project_key).and_then(|entries| {
+            entries.iter_mut().find(|e| e.session_key == *session_key).map(|entry| {
+                entry.status = forge_primitives::WorkerLiveness::Running;
+                entry.needs_tag = matches!(result, TagWriteResult::DeferredNotFound);
+                entry.to_status()
+            })
+        })
+    };
+    if let Some(status) = updated_status {
+        let _ = workspace.update_tx.send(SessionUpdate::WorkerStatusChanged {
+            project_key: project_key.clone(),
+            action: crate::protocol::WorkerStatusAction::StatusChanged,
+            status,
+        });
+    }
+}
+
 /// Wrap `mutations::tag_session` with a retry loop scoped to the JSONL-
 /// not-yet-on-disk race after `Connected`. claude CLI creates
-/// `<session_id>.jsonl` lazily on its first message; until that lands,
-/// `find_session_file` returns `None` and `tag_session` surfaces
-/// `Io(NotFound)`. We retry only on that variant - any other error
-/// (permission denied, disk full, invalid UUID, encode error) propagates
-/// immediately. The async `tokio::time::sleep` is mandatory: this runs
-/// in a tokio task spawned from `apply_worker_tag_or_rollback`, never on
-/// a blocking thread.
+/// `<session_id>.jsonl` lazily; until that lands, `find_session_file`
+/// returns `None` and `tag_session` surfaces `Io(NotFound)`. We retry
+/// only on that variant - any other error (permission denied, disk
+/// full, invalid UUID, encode error) propagates immediately. The async
+/// `tokio::time::sleep` is mandatory: this runs in a tokio task spawned
+/// from `apply_worker_tag_or_rollback` (or `retry_worker_tag_opportunistic`),
+/// never on a blocking thread.
 async fn tag_session_with_retry(
     config_dir: &std::path::Path,
     session_id: &str,
@@ -2953,6 +3141,7 @@ mod workers_state_tests {
             status: WorkerLiveness::Running,
             spawned_at: SystemTime::UNIX_EPOCH,
             spawned_by_session_id: "lead-uuid".into(),
+            needs_tag: false,
         }
     }
 
@@ -3047,6 +3236,7 @@ mod release_session_cascade_tests {
             status: WorkerLiveness::Running,
             spawned_at: SystemTime::UNIX_EPOCH,
             spawned_by_session_id: "lead-uuid".into(),
+            needs_tag: false,
         }
     }
 
@@ -3312,5 +3502,182 @@ mod tag_retry_tests {
             elapsed < Duration::from_secs(1),
             "non-NotFound errors must skip retry: {elapsed:?}"
         );
+    }
+
+    fn fake_spawning_entry(
+        label: &str,
+        key: &str,
+        needs_tag: bool,
+    ) -> crate::mcp::workers::types::WorkerEntry {
+        crate::mcp::workers::types::WorkerEntry {
+            label: label.into(),
+            charter: "test".into(),
+            session_key: SessionKey::from_session_id(key),
+            status: forge_primitives::WorkerLiveness::Spawning,
+            spawned_at: std::time::SystemTime::UNIX_EPOCH,
+            spawned_by_session_id: "lead".into(),
+            needs_tag,
+        }
+    }
+
+    /// `apply_worker_tag_or_rollback_with_config_dir`: when the JSONL
+    /// never appears, the retry exhausts with NotFound, but the worker
+    /// stays in `live_workers` (NO rollback), transitions to Running,
+    /// and `needs_tag` remains true so the opportunistic retry on the
+    /// first turn can try again. A single `StatusChanged` event fires.
+    #[tokio::test]
+    async fn notfound_keeps_worker_with_needs_tag_flag() {
+        let (workspace, mut rx) = Workspace::testing_stub();
+        let project_key = ProjectKey::new("forge");
+        let session_id = "550e8400-e29b-41d4-a716-446655440010";
+        let session_key = SessionKey::from_session_id(session_id);
+        workspace.insert_live_worker(&project_key, fake_spawning_entry("idle", session_id, true));
+
+        let cfg = tempdir().expect("cfg");
+        let cwd = tempdir().expect("cwd");
+        // Do NOT create the JSONL: tag_session will see NotFound every
+        // attempt and the retry will exhaust.
+        let _path = jsonl_path_for(cfg.path(), cwd.path(), session_id);
+
+        // Use a tight retry budget so the test completes quickly. The
+        // _with_config_dir entry point spawns the detached tokio task
+        // internally - we override the constants by calling
+        // tag_session_with_retry directly here would be cheating; this
+        // test verifies the wrapper's classification + transition logic.
+        workspace.apply_worker_tag_or_rollback_with_config_dir(
+            &session_key,
+            &project_key,
+            "idle",
+            &cwd.path().to_string_lossy(),
+            cfg.path(),
+        );
+
+        // The detached task takes ~3s (30 x 100ms) to exhaust against an
+        // absent JSONL. Wait for the StatusChanged that signals it ran
+        // through the deferred-NotFound branch.
+        let status_changed = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match rx.recv().await {
+                    Some(SessionUpdate::WorkerStatusChanged { action, status, .. }) => {
+                        if matches!(action, crate::protocol::WorkerStatusAction::StatusChanged) {
+                            return Some(status);
+                        }
+                        if matches!(action, crate::protocol::WorkerStatusAction::Removed) {
+                            return None;
+                        }
+                    }
+                    Some(_) => {}
+                    None => return None,
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for StatusChanged");
+
+        let status = status_changed.expect("expected StatusChanged, not Removed (rollback)");
+        assert_eq!(status.label, "idle");
+        assert!(matches!(status.status, forge_primitives::WorkerLiveness::Running));
+
+        // Worker entry should remain in live_workers with needs_tag=true.
+        let entries = workspace.list_live_workers(&project_key);
+        assert_eq!(entries.len(), 1, "worker must NOT have been rolled back");
+        assert_eq!(entries[0].label, "idle");
+        assert!(entries[0].needs_tag, "needs_tag stays true so opportunistic retry can fire");
+        assert!(matches!(entries[0].status, forge_primitives::WorkerLiveness::Running));
+    }
+
+    /// `apply_worker_tag_or_rollback_with_config_dir`: when the JSONL
+    /// exists from the start, the retry succeeds on the first attempt,
+    /// the worker transitions to Running, and `needs_tag` is cleared.
+    #[tokio::test]
+    async fn jsonl_present_clears_needs_tag() {
+        let (workspace, mut rx) = Workspace::testing_stub();
+        let project_key = ProjectKey::new("forge");
+        let session_id = "550e8400-e29b-41d4-a716-446655440011";
+        let session_key = SessionKey::from_session_id(session_id);
+        workspace.insert_live_worker(
+            &project_key,
+            fake_spawning_entry("prompt-driven", session_id, true),
+        );
+
+        let cfg = tempdir().expect("cfg");
+        let cwd = tempdir().expect("cwd");
+        let path = jsonl_path_for(cfg.path(), cwd.path(), session_id);
+        fs::write(&path, "").expect("seed jsonl");
+
+        workspace.apply_worker_tag_or_rollback_with_config_dir(
+            &session_key,
+            &project_key,
+            "prompt-driven",
+            &cwd.path().to_string_lossy(),
+            cfg.path(),
+        );
+
+        // Wait for the StatusChanged emit.
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while let Some(update) = rx.recv().await {
+                if let SessionUpdate::WorkerStatusChanged { action, .. } = update
+                    && matches!(action, crate::protocol::WorkerStatusAction::StatusChanged)
+                {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("StatusChanged emit within budget");
+
+        let entries = workspace.list_live_workers(&project_key);
+        assert_eq!(entries.len(), 1);
+        assert!(!entries[0].needs_tag, "needs_tag cleared on successful tag-write");
+        assert!(matches!(entries[0].status, forge_primitives::WorkerLiveness::Running));
+        let body = fs::read_to_string(&path).expect("read jsonl");
+        assert!(body.contains("\"tag\":\"forge:worker:prompt-driven\""));
+    }
+
+    /// `retry_worker_tag_opportunistic_with_config_dir` on a worker
+    /// whose `needs_tag` is true: when the JSONL is present, the
+    /// retry succeeds, the flag is cleared, and a single
+    /// `StatusChanged` event fires.
+    #[tokio::test]
+    async fn opportunistic_retry_clears_flag_when_jsonl_appears() {
+        let (workspace, mut rx) = Workspace::testing_stub();
+        let project_key = ProjectKey::new("forge");
+        let session_id = "550e8400-e29b-41d4-a716-446655440012";
+        let session_key = SessionKey::from_session_id(session_id);
+        // Pre-state: worker is Running but needs_tag=true (it landed
+        // here via the deferred-NotFound branch earlier).
+        let mut entry = fake_spawning_entry("idle", session_id, true);
+        entry.status = forge_primitives::WorkerLiveness::Running;
+        workspace.insert_live_worker(&project_key, entry);
+
+        let cfg = tempdir().expect("cfg");
+        let cwd = tempdir().expect("cwd");
+        let path = jsonl_path_for(cfg.path(), cwd.path(), session_id);
+        fs::write(&path, "").expect("seed jsonl (claude has now written one)");
+
+        workspace.retry_worker_tag_opportunistic_with_config_dir(
+            &project_key,
+            &session_key,
+            "idle",
+            &cwd.path().to_string_lossy(),
+            cfg.path(),
+        );
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while let Some(update) = rx.recv().await {
+                if let SessionUpdate::WorkerStatusChanged { action, .. } = update
+                    && matches!(action, crate::protocol::WorkerStatusAction::StatusChanged)
+                {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("StatusChanged within budget");
+
+        let entries = workspace.list_live_workers(&project_key);
+        assert!(!entries[0].needs_tag, "needs_tag cleared on opportunistic retry success");
+        let body = fs::read_to_string(&path).expect("read jsonl");
+        assert!(body.contains("\"tag\":\"forge:worker:idle\""));
     }
 }

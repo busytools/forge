@@ -1652,6 +1652,7 @@ mod tests {
             status: forge_primitives::WorkerLiveness::Running,
             spawned_at: SystemTime::UNIX_EPOCH,
             spawned_by_session_id: "lead".into(),
+            needs_tag: false,
         };
         workspace.insert_live_worker(&project_key, entry.clone());
 
@@ -1712,6 +1713,7 @@ mod tests {
                 status: forge_primitives::WorkerLiveness::Running,
                 spawned_at: SystemTime::UNIX_EPOCH,
                 spawned_by_session_id: "lead".into(),
+                needs_tag: false,
             },
         );
         workspace.insert_live_worker(
@@ -1723,6 +1725,7 @@ mod tests {
                 status: forge_primitives::WorkerLiveness::Spawning,
                 spawned_at: SystemTime::UNIX_EPOCH,
                 spawned_by_session_id: "lead".into(),
+                needs_tag: false,
             },
         );
 

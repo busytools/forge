@@ -12,6 +12,13 @@ use crate::SessionKey;
 /// In-memory entry stored in `Workspace.live_workers[project_key]`.
 /// `WorkerStatus` is the wire shape returned by `workers__list`;
 /// `session_key` is the workspace-internal routing handle.
+///
+/// `needs_tag` is workspace-internal scratch state (not part of the
+/// wire shape) that tracks whether the on-disk `forge:worker:<label>`
+/// tag has been appended to the session's JSONL yet. claude CLI
+/// writes the JSONL lazily on the first user turn, so an idle-spawned
+/// worker has no JSONL at `Connected`. The tag-write is retried
+/// opportunistically when the first `DeliverWorkerPrompt` arrives.
 #[derive(Debug, Clone)]
 pub struct WorkerEntry {
     pub label: String,
@@ -20,6 +27,7 @@ pub struct WorkerEntry {
     pub status: WorkerLiveness,
     pub spawned_at: SystemTime,
     pub spawned_by_session_id: String,
+    pub needs_tag: bool,
 }
 
 impl WorkerEntry {

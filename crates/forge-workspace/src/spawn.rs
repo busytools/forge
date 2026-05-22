@@ -428,6 +428,7 @@ pub(crate) fn handle_spawn_worker(
         status: forge_primitives::WorkerLiveness::Spawning,
         spawned_at: std::time::SystemTime::now(),
         spawned_by_session_id,
+        needs_tag: true,
     };
     workspace.insert_live_worker(&project_key, entry.clone());
     try_emit(
@@ -563,6 +564,29 @@ pub(crate) fn handle_deliver_worker_prompt(
         return;
     };
     let target_key = entry.session_key.clone();
+
+    // Opportunistic tag-write retry: if this worker was spawned idle
+    // (no initial_prompt), the JSONL didn't exist at Connected and
+    // the tag-write at that point exhausted into a deferred state.
+    // claude is about to process this turn, which means it's about
+    // to write the JSONL - kick off a fire-and-forget retry now.
+    if entry.needs_tag {
+        let cwd = workspace
+            .list_projects()
+            .into_iter()
+            .find(|view| view.key == *project_key)
+            .map(|view| view.path.to_string_lossy().into_owned());
+        if let Some(cwd) = cwd {
+            workspace.retry_worker_tag_opportunistic(project_key, &target_key, target_label, &cwd);
+        } else {
+            tracing::debug!(
+                target: "forge_workspace::spawn",
+                project = %project_key.as_str(),
+                label = %target_label,
+                "deliver_worker_prompt: project view missing; skipping tag retry"
+            );
+        }
+    }
 
     // Stamp current_inbound_hop so any tools the target's LLM fires
     // during the resulting turn observe the correct ambient hop.
@@ -840,6 +864,7 @@ config_dir = "~/.claude-subspace"
             status: forge_primitives::WorkerLiveness::Running,
             spawned_at: std::time::SystemTime::UNIX_EPOCH,
             spawned_by_session_id: "lead-uuid".into(),
+            needs_tag: false,
         }
     }
 
@@ -922,6 +947,132 @@ config_dir = "~/.claude-subspace"
         );
         assert!(a.as_str().starts_with("__spawn_worker_forge_reviewer_"));
         assert!(b.as_str().starts_with("__spawn_worker_forge_reviewer_"));
+    }
+
+    /// `handle_deliver_worker_prompt` for a worker carrying
+    /// `needs_tag = true` must kick off an opportunistic tag-write
+    /// retry. The worker was spawned idle (no initial_prompt), claude
+    /// only writes the JSONL once the first turn arrives, and this
+    /// handler runs as that first turn is being routed.
+    ///
+    /// Verifies the integration end-to-end: pre-seed a Running worker
+    /// with `needs_tag = true`, install the testing-stub agent (its
+    /// `config_dir` resolves to `/tmp/forge-testing-stub`), seed the
+    /// JSONL at the path `tag_session` expects, and assert that after
+    /// `handle_deliver_worker_prompt` fires the entry's `needs_tag`
+    /// flips to `false` (the retry succeeded). Uses a unique session_id
+    /// to avoid collision with other parallel tests that hit the
+    /// shared stub config_dir.
+    #[tokio::test]
+    async fn deliver_prompt_kicks_opportunistic_tag_retry() {
+        // Set up a real Workspace::new with a project pointing at a
+        // tempdir so list_projects returns the project view we need.
+        let toml_dir = tempdir().expect("toml dir");
+        let project_root = tempdir().expect("project root");
+        let project_path = project_root.path().to_string_lossy().into_owned();
+        fs::write(
+            toml_dir.path().join("forge.toml"),
+            format!(
+                r#"
+[[orgs]]
+name = "Default"
+accounts = ["Subspace"]
+
+[[orgs.projects]]
+name = "forge"
+path = "{project_path}"
+auto_start = true
+
+[[accounts]]
+display_name = "Subspace"
+config_dir = "~/.claude-subspace"
+"#,
+            ),
+        )
+        .expect("write forge.toml");
+        let workspace = Arc::new(Workspace::new(toml_dir.path().to_owned()).await.expect("new"));
+
+        // Resolve the project's key + path from list_projects (matches
+        // what the spawn handler will look up).
+        let project_view = workspace
+            .list_projects()
+            .into_iter()
+            .find(|view| view.name == "forge")
+            .expect("forge project");
+        let project_key = project_view.key.clone();
+
+        // Unique session_id so concurrent test runs don't collide on
+        // the shared /tmp/forge-testing-stub. Must be a valid UUID
+        // since `tag_session` rejects non-UUID with `MessageParse`.
+        let session_id = uuid::Uuid::new_v4().hyphenated().to_string();
+        let session_key = SessionKey::from_session_id(&session_id);
+
+        // Install the testing stub so config_dir_for resolves (to
+        // /tmp/forge-testing-stub via the bridge's default config_dir).
+        let _agent_rx = workspace.install_testing_stub(&session_key);
+
+        // Pre-seed the worker entry: Running but needs_tag = true,
+        // matching the post-deferred-NotFound state from the
+        // `apply_worker_tag_or_rollback` deferred branch.
+        workspace.insert_live_worker(
+            &project_key,
+            crate::mcp::workers::types::WorkerEntry {
+                label: "idle".into(),
+                charter: "c".into(),
+                session_key: session_key.clone(),
+                status: forge_primitives::WorkerLiveness::Running,
+                spawned_at: std::time::SystemTime::UNIX_EPOCH,
+                spawned_by_session_id: "lead".into(),
+                needs_tag: true,
+            },
+        );
+
+        // Pre-create the JSONL at the path the retry will look for.
+        // /tmp/forge-testing-stub/projects/<sanitized>/<session_id>.jsonl
+        let stub_config_dir = std::path::PathBuf::from("/tmp/forge-testing-stub");
+        let sanitized =
+            forge_agent::userdata::catalog::scan::project_key_for_directory(Some(&project_path));
+        let projects_dir = forge_sdk::projects_dir_for(&stub_config_dir).join(&sanitized);
+        fs::create_dir_all(&projects_dir).expect("project dir");
+        let jsonl_path = projects_dir.join(format!("{session_id}.jsonl"));
+        fs::write(&jsonl_path, "").expect("seed jsonl");
+
+        // Fire the deliver. The handler observes needs_tag = true,
+        // looks up the project view's path, and kicks the retry task.
+        // It also dispatches Command::Prompt which the stub agent
+        // accepts (the side-effect we don't assert on here).
+        let caller = SessionKey::from_str_for_test("caller-1");
+        handle_deliver_worker_prompt(&workspace, caller, &project_key, "idle", fixture_wrapped());
+
+        // Wait briefly for the spawned task to finish the retry +
+        // status update. The retry should succeed on first attempt
+        // because the JSONL exists.
+        let needs_tag = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let entries = workspace.list_live_workers(&project_key);
+                let entry = entries.iter().find(|e| e.session_key == session_key);
+                if let Some(entry) = entry
+                    && !entry.needs_tag
+                {
+                    return false;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("needs_tag must clear within budget");
+        assert!(!needs_tag, "needs_tag cleared after opportunistic retry succeeded");
+
+        // Confirm the tag actually landed on disk.
+        let body = fs::read_to_string(&jsonl_path).expect("read jsonl");
+        assert!(
+            body.contains("\"tag\":\"forge:worker:idle\""),
+            "tag row appended on opportunistic retry: {body:?}"
+        );
+
+        // Clean up the shared stub config_dir entries we created so
+        // subsequent parallel runs aren't polluted.
+        let _ = fs::remove_file(&jsonl_path);
     }
 
     /// Regression for C4: closing a worker must expire every
