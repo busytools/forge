@@ -324,20 +324,50 @@ fn append_project_rows(
     for project in projects {
         let spawn_synthetic =
             forge_workspace::SessionKey::from_session_id(format!("__spawn_{}__", project.name));
-        let live_session = project.sessions.iter().find_map(|s| {
-            if worker_keys.contains(&s.session) {
-                return None;
-            }
-            app.sessions.get(&s.session).map(|_| (s.session.clone(), lifecycle_for(&s.session)))
-        });
+        let project_path_str = project.path.to_string_lossy().into_owned();
+        // The project row represents the LEAD. Anchor `live_session`
+        // to a non-worker pooled bucket whose `cwd_raw` matches the
+        // project path. This sidesteps catalog ordering (which a
+        // freshly-spawned worker can overtake by mtime) and the
+        // catalog-presence-of-the-lead question entirely.
+        let live_session = app
+            .sessions
+            .iter()
+            .find(|(k, s)| {
+                s.cwd_raw.as_str() == project_path_str.as_str() && !worker_keys.contains(k)
+            })
+            .map(|(k, s)| (k.clone(), s.lifecycle_state))
+            .or_else(|| {
+                // Fallback: catalog walk excluding workers. Used when
+                // the lead's bucket isn't yet pooled (cold project at
+                // launchpad time) but its session has a SessionView
+                // entry.
+                project.sessions.iter().find_map(|s| {
+                    if worker_keys.contains(&s.session) {
+                        return None;
+                    }
+                    app.sessions
+                        .get(&s.session)
+                        .map(|_| (s.session.clone(), lifecycle_for(&s.session)))
+                })
+            });
         let synthetic = app
             .sessions
             .get(&spawn_synthetic)
             .map(|_| (spawn_synthetic.clone(), lifecycle_for(&spawn_synthetic)));
+        // Project row is focused when the active session belongs to
+        // this project - either as the lead OR as one of its
+        // workers. The lead's bucket has cwd_raw matching the
+        // project path; a worker's bucket likewise sits under the
+        // project (via `live_workers[project.key]`). Decoupling
+        // is_focused from the `live` key lets the project row stay
+        // highlighted while the user is on a worker tree-child.
+        let is_active_project = active_session_key.as_ref().is_some_and(|k| {
+            app.sessions.get(k).is_some_and(|s| s.cwd_raw.as_str() == project_path_str.as_str())
+        });
         let live = live_session.or(synthetic).map(|(key, lifecycle)| {
-            let is_focused = Some(&key) == active_session_key.as_ref();
             let badges = badges_for(&key);
-            (key, lifecycle, is_focused, badges)
+            (key, lifecycle, is_active_project, badges)
         });
         by_org.entry(project.org.clone()).or_default().push((project, live));
     }
