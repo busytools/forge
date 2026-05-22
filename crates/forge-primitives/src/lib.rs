@@ -68,6 +68,7 @@ pub mod session_update;
 pub mod subagents;
 pub mod turn_error;
 pub mod usage;
+pub mod workers;
 
 pub use command::AgentCommand;
 pub use content::ContentBlock;
@@ -125,3 +126,6 @@ pub use session_update::{
 };
 pub use subagents::{EffortPreset, SubagentDefinition, SubagentMcpServerRef, SubagentMemory};
 pub use turn_error::TurnErrorClass;
+pub use workers::{
+    FORGE_LEAD_TAG, FORGE_WORKER_TAG_PREFIX, WorkerLiveness, WorkerStatus, worker_tag,
+};

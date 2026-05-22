@@ -86,13 +86,53 @@ pub(crate) enum PeerInboundKind {
     },
 }
 
-/// One outbound peer block parsed from a `mcp__forge__peers__*`
-/// tool_use card. The correlation id is `None` until the tool call's
-/// result arrives.
+/// One outbound peer or worker block parsed from a `mcp__forge__peers__*`
+/// or `mcp__forge__workers__*` tool_use card. The correlation id is
+/// `None` until the tool call's result arrives. The `family` flag
+/// distinguishes the visual labelling (peers cross-project, workers
+/// project-internal child agents).
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum PeerOutboundKind {
-    Ask { target: String, body: String, correlation_id: Option<String> },
-    Tell { target: String, body: String, correlation_id: Option<String> },
+    Ask {
+        family: OutboundFamily,
+        target: String,
+        body: String,
+        correlation_id: Option<String>,
+    },
+    Tell {
+        family: OutboundFamily,
+        target: String,
+        body: String,
+        correlation_id: Option<String>,
+    },
+    /// `workers__spawn` - distinct from Ask/Tell because there's no
+    /// pre-existing target to address; the call creates a new worker.
+    /// Body carries the charter so the chat row reads as
+    /// `→ spawn <label>` followed by the charter prose.
+    WorkerSpawn {
+        label: String,
+        charter: String,
+    },
+    /// `workers__list` - no arguments, no body; one-line header.
+    WorkerList,
+}
+
+/// Visual family of an outbound block. `Peers` are cross-project
+/// (`mcp__forge__peers__*`); `Workers` are project-internal
+/// (`mcp__forge__workers__*`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OutboundFamily {
+    Peers,
+    Workers,
+}
+
+impl OutboundFamily {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Peers => "peer",
+            Self::Workers => "worker",
+        }
+    }
 }
 
 /// Detect a peer wrapper at the start of a user-message text. Returns
@@ -184,21 +224,60 @@ pub(crate) fn detect_inbound(text: &str) -> Option<PeerInboundKind> {
     None
 }
 
-/// Detect an outbound peer tool_use card. Returns `None` for any
-/// tool that isn't a peer ask/tell.
+/// Detect an outbound peer or worker tool_use card. Returns `None`
+/// for any tool that isn't one of the four peers / four workers
+/// shapes. Workers and peers share the same chat-card style; the
+/// `family` field on the returned kind picks the labelling.
 pub(crate) fn detect_outbound(tc: &ToolCallInfo) -> Option<PeerOutboundKind> {
     let raw = tc.raw_input.as_ref()?;
-    let target = raw.get("target")?.as_str()?.to_owned();
     let correlation_id = extract_correlation_id_from_result(tc);
     match tc.sdk_tool_name.as_str() {
         "mcp__forge__peers__ask_agent" => {
+            let target = raw.get("target")?.as_str()?.to_owned();
             let body = raw.get("prompt").and_then(|v| v.as_str()).unwrap_or("").to_owned();
-            Some(PeerOutboundKind::Ask { target, body, correlation_id })
+            Some(PeerOutboundKind::Ask {
+                family: OutboundFamily::Peers,
+                target,
+                body,
+                correlation_id,
+            })
         }
         "mcp__forge__peers__tell_agent" => {
+            let target = raw.get("target")?.as_str()?.to_owned();
             let body = raw.get("message").and_then(|v| v.as_str()).unwrap_or("").to_owned();
-            Some(PeerOutboundKind::Tell { target, body, correlation_id })
+            Some(PeerOutboundKind::Tell {
+                family: OutboundFamily::Peers,
+                target,
+                body,
+                correlation_id,
+            })
         }
+        "mcp__forge__workers__ask" => {
+            let target = raw.get("label")?.as_str()?.to_owned();
+            let body = raw.get("question").and_then(|v| v.as_str()).unwrap_or("").to_owned();
+            Some(PeerOutboundKind::Ask {
+                family: OutboundFamily::Workers,
+                target,
+                body,
+                correlation_id,
+            })
+        }
+        "mcp__forge__workers__tell" => {
+            let target = raw.get("label")?.as_str()?.to_owned();
+            let body = raw.get("message").and_then(|v| v.as_str()).unwrap_or("").to_owned();
+            Some(PeerOutboundKind::Tell {
+                family: OutboundFamily::Workers,
+                target,
+                body,
+                correlation_id,
+            })
+        }
+        "mcp__forge__workers__spawn" => {
+            let label = raw.get("label")?.as_str()?.to_owned();
+            let charter = raw.get("charter").and_then(|v| v.as_str()).unwrap_or("").to_owned();
+            Some(PeerOutboundKind::WorkerSpawn { label, charter })
+        }
+        "mcp__forge__workers__list" => Some(PeerOutboundKind::WorkerList),
         _ => None,
     }
 }
@@ -303,30 +382,61 @@ pub(crate) fn render_inbound(kind: &PeerInboundKind, collapsed: bool) -> Vec<Lin
     }
 }
 
-/// Build the styled lines for an outbound peer block. Used by the
-/// chat renderer for `mcp__forge__peers__*` tool_use cards instead
-/// of the default tool-card rendering. Same tool-card shape as
-/// [`render_inbound`].
+/// Build the styled lines for an outbound peer or worker block.
+/// Used by the chat renderer for `mcp__forge__peers__*` and
+/// `mcp__forge__workers__*` tool_use cards in place of the default
+/// tool-card rendering. Same tool-card shape as [`render_inbound`].
+/// The `family` field on the kind picks the labelling - workers
+/// rows read as `worker ask`, peers rows read as `peer ask`, etc.
 pub(crate) fn render_outbound(kind: &PeerOutboundKind, collapsed: bool) -> Vec<Line<'static>> {
-    let (accent, label, target, body, id) = match kind {
-        PeerOutboundKind::Ask { target, body, correlation_id } => {
-            (theme::RUST_ORANGE, "ask", target, body, correlation_id)
+    match kind {
+        PeerOutboundKind::Ask { family, target, body, correlation_id } => {
+            let id_label = correlation_id.clone().unwrap_or_else(|| "q-…".to_owned());
+            render_peer_card(
+                PeerCardStatus::Ok,
+                OUTBOUND_ICON,
+                theme::RUST_ORANGE,
+                &format!("{} ask", family.label()),
+                target,
+                &dim_meta(&[format!("· {id_label}")]),
+                body,
+                collapsed,
+            )
         }
-        PeerOutboundKind::Tell { target, body, correlation_id } => {
-            (theme::SUBAGENT_TOKEN, "tell", target, body, correlation_id)
+        PeerOutboundKind::Tell { family, target, body, correlation_id } => {
+            let id_label = correlation_id.clone().unwrap_or_else(|| "t-…".to_owned());
+            render_peer_card(
+                PeerCardStatus::Ok,
+                OUTBOUND_ICON,
+                theme::SUBAGENT_TOKEN,
+                &format!("{} tell", family.label()),
+                target,
+                &dim_meta(&[format!("· {id_label}")]),
+                body,
+                collapsed,
+            )
         }
-    };
-    let id_label = id.clone().unwrap_or_else(|| "q-…".to_owned());
-    render_peer_card(
-        PeerCardStatus::Ok,
-        OUTBOUND_ICON,
-        accent,
-        label,
-        target,
-        &dim_meta(&[format!("· {id_label}")]),
-        body,
-        collapsed,
-    )
+        PeerOutboundKind::WorkerSpawn { label, charter } => render_peer_card(
+            PeerCardStatus::Ok,
+            OUTBOUND_ICON,
+            theme::RUST_ORANGE,
+            "worker spawn",
+            label,
+            &dim_meta(&[]),
+            charter,
+            collapsed,
+        ),
+        PeerOutboundKind::WorkerList => render_peer_card(
+            PeerCardStatus::Ok,
+            OUTBOUND_ICON,
+            theme::SUBAGENT_TOKEN,
+            "worker list",
+            "",
+            &dim_meta(&[]),
+            "",
+            collapsed,
+        ),
+    }
 }
 
 /// Leading kind-icon glyphs for the header row. Outbound + inbound
@@ -795,6 +905,7 @@ mod tests {
     #[test]
     fn render_outbound_ask_block() {
         let kind = PeerOutboundKind::Ask {
+            family: OutboundFamily::Peers,
             target: "granite-backend".to_owned(),
             body: "What's the test setup?".to_owned(),
             correlation_id: Some("q-7f3a92e0".to_owned()),
@@ -810,6 +921,7 @@ mod tests {
     #[test]
     fn render_outbound_with_pending_correlation_id() {
         let kind = PeerOutboundKind::Tell {
+            family: OutboundFamily::Peers,
             target: "forge".to_owned(),
             body: "fyi".to_owned(),
             correlation_id: None,
@@ -817,8 +929,8 @@ mod tests {
         let lines = render_outbound(&kind, false);
         let header_text: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(header_text.contains("tell"));
-        // Pending id placeholder.
-        assert!(header_text.contains("q-…"));
+        // Pending id placeholder (tells use `t-…`).
+        assert!(header_text.contains("t-…"));
     }
 
     /// Expanded view must render the FULL body — no truncation,
@@ -868,6 +980,7 @@ mod tests {
     #[test]
     fn render_outbound_collapsed_shape() {
         let kind = PeerOutboundKind::Ask {
+            family: OutboundFamily::Peers,
             target: "granite-backend".to_owned(),
             body: "Long prompt\nspanning\nmultiple lines".to_owned(),
             correlation_id: Some("q-1".to_owned()),
@@ -876,5 +989,110 @@ mod tests {
         assert_eq!(lines.len(), 2);
         let last_text: String = lines[1].spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(last_text.contains("click or ctrl+x to expand"));
+    }
+
+    #[test]
+    fn render_outbound_workers_spawn_shows_label_and_charter() {
+        let kind = PeerOutboundKind::WorkerSpawn {
+            label: "reviewer".to_owned(),
+            charter: "be terse".to_owned(),
+        };
+        let lines = render_outbound(&kind, false);
+        assert!(!lines.is_empty());
+        let header_text: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            header_text.contains("worker spawn"),
+            "header carries the worker label: {header_text}"
+        );
+        assert!(header_text.contains("reviewer"), "header has target: {header_text}");
+        let body_text: String =
+            lines.iter().skip(1).flat_map(|l| l.spans.iter().map(|s| s.content.as_ref())).collect();
+        assert!(body_text.contains("be terse"), "charter prose appears in body: {body_text}");
+    }
+
+    #[test]
+    fn render_outbound_workers_tell_uses_workers_labelling() {
+        let kind = PeerOutboundKind::Tell {
+            family: OutboundFamily::Workers,
+            target: "reviewer".to_owned(),
+            body: "hello".to_owned(),
+            correlation_id: Some("t-abc".to_owned()),
+        };
+        let lines = render_outbound(&kind, false);
+        let header_text: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            header_text.contains("worker tell"),
+            "workers family swaps the label: {header_text}"
+        );
+        assert!(header_text.contains("reviewer"));
+    }
+
+    #[test]
+    fn render_outbound_workers_list_is_header_only() {
+        let kind = PeerOutboundKind::WorkerList;
+        let lines = render_outbound(&kind, false);
+        // No args + no body means no tree children - just the header row.
+        assert_eq!(lines.len(), 1, "workers__list is a header-only block");
+        let header_text: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(header_text.contains("worker list"));
+    }
+
+    fn make_tc(sdk_tool_name: &str, raw_input: serde_json::Value) -> crate::app::ToolCallInfo {
+        crate::app::ToolCallInfo {
+            id: "tc-1".into(),
+            title: "tc-1".into(),
+            sdk_tool_name: sdk_tool_name.into(),
+            raw_input: Some(raw_input),
+            raw_input_bytes: 0,
+            output_metadata: None,
+            task_metadata: None,
+            status: crate::agent::model::ToolCallStatus::InProgress,
+            content: vec![],
+            hidden: false,
+            terminal_id: None,
+            terminal_command: None,
+            terminal_output: None,
+            terminal_output_len: 0,
+            terminal_bytes_seen: 0,
+            terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
+            render_epoch: 0,
+            layout_epoch: 0,
+            last_measured_width: 0,
+            last_measured_height: 0,
+            last_measured_layout_epoch: 0,
+            last_measured_layout_generation: 0,
+            cache: crate::app::BlockCache::default(),
+            collapsed_override: None,
+            last_measured_y_in_msg: 0,
+        }
+    }
+
+    #[test]
+    fn detect_outbound_recognises_workers_spawn() {
+        let raw = serde_json::json!({"label": "reviewer", "charter": "be terse"});
+        let tc = make_tc("mcp__forge__workers__spawn", raw);
+        let kind = detect_outbound(&tc).expect("workers__spawn detected");
+        match kind {
+            PeerOutboundKind::WorkerSpawn { label, charter } => {
+                assert_eq!(label, "reviewer");
+                assert_eq!(charter, "be terse");
+            }
+            other => panic!("expected WorkerSpawn, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn detect_outbound_recognises_workers_ask_with_label_arg() {
+        let raw = serde_json::json!({"label": "reviewer", "question": "ready?"});
+        let tc = make_tc("mcp__forge__workers__ask", raw);
+        let kind = detect_outbound(&tc).expect("workers__ask detected");
+        match kind {
+            PeerOutboundKind::Ask { family, target, body, .. } => {
+                assert_eq!(family, OutboundFamily::Workers);
+                assert_eq!(target, "reviewer");
+                assert_eq!(body, "ready?");
+            }
+            other => panic!("expected Ask{{Workers}}, got {other:?}"),
+        }
     }
 }

@@ -22,3 +22,8 @@ parking_lot.workspace = true
 
 [dev-dependencies]
 async-trait.workspace = true
+# Workers MCP scenario tests need the in-process MCP server impl plus
+# its mock facade, both of which live in forge-workspace gated behind
+# the `testing` feature flag. Dev-only dep so the harness's production
+# surface (forge-sdk + forge-primitives) stays minimal.
+forge-workspace = { workspace = true, features = ["testing", "test-helpers"] }

@@ -78,7 +78,7 @@ pub use protocol::{Command, DispatchError, PendingInteractionSlot, SessionUpdate
 pub use target::{ProjectKey, SessionKey, SessionTarget};
 pub use ui::{SpinnerStyle, UiSettings};
 pub use views::{ProjectView, SessionView};
-pub use workspace::Workspace;
+pub use workspace::{Workspace, resolve_lead_session};
 
 // Re-export forge-agent types that public surface returns, so
 // callers can write `use forge_workspace::AgentHandle` if they

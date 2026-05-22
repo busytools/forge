@@ -138,7 +138,9 @@ fn shift_body_hit_targets(app: &mut App, start_idx: usize, body_top: u16, offset
         match target {
             crate::app::PaneHitTarget::ProjectHeader { y, height, .. }
             | crate::app::PaneHitTarget::SessionRow { y, height, .. }
-            | crate::app::PaneHitTarget::CloseSession { y, height, .. } => {
+            | crate::app::PaneHitTarget::CloseSession { y, height, .. }
+            | crate::app::PaneHitTarget::CloseWorker { y, height, .. }
+            | crate::app::PaneHitTarget::WorkerRow { y, height, .. } => {
                 if let Some(new_y) = y.checked_sub(offset) {
                     if new_y < body_top {
                         *height = 0;
@@ -295,6 +297,16 @@ fn append_project_rows(
 ) {
     let active_session_key = app.active_session_key.clone();
     let spinner_frame = app.spinner_frame;
+    // Worker session_keys across every project. Used to skip worker
+    // entries when picking each project's "live lead" - the catalog
+    // includes worker JSONLs post-Connected, and naive iteration would
+    // surface a worker as the project's live row once the worker's
+    // mtime overtakes the lead's.
+    let worker_keys: std::collections::HashSet<forge_workspace::SessionKey> = app
+        .workspace
+        .as_ref()
+        .map(|ws| ws.all_live_worker_session_keys().into_iter().collect())
+        .unwrap_or_default();
     let lifecycle_for = |key: &forge_workspace::SessionKey| -> SessionLifecycleState {
         app.sessions.get(key).map_or(SessionLifecycleState::default(), |s| s.lifecycle_state)
     };
@@ -312,17 +324,57 @@ fn append_project_rows(
     for project in projects {
         let spawn_synthetic =
             forge_workspace::SessionKey::from_session_id(format!("__spawn_{}__", project.name));
-        let live_session = project.sessions.iter().find_map(|s| {
-            app.sessions.get(&s.session).map(|_| (s.session.clone(), lifecycle_for(&s.session)))
-        });
+        let project_path_str = project.path.to_string_lossy().into_owned();
+        // The project row represents the LEAD. Anchor `live_session`
+        // to a non-worker pooled bucket whose `cwd_raw` matches the
+        // project path. This sidesteps catalog ordering (which a
+        // freshly-spawned worker can overtake by mtime) and the
+        // catalog-presence-of-the-lead question entirely.
+        let live_session = app
+            .sessions
+            .iter()
+            .find(|(k, s)| {
+                s.cwd_raw.as_str() == project_path_str.as_str() && !worker_keys.contains(k)
+            })
+            .map(|(k, s)| (k.clone(), s.lifecycle_state))
+            .or_else(|| {
+                // Fallback: catalog walk excluding workers. Used when
+                // the lead's bucket isn't yet pooled (cold project at
+                // launchpad time) but its session has a SessionView
+                // entry.
+                project.sessions.iter().find_map(|s| {
+                    if worker_keys.contains(&s.session) {
+                        return None;
+                    }
+                    app.sessions
+                        .get(&s.session)
+                        .map(|_| (s.session.clone(), lifecycle_for(&s.session)))
+                })
+            });
         let synthetic = app
             .sessions
             .get(&spawn_synthetic)
             .map(|_| (spawn_synthetic.clone(), lifecycle_for(&spawn_synthetic)));
+        // Project row is focused when the active session belongs to
+        // this project - either as the lead OR as one of its
+        // workers. The lead's bucket has cwd_raw matching the
+        // project path; a worker's bucket likewise sits under the
+        // project (via `live_workers[project.key]`); and the
+        // catalog tracks the session_key explicitly. Match any of
+        // the three signals so snapshot tests (which don't seed
+        // cwd_raw on test UiSessions) and the production hot path
+        // both highlight correctly.
+        let is_active_project = active_session_key.as_ref().is_some_and(|k| {
+            let cwd_match = app
+                .sessions
+                .get(k)
+                .is_some_and(|s| s.cwd_raw.as_str() == project_path_str.as_str());
+            let catalog_match = project.sessions.iter().any(|s| s.session == *k);
+            cwd_match || catalog_match
+        });
         let live = live_session.or(synthetic).map(|(key, lifecycle)| {
-            let is_focused = Some(&key) == active_session_key.as_ref();
             let badges = badges_for(&key);
-            (key, lifecycle, is_focused, badges)
+            (key, lifecycle, is_active_project, badges)
         });
         by_org.entry(project.org.clone()).or_default().push((project, live));
     }
@@ -364,6 +416,7 @@ fn append_project_rows(
                 spinner_frame,
                 now,
             );
+            append_worker_tree_children(lines, area, app, project);
             // Deadzone gap row between adjacent projects in the
             // same org — emits the `│  ` tree continuation so the
             // connector lines visually link across the breathing
@@ -501,6 +554,108 @@ fn append_org_project_row(
             project_name: project.key.as_str().to_owned(),
             y: row_y,
             height: 1,
+        });
+    }
+}
+
+/// Append worker tree-children rows immediately below a project's
+/// row. Each row carries the worker's label, a tree-glyph connector
+/// (`├─` or `└─` styled DIM), and a trailing `×` close affordance
+/// right-justified to match the project's `x` button column. Hit
+/// targets get stamped for both the label area (switches focus to
+/// the worker's chat) and the `×` (dispatches `Command::CloseWorker`).
+///
+/// Source of truth is `workspace.list_live_workers(project_key)`;
+/// the TUI never caches this so the snapshot stays fresh between
+/// `SessionUpdate::WorkerStatusChanged` events.
+fn append_worker_tree_children(
+    lines: &mut Vec<Line<'static>>,
+    area: Rect,
+    app: &mut App,
+    project: &ProjectView,
+) {
+    let Some(workspace) = app.workspace.as_ref() else {
+        return;
+    };
+    let workers = workspace.list_live_workers(&project.key);
+    if workers.is_empty() {
+        return;
+    }
+
+    let worker_count = workers.len();
+    let active_session_key = app.active_session_key.clone();
+    // Chrome: ` │  └─ <label> <pad> <sp> x  ` ->
+    // 1 left pad + 3 vertical indent + 3 tree connector + label + pad
+    // + 1 sep + 3 close (` x `) + 1 right gutter = 12 cells of chrome.
+    // Matches the active project row's close-button column so worker
+    // and lead `x` glyphs line up vertically.
+    let total_width = usize::from(area.width);
+    let label_budget = total_width.saturating_sub(1 + 3 + 3 + 1 + 3 + 1);
+    for (idx, worker) in workers.iter().enumerate() {
+        let row_y = area.y + line_count_as_u16(lines);
+        let is_last = idx + 1 == worker_count;
+        let tree_glyph = if is_last { "\u{2514}\u{2500} " } else { "\u{251C}\u{2500} " };
+        let label = truncate_with_ellipsis(worker.label.as_str(), label_budget);
+        let label_pad = label_budget.saturating_sub(label.chars().count());
+        let is_focused = active_session_key.as_ref() == Some(&worker.session_key);
+        let label_style = if is_focused {
+            // Active worker - mirror the lead row's focused style
+            // (RUST_ORANGE + bold) so the highlight semantics are
+            // identical for both row kinds.
+            Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)
+        } else {
+            match worker.status {
+                forge_primitives::WorkerLiveness::Running => Style::default(),
+                forge_primitives::WorkerLiveness::Spawning => Style::default().fg(theme::DIM),
+            }
+        };
+
+        // Left-indent (1) + `│  ` (3) so the worker's tree connector
+        // hangs off the active project's column rather than the org
+        // column. Then connector, label, pad, close button, gutter.
+        // Close affordance: ` x ` 3-cell button on USER_MSG_BG slate.
+        // Same shape and column as the active project row's close
+        // button so the worker rows visually align with the parent.
+        let spans: Vec<Span<'static>> = vec![
+            Span::raw(" "),
+            Span::styled("\u{2502}  ".to_owned(), Style::default().fg(theme::DIM)),
+            Span::styled(tree_glyph.to_owned(), Style::default().fg(theme::DIM)),
+            Span::styled(label, label_style),
+            Span::raw(" ".repeat(label_pad)),
+            Span::raw(" "),
+            Span::styled(
+                " x ".to_owned(),
+                Style::default()
+                    .fg(Color::Gray)
+                    .bg(theme::USER_MSG_BG)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" "),
+        ];
+        lines.push(Line::from(spans));
+
+        // Hit targets. The label area covers the row from x_start at
+        // the indent + connector through to before the close button.
+        // Click on it switches focus to the worker's chat session.
+        // The trailing 3-cell ` x ` button + 1-cell tolerance each
+        // side dispatches the close command (mirrors `CloseSession`).
+        app.pane_hit_targets.push(PaneHitTarget::WorkerRow {
+            project_key: project.key.clone(),
+            label: worker.label.clone(),
+            session_key: worker.session_key.clone(),
+            y: row_y,
+            height: 1,
+        });
+        let row_right = area.x.saturating_add(area.width);
+        let close_x_start = row_right.saturating_sub(5);
+        let close_x_end = row_right.saturating_sub(1);
+        app.pane_hit_targets.push(PaneHitTarget::CloseWorker {
+            project_key: project.key.clone(),
+            label: worker.label.clone(),
+            y: row_y,
+            height: 1,
+            x_start: close_x_start,
+            x_end: close_x_end,
         });
     }
 }
@@ -1503,5 +1658,163 @@ mod tests {
         // so a change to row count surfaces here too, not only at
         // runtime.
         assert_eq!(ACCOUNT_PANEL_HEIGHT, 19);
+    }
+
+    /// A project with no live workers must produce zero tree-child
+    /// rows and stamp no hit targets. Renders are driven directly
+    /// from `workspace.list_live_workers`; the renderer's job is to
+    /// branch cleanly on `is_empty`.
+    #[test]
+    fn worker_tree_children_render_no_rows_when_zero_workers() {
+        use crate::app::PaneHitTarget;
+        use forge_workspace::ProjectKey;
+
+        let mut app = App::test_default();
+        let project_key = ProjectKey::new_for_test("forge");
+        let project =
+            ProjectView::new_for_test(project_key.clone(), "forge", "~/Projects/forge", Vec::new());
+        let area = Rect { x: 0, y: 0, width: 32, height: 20 };
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        append_worker_tree_children(&mut lines, area, &mut app, &project);
+
+        assert!(lines.is_empty(), "zero workers must render zero rows");
+        let workers_targets: Vec<_> = app
+            .pane_hit_targets
+            .iter()
+            .filter(|t| {
+                matches!(t, PaneHitTarget::CloseWorker { .. } | PaneHitTarget::WorkerRow { .. })
+            })
+            .collect();
+        assert!(workers_targets.is_empty(), "zero workers stamps no hit targets");
+    }
+
+    /// `WorkerStatusChanged { Removed }` only flags a redraw - the
+    /// authoritative `live_workers` map lives on the workspace, so
+    /// the next render reads it directly. This test asserts the
+    /// pipeline shape: after the reducer fires AND the worker is
+    /// dropped from `live_workers`, a subsequent render sees zero
+    /// rows.
+    #[test]
+    fn worker_removed_reducer_drives_redraw_and_subsequent_render_omits_worker() {
+        use crate::app::events::apply_session_update;
+        use forge_workspace::ProjectKey;
+        use forge_workspace::SessionKey;
+        use forge_workspace::mcp::workers::types::WorkerEntry;
+        use forge_workspace::protocol::{SessionUpdate, WorkerStatusAction};
+        use std::time::SystemTime;
+
+        let mut app = App::test_default();
+        let workspace = app.workspace.clone().expect("workspace stub");
+        let project_key = ProjectKey::new_for_test("forge");
+        let entry = WorkerEntry {
+            label: "reviewer".into(),
+            charter: "be sharp".into(),
+            session_key: SessionKey::from_session_id("worker-1"),
+            status: forge_primitives::WorkerLiveness::Running,
+            spawned_at: SystemTime::UNIX_EPOCH,
+            spawned_by_session_id: "lead".into(),
+            needs_tag: false,
+        };
+        workspace.insert_live_worker(&project_key, entry.clone());
+
+        // Baseline: render should show one row.
+        {
+            let project = ProjectView::new_for_test(
+                project_key.clone(),
+                "forge",
+                "~/Projects/forge",
+                Vec::new(),
+            );
+            let area = Rect { x: 0, y: 0, width: 32, height: 20 };
+            let mut lines: Vec<Line<'static>> = Vec::new();
+            append_worker_tree_children(&mut lines, area, &mut app, &project);
+            assert_eq!(lines.len(), 1, "baseline: one worker = one row");
+        }
+
+        // Drop the worker from the source of truth, then fire the
+        // Removed reducer the way the workspace would.
+        workspace.remove_latest_worker(&project_key, "reviewer");
+        app.needs_redraw = false;
+        apply_session_update(
+            &mut app,
+            SessionUpdate::WorkerStatusChanged {
+                project_key: project_key.clone(),
+                action: WorkerStatusAction::Removed,
+                status: entry.to_status(),
+            },
+        );
+        assert!(app.needs_redraw, "Removed reducer must request a redraw");
+
+        // Next render reads list_live_workers directly: zero rows.
+        let project =
+            ProjectView::new_for_test(project_key, "forge", "~/Projects/forge", Vec::new());
+        let area = Rect { x: 0, y: 0, width: 32, height: 20 };
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        append_worker_tree_children(&mut lines, area, &mut app, &project);
+        assert!(lines.is_empty(), "after Removed, render shows no worker rows");
+    }
+
+    #[test]
+    fn worker_tree_children_render_with_glyphs_and_close_affordance() {
+        use crate::app::PaneHitTarget;
+        use forge_workspace::ProjectKey;
+        use forge_workspace::SessionKey;
+        use forge_workspace::mcp::workers::types::WorkerEntry;
+        use std::time::SystemTime;
+
+        let mut app = App::test_default();
+        let workspace = app.workspace.clone().expect("test_default seeds a workspace stub");
+        let project_key = ProjectKey::new_for_test("forge");
+        workspace.insert_live_worker(
+            &project_key,
+            WorkerEntry {
+                label: "reviewer".into(),
+                charter: "be sharp".into(),
+                session_key: SessionKey::from_session_id("worker-1"),
+                status: forge_primitives::WorkerLiveness::Running,
+                spawned_at: SystemTime::UNIX_EPOCH,
+                spawned_by_session_id: "lead".into(),
+                needs_tag: false,
+            },
+        );
+        workspace.insert_live_worker(
+            &project_key,
+            WorkerEntry {
+                label: "doc-writer".into(),
+                charter: "tone".into(),
+                session_key: SessionKey::from_session_id("worker-2"),
+                status: forge_primitives::WorkerLiveness::Spawning,
+                spawned_at: SystemTime::UNIX_EPOCH,
+                spawned_by_session_id: "lead".into(),
+                needs_tag: false,
+            },
+        );
+
+        let project =
+            ProjectView::new_for_test(project_key.clone(), "forge", "~/Projects/forge", Vec::new());
+        let area = Rect { x: 0, y: 0, width: 32, height: 20 };
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        append_worker_tree_children(&mut lines, area, &mut app, &project);
+
+        assert_eq!(lines.len(), 2, "two worker rows");
+        let row0: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        let row1: String = lines[1].spans.iter().map(|s| s.content.as_ref()).collect();
+        // First row → not-last → `├─`. Second row → last → `└─`.
+        assert!(row0.contains("\u{251C}\u{2500}"), "first row has ├─: {row0:?}");
+        assert!(row1.contains("\u{2514}\u{2500}"), "last row has └─: {row1:?}");
+        assert!(row0.contains("reviewer"), "first row has reviewer label: {row0:?}");
+        assert!(row1.contains("doc-writer"), "last row has doc-writer label: {row1:?}");
+        assert!(row0.contains(" x "), "first row has close button glyph: {row0:?}");
+        assert!(row1.contains(" x "), "last row has close button glyph: {row1:?}");
+
+        // One CloseWorker + one WorkerRow per row → 4 hit targets.
+        let workers_targets: Vec<_> = app
+            .pane_hit_targets
+            .iter()
+            .filter(|t| {
+                matches!(t, PaneHitTarget::CloseWorker { .. } | PaneHitTarget::WorkerRow { .. })
+            })
+            .collect();
+        assert_eq!(workers_targets.len(), 4, "expected 4 worker targets, got {workers_targets:?}");
     }
 }

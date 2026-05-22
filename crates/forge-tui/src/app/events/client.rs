@@ -254,6 +254,13 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
                 session.peer_badges = stats;
             }
         }
+        SessionUpdate::WorkerStatusChanged { .. } => {
+            // Workspace owns the authoritative live_workers map; the
+            // projects-pane renderer reads from `workspace.list_live_workers`
+            // each frame so the only thing the TUI has to do on a worker
+            // status change is request a redraw.
+            app.needs_redraw = true;
+        }
         SessionUpdate::PeerEnvelopeAppended { session_id, wrapped } => {
             // Workspace no longer forges an SDK `Message::User`
             // carrying peer prose — it emits the typed envelope
