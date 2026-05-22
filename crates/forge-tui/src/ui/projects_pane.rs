@@ -297,6 +297,16 @@ fn append_project_rows(
 ) {
     let active_session_key = app.active_session_key.clone();
     let spinner_frame = app.spinner_frame;
+    // Worker session_keys across every project. Used to skip worker
+    // entries when picking each project's "live lead" - the catalog
+    // includes worker JSONLs post-Connected, and naive iteration would
+    // surface a worker as the project's live row once the worker's
+    // mtime overtakes the lead's.
+    let worker_keys: std::collections::HashSet<forge_workspace::SessionKey> = app
+        .workspace
+        .as_ref()
+        .map(|ws| ws.all_live_worker_session_keys().into_iter().collect())
+        .unwrap_or_default();
     let lifecycle_for = |key: &forge_workspace::SessionKey| -> SessionLifecycleState {
         app.sessions.get(key).map_or(SessionLifecycleState::default(), |s| s.lifecycle_state)
     };
@@ -315,6 +325,9 @@ fn append_project_rows(
         let spawn_synthetic =
             forge_workspace::SessionKey::from_session_id(format!("__spawn_{}__", project.name));
         let live_session = project.sessions.iter().find_map(|s| {
+            if worker_keys.contains(&s.session) {
+                return None;
+            }
             app.sessions.get(&s.session).map(|_| (s.session.clone(), lifecycle_for(&s.session)))
         });
         let synthetic = app
@@ -533,6 +546,7 @@ fn append_worker_tree_children(
     }
 
     let worker_count = workers.len();
+    let active_session_key = app.active_session_key.clone();
     // Chrome: ` │  └─ <label> <pad> <sp> x  ` ->
     // 1 left pad + 3 vertical indent + 3 tree connector + label + pad
     // + 1 sep + 3 close (` x `) + 1 right gutter = 12 cells of chrome.
@@ -546,9 +560,17 @@ fn append_worker_tree_children(
         let tree_glyph = if is_last { "\u{2514}\u{2500} " } else { "\u{251C}\u{2500} " };
         let label = truncate_with_ellipsis(worker.label.as_str(), label_budget);
         let label_pad = label_budget.saturating_sub(label.chars().count());
-        let label_style = match worker.status {
-            forge_primitives::WorkerLiveness::Running => Style::default(),
-            forge_primitives::WorkerLiveness::Spawning => Style::default().fg(theme::DIM),
+        let is_focused = active_session_key.as_ref() == Some(&worker.session_key);
+        let label_style = if is_focused {
+            // Active worker - mirror the lead row's focused style
+            // (RUST_ORANGE + bold) so the highlight semantics are
+            // identical for both row kinds.
+            Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)
+        } else {
+            match worker.status {
+                forge_primitives::WorkerLiveness::Running => Style::default(),
+                forge_primitives::WorkerLiveness::Spawning => Style::default().fg(theme::DIM),
+            }
         };
 
         // Left-indent (1) + `│  ` (3) so the worker's tree connector
