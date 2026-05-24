@@ -677,10 +677,11 @@ fn switch_to_project_and_focus(app: &mut App, project_name: &str) {
 fn retry_project(app: &mut App, project_name: &str) {
     let spawn_synthetic = SessionKey::from_session_id(format!("__spawn_{project_name}__"));
     if let Some(workspace) = app.workspace.as_ref() {
-        // Synthetic key cleanup: primitive release - no cascade
-        // semantics meaningful for a synth_key that never reached
-        // Connected and was never recorded in the catalog.
-        workspace.release_session(&spawn_synthetic);
+        // Synthetic key cleanup. Cascade-detection inside
+        // `release_session_with_cascade` no-ops for a synth_key (it
+        // never reached Connected, so it isn't in any project's
+        // catalog) - effectively a plain primitive release here.
+        workspace.release_session_with_cascade(&spawn_synthetic);
     }
     app.sessions.remove(&spawn_synthetic);
 
