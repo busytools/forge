@@ -518,6 +518,14 @@ pub(crate) fn handle_close_worker(
         return;
     };
     let status = entry.to_status();
+    // MUST call the non-cascading `release_session` primitive (NOT
+    // `release_session_with_cascade`). By the time we get here the
+    // worker is already gone from `live_workers` (via
+    // `remove_latest_worker` above), so the cascading variant would
+    // treat the orphaned session_key as a project-lead under its
+    // cascade-detection rule (`in_catalog && !is_worker`) and drain
+    // every OTHER worker in the project too. Per-row close MUST only
+    // affect the single worker being closed.
     workspace.release_session(&entry.session_key);
     workspace.expire_inflight_for_closed_worker(project_key, label);
     let _ = workspace.update_tx().send(SessionUpdate::WorkerStatusChanged {
@@ -889,6 +897,46 @@ config_dir = "~/.claude-subspace"
             }
         }
         assert!(saw_removed, "Removed event was emitted");
+    }
+
+    /// Regression: closing ONE worker must NOT cascade to the others.
+    /// Before the fix, `handle_close_worker` called the cascading
+    /// `release_session` AFTER `remove_latest_worker`. The cascade-
+    /// detection (`in_catalog && !is_worker`) saw the orphaned
+    /// session_key as a lead (because it was already gone from
+    /// `live_workers` by step 1) and drained every OTHER worker.
+    /// The fix calls `release_session_inner` directly.
+    #[tokio::test]
+    async fn close_one_worker_leaves_other_workers_intact() {
+        let (workspace, mut rx) = Workspace::testing_stub();
+        let project = ProjectKey::new("forge");
+        workspace.insert_live_worker(&project, fake_worker_entry("worker-a", "session-a"));
+        workspace.insert_live_worker(&project, fake_worker_entry("worker-b", "session-b"));
+        workspace.insert_live_worker(&project, fake_worker_entry("worker-c", "session-c"));
+        assert_eq!(workspace.list_live_workers(&project).len(), 3);
+
+        handle_close_worker(&workspace, &project, "worker-b");
+
+        let remaining = workspace.list_live_workers(&project);
+        assert_eq!(remaining.len(), 2, "only the targeted worker should be removed; got {remaining:?}");
+        let labels: Vec<&str> = remaining.iter().map(|w| w.label.as_str()).collect();
+        assert!(labels.contains(&"worker-a"), "worker-a must survive");
+        assert!(labels.contains(&"worker-c"), "worker-c must survive");
+
+        // Exactly one Removed event for worker-b.
+        let mut removed_labels: Vec<String> = Vec::new();
+        while let Ok(update) = rx.try_recv() {
+            if let SessionUpdate::WorkerStatusChanged { action, status, .. } = update
+                && action == WorkerStatusAction::Removed
+            {
+                removed_labels.push(status.label);
+            }
+        }
+        assert_eq!(
+            removed_labels,
+            vec!["worker-b".to_owned()],
+            "exactly one Removed event for the closed worker; got {removed_labels:?}"
+        );
     }
 
     /// `handle_close_worker` for an unknown label logs but does not

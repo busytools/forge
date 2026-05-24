@@ -677,6 +677,9 @@ fn switch_to_project_and_focus(app: &mut App, project_name: &str) {
 fn retry_project(app: &mut App, project_name: &str) {
     let spawn_synthetic = SessionKey::from_session_id(format!("__spawn_{project_name}__"));
     if let Some(workspace) = app.workspace.as_ref() {
+        // Synthetic key cleanup: primitive release - no cascade
+        // semantics meaningful for a synth_key that never reached
+        // Connected and was never recorded in the catalog.
         workspace.release_session(&spawn_synthetic);
     }
     app.sessions.remove(&spawn_synthetic);
@@ -691,7 +694,9 @@ fn retry_project(app: &mut App, project_name: &str) {
             if let Some(bucket) = app.sessions.get(&sess.session)
                 && bucket.lifecycle_state == SessionLifecycleState::Failed
             {
-                workspace.release_session(&sess.session);
+                // Cascade-aware: a failed lead bucket may have workers
+                // attached; closing the lead must drain them.
+                workspace.release_session_with_cascade(&sess.session);
                 app.sessions.remove(&sess.session);
             }
         }

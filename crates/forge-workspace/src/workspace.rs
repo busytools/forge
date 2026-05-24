@@ -90,7 +90,7 @@ pub struct Workspace {
     update_rx_slot: Mutex<Option<mpsc::UnboundedReceiver<SessionUpdate>>>,
     /// Per-session [`Command`] sender map. Populated when
     /// [`Self::get_agent_handle`] spawns the first `SessionTask` for a
-    /// key; cleared on [`Self::release_session`] and [`Self::shutdown`].
+    /// key; cleared on [`Self::release_session_with_cascade`] and [`Self::shutdown`].
     command_senders: Mutex<HashMap<SessionKey, mpsc::UnboundedSender<Command>>>,
     /// Per-project list of live worker sessions. In-memory only -
     /// wiped on forge restart by design (workers are ephemeral at the
@@ -1370,17 +1370,16 @@ impl Workspace {
     /// Release a single session's pool entry. Drops the workspace's
     /// `Arc<AgentHandle>` for that key so the underlying `claude`
     /// subprocess exits once the consumer (forge-tui's bucket) also
-    /// drops its reference. No-op when the key isn't in the pool.
-    /// Called from forge-tui's per-row "close" action.
+    /// **Cascade-aware** lead release. Use this when closing a project's
+    /// lead session from the TUI: the lead-row `×` click, the launchpad's
+    /// per-row close on a failed lead bucket, etc.
     ///
-    /// **Lead cascade**: when `session_key` is a project's lead - it
-    /// appears in the project's catalog AND is NOT in
-    /// `live_workers[project]` - every live worker under that project
-    /// is released first. Workers' JSONLs persist on disk; only the
-    /// in-memory live state + the running claude subprocesses are
-    /// torn down. The split into a non-cascading `release_session_inner`
-    /// keeps the recursion bounded - the per-worker release calls
-    /// into the inner method directly.
+    /// When `session_key` is a project's lead - it appears in the
+    /// project's catalog AND is NOT in `live_workers[project]` - every
+    /// live worker under that project is released first via the
+    /// non-cascading `release_session` primitive. Workers' JSONLs
+    /// persist on disk; only the in-memory live state + the running
+    /// claude subprocesses are torn down.
     ///
     /// The "in-catalog AND not-in-live_workers" rule is the
     /// discriminator (rather than `sessions.first()`): the catalog
@@ -1388,7 +1387,7 @@ impl Workspace {
     /// `sessions[0]` is not a reliable lead marker after a worker
     /// reaches Running. `live_workers` is the authoritative
     /// "this session is a child agent" registry.
-    pub fn release_session(&self, session_key: &SessionKey) {
+    pub fn release_session_with_cascade(&self, session_key: &SessionKey) {
         let cascade_project = self.list_projects().into_iter().find(|view| {
             let in_catalog = view.sessions.iter().any(|s| s.session == *session_key);
             let is_worker =
@@ -1404,17 +1403,30 @@ impl Workspace {
                     action: crate::protocol::WorkerStatusAction::Removed,
                     status,
                 });
-                self.release_session_inner(&entry.session_key);
+                self.release_session(&entry.session_key);
             }
         }
-        self.release_session_inner(session_key);
+        self.release_session(session_key);
     }
 
-    /// Non-cascading session release. Removes the pool entry, command
-    /// sender, and domain handle for `session_key`. Split out so the
-    /// lead-cascade path in `release_session` can release worker
-    /// sessions without re-triggering the cascade check.
-    fn release_session_inner(&self, session_key: &SessionKey) {
+    /// Non-cascading single-session release - the primitive. Drops
+    /// the pool entry, command sender, and domain handle for
+    /// `session_key`. No side effects beyond that single session.
+    ///
+    /// Use this for ANY session close where cascade semantics are
+    /// undesirable or undefined:
+    /// - `handle_close_worker` (per-row worker X click) - cascade
+    ///   must NOT fire because the worker was already removed from
+    ///   `live_workers` by `remove_latest_worker`; the cascade-check
+    ///   in `release_session_with_cascade` would misidentify the
+    ///   orphaned session_key as a lead and drain every OTHER worker.
+    /// - The lead-cascade loop inside `release_session_with_cascade`
+    ///   itself, when releasing each worker.
+    /// - Synthetic spawn-key cleanup (launchpad retry path).
+    ///
+    /// Use `release_session_with_cascade` instead when the caller is
+    /// the lead-row close gesture.
+    pub(crate) fn release_session(&self, session_key: &SessionKey) {
         let removed = self.pool.lock().remove(session_key);
         drop(removed);
         let _ = self.command_senders.lock().remove(session_key);
@@ -3276,8 +3288,8 @@ config_dir = "~/.claude-subspace"
         dir
     }
 
-    /// `release_session` cascades worker termination when the released
-    /// session is a project's lead. Workers' JSONLs persist on disk
+    /// `release_session_with_cascade` cascades worker termination when
+    /// the released session is a project's lead. Workers' JSONLs persist on disk
     /// (we don't delete them); only the in-memory live_workers
     /// entries + the running session subprocesses are torn down.
     #[tokio::test]
@@ -3304,7 +3316,7 @@ config_dir = "~/.claude-subspace"
 
         // Release the lead. Cascade fires before the lead release
         // itself; workers' live_workers entries are gone afterward.
-        workspace.release_session(&lead_key);
+        workspace.release_session_with_cascade(&lead_key);
         assert!(
             workspace.list_live_workers(&project_key).is_empty(),
             "workers must be cascade-closed"
@@ -3323,8 +3335,8 @@ config_dir = "~/.claude-subspace"
         assert_eq!(removed_count, 2, "two Removed events fire for the two workers");
     }
 
-    /// `release_session` on a non-lead (or unknown) session is a plain
-    /// release with NO cascade. Confirms the cascade is gated on
+    /// `release_session_with_cascade` on a non-lead (or unknown) session
+    /// is a plain release with NO cascade. Confirms the cascade is gated on
     /// "session is a lead of some project."
     #[tokio::test]
     async fn release_session_on_non_lead_does_not_cascade() {
@@ -3335,7 +3347,7 @@ config_dir = "~/.claude-subspace"
         workspace.insert_live_worker(&project_key, fake_entry("r1", "worker-1"));
 
         let unknown = SessionKey::from_session_id("unknown-session");
-        workspace.release_session(&unknown);
+        workspace.release_session_with_cascade(&unknown);
         assert_eq!(
             workspace.list_live_workers(&project_key).len(),
             1,
@@ -3380,7 +3392,7 @@ config_dir = "~/.claude-subspace"
         // Release the LEAD. Pre-fix this fell through to a no-op
         // because the cascade check (`sessions.first() == lead_key`)
         // failed - the head was the worker.
-        workspace.release_session(&lead_key);
+        workspace.release_session_with_cascade(&lead_key);
 
         assert!(
             workspace.list_live_workers(&project_key).is_empty(),
