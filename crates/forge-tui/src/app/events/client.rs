@@ -1975,7 +1975,7 @@ mod tests {
             app.active_session_key.is_some(),
             "active must fall back to a surviving session, not None, while any bucket exists",
         );
-        assert!(!app.sessions.contains_key(&worker_key), "worker bucket itself must be gone",);
+        assert!(!app.sessions.contains_key(&worker_key), "worker bucket itself must be gone");
     }
 
     /// When `active_session_key` was NOT the closed worker, it must
