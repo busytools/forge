@@ -16,6 +16,15 @@ pub struct SessionLaunchSettings {
     /// other spawn path (leads, resumes).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub charter: Option<String>,
+    /// Spawn-path-specific extra CLI args to thread through to the
+    /// `claude` subprocess via `OptionsBuilder::extra_arg`. Each pair
+    /// becomes `--<flag> <value>` (or `--<flag>` when the value is
+    /// `None`). Workers in git-repo projects populate
+    /// `("worktree", Some(label))` so claude forks a worktree at
+    /// `<repo>/.claude/worktrees/<label>/`; lead/resume paths leave
+    /// this empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extra_args: Vec<(String, Option<String>)>,
 }
 
 impl SessionLaunchSettings {
@@ -24,6 +33,7 @@ impl SessionLaunchSettings {
             && self.settings.is_none()
             && self.agent_progress_summaries.is_none()
             && self.charter.is_none()
+            && self.extra_args.is_empty()
     }
 }
 

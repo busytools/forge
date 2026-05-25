@@ -643,6 +643,17 @@ fn build_options_with_callback(
         }
     };
 
+    // Spawn-path-specific extra CLI args (e.g. workers in git-repo
+    // projects get `("worktree", Some(label))` so claude forks a
+    // worktree at `<repo>/.claude/worktrees/<label>/`). The
+    // OptionsBuilder's `extra_args` HashMap absorbs duplicates by
+    // last-write-wins; today there's no overlap with the keys this
+    // function itself stamps (`effort`) but the iteration order keeps
+    // the launch_settings entries authoritative either way.
+    for (flag, value) in &launch_settings.extra_args {
+        b = b.extra_arg(flag.clone(), value.clone());
+    }
+
     // Per-spawn `CLAUDE_CONFIG_DIR` — workspace-driven so each
     // `claude` subprocess reads/writes the bound account's
     // user-data tree (oauth tokens, projects history, settings).
