@@ -29,18 +29,14 @@ use crate::{SessionKey, SessionTarget};
 /// `("worktree", Some(label))` so the spawned `claude` subprocess
 /// creates a worktree at `<repo>/.claude/worktrees/<label>/` and
 /// runs the session inside it. Empty when the project isn't a git
-/// repo — the worker spawns into the project's cwd directly.
+/// repo - the worker spawns into the project's cwd directly.
 ///
 /// The `is_git_repo` boolean is passed in (already-computed by the
 /// caller) so the git-repo probe runs at most once per spawn even
 /// when the same answer is needed for both the `WorkerEntry.is_git_repo_at_spawn`
 /// field and this argument list.
 fn build_worker_extra_args(is_git_repo: bool, label: &str) -> Vec<(String, Option<String>)> {
-    if is_git_repo {
-        vec![("worktree".to_owned(), Some(label.to_owned()))]
-    } else {
-        Vec::new()
-    }
+    if is_git_repo { vec![("worktree".to_owned(), Some(label.to_owned()))] } else { Vec::new() }
 }
 
 /// Emit a `SessionUpdate` and log at debug when the receiver is gone
@@ -1254,7 +1250,7 @@ config_dir = "~/.claude-subspace"
     }
 
     /// `build_worker_extra_args` returns no `worktree` entry when the
-    /// project path isn't a git repo — the worker just spawns into
+    /// project path isn't a git repo - the worker just spawns into
     /// the project's plain cwd and skips the worktree path entirely.
     #[test]
     fn worker_in_non_git_repo_gets_no_worktree_flag() {

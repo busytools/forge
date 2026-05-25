@@ -646,10 +646,10 @@ fn build_options_with_callback(
     // Spawn-path-specific extra CLI args (e.g. workers in git-repo
     // projects get `("worktree", Some(label))` so claude forks a
     // worktree at `<repo>/.claude/worktrees/<label>/`). The
-    // OptionsBuilder's `extra_args` HashMap absorbs duplicates by
-    // last-write-wins; today there's no overlap with the keys this
-    // function itself stamps (`effort`) but the iteration order keeps
-    // the launch_settings entries authoritative either way.
+    // OptionsBuilder's `extra_args` HashMap is last-write-wins on
+    // insert; this loop runs after the function's own extra_arg calls
+    // (`effort`), so any duplicate key in launch_settings overrides
+    // what the function stamped.
     for (flag, value) in &launch_settings.extra_args {
         b = b.extra_arg(flag.clone(), value.clone());
     }
