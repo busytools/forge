@@ -51,9 +51,7 @@ mod tests {
 
     #[test]
     fn returns_false_for_nonexistent_path() {
-        assert!(!is_git_repo(Path::new(
-            "/nonexistent/path/that/does/not/exist"
-        )));
+        assert!(!is_git_repo(Path::new("/nonexistent/path/that/does/not/exist")));
     }
 
     #[test]
