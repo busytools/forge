@@ -81,6 +81,12 @@ pub enum WorkerSpawnError {
     /// Spawn was dispatched but the workspace returned an error
     /// (e.g. tag-write failed). Forwarded as-is to the LLM.
     DispatchFailed { message: String },
+    /// claude failed to create the git worktree for `--worktree <label>`.
+    /// Reason text comes from claude's error output, passed through
+    /// verbatim so the lead's LLM can decide whether to retry (e.g.
+    /// pick a different label, or `git commit --allow-empty` first
+    /// in the empty-repo case).
+    WorktreeCreationFailed { reason: String },
 }
 
 /// Caller's project + lead-or-not flag. Returned by
@@ -617,5 +623,21 @@ mod mock_tests {
         };
         let res = mock.deliver_worker_prompt(&caller, "missing", wrapped);
         assert!(matches!(res, Err(WorkerDeliverError::UnknownLabel { .. })));
+    }
+}
+
+#[cfg(test)]
+mod worktree_creation_failed_tests {
+    use super::*;
+
+    #[test]
+    fn worktree_creation_failed_carries_reason() {
+        let err = WorkerSpawnError::WorktreeCreationFailed {
+            reason: "fatal: 'worktree-reviewer' is already used by worktree at /a".into(),
+        };
+        let WorkerSpawnError::WorktreeCreationFailed { reason } = err else {
+            panic!("expected WorktreeCreationFailed");
+        };
+        assert!(reason.contains("already used by worktree"));
     }
 }
