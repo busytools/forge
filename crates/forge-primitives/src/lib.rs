@@ -39,6 +39,8 @@
 //! - [`question`] — `AskUserQuestion` request/response shapes.
 //! - [`mcp_ui_sync`] — MCP UI events (`McpOperationError`).
 //! - [`session_meta`] — `SessionListEntry`, `PromptChunk`.
+//! - [`worktree`] — `WorktreeInfo` wire shape for `--worktree <name>`
+//!   sessions.
 //!
 //! Add a type here when 2+ forge crates need it. Never reach for
 //! cross-crate `pub use` chains as a substitute.
@@ -69,6 +71,7 @@ pub mod subagents;
 pub mod turn_error;
 pub mod usage;
 pub mod workers;
+pub mod worktree;
 
 pub use command::AgentCommand;
 pub use content::ContentBlock;
@@ -129,3 +132,4 @@ pub use turn_error::TurnErrorClass;
 pub use workers::{
     FORGE_LEAD_TAG, FORGE_WORKER_TAG_PREFIX, WorkerLiveness, WorkerStatus, worker_tag,
 };
+pub use worktree::WorktreeInfo;
