@@ -736,7 +736,9 @@ fn copy_session_id_to_clipboard(session_id: &str) {
 
 fn close_session(app: &mut App, session_key: &forge_workspace::SessionKey) {
     if let Some(workspace) = app.workspace.as_ref() {
-        workspace.release_session(session_key);
+        // Cascade-aware: if the session is a project's lead, all
+        // workers under that project terminate first.
+        workspace.release_session_with_cascade(session_key);
     }
     app.sessions.remove(session_key);
     if app.active_session_key.as_ref() == Some(session_key) {

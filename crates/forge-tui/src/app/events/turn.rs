@@ -647,8 +647,15 @@ fn apply_turn_error_presentation(
                 error_class = "auth_required",
                 error_preview = %summary,
             );
-            app.exit_error = Some(crate::error::AppError::AuthRequired);
-            app.should_quit = true;
+            // Surface the auth-required error in-session via the same
+            // banner / chat-error pipeline `PlanLimit` uses. Do NOT
+            // force-quit the entire TUI — other sessions in this forge
+            // may still be healthy, and the user can refresh auth from
+            // another terminal then re-prompt this session. The
+            // classifier also fires spuriously on a 401 from a stale
+            // background usage probe (token expired on disk while the
+            // user wasn't looking); blowing up the whole app in that
+            // case is wildly disproportionate.
         }
         TurnErrorClass::Internal => {
             tracing::debug!(

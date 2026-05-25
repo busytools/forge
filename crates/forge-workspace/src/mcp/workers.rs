@@ -9,9 +9,11 @@ use std::sync::Arc;
 use forge_sdk::mcp::server::{McpServer, McpServerBuilder};
 use forge_sdk::mcp::tool::{Tool, ToolInput, ToolOutput, ToolOutputBlock};
 
-use crate::mcp::peers::facade::CallerKeyResolver;
+use crate::mcp::peers::facade::{CallerKeyResolver, PeerStatsDelta};
 use crate::mcp::peers::types::{CorrelationId, InflightAsk, WrappedKind, WrappedPrompt};
-use crate::mcp::workers::facade::{WorkerDeliverError, WorkerFacade, WorkerSpawnError};
+use crate::mcp::workers::facade::{
+    LEAD_LABEL, WorkerDeliverError, WorkerFacade, WorkerLeadDeliverError, WorkerSpawnError,
+};
 
 pub mod facade;
 pub mod types;
@@ -99,10 +101,11 @@ impl Tool for Spawn {
          it is being asked to do. Returns the worker's session_id and \
          tag (`forge:worker:<label>`). Labels are free-form and need \
          not be unique - if you spawn multiple workers with the same \
-         label, addressing picks the latest-spawned. Use workers__list \
-         to see your project's current worker pool. This tool errors \
-         if called from a worker session; only the project lead may \
-         spawn."
+         label, addressing picks the latest-spawned. The label 'lead' \
+         is reserved (used by workers__tell / workers__ask to address \
+         the spawning lead) and rejected here. Use workers__list to \
+         see your project's current worker pool. This tool errors if \
+         called from a worker session; only the project lead may spawn."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -158,6 +161,10 @@ fn format_spawn_error(err: &WorkerSpawnError) -> String {
                 .to_owned()
         }
         WorkerSpawnError::EmptyLabel => "label must be non-empty after trim".to_owned(),
+        WorkerSpawnError::ReservedLabel => format!(
+            "label '{LEAD_LABEL}' is reserved — workers__tell / workers__ask use it as \
+             the addressing keyword for the caller's lead. Pick a different label."
+        ),
         WorkerSpawnError::EmptyCharter => "charter must be non-empty after trim".to_owned(),
         WorkerSpawnError::UnknownCallerProject => {
             "could not resolve caller to a known project (forge bug)".to_owned()
@@ -235,6 +242,8 @@ pub(crate) struct Tell {
 struct TellArgs {
     label: String,
     message: String,
+    #[serde(default)]
+    in_reply_to: Option<String>,
 }
 
 #[async_trait::async_trait]
@@ -246,14 +255,22 @@ impl Tool for Tell {
 
     #[allow(clippy::unnecessary_literal_bound)]
     fn description(&self) -> &str {
-        "Send a fire-and-forget message to a worker in YOUR project by \
-         label. The message lands as a new user turn in the worker's \
-         chat, rendered as an incoming-from-<caller> block. No reply is \
-         awaited; use workers__ask if you need an answer back. If \
-         multiple workers share the same label, addressing picks the \
-         latest-spawned. Available to both lead and worker callers. \
-         Run workers__list first to confirm the label and that the \
-         worker is live."
+        "Send a message to a worker in YOUR project by label. Two \
+         shapes: (1) UNSOLICITED — omit `in_reply_to` to send standalone \
+         prose; the message lands as a new user turn in the target's \
+         chat, rendered as an incoming-from-<caller> block. (2) REPLY \
+         to an earlier `workers__ask` — set `in_reply_to` to the \
+         correlation_id from that ask's wrapper, and the original asker \
+         sees your message rendered as a Reply (the inflight ask closes; \
+         the asker's outgoing counter + your incoming counter both \
+         decrement). If multiple workers share the same label, \
+         addressing picks the latest-spawned. The reserved label 'lead' \
+         targets the caller's lead (worker-only — a worker can use this \
+         to send FYIs / replies back to whoever spawned it; project \
+         leads have no lead and will get an error). Available to both \
+         lead and worker callers (apart from the 'lead' case). Run \
+         workers__list first to confirm the label and that the worker \
+         is live."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -262,11 +279,15 @@ impl Tool for Tell {
             "properties": {
                 "label": {
                     "type": "string",
-                    "description": "Worker label from workers__list. Case-sensitive. If multiple workers share the label, the latest-spawned receives the message.",
+                    "description": "Worker label from workers__list. Case-sensitive. If multiple workers share the label, the latest-spawned receives the message. Use the reserved label 'lead' to address the caller's spawning lead (worker-only).",
                 },
                 "message": {
                     "type": "string",
-                    "description": "Message body. Rendered as a new user turn in the worker's chat - write it as direct instructions or context to the worker.",
+                    "description": "Message body. Rendered as a new user turn in the target's chat - write it as direct instructions or context.",
+                },
+                "in_reply_to": {
+                    "type": "string",
+                    "description": "Optional. Set to the correlation_id (q-XXXXXXXX) of an inbound `workers__ask` to mark this as a reply. The original asker sees it as a Reply envelope; the inflight ask closes and stat counters decrement on both sides. Omit for unsolicited messages.",
                 },
             },
             "required": ["label", "message"],
@@ -281,10 +302,36 @@ impl Tool for Tell {
         };
 
         let caller_key = self.caller_key.current();
+
+        // Validate `in_reply_to` shape at the tool boundary. A
+        // malformed id would silently miss the inflight-map lookup
+        // and degrade to Message, hiding the actual problem — reject
+        // explicitly so the LLM sees + fixes.
+        let in_reply_to_id = match args.in_reply_to.as_deref() {
+            None => None,
+            Some(s) => match CorrelationId::from_external(s) {
+                Some(id) => Some(id),
+                None => {
+                    return tool_error(format!(
+                        "in_reply_to {s:?} is not a well-formed correlation id \
+                         (expected q-XXXXXXXX or t-XXXXXXXX, 8 lowercase hex chars)"
+                    ));
+                }
+            },
+        };
+
+        // Classify the tell. If `in_reply_to` resolves to an
+        // InflightAsk whose `caller` matches the resolved target
+        // session, this is a clean reply — kind=Reply, and we'll
+        // close the ask + decrement stats post-dispatch. Otherwise
+        // it degrades to Message (or stays Message for unsolicited).
+        let (kind, reply_target_session) =
+            classify_workers_tell(&*self.facade, &caller_key, &args.label, in_reply_to_id.as_ref());
+
         let correlation_id = CorrelationId::new_tell();
         let wrapped = WrappedPrompt {
             correlation_id: correlation_id.clone(),
-            kind: WrappedKind::Message,
+            kind,
             sender_name: caller_key.as_str().to_owned(),
             sender_org: String::new(),
             hop: 1,
@@ -292,19 +339,171 @@ impl Tool for Tell {
             body: args.message,
         };
 
-        match self.facade.deliver_worker_prompt(&caller_key, &args.label, wrapped) {
-            Ok(_) => {
-                let body = serde_json::json!({
-                    "correlation_id": correlation_id.as_str(),
-                    "status": "delivered",
-                });
-                match serde_json::to_string_pretty(&body) {
-                    Ok(json) => ToolOutput::text(json),
-                    Err(err) => tool_error(format!("response serialization failed: {err}")),
-                }
+        // Reserved keyword: `label="lead"` routes back to the caller's
+        // lead session (resolved from the worker's
+        // `spawned_by_session_id`). Lead callers get a clear error —
+        // leads don't have a lead. See `LEAD_LABEL` in
+        // `mcp::workers::facade`.
+        let delivery_ok = if args.label == LEAD_LABEL {
+            match self.facade.deliver_prompt_to_lead(&caller_key, wrapped) {
+                Ok(_) => true,
+                Err(err) => return tool_error(format_lead_deliver_error(&err)),
             }
-            Err(err) => tool_error(format_deliver_error(&args.label, &err)),
+        } else {
+            match self.facade.deliver_worker_prompt(&caller_key, &args.label, wrapped) {
+                Ok(_) => true,
+                Err(err) => return tool_error(format_deliver_error(&args.label, &err)),
+            }
+        };
+
+        // Post-dispatch close-out for clean replies. Mirrors peers
+        // `tell_agent` behaviour: remove the inflight entry + bump
+        // both sides' counters so the asker's outgoing balances
+        // their original ask and the replier's incoming balances
+        // their inbound question. Skip when the tell was unsolicited
+        // or degraded.
+        if delivery_ok
+            && matches!(kind, WrappedKind::Reply)
+            && let (Some(id), Some(target)) =
+                (in_reply_to_id.as_ref(), reply_target_session.as_ref())
+        {
+            self.facade.complete_inflight_ask(id);
+            self.facade.bump_inflight_stats(&caller_key, PeerStatsDelta::IncomingMinus1);
+            self.facade.bump_inflight_stats(target, PeerStatsDelta::OutgoingMinus1);
         }
+
+        deliver_ok_response(&correlation_id)
+    }
+}
+
+/// Classify a `workers__tell` based on the optional `in_reply_to`.
+///
+/// - No `in_reply_to` → `(Message, None)` — unsolicited.
+/// - `in_reply_to` resolves to an InflightAsk AND the resolved
+///   target session of this tell == the original ask's caller →
+///   `(Reply, Some(asker_session))` — clean reply.
+/// - `in_reply_to` provided but resolves to nothing, or resolves to
+///   an ask whose caller doesn't match this tell's target →
+///   `(Message, None)` with a warn log (degraded reply). Same
+///   semantics as peers `classify_tell`.
+fn classify_workers_tell(
+    facade: &dyn WorkerFacade,
+    caller_key: &crate::SessionKey,
+    target_label: &str,
+    in_reply_to: Option<&CorrelationId>,
+) -> (WrappedKind, Option<crate::SessionKey>) {
+    let Some(id) = in_reply_to else {
+        return (WrappedKind::Message, None);
+    };
+    let Some(ask) = facade.resolve_correlation(id) else {
+        tracing::warn!(
+            target: "forge_workspace::mcp::workers",
+            correlation_id = id.as_str(),
+            target_label,
+            "tell in_reply_to references unknown correlation_id; degrading to Message"
+        );
+        return (WrappedKind::Message, None);
+    };
+    // Resolve the tell's target to a session_key and compare with
+    // the original ask's caller. For label="lead": resolve via the
+    // caller's spawned_by_session_id. For other labels: live-workers
+    // lookup in the caller's project.
+    let target_session = resolve_target_session(facade, caller_key, target_label);
+    match target_session {
+        Some(target) if target == ask.caller => (WrappedKind::Reply, Some(target)),
+        Some(target) => {
+            tracing::warn!(
+                target: "forge_workspace::mcp::workers",
+                correlation_id = id.as_str(),
+                target_label,
+                target_session = %target.as_str(),
+                ask_caller = %ask.caller.as_str(),
+                "tell in_reply_to target mismatch (label resolves to a different session than the original asker); degrading to Message"
+            );
+            (WrappedKind::Message, None)
+        }
+        None => {
+            tracing::warn!(
+                target: "forge_workspace::mcp::workers",
+                correlation_id = id.as_str(),
+                target_label,
+                "tell in_reply_to could not resolve target label to a session; degrading to Message"
+            );
+            (WrappedKind::Message, None)
+        }
+    }
+}
+
+/// Resolve a `workers__tell` target label to a concrete session key.
+/// `LEAD_LABEL` → the caller's `spawned_by_session_id`. Other labels
+/// → look up the latest-spawned live worker in the caller's project
+/// matching the label. Returns `None` when the lookup fails (caller
+/// has no worker entry, label not live, etc.).
+fn resolve_target_session(
+    facade: &dyn WorkerFacade,
+    caller_key: &crate::SessionKey,
+    target_label: &str,
+) -> Option<crate::SessionKey> {
+    let cp = facade.caller_project(caller_key)?;
+    if target_label == LEAD_LABEL {
+        // Caller must be a worker for "lead" addressing to mean
+        // anything; for leads, this target is undefined and the
+        // deliver path will reject the call anyway.
+        if cp.is_lead {
+            return None;
+        }
+        return facade
+            .list_workers(caller_key)
+            .into_iter()
+            .find(|w| w.session_id == caller_key.as_str())
+            .map(|w| crate::SessionKey::from_session_id(w.spawned_by_session_id));
+    }
+    // Sibling-worker / cross-worker addressing. Use the same
+    // latest-spawned-wins rule as the dispatcher.
+    facade
+        .list_workers(caller_key)
+        .into_iter()
+        .rev()
+        .find(|w| w.label == target_label)
+        .map(|w| crate::SessionKey::from_session_id(w.session_id))
+}
+
+/// Helper: build the standard `{ correlation_id, status: "delivered" }`
+/// response body. Pulled out so both Tell + Ask + lead-delivery paths
+/// emit a single canonical shape.
+fn deliver_ok_response(correlation_id: &CorrelationId) -> ToolOutput {
+    let body = serde_json::json!({
+        "correlation_id": correlation_id.as_str(),
+        "status": "delivered",
+    });
+    match serde_json::to_string_pretty(&body) {
+        Ok(json) => ToolOutput::text(json),
+        Err(err) => tool_error(format!("response serialization failed: {err}")),
+    }
+}
+
+/// LLM-facing error text for `WorkerLeadDeliverError`. Mirrors
+/// `format_deliver_error`'s shape so the worker LLM gets the same
+/// flavor of guidance regardless of which addressing path it took.
+fn format_lead_deliver_error(err: &WorkerLeadDeliverError) -> String {
+    match err {
+        WorkerLeadDeliverError::UnknownCaller => {
+            "could not resolve caller to a known worker session (forge bug)".to_owned()
+        }
+        WorkerLeadDeliverError::LeadCallerHasNoLead => {
+            "label='lead' is worker-only; this session is a project lead and has no lead \
+             to talk back to. Use peers__* to reach another project's lead, or \
+             workers__tell/ask with a real worker label."
+                .to_owned()
+        }
+        WorkerLeadDeliverError::LeadGone { lead_session_id } => format!(
+            "lead session '{lead_session_id}' is no longer live. The lead closed since this \
+             worker was spawned; the worker pool will cascade-close shortly."
+        ),
+        WorkerLeadDeliverError::HopLimitExceeded { hop, limit } => format!(
+            "hop limit exceeded forwarding to lead ({hop}/{limit}). The chain has reached \
+             its maximum depth - your message will not be forwarded."
+        ),
     }
 }
 
@@ -356,16 +555,19 @@ impl Tool for Ask {
         "Ask a worker in YOUR project a question and receive their \
          reply asynchronously. Returns IMMEDIATELY with a \
          correlation_id (e.g. q-7f3a92e0); this tool does NOT wait \
-         for the reply. The worker's LLM will see your question as a \
+         for the reply. The target's LLM will see your question as a \
          new user turn, do its work, and respond. The reply lands as \
          a fresh user turn in YOUR chat whenever it's ready - finish \
          your current turn naturally and continue with other work. \
          Multiple asks can run in parallel - fire several workers__ask \
-         calls in one turn and the replies arrive independently. \
-         Available to both lead and worker callers. If multiple \
-         workers share the label, addressing picks the latest-spawned. \
-         Run workers__list first to confirm the label and that the \
-         worker is live."
+         calls in one turn and the replies arrive independently. The \
+         reserved label 'lead' targets the caller's lead (worker-only \
+         — use it to ask the spawning lead for direction; project \
+         leads have no lead and will get an error). Available to both \
+         lead and worker callers (apart from the 'lead' case). If \
+         multiple workers share the label, addressing picks the \
+         latest-spawned. Run workers__list first to confirm the label \
+         and that the worker is live."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -435,22 +637,39 @@ impl Tool for Ask {
             caller_org: String::new(),
             target_project: target_project_composite,
         });
+        // Bump the caller's outgoing counter. Mirrors peers__ask_agent
+        // so the sidebar badge reflects "I have N asks awaiting reply"
+        // regardless of whether the asks went peer-ward or
+        // worker-ward. Decrement fires when the recipient's
+        // `workers__tell` with `in_reply_to` closes the ask.
+        self.facade.bump_inflight_stats(&caller_key, PeerStatsDelta::OutgoingPlus1);
+
+        // Reserved keyword: `label="lead"` routes back to the caller's
+        // lead session (the worker's spawner). Workers ask their lead
+        // for project-level direction; leads can't use this addressing
+        // (no lead above them).
+        if args.label == LEAD_LABEL {
+            return match self.facade.deliver_prompt_to_lead(&caller_key, wrapped) {
+                Ok(_) => deliver_ok_response(&correlation_id),
+                Err(err) => {
+                    // Rollback: delivery never landed. Counter +
+                    // inflight both rewind so the map / badge stay
+                    // consistent with reality.
+                    self.facade.complete_inflight_ask(&correlation_id);
+                    self.facade.bump_inflight_stats(&caller_key, PeerStatsDelta::OutgoingMinus1);
+                    tool_error(format_lead_deliver_error(&err))
+                }
+            };
+        }
 
         match self.facade.deliver_worker_prompt(&caller_key, &args.label, wrapped) {
-            Ok(_) => {
-                let body = serde_json::json!({
-                    "correlation_id": correlation_id.as_str(),
-                    "status": "delivered",
-                });
-                match serde_json::to_string_pretty(&body) {
-                    Ok(json) => ToolOutput::text(json),
-                    Err(err) => tool_error(format!("response serialization failed: {err}")),
-                }
-            }
+            Ok(_) => deliver_ok_response(&correlation_id),
             Err(err) => {
                 // Rollback: the dispatch never reached the worker so
-                // the inflight_asks entry would otherwise leak.
+                // the inflight_asks entry + outgoing bump would
+                // otherwise leak.
                 self.facade.complete_inflight_ask(&correlation_id);
+                self.facade.bump_inflight_stats(&caller_key, PeerStatsDelta::OutgoingMinus1);
                 tool_error(format_deliver_error(&args.label, &err))
             }
         }
@@ -784,10 +1003,16 @@ mod tests {
         let facade = mock.into_arc();
         let tool = Tell { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("k")) };
         assert_eq!(tool.name(), "workers__tell");
-        assert!(tool.description().to_lowercase().contains("fire-and-forget"));
+        // Tool description must surface the two shapes (unsolicited
+        // vs reply) so the LLM knows about `in_reply_to`.
+        assert!(tool.description().to_lowercase().contains("in_reply_to"));
         let schema = tool.input_schema();
         let required = schema["required"].as_array().expect("required field present");
         assert!(required.iter().any(|v| v == "label"));
+        // `in_reply_to` is an OPTIONAL property — present in the schema
+        // but not in `required`, mirroring peers__tell_agent.
+        assert!(schema["properties"].as_object().unwrap().contains_key("in_reply_to"));
+        assert!(required.iter().all(|v| v != "in_reply_to"));
         assert!(required.iter().any(|v| v == "message"));
     }
 
@@ -915,5 +1140,366 @@ mod tests {
                 "build_server must include {expected}; debug: {debug}",
             );
         }
+    }
+
+    // ---------------------------------------------------------------
+    // Reserved `"lead"` addressing — workers__spawn rejects the label,
+    // workers__tell / workers__ask route to the caller's spawning
+    // lead when the label matches.
+    // ---------------------------------------------------------------
+
+    /// Helper: build a `WorkerStatus` whose `session_id` matches the
+    /// caller's key and whose `spawned_by_session_id` is `lead_uuid`.
+    /// `MockWorkerFacade::deliver_prompt_to_lead` reads this entry to
+    /// resolve the worker's lead.
+    fn worker_with_lead(
+        label: &str,
+        session_id: &str,
+        lead_uuid: &str,
+    ) -> forge_primitives::WorkerStatus {
+        forge_primitives::WorkerStatus {
+            label: label.to_owned(),
+            charter: "test charter".to_owned(),
+            status: forge_primitives::WorkerLiveness::Running,
+            session_id: session_id.to_owned(),
+            spawned_at: std::time::SystemTime::UNIX_EPOCH,
+            spawned_by_session_id: lead_uuid.to_owned(),
+        }
+    }
+
+    #[tokio::test]
+    async fn spawn_reserved_lead_label_is_error() {
+        // workers__spawn must reject label='lead' because workers__tell
+        // / workers__ask reserve that label for addressing the caller's
+        // lead — letting it through would let a worker shadow the
+        // reserved keyword.
+        let mock = MockWorkerFacade::new();
+        mock.callers.lock().insert(fake_key("lead-key"), lead_caller("forge"));
+        let facade = mock.into_arc();
+        let tool =
+            Spawn { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("lead-key")) };
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({
+                    "label": "lead",
+                    "charter": "doesn't matter",
+                }),
+            })
+            .await;
+        assert!(output.is_error);
+        assert!(
+            output.blocks[0].text.contains("reserved"),
+            "error must mention 'reserved': {:?}",
+            output.blocks,
+        );
+    }
+
+    #[tokio::test]
+    async fn spawn_reserved_lead_label_trimmed_is_error() {
+        // Trim must happen before the reserved-keyword check so
+        // '  lead  ' is still rejected.
+        let mock = MockWorkerFacade::new();
+        mock.callers.lock().insert(fake_key("lead-key"), lead_caller("forge"));
+        let facade = mock.into_arc();
+        let tool =
+            Spawn { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("lead-key")) };
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({
+                    "label": "  lead  ",
+                    "charter": "doesn't matter",
+                }),
+            })
+            .await;
+        assert!(output.is_error);
+        assert!(output.blocks[0].text.contains("reserved"));
+    }
+
+    #[tokio::test]
+    async fn tell_label_lead_from_worker_routes_to_lead_delivery() {
+        // Worker caller, label='lead' → routes to the
+        // deliver_prompt_to_lead facade path. The mock records the
+        // delivery under the synthetic label '<lead>' so the assertion
+        // is unambiguous about which facade method fired.
+        let mock = Arc::new(MockWorkerFacade::new());
+        let worker_key = fake_key("worker-uuid");
+        mock.callers.lock().insert(worker_key.clone(), worker_caller("forge"));
+        mock.workers
+            .lock()
+            .insert("forge".into(), vec![worker_with_lead("probe-a", "worker-uuid", "lead-uuid")]);
+        let facade: Arc<dyn WorkerFacade> = mock.clone();
+        let tool = Tell { facade, caller_key: CallerKeyResolver::from_fixed(worker_key) };
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({
+                    "label": "lead",
+                    "message": "FYI from the worker",
+                }),
+            })
+            .await;
+        assert!(!output.is_error, "worker→lead tell should succeed: {:?}", output.blocks);
+        let dispatched = mock.deliver_calls.lock();
+        assert_eq!(dispatched.len(), 1, "exactly one delivery");
+        assert_eq!(dispatched[0].1, "<lead>", "mock tags lead deliveries with '<lead>'");
+    }
+
+    #[tokio::test]
+    async fn tell_label_lead_from_lead_is_error() {
+        // Lead caller using label='lead' — error. Leads have no lead.
+        let mock = Arc::new(MockWorkerFacade::new());
+        let lead_key = fake_key("lead-key");
+        mock.callers.lock().insert(lead_key.clone(), lead_caller("forge"));
+        let facade: Arc<dyn WorkerFacade> = mock.clone();
+        let tool = Tell { facade, caller_key: CallerKeyResolver::from_fixed(lead_key) };
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({
+                    "label": "lead",
+                    "message": "should fail",
+                }),
+            })
+            .await;
+        assert!(output.is_error);
+        assert!(
+            output.blocks[0].text.to_lowercase().contains("lead"),
+            "error text mentions lead: {:?}",
+            output.blocks,
+        );
+        assert_eq!(mock.deliver_calls.lock().len(), 0, "no delivery on lead-from-lead");
+    }
+
+    #[tokio::test]
+    async fn ask_label_lead_from_worker_routes_to_lead_and_registers_inflight() {
+        // Worker → lead via workers__ask should:
+        //  * route through deliver_prompt_to_lead (mock tags '<lead>')
+        //  * register the inflight ask BEFORE delivery
+        //  * not roll back since delivery succeeded
+        let mock = Arc::new(MockWorkerFacade::new());
+        let worker_key = fake_key("worker-uuid");
+        mock.callers.lock().insert(worker_key.clone(), worker_caller("forge"));
+        mock.workers
+            .lock()
+            .insert("forge".into(), vec![worker_with_lead("probe-a", "worker-uuid", "lead-uuid")]);
+        let facade: Arc<dyn WorkerFacade> = mock.clone();
+        let tool = Ask { facade, caller_key: CallerKeyResolver::from_fixed(worker_key) };
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({
+                    "label": "lead",
+                    "question": "Should I keep going on this branch?",
+                }),
+            })
+            .await;
+        assert!(!output.is_error, "worker→lead ask should succeed: {:?}", output.blocks);
+        assert_eq!(mock.deliver_calls.lock().len(), 1);
+        assert_eq!(mock.deliver_calls.lock()[0].1, "<lead>");
+        // Inflight registration survives a successful delivery — only
+        // dispatch failures roll back. One ask = one entry.
+        assert_eq!(mock.inflight.lock().len(), 1, "inflight registered + retained on success");
+    }
+
+    #[tokio::test]
+    async fn ask_label_lead_from_lead_is_error_and_rolls_back_inflight() {
+        // Lead → label='lead' must error AND roll back the inflight
+        // registration so the map doesn't leak. Same race-safety
+        // contract as the non-lead error paths.
+        let mock = Arc::new(MockWorkerFacade::new());
+        let lead_key = fake_key("lead-key");
+        mock.callers.lock().insert(lead_key.clone(), lead_caller("forge"));
+        let facade: Arc<dyn WorkerFacade> = mock.clone();
+        let tool = Ask { facade, caller_key: CallerKeyResolver::from_fixed(lead_key) };
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({
+                    "label": "lead",
+                    "question": "lead asking itself?",
+                }),
+            })
+            .await;
+        assert!(output.is_error);
+        assert_eq!(mock.deliver_calls.lock().len(), 0);
+        assert_eq!(mock.inflight.lock().len(), 0, "rollback after delivery error");
+    }
+
+    #[tokio::test]
+    async fn tell_label_lead_when_worker_entry_missing_errors() {
+        // Worker caller exists, but no WorkerEntry is preloaded — the
+        // mock can't resolve the lead and surfaces UnknownCaller. The
+        // production path hits this branch when the worker was just
+        // closed between Tool invocation and facade dispatch.
+        let mock = Arc::new(MockWorkerFacade::new());
+        let worker_key = fake_key("orphan-worker");
+        mock.callers.lock().insert(worker_key.clone(), worker_caller("forge"));
+        // workers map empty — no entry for this session_id
+        let facade: Arc<dyn WorkerFacade> = mock.clone();
+        let tool = Tell { facade, caller_key: CallerKeyResolver::from_fixed(worker_key) };
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({
+                    "label": "lead",
+                    "message": "trying to reach lead",
+                }),
+            })
+            .await;
+        assert!(output.is_error);
+        assert_eq!(mock.deliver_calls.lock().len(), 0);
+    }
+
+    // ---------------------------------------------------------------
+    // `in_reply_to` closes the inflight ask + decrements counters
+    // ---------------------------------------------------------------
+
+    /// Helper: register an inflight ask in the mock so a follow-up
+    /// `workers__tell(in_reply_to=...)` can classify as a Reply.
+    fn register_ask(
+        mock: &MockWorkerFacade,
+        correlation_id: &str,
+        caller: SessionKey,
+        caller_project: &str,
+        target_composite: &str,
+    ) -> CorrelationId {
+        let id = CorrelationId(correlation_id.to_owned());
+        mock.inflight.lock().insert(
+            id.clone(),
+            InflightAsk {
+                correlation_id: id.clone(),
+                caller,
+                caller_project: caller_project.to_owned(),
+                caller_org: String::new(),
+                target_project: target_composite.to_owned(),
+            },
+        );
+        id
+    }
+
+    #[tokio::test]
+    async fn ask_bumps_outgoing_plus_one_on_caller() {
+        // workers__ask must mirror peers__ask_agent and stamp
+        // OutgoingPlus1 on the caller so the sidebar badge reflects
+        // "I have N asks awaiting reply" regardless of channel.
+        let mock = Arc::new(MockWorkerFacade::new());
+        let caller = fake_key("worker-uuid");
+        mock.callers.lock().insert(caller.clone(), worker_caller("forge"));
+        mock.workers
+            .lock()
+            .insert("forge".into(), vec![worker_with_lead("probe-a", "worker-uuid", "lead-uuid")]);
+        let facade: Arc<dyn WorkerFacade> = mock.clone();
+        let tool = Ask { facade, caller_key: CallerKeyResolver::from_fixed(caller.clone()) };
+        let _ = tool
+            .call(ToolInput {
+                value: serde_json::json!({
+                    "label": "lead",
+                    "question": "stat-bump test",
+                }),
+            })
+            .await;
+        let bumps = mock.bumps.lock();
+        assert!(
+            bumps.iter().any(|(k, d)| *k == caller && *d == PeerStatsDelta::OutgoingPlus1),
+            "ask must bump OutgoingPlus1 on caller; got {bumps:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn tell_reply_closes_inflight_and_decrements_both_sides() {
+        // Scenario: worker-A asked the lead via workers__ask. Now
+        // the lead replies via workers__tell(in_reply_to=q-XXX,
+        // label="worker-A"). The reply must:
+        //   - close the inflight entry
+        //   - bump IncomingMinus1 on the lead (replier)
+        //   - bump OutgoingMinus1 on worker-A (original asker)
+        let mock = Arc::new(MockWorkerFacade::new());
+        let lead_key = fake_key("lead-uuid");
+        let worker_key = fake_key("worker-uuid");
+        mock.callers.lock().insert(lead_key.clone(), lead_caller("forge"));
+        // Pre-load: live workers so the tell can resolve label →
+        // session.
+        mock.workers
+            .lock()
+            .insert("forge".into(), vec![worker_with_lead("worker-A", "worker-uuid", "lead-uuid")]);
+        // Pre-register: an inflight ask from worker-A → lead.
+        let ask_id = register_ask(&mock, "q-deadbeef", worker_key.clone(), "forge", "forge::lead");
+
+        let facade: Arc<dyn WorkerFacade> = mock.clone();
+        let tool = Tell { facade, caller_key: CallerKeyResolver::from_fixed(lead_key.clone()) };
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({
+                    "label": "worker-A",
+                    "message": "lead's reply",
+                    "in_reply_to": ask_id.as_str(),
+                }),
+            })
+            .await;
+        assert!(!output.is_error, "reply tell should succeed: {:?}", output.blocks);
+        // Inflight entry removed.
+        assert!(
+            mock.inflight.lock().get(&ask_id).is_none(),
+            "inflight ask must be removed after a clean reply",
+        );
+        // Both decrements landed.
+        let bumps = mock.bumps.lock();
+        assert!(
+            bumps.iter().any(|(k, d)| *k == lead_key && *d == PeerStatsDelta::IncomingMinus1),
+            "lead must get IncomingMinus1; got {bumps:?}",
+        );
+        assert!(
+            bumps.iter().any(|(k, d)| *k == worker_key && *d == PeerStatsDelta::OutgoingMinus1),
+            "worker-A (original asker) must get OutgoingMinus1; got {bumps:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn tell_with_unknown_in_reply_to_degrades_to_message() {
+        // in_reply_to set but the correlation_id is not in the
+        // inflight map (already completed, never registered, …):
+        // degrade to Message — delivery still succeeds, but no
+        // decrement fires.
+        let mock = Arc::new(MockWorkerFacade::new());
+        let lead_key = fake_key("lead-uuid");
+        mock.callers.lock().insert(lead_key.clone(), lead_caller("forge"));
+        mock.workers
+            .lock()
+            .insert("forge".into(), vec![worker_with_lead("worker-A", "worker-uuid", "lead-uuid")]);
+        let facade: Arc<dyn WorkerFacade> = mock.clone();
+        let tool = Tell { facade, caller_key: CallerKeyResolver::from_fixed(lead_key.clone()) };
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({
+                    "label": "worker-A",
+                    "message": "stale reply",
+                    "in_reply_to": "q-00000000",
+                }),
+            })
+            .await;
+        assert!(!output.is_error, "degraded path still delivers");
+        // No Incoming/Outgoing Minus1 bumps on the degraded path.
+        let bumps = mock.bumps.lock();
+        let has_decrement = bumps.iter().any(|(_, d)| {
+            *d == PeerStatsDelta::IncomingMinus1 || *d == PeerStatsDelta::OutgoingMinus1
+        });
+        assert!(!has_decrement, "degraded reply must not decrement: {bumps:?}");
+    }
+
+    #[tokio::test]
+    async fn tell_with_malformed_in_reply_to_is_error() {
+        // Garbage `in_reply_to` value → tool returns is_error before
+        // doing any work. Mirrors peers__tell_agent's validation.
+        let mock = Arc::new(MockWorkerFacade::new());
+        let lead_key = fake_key("lead-uuid");
+        mock.callers.lock().insert(lead_key.clone(), lead_caller("forge"));
+        let facade: Arc<dyn WorkerFacade> = mock.clone();
+        let tool = Tell { facade, caller_key: CallerKeyResolver::from_fixed(lead_key) };
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({
+                    "label": "worker-A",
+                    "message": "x",
+                    "in_reply_to": "not-a-correlation-id",
+                }),
+            })
+            .await;
+        assert!(output.is_error);
+        assert!(output.blocks[0].text.contains("in_reply_to"));
     }
 }

@@ -2779,7 +2779,11 @@ mod tests {
     }
 
     #[test]
-    fn classified_turn_error_auth_required_sets_exit_error_and_quits() {
+    fn classified_turn_error_auth_required_shows_error_in_session() {
+        // AuthRequired surfaces as an in-session error banner (status
+        // = Error, input locked) rather than force-quitting the TUI.
+        // Other sessions in this forge may still be healthy and the
+        // user can refresh auth from another terminal then re-prompt.
         let mut app = make_test_app();
 
         let session_key = active_session_key(&app);
@@ -2794,8 +2798,11 @@ mod tests {
         );
 
         assert!(matches!(app.status, AppStatus::Error));
-        assert!(app.should_quit);
-        assert_eq!(app.exit_error, Some(crate::error::AppError::AuthRequired));
+        assert!(!app.should_quit, "AuthRequired must NOT force-quit the TUI");
+        assert_eq!(
+            app.exit_error, None,
+            "AuthRequired must NOT set exit_error (no exit, no error overlay)",
+        );
     }
 
     #[test]

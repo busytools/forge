@@ -4,7 +4,7 @@
 //! every spawn; the chosen `AccountKey` becomes the spawned Agent's
 //! `CLAUDE_CONFIG_DIR` override.
 //!
-//! **Policy — two-tier filter + pin priority:**
+//! **Policy — two-tier filter + global round-robin:**
 //!
 //! 1. **Usable** — usage is unknown, OR usage shows under 100% on
 //!    both windows, OR last probe failed transiently (network /
@@ -16,19 +16,22 @@
 //!    unauthorized. Known to be either at the cap or unable to
 //!    authenticate.
 //!
-//! Within each tier, `forge.toml` definition order wins. The pin is
-//! authoritative — the picker never load-balances on utilisation. A
-//! pin of `[Granite, Granite1, Personal]` means "pick Granite when
-//! it's usable; if Granite is at 100% or 429-throttled, fall through
-//! to Granite1; only reach Personal when both above are blocked."
+//! Within the usable tier, a single global round-robin counter
+//! rotates picks across every healthy account in the project's
+//! `accounts` allow-list. The counter is shared across all projects
+//! — one increment per pick — so concurrent spawns from different
+//! projects continue rotating instead of all hammering whichever
+//! account happens to be first in their respective lists. Counter
+//! is in-memory only; resets to 0 on forge restart (no persistence).
 //!
-//! If every account in the pin is Unusable, the picker still returns
-//! the first one in pin order so the spawn doesn't fail outright —
-//! the user gets visible feedback from the spawned subprocess's own
+//! If every account in the allow-list is Unusable, the picker falls
+//! back to the first entry so the spawn doesn't fail outright — the
+//! user gets visible feedback from the spawned subprocess's own
 //! 401/429 rather than from forge silently refusing.
 //!
 //! Rate-limited accounts are visible in the bottom-panel bars so the
-//! user can manually broaden the pin or wait for the window to reset.
+//! user can manually broaden the allow-list or wait for the window
+//! to reset.
 
 use std::path::PathBuf;
 
@@ -102,6 +105,12 @@ pub(crate) struct AccountState {
 pub(crate) struct AccountStateMap {
     pub ordered_keys: Vec<AccountKey>, // forge.toml definition order
     pub by_key: std::collections::HashMap<AccountKey, AccountState>,
+    /// Global round-robin cursor for `pick_for_project`. Each pick
+    /// in the usable tier reads `cursor % usable_len`, then bumps
+    /// the cursor. Shared across all projects so rotation spans the
+    /// whole spawn stream, not just per-project. In-memory only —
+    /// resets to 0 on forge restart.
+    rr_cursor: std::sync::atomic::AtomicUsize,
 }
 
 impl AccountStateMap {
@@ -110,7 +119,11 @@ impl AccountStateMap {
     /// (`pick_for_project`), which a test fixture should never exercise.
     #[cfg(any(test, feature = "testing"))]
     pub fn empty_for_test() -> Self {
-        Self { ordered_keys: Vec::new(), by_key: std::collections::HashMap::new() }
+        Self {
+            ordered_keys: Vec::new(),
+            by_key: std::collections::HashMap::new(),
+            rr_cursor: std::sync::atomic::AtomicUsize::new(0),
+        }
     }
 
     pub fn new(accounts: &[LoadedAccount]) -> Self {
@@ -131,7 +144,7 @@ impl AccountStateMap {
                 },
             );
         }
-        Self { ordered_keys, by_key }
+        Self { ordered_keys, by_key, rr_cursor: std::sync::atomic::AtomicUsize::new(0) }
     }
 
     /// Seed the in-memory map from a previously-persisted cache.
@@ -259,9 +272,8 @@ impl AccountStateMap {
         self.by_key.get(key).and_then(|s| s.last_error)
     }
 
-    /// Pick the best account within the project's pinned `allowed`
-    /// subset using the tiered rate-limit-aware policy described in
-    /// the module docs.
+    /// Pick an account within the project's `allowed` subset using
+    /// tier-gated round-robin (see module docs).
     ///
     /// Returns the picked key + its config_dir. The caller's spawn
     /// path uses the dir to seed `CLAUDE_CONFIG_DIR`.
@@ -272,49 +284,60 @@ impl AccountStateMap {
     /// out of an unreachable `panic!` form.
     pub fn pick_for_project(&self, allowed: &[String]) -> (AccountKey, PathBuf) {
         debug_assert!(!allowed.is_empty(), "pick_for_project requires a non-empty allow list");
-        // Carry (def_order_idx, key, usage, last_error) per
-        // candidate so the tier sort can see probe failures (not
-        // just usage data). Without the last_error consult, an
-        // account whose probe perpetually 429s or has expired
-        // OAuth credentials stays at tier 0 (Unknown) forever and
-        // dominates the sort over accounts with healthy probes.
-        let mut candidates: Vec<(
-            usize,
-            &AccountKey,
-            Option<&UsageSnapshot>,
-            Option<UsageFetchStatus>,
-        )> = allowed
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, name)| {
-                self.ordered_keys.iter().find(|k| k.0 == *name).map(|k| {
+        // Resolve allow-list entries to known keys, preserving
+        // allow-list order. Carry usage + last_error so tier_of can
+        // see probe failures, not just usage data — an account whose
+        // probe perpetually 429s or has expired OAuth credentials
+        // must classify as Unusable, not Usable-with-no-data.
+        let candidates: Vec<(&AccountKey, Option<&UsageSnapshot>, Option<UsageFetchStatus>)> =
+            allowed
+                .iter()
+                .filter_map(|name| self.ordered_keys.iter().find(|k| k.0 == *name))
+                .map(|k| {
                     let state = self.by_key.get(k);
-                    let usage = state.and_then(|s| s.usage.as_ref());
-                    let last_error = state.and_then(|s| s.last_error);
-                    (idx, k, usage, last_error)
+                    (k, state.and_then(|s| s.usage.as_ref()), state.and_then(|s| s.last_error))
                 })
-            })
+                .collect();
+        // Usable subset, in allow-list order. Round-robin rotates
+        // across this filtered list so saturated / expired accounts
+        // never get picked even when their slot in the cursor cycle
+        // comes up.
+        let usable: Vec<&AccountKey> = candidates
+            .iter()
+            .filter(|(_, u, e)| tier_of(*u, *e) == 0)
+            .map(|(k, _, _)| *k)
             .collect();
-        candidates.sort_by(|a, b| {
-            // Priority-order policy: first account in pin order that
-            // isn't saturated (tier 2) wins. Tier still gates so a
-            // saturated first-pin account (tier 3+) cleanly falls
-            // through to the next pin entry that's healthier. Within
-            // a tier, ties always go to forge.toml definition order
-            // — no load-balancing on utilisation. The user's pin
-            // expresses intent; the picker just respects it and
-            // skips clearly-saturated accounts.
-            let tier_a = tier_of(a.2, a.3);
-            let tier_b = tier_of(b.2, b.3);
-            tier_a.cmp(&tier_b).then_with(|| a.0.cmp(&b.0))
-        });
+        let picked = if usable.is_empty() {
+            // Every allow-list entry is Unusable. Spawn must still
+            // proceed so the user sees the spawned subprocess's
+            // 401/429 rather than forge silently refusing — fall
+            // back to the first allow-list entry that exists.
+            candidates.first().map_or_else(
+                || {
+                    tracing::error!(
+                        target: "forge_workspace::account",
+                        "pick_for_project: candidates resolved to empty; allow list = {allowed:?}",
+                    );
+                    self.ordered_keys.first().cloned().unwrap_or(AccountKey(String::new()))
+                },
+                |(k, _, _)| (*k).clone(),
+            )
+        } else {
+            // `Relaxed` is sufficient: the cursor only needs to
+            // advance monotonically; the exact interleaving with
+            // other shared-state reads is irrelevant for load
+            // balancing.
+            let idx =
+                self.rr_cursor.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % usable.len();
+            usable[idx].clone()
+        };
         // Diagnostic log — one line per pick decision listing the
         // tier and probe state of every candidate so a future
         // "why was account X picked?" triage can correlate from
         // logs without re-running with extra instrumentation.
         let decision_summary: Vec<String> = candidates
             .iter()
-            .map(|(_, k, u, e)| {
+            .map(|(k, u, e)| {
                 let tier = tier_of(*u, *e);
                 let usage_state = match u {
                     None => "no-snapshot".to_owned(),
@@ -324,20 +347,6 @@ impl AccountStateMap {
                 format!("{}=tier{}({usage_state},err={err_state})", k.0, tier)
             })
             .collect();
-        // Invariant: candidates is non-empty because allowed is
-        // non-empty and config-load validated every name exists.
-        // Fallback path is structurally unreachable but never
-        // panics — returns the first registered account.
-        let picked = candidates.first().map_or_else(
-            || {
-                tracing::error!(
-                    target: "forge_workspace::account",
-                    "pick_for_project: candidates resolved to empty; allow list = {allowed:?}",
-                );
-                self.ordered_keys.first().cloned().unwrap_or(AccountKey(String::new()))
-            },
-            |(_, k, _, _)| (*k).clone(),
-        );
         tracing::debug!(
             target: "forge_workspace::account",
             event_name = "account_picked",
@@ -352,8 +361,9 @@ impl AccountStateMap {
     }
 }
 
-/// Two-tier classification driving the sort. Lower = preferred.
-/// Within a tier, `forge.toml` pin order is the tiebreak.
+/// Two-tier classification driving the picker. Round-robin rotates
+/// among tier-0 entries; tier 1 is only used when no tier-0 candidate
+/// exists in the allow-list (the all-unusable fallback path).
 ///
 /// - **0** Usable: usage unknown (no probe yet), OR usage known
 ///   under 100% on both windows, OR last probe failed transiently
@@ -362,10 +372,6 @@ impl AccountStateMap {
 /// - **1** Unusable: usage shows 100% on at least one window, OR
 ///   `/api/oauth/usage` returned 429, OR credentials are expired /
 ///   unauthorized. Either at the cap or unable to authenticate.
-///
-/// Collapsed from a six-tier system per user request — the simpler
-/// shape matches the mental model "skip rate-limited, pick first
-/// available in pin order."
 fn tier_of(usage: Option<&UsageSnapshot>, last_error: Option<UsageFetchStatus>) -> u8 {
     let saturated = usage.is_some_and(is_rate_limited);
     let probe_blocked = matches!(
@@ -648,6 +654,109 @@ mod tests {
         map.set_usage(&AccountKey("Personal".to_owned()), snapshot(Some(50.0), Some(50.0)));
         let (picked, _) = map.pick_for_project(&["Granite".to_owned(), "Personal".to_owned()]);
         assert_eq!(picked.0, "Granite", "transient network error doesn't demote — pin order wins");
+    }
+
+    #[test]
+    fn round_robin_rotates_across_consecutive_picks() {
+        // Three healthy accounts in the allow-list, all tier 0.
+        // First pick (cursor=0) → first usable, second (cursor=1) →
+        // second usable, third (cursor=2) → third usable, fourth
+        // wraps back to first (cursor=3, 3 % 3 = 0).
+        let map = AccountStateMap::new(&[
+            make_account("Granite"),
+            make_account("Granite1"),
+            make_account("Personal"),
+        ]);
+        let allow = ["Granite".to_owned(), "Granite1".to_owned(), "Personal".to_owned()];
+        let picks: Vec<String> = (0..4).map(|_| map.pick_for_project(&allow).0.0).collect();
+        assert_eq!(
+            picks,
+            vec![
+                "Granite".to_owned(),
+                "Granite1".to_owned(),
+                "Personal".to_owned(),
+                "Granite".to_owned(),
+            ],
+            "round-robin must rotate through the usable subset and wrap",
+        );
+    }
+
+    #[test]
+    fn round_robin_skips_unusable_in_rotation() {
+        // Granite is rate-limited (tier 1); Granite1 + Personal are
+        // tier 0. Rotation must alternate between the TWO usable
+        // entries and never land on Granite even though it's first
+        // in the allow-list.
+        let mut map = AccountStateMap::new(&[
+            make_account("Granite"),
+            make_account("Granite1"),
+            make_account("Personal"),
+        ]);
+        map.set_usage(&AccountKey("Granite".to_owned()), snapshot(Some(100.0), Some(100.0)));
+        map.set_usage(&AccountKey("Granite1".to_owned()), snapshot(Some(20.0), Some(20.0)));
+        map.set_usage(&AccountKey("Personal".to_owned()), snapshot(Some(30.0), Some(30.0)));
+        let allow = ["Granite".to_owned(), "Granite1".to_owned(), "Personal".to_owned()];
+        let picks: Vec<String> = (0..4).map(|_| map.pick_for_project(&allow).0.0).collect();
+        assert_eq!(
+            picks,
+            vec![
+                "Granite1".to_owned(),
+                "Personal".to_owned(),
+                "Granite1".to_owned(),
+                "Personal".to_owned(),
+            ],
+            "round-robin must skip Granite (tier 1) and alternate between the two usable accounts",
+        );
+    }
+
+    #[test]
+    fn round_robin_cursor_is_global_across_projects() {
+        // Two projects share the SAME AccountStateMap (the cursor is
+        // a single field on the map, not per-project). Interleaved
+        // picks from project A and project B share the cursor, so
+        // each pick advances the shared cursor regardless of which
+        // project asked.
+        let map = AccountStateMap::new(&[make_account("Granite"), make_account("Granite1")]);
+        let project_a = ["Granite".to_owned(), "Granite1".to_owned()];
+        let project_b = ["Granite".to_owned(), "Granite1".to_owned()];
+        // Pick: A (cursor=0 → Granite), B (cursor=1 → Granite1),
+        //       A (cursor=2 → Granite), B (cursor=3 → Granite1).
+        let picks = vec![
+            map.pick_for_project(&project_a).0.0,
+            map.pick_for_project(&project_b).0.0,
+            map.pick_for_project(&project_a).0.0,
+            map.pick_for_project(&project_b).0.0,
+        ];
+        assert_eq!(
+            picks,
+            vec![
+                "Granite".to_owned(),
+                "Granite1".to_owned(),
+                "Granite".to_owned(),
+                "Granite1".to_owned(),
+            ],
+            "cursor must be shared across projects, not reset per project",
+        );
+    }
+
+    #[test]
+    fn round_robin_with_single_usable_account_always_picks_it() {
+        // Only Granite is usable; the other two are saturated. Every
+        // pick lands on Granite — `cursor % 1 == 0` collapses the
+        // rotation to a single account.
+        let mut map = AccountStateMap::new(&[
+            make_account("Granite"),
+            make_account("Granite1"),
+            make_account("Personal"),
+        ]);
+        map.set_usage(&AccountKey("Granite".to_owned()), snapshot(Some(10.0), Some(10.0)));
+        map.set_usage(&AccountKey("Granite1".to_owned()), snapshot(Some(100.0), Some(100.0)));
+        map.set_usage(&AccountKey("Personal".to_owned()), snapshot(Some(100.0), Some(100.0)));
+        let allow = ["Granite".to_owned(), "Granite1".to_owned(), "Personal".to_owned()];
+        for _ in 0..5 {
+            let (picked, _) = map.pick_for_project(&allow);
+            assert_eq!(picked.0, "Granite");
+        }
     }
 
     #[test]
