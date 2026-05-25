@@ -416,7 +416,7 @@ fn append_project_rows(
                 spinner_frame,
                 now,
             );
-            append_worker_tree_children(lines, area, app, project);
+            append_worker_tree_children(lines, area, app, project, spinner_frame);
             // Deadzone gap row between adjacent projects in the
             // same org — emits the `│  ` tree continuation so the
             // connector lines visually link across the breathing
@@ -573,6 +573,7 @@ fn append_worker_tree_children(
     area: Rect,
     app: &mut App,
     project: &ProjectView,
+    spinner_frame: usize,
 ) {
     let Some(workspace) = app.workspace.as_ref() else {
         return;
@@ -584,14 +585,30 @@ fn append_worker_tree_children(
 
     let worker_count = workers.len();
     let active_session_key = app.active_session_key.clone();
-    // Chrome: ` │  └─ <label> <pad> <sp> x  ` ->
-    // 1 left pad + 3 vertical indent + 3 tree connector + label + pad
-    // + 1 sep + 3 close (` x `) + 1 right gutter = 12 cells of chrome.
-    // Matches the active project row's close-button column so worker
-    // and lead `x` glyphs line up vertically.
+    // Chrome: ` │  └─ <glyph> <label> <pad> <sp> x  ` ->
+    // 1 left pad + 3 vertical indent + 3 tree connector + 1 glyph
+    // + 1 sep + label + pad + 1 sep + 3 close (` x `) + 1 right
+    // gutter = 14 cells of chrome. Matches the active project row's
+    // close-button column so worker and lead `x` glyphs line up
+    // vertically.
     let total_width = usize::from(area.width);
-    let label_budget = total_width.saturating_sub(1 + 3 + 3 + 1 + 3 + 1);
+    let label_budget = total_width.saturating_sub(1 + 3 + 3 + 1 + 1 + 1 + 3 + 1);
     for (idx, worker) in workers.iter().enumerate() {
+        // Leading breathing gap above the FIRST worker so the tree
+        // connector visually links the project lead row to probe-a.
+        // TWO `│` glyphs are needed: one at col 1 (the org
+        // continuation, mirrors what worker rows emit), and one at
+        // col 4 (the worker-subtree continuation, drops down to the
+        // first worker's `├─`). Without the col-4 `│`, probe-a's
+        // tree connector appears to start mid-air — the vertical
+        // line of its branch has no parent above it.
+        if idx == 0 {
+            lines.push(Line::from(vec![
+                Span::raw(" "),
+                Span::styled("\u{2502}  ".to_owned(), Style::default().fg(theme::DIM)),
+                Span::styled("\u{2502}".to_owned(), Style::default().fg(theme::DIM)),
+            ]));
+        }
         let row_y = area.y + line_count_as_u16(lines);
         let is_last = idx + 1 == worker_count;
         let tree_glyph = if is_last { "\u{2514}\u{2500} " } else { "\u{251C}\u{2500} " };
@@ -610,16 +627,31 @@ fn append_worker_tree_children(
             }
         };
 
+        // Lifecycle glyph in front of the label - matches the project
+        // row's leading glyph column. Prefer the bucket's actual
+        // lifecycle (Idle ●, Running spinner, etc.) when present in
+        // `app.sessions`; fall back to a Spawning spinner when the
+        // worker's Connected hasn't landed yet so the column never
+        // collapses to a blank cell.
+        let lifecycle = app
+            .sessions
+            .get(&worker.session_key)
+            .map_or(SessionLifecycleState::Spawning, |s| s.lifecycle_state);
+        let (glyph, glyph_color) = glyph_for_lifecycle(lifecycle, is_focused, spinner_frame);
+
         // Left-indent (1) + `│  ` (3) so the worker's tree connector
         // hangs off the active project's column rather than the org
-        // column. Then connector, label, pad, close button, gutter.
-        // Close affordance: ` x ` 3-cell button on USER_MSG_BG slate.
-        // Same shape and column as the active project row's close
-        // button so the worker rows visually align with the parent.
+        // column. Then connector, glyph, label, pad, close button,
+        // gutter. Close affordance: ` x ` 3-cell button on USER_MSG_BG
+        // slate. Same shape and column as the active project row's
+        // close button so the worker rows visually align with the
+        // parent.
         let spans: Vec<Span<'static>> = vec![
             Span::raw(" "),
             Span::styled("\u{2502}  ".to_owned(), Style::default().fg(theme::DIM)),
             Span::styled(tree_glyph.to_owned(), Style::default().fg(theme::DIM)),
+            Span::styled(glyph, Style::default().fg(glyph_color)),
+            Span::raw(" "),
             Span::styled(label, label_style),
             Span::raw(" ".repeat(label_pad)),
             Span::raw(" "),
@@ -657,6 +689,21 @@ fn append_worker_tree_children(
             x_start: close_x_start,
             x_end: close_x_end,
         });
+
+        // Inter-row breathing gap: two `│` glyphs to keep both the
+        // org-continuation (col 1) and the worker-subtree
+        // continuation (col 4) painting through the blank band.
+        // Skipped after the last worker — the project-to-project
+        // deadzone (or the org break) takes its place; from there on
+        // only the org `│` matters because the worker subtree has
+        // ended.
+        if !is_last {
+            lines.push(Line::from(vec![
+                Span::raw(" "),
+                Span::styled("\u{2502}  ".to_owned(), Style::default().fg(theme::DIM)),
+                Span::styled("\u{2502}".to_owned(), Style::default().fg(theme::DIM)),
+            ]));
+        }
     }
 }
 
@@ -1675,7 +1722,7 @@ mod tests {
             ProjectView::new_for_test(project_key.clone(), "forge", "~/Projects/forge", Vec::new());
         let area = Rect { x: 0, y: 0, width: 32, height: 20 };
         let mut lines: Vec<Line<'static>> = Vec::new();
-        append_worker_tree_children(&mut lines, area, &mut app, &project);
+        append_worker_tree_children(&mut lines, area, &mut app, &project, 0);
 
         assert!(lines.is_empty(), "zero workers must render zero rows");
         let workers_targets: Vec<_> = app
@@ -1727,8 +1774,10 @@ mod tests {
             );
             let area = Rect { x: 0, y: 0, width: 32, height: 20 };
             let mut lines: Vec<Line<'static>> = Vec::new();
-            append_worker_tree_children(&mut lines, area, &mut app, &project);
-            assert_eq!(lines.len(), 1, "baseline: one worker = one row");
+            append_worker_tree_children(&mut lines, area, &mut app, &project, 0);
+            // One worker → 2 lines: leading spacer (`│  ` bridge from
+            // project lead) + worker row.
+            assert_eq!(lines.len(), 2, "baseline: one worker = leading spacer + one row");
         }
 
         // Drop the worker from the source of truth, then fire the
@@ -1750,7 +1799,7 @@ mod tests {
             ProjectView::new_for_test(project_key, "forge", "~/Projects/forge", Vec::new());
         let area = Rect { x: 0, y: 0, width: 32, height: 20 };
         let mut lines: Vec<Line<'static>> = Vec::new();
-        append_worker_tree_children(&mut lines, area, &mut app, &project);
+        append_worker_tree_children(&mut lines, area, &mut app, &project, 0);
         assert!(lines.is_empty(), "after Removed, render shows no worker rows");
     }
 
@@ -1794,18 +1843,40 @@ mod tests {
             ProjectView::new_for_test(project_key.clone(), "forge", "~/Projects/forge", Vec::new());
         let area = Rect { x: 0, y: 0, width: 32, height: 20 };
         let mut lines: Vec<Line<'static>> = Vec::new();
-        append_worker_tree_children(&mut lines, area, &mut app, &project);
+        append_worker_tree_children(&mut lines, area, &mut app, &project, 0);
 
-        assert_eq!(lines.len(), 2, "two worker rows");
-        let row0: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
-        let row1: String = lines[1].spans.iter().map(|s| s.content.as_ref()).collect();
-        // First row → not-last → `├─`. Second row → last → `└─`.
-        assert!(row0.contains("\u{251C}\u{2500}"), "first row has ├─: {row0:?}");
-        assert!(row1.contains("\u{2514}\u{2500}"), "last row has └─: {row1:?}");
-        assert!(row0.contains("reviewer"), "first row has reviewer label: {row0:?}");
-        assert!(row1.contains("doc-writer"), "last row has doc-writer label: {row1:?}");
-        assert!(row0.contains(" x "), "first row has close button glyph: {row0:?}");
-        assert!(row1.contains(" x "), "last row has close button glyph: {row1:?}");
+        // Two workers → 4 lines: leading spacer (bridge from project
+        // lead) + worker + inter-row spacer + worker.
+        assert_eq!(lines.len(), 4, "leading spacer + two worker rows + one inter-row spacer");
+        let leading: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        let row0: String = lines[1].spans.iter().map(|s| s.content.as_ref()).collect();
+        let spacer: String = lines[2].spans.iter().map(|s| s.content.as_ref()).collect();
+        let row1: String = lines[3].spans.iter().map(|s| s.content.as_ref()).collect();
+        // First worker → not-last → `├─`. Second worker → last → `└─`.
+        assert!(row0.contains("\u{251C}\u{2500}"), "first worker row has ├─: {row0:?}");
+        assert!(row1.contains("\u{2514}\u{2500}"), "last worker row has └─: {row1:?}");
+        assert!(row0.contains("reviewer"), "first worker row has reviewer label: {row0:?}");
+        assert!(row1.contains("doc-writer"), "last worker row has doc-writer label: {row1:?}");
+        assert!(row0.contains(" x "), "first worker row has close button glyph: {row0:?}");
+        assert!(row1.contains(" x "), "last worker row has close button glyph: {row1:?}");
+        // Both leading + inter-row spacers carry TWO `│` glyphs so
+        // the tree line bridges the gap at both the org column
+        // (col 1) and the worker-subtree column (col 4). No `x`
+        // button, no label.
+        assert_eq!(
+            leading.matches('\u{2502}').count(),
+            2,
+            "leading spacer must carry two │ (org + worker-subtree): {leading:?}",
+        );
+        assert_eq!(
+            spacer.matches('\u{2502}').count(),
+            2,
+            "inter-row spacer must carry two │ (org + worker-subtree): {spacer:?}",
+        );
+        assert!(!leading.contains(" x "), "leading spacer has no close button: {leading:?}");
+        assert!(!spacer.contains(" x "), "inter-row spacer has no close button: {spacer:?}");
+        assert!(!leading.contains("reviewer"), "leading spacer has no label: {leading:?}");
+        assert!(!spacer.contains("reviewer"), "inter-row spacer has no label: {spacer:?}");
 
         // One CloseWorker + one WorkerRow per row → 4 hit targets.
         let workers_targets: Vec<_> = app

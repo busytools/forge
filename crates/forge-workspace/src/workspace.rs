@@ -75,8 +75,12 @@ pub struct Workspace {
     /// across `await` points.
     catalog: Mutex<HashMap<ProjectKey, Vec<SDKSessionInfo>>>,
     /// Live Agents keyed by session id. `parking_lot::Mutex` so the
-    /// public methods can take `&self`.
-    pool: Mutex<HashMap<SessionKey, PooledAgent>>,
+    /// public methods can take `&self`. `pub(crate)` so sibling
+    /// modules (`spawn::handle_deliver_worker_prompt_to_lead`,
+    /// `mcp::workers::facade::ProdWorkerFacade`) can probe pool
+    /// membership for lead-delivery gating without an extra method
+    /// wrapper.
+    pub(crate) pool: Mutex<HashMap<SessionKey, PooledAgent>>,
     /// Account picker state. Updated on every spawn; refreshed by
     /// the in-memory usage poller.
     accounts: Mutex<AccountStateMap>,
@@ -90,7 +94,7 @@ pub struct Workspace {
     update_rx_slot: Mutex<Option<mpsc::UnboundedReceiver<SessionUpdate>>>,
     /// Per-session [`Command`] sender map. Populated when
     /// [`Self::get_agent_handle`] spawns the first `SessionTask` for a
-    /// key; cleared on [`Self::release_session`] and [`Self::shutdown`].
+    /// key; cleared on [`Self::release_session_with_cascade`] and [`Self::shutdown`].
     command_senders: Mutex<HashMap<SessionKey, mpsc::UnboundedSender<Command>>>,
     /// Per-project list of live worker sessions. In-memory only -
     /// wiped on forge restart by design (workers are ephemeral at the
@@ -489,19 +493,28 @@ impl Workspace {
             }
         };
 
-        // Build the per-session `forge` MCP server. ONE server name,
-        // both peer-coordination (`peers__*`) and worker-coordination
-        // (`workers__*`) tool groups surfaced together. The CLI
-        // rejects duplicate-name MCP servers, so peers and workers
-        // must share the `forge` namespace. CallerKeyResolver reads
-        // `domain.key` through the shared Arc - when SessionTask
-        // migrates the key from synthetic to real on Connected, the
-        // resolver tracks for both tool groups.
+        // Build the per-session `forge` MCP server. ONE server name;
+        // tool surface depends on whether this spawn is for a project
+        // lead or a worker. Leads see peers + workers (cross-project
+        // coordination is a lead-only role); workers see workers
+        // only. See `crate::mcp::SessionKind` for the rationale.
+        //
+        // The synth-key prefix is the signal: `__spawn_worker_*` is
+        // stamped by `handle_spawn_worker` for every worker spawn;
+        // peer-spawned project leads use `__spawn_<name>__` (no
+        // `worker` segment) and direct lead spawns have no
+        // `spawn_key`. So absence of the worker prefix means Lead.
+        let session_kind =
+            if spawn_key.as_ref().is_some_and(|k| k.as_str().starts_with("__spawn_worker_")) {
+                crate::mcp::SessionKind::Worker
+            } else {
+                crate::mcp::SessionKind::Lead
+            };
         let forge_server = {
             let workspace_facade = crate::mcp::peers::facade::ProdWorkspaceFacade::from_arc(self);
             let worker_facade = crate::mcp::workers::facade::ProdWorkerFacade::from_arc(self);
             let resolver = crate::mcp::peers::facade::CallerKeyResolver::from_domain(&domain_arc);
-            crate::mcp::build_forge_server(workspace_facade, worker_facade, resolver)
+            crate::mcp::build_forge_server(workspace_facade, worker_facade, resolver, session_kind)
         };
 
         let handle = forge_agent::Agent::spawn(
@@ -1286,6 +1299,20 @@ impl Workspace {
                         wrapped,
                     );
                 }
+                Command::DeliverWorkerPromptToLead { caller, target_lead_key, wrapped } => {
+                    let span = tracing::info_span!(
+                        "deliver_worker_prompt_to_lead",
+                        target = %target_lead_key.as_str(),
+                        correlation_id = %wrapped.correlation_id,
+                    );
+                    let _enter = span.enter();
+                    spawn::handle_deliver_worker_prompt_to_lead(
+                        self,
+                        caller,
+                        &target_lead_key,
+                        wrapped,
+                    );
+                }
                 other => {
                     tracing::warn!(
                         target: "forge_workspace",
@@ -1370,17 +1397,16 @@ impl Workspace {
     /// Release a single session's pool entry. Drops the workspace's
     /// `Arc<AgentHandle>` for that key so the underlying `claude`
     /// subprocess exits once the consumer (forge-tui's bucket) also
-    /// drops its reference. No-op when the key isn't in the pool.
-    /// Called from forge-tui's per-row "close" action.
+    /// **Cascade-aware** lead release. Use this when closing a project's
+    /// lead session from the TUI: the lead-row `×` click, the launchpad's
+    /// per-row close on a failed lead bucket, etc.
     ///
-    /// **Lead cascade**: when `session_key` is a project's lead - it
-    /// appears in the project's catalog AND is NOT in
-    /// `live_workers[project]` - every live worker under that project
-    /// is released first. Workers' JSONLs persist on disk; only the
-    /// in-memory live state + the running claude subprocesses are
-    /// torn down. The split into a non-cascading `release_session_inner`
-    /// keeps the recursion bounded - the per-worker release calls
-    /// into the inner method directly.
+    /// When `session_key` is a project's lead - it appears in the
+    /// project's catalog AND is NOT in `live_workers[project]` - every
+    /// live worker under that project is released first via the
+    /// non-cascading `release_session` primitive. Workers' JSONLs
+    /// persist on disk; only the in-memory live state + the running
+    /// claude subprocesses are torn down.
     ///
     /// The "in-catalog AND not-in-live_workers" rule is the
     /// discriminator (rather than `sessions.first()`): the catalog
@@ -1388,7 +1414,7 @@ impl Workspace {
     /// `sessions[0]` is not a reliable lead marker after a worker
     /// reaches Running. `live_workers` is the authoritative
     /// "this session is a child agent" registry.
-    pub fn release_session(&self, session_key: &SessionKey) {
+    pub fn release_session_with_cascade(&self, session_key: &SessionKey) {
         let cascade_project = self.list_projects().into_iter().find(|view| {
             let in_catalog = view.sessions.iter().any(|s| s.session == *session_key);
             let is_worker =
@@ -1404,17 +1430,30 @@ impl Workspace {
                     action: crate::protocol::WorkerStatusAction::Removed,
                     status,
                 });
-                self.release_session_inner(&entry.session_key);
+                self.release_session(&entry.session_key);
             }
         }
-        self.release_session_inner(session_key);
+        self.release_session(session_key);
     }
 
-    /// Non-cascading session release. Removes the pool entry, command
-    /// sender, and domain handle for `session_key`. Split out so the
-    /// lead-cascade path in `release_session` can release worker
-    /// sessions without re-triggering the cascade check.
-    fn release_session_inner(&self, session_key: &SessionKey) {
+    /// Non-cascading single-session release - the primitive. Drops
+    /// the pool entry, command sender, and domain handle for
+    /// `session_key`. No side effects beyond that single session.
+    ///
+    /// Use this for ANY session close where cascade semantics are
+    /// undesirable or undefined:
+    /// - `handle_close_worker` (per-row worker X click) - cascade
+    ///   must NOT fire because the worker was already removed from
+    ///   `live_workers` by `remove_latest_worker`; the cascade-check
+    ///   in `release_session_with_cascade` would misidentify the
+    ///   orphaned session_key as a lead and drain every OTHER worker.
+    /// - The lead-cascade loop inside `release_session_with_cascade`
+    ///   itself, when releasing each worker.
+    /// - Synthetic spawn-key cleanup (launchpad retry path).
+    ///
+    /// Use `release_session_with_cascade` instead when the caller is
+    /// the lead-row close gesture.
+    pub(crate) fn release_session(&self, session_key: &SessionKey) {
         let removed = self.pool.lock().remove(session_key);
         drop(removed);
         let _ = self.command_senders.lock().remove(session_key);
@@ -2663,12 +2702,13 @@ config_dir = "~/.claude-gateway"
     }
 
     #[tokio::test]
-    async fn cold_cache_spawns_pick_first_in_allow_list_deterministically() {
-        // With no usage data for any account, the picker sorts
-        // unknown-first by `accounts = [...]` enumerate index. Both
-        // spawns land on the same account (Stargate, first in list).
-        // No LRU rotation — the usage-balanced policy lets data
-        // drive the choice once it's available.
+    async fn cold_cache_spawns_rotate_across_allow_list() {
+        // Two healthy accounts in the allow-list, two spawns. Round-
+        // robin cursor advances per pick, so the first spawn lands
+        // on the first allow-list entry (Stargate) and the second
+        // rotates to Gateway. Cursor is shared across the workspace
+        // so even cold-cache spawns spread load rather than always
+        // hammering the first account.
         let dir = make_workspace_dir_with_two_accounts();
         let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
 
@@ -2681,11 +2721,14 @@ config_dir = "~/.claude-gateway"
             .get_agent_handle(SessionTarget::Session(other), SessionLaunchSettings::default())
             .expect("second");
 
-        let bound = workspace.pool.lock().values().map(|p| p.account.0.clone()).collect::<Vec<_>>();
-        assert_eq!(bound.len(), 2);
-        // Both spawns picked Stargate (first in accounts list, no
-        // usage data to differentiate).
-        assert!(bound.iter().all(|name| name == "Stargate"));
+        let mut bound =
+            workspace.pool.lock().values().map(|p| p.account.0.clone()).collect::<Vec<_>>();
+        bound.sort();
+        assert_eq!(
+            bound,
+            vec!["Gateway".to_owned(), "Stargate".to_owned()],
+            "two spawns must split across the two healthy accounts (round-robin)",
+        );
     }
 
     #[tokio::test]
@@ -3276,8 +3319,8 @@ config_dir = "~/.claude-stargate"
         dir
     }
 
-    /// `release_session` cascades worker termination when the released
-    /// session is a project's lead. Workers' JSONLs persist on disk
+    /// `release_session_with_cascade` cascades worker termination when
+    /// the released session is a project's lead. Workers' JSONLs persist on disk
     /// (we don't delete them); only the in-memory live_workers
     /// entries + the running session subprocesses are torn down.
     #[tokio::test]
@@ -3304,7 +3347,7 @@ config_dir = "~/.claude-stargate"
 
         // Release the lead. Cascade fires before the lead release
         // itself; workers' live_workers entries are gone afterward.
-        workspace.release_session(&lead_key);
+        workspace.release_session_with_cascade(&lead_key);
         assert!(
             workspace.list_live_workers(&project_key).is_empty(),
             "workers must be cascade-closed"
@@ -3323,8 +3366,8 @@ config_dir = "~/.claude-stargate"
         assert_eq!(removed_count, 2, "two Removed events fire for the two workers");
     }
 
-    /// `release_session` on a non-lead (or unknown) session is a plain
-    /// release with NO cascade. Confirms the cascade is gated on
+    /// `release_session_with_cascade` on a non-lead (or unknown) session
+    /// is a plain release with NO cascade. Confirms the cascade is gated on
     /// "session is a lead of some project."
     #[tokio::test]
     async fn release_session_on_non_lead_does_not_cascade() {
@@ -3335,7 +3378,7 @@ config_dir = "~/.claude-stargate"
         workspace.insert_live_worker(&project_key, fake_entry("r1", "worker-1"));
 
         let unknown = SessionKey::from_session_id("unknown-session");
-        workspace.release_session(&unknown);
+        workspace.release_session_with_cascade(&unknown);
         assert_eq!(
             workspace.list_live_workers(&project_key).len(),
             1,
@@ -3380,7 +3423,7 @@ config_dir = "~/.claude-stargate"
         // Release the LEAD. Pre-fix this fell through to a no-op
         // because the cascade check (`sessions.first() == lead_key`)
         // failed - the head was the worker.
-        workspace.release_session(&lead_key);
+        workspace.release_session_with_cascade(&lead_key);
 
         assert!(
             workspace.list_live_workers(&project_key).is_empty(),

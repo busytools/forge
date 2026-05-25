@@ -741,7 +741,8 @@ pub(crate) fn execute_command_via_handle(
         | Command::DeliverPeerPrompt { .. }
         | Command::SpawnWorker { .. }
         | Command::CloseWorker { .. }
-        | Command::DeliverWorkerPrompt { .. }) => {
+        | Command::DeliverWorkerPrompt { .. }
+        | Command::DeliverWorkerPromptToLead { .. }) => {
             tracing::warn!(
                 target: "forge_workspace::session_task",
                 key = %key.as_str(),

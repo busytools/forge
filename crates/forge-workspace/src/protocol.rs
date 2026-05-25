@@ -220,6 +220,20 @@ pub enum Command {
         target_label: String,
         wrapped: WrappedPrompt,
     },
+    /// Deliver a wrapped peer-style prompt from a worker back to its
+    /// lead. Dispatched by the `workers__tell` / `workers__ask` Tool
+    /// impls when the caller addresses `label="lead"`. The target
+    /// `SessionKey` is resolved at Tool dispatch time from the
+    /// worker's `spawned_by_session_id` so the handler can deliver
+    /// directly without re-doing the lookup against a possibly-mutated
+    /// `live_workers` map. Wire shape is identical to
+    /// `DeliverWorkerPrompt` (same PeerEnvelopeAppended echo + same
+    /// `Command::Prompt` dispatch into the target session).
+    DeliverWorkerPromptToLead {
+        caller: SessionKey,
+        target_lead_key: SessionKey,
+        wrapped: WrappedPrompt,
+    },
 }
 
 impl Command {
@@ -247,7 +261,8 @@ impl Command {
             | Self::DeliverPeerPrompt { .. }
             | Self::SpawnWorker { .. }
             | Self::CloseWorker { .. }
-            | Self::DeliverWorkerPrompt { .. } => None,
+            | Self::DeliverWorkerPrompt { .. }
+            | Self::DeliverWorkerPromptToLead { .. } => None,
         }
     }
 }
@@ -335,6 +350,11 @@ impl std::fmt::Debug for Command {
                 .field("caller", caller)
                 .field("project_key", project_key)
                 .field("target_label", target_label)
+                .finish_non_exhaustive(),
+            Self::DeliverWorkerPromptToLead { caller, target_lead_key, .. } => f
+                .debug_struct("DeliverWorkerPromptToLead")
+                .field("caller", caller)
+                .field("target_lead_key", target_lead_key)
                 .finish_non_exhaustive(),
         }
     }

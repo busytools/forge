@@ -118,12 +118,23 @@ pub(crate) fn handle_deliver_peer_prompt(
     // Find the target project's running lead session (if any). The
     // `list_projects()` snapshot has `sessions: Vec<SessionView>` per
     // project; `is_open == true` on a session means an Agent is in
-    // the workspace pool — that's "running."
-    let target_running_key = workspace
-        .list_projects()
-        .into_iter()
-        .find(|v| v.name == target_project)
-        .and_then(|v| v.sessions.into_iter().find(|s| s.is_open).map(|s| s.session));
+    // the workspace pool — that's "running." MUST skip worker
+    // sessions: once a worker connects it lands in `view.sessions`
+    // too, and a worker can sit at position 0 / be the first
+    // is_open session. Returning a worker key here dispatches the
+    // peer envelope to the worker's chat instead of the lead's,
+    // which is wrong (peers address project leads, not workers).
+    // `live_workers` is the authoritative worker registry; subtract
+    // its session keys from the candidate set.
+    let target_running_key =
+        workspace.list_projects().into_iter().find(|v| v.name == target_project).and_then(|v| {
+            let live_worker_keys: std::collections::HashSet<_> =
+                workspace.list_live_workers(&v.key).into_iter().map(|w| w.session_key).collect();
+            v.sessions
+                .into_iter()
+                .find(|s| s.is_open && !live_worker_keys.contains(&s.session))
+                .map(|s| s.session)
+        });
 
     if let Some(target_key) = target_running_key {
         // Stamp current_inbound_hop on target's DomainSession before
@@ -518,6 +529,14 @@ pub(crate) fn handle_close_worker(
         return;
     };
     let status = entry.to_status();
+    // MUST call the non-cascading `release_session` primitive (NOT
+    // `release_session_with_cascade`). By the time we get here the
+    // worker is already gone from `live_workers` (via
+    // `remove_latest_worker` above), so the cascading variant would
+    // treat the orphaned session_key as a project-lead under its
+    // cascade-detection rule (`in_catalog && !is_worker`) and drain
+    // every OTHER worker in the project too. Per-row close MUST only
+    // affect the single worker being closed.
     workspace.release_session(&entry.session_key);
     workspace.expire_inflight_for_closed_worker(project_key, label);
     let _ = workspace.update_tx().send(SessionUpdate::WorkerStatusChanged {
@@ -617,6 +636,62 @@ pub(crate) fn handle_deliver_worker_prompt(
             label = %target_label,
             error = ?err,
             "DeliverWorkerPrompt dispatch to worker failed"
+        );
+    }
+}
+
+/// Handle a `Command::DeliverWorkerPromptToLead`: route a wrapped
+/// peer-style prompt from a worker back to its lead, addressed by
+/// the lead's `SessionKey` (resolved at Tool dispatch from the
+/// worker's `spawned_by_session_id`). Same wire shape as
+/// `DeliverWorkerPrompt` — PeerEnvelopeAppended echo + Command::Prompt
+/// dispatch — so the lead's TUI renders the message identically to
+/// a sibling-worker delivery.
+///
+/// Drops with a warn log when the target lead session is no longer
+/// in the pool (lead closed since the worker captured its
+/// `spawned_by_session_id`). The lead can't be auto-respawned from
+/// this path: that's a project-level decision the worker isn't
+/// authorized to make.
+pub(crate) fn handle_deliver_worker_prompt_to_lead(
+    workspace: &Arc<Workspace>,
+    _caller: SessionKey,
+    target_lead_key: &SessionKey,
+    wrapped: WrappedPrompt,
+) {
+    // Defensive: confirm the lead session is still in the pool. If it
+    // closed since the worker captured its `spawned_by_session_id`,
+    // drop the prompt with a warn — same shape as `DeliverWorkerPrompt`
+    // does for a worker that vanished between dispatch and handler.
+    if !workspace.pool.lock().contains_key(target_lead_key) {
+        tracing::warn!(
+            target: "forge_workspace::spawn",
+            target = %target_lead_key.as_str(),
+            "deliver_worker_prompt_to_lead: lead session not in pool (closed since dispatch)"
+        );
+        return;
+    }
+
+    stamp_inbound_hop(workspace, target_lead_key, wrapped.hop);
+
+    if matches!(wrapped.kind, crate::mcp::peers::types::WrappedKind::Question) {
+        let facade = crate::mcp::peers::facade::ProdWorkspaceFacade::from_arc(workspace);
+        facade.bump_inflight_stats(target_lead_key, PeerStatsDelta::IncomingPlus1);
+    }
+
+    let text = wrapped.to_prose();
+    push_peer_user_turn_into_chat(workspace, target_lead_key, &wrapped);
+    drop(wrapped);
+    if let Err(err) = workspace.dispatch(Command::Prompt {
+        key: target_lead_key.clone(),
+        text,
+        attachments: Vec::new(),
+    }) {
+        tracing::warn!(
+            target: "forge_workspace::spawn",
+            target = %target_lead_key.as_str(),
+            error = ?err,
+            "DeliverWorkerPromptToLead dispatch to lead failed"
         );
     }
 }
@@ -889,6 +964,50 @@ config_dir = "~/.claude-stargate"
             }
         }
         assert!(saw_removed, "Removed event was emitted");
+    }
+
+    /// Regression: closing ONE worker must NOT cascade to the others.
+    /// Before the fix, `handle_close_worker` called the cascading
+    /// `release_session` AFTER `remove_latest_worker`. The cascade-
+    /// detection (`in_catalog && !is_worker`) saw the orphaned
+    /// session_key as a lead (because it was already gone from
+    /// `live_workers` by step 1) and drained every OTHER worker.
+    /// The fix calls `release_session_inner` directly.
+    #[tokio::test]
+    async fn close_one_worker_leaves_other_workers_intact() {
+        let (workspace, mut rx) = Workspace::testing_stub();
+        let project = ProjectKey::new("forge");
+        workspace.insert_live_worker(&project, fake_worker_entry("worker-a", "session-a"));
+        workspace.insert_live_worker(&project, fake_worker_entry("worker-b", "session-b"));
+        workspace.insert_live_worker(&project, fake_worker_entry("worker-c", "session-c"));
+        assert_eq!(workspace.list_live_workers(&project).len(), 3);
+
+        handle_close_worker(&workspace, &project, "worker-b");
+
+        let remaining = workspace.list_live_workers(&project);
+        assert_eq!(
+            remaining.len(),
+            2,
+            "only the targeted worker should be removed; got {remaining:?}"
+        );
+        let labels: Vec<&str> = remaining.iter().map(|w| w.label.as_str()).collect();
+        assert!(labels.contains(&"worker-a"), "worker-a must survive");
+        assert!(labels.contains(&"worker-c"), "worker-c must survive");
+
+        // Exactly one Removed event for worker-b.
+        let mut removed_labels: Vec<String> = Vec::new();
+        while let Ok(update) = rx.try_recv() {
+            if let SessionUpdate::WorkerStatusChanged { action, status, .. } = update
+                && action == WorkerStatusAction::Removed
+            {
+                removed_labels.push(status.label);
+            }
+        }
+        assert_eq!(
+            removed_labels,
+            vec!["worker-b".to_owned()],
+            "exactly one Removed event for the closed worker; got {removed_labels:?}"
+        );
     }
 
     /// `handle_close_worker` for an unknown label logs but does not
