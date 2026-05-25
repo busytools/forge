@@ -440,6 +440,7 @@ pub(crate) fn handle_spawn_worker(
         spawned_at: std::time::SystemTime::now(),
         spawned_by_session_id,
         needs_tag: true,
+        is_git_repo_at_spawn: false,
     };
     workspace.insert_live_worker(&project_key, entry.clone());
     try_emit(
@@ -940,6 +941,7 @@ config_dir = "~/.claude-subspace"
             spawned_at: std::time::SystemTime::UNIX_EPOCH,
             spawned_by_session_id: "lead-uuid".into(),
             needs_tag: false,
+            is_git_repo_at_spawn: false,
         }
     }
 
@@ -1143,6 +1145,7 @@ config_dir = "~/.claude-subspace"
                 spawned_at: std::time::SystemTime::UNIX_EPOCH,
                 spawned_by_session_id: "lead".into(),
                 needs_tag: true,
+                is_git_repo_at_spawn: false,
             },
         );
 

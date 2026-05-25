@@ -3198,6 +3198,7 @@ mod workers_state_tests {
             spawned_at: SystemTime::UNIX_EPOCH,
             spawned_by_session_id: "lead-uuid".into(),
             needs_tag: false,
+            is_git_repo_at_spawn: false,
         }
     }
 
@@ -3293,6 +3294,7 @@ mod release_session_cascade_tests {
             spawned_at: SystemTime::UNIX_EPOCH,
             spawned_by_session_id: "lead-uuid".into(),
             needs_tag: false,
+            is_git_repo_at_spawn: false,
         }
     }
 
@@ -3573,6 +3575,7 @@ mod tag_retry_tests {
             spawned_at: std::time::SystemTime::UNIX_EPOCH,
             spawned_by_session_id: "lead".into(),
             needs_tag,
+            is_git_repo_at_spawn: false,
         }
     }
 

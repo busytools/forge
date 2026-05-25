@@ -2618,6 +2618,7 @@ mod tests {
                 spawned_at: std::time::SystemTime::UNIX_EPOCH,
                 spawned_by_session_id: lead_key.as_str().to_owned(),
                 needs_tag: false,
+                is_git_repo_at_spawn: false,
             },
         );
 

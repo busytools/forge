@@ -1761,6 +1761,7 @@ mod tests {
             spawned_at: SystemTime::UNIX_EPOCH,
             spawned_by_session_id: "lead".into(),
             needs_tag: false,
+            is_git_repo_at_spawn: false,
         };
         workspace.insert_live_worker(&project_key, entry.clone());
 
@@ -1824,6 +1825,7 @@ mod tests {
                 spawned_at: SystemTime::UNIX_EPOCH,
                 spawned_by_session_id: "lead".into(),
                 needs_tag: false,
+                is_git_repo_at_spawn: false,
             },
         );
         workspace.insert_live_worker(
@@ -1836,6 +1838,7 @@ mod tests {
                 spawned_at: SystemTime::UNIX_EPOCH,
                 spawned_by_session_id: "lead".into(),
                 needs_tag: false,
+                is_git_repo_at_spawn: false,
             },
         );
 
