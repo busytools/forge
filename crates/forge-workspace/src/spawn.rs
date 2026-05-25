@@ -25,18 +25,27 @@ use crate::workspace::Workspace;
 use crate::{SessionKey, SessionTarget};
 
 /// Build the list of `(flag, value)` extra CLI args specific to a
-/// worker spawn. Currently: when the project is a git repo, append
+/// worker spawn. When the project is a git repo, append
 /// `("worktree", Some(label))` so the spawned `claude` subprocess
 /// creates a worktree at `<repo>/.claude/worktrees/<label>/` and
-/// runs the session inside it. Empty when the project isn't a git
-/// repo - the worker spawns into the project's cwd directly.
+/// runs the session inside it. In all cases, append a
+/// `--disallowedTools EnterWorktree,ExitWorktree` entry: workers are
+/// pinned to their spawn-time location (whether a worktree or the
+/// project cwd) and must not be able to call claude's built-in
+/// worktree-hop tools to escape. Comma-separated value form is
+/// empirically accepted by the CLI's variadic `<tools...>` parser.
 ///
 /// The `is_git_repo` boolean is passed in (already-computed by the
 /// caller) so the git-repo probe runs at most once per spawn even
 /// when the same answer is needed for both the `WorkerEntry.is_git_repo_at_spawn`
 /// field and this argument list.
 fn build_worker_extra_args(is_git_repo: bool, label: &str) -> Vec<(String, Option<String>)> {
-    if is_git_repo { vec![("worktree".to_owned(), Some(label.to_owned()))] } else { Vec::new() }
+    let mut args = Vec::new();
+    if is_git_repo {
+        args.push(("worktree".to_owned(), Some(label.to_owned())));
+    }
+    args.push(("disallowedTools".to_owned(), Some("EnterWorktree,ExitWorktree".to_owned())));
+    args
 }
 
 /// Emit a `SessionUpdate` and log at debug when the receiver is gone
@@ -1262,6 +1271,40 @@ config_dir = "~/.claude-subspace"
             !args.iter().any(|(flag, _)| flag == "worktree"),
             "expected no worktree entry in {args:?}"
         );
+    }
+
+    /// Workers are pinned to their worktree (when they have one) and
+    /// must not be able to call claude's built-in `EnterWorktree` /
+    /// `ExitWorktree` tools to hop elsewhere. `build_worker_extra_args`
+    /// emits a `--disallowedTools` flag carrying both tool names as a
+    /// single comma-separated value (empirically confirmed to be
+    /// accepted by the claude CLI's variadic `<tools...>` parser).
+    /// This test covers the git-repo case: the `worktree` flag is
+    /// still present, and the `disallowedTools` flag is added on top.
+    #[test]
+    fn worker_in_git_repo_blocks_enter_and_exit_worktree() {
+        let is_git = true;
+        let args = build_worker_extra_args(is_git, "reviewer");
+        let blocked = args.iter().find(|(flag, _)| flag == "disallowedTools");
+        let (_, value) = blocked.expect("expected --disallowedTools entry");
+        let value = value.as_deref().expect("expected value for --disallowedTools");
+        assert!(value.contains("EnterWorktree"), "EnterWorktree must be blocked, got {value:?}");
+        assert!(value.contains("ExitWorktree"), "ExitWorktree must be blocked, got {value:?}");
+    }
+
+    /// The non-git-repo case still blocks the worktree-hop tools even
+    /// though the worker isn't running inside a worktree - the tool
+    /// surface is uniform across project shapes so workers can't be
+    /// nudged into surprising behaviour by the project layout.
+    #[test]
+    fn worker_in_non_git_repo_also_blocks_worktree_tools() {
+        let is_git = false;
+        let args = build_worker_extra_args(is_git, "reviewer");
+        let blocked = args.iter().find(|(flag, _)| flag == "disallowedTools");
+        let (_, value) = blocked.expect("expected --disallowedTools entry even outside git-repo");
+        let value = value.as_deref().expect("expected value for --disallowedTools");
+        assert!(value.contains("EnterWorktree"));
+        assert!(value.contains("ExitWorktree"));
     }
 
     /// Regression for C4: closing a worker must expire every
