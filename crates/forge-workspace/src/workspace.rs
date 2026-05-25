@@ -75,8 +75,12 @@ pub struct Workspace {
     /// across `await` points.
     catalog: Mutex<HashMap<ProjectKey, Vec<SDKSessionInfo>>>,
     /// Live Agents keyed by session id. `parking_lot::Mutex` so the
-    /// public methods can take `&self`.
-    pool: Mutex<HashMap<SessionKey, PooledAgent>>,
+    /// public methods can take `&self`. `pub(crate)` so sibling
+    /// modules (`spawn::handle_deliver_worker_prompt_to_lead`,
+    /// `mcp::workers::facade::ProdWorkerFacade`) can probe pool
+    /// membership for lead-delivery gating without an extra method
+    /// wrapper.
+    pub(crate) pool: Mutex<HashMap<SessionKey, PooledAgent>>,
     /// Account picker state. Updated on every spawn; refreshed by
     /// the in-memory usage poller.
     accounts: Mutex<AccountStateMap>,
@@ -489,19 +493,28 @@ impl Workspace {
             }
         };
 
-        // Build the per-session `forge` MCP server. ONE server name,
-        // both peer-coordination (`peers__*`) and worker-coordination
-        // (`workers__*`) tool groups surfaced together. The CLI
-        // rejects duplicate-name MCP servers, so peers and workers
-        // must share the `forge` namespace. CallerKeyResolver reads
-        // `domain.key` through the shared Arc - when SessionTask
-        // migrates the key from synthetic to real on Connected, the
-        // resolver tracks for both tool groups.
+        // Build the per-session `forge` MCP server. ONE server name;
+        // tool surface depends on whether this spawn is for a project
+        // lead or a worker. Leads see peers + workers (cross-project
+        // coordination is a lead-only role); workers see workers
+        // only. See `crate::mcp::SessionKind` for the rationale.
+        //
+        // The synth-key prefix is the signal: `__spawn_worker_*` is
+        // stamped by `handle_spawn_worker` for every worker spawn;
+        // peer-spawned project leads use `__spawn_<name>__` (no
+        // `worker` segment) and direct lead spawns have no
+        // `spawn_key`. So absence of the worker prefix means Lead.
+        let session_kind =
+            if spawn_key.as_ref().is_some_and(|k| k.as_str().starts_with("__spawn_worker_")) {
+                crate::mcp::SessionKind::Worker
+            } else {
+                crate::mcp::SessionKind::Lead
+            };
         let forge_server = {
             let workspace_facade = crate::mcp::peers::facade::ProdWorkspaceFacade::from_arc(self);
             let worker_facade = crate::mcp::workers::facade::ProdWorkerFacade::from_arc(self);
             let resolver = crate::mcp::peers::facade::CallerKeyResolver::from_domain(&domain_arc);
-            crate::mcp::build_forge_server(workspace_facade, worker_facade, resolver)
+            crate::mcp::build_forge_server(workspace_facade, worker_facade, resolver, session_kind)
         };
 
         let handle = forge_agent::Agent::spawn(
@@ -1283,6 +1296,20 @@ impl Workspace {
                         caller,
                         &project_key,
                         &target_label,
+                        wrapped,
+                    );
+                }
+                Command::DeliverWorkerPromptToLead { caller, target_lead_key, wrapped } => {
+                    let span = tracing::info_span!(
+                        "deliver_worker_prompt_to_lead",
+                        target = %target_lead_key.as_str(),
+                        correlation_id = %wrapped.correlation_id,
+                    );
+                    let _enter = span.enter();
+                    spawn::handle_deliver_worker_prompt_to_lead(
+                        self,
+                        caller,
+                        &target_lead_key,
                         wrapped,
                     );
                 }
@@ -2675,12 +2702,13 @@ config_dir = "~/.claude-granite"
     }
 
     #[tokio::test]
-    async fn cold_cache_spawns_pick_first_in_allow_list_deterministically() {
-        // With no usage data for any account, the picker sorts
-        // unknown-first by `accounts = [...]` enumerate index. Both
-        // spawns land on the same account (Subspace, first in list).
-        // No LRU rotation — the usage-balanced policy lets data
-        // drive the choice once it's available.
+    async fn cold_cache_spawns_rotate_across_allow_list() {
+        // Two healthy accounts in the allow-list, two spawns. Round-
+        // robin cursor advances per pick, so the first spawn lands
+        // on the first allow-list entry (Subspace) and the second
+        // rotates to Granite. Cursor is shared across the workspace
+        // so even cold-cache spawns spread load rather than always
+        // hammering the first account.
         let dir = make_workspace_dir_with_two_accounts();
         let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
 
@@ -2693,11 +2721,14 @@ config_dir = "~/.claude-granite"
             .get_agent_handle(SessionTarget::Session(other), SessionLaunchSettings::default())
             .expect("second");
 
-        let bound = workspace.pool.lock().values().map(|p| p.account.0.clone()).collect::<Vec<_>>();
-        assert_eq!(bound.len(), 2);
-        // Both spawns picked Subspace (first in accounts list, no
-        // usage data to differentiate).
-        assert!(bound.iter().all(|name| name == "Subspace"));
+        let mut bound =
+            workspace.pool.lock().values().map(|p| p.account.0.clone()).collect::<Vec<_>>();
+        bound.sort();
+        assert_eq!(
+            bound,
+            vec!["Granite".to_owned(), "Subspace".to_owned()],
+            "two spawns must split across the two healthy accounts (round-robin)",
+        );
     }
 
     #[tokio::test]

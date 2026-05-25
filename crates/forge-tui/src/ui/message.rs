@@ -1007,13 +1007,45 @@ fn role_label_line(msg: &ChatMessage) -> Line<'static> {
             "Overview",
             Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
         )),
-        MessageRole::User => Line::from(Span::styled(
-            "User",
-            Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
-        )),
+        MessageRole::User => {
+            // Peer / worker MCP envelopes ride on the User role at
+            // the SDK protocol level (claude treats them as user
+            // turns), but they're agent-to-agent traffic — the chat
+            // label "User" misrepresents them as human input.
+            // Distinguish: real human input keeps the "User" label;
+            // any User message whose first text block is a peer-
+            // envelope bracket re-labels as "forge". Reserves the
+            // "User" treatment for things actually typed by the
+            // human at the prompt.
+            if is_peer_envelope_user_message(msg) {
+                Line::from(Span::styled(
+                    "forge",
+                    Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
+                ))
+            } else {
+                Line::from(Span::styled(
+                    "User",
+                    Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
+                ))
+            }
+        }
         MessageRole::Assistant => assistant_role_label_line(),
         MessageRole::System(_) => system_role_label_line(system_severity_from_role(&msg.role)),
     }
+}
+
+/// True when this `MessageRole::User` carries a peer / worker MCP
+/// inbound envelope (a `[Question id=q-...]`, `[Message id=t-...]`,
+/// `[Reply id=t-...]`, or one of the timeout/expired/failed
+/// notification shapes). Detection re-uses `peer_block::detect_inbound`
+/// so the chat label moves in lockstep with the block renderer's own
+/// recognition logic.
+fn is_peer_envelope_user_message(msg: &ChatMessage) -> bool {
+    use crate::ui::peer_block::detect_inbound;
+    msg.blocks.iter().any(|block| match block {
+        MessageBlock::Text(text) => detect_inbound(&text.text).is_some(),
+        _ => false,
+    })
 }
 
 fn system_role_label_line(severity: SystemSeverity) -> Line<'static> {

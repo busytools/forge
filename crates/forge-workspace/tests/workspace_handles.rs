@@ -17,13 +17,12 @@ use forge_workspace::{SessionKey, SessionLaunchSettings, SessionTarget, Workspac
 use tempfile::tempdir;
 
 #[tokio::test]
-async fn cold_cache_dual_spawns_pin_to_first_in_allow_list() {
-    // The pinned `accounts = [...]` order is the determinism source
-    // when the usage cache is cold. Both spawns hit Subspace because
-    // it's first in the pin; the `Granite` entry is eligible but
-    // loses on idx tie-break (unknown-first sorts by enumerate order
-    // in `allowed`). Under live usage data, the choice would
-    // depend on remaining budget per account.
+async fn cold_cache_dual_spawns_rotate_across_allow_list() {
+    // Round-robin cursor advances per pick — under a cold usage
+    // cache (both accounts in tier 0 / Usable), the first spawn
+    // picks Subspace (cursor=0 → first allow-list entry) and the
+    // second rotates to Granite (cursor=1). Spreads load across
+    // healthy accounts instead of always hammering the first.
     let dir = tempdir().expect("tempdir");
     fs::write(
         dir.path().join("forge.toml"),
@@ -56,19 +55,19 @@ config_dir = "/tmp/forge-test-granite"
     assert_eq!(
         h1.config_dir(),
         PathBuf::from("/tmp/forge-test-subspace"),
-        "first spawn binds to Subspace's config_dir (first in pin)",
+        "first spawn (cursor=0) binds to Subspace's config_dir (first usable in allow-list)",
     );
 
-    // Second spawn under a distinct SessionTarget — same pin, same
-    // cold cache, picks Subspace again deterministically.
+    // Second spawn under a distinct SessionTarget — same allow-list,
+    // cursor advances to 1, rotates to Granite.
     let other = SessionKey::from_str_for_test("dual-account-other");
     let h2 = workspace
         .get_agent_handle(SessionTarget::Session(other), SessionLaunchSettings::default())
         .expect("second spawn");
     assert_eq!(
         h2.config_dir(),
-        PathBuf::from("/tmp/forge-test-subspace"),
-        "second spawn also binds to Subspace's config_dir under cold cache",
+        PathBuf::from("/tmp/forge-test-granite"),
+        "second spawn (cursor=1) rotates to Granite's config_dir (round-robin)",
     );
 }
 

@@ -246,6 +246,23 @@ impl ProdWorkspaceFacade {
     }
 }
 
+/// Return the first non-worker session in `view.sessions`, i.e. the
+/// project's lead. Worker sessions land in `view.sessions` once their
+/// `Connected` lands and the catalog indexes them; without filtering,
+/// a spawned worker can shadow the lead at position 0 and break peer
+/// caller resolution (whoami / list_peers) plus peer delivery target
+/// resolution. The workers MCP's own `caller_project` uses the same
+/// "skip live_workers" gate; pulling it inline here keeps the two
+/// paths consistent.
+fn lead_session_view<'a>(
+    ws: &crate::workspace::Workspace,
+    view: &'a crate::views::ProjectView,
+) -> Option<&'a crate::views::SessionView> {
+    let live_keys: std::collections::HashSet<_> =
+        ws.list_live_workers(&view.key).into_iter().map(|w| w.session_key).collect();
+    view.sessions.iter().find(|s| !live_keys.contains(&s.session))
+}
+
 impl WorkspaceFacade for ProdWorkspaceFacade {
     fn list_peers(&self) -> Vec<PeerStatus> {
         let Some(ws) = self.0.upgrade() else { return Vec::new() };
@@ -254,7 +271,7 @@ impl WorkspaceFacade for ProdWorkspaceFacade {
         projects
             .into_iter()
             .map(|view| {
-                let lead = view.sessions.first();
+                let lead = lead_session_view(&ws, &view);
                 let liveness = lead.map_or(PeerLiveness::Sleeping, |s| {
                     if s.is_open { PeerLiveness::Running } else { PeerLiveness::Sleeping }
                 });
@@ -279,7 +296,7 @@ impl WorkspaceFacade for ProdWorkspaceFacade {
         let projects = ws.list_projects();
         let stat_counters = ws.peer_stats.lock();
         projects.into_iter().find_map(|view| {
-            let lead = view.sessions.first()?;
+            let lead = lead_session_view(&ws, &view)?;
             if lead.session != *caller {
                 return None;
             }
@@ -319,9 +336,10 @@ impl WorkspaceFacade for ProdWorkspaceFacade {
             .into_iter()
             .find(|v| v.name == target_project)
             .ok_or_else(|| DeliverError::UnknownTarget { name: target_project.to_owned() })?;
-        let target_status = project
-            .sessions
-            .first()
+        // Skip worker sessions when probing the target project's
+        // lead — workers can shadow `sessions[0]` once they connect.
+        // `lead_session_view` mirrors the workers MCP gate.
+        let target_status = lead_session_view(&ws, &project)
             .filter(|s| s.is_open)
             .map_or(TargetStatus::QueuedForSpawn, |_| TargetStatus::Delivered);
         if let Err(err) = ws.dispatch(Command::DeliverPeerPrompt {

@@ -9,6 +9,7 @@ use std::sync::{Arc, Weak};
 use forge_primitives::WorkerStatus;
 
 use crate::SessionKey;
+use crate::mcp::peers::facade::PeerStatsDelta;
 use crate::mcp::peers::types::{CorrelationId, InflightAsk, WrappedPrompt};
 use crate::mcp::workers::types::WorkerEntry;
 use crate::protocol::{Command, WorkerSpawnReply};
@@ -34,6 +35,31 @@ pub enum WorkerDeliverError {
     HopLimitExceeded { hop: u8, limit: u8 },
 }
 
+/// Synchronous error from `deliver_prompt_to_lead`. The caller wants
+/// to send a prompt back to its lead via the reserved `"lead"`
+/// addressing keyword.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WorkerLeadDeliverError {
+    /// Caller resolves to no known session (defensive — should not
+    /// happen with a valid CallerKeyResolver).
+    UnknownCaller,
+    /// Caller is a project lead — leads have no lead to talk back
+    /// to. The `"lead"` keyword is worker-only.
+    LeadCallerHasNoLead,
+    /// Worker's recorded `spawned_by_session_id` no longer resolves
+    /// to a session in the pool (lead session ended). The worker
+    /// can't reach its lead anymore.
+    LeadGone { lead_session_id: String },
+    /// Outgoing hop exceeds the limit (default 10).
+    HopLimitExceeded { hop: u8, limit: u8 },
+}
+
+/// Label string the workers MCP reserves for addressing the caller's
+/// lead via `workers__tell` / `workers__ask`. Workers may target the
+/// lead with `label="lead"`; `workers__spawn` rejects the label so
+/// no live worker can shadow the keyword.
+pub const LEAD_LABEL: &str = "lead";
+
 /// Synchronous error from `spawn_worker`. All gating happens before
 /// the workspace dispatch is even issued.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -42,6 +68,10 @@ pub enum WorkerSpawnError {
     NotLeadCaller,
     /// `label` is empty after trim.
     EmptyLabel,
+    /// `label` collides with the reserved `"lead"` keyword
+    /// (workers MCP uses it as an addressing target for the worker's
+    /// own lead — see [`LEAD_LABEL`]).
+    ReservedLabel,
     /// `charter` is empty after trim.
     EmptyCharter,
     /// Caller's session key resolves to no known project (defensive;
@@ -99,6 +129,18 @@ pub trait WorkerFacade: Send + Sync {
         wrapped: WrappedPrompt,
     ) -> Result<WorkerTargetStatus, WorkerDeliverError>;
 
+    /// Dispatch a wrapped prompt from a worker back to its lead.
+    /// Caller MUST be a worker. The target lead is resolved from the
+    /// caller's `WorkerEntry::spawned_by_session_id`. Returns
+    /// `Delivered` (`Command::DeliverWorkerPromptToLead` dispatched)
+    /// or one of the [`WorkerLeadDeliverError`] variants. Same
+    /// hop-limit + wire-shape contract as `deliver_worker_prompt`.
+    fn deliver_prompt_to_lead(
+        &self,
+        caller: &SessionKey,
+        wrapped: WrappedPrompt,
+    ) -> Result<WorkerTargetStatus, WorkerLeadDeliverError>;
+
     /// Register an outgoing ask in the workspace's `inflight_asks`
     /// map. Same map the peer-MCP uses; correlation ids never
     /// collide because of the `q-` / `t-` prefix scheme.
@@ -108,6 +150,19 @@ pub trait WorkerFacade: Send + Sync {
     /// Returns the removed ask so the caller can inspect its
     /// metadata, or `None` when the entry was already gone.
     fn complete_inflight_ask(&self, id: &CorrelationId) -> Option<InflightAsk>;
+
+    /// Look up an `InflightAsk` without removing it. Used by
+    /// `workers__tell` to classify an `in_reply_to` argument as
+    /// either a clean reply (entry exists, target matches) or a
+    /// degraded message (entry gone / mismatched).
+    fn resolve_correlation(&self, id: &CorrelationId) -> Option<InflightAsk>;
+
+    /// Bump per-session peer-inflight stats counters. Same map the
+    /// peer-MCP uses; workers__ask bumps `OutgoingPlus1` on the
+    /// caller when it fires, workers__tell with `in_reply_to`
+    /// decrements `OutgoingMinus1` on the original asker and
+    /// `IncomingMinus1` on the replier.
+    fn bump_inflight_stats(&self, key: &SessionKey, delta: PeerStatsDelta);
 }
 
 /// Production impl. Holds a `Weak<Workspace>` so construction doesn't
@@ -160,6 +215,9 @@ impl WorkerFacade for ProdWorkerFacade {
         }
         if label.trim().is_empty() {
             return Err(WorkerSpawnError::EmptyLabel);
+        }
+        if label.trim() == LEAD_LABEL {
+            return Err(WorkerSpawnError::ReservedLabel);
         }
         if charter.trim().is_empty() {
             return Err(WorkerSpawnError::EmptyCharter);
@@ -243,6 +301,55 @@ impl WorkerFacade for ProdWorkerFacade {
         Ok(WorkerTargetStatus::Delivered)
     }
 
+    fn deliver_prompt_to_lead(
+        &self,
+        caller: &SessionKey,
+        wrapped: WrappedPrompt,
+    ) -> Result<WorkerTargetStatus, WorkerLeadDeliverError> {
+        if wrapped.hop > wrapped.hop_limit {
+            return Err(WorkerLeadDeliverError::HopLimitExceeded {
+                hop: wrapped.hop,
+                limit: wrapped.hop_limit,
+            });
+        }
+        let cp = self.caller_project(caller).ok_or(WorkerLeadDeliverError::UnknownCaller)?;
+        if cp.is_lead {
+            return Err(WorkerLeadDeliverError::LeadCallerHasNoLead);
+        }
+        let Some(ws) = self.workspace.upgrade() else {
+            return Err(WorkerLeadDeliverError::UnknownCaller);
+        };
+        // Find the caller's WorkerEntry to read its spawned_by_session_id.
+        // The synth -> real key migration on Connected updates session_key
+        // on the entry, so matching by SessionKey works for both the
+        // pre-Connect and post-Connect windows.
+        let Some(entry) =
+            ws.list_live_workers(&cp.project_key).into_iter().find(|w| w.session_key == *caller)
+        else {
+            return Err(WorkerLeadDeliverError::UnknownCaller);
+        };
+        let lead_session_id = entry.spawned_by_session_id.clone();
+        let target_lead_key = SessionKey::from_session_id(lead_session_id.clone());
+        // Defensive: confirm the lead's session is still in the pool
+        // before dispatching. If it closed since the worker was
+        // spawned, surface a clear error so the worker LLM can adapt.
+        if !ws.pool.lock().contains_key(&target_lead_key) {
+            return Err(WorkerLeadDeliverError::LeadGone { lead_session_id });
+        }
+        if let Err(err) = ws.dispatch(Command::DeliverWorkerPromptToLead {
+            caller: caller.clone(),
+            target_lead_key,
+            wrapped,
+        }) {
+            tracing::warn!(
+                target: "forge_workspace::mcp::workers",
+                error = ?err,
+                "Command::DeliverWorkerPromptToLead dispatch failed"
+            );
+        }
+        Ok(WorkerTargetStatus::Delivered)
+    }
+
     fn register_inflight_ask(&self, ask: InflightAsk) {
         let Some(ws) = self.workspace.upgrade() else { return };
         ws.inflight_asks.lock().insert(ask.correlation_id.clone(), ask);
@@ -251,6 +358,20 @@ impl WorkerFacade for ProdWorkerFacade {
     fn complete_inflight_ask(&self, id: &CorrelationId) -> Option<InflightAsk> {
         let ws = self.workspace.upgrade()?;
         ws.inflight_asks.lock().remove(id)
+    }
+
+    fn resolve_correlation(&self, id: &CorrelationId) -> Option<InflightAsk> {
+        let ws = self.workspace.upgrade()?;
+        ws.inflight_asks.lock().get(id).cloned()
+    }
+
+    fn bump_inflight_stats(&self, key: &SessionKey, delta: PeerStatsDelta) {
+        // Reuse the peer-MCP facade's identical implementation by
+        // routing through `ProdWorkspaceFacade`. Same `peer_stats`
+        // map; one Mutex shared between peer + worker traffic.
+        let Some(ws) = self.workspace.upgrade() else { return };
+        let facade = crate::mcp::peers::facade::ProdWorkspaceFacade::from_arc(&ws);
+        facade.bump_inflight_stats(key, delta);
     }
 }
 
@@ -277,6 +398,10 @@ pub struct MockWorkerFacade {
     pub deliver_calls: parking_lot::Mutex<Vec<(SessionKey, String, WrappedPrompt)>>,
     /// Inflight asks the mock has registered.
     pub inflight: parking_lot::Mutex<std::collections::HashMap<CorrelationId, InflightAsk>>,
+    /// Captured `bump_inflight_stats` calls so tests can assert the
+    /// expected delta sequence (e.g. `OutgoingPlus1` on ask, then
+    /// `IncomingMinus1` + `OutgoingMinus1` on a reply tell).
+    pub bumps: parking_lot::Mutex<Vec<(SessionKey, PeerStatsDelta)>>,
 }
 
 #[cfg(any(test, feature = "testing"))]
@@ -311,6 +436,9 @@ impl WorkerFacade for MockWorkerFacade {
         }
         if label.trim().is_empty() {
             return Err(WorkerSpawnError::EmptyLabel);
+        }
+        if label.trim() == LEAD_LABEL {
+            return Err(WorkerSpawnError::ReservedLabel);
         }
         if charter.trim().is_empty() {
             return Err(WorkerSpawnError::EmptyCharter);
@@ -359,12 +487,61 @@ impl WorkerFacade for MockWorkerFacade {
         Ok(WorkerTargetStatus::Delivered)
     }
 
+    fn deliver_prompt_to_lead(
+        &self,
+        caller: &SessionKey,
+        wrapped: WrappedPrompt,
+    ) -> Result<WorkerTargetStatus, WorkerLeadDeliverError> {
+        if wrapped.hop > wrapped.hop_limit {
+            return Err(WorkerLeadDeliverError::HopLimitExceeded {
+                hop: wrapped.hop,
+                limit: wrapped.hop_limit,
+            });
+        }
+        let cp = self.caller_project(caller).ok_or(WorkerLeadDeliverError::UnknownCaller)?;
+        if cp.is_lead {
+            return Err(WorkerLeadDeliverError::LeadCallerHasNoLead);
+        }
+        // Mock surfaces a synthetic spawned_by lookup via the
+        // preloaded workers map (entries carry spawned_by via
+        // WorkerStatus). The Tool tests preload that field; the
+        // failure modes (LeadGone, UnknownCaller) are still
+        // reachable when the test omits the entry.
+        let lead_session_id = self
+            .workers
+            .lock()
+            .get(cp.project_key.as_str())
+            .and_then(|ws| ws.iter().find(|w| w.session_id == caller.as_str()))
+            .map(|w| w.spawned_by_session_id.clone());
+        let Some(lead_session_id) = lead_session_id else {
+            return Err(WorkerLeadDeliverError::UnknownCaller);
+        };
+        // Mock has no pool to consult; treat empty `spawned_by` as
+        // "lead gone" so tests can exercise that path explicitly.
+        if lead_session_id.is_empty() {
+            return Err(WorkerLeadDeliverError::LeadGone { lead_session_id });
+        }
+        // Record under the synthetic label `<lead>` so tests can
+        // assert "the lead-bound delivery happened" without colliding
+        // with a real worker label.
+        self.deliver_calls.lock().push((caller.clone(), "<lead>".to_owned(), wrapped));
+        Ok(WorkerTargetStatus::Delivered)
+    }
+
     fn register_inflight_ask(&self, ask: InflightAsk) {
         self.inflight.lock().insert(ask.correlation_id.clone(), ask);
     }
 
     fn complete_inflight_ask(&self, id: &CorrelationId) -> Option<InflightAsk> {
         self.inflight.lock().remove(id)
+    }
+
+    fn resolve_correlation(&self, id: &CorrelationId) -> Option<InflightAsk> {
+        self.inflight.lock().get(id).cloned()
+    }
+
+    fn bump_inflight_stats(&self, key: &SessionKey, delta: PeerStatsDelta) {
+        self.bumps.lock().push((key.clone(), delta));
     }
 }
 
