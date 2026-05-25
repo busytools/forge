@@ -478,6 +478,7 @@ pub(crate) fn handle_spawn_worker(
             project_key: project_key.clone(),
             action: WorkerStatusAction::Added,
             status: entry.to_status(),
+            is_git_repo_at_spawn: entry.is_git_repo_at_spawn,
         },
     );
 
@@ -530,6 +531,7 @@ pub(crate) fn handle_spawn_worker(
                         project_key,
                         action: WorkerStatusAction::Removed,
                         status: rolled.to_status(),
+                        is_git_repo_at_spawn: rolled.is_git_repo_at_spawn,
                     },
                 );
             }
@@ -564,6 +566,7 @@ pub(crate) fn handle_close_worker(
         return;
     };
     let status = entry.to_status();
+    let is_git_repo_at_spawn = entry.is_git_repo_at_spawn;
     // MUST call the non-cascading `release_session` primitive (NOT
     // `release_session_with_cascade`). By the time we get here the
     // worker is already gone from `live_workers` (via
@@ -578,6 +581,7 @@ pub(crate) fn handle_close_worker(
         project_key: project_key.clone(),
         action: WorkerStatusAction::Removed,
         status,
+        is_git_repo_at_spawn,
     });
 }
 

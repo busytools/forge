@@ -544,11 +544,16 @@ pub enum SessionUpdate {
     /// TUI reducer updates the projects pane's tree-children based on
     /// `action`. `status` is the snapshot at the moment of the change
     /// (relevant for Added and StatusChanged; ignored for Removed but
-    /// carried for symmetry).
+    /// carried for symmetry). `is_git_repo_at_spawn` is the worker's
+    /// cached "was the project a git repo at spawn time" flag - the
+    /// TUI's close-toast formatter reads it on `Removed` events
+    /// (after which the `WorkerEntry` is gone from `live_workers`,
+    /// so a lookup-by-label would fail).
     WorkerStatusChanged {
         project_key: crate::ProjectKey,
         action: WorkerStatusAction,
         status: forge_primitives::WorkerStatus,
+        is_git_repo_at_spawn: bool,
     },
     /// A peer-coordination envelope arrived at session `session_id`.
     /// Carries the typed `WrappedPrompt` so the TUI reducer can build
@@ -721,11 +726,12 @@ impl std::fmt::Debug for SessionUpdate {
                 .field("key", key)
                 .field("stats", stats)
                 .finish(),
-            Self::WorkerStatusChanged { project_key, action, status } => f
+            Self::WorkerStatusChanged { project_key, action, status, is_git_repo_at_spawn } => f
                 .debug_struct("WorkerStatusChanged")
                 .field("project_key", project_key)
                 .field("action", action)
                 .field("label", &status.label)
+                .field("is_git_repo_at_spawn", is_git_repo_at_spawn)
                 .finish_non_exhaustive(),
             Self::PeerEnvelopeAppended { session_id, wrapped } => f
                 .debug_struct("PeerEnvelopeAppended")
@@ -778,6 +784,7 @@ mod workers_command_tests {
                 spawned_at: SystemTime::UNIX_EPOCH,
                 spawned_by_session_id: "lead-uuid".into(),
             },
+            is_git_repo_at_spawn: true,
         };
     }
 }

@@ -1105,6 +1105,15 @@ fn append_worktree_section_for_worker(
     project_path: &std::path::Path,
 ) {
     push_worktree_header(lines);
+    let status_text = match entry.status {
+        forge_primitives::WorkerLiveness::Spawning => {
+            super::worker_status::format_spawning_status(&entry.label, entry.is_git_repo_at_spawn)
+        }
+        forge_primitives::WorkerLiveness::Running => {
+            super::worker_status::format_running_status(&entry.label, entry.is_git_repo_at_spawn)
+        }
+    };
+    lines.push(worktree_kv_row("status", &status_text));
     if entry.is_git_repo_at_spawn {
         let branch = format!("worktree-{}", entry.label);
         let path = project_path.join(".claude/worktrees").join(&entry.label);
@@ -2254,8 +2263,8 @@ mod tests {
 
     #[test]
     fn render_worktree_section_for_worker_with_worktree_shows_name_branch_path() {
-        // Shape B — worker spawned inside a git repo. Three KV
-        // rows: name (worker label), branch (claude's default
+        // Shape B — worker spawned inside a git repo. Status row +
+        // three KV rows: name (worker label), branch (claude's default
         // `worktree-<label>`), path (project root + .claude/worktrees/<label>).
         // No `base` row — explicitly dropped per design discussion.
         let entry = worker_entry_for_test("reviewer", true);
@@ -2265,13 +2274,24 @@ mod tests {
             &entry,
             std::path::Path::new("/Users/me/Projects/forge"),
         );
-        // header + blank + 3 KV rows = 5 lines.
-        assert_eq!(lines.len(), 5, "expected header + blank + 3 KV rows, got {}", lines.len());
+        // header + blank + status + 3 KV rows = 6 lines.
+        assert_eq!(
+            lines.len(),
+            6,
+            "expected header + blank + status + 3 KV rows, got {}",
+            lines.len()
+        );
         assert_eq!(line_text(&lines[0]), " WORKTREE");
         assert!(line_text(&lines[1]).is_empty(), "blank separator missing");
-        let name_row = line_text(&lines[2]);
-        let branch_row = line_text(&lines[3]);
-        let path_row = line_text(&lines[4]);
+        let status_row = line_text(&lines[2]);
+        let name_row = line_text(&lines[3]);
+        let branch_row = line_text(&lines[4]);
+        let path_row = line_text(&lines[5]);
+        assert!(status_row.contains("status"), "status label missing: {status_row:?}");
+        assert!(
+            status_row.contains("running in worktree reviewer"),
+            "running-in-worktree text missing: {status_row:?}"
+        );
         assert!(name_row.contains("name"), "name label missing: {name_row:?}");
         assert!(name_row.contains("reviewer"), "name value missing: {name_row:?}");
         assert!(branch_row.contains("branch"), "branch label missing: {branch_row:?}");
@@ -2290,7 +2310,8 @@ mod tests {
     fn render_worktree_section_for_worker_without_worktree_shows_not_a_git_repo() {
         // Shape C — worker spawned in a non-git-repo project. No
         // worktree was created (claude --worktree no-ops outside a
-        // repo); the section confirms that fact with one DIM line.
+        // repo); the section confirms that fact with one DIM line +
+        // the bare "running" status row above it.
         let entry = worker_entry_for_test("notes", false);
         let mut lines = Vec::new();
         append_worktree_section_for_worker(
@@ -2298,11 +2319,60 @@ mod tests {
             &entry,
             std::path::Path::new("/Users/me/Projects/notes"),
         );
-        assert_eq!(lines.len(), 3, "expected header + blank + body, got {}", lines.len());
+        // header + blank + status + body = 4 lines.
+        assert_eq!(lines.len(), 4, "expected header + blank + status + body, got {}", lines.len());
         assert_eq!(line_text(&lines[0]), " WORKTREE");
         assert!(line_text(&lines[1]).is_empty(), "blank separator missing");
-        let body = line_text(&lines[2]);
+        let status_row = line_text(&lines[2]);
+        assert!(status_row.contains("status"), "status label missing: {status_row:?}");
+        assert!(status_row.contains("running"), "running text missing: {status_row:?}");
+        assert!(
+            !status_row.contains("worktree"),
+            "worktree must not appear in non-git status: {status_row:?}"
+        );
+        let body = line_text(&lines[3]);
         assert!(body.contains("not a git repo"), "missing label: {body:?}");
         assert!(body.contains("/Users/me/Projects/notes"), "missing project path: {body:?}");
+    }
+
+    #[test]
+    fn render_worktree_section_for_spawning_git_worker_status_mentions_worktree() {
+        // Shape B during the Spawning window. The status row should
+        // surface "spawning <label> in worktree …" so the operator
+        // sees the worker is mid-spawn AND that a worktree is being
+        // set up.
+        let mut entry = worker_entry_for_test("reviewer", true);
+        entry.status = forge_primitives::WorkerLiveness::Spawning;
+        let mut lines = Vec::new();
+        append_worktree_section_for_worker(
+            &mut lines,
+            &entry,
+            std::path::Path::new("/Users/me/Projects/forge"),
+        );
+        let status_row = line_text(&lines[2]);
+        assert!(
+            status_row.contains("spawning reviewer in worktree"),
+            "spawning-in-worktree text missing: {status_row:?}"
+        );
+    }
+
+    #[test]
+    fn render_worktree_section_for_spawning_non_git_worker_status_omits_worktree() {
+        // Shape C during the Spawning window. The status row should
+        // surface "spawning <label> …" without any worktree mention.
+        let mut entry = worker_entry_for_test("notes", false);
+        entry.status = forge_primitives::WorkerLiveness::Spawning;
+        let mut lines = Vec::new();
+        append_worktree_section_for_worker(
+            &mut lines,
+            &entry,
+            std::path::Path::new("/Users/me/Projects/notes"),
+        );
+        let status_row = line_text(&lines[2]);
+        assert!(status_row.contains("spawning notes"), "spawning text missing: {status_row:?}");
+        assert!(
+            !status_row.contains("worktree"),
+            "worktree must not appear in non-git status: {status_row:?}"
+        );
     }
 }
