@@ -24,6 +24,30 @@ use crate::target::ProjectKey;
 use crate::workspace::Workspace;
 use crate::{SessionKey, SessionTarget};
 
+/// Build the list of `(flag, value)` extra CLI args specific to a
+/// worker spawn. When the project is a git repo, append
+/// `("worktree", Some(label))` so the spawned `claude` subprocess
+/// creates a worktree at `<repo>/.claude/worktrees/<label>/` and
+/// runs the session inside it. In all cases, append a
+/// `--disallowedTools EnterWorktree,ExitWorktree` entry: workers are
+/// pinned to their spawn-time location (whether a worktree or the
+/// project cwd) and must not be able to call claude's built-in
+/// worktree-hop tools to escape. Comma-separated value form is
+/// empirically accepted by the CLI's variadic `<tools...>` parser.
+///
+/// The `is_git_repo` boolean is passed in (already-computed by the
+/// caller) so the git-repo probe runs at most once per spawn even
+/// when the same answer is needed for both the `WorkerEntry.is_git_repo_at_spawn`
+/// field and this argument list.
+fn build_worker_extra_args(is_git_repo: bool, label: &str) -> Vec<(String, Option<String>)> {
+    let mut args = Vec::new();
+    if is_git_repo {
+        args.push(("worktree".to_owned(), Some(label.to_owned())));
+    }
+    args.push(("disallowedTools".to_owned(), Some("EnterWorktree,ExitWorktree".to_owned())));
+    args
+}
+
 /// Emit a `SessionUpdate` and log at debug when the receiver is gone
 /// (TUI is shutting down or has crashed). The send is logically
 /// best-effort — no caller can act on the failure — but visibility
@@ -405,12 +429,16 @@ pub(crate) fn handle_spawn_worker(
     spawned_by_session_id: String,
     return_to: tokio::sync::oneshot::Sender<Result<WorkerSpawnReply, String>>,
 ) {
-    // Verify the project exists before claiming a synth key.
+    // Verify the project exists before claiming a synth key. Probe
+    // its filesystem path for git-repo-ness exactly once here and
+    // feed the result into both the WorkerEntry flag and the
+    // `--worktree` extra-arg threading below.
     let projects = workspace.list_projects();
-    let Some(_view) = projects.iter().find(|v| v.key == project_key) else {
+    let Some(view) = projects.iter().find(|v| v.key == project_key) else {
         let _ = return_to.send(Err(format!("project not found: {}", project_key.as_str())));
         return;
     };
+    let is_git = forge_agent::env::worktree::is_git_repo(&view.path);
 
     // Synthesize a pool key for the not-yet-spawned worker. The
     // SessionTask rekeys this onto the real claude-issued UUID on
@@ -440,6 +468,7 @@ pub(crate) fn handle_spawn_worker(
         spawned_at: std::time::SystemTime::now(),
         spawned_by_session_id,
         needs_tag: true,
+        is_git_repo_at_spawn: is_git,
     };
     workspace.insert_live_worker(&project_key, entry.clone());
     try_emit(
@@ -449,14 +478,21 @@ pub(crate) fn handle_spawn_worker(
             project_key: project_key.clone(),
             action: WorkerStatusAction::Added,
             status: entry.to_status(),
+            is_git_repo_at_spawn: entry.is_git_repo_at_spawn,
         },
     );
 
     // Spawn the fresh session under the picked account. The charter
     // is threaded onto SessionLaunchSettings.charter; the spawn path
     // (forge_sdk_worker::build_options_with_callback) appends it to
-    // the system prompt via --append-system-prompt.
-    let settings = SessionLaunchSettings { charter: Some(charter), ..Default::default() };
+    // the system prompt via --append-system-prompt. `extra_args`
+    // carries `("worktree", Some(label))` for git-repo projects so
+    // claude forks a worktree at `<repo>/.claude/worktrees/<label>/`.
+    let settings = SessionLaunchSettings {
+        charter: Some(charter),
+        extra_args: build_worker_extra_args(is_git, label),
+        ..Default::default()
+    };
     let target = SessionTarget::FreshInProject {
         project_key: project_key.clone(),
         synth_key: synth_key.clone(),
@@ -495,6 +531,7 @@ pub(crate) fn handle_spawn_worker(
                         project_key,
                         action: WorkerStatusAction::Removed,
                         status: rolled.to_status(),
+                        is_git_repo_at_spawn: rolled.is_git_repo_at_spawn,
                     },
                 );
             }
@@ -529,6 +566,7 @@ pub(crate) fn handle_close_worker(
         return;
     };
     let status = entry.to_status();
+    let is_git_repo_at_spawn = entry.is_git_repo_at_spawn;
     // MUST call the non-cascading `release_session` primitive (NOT
     // `release_session_with_cascade`). By the time we get here the
     // worker is already gone from `live_workers` (via
@@ -543,6 +581,7 @@ pub(crate) fn handle_close_worker(
         project_key: project_key.clone(),
         action: WorkerStatusAction::Removed,
         status,
+        is_git_repo_at_spawn,
     });
 }
 
@@ -940,6 +979,7 @@ config_dir = "~/.claude-subspace"
             spawned_at: std::time::SystemTime::UNIX_EPOCH,
             spawned_by_session_id: "lead-uuid".into(),
             needs_tag: false,
+            is_git_repo_at_spawn: false,
         }
     }
 
@@ -1143,6 +1183,7 @@ config_dir = "~/.claude-subspace"
                 spawned_at: std::time::SystemTime::UNIX_EPOCH,
                 spawned_by_session_id: "lead".into(),
                 needs_tag: true,
+                is_git_repo_at_spawn: false,
             },
         );
 
@@ -1192,6 +1233,82 @@ config_dir = "~/.claude-subspace"
         // Clean up the shared stub config_dir entries we created so
         // subsequent parallel runs aren't polluted.
         let _ = fs::remove_file(&jsonl_path);
+    }
+
+    /// `build_worker_extra_args` returns `[("worktree", Some(label))]`
+    /// when the project path is a git repo so the worker spawn picks
+    /// up `--worktree=<label>` and lands inside an auto-created
+    /// `<repo>/.claude/worktrees/<label>/`. The helper takes a
+    /// pre-computed `is_git_repo` boolean (caller probes the path
+    /// once and reuses the result for both the WorkerEntry flag and
+    /// this arg list); the test seeds the bool via the same
+    /// `forge_agent::env::worktree::is_git_repo` probe the spawn
+    /// path uses so the two layers stay in sync.
+    #[test]
+    fn worker_in_git_repo_gets_worktree_flag() {
+        let dir = tempdir().expect("tempdir");
+        std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(dir.path())
+            .status()
+            .expect("git init");
+        let is_git = forge_agent::env::worktree::is_git_repo(dir.path());
+        assert!(is_git, "freshly-initialised tempdir must register as git repo");
+        let args = build_worker_extra_args(is_git, "reviewer");
+        assert!(
+            args.iter()
+                .any(|(flag, value)| flag == "worktree" && value.as_deref() == Some("reviewer")),
+            "expected (\"worktree\", Some(\"reviewer\")) in {args:?}"
+        );
+    }
+
+    /// `build_worker_extra_args` returns no `worktree` entry when the
+    /// project path isn't a git repo - the worker just spawns into
+    /// the project's plain cwd and skips the worktree path entirely.
+    #[test]
+    fn worker_in_non_git_repo_gets_no_worktree_flag() {
+        let dir = tempdir().expect("tempdir"); // empty, not a repo
+        let is_git = forge_agent::env::worktree::is_git_repo(dir.path());
+        assert!(!is_git, "empty tempdir must not register as git repo");
+        let args = build_worker_extra_args(is_git, "reviewer");
+        assert!(
+            !args.iter().any(|(flag, _)| flag == "worktree"),
+            "expected no worktree entry in {args:?}"
+        );
+    }
+
+    /// Workers are pinned to their worktree (when they have one) and
+    /// must not be able to call claude's built-in `EnterWorktree` /
+    /// `ExitWorktree` tools to hop elsewhere. `build_worker_extra_args`
+    /// emits a `--disallowedTools` flag carrying both tool names as a
+    /// single comma-separated value (empirically confirmed to be
+    /// accepted by the claude CLI's variadic `<tools...>` parser).
+    /// This test covers the git-repo case: the `worktree` flag is
+    /// still present, and the `disallowedTools` flag is added on top.
+    #[test]
+    fn worker_in_git_repo_blocks_enter_and_exit_worktree() {
+        let is_git = true;
+        let args = build_worker_extra_args(is_git, "reviewer");
+        let blocked = args.iter().find(|(flag, _)| flag == "disallowedTools");
+        let (_, value) = blocked.expect("expected --disallowedTools entry");
+        let value = value.as_deref().expect("expected value for --disallowedTools");
+        assert!(value.contains("EnterWorktree"), "EnterWorktree must be blocked, got {value:?}");
+        assert!(value.contains("ExitWorktree"), "ExitWorktree must be blocked, got {value:?}");
+    }
+
+    /// The non-git-repo case still blocks the worktree-hop tools even
+    /// though the worker isn't running inside a worktree - the tool
+    /// surface is uniform across project shapes so workers can't be
+    /// nudged into surprising behaviour by the project layout.
+    #[test]
+    fn worker_in_non_git_repo_also_blocks_worktree_tools() {
+        let is_git = false;
+        let args = build_worker_extra_args(is_git, "reviewer");
+        let blocked = args.iter().find(|(flag, _)| flag == "disallowedTools");
+        let (_, value) = blocked.expect("expected --disallowedTools entry even outside git-repo");
+        let value = value.as_deref().expect("expected value for --disallowedTools");
+        assert!(value.contains("EnterWorktree"));
+        assert!(value.contains("ExitWorktree"));
     }
 
     /// Regression for C4: closing a worker must expire every

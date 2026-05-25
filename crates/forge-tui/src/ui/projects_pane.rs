@@ -1761,6 +1761,7 @@ mod tests {
             spawned_at: SystemTime::UNIX_EPOCH,
             spawned_by_session_id: "lead".into(),
             needs_tag: false,
+            is_git_repo_at_spawn: false,
         };
         workspace.insert_live_worker(&project_key, entry.clone());
 
@@ -1790,6 +1791,7 @@ mod tests {
                 project_key: project_key.clone(),
                 action: WorkerStatusAction::Removed,
                 status: entry.to_status(),
+                is_git_repo_at_spawn: entry.is_git_repo_at_spawn,
             },
         );
         assert!(app.needs_redraw, "Removed reducer must request a redraw");
@@ -1824,6 +1826,7 @@ mod tests {
                 spawned_at: SystemTime::UNIX_EPOCH,
                 spawned_by_session_id: "lead".into(),
                 needs_tag: false,
+                is_git_repo_at_spawn: false,
             },
         );
         workspace.insert_live_worker(
@@ -1836,6 +1839,7 @@ mod tests {
                 spawned_at: SystemTime::UNIX_EPOCH,
                 spawned_by_session_id: "lead".into(),
                 needs_tag: false,
+                is_git_repo_at_spawn: false,
             },
         );
 

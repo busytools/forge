@@ -28,7 +28,7 @@ pub use outputs::{
     SubagentStartHookSpecificOutput, UserPromptSubmitHookSpecificOutput,
 };
 
-/// Identifies which hook point a callback is registered for. Ten event
+/// Identifies which hook point a callback is registered for. Sixteen event
 /// kinds mirrored from the CLI v0.1.64, plus
 /// `Unknown` as a fallback for forward-compatibility.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -53,6 +53,18 @@ pub enum HookKind {
     Notification,
     /// Permission request observation (distinct from `can_use_tool`).
     PermissionRequest,
+    /// Worktree created (LLM called EnterWorktree, or claude spawned with --worktree).
+    WorktreeCreate,
+    /// Worktree removed (LLM called ExitWorktree, or claude session ended).
+    WorktreeRemove,
+    /// Session cwd changed (LLM entered/exited a worktree).
+    CwdChanged,
+    /// External file modification observed by claude's file-history watcher.
+    FileChanged,
+    /// Session lifecycle: init.
+    SessionStart,
+    /// Session lifecycle: end.
+    SessionEnd,
     /// Fallback for hook events forge-sdk doesn't yet recognise.
     Unknown,
 }
@@ -71,6 +83,12 @@ impl HookKind {
             Self::PreCompact => "PreCompact",
             Self::Notification => "Notification",
             Self::PermissionRequest => "PermissionRequest",
+            Self::WorktreeCreate => "WorktreeCreate",
+            Self::WorktreeRemove => "WorktreeRemove",
+            Self::CwdChanged => "CwdChanged",
+            Self::FileChanged => "FileChanged",
+            Self::SessionStart => "SessionStart",
+            Self::SessionEnd => "SessionEnd",
             Self::Unknown => "Unknown",
         }
     }
@@ -90,6 +108,12 @@ impl HookKind {
             "PreCompact" => Self::PreCompact,
             "Notification" => Self::Notification,
             "PermissionRequest" => Self::PermissionRequest,
+            "WorktreeCreate" => Self::WorktreeCreate,
+            "WorktreeRemove" => Self::WorktreeRemove,
+            "CwdChanged" => Self::CwdChanged,
+            "FileChanged" => Self::FileChanged,
+            "SessionStart" => Self::SessionStart,
+            "SessionEnd" => Self::SessionEnd,
             _ => Self::Unknown,
         }
     }
@@ -107,4 +131,50 @@ pub struct HookContext {
     /// Tool-use id when the hook fired in a tool-use context
     /// (`PreToolUse`, `PostToolUse`). `None` for other hook kinds.
     pub tool_use_id: Option<String>,
+}
+
+#[cfg(test)]
+mod hook_kind_extension_tests {
+    use super::*;
+
+    #[test]
+    fn worktree_create_round_trips() {
+        assert_eq!(HookKind::from_wire("WorktreeCreate"), HookKind::WorktreeCreate);
+        assert_eq!(HookKind::WorktreeCreate.as_str(), "WorktreeCreate");
+    }
+
+    #[test]
+    fn worktree_remove_round_trips() {
+        assert_eq!(HookKind::from_wire("WorktreeRemove"), HookKind::WorktreeRemove);
+        assert_eq!(HookKind::WorktreeRemove.as_str(), "WorktreeRemove");
+    }
+
+    #[test]
+    fn cwd_changed_round_trips() {
+        assert_eq!(HookKind::from_wire("CwdChanged"), HookKind::CwdChanged);
+        assert_eq!(HookKind::CwdChanged.as_str(), "CwdChanged");
+    }
+
+    #[test]
+    fn file_changed_round_trips() {
+        assert_eq!(HookKind::from_wire("FileChanged"), HookKind::FileChanged);
+        assert_eq!(HookKind::FileChanged.as_str(), "FileChanged");
+    }
+
+    #[test]
+    fn session_start_round_trips() {
+        assert_eq!(HookKind::from_wire("SessionStart"), HookKind::SessionStart);
+        assert_eq!(HookKind::SessionStart.as_str(), "SessionStart");
+    }
+
+    #[test]
+    fn session_end_round_trips() {
+        assert_eq!(HookKind::from_wire("SessionEnd"), HookKind::SessionEnd);
+        assert_eq!(HookKind::SessionEnd.as_str(), "SessionEnd");
+    }
+
+    #[test]
+    fn truly_unknown_still_routes_to_unknown() {
+        assert_eq!(HookKind::from_wire("ThisIsNotARealEvent"), HookKind::Unknown);
+    }
 }

@@ -1425,10 +1425,12 @@ impl Workspace {
         if let Some(project_key) = cascade_project {
             for entry in self.drain_live_workers(&project_key) {
                 let status = entry.to_status();
+                let is_git_repo_at_spawn = entry.is_git_repo_at_spawn;
                 let _ = self.update_tx.send(SessionUpdate::WorkerStatusChanged {
                     project_key: project_key.clone(),
                     action: crate::protocol::WorkerStatusAction::Removed,
                     status,
+                    is_git_repo_at_spawn,
                 });
                 self.release_session(&entry.session_key);
             }
@@ -1664,10 +1666,12 @@ impl Workspace {
                     let removed = workspace.remove_latest_worker(&project_key, &label);
                     if let Some(entry) = removed {
                         let status = entry.to_status();
+                        let is_git_repo_at_spawn = entry.is_git_repo_at_spawn;
                         let _ = workspace.update_tx.send(SessionUpdate::WorkerStatusChanged {
                             project_key,
                             action: crate::protocol::WorkerStatusAction::Removed,
                             status,
+                            is_git_repo_at_spawn,
                         });
                     }
                     workspace.release_session(&session_key);
@@ -1744,16 +1748,16 @@ impl Workspace {
             .await;
             match result {
                 Ok(()) => {
-                    let updated_status = {
+                    let updated = {
                         let mut workers = workspace.live_workers.lock();
                         workers.get_mut(&project_key).and_then(|entries| {
                             entries.iter_mut().find(|e| e.session_key == session_key).map(|entry| {
                                 entry.needs_tag = false;
-                                entry.to_status()
+                                (entry.to_status(), entry.is_git_repo_at_spawn)
                             })
                         })
                     };
-                    if let Some(status) = updated_status {
+                    if let Some((status, is_git_repo_at_spawn)) = updated {
                         tracing::info!(
                             target: "forge_workspace::workspace",
                             session_id = %session_key.as_str(),
@@ -1764,6 +1768,7 @@ impl Workspace {
                             project_key,
                             action: crate::protocol::WorkerStatusAction::StatusChanged,
                             status,
+                            is_git_repo_at_spawn,
                         });
                     }
                 }
@@ -2351,21 +2356,22 @@ fn transition_worker_to_running(
     session_key: &SessionKey,
     result: TagWriteResult,
 ) {
-    let updated_status = {
+    let updated = {
         let mut workers = workspace.live_workers.lock();
         workers.get_mut(project_key).and_then(|entries| {
             entries.iter_mut().find(|e| e.session_key == *session_key).map(|entry| {
                 entry.status = forge_primitives::WorkerLiveness::Running;
                 entry.needs_tag = matches!(result, TagWriteResult::DeferredNotFound);
-                entry.to_status()
+                (entry.to_status(), entry.is_git_repo_at_spawn)
             })
         })
     };
-    if let Some(status) = updated_status {
+    if let Some((status, is_git_repo_at_spawn)) = updated {
         let _ = workspace.update_tx.send(SessionUpdate::WorkerStatusChanged {
             project_key: project_key.clone(),
             action: crate::protocol::WorkerStatusAction::StatusChanged,
             status,
+            is_git_repo_at_spawn,
         });
     }
 }
@@ -3198,6 +3204,7 @@ mod workers_state_tests {
             spawned_at: SystemTime::UNIX_EPOCH,
             spawned_by_session_id: "lead-uuid".into(),
             needs_tag: false,
+            is_git_repo_at_spawn: false,
         }
     }
 
@@ -3293,6 +3300,7 @@ mod release_session_cascade_tests {
             spawned_at: SystemTime::UNIX_EPOCH,
             spawned_by_session_id: "lead-uuid".into(),
             needs_tag: false,
+            is_git_repo_at_spawn: false,
         }
     }
 
@@ -3573,6 +3581,7 @@ mod tag_retry_tests {
             spawned_at: std::time::SystemTime::UNIX_EPOCH,
             spawned_by_session_id: "lead".into(),
             needs_tag,
+            is_git_repo_at_spawn: false,
         }
     }
 

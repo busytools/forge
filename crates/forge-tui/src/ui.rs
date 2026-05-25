@@ -21,6 +21,7 @@ pub(crate) mod theme;
 mod tool_call;
 pub mod top_bar;
 mod two_column_list;
+pub(crate) mod worker_status;
 mod wrap;
 
 pub use message::{SpinnerState, measure_message_height_cached};
