@@ -28,6 +28,13 @@ pub struct WorkerEntry {
     pub spawned_at: SystemTime,
     pub spawned_by_session_id: String,
     pub needs_tag: bool,
+    /// Cached at spawn time: was the project's path a git repo?
+    /// Drives the TUI Inspector pane's WORKTREE section render and
+    /// the "in worktree" status-string suffix. `true` means the
+    /// worker was spawned with `--worktree=<label>` and is operating
+    /// in claude's auto-created `<project>/.claude/worktrees/<label>/`;
+    /// `false` means non-git-repo project (no worktree, plain cwd).
+    pub is_git_repo_at_spawn: bool,
 }
 
 impl WorkerEntry {
@@ -44,5 +51,37 @@ impl WorkerEntry {
             spawned_at: self.spawned_at,
             spawned_by_session_id: self.spawned_by_session_id.clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod is_git_repo_at_spawn_tests {
+    use super::*;
+    use crate::SessionKey;
+    use std::time::SystemTime;
+
+    fn fake_entry(is_git: bool) -> WorkerEntry {
+        WorkerEntry {
+            label: "reviewer".into(),
+            charter: "review the diff".into(),
+            session_key: SessionKey::from_session_id("uuid-1"),
+            status: WorkerLiveness::Running,
+            spawned_at: SystemTime::UNIX_EPOCH,
+            spawned_by_session_id: "lead-uuid".into(),
+            needs_tag: false,
+            is_git_repo_at_spawn: is_git,
+        }
+    }
+
+    #[test]
+    fn worker_entry_carries_is_git_repo_at_spawn_true() {
+        let entry = fake_entry(true);
+        assert!(entry.is_git_repo_at_spawn);
+    }
+
+    #[test]
+    fn worker_entry_carries_is_git_repo_at_spawn_false() {
+        let entry = fake_entry(false);
+        assert!(!entry.is_git_repo_at_spawn);
     }
 }

@@ -254,11 +254,48 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
                 session.peer_badges = stats;
             }
         }
-        SessionUpdate::WorkerStatusChanged { .. } => {
+        SessionUpdate::WorkerStatusChanged { action, status, is_git_repo_at_spawn, .. } => {
             // Workspace owns the authoritative live_workers map; the
             // projects-pane renderer reads from `workspace.list_live_workers`
-            // each frame so the only thing the TUI has to do on a worker
-            // status change is request a redraw.
+            // each frame so a redraw covers Added / StatusChanged.
+            // Removed additionally surfaces a system-message toast in
+            // the active session's chat so the operator knows the
+            // worker is gone and, for git-repo workers, that the
+            // worktree is preserved on disk. Removed ALSO drops the
+            // worker's UiSession bucket from `app.sessions` and, when
+            // it was the active session, falls back to the worker's
+            // spawning lead (or any other live session) - without
+            // this cleanup the bucket lingers with stale chat data
+            // and `active_session_key` keeps pointing at the released
+            // worker, so the chat view renders the dead worker's
+            // history instead of the lead's.
+            if matches!(action, forge_workspace::protocol::WorkerStatusAction::Removed) {
+                let toast = crate::ui::worker_status::format_close_toast(
+                    &status.label,
+                    is_git_repo_at_spawn,
+                );
+                super::push_system_message_with_severity(
+                    app,
+                    Some(crate::app::SystemSeverity::Info),
+                    &toast,
+                );
+                let worker_key = SessionKey::from_session_id(status.session_id.clone());
+                app.sessions.remove(&worker_key);
+                if app.active_session_key.as_ref() == Some(&worker_key) {
+                    let lead_key =
+                        SessionKey::from_session_id(status.spawned_by_session_id.clone());
+                    let fallback = if app.sessions.contains_key(&lead_key) {
+                        Some(lead_key)
+                    } else {
+                        app.sessions.keys().next().cloned()
+                    };
+                    if let Some(new_active) = fallback {
+                        app.switch_active_session(new_active);
+                    } else {
+                        app.active_session_key = None;
+                    }
+                }
+            }
             app.needs_redraw = true;
         }
         SessionUpdate::PeerEnvelopeAppended { session_id, wrapped } => {
@@ -1802,5 +1839,166 @@ mod tests {
             app.sessions.get(&key_a).expect("a").prompt_queue.is_empty(),
             "active session must not receive a background bucket's prompt"
         );
+    }
+
+    /// Helper: build a `WorkerStatusChanged { Removed }` event with
+    /// the given label + git-repo flag for the worker-close-toast
+    /// tests.
+    fn worker_removed_event(label: &str, is_git_repo_at_spawn: bool) -> SessionUpdate {
+        SessionUpdate::WorkerStatusChanged {
+            project_key: forge_workspace::ProjectKey::new_for_test("forge"),
+            action: forge_workspace::protocol::WorkerStatusAction::Removed,
+            status: forge_primitives::WorkerStatus {
+                label: label.to_owned(),
+                charter: "test".to_owned(),
+                status: forge_primitives::WorkerLiveness::Running,
+                session_id: "uuid-1".to_owned(),
+                spawned_at: std::time::SystemTime::UNIX_EPOCH,
+                spawned_by_session_id: "lead-uuid".to_owned(),
+            },
+            is_git_repo_at_spawn,
+        }
+    }
+
+    /// Concatenate every text span of a chat-message body so test
+    /// assertions can scan the full rendered text.
+    fn chat_message_text(msg: &crate::app::ChatMessage) -> String {
+        msg.blocks
+            .iter()
+            .map(|b| match b {
+                crate::app::MessageBlock::Text(t) => t.markdown.full_text(),
+                _ => String::new(),
+            })
+            .collect::<String>()
+    }
+
+    #[test]
+    fn worker_removed_event_pushes_close_toast_for_git_repo_worker() {
+        let mut app = App::test_default();
+        let active_key =
+            app.active_session_key.clone().expect("test_default seeds an active session");
+        let before = app.sessions.get(&active_key).expect("active bucket").messages.len();
+
+        apply_session_update(&mut app, worker_removed_event("reviewer", true));
+
+        let bucket = app.sessions.get(&active_key).expect("active bucket");
+        assert!(bucket.messages.len() > before, "Removed event should push a system-message toast");
+        let toast = chat_message_text(bucket.messages.last().expect("toast message present"));
+        assert!(toast.contains("Worker reviewer closed."), "missing close text: {toast:?}");
+        assert!(
+            toast.contains("Worktree preserved at .claude/worktrees/reviewer/"),
+            "missing worktree-preserved text: {toast:?}",
+        );
+        assert!(app.needs_redraw, "Removed event must request a redraw");
+    }
+
+    #[test]
+    fn worker_removed_event_pushes_plain_toast_for_non_git_worker() {
+        let mut app = App::test_default();
+        let active_key =
+            app.active_session_key.clone().expect("test_default seeds an active session");
+
+        apply_session_update(&mut app, worker_removed_event("notes", false));
+
+        let bucket = app.sessions.get(&active_key).expect("active bucket");
+        let toast = chat_message_text(bucket.messages.last().expect("toast message present"));
+        assert_eq!(toast, "Worker notes closed.");
+        assert!(!toast.contains("worktree"), "must not mention worktree: {toast:?}");
+        assert!(!toast.contains("Worktree"), "must not mention worktree: {toast:?}");
+    }
+
+    /// Removed must drop the worker's UiSession bucket. Without
+    /// this the stale bucket lingers in `app.sessions` and a later
+    /// `active_session_key == worker_key` render keeps showing the
+    /// closed worker's chat history.
+    #[test]
+    fn worker_removed_event_drops_worker_session_bucket() {
+        let mut app = App::test_default();
+        let worker_key = SessionKey::from_session_id("uuid-1");
+        app.sessions
+            .insert(worker_key.clone(), crate::app::session::UiSession::new(worker_key.clone()));
+        assert!(app.sessions.contains_key(&worker_key));
+
+        apply_session_update(&mut app, worker_removed_event("reviewer", true));
+
+        assert!(
+            !app.sessions.contains_key(&worker_key),
+            "worker bucket must be dropped from app.sessions on Removed"
+        );
+    }
+
+    /// When `active_session_key` was the closed worker, Removed must
+    /// fall back to the worker's spawning lead (the natural revert).
+    #[test]
+    fn worker_removed_event_falls_back_active_to_lead_when_worker_was_active() {
+        let mut app = App::test_default();
+        let lead_key = SessionKey::from_session_id("lead-uuid");
+        let worker_key = SessionKey::from_session_id("uuid-1");
+        app.sessions
+            .insert(lead_key.clone(), crate::app::session::UiSession::new(lead_key.clone()));
+        app.sessions
+            .insert(worker_key.clone(), crate::app::session::UiSession::new(worker_key.clone()));
+        app.active_session_key = Some(worker_key.clone());
+
+        apply_session_update(&mut app, worker_removed_event("reviewer", true));
+
+        assert_eq!(
+            app.active_session_key.as_ref(),
+            Some(&lead_key),
+            "active session must fall back to the spawning lead",
+        );
+    }
+
+    /// When the worker's lead isn't in `app.sessions` either (rare:
+    /// the lead's bucket was already torn down), fall back to any
+    /// surviving session rather than dropping active to None.
+    #[test]
+    fn worker_removed_event_falls_back_to_any_session_when_lead_gone() {
+        let mut app = App::test_default();
+        let worker_key = SessionKey::from_session_id("uuid-1");
+        // Note: no lead-uuid bucket present. The test_default()
+        // helper already seeded an active session under
+        // `__conn_pending__`; that bucket plays the role of "any
+        // surviving session" for this test.
+        app.sessions
+            .insert(worker_key.clone(), crate::app::session::UiSession::new(worker_key.clone()));
+        app.active_session_key = Some(worker_key.clone());
+
+        apply_session_update(&mut app, worker_removed_event("reviewer", true));
+
+        assert_ne!(
+            app.active_session_key.as_ref(),
+            Some(&worker_key),
+            "active must no longer point at the removed worker"
+        );
+        assert!(
+            app.active_session_key.is_some(),
+            "active must fall back to a surviving session, not None, while any bucket exists",
+        );
+        assert!(!app.sessions.contains_key(&worker_key), "worker bucket itself must be gone");
+    }
+
+    /// When `active_session_key` was NOT the closed worker, it must
+    /// stay put after Removed. Closing a worker while viewing the
+    /// lead's chat must not yank the user away from the lead.
+    #[test]
+    fn worker_removed_event_leaves_active_unchanged_when_not_active() {
+        let mut app = App::test_default();
+        let lead_key = SessionKey::from_session_id("lead-uuid");
+        let worker_key = SessionKey::from_session_id("uuid-1");
+        app.sessions
+            .insert(lead_key.clone(), crate::app::session::UiSession::new(lead_key.clone()));
+        app.sessions
+            .insert(worker_key.clone(), crate::app::session::UiSession::new(worker_key.clone()));
+        app.active_session_key = Some(lead_key.clone());
+
+        apply_session_update(&mut app, worker_removed_event("reviewer", true));
+
+        assert_eq!(
+            app.active_session_key.as_ref(),
+            Some(&lead_key),
+            "active session must stay on the lead when the closed worker wasn't active",
+        );
+        assert!(!app.sessions.contains_key(&worker_key));
     }
 }

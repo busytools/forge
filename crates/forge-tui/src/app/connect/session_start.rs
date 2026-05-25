@@ -43,6 +43,7 @@ pub(crate) fn session_launch_settings_for_reason(
         settings: Some(build_session_settings_object(app)),
         agent_progress_summaries: Some(true),
         charter: None,
+        ..SessionLaunchSettings::default()
     }
 }
 

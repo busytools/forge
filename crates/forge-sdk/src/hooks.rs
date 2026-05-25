@@ -304,7 +304,7 @@ mod tests_hooks_types {
     }
 
     #[test]
-    fn hook_kind_discriminants_cover_all_ten_plus_unknown() {
+    fn hook_kind_discriminants_cover_all_variants_plus_unknown() {
         assert_eq!(HookKind::PreToolUse.as_str(), "PreToolUse");
         assert_eq!(HookKind::PostToolUse.as_str(), "PostToolUse");
         assert_eq!(HookKind::PostToolUseFailure.as_str(), "PostToolUseFailure");
@@ -315,6 +315,12 @@ mod tests_hooks_types {
         assert_eq!(HookKind::PreCompact.as_str(), "PreCompact");
         assert_eq!(HookKind::Notification.as_str(), "Notification");
         assert_eq!(HookKind::PermissionRequest.as_str(), "PermissionRequest");
+        assert_eq!(HookKind::WorktreeCreate.as_str(), "WorktreeCreate");
+        assert_eq!(HookKind::WorktreeRemove.as_str(), "WorktreeRemove");
+        assert_eq!(HookKind::CwdChanged.as_str(), "CwdChanged");
+        assert_eq!(HookKind::FileChanged.as_str(), "FileChanged");
+        assert_eq!(HookKind::SessionStart.as_str(), "SessionStart");
+        assert_eq!(HookKind::SessionEnd.as_str(), "SessionEnd");
         assert_eq!(HookKind::Unknown.as_str(), "Unknown");
     }
 
@@ -331,6 +337,12 @@ mod tests_hooks_types {
             HookKind::PreCompact,
             HookKind::Notification,
             HookKind::PermissionRequest,
+            HookKind::WorktreeCreate,
+            HookKind::WorktreeRemove,
+            HookKind::CwdChanged,
+            HookKind::FileChanged,
+            HookKind::SessionStart,
+            HookKind::SessionEnd,
         ] {
             assert_eq!(HookKind::from_wire(kind.as_str()), kind);
         }

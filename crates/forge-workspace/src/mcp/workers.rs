@@ -172,6 +172,9 @@ fn format_spawn_error(err: &WorkerSpawnError) -> String {
         WorkerSpawnError::DispatchFailed { message } => {
             format!("worker spawn failed: {message}")
         }
+        WorkerSpawnError::WorktreeCreationFailed { reason } => {
+            format!("worktree creation failed: {reason}")
+        }
     }
 }
 
