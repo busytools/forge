@@ -13,6 +13,15 @@
 //!   of the top-N changed files grouped by directory. Single-child
 //!   directory chains fold so deep paths render as one row. Sourced
 //!   from `UiSession.git_diff_snapshot`.
+//! - `WORKTREE` — rendered when the active session is a worker (one
+//!   row each for name / branch / path when claude auto-created a
+//!   worktree, one DIM `not a git repo · <cwd>` line when the
+//!   project isn't a git repo) or, for project leads in a git repo,
+//!   one DIM `main repo · <cwd>` line confirming the cwd is the
+//!   project root rather than a worktree. Suppressed for leads in
+//!   non-git projects. Sourced from `WorkerEntry.is_git_repo_at_spawn`
+//!   (via `Workspace::worker_lookup_for_session` /
+//!   `list_live_workers`) and `UiSession.cwd`.
 //! - `TASKS` — rendered when the active session has todos or a
 //!   pending verification nudge. The live `TodoWrite` snapshot is
 //!   the sole surface for the todo list; the chat-stream
@@ -340,6 +349,7 @@ const INSPECTOR_THUMB_MAX_CELLS: usize = 1;
 /// distinct rather than two `DIM bold` headers next to each other.
 fn append_body(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
     append_git_section(lines, app, width);
+    append_worktree_section(lines, app, width);
 
     let todos = app.todos();
     // Section visibility gates on PENDING/IN-PROGRESS tasks
@@ -985,6 +995,143 @@ fn fit_path_head_truncated(s: &str, max_chars: usize) -> String {
     let mut out = String::from("\u{2026}");
     out.extend(s.chars().skip(skip));
     out
+}
+
+/// Dispatch into the WORKTREE section. Three shapes:
+///
+/// - Active session is a worker WITH `is_git_repo_at_spawn = true`:
+///   render Shape B (name / branch / path KV rows).
+/// - Active session is a worker WITH `is_git_repo_at_spawn = false`:
+///   render Shape C (`not a git repo · <cwd>`).
+/// - Active session is a project lead: render Shape A
+///   (`main repo · <cwd>`). Suppressed when the GIT snapshot has
+///   already confirmed the cwd is not a git repo — the "main repo"
+///   framing is meaningless outside a repo, and the empty header
+///   would just add chrome with no signal.
+///
+/// Suppressed entirely in the pre-Connect window (no active session)
+/// or when no project path can be resolved.
+fn append_worktree_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
+    let Some(active_key) = app.active_session_key.as_ref() else {
+        return;
+    };
+    let Some(workspace) = app.workspace.as_ref() else {
+        return;
+    };
+
+    // Worker discriminator: ask the workspace whether this session
+    // appears in any project's live_workers list. Mirrors the
+    // existing `worker_lookup_for_session` pattern used by the
+    // session-task Connected handler.
+    if let Some((project_key, label)) = workspace.worker_lookup_for_session(active_key) {
+        let workers = workspace.list_live_workers(&project_key);
+        let Some(entry) = workers.into_iter().find(|w| w.label == label) else {
+            return;
+        };
+        // The project path lives on the ProjectView keyed by
+        // `project_key`. list_projects() walks the catalog; the
+        // worker's project key is the canonical lookup.
+        let Some(project_view) =
+            workspace.list_projects().into_iter().find(|view| view.key == project_key)
+        else {
+            return;
+        };
+        lines.push(Line::default());
+        push_section_rule(lines, width);
+        lines.push(Line::default());
+        append_worktree_section_for_worker(lines, &entry, project_view.path.as_path());
+        return;
+    }
+
+    // Lead branch — skip when the cwd is not a git repo so we don't
+    // surface "main repo" for a non-git project.
+    if let Some(snapshot) = app.active_session().and_then(|s| s.git_diff_snapshot.as_ref())
+        && snapshot.scanner_ok
+        && matches!(snapshot.view, GitDiffView::NoRepo)
+    {
+        return;
+    }
+    let cwd = app.cwd();
+    if cwd.is_empty() {
+        return;
+    }
+    lines.push(Line::default());
+    push_section_rule(lines, width);
+    lines.push(Line::default());
+    append_worktree_section_for_lead(lines, std::path::Path::new(cwd));
+}
+
+/// Append the WORKTREE section header (` WORKTREE`, DIM BOLD) to
+/// `lines`. Shared between the lead / worker render paths.
+fn push_worktree_header(lines: &mut Vec<Line<'static>>) {
+    lines.push(Line::from(Span::styled(
+        " WORKTREE".to_owned(),
+        Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::default());
+}
+
+/// Shape A: the active session is a project lead operating in the
+/// main repo (no worktree). One DIM body line confirms the cwd
+/// belongs to the project root rather than a worktree.
+fn append_worktree_section_for_lead(
+    lines: &mut Vec<Line<'static>>,
+    project_path: &std::path::Path,
+) {
+    push_worktree_header(lines);
+    lines.push(Line::from(vec![
+        Span::raw(" "),
+        Span::styled(
+            format!("main repo \u{00B7} {}", project_path.display()),
+            Style::default().fg(theme::DIM),
+        ),
+    ]));
+}
+
+/// Shape B/C: the active session is a worker. Branches on
+/// `entry.is_git_repo_at_spawn`:
+///
+/// - `true`: claude auto-created a worktree at
+///   `<project_path>/.claude/worktrees/<label>/` on the
+///   `worktree-<label>` branch. Render three KV rows (name, branch,
+///   path). No `base` row — the original branch is not part of the
+///   per-worker surface.
+/// - `false`: the project is not a git repo, so `--worktree` no-ops
+///   and the worker runs in the project's cwd. One DIM body line
+///   surfaces that.
+fn append_worktree_section_for_worker(
+    lines: &mut Vec<Line<'static>>,
+    entry: &forge_workspace::mcp::workers::types::WorkerEntry,
+    project_path: &std::path::Path,
+) {
+    push_worktree_header(lines);
+    if entry.is_git_repo_at_spawn {
+        let branch = format!("worktree-{}", entry.label);
+        let path = project_path.join(".claude/worktrees").join(&entry.label);
+        lines.push(worktree_kv_row("name  ", &entry.label));
+        lines.push(worktree_kv_row("branch", &branch));
+        lines.push(worktree_kv_row("path  ", &path.to_string_lossy()));
+    } else {
+        lines.push(Line::from(vec![
+            Span::raw(" "),
+            Span::styled(
+                format!("not a git repo \u{00B7} {}", project_path.display()),
+                Style::default().fg(theme::DIM),
+            ),
+        ]));
+    }
+}
+
+/// One key-value row of the WORKTREE section. Label DIM, value plain
+/// (the project path / branch name reads more clearly without DIM,
+/// matching the GIT section's path row contrast).
+fn worktree_kv_row(label: &str, value: &str) -> Line<'static> {
+    Line::from(vec![
+        Span::raw(" "),
+        Span::styled(label.to_owned(), Style::default().fg(theme::DIM)),
+        Span::raw("  "),
+        Span::raw(value.to_owned()),
+    ])
 }
 
 fn append_tasks_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
@@ -2067,5 +2214,95 @@ mod tests {
         // Style assertion: pull the glyph span and check its colour.
         let glyph_span = &lines[2].spans[1];
         assert_eq!(glyph_span.style.fg, Some(theme::DIM));
+    }
+
+    fn worker_entry_for_test(
+        label: &str,
+        is_git_repo_at_spawn: bool,
+    ) -> forge_workspace::mcp::workers::types::WorkerEntry {
+        forge_workspace::mcp::workers::types::WorkerEntry {
+            label: label.to_owned(),
+            charter: "test".to_owned(),
+            session_key: forge_workspace::SessionKey::from_session_id("uuid-1"),
+            status: forge_primitives::WorkerLiveness::Running,
+            spawned_at: std::time::SystemTime::UNIX_EPOCH,
+            spawned_by_session_id: "lead-uuid".to_owned(),
+            needs_tag: false,
+            is_git_repo_at_spawn,
+        }
+    }
+
+    #[test]
+    fn render_worktree_section_for_lead_shows_main_repo_and_cwd() {
+        // Shape A — lead in a real repo. One DIM body line under
+        // the section header (header + blank-between + body = 3
+        // rendered lines, matching the PROCESSES / TASKS chrome).
+        // Prefixed `main repo · <cwd>` so the operator sees at a
+        // glance "this is the project root, not a worktree".
+        let mut lines = Vec::new();
+        append_worktree_section_for_lead(
+            &mut lines,
+            std::path::Path::new("/Users/me/Projects/forge"),
+        );
+        assert_eq!(lines.len(), 3, "expected header + blank + body, got {}", lines.len());
+        assert_eq!(line_text(&lines[0]), " WORKTREE");
+        assert!(line_text(&lines[1]).is_empty(), "blank separator missing");
+        let body = line_text(&lines[2]);
+        assert!(body.contains("main repo"), "main repo label missing: {body:?}");
+        assert!(body.contains("/Users/me/Projects/forge"), "project path missing: {body:?}");
+    }
+
+    #[test]
+    fn render_worktree_section_for_worker_with_worktree_shows_name_branch_path() {
+        // Shape B — worker spawned inside a git repo. Three KV
+        // rows: name (worker label), branch (claude's default
+        // `worktree-<label>`), path (project root + .claude/worktrees/<label>).
+        // No `base` row — explicitly dropped per design discussion.
+        let entry = worker_entry_for_test("reviewer", true);
+        let mut lines = Vec::new();
+        append_worktree_section_for_worker(
+            &mut lines,
+            &entry,
+            std::path::Path::new("/Users/me/Projects/forge"),
+        );
+        // header + blank + 3 KV rows = 5 lines.
+        assert_eq!(lines.len(), 5, "expected header + blank + 3 KV rows, got {}", lines.len());
+        assert_eq!(line_text(&lines[0]), " WORKTREE");
+        assert!(line_text(&lines[1]).is_empty(), "blank separator missing");
+        let name_row = line_text(&lines[2]);
+        let branch_row = line_text(&lines[3]);
+        let path_row = line_text(&lines[4]);
+        assert!(name_row.contains("name"), "name label missing: {name_row:?}");
+        assert!(name_row.contains("reviewer"), "name value missing: {name_row:?}");
+        assert!(branch_row.contains("branch"), "branch label missing: {branch_row:?}");
+        assert!(branch_row.contains("worktree-reviewer"), "branch value missing: {branch_row:?}");
+        assert!(path_row.contains("path"), "path label missing: {path_row:?}");
+        assert!(
+            path_row.contains(".claude/worktrees/reviewer"),
+            "worktree path missing: {path_row:?}"
+        );
+        // Regression guard: no `base` row.
+        let joined = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert!(!joined.contains("base"), "base row must not appear: {joined:?}");
+    }
+
+    #[test]
+    fn render_worktree_section_for_worker_without_worktree_shows_not_a_git_repo() {
+        // Shape C — worker spawned in a non-git-repo project. No
+        // worktree was created (claude --worktree no-ops outside a
+        // repo); the section confirms that fact with one DIM line.
+        let entry = worker_entry_for_test("notes", false);
+        let mut lines = Vec::new();
+        append_worktree_section_for_worker(
+            &mut lines,
+            &entry,
+            std::path::Path::new("/Users/me/Projects/notes"),
+        );
+        assert_eq!(lines.len(), 3, "expected header + blank + body, got {}", lines.len());
+        assert_eq!(line_text(&lines[0]), " WORKTREE");
+        assert!(line_text(&lines[1]).is_empty(), "blank separator missing");
+        let body = line_text(&lines[2]);
+        assert!(body.contains("not a git repo"), "missing label: {body:?}");
+        assert!(body.contains("/Users/me/Projects/notes"), "missing project path: {body:?}");
     }
 }
