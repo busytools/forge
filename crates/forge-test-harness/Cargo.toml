@@ -27,3 +27,7 @@ async-trait.workspace = true
 # the `testing` feature flag. Dev-only dep so the harness's production
 # surface (forge-sdk + forge-primitives) stays minimal.
 forge-workspace = { workspace = true, features = ["testing", "test-helpers"] }
+# `sdk_scenarios_worktree_spawn` needs a fresh git repo per run to give
+# `--worktree` something to fork off. Dev-only because it's a test fixture
+# concern.
+tempfile.workspace = true
