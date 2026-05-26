@@ -445,6 +445,7 @@ pub(crate) fn handle_spawn_worker(
     label: &str,
     charter: String,
     spawned_by_session_id: String,
+    resume_existing: Option<String>,
     return_to: tokio::sync::oneshot::Sender<Result<WorkerSpawnReply, String>>,
 ) {
     // Verify the project exists before claiming a synth key. Probe
@@ -466,9 +467,14 @@ pub(crate) fn handle_spawn_worker(
     // A v4 uuid suffix makes the key unique across concurrent spawns
     // of the same label - two `spawn_worker(label="reviewer")` calls
     // would otherwise collide on the pool / command_senders /
-    // domain_handles maps and only one would survive.
+    // domain_handles maps and only one would survive. The resume
+    // path uses a separate `__resume_worker_<...>__` synth prefix so
+    // it's distinguishable in tracing logs from the fresh case.
+    let is_resume = resume_existing.is_some();
+    let synth_prefix = if is_resume { "__resume_worker_" } else { "__spawn_worker_" };
     let synth_key = SessionKey::from_session_id(format!(
-        "__spawn_worker_{}_{}_{}__",
+        "{}{}_{}_{}__",
+        synth_prefix,
         project_key.as_str(),
         label,
         uuid::Uuid::new_v4().simple()
@@ -478,6 +484,11 @@ pub(crate) fn handle_spawn_worker(
     // Insert WorkerEntry as Spawning BEFORE the agent spawn so the
     // Connected handler can find the entry via worker_lookup_for_session
     // when it fires (worker_lookup_for_session reads live_workers).
+    //
+    // On the resume path `needs_tag` is false — the tag is already on
+    // disk in the JSONL (the team Connected hook only resumes sessions
+    // whose tag matches `forge:worker:<label>` so this invariant is
+    // guaranteed by the caller).
     let entry = crate::mcp::workers::types::WorkerEntry {
         label: label.to_owned(),
         charter: charter.clone(),
@@ -485,7 +496,7 @@ pub(crate) fn handle_spawn_worker(
         status: forge_primitives::WorkerLiveness::Spawning,
         spawned_at: std::time::SystemTime::now(),
         spawned_by_session_id,
-        needs_tag: true,
+        needs_tag: !is_resume,
         is_git_repo_at_spawn: is_git,
     };
     workspace.insert_live_worker(&project_key, entry.clone());
@@ -506,14 +517,25 @@ pub(crate) fn handle_spawn_worker(
     // the system prompt via --append-system-prompt. `extra_args`
     // carries `("worktree", Some(label))` for git-repo projects so
     // claude forks a worktree at `<repo>/.claude/worktrees/<label>/`.
+    //
+    // Resume path: `SessionTarget::Session` reads the original cwd
+    // from the catalog (Workspace::session_cwd_for) so claude lands
+    // back in the worktree it was first spawned in. If the worktree
+    // dir was removed out-of-band, claude's spawn fails and the
+    // existing ConnectionFailed surface (workspace.rs:570) reports
+    // it - we don't silently fall back to fresh-spawn (that would
+    // lose state without warning).
     let settings = SessionLaunchSettings {
         charter: Some(charter),
         extra_args: build_worker_extra_args(is_git, label),
         ..Default::default()
     };
-    let target = SessionTarget::FreshInProject {
-        project_key: project_key.clone(),
-        synth_key: synth_key.clone(),
+    let target = match resume_existing {
+        Some(session_id) => SessionTarget::Session(SessionKey::from_session_id(session_id)),
+        None => SessionTarget::FreshInProject {
+            project_key: project_key.clone(),
+            synth_key: synth_key.clone(),
+        },
     };
     match workspace.get_agent_handle_with_spawn_key(target, settings, Some(synth_key.clone())) {
         Ok(_handle) => {
