@@ -196,7 +196,14 @@ pub fn create_tool_call(
 
 /// Mirrors `extractText(value)` — flattens a `tool_result` content
 /// payload into a single `String`. Accepts string, array of
-/// `{ type: "text", text }` blocks, or single `{ text }` object.
+/// `{ type: "text", text }` blocks, or a single object carrying prose
+/// under one of `plan` / `description` / `summary` / `message` /
+/// `text` (priority order: plan-mode-specific first, generic last).
+///
+/// Returns `""` for any other shape so the caller knows the value
+/// can't be rendered as user-facing text - the alternative
+/// (JSON-stringifying arbitrary structures) leaks raw `\n` escapes
+/// into chat (bug #136).
 fn extract_text(value: &Value) -> String {
     if let Some(s) = value.as_str() {
         return s.to_owned();
@@ -218,8 +225,12 @@ fn extract_text(value: &Value) -> String {
             .collect::<Vec<_>>()
             .join("\n");
     }
-    if let Some(s) = value.as_object().and_then(|r| r.get("text")).and_then(Value::as_str) {
-        return s.to_owned();
+    if let Some(obj) = value.as_object() {
+        for key in &["plan", "description", "summary", "message", "text"] {
+            if let Some(s) = obj.get(*key).and_then(Value::as_str) {
+                return s.to_owned();
+            }
+        }
     }
     String::new()
 }
@@ -760,7 +771,13 @@ pub fn build_tool_result_fields(
     } else if !normalized_raw_output.is_empty() {
         normalized_raw_output
     } else {
-        raw_content.map(|v| serde_json::to_string(v).unwrap_or_default()).unwrap_or_default()
+        // Defensive: when `extract_text` couldn't recognize the shape,
+        // only fall back for primitive string values. JSON-dumping
+        // arbitrary objects/arrays leaks raw `\n` escapes into chat
+        // (bug #136). `extract_text` already handles `Value::String`,
+        // so this branch is effectively unreachable for well-formed
+        // wire content - kept as a safe path.
+        raw_content.and_then(Value::as_str).map(str::to_owned).unwrap_or_default()
     };
     if !raw_output.is_empty() {
         fields.raw_output = Some(raw_output.clone());
@@ -911,6 +928,75 @@ mod tests {
         );
         assert_eq!(extract_text(&json!({"text":"o"})), "o");
         assert_eq!(extract_text(&json!(123)), "");
+    }
+
+    /// Bug #136: ExitPlanMode result is a JSON object whose plan body
+    /// lives under "plan", with auxiliary fields like "allowedTools"
+    /// alongside. `extract_text` historically returned "" for this
+    /// shape, forcing the line-763 fallback to JSON-stringify the
+    /// whole object (with literal `\n` escapes leaking into chat).
+    /// Widen recognition to the conventional prose-field names.
+    #[test]
+    fn extract_text_widens_to_prose_carrying_object_fields() {
+        assert_eq!(
+            extract_text(&json!({"plan": "Step 1\nStep 2", "allowedTools": ["Bash"]})),
+            "Step 1\nStep 2",
+        );
+        assert_eq!(extract_text(&json!({"description": "desc text"})), "desc text");
+        assert_eq!(extract_text(&json!({"summary": "summary text"})), "summary text");
+        assert_eq!(extract_text(&json!({"message": "message text"})), "message text");
+    }
+
+    /// Unrecognized JSON object (no prose-carrying field) returns "" -
+    /// the caller path then refuses to dump the raw JSON (see
+    /// `build_fields_does_not_json_dump_unrecognized_object`).
+    #[test]
+    fn extract_text_returns_empty_for_unrecognized_object() {
+        let v = json!({"allowedTools": ["Bash"], "permissions": {"defaultBehavior": "ask"}});
+        assert_eq!(extract_text(&v), "");
+    }
+
+    /// Bug #136 regression test: ExitPlanMode-shaped tool_use_result
+    /// must render the plan body cleanly, not as raw-JSON-with-escapes.
+    #[test]
+    fn build_fields_extracts_plan_text_for_exit_plan_mode() {
+        let base = make_base("ExitPlanMode", &json!({"plan": "..."}));
+        let raw_content = json!({
+            "plan": "Step 1: do X\nStep 2: do Y",
+            "allowedTools": ["Bash", "Read"],
+        });
+        let f = build_tool_result_fields(false, Some(&raw_content), Some(&base), None);
+        assert_eq!(f.raw_output.as_deref(), Some("Step 1: do X\nStep 2: do Y"));
+        let Some(ToolCallContent::Content { content: ChunkContent::Text { text } }) =
+            f.content.as_ref().and_then(|c| c.first())
+        else {
+            panic!("expected text content");
+        };
+        assert_eq!(text, "Step 1: do X\nStep 2: do Y");
+    }
+
+    /// For any other JSON-object-shaped result that carries no
+    /// prose-bearing field, the fallback must NOT JSON-stringify the
+    /// raw value into chat. Better to render an empty body than a
+    /// literal-escape blob.
+    #[test]
+    fn build_fields_does_not_json_dump_unrecognized_object() {
+        let base = make_base("ExitPlanMode", &json!({"plan": "..."}));
+        let raw_content = json!({
+            "allowedTools": ["Bash"],
+            "permissions": {"defaultBehavior": "ask"},
+        });
+        let f = build_tool_result_fields(false, Some(&raw_content), Some(&base), None);
+        assert!(
+            f.raw_output.is_none(),
+            "unrecognized JSON shape must not dump as raw_output, got: {:?}",
+            f.raw_output
+        );
+        assert!(
+            f.content.is_none(),
+            "unrecognized JSON shape must not become content text, got: {:?}",
+            f.content
+        );
     }
 
     #[test]
