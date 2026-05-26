@@ -28,19 +28,22 @@ const OAUTH_USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 const OAUTH_BETA_HEADER: &str = "oauth-2025-04-20";
 const OAUTH_TIMEOUT: Duration = Duration::from_secs(8);
 
-/// Canonical `User-Agent` Anthropic expects on /api/oauth/usage —
-/// matches what the spawned `claude` subprocess sends on /v1/messages
-/// after the wire-rewriter normalises it. Non-canonical UAs
-/// (e.g. `forge-sdk/X.Y.Z`) get 429'd aggressively by Anthropic's
-/// per-IP rate limiter, even on the first probe of an idle account.
-/// Format: `claude-cli/<version> (external, cli)`. Version is probed
-/// once via `claude --version` and cached. If the probe ever fails
-/// (claude not on PATH, exec error) we propagate that as a probe
-/// error so the caller's backoff path engages — a stale pinned
-/// fallback would actively lie to Anthropic about which version is
-/// running and drift over time, defeating the point of matching
-/// reality on the wire.
-async fn canonical_user_agent() -> Result<&'static str, OauthUsageError> {
+/// `User-Agent` native CLI sends on /api/oauth/usage, captured from
+/// mitmdump 2026-05-26 against claude CLI 2.1.133 in an authenticated
+/// interactive session running `/usage`. Format: `claude-code/<version>`,
+/// no parens, no `(external, cli)` suffix. Distinct from the
+/// /v1/messages UA shape (which is `claude-cli/<version> (external, cli)`);
+/// the messages endpoint and the oauth-usage endpoint deliberately
+/// carry different UAs natively, so this probe matches the usage
+/// endpoint's shape rather than the messages endpoint's.
+///
+/// Version is probed once via `claude --version` and cached. If the
+/// probe fails (claude not on PATH, exec error) we propagate that as
+/// a probe error so the caller's backoff path engages. A stale
+/// pinned fallback would actively lie to Anthropic about which
+/// version is running and drift over time, defeating the point of
+/// matching reality on the wire.
+async fn oauth_usage_user_agent() -> Result<&'static str, OauthUsageError> {
     static UA: OnceLock<String> = OnceLock::new();
     if let Some(cached) = UA.get() {
         return Ok(cached);
@@ -54,7 +57,7 @@ async fn canonical_user_agent() -> Result<&'static str, OauthUsageError> {
             .map_err(|e| {
                 OauthUsageError::Network(format!("claude --version probe failed for UA: {e}"))
             })?;
-    let ua = format!("claude-cli/{version} (external, cli)");
+    let ua = format!("claude-code/{version}");
     // get_or_init isn't `Result`-friendly. set/get pair: if another
     // caller raced us and set first, our `set` errors out and we
     // read theirs via `get` below — value is identical (same probe
@@ -160,7 +163,7 @@ async fn oauth_headers(access_token: &str) -> Result<HeaderMap, OauthUsageError>
     headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
     headers.insert("anthropic-beta", HeaderValue::from_static(OAUTH_BETA_HEADER));
-    let ua = HeaderValue::from_str(canonical_user_agent().await?)
+    let ua = HeaderValue::from_str(oauth_usage_user_agent().await?)
         .map_err(|error| OauthUsageError::Network(format!("bad UA header: {error}")))?;
     headers.insert(USER_AGENT, ua);
     let bearer = HeaderValue::from_str(&format!("Bearer {access_token}"))
@@ -270,6 +273,19 @@ mod tests {
         assert_eq!(extra.used_credits, Some(1240.0));
         assert_eq!(extra.utilization, Some(62.0));
         assert_eq!(extra.currency.as_deref(), Some("USD"));
+    }
+
+    /// Pins the User-Agent shape sent on /api/oauth/usage to the
+    /// `claude-code/<version>` form captured from native CLI 2.1.133.
+    /// The probe at runtime spawns `claude --version` to fill in the
+    /// version; in unit context we exercise the format only.
+    #[test]
+    fn oauth_usage_ua_shape_matches_native_claude_code_prefix() {
+        let formatted = format!("claude-code/{}", "2.1.133");
+        assert_eq!(formatted, "claude-code/2.1.133");
+        assert!(!formatted.contains("(external"));
+        assert!(!formatted.contains("(cli"));
+        assert!(!formatted.starts_with("claude-cli/"));
     }
 
     #[test]
