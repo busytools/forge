@@ -4205,6 +4205,118 @@ mod tag_retry_tests {
         let body = fs::read_to_string(&path).expect("read jsonl");
         assert!(body.contains("\"tag\":\"forge:worker:idle\""));
     }
+
+    /// #166 regression: when a worker session hits /new, the new
+    /// session_id needs its own tag row written to its JSONL.
+    /// `session_task::translate_event` now calls
+    /// `apply_worker_tag_or_rollback` on EVERY Connected (not just
+    /// the first), so the post-/new JSONL gets tagged in lockstep
+    /// with the entry's session_key migration. Without this, the
+    /// resume scan from #157/#164 picks the orphaned pre-/new
+    /// JSONL on the next forge restart.
+    ///
+    /// Workspace-level test: simulate the /new flow by calling the
+    /// tagger twice, migrating the WorkerEntry's session_key between
+    /// calls (the production `migrate_session_task` does this on
+    /// rekey_to). Verify both session_ids' JSONLs land with the tag.
+    #[tokio::test]
+    async fn worker_tag_re_applied_after_new_session_rekey() {
+        let (workspace, mut rx) = Workspace::testing_stub();
+        let project_key = ProjectKey::new("forge");
+
+        // Two distinct session_ids: first Connected, then post-/new.
+        let session_id_1 = "550e8400-e29b-41d4-a716-446655440021";
+        let session_id_2 = "550e8400-e29b-41d4-a716-446655440022";
+        let key_1 = SessionKey::from_session_id(session_id_1);
+        let key_2 = SessionKey::from_session_id(session_id_2);
+
+        // Seed the WorkerEntry with the FIRST session's key. The
+        // production flow inserts at the synth key and migrates to
+        // the real key on first Connected; for this test the entry
+        // is already at the first real key.
+        workspace
+            .insert_live_worker(&project_key, fake_spawning_entry("reviewer", session_id_1, true));
+
+        let cfg = tempdir().expect("cfg");
+        let cwd = tempdir().expect("cwd");
+        let path_1 = jsonl_path_for(cfg.path(), cwd.path(), session_id_1);
+        fs::write(&path_1, "").expect("seed first jsonl");
+
+        // First Connected: tag the first session's JSONL.
+        workspace.apply_worker_tag_or_rollback_with_config_dir(
+            &key_1,
+            &project_key,
+            "reviewer",
+            &cwd.path().to_string_lossy(),
+            cfg.path(),
+        );
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while let Some(update) = rx.recv().await {
+                if let SessionUpdate::WorkerStatusChanged { action, .. } = update
+                    && matches!(action, crate::protocol::WorkerStatusAction::StatusChanged)
+                {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("first StatusChanged within budget");
+        let body_1 = fs::read_to_string(&path_1).expect("read first jsonl");
+        assert!(
+            body_1.contains("\"tag\":\"forge:worker:reviewer\""),
+            "first Connected tags the first session's JSONL",
+        );
+
+        // Simulate /new's rekey: the WorkerEntry's session_key
+        // migrates to the new real session_id. Production does this
+        // via `migrate_session_task` from `rekey_to`.
+        assert!(
+            workspace.migrate_session_task(&key_1, &key_2),
+            "migrate worker entry to new session key",
+        );
+
+        // Seed the second session's JSONL as if claude wrote it on
+        // the first turn after /new.
+        let path_2 = jsonl_path_for(cfg.path(), cwd.path(), session_id_2);
+        fs::write(&path_2, "").expect("seed second jsonl");
+
+        // Second Connected (the /new flow). Without #166's fix the
+        // tagger was never called; with the fix it fires
+        // unconditionally on every Connected.
+        workspace.apply_worker_tag_or_rollback_with_config_dir(
+            &key_2,
+            &project_key,
+            "reviewer",
+            &cwd.path().to_string_lossy(),
+            cfg.path(),
+        );
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while let Some(update) = rx.recv().await {
+                if let SessionUpdate::WorkerStatusChanged { action, .. } = update
+                    && matches!(action, crate::protocol::WorkerStatusAction::StatusChanged)
+                {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("second StatusChanged within budget");
+
+        let body_2 = fs::read_to_string(&path_2).expect("read second jsonl");
+        assert!(
+            body_2.contains("\"tag\":\"forge:worker:reviewer\""),
+            "second Connected (post-/new) tags the new session's JSONL",
+        );
+
+        // The first JSONL keeps its tag - re-tagging writes to the
+        // new file, not the old one. This guards against accidental
+        // first-JSONL overwrite during the re-tag flow.
+        let body_1_after = fs::read_to_string(&path_1).expect("read first jsonl");
+        assert!(
+            body_1_after.contains("\"tag\":\"forge:worker:reviewer\""),
+            "first session's tag survives the /new re-tag flow",
+        );
+    }
 }
 
 #[cfg(test)]
