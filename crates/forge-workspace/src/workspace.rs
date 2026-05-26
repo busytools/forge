@@ -3668,6 +3668,134 @@ config_dir = "~/.claude-stargate"
         });
         assert!(result.is_ok(), "dispatch routed cleanly: {result:?}");
     }
+
+    /// Disk-backed workspace fixture shared by the per-project loop
+    /// tests below. Returns the `Arc<Workspace>` plus the `TempDir`
+    /// that holds the on-disk `forge.toml`; the caller must keep the
+    /// `TempDir` alive (drop deletes the directory). Required because
+    /// `expire_target_inflight` resolves the closing key's project via
+    /// `list_projects()` (catalog-backed), so a fully-in-memory
+    /// workspace would early-return.
+    async fn peer_mcp_workspace_fixture() -> (Arc<Workspace>, tempfile::TempDir) {
+        let dir = forge_toml_with_two_projects();
+        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        (workspace, dir)
+    }
+
+    /// Resolve a project's expanded path from the workspace's view.
+    /// Catalog keys derive from `project_key_for_directory(expanded_path)`,
+    /// not the literal `~/`-prefixed forge.toml string, so callers that
+    /// want `record_connected_session` to populate the right project's
+    /// session list need this lookup.
+    fn project_expanded_path(workspace: &Workspace, name: &str) -> String {
+        workspace.list_projects().into_iter().find(|p| p.name == name).map_or_else(
+            || panic!("project '{name}' missing from workspace"),
+            |p| p.path.to_string_lossy().into_owned(),
+        )
+    }
+
+    /// `expire_target_inflight` walks `inflight_asks`, finds entries
+    /// whose `target_project` matches the closing key's project, and
+    /// expires each via `expire_inflight_ask_failed`. Asks scoped to
+    /// other projects' targets stay untouched.
+    ///
+    /// Covers the per-project loop wrapper that the per-id unit
+    /// (`expire_inflight_ask_failed_dispatches_failure_notice`) sits
+    /// underneath. The on-disk fixture is required because the loop
+    /// resolves the closing session's project via `list_projects()`
+    /// (catalog-backed); a fully-in-memory test would early-return.
+    #[tokio::test]
+    async fn expire_target_inflight_drains_only_targeted_asks() {
+        use crate::mcp::peers::types::{CorrelationId, InflightAsk, PeerFailureReason};
+
+        let (workspace, _dir) = peer_mcp_workspace_fixture().await;
+
+        // Seed catalog so list_projects() sees a session under
+        // "gateway-backend". The session_id is what we'll feed to
+        // expire_target_inflight as the closing key.
+        let gateway_cwd = project_expanded_path(&workspace, "gateway-backend");
+        let target_session_id = "target-session-uuid";
+        workspace.record_connected_session(&gateway_cwd, target_session_id, None);
+
+        // Three inflight asks: two targeting gateway-backend (must
+        // expire), one targeting forge (must survive).
+        let caller_a = SessionKey::from_str_for_test("caller-a");
+        let caller_b = SessionKey::from_str_for_test("caller-b");
+        let caller_c = SessionKey::from_str_for_test("caller-c");
+        let id_a = CorrelationId::new_ask();
+        let id_b = CorrelationId::new_ask();
+        let id_c = CorrelationId::new_ask();
+        {
+            let mut asks = workspace.inflight_asks.lock();
+            asks.insert(
+                id_a.clone(),
+                InflightAsk {
+                    correlation_id: id_a.clone(),
+                    caller: caller_a.clone(),
+                    caller_project: "forge".to_owned(),
+                    target_project: "gateway-backend".to_owned(),
+                },
+            );
+            asks.insert(
+                id_b.clone(),
+                InflightAsk {
+                    correlation_id: id_b.clone(),
+                    caller: caller_b.clone(),
+                    caller_project: "forge".to_owned(),
+                    target_project: "gateway-backend".to_owned(),
+                },
+            );
+            asks.insert(
+                id_c.clone(),
+                InflightAsk {
+                    correlation_id: id_c.clone(),
+                    caller: caller_c.clone(),
+                    caller_project: "gateway-backend".to_owned(),
+                    target_project: "forge".to_owned(),
+                },
+            );
+        }
+
+        // Arm intercept so we can assert the per-id path fired a
+        // Command::Prompt (DeliveryFailureNotice) for each targeted
+        // ask without spinning up real caller session tasks.
+        workspace.enable_test_dispatch_intercept();
+        let closing_key = SessionKey::from_session_id(target_session_id);
+        workspace.expire_target_inflight(&closing_key, PeerFailureReason::TargetConnectionFailed);
+
+        // Targeted asks are gone; the orthogonally-targeted ask survives.
+        let asks = workspace.inflight_asks.lock();
+        assert!(!asks.contains_key(&id_a), "ask targeting gateway-backend removed");
+        assert!(!asks.contains_key(&id_b), "ask targeting gateway-backend removed");
+        assert!(
+            asks.contains_key(&id_c),
+            "ask targeting forge survives, only the closing project's asks expire"
+        );
+        drop(asks);
+
+        // One DeliveryFailureNotice Command::Prompt per expired ask,
+        // routed back to each ask's caller. Sort by caller key before
+        // comparing; HashMap iteration order isn't pinned.
+        let buffered = workspace.drain_test_dispatch_buffer();
+        let mut notice_callers: Vec<SessionKey> = buffered
+            .into_iter()
+            .filter_map(|cmd| match cmd {
+                crate::protocol::Command::Prompt { key, text, .. }
+                    if text.contains("failed to deliver") =>
+                {
+                    Some(key)
+                }
+                _ => None,
+            })
+            .collect();
+        notice_callers.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        let mut expected_callers = vec![caller_a.clone(), caller_b.clone()];
+        expected_callers.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        assert_eq!(
+            notice_callers, expected_callers,
+            "DeliveryFailureNotice fired for exactly the two gateway-backend-targeted callers"
+        );
+    }
 }
 
 #[cfg(test)]

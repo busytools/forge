@@ -1257,6 +1257,111 @@ mod tests {
         );
     }
 
+    /// First-Connected drains `DomainSession.pending_peer_prompts` in
+    /// FIFO order, dispatching one `Command::Prompt` per buffered
+    /// entry, then leaves the buffer empty. Pinned via the workspace's
+    /// command-intercept buffer so the full first-Connected branch of
+    /// `translate_event` runs end-to-end (no poking the private drain
+    /// method directly).
+    #[tokio::test]
+    async fn first_connected_drains_pending_peer_prompts_in_fifo_order() {
+        use crate::mcp::peers::types::{CorrelationId, WrappedKind, WrappedPrompt};
+
+        let (workspace, _update_rx) = crate::Workspace::testing_stub();
+
+        // Build a DomainSession at a fixed session-id key and seed
+        // three Messages in known order. Message kind (not Question)
+        // keeps the assertion focused on FIFO dispatch; the
+        // Question-kind incoming-counter bump is exercised separately.
+        let session_key = SessionKey::from_session_id("drain-session-uuid");
+        let domain =
+            Arc::new(parking_lot::Mutex::new(DomainSession::new(session_key.clone(), None)));
+        let bodies = ["first", "second", "third"];
+        {
+            let mut d = domain.lock();
+            for body in bodies {
+                d.pending_peer_prompts.push(WrappedPrompt {
+                    correlation_id: CorrelationId::new_tell(),
+                    kind: WrappedKind::Message,
+                    sender_name: "forge".to_owned(),
+                    sender_org: "Default".to_owned(),
+                    hop: 1,
+                    hop_limit: 10,
+                    body: body.to_owned(),
+                });
+            }
+        }
+
+        // spawn_key=None + connected_once=false → first-Connected arm
+        // that calls drain_pending_peer_prompts. Matching self.key to
+        // the event's session_id makes rekey_to a no-op so the test
+        // doesn't have to register against the workspace pool.
+        let (handle, _agent_cmd_rx) = Agent::testing_stub();
+        let (_cmd_tx, command_rx) =
+            tokio::sync::mpsc::unbounded_channel::<crate::protocol::Command>();
+        let update_tx = workspace.update_sender();
+        let mut task = SessionTask {
+            key: session_key.clone(),
+            handle: Arc::new(handle),
+            command_rx,
+            domain: Arc::clone(&domain),
+            update_tx,
+            spawn_key: None,
+            connected_once: false,
+            workspace: Arc::downgrade(&workspace),
+        };
+
+        workspace.enable_test_dispatch_intercept();
+        task.translate_event(AgentEvent::Connected {
+            session_id: session_key.as_str().to_owned(),
+            cwd: "/tmp/drain".to_owned(),
+            current_model: forge_primitives::CurrentModel {
+                resolved_id: "claude".to_owned(),
+                display_name_short: "claude".to_owned(),
+                display_name_long: "claude".to_owned(),
+                requested_id: None,
+                catalog_id: None,
+                supports_effort: false,
+                supported_effort_levels: Vec::new(),
+                supports_fast_mode: None,
+                supports_auto_mode: None,
+                supports_adaptive_thinking: None,
+                is_authoritative: true,
+            },
+            available_models: Vec::new(),
+            mode: None,
+            history_updates: None,
+        });
+
+        // Drain dispatches Command::Prompt for each buffered entry,
+        // in insertion order. Filter out anything else in case
+        // translate_event grows side-effects later.
+        let buffered = workspace.drain_test_dispatch_buffer();
+        let drained_bodies: Vec<String> = buffered
+            .into_iter()
+            .filter_map(|cmd| match cmd {
+                crate::protocol::Command::Prompt { text, .. } => Some(text),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            drained_bodies.len(),
+            bodies.len(),
+            "one Command::Prompt per buffered wrapped prompt"
+        );
+        for (i, expected_body) in bodies.iter().enumerate() {
+            assert!(
+                drained_bodies[i].contains(expected_body),
+                "drain position {i}: expected body '{expected_body}' in dispatched text '{}'",
+                drained_bodies[i],
+            );
+        }
+        assert!(
+            domain.lock().pending_peer_prompts.is_empty(),
+            "pending_peer_prompts is drained after first-Connected"
+        );
+    }
+
     /// Common harness for the `execute_command_via_handle` tests
     /// below: build a fresh stub handle + drain channel, return both.
     fn stub_handle_with_rx()
