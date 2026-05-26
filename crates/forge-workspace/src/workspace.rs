@@ -941,12 +941,37 @@ impl Workspace {
                         _ => None,
                     };
                     self.accounts.lock().set_last_error(&key, status, retry_after);
+                    // Branch the log message by error class so anyone
+                    // reading triage logs gets the right framing.
+                    // The previous shape said "persistent failures
+                    // usually mean stale OAuth credentials" for every
+                    // error variant - which misclassified 429
+                    // rate-limits (a transient Anthropic throttle) as
+                    // an auth/credentials issue and sent users hunting
+                    // for /login problems that didn't exist.
+                    let message: &str = match status {
+                        account::UsageFetchStatus::RateLimited => {
+                            "usage_poll fetch rate-limited by Anthropic; sub-second Retry-After is treated as 'no hint' and we back off exponentially"
+                        }
+                        account::UsageFetchStatus::Expired
+                        | account::UsageFetchStatus::Unauthorized => {
+                            "usage_poll fetch failed with auth error; OAuth credentials likely need refresh via /login"
+                        }
+                        account::UsageFetchStatus::NetworkFailed => {
+                            "usage_poll fetch failed with network error; will retry on next tick"
+                        }
+                        account::UsageFetchStatus::Other => {
+                            "usage_poll fetch failed with unhandled error class; see error field for details"
+                        }
+                    };
                     tracing::warn!(
                         target: "forge_workspace::account",
                         account = %key.0,
                         config_dir = %dir.display(),
                         error = %err,
-                        "usage_poll fetch failed; persistent failures usually mean stale OAuth credentials for this account",
+                        retry_after_secs = ?retry_after.map(|d| d.as_secs()),
+                        status = ?status,
+                        "{message}",
                     );
                 }
             }
