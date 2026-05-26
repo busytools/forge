@@ -54,7 +54,26 @@ use crate::workspace::Workspace;
 /// Test resolvers can be any closure (typically returning a fixed
 /// fake key).
 #[derive(Clone)]
-pub struct CallerKeyResolver(Arc<dyn Fn() -> SessionKey + Send + Sync>);
+pub struct CallerKeyResolver(Arc<dyn Fn() -> Result<SessionKey, ResolverDetached> + Send + Sync>);
+
+/// Returned by [`CallerKeyResolver::current`] when the underlying
+/// `DomainSession` has been dropped (typically: workspace shutdown
+/// happening concurrently with a peer/worker tool invocation). The
+/// Tool impl should surface this as an `is_error` tool response —
+/// the recipient session is dying, the LLM call won't have anywhere
+/// to land anyway. Replaces the prior `__detached__` SessionKey
+/// sentinel which forced every consumer to compare against a magic
+/// string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResolverDetached;
+
+impl std::fmt::Display for ResolverDetached {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("caller session is detached (DomainSession dropped)")
+    }
+}
+
+impl std::error::Error for ResolverDetached {}
 
 impl std::fmt::Debug for CallerKeyResolver {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -83,30 +102,27 @@ impl CallerKeyResolver {
     ///
     /// If the DomainSession gets dropped before a tool fires (e.g.
     /// the workspace is shutting down concurrently with a peer tool
-    /// invocation), `current()` returns a sentinel `__detached__`
-    /// key. Tools handle this defensively: `whoami` would fail to
-    /// resolve the project, surface as `is_error` with a
-    /// "no identity resolved" message. Fine — the recipient session
-    /// is dying, the LLM call won't have anywhere to land anyway.
+    /// invocation), `current()` returns `Err(ResolverDetached)`.
+    /// Tools handle this by returning a tool-level error so the LLM
+    /// sees the failure cleanly rather than silently routing against
+    /// a synthetic sentinel SessionKey.
     pub fn from_domain(domain: &Arc<parking_lot::Mutex<DomainSession>>) -> Self {
         let weak = Arc::downgrade(domain);
         Self(Arc::new(move || {
-            weak.upgrade().map_or_else(
-                || SessionKey::from_session_id("__detached__"),
-                |d| d.lock().key.clone(),
-            )
+            weak.upgrade().map(|d| d.lock().key.clone()).ok_or(ResolverDetached)
         }))
     }
 
     /// Build a resolver that returns a fixed `SessionKey`. Use this
     /// in tests where the session never rekeys.
     pub fn from_fixed(key: SessionKey) -> Self {
-        Self(Arc::new(move || key.clone()))
+        Self(Arc::new(move || Ok(key.clone())))
     }
 
-    /// Resolve the caller's current `SessionKey`. Cheap (one mutex
-    /// acquire over a `String` after one `Weak::upgrade` check).
-    pub fn current(&self) -> SessionKey {
+    /// Resolve the caller's current `SessionKey`. Returns
+    /// `Err(ResolverDetached)` when the underlying `DomainSession`
+    /// has been dropped (workspace shutdown race).
+    pub fn current(&self) -> Result<SessionKey, ResolverDetached> {
         (self.0)()
     }
 }
@@ -572,6 +588,26 @@ mod tests {
             hop_limit,
             body: "hi".to_owned(),
         }
+    }
+
+    #[test]
+    fn caller_key_from_fixed_returns_ok() {
+        let resolver = CallerKeyResolver::from_fixed(fake_key("alpha"));
+        let key = resolver.current().expect("from_fixed always resolves");
+        assert_eq!(key.as_str(), "alpha");
+    }
+
+    #[test]
+    fn caller_key_from_domain_returns_err_after_drop() {
+        // Build a DomainSession-shaped Mutex, downgrade to Weak via
+        // from_domain, drop the Arc, then probe current(). The
+        // upgrade must fail and we must see ResolverDetached.
+        let domain =
+            Arc::new(parking_lot::Mutex::new(crate::DomainSession::new(fake_key("alpha"), None)));
+        let resolver = CallerKeyResolver::from_domain(&domain);
+        assert_eq!(resolver.current().map(|k| k.as_str().to_owned()), Ok("alpha".to_owned()));
+        drop(domain);
+        assert_eq!(resolver.current(), Err(ResolverDetached));
     }
 
     #[test]

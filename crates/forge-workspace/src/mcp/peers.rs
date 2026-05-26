@@ -106,7 +106,10 @@ impl Tool for Whoami {
     }
 
     async fn call(&self, _input: ToolInput) -> ToolOutput {
-        let caller_key = self.caller_key.current();
+        let caller_key = match self.caller_key.current() {
+            Ok(k) => k,
+            Err(err) => return tool_error(err.to_string()),
+        };
         match self.facade.whoami(&caller_key) {
             Some(identity) => match serde_json::to_string_pretty(&identity) {
                 Ok(json) => ToolOutput::text(json),
@@ -299,7 +302,10 @@ impl Tool for TellAgent {
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
 
-        let caller_key = self.caller_key.current();
+        let caller_key = match self.caller_key.current() {
+            Ok(k) => k,
+            Err(err) => return tool_error(err.to_string()),
+        };
         let Some(identity) = self.facade.whoami(&caller_key) else {
             return tool_error(format!(
                 "no identity resolved for caller {} (forge bug)",
@@ -550,7 +556,10 @@ impl Tool for AskAgent {
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
 
-        let caller_key = self.caller_key.current();
+        let caller_key = match self.caller_key.current() {
+            Ok(k) => k,
+            Err(err) => return tool_error(err.to_string()),
+        };
         let Some(identity) = self.facade.whoami(&caller_key) else {
             return tool_error(format!(
                 "no identity resolved for caller {} (forge bug)",

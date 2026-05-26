@@ -132,7 +132,10 @@ impl Tool for Spawn {
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
 
-        let caller_key = self.caller_key.current();
+        let caller_key = match self.caller_key.current() {
+            Ok(k) => k,
+            Err(err) => return tool_error(err.to_string()),
+        };
         match self.facade.spawn_worker(&caller_key, args.label, args.charter).await {
             Ok(reply) => {
                 let body = serde_json::json!({
@@ -217,7 +220,10 @@ impl Tool for List {
     }
 
     async fn call(&self, _input: ToolInput) -> ToolOutput {
-        let caller_key = self.caller_key.current();
+        let caller_key = match self.caller_key.current() {
+            Ok(k) => k,
+            Err(err) => return tool_error(err.to_string()),
+        };
         let workers = self.facade.list_workers(&caller_key);
         match serde_json::to_string_pretty(&workers) {
             Ok(json) => ToolOutput::text(json),
@@ -304,7 +310,10 @@ impl Tool for Tell {
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
 
-        let caller_key = self.caller_key.current();
+        let caller_key = match self.caller_key.current() {
+            Ok(k) => k,
+            Err(err) => return tool_error(err.to_string()),
+        };
 
         // Validate `in_reply_to` shape at the tool boundary. A
         // malformed id would silently miss the inflight-map lookup
@@ -598,7 +607,10 @@ impl Tool for Ask {
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
 
-        let caller_key = self.caller_key.current();
+        let caller_key = match self.caller_key.current() {
+            Ok(k) => k,
+            Err(err) => return tool_error(err.to_string()),
+        };
         let correlation_id = CorrelationId::new_ask();
 
         let identity = self.facade.caller_identity(&caller_key);
