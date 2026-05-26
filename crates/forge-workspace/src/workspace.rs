@@ -30,7 +30,7 @@ use crate::views::{ProjectView, SessionView};
 /// from the cache this poll populates. 60 s upper-bounds how stale
 /// the "which account has more headroom" decision can be while
 /// staying clear of the OAuth usage endpoint's 429 throttle under
-/// multi-instance polling - combined with per-account `last_error`
+/// multi-instance polling — combined with per-account `last_error`
 /// backoff (see `account::AccountState`), transient 429s recover
 /// naturally.
 const USAGE_POLL_INTERVAL: Duration = Duration::from_secs(60);
@@ -115,7 +115,7 @@ pub struct Workspace {
     /// reply (`complete_inflight_ask`) or target-failure
     /// (`expire_inflight_ask_failed`).
     ///
-    /// There is no timeout machinery - asks live until reply or
+    /// There is no timeout machinery — asks live until reply or
     /// crash. The peer-mcp v1 brainstorm had a 30-min timer + late-
     /// reply tagging but the user opted to drop both: peers are
     /// expected to respond promptly, and a forever-pending entry is
@@ -136,10 +136,10 @@ pub struct Workspace {
     /// inherit `HTTPS_PROXY` + `NODE_EXTRA_CA_CERTS` and their wire
     /// classification gets normalised to `cli` (interactive
     /// subscription) shape. Forge refuses to construct a Workspace if
-    /// the proxy fails to boot (hard-fail policy - see
+    /// the proxy fails to boot (hard-fail policy — see
     /// [`forge_agent::proxy`]).
     ///
-    /// `None` only in `Workspace::testing_stub` - that path skips
+    /// `None` only in `Workspace::testing_stub` — that path skips
     /// `new()` and therefore the proxy boot. Tests don't drive real
     /// subprocesses, so the absence is fine.
     proxy: Option<forge_agent::proxy::ProxyHandle>,
@@ -155,7 +155,7 @@ pub struct Workspace {
     team_spawn_in_flight: Mutex<std::collections::HashSet<ProjectKey>>,
     /// Test-only intercept buffer for app-level Commands. When
     /// `Some`, `dispatch` captures the command into the buffer
-    /// instead of routing it to the spawn::* handler - used by
+    /// instead of routing it to the spawn::* handler — used by
     /// engineering-team tests to assert what would have been
     /// dispatched without spinning up real subprocesses. Always
     /// `None` in production (no enable hook outside test cfg).
@@ -235,7 +235,7 @@ async fn scan_worker_resume_map(
     build_resume_map_from_sessions(&sessions, project_dir)
 }
 
-/// Pure-function inner of [`scan_worker_resume_map`] - pulls the
+/// Pure-function inner of [`scan_worker_resume_map`] — pulls the
 /// catalog scan out so the filtering logic can be unit-tested without
 /// the async filesystem walk. Takes the already-scanned `sessions`
 /// slice and a `project_dir` prefix; returns label -> session_id for
@@ -303,7 +303,7 @@ impl Workspace {
         .await;
 
         // Group sessions by project key derived from each session's cwd.
-        // Sessions without a cwd are skipped - they can't be associated
+        // Sessions without a cwd are skipped — they can't be associated
         // with a project view.
         let mut catalog: HashMap<ProjectKey, Vec<SDKSessionInfo>> = HashMap::new();
         for entry in catalog_entries {
@@ -326,7 +326,7 @@ impl Workspace {
         // the first live probe for 30 s+; without seed data every
         // account ties at tier 0 (unknown-fresh) during that window.
         // The 60 s background poller refreshes these snapshots in
-        // the background - the cache is purely "last known value"
+        // the background — the cache is purely "last known value"
         // seed.
         let state = crate::account_cache::load(&config_dir);
         accounts.seed_from_cache(&state.account_usage);
@@ -371,21 +371,21 @@ impl Workspace {
     /// Snapshot of the `[ui]` section from `forge.toml`. All fields
     /// have defaults so callers can use the result without worrying
     /// about whether the section was present in the config file.
-    /// Cheap clone - the struct is shallow.
+    /// Cheap clone — the struct is shallow.
     pub fn ui_settings(&self) -> crate::ui::UiSettings {
         self.config.ui.clone()
     }
 
     /// Return the names of all projects that should spawn at forge
     /// launch (`auto_start = true`). Order is declaration order from
-    /// forge.toml - the launchpad picker uses its own row sort, so
+    /// forge.toml — the launchpad picker uses its own row sort, so
     /// no further ordering is imposed here.
     pub fn auto_start_project_names(&self) -> Vec<String> {
         self.config.auto_start_projects().map(|p| p.name.clone()).collect()
     }
 
     /// Every project listed in `forge.toml`, each carrying its catalog
-    /// sessions sorted by last-activity descending - `sessions[0]` is
+    /// sessions sorted by last-activity descending — `sessions[0]` is
     /// the lead. Empty `sessions` means the project has nothing on
     /// disk yet; the project still surfaces in the returned Vec.
     pub fn list_projects(&self) -> Vec<ProjectView> {
@@ -445,7 +445,7 @@ impl Workspace {
 
     /// Hands out the `Arc<AgentHandle>` for the requested session,
     /// spawning the underlying Agent lazily if it isn't already pooled.
-    /// Idempotent - repeated calls for the same target return the same
+    /// Idempotent — repeated calls for the same target return the same
     /// handle (no second subprocess). `settings` only apply to the
     /// spawn; subsequent calls reuse the existing Agent and ignore the
     /// parameter.
@@ -456,7 +456,7 @@ impl Workspace {
     /// lives in the in-memory usage cache; nothing about account
     /// choice is persisted across forge launches.
     ///
-    /// Workspace does not track which handle the caller is "using" -
+    /// Workspace does not track which handle the caller is "using" —
     /// that's the caller's concern.
     pub fn get_agent_handle(
         self: &Arc<Self>,
@@ -486,7 +486,7 @@ impl Workspace {
         // `handle_deliver_peer_prompt` parks the wrapped prompt at
         // `__spawn_<name>__` and dispatches SpawnProject), we MUST
         // drain that buffer into the live session before returning
-        // the pooled handle - otherwise the pending peer prompt
+        // the pooled handle — otherwise the pending peer prompt
         // strands at the synth key forever. The drain happens in
         // the same critical section as the pool lookup so a
         // concurrent caller can't race us into orphaning the
@@ -529,7 +529,7 @@ impl Workspace {
         // Attach the rewriter proxy only when the picked account's
         // `proxy = true` in forge.toml (defaults to true when the
         // field is absent). When false, claude talks direct to
-        // Anthropic with native sdk-cli classification - used for
+        // Anthropic with native sdk-cli classification — used for
         // API-key accounts where the rewriter adds no value, or for
         // debugging the raw wire shape.
         let account_proxy_enabled = self.accounts.lock().proxy_enabled(&account_key);
@@ -556,7 +556,7 @@ impl Workspace {
             //     before dispatching SpawnProject). Move that
             //     DomainSession onto `session_key` so the SessionTask
             //     we're about to construct sees the buffered state.
-            //  3. Neither - create fresh at `session_key`.
+            //  3. Neither — create fresh at `session_key`.
             //
             // When both `session_key` and `spawn_key` exist (race:
             // peer ask arrives while a pre-Connect placeholder was
@@ -650,7 +650,7 @@ impl Workspace {
                 // the subprocess cwd, so we must spawn in the session's
                 // original cwd. Source it from the catalog; if the
                 // catalog has no record (or no cwd) the session can't
-                // be resumed cleanly anyway - pass through and let the
+                // be resumed cleanly anyway — pass through and let the
                 // bridge surface ConnectionFailed.
                 let cwd = self.session_cwd_for(&key).unwrap_or_default();
                 handle.resume_session(key.as_str().to_owned(), cwd, settings)?;
@@ -699,7 +699,7 @@ impl Workspace {
             );
         }
 
-        // Spawn the per-session `SessionTask` actor. Idempotent -
+        // Spawn the per-session `SessionTask` actor. Idempotent —
         // a second `get_agent_handle` call for the same key reuses
         // the existing task. The command channel is created only
         // on the cold path (no existing sender), held by the
@@ -721,7 +721,7 @@ impl Workspace {
             // now that the handle exists. The TUI's pre-spawn
             // accessors (`connect::create_app`'s placeholder entry)
             // keep reading from the same `Arc<Mutex<…>>` they were
-            // given before - no second `domain_session_for`
+            // given before — no second `domain_session_for`
             // round-trip after the spawn lands.
             domain_arc.lock().conn = Some(Arc::clone(&arc));
             let domain = Arc::clone(&domain_arc);
@@ -751,7 +751,7 @@ impl Workspace {
     /// (e.g. `__spawn_<project>__`) into the live session via
     /// `Command::Prompt`. Without this, peer asks aimed at a
     /// running-but-pre-spawn-dispatched target strand at the synth
-    /// key forever - the regular Connected-time drain only fires
+    /// key forever — the regular Connected-time drain only fires
     /// when a fresh SessionTask boots.
     fn drain_spawn_key_buffer_into(
         self: &Arc<Self>,
@@ -816,7 +816,7 @@ impl Workspace {
     /// Called once at startup, after `Workspace::new` has seeded the
     /// in-memory map from the on-disk cache. The 60 s background
     /// poller takes over from here. There is no retry-until-success
-    /// loop - Anthropic's per-IP rate-limiter on `/api/oauth/usage`
+    /// loop — Anthropic's per-IP rate-limiter on `/api/oauth/usage`
     /// makes bursting counterproductive, and the on-disk cache means
     /// the launchpad picker has tier data immediately regardless of
     /// whether the live probe succeeds.
@@ -840,7 +840,7 @@ impl Workspace {
     ///
     /// Call once at construction, AFTER `spawn_initial_account_probe`.
     /// A `usage_poller_started` flag guards against duplicate
-    /// spawns - second and later calls return without spawning so a
+    /// spawns — second and later calls return without spawning so a
     /// forge-tui programming error can't multiply the poll rate.
     pub fn start_usage_poller(self: &Arc<Self>) {
         if self.usage_poller_started.swap(true, std::sync::atomic::Ordering::AcqRel) {
@@ -891,7 +891,7 @@ impl Workspace {
             accounts
                 .ordered_keys
                 .iter()
-                // Skip accounts inside an active backoff window - a
+                // Skip accounts inside an active backoff window — a
                 // recent probe failed and re-probing now would just
                 // re-trip the same rate limit. `should_probe_now`
                 // returns true for cold-cache accounts (no failure
@@ -979,7 +979,7 @@ impl Workspace {
 
         // Persist the snapshot to disk so the next forge launch's
         // launchpad picker has seed data even if Anthropic 429s the
-        // first probe. Skipped when no probe succeeded this round -
+        // first probe. Skipped when no probe succeeded this round —
         // no point rewriting the file with the same contents.
         if any_success {
             let snapshots = self.accounts.lock().snapshots_for_cache();
@@ -1058,7 +1058,7 @@ impl Workspace {
     ///
     /// Config-load guarantees every `LoadedProject.accounts` is
     /// non-empty. The session-id branch can still miss (catalog has
-    /// no record, or cwd doesn't match any project) - those fall
+    /// no record, or cwd doesn't match any project) — those fall
     /// back to the default project's pin so the picker always has
     /// a non-empty list. This mirrors the "use what we know" intent
     /// rather than a global account fallback.
@@ -1241,7 +1241,7 @@ impl Workspace {
     /// second-subscriber programming error doesn't disappear into
     /// silent data loss). forge-tui's main event loop owns the
     /// returned `mpsc::UnboundedReceiver` and reads `SessionUpdate`
-    /// envelopes directly - this is the sole event source the App
+    /// envelopes directly — this is the sole event source the App
     /// consumes.
     pub fn subscribe(&self) -> Option<mpsc::UnboundedReceiver<SessionUpdate>> {
         if let Some(rx) = self.update_rx_slot.lock().take() {
@@ -1249,7 +1249,7 @@ impl Workspace {
         } else {
             tracing::error!(
                 target: "forge_workspace::workspace",
-                "Workspace::subscribe called after the receiver was already taken - second subscriber would silently receive nothing"
+                "Workspace::subscribe called after the receiver was already taken — second subscriber would silently receive nothing"
             );
             None
         }
@@ -1272,9 +1272,9 @@ impl Workspace {
     /// `SessionTask` is registered for `key` (e.g., the session was
     /// closed or hasn't been spawned yet).
     ///
-    /// Callers should hold the lock for the shortest scope possible;
-    /// concurrent reducers and the per-session `SessionTask` share
-    /// this mutex.
+    /// Callers should hold the lock for the shortest scope possible
+    /// — concurrent reducers and the per-session `SessionTask`
+    /// share this mutex.
     pub fn domain_session_for(&self, key: &SessionKey) -> Option<Arc<Mutex<DomainSession>>> {
         self.domain_handles.lock().get(key).cloned()
     }
@@ -1282,7 +1282,7 @@ impl Workspace {
     /// Whether the session at `key` currently has a live agent
     /// handle stamped onto its [`DomainSession`]. Encapsulates the
     /// presence check so callers don't need to peek at
-    /// `DomainSession.conn` directly - the field layout is a
+    /// `DomainSession.conn` directly — the field layout is a
     /// workspace internal.
     pub fn has_agent_for(&self, key: &SessionKey) -> bool {
         self.domain_session_for(key).is_some_and(|d| d.lock().conn.is_some())
@@ -1290,7 +1290,7 @@ impl Workspace {
 
     /// Route a [`Command`]. Per-session commands (`cmd.key() ==
     /// Some(key)`) fan out to the matching `SessionTask`. App-level
-    /// commands (`cmd.key() == None` - `SpawnProject`,
+    /// commands (`cmd.key() == None` — `SpawnProject`,
     /// `SpawnSession`, `StartDefault`) route to the workspace's own
     /// handler.
     ///
@@ -1337,7 +1337,7 @@ impl Workspace {
             // `DomainSession` (without a running tokio runtime to host
             // a real `SessionTask`) get a synchronous fallback so the
             // command still reaches the stub. Gating this here means
-            // the fallback is structurally unreachable in production -
+            // the fallback is structurally unreachable in production —
             // a future refactor can't open the race window silently.
             #[cfg(any(test, feature = "testing"))]
             {
@@ -1356,7 +1356,7 @@ impl Workspace {
                 Err(DispatchError::UnknownSession(key))
             }
         } else {
-            // App-level commands. The `spawn::*` handlers are sync -
+            // App-level commands. The `spawn::*` handlers are sync —
             // they emit one event, kick off `get_agent_handle_with_spawn_key`
             // (which internally tokio::spawns the agent), and return.
             // Run them inline under the span; no detach needed.
@@ -1485,7 +1485,7 @@ impl Workspace {
     ///
     /// The dispatcher reuses the existing `Command::SpawnWorker`
     /// handler (`handle_spawn_worker`); the only difference from
-    /// MCP-tool-driven spawn is the absence of an MCP caller -
+    /// MCP-tool-driven spawn is the absence of an MCP caller —
     /// `spawned_by_session_id` is the lead's UUID directly, and
     /// `return_to` is a dropped oneshot (we don't await the reply
     /// here; each worker's own Connected event surfaces them via
@@ -1655,7 +1655,7 @@ impl Workspace {
     /// `QuestionRequest` arrives.
     ///
     /// No-op when no `SessionTask` is registered for `key` (e.g.,
-    /// the session was just closed) - the oneshot is dropped and the
+    /// the session was just closed) — the oneshot is dropped and the
     /// caller's forwarder task observes a closed receiver, which
     /// surfaces as an `oneshot::Recv` error in the existing
     /// permission/question response forwarder paths.
@@ -1681,7 +1681,7 @@ impl Workspace {
     /// Set the `session_id` field on the workspace's `DomainSession`
     /// for `key`. No-op when no domain handle is registered for
     /// `key`. Used by `App::set_session_id` to stamp the
-    /// claude-issued UUID once the first `Connected` event fires -
+    /// claude-issued UUID once the first `Connected` event fires —
     /// the workspace consults this when routing `AgentHandle` calls
     /// that take a session_id.
     pub fn set_session_id_in_domain(
@@ -1898,8 +1898,9 @@ impl Workspace {
     /// fix from #184 at a different surface: workers spawned in a
     /// git repo run inside claude's `--worktree <label>` fork (under
     /// `<project_root>/.claude/worktrees/<label>/`), so `cwd_raw`
-    /// from the `Connected` event carries the project root - scanning
-    /// there would surface the lead's branch / diff, not the worker's.
+    /// from the `Connected` event carries the project root and
+    /// scanning there would surface the lead's branch / diff, not
+    /// the worker's.
     ///
     /// For non-worker sessions (project leads) or non-git workers,
     /// returns `cwd_raw` unchanged.
@@ -1925,7 +1926,7 @@ impl Workspace {
     /// `handle_spawn_worker`).
     ///
     /// Returns `true` when the caller IS a worker (so it knows to
-    /// suppress nothing - the existing `ConnectionFailed` emission
+    /// suppress nothing — the existing `ConnectionFailed` emission
     /// still fires for the TUI side). `false` for lead sessions or
     /// any other non-worker, in which case the caller's existing
     /// behaviour proceeds unchanged.
@@ -2414,7 +2415,7 @@ impl Workspace {
     }
 
     /// Borrow the [`Arc<AgentHandle>`] registered against `key`.
-    /// Workspace-internal helper - surfaces a sometimes-`None` to keep
+    /// Workspace-internal helper — surfaces a sometimes-`None` to keep
     /// the early-init / disconnected branches explicit.
     fn agent_handle_for(&self, key: &SessionKey) -> Option<Arc<AgentHandle>> {
         let pool = self.pool.lock();
@@ -2492,7 +2493,7 @@ impl Workspace {
         let mut handles = self.domain_handles.lock();
         if handles.contains_key(&key) {
             // Overwriting silently drops the previous DomainSession
-            // along with any pending_interactions oneshots - pending
+            // along with any pending_interactions oneshots — pending
             // permission/question round-trips would then deny with
             // "response channel closed" instead of completing. Log
             // loudly so a future programming error doesn't manifest
@@ -2500,7 +2501,7 @@ impl Workspace {
             tracing::error!(
                 target: "forge_workspace::workspace",
                 key = %key.as_str(),
-                "register_domain_session overwriting existing entry - pending interactions lost"
+                "register_domain_session overwriting existing entry — pending interactions lost"
             );
         }
         handles.insert(key, Arc::clone(&domain));
@@ -2522,7 +2523,7 @@ impl Workspace {
     /// `from` to `to`. Called by the per-session task actor on
     /// `Connected` / `SessionReplaced` when the pool key it was
     /// registered under differs from the real claude-issued session
-    /// UUID - i.e., the `/new` / `/resume` / first-Connect-of-a-fresh-
+    /// UUID — i.e., the `/new` / `/resume` / first-Connect-of-a-fresh-
     /// project paths where the pool key was a placeholder (a previous
     /// session's id or `__fresh__:<project_key>`) and the actual
     /// session UUID isn't known until the bridge fires `init`.
@@ -2531,7 +2532,7 @@ impl Workspace {
     /// `domain_handles` (and rewrites the moved `DomainSession.key`
     /// field). Without this migration, `Workspace::dispatch`'s key
     /// lookup falls off the end with `UnknownSession` for every
-    /// `Command::Prompt` / `Cancel` / etc. after a session-replace -
+    /// `Command::Prompt` / `Cancel` / etc. after a session-replace —
     /// the SessionTask is still alive at the old key but the TUI's
     /// `active_session_key` has flipped to the new one.
     ///
@@ -2545,7 +2546,7 @@ impl Workspace {
         let mut pool = self.pool.lock();
         let mut senders = self.command_senders.lock();
         let mut handles = self.domain_handles.lock();
-        // Refuse the migration if `to` is already registered - moving
+        // Refuse the migration if `to` is already registered — moving
         // would silently replace a live SessionTask's entries and
         // orphan its pending interactions. This is a hint that a
         // duplicate Connected event arrived for two SessionTasks
@@ -2592,7 +2593,7 @@ impl Workspace {
     /// - `AgentEvent::ConnectionFailed` arrives for a target's bridge
     ///   (target's claude subprocess crashed or failed to spawn)
     /// - A `SessionTask::drop` fires (target's session was closed by
-    ///   any reason - user close, lifecycle terminate, panic)
+    ///   any reason — user close, lifecycle terminate, panic)
     ///
     /// Maps the closing `SessionKey` to its project name via
     /// `list_projects`, then walks `inflight_asks` for entries whose
@@ -2672,7 +2673,7 @@ impl Workspace {
             .find(|p| p.name == ask.target_project)
             .map_or_else(|| "?".to_owned(), |p| p.org);
 
-        // Body carries the human-readable failure reason - caller
+        // Body carries the human-readable failure reason — caller
         // chat block surfaces it underneath the bracket header.
         let body = match &reason {
             crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed => {
@@ -2746,7 +2747,7 @@ impl Workspace {
     /// `Receiver<forge_primitives::AgentCommand>` that drains every command
     /// dispatched to it. Tests use this to wire `App.set_active_conn`
     /// without spinning up a real subprocess; the bridge underneath is
-    /// `forge_agent::Agent::testing_stub` - same shape as before, now
+    /// `forge_agent::Agent::testing_stub` — same shape as before, now
     /// reachable from forge-tui via `forge_workspace::Workspace::*`
     /// so the TUI crate no longer needs a direct `forge-agent` dep.
     ///
@@ -2792,7 +2793,7 @@ impl Workspace {
     /// exercising any code path that needs one.
     ///
     /// Returns the workspace alongside the `SessionUpdate` receiver.
-    /// The workspace's `subscribe()` slot is `None` - callers that
+    /// The workspace's `subscribe()` slot is `None` — callers that
     /// need the receiver get it directly from this constructor.
     pub fn testing_stub() -> (Arc<Self>, mpsc::UnboundedReceiver<SessionUpdate>) {
         Self::testing_stub_with_config_dir(PathBuf::from("/tmp/forge-testing-stub"))
@@ -2836,7 +2837,7 @@ impl Workspace {
     /// call, every `Command` routed through the app-level branch of
     /// `dispatch` is buffered in lieu of running the spawn handler;
     /// drain via `drain_test_dispatch_buffer`. No-op if already
-    /// enabled. Test-only - tests use this to assert what would
+    /// enabled. Test-only — tests use this to assert what would
     /// have been dispatched without spinning up real subprocesses.
     pub fn enable_test_dispatch_intercept(&self) {
         let mut intercept = self.command_intercept.lock();
@@ -3402,7 +3403,7 @@ config_dir = "~/.claude-personal"
 
     /// `dispatch(Command::Cancel)` falls back to synchronous direct
     /// dispatch when no SessionTask is registered. This is the path
-    /// TUI unit tests rely on - `set_active_conn` installs a stub
+    /// TUI unit tests rely on — `set_active_conn` installs a stub
     /// handle but never spawns a task, and tests need to observe
     /// the primitive command on the rx.
     #[test]
@@ -3581,7 +3582,7 @@ config_dir = "~/.claude-personal"
             UsageFetchStatus::NetworkFailed,
         );
         // Non-429 HTTP errors and decode failures fall through to the
-        // generic `Other` bucket - renderers show "fetch failed" so
+        // generic `Other` bucket — renderers show "fetch failed" so
         // the user can tell something's wrong without naming a cause.
         assert_eq!(
             classify_oauth_usage_error(&OauthUsageError::HttpStatus(500, String::new())),
@@ -3594,7 +3595,7 @@ config_dir = "~/.claude-personal"
     }
 
     // ─────────────────────────────────────────────────────────────────
-    // I3 - peer-MCP lifecycle tests
+    // I3 — peer-MCP lifecycle tests
     // ─────────────────────────────────────────────────────────────────
 
     fn forge_toml_with_two_projects() -> tempfile::TempDir {
@@ -3627,7 +3628,7 @@ config_dir = "~/.claude-subspace"
 
     /// expire_inflight_ask_failed removes the entry from inflight_asks,
     /// fires the DeliveryFailed stat bump, and dispatches a
-    /// DeliveryFailureNotice wrapper. Idempotent - a second call on the
+    /// DeliveryFailureNotice wrapper. Idempotent — a second call on the
     /// same id is a no-op.
     #[tokio::test]
     async fn expire_inflight_ask_failed_removes_entry_and_is_idempotent() {
@@ -3651,7 +3652,7 @@ config_dir = "~/.claude-subspace"
         workspace.expire_inflight_ask_failed(&id, PeerFailureReason::TargetConnectionFailed);
         assert!(!workspace.inflight_asks.lock().contains_key(&id), "entry removed after expire");
 
-        // Idempotent - second call on the same id is a no-op.
+        // Idempotent — second call on the same id is a no-op.
         workspace.expire_inflight_ask_failed(&id, PeerFailureReason::TargetConnectionFailed);
         assert!(!workspace.inflight_asks.lock().contains_key(&id));
     }
@@ -3713,7 +3714,7 @@ config_dir = "~/.claude-subspace"
             hop_limit: 10,
             body: "fyi".to_owned(),
         };
-        // The command channel is the workspace's main dispatch bus -
+        // The command channel is the workspace's main dispatch bus —
         // routing to an unknown target still queues, the spawn handler
         // is the one that rejects. Smoke: dispatch returns Ok.
         let result = workspace.dispatch(crate::protocol::Command::DeliverPeerPrompt {
@@ -4727,7 +4728,7 @@ mod team_spawn_tests {
         assert!(workspace.drain_test_dispatch_buffer().is_empty());
     }
 
-    /// #157: all-fresh path - when no roles have a matching entry in
+    /// #157: all-fresh path — when no roles have a matching entry in
     /// `resume_map`, every dispatched `SpawnWorker` carries
     /// `resume_existing = None`.
     #[test]
@@ -4753,7 +4754,7 @@ mod team_spawn_tests {
         }
     }
 
-    /// #157: all-resume path - every role has a matching entry in
+    /// #157: all-resume path — every role has a matching entry in
     /// `resume_map`, so every dispatched `SpawnWorker` carries
     /// `resume_existing = Some(<expected_session_id>)`.
     #[test]
@@ -4783,7 +4784,7 @@ mod team_spawn_tests {
         }
     }
 
-    /// #157: mixed path - one role resumes, one is fresh.
+    /// #157: mixed path — one role resumes, one is fresh.
     #[test]
     fn spawn_team_for_lead_with_resume_mixed() {
         let (workspace, _update_rx) = Workspace::testing_stub();
@@ -5206,7 +5207,7 @@ mod async_worker_spawn_failure_tests {
         let lead_id = "lead-gone-uuid";
         workspace
             .insert_live_worker(&project_key, fake_worker("reviewer", synth_key, lead_id, true));
-        // DELIBERATELY skip install_lead_in_pool - lead is "gone".
+        // DELIBERATELY skip install_lead_in_pool — lead is "gone".
 
         let handled = workspace.handle_async_worker_spawn_failure(
             &SessionKey::from_session_id(synth_key),
