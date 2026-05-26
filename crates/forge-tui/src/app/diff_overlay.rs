@@ -181,15 +181,21 @@ pub enum DefaultTarget {
     /// The Inspector scanner itself failed (subprocess crash,
     /// timeout, oversize output). Distinct from `NotARepo` because
     /// the user IS in a repo; git just couldn't run. The snapshot
-    /// collapses to `view = NoRepo` as a render failsafe but
-    /// `scanner_ok=false` signals the real story.
+    /// collapses to `in_repo = false` as a render failsafe but
+    /// `scanner_ok = false` signals the real story.
     ScannerFailed,
-    /// Snapshot view is `BranchVsDefault` (so the scanner sees
-    /// committed changes vs SOME default) but the default branch
-    /// itself couldn't be resolved - no `origin/HEAD`, no local
-    /// `main`, no local `master`. Distinct from `Clean` because
-    /// there ARE changes; we just don't know which ref to compare
-    /// against. User needs to pass an explicit `/diff <ref>`.
+    /// Snapshot has `branch_ahead = Some(_)` (so the scanner sees
+    /// committed work) but the default branch itself couldn't be
+    /// resolved - no `origin/HEAD`, no local `main`, no local
+    /// `master`. Distinct from `Clean` because there ARE changes;
+    /// we just don't know which ref to compare against. User needs
+    /// to pass an explicit `/diff <ref>`.
+    ///
+    /// In the current scan logic this is structurally unreachable
+    /// because `branch_ahead` is only constructed when
+    /// `default_branch` resolved. Kept as a defensive case so a
+    /// future refactor that decouples the two doesn't accidentally
+    /// collapse this into `Clean`.
     NoDefault,
     /// Working tree is clean against the resolved default branch.
     /// Genuine "no changes". Branch name is surfaced in the
