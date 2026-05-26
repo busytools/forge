@@ -280,6 +280,17 @@ impl SessionTask {
                         &key,
                         crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
                     );
+                    // Worker async spawn failure: classify the
+                    // failure, dispatch a typed
+                    // WorkerSpawnFailedNotice envelope to the lead's
+                    // chat if the classifier identifies a worktree-
+                    // creation failure, and roll back the
+                    // WorkerEntry regardless of classifier outcome
+                    // (parity with the sync rollback in
+                    // handle_spawn_worker). Lead-session and
+                    // non-worker callers see no behavioural change
+                    // - this branch is a no-op for them.
+                    workspace.handle_async_worker_spawn_failure(&key, &message);
                 }
                 self.emit(SessionUpdate::ConnectionFailed { key, message, fatal: false });
             }
