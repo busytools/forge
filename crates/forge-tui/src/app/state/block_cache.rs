@@ -50,15 +50,19 @@ pub struct BlockCache {
     last_access_tick: Cell<u64>,
 }
 
-/// A previously-rendered width's lines kept in the LRU. The stored
-/// `cached_bytes` keep budget accounting accurate without paying for
-/// segment + height metadata that would only matter if stale slots
-/// participated in height measurement (they currently don't; the
-/// height re-measures lazily on the next `measure_and_set_height`).
+/// A previously-rendered width's lines kept in the LRU. Carries
+/// segments + a snapshot of the height-at-this-width so that a
+/// `get_for_width` hit can swap with the live slot and still have
+/// the measure path land on the right lines / segments / height.
 struct StaleSlot {
     width: u16,
     lines: Vec<ratatui::text::Line<'static>>,
+    segments: Vec<CacheLineSegment>,
     cached_bytes: usize,
+    /// Snapshot of `BlockCache.wrapped_height` at rotation time, if the
+    /// height was already measured for this width. `None` means the
+    /// caller will need to re-measure via segments after promotion.
+    wrapped_height: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -104,7 +108,7 @@ impl BlockCache {
         }
     }
 
-    pub fn get_for_width(&self, width: u16) -> Option<&Vec<ratatui::text::Line<'static>>> {
+    pub fn get_for_width(&mut self, width: u16) -> Option<&Vec<ratatui::text::Line<'static>>> {
         if self.version != 0 {
             return None;
         }
@@ -115,17 +119,34 @@ impl BlockCache {
             }
             return lines;
         }
-        // Resize-back recovery: walk the small LRU of previously
-        // rendered widths. A hit lets the caller skip a full
-        // re-render. Promotion to live happens lazily on the next
-        // `store_for_width` (this getter is `&self`).
-        for slot in &self.stale_widths {
-            if slot.width == width {
-                self.touch();
-                return Some(&slot.lines);
-            }
+        // Resize-back recovery: promote a matching stale slot to live
+        // so the subsequent `measure_and_set_height(width)` operates
+        // on the right lines + segments. Without promotion the
+        // measure path would re-measure the LIVE slot's lines at
+        // `width`, which is wrong for width-dependent content (diff
+        // bodies). The current live slot rotates into stale.
+        let idx = self.stale_widths.iter().position(|slot| slot.width == width)?;
+        let promoted = self.stale_widths.remove(idx)?;
+        if let Some(old_width) = self.render_width.take()
+            && let Some(old_lines) = self.lines.take()
+        {
+            self.rotate_live_into_stale(old_width, old_lines);
         }
-        None
+        self.render_width = Some(promoted.width);
+        self.lines = Some(promoted.lines);
+        self.segments = promoted.segments;
+        self.cached_bytes = promoted.cached_bytes;
+        if let Some(h) = promoted.wrapped_height {
+            self.wrapped_height = h;
+            self.wrapped_width = promoted.width;
+            self.wrapped_height_valid = true;
+        } else {
+            self.wrapped_height = 0;
+            self.wrapped_width = 0;
+            self.wrapped_height_valid = false;
+        }
+        self.touch();
+        self.lines.as_ref()
     }
 
     /// Store freshly rendered lines, marking the cache as clean.
@@ -159,19 +180,42 @@ impl BlockCache {
             && let Some(old_width) = self.render_width.take()
             && let Some(old_lines) = self.lines.take()
         {
-            self.segments.clear();
-            let old_bytes = std::mem::replace(&mut self.cached_bytes, 0);
-            self.stale_widths.push_back(StaleSlot {
-                width: old_width,
-                lines: old_lines,
-                cached_bytes: old_bytes,
-            });
-            while self.stale_widths.len() > MAX_STALE_WIDTHS {
-                self.stale_widths.pop_front();
-            }
+            self.rotate_live_into_stale(old_width, old_lines);
         }
         self.render_width = Some(width);
         self.store_with_policy_and_width(lines, *super::super::default_cache_split_policy());
+    }
+
+    /// Move the current live slot's lines + segments + measured height
+    /// (when valid) into a fresh `StaleSlot`, evicting the oldest stale
+    /// entry if the LRU is at capacity. The caller is responsible for
+    /// already having taken `lines` and `render_width`; this helper
+    /// drains the remaining live state.
+    fn rotate_live_into_stale(
+        &mut self,
+        old_width: u16,
+        old_lines: Vec<ratatui::text::Line<'static>>,
+    ) {
+        let old_segments = std::mem::take(&mut self.segments);
+        let old_bytes = std::mem::replace(&mut self.cached_bytes, 0);
+        let old_wrapped_height = if self.wrapped_height_valid && self.wrapped_width == old_width {
+            Some(self.wrapped_height)
+        } else {
+            None
+        };
+        self.wrapped_height = 0;
+        self.wrapped_width = 0;
+        self.wrapped_height_valid = false;
+        self.stale_widths.push_back(StaleSlot {
+            width: old_width,
+            lines: old_lines,
+            segments: old_segments,
+            cached_bytes: old_bytes,
+            wrapped_height: old_wrapped_height,
+        });
+        while self.stale_widths.len() > MAX_STALE_WIDTHS {
+            self.stale_widths.pop_front();
+        }
     }
 
     fn store_with_policy_and_width(
@@ -425,6 +469,51 @@ mod tests {
         assert!(cache.get_for_width(80).is_none());
         assert!(cache.get_for_width(100).is_none());
         assert!(cache.get_for_width(120).is_none());
+    }
+
+    /// Regression for #125 round-2: on a stale-LRU hit at width W,
+    /// the subsequent `measure_and_set_height(W)` must read the
+    /// promoted slot's segments, not the LIVE slot's. Otherwise
+    /// width-dependent bodies (diff content) memoize a height
+    /// computed from the wrong line set. Uses line counts that
+    /// disambiguate which slot the measure path saw.
+    #[test]
+    fn measure_after_stale_hit_uses_promoted_slot() {
+        let mut cache = BlockCache::default();
+        let three_lines: Vec<Line<'static>> =
+            vec![Line::from("a"), Line::from("b"), Line::from("c")];
+        cache.store_for_width(three_lines, 80);
+        let h_80 = cache.measure_and_set_height(80).expect("measure at 80");
+        assert_eq!(h_80, 3, "three single-char lines measure to 3 at width 80");
+
+        cache.store_for_width(vec![Line::from("one")], 120);
+        let h_120 = cache.measure_and_set_height(120).expect("measure at 120");
+        assert_eq!(h_120, 1, "one-line body measures to 1 at width 120");
+
+        let restored = cache.get_for_width(80).expect("80 still in stale lru");
+        assert_eq!(restored.len(), 3, "promoted slot exposes the 3-line body");
+
+        let h_80_again = cache.measure_and_set_height(80).expect("re-measure at 80");
+        assert_eq!(
+            h_80_again, 3,
+            "height after stale hit must match the promoted slot, not the prior live (120) body",
+        );
+    }
+
+    /// On stale-LRU hit, the prior live slot rotates into stale so
+    /// both widths remain reachable. Verifies the swap: after
+    /// promoting 80, the previously-live 120 must still be in stale.
+    #[test]
+    fn stale_hit_rotates_prior_live_into_stale() {
+        let mut cache = BlockCache::default();
+        cache.store_for_width(make_lines("at-80"), 80);
+        cache.store_for_width(make_lines("at-120"), 120);
+        // Promote 80.
+        let promoted = cache.get_for_width(80).expect("80 promotes");
+        assert_eq!(promoted[0].spans[0].content, "at-80");
+        // 120 must now be reachable via stale.
+        let stale_120 = cache.get_for_width(120).expect("120 rotated into stale");
+        assert_eq!(stale_120[0].spans[0].content, "at-120");
     }
 
     /// Same-width re-store overwrites in place without rotating stale
