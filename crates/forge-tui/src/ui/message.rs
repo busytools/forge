@@ -769,16 +769,19 @@ pub(crate) struct MessageRenderOptions {
     pub tools_collapsed: bool,
     pub include_trailing_separator: bool,
     /// True when this message is a peer-MCP / worker-MCP envelope and
-    /// the prior visible envelope had the same `sender_org`. Suppresses
-    /// the `forge` role label at the top so consecutive same-project
-    /// envelopes read as a group-chat-style streak (one label, N
-    /// bodies) instead of repeating the label per envelope. Computed
-    /// by the chat iterator (see `crate::ui::chat`) from the previous
-    /// visible message's envelope org. Sticky-header for scroll-back
-    /// falls out naturally — when `render_start` advances past a
-    /// streak's first message, the new first-visible envelope is
-    /// treated as having no prior visible envelope and shows the
-    /// label.
+    /// the prior message in the FULL chat list had the same
+    /// `sender_org`. Suppresses the `forge` role label at the top so
+    /// consecutive same-project envelopes read as a group-chat-style
+    /// streak (one label, N bodies) instead of repeating the label per
+    /// envelope. Computed by the chat iterator (see `crate::ui::chat`)
+    /// from the chat-wide previous message's envelope org.
+    ///
+    /// Sticky-header for scroll-back is NOT implemented: when the user
+    /// scrolls past a streak's first envelope, the new first-visible
+    /// envelope shows no label. The viewport-anchor alternative
+    /// (re-render the header for the first visible mid-group envelope)
+    /// would split the cache key per scroll position and flap entries
+    /// on every viewport change. Filed as v2 if user feedback warrants.
     pub suppress_group_header: bool,
 }
 
