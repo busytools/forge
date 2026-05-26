@@ -2587,7 +2587,7 @@ mod tests {
     /// lead.
     #[test]
     fn find_running_bucket_for_path_excludes_worker_session_keys() {
-        use forge_workspace::mcp::workers::types::WorkerEntry;
+        use forge_workspace::WorkerEntry;
         use forge_workspace::{ProjectKey, SessionKey};
 
         let mut app = App::test_default();

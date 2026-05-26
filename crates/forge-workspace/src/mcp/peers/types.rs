@@ -151,7 +151,6 @@ pub struct InflightAsk {
     pub correlation_id: CorrelationId,
     pub caller: SessionKey,
     pub caller_project: String,
-    pub caller_org: String,
     pub target_project: String,
 }
 

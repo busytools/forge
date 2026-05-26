@@ -6,7 +6,9 @@
 
 use std::sync::Arc;
 
-use forge_sdk::mcp::server::{McpServer, McpServerBuilder};
+#[cfg(any(test, feature = "testing"))]
+use forge_sdk::mcp::server::McpServer;
+use forge_sdk::mcp::server::McpServerBuilder;
 use forge_sdk::mcp::tool::{Tool, ToolInput, ToolOutput, ToolOutputBlock};
 
 use crate::mcp::peers::facade::{CallerKeyResolver, PeerStatsDelta};
@@ -17,8 +19,6 @@ use crate::mcp::workers::facade::{
 
 pub mod facade;
 pub mod types;
-
-pub use types::WorkerEntry;
 
 /// Default hop limit for forwarded ask/tell chains within a project.
 /// Mirrors the peer-MCP value (#114 v1 brainstorm locked at 10).
@@ -38,9 +38,10 @@ pub(crate) fn worker_target_project_key(project_key: &str, label: &str) -> Strin
 /// Build a standalone `forge` MCP server carrying only the four
 /// workers-coordination tools. Used in tests for isolated workers-MCP
 /// coverage; the production build_site uses
-/// [`crate::mcp::build_forge_server`] which combines peers + workers
+/// `crate::mcp::build_forge_server` which combines peers + workers
 /// into one server (the CLI rejects duplicate-name MCP servers, so
 /// both modules must register their tools through a single builder).
+#[cfg(any(test, feature = "testing"))]
 pub fn build_server(facade: Arc<dyn WorkerFacade>, caller_key: CallerKeyResolver) -> McpServer {
     add_tools(McpServerBuilder::new("forge", env!("CARGO_PKG_VERSION")), facade, caller_key).build()
 }
@@ -132,7 +133,10 @@ impl Tool for Spawn {
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
 
-        let caller_key = self.caller_key.current();
+        let caller_key = match self.caller_key.current() {
+            Ok(k) => k,
+            Err(err) => return tool_error(err.to_string()),
+        };
         match self.facade.spawn_worker(&caller_key, args.label, args.charter).await {
             Ok(reply) => {
                 let body = serde_json::json!({
@@ -217,7 +221,10 @@ impl Tool for List {
     }
 
     async fn call(&self, _input: ToolInput) -> ToolOutput {
-        let caller_key = self.caller_key.current();
+        let caller_key = match self.caller_key.current() {
+            Ok(k) => k,
+            Err(err) => return tool_error(err.to_string()),
+        };
         let workers = self.facade.list_workers(&caller_key);
         match serde_json::to_string_pretty(&workers) {
             Ok(json) => ToolOutput::text(json),
@@ -304,7 +311,10 @@ impl Tool for Tell {
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
 
-        let caller_key = self.caller_key.current();
+        let caller_key = match self.caller_key.current() {
+            Ok(k) => k,
+            Err(err) => return tool_error(err.to_string()),
+        };
 
         // Validate `in_reply_to` shape at the tool boundary. A
         // malformed id would silently miss the inflight-map lookup
@@ -598,7 +608,10 @@ impl Tool for Ask {
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
 
-        let caller_key = self.caller_key.current();
+        let caller_key = match self.caller_key.current() {
+            Ok(k) => k,
+            Err(err) => return tool_error(err.to_string()),
+        };
         let correlation_id = CorrelationId::new_ask();
 
         let identity = self.facade.caller_identity(&caller_key);
@@ -639,7 +652,6 @@ impl Tool for Ask {
             correlation_id: correlation_id.clone(),
             caller: caller_key.clone(),
             caller_project: caller_project_key,
-            caller_org: String::new(),
             target_project: target_project_composite,
         });
         // Bump the caller's outgoing counter. Mirrors peers__ask_agent
@@ -1370,7 +1382,6 @@ mod tests {
                 correlation_id: id.clone(),
                 caller,
                 caller_project: caller_project.to_owned(),
-                caller_org: String::new(),
                 target_project: target_composite.to_owned(),
             },
         );

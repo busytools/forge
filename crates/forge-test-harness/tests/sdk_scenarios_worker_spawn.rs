@@ -32,10 +32,10 @@ use std::time::SystemTime;
 use forge_sdk::{OptionsBuilder, PermissionMode};
 use forge_test_harness::sdk_wire::run_live_scenario;
 use forge_workspace::SessionKey;
-use forge_workspace::mcp::peers::facade::CallerKeyResolver;
-use forge_workspace::mcp::workers::build_server;
-use forge_workspace::mcp::workers::facade::{CallerProject, MockWorkerFacade, WorkerFacade};
 use forge_workspace::protocol::WorkerSpawnReply;
+use forge_workspace::{
+    CallerKeyResolver, CallerProject, MockWorkerFacade, WorkerFacade, build_workers_server,
+};
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "burns real Anthropic API tokens; opt-in via FORGE_WIRE_CAPTURE=1"]
@@ -68,7 +68,7 @@ async fn worker_spawn_scenario() {
     );
     let facade: Arc<dyn WorkerFacade> = Arc::new(mock);
 
-    let server = build_server(facade, CallerKeyResolver::from_fixed(caller_key));
+    let server = build_workers_server(facade, CallerKeyResolver::from_fixed(caller_key));
 
     let opts = OptionsBuilder::new()
         .max_turns(4)

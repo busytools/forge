@@ -62,7 +62,7 @@ mod account_cache;
 mod config;
 mod domain_session;
 mod error;
-pub mod mcp;
+pub(crate) mod mcp;
 pub mod protocol;
 mod session_task;
 mod spawn;
@@ -80,6 +80,15 @@ pub use target::{ProjectKey, SessionKey, SessionTarget};
 pub use ui::{SpinnerStyle, UiSettings};
 pub use views::{ProjectView, SessionView};
 pub use workspace::{Workspace, resolve_lead_session};
+
+// MCP (peers / workers) public surface. The `mcp` module itself is
+// crate-private now; these flat re-exports expose only the types
+// production consumers (forge-tui) need to read off `SessionUpdate`
+// payloads. The `testing`-feature block below adds the extra surface
+// the `forge-test-harness` integration tests need (MCP server
+// builders, mock facades, the caller-key resolver).
+pub use mcp::peers::types::{CorrelationId, WrappedKind, WrappedPrompt};
+pub use mcp::workers::types::WorkerEntry;
 
 #[cfg(any(test, feature = "testing"))]
 pub use session_task::on_connected_for_test;
@@ -147,3 +156,15 @@ pub use forge_primitives::permission::PermissionMode;
 pub use forge_agent::Agent;
 #[cfg(feature = "testing")]
 pub use forge_agent::AgentEvent;
+
+// MCP test-harness re-exports. `forge-test-harness` integration tests
+// drive the workers MCP server directly against a mock facade; that
+// requires the server-builder, the resolver, and the facade trait /
+// mock to be visible cross-crate. Gating on `testing` keeps them out
+// of production builds.
+#[cfg(feature = "testing")]
+pub use mcp::peers::facade::CallerKeyResolver;
+#[cfg(feature = "testing")]
+pub use mcp::workers::build_server as build_workers_server;
+#[cfg(feature = "testing")]
+pub use mcp::workers::facade::{CallerProject, MockWorkerFacade, WorkerFacade};
