@@ -21,6 +21,7 @@ use crate::mcp::peers::facade::PeerStatsDelta;
 use crate::mcp::peers::types::WrappedPrompt;
 use crate::protocol::{Command, SessionUpdate, WorkerSpawnReply, WorkerStatusAction};
 use crate::target::ProjectKey;
+use crate::team::{LEAD_CHARTER, Role};
 use crate::workspace::Workspace;
 use crate::{SessionKey, SessionTarget};
 
@@ -48,6 +49,21 @@ fn build_worker_extra_args(is_git_repo: bool, label: &str) -> Vec<(String, Optio
     args
 }
 
+/// If the project has a non-empty `team` list and the launch settings
+/// don't already carry a `charter`, stamp the engineering-team lead
+/// charter so the spawned lead session knows it has a team. No-op when
+/// the team is empty or a charter was already set (worker spawns set
+/// the worker's own charter; we never overwrite that).
+fn apply_lead_charter_if_team(team: &[Role], settings: &mut SessionLaunchSettings) {
+    if team.is_empty() {
+        return;
+    }
+    if settings.charter.is_some() {
+        return;
+    }
+    settings.charter = Some(LEAD_CHARTER.to_owned());
+}
+
 /// Emit a `SessionUpdate` and log at debug when the receiver is gone
 /// (TUI is shutting down or has crashed). The send is logically
 /// best-effort — no caller can act on the failure — but visibility
@@ -72,7 +88,7 @@ fn try_emit(workspace: &Workspace, label: &'static str, update: SessionUpdate) {
 pub(crate) fn handle_spawn_project(
     workspace: &Arc<Workspace>,
     project_name: &str,
-    launch_settings: SessionLaunchSettings,
+    mut launch_settings: SessionLaunchSettings,
 ) {
     let Some(project) = workspace.find_project_view_by_name(project_name) else {
         tracing::warn!(
@@ -82,6 +98,8 @@ pub(crate) fn handle_spawn_project(
         );
         return;
     };
+
+    apply_lead_charter_if_team(&project.team, &mut launch_settings);
 
     let synth_key = SessionKey::from_session_id(format!("__spawn_{project_name}__"));
     try_emit(
@@ -1348,5 +1366,39 @@ config_dir = "~/.claude-subspace"
             workspace.inflight_asks.lock().is_empty(),
             "ask must be expired when the worker it targets closes"
         );
+    }
+}
+
+#[cfg(test)]
+mod team_charter_tests {
+    use super::*;
+
+    #[test]
+    fn project_with_team_gets_lead_charter() {
+        let team = vec![Role::Planner, Role::Reviewer];
+        let mut settings = SessionLaunchSettings::default();
+        apply_lead_charter_if_team(&team, &mut settings);
+        assert_eq!(settings.charter.as_deref(), Some(LEAD_CHARTER));
+    }
+
+    #[test]
+    fn project_without_team_skips_lead_charter() {
+        let team: Vec<Role> = Vec::new();
+        let mut settings = SessionLaunchSettings::default();
+        apply_lead_charter_if_team(&team, &mut settings);
+        assert!(settings.charter.is_none());
+    }
+
+    #[test]
+    fn existing_charter_is_preserved_not_overwritten() {
+        // Defensive: if a caller (test fixture, worker resume, etc.)
+        // already set charter, don't clobber it.
+        let team = vec![Role::Planner];
+        let mut settings = SessionLaunchSettings {
+            charter: Some("pre-existing".into()),
+            ..SessionLaunchSettings::default()
+        };
+        apply_lead_charter_if_team(&team, &mut settings);
+        assert_eq!(settings.charter.as_deref(), Some("pre-existing"));
     }
 }
