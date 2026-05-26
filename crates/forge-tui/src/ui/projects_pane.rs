@@ -1231,6 +1231,20 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         .zip(app.active_account_display_name())
         .and_then(|(ws, name)| ws.usage_error_for(&name));
 
+    // 7d cap detection: when the 7d window is at-or-near 100%
+    // utilization AND the usage probe hit a 429, the 429 is a
+    // downstream consequence of the cap (Anthropic 429s the probe
+    // for accounts past budget). Surface "7d cap" on the 5h
+    // indicator instead of the generic "rate-limited" so the user
+    // reads "budget exhausted, not transient throttle." 99% catches
+    // floor + tiny inflight overage.
+    let seven_day_at_cap = app
+        .usage()
+        .snapshot
+        .as_ref()
+        .and_then(|s| s.seven_day.as_ref())
+        .is_some_and(|w| w.utilization >= 99.0);
+
     // Rows 9..=10: 5h bar + ETA row.
     push_usage_window_lines(
         &mut lines,
@@ -1238,18 +1252,25 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         app.usage().snapshot.as_ref().and_then(|s| s.five_hour.as_ref()),
         width,
         usage_error,
+        seven_day_at_cap,
     );
 
     // Row 11: blank between 5h and 7d.
     lines.push(Line::default());
 
-    // Rows 12..=13: 7d bar + ETA row.
+    // Rows 12..=13: 7d bar + ETA row. The "7d cap" label only
+    // applies to the 5h indicator (it tells the user the 5h-side
+    // 429 is downstream of the 7d cap, not its own thing). The 7d
+    // row itself doesn't need that hint — its 100% bar already
+    // tells the user the cap is hit. Pass false here so 7d's label
+    // (if any) reads its own error class.
     push_usage_window_lines(
         &mut lines,
         "7d",
         app.usage().snapshot.as_ref().and_then(|s| s.seven_day.as_ref()),
         width,
         usage_error,
+        false,
     );
 
     // Row 14: blank between usage and version rows.
@@ -1334,6 +1355,7 @@ fn push_usage_window_lines(
     window: Option<&crate::app::UsageWindow>,
     width: u16,
     usage_error: Option<forge_workspace::UsageFetchStatus>,
+    seven_day_at_cap: bool,
 ) {
     let bar_cells = bar_cells_for(width);
     let pct_value = window.map_or(0.0, |w| w.utilization);
@@ -1369,7 +1391,8 @@ fn push_usage_window_lines(
                     Style::default().fg(theme::DIM)
                 }
             });
-            let text = usage_error.map_or_else(|| "—".to_owned(), usage_error_label);
+            let text = usage_error
+                .map_or_else(|| "—".to_owned(), |s| usage_error_label(s, seven_day_at_cap));
             (text, style)
         },
         |duration| (duration, Style::default().fg(theme::DIM)),
@@ -1396,22 +1419,32 @@ fn needs_user_recovery(status: forge_workspace::UsageFetchStatus) -> bool {
 /// even when the user is glancing past the panel.
 ///
 /// `RateLimited` here means the `/api/oauth/usage` PROBE endpoint
-/// returned 429, NOT that the user's account is rate-limited.
-/// Surfacing "rate-limited" in the bar's hint column was
-/// misleading — it read as "your account hit a limit" when really
-/// it's "forge's bookkeeping request got throttled by Anthropic's
-/// per-IP /usage rate." Show `—` (same as cold boot) instead so
-/// the transient internal hiccup doesn't alarm the user. Network
-/// hiccups likewise collapse to `—`; only real auth failures
-/// surface with their loud yellow recovery hint.
-fn usage_error_label(status: forge_workspace::UsageFetchStatus) -> String {
+/// returned 429. Two distinct shapes get surfaced:
+///
+/// - When the 7d window is at-or-near 100% (budget exhausted),
+///   Anthropic 429s the usage probe as a downstream consequence of
+///   the cap. The 5h indicator picks up the same 429 even though
+///   the 5h budget itself is fine. Surface "7d cap" so the user
+///   reads it as "budget exhaustion, not transient throttle."
+/// - Otherwise (the typical multi-instance per-IP throttle) show
+///   "rate-limited" so the user can tell an empty bar from an
+///   upstream throttle.
+///
+/// Network failures and the catch-all Other class collapse to
+/// "—" because they're transient and rarely require user action.
+fn usage_error_label(status: forge_workspace::UsageFetchStatus, seven_day_at_cap: bool) -> String {
     use forge_workspace::UsageFetchStatus;
     match status {
         UsageFetchStatus::Expired => "⚠ expired — /login".to_owned(),
         UsageFetchStatus::Unauthorized => "⚠ unauthorized — /login".to_owned(),
-        UsageFetchStatus::RateLimited
-        | UsageFetchStatus::NetworkFailed
-        | UsageFetchStatus::Other => "—".to_owned(),
+        UsageFetchStatus::RateLimited => {
+            if seven_day_at_cap {
+                "7d cap".to_owned()
+            } else {
+                "rate-limited".to_owned()
+            }
+        }
+        UsageFetchStatus::NetworkFailed | UsageFetchStatus::Other => "—".to_owned(),
     }
 }
 
@@ -1902,5 +1935,47 @@ mod tests {
             })
             .collect();
         assert_eq!(workers_targets.len(), 4, "expected 4 worker targets, got {workers_targets:?}");
+    }
+
+    // ----------------------------------------------------------------
+    // #160: usage_error_label distinguishes 429 from auth failures
+    // and surfaces 7d-cap context when applicable.
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn usage_error_label_rate_limited_says_rate_limited_when_7d_below_cap() {
+        let label = usage_error_label(forge_workspace::UsageFetchStatus::RateLimited, false);
+        assert_eq!(label, "rate-limited", "429 + 7d-below-cap → rate-limited");
+    }
+
+    #[test]
+    fn usage_error_label_rate_limited_says_7d_cap_when_7d_at_cap() {
+        let label = usage_error_label(forge_workspace::UsageFetchStatus::RateLimited, true);
+        assert_eq!(
+            label, "7d cap",
+            "429 + 7d-at-cap → 7d cap (budget exhaustion, not transient throttle)",
+        );
+    }
+
+    #[test]
+    fn usage_error_label_unauthorized_unchanged() {
+        let label = usage_error_label(forge_workspace::UsageFetchStatus::Unauthorized, false);
+        assert_eq!(label, "⚠ unauthorized — /login");
+        // 7d-at-cap flag must NOT affect auth errors - they need /login
+        // regardless of the 7d window state.
+        let with_cap = usage_error_label(forge_workspace::UsageFetchStatus::Unauthorized, true);
+        assert_eq!(with_cap, "⚠ unauthorized — /login");
+    }
+
+    #[test]
+    fn usage_error_label_expired_unchanged() {
+        let label = usage_error_label(forge_workspace::UsageFetchStatus::Expired, false);
+        assert_eq!(label, "⚠ expired — /login");
+    }
+
+    #[test]
+    fn usage_error_label_network_and_other_collapse_to_em_dash() {
+        assert_eq!(usage_error_label(forge_workspace::UsageFetchStatus::NetworkFailed, false), "—",);
+        assert_eq!(usage_error_label(forge_workspace::UsageFetchStatus::Other, false), "—");
     }
 }
