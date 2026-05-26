@@ -239,19 +239,23 @@ async fn scan_worker_resume_map(
 /// catalog scan out so the filtering logic can be unit-tested without
 /// the async filesystem walk. Takes the already-scanned `sessions`
 /// slice and a `project_dir` prefix; returns label -> session_id for
-/// each worker-tagged session whose `cwd` starts with `project_dir`.
+/// each worker-tagged session whose `cwd` is under `project_dir`.
+///
+/// Uses `Path::starts_with` (component-aware) rather than
+/// `str::starts_with` so a project at `/foo/bar` doesn't match
+/// workers from a sibling project at `/foo/bar-old` whose cwd
+/// shares the byte-prefix.
 #[must_use]
 fn build_resume_map_from_sessions(
     sessions: &[SDKSessionInfo],
     project_dir: &std::path::Path,
 ) -> HashMap<String, String> {
-    let project_dir_str = project_dir.to_string_lossy().to_string();
     let mut resume_map: HashMap<String, String> = HashMap::new();
     for info in sessions {
-        let Some(cwd) = info.cwd.as_deref() else {
+        let Some(cwd) = info.cwd.as_deref().map(std::path::Path::new) else {
             continue;
         };
-        if !cwd.starts_with(&project_dir_str) {
+        if !cwd.starts_with(project_dir) {
             continue;
         }
         let Some(tag) = info.tag.as_deref() else {
@@ -4323,6 +4327,33 @@ mod build_resume_map_tests {
         ];
         let map = build_resume_map_from_sessions(&sessions, project_dir);
         assert_eq!(map.len(), 1);
+        assert_eq!(map.get("planner"), Some(&"ours".to_owned()));
+    }
+
+    /// Path-prefix matching must be component-aware: a project at
+    /// `/Users/me/Projects/forge` MUST NOT match workers from a
+    /// sibling project at `/Users/me/Projects/forge-old` whose cwd
+    /// shares the `forge` byte-prefix. `Path::starts_with` (not
+    /// `str::starts_with`) handles this correctly. Without the
+    /// component-aware check, `forge-old`'s workers would silently
+    /// migrate into `forge`'s resume map - same bug class as #157.
+    #[test]
+    fn build_resume_map_filters_out_workers_with_overlapping_path_prefix() {
+        let project_dir = std::path::Path::new("/Users/me/Projects/forge");
+        let sessions = vec![
+            mk_info(
+                "ours",
+                Some("/Users/me/Projects/forge/.claude/worktrees/planner"),
+                Some("forge:worker:planner"),
+            ),
+            mk_info(
+                "prefix-overlap",
+                Some("/Users/me/Projects/forge-old/.claude/worktrees/planner"),
+                Some("forge:worker:planner"),
+            ),
+        ];
+        let map = build_resume_map_from_sessions(&sessions, project_dir);
+        assert_eq!(map.len(), 1, "only the matching-project worker should resume");
         assert_eq!(map.get("planner"), Some(&"ours".to_owned()));
     }
 
