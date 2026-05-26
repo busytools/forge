@@ -201,7 +201,7 @@ pub trait WorkerFacade: Send + Sync {
     /// Caller MUST be a worker. The target lead is resolved from the
     /// caller's `WorkerEntry::spawned_by_session_id`. Returns
     /// `Delivered` (`Command::DeliverWorkerPromptToLead` dispatched)
-    /// or one of the [`WorkerLeadDeliverError`] variants. Same
+    /// or one of the `WorkerLeadDeliverError` variants. Same
     /// hop-limit + wire-shape contract as `deliver_worker_prompt`.
     fn deliver_prompt_to_lead(
         &self,

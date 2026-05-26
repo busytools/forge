@@ -21,7 +21,9 @@
 
 use std::sync::Arc;
 
-use forge_sdk::mcp::server::{McpServer, McpServerBuilder};
+#[cfg(test)]
+use forge_sdk::mcp::server::McpServer;
+use forge_sdk::mcp::server::McpServerBuilder;
 use forge_sdk::mcp::tool::{Tool, ToolInput, ToolOutput};
 
 use crate::SessionKey;
@@ -34,10 +36,11 @@ pub mod types;
 /// Build a standalone `forge` MCP server carrying only the four
 /// peer-coordination tools. Used in tests for isolated peer-MCP
 /// coverage; the production build_site uses
-/// [`crate::mcp::build_forge_server`] which combines peers + workers
+/// `crate::mcp::build_forge_server` which combines peers + workers
 /// into one server (the CLI rejects duplicate-name MCP servers, so
 /// both modules must register their tools through a single
 /// builder).
+#[cfg(test)]
 pub fn build_server(facade: Arc<dyn WorkspaceFacade>, caller_key: CallerKeyResolver) -> McpServer {
     add_tools(McpServerBuilder::new("forge", env!("CARGO_PKG_VERSION")), facade, caller_key).build()
 }
@@ -106,7 +109,10 @@ impl Tool for Whoami {
     }
 
     async fn call(&self, _input: ToolInput) -> ToolOutput {
-        let caller_key = self.caller_key.current();
+        let caller_key = match self.caller_key.current() {
+            Ok(k) => k,
+            Err(err) => return tool_error(err.to_string()),
+        };
         match self.facade.whoami(&caller_key) {
             Some(identity) => match serde_json::to_string_pretty(&identity) {
                 Ok(json) => ToolOutput::text(json),
@@ -299,7 +305,10 @@ impl Tool for TellAgent {
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
 
-        let caller_key = self.caller_key.current();
+        let caller_key = match self.caller_key.current() {
+            Ok(k) => k,
+            Err(err) => return tool_error(err.to_string()),
+        };
         let Some(identity) = self.facade.whoami(&caller_key) else {
             return tool_error(format!(
                 "no identity resolved for caller {} (forge bug)",
@@ -550,7 +559,10 @@ impl Tool for AskAgent {
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
 
-        let caller_key = self.caller_key.current();
+        let caller_key = match self.caller_key.current() {
+            Ok(k) => k,
+            Err(err) => return tool_error(err.to_string()),
+        };
         let Some(identity) = self.facade.whoami(&caller_key) else {
             return tool_error(format!(
                 "no identity resolved for caller {} (forge bug)",
@@ -588,7 +600,6 @@ impl Tool for AskAgent {
             correlation_id: correlation_id.clone(),
             caller: caller_key.clone(),
             caller_project: identity.name.clone(),
-            caller_org: identity.org.clone(),
             target_project: args.target.clone(),
         });
         self.facade.bump_inflight_stats(&caller_key, PeerStatsDelta::OutgoingPlus1);
@@ -763,7 +774,6 @@ mod tests {
             correlation_id: CorrelationId(correlation_id.to_owned()),
             caller: fake_key(caller_key_str),
             caller_project: caller_project.to_owned(),
-            caller_org: "TestOrg".to_owned(),
             target_project: target_project.to_owned(),
         }
     }

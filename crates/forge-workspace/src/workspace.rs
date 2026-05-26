@@ -3588,7 +3588,6 @@ config_dir = "~/.claude-stargate"
                 correlation_id: id.clone(),
                 caller: caller.clone(),
                 caller_project: "forge".to_owned(),
-                caller_org: "Default".to_owned(),
                 target_project: "gateway-backend".to_owned(),
             },
         );
@@ -3624,7 +3623,6 @@ config_dir = "~/.claude-stargate"
                 correlation_id: id.clone(),
                 caller: caller.clone(),
                 caller_project: "forge".to_owned(),
-                caller_org: "Default".to_owned(),
                 target_project: "gateway-backend".to_owned(),
             },
         );

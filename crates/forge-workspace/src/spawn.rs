@@ -1376,7 +1376,6 @@ config_dir = "~/.claude-stargate"
                 correlation_id: cid.clone(),
                 caller: SessionKey::from_session_id("lead-uuid"),
                 caller_project: project.as_str().to_owned(),
-                caller_org: String::new(),
                 target_project: composite,
             },
         );
