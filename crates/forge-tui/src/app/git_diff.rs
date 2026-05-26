@@ -7,7 +7,7 @@
 //! addressed [`UiSession`].
 //!
 //! Mirrors the existing OAuth-usage refresh pattern (TUI spawns,
-//! workspace mediates, agent does the actual work) — see the
+//! workspace mediates, agent does the actual work) - see the
 //! "Crate placement guide" in `CLAUDE.md`.
 
 #![allow(clippy::module_name_repetitions)]
@@ -24,7 +24,7 @@ use crate::app::App;
 use crate::app::session::UiSession;
 
 /// How often the ticker pokes the drain pump. The actual `git`
-/// subprocess only runs every [`SNAPSHOT_STALENESS`] — the ticker
+/// subprocess only runs every [`SNAPSHOT_STALENESS`] - the ticker
 /// is just a cheap check that compares timestamps. Short enough
 /// that cold-start (snapshot == None) is caught within ~1s; cheap
 /// enough that the per-second tokio wake is invisible.
@@ -47,11 +47,13 @@ pub enum GitDiffEvent {
     /// A scanner task finished. `key` identifies the originating
     /// session bucket; `generation` lets `drain_events` drop stale
     /// results when the session's cwd has changed since the scan
-    /// was kicked off.
-    SnapshotReady { key: SessionKey, generation: u64, snapshot: GitDiffSnapshot },
+    /// was kicked off. The snapshot is boxed to keep the
+    /// `TimerTick` variant from being dominated by it - the
+    /// snapshot grew once layer-2 stats joined the type.
+    SnapshotReady { key: SessionKey, generation: u64, snapshot: Box<GitDiffSnapshot> },
     /// The 10s idle ticker fired. `drain_events` resolves the
     /// current active session + cwd at consume time and issues a
-    /// fresh refresh request — embedding the key here would let it
+    /// fresh refresh request - embedding the key here would let it
     /// drift if the user switched sessions between fire and consume.
     TimerTick,
 }
@@ -61,7 +63,7 @@ pub enum GitDiffEvent {
 /// `true` and leave the session permanently unable to refresh.
 /// `scan` itself is infallible by construction, but a panic via OOM
 /// / allocator failure / future executor bug would otherwise be
-/// invisible — the next ticker tick would see the guard still set
+/// invisible - the next ticker tick would see the guard still set
 /// and silently skip forever.
 struct ScanInFlightGuard(Arc<AtomicBool>);
 
@@ -78,7 +80,7 @@ impl Drop for ScanInFlightGuard {
 /// `prev_snapshot` carries the session's most-recent
 /// `GitDiffSnapshot`, cloned by the caller (the spawn moves
 /// ownership into the task). The scanner uses it to short-circuit
-/// the `gh pr list` call when the branch hasn't changed — see
+/// the `gh pr list` call when the branch hasn't changed - see
 /// [`forge_agent::env::git_diff::scan`].
 ///
 /// Early-returns (and logs at debug level) when:
@@ -125,8 +127,11 @@ pub fn request_refresh(
         let _guard = guard;
         let snapshot = forge_workspace::env::git_diff::scan(&cwd, prev_snapshot.as_ref()).await;
         // Best-effort send; the receiver going away (app shutdown)
-        // is fine, drop the result.
-        let _ = tx.send(GitDiffEvent::SnapshotReady { key, generation, snapshot });
+        // is fine, drop the result. Box the snapshot so the channel
+        // event keeps the `TimerTick` / `SnapshotReady` variants
+        // balanced in size (clippy::large_enum_variant).
+        let _ =
+            tx.send(GitDiffEvent::SnapshotReady { key, generation, snapshot: Box::new(snapshot) });
     });
 }
 
@@ -140,7 +145,7 @@ pub fn drain_events(app: &mut App) {
             Ok(event) => event,
             // Empty: nothing more this tick. Disconnected: the
             // ticker / scanner senders are gone (app shutdown).
-            // Either way we stop draining — nothing else will arrive
+            // Either way we stop draining - nothing else will arrive
             // during this main-loop pass.
             Err(std_mpsc::TryRecvError::Empty | std_mpsc::TryRecvError::Disconnected) => return,
         };
@@ -151,7 +156,7 @@ pub fn drain_events(app: &mut App) {
 fn apply_event(app: &mut App, event: GitDiffEvent) {
     match event {
         GitDiffEvent::SnapshotReady { key, generation, snapshot } => {
-            apply_snapshot_ready(app, &key, generation, snapshot);
+            apply_snapshot_ready(app, &key, generation, *snapshot);
         }
         GitDiffEvent::TimerTick => {
             apply_timer_tick(app);
@@ -166,7 +171,7 @@ fn apply_snapshot_ready(
     snapshot: GitDiffSnapshot,
 ) {
     let Some(session) = app.sessions.get_mut(key) else {
-        // Session closed during a scan — benign, not actionable.
+        // Session closed during a scan - benign, not actionable.
         // TRACE so the log doesn't flood when the user is rapidly
         // opening / closing sessions.
         tracing::trace!(
@@ -180,7 +185,7 @@ fn apply_snapshot_ready(
         return;
     };
     if generation != session.git_diff_generation {
-        // Stale generation — usually a session-cwd swap landed
+        // Stale generation - usually a session-cwd swap landed
         // mid-scan. WARN-level so operators can spot a hung scanner
         // (repeated stale drops on the same key with no progress)
         // when triaging a "GIT section frozen" report.
@@ -221,7 +226,16 @@ fn apply_timer_tick(app: &mut App) {
     if !should_refresh(session) {
         return;
     }
-    let cwd = std::path::PathBuf::from(session.cwd_raw.clone());
+    // For git-repo worker sessions, `cwd_raw` carries the project
+    // root (pre-fork value from `AgentEvent::Connected.cwd`); the
+    // worker actually runs inside `<root>/.claude/worktrees/<label>/`.
+    // Resolve the worktree-aware cwd via the workspace so the scan
+    // lands on the worker's branch, not the lead's.
+    let cwd_raw_path = std::path::PathBuf::from(session.cwd_raw.clone());
+    let cwd = match app.workspace.as_ref() {
+        Some(workspace) => workspace.git_scan_cwd_for_session(&active_key, &cwd_raw_path),
+        None => cwd_raw_path,
+    };
     let generation = session.git_diff_generation;
     let scan_in_flight = Arc::clone(&session.git_diff_scan_in_flight);
     // Clone the prior snapshot so the spawned scan can reuse cached
@@ -240,7 +254,7 @@ fn apply_timer_tick(app: &mut App) {
 
 /// Refresh rule: fetch when the snapshot is missing OR the last
 /// successful refresh is at least [`SNAPSHOT_STALENESS`] old.
-/// Skips otherwise — cached snapshot is fresh enough.
+/// Skips otherwise - cached snapshot is fresh enough.
 fn should_refresh(session: &UiSession) -> bool {
     if session.git_diff_snapshot.is_none() {
         return true;
@@ -271,13 +285,14 @@ pub fn spawn_periodic_timer(tx: std_mpsc::Sender<GitDiffEvent>) {
 mod tests {
     use super::*;
     use forge_primitives::git::GitBranch;
-    use forge_workspace::env::git_diff::GitDiffView;
 
     fn snapshot() -> GitDiffSnapshot {
         GitDiffSnapshot {
             branch: GitBranch::Named("main".into()),
             default_branch: Some("main".into()),
-            view: GitDiffView::CleanDefault,
+            in_repo: true,
+            worktree: None,
+            branch_ahead: None,
             pr: None,
             closes: Vec::new(),
             scanner_ok: true,
@@ -322,7 +337,7 @@ mod tests {
         app.needs_redraw = false;
 
         // Event carries an older generation than the session currently
-        // tracks — drain pump must reject it.
+        // tracks - drain pump must reject it.
         apply_snapshot_ready(&mut app, &key, 6, snapshot());
 
         let session = app.sessions.get(&key).expect("session exists");
@@ -332,7 +347,7 @@ mod tests {
     }
 
     /// Unknown-session: a scan landing after its bucket has been
-    /// removed (session closed) must not panic — it just logs and
+    /// removed (session closed) must not panic - it just logs and
     /// drops.
     #[test]
     fn apply_snapshot_ready_drops_for_unknown_session() {

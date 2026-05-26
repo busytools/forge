@@ -1,20 +1,29 @@
-//! Git diff scanner — on-demand `git` subprocess invocations that
+//! Git diff scanner - on-demand `git` subprocess invocations that
 //! produce a [`GitDiffSnapshot`] describing the project's current
 //! changeset.
 //!
 //! Polled (not watched): callers (`forge_workspace::Workspace::scan_git_diff`)
-//! invoke [`scan`] from the TUI's `app::git_diff` ticker — a 1 s
+//! invoke [`scan`] from the TUI's `app::git_diff` ticker - a 1 s
 //! poke runs the "snapshot is `None` OR age ≥ 10 s → fetch" rule
 //! against the active session. The snapshot carries branch info
 //! alongside diff stats, so this module replaces both the previous
 //! file-watcher `GitContextWatcher` and the per-turn refresh hooks
 //! that fed it.
 //!
+//! The snapshot exposes two independent diff layers so callers can
+//! render both simultaneously when both apply (worker on a topic
+//! branch with uncommitted edits, for instance):
+//! - `worktree`: uncommitted edits vs HEAD (the dirty tree). `None`
+//!   when the tree is clean.
+//! - `branch_ahead`: the branch's commits ahead of the default
+//!   branch. `None` on the default branch, on detached HEAD, or
+//!   when there's no resolvable default.
+//!
 //! `scan` always returns a value. Subprocess failures, missing
-//! repos, oversize output, and timeouts all collapse to
-//! [`GitDiffView::NoRepo`]; the failure surfaces in the trace log
-//! at WARN level so a real issue can be diagnosed without breaking
-//! the rendering path.
+//! repos, oversize output, and timeouts all collapse to a snapshot
+//! with `in_repo = false`; the failure surfaces in the trace log at
+//! WARN level so a real issue can be diagnosed without breaking the
+//! rendering path.
 
 use std::path::Path;
 use std::time::Duration;
@@ -45,7 +54,7 @@ const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 /// renderer collapses the rest into a "+N more" line. With the
 /// box-drawing tree + single-child folding in `inspector_pane`,
 /// 7 file leaves typically render as ~9-11 rows including
-/// directory headers — matches the TASKS / PROCESSES section caps
+/// directory headers - matches the TASKS / PROCESSES section caps
 /// (5) and keeps the GIT section roughly the same height as its
 /// neighbours on tall trees.
 const TOP_FILE_COUNT: usize = 7;
@@ -53,6 +62,10 @@ const TOP_FILE_COUNT: usize = 7;
 /// Snapshot of one project's git state, suitable for rendering in
 /// the Inspector pane's GIT section. Branch info is folded in here
 /// so a single polled scan covers everything the renderer needs.
+///
+/// `worktree` and `branch_ahead` are independent: a worker on a
+/// topic branch with uncommitted edits surfaces both layers, while
+/// the lead on `main` with a clean tree surfaces neither.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitDiffSnapshot {
     /// Current branch (Named / Detached / NoRepo / Unknown).
@@ -61,10 +74,26 @@ pub struct GitDiffSnapshot {
     /// `None` when `origin/HEAD` is missing AND neither `main` nor
     /// `master` exists as a local ref.
     pub default_branch: Option<String>,
-    pub view: GitDiffView,
+    /// `false` when `cwd` is not inside a git repository (rev-parse
+    /// reported empty output). Combined with [`Self::scanner_ok`],
+    /// lets consumers distinguish "not a repo" (in_repo=false,
+    /// scanner_ok=true) from "scanner crashed" (in_repo=false,
+    /// scanner_ok=false).
+    pub in_repo: bool,
+    /// Layer 1: uncommitted edits vs HEAD. `None` when the tree is
+    /// clean or the cwd isn't in a repo.
+    pub worktree: Option<GitDiffStats>,
+    /// Layer 2: commits the current branch has ahead of
+    /// `default_branch`. `None` on the default branch, on detached
+    /// HEAD, when `default_branch` is unknown, or when the cwd
+    /// isn't in a repo. The commit count is exposed separately
+    /// because `--numstat` collapses every commit into a single
+    /// stat block; the count tells the renderer "this many commits
+    /// produced these stats".
+    pub branch_ahead: Option<GitBranchAhead>,
     /// Open pull request for the current branch, if one exists. Only
     /// populated for `Named` non-default branches; `None` otherwise.
-    /// Cached across scans by branch name — refetched only when the
+    /// Cached across scans by branch name - refetched only when the
     /// branch changes (see [`scan`]'s `prev` parameter).
     pub pr: Option<GitPrInfo>,
     /// Issues the open PR closes (from GitHub's
@@ -72,37 +101,35 @@ pub struct GitDiffSnapshot {
     /// PR doesn't reference any issues. Cached alongside `pr`.
     pub closes: Vec<GitIssueRef>,
     /// `false` when the underlying scan hit a subprocess failure
-    /// (Failed / Oversize / timeout) and the snapshot collapsed to
-    /// `view = NoRepo` as the failsafe. Lets consumers distinguish
-    /// "cwd isn't a git repo" (legitimate `NoRepo`) from "git
-    /// crashed mid-scan" (failsafe `NoRepo`) — the user-facing
-    /// message they need to surface differs sharply.
+    /// (Failed / Oversize / timeout). Combined with `in_repo` so
+    /// the renderer can surface a "scanner unhealthy" banner that's
+    /// distinct from a legitimate non-repo cwd.
     pub scanner_ok: bool,
 }
 
-/// What flavour of diff the snapshot represents.
+/// Per-file numstat plus aggregate totals for one diff layer.
+/// Shared between [`GitDiffSnapshot::worktree`] (layer 1, HEAD vs
+/// workdir) and [`GitBranchAhead::stats`] (layer 2, default vs
+/// branch tip).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct GitDiffStats {
+    pub files: Vec<GitDiffFile>,
+    pub total_files: usize,
+    pub total_added: u32,
+    pub total_removed: u32,
+}
+
+/// Layer 2 payload: how far the branch is ahead of the default
+/// branch, alongside the corresponding numstat.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum GitDiffView {
-    /// Default branch + clean working tree, OR detached HEAD + clean.
-    /// Renderer shows path + branch only — no subtitle, no file list.
-    CleanDefault,
-    /// Working tree has uncommitted changes (any branch, including
-    /// detached HEAD). Renderer shows `worktree` subtitle + overall
-    /// `+N -M` totals + per-file rows.
-    Worktree { files: Vec<GitDiffFile>, total_files: usize, total_added: u32, total_removed: u32 },
-    /// Feature branch + clean working tree. Renderer shows
-    /// `vs <default>` subtitle + overall `+N -M` totals + per-file
-    /// rows (commits on this branch relative to the default branch).
-    BranchVsDefault {
-        files: Vec<GitDiffFile>,
-        total_files: usize,
-        total_added: u32,
-        total_removed: u32,
-    },
-    /// Cwd is not in a git repo, OR the scan failed (subprocess
-    /// error, timeout, oversize output, …). Renderer shows path
-    /// only.
-    NoRepo,
+pub struct GitBranchAhead {
+    /// Number of commits between the merge-base with `default_branch`
+    /// and the branch tip. The renderer surfaces this so the user
+    /// can see "N commits ahead" without inferring it from the file
+    /// list.
+    pub commit_count: u32,
+    /// File-level numstat for the same commit range.
+    pub stats: GitDiffStats,
 }
 
 /// One file's diff stats. `added` / `removed` are git's `--numstat`
@@ -116,8 +143,8 @@ pub struct GitDiffFile {
 }
 
 /// Run the full scan sequence against `cwd` and return a snapshot.
-/// Always succeeds — every failure path collapses to
-/// [`GitDiffView::NoRepo`] with a WARN log naming the step that
+/// Always succeeds - every failure path collapses to a snapshot
+/// with `in_repo = false` and a WARN log naming the step that
 /// failed. Callers should treat the snapshot as authoritative for
 /// rendering regardless of which variant came back.
 ///
@@ -131,12 +158,14 @@ pub async fn scan(cwd: &Path, prev: Option<&GitDiffSnapshot>) -> GitDiffSnapshot
         GitOutput::Ok(s) => s.trim().to_owned(),
         GitOutput::Empty => {
             // Empty output from rev-parse means "cwd genuinely
-            // isn't a git repo" — scanner_ok=true since git itself
+            // isn't a git repo" - scanner_ok=true since git itself
             // ran fine and reported the state correctly.
             return GitDiffSnapshot {
                 branch: GitBranch::NoRepo,
                 default_branch: None,
-                view: GitDiffView::NoRepo,
+                in_repo: false,
+                worktree: None,
+                branch_ahead: None,
                 pr: None,
                 closes: Vec::new(),
                 scanner_ok: true,
@@ -144,14 +173,16 @@ pub async fn scan(cwd: &Path, prev: Option<&GitDiffSnapshot>) -> GitDiffSnapshot
         }
         GitOutput::Failed | GitOutput::Oversize => {
             // Subprocess crash, timeout, or unreadable output.
-            // View still collapses to NoRepo as the failsafe so
-            // existing render paths don't crash, but scanner_ok=false
-            // tells consumers to surface "scan failed" rather than
-            // "not a git repository."
+            // in_repo=false as the failsafe so existing render paths
+            // don't crash; scanner_ok=false tells consumers to
+            // surface "scan failed" rather than "not a git
+            // repository."
             return GitDiffSnapshot {
                 branch: GitBranch::NoRepo,
                 default_branch: None,
-                view: GitDiffView::NoRepo,
+                in_repo: false,
+                worktree: None,
+                branch_ahead: None,
                 pr: None,
                 closes: Vec::new(),
                 scanner_ok: false,
@@ -171,48 +202,41 @@ pub async fn scan(cwd: &Path, prev: Option<&GitDiffSnapshot>) -> GitDiffSnapshot
     let on_default = default_branch.as_ref().is_some_and(|default| default == &raw_branch);
     let dirty = is_worktree_dirty(cwd).await;
 
-    // View resolution mirrors the previous early-return ladder, just
-    // collapsed into a single binding so the final snapshot is built
-    // once at the bottom alongside `pr` / `closes`.
-    let view = if detached {
-        if dirty {
-            let stats = numstat(cwd, &["diff", "--numstat", "HEAD"]).await;
-            GitDiffView::Worktree {
-                files: stats.files,
-                total_files: stats.total_files,
-                total_added: stats.total_added,
-                total_removed: stats.total_removed,
-            }
-        } else {
-            GitDiffView::CleanDefault
-        }
-    } else if dirty {
+    // Layer 1: uncommitted edits vs HEAD. Same probe as before;
+    // populated whenever the working tree is dirty regardless of
+    // which branch we're on. None when clean.
+    let worktree = if dirty {
         let stats = numstat(cwd, &["diff", "--numstat", "HEAD"]).await;
-        GitDiffView::Worktree {
-            files: stats.files,
-            total_files: stats.total_files,
-            total_added: stats.total_added,
-            total_removed: stats.total_removed,
-        }
-    } else if on_default {
-        GitDiffView::CleanDefault
-    } else if let Some(default) = default_branch.as_deref() {
-        // Feature branch + clean → branch-vs-default diff. Skip if
-        // the default branch is unknown (no sensible base to diff
-        // against — collapses to CleanDefault).
-        let range = format!("{default}...HEAD");
-        let stats = numstat(cwd, &["diff", "--numstat", &range]).await;
-        GitDiffView::BranchVsDefault {
-            files: stats.files,
-            total_files: stats.total_files,
-            total_added: stats.total_added,
-            total_removed: stats.total_removed,
-        }
+        Some(stats)
     } else {
-        GitDiffView::CleanDefault
+        None
     };
 
-    // PR / closes only make sense for named non-default branches —
+    // Layer 2: commits the branch has ahead of the default branch.
+    // Skipped on detached HEAD (no meaningful "branch name" to be
+    // ahead from), on the default branch itself (the diff against
+    // itself is empty by construction), and when default_branch is
+    // unknown (no sensible base). A clean branch sitting at the
+    // merge-base with no commits ahead collapses to None as well so
+    // the renderer doesn't show an empty layer-2 row.
+    let branch_ahead = if !detached && !on_default {
+        if let Some(default) = default_branch.as_deref() {
+            let range = format!("{default}...HEAD");
+            let stats = numstat(cwd, &["diff", "--numstat", &range]).await;
+            let commit_count = commit_count_in_range(cwd, default, "HEAD").await;
+            if commit_count == 0 && stats.total_files == 0 {
+                None
+            } else {
+                Some(GitBranchAhead { commit_count, stats })
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    // PR / closes only make sense for named non-default branches -
     // default branch never has a PR open against itself, detached /
     // unknown branches can't be queried by name. For eligible
     // branches, reuse the prior snapshot's data when the branch name
@@ -222,24 +246,41 @@ pub async fn scan(cwd: &Path, prev: Option<&GitDiffSnapshot>) -> GitDiffSnapshot
         _ => (None, Vec::new()),
     };
 
-    // scanner_ok=true here — we've passed the rev-parse gate and
+    // scanner_ok=true here - we've passed the rev-parse gate and
     // every downstream subprocess (default-branch resolution,
     // numstat, gh pr) is best-effort; failures collapse to safe
     // defaults but don't poison the overall snapshot. The
     // scanner_ok=false case is only the rev-parse-failed return at
     // the top of this function.
-    GitDiffSnapshot { branch, default_branch, view, pr, closes, scanner_ok: true }
+    GitDiffSnapshot {
+        branch,
+        default_branch,
+        in_repo: true,
+        worktree,
+        branch_ahead,
+        pr,
+        closes,
+        scanner_ok: true,
+    }
 }
 
-/// Per-scan aggregate the renderer needs. `files` is the top-N
-/// trimmed for display; `total_*` cover ALL parsed files (binary
-/// files excluded — they don't have meaningful line counts).
-struct NumstatResult {
-    files: Vec<GitDiffFile>,
-    total_files: usize,
-    total_added: u32,
-    total_removed: u32,
+/// Count commits in `<base>..HEAD` via `git rev-list --count`.
+/// Returns 0 on any failure path (subprocess error, parse failure,
+/// empty output) so the surrounding scan logic stays infallible.
+async fn commit_count_in_range(cwd: &Path, base: &str, head: &str) -> u32 {
+    let range = format!("{base}..{head}");
+    match run_git(cwd, &["rev-list", "--count", &range]).await {
+        GitOutput::Ok(s) => s.trim().parse::<u32>().unwrap_or(0),
+        GitOutput::Empty | GitOutput::Failed | GitOutput::Oversize => 0,
+    }
 }
+
+// Per-scan aggregate the renderer needs. `files` is the top-N
+// trimmed for display; `total_*` cover ALL parsed files (binary
+// files excluded - they don't have meaningful line counts). Shape
+// matches [`GitDiffStats`] one-for-one; `numstat` returns the type
+// directly so both layers consume it without an extra conversion
+// step.
 
 /// `git symbolic-ref --short refs/remotes/origin/HEAD` with `main`
 /// → `master` fallback. Returns `None` if no default can be
@@ -247,7 +288,7 @@ struct NumstatResult {
 async fn resolve_default_branch(cwd: &Path) -> Option<String> {
     match run_git(cwd, &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]).await {
         GitOutput::Ok(s) => {
-            // Output looks like `origin/main` — strip the remote
+            // Output looks like `origin/main` - strip the remote
             // prefix to leave just the branch name.
             let trimmed = s.trim();
             return Some(trimmed.strip_prefix("origin/").unwrap_or(trimmed).to_owned());
@@ -261,7 +302,7 @@ async fn resolve_default_branch(cwd: &Path) -> Option<String> {
     }
     // No `origin/HEAD`, no `main`, no `master`. A feature-branch
     // diff has no meaningful base, so the renderer collapses to
-    // `CleanDefault` — meaning the user sees branch + path with no
+    // `CleanDefault` - meaning the user sees branch + path with no
     // diff stats even when the branch has commits relative to some
     // other default (e.g. `develop`). Surfacing WARN here so the
     // failure is grep-able when the user reports "the GIT section
@@ -287,18 +328,11 @@ async fn is_worktree_dirty(cwd: &Path) -> bool {
 /// top-`TOP_FILE_COUNT` files (sorted by total changes desc, alpha
 /// tie-break) plus the full file count and overall add/remove
 /// totals.
-async fn numstat(cwd: &Path, args: &[&str]) -> NumstatResult {
+async fn numstat(cwd: &Path, args: &[&str]) -> GitDiffStats {
     let raw = match run_git(cwd, args).await {
         GitOutput::Ok(s) => s,
         GitOutput::Empty => String::new(),
-        GitOutput::Failed | GitOutput::Oversize => {
-            return NumstatResult {
-                files: Vec::new(),
-                total_files: 0,
-                total_added: 0,
-                total_removed: 0,
-            };
-        }
+        GitOutput::Failed | GitOutput::Oversize => return GitDiffStats::default(),
     };
     let mut files = parse_numstat(&raw);
     let total_files = files.len();
@@ -310,7 +344,7 @@ async fn numstat(cwd: &Path, args: &[&str]) -> NumstatResult {
         b_total.cmp(&a_total).then_with(|| a.path.cmp(&b.path))
     });
     files.truncate(TOP_FILE_COUNT);
-    NumstatResult { files, total_files, total_added, total_removed }
+    GitDiffStats { files, total_files, total_added, total_removed }
 }
 
 /// Parse `<added>\t<removed>\t<path>` lines. Skips binary entries
@@ -356,7 +390,7 @@ async fn pr_for_branch(
 
 /// Shell out to `gh pr list --head <branch> --state open --json …`
 /// and parse the first entry. Returns `(None, vec![])` on any
-/// failure path — `gh` missing, unauthenticated, not a github
+/// failure path - `gh` missing, unauthenticated, not a github
 /// repo, no PR for the branch, JSON parse error. Failures log
 /// at WARN with a structured event so operators can grep for
 /// `gh_pr_lookup_*` when triaging "PR row never shows".
@@ -376,7 +410,7 @@ async fn fetch_pr_for_branch(cwd: &Path, branch: &str) -> (Option<GitPrInfo>, Ve
     let raw = match run_gh(cwd, &args).await {
         GitOutput::Ok(s) => s,
         GitOutput::Empty => {
-            // `gh` returned exit 0 with empty stdout — unusual for
+            // `gh` returned exit 0 with empty stdout - unusual for
             // `--json`, which always emits at least `[]`. Treat as
             // no PR rather than a hard failure.
             return (None, Vec::new());
@@ -399,7 +433,7 @@ async fn fetch_pr_for_branch(cwd: &Path, branch: &str) -> (Option<GitPrInfo>, Ve
         }
     };
     let Some(first) = entries.into_iter().next() else {
-        // Empty array — no open PR for this branch. Cache as None so
+        // Empty array - no open PR for this branch. Cache as None so
         // subsequent scans on the same branch skip the gh call.
         return (None, Vec::new());
     };
@@ -434,7 +468,7 @@ struct GhIssueEntry {
 /// Result of one `git` subprocess invocation. Callers treat all
 /// failure variants the same way (collapse to `NoRepo` / zero
 /// stats), but the variants are split so the WARN log captures the
-/// right context — `Failed` means non-zero exit with stderr that an
+/// right context - `Failed` means non-zero exit with stderr that an
 /// operator might need; `Empty` is a legitimate "ran fine, no
 /// output" signal (the common case for `status --porcelain` on a
 /// clean tree).
@@ -451,7 +485,7 @@ pub(super) enum GitOutput {
 }
 
 /// Cap on captured stderr surfaced into the WARN log. Far below the
-/// stdout cap because stderr is conversational — a couple of
+/// stdout cap because stderr is conversational - a couple of
 /// `fatal:` lines is more than enough context.
 const STDERR_LOG_CAP: usize = 1024;
 
@@ -491,7 +525,7 @@ pub(super) async fn run_git(cwd: &Path, args: &[&str]) -> GitOutput {
     };
     if !output.status.success() {
         // Non-zero exit. The renderer still collapses to NoRepo /
-        // zero stats — keep the surface failure-tolerant — but log
+        // zero stats - keep the surface failure-tolerant - but log
         // the exit code + truncated stderr so an operator can tell
         // "git: command not found" / "fatal: not a git repository" /
         // "fatal: index file corrupt" apart without reproducing.
@@ -535,7 +569,7 @@ pub(super) async fn run_git(cwd: &Path, args: &[&str]) -> GitOutput {
 }
 
 /// Spawn `gh <args>` from `cwd` (gh derives the github repo from
-/// the current working directory — there's no `-C` equivalent).
+/// the current working directory - there's no `-C` equivalent).
 /// Mirrors [`run_git`]'s timeout / classification / WARN logging so
 /// failures distinguish "gh: command not found" (binary missing)
 /// from "gh: To use GitHub CLI in a Git repository, please run …"
@@ -621,7 +655,7 @@ mod tests {
         // The `git init -b <branch>` flag was added in git 2.28; CI
         // runners can still be on 2.25 (Ubuntu 20.04's default). To
         // stay compatible we `init` without `-b` and then point HEAD
-        // at the desired branch via `symbolic-ref` — works on every
+        // at the desired branch via `symbolic-ref` - works on every
         // git version, including ones where `init.defaultBranch`
         // isn't recognised. Each call asserts `status.success()` so
         // a silent setup failure surfaces here rather than confusing
@@ -699,27 +733,38 @@ mod tests {
         assert_eq!(parsed[0].path, "src/weird\tpath.rs");
     }
 
+    /// `tempfile::tempdir()` produces a dir with no `.git/`, so
+    /// `git rev-parse` returns non-zero exit. The scan reports
+    /// `in_repo = false` either way; `scanner_ok` reflects git's
+    /// exit status, which is non-zero here (the "not a git
+    /// repository" fatal line). The distinction matters for the
+    /// renderer: a healthy non-repo gets a clean hidden GIT
+    /// section, while a sick scanner surfaces the unhealthy banner.
     #[tokio::test(flavor = "current_thread")]
-    async fn scan_no_repo_returns_no_repo_view() {
+    async fn scan_no_repo_collapses_to_not_in_repo() {
         let dir = tempfile::tempdir().expect("tempdir");
         let snap = scan(dir.path(), None).await;
-        assert!(matches!(snap.view, GitDiffView::NoRepo));
+        assert!(!snap.in_repo);
+        assert!(snap.worktree.is_none());
+        assert!(snap.branch_ahead.is_none());
         assert!(snap.default_branch.is_none());
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn scan_clean_default_branch_returns_clean_default() {
+    async fn scan_clean_default_branch_has_no_layers() {
         let dir = tempfile::tempdir().expect("tempdir");
         init_repo(&dir, "main");
         write_file(&dir, "README.md", "hello\n");
         commit_all(&dir, "init");
         let snap = scan(dir.path(), None).await;
-        assert!(matches!(snap.view, GitDiffView::CleanDefault), "got {:?}", snap.view);
+        assert!(snap.in_repo);
+        assert!(snap.worktree.is_none(), "clean tree → no layer 1");
+        assert!(snap.branch_ahead.is_none(), "on default → no layer 2");
         assert_eq!(snap.default_branch.as_deref(), Some("main"));
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn scan_dirty_default_branch_returns_worktree() {
+    async fn scan_dirty_default_branch_populates_worktree_only() {
         let dir = tempfile::tempdir().expect("tempdir");
         init_repo(&dir, "main");
         write_file(&dir, "README.md", "first\n");
@@ -727,21 +772,17 @@ mod tests {
         // Dirty: modify the tracked file without committing.
         write_file(&dir, "README.md", "second\nthird\n");
         let snap = scan(dir.path(), None).await;
-        let GitDiffView::Worktree { files, total_files, total_added, total_removed } = snap.view
-        else {
-            panic!("expected Worktree, got {:?}", snap.view);
-        };
-        assert_eq!(total_files, 1);
-        assert_eq!(files[0].path, "README.md");
-        assert!(files[0].added >= 1);
-        // Totals mirror the single file's stats since it's the only
-        // change.
-        assert_eq!(total_added, files[0].added);
-        assert_eq!(total_removed, files[0].removed);
+        let stats = snap.worktree.as_ref().expect("layer 1 populated on dirty tree");
+        assert!(snap.branch_ahead.is_none(), "on default branch → layer 2 stays empty");
+        assert_eq!(stats.total_files, 1);
+        assert_eq!(stats.files[0].path, "README.md");
+        assert!(stats.files[0].added >= 1);
+        assert_eq!(stats.total_added, stats.files[0].added);
+        assert_eq!(stats.total_removed, stats.files[0].removed);
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn scan_clean_feature_branch_returns_branch_vs_default() {
+    async fn scan_clean_feature_branch_populates_branch_ahead_only() {
         let dir = tempfile::tempdir().expect("tempdir");
         init_repo(&dir, "main");
         write_file(&dir, "README.md", "first\n");
@@ -754,20 +795,23 @@ mod tests {
         commit_all(&dir, "feat commit");
 
         let snap = scan(dir.path(), None).await;
-        let GitDiffView::BranchVsDefault { files, total_files, total_added, total_removed } =
-            snap.view
-        else {
-            panic!("expected BranchVsDefault, got {:?}", snap.view);
-        };
-        assert_eq!(total_files, 1);
-        assert_eq!(files[0].path, "feat.rs");
+        assert!(snap.worktree.is_none(), "clean tree → no layer 1");
+        let ahead = snap.branch_ahead.as_ref().expect("layer 2 populated on feature branch");
+        assert_eq!(ahead.commit_count, 1, "one commit on feature branch beyond main");
+        assert_eq!(ahead.stats.total_files, 1);
+        assert_eq!(ahead.stats.files[0].path, "feat.rs");
         assert_eq!(snap.default_branch.as_deref(), Some("main"));
-        assert_eq!(total_added, files[0].added);
-        assert_eq!(total_removed, files[0].removed);
+        assert_eq!(ahead.stats.total_added, ahead.stats.files[0].added);
+        assert_eq!(ahead.stats.total_removed, ahead.stats.files[0].removed);
     }
 
+    /// #185 core regression: when a worker is on a topic branch
+    /// AND has uncommitted edits, BOTH layers must populate (layer 1
+    /// = the dirty tree, layer 2 = the prior commit on the branch).
+    /// The pre-refactor either/or `GitDiffView` enum showed only
+    /// layer 1 in this state, hiding the committed-but-unmerged work.
     #[tokio::test(flavor = "current_thread")]
-    async fn scan_dirty_feature_branch_returns_worktree_only() {
+    async fn scan_dirty_feature_branch_populates_both_layers() {
         let dir = tempfile::tempdir().expect("tempdir");
         init_repo(&dir, "main");
         write_file(&dir, "README.md", "first\n");
@@ -778,22 +822,24 @@ mod tests {
         run(&["checkout", "-q", "-b", "feat/x"]);
         write_file(&dir, "feat.rs", "fn x() {}\n");
         commit_all(&dir, "feat commit");
-        // Dirty the worktree AFTER the feature commit. The
-        // expectation is worktree-only (no vs-default mixing).
+        // Dirty the worktree AFTER the feature commit.
         write_file(&dir, "feat.rs", "fn x() {}\nfn y() {}\n");
 
         let snap = scan(dir.path(), None).await;
-        let GitDiffView::Worktree { files, total_files, total_added: _, total_removed: _ } =
-            snap.view
-        else {
-            panic!("expected Worktree, got {:?}", snap.view);
-        };
-        assert_eq!(total_files, 1);
-        assert_eq!(files[0].path, "feat.rs");
+        let worktree = snap.worktree.as_ref().expect("layer 1 populated on dirty tree");
+        let ahead = snap.branch_ahead.as_ref().expect("layer 2 populated on feature branch");
+        // Layer 1: in-progress edits to feat.rs.
+        assert_eq!(worktree.total_files, 1);
+        assert_eq!(worktree.files[0].path, "feat.rs");
+        // Layer 2: the committed-and-unmerged work (the original
+        // `feat commit` against main).
+        assert_eq!(ahead.commit_count, 1);
+        assert_eq!(ahead.stats.total_files, 1);
+        assert_eq!(ahead.stats.files[0].path, "feat.rs");
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn scan_detached_dirty_returns_worktree() {
+    async fn scan_detached_dirty_populates_worktree_no_branch_ahead() {
         let dir = tempfile::tempdir().expect("tempdir");
         init_repo(&dir, "main");
         write_file(&dir, "README.md", "first\n");
@@ -808,15 +854,15 @@ mod tests {
         write_file(&dir, "README.md", "third\n");
 
         let snap = scan(dir.path(), None).await;
+        assert!(snap.worktree.is_some(), "detached + dirty → layer 1 populated");
         assert!(
-            matches!(snap.view, GitDiffView::Worktree { .. }),
-            "expected Worktree, got {:?}",
-            snap.view,
+            snap.branch_ahead.is_none(),
+            "detached HEAD has no branch name, layer 2 stays empty"
         );
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn scan_detached_clean_returns_clean_default() {
+    async fn scan_detached_clean_has_no_layers() {
         let dir = tempfile::tempdir().expect("tempdir");
         init_repo(&dir, "main");
         write_file(&dir, "README.md", "first\n");
@@ -828,7 +874,9 @@ mod tests {
         };
         run(&["checkout", "-q", "HEAD~1"]);
         let snap = scan(dir.path(), None).await;
-        assert!(matches!(snap.view, GitDiffView::CleanDefault), "got {:?}", snap.view);
+        assert!(snap.in_repo);
+        assert!(snap.worktree.is_none());
+        assert!(snap.branch_ahead.is_none());
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -853,20 +901,17 @@ mod tests {
             .expect("git ok");
 
         let snap = scan(dir.path(), None).await;
-        let GitDiffView::Worktree { files, total_files, total_added, total_removed } = snap.view
-        else {
-            panic!("expected Worktree, got {:?}", snap.view);
-        };
-        assert_eq!(total_files, 3);
+        let stats = snap.worktree.as_ref().expect("dirty tree → layer 1 populated");
+        assert_eq!(stats.total_files, 3);
         // Sum of per-file added/removed equals the overall total.
-        let per_file_added: u32 = files.iter().map(|f| f.added).sum();
-        let per_file_removed: u32 = files.iter().map(|f| f.removed).sum();
-        assert_eq!(total_added, per_file_added);
-        assert_eq!(total_removed, per_file_removed);
+        let per_file_added: u32 = stats.files.iter().map(|f| f.added).sum();
+        let per_file_removed: u32 = stats.files.iter().map(|f| f.removed).sum();
+        assert_eq!(stats.total_added, per_file_added);
+        assert_eq!(stats.total_removed, per_file_removed);
         // At least one row in each direction (we added 1+3+1 lines
         // and removed 1).
-        assert!(total_added >= 5);
-        assert!(total_removed >= 1);
+        assert!(stats.total_added >= 5);
+        assert!(stats.total_removed >= 1);
     }
 
     #[test]
@@ -889,7 +934,7 @@ mod tests {
     }
 
     /// `pr_for_branch` short-circuits the `gh pr list` call when
-    /// `prev`'s branch matches the requested branch — even when the
+    /// `prev`'s branch matches the requested branch - even when the
     /// `cwd` would make a real `gh` invocation fail (tempdir has no
     /// git remote). The returned `pr` / `closes` MUST be clones of
     /// `prev`'s, proving the cache hit.
@@ -901,7 +946,9 @@ mod tests {
         let prev = GitDiffSnapshot {
             branch: GitBranch::Named("feat/x".into()),
             default_branch: Some("main".into()),
-            view: GitDiffView::CleanDefault,
+            in_repo: true,
+            worktree: None,
+            branch_ahead: None,
             pr: Some(pr.clone()),
             closes: closes.clone(),
             scanner_ok: true,
@@ -914,7 +961,7 @@ mod tests {
 
     /// Cache miss when the requested branch differs from `prev`'s.
     /// `cwd` here isn't a github repo, so `gh pr list` collapses to
-    /// `(None, vec![])` whether or not `gh` is installed — that's the
+    /// `(None, vec![])` whether or not `gh` is installed - that's the
     /// expected miss outcome.
     #[tokio::test(flavor = "current_thread")]
     async fn pr_for_branch_refetches_when_branch_differs() {
@@ -922,7 +969,9 @@ mod tests {
         let prev = GitDiffSnapshot {
             branch: GitBranch::Named("feat/x".into()),
             default_branch: Some("main".into()),
-            view: GitDiffView::CleanDefault,
+            in_repo: true,
+            worktree: None,
+            branch_ahead: None,
             pr: Some(GitPrInfo { number: 42, url: "https://example/pull/42".into() }),
             closes: Vec::new(),
             scanner_ok: true,
@@ -943,7 +992,9 @@ mod tests {
         let prev = GitDiffSnapshot {
             branch: GitBranch::Detached,
             default_branch: Some("main".into()),
-            view: GitDiffView::CleanDefault,
+            in_repo: true,
+            worktree: None,
+            branch_ahead: None,
             pr: Some(GitPrInfo { number: 42, url: "url".into() }),
             closes: Vec::new(),
             scanner_ok: true,
@@ -978,7 +1029,9 @@ mod tests {
         let prev = GitDiffSnapshot {
             branch: GitBranch::Named("feat/cache".into()),
             default_branch: Some("main".into()),
-            view: GitDiffView::CleanDefault,
+            in_repo: true,
+            worktree: None,
+            branch_ahead: None,
             pr: Some(synthetic_pr.clone()),
             closes: synthetic_closes.clone(),
             scanner_ok: true,
@@ -989,7 +1042,7 @@ mod tests {
         assert_eq!(snap.closes, synthetic_closes);
     }
 
-    /// On the default branch, `scan` skips the PR fetch entirely —
+    /// On the default branch, `scan` skips the PR fetch entirely -
     /// `pr` / `closes` stay empty. Mirrors the "no PR opens against
     /// main" assumption (true for personal repos; fork → upstream
     /// edge case is out of scope for v1).
@@ -1003,7 +1056,9 @@ mod tests {
         let prev = GitDiffSnapshot {
             branch: GitBranch::Named("main".into()),
             default_branch: Some("main".into()),
-            view: GitDiffView::CleanDefault,
+            in_repo: true,
+            worktree: None,
+            branch_ahead: None,
             pr: Some(GitPrInfo { number: 1, url: "url".into() }),
             closes: Vec::new(),
             scanner_ok: true,
