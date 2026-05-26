@@ -1068,7 +1068,7 @@ fn push_worktree_header(lines: &mut Vec<Line<'static>>) {
 ///   surfaces that.
 fn append_worktree_section_for_worker(
     lines: &mut Vec<Line<'static>>,
-    entry: &forge_workspace::mcp::workers::types::WorkerEntry,
+    entry: &forge_workspace::WorkerEntry,
     project_path: &std::path::Path,
 ) {
     push_worktree_header(lines);
@@ -2200,8 +2200,8 @@ mod tests {
     fn worker_entry_for_test(
         label: &str,
         is_git_repo_at_spawn: bool,
-    ) -> forge_workspace::mcp::workers::types::WorkerEntry {
-        forge_workspace::mcp::workers::types::WorkerEntry {
+    ) -> forge_workspace::WorkerEntry {
+        forge_workspace::WorkerEntry {
             label: label.to_owned(),
             charter: "test".to_owned(),
             session_key: forge_workspace::SessionKey::from_session_id("uuid-1"),

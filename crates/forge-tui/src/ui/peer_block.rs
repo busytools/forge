@@ -964,7 +964,7 @@ mod tests {
     /// matches what was emitted.
     #[test]
     fn roundtrip_question_to_prose_through_detect_inbound() {
-        use forge_workspace::mcp::peers::types::{CorrelationId, WrappedKind, WrappedPrompt};
+        use forge_workspace::{CorrelationId, WrappedKind, WrappedPrompt};
         let w = WrappedPrompt {
             correlation_id: CorrelationId::from_external("q-7f3a92e0").expect("valid id"),
             kind: WrappedKind::Question,
@@ -990,7 +990,7 @@ mod tests {
 
     #[test]
     fn roundtrip_message_to_prose_through_detect_inbound() {
-        use forge_workspace::mcp::peers::types::{CorrelationId, WrappedKind, WrappedPrompt};
+        use forge_workspace::{CorrelationId, WrappedKind, WrappedPrompt};
         let w = WrappedPrompt {
             correlation_id: CorrelationId::from_external("t-c45a8f12").expect("valid id"),
             kind: WrappedKind::Message,
@@ -1006,7 +1006,7 @@ mod tests {
 
     #[test]
     fn roundtrip_reply_to_prose_through_detect_inbound() {
-        use forge_workspace::mcp::peers::types::{CorrelationId, WrappedKind, WrappedPrompt};
+        use forge_workspace::{CorrelationId, WrappedKind, WrappedPrompt};
         let w = WrappedPrompt {
             correlation_id: CorrelationId::from_external("q-7f3a92e0").expect("valid id"),
             kind: WrappedKind::Reply,
@@ -1030,7 +1030,7 @@ mod tests {
 
     #[test]
     fn roundtrip_delivery_failure_through_detect_inbound() {
-        use forge_workspace::mcp::peers::types::{CorrelationId, WrappedKind, WrappedPrompt};
+        use forge_workspace::{CorrelationId, WrappedKind, WrappedPrompt};
         let w = WrappedPrompt {
             correlation_id: CorrelationId::from_external("q-d31fa8a3").expect("valid id"),
             kind: WrappedKind::DeliveryFailureNotice,
@@ -1056,7 +1056,7 @@ mod tests {
     /// with all fields preserved.
     #[test]
     fn roundtrip_worker_spawn_failed_through_detect_inbound() {
-        use forge_workspace::mcp::peers::types::{CorrelationId, WrappedKind, WrappedPrompt};
+        use forge_workspace::{CorrelationId, WrappedKind, WrappedPrompt};
         let w = WrappedPrompt {
             correlation_id: CorrelationId::from_external("t-c45a8f12").expect("valid id"),
             kind: WrappedKind::WorkerSpawnFailedNotice,

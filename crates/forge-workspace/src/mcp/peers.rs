@@ -21,7 +21,9 @@
 
 use std::sync::Arc;
 
-use forge_sdk::mcp::server::{McpServer, McpServerBuilder};
+#[cfg(test)]
+use forge_sdk::mcp::server::McpServer;
+use forge_sdk::mcp::server::McpServerBuilder;
 use forge_sdk::mcp::tool::{Tool, ToolInput, ToolOutput};
 
 use crate::SessionKey;
@@ -38,6 +40,7 @@ pub mod types;
 /// into one server (the CLI rejects duplicate-name MCP servers, so
 /// both modules must register their tools through a single
 /// builder).
+#[cfg(test)]
 pub fn build_server(facade: Arc<dyn WorkspaceFacade>, caller_key: CallerKeyResolver) -> McpServer {
     add_tools(McpServerBuilder::new("forge", env!("CARGO_PKG_VERSION")), facade, caller_key).build()
 }
@@ -597,7 +600,6 @@ impl Tool for AskAgent {
             correlation_id: correlation_id.clone(),
             caller: caller_key.clone(),
             caller_project: identity.name.clone(),
-            caller_org: identity.org.clone(),
             target_project: args.target.clone(),
         });
         self.facade.bump_inflight_stats(&caller_key, PeerStatsDelta::OutgoingPlus1);
@@ -772,7 +774,6 @@ mod tests {
             correlation_id: CorrelationId(correlation_id.to_owned()),
             caller: fake_key(caller_key_str),
             caller_project: caller_project.to_owned(),
-            caller_org: "TestOrg".to_owned(),
             target_project: target_project.to_owned(),
         }
     }

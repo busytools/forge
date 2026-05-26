@@ -108,13 +108,12 @@ impl CallerKeyResolver {
     /// a synthetic sentinel SessionKey.
     pub fn from_domain(domain: &Arc<parking_lot::Mutex<DomainSession>>) -> Self {
         let weak = Arc::downgrade(domain);
-        Self(Arc::new(move || {
-            weak.upgrade().map(|d| d.lock().key.clone()).ok_or(ResolverDetached)
-        }))
+        Self(Arc::new(move || weak.upgrade().map(|d| d.lock().key.clone()).ok_or(ResolverDetached)))
     }
 
     /// Build a resolver that returns a fixed `SessionKey`. Use this
     /// in tests where the session never rekeys.
+    #[cfg(any(test, feature = "testing"))]
     pub fn from_fixed(key: SessionKey) -> Self {
         Self(Arc::new(move || Ok(key.clone())))
     }
@@ -167,7 +166,6 @@ pub enum PeerStatsDelta {
     OutgoingMinus1,
     IncomingPlus1,
     IncomingMinus1,
-    TimedOutPlus1,
     DeliveryFailedPlus1,
 }
 
@@ -438,7 +436,6 @@ fn apply_delta(stats: &mut PeerInflightStats, delta: PeerStatsDelta) {
         PeerStatsDelta::OutgoingMinus1 => sub("outgoing", &mut stats.outgoing),
         PeerStatsDelta::IncomingPlus1 => stats.incoming = stats.incoming.saturating_add(1),
         PeerStatsDelta::IncomingMinus1 => sub("incoming", &mut stats.incoming),
-        PeerStatsDelta::TimedOutPlus1 => stats.timed_out = stats.timed_out.saturating_add(1),
         PeerStatsDelta::DeliveryFailedPlus1 => {
             stats.delivery_failed = stats.delivery_failed.saturating_add(1);
         }
@@ -449,7 +446,7 @@ fn apply_delta(stats: &mut PeerInflightStats, delta: PeerStatsDelta) {
 /// call into a Vec so tests can assert "tool X dispatched
 /// register_inflight_ask with these args" without spinning up a real
 /// Workspace.
-#[cfg(any(test, feature = "testing"))]
+#[cfg(test)]
 #[derive(Default)]
 pub struct MockWorkspaceFacade {
     /// Pre-loaded peer status snapshot returned by `list_peers`.
@@ -472,7 +469,7 @@ pub struct MockWorkspaceFacade {
     pub force_deliver_error: parking_lot::Mutex<Option<DeliverError>>,
 }
 
-#[cfg(any(test, feature = "testing"))]
+#[cfg(test)]
 impl MockWorkspaceFacade {
     /// New empty mock; tests pre-load the fields they care about.
     pub fn new() -> Self {
@@ -485,7 +482,7 @@ impl MockWorkspaceFacade {
     }
 }
 
-#[cfg(any(test, feature = "testing"))]
+#[cfg(test)]
 impl WorkspaceFacade for MockWorkspaceFacade {
     fn list_peers(&self) -> Vec<PeerStatus> {
         self.peers.lock().clone()
@@ -669,7 +666,6 @@ mod tests {
             correlation_id: CorrelationId("q-deadbeef".to_owned()),
             caller: fake_key("alpha"),
             caller_project: "alpha".to_owned(),
-            caller_org: "Test".to_owned(),
             target_project: "beta".to_owned(),
         };
         mock.register_inflight_ask(ask.clone());

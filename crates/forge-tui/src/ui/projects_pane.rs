@@ -1809,7 +1809,7 @@ mod tests {
         use crate::app::events::apply_session_update;
         use forge_workspace::ProjectKey;
         use forge_workspace::SessionKey;
-        use forge_workspace::mcp::workers::types::WorkerEntry;
+        use forge_workspace::WorkerEntry;
         use forge_workspace::protocol::{SessionUpdate, WorkerStatusAction};
         use std::time::SystemTime;
 
@@ -1873,7 +1873,7 @@ mod tests {
         use crate::app::PaneHitTarget;
         use forge_workspace::ProjectKey;
         use forge_workspace::SessionKey;
-        use forge_workspace::mcp::workers::types::WorkerEntry;
+        use forge_workspace::WorkerEntry;
         use std::time::SystemTime;
 
         let mut app = App::test_default();

@@ -6,7 +6,9 @@
 
 use std::sync::Arc;
 
-use forge_sdk::mcp::server::{McpServer, McpServerBuilder};
+#[cfg(any(test, feature = "testing"))]
+use forge_sdk::mcp::server::McpServer;
+use forge_sdk::mcp::server::McpServerBuilder;
 use forge_sdk::mcp::tool::{Tool, ToolInput, ToolOutput, ToolOutputBlock};
 
 use crate::mcp::peers::facade::{CallerKeyResolver, PeerStatsDelta};
@@ -17,8 +19,6 @@ use crate::mcp::workers::facade::{
 
 pub mod facade;
 pub mod types;
-
-pub use types::WorkerEntry;
 
 /// Default hop limit for forwarded ask/tell chains within a project.
 /// Mirrors the peer-MCP value (#114 v1 brainstorm locked at 10).
@@ -41,6 +41,7 @@ pub(crate) fn worker_target_project_key(project_key: &str, label: &str) -> Strin
 /// [`crate::mcp::build_forge_server`] which combines peers + workers
 /// into one server (the CLI rejects duplicate-name MCP servers, so
 /// both modules must register their tools through a single builder).
+#[cfg(any(test, feature = "testing"))]
 pub fn build_server(facade: Arc<dyn WorkerFacade>, caller_key: CallerKeyResolver) -> McpServer {
     add_tools(McpServerBuilder::new("forge", env!("CARGO_PKG_VERSION")), facade, caller_key).build()
 }
@@ -651,7 +652,6 @@ impl Tool for Ask {
             correlation_id: correlation_id.clone(),
             caller: caller_key.clone(),
             caller_project: caller_project_key,
-            caller_org: String::new(),
             target_project: target_project_composite,
         });
         // Bump the caller's outgoing counter. Mirrors peers__ask_agent
@@ -1382,7 +1382,6 @@ mod tests {
                 correlation_id: id.clone(),
                 caller,
                 caller_project: caller_project.to_owned(),
-                caller_org: String::new(),
                 target_project: target_composite.to_owned(),
             },
         );
