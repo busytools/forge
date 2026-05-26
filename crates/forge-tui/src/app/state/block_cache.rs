@@ -1,4 +1,5 @@
 use std::cell::Cell;
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static CACHE_ACCESS_TICK: AtomicU64 = AtomicU64::new(1);
@@ -7,8 +8,23 @@ pub(crate) fn next_cache_access_tick() -> u64 {
     CACHE_ACCESS_TICK.fetch_add(1, Ordering::Relaxed)
 }
 
+/// How many previously-rendered widths to keep around alongside the
+/// live slot. With N=2, a block can cache 3 widths total. The bug
+/// this fixes (#125) is "resize forces a mass re-render"; on
+/// resize-back to a width still in the LRU, `get_for_width` hits and
+/// the caller skips the expensive `tc::render_body` work. Memory cost
+/// is bounded per block; the workspace render budget continues to
+/// enforce total bytes via `evict_cached_render`.
+const MAX_STALE_WIDTHS: usize = 2;
+
 /// Cached rendered lines for a block. Stores a version counter so the cache
 /// is only recomputed when the block content actually changes.
+///
+/// The width-keyed path keeps a small LRU of previously-rendered widths
+/// in `stale_widths` so resize cycles don't force a mass re-render
+/// (see #125). Same-width re-stores overwrite the live slot in place
+/// (no rotation). `invalidate()` clears the LRU because stale lines
+/// belong to old content.
 ///
 /// Fields are private - use `invalidate()` to mark stale, `is_stale()` to check,
 /// `get()` to read cached lines, and `store()` to populate.
@@ -21,6 +37,10 @@ pub struct BlockCache {
     segments: Vec<CacheLineSegment>,
     /// Approximate UTF-8 byte size of cached rendered lines.
     cached_bytes: usize,
+    /// Previously-rendered widths kept around for resize-back recovery.
+    /// FIFO bounded by `MAX_STALE_WIDTHS`: push_back on rotation,
+    /// pop_front when capacity is exceeded.
+    stale_widths: VecDeque<StaleSlot>,
     /// Wrapped line count of the cached lines at `wrapped_width`.
     /// Computed via `Paragraph::line_count(width)` on the same lines stored in `lines`.
     wrapped_height: usize,
@@ -28,6 +48,17 @@ pub struct BlockCache {
     wrapped_width: u16,
     wrapped_height_valid: bool,
     last_access_tick: Cell<u64>,
+}
+
+/// A previously-rendered width's lines kept in the LRU. The stored
+/// `cached_bytes` keep budget accounting accurate without paying for
+/// segment + height metadata that would only matter if stale slots
+/// participated in height measurement (they currently don't; the
+/// height re-measures lazily on the next `measure_and_set_height`).
+struct StaleSlot {
+    width: u16,
+    lines: Vec<ratatui::text::Line<'static>>,
+    cached_bytes: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,10 +81,14 @@ impl BlockCache {
         self.last_access_tick.set(next_cache_access_tick());
     }
 
-    /// Bump the version to invalidate cached lines and height.
+    /// Bump the version to invalidate cached lines and height. Also
+    /// drops any LRU-cached stale widths, whose lines refer to the
+    /// pre-invalidate content and would resurrect under the next
+    /// store's `version = 0` reset.
     pub fn invalidate(&mut self) {
         self.version += 1;
         self.wrapped_height_valid = false;
+        self.stale_widths.clear();
     }
 
     /// Get a reference to the cached lines, if fresh.
@@ -70,15 +105,27 @@ impl BlockCache {
     }
 
     pub fn get_for_width(&self, width: u16) -> Option<&Vec<ratatui::text::Line<'static>>> {
-        if self.version == 0 && self.render_width == Some(width) {
+        if self.version != 0 {
+            return None;
+        }
+        if self.render_width == Some(width) {
             let lines = self.lines.as_ref();
             if lines.is_some() {
                 self.touch();
             }
-            lines
-        } else {
-            None
+            return lines;
         }
+        // Resize-back recovery: walk the small LRU of previously
+        // rendered widths. A hit lets the caller skip a full
+        // re-render. Promotion to live happens lazily on the next
+        // `store_for_width` (this getter is `&self`).
+        for slot in &self.stale_widths {
+            if slot.width == width {
+                self.touch();
+                return Some(&slot.lines);
+            }
+        }
+        None
     }
 
     /// Store freshly rendered lines, marking the cache as clean.
@@ -88,16 +135,41 @@ impl BlockCache {
     }
 
     /// Store freshly rendered lines using a shared KB split policy.
+    /// Defensively drops any width-LRU entries since no-width blocks
+    /// don't participate in the LRU - if anything's there, it's stale
+    /// from a prior misuse and would leak memory.
     pub fn store_with_policy(
         &mut self,
         lines: Vec<ratatui::text::Line<'static>>,
         policy: super::super::CacheSplitPolicy,
     ) {
         self.render_width = None;
+        self.stale_widths.clear();
         self.store_with_policy_and_width(lines, policy);
     }
 
+    /// Store rendered lines keyed by `width`. When the new width
+    /// differs from the live one, the current slot rotates into
+    /// `stale_widths` so resize-back hits the cache instead of forcing
+    /// a re-render. Same-width re-stores overwrite in place.
     pub fn store_for_width(&mut self, lines: Vec<ratatui::text::Line<'static>>, width: u16) {
+        let should_rotate =
+            self.render_width.is_some_and(|live| live != width) && self.lines.is_some();
+        if should_rotate
+            && let Some(old_width) = self.render_width.take()
+            && let Some(old_lines) = self.lines.take()
+        {
+            self.segments.clear();
+            let old_bytes = std::mem::replace(&mut self.cached_bytes, 0);
+            self.stale_widths.push_back(StaleSlot {
+                width: old_width,
+                lines: old_lines,
+                cached_bytes: old_bytes,
+            });
+            while self.stale_widths.len() > MAX_STALE_WIDTHS {
+                self.stale_widths.pop_front();
+            }
+        }
         self.render_width = Some(width);
         self.store_with_policy_and_width(lines, *super::super::default_cache_split_policy());
     }
@@ -193,7 +265,8 @@ impl BlockCache {
     }
 
     pub fn cached_bytes(&self) -> usize {
-        self.cached_bytes
+        let stale: usize = self.stale_widths.iter().map(|slot| slot.cached_bytes).sum();
+        self.cached_bytes.saturating_add(stale)
     }
 
     pub fn last_access_tick(&self) -> u64 {
@@ -201,19 +274,21 @@ impl BlockCache {
     }
 
     pub fn evict_cached_render(&mut self) -> usize {
-        let removed = self.cached_bytes;
-        if removed == 0 {
+        let stale_bytes: usize = self.stale_widths.iter().map(|slot| slot.cached_bytes).sum();
+        let total = self.cached_bytes.saturating_add(stale_bytes);
+        if total == 0 {
             return 0;
         }
         self.lines = None;
         self.render_width = None;
         self.segments.clear();
         self.cached_bytes = 0;
+        self.stale_widths.clear();
         self.wrapped_height = 0;
         self.wrapped_width = 0;
         self.wrapped_height_valid = false;
         self.version = self.version.wrapping_add(1);
-        removed
+        total
     }
 }
 
@@ -251,4 +326,125 @@ fn line_utf8_bytes(line: &ratatui::text::Line<'static>) -> usize {
     let span_bytes =
         line.spans.iter().fold(0usize, |acc, span| acc.saturating_add(span.content.len()));
     span_bytes.saturating_add(1)
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use ratatui::text::Line;
+
+    fn make_lines(text: &str) -> Vec<Line<'static>> {
+        vec![Line::from(text.to_owned())]
+    }
+
+    /// Resize-back recovery: storing at width A, then B, must leave A's
+    /// lines reachable via `get_for_width(A)` instead of forcing a
+    /// full re-render. This is the bug fix for #125's mass-cache-miss
+    /// on resize.
+    #[test]
+    fn width_lru_restores_lines_on_resize_back() {
+        let mut cache = BlockCache::default();
+        cache.store_for_width(make_lines("rendered at 80"), 80);
+        cache.store_for_width(make_lines("rendered at 120"), 120);
+
+        let restored = cache.get_for_width(80).expect("80 cached in stale lru");
+        assert_eq!(restored[0].spans[0].content, "rendered at 80");
+        let live = cache.get_for_width(120).expect("120 is live");
+        assert_eq!(live[0].spans[0].content, "rendered at 120");
+    }
+
+    /// LRU capacity bound: with the live slot + 2 stale slots, the
+    /// 4th distinct width must evict the oldest stale entry.
+    #[test]
+    fn width_lru_evicts_oldest_on_capacity() {
+        let mut cache = BlockCache::default();
+        cache.store_for_width(make_lines("at-80"), 80);
+        cache.store_for_width(make_lines("at-100"), 100);
+        cache.store_for_width(make_lines("at-120"), 120);
+        cache.store_for_width(make_lines("at-140"), 140);
+
+        assert!(cache.get_for_width(80).is_none(), "oldest width 80 should be evicted");
+        assert!(cache.get_for_width(100).is_some(), "100 stays in stale lru");
+        assert!(cache.get_for_width(120).is_some(), "120 stays in stale lru");
+        assert!(cache.get_for_width(140).is_some(), "140 is live");
+    }
+
+    /// `invalidate()` must drop stale slots too - their lines refer to
+    /// pre-invalidate content and would resurrect under the next
+    /// store's `version = 0` reset.
+    #[test]
+    fn invalidate_clears_stale_widths() {
+        let mut cache = BlockCache::default();
+        cache.store_for_width(make_lines("at-80"), 80);
+        cache.store_for_width(make_lines("at-120"), 120);
+        assert!(cache.get_for_width(80).is_some());
+        assert!(cache.get_for_width(120).is_some());
+
+        cache.invalidate();
+        assert!(cache.get_for_width(80).is_none(), "stale cleared on invalidate");
+        assert!(cache.get_for_width(120).is_none(), "live invalidated by version bump");
+    }
+
+    /// Budget accounting: `cached_bytes` must include stale slot bytes
+    /// so `render_budget::enforce_render_cache_budget` sees the real
+    /// memory cost of the LRU. Uses identical content at two widths so
+    /// the byte math depends on slot count, not content length.
+    #[test]
+    fn cached_bytes_sums_live_and_stale_slots() {
+        let mut cache = BlockCache::default();
+        let content = make_lines("identical-content-for-byte-math");
+        cache.store_for_width(content.clone(), 80);
+        let bytes_one_slot = cache.cached_bytes();
+        assert!(bytes_one_slot > 0);
+        cache.store_for_width(content, 120);
+        let bytes_two_slots = cache.cached_bytes();
+        assert_eq!(
+            bytes_two_slots,
+            bytes_one_slot * 2,
+            "cached_bytes should sum live + stale slot bytes exactly (each holds identical content)",
+        );
+    }
+
+    /// `evict_cached_render` must return the total freed bytes (live +
+    /// stale) and leave the cache fully empty. Uses identical content
+    /// at three widths so the byte math depends on slot count.
+    #[test]
+    fn evict_cached_render_returns_total_bytes_and_clears_all() {
+        let mut cache = BlockCache::default();
+        let content = make_lines("identical-content-for-byte-math");
+        cache.store_for_width(content.clone(), 80);
+        let per_slot = cache.cached_bytes();
+        cache.store_for_width(content.clone(), 100);
+        cache.store_for_width(content, 120);
+        let total = cache.cached_bytes();
+        assert_eq!(total, per_slot * 3, "three identical slots sum to 3x per-slot bytes");
+        let evicted = cache.evict_cached_render();
+        assert_eq!(evicted, total, "evict should return total cached bytes (live + stale)");
+        assert_eq!(cache.cached_bytes(), 0);
+        assert!(cache.get_for_width(80).is_none());
+        assert!(cache.get_for_width(100).is_none());
+        assert!(cache.get_for_width(120).is_none());
+    }
+
+    /// Same-width re-store overwrites in place without rotating stale
+    /// slots - otherwise repeated renders at one width would push old
+    /// widths out unnecessarily.
+    #[test]
+    fn same_width_restore_does_not_rotate_stale() {
+        let mut cache = BlockCache::default();
+        cache.store_for_width(make_lines("at-80-v1"), 80);
+        cache.store_for_width(make_lines("at-120"), 120);
+        // Re-store at 120: stale should still contain 80.
+        cache.store_for_width(make_lines("at-120-v2"), 120);
+        assert!(
+            cache.get_for_width(80).is_some(),
+            "80 should not be pushed out by same-width re-store"
+        );
+        assert_eq!(
+            cache.get_for_width(120).expect("120 live")[0].spans[0].content,
+            "at-120-v2",
+            "live slot should hold the most recent v2 content",
+        );
+    }
 }
