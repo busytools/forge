@@ -172,7 +172,9 @@ fn build_message_layout(
     render_context: MessageRenderContext<'_>,
 ) -> MessageLayout {
     let mut layout = MessageLayout::new();
-    layout.push_wrapped_line(role_label_line(msg), render_context.width);
+    if !render_context.options.suppress_group_header {
+        layout.push_wrapped_line(role_label_line(msg), render_context.width);
+    }
 
     match msg.role {
         MessageRole::Welcome => append_welcome_blocks(msg, render_context.width, &mut layout),
@@ -573,12 +575,35 @@ pub fn measure_message_height_cached_with_tools_collapsed_and_separator_and_mode
     tools_collapsed: bool,
     include_trailing_separator: bool,
 ) -> (usize, usize) {
-    let render_context = MessageRenderContext::new(
+    measure_message_height_cached_with_options(
+        msg,
+        spinner,
         current_mode_id,
         width,
         layout_generation,
-        MessageRenderOptions { tools_collapsed, include_trailing_separator },
-    );
+        MessageRenderOptions {
+            tools_collapsed,
+            include_trailing_separator,
+            suppress_group_header: false,
+        },
+    )
+}
+
+/// Lowest-level measurement helper — accepts the full
+/// `MessageRenderOptions` so callers that compute
+/// `suppress_group_header` (chat.rs's measure + render passes for
+/// same-project envelope grouping) can thread it through without
+/// growing the granular helper's parameter list further.
+pub fn measure_message_height_cached_with_options(
+    msg: &mut ChatMessage,
+    spinner: &SpinnerState,
+    current_mode_id: Option<&str>,
+    width: u16,
+    layout_generation: u64,
+    options: MessageRenderOptions,
+) -> (usize, usize) {
+    let render_context =
+        MessageRenderContext::new(current_mode_id, width, layout_generation, options);
     let cache = get_or_build_message_render_cache(msg, spinner, render_context);
     (cache.height(), cache.wrapped_lines())
 }
@@ -624,7 +649,11 @@ pub(crate) fn render_message_from_offset_with_tools_collapsed(
         spinner,
         width,
         layout_generation,
-        MessageRenderOptions { tools_collapsed, include_trailing_separator: true },
+        MessageRenderOptions {
+            tools_collapsed,
+            include_trailing_separator: true,
+            suppress_group_header: false,
+        },
         skip_rows,
         out,
     )
@@ -739,6 +768,18 @@ fn render_cached_message(segments: &[CachedMessageSegment], out: &mut Vec<Line<'
 pub(crate) struct MessageRenderOptions {
     pub tools_collapsed: bool,
     pub include_trailing_separator: bool,
+    /// True when this message is a peer-MCP / worker-MCP envelope and
+    /// the prior visible envelope had the same `sender_org`. Suppresses
+    /// the `forge` role label at the top so consecutive same-project
+    /// envelopes read as a group-chat-style streak (one label, N
+    /// bodies) instead of repeating the label per envelope. Computed
+    /// by the chat iterator (see `crate::ui::chat`) from the previous
+    /// visible message's envelope org. Sticky-header for scroll-back
+    /// falls out naturally — when `render_start` advances past a
+    /// streak's first message, the new first-visible envelope is
+    /// treated as having no prior visible envelope and shows the
+    /// label.
+    pub suppress_group_header: bool,
 }
 
 fn get_or_build_message_render_cache<'a>(
@@ -768,6 +809,7 @@ fn build_message_render_cache_key(
         layout_generation: render_context.layout_generation,
         tools_collapsed: render_context.options.tools_collapsed,
         include_trailing_separator: render_context.options.include_trailing_separator,
+        suppress_group_header: render_context.options.suppress_group_header,
         render_signature: build_message_render_signature(
             msg,
             spinner,
@@ -1046,6 +1088,41 @@ fn is_peer_envelope_user_message(msg: &ChatMessage) -> bool {
         MessageBlock::Text(text) => detect_inbound(&text.text).is_some(),
         _ => false,
     })
+}
+
+/// Extract the `sender_org` tag from this message's first inbound peer
+/// envelope, if any. Returns `None` for non-User messages, messages
+/// with no envelope, or messages whose first text block does not match
+/// a recognised envelope shape. Drives the same-project envelope
+/// grouping at `compute_suppress_group_header` (chat-iteration level).
+pub(crate) fn message_envelope_org(msg: &ChatMessage) -> Option<String> {
+    use crate::ui::peer_block::detect_inbound;
+    if !matches!(msg.role, MessageRole::User) {
+        return None;
+    }
+    msg.blocks.iter().find_map(|block| match block {
+        MessageBlock::Text(text) => detect_inbound(&text.text).map(|kind| kind.org().to_owned()),
+        _ => None,
+    })
+}
+
+/// Decide whether `messages[idx]` should suppress its role-label line.
+/// Group-chat-style collapse: returns `true` iff the message AND its
+/// immediate predecessor are both peer/worker envelopes carrying the
+/// same `sender_org`. Used by chat.rs to thread `suppress_group_header`
+/// through both the measure and render passes consistently so the
+/// `MessageRenderCacheKey` stays stable per message.
+pub(crate) fn compute_suppress_group_header(messages: &[ChatMessage], idx: usize) -> bool {
+    if idx == 0 {
+        return false;
+    }
+    let Some(cur) = message_envelope_org(&messages[idx]) else {
+        return false;
+    };
+    let Some(prev) = message_envelope_org(&messages[idx - 1]) else {
+        return false;
+    };
+    cur == prev
 }
 
 fn system_role_label_line(severity: SystemSeverity) -> Line<'static> {
@@ -1671,11 +1748,19 @@ mod tests {
     }
 
     fn default_options() -> MessageRenderOptions {
-        MessageRenderOptions { tools_collapsed: false, include_trailing_separator: true }
+        MessageRenderOptions {
+            tools_collapsed: false,
+            include_trailing_separator: true,
+            suppress_group_header: false,
+        }
     }
 
     fn options_without_separator() -> MessageRenderOptions {
-        MessageRenderOptions { tools_collapsed: false, include_trailing_separator: false }
+        MessageRenderOptions {
+            tools_collapsed: false,
+            include_trailing_separator: false,
+            suppress_group_header: false,
+        }
     }
 
     fn ground_truth_height(msg: &mut ChatMessage, spinner: &SpinnerState, width: u16) -> usize {
@@ -1965,7 +2050,11 @@ mod tests {
             &spinner,
             80,
             1,
-            MessageRenderOptions { tools_collapsed: false, include_trailing_separator: false },
+            MessageRenderOptions {
+                tools_collapsed: false,
+                include_trailing_separator: false,
+                suppress_group_header: false,
+            },
             0,
             &mut out,
         );
@@ -1992,7 +2081,11 @@ mod tests {
             &spinner,
             80,
             1,
-            MessageRenderOptions { tools_collapsed: false, include_trailing_separator: false },
+            MessageRenderOptions {
+                tools_collapsed: false,
+                include_trailing_separator: false,
+                suppress_group_header: false,
+            },
             0,
             &mut out,
         );
@@ -2187,7 +2280,11 @@ mod tests {
                     None,
                     120,
                     0,
-                    MessageRenderOptions { tools_collapsed, include_trailing_separator: true },
+                    MessageRenderOptions {
+                        tools_collapsed,
+                        include_trailing_separator: true,
+                        suppress_group_header: false,
+                    },
                 ),
                 &mut lines,
             );
@@ -2453,5 +2550,129 @@ mod tests {
                 CachedMessageSegment::Lines { height, .. } => *height,
             })
             .sum()
+    }
+
+    // -----------------------------------------------------------------
+    // Same-project envelope grouping (#158). Tests cover the
+    // grouping-decision helper + the render-time suppression flow.
+    // -----------------------------------------------------------------
+
+    /// Build a User-role message whose first text block is a peer
+    /// envelope so `detect_inbound` + `message_envelope_org` recognise
+    /// it. Reuses the existing `peer_block` to_prose shape so the test
+    /// doesn't have to hand-roll the bracket format.
+    fn make_peer_envelope_message(sender: &str, org: &str, body: &str) -> ChatMessage {
+        let text = format!(
+            "[Message id=t-12345678 hop=1/10 from agent '{sender}' (org '{org}')]\n\n{body}"
+        );
+        ChatMessage::new(
+            MessageRole::User,
+            vec![MessageBlock::Text(TextBlock::from_complete(&text))],
+            None,
+        )
+    }
+
+    #[test]
+    fn compute_suppress_group_header_is_false_for_first_message() {
+        let messages = vec![make_peer_envelope_message("forge", "Personal", "hi")];
+        assert!(!compute_suppress_group_header(&messages, 0));
+    }
+
+    #[test]
+    fn compute_suppress_group_header_is_false_for_non_envelope() {
+        let messages = vec![
+            make_peer_envelope_message("forge", "Personal", "first"),
+            make_text_message(MessageRole::User, "plain user text"),
+        ];
+        assert!(!compute_suppress_group_header(&messages, 1));
+    }
+
+    #[test]
+    fn compute_suppress_group_header_is_false_when_prev_is_not_envelope() {
+        let messages = vec![
+            make_text_message(MessageRole::User, "first user input"),
+            make_peer_envelope_message("forge", "Personal", "envelope"),
+        ];
+        assert!(!compute_suppress_group_header(&messages, 1));
+    }
+
+    #[test]
+    fn compute_suppress_group_header_is_true_for_consecutive_same_org() {
+        let messages = vec![
+            make_peer_envelope_message("forge", "Personal", "first"),
+            make_peer_envelope_message("forge", "Personal", "second"),
+            make_peer_envelope_message("forge", "Personal", "third"),
+        ];
+        assert!(!compute_suppress_group_header(&messages, 0));
+        assert!(compute_suppress_group_header(&messages, 1));
+        assert!(compute_suppress_group_header(&messages, 2));
+    }
+
+    #[test]
+    fn compute_suppress_group_header_is_false_when_org_differs() {
+        let messages = vec![
+            make_peer_envelope_message("forge", "Personal", "lead msg"),
+            make_peer_envelope_message("reviewer", "worker in forge", "worker msg"),
+            make_peer_envelope_message("forge", "Personal", "lead again"),
+        ];
+        // (1) is an envelope with a different org from (0) → no suppress
+        assert!(!compute_suppress_group_header(&messages, 1));
+        // (2) is an envelope with a different org from (1) → no suppress
+        assert!(!compute_suppress_group_header(&messages, 2));
+    }
+
+    #[test]
+    fn compute_suppress_group_header_breaks_on_assistant_turn() {
+        let messages = vec![
+            make_peer_envelope_message("forge", "Personal", "first envelope"),
+            make_text_message(MessageRole::Assistant, "assistant reply"),
+            make_peer_envelope_message("forge", "Personal", "second envelope"),
+        ];
+        // Non-User assistant turn between envelopes breaks the group.
+        assert!(!compute_suppress_group_header(&messages, 2));
+    }
+
+    /// Render-time effect: with `suppress_group_header = true`, the
+    /// envelope render does NOT include the "forge" role label line.
+    /// With it false, the label IS present. Same envelope text, only
+    /// the flag changes.
+    #[test]
+    fn render_envelope_with_suppress_group_header_omits_role_label() {
+        let mut msg = make_peer_envelope_message("forge", "Personal", "hello");
+        let spinner = idle_spinner();
+        let options_with_label = MessageRenderOptions {
+            tools_collapsed: false,
+            include_trailing_separator: false,
+            suppress_group_header: false,
+        };
+        let mut lines_with = Vec::new();
+        render_message(
+            &mut msg,
+            &spinner,
+            MessageRenderContext::new(None, 80, 0, options_with_label),
+            &mut lines_with,
+        );
+        let with_label = render_lines_to_strings(&lines_with);
+        // Invalidate the cache between the two render calls so the
+        // second one rebuilds against the new options (the cache key
+        // already distinguishes the two, but we want to be explicit).
+        msg.invalidate_render_cache();
+        let options_no_label = MessageRenderOptions {
+            tools_collapsed: false,
+            include_trailing_separator: false,
+            suppress_group_header: true,
+        };
+        let mut lines_without = Vec::new();
+        render_message(
+            &mut msg,
+            &spinner,
+            MessageRenderContext::new(None, 80, 0, options_no_label),
+            &mut lines_without,
+        );
+        let without_label = render_lines_to_strings(&lines_without);
+
+        assert_eq!(with_label.first().map(String::as_str), Some("forge"));
+        assert_ne!(without_label.first().map(String::as_str), Some("forge"));
+        assert!(lines_without.len() < lines_with.len(), "suppressing the label drops one line");
     }
 }
