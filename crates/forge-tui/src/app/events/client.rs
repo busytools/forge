@@ -356,7 +356,6 @@ fn apply_session_update_spawning(
     let mut bucket = crate::app::session::UiSession::new(key.clone());
     bucket.cwd = shorten_cwd_display_path(cwd);
     cwd.clone_into(&mut bucket.cwd_raw);
-    bucket.lifecycle_state = crate::app::session::SessionLifecycleState::Spawning;
     bucket.messages.push(crate::app::ChatMessage::new(
         crate::app::MessageRole::System(Some(crate::app::SystemSeverity::Info)),
         vec![crate::app::MessageBlock::Text(crate::app::TextBlock::from_complete(&format!(
@@ -366,6 +365,11 @@ fn apply_session_update_spawning(
     ));
     bucket.message_retained_bytes.push(0);
     app.sessions.insert(key.clone(), bucket);
+    super::set_bucket_lifecycle_state(
+        app,
+        &key,
+        crate::app::session::SessionLifecycleState::Spawning,
+    );
 
     // **Focus stays where it is.** Auto-focus over the pre-Connect
     // placeholder would let whichever auto_start project's Spawning

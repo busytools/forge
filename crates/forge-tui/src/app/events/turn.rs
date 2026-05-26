@@ -366,9 +366,13 @@ fn apply_turn_complete_presentation(
         // it to Idle so the Projects pane drops the spinner glyph,
         // and reset the per-turn SDK state.
         if let Some(bucket) = app.sessions.get_mut(session_key) {
-            bucket.lifecycle_state = crate::app::session::SessionLifecycleState::Idle;
             bucket.turn_state = forge_primitives::runtime::SessionTurnState::default();
         }
+        super::set_bucket_lifecycle_state(
+            app,
+            session_key,
+            crate::app::session::SessionLifecycleState::Idle,
+        );
         if let Some(reason) = terminal_reason {
             tracing::debug!(
                 target: crate::logging::targets::APP_SESSION,
@@ -558,9 +562,13 @@ fn apply_turn_error_presentation(
         // bucket to Idle so the Projects pane drops the spinner glyph,
         // and reset the per-turn SDK state.
         if let Some(bucket) = app.sessions.get_mut(session_key) {
-            bucket.lifecycle_state = crate::app::session::SessionLifecycleState::Idle;
             bucket.turn_state = forge_primitives::runtime::SessionTurnState::default();
         }
+        super::set_bucket_lifecycle_state(
+            app,
+            session_key,
+            crate::app::session::SessionLifecycleState::Idle,
+        );
         let summary = summarize_internal_error(msg);
         if cancelled_requested {
             tracing::warn!(
