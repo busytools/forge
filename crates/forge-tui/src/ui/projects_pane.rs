@@ -464,7 +464,18 @@ fn append_org_project_row(
     spans.push(Span::styled(connector.to_owned(), Style::default().fg(theme::DIM)));
 
     if let Some((session_key, lifecycle, is_focused, badge_input)) = live {
-        let (glyph, glyph_color) = glyph_for_lifecycle(*lifecycle, *is_focused, spinner_frame);
+        // Background-row override: a non-active session with a pending
+        // permission/question prompt surfaces yellow △ regardless of
+        // lifecycle, so the user notices it without switching focus.
+        // Focused rows keep their normal glyph - the yellow signal is
+        // "background session needs you", not "the one you're looking at".
+        let needs_attention = !*is_focused
+            && app.sessions.get(session_key).is_some_and(|b| !b.prompt_queue.is_empty());
+        let (glyph, glyph_color) = if needs_attention {
+            ("\u{25b3}".to_owned(), theme::STATUS_WARNING)
+        } else {
+            glyph_for_lifecycle(*lifecycle, *is_focused, spinner_frame)
+        };
         let name_style = if *is_focused {
             Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)
         } else {

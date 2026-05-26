@@ -9,11 +9,16 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
+use forge_primitives::permission_ui::{
+    PermissionAction, PermissionOption, PermissionOptionKind, PermissionRequest,
+};
+use forge_primitives::session_update::ToolCall;
 use forge_tui::app::App;
 use forge_tui::app::PaneHitTarget;
+use forge_tui::app::apply_session_update;
 use forge_tui::app::session::{SessionLifecycleState, UiSession};
 use forge_tui::ui::{projects_pane, top_bar};
-use forge_workspace::{ProjectKey, ProjectView, SessionKey, SessionView};
+use forge_workspace::{ProjectKey, ProjectView, SessionKey, SessionUpdate, SessionView};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
@@ -400,5 +405,108 @@ fn wide_tier_attention_session_glyph_uses_warning_color() {
         fg,
         ratatui::style::Color::Yellow,
         "Attention glyph must use STATUS_WARNING (Yellow), got: {fg:?}"
+    );
+}
+
+fn build_permission_request() -> PermissionRequest {
+    PermissionRequest {
+        tool_call: ToolCall {
+            tool_call_id: "tc-test".into(),
+            title: "Bash".into(),
+            kind: forge_primitives::ToolKind::Execute,
+            status: forge_primitives::ToolCallStatus::Pending,
+            content: vec![],
+            raw_input: None,
+            raw_output: None,
+            output_metadata: None,
+            task_metadata: None,
+            locations: vec![],
+            meta: None,
+        },
+        options: vec![PermissionOption {
+            option_id: "allow".into(),
+            name: "Allow".into(),
+            kind: PermissionOptionKind::Allow,
+            action: PermissionAction::Allow,
+        }],
+        display: None,
+    }
+}
+
+#[test]
+fn wide_tier_background_session_with_pending_prompt_renders_yellow_glyph() {
+    let mut app = App::test_default();
+
+    // Two projects: active session on `forge`, background session on
+    // `stargate`. A PermissionRequest lands on the background session;
+    // the projects pane must surface the yellow △ on the background
+    // row so the user notices it without switching focus.
+    let projects = vec![
+        project_view("forge", vec![session_view("session-a", "lead-a")]),
+        project_view("stargate", vec![session_view("session-b", "lead-b")]),
+    ];
+
+    let key_a = SessionKey::from_str_for_test("session-a");
+    let key_b = SessionKey::from_str_for_test("session-b");
+    app.active_session_key = Some(key_a.clone());
+    register_lifecycle_for_test(&mut app, &key_a, SessionLifecycleState::Idle);
+    register_lifecycle_for_test(&mut app, &key_b, SessionLifecycleState::Idle);
+
+    apply_session_update(
+        &mut app,
+        SessionUpdate::PermissionRequest {
+            key: key_b.clone(),
+            tool_id: "tc-test".into(),
+            request: build_permission_request(),
+        },
+    );
+
+    let backend = TestBackend::new(40, 14);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let area = Rect::new(0, 0, 40, 14);
+    terminal.draw(|frame| projects_pane::render(frame, area, &mut app, &projects)).unwrap();
+    let buffer = terminal.backend().buffer().clone();
+
+    let fg = find_glyph_fg(&buffer, '△')
+        .expect("background session with pending prompt must surface △ on its row");
+    assert_eq!(
+        fg,
+        ratatui::style::Color::Yellow,
+        "background-row △ must use STATUS_WARNING (Yellow), got: {fg:?}"
+    );
+}
+
+#[test]
+fn wide_tier_focused_session_with_pending_prompt_keeps_normal_glyph() {
+    let mut app = App::test_default();
+
+    // Single project, focused session has a pending PermissionRequest.
+    // The yellow signal is "background session needs you"; the focused
+    // row is already in the user's view, so it keeps its normal Idle
+    // glyph (no over-trigger).
+    let projects = vec![project_view("forge", vec![session_view("session-a", "lead-a")])];
+
+    let key_a = SessionKey::from_str_for_test("session-a");
+    app.active_session_key = Some(key_a.clone());
+    register_lifecycle_for_test(&mut app, &key_a, SessionLifecycleState::Idle);
+
+    apply_session_update(
+        &mut app,
+        SessionUpdate::PermissionRequest {
+            key: key_a.clone(),
+            tool_id: "tc-test".into(),
+            request: build_permission_request(),
+        },
+    );
+
+    let backend = TestBackend::new(26, 10);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let area = Rect::new(0, 0, 26, 10);
+    terminal.draw(|frame| projects_pane::render(frame, area, &mut app, &projects)).unwrap();
+    let buffer = terminal.backend().buffer().clone();
+
+    assert!(
+        find_glyph_fg(&buffer, '△').is_none(),
+        "focused session with pending prompt must not flip its row to yellow △",
     );
 }
