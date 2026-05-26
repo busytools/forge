@@ -727,16 +727,12 @@ fn uncommitted_display(stats: &GitDiffStats) -> DiffDisplay<'_> {
 /// Layer 2 (branch ahead of default): subtitle carries the commit
 /// count so the user knows how many commits produced the stats
 /// (e.g. `3 commits vs main`). Singular form (`1 commit vs main`)
-/// when the branch only has one commit ahead. Empty `default` is
-/// defensive - `branch_ahead` is only constructed when the scanner
-/// resolved a default branch, so this only fires under future drift.
+/// when the branch only has one commit ahead. `default` is
+/// guaranteed non-empty by the scanner: `branch_ahead` is only
+/// constructed when `default_branch` resolved.
 fn branch_ahead_display<'a>(ahead: &'a GitBranchAhead, default: &str) -> DiffDisplay<'a> {
     let commit_label = if ahead.commit_count == 1 { "commit" } else { "commits" };
-    let subtitle = if default.is_empty() {
-        format!("{} {commit_label} vs default", ahead.commit_count)
-    } else {
-        format!("{} {commit_label} vs {default}", ahead.commit_count)
-    };
+    let subtitle = format!("{} {commit_label} vs {default}", ahead.commit_count);
     DiffDisplay {
         files: &ahead.stats.files,
         total_files: ahead.stats.total_files,
