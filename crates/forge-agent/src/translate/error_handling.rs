@@ -27,6 +27,32 @@ pub fn summarize_internal_error(input: &str) -> String {
     if let Some(msg) = extract_json_string_field(input, "message") {
         return truncate_for_log(&msg);
     }
+    // #143 item 1: extended fallback chain. The wrapped error
+    // payloads sometimes carry their useful text under a different
+    // field name. The previous chain (`<message>` -> `"message"` ->
+    // first-non-blank line) returned `""` when the wire shape used
+    // any of the variants below.
+    //
+    // - `assistant_error` — wire-shape from the agent SDK adapter for
+    //   errors that surface inside an assistant turn body.
+    // - `detail` / `description` — common JSON shapes for error
+    //   responses that don't follow the `"message"` convention
+    //   (Anthropic's "rate_limit_error" body uses `message` so it
+    //   hits the prior branch; other endpoints differ).
+    // - `error.message` / `error.type` — nested error objects.
+    // - `body` — the truncated HTTP body suffix oauth_usage and
+    //   similar loggers stuff verbatim onto wrapped error strings.
+    //
+    // Each extractor returns None when the field isn't present so
+    // the chain falls through to the original first-non-blank-line
+    // fallback when no structured signal is recoverable.
+    for field in ["assistant_error", "detail", "description", "type", "body"] {
+        if let Some(msg) = extract_json_string_field(input, field) {
+            if !msg.trim().is_empty() {
+                return truncate_for_log(&msg);
+            }
+        }
+    }
     let fallback = input.lines().find(|line| !line.trim().is_empty()).unwrap_or(input);
     truncate_for_log(fallback.trim())
 }
@@ -270,5 +296,38 @@ mod tests {
             summarize_internal_error(payload),
             "Tool permission request failed: Invalid input: expected record, received undefined"
         );
+    }
+
+    /// #143 item 1: the wrapped error payloads sometimes use field
+    /// names other than "message". Extended fallback chain now
+    /// reaches `assistant_error`, `detail`, `description`, `type`,
+    /// `body` so error_preview no longer comes back empty when
+    /// the wire shape avoids the canonical "message" field.
+    #[test]
+    fn summarize_falls_through_to_assistant_error_field() {
+        let payload = r#"{"jsonrpc":"2.0","error":{"assistant_error":"model context exceeded"}}"#;
+        assert_eq!(summarize_internal_error(payload), "model context exceeded");
+    }
+
+    #[test]
+    fn summarize_falls_through_to_detail_field() {
+        let payload = r#"{"jsonrpc":"2.0","error":{"code":-32603,"detail":"upstream stream closed"}}"#;
+        assert_eq!(summarize_internal_error(payload), "upstream stream closed");
+    }
+
+    #[test]
+    fn summarize_falls_through_to_body_field() {
+        let payload =
+            r#"{"jsonrpc":"2.0","error":{"code":-32603,"body":"HTTP/2.0 502 Bad Gateway"}}"#;
+        assert_eq!(summarize_internal_error(payload), "HTTP/2.0 502 Bad Gateway");
+    }
+
+    /// `"message"` field wins over the fallback fields - the
+    /// pre-existing extractor runs first so this test pins
+    /// precedence ordering.
+    #[test]
+    fn summarize_message_field_wins_over_fallbacks() {
+        let payload = r#"{"error":{"message":"primary","detail":"secondary"}}"#;
+        assert_eq!(summarize_internal_error(payload), "primary");
     }
 }
