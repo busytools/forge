@@ -81,6 +81,9 @@ pub use ui::{SpinnerStyle, UiSettings};
 pub use views::{ProjectView, SessionView};
 pub use workspace::{Workspace, resolve_lead_session};
 
+#[cfg(any(test, feature = "testing"))]
+pub use session_task::on_connected_for_test;
+
 // Re-export forge-agent types that public surface returns, so
 // callers can write `use forge_workspace::AgentHandle` if they
 // prefer.
