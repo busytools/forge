@@ -819,9 +819,7 @@ fn glyph_for_lifecycle(
         // need `claude auth login` vs which are simply idle. ⚠ in
         // STATUS_WARNING mirrors the 5h/7d ETA column's "⚠ expired
         // — /login" treatment from #169.
-        SessionLifecycleState::AuthRequired => {
-            ("\u{26a0}".to_owned(), theme::STATUS_WARNING)
-        }
+        SessionLifecycleState::AuthRequired => ("\u{26a0}".to_owned(), theme::STATUS_WARNING),
         SessionLifecycleState::Sleeping
         | SessionLifecycleState::Failed
         | SessionLifecycleState::LoggedOut => ("·".to_owned(), theme::DIM),

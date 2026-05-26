@@ -424,7 +424,19 @@ fn append_assistant_tool_block(
         if !state.prev_was_tool && state.has_body_content {
             layout.push_blank();
         }
-        let collapsed = tc.collapsed_override.unwrap_or(render_context.options.tools_collapsed);
+        // #143 item 5: routine `mcp__forge__*` calls collapse to a
+        // one-line summary by default — the wire shape is
+        // predictable and the user-facing intent is target +
+        // correlation_id, not the JSON args. A per-tc
+        // `collapsed_override` (set by clicking on the row) still
+        // wins so the user can expand for a specific call when
+        // they want the body preview. The global `tools_collapsed`
+        // setting is ignored on this path because these cards are
+        // intentionally compact by default; it'd be confusing to
+        // make them honor a setting whose name implies the
+        // OPPOSITE default behaviour ("tools_collapsed=false" =
+        // "show full tool cards" = wrong for these).
+        let collapsed = tc.collapsed_override.unwrap_or(true);
         let lines = peer_block::render_outbound(&kind, collapsed);
         // Same hit-target stamping the standard tool-call branch
         // below does so `mouse::locate_tool_call_block_at_click` can

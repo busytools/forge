@@ -47,10 +47,10 @@ pub fn summarize_internal_error(input: &str) -> String {
     // the chain falls through to the original first-non-blank-line
     // fallback when no structured signal is recoverable.
     for field in ["assistant_error", "detail", "description", "type", "body"] {
-        if let Some(msg) = extract_json_string_field(input, field) {
-            if !msg.trim().is_empty() {
-                return truncate_for_log(&msg);
-            }
+        if let Some(msg) = extract_json_string_field(input, field)
+            && !msg.trim().is_empty()
+        {
+            return truncate_for_log(&msg);
         }
     }
     let fallback = input.lines().find(|line| !line.trim().is_empty()).unwrap_or(input);
@@ -311,7 +311,8 @@ mod tests {
 
     #[test]
     fn summarize_falls_through_to_detail_field() {
-        let payload = r#"{"jsonrpc":"2.0","error":{"code":-32603,"detail":"upstream stream closed"}}"#;
+        let payload =
+            r#"{"jsonrpc":"2.0","error":{"code":-32603,"detail":"upstream stream closed"}}"#;
         assert_eq!(summarize_internal_error(payload), "upstream stream closed");
     }
 
