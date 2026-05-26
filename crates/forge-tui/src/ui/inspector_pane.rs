@@ -484,9 +484,14 @@ fn append_git_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
     // default isn't resolved (`branch_ahead == None`). When BOTH
     // layers are present, layer 2 renders directly below layer 1
     // so the user sees in-progress + committed-but-unmerged work
-    // stacked in the same view.
-    if let Some(ahead) = snapshot.branch_ahead.as_ref() {
-        let default = snapshot.default_branch.as_deref().unwrap_or_default();
+    // stacked in the same view. The tuple-match here is paired
+    // with the scanner's invariant that `branch_ahead = Some(_)`
+    // is only constructed when `default_branch` resolved; the
+    // explicit `Some(default)` makes the assumption load-bearing
+    // at the call site rather than hidden behind an unwrap.
+    if let (Some(ahead), Some(default)) =
+        (snapshot.branch_ahead.as_ref(), snapshot.default_branch.as_deref())
+    {
         append_diff_layer(lines, &branch_ahead_display(ahead, default), width);
     }
 }
