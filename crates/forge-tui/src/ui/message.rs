@@ -424,7 +424,19 @@ fn append_assistant_tool_block(
         if !state.prev_was_tool && state.has_body_content {
             layout.push_blank();
         }
-        let collapsed = tc.collapsed_override.unwrap_or(render_context.options.tools_collapsed);
+        // #143 item 5: routine `mcp__forge__*` calls collapse to a
+        // one-line summary by default — the wire shape is
+        // predictable and the user-facing intent is target +
+        // correlation_id, not the JSON args. A per-tc
+        // `collapsed_override` (set by clicking on the row) still
+        // wins so the user can expand for a specific call when
+        // they want the body preview. The global `tools_collapsed`
+        // setting is ignored on this path because these cards are
+        // intentionally compact by default; it'd be confusing to
+        // make them honor a setting whose name implies the
+        // OPPOSITE default behaviour ("tools_collapsed=false" =
+        // "show full tool cards" = wrong for these).
+        let collapsed = tc.collapsed_override.unwrap_or(true);
         let lines = peer_block::render_outbound(&kind, collapsed);
         // Same hit-target stamping the standard tool-call branch
         // below does so `mouse::locate_tool_call_block_at_click` can
@@ -1112,15 +1124,16 @@ fn role_label_line(msg: &ChatMessage) -> Line<'static> {
 /// True when this `MessageRole::User` carries a peer / worker MCP
 /// inbound envelope (a `[Question id=q-...]`, `[Message id=t-...]`,
 /// `[Reply id=t-...]`, or one of the timeout/expired/failed
-/// notification shapes). Detection re-uses `peer_block::detect_inbound`
-/// so the chat label moves in lockstep with the block renderer's own
-/// recognition logic.
+/// notification shapes).
+///
+/// #143 item 2: reads the cached `is_peer_envelope` flag on
+/// `ChatMessage` (stamped at push time by the
+/// `PeerEnvelopeAppended` path via `ChatMessage::new_peer_envelope`)
+/// rather than walking blocks + running `detect_inbound` per frame.
+/// The walk was a hot path under heavy envelope traffic — the role
+/// label re-evaluates on every render of every chat message.
 fn is_peer_envelope_user_message(msg: &ChatMessage) -> bool {
-    use crate::ui::peer_block::detect_inbound;
-    msg.blocks.iter().any(|block| match block {
-        MessageBlock::Text(text) => detect_inbound(&text.text).is_some(),
-        _ => false,
-    })
+    msg.is_peer_envelope
 }
 
 /// Extract the `sender_org` tag from this message's first inbound peer
@@ -2682,7 +2695,7 @@ mod tests {
         let text = format!(
             "[Message id=t-12345678 hop=1/10 from agent '{sender}' (org '{org}')]\n\n{body}"
         );
-        ChatMessage::new(
+        ChatMessage::new_peer_envelope(
             MessageRole::User,
             vec![MessageBlock::Text(TextBlock::from_complete(&text))],
             None,
@@ -2746,7 +2759,7 @@ mod tests {
         let text = format!(
             "[Message id=t-12345678 hop=1/10 from agent '{sender}' (org '{org}')]\n\n{body}"
         );
-        ChatMessage::new(
+        ChatMessage::new_peer_envelope(
             MessageRole::User,
             vec![MessageBlock::Text(TextBlock::from_complete(&text))],
             None,
