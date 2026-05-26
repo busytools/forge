@@ -1423,7 +1423,7 @@ mod team_hook_tests {
             dispatched.iter().filter(|c| matches!(c, Command::Prompt { .. })).collect();
         assert_eq!(prompts.len(), 1, "planner worker gets exactly one kick");
         if let Command::Prompt { key, text, .. } = prompts[0] {
-            assert_eq!(key.as_str(), "worker-uuid", "kick targets the worker's real session id",);
+            assert_eq!(key.as_str(), "worker-uuid", "kick targets the worker's real session id");
             assert!(
                 text.contains("gh issue list -l untriaged"),
                 "kick carries planner-specific gh command; got: {text}",
