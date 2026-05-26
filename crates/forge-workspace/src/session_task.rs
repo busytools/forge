@@ -717,24 +717,52 @@ fn maybe_spawn_team_on_connected(
     if !workspace.list_live_workers(&project_key).is_empty() {
         return;
     }
-    workspace.spawn_team_for_lead(real_session_id, &project_key, &project.team);
+    // Scan the project's catalog for previously-spawned worker
+    // sessions (tagged `forge:worker:<label>`) so each role resumes
+    // its existing session instead of starting fresh. The scan is
+    // async (filesystem I/O); workspace claims a per-project
+    // in-flight guard synchronously so a fast double-Connected
+    // can't slip a second team-spawn through. The guard is
+    // released after the SpawnWorker commands are dispatched.
+    workspace.spawn_team_for_lead_with_catalog_scan(
+        real_session_id.to_owned(),
+        project_key,
+        project.path.clone(),
+        project.team.clone(),
+    );
 }
 
-/// Parse a worker synthetic spawn key
-/// (`__spawn_worker_<project>_<label>_<uuid>__`) and return the
-/// label segment. Returns `None` for lead synth keys or any other
-/// shape. Project keys are alphanumeric+dash only (no underscores)
-/// and uuids are hex (no underscores), so `splitn(3, '_')` on the
-/// "<project>_<label>_<uuid>" remainder yields exactly three parts.
+/// Parse a worker synthetic spawn key. Recognises both:
+///
+/// - `__spawn_worker_<project>_<label>_<uuid>__` (fresh-spawn shape,
+///   `handle_spawn_worker` with `resume_existing = None`)
+/// - `__resume_worker_<project>_<label>_<uuid>__` (resume shape,
+///   `handle_spawn_worker` with `resume_existing = Some(...)`)
+///
+/// Returns the label segment. `None` for lead synth keys or any
+/// other shape. Project keys are alphanumeric+dash only (no
+/// underscores) and uuids are hex (no underscores), so
+/// `splitn(3, '_')` on the "<project>_<label>_<uuid>" remainder
+/// yields exactly three parts.
 fn parse_worker_label_from_synth_key(key: &SessionKey) -> Option<String> {
     let s = key.as_str();
-    let inner = s.strip_prefix("__spawn_")?.strip_suffix("__")?;
+    let inner =
+        s.strip_prefix("__spawn_").or_else(|| s.strip_prefix("__resume_"))?.strip_suffix("__")?;
     let after_worker = inner.strip_prefix("worker_")?;
     let parts: Vec<&str> = after_worker.splitn(3, '_').collect();
     if parts.len() != 3 {
         return None;
     }
     Some(parts[1].to_owned())
+}
+
+/// True when `key` is the resume-shaped worker synth key
+/// (`__resume_worker_<project>_<label>_<uuid>__`). The kick-skip
+/// guard in `maybe_kick_worker_on_connected` keys on this to decide
+/// whether to inspect the JSONL turn count before firing the
+/// initial kick.
+fn is_resume_worker_synth_key(key: &SessionKey) -> bool {
+    key.as_str().starts_with("__resume_worker_")
 }
 
 /// Shared engineering-team worker-kick hook: if `spawn_key` is a
@@ -765,6 +793,29 @@ fn maybe_kick_worker_on_connected(
     let Some(role) = crate::team::Role::from_str_ci(&label) else {
         return;
     };
+    // Resume path: inspect the JSONL turn count before re-firing
+    // the kick. The kick lands as a USER turn; a worker that's
+    // already executed past the kick has at least one MORE user
+    // turn in its history (the next prompt from the lead, or an
+    // MCP-driven peer/worker message). Threshold is 2: a JSONL with
+    // exactly 1 user turn means the worker received the kick but
+    // crashed / didn't progress before forge restarted, so we
+    // re-fire to actually start the work. 2+ means the worker has
+    // moved past the kick — leave it alone, since a re-kick would
+    // override its in-flight state. Fresh-spawn path skips this
+    // check (no JSONL exists yet; user_turn_count would be 0
+    // anyway).
+    if is_resume_worker_synth_key(spawn_key)
+        && workspace.worker_has_progress_past_kick(real_session_id)
+    {
+        tracing::info!(
+            target: "forge_workspace::team",
+            role = role.label(),
+            session_id = real_session_id,
+            "skipping kick on worker resume with prior progress past initial kick",
+        );
+        return;
+    }
     let target_key = SessionKey::from_session_id(real_session_id.to_owned());
     if let Err(err) = workspace.dispatch(crate::protocol::Command::Prompt {
         key: target_key,
@@ -1497,5 +1548,22 @@ mod team_hook_tests {
             None,
             "worker prefix with no project/label/uuid segments must reject",
         );
+    }
+
+    /// #157: the resume-shaped worker synth key
+    /// (`__resume_worker_<project>_<label>_<uuid>__`) parses to the
+    /// same label as the fresh-shape — the parser accepts both.
+    #[test]
+    fn parse_worker_label_from_synth_key_extracts_label_for_resume_shape() {
+        let key = SessionKey::from_session_id("__resume_worker_forge_planner_abc123__");
+        assert_eq!(parse_worker_label_from_synth_key(&key), Some("planner".to_owned()));
+    }
+
+    #[test]
+    fn is_resume_worker_synth_key_identifies_resume_prefix() {
+        let resume = SessionKey::from_session_id("__resume_worker_forge_planner_abc123__");
+        let fresh = SessionKey::from_session_id("__spawn_worker_forge_planner_abc123__");
+        assert!(is_resume_worker_synth_key(&resume));
+        assert!(!is_resume_worker_synth_key(&fresh));
     }
 }

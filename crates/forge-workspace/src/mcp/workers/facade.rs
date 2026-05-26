@@ -342,6 +342,10 @@ impl WorkerFacade for ProdWorkerFacade {
             label,
             charter,
             spawned_by_session_id: caller.as_str().to_owned(),
+            // MCP-driven spawn is always a fresh session — the LLM
+            // explicitly requested a NEW worker. Resume is for the
+            // engineering-team Connected hook only.
+            resume_existing: None,
             return_to: tx,
         };
         if let Err(err) = ws.dispatch(cmd) {
