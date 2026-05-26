@@ -332,11 +332,12 @@ impl Tool for Tell {
             classify_workers_tell(&*self.facade, &caller_key, &args.label, in_reply_to_id.as_ref());
 
         let correlation_id = CorrelationId::new_tell();
+        let identity = self.facade.caller_identity(&caller_key);
         let wrapped = WrappedPrompt {
             correlation_id: correlation_id.clone(),
             kind,
-            sender_name: caller_key.as_str().to_owned(),
-            sender_org: String::new(),
+            sender_name: identity.name,
+            sender_org: identity.org,
             hop: 1,
             hop_limit: HOP_LIMIT,
             body: args.message,
@@ -600,11 +601,12 @@ impl Tool for Ask {
         let caller_key = self.caller_key.current();
         let correlation_id = CorrelationId::new_ask();
 
+        let identity = self.facade.caller_identity(&caller_key);
         let wrapped = WrappedPrompt {
             correlation_id: correlation_id.clone(),
             kind: WrappedKind::Question,
-            sender_name: caller_key.as_str().to_owned(),
-            sender_org: String::new(),
+            sender_name: identity.name,
+            sender_org: identity.org,
             hop: 1,
             hop_limit: HOP_LIMIT,
             body: args.question,
