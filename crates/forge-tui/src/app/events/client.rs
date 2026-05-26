@@ -713,30 +713,54 @@ fn apply_sdk_message_presentation(app: &mut App, session_id: &str, msg: forge_pr
         // buffer still only shows what was on screen at switch-out.
         let session_key = SessionKey::from_session_id(session_id.to_owned());
         if app.session_mut(&session_key).is_none() {
-            // Promoted to `error` so always-on debug logs make this
-            // very visible. The wire `session_id` doesn't match any
-            // known UiSession bucket — typically a key-drift race
-            // (in-flight wire frame whose session_id was rekey'd /
-            // dropped between the SessionTask emit and this reducer).
-            // The dumped context lets us see exactly which key the
-            // wire used vs what the TUI was tracking. If the
-            // dropped msg is `Result`, TurnComplete never fires and
-            // the spinner stays on "Thinking..." forever.
-            let bucket_keys: Vec<String> =
-                app.sessions.keys().map(|k| k.as_str().to_owned()).collect();
-            tracing::error!(
-                target: crate::logging::targets::APP_SESSION,
-                event_name = "sdk_message_dropped",
-                message = "SDK message dropped for an unknown session",
-                outcome = "dropped",
-                wire_session_id = %session_id,
-                active_session_id = %active_session_id_str,
-                active_session_key = ?app.active_session_key.as_ref().map(|k| k.as_str().to_owned()),
-                msg_variant = msg_variant_name(&msg),
-                bucket_keys = ?bucket_keys,
-                reason = "unknown_session",
-            );
-            return;
+            // #126 rekey path: the wire `session_id` doesn't match a
+            // known bucket. This is the symptom of an empty-session_id
+            // Connected (the bridge emitted KeyRenamed with empty
+            // `to` before the bucket migrated cleanly; our KeyRenamed
+            // handler now substitutes `__pending_<from>__`). If
+            // exactly one `__pending_*` bucket exists, rekey it to
+            // the wire session_id - it's almost certainly the bucket
+            // waiting for its real id. Multiple pending buckets
+            // (concurrent spawns with different leads) → fall
+            // through to the drop path; cwd-based disambiguation is
+            // a v2 concern.
+            if rekey_pending_bucket_to(app, &session_key) {
+                // Re-fetch via session_mut to confirm the bucket
+                // landed; if so, fall through to the routing branch
+                // below. The bucket is now keyed by session_id so
+                // the rest of the function handles it normally.
+                tracing::info!(
+                    target: crate::logging::targets::APP_SESSION,
+                    event_name = "sdk_message_bucket_rekeyed",
+                    wire_session_id = %session_id,
+                    "rekeyed pending bucket to wire session_id and routed the frame",
+                );
+            } else {
+                // Promoted to `error` so always-on debug logs make this
+                // very visible. The wire `session_id` doesn't match any
+                // known UiSession bucket and no `__pending_*` candidate
+                // is uniquely identifiable — typically a key-drift
+                // race (in-flight wire frame whose session_id was
+                // rekey'd / dropped between the SessionTask emit and
+                // this reducer). If the dropped msg is `Result`,
+                // TurnComplete never fires and the spinner stays on
+                // "Thinking..." forever.
+                let bucket_keys: Vec<String> =
+                    app.sessions.keys().map(|k| k.as_str().to_owned()).collect();
+                tracing::error!(
+                    target: crate::logging::targets::APP_SESSION,
+                    event_name = "sdk_message_dropped",
+                    message = "SDK message dropped for an unknown session",
+                    outcome = "dropped",
+                    wire_session_id = %session_id,
+                    active_session_id = %active_session_id_str,
+                    active_session_key = ?app.active_session_key.as_ref().map(|k| k.as_str().to_owned()),
+                    msg_variant = msg_variant_name(&msg),
+                    bucket_keys = ?bucket_keys,
+                    reason = "unknown_session",
+                );
+                return;
+            }
         }
         // Background SDK message routing: dispatch against the
         // target session's bucket without disturbing the active
@@ -922,12 +946,69 @@ fn apply_runtime_reload_failed_presentation(app: &mut App, session_id: &str, mes
     }
 }
 
+/// #126: when a wire frame arrives with a `session_id` that doesn't
+/// match any known bucket, scan for `__pending_*` synth buckets
+/// (planted by `apply_session_update_key_renamed` when Connected
+/// emitted with an empty session_id). If EXACTLY ONE exists, rekey
+/// it to the wire session_id and return true so the caller can
+/// route the frame to the freshly-rekeyed bucket. Returns false
+/// when no candidate exists or when multiple candidates make the
+/// match ambiguous (concurrent spawn case — cwd-based
+/// disambiguation is a v2 follow-up).
+fn rekey_pending_bucket_to(app: &mut App, real_key: &SessionKey) -> bool {
+    let pending_keys: Vec<SessionKey> =
+        app.sessions.keys().filter(|k| k.as_str().starts_with("__pending_")).cloned().collect();
+    if pending_keys.len() != 1 {
+        return false;
+    }
+    let Some(pending_key) = pending_keys.into_iter().next() else {
+        return false;
+    };
+    let Some(mut bucket) = app.sessions.remove(&pending_key) else {
+        return false;
+    };
+    bucket.key = Some(real_key.clone());
+    bucket.session_id = Some(crate::agent::model::SessionId::new(real_key.as_str().to_owned()));
+    app.sessions.insert(real_key.clone(), bucket);
+    // Forward active_session_key if it was pointing at the pending
+    // bucket. Background sessions whose pending bucket wasn't the
+    // focused one leave active_session_key alone.
+    if app.active_session_key.as_ref() == Some(&pending_key) {
+        app.active_session_key = Some(real_key.clone());
+    }
+    // Mirror the bucket rekey onto the workspace's `DomainSession`
+    // handle map so subsequent dispatches resolve via the real key.
+    if let Some(ws) = app.workspace.as_ref() {
+        ws.rekey_domain_session(&pending_key, real_key.clone());
+    }
+    app.needs_redraw = true;
+    true
+}
+
 /// migrate the bucket at `from` over to `to` when the
 /// workspace renames a synthetic spawn key onto the real claude
 /// session UUID. Updates `active_session_key` only when it
 /// currently points at `from` (background-spawn case must NOT
 /// hijack the user's deliberate session pick).
+///
+/// When `to` is the empty SessionKey (the bridge emitted Connected
+/// with an empty session_id — typical for a fresh session before
+/// claude's `system/init` lands), substitute a disambiguated
+/// `__pending_<from>__` synth so the bucket stays uniquely
+/// findable. `apply_sdk_message_presentation`'s pending-bucket
+/// rekey path picks it up when the first wire frame with a real
+/// session_id arrives. Without this substitution, an empty `to`
+/// would either route every fresh session to a single "" bucket
+/// (concurrent-spawn collision drops the second; see #126's
+/// secondary failure mode), or route subsequent wire frames to a
+/// "" key that never matches the real session_id (the primary
+/// failure mode).
 fn apply_session_update_key_renamed(app: &mut App, from: &SessionKey, to: SessionKey) {
+    let to = if to.as_str().is_empty() {
+        SessionKey::from_session_id(format!("__pending_{}__", from.as_str()))
+    } else {
+        to
+    };
     let already_under_to = app.sessions.contains_key(&to);
     if let Some(mut bucket) = app.sessions.remove(from) {
         if already_under_to {
@@ -2004,5 +2085,119 @@ mod tests {
             "active session must stay on the lead when the closed worker wasn't active",
         );
         assert!(!app.sessions.contains_key(&worker_key));
+    }
+
+    // ---------------------------------------------------------------------
+    // #126: empty-session_id Connected + wire-frame rekey path tests.
+    // ---------------------------------------------------------------------
+
+    /// KeyRenamed with an empty `to` (the bridge emitted Connected
+    /// before claude's `system/init` carried the real session_id)
+    /// must NOT migrate the bucket to the empty "" key. Instead the
+    /// handler substitutes `__pending_<from>__` so the bucket stays
+    /// uniquely findable for the rekey-on-wire-frame path.
+    #[test]
+    fn key_renamed_with_empty_to_substitutes_pending_synth() {
+        let mut app = App::test_default();
+        let synth = SessionKey::from_str_for_test("__spawn_forge__");
+        app.sessions.insert(synth.clone(), UiSession::new(synth.clone()));
+        app.active_session_key = Some(synth.clone());
+
+        apply_session_update_key_renamed(&mut app, &synth, SessionKey::from_session_id(""));
+
+        let pending = SessionKey::from_session_id("__pending___spawn_forge____");
+        assert!(
+            app.sessions.contains_key(&pending),
+            "bucket landed at __pending_<from>__ synth (keys: {:?})",
+            app.sessions.keys().map(SessionKey::as_str).collect::<Vec<_>>(),
+        );
+        assert!(
+            !app.sessions.contains_key(&SessionKey::from_session_id("")),
+            "no bucket at the bare empty '' key",
+        );
+        // active_session_key followed the rename through to the
+        // pending synth so user input still lands in the right
+        // bucket while we wait for the real id.
+        assert_eq!(app.active_session_key.as_ref(), Some(&pending));
+    }
+
+    /// Two empty-session_id Connecteds in a row (concurrent spawn
+    /// scenario) MUST land in DISTINCT pending buckets — the prior
+    /// code's `already_under_to` branch dropped the second synth
+    /// silently. Verifies the secondary failure mode is closed.
+    #[test]
+    fn two_empty_key_renames_land_in_distinct_pending_buckets() {
+        let mut app = App::test_default();
+        let synth_a = SessionKey::from_str_for_test("__spawn_alpha__");
+        let synth_b = SessionKey::from_str_for_test("__spawn_beta__");
+        app.sessions.insert(synth_a.clone(), UiSession::new(synth_a.clone()));
+        app.sessions.insert(synth_b.clone(), UiSession::new(synth_b.clone()));
+
+        apply_session_update_key_renamed(&mut app, &synth_a, SessionKey::from_session_id(""));
+        apply_session_update_key_renamed(&mut app, &synth_b, SessionKey::from_session_id(""));
+
+        let pending_a = SessionKey::from_session_id("__pending___spawn_alpha____");
+        let pending_b = SessionKey::from_session_id("__pending___spawn_beta____");
+        assert!(
+            app.sessions.contains_key(&pending_a),
+            "first concurrent rename landed at distinct pending key (keys: {:?})",
+            app.sessions.keys().map(SessionKey::as_str).collect::<Vec<_>>(),
+        );
+        assert!(
+            app.sessions.contains_key(&pending_b),
+            "second concurrent rename landed at distinct pending key (keys: {:?})",
+            app.sessions.keys().map(SessionKey::as_str).collect::<Vec<_>>(),
+        );
+    }
+
+    /// `rekey_pending_bucket_to`: when exactly one `__pending_*`
+    /// bucket exists, the helper rekeys it to the wire session_id
+    /// and returns true. Subsequent `session_mut(&real_key)` finds
+    /// the bucket where it used to fail.
+    #[test]
+    fn rekey_pending_bucket_promotes_single_candidate() {
+        let mut app = App::test_default();
+        let pending = SessionKey::from_session_id("__pending___spawn_forge____");
+        app.sessions.insert(pending.clone(), UiSession::new(pending.clone()));
+
+        let real = SessionKey::from_session_id("real-uuid-1");
+        assert!(rekey_pending_bucket_to(&mut app, &real), "single pending bucket → rekey succeeds");
+        assert!(!app.sessions.contains_key(&pending), "pending key removed after promotion");
+        let bucket = app.sessions.get(&real).expect("bucket at real key");
+        assert_eq!(bucket.key.as_ref(), Some(&real));
+        assert_eq!(
+            bucket.session_id.as_ref().map(ToString::to_string),
+            Some("real-uuid-1".to_owned()),
+        );
+    }
+
+    /// Multiple `__pending_*` buckets → the helper can't pick a
+    /// unique candidate and returns false. The caller falls
+    /// through to the existing drop-with-error-log path.
+    #[test]
+    fn rekey_pending_bucket_skips_when_ambiguous() {
+        let mut app = App::test_default();
+        let p1 = SessionKey::from_session_id("__pending_a__");
+        let p2 = SessionKey::from_session_id("__pending_b__");
+        app.sessions.insert(p1.clone(), UiSession::new(p1.clone()));
+        app.sessions.insert(p2.clone(), UiSession::new(p2.clone()));
+
+        let real = SessionKey::from_session_id("real-uuid-x");
+        assert!(
+            !rekey_pending_bucket_to(&mut app, &real),
+            "multiple pending → ambiguous, returns false",
+        );
+        assert!(app.sessions.contains_key(&p1), "p1 untouched");
+        assert!(app.sessions.contains_key(&p2), "p2 untouched");
+        assert!(!app.sessions.contains_key(&real), "real key NOT inserted");
+    }
+
+    /// No `__pending_*` buckets at all → helper returns false
+    /// (nothing to rekey).
+    #[test]
+    fn rekey_pending_bucket_returns_false_when_no_candidates() {
+        let mut app = App::test_default();
+        let real_key = SessionKey::from_session_id("real-uuid-2");
+        assert!(!rekey_pending_bucket_to(&mut app, &real_key));
     }
 }
