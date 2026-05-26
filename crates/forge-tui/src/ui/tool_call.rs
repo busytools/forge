@@ -28,6 +28,22 @@ use errors::{
 #[cfg(test)]
 use standard::{cap_write_diff_lines, content_summary};
 
+/// Stable-hash a string into a `usize` for the perf-log's `extra`
+/// field. Used by the `tc::render_body` instrumentation (#125
+/// variant 2) so a slow-frame capture can correlate tool names + ids
+/// across logs without leaking raw strings into the diagnostic
+/// stream. The hash is `DefaultHasher`-based — stable per process,
+/// not across forge versions; sufficient for in-session triage.
+fn stable_hash_usize(s: &str) -> usize {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    s.hash(&mut h);
+    #[allow(clippy::cast_possible_truncation)]
+    let truncated = h.finish() as usize;
+    truncated
+}
+
 /// Spinner frames as `&'static str` for use in `status_icon` return type.
 const SPINNER_STRS: &[&str] = &[
     "\u{280B}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283C}", "\u{2834}", "\u{2826}", "\u{2827}",
@@ -102,7 +118,25 @@ pub fn render_tool_call_cached_with_tools_collapsed(
         out.extend_from_slice(cached_body);
     } else {
         crate::perf::mark("tc::cache_miss_body");
-        let _t = crate::perf::start("tc::render_body");
+        // #125 variant 2 instrumentation: enrich the render_body
+        // mark so a slow-frame perf-log capture can answer "which
+        // tool's body is taking the time?" without re-running. The
+        // timer carries input_bytes as a cost proxy (pre-render, no
+        // re-walk of the laid-out body needed); sibling marks
+        // record a stable hash of sdk_tool_name + the tool-call id
+        // so a triage can correlate sessions / cross-reference
+        // logs without leaking raw command strings into the
+        // diagnostic capture. The string-hash approach is a
+        // workaround for the existing perf API only carrying
+        // `usize` extras; properly threading raw strings is a
+        // future API extension.
+        let _t = crate::perf::start_with("tc::render_body", "input_bytes", tc.raw_input_bytes);
+        crate::perf::mark_with(
+            "tc::render_body_tool",
+            "name_hash",
+            stable_hash_usize(&tc.sdk_tool_name),
+        );
+        crate::perf::mark_with("tc::render_body_id", "tc_id_hash", stable_hash_usize(&tc.id));
         let body = standard::render_tool_call_body(tc, width);
         if body_depends_on_width {
             tc.cache.store_for_width(body, width);
