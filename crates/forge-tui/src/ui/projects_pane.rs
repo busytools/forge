@@ -644,11 +644,25 @@ fn append_worker_tree_children(
         // `app.sessions`; fall back to a Spawning spinner when the
         // worker's Connected hasn't landed yet so the column never
         // collapses to a blank cell.
+        //
+        // Background-row override (#153, parity with the project-lead
+        // row's #152/#137 fix): a non-active worker with a pending
+        // permission/question prompt surfaces yellow △ regardless of
+        // lifecycle, so the user notices the worker needs attention
+        // without switching focus. Focused worker rows keep their
+        // normal glyph - the yellow signal is "background worker
+        // needs you", not "the one you're looking at."
         let lifecycle = app
             .sessions
             .get(&worker.session_key)
             .map_or(SessionLifecycleState::Spawning, |s| s.lifecycle_state);
-        let (glyph, glyph_color) = glyph_for_lifecycle(lifecycle, is_focused, spinner_frame);
+        let needs_attention = !is_focused
+            && app.sessions.get(&worker.session_key).is_some_and(|b| !b.prompt_queue.is_empty());
+        let (glyph, glyph_color) = if needs_attention {
+            ("\u{25b3}".to_owned(), theme::STATUS_WARNING)
+        } else {
+            glyph_for_lifecycle(lifecycle, is_focused, spinner_frame)
+        };
 
         // Left-indent (1) + `│  ` (3) so the worker's tree connector
         // hangs off the active project's column rather than the org
@@ -1935,6 +1949,148 @@ mod tests {
             })
             .collect();
         assert_eq!(workers_targets.len(), 4, "expected 4 worker targets, got {workers_targets:?}");
+    }
+
+    // ----------------------------------------------------------------
+    // #153: worker rows mirror the project-lead row's pending-prompt
+    // yellow △ override (#137 / #152). Non-active worker with a
+    // pending interaction surfaces △; focused worker keeps its
+    // normal lifecycle glyph.
+    // ----------------------------------------------------------------
+
+    /// Insert a `PromptState` directly into a worker's prompt_queue
+    /// so the override fires without needing to construct a full
+    /// PermissionRequest fixture. The override only reads
+    /// `prompt_queue.is_empty()`, so any non-empty queue suffices.
+    #[cfg(test)]
+    fn seed_worker_prompt_queue(app: &mut App, key: &forge_workspace::SessionKey) {
+        use crate::app::session::UiSession;
+        use forge_primitives::ToolCall;
+        use forge_primitives::permission_ui::{
+            PermissionAction, PermissionOption, PermissionOptionKind, PermissionRequest,
+        };
+        let bucket = app.sessions.entry(key.clone()).or_insert_with(|| UiSession::new(key.clone()));
+        let request = PermissionRequest {
+            tool_call: ToolCall {
+                tool_call_id: "tc-test".into(),
+                title: "Bash".into(),
+                kind: forge_primitives::ToolKind::Execute,
+                status: forge_primitives::ToolCallStatus::Pending,
+                content: vec![],
+                raw_input: None,
+                raw_output: None,
+                output_metadata: None,
+                task_metadata: None,
+                locations: vec![],
+                meta: None,
+            },
+            options: vec![PermissionOption {
+                option_id: "allow".into(),
+                name: "Allow".into(),
+                kind: PermissionOptionKind::Allow,
+                action: PermissionAction::Allow,
+            }],
+            display: None,
+        };
+        bucket
+            .prompt_queue
+            .push_back(crate::app::prompt::PromptState::from_permission("tc-test".into(), request));
+    }
+
+    #[test]
+    fn worker_row_with_pending_prompt_renders_yellow_triangle() {
+        use forge_workspace::ProjectKey;
+        use forge_workspace::SessionKey;
+        use forge_workspace::mcp::workers::types::WorkerEntry;
+        use std::time::SystemTime;
+
+        let mut app = App::test_default();
+        let workspace = app.workspace.clone().expect("workspace stub");
+        let project_key = ProjectKey::new_for_test("forge");
+        let worker_key = SessionKey::from_session_id("worker-1");
+        workspace.insert_live_worker(
+            &project_key,
+            WorkerEntry {
+                label: "reviewer".into(),
+                charter: "be sharp".into(),
+                session_key: worker_key.clone(),
+                status: forge_primitives::WorkerLiveness::Running,
+                spawned_at: SystemTime::UNIX_EPOCH,
+                spawned_by_session_id: "lead".into(),
+                needs_tag: false,
+                is_git_repo_at_spawn: false,
+            },
+        );
+        // Active session is something else - the worker is
+        // background. Seed its prompt_queue so the override gate
+        // fires.
+        app.active_session_key = Some(SessionKey::from_session_id("some-other-lead-session"));
+        seed_worker_prompt_queue(&mut app, &worker_key);
+
+        let project =
+            ProjectView::new_for_test(project_key, "forge", "~/Projects/forge", Vec::new());
+        let area = Rect { x: 0, y: 0, width: 32, height: 20 };
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        append_worker_tree_children(&mut lines, area, &mut app, &project, 0);
+
+        // First line is the leading spacer (bridge from project lead);
+        // second line is the worker row.
+        assert_eq!(lines.len(), 2, "leading spacer + one worker row");
+        let glyph_present = lines[1].spans.iter().any(|s| s.content.contains('\u{25b3}'));
+        assert!(glyph_present, "worker row must carry yellow △ when prompt_queue is non-empty");
+        // Verify the △ span carries STATUS_WARNING color.
+        let glyph_span =
+            lines[1].spans.iter().find(|s| s.content.contains('\u{25b3}')).expect("△ span present");
+        assert_eq!(
+            glyph_span.style.fg,
+            Some(theme::STATUS_WARNING),
+            "△ glyph must use STATUS_WARNING color",
+        );
+    }
+
+    /// Mirror of `wide_tier_focused_session_with_pending_prompt_keeps_normal_glyph`
+    /// for worker rows: an ACTIVE worker (matches `active_session_key`)
+    /// with a pending prompt keeps its normal lifecycle glyph - the
+    /// yellow signal is "background worker needs you", not "the one
+    /// you're already looking at."
+    #[test]
+    fn active_worker_with_pending_prompt_keeps_normal_glyph() {
+        use forge_workspace::ProjectKey;
+        use forge_workspace::SessionKey;
+        use forge_workspace::mcp::workers::types::WorkerEntry;
+        use std::time::SystemTime;
+
+        let mut app = App::test_default();
+        let workspace = app.workspace.clone().expect("workspace stub");
+        let project_key = ProjectKey::new_for_test("forge");
+        let worker_key = SessionKey::from_session_id("worker-1");
+        workspace.insert_live_worker(
+            &project_key,
+            WorkerEntry {
+                label: "reviewer".into(),
+                charter: "be sharp".into(),
+                session_key: worker_key.clone(),
+                status: forge_primitives::WorkerLiveness::Running,
+                spawned_at: SystemTime::UNIX_EPOCH,
+                spawned_by_session_id: "lead".into(),
+                needs_tag: false,
+                is_git_repo_at_spawn: false,
+            },
+        );
+        // Active session IS the worker - override must NOT fire.
+        app.active_session_key = Some(worker_key.clone());
+        seed_worker_prompt_queue(&mut app, &worker_key);
+
+        let project =
+            ProjectView::new_for_test(project_key, "forge", "~/Projects/forge", Vec::new());
+        let area = Rect { x: 0, y: 0, width: 32, height: 20 };
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        append_worker_tree_children(&mut lines, area, &mut app, &project, 0);
+
+        assert_eq!(lines.len(), 2);
+        let any_triangle =
+            lines.iter().any(|line| line.spans.iter().any(|s| s.content.contains('\u{25b3}')));
+        assert!(!any_triangle, "focused worker with pending prompt must NOT flip to yellow △");
     }
 
     // ----------------------------------------------------------------
