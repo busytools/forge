@@ -1112,15 +1112,16 @@ fn role_label_line(msg: &ChatMessage) -> Line<'static> {
 /// True when this `MessageRole::User` carries a peer / worker MCP
 /// inbound envelope (a `[Question id=q-...]`, `[Message id=t-...]`,
 /// `[Reply id=t-...]`, or one of the timeout/expired/failed
-/// notification shapes). Detection re-uses `peer_block::detect_inbound`
-/// so the chat label moves in lockstep with the block renderer's own
-/// recognition logic.
+/// notification shapes).
+///
+/// #143 item 2: reads the cached `is_peer_envelope` flag on
+/// `ChatMessage` (stamped at push time by the
+/// `PeerEnvelopeAppended` path via `ChatMessage::new_peer_envelope`)
+/// rather than walking blocks + running `detect_inbound` per frame.
+/// The walk was a hot path under heavy envelope traffic — the role
+/// label re-evaluates on every render of every chat message.
 fn is_peer_envelope_user_message(msg: &ChatMessage) -> bool {
-    use crate::ui::peer_block::detect_inbound;
-    msg.blocks.iter().any(|block| match block {
-        MessageBlock::Text(text) => detect_inbound(&text.text).is_some(),
-        _ => false,
-    })
+    msg.is_peer_envelope
 }
 
 /// Extract the `sender_org` tag from this message's first inbound peer
@@ -2682,7 +2683,7 @@ mod tests {
         let text = format!(
             "[Message id=t-12345678 hop=1/10 from agent '{sender}' (org '{org}')]\n\n{body}"
         );
-        ChatMessage::new(
+        ChatMessage::new_peer_envelope(
             MessageRole::User,
             vec![MessageBlock::Text(TextBlock::from_complete(&text))],
             None,
@@ -2746,7 +2747,7 @@ mod tests {
         let text = format!(
             "[Message id=t-12345678 hop=1/10 from agent '{sender}' (org '{org}')]\n\n{body}"
         );
-        ChatMessage::new(
+        ChatMessage::new_peer_envelope(
             MessageRole::User,
             vec![MessageBlock::Text(TextBlock::from_complete(&text))],
             None,
