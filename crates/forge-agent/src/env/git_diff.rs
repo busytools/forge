@@ -252,7 +252,15 @@ pub async fn scan(cwd: &Path, prev: Option<&GitDiffSnapshot>) -> GitDiffSnapshot
             match numstat(cwd, &["diff", "--numstat", &range]).await {
                 Some(stats) => {
                     let commit_count = commit_count_in_range(cwd, default, "HEAD").await;
-                    if commit_count == 0 && stats.total_files == 0 {
+                    // `commit_count == 0` is the cleanest signal that
+                    // the branch has no commits ahead of default;
+                    // gate on that alone. The earlier `&& stats.
+                    // total_files == 0` clause masked the racy
+                    // merge-base / force-push corner case where
+                    // commit_count == 0 but stats showed files,
+                    // producing a "0 commits vs main" subtitle that
+                    // read oddly to the user.
+                    if commit_count == 0 {
                         (None, true)
                     } else {
                         (Some(GitBranchAhead { commit_count, stats }), true)
