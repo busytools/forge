@@ -887,11 +887,9 @@ mod tests {
         assert_eq!(ahead.stats.total_removed, ahead.stats.files[0].removed);
     }
 
-    /// #185 core regression: when a worker is on a topic branch
-    /// AND has uncommitted edits, BOTH layers must populate (layer 1
-    /// = the dirty tree, layer 2 = the prior commit on the branch).
-    /// The pre-refactor either/or `GitDiffView` enum showed only
-    /// layer 1 in this state, hiding the committed-but-unmerged work.
+    /// Feature branch with uncommitted edits: both layers must
+    /// populate independently. Layer 1 carries the dirty tree;
+    /// layer 2 carries the commit(s) on the feature branch.
     #[tokio::test(flavor = "current_thread")]
     async fn scan_dirty_feature_branch_populates_both_layers() {
         let dir = tempfile::tempdir().expect("tempdir");
