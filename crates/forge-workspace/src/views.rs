@@ -36,6 +36,12 @@ pub struct ProjectView {
     /// loader enforces). The launchpad picker reads the first entry
     /// as the row's account hint via [`Self::primary_account_hint`].
     pub accounts: Vec<String>,
+    /// Engineering-team roles configured for this project via the
+    /// `team = [...]` field in `forge.toml`. Empty means no team;
+    /// when non-empty the project's lead session stamps the
+    /// `LEAD_CHARTER` system-prompt addendum and auto-spawns one
+    /// worker per role on `Connected`. See `crate::team::Role`.
+    pub team: Vec<crate::team::Role>,
     pub sessions: Vec<SessionView>,
 }
 
@@ -72,6 +78,7 @@ impl ProjectView {
             path: PathBuf::from(&display_path),
             display_path,
             accounts: Vec::new(),
+            team: Vec::new(),
             sessions,
         }
     }
@@ -96,6 +103,7 @@ impl ProjectView {
             path: PathBuf::from(&display_path),
             display_path,
             accounts,
+            team: Vec::new(),
             sessions,
         }
     }
@@ -142,6 +150,7 @@ mod tests {
             path: PathBuf::from("/tmp/forge"),
             display_path: "~/Projects/forge".to_owned(),
             accounts: vec!["Personal".to_owned(), "Gateway".to_owned()],
+            team: Vec::new(),
             sessions: Vec::new(),
         };
         assert_eq!(view.primary_account_hint(), "personal");
@@ -156,6 +165,7 @@ mod tests {
             path: PathBuf::from("/tmp/forge"),
             display_path: "~/Projects/forge".to_owned(),
             accounts: Vec::new(),
+            team: Vec::new(),
             sessions: Vec::new(),
         };
         assert_eq!(view.primary_account_hint(), "unknown");

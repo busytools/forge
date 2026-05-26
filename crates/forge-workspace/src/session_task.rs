@@ -219,6 +219,19 @@ impl SessionTask {
                     if let Some(workspace) = self.workspace.upgrade() {
                         workspace.apply_worker_tag_or_rollback(&real_key, &cwd);
                     }
+                    // Engineering team: when the lead's synth key
+                    // names a project that carries a team config and
+                    // no workers are live yet, programmatically
+                    // dispatch one SpawnWorker per role. Idempotent
+                    // via the live_workers gate — a reconnect after
+                    // a transient failure skips re-spawn. See
+                    // `crate::team` and `Workspace::spawn_team_for_lead`.
+                    if let Some(spawn_key) = self.spawn_key.as_ref()
+                        && let Some(workspace) = self.workspace.upgrade()
+                    {
+                        maybe_spawn_team_on_connected(&workspace, spawn_key, real_key.as_str());
+                        maybe_kick_worker_on_connected(&workspace, spawn_key, real_key.as_str());
+                    }
                     // First Connected: emit KeyRenamed { from:
                     // spawn_key, to: real_key } so the TUI migrates
                     // its synthetic spawn bucket onto the real
@@ -654,6 +667,133 @@ impl Drop for SessionTask {
             );
         }
     }
+}
+
+/// Parse a synthetic spawn key. Project lead spawn keys have shape
+/// `__spawn_<project_name>__`; worker spawn keys have shape
+/// `__spawn_worker_<project_key>_<label>_<uuid>__` (at least four
+/// underscore-separated segments after the `worker_` prefix).
+/// Returns the project name iff `key` is a lead spawn key, `None`
+/// for workers or any other shape. A literal project name starting
+/// with `worker_` only false-classifies when its segment count
+/// happens to match the worker shape; the common short cases
+/// (`worker_foo`, `worker_my_proj`) parse correctly as leads.
+fn parse_project_lead_synth_key(key: &SessionKey) -> Option<String> {
+    let s = key.as_str();
+    let inner = s.strip_prefix("__spawn_")?.strip_suffix("__")?;
+    if inner.starts_with("worker_") && inner.split('_').count() >= 4 {
+        return None;
+    }
+    Some(inner.to_owned())
+}
+
+/// Shared engineering-team Connected hook: if `spawn_key` is a
+/// project-lead synth key, the project has a team configured, and
+/// no live workers exist for it yet, dispatch one `SpawnWorker`
+/// per configured role. Called from `SessionTask::translate_event`
+/// (production) and `on_connected_for_test` (tests). Idempotent;
+/// safe to call multiple times for the same session — the
+/// `live_workers.is_empty()` gate guards against double-spawn on
+/// `/new` reconnects or transient retries.
+fn maybe_spawn_team_on_connected(
+    workspace: &Arc<crate::Workspace>,
+    spawn_key: &SessionKey,
+    real_session_id: &str,
+) {
+    let Some(project_name) = parse_project_lead_synth_key(spawn_key) else {
+        return;
+    };
+    let Some(project) = workspace.find_project_view_by_name(&project_name) else {
+        return;
+    };
+    if project.team.is_empty() {
+        return;
+    }
+    let project_key = crate::target::ProjectKey::new(
+        forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+            &project.path.to_string_lossy(),
+        )),
+    );
+    if !workspace.list_live_workers(&project_key).is_empty() {
+        return;
+    }
+    workspace.spawn_team_for_lead(real_session_id, &project_key, &project.team);
+}
+
+/// Parse a worker synthetic spawn key
+/// (`__spawn_worker_<project>_<label>_<uuid>__`) and return the
+/// label segment. Returns `None` for lead synth keys or any other
+/// shape. Project keys are alphanumeric+dash only (no underscores)
+/// and uuids are hex (no underscores), so `splitn(3, '_')` on the
+/// "<project>_<label>_<uuid>" remainder yields exactly three parts.
+fn parse_worker_label_from_synth_key(key: &SessionKey) -> Option<String> {
+    let s = key.as_str();
+    let inner = s.strip_prefix("__spawn_")?.strip_suffix("__")?;
+    let after_worker = inner.strip_prefix("worker_")?;
+    let parts: Vec<&str> = after_worker.splitn(3, '_').collect();
+    if parts.len() != 3 {
+        return None;
+    }
+    Some(parts[1].to_owned())
+}
+
+/// Shared engineering-team worker-kick hook: if `spawn_key` is a
+/// worker synth key AND its label matches a known role, dispatch a
+/// `Command::Prompt` carrying that role's `initial_kick` text to the
+/// freshly-Connected worker. Claude sessions don't act until a
+/// user-turn arrives, so without this kick a team worker would sit
+/// idle indefinitely after spawn (its charter would shape behaviour
+/// IF prompted, but nothing prompts it).
+///
+/// Workers spawned with non-role labels (e.g. LLM-driven
+/// `workers__spawn("scratchpad", ...)` outside the engineering-team
+/// flow) get no kick — they're caller-driven by design.
+///
+/// Called from `SessionTask::translate_event` (production) and
+/// `on_connected_for_test` (tests). The dispatch goes through the
+/// Workspace command bus to the worker's own SessionTask queue,
+/// which processes the prompt on its next loop iteration once
+/// translate_event returns.
+fn maybe_kick_worker_on_connected(
+    workspace: &Arc<crate::Workspace>,
+    spawn_key: &SessionKey,
+    real_session_id: &str,
+) {
+    let Some(label) = parse_worker_label_from_synth_key(spawn_key) else {
+        return;
+    };
+    let Some(role) = crate::team::Role::from_str_ci(&label) else {
+        return;
+    };
+    let target_key = SessionKey::from_session_id(real_session_id.to_owned());
+    if let Err(err) = workspace.dispatch(crate::protocol::Command::Prompt {
+        key: target_key,
+        text: role.initial_kick().to_owned(),
+        attachments: Vec::new(),
+    }) {
+        tracing::error!(
+            target: "forge_workspace::team",
+            role = role.label(),
+            error = ?err,
+            "maybe_kick_worker_on_connected: dispatch failed",
+        );
+    }
+}
+
+/// Test-only entry point for the Connected team hooks.
+/// Drives both `maybe_spawn_team_on_connected` (lead path) and
+/// `maybe_kick_worker_on_connected` (worker path) directly without
+/// constructing a `SessionTask` or pumping through the actor — the
+/// `team_hook_tests` module uses this to assert the trigger logic.
+/// Only one hook fires per call: the spawn_key's shape selects.
+#[cfg(any(test, feature = "testing"))]
+pub fn on_connected_for_test(
+    workspace: &Arc<crate::Workspace>,
+    synth_key: &SessionKey,
+    real_session_id: &str,
+) {
+    maybe_spawn_team_on_connected(workspace, synth_key, real_session_id);
+    maybe_kick_worker_on_connected(workspace, synth_key, real_session_id);
 }
 
 /// Forward a `Command` straight to `handle`. Pure transport — no
@@ -1154,5 +1294,208 @@ mod tests {
             .expect("dispatch returns Ok");
         // Nothing should have been queued.
         assert!(rx.try_recv().is_err());
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+mod team_hook_tests {
+    use super::*;
+    use crate::Workspace;
+    use crate::protocol::Command;
+    use crate::target::ProjectKey;
+    use crate::team::Role;
+
+    fn synth_lead_key(project_name: &str) -> SessionKey {
+        SessionKey::from_session_id(format!("__spawn_{project_name}__"))
+    }
+
+    /// A lead Connected for a project carrying a team config
+    /// triggers one `Command::SpawnWorker` per configured role.
+    #[test]
+    fn lead_connected_with_team_triggers_team_spawn() {
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        workspace.enable_test_dispatch_intercept();
+        workspace.seed_test_project_with_team(
+            "proj-x",
+            "/tmp/proj-x",
+            &[Role::Planner, Role::Reviewer],
+        );
+
+        on_connected_for_test(&workspace, &synth_lead_key("proj-x"), "lead-uuid");
+
+        let dispatched = workspace.drain_test_dispatch_buffer();
+        let spawns: Vec<&Command> =
+            dispatched.iter().filter(|c| matches!(c, Command::SpawnWorker { .. })).collect();
+        assert_eq!(spawns.len(), 2, "one SpawnWorker per role");
+    }
+
+    /// A lead Connected for a project with NO team configuration is
+    /// a no-op — nothing dispatched.
+    #[test]
+    fn lead_connected_without_team_does_nothing() {
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        workspace.enable_test_dispatch_intercept();
+        workspace.seed_test_project_with_team("proj-y", "/tmp/proj-y", &[]);
+
+        on_connected_for_test(&workspace, &synth_lead_key("proj-y"), "lead-uuid");
+
+        assert!(workspace.drain_test_dispatch_buffer().is_empty());
+    }
+
+    /// A worker session's Connected (synth key prefixed with
+    /// `__spawn_worker_...`) does NOT trigger the team-spawn hook
+    /// even when the project has a team configured.
+    #[test]
+    fn worker_connected_does_not_trigger_team_spawn() {
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        workspace.enable_test_dispatch_intercept();
+        workspace.seed_test_project_with_team("proj-z", "/tmp/proj-z", &[Role::Planner]);
+
+        let worker_synth = SessionKey::from_session_id("__spawn_worker_proj-z_planner_abc__");
+        on_connected_for_test(&workspace, &worker_synth, "worker-uuid");
+
+        let dispatched = workspace.drain_test_dispatch_buffer();
+        assert!(dispatched.iter().all(|c| !matches!(c, Command::SpawnWorker { .. })));
+    }
+
+    /// Idempotency: a second Connected event for the same lead must
+    /// not double-spawn. The first call inserts WorkerEntries into
+    /// `live_workers`; the second call's `list_live_workers(...).is_empty()`
+    /// gate trips and the trigger no-ops.
+    #[test]
+    fn second_lead_connected_does_not_double_spawn() {
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        workspace.enable_test_dispatch_intercept();
+        workspace.seed_test_project_with_team("proj-x", "/tmp/proj-x", &[Role::Planner]);
+
+        let lead_synth = synth_lead_key("proj-x");
+
+        // First Connected: triggers team spawn (1 SpawnWorker).
+        on_connected_for_test(&workspace, &lead_synth, "lead-uuid");
+        let after_first = workspace.drain_test_dispatch_buffer();
+        let first_spawns: usize =
+            after_first.iter().filter(|c| matches!(c, Command::SpawnWorker { .. })).count();
+        assert_eq!(first_spawns, 1, "first Connected spawns the team");
+
+        // Simulate the workers having become live (the production
+        // flow does this via `handle_spawn_worker`'s
+        // `insert_live_worker`; the test intercept skipped that
+        // path so we seed it manually for the idempotency gate).
+        let project_key = ProjectKey::new(
+            forge_agent::userdata::catalog::scan::project_key_for_directory(Some("/tmp/proj-x")),
+        );
+        workspace.insert_live_worker(
+            &project_key,
+            crate::mcp::workers::types::WorkerEntry {
+                label: "planner".into(),
+                charter: "test".into(),
+                session_key: SessionKey::from_session_id("worker-uuid"),
+                status: forge_primitives::WorkerLiveness::Running,
+                spawned_at: std::time::SystemTime::UNIX_EPOCH,
+                spawned_by_session_id: "lead-uuid".into(),
+                needs_tag: false,
+                is_git_repo_at_spawn: false,
+            },
+        );
+
+        // Second Connected: gate trips, no new SpawnWorker.
+        on_connected_for_test(&workspace, &lead_synth, "lead-uuid");
+        let after_second = workspace.drain_test_dispatch_buffer();
+        let second_spawns: usize =
+            after_second.iter().filter(|c| matches!(c, Command::SpawnWorker { .. })).count();
+        assert_eq!(second_spawns, 0, "second Connected must not double-spawn");
+    }
+
+    /// Worker Connected with a role-matching label dispatches a
+    /// `Command::Prompt` carrying the role's initial-kick text to
+    /// the worker's real session_id.
+    #[test]
+    fn worker_connected_for_role_label_dispatches_kick_prompt() {
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        workspace.enable_test_dispatch_intercept();
+
+        let worker_synth = SessionKey::from_session_id("__spawn_worker_forge_planner_abc123__");
+        on_connected_for_test(&workspace, &worker_synth, "worker-uuid");
+
+        let dispatched = workspace.drain_test_dispatch_buffer();
+        let prompts: Vec<&Command> =
+            dispatched.iter().filter(|c| matches!(c, Command::Prompt { .. })).collect();
+        assert_eq!(prompts.len(), 1, "planner worker gets exactly one kick");
+        if let Command::Prompt { key, text, .. } = prompts[0] {
+            assert_eq!(key.as_str(), "worker-uuid", "kick targets the worker's real session id");
+            assert!(
+                text.contains("gh issue list -l untriaged"),
+                "kick carries planner-specific gh command; got: {text}",
+            );
+            assert!(
+                text.contains("You are now active"),
+                "kick opens with activation framing; got: {text}",
+            );
+        }
+    }
+
+    /// Worker Connected with a label NOT matching a built-in role
+    /// (e.g. an LLM-driven `workers__spawn("scratchpad", ...)` for
+    /// ad-hoc work) does not get a kick — only engineering-team
+    /// roles do.
+    #[test]
+    fn worker_connected_for_non_role_label_does_not_kick() {
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        workspace.enable_test_dispatch_intercept();
+
+        let worker_synth = SessionKey::from_session_id("__spawn_worker_forge_scratchpad_abc123__");
+        on_connected_for_test(&workspace, &worker_synth, "worker-uuid");
+
+        let dispatched = workspace.drain_test_dispatch_buffer();
+        assert!(
+            dispatched.iter().all(|c| !matches!(c, Command::Prompt { .. })),
+            "non-role labels should not trigger a kick",
+        );
+    }
+
+    /// Lead Connected does not dispatch any kick prompt — kicks are
+    /// for workers only.
+    #[test]
+    fn lead_connected_does_not_dispatch_kick_prompt() {
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        workspace.enable_test_dispatch_intercept();
+        // Empty team so the spawn-team path doesn't fire either; we
+        // want to assert PURELY on the kick path being suppressed
+        // for leads.
+        workspace.seed_test_project_with_team("proj-x", "/tmp/proj-x", &[]);
+
+        on_connected_for_test(&workspace, &synth_lead_key("proj-x"), "lead-uuid");
+
+        let dispatched = workspace.drain_test_dispatch_buffer();
+        assert!(
+            dispatched.iter().all(|c| !matches!(c, Command::Prompt { .. })),
+            "lead synth keys must not trigger the worker-kick path",
+        );
+    }
+
+    #[test]
+    fn parse_worker_label_from_synth_key_extracts_label_for_canonical_shape() {
+        let key = SessionKey::from_session_id("__spawn_worker_forge_planner_abc123__");
+        assert_eq!(parse_worker_label_from_synth_key(&key), Some("planner".to_owned()));
+    }
+
+    #[test]
+    fn parse_worker_label_from_synth_key_rejects_lead_synth_keys() {
+        let key = SessionKey::from_session_id("__spawn_forge__");
+        assert_eq!(parse_worker_label_from_synth_key(&key), None);
+    }
+
+    #[test]
+    fn parse_worker_label_from_synth_key_rejects_unrelated_shapes() {
+        assert_eq!(
+            parse_worker_label_from_synth_key(&SessionKey::from_session_id("not-a-synth-key")),
+            None,
+        );
+        assert_eq!(
+            parse_worker_label_from_synth_key(&SessionKey::from_session_id("__spawn_worker__")),
+            None,
+            "worker prefix with no project/label/uuid segments must reject",
+        );
     }
 }

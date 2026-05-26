@@ -18,7 +18,7 @@
 //!   a worktree (path shown relative to the project root, e.g.
 //!   `.claude/worktrees/<label>/`), or one DIM `not a git repo · <cwd>`
 //!   line when the worker's project isn't a git repo. Suppressed
-//!   entirely for project lead sessions - "main repo · <cwd>" was
+//!   entirely for project lead sessions - `main repo · <cwd>` was
 //!   redundant chrome on the chat where the user is already looking
 //!   at the lead's view. Sourced from
 //!   `WorkerEntry.is_git_repo_at_spawn` (via

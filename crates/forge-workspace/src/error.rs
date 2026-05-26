@@ -66,6 +66,18 @@ pub enum WorkspaceError {
     ProjectNotFound { name: String, path: PathBuf },
 
     #[error(
+        "forge.toml at {}: project '{project_name}' team contains unknown role '{role}'; supported: planner, implementer, reviewer, debugger, tester",
+        path.display()
+    )]
+    UnknownTeamRole { path: PathBuf, project_name: String, role: String },
+
+    #[error(
+        "forge.toml at {}: project '{project_name}' team has duplicate role '{role}'; v1 supports only one instance per role",
+        path.display()
+    )]
+    DuplicateTeamRole { path: PathBuf, project_name: String, role: String },
+
+    #[error(
         "wire-classification rewriter proxy failed to start: {reason}. forge refuses to spawn sessions without a healthy proxy because the wire shape Anthropic sees determines billing tier"
     )]
     ProxyUnavailable { reason: String },
