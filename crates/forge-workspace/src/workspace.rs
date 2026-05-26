@@ -1899,9 +1899,10 @@ impl Workspace {
     /// `<project_root>/.claude/worktrees/<label>/`), so `cwd_raw`
     /// from the `Connected` event carries the project root and
     /// scanning there would surface the lead's branch / diff, not
-    /// the worker's. Composes [`worker_lookup_for_session`] with
-    /// [`crate::mcp::workers::types::worker_tag_dir`] so the same
-    /// helper drives both the tag-write path and the git-diff scan.
+    /// the worker's. Composes [`Self::worker_lookup_for_session`]
+    /// with `worker_tag_dir` (in `crate::mcp::workers::types`) so
+    /// the same helper drives both the tag-write path and the
+    /// git-diff scan.
     ///
     /// For non-worker sessions (project leads) or non-git workers,
     /// returns `cwd_raw` unchanged.

@@ -66,6 +66,43 @@ const TOP_FILE_COUNT: usize = 7;
 /// `worktree` and `branch_ahead` are independent: a worker on a
 /// topic branch with uncommitted edits surfaces both layers, while
 /// the lead on `main` with a clean tree surfaces neither.
+///
+/// # Field invariants
+///
+/// Cross-field invariants the scanner enforces (and the renderer
+/// relies on). Use this as the contract when constructing a
+/// snapshot field-by-field in tests or future call sites; the type
+/// itself does not enforce them, the constructor in [`scan`] does.
+///
+/// Valid combinations:
+/// - `in_repo: true,  scanner_ok: true` — the normal in-repo
+///   states. `worktree` and `branch_ahead` may each be Some or
+///   None independently. `pr` / `closes` may be populated for
+///   named non-default branches.
+/// - `in_repo: false, scanner_ok: true` — legitimate non-repo
+///   cwd (`git rev-parse` returned Empty). All of `worktree`,
+///   `branch_ahead`, `pr`, `closes`, `default_branch` empty.
+/// - `in_repo: false, scanner_ok: false` — failsafe collapse
+///   after `git rev-parse` returned Failed / Oversize. All other
+///   payload fields empty; the renderer surfaces a
+///   "scanner unhealthy" banner.
+///
+/// Invalid combinations (do NOT construct):
+/// - `in_repo: false` with ANY of `worktree` / `branch_ahead` /
+///   `pr` populated, or `default_branch` Some, or `closes`
+///   non-empty.
+/// - `scanner_ok: false` with `in_repo: true`. The two failure
+///   states (sick scanner vs healthy non-repo) are mutually
+///   exclusive at the rev-parse gate.
+/// - `branch_ahead: Some(_)` with `default_branch: None`.
+///   `branch_ahead` is only constructed when the default branch
+///   resolved; the renderer's tuple-match enforces this at the
+///   call site.
+/// - `worktree_scan_ok: false` with `worktree: Some(_)`, or
+///   `branch_ahead_scan_ok: false` with `branch_ahead: Some(_)`.
+///   The per-layer flags only flip false when numstat returned
+///   None (subprocess failure), in which case the layer's
+///   payload is also None.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitDiffSnapshot {
     /// Current branch (Named / Detached / NoRepo / Unknown).
