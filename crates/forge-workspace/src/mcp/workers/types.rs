@@ -3,11 +3,31 @@
 //! `WorkerEntry` which adds routing metadata (session_key) on top
 //! of the wire shape.
 
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use forge_primitives::{WorkerLiveness, WorkerStatus};
 
 use crate::SessionKey;
+
+/// Cwd a worker's tag-write should land at. For git-repo workers,
+/// claude's `--worktree <label>` flag forks the subprocess into
+/// `<project_root>/.claude/worktrees/<label>/` and writes the session
+/// JSONL under THAT sanitised path, not the project root. The
+/// tag-write must follow.
+///
+/// `project_root` is whatever forge sources from `forge.toml`
+/// (`forge-workspace::list_projects().path`); `label` is the worker's
+/// charter label; `is_git_repo_at_spawn` is the cached flag on
+/// `WorkerEntry`. Non-git workers run in the project root unmodified.
+#[must_use]
+pub fn worker_tag_dir(project_root: &Path, label: &str, is_git_repo_at_spawn: bool) -> PathBuf {
+    if is_git_repo_at_spawn {
+        project_root.join(".claude/worktrees").join(label)
+    } else {
+        project_root.to_path_buf()
+    }
+}
 
 /// In-memory entry stored in `Workspace.live_workers[project_key]`.
 /// `WorkerStatus` is the wire shape returned by `workers__list`;

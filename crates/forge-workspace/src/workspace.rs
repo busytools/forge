@@ -1867,19 +1867,27 @@ impl Workspace {
         self.live_workers.lock().remove(project_key).unwrap_or_default()
     }
 
-    /// Locate `(project_key, label)` for any worker matching `session_key`
-    /// across every project's `live_workers`. Used by the Connected
-    /// handler in `SessionTask::translate_event` to decide whether a
-    /// just-connected session is a worker (and what tag to write).
+    /// Locate `(project_key, label, is_git_repo_at_spawn)` for any
+    /// worker matching `session_key` across every project's
+    /// `live_workers`. Used by the Connected handler in
+    /// `SessionTask::translate_event` to decide whether a just-
+    /// connected session is a worker (and what tag to write).
+    /// `is_git_repo_at_spawn` lets the tag-write path route to the
+    /// worktree-derived JSONL via `worker_tag_dir` in
+    /// `crate::mcp::workers::types`.
     /// `None` when the session is a lead (or not a worker at all).
     pub fn worker_lookup_for_session(
         &self,
         session_key: &SessionKey,
-    ) -> Option<(ProjectKey, String)> {
+    ) -> Option<(ProjectKey, String, bool)> {
         let workers = self.live_workers.lock();
         for (project_key, entries) in workers.iter() {
             if let Some(entry) = entries.iter().find(|e| e.session_key == *session_key) {
-                return Some((project_key.clone(), entry.label.clone()));
+                return Some((
+                    project_key.clone(),
+                    entry.label.clone(),
+                    entry.is_git_repo_at_spawn,
+                ));
             }
         }
         None
@@ -2007,7 +2015,9 @@ impl Workspace {
         session_key: &SessionKey,
         cwd: &str,
     ) {
-        let Some((project_key, label)) = self.worker_lookup_for_session(session_key) else {
+        let Some((project_key, label, is_git_repo_at_spawn)) =
+            self.worker_lookup_for_session(session_key)
+        else {
             return;
         };
         // Resolve the per-account config_dir for this session via the
@@ -2026,6 +2036,7 @@ impl Workspace {
             &project_key,
             &label,
             cwd,
+            is_git_repo_at_spawn,
             &config_dir,
         );
     }
@@ -2035,19 +2046,31 @@ impl Workspace {
     /// resolves via `config_dir_for`; unit tests pass a tempdir to
     /// exercise the retry / rollback / deferred branches without
     /// having to register a full `AgentHandle`.
+    ///
+    /// `cwd` is the project root from `forge.toml`; for git-repo
+    /// workers (`is_git_repo_at_spawn = true`) the tag-write is
+    /// routed to `<cwd>/.claude/worktrees/<label>` via
+    /// [`crate::mcp::workers::types::worker_tag_dir`] so the lookup
+    /// matches where claude's `--worktree <label>` actually wrote
+    /// the JSONL.
     pub(crate) fn apply_worker_tag_or_rollback_with_config_dir(
         self: &Arc<Self>,
         session_key: &SessionKey,
         project_key: &ProjectKey,
         label: &str,
         cwd: &str,
+        is_git_repo_at_spawn: bool,
         config_dir: &std::path::Path,
     ) {
         let workspace = Arc::clone(self);
         let project_key = project_key.clone();
         let session_key = session_key.clone();
         let label = label.to_owned();
-        let cwd = cwd.to_owned();
+        let effective_cwd = crate::mcp::workers::types::worker_tag_dir(
+            std::path::Path::new(cwd),
+            &label,
+            is_git_repo_at_spawn,
+        );
         let config_dir = config_dir.to_path_buf();
         tokio::spawn(async move {
             let tag = forge_primitives::worker_tag(&label);
@@ -2055,7 +2078,7 @@ impl Workspace {
                 &config_dir,
                 session_key.as_str(),
                 &tag,
-                &cwd,
+                &effective_cwd.to_string_lossy(),
                 WORKER_TAG_RETRY_ATTEMPTS,
                 WORKER_TAG_RETRY_DELAY,
             )
@@ -2130,6 +2153,7 @@ impl Workspace {
         session_key: &SessionKey,
         label: &str,
         cwd: &str,
+        is_git_repo_at_spawn: bool,
     ) {
         let Some(config_dir) = self.config_dir_for(session_key) else {
             tracing::warn!(
@@ -2144,26 +2168,33 @@ impl Workspace {
             session_key,
             label,
             cwd,
+            is_git_repo_at_spawn,
             &config_dir,
         );
     }
 
     /// Testable inner of [`Self::retry_worker_tag_opportunistic`] that
     /// takes the resolved `config_dir` directly. Same shape as the
-    /// `_with_config_dir` variant of `apply_worker_tag_or_rollback`.
+    /// `_with_config_dir` variant of `apply_worker_tag_or_rollback`,
+    /// including the worktree-aware cwd routing for git-repo workers.
     pub(crate) fn retry_worker_tag_opportunistic_with_config_dir(
         self: &Arc<Self>,
         project_key: &ProjectKey,
         session_key: &SessionKey,
         label: &str,
         cwd: &str,
+        is_git_repo_at_spawn: bool,
         config_dir: &std::path::Path,
     ) {
         let workspace = Arc::clone(self);
         let project_key = project_key.clone();
         let session_key = session_key.clone();
         let label = label.to_owned();
-        let cwd = cwd.to_owned();
+        let effective_cwd = crate::mcp::workers::types::worker_tag_dir(
+            std::path::Path::new(cwd),
+            &label,
+            is_git_repo_at_spawn,
+        );
         let config_dir = config_dir.to_path_buf();
         tokio::spawn(async move {
             let tag = forge_primitives::worker_tag(&label);
@@ -2171,7 +2202,7 @@ impl Workspace {
                 &config_dir,
                 session_key.as_str(),
                 &tag,
-                &cwd,
+                &effective_cwd.to_string_lossy(),
                 WORKER_TAG_RETRY_ATTEMPTS,
                 WORKER_TAG_RETRY_DELAY,
             )
@@ -4225,6 +4256,7 @@ mod tag_retry_tests {
             &project_key,
             "idle",
             &cwd.path().to_string_lossy(),
+            false,
             cfg.path(),
         );
 
@@ -4286,6 +4318,7 @@ mod tag_retry_tests {
             &project_key,
             "prompt-driven",
             &cwd.path().to_string_lossy(),
+            false,
             cfg.path(),
         );
 
@@ -4336,6 +4369,7 @@ mod tag_retry_tests {
             &session_key,
             "idle",
             &cwd.path().to_string_lossy(),
+            false,
             cfg.path(),
         );
 
@@ -4399,6 +4433,7 @@ mod tag_retry_tests {
             &project_key,
             "reviewer",
             &cwd.path().to_string_lossy(),
+            false,
             cfg.path(),
         );
         tokio::time::timeout(Duration::from_secs(2), async {
@@ -4439,6 +4474,7 @@ mod tag_retry_tests {
             &project_key,
             "reviewer",
             &cwd.path().to_string_lossy(),
+            false,
             cfg.path(),
         );
         tokio::time::timeout(Duration::from_secs(2), async {
@@ -4466,6 +4502,139 @@ mod tag_retry_tests {
         assert!(
             body_1_after.contains("\"tag\":\"forge:worker:reviewer\""),
             "first session's tag survives the /new re-tag flow",
+        );
+    }
+
+    /// #184 regression: when a worker is spawned inside a git repo,
+    /// claude's `--worktree <label>` forks the subprocess into
+    /// `<repo>/.claude/worktrees/<label>/` and writes the session
+    /// JSONL under THAT sanitised path, not the repo root. The
+    /// tag-write path must follow the JSONL there.
+    ///
+    /// Before the fix, `apply_worker_tag_or_rollback_with_config_dir`
+    /// passed the repo root to `tag_session_with_retry`, the lookup
+    /// missed (different sanitised key), all 30 retries hit NotFound,
+    /// and `needs_tag` stayed true forever. On forge restart the
+    /// catalog scan found zero tagged worker JSONLs and every role
+    /// spawned fresh.
+    ///
+    /// Test breaks the existing fixture's "write path = lookup path"
+    /// coupling: cwd argument is the repo root, but the JSONL is
+    /// seeded at the worktree path's sanitised key.
+    #[tokio::test]
+    async fn git_repo_worker_tag_lands_under_worktree_path() {
+        let (workspace, mut rx) = Workspace::testing_stub();
+        let project_key = ProjectKey::new("repo");
+        let session_id = "550e8400-e29b-41d4-a716-446655440099";
+        let session_key = SessionKey::from_session_id(session_id);
+
+        // is_git_repo_at_spawn=true is the production shape that
+        // triggers claude's --worktree fork.
+        let mut entry = fake_spawning_entry("debugger", session_id, true);
+        entry.is_git_repo_at_spawn = true;
+        workspace.insert_live_worker(&project_key, entry);
+
+        let cfg = tempdir().expect("cfg");
+        let repo_root = tempdir().expect("repo");
+        // JSONL lives at the WORKTREE path (matches claude's behaviour
+        // under --worktree): <repo>/.claude/worktrees/<label>/.
+        let worktree_path = repo_root.path().join(".claude/worktrees/debugger");
+        let path = jsonl_path_for(cfg.path(), &worktree_path, session_id);
+        fs::write(&path, "").expect("seed jsonl at worktree path");
+
+        // Caller passes the repo root (NOT the worktree path), matching
+        // how forge sources the cwd from the project view. The wrapper
+        // must compute the worktree-derived cwd internally when
+        // is_git_repo_at_spawn is true.
+        workspace.apply_worker_tag_or_rollback_with_config_dir(
+            &session_key,
+            &project_key,
+            "debugger",
+            &repo_root.path().to_string_lossy(),
+            true,
+            cfg.path(),
+        );
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while let Some(update) = rx.recv().await {
+                if let SessionUpdate::WorkerStatusChanged { action, .. } = update
+                    && matches!(action, crate::protocol::WorkerStatusAction::StatusChanged)
+                {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("StatusChanged within budget");
+
+        let entries = workspace.list_live_workers(&project_key);
+        assert_eq!(entries.len(), 1, "worker stays in live_workers after successful tag");
+        assert!(
+            !entries[0].needs_tag,
+            "needs_tag cleared, tag-write found the JSONL at the worktree path"
+        );
+        let body = fs::read_to_string(&path).expect("read jsonl at worktree path");
+        assert!(
+            body.contains("\"tag\":\"forge:worker:debugger\""),
+            "tag row appended at the worktree-derived JSONL: {body:?}"
+        );
+    }
+
+    /// #184 regression for the opportunistic-retry path: the
+    /// first-turn retry from `handle_deliver_worker_prompt` also
+    /// needs to address the worktree-derived JSONL for git-repo
+    /// workers. Sibling to `git_repo_worker_tag_lands_under_worktree_path`
+    /// Same setup as the apply path, different entry point.
+    #[tokio::test]
+    async fn git_repo_worker_opportunistic_retry_uses_worktree_path() {
+        let (workspace, mut rx) = Workspace::testing_stub();
+        let project_key = ProjectKey::new("repo");
+        let session_id = "550e8400-e29b-41d4-a716-446655440100";
+        let session_key = SessionKey::from_session_id(session_id);
+
+        // Pre-state: worker is Running (the apply_* path already ran
+        // and exhausted into DeferredNotFound). is_git_repo_at_spawn=true.
+        let mut entry = fake_spawning_entry("debugger", session_id, true);
+        entry.status = forge_primitives::WorkerLiveness::Running;
+        entry.is_git_repo_at_spawn = true;
+        workspace.insert_live_worker(&project_key, entry);
+
+        let cfg = tempdir().expect("cfg");
+        let repo_root = tempdir().expect("repo");
+        let worktree_path = repo_root.path().join(".claude/worktrees/debugger");
+        let path = jsonl_path_for(cfg.path(), &worktree_path, session_id);
+        fs::write(&path, "").expect("seed jsonl at worktree path (claude has now written)");
+
+        workspace.retry_worker_tag_opportunistic_with_config_dir(
+            &project_key,
+            &session_key,
+            "debugger",
+            &repo_root.path().to_string_lossy(),
+            true,
+            cfg.path(),
+        );
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while let Some(update) = rx.recv().await {
+                if let SessionUpdate::WorkerStatusChanged { action, .. } = update
+                    && matches!(action, crate::protocol::WorkerStatusAction::StatusChanged)
+                {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("StatusChanged within budget");
+
+        let entries = workspace.list_live_workers(&project_key);
+        assert!(
+            !entries[0].needs_tag,
+            "opportunistic retry found the worktree-path JSONL; needs_tag cleared"
+        );
+        let body = fs::read_to_string(&path).expect("read jsonl at worktree path");
+        assert!(
+            body.contains("\"tag\":\"forge:worker:debugger\""),
+            "tag row appended at worktree path: {body:?}"
         );
     }
 }
