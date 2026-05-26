@@ -142,6 +142,43 @@ impl SessionTask {
                 // TUI's `active_session_key` flips to `real_key` after
                 // `Connected` and every subsequent `Command::Prompt`
                 // falls off `dispatch`'s key lookup with `UnknownSession`.
+                // Worker sessions get their tag JSONL row written by
+                // `apply_worker_tag_or_rollback`, which spawns a
+                // detached tokio task. The helper checks live_workers
+                // for a matching entry; for leads + non-worker
+                // sessions this is a no-op (early return on
+                // `worker_lookup_for_session` returning None).
+                //
+                // Critical: the helper fires on BOTH first-Connected
+                // and subsequent Connecteds (the /new / login /
+                // logout flow that enters via `connected_once`).
+                // Each Connected carries a fresh session_id and the
+                // worker's tag must travel to the new JSONL —
+                // without re-tagging on /new, the resume scan
+                // (#157/#164) finds the orphaned pre-/new JSONL and
+                // resumes that instead of the active post-/new
+                // session. Captured before the if/else because both
+                // branches consume the `cwd` field.
+                //
+                // The detached task does an initial retry loop on
+                // `Io(NotFound)` (claude writes the JSONL lazily on
+                // first turn, so an idle-spawned worker has no file
+                // at Connected). If retries exhaust on NotFound, the
+                // worker still transitions to Running with
+                // `needs_tag = true`; the opportunistic retry in
+                // `handle_deliver_worker_prompt` catches the tag
+                // when the first turn arrives. Non-NotFound errors
+                // (permission denied, disk full, etc.) DO roll back:
+                // release session + emit Removed.
+                //
+                // TODO: lead sessions are currently never tagged
+                // with `forge:lead`. The resolver falls back to
+                // latest untagged so existing behaviour works, but
+                // explicit lead tagging is a spec gap we should
+                // close (apply the same retry pattern via a sibling
+                // `apply_lead_tag_or_warn` that does NOT roll back
+                // on failure - just warns).
+                let cwd_for_tag = cwd.clone();
                 if self.connected_once {
                     // Drop oneshots from the previous identity so parked
                     // forwarder tasks exit instead of waiting on
@@ -168,7 +205,7 @@ impl SessionTask {
                     }
                     self.rekey_to(&real_key);
                     self.emit(SessionUpdate::SessionReplaced {
-                        key: real_key,
+                        key: real_key.clone(),
                         session_id: SessionId::new(session_id),
                         cwd,
                         current_model,
@@ -179,46 +216,6 @@ impl SessionTask {
                 } else {
                     self.rekey_to(&real_key);
                     self.connected_once = true;
-                    // Worker sessions get their tag JSONL row written
-                    // by `apply_worker_tag_or_rollback`, which spawns
-                    // a detached tokio task. The helper checks
-                    // live_workers for a matching entry; for leads +
-                    // non-worker sessions this is a no-op.
-                    //
-                    // The detached task does an initial retry loop on
-                    // `Io(NotFound)` (claude writes the JSONL lazily
-                    // on first turn, so an idle-spawned worker has no
-                    // file at Connected). If retries exhaust on
-                    // NotFound, the worker still transitions to
-                    // Running with `needs_tag = true`; the
-                    // opportunistic retry in
-                    // `handle_deliver_worker_prompt` catches the tag
-                    // when the first turn arrives. Non-NotFound
-                    // errors (permission denied, disk full, etc.) DO
-                    // roll back: release session + emit Removed.
-                    //
-                    // Brief window between Connected and the eventual
-                    // tag-write: a concurrent catalog scan could see
-                    // the JSONL untagged. The resolver's
-                    // `latest(forge:lead) -> latest(untagged)` order
-                    // means an idle worker without a JSONL is invisible
-                    // (no on-disk file yet) but a USED worker
-                    // (post-first-turn, pre-tag-landing) is briefly
-                    // race-visible. In practice the
-                    // `should_exclude_worker_tag` filter + the
-                    // opportunistic retry close the gap on the next
-                    // turn or scan.
-                    //
-                    // TODO: lead sessions are currently never tagged
-                    // with `forge:lead`. The resolver falls back to
-                    // latest untagged so existing behaviour works, but
-                    // explicit lead tagging is a spec gap we should
-                    // close (apply the same retry pattern via a
-                    // sibling `apply_lead_tag_or_warn` that does NOT
-                    // roll back on failure - just warns).
-                    if let Some(workspace) = self.workspace.upgrade() {
-                        workspace.apply_worker_tag_or_rollback(&real_key, &cwd);
-                    }
                     // Engineering team: when the lead's synth key
                     // names a project that carries a team config and
                     // no workers are live yet, programmatically
@@ -245,7 +242,7 @@ impl SessionTask {
                         });
                     }
                     self.emit(SessionUpdate::Connected {
-                        key: real_key,
+                        key: real_key.clone(),
                         session_id: SessionId::new(session_id),
                         cwd,
                         current_model,
@@ -261,6 +258,15 @@ impl SessionTask {
                     // the existing prompt-delivery path handles it
                     // uniformly with user-typed prompts.
                     self.drain_pending_peer_prompts();
+                }
+                // Fire worker re-tag for both first-Connected and
+                // post-/new Connected paths. #166: the previous
+                // shape only called this in the else branch, so a
+                // /new on a worker session wrote the new session's
+                // JSONL but never tagged it - the resume scan then
+                // picked the pre-/new orphan.
+                if let Some(workspace) = self.workspace.upgrade() {
+                    workspace.apply_worker_tag_or_rollback(&real_key, &cwd_for_tag);
                 }
             }
             AgentEvent::AuthRequired { method_name, method_description } => {
