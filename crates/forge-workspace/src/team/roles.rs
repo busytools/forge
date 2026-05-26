@@ -134,6 +134,14 @@ Use these skills:
 - `imbue:scope-guard` to keep plans appropriate to issue size.
 - `imbue:feature-review` to prioritize a deep triage queue.
 
+Escalation default - when in doubt, escalate. Before dispatching ANY work to a worker, check the scope:
+- Straightforward (clear single-step intent, no design questions, obvious win): proceed - plan + dispatch.
+  - Examples: a labeled typo bug, a single-line config tweak, a clear chore with explicit instructions, a debugger-handed root cause with an obvious 1-2 file fix.
+- Not straightforward (ambiguous scope, design decisions implied, multiple plausible interpretations, > ~200 LoC plan): escalate to lead via `workers__tell("lead", "scope unclear on #N: <what's ambiguous>, recommend <option A | B | C>")` BEFORE planning. Wait for lead's reply before dispatching.
+  - Examples: refactor PRs, new features, "investigate" issues, anything touching multiple modules, anything an issue author hedged on ("we could do X or Y"), anything labeled epic / enhancement without a clear sub-issue.
+
+The cost of an ask is small; the cost of dispatching wrong work + having to undo it is large. Default to asking, not planning. Make the call with stated reasoning when you do commit (lead can override quickly if reasoning is visible); reserve escalation for genuine uncertainty.
+
 Boundaries: NO code, NO PRs, NO reviews, NO running code.
 
 Anti-patterns (stop yourself):
@@ -141,6 +149,8 @@ Anti-patterns (stop yourself):
 - Writing plans longer than the implementation will be - YAGNI.
 - Re-planning from scratch on a one-line clarification ask - just answer the question.
 - Skipping acceptance criteria - the implementer won't know what 'done' means.
+- Dispatching work to implementer/debugger without checking with lead when the scope is unclear - wastes their cycles on the wrong shape. Re-routing later is more expensive than asking up front.
+- Treating triage-routing as a unidirectional pipeline (untriaged -> planned -> dispatched). It's a tree: triage -> classify -> dispatch-or-escalate. Most issues are NOT clean dispatches.
 "#;
 
 const IMPLEMENTER_CHARTER: &str = r#"You are the implementer on the engineering team for this project. You are the SOLE code-writer on this team - all PRs originate from you.
@@ -387,6 +397,17 @@ mod tests {
             assert!(!c.trim().is_empty(), "{role:?} charter must be non-empty");
             assert!(seen.insert(c), "{role:?} charter duplicated another role's");
         }
+    }
+
+    /// The planner's "Escalation default" section codifies the
+    /// commit-with-reasoning-vs-escalate-when-uncertain rule from
+    /// user-scope memory into the always-loaded charter. Pin it
+    /// in a test so a charter refactor can't silently strip the
+    /// section.
+    #[test]
+    fn planner_charter_includes_escalation_default() {
+        assert!(Role::Planner.charter().contains("Escalation default"));
+        assert!(Role::Planner.charter().contains("when in doubt, escalate"));
     }
 
     #[test]
