@@ -315,14 +315,18 @@ fn measure_message_height_at(
     let msg_count = app.messages().len();
     let is_last_message = idx + 1 == msg_count;
     let sp = msg_spinner(base, idx, active_turn_assistant, &app.messages()[idx]);
+    let suppress_group_header = message::compute_suppress_group_header(app.messages(), idx);
     let (h, rendered_lines) = measure_message_height(
         &mut app.active_messages_mut()[idx],
         &sp,
         mode_id,
         width,
         layout_generation,
-        tools_collapsed,
-        !is_last_message,
+        message::MessageRenderOptions {
+            tools_collapsed,
+            include_trailing_separator: !is_last_message,
+            suppress_group_header,
+        },
     );
     app.sync_render_cache_message(idx);
     stats.measured_msgs += 1;
@@ -346,20 +350,17 @@ fn measure_message_height(
     current_mode_id: Option<&str>,
     width: u16,
     layout_generation: u64,
-    tools_collapsed: bool,
-    include_trailing_separator: bool,
+    options: message::MessageRenderOptions,
 ) -> (usize, usize) {
     let _t = crate::perf::start_with("chat::measure_msg", "blocks", msg.blocks.len());
-    let (h, wrapped_lines) =
-        message::measure_message_height_cached_with_tools_collapsed_and_separator_and_mode(
-            msg,
-            spinner,
-            current_mode_id,
-            width,
-            layout_generation,
-            tools_collapsed,
-            include_trailing_separator,
-        );
+    let (h, wrapped_lines) = message::measure_message_height_cached_with_options(
+        msg,
+        spinner,
+        current_mode_id,
+        width,
+        layout_generation,
+        options,
+    );
     crate::perf::mark_with("chat::measure_msg_wrapped_lines", "lines", wrapped_lines);
     (h, wrapped_lines)
 }
@@ -741,19 +742,17 @@ fn render_culled_messages(
         let sp = msg_spinner(base, i, active_turn_assistant, &app.messages()[i]);
         let before = out.len();
         let message_height = app.viewport().message_height(i);
+        let suppress_group_header = message::compute_suppress_group_header(app.messages(), i);
+        let options = message::MessageRenderOptions {
+            tools_collapsed,
+            include_trailing_separator: i + 1 != msg_count,
+            suppress_group_header,
+        };
         if structural_skip > 0 {
             let remaining_skip = message::render_message_from_offset_internal_with_mode(
                 &mut app.active_messages_mut()[i],
                 &sp,
-                message::MessageRenderContext::new(
-                    mode_id,
-                    width,
-                    layout_generation,
-                    message::MessageRenderOptions {
-                        tools_collapsed,
-                        include_trailing_separator: i + 1 != msg_count,
-                    },
-                ),
+                message::MessageRenderContext::new(mode_id, width, layout_generation, options),
                 structural_skip,
                 out,
             );
@@ -766,15 +765,7 @@ fn render_culled_messages(
             message::render_message(
                 &mut app.active_messages_mut()[i],
                 &sp,
-                message::MessageRenderContext::new(
-                    mode_id,
-                    width,
-                    layout_generation,
-                    message::MessageRenderOptions {
-                        tools_collapsed,
-                        include_trailing_separator: i + 1 != msg_count,
-                    },
-                ),
+                message::MessageRenderContext::new(mode_id, width, layout_generation, options),
                 out,
             );
             rendered_rows = rendered_rows.saturating_add(message_height);
@@ -1439,6 +1430,7 @@ mod tests {
                 message::MessageRenderOptions {
                     tools_collapsed,
                     include_trailing_separator: false,
+                    suppress_group_header: false,
                 },
             ),
             &mut full_lines,
@@ -1498,6 +1490,7 @@ mod tests {
                 message::MessageRenderOptions {
                     tools_collapsed,
                     include_trailing_separator: false,
+                    suppress_group_header: false,
                 },
             ),
             &mut full_lines,

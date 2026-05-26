@@ -86,6 +86,24 @@ pub(crate) enum PeerInboundKind {
     },
 }
 
+impl PeerInboundKind {
+    /// The `sender_org` field threaded through every variant — drives
+    /// same-project envelope grouping at the chat-iteration level
+    /// (see `crate::ui::chat`). All 7 variants carry it, so the
+    /// helper is total.
+    pub(crate) fn org(&self) -> &str {
+        match self {
+            Self::Question { org, .. }
+            | Self::Message { org, .. }
+            | Self::Reply { org, .. }
+            | Self::LateReply { org, .. }
+            | Self::CallerTimeout { org, .. }
+            | Self::RecipientExpired { org, .. }
+            | Self::DeliveryFailure { org, .. } => org,
+        }
+    }
+}
+
 /// One outbound peer or worker block parsed from a `mcp__forge__peers__*`
 /// or `mcp__forge__workers__*` tool_use card. The correlation id is
 /// `None` until the tool call's result arrives. The `family` flag
