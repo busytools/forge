@@ -1894,13 +1894,14 @@ impl Workspace {
     }
 
     /// Resolve the cwd a git-diff scan should run against for the
-    /// session at `session_key`. Mirrors the `apply_worker_tag` cwd
-    /// fix from #184 at a different surface: workers spawned in a
-    /// git repo run inside claude's `--worktree <label>` fork (under
+    /// session at `session_key`. Workers spawned in a git repo run
+    /// inside claude's `--worktree <label>` fork (under
     /// `<project_root>/.claude/worktrees/<label>/`), so `cwd_raw`
     /// from the `Connected` event carries the project root and
     /// scanning there would surface the lead's branch / diff, not
-    /// the worker's.
+    /// the worker's. Composes [`worker_lookup_for_session`] with
+    /// [`crate::mcp::workers::types::worker_tag_dir`] so the same
+    /// helper drives both the tag-write path and the git-diff scan.
     ///
     /// For non-worker sessions (project leads) or non-git workers,
     /// returns `cwd_raw` unchanged.
