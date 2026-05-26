@@ -1,10 +1,5 @@
 //! Worker-status text formatters. Pure string helpers that surface
 //! the `is_git_repo_at_spawn` distinction in the worker close toast.
-//! Spawning / running status formatters used to live here too; both
-//! were retired alongside the WORKTREE inspector section in #185
-//! (the running state surfaces through the projects-pane row glyph
-//! now, and the GIT panel covers the worktree-vs-non-git distinction
-//! by following the focused session's cwd).
 
 /// Format the close toast for a worker. When the worker was spawned
 /// in a git repo, claude auto-created a worktree at
