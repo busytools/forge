@@ -67,6 +67,7 @@ pub mod protocol;
 mod session_task;
 mod spawn;
 mod target;
+pub mod team;
 pub mod ui;
 mod views;
 mod workspace;
