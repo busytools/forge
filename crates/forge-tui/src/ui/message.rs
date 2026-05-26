@@ -182,6 +182,7 @@ fn build_message_layout(
             msg,
             render_context.width,
             render_context.options.tools_collapsed,
+            render_context.options.envelope_streak_position,
             &mut layout,
         ),
         MessageRole::Assistant => {
@@ -210,6 +211,7 @@ fn append_user_blocks(
     msg: &mut ChatMessage,
     width: u16,
     tools_collapsed: bool,
+    envelope_streak_position: Option<EnvelopeStreakPosition>,
     layout: &mut MessageLayout,
 ) {
     for block in &mut msg.blocks {
@@ -227,7 +229,22 @@ fn append_user_blocks(
                 if let Some(kind) = peer_block::detect_inbound(&block.text) {
                     let trailing_gap = block.trailing_blank_lines();
                     let collapsed = block.peer_collapsed_override.unwrap_or(tools_collapsed);
-                    let lines = peer_block::render_inbound(&kind, collapsed);
+                    // #163: streak-follower envelopes use the compact
+                    // renderer (worker label header + body, no
+                    // kind-label / id / org meta). Streak-starters and
+                    // standalone envelopes keep the existing card
+                    // chrome.
+                    let (lines, suppress_trailing_gap) = match envelope_streak_position {
+                        Some(EnvelopeStreakPosition::FollowerNewWorker) => {
+                            (peer_block::render_inbound_follower(&kind, false, collapsed), true)
+                        }
+                        Some(EnvelopeStreakPosition::FollowerSameWorker) => {
+                            (peer_block::render_inbound_follower(&kind, true, collapsed), true)
+                        }
+                        Some(EnvelopeStreakPosition::Start) | None => {
+                            (peer_block::render_inbound(&kind, collapsed), false)
+                        }
+                    };
                     let y_in_msg = layout.height;
                     let height = rendered_lines_height(&lines, width);
                     layout.push_wrapped_lines(lines, width);
@@ -238,8 +255,10 @@ fn append_user_blocks(
                     block.peer_last_measured_y_in_msg = y_in_msg;
                     block.peer_last_measured_height = height;
                     block.peer_last_measured_width = width;
-                    for _ in 0..trailing_gap {
-                        layout.push_blank();
+                    if !suppress_trailing_gap {
+                        for _ in 0..trailing_gap {
+                            layout.push_blank();
+                        }
                     }
                     continue;
                 }
@@ -585,6 +604,7 @@ pub fn measure_message_height_cached_with_tools_collapsed_and_separator_and_mode
             tools_collapsed,
             include_trailing_separator,
             suppress_group_header: false,
+            envelope_streak_position: None,
         },
     )
 }
@@ -653,6 +673,7 @@ pub(crate) fn render_message_from_offset_with_tools_collapsed(
             tools_collapsed,
             include_trailing_separator: true,
             suppress_group_header: false,
+            envelope_streak_position: None,
         },
         skip_rows,
         out,
@@ -764,7 +785,7 @@ fn render_cached_message(segments: &[CachedMessageSegment], out: &mut Vec<Line<'
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub(crate) struct MessageRenderOptions {
     pub tools_collapsed: bool,
     pub include_trailing_separator: bool,
@@ -780,6 +801,11 @@ pub(crate) struct MessageRenderOptions {
     /// treated as having no prior visible envelope and shows the
     /// label.
     pub suppress_group_header: bool,
+    /// Position of this message inside its envelope streak when it
+    /// IS an envelope. Drives the peer-block renderer's branch
+    /// between full streak-starter chrome and compact follower
+    /// shape (#163). `None` for non-envelope messages.
+    pub envelope_streak_position: Option<EnvelopeStreakPosition>,
 }
 
 fn get_or_build_message_render_cache<'a>(
@@ -804,12 +830,19 @@ fn build_message_render_cache_key(
     spinner: &SpinnerState,
     render_context: MessageRenderContext<'_>,
 ) -> MessageRenderCacheKey {
+    let envelope_streak_position_ord = match render_context.options.envelope_streak_position {
+        None => 0,
+        Some(EnvelopeStreakPosition::Start) => 1,
+        Some(EnvelopeStreakPosition::FollowerNewWorker) => 2,
+        Some(EnvelopeStreakPosition::FollowerSameWorker) => 3,
+    };
     MessageRenderCacheKey {
         width: render_context.width,
         layout_generation: render_context.layout_generation,
         tools_collapsed: render_context.options.tools_collapsed,
         include_trailing_separator: render_context.options.include_trailing_separator,
         suppress_group_header: render_context.options.suppress_group_header,
+        envelope_streak_position_ord,
         render_signature: build_message_render_signature(
             msg,
             spinner,
@@ -1123,6 +1156,85 @@ pub(crate) fn compute_suppress_group_header(messages: &[ChatMessage], idx: usize
         return false;
     };
     cur == prev
+}
+
+/// Position of one envelope inside a same-project envelope streak.
+/// Drives the peer-block renderer's branch between the full
+/// streak-starter shape (existing `render_peer_card` chrome with
+/// kind label + sender + id + org meta) and the compact follower
+/// shape introduced for #163 (worker label inline with body, no
+/// id/org meta, no blank line between followers).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EnvelopeStreakPosition {
+    /// First envelope in a streak (or solo envelope, or post-break
+    /// envelope). Renders with the full peer-block card.
+    Start,
+    /// Subsequent envelope in a same-project streak whose
+    /// `sender_name` differs from the previous envelope's sender.
+    /// Renders compactly with the worker label prefix.
+    FollowerNewWorker,
+    /// Subsequent envelope in a same-project streak from the SAME
+    /// worker as the previous envelope. Renders compactly without
+    /// the worker label — body continues under the existing tag
+    /// column so a contiguous run of one worker's messages reads as
+    /// one paragraph.
+    FollowerSameWorker,
+}
+
+/// Extract this message's envelope sender_name (the worker label
+/// or the project name for lead-to-lead peer messages). Returns
+/// `None` for non-envelope messages.
+fn message_envelope_sender(msg: &ChatMessage) -> Option<String> {
+    use crate::ui::peer_block::detect_inbound;
+    if !matches!(msg.role, MessageRole::User) {
+        return None;
+    }
+    msg.blocks.iter().find_map(|block| match block {
+        MessageBlock::Text(text) => detect_inbound(&text.text).map(|kind| match kind {
+            crate::ui::peer_block::PeerInboundKind::Question { from, .. }
+            | crate::ui::peer_block::PeerInboundKind::Message { from, .. }
+            | crate::ui::peer_block::PeerInboundKind::Reply { from, .. }
+            | crate::ui::peer_block::PeerInboundKind::LateReply { from, .. }
+            | crate::ui::peer_block::PeerInboundKind::RecipientExpired { from, .. } => from,
+            crate::ui::peer_block::PeerInboundKind::CallerTimeout { target, .. }
+            | crate::ui::peer_block::PeerInboundKind::DeliveryFailure { target, .. } => target,
+            crate::ui::peer_block::PeerInboundKind::WorkerSpawnFailed { label, .. } => label,
+        }),
+        _ => None,
+    })
+}
+
+/// Decide where `messages[idx]` sits inside its envelope streak.
+/// Returns `None` for non-envelope messages (peer-block renderer is
+/// not invoked for them).
+///
+/// Position depends on the FULL chat list (matching #161's
+/// chat-wide grouping). The first-visible streak follower in a
+/// scroll-back view still renders as a follower; sticky-header
+/// is intentionally deferred per #158.
+pub(crate) fn compute_envelope_streak_position(
+    messages: &[ChatMessage],
+    idx: usize,
+) -> Option<EnvelopeStreakPosition> {
+    let cur_org = message_envelope_org(&messages[idx])?;
+    if idx == 0 {
+        return Some(EnvelopeStreakPosition::Start);
+    }
+    let prev_org = message_envelope_org(&messages[idx - 1]);
+    if prev_org.as_deref() != Some(cur_org.as_str()) {
+        // Previous message either isn't an envelope or is from a
+        // different project — this envelope starts a fresh streak.
+        return Some(EnvelopeStreakPosition::Start);
+    }
+    // Same-project streak follower. Distinguish same-worker
+    // (continuation under existing tag) from new-worker (own tag).
+    let cur_sender = message_envelope_sender(&messages[idx]);
+    let prev_sender = message_envelope_sender(&messages[idx - 1]);
+    if cur_sender.is_some() && cur_sender == prev_sender {
+        Some(EnvelopeStreakPosition::FollowerSameWorker)
+    } else {
+        Some(EnvelopeStreakPosition::FollowerNewWorker)
+    }
 }
 
 fn system_role_label_line(severity: SystemSeverity) -> Line<'static> {
@@ -1752,6 +1864,7 @@ mod tests {
             tools_collapsed: false,
             include_trailing_separator: true,
             suppress_group_header: false,
+            envelope_streak_position: None,
         }
     }
 
@@ -1760,6 +1873,7 @@ mod tests {
             tools_collapsed: false,
             include_trailing_separator: false,
             suppress_group_header: false,
+            envelope_streak_position: None,
         }
     }
 
@@ -2054,6 +2168,7 @@ mod tests {
                 tools_collapsed: false,
                 include_trailing_separator: false,
                 suppress_group_header: false,
+                envelope_streak_position: None,
             },
             0,
             &mut out,
@@ -2085,6 +2200,7 @@ mod tests {
                 tools_collapsed: false,
                 include_trailing_separator: false,
                 suppress_group_header: false,
+                envelope_streak_position: None,
             },
             0,
             &mut out,
@@ -2284,6 +2400,7 @@ mod tests {
                         tools_collapsed,
                         include_trailing_separator: true,
                         suppress_group_header: false,
+                        envelope_streak_position: None,
                     },
                 ),
                 &mut lines,
@@ -2621,6 +2738,84 @@ mod tests {
         assert!(!compute_suppress_group_header(&messages, 2));
     }
 
+    // -----------------------------------------------------------------
+    // #163: envelope streak position helpers.
+    // -----------------------------------------------------------------
+
+    fn make_envelope_msg(sender: &str, org: &str, body: &str) -> ChatMessage {
+        let text = format!(
+            "[Message id=t-12345678 hop=1/10 from agent '{sender}' (org '{org}')]\n\n{body}"
+        );
+        ChatMessage::new(
+            MessageRole::User,
+            vec![MessageBlock::Text(TextBlock::from_complete(&text))],
+            None,
+        )
+    }
+
+    #[test]
+    fn compute_envelope_streak_position_first_envelope_is_start() {
+        let messages = vec![make_envelope_msg("planner", "worker in forge", "first")];
+        assert_eq!(
+            compute_envelope_streak_position(&messages, 0),
+            Some(EnvelopeStreakPosition::Start),
+        );
+    }
+
+    #[test]
+    fn compute_envelope_streak_position_after_non_envelope_is_start() {
+        let messages = vec![
+            make_text_message(MessageRole::User, "plain user text"),
+            make_envelope_msg("planner", "worker in forge", "envelope"),
+        ];
+        assert_eq!(
+            compute_envelope_streak_position(&messages, 1),
+            Some(EnvelopeStreakPosition::Start),
+        );
+    }
+
+    #[test]
+    fn compute_envelope_streak_position_different_worker_same_project_is_follower_new_worker() {
+        let messages = vec![
+            make_envelope_msg("planner", "worker in forge", "first"),
+            make_envelope_msg("implementer", "worker in forge", "second"),
+        ];
+        assert_eq!(
+            compute_envelope_streak_position(&messages, 1),
+            Some(EnvelopeStreakPosition::FollowerNewWorker),
+        );
+    }
+
+    #[test]
+    fn compute_envelope_streak_position_same_worker_is_follower_same_worker() {
+        let messages = vec![
+            make_envelope_msg("planner", "worker in forge", "first"),
+            make_envelope_msg("planner", "worker in forge", "second"),
+        ];
+        assert_eq!(
+            compute_envelope_streak_position(&messages, 1),
+            Some(EnvelopeStreakPosition::FollowerSameWorker),
+        );
+    }
+
+    #[test]
+    fn compute_envelope_streak_position_different_project_is_start() {
+        let messages = vec![
+            make_envelope_msg("forge", "Personal", "first"),
+            make_envelope_msg("granite-backend", "Granite", "second"),
+        ];
+        assert_eq!(
+            compute_envelope_streak_position(&messages, 1),
+            Some(EnvelopeStreakPosition::Start),
+        );
+    }
+
+    #[test]
+    fn compute_envelope_streak_position_non_envelope_returns_none() {
+        let messages = vec![make_text_message(MessageRole::User, "plain user text")];
+        assert_eq!(compute_envelope_streak_position(&messages, 0), None);
+    }
+
     #[test]
     fn compute_suppress_group_header_breaks_on_assistant_turn() {
         let messages = vec![
@@ -2644,6 +2839,7 @@ mod tests {
             tools_collapsed: false,
             include_trailing_separator: false,
             suppress_group_header: false,
+            envelope_streak_position: None,
         };
         let mut lines_with = Vec::new();
         render_message(
@@ -2661,6 +2857,7 @@ mod tests {
             tools_collapsed: false,
             include_trailing_separator: false,
             suppress_group_header: true,
+            envelope_streak_position: None,
         };
         let mut lines_without = Vec::new();
         render_message(

@@ -49,6 +49,11 @@ pub struct MessageRenderCacheKey {
     pub tools_collapsed: bool,
     pub include_trailing_separator: bool,
     pub suppress_group_header: bool,
+    /// Mirror of `MessageRenderOptions.envelope_streak_position`
+    /// serialized as a small ordinal so the cache key stays
+    /// `derive(PartialEq, Eq)`. `0` = None, `1` = Start, `2` =
+    /// FollowerNewWorker, `3` = FollowerSameWorker.
+    pub envelope_streak_position_ord: u8,
     pub render_signature: MessageRenderSignature,
 }
 
