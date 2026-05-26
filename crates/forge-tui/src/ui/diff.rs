@@ -1,4 +1,5 @@
 use crate::agent::model;
+use crate::ui::highlight::LineHighlighter;
 use crate::ui::theme;
 use crate::ui::wrap::{StyledChunk, display_width, wrap_styled_chunks};
 use ratatui::style::{Color, Modifier, Style};
@@ -23,6 +24,14 @@ pub fn render_diff(diff: &model::Diff, width: u16) -> Vec<Line<'static>> {
     let line_number_width = old.lines().count().max(new.lines().count()).max(1).to_string().len();
     let content_width = usize::from(width).saturating_sub(line_number_width + 5).max(1);
 
+    // One syntect highlighter per side so multi-line constructs (block
+    // comments, strings spanning lines) carry state correctly. Context
+    // lines feed BOTH so the old + new sides stay synchronized for the
+    // next change that hits either side.
+    let path_str = diff.path.to_string_lossy();
+    let mut left_hl = LineHighlighter::for_path(&path_str);
+    let mut right_hl = LineHighlighter::for_path(&path_str);
+
     // Use unified diff with 3 lines of context -- only shows changed hunks
     // instead of the full file content.
     let udiff = text_diff.unified_diff();
@@ -40,7 +49,7 @@ pub fn render_diff(diff: &model::Diff, width: u16) -> Vec<Line<'static>> {
 
         for change in hunk.iter_changes() {
             let value = change.as_str().unwrap_or("").trim_end_matches('\n');
-            let (marker, style, line_number) = match change.tag() {
+            let (marker, marker_style, line_number) = match change.tag() {
                 similar::ChangeTag::Delete => (
                     "-",
                     Style::default().fg(Color::Red),
@@ -57,18 +66,55 @@ pub fn render_diff(diff: &model::Diff, width: u16) -> Vec<Line<'static>> {
                     change.new_index().map(|index| index + 1),
                 ),
             };
+
+            // Split leading whitespace; `wrap_styled_chunks` drops
+            // leading spaces at wrap boundaries, so the indent column
+            // is rendered explicitly (matches pre-syntect behavior).
+            let (leading_indent, content) = split_leading_whitespace(value);
+            let highlighted_spans = match change.tag() {
+                similar::ChangeTag::Delete => left_hl.highlight(content),
+                similar::ChangeTag::Insert => right_hl.highlight(content),
+                similar::ChangeTag::Equal => {
+                    // Feed both sides to keep their state synchronized;
+                    // use right_hl output for display and dim it so the
+                    // context row stays visually distinct from changes.
+                    let _ = left_hl.highlight(content);
+                    right_hl.highlight(content)
+                }
+            };
+            let extra_modifier =
+                matches!(change.tag(), similar::ChangeTag::Equal).then_some(Modifier::DIM);
+            let content_chunks = spans_to_chunks(highlighted_spans, extra_modifier);
+
             lines.extend(render_wrapped_diff_row(
                 line_number,
                 line_number_width,
                 marker,
-                value,
-                style,
+                marker_style,
+                leading_indent,
+                &content_chunks,
                 content_width,
             ));
         }
     }
 
     lines
+}
+
+fn spans_to_chunks(
+    spans: Vec<Span<'static>>,
+    extra_modifier: Option<Modifier>,
+) -> Vec<StyledChunk> {
+    spans
+        .into_iter()
+        .map(|span| {
+            let style = match extra_modifier {
+                Some(modifier) => span.style.add_modifier(modifier),
+                None => span.style,
+            };
+            StyledChunk { text: span.content.into_owned(), style }
+        })
+        .collect()
 }
 
 pub fn looks_like_unified_diff(text: &str) -> bool {
@@ -187,18 +233,19 @@ fn render_wrapped_diff_row(
     line_number: Option<usize>,
     line_number_width: usize,
     marker: &str,
-    value: &str,
-    style: Style,
+    marker_style: Style,
+    leading_indent: &str,
+    content_chunks: &[StyledChunk],
     content_width: usize,
 ) -> Vec<Line<'static>> {
     let number_style = Style::default().fg(theme::DIM);
-    let (leading_indent, content) = split_leading_whitespace(value);
     let leading_indent_width = display_width(leading_indent);
-    let content_lines = if content.is_empty() {
+    let content_is_empty = content_chunks.iter().all(|chunk| chunk.text.is_empty());
+    let content_lines = if content_is_empty {
         vec![Line::default()]
     } else {
         let wrapped_width = content_width.saturating_sub(leading_indent_width).max(1);
-        wrap_styled_chunks(&[StyledChunk { text: content.to_owned(), style }], wrapped_width)
+        wrap_styled_chunks(content_chunks, wrapped_width)
     };
 
     let line_number_text = line_number.map_or_else(
@@ -215,14 +262,14 @@ fn render_wrapped_diff_row(
                 vec![
                     Span::styled(line_number_text.clone(), number_style),
                     Span::styled("  ", number_style),
-                    Span::styled(marker.to_owned(), style),
+                    Span::styled(marker.to_owned(), marker_style),
                     Span::styled("  ", number_style),
                 ]
             } else {
                 vec![Span::styled(continuation_prefix.clone(), number_style)]
             };
             if !leading_indent.is_empty() {
-                spans.push(Span::styled(leading_indent.to_owned(), style));
+                spans.push(Span::styled(leading_indent.to_owned(), marker_style));
             }
             spans.extend(content_line.spans);
             Line::from(spans)
@@ -425,6 +472,66 @@ mod tests {
         assert_eq!(format_compact_hunk_header("@@ -0,0 +1,7 @@"), "lines +1-7");
         assert_eq!(format_compact_hunk_header("@@ -4,3 +4,5 @@"), "lines -4-6 +4-8");
         assert_eq!(format_compact_hunk_header("@@ -8 +8 @@"), "lines -8 +8");
+    }
+
+    /// A Rust insert line should pick up syntect tokenization: the
+    /// body cell renders as multiple spans with distinct foreground
+    /// colors (keyword vs. identifier vs. string literal), not a
+    /// single uniform Insert-Green block.
+    #[test]
+    fn render_diff_applies_syntect_highlighting_to_change_body() {
+        let lines = render_diff(
+            &model::Diff::new(
+                "src/lib.rs",
+                "fn hello() -> &'static str {\n    \"world\"\n}\n".to_owned(),
+            ),
+            80,
+        );
+        let rust_line = lines
+            .iter()
+            .find(|line| line.spans.iter().any(|span| span.content.contains("hello")))
+            .expect("inserted rust line rendered");
+        // Collect distinct fg colors across the body spans (anything
+        // past the marker/gutter prefix). Without syntect, every
+        // body span would carry the Insert Green color. With syntect,
+        // tokenization yields at least two distinct fg colors for a
+        // Rust function-declaration line.
+        let body_colors: std::collections::HashSet<_> = rust_line
+            .spans
+            .iter()
+            .filter(|span| !span.content.trim().is_empty())
+            .filter_map(|span| span.style.fg)
+            .collect();
+        assert!(
+            body_colors.len() >= 2,
+            "rust insert line should expose >=2 distinct fg colors (syntect-tokenized), got: {body_colors:?}"
+        );
+    }
+
+    /// Context lines (unchanged equal rows) must keep the DIM modifier
+    /// on their body spans so they stay visually distinct from change
+    /// rows even after syntect tokenization.
+    #[test]
+    fn render_diff_dims_context_line_bodies() {
+        let lines = render_diff(
+            &model::Diff::new("src/lib.rs", "fn one() {}\nfn two() {}\nfn three() {}\n".to_owned())
+                .old_text(Some("fn one() {}\nfn two() {}\nfn THREE() {}\n")),
+            80,
+        );
+        // The unchanged `fn one` line is a context row. Its body spans
+        // should carry Modifier::DIM (composed with syntect colors).
+        let context_line = lines
+            .iter()
+            .find(|line| line.spans.iter().any(|span| span.content.contains("one")))
+            .expect("context line rendered");
+        let has_dim_body_span = context_line.spans.iter().any(|span| {
+            !span.content.trim().is_empty() && span.style.add_modifier.contains(Modifier::DIM)
+        });
+        assert!(
+            has_dim_body_span,
+            "context line body should carry Modifier::DIM (composed with syntect), spans: {:?}",
+            context_line.spans
+        );
     }
 
     #[test]
