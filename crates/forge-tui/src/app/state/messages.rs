@@ -48,6 +48,7 @@ pub struct MessageRenderCacheKey {
     pub layout_generation: u64,
     pub tools_collapsed: bool,
     pub include_trailing_separator: bool,
+    pub suppress_group_header: bool,
     pub render_signature: MessageRenderSignature,
 }
 
