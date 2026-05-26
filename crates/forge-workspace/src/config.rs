@@ -56,6 +56,13 @@ struct ProjectEntry {
     /// which one becomes the focused tab. Defaults to `false`.
     #[serde(default)]
     auto_start: bool,
+    /// Built-in engineering-team roles to auto-spawn alongside this
+    /// project's lead. Each entry must match a known role name
+    /// (planner / implementer / reviewer / debugger / tester);
+    /// unknown names error at config load. Empty / missing means
+    /// no team.
+    #[serde(default)]
+    team: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -131,6 +138,9 @@ pub(crate) struct LoadedProject {
     /// `true` when the project should spawn automatically at forge
     /// launch.
     pub auto_start: bool,
+    /// Parsed + validated team list for this project. Empty means
+    /// no team. See `crate::team::Role`.
+    pub team: Vec<crate::team::Role>,
 }
 
 impl LoadedConfig {
@@ -233,6 +243,27 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
             if !seen_project_names.insert(project_entry.name.clone()) {
                 return Err(WorkspaceError::DuplicateProject { path, name: project_entry.name });
             }
+            let mut team_roles: Vec<crate::team::Role> =
+                Vec::with_capacity(project_entry.team.len());
+            let mut seen_roles: std::collections::HashSet<crate::team::Role> =
+                std::collections::HashSet::new();
+            for raw_role in &project_entry.team {
+                let role = crate::team::Role::from_str_ci(raw_role).ok_or_else(|| {
+                    WorkspaceError::UnknownTeamRole {
+                        path: path.clone(),
+                        project_name: project_entry.name.clone(),
+                        role: raw_role.clone(),
+                    }
+                })?;
+                if !seen_roles.insert(role) {
+                    return Err(WorkspaceError::DuplicateTeamRole {
+                        path: path.clone(),
+                        project_name: project_entry.name.clone(),
+                        role: raw_role.clone(),
+                    });
+                }
+                team_roles.push(role);
+            }
             projects.push(LoadedProject {
                 name: project_entry.name,
                 path: expand_home(&project_entry.path),
@@ -240,6 +271,7 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
                 org: org_entry.name.clone(),
                 accounts: org_entry.accounts.clone(),
                 auto_start: project_entry.auto_start,
+                team: team_roles,
             });
         }
         orgs.push(LoadedOrg { name: org_entry.name, accounts: org_entry.accounts });
@@ -608,5 +640,141 @@ config_dir = "~/.claude-other"
         write_config(dir.path(), &config_text);
         let config = load_from_dir(dir.path()).expect("legacy [selection] should be ignored");
         assert_eq!(config.default_project().name, "forge");
+    }
+}
+
+#[cfg(test)]
+mod team_tests {
+    use super::*;
+    use crate::team::Role;
+
+    fn write_config(dir: &std::path::Path, contents: &str) {
+        std::fs::write(dir.join("forge.toml"), contents).expect("write forge.toml");
+    }
+
+    #[test]
+    fn project_without_team_field_loads_empty_team() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        write_config(
+            tmp.path(),
+            r#"
+[[orgs]]
+name = "TestOrg"
+accounts = ["acct-a"]
+[[orgs.projects]]
+name = "p1"
+path = "/tmp/p1"
+
+[[accounts]]
+display_name = "acct-a"
+config_dir = "/tmp/acct-a"
+"#,
+        );
+        let cfg = load_from_dir(tmp.path()).expect("load ok");
+        let p = cfg.projects.iter().find(|p| p.name == "p1").expect("p1 present");
+        assert!(p.team.is_empty(), "missing team field -> empty team");
+    }
+
+    #[test]
+    fn project_with_team_field_parses_roles() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        write_config(
+            tmp.path(),
+            r#"
+[[orgs]]
+name = "TestOrg"
+accounts = ["acct-a"]
+[[orgs.projects]]
+name = "p1"
+path = "/tmp/p1"
+team = ["planner", "implementer", "reviewer", "debugger", "tester"]
+
+[[accounts]]
+display_name = "acct-a"
+config_dir = "/tmp/acct-a"
+"#,
+        );
+        let cfg = load_from_dir(tmp.path()).expect("load ok");
+        let p = cfg.projects.iter().find(|p| p.name == "p1").expect("p1 present");
+        assert_eq!(
+            p.team,
+            vec![Role::Planner, Role::Implementer, Role::Reviewer, Role::Debugger, Role::Tester]
+        );
+    }
+
+    #[test]
+    fn project_with_partial_team_only_enables_listed_roles() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        write_config(
+            tmp.path(),
+            r#"
+[[orgs]]
+name = "TestOrg"
+accounts = ["acct-a"]
+[[orgs.projects]]
+name = "p1"
+path = "/tmp/p1"
+team = ["reviewer", "planner"]
+
+[[accounts]]
+display_name = "acct-a"
+config_dir = "/tmp/acct-a"
+"#,
+        );
+        let cfg = load_from_dir(tmp.path()).expect("load ok");
+        let p = cfg.projects.iter().find(|p| p.name == "p1").expect("p1 present");
+        assert_eq!(p.team, vec![Role::Reviewer, Role::Planner]);
+    }
+
+    #[test]
+    fn unknown_role_in_team_rejects_with_clear_error() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        write_config(
+            tmp.path(),
+            r#"
+[[orgs]]
+name = "TestOrg"
+accounts = ["acct-a"]
+[[orgs.projects]]
+name = "p1"
+path = "/tmp/p1"
+team = ["planner", "manager"]
+
+[[accounts]]
+display_name = "acct-a"
+config_dir = "/tmp/acct-a"
+"#,
+        );
+        let err = load_from_dir(tmp.path()).expect_err("must reject");
+        let msg = format!("{err}");
+        assert!(msg.contains("manager"), "error must name the unknown role; got: {msg}");
+        assert!(msg.contains("p1"), "error must name the project; got: {msg}");
+    }
+
+    #[test]
+    fn duplicate_role_in_team_rejects() {
+        // v1 supports only one instance per role per project. Duplicate
+        // entries reject loud rather than silently dedup.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        write_config(
+            tmp.path(),
+            r#"
+[[orgs]]
+name = "TestOrg"
+accounts = ["acct-a"]
+[[orgs.projects]]
+name = "p1"
+path = "/tmp/p1"
+team = ["planner", "planner"]
+
+[[accounts]]
+display_name = "acct-a"
+config_dir = "/tmp/acct-a"
+"#,
+        );
+        let err = load_from_dir(tmp.path()).expect_err("must reject");
+        let msg = format!("{err}");
+        assert!(msg.contains("planner"), "error must name duplicate role; got: {msg}");
+        assert!(msg.contains("p1"), "error must name the project; got: {msg}");
     }
 }

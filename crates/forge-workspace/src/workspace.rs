@@ -331,6 +331,7 @@ impl Workspace {
                 path: project.path.clone(),
                 display_path: project.display_path.clone(),
                 accounts: project.accounts.clone(),
+                team: project.team.clone(),
                 sessions,
             });
         }
