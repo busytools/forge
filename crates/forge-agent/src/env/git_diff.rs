@@ -266,12 +266,46 @@ pub async fn scan(cwd: &Path, prev: Option<&GitDiffSnapshot>) -> GitDiffSnapshot
 
 /// Count commits in `<base>..HEAD` via `git rev-list --count`.
 /// Returns 0 on any failure path (subprocess error, parse failure,
-/// empty output) so the surrounding scan logic stays infallible.
+/// anomalous empty output) so the surrounding scan logic stays
+/// infallible. Each non-Ok branch emits a WARN log mirroring the
+/// `gh_pr_lookup_*` pattern so a silent "0 commits ahead" can be
+/// traced to a real failure rather than a clean range.
 async fn commit_count_in_range(cwd: &Path, base: &str, head: &str) -> u32 {
     let range = format!("{base}..{head}");
     match run_git(cwd, &["rev-list", "--count", &range]).await {
-        GitOutput::Ok(s) => s.trim().parse::<u32>().unwrap_or(0),
-        GitOutput::Empty | GitOutput::Failed | GitOutput::Oversize => 0,
+        GitOutput::Ok(s) => match s.trim().parse::<u32>() {
+            Ok(count) => count,
+            Err(err) => {
+                tracing::warn!(
+                    target: crate::logging::targets::ENV_GIT,
+                    cwd = %cwd.display(),
+                    event_name = "git_commit_count_parse_failed",
+                    message = "rev-list --count stdout did not parse as u32",
+                    outcome = "failure",
+                    error = %err,
+                    range = %range,
+                    raw = %s.trim(),
+                );
+                0
+            }
+        },
+        GitOutput::Empty => {
+            // rev-list --count always emits `0\n` on success even for
+            // an empty range; Empty here is anomalous (binary stdout,
+            // truncation, etc.). Log separately so operators can tell
+            // it apart from Failed/Oversize when triaging a vanished
+            // layer-2 row.
+            tracing::warn!(
+                target: crate::logging::targets::ENV_GIT,
+                cwd = %cwd.display(),
+                event_name = "git_commit_count_empty",
+                message = "rev-list --count returned empty stdout (expected at minimum '0\\n')",
+                outcome = "anomalous",
+                range = %range,
+            );
+            0
+        }
+        GitOutput::Failed | GitOutput::Oversize => 0,
     }
 }
 
