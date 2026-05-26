@@ -136,6 +136,17 @@ pub struct CallerProject {
     pub is_lead: bool,
 }
 
+/// Display identity for the sender of a `workers__tell` or
+/// `workers__ask` envelope. Returned by [`WorkerFacade::caller_identity`]
+/// and stamped into `WrappedPrompt::sender_name` / `sender_org` so the
+/// recipient's chat renders `from agent '<name>' (org '<org>')` with a
+/// human-readable label rather than the raw session UUID.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkerIdentity {
+    pub name: String,
+    pub org: String,
+}
+
 /// The narrow workspace-state surface workers MCP Tool impls
 /// depend on.
 ///
@@ -147,6 +158,18 @@ pub trait WorkerFacade: Send + Sync {
     /// Resolve the caller's project key + lead/worker flag.
     /// Returns `None` when `caller` matches no known session.
     fn caller_project(&self, caller: &SessionKey) -> Option<CallerProject>;
+
+    /// Resolve a display identity for `caller`. Always returns a value
+    /// (no `Option`); the production impl falls back to the raw
+    /// session id for genuinely unresolvable callers so the envelope
+    /// at least renders something. Three resolved shapes:
+    ///
+    /// - lead caller → `(project_key, "Personal")`
+    /// - worker caller with a live `WorkerEntry` →
+    ///   `(label, "worker in <project_key>")`
+    /// - worker caller whose entry was reaped (detached, mid-shutdown) →
+    ///   `(session_id, "worker in <project_key> (detached)")`
+    fn caller_identity(&self, caller: &SessionKey) -> WorkerIdentity;
 
     /// Dispatch a `Command::SpawnWorker` and await its synchronous
     /// reply. Gating (lead-only, non-empty label/charter) happens
@@ -246,6 +269,36 @@ impl WorkerFacade for ProdWorkerFacade {
             }
         }
         None
+    }
+
+    fn caller_identity(&self, caller: &SessionKey) -> WorkerIdentity {
+        let Some(ws) = self.workspace.upgrade() else {
+            return WorkerIdentity { name: caller.as_str().to_owned(), org: String::new() };
+        };
+        let Some(cp) = self.caller_project(caller) else {
+            return WorkerIdentity { name: caller.as_str().to_owned(), org: String::new() };
+        };
+        if cp.is_lead {
+            return WorkerIdentity {
+                name: cp.project_key.as_str().to_owned(),
+                org: "Personal".to_owned(),
+            };
+        }
+        let label = ws
+            .list_live_workers(&cp.project_key)
+            .into_iter()
+            .find(|w| w.session_key == *caller)
+            .map(|w| w.label);
+        match label {
+            Some(label) => WorkerIdentity {
+                name: label,
+                org: format!("worker in {}", cp.project_key.as_str()),
+            },
+            None => WorkerIdentity {
+                name: caller.as_str().to_owned(),
+                org: format!("worker in {} (detached)", cp.project_key.as_str()),
+            },
+        }
     }
 
     async fn spawn_worker(
@@ -482,6 +535,31 @@ impl WorkerFacade for MockWorkerFacade {
         self.callers.lock().get(caller).cloned()
     }
 
+    fn caller_identity(&self, caller: &SessionKey) -> WorkerIdentity {
+        let Some(cp) = self.caller_project(caller) else {
+            return WorkerIdentity { name: caller.as_str().to_owned(), org: String::new() };
+        };
+        if cp.is_lead {
+            return WorkerIdentity {
+                name: cp.project_key.as_str().to_owned(),
+                org: "Personal".to_owned(),
+            };
+        }
+        let label = self.workers.lock().get(cp.project_key.as_str()).and_then(|ws| {
+            ws.iter().find(|w| w.session_id == caller.as_str()).map(|w| w.label.clone())
+        });
+        match label {
+            Some(label) => WorkerIdentity {
+                name: label,
+                org: format!("worker in {}", cp.project_key.as_str()),
+            },
+            None => WorkerIdentity {
+                name: caller.as_str().to_owned(),
+                org: format!("worker in {} (detached)", cp.project_key.as_str()),
+            },
+        }
+    }
+
     async fn spawn_worker(
         &self,
         caller: &SessionKey,
@@ -654,6 +732,68 @@ mod mock_tests {
             .unwrap();
         assert_eq!(res.session_id, "new-uuid");
         assert_eq!(mock.spawn_calls.lock().len(), 1);
+    }
+
+    #[test]
+    fn caller_identity_lead_returns_project_key_and_personal() {
+        let mock = MockWorkerFacade::new();
+        let lead = SessionKey::from_session_id("lead-uuid");
+        mock.callers.lock().insert(
+            lead.clone(),
+            CallerProject { project_key: crate::ProjectKey::new("forge"), is_lead: true },
+        );
+        let id = mock.caller_identity(&lead);
+        assert_eq!(id.name, "forge");
+        assert_eq!(id.org, "Personal");
+    }
+
+    #[test]
+    fn caller_identity_worker_with_live_entry_returns_label_and_worker_in_project() {
+        let mock = MockWorkerFacade::new();
+        let worker_key = SessionKey::from_session_id("worker-uuid");
+        mock.callers.lock().insert(
+            worker_key.clone(),
+            CallerProject { project_key: crate::ProjectKey::new("forge"), is_lead: false },
+        );
+        mock.workers.lock().insert(
+            "forge".into(),
+            vec![WorkerStatus {
+                label: "reviewer".into(),
+                charter: "review the diff".into(),
+                status: forge_primitives::WorkerLiveness::Running,
+                session_id: "worker-uuid".into(),
+                spawned_at: std::time::SystemTime::UNIX_EPOCH,
+                spawned_by_session_id: "lead-uuid".into(),
+            }],
+        );
+        let id = mock.caller_identity(&worker_key);
+        assert_eq!(id.name, "reviewer");
+        assert_eq!(id.org, "worker in forge");
+    }
+
+    #[test]
+    fn caller_identity_detached_worker_falls_back_to_session_id() {
+        let mock = MockWorkerFacade::new();
+        let worker_key = SessionKey::from_session_id("worker-uuid");
+        mock.callers.lock().insert(
+            worker_key.clone(),
+            CallerProject { project_key: crate::ProjectKey::new("forge"), is_lead: false },
+        );
+        // Caller resolves to project, but no matching WorkerEntry in
+        // live_workers (e.g. reaped mid-shutdown).
+        let id = mock.caller_identity(&worker_key);
+        assert_eq!(id.name, "worker-uuid");
+        assert_eq!(id.org, "worker in forge (detached)");
+    }
+
+    #[test]
+    fn caller_identity_unknown_caller_returns_session_id_with_empty_org() {
+        let mock = MockWorkerFacade::new();
+        let unknown = SessionKey::from_session_id("ghost-uuid");
+        // No entry in mock.callers - mirrors the genuinely-unresolved case.
+        let id = mock.caller_identity(&unknown);
+        assert_eq!(id.name, "ghost-uuid");
+        assert_eq!(id.org, "");
     }
 
     #[test]
