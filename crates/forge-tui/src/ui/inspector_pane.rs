@@ -1027,7 +1027,9 @@ fn append_worktree_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16
     // already looking at the project's lead chat. The section only
     // appears when there's actual worktree (or non-git-repo) state
     // to surface, i.e. worker sessions.
-    let Some((project_key, label)) = workspace.worker_lookup_for_session(active_key) else {
+    let Some((project_key, label, _is_git_repo_at_spawn)) =
+        workspace.worker_lookup_for_session(active_key)
+    else {
         return;
     };
     let workers = workspace.list_live_workers(&project_key);

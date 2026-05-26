@@ -675,7 +675,13 @@ pub(crate) fn handle_deliver_worker_prompt(
             .find(|view| view.key == *project_key)
             .map(|view| view.path.to_string_lossy().into_owned());
         if let Some(cwd) = cwd {
-            workspace.retry_worker_tag_opportunistic(project_key, &target_key, target_label, &cwd);
+            workspace.retry_worker_tag_opportunistic(
+                project_key,
+                &target_key,
+                target_label,
+                &cwd,
+                entry.is_git_repo_at_spawn,
+            );
         } else {
             tracing::debug!(
                 target: "forge_workspace::spawn",
