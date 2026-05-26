@@ -814,8 +814,15 @@ fn glyph_for_lifecycle(
             let color = if session_is_active { theme::RUST_ORANGE } else { theme::DIM };
             ("●".to_owned(), color)
         }
+        // #143 item 3: AuthRequired needs distinct visual from
+        // Sleeping so the user can tell at a glance which sessions
+        // need `claude auth login` vs which are simply idle. ⚠ in
+        // STATUS_WARNING mirrors the 5h/7d ETA column's "⚠ expired
+        // — /login" treatment from #169.
+        SessionLifecycleState::AuthRequired => {
+            ("\u{26a0}".to_owned(), theme::STATUS_WARNING)
+        }
         SessionLifecycleState::Sleeping
-        | SessionLifecycleState::AuthRequired
         | SessionLifecycleState::Failed
         | SessionLifecycleState::LoggedOut => ("·".to_owned(), theme::DIM),
     }
