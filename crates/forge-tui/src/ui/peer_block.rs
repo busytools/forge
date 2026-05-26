@@ -360,7 +360,7 @@ pub(crate) fn render_inbound(kind: &PeerInboundKind, collapsed: bool) -> Vec<Lin
         ),
         PeerInboundKind::Reply { id, from, org, body } => render_peer_card(
             PeerCardStatus::Ok,
-            INBOUND_ICON,
+            REPLY_INBOUND_ICON,
             Color::Green,
             "reply",
             from,
@@ -378,7 +378,7 @@ pub(crate) fn render_inbound(kind: &PeerInboundKind, collapsed: bool) -> Vec<Lin
             meta.push(Span::styled(format!(" · ({org})"), Style::default().fg(theme::DIM)));
             render_peer_card(
                 PeerCardStatus::Warning,
-                INBOUND_ICON,
+                REPLY_INBOUND_ICON,
                 Color::Green,
                 "reply",
                 from,
@@ -595,6 +595,12 @@ pub(crate) fn render_outbound(kind: &PeerOutboundKind, collapsed: bool) -> Vec<L
 /// than mixing arrow + triangle styles.
 const INBOUND_ICON: &str = "\u{2190}"; // ←
 const OUTBOUND_ICON: &str = "\u{2192}"; // →
+/// #143 item 4: distinguish Reply / LateReply envelopes from
+/// unsolicited Message envelopes with a hook-arrow glyph. Replies
+/// semantically close an inflight ask; the ↩ shape carries that
+/// "this answers something" signal at a glance, where ← reads as
+/// "incoming peer message" without distinguishing the two.
+const REPLY_INBOUND_ICON: &str = "\u{21A9}"; // ↩
 
 /// Status-icon classification — drives the leading glyph + colour.
 /// Mirrors the standard tool card's `✓` / `⚠` / `✗` semantics so a

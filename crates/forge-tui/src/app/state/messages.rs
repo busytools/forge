@@ -14,11 +14,44 @@ pub struct ChatMessage {
     pub blocks: Vec<MessageBlock>,
     pub usage: Option<MessageUsage>,
     pub render_cache: MessageRenderCache,
+    /// #143 item 2: cached peer-envelope flag stamped once at push
+    /// time (the `PeerEnvelopeAppended` reducer + similar entry
+    /// points) so the chat renderer doesn't walk text blocks every
+    /// frame to recompute it. The flag is intrinsic to the message's
+    /// FIRST text block: a peer envelope arrives as a User-role
+    /// message whose first text block starts with a recognised
+    /// bracket prefix (`[Question id=…]` / `[Message id=…]` / etc.).
+    pub is_peer_envelope: bool,
 }
 
 impl ChatMessage {
     pub fn new(role: MessageRole, blocks: Vec<MessageBlock>, usage: Option<MessageUsage>) -> Self {
-        Self { role, blocks, usage, render_cache: MessageRenderCache::default() }
+        Self {
+            role,
+            blocks,
+            usage,
+            render_cache: MessageRenderCache::default(),
+            is_peer_envelope: false,
+        }
+    }
+
+    /// Variant of `new` for envelope messages that pre-stamps the
+    /// peer-envelope flag. Used by the `PeerEnvelopeAppended`
+    /// reducer + any other site that constructs a known-envelope
+    /// `ChatMessage`. Avoids the render-time `detect_inbound` walk
+    /// over the text blocks.
+    pub fn new_peer_envelope(
+        role: MessageRole,
+        blocks: Vec<MessageBlock>,
+        usage: Option<MessageUsage>,
+    ) -> Self {
+        Self {
+            role,
+            blocks,
+            usage,
+            render_cache: MessageRenderCache::default(),
+            is_peer_envelope: true,
+        }
     }
 
     pub fn welcome(version: &str, subscription: &str, cwd: &str, session_id: &str) -> Self {

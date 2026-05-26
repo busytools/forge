@@ -310,7 +310,9 @@ fn push_peer_envelope_user_turn_if_present(
             continue;
         }
         let blocks = vec![MessageBlock::Text(TextBlock::from_complete(text))];
-        let msg = ChatMessage::new(MessageRole::User, blocks, None);
+        // #143 item 2: cache the peer-envelope flag at push time so
+        // the chat renderer doesn't walk text blocks every frame.
+        let msg = ChatMessage::new_peer_envelope(MessageRole::User, blocks, None);
         // When forge is mid-turn there's an empty assistant placeholder
         // at the tail (input_submit::dispatch_prompt pushed it before
         // the response stream started). A blind push appends the peer
