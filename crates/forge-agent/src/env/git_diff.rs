@@ -75,14 +75,14 @@ const TOP_FILE_COUNT: usize = 7;
 /// itself does not enforce them, the constructor in [`scan`] does.
 ///
 /// Valid combinations:
-/// - `in_repo: true,  scanner_ok: true` — the normal in-repo
+/// - `in_repo: true,  scanner_ok: true` - the normal in-repo
 ///   states. `worktree` and `branch_ahead` may each be Some or
 ///   None independently. `pr` / `closes` may be populated for
 ///   named non-default branches.
-/// - `in_repo: false, scanner_ok: true` — legitimate non-repo
+/// - `in_repo: false, scanner_ok: true` - legitimate non-repo
 ///   cwd (`git rev-parse` returned Empty). All of `worktree`,
 ///   `branch_ahead`, `pr`, `closes`, `default_branch` empty.
-/// - `in_repo: false, scanner_ok: false` — failsafe collapse
+/// - `in_repo: false, scanner_ok: false` - failsafe collapse
 ///   after `git rev-parse` returned Failed / Oversize. All other
 ///   payload fields empty; the renderer surfaces a
 ///   "scanner unhealthy" banner.
