@@ -474,9 +474,14 @@ fn append_git_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
     }
 
     // Layer 1 sub-section - uncommitted edits vs HEAD. Skipped
-    // when the tree is clean (`worktree == None`).
+    // when the tree is clean (`worktree == None` AND
+    // `worktree_scan_ok == true`). When the per-layer scan
+    // failed, surface a "(scan failed)" stub so the user sees
+    // SOMETHING — silent vanish is the bug F3 closed.
     if let Some(stats) = snapshot.worktree.as_ref() {
         append_diff_layer(lines, &uncommitted_display(stats), width);
+    } else if !snapshot.worktree_scan_ok {
+        lines.push(diff_layer_failed_line(width, "uncommitted"));
     }
 
     // Layer 2 sub-section - branch commits ahead of default.
@@ -488,12 +493,40 @@ fn append_git_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
     // with the scanner's invariant that `branch_ahead = Some(_)`
     // is only constructed when `default_branch` resolved; the
     // explicit `Some(default)` makes the assumption load-bearing
-    // at the call site rather than hidden behind an unwrap.
+    // at the call site rather than hidden behind an unwrap. The
+    // `else if` mirrors layer 1's per-layer scan_failed surfacing.
     if let (Some(ahead), Some(default)) =
         (snapshot.branch_ahead.as_ref(), snapshot.default_branch.as_deref())
     {
         append_diff_layer(lines, &branch_ahead_display(ahead, default), width);
+    } else if !snapshot.branch_ahead_scan_ok {
+        lines.push(diff_layer_failed_line(width, "vs default"));
     }
+}
+
+/// Render a single-line "(scan failed)" subtitle for a diff layer
+/// whose per-layer numstat hit a subprocess failure. Same indent
+/// chrome as [`diff_subtitle_line`] so the failure row sits where
+/// the normal subtitle would.
+fn diff_layer_failed_line(width: u16, label: &str) -> Line<'static> {
+    let warn_text = "(scan failed)";
+    let indent_chrome = usize::from(PANE_PAD) + 3;
+    let label_chars = label.chars().count();
+    let warn_chars = warn_text.chars().count();
+    let pad = usize::from(width)
+        .saturating_sub(indent_chrome)
+        .saturating_sub(label_chars)
+        .saturating_sub(1)
+        .saturating_sub(warn_chars)
+        .saturating_sub(usize::from(PANE_PAD));
+    Line::from(vec![
+        Span::raw("    "),
+        Span::styled(label.to_owned(), Style::default().fg(theme::DIM)),
+        Span::raw(" "),
+        Span::raw(" ".repeat(pad)),
+        Span::styled(warn_text.to_owned(), Style::default().fg(theme::STATUS_WARNING)),
+        Span::raw(" "),
+    ])
 }
 
 /// Whether the active session's snapshot warrants the `🦉` open-diff
@@ -512,7 +545,10 @@ fn snapshot_has_diff(app: &App) -> bool {
     if !snapshot.scanner_ok {
         return true;
     }
-    snapshot.worktree.is_some() || snapshot.branch_ahead.is_some()
+    snapshot.worktree.is_some()
+        || snapshot.branch_ahead.is_some()
+        || !snapshot.worktree_scan_ok
+        || !snapshot.branch_ahead_scan_ok
 }
 
 /// Render one diff layer (subtitle + tree + optional overflow row)
@@ -1585,7 +1621,9 @@ mod tests {
             default_branch: default.map(str::to_owned),
             in_repo,
             worktree: None,
+            worktree_scan_ok: true,
             branch_ahead: None,
+            branch_ahead_scan_ok: true,
             pr: None,
             closes: Vec::new(),
             scanner_ok: true,

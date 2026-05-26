@@ -81,16 +81,29 @@ pub struct GitDiffSnapshot {
     /// scanner_ok=false).
     pub in_repo: bool,
     /// Layer 1: uncommitted edits vs HEAD. `None` when the tree is
-    /// clean or the cwd isn't in a repo.
+    /// clean, the cwd isn't in a repo, OR the per-layer scan hit a
+    /// subprocess failure; check `worktree_scan_ok` to distinguish
+    /// the three.
     pub worktree: Option<GitDiffStats>,
+    /// `false` when the per-layer numstat for the worktree diff
+    /// surfaced `Failed` / `Oversize`. Lets the renderer show
+    /// "uncommitted (scan failed)" instead of silently dropping
+    /// the layer to a clean-tree render. `true` for the legitimate
+    /// "clean tree" / "not in repo" / "scan succeeded" cases.
+    pub worktree_scan_ok: bool,
     /// Layer 2: commits the current branch has ahead of
     /// `default_branch`. `None` on the default branch, on detached
-    /// HEAD, when `default_branch` is unknown, or when the cwd
-    /// isn't in a repo. The commit count is exposed separately
-    /// because `--numstat` collapses every commit into a single
-    /// stat block; the count tells the renderer "this many commits
-    /// produced these stats".
+    /// HEAD, when `default_branch` is unknown, when the cwd isn't
+    /// in a repo, OR when the per-layer scan hit a subprocess
+    /// failure; check `branch_ahead_scan_ok` to distinguish. The
+    /// commit count is exposed separately because `--numstat`
+    /// collapses every commit into a single stat block; the count
+    /// tells the renderer "this many commits produced these stats".
     pub branch_ahead: Option<GitBranchAhead>,
+    /// `false` when the per-layer numstat for the branch-vs-default
+    /// diff surfaced `Failed` / `Oversize`. Mirror of
+    /// `worktree_scan_ok` for layer 2.
+    pub branch_ahead_scan_ok: bool,
     /// Open pull request for the current branch, if one exists. Only
     /// populated for `Named` non-default branches; `None` otherwise.
     /// Cached across scans by branch name - refetched only when the
@@ -159,13 +172,17 @@ pub async fn scan(cwd: &Path, prev: Option<&GitDiffSnapshot>) -> GitDiffSnapshot
         GitOutput::Empty => {
             // Empty output from rev-parse means "cwd genuinely
             // isn't a git repo" - scanner_ok=true since git itself
-            // ran fine and reported the state correctly.
+            // ran fine and reported the state correctly. Per-layer
+            // flags stay true: there's nothing to scan, so there's
+            // nothing that could have failed.
             return GitDiffSnapshot {
                 branch: GitBranch::NoRepo,
                 default_branch: None,
                 in_repo: false,
                 worktree: None,
+                worktree_scan_ok: true,
                 branch_ahead: None,
+                branch_ahead_scan_ok: true,
                 pr: None,
                 closes: Vec::new(),
                 scanner_ok: true,
@@ -176,13 +193,17 @@ pub async fn scan(cwd: &Path, prev: Option<&GitDiffSnapshot>) -> GitDiffSnapshot
             // in_repo=false as the failsafe so existing render paths
             // don't crash; scanner_ok=false tells consumers to
             // surface "scan failed" rather than "not a git
-            // repository."
+            // repository." Per-layer flags stay true here too: the
+            // overall scanner_ok=false banner subsumes the per-layer
+            // signal in this collapsed state.
             return GitDiffSnapshot {
                 branch: GitBranch::NoRepo,
                 default_branch: None,
                 in_repo: false,
                 worktree: None,
+                worktree_scan_ok: true,
                 branch_ahead: None,
+                branch_ahead_scan_ok: true,
                 pr: None,
                 closes: Vec::new(),
                 scanner_ok: false,
@@ -204,12 +225,16 @@ pub async fn scan(cwd: &Path, prev: Option<&GitDiffSnapshot>) -> GitDiffSnapshot
 
     // Layer 1: uncommitted edits vs HEAD. Same probe as before;
     // populated whenever the working tree is dirty regardless of
-    // which branch we're on. None when clean.
-    let worktree = if dirty {
-        let stats = numstat(cwd, &["diff", "--numstat", "HEAD"]).await;
-        Some(stats)
+    // which branch we're on. None when clean. `worktree_scan_ok`
+    // distinguishes "tree was clean, nothing to show" from "tree
+    // was dirty but the numstat subprocess failed".
+    let (worktree, worktree_scan_ok) = if dirty {
+        match numstat(cwd, &["diff", "--numstat", "HEAD"]).await {
+            Some(stats) => (Some(stats), true),
+            None => (None, false),
+        }
     } else {
-        None
+        (None, true)
     };
 
     // Layer 2: commits the branch has ahead of the default branch.
@@ -219,21 +244,27 @@ pub async fn scan(cwd: &Path, prev: Option<&GitDiffSnapshot>) -> GitDiffSnapshot
     // unknown (no sensible base). A clean branch sitting at the
     // merge-base with no commits ahead collapses to None as well so
     // the renderer doesn't show an empty layer-2 row.
-    let branch_ahead = if !detached && !on_default {
+    // `branch_ahead_scan_ok` carries the same scan-vs-empty
+    // distinction as `worktree_scan_ok` for this layer.
+    let (branch_ahead, branch_ahead_scan_ok) = if !detached && !on_default {
         if let Some(default) = default_branch.as_deref() {
             let range = format!("{default}...HEAD");
-            let stats = numstat(cwd, &["diff", "--numstat", &range]).await;
-            let commit_count = commit_count_in_range(cwd, default, "HEAD").await;
-            if commit_count == 0 && stats.total_files == 0 {
-                None
-            } else {
-                Some(GitBranchAhead { commit_count, stats })
+            match numstat(cwd, &["diff", "--numstat", &range]).await {
+                Some(stats) => {
+                    let commit_count = commit_count_in_range(cwd, default, "HEAD").await;
+                    if commit_count == 0 && stats.total_files == 0 {
+                        (None, true)
+                    } else {
+                        (Some(GitBranchAhead { commit_count, stats }), true)
+                    }
+                }
+                None => (None, false),
             }
         } else {
-            None
+            (None, true)
         }
     } else {
-        None
+        (None, true)
     };
 
     // PR / closes only make sense for named non-default branches -
@@ -249,15 +280,18 @@ pub async fn scan(cwd: &Path, prev: Option<&GitDiffSnapshot>) -> GitDiffSnapshot
     // scanner_ok=true here - we've passed the rev-parse gate and
     // every downstream subprocess (default-branch resolution,
     // numstat, gh pr) is best-effort; failures collapse to safe
-    // defaults but don't poison the overall snapshot. The
-    // scanner_ok=false case is only the rev-parse-failed return at
-    // the top of this function.
+    // defaults plus per-layer `*_scan_ok` flags so the renderer can
+    // surface them at the layer level rather than poisoning the
+    // overall snapshot. The scanner_ok=false case is only the
+    // rev-parse-failed return at the top of this function.
     GitDiffSnapshot {
         branch,
         default_branch,
         in_repo: true,
         worktree,
+        worktree_scan_ok,
         branch_ahead,
+        branch_ahead_scan_ok,
         pr,
         closes,
         scanner_ok: true,
@@ -362,11 +396,17 @@ async fn is_worktree_dirty(cwd: &Path) -> bool {
 /// top-`TOP_FILE_COUNT` files (sorted by total changes desc, alpha
 /// tie-break) plus the full file count and overall add/remove
 /// totals.
-async fn numstat(cwd: &Path, args: &[&str]) -> GitDiffStats {
+/// Returns `None` when the underlying `git` subprocess hit
+/// `Failed` / `Oversize`; callers use that signal to set the
+/// per-layer `*_scan_ok` flag false so the renderer can distinguish
+/// "scan failed" from "clean tree, nothing to show". `Empty`
+/// (exit 0, no stdout) collapses to a zero-row stats block since
+/// that's the legitimate "no diff to report" outcome.
+async fn numstat(cwd: &Path, args: &[&str]) -> Option<GitDiffStats> {
     let raw = match run_git(cwd, args).await {
         GitOutput::Ok(s) => s,
         GitOutput::Empty => String::new(),
-        GitOutput::Failed | GitOutput::Oversize => return GitDiffStats::default(),
+        GitOutput::Failed | GitOutput::Oversize => return None,
     };
     let mut files = parse_numstat(&raw);
     let total_files = files.len();
@@ -378,7 +418,7 @@ async fn numstat(cwd: &Path, args: &[&str]) -> GitDiffStats {
         b_total.cmp(&a_total).then_with(|| a.path.cmp(&b.path))
     });
     files.truncate(TOP_FILE_COUNT);
-    GitDiffStats { files, total_files, total_added, total_removed }
+    Some(GitDiffStats { files, total_files, total_added, total_removed })
 }
 
 /// Parse `<added>\t<removed>\t<path>` lines. Skips binary entries
@@ -982,7 +1022,9 @@ mod tests {
             default_branch: Some("main".into()),
             in_repo: true,
             worktree: None,
+            worktree_scan_ok: true,
             branch_ahead: None,
+            branch_ahead_scan_ok: true,
             pr: Some(pr.clone()),
             closes: closes.clone(),
             scanner_ok: true,
@@ -1005,7 +1047,9 @@ mod tests {
             default_branch: Some("main".into()),
             in_repo: true,
             worktree: None,
+            worktree_scan_ok: true,
             branch_ahead: None,
+            branch_ahead_scan_ok: true,
             pr: Some(GitPrInfo { number: 42, url: "https://example/pull/42".into() }),
             closes: Vec::new(),
             scanner_ok: true,
@@ -1028,7 +1072,9 @@ mod tests {
             default_branch: Some("main".into()),
             in_repo: true,
             worktree: None,
+            worktree_scan_ok: true,
             branch_ahead: None,
+            branch_ahead_scan_ok: true,
             pr: Some(GitPrInfo { number: 42, url: "url".into() }),
             closes: Vec::new(),
             scanner_ok: true,
@@ -1065,7 +1111,9 @@ mod tests {
             default_branch: Some("main".into()),
             in_repo: true,
             worktree: None,
+            worktree_scan_ok: true,
             branch_ahead: None,
+            branch_ahead_scan_ok: true,
             pr: Some(synthetic_pr.clone()),
             closes: synthetic_closes.clone(),
             scanner_ok: true,
@@ -1092,7 +1140,9 @@ mod tests {
             default_branch: Some("main".into()),
             in_repo: true,
             worktree: None,
+            worktree_scan_ok: true,
             branch_ahead: None,
+            branch_ahead_scan_ok: true,
             pr: Some(GitPrInfo { number: 1, url: "url".into() }),
             closes: Vec::new(),
             scanner_ok: true,
