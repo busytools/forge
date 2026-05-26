@@ -36,7 +36,7 @@ pub mod types;
 /// Build a standalone `forge` MCP server carrying only the four
 /// peer-coordination tools. Used in tests for isolated peer-MCP
 /// coverage; the production build_site uses
-/// [`crate::mcp::build_forge_server`] which combines peers + workers
+/// `crate::mcp::build_forge_server` which combines peers + workers
 /// into one server (the CLI rejects duplicate-name MCP servers, so
 /// both modules must register their tools through a single
 /// builder).

@@ -2006,7 +2006,7 @@ mod tests {
     fn worker_row_with_pending_prompt_renders_yellow_triangle() {
         use forge_workspace::ProjectKey;
         use forge_workspace::SessionKey;
-        use forge_workspace::mcp::workers::types::WorkerEntry;
+        use forge_workspace::WorkerEntry;
         use std::time::SystemTime;
 
         let mut app = App::test_default();
@@ -2062,7 +2062,7 @@ mod tests {
     fn active_worker_with_pending_prompt_keeps_normal_glyph() {
         use forge_workspace::ProjectKey;
         use forge_workspace::SessionKey;
-        use forge_workspace::mcp::workers::types::WorkerEntry;
+        use forge_workspace::WorkerEntry;
         use std::time::SystemTime;
 
         let mut app = App::test_default();

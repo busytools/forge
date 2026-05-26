@@ -38,7 +38,7 @@ pub(crate) fn worker_target_project_key(project_key: &str, label: &str) -> Strin
 /// Build a standalone `forge` MCP server carrying only the four
 /// workers-coordination tools. Used in tests for isolated workers-MCP
 /// coverage; the production build_site uses
-/// [`crate::mcp::build_forge_server`] which combines peers + workers
+/// `crate::mcp::build_forge_server` which combines peers + workers
 /// into one server (the CLI rejects duplicate-name MCP servers, so
 /// both modules must register their tools through a single builder).
 #[cfg(any(test, feature = "testing"))]
