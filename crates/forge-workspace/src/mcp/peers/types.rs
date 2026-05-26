@@ -133,6 +133,12 @@ pub enum WrappedKind {
     /// delivery to the target failed (target crashed mid-flight,
     /// session connection closed).
     DeliveryFailureNotice,
+    /// forge-synthesised notice landing in the LEAD's chat when a
+    /// worker's spawn failed asynchronously (subprocess crashed
+    /// inside the `--worktree` machinery before reaching `Connected`).
+    /// `sender_name` carries the worker label; `body` carries the
+    /// reason text from the classifier (verbatim claude error).
+    WorkerSpawnFailedNotice,
 }
 
 /// One in-flight peer ask tracked at the workspace level. Lives in
@@ -194,6 +200,10 @@ impl WrappedPrompt {
             WrappedKind::DeliveryFailureNotice => format!(
                 "[Ask id={} to agent '{}' (org '{}') failed to deliver: {}]",
                 self.correlation_id, self.sender_name, self.sender_org, self.body,
+            ),
+            WrappedKind::WorkerSpawnFailedNotice => format!(
+                "[Worker '{}' spawn failed id={}: {}]",
+                self.sender_name, self.correlation_id, self.body,
             ),
         }
     }
@@ -285,9 +295,10 @@ mod tests {
     fn wrapper(kind: WrappedKind, sender: &str, org: &str, body: &str) -> WrappedPrompt {
         WrappedPrompt {
             correlation_id: CorrelationId(match kind {
-                WrappedKind::Question | WrappedKind::Reply | WrappedKind::DeliveryFailureNotice => {
-                    "q-7f3a92e0".to_owned()
-                }
+                WrappedKind::Question
+                | WrappedKind::Reply
+                | WrappedKind::DeliveryFailureNotice
+                | WrappedKind::WorkerSpawnFailedNotice => "q-7f3a92e0".to_owned(),
                 WrappedKind::Message => "t-c45a8f12".to_owned(),
             }),
             kind,
@@ -352,6 +363,24 @@ mod tests {
         assert!(prose.starts_with(
             "[Ask id=q-7f3a92e0 to agent 'gateway-liq-bot' (org 'Gateway') failed to deliver: target session connection lost",
         ));
+    }
+
+    /// #146: WorkerSpawnFailedNotice prose carries the label as
+    /// sender_name, the reason as body, and a synthetic correlation
+    /// id so detect_inbound's parser can key on `id=`.
+    #[test]
+    fn wrapped_prompt_worker_spawn_failed_notice_prose() {
+        let w = wrapper(
+            WrappedKind::WorkerSpawnFailedNotice,
+            "reviewer",
+            "",
+            "Failed to resolve base branch \"HEAD\": git rev-parse failed",
+        );
+        let prose = w.to_prose();
+        assert_eq!(
+            prose,
+            "[Worker 'reviewer' spawn failed id=q-7f3a92e0: Failed to resolve base branch \"HEAD\": git rev-parse failed]",
+        );
     }
 
     #[test]

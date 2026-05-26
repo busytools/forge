@@ -84,13 +84,26 @@ pub(crate) enum PeerInboundKind {
         org: String,
         reason: String,
     },
+    /// `[Worker '<label>' spawn failed id=<id>: <reason>]`
+    /// Lead-side notice that a team worker's async spawn failed
+    /// (subprocess crashed inside the `--worktree` machinery before
+    /// reaching `Connected`). Reason text is verbatim from claude's
+    /// stderr.
+    WorkerSpawnFailed {
+        id: String,
+        label: String,
+        reason: String,
+    },
 }
 
 impl PeerInboundKind {
     /// The `sender_org` field threaded through every variant — drives
     /// same-project envelope grouping at the chat-iteration level
-    /// (see `crate::ui::chat`). All 7 variants carry it, so the
-    /// helper is total.
+    /// (see `crate::ui::chat`). Variants that carry an explicit org
+    /// return it; the worker-spawn-failure notice has no org of its
+    /// own (it's lead-local, with no sending project) so it returns
+    /// an empty string and naturally groups with adjacent lead-local
+    /// envelopes.
     pub(crate) fn org(&self) -> &str {
         match self {
             Self::Question { org, .. }
@@ -100,6 +113,7 @@ impl PeerInboundKind {
             | Self::CallerTimeout { org, .. }
             | Self::RecipientExpired { org, .. }
             | Self::DeliveryFailure { org, .. } => org,
+            Self::WorkerSpawnFailed { .. } => "",
         }
     }
 }
@@ -237,6 +251,20 @@ pub(crate) fn detect_inbound(text: &str) -> Option<PeerInboundKind> {
             let (from, org) = extract_from_agent_after(rest_from)?;
             return Some(PeerInboundKind::RecipientExpired { id: id.to_owned(), from, org, body });
         }
+    }
+
+    // `[Worker '<label>' spawn failed id=<id>: <reason>]` - lead-local
+    // notice that an async worker spawn failed inside claude's
+    // `--worktree` machinery. Distinct prefix from the four canonical
+    // peer envelopes so the existing parsers don't ambiguous-match.
+    if let Some(rest) = header.strip_prefix("Worker '") {
+        let (label, rest) = take_until(rest, "' spawn failed id=")?;
+        let (id, rest) = take_until(rest, ": ")?;
+        return Some(PeerInboundKind::WorkerSpawnFailed {
+            id: id.to_owned(),
+            label: label.to_owned(),
+            reason: rest.to_owned(),
+        });
     }
 
     None
@@ -394,6 +422,16 @@ pub(crate) fn render_inbound(kind: &PeerInboundKind, collapsed: bool) -> Vec<Lin
             "failed to deliver",
             target,
             &dim_meta(&[format!("· {id}"), format!("· ({org})")]),
+            reason,
+            collapsed,
+        ),
+        PeerInboundKind::WorkerSpawnFailed { id, label, reason } => render_peer_card(
+            PeerCardStatus::Error,
+            INBOUND_ICON,
+            theme::STATUS_ERROR,
+            "worker spawn failed",
+            label,
+            &dim_meta(&[format!("· {id}")]),
             reason,
             collapsed,
         ),
@@ -796,6 +834,25 @@ mod tests {
         }
     }
 
+    /// #146: async-path WorkerSpawnFailed notice parses with the
+    /// label + id + reason intact. The reason carries verbatim
+    /// claude stderr (may contain spaces, quotes, etc.) - this
+    /// fixture uses the empty-repo "Failed to resolve base branch"
+    /// case the issue calls out.
+    #[test]
+    fn detect_worker_spawn_failed_inbound() {
+        let text = "[Worker 'reviewer' spawn failed id=t-c45a8f12: Failed to resolve base branch \"HEAD\": git rev-parse failed]";
+        let kind = detect_inbound(text).expect("worker spawn failed parsed");
+        match kind {
+            PeerInboundKind::WorkerSpawnFailed { id, label, reason } => {
+                assert_eq!(id, "t-c45a8f12");
+                assert_eq!(label, "reviewer");
+                assert!(reason.starts_with("Failed to resolve base branch"));
+            }
+            other => panic!("expected WorkerSpawnFailed, got {other:?}"),
+        }
+    }
+
     /// I3 — cross-crate roundtrip guard. workspace's
     /// `WrappedPrompt::to_prose` (emitter) and forge-tui's
     /// `detect_inbound` (parser) hand-roll the same wire format in two
@@ -891,6 +948,32 @@ mod tests {
                 assert!(reason.contains("connection lost"), "got: {reason}");
             }
             other => panic!("expected DeliveryFailure, got {other:?}"),
+        }
+    }
+
+    /// #146 roundtrip: workspace's WrappedPrompt → to_prose →
+    /// detect_inbound parses back to PeerInboundKind::WorkerSpawnFailed
+    /// with all fields preserved.
+    #[test]
+    fn roundtrip_worker_spawn_failed_through_detect_inbound() {
+        use forge_workspace::mcp::peers::types::{CorrelationId, WrappedKind, WrappedPrompt};
+        let w = WrappedPrompt {
+            correlation_id: CorrelationId::from_external("t-c45a8f12").expect("valid id"),
+            kind: WrappedKind::WorkerSpawnFailedNotice,
+            sender_name: "reviewer".to_owned(),
+            sender_org: String::new(),
+            hop: 1,
+            hop_limit: 10,
+            body: "Failed to resolve base branch \"HEAD\": git rev-parse failed".to_owned(),
+        };
+        let kind = detect_inbound(&w.to_prose()).expect("roundtrip parses");
+        match kind {
+            PeerInboundKind::WorkerSpawnFailed { id, label, reason } => {
+                assert_eq!(id, "t-c45a8f12");
+                assert_eq!(label, "reviewer");
+                assert!(reason.starts_with("Failed to resolve base branch"));
+            }
+            other => panic!("expected WorkerSpawnFailed, got {other:?}"),
         }
     }
 

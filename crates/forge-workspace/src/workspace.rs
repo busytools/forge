@@ -1812,6 +1812,27 @@ impl Workspace {
         Some(entries.remove(last_match_idx))
     }
 
+    /// Remove the worker whose `session_key` exactly matches across
+    /// any project's `live_workers`. Used by the async-spawn-failure
+    /// path so concurrent same-label spawns don't accidentally
+    /// roll back the wrong entry (`remove_latest_worker` would peek
+    /// the wrong one when two workers share a label). Returns the
+    /// matched `(project_key, entry)` pair, or `None` when no entry
+    /// matches.
+    pub fn remove_worker_by_session_key(
+        &self,
+        session_key: &SessionKey,
+    ) -> Option<(ProjectKey, crate::mcp::workers::types::WorkerEntry)> {
+        let mut map = self.live_workers.lock();
+        for (project_key, entries) in map.iter_mut() {
+            if let Some(idx) = entries.iter().position(|e| e.session_key == *session_key) {
+                let entry = entries.remove(idx);
+                return Some((project_key.clone(), entry));
+            }
+        }
+        None
+    }
+
     /// Drain every worker entry for `project_key` and return them in
     /// insertion order.
     pub fn drain_live_workers(
@@ -1837,6 +1858,91 @@ impl Workspace {
             }
         }
         None
+    }
+
+    /// Handle an async worker-spawn failure: classify the error,
+    /// dispatch a typed notice to the lead's chat when the
+    /// classifier identifies a worktree-creation failure, and roll
+    /// back the worker's `WorkerEntry` regardless of classifier
+    /// outcome (parity with the sync rollback in
+    /// `handle_spawn_worker`).
+    ///
+    /// Returns `true` when the caller IS a worker (so it knows to
+    /// suppress nothing — the existing `ConnectionFailed` emission
+    /// still fires for the TUI side). `false` for lead sessions or
+    /// any other non-worker, in which case the caller's existing
+    /// behaviour proceeds unchanged.
+    pub(crate) fn handle_async_worker_spawn_failure(
+        self: &Arc<Self>,
+        session_key: &SessionKey,
+        message: &str,
+    ) -> bool {
+        let Some((project_key, entry)) = self.remove_worker_by_session_key(session_key) else {
+            return false;
+        };
+        // Classify against the entry's recorded is_git_repo_at_spawn
+        // flag - same heuristic the sync workers__spawn path uses.
+        let classified = crate::mcp::workers::facade::classify_worker_spawn_failure(
+            message,
+            entry.is_git_repo_at_spawn,
+        );
+        if let crate::mcp::workers::facade::WorkerSpawnError::WorktreeCreationFailed { reason } =
+            &classified
+        {
+            // Notice goes to the lead session that spawned this
+            // worker. Use the workspace's update channel + a fresh
+            // Command::Prompt so the lead's claude subprocess sees
+            // the envelope as a user turn and the TUI render path
+            // picks up the bracketed prefix via peer_block::detect_inbound.
+            let lead_session_id = entry.spawned_by_session_id.clone();
+            let lead_key = SessionKey::from_session_id(lead_session_id.clone());
+            let pool_has_lead = self.pool.lock().contains_key(&lead_key);
+            if pool_has_lead {
+                let wrapped = WrappedPrompt {
+                    correlation_id: CorrelationId::new_tell(),
+                    kind: WrappedKind::WorkerSpawnFailedNotice,
+                    sender_name: entry.label.clone(),
+                    sender_org: String::new(),
+                    hop: 1,
+                    hop_limit: 10,
+                    body: reason.clone(),
+                };
+                if let Err(err) = self.dispatch(Command::Prompt {
+                    key: lead_key,
+                    text: wrapped.to_prose(),
+                    attachments: Vec::new(),
+                }) {
+                    tracing::warn!(
+                        target: "forge_workspace::worker_async_failure",
+                        project = %project_key.as_str(),
+                        label = %entry.label,
+                        error = ?err,
+                        "WorkerSpawnFailedNotice dispatch to lead failed",
+                    );
+                }
+            } else {
+                tracing::warn!(
+                    target: "forge_workspace::worker_async_failure",
+                    project = %project_key.as_str(),
+                    label = %entry.label,
+                    lead_session_id = %lead_session_id,
+                    "worker spawn failed but lead session is gone; dropping notice",
+                );
+            }
+        }
+        // Emit WorkerStatusChanged::Removed regardless of classifier
+        // outcome - sync rollback in handle_spawn_worker does this
+        // unconditionally on dispatch failure, async parity requires
+        // the same. Without it, the LLM sees a typed failure notice
+        // AND a stale worker entry in workers__list, or for non-
+        // worktree-failure cases just a stale entry with no notice.
+        let _ = self.update_tx.send(SessionUpdate::WorkerStatusChanged {
+            project_key,
+            action: crate::protocol::WorkerStatusAction::Removed,
+            status: entry.to_status(),
+            is_git_repo_at_spawn: entry.is_git_repo_at_spawn,
+        });
+        true
     }
 
     /// Tag a worker session's JSONL with `forge:worker:<label>` and
@@ -4479,5 +4585,186 @@ mod worker_resume_kick_skip_tests {
         write_jsonl(cfg.path(), session_id, body);
         let (workspace, _) = Workspace::testing_stub_with_config_dir(cfg.path().to_path_buf());
         assert!(workspace.worker_has_progress_past_kick(session_id));
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+mod async_worker_spawn_failure_tests {
+    use super::*;
+    use crate::mcp::workers::types::WorkerEntry;
+
+    fn fake_worker(label: &str, synth_key: &str, lead_id: &str, is_git: bool) -> WorkerEntry {
+        WorkerEntry {
+            label: label.to_owned(),
+            charter: "test".to_owned(),
+            session_key: SessionKey::from_session_id(synth_key),
+            status: forge_primitives::WorkerLiveness::Spawning,
+            spawned_at: std::time::SystemTime::UNIX_EPOCH,
+            spawned_by_session_id: lead_id.to_owned(),
+            needs_tag: true,
+            is_git_repo_at_spawn: is_git,
+        }
+    }
+
+    /// Seed the workspace pool with a stub Agent so the notice
+    /// dispatch's `pool.lock().contains_key(&lead_key)` lead-
+    /// resolution check passes. Mirrors the `install_fake_session_task`
+    /// helper used by the migration tests.
+    fn install_lead_in_pool(workspace: &Arc<Workspace>, lead_id: &str) -> SessionKey {
+        let key = SessionKey::from_session_id(lead_id);
+        let (handle, _agent_rx) = Workspace::testing_stub_handle();
+        workspace.pool.lock().insert(
+            key.clone(),
+            PooledAgent { handle: Arc::new(handle), account: AccountKey("test".to_owned()) },
+        );
+        key
+    }
+
+    /// #146: async worktree-creation failure → notice envelope
+    /// dispatched to the lead's chat AND the WorkerEntry rolled
+    /// back. Verifies both effects in one go.
+    #[tokio::test]
+    async fn async_failure_with_worktree_classification_dispatches_notice_and_rolls_back() {
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        workspace.enable_test_dispatch_intercept();
+
+        let project_key = ProjectKey::new("proj-x");
+        let synth_key = "__spawn_worker_proj-x_reviewer_abc__";
+        let lead_id = "lead-uuid";
+        workspace
+            .insert_live_worker(&project_key, fake_worker("reviewer", synth_key, lead_id, true));
+        let lead_key = install_lead_in_pool(&workspace, lead_id);
+
+        let handled = workspace.handle_async_worker_spawn_failure(
+            &SessionKey::from_session_id(synth_key),
+            "fatal: 'reviewer' is already used by worktree at /a/b/c",
+        );
+        assert!(handled, "async worker failure path must consume the failure");
+
+        // Notice dispatched via Command::Prompt to the lead's key.
+        let dispatched = workspace.drain_test_dispatch_buffer();
+        let prompts: Vec<&Command> =
+            dispatched.iter().filter(|c| matches!(c, Command::Prompt { .. })).collect();
+        assert_eq!(prompts.len(), 1, "exactly one WorkerSpawnFailedNotice envelope");
+        if let Command::Prompt { key, text, .. } = prompts[0] {
+            assert_eq!(*key, lead_key, "notice targets the lead session id");
+            assert!(text.starts_with("[Worker 'reviewer' spawn failed"));
+            assert!(text.contains("already used by worktree"));
+        }
+
+        // WorkerEntry rolled back: live_workers is empty.
+        assert!(
+            workspace.list_live_workers(&project_key).is_empty(),
+            "WorkerEntry removed on async failure",
+        );
+    }
+
+    /// #146: async failure with a non-worktree-classified message
+    /// must NOT dispatch a notice, but MUST still roll back the
+    /// WorkerEntry (sync-rollback parity per the plan's bundle
+    /// decision).
+    #[tokio::test]
+    async fn async_failure_without_worktree_classification_skips_notice_but_rolls_back() {
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        workspace.enable_test_dispatch_intercept();
+
+        let project_key = ProjectKey::new("proj-x");
+        let synth_key = "__spawn_worker_proj-x_reviewer_abc__";
+        let lead_id = "lead-uuid";
+        workspace
+            .insert_live_worker(&project_key, fake_worker("reviewer", synth_key, lead_id, true));
+        install_lead_in_pool(&workspace, lead_id);
+
+        let handled = workspace.handle_async_worker_spawn_failure(
+            &SessionKey::from_session_id(synth_key),
+            "agent spawn failed: subprocess exited with code 2",
+        );
+        assert!(handled);
+
+        let dispatched = workspace.drain_test_dispatch_buffer();
+        let prompts: Vec<&Command> =
+            dispatched.iter().filter(|c| matches!(c, Command::Prompt { .. })).collect();
+        assert!(prompts.is_empty(), "non-worktree classifier outcome must NOT dispatch a notice");
+        assert!(
+            workspace.list_live_workers(&project_key).is_empty(),
+            "WorkerEntry rollback fires regardless of classifier outcome",
+        );
+    }
+
+    /// #146: non-worker session_key (e.g. a lead failure) returns
+    /// false and changes nothing - the caller's existing
+    /// ConnectionFailed flow proceeds unchanged.
+    #[tokio::test]
+    async fn async_failure_on_non_worker_session_is_no_op() {
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        workspace.enable_test_dispatch_intercept();
+        let unknown = SessionKey::from_session_id("not-a-worker");
+        let handled = workspace.handle_async_worker_spawn_failure(&unknown, "some unrelated error");
+        assert!(!handled);
+        assert!(workspace.drain_test_dispatch_buffer().is_empty());
+    }
+
+    /// #146: double-fire safety - a second ConnectionFailed for the
+    /// same worker (after the first call removed its WorkerEntry)
+    /// must be a no-op rather than re-dispatching the notice.
+    #[tokio::test]
+    async fn async_failure_double_fire_is_no_op() {
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        workspace.enable_test_dispatch_intercept();
+
+        let project_key = ProjectKey::new("proj-x");
+        let synth_key = "__spawn_worker_proj-x_reviewer_abc__";
+        let lead_id = "lead-uuid";
+        workspace
+            .insert_live_worker(&project_key, fake_worker("reviewer", synth_key, lead_id, true));
+        install_lead_in_pool(&workspace, lead_id);
+
+        let session_key = SessionKey::from_session_id(synth_key);
+        assert!(workspace.handle_async_worker_spawn_failure(
+            &session_key,
+            "fatal: 'reviewer' is already used by worktree at /a"
+        ));
+        let _ = workspace.drain_test_dispatch_buffer();
+
+        // Second call: WorkerEntry already gone, returns false, no
+        // new dispatch.
+        assert!(!workspace.handle_async_worker_spawn_failure(
+            &session_key,
+            "fatal: 'reviewer' is already used by worktree at /a"
+        ));
+        assert!(workspace.drain_test_dispatch_buffer().is_empty());
+    }
+
+    /// #146: lead-session-gone path - the worker was spawned by a
+    /// lead session that has since been released (e.g. /new flow).
+    /// Notice dispatch is skipped (warn-logged) but the WorkerEntry
+    /// still rolls back.
+    #[tokio::test]
+    async fn async_failure_when_lead_session_gone_drops_notice_but_rolls_back() {
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        workspace.enable_test_dispatch_intercept();
+
+        let project_key = ProjectKey::new("proj-x");
+        let synth_key = "__spawn_worker_proj-x_reviewer_abc__";
+        let lead_id = "lead-gone-uuid";
+        workspace
+            .insert_live_worker(&project_key, fake_worker("reviewer", synth_key, lead_id, true));
+        // DELIBERATELY skip install_lead_in_pool — lead is "gone".
+
+        let handled = workspace.handle_async_worker_spawn_failure(
+            &SessionKey::from_session_id(synth_key),
+            "fatal: 'reviewer' is already used by worktree at /a",
+        );
+        assert!(handled, "still consumes the failure even when lead is gone");
+
+        let dispatched = workspace.drain_test_dispatch_buffer();
+        let prompts: Vec<&Command> =
+            dispatched.iter().filter(|c| matches!(c, Command::Prompt { .. })).collect();
+        assert!(prompts.is_empty(), "no notice dispatched when lead session is gone");
+        assert!(
+            workspace.list_live_workers(&project_key).is_empty(),
+            "WorkerEntry still rolls back even when notice is dropped",
+        );
     }
 }
