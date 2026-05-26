@@ -143,6 +143,21 @@ pub struct Workspace {
     /// `new()` and therefore the proxy boot. Tests don't drive real
     /// subprocesses, so the absence is fine.
     proxy: Option<forge_agent::proxy::ProxyHandle>,
+    /// Test-only intercept buffer for app-level Commands. When
+    /// `Some`, `dispatch` captures the command into the buffer
+    /// instead of routing it to the spawn::* handler — used by
+    /// engineering-team tests to assert what would have been
+    /// dispatched without spinning up real subprocesses. Always
+    /// `None` in production (no enable hook outside test cfg).
+    #[cfg(any(test, feature = "testing"))]
+    command_intercept: Mutex<Option<Vec<Command>>>,
+    /// Test-only project overlay. Entries appended via
+    /// `seed_test_project_with_team` are searched first in
+    /// `find_project_view_by_name` so tests can drive the
+    /// Connected-hook team-spawn trigger without writing a
+    /// real `forge.toml`. Empty in production.
+    #[cfg(any(test, feature = "testing"))]
+    test_extra_projects: Mutex<Vec<LoadedProject>>,
 }
 
 /// Pool entry wrapping the live `Arc<AgentHandle>`. Tests assert
@@ -255,6 +270,10 @@ impl Workspace {
             peer_stats: Mutex::new(HashMap::new()),
             usage_poller_started: std::sync::atomic::AtomicBool::new(false),
             proxy: Some(proxy),
+            #[cfg(any(test, feature = "testing"))]
+            command_intercept: Mutex::new(None),
+            #[cfg(any(test, feature = "testing"))]
+            test_extra_projects: Mutex::new(Vec::new()),
         })
     }
 
@@ -331,6 +350,7 @@ impl Workspace {
                 path: project.path.clone(),
                 display_path: project.display_path.clone(),
                 accounts: project.accounts.clone(),
+                team: project.team.clone(),
                 sessions,
             });
         }
@@ -1020,6 +1040,12 @@ impl Workspace {
     /// Used by the spawn handlers to resolve the project's path / cwd
     /// before emitting `SessionUpdate::Spawning`.
     pub(crate) fn find_project_view_by_name(&self, name: &str) -> Option<LoadedProject> {
+        #[cfg(any(test, feature = "testing"))]
+        if let Some(found) =
+            self.test_extra_projects.lock().iter().find(|p| p.name == name).cloned()
+        {
+            return Some(found);
+        }
         self.config.projects.iter().find(|p| p.name == name).cloned()
     }
 
@@ -1180,6 +1206,19 @@ impl Workspace {
     /// just closed), or [`DispatchError::SessionClosed`] when the
     /// task's command receiver has been dropped.
     pub fn dispatch(self: &Arc<Self>, cmd: Command) -> Result<(), DispatchError> {
+        // Test intercept (when armed): capture EVERY Command - both
+        // app-level and per-session - before any routing. Tests use
+        // this to assert what would have been dispatched without
+        // spinning up real subprocesses or stub SessionTasks. Always
+        // a no-op in production builds without the testing feature.
+        #[cfg(any(test, feature = "testing"))]
+        {
+            let mut intercept = self.command_intercept.lock();
+            if let Some(buffer) = intercept.as_mut() {
+                buffer.push(cmd);
+                return Ok(());
+            }
+        }
         if let Some(key) = cmd.key() {
             let key = key.clone();
             let senders = self.command_senders.lock();
@@ -1322,6 +1361,51 @@ impl Workspace {
                 }
             }
             Ok(())
+        }
+    }
+
+    /// Dispatch one `Command::SpawnWorker` per configured role for a
+    /// project whose lead session just emitted `Connected`. Called
+    /// from `SessionTask`'s Connected arm (lead path only, gated on
+    /// `live_workers.is_empty()` so a reconnect / second-Connected
+    /// doesn't double-spawn).
+    ///
+    /// The dispatcher reuses the existing `Command::SpawnWorker`
+    /// handler (`handle_spawn_worker`); the only difference from
+    /// MCP-tool-driven spawn is the absence of an MCP caller —
+    /// `spawned_by_session_id` is the lead's UUID directly, and
+    /// `return_to` is a dropped oneshot (we don't await the reply
+    /// here; each worker's own Connected event surfaces them via
+    /// the normal flow).
+    ///
+    /// No-op when `team` is empty.
+    pub(crate) fn spawn_team_for_lead(
+        self: &Arc<Self>,
+        lead_session_id: &str,
+        project_key: &crate::target::ProjectKey,
+        team: &[crate::team::Role],
+    ) {
+        if team.is_empty() {
+            return;
+        }
+        for role in team {
+            let (tx, _rx) = tokio::sync::oneshot::channel();
+            let cmd = crate::protocol::Command::SpawnWorker {
+                project_key: project_key.clone(),
+                label: role.label().to_owned(),
+                charter: role.charter().to_owned(),
+                spawned_by_session_id: lead_session_id.to_owned(),
+                return_to: tx,
+            };
+            if let Err(err) = self.dispatch(cmd) {
+                tracing::error!(
+                    target: "forge_workspace::team",
+                    project = %project_key.as_str(),
+                    role = role.label(),
+                    error = ?err,
+                    "spawn_team_for_lead: dispatch failed for role"
+                );
+            }
         }
     }
 
@@ -2328,8 +2412,53 @@ impl Workspace {
             // testing_stub skips Workspace::new and therefore the
             // proxy boot. Tests don't drive real subprocesses.
             proxy: None,
+            command_intercept: Mutex::new(None),
+            test_extra_projects: Mutex::new(Vec::new()),
         };
         (Arc::new(workspace), update_rx)
+    }
+}
+
+#[cfg(any(test, feature = "testing"))]
+impl Workspace {
+    /// Enable test-mode app-level command interception. After this
+    /// call, every `Command` routed through the app-level branch of
+    /// `dispatch` is buffered in lieu of running the spawn handler;
+    /// drain via `drain_test_dispatch_buffer`. No-op if already
+    /// enabled. Test-only — tests use this to assert what would
+    /// have been dispatched without spinning up real subprocesses.
+    pub fn enable_test_dispatch_intercept(&self) {
+        let mut intercept = self.command_intercept.lock();
+        if intercept.is_none() {
+            *intercept = Some(Vec::new());
+        }
+    }
+
+    /// Drain every app-level `Command` captured since the last call.
+    /// Returns empty when no intercept was enabled or no commands
+    /// were dispatched. Test-only.
+    pub fn drain_test_dispatch_buffer(&self) -> Vec<crate::protocol::Command> {
+        let mut intercept = self.command_intercept.lock();
+        match intercept.as_mut() {
+            Some(buffer) => std::mem::take(buffer),
+            None => Vec::new(),
+        }
+    }
+
+    /// Append a synthetic project to the test overlay searched first
+    /// by `find_project_view_by_name`. Used by engineering-team tests
+    /// to drive the Connected-hook team-spawn trigger without
+    /// writing a real `forge.toml`. Test-only.
+    pub fn seed_test_project_with_team(&self, name: &str, path: &str, team: &[crate::team::Role]) {
+        self.test_extra_projects.lock().push(crate::config::LoadedProject {
+            name: name.to_owned(),
+            path: std::path::PathBuf::from(path),
+            display_path: path.to_owned(),
+            org: "TestOrg".to_owned(),
+            accounts: vec!["acct-a".to_owned()],
+            auto_start: false,
+            team: team.to_vec(),
+        });
     }
 }
 
@@ -3744,5 +3873,60 @@ mod tag_retry_tests {
         assert!(!entries[0].needs_tag, "needs_tag cleared on opportunistic retry success");
         let body = fs::read_to_string(&path).expect("read jsonl");
         assert!(body.contains("\"tag\":\"forge:worker:idle\""));
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+mod team_spawn_tests {
+    use super::*;
+    use crate::protocol::Command;
+    use crate::team::Role;
+
+    #[test]
+    fn spawn_team_for_lead_dispatches_one_command_per_role() {
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        workspace.enable_test_dispatch_intercept();
+        let lead_sid = "lead-uuid";
+        let project_key = ProjectKey::new("proj-x");
+        let team = vec![Role::Planner, Role::Reviewer, Role::Tester];
+
+        workspace.spawn_team_for_lead(lead_sid, &project_key, &team);
+
+        let dispatched = workspace.drain_test_dispatch_buffer();
+        assert_eq!(dispatched.len(), 3, "one SpawnWorker per configured role");
+
+        let mut labels: Vec<String> = Vec::new();
+        let mut charters: Vec<String> = Vec::new();
+        for cmd in dispatched {
+            match cmd {
+                Command::SpawnWorker {
+                    label,
+                    charter,
+                    spawned_by_session_id,
+                    project_key: pk,
+                    ..
+                } => {
+                    assert_eq!(spawned_by_session_id, lead_sid);
+                    assert_eq!(pk, project_key);
+                    labels.push(label);
+                    charters.push(charter);
+                }
+                other => panic!("expected SpawnWorker, got {other:?}"),
+            }
+        }
+        labels.sort();
+        assert_eq!(labels, vec!["planner", "reviewer", "tester"]);
+        for c in charters {
+            assert!(!c.trim().is_empty(), "role charter must be non-empty");
+        }
+    }
+
+    #[test]
+    fn spawn_team_for_lead_with_empty_team_dispatches_nothing() {
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        workspace.enable_test_dispatch_intercept();
+        workspace.spawn_team_for_lead("lead-uuid", &ProjectKey::new("proj-x"), &Vec::<Role>::new());
+        assert!(workspace.drain_test_dispatch_buffer().is_empty());
     }
 }
