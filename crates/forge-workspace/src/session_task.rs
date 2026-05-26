@@ -1415,8 +1415,7 @@ mod team_hook_tests {
         let (workspace, _update_rx) = Workspace::testing_stub();
         workspace.enable_test_dispatch_intercept();
 
-        let worker_synth =
-            SessionKey::from_session_id("__spawn_worker_forge_planner_abc123__");
+        let worker_synth = SessionKey::from_session_id("__spawn_worker_forge_planner_abc123__");
         on_connected_for_test(&workspace, &worker_synth, "worker-uuid");
 
         let dispatched = workspace.drain_test_dispatch_buffer();
@@ -1424,11 +1423,7 @@ mod team_hook_tests {
             dispatched.iter().filter(|c| matches!(c, Command::Prompt { .. })).collect();
         assert_eq!(prompts.len(), 1, "planner worker gets exactly one kick");
         if let Command::Prompt { key, text, .. } = prompts[0] {
-            assert_eq!(
-                key.as_str(),
-                "worker-uuid",
-                "kick targets the worker's real session id",
-            );
+            assert_eq!(key.as_str(), "worker-uuid", "kick targets the worker's real session id",);
             assert!(
                 text.contains("gh issue list -l untriaged"),
                 "kick carries planner-specific gh command; got: {text}",
@@ -1449,8 +1444,7 @@ mod team_hook_tests {
         let (workspace, _update_rx) = Workspace::testing_stub();
         workspace.enable_test_dispatch_intercept();
 
-        let worker_synth =
-            SessionKey::from_session_id("__spawn_worker_forge_scratchpad_abc123__");
+        let worker_synth = SessionKey::from_session_id("__spawn_worker_forge_scratchpad_abc123__");
         on_connected_for_test(&workspace, &worker_synth, "worker-uuid");
 
         let dispatched = workspace.drain_test_dispatch_buffer();
