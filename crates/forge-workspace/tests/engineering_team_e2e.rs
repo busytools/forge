@@ -65,10 +65,22 @@ async fn config_load_through_team_dispatch() {
     let synth_key = SessionKey::from_session_id("__spawn_demo__");
     on_connected_for_test(&workspace, &synth_key, "lead-uuid");
 
-    // Drain dispatched commands and verify exactly three
-    // SpawnWorker commands fired, with labels matching the
-    // configured team in declaration order.
-    let dispatched = workspace.drain_test_dispatch_buffer();
+    // Team-spawn under a tokio runtime goes through
+    // `spawn_team_for_lead_with_catalog_scan` which dispatches the
+    // SpawnWorker commands from a tokio::spawn after an async catalog
+    // scan. Poll the dispatch buffer briefly to let that async task
+    // land before draining. The catalog scan is empty (tempdir has
+    // no JSONLs) so the wait should be sub-100ms in practice; cap at
+    // 5s for CI margin.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut dispatched: Vec<Command> = Vec::new();
+    while std::time::Instant::now() < deadline {
+        dispatched = workspace.drain_test_dispatch_buffer();
+        if !dispatched.is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
     let labels: Vec<String> = dispatched
         .iter()
         .filter_map(|c| match c {

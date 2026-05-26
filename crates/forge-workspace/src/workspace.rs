@@ -143,6 +143,16 @@ pub struct Workspace {
     /// `new()` and therefore the proxy boot. Tests don't drive real
     /// subprocesses, so the absence is fine.
     proxy: Option<forge_agent::proxy::ProxyHandle>,
+    /// Per-project in-flight guard for the engineering-team Connected
+    /// hook's catalog scan. Inserted synchronously when
+    /// `spawn_team_for_lead_with_catalog_scan` starts; removed when
+    /// the async scan completes and dispatches its SpawnWorker
+    /// commands. A concurrent second Connected (e.g. a fast /new
+    /// reconnect) checking this set sees the entry and skips its own
+    /// team-spawn, preventing duplicate worker sets while the scan
+    /// is in flight. The existing `live_workers.is_empty()` gate
+    /// covers the post-dispatch case.
+    team_spawn_in_flight: Mutex<std::collections::HashSet<ProjectKey>>,
     /// Test-only intercept buffer for app-level Commands. When
     /// `Some`, `dispatch` captures the command into the buffer
     /// instead of routing it to the spawn::* handler — used by
@@ -270,6 +280,7 @@ impl Workspace {
             peer_stats: Mutex::new(HashMap::new()),
             usage_poller_started: std::sync::atomic::AtomicBool::new(false),
             proxy: Some(proxy),
+            team_spawn_in_flight: Mutex::new(std::collections::HashSet::new()),
             #[cfg(any(test, feature = "testing"))]
             command_intercept: Mutex::new(None),
             #[cfg(any(test, feature = "testing"))]
@@ -1296,12 +1307,14 @@ impl Workspace {
                     label,
                     charter,
                     spawned_by_session_id,
+                    resume_existing,
                     return_to,
                 } => {
                     let span = tracing::info_span!(
                         "spawn_worker",
                         project = %project_key.as_str(),
                         label = %label,
+                        resume = resume_existing.is_some(),
                     );
                     let _enter = span.enter();
                     spawn::handle_spawn_worker(
@@ -1310,6 +1323,7 @@ impl Workspace {
                         &label,
                         charter,
                         spawned_by_session_id,
+                        resume_existing,
                         return_to,
                     );
                 }
@@ -1370,6 +1384,13 @@ impl Workspace {
     /// `live_workers.is_empty()` so a reconnect / second-Connected
     /// doesn't double-spawn).
     ///
+    /// `resume_map` carries `role.label -> session_id` entries for
+    /// roles whose previous-process session JSONL was discovered by
+    /// the team Connected hook's catalog scan. A role present in the
+    /// map resumes that session; a role absent from the map spawns
+    /// fresh. Empty map = all-fresh (the v1 behaviour preserved by
+    /// `spawn_team_for_lead` for callers that haven't migrated yet).
+    ///
     /// The dispatcher reuses the existing `Command::SpawnWorker`
     /// handler (`handle_spawn_worker`); the only difference from
     /// MCP-tool-driven spawn is the absence of an MCP caller —
@@ -1379,22 +1400,25 @@ impl Workspace {
     /// the normal flow).
     ///
     /// No-op when `team` is empty.
-    pub(crate) fn spawn_team_for_lead(
+    pub(crate) fn spawn_team_for_lead_with_resume(
         self: &Arc<Self>,
         lead_session_id: &str,
         project_key: &crate::target::ProjectKey,
         team: &[crate::team::Role],
+        resume_map: &std::collections::HashMap<String, String>,
     ) {
         if team.is_empty() {
             return;
         }
         for role in team {
+            let resume_existing = resume_map.get(role.label()).cloned();
             let (tx, _rx) = tokio::sync::oneshot::channel();
             let cmd = crate::protocol::Command::SpawnWorker {
                 project_key: project_key.clone(),
                 label: role.label().to_owned(),
                 charter: role.charter().to_owned(),
                 spawned_by_session_id: lead_session_id.to_owned(),
+                resume_existing,
                 return_to: tx,
             };
             if let Err(err) = self.dispatch(cmd) {
@@ -1407,6 +1431,147 @@ impl Workspace {
                 );
             }
         }
+    }
+
+    /// Engineering-team Connected-hook entry point. Synchronously
+    /// claims a per-project in-flight guard, then spawns an async
+    /// task that scans the catalog for `forge:worker:<label>` tagged
+    /// sessions and dispatches one `Command::SpawnWorker` per role
+    /// (with `resume_existing` populated for roles that have a
+    /// matching catalog entry, `None` otherwise). The guard is
+    /// released after the dispatches go out so a fast double-
+    /// Connected can't slip a second scan through.
+    ///
+    /// No-op when the per-project guard is already claimed (another
+    /// scan is in flight). The first-pass `live_workers.is_empty()`
+    /// gate in `session_task::maybe_spawn_team_on_connected` catches
+    /// the post-scan case; this guard covers the during-scan window.
+    pub(crate) fn spawn_team_for_lead_with_catalog_scan(
+        self: &Arc<Self>,
+        lead_session_id: String,
+        project_key: crate::target::ProjectKey,
+        project_dir: PathBuf,
+        team: Vec<crate::team::Role>,
+    ) {
+        if team.is_empty() {
+            return;
+        }
+        if !self.try_claim_team_spawn(&project_key) {
+            tracing::debug!(
+                target: "forge_workspace::team",
+                project = %project_key.as_str(),
+                "team-spawn already in flight; skipping duplicate Connected fire",
+            );
+            return;
+        }
+        // When invoked inside a tokio runtime (production + any
+        // `#[tokio::test]`), spawn the catalog scan + dispatch
+        // asynchronously so translate_event isn't blocked on file
+        // I/O. When invoked outside a runtime (the sync `#[test]`
+        // fixtures in `team_hook_tests`), fall back to a synchronous
+        // dispatch with an empty resume map: those tests exercise
+        // the role-fanout shape, not the resume mechanic. Tests that
+        // need the resume path opt into `#[tokio::test]` + fixture
+        // JSONLs explicitly.
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            tracing::debug!(
+                target: "forge_workspace::team",
+                project = %project_key.as_str(),
+                "no tokio runtime in scope; falling back to sync team-spawn (test path)",
+            );
+            self.spawn_team_for_lead_with_resume(
+                &lead_session_id,
+                &project_key,
+                &team,
+                &std::collections::HashMap::new(),
+            );
+            self.release_team_spawn(&project_key);
+            return;
+        };
+        let workspace = Arc::clone(self);
+        let config_dir = self.config_dir.clone();
+        handle.spawn(async move {
+            let project_dir_str = project_dir.to_string_lossy().to_string();
+            let sessions = forge_agent::userdata::catalog::scan::list_sessions(
+                &config_dir,
+                Some(&project_dir_str),
+                None,
+                0,
+                true,
+            )
+            .await;
+            let mut resume_map: std::collections::HashMap<String, String> =
+                std::collections::HashMap::new();
+            for info in &sessions {
+                if let Some(tag) = &info.tag
+                    && let Some(label) = tag.strip_prefix(forge_primitives::FORGE_WORKER_TAG_PREFIX)
+                {
+                    resume_map.entry(label.to_owned()).or_insert_with(|| info.session_id.clone());
+                }
+            }
+            tracing::info!(
+                target: "forge_workspace::team",
+                project = %project_key.as_str(),
+                lead_session_id = %lead_session_id,
+                resume_count = resume_map.len(),
+                fresh_count = team.len().saturating_sub(resume_map.len()),
+                "team-spawn catalog scan complete; dispatching SpawnWorker per role",
+            );
+            workspace.spawn_team_for_lead_with_resume(
+                &lead_session_id,
+                &project_key,
+                &team,
+                &resume_map,
+            );
+            workspace.release_team_spawn(&project_key);
+        });
+    }
+
+    /// Claim the per-project team-spawn in-flight guard. Returns true
+    /// if the guard was acquired (entry was absent), false if another
+    /// scan was already in flight.
+    fn try_claim_team_spawn(&self, project_key: &crate::target::ProjectKey) -> bool {
+        self.team_spawn_in_flight.lock().insert(project_key.clone())
+    }
+
+    /// Release the per-project team-spawn in-flight guard. Paired with
+    /// `try_claim_team_spawn`; called from the async task's tail
+    /// after `spawn_team_for_lead_with_resume` returns.
+    fn release_team_spawn(&self, project_key: &crate::target::ProjectKey) {
+        self.team_spawn_in_flight.lock().remove(project_key);
+    }
+
+    /// Inspect a worker session's JSONL to decide whether it has
+    /// progressed beyond the initial team-kick. Counts user-role
+    /// turns; threshold is 2.
+    ///
+    /// - 0 user turns: fresh session, no kick fired yet (or JSONL not
+    ///   yet written). Re-fire the kick.
+    /// - 1 user turn: kick landed but worker didn't progress past it
+    ///   (forge restarted before the worker did any real work, or
+    ///   crashed mid-response). Re-fire the kick so the work
+    ///   actually starts.
+    /// - 2+ user turns: worker received the kick AND has been
+    ///   prompted again since (peer/worker message, lead follow-up).
+    ///   Leave it alone; re-firing would override its in-flight
+    ///   state.
+    ///
+    /// Returns true iff the worker has 2+ user turns. The kick path
+    /// gates on this only for resume sessions; fresh sessions skip
+    /// the check (their JSONL doesn't exist yet so the answer is
+    /// always false anyway).
+    #[must_use]
+    pub(crate) fn worker_has_progress_past_kick(&self, session_id: &str) -> bool {
+        let messages = forge_agent::userdata::catalog::scan::get_session_messages(
+            &self.config_dir,
+            session_id,
+            None,
+        );
+        let user_turn_count = messages
+            .iter()
+            .filter(|m| matches!(m.kind, forge_primitives::SessionMessageKind::User))
+            .count();
+        user_turn_count >= 2
     }
 
     /// Park an oneshot in
@@ -2394,9 +2559,18 @@ impl Workspace {
     /// The workspace's `subscribe()` slot is `None` — callers that
     /// need the receiver get it directly from this constructor.
     pub fn testing_stub() -> (Arc<Self>, mpsc::UnboundedReceiver<SessionUpdate>) {
+        Self::testing_stub_with_config_dir(PathBuf::from("/tmp/forge-testing-stub"))
+    }
+
+    /// Like `testing_stub` but with a caller-supplied `config_dir` so
+    /// tests that probe disk-side APIs (catalog scan, JSONL reads)
+    /// can point the stub at a tempdir of their own.
+    pub fn testing_stub_with_config_dir(
+        config_dir: PathBuf,
+    ) -> (Arc<Self>, mpsc::UnboundedReceiver<SessionUpdate>) {
         let (update_tx, update_rx) = mpsc::unbounded_channel::<SessionUpdate>();
         let workspace = Self {
-            config_dir: PathBuf::from("/tmp/forge-testing-stub"),
+            config_dir,
             config: LoadedConfig::empty_for_test(),
             catalog: Mutex::new(HashMap::new()),
             pool: Mutex::new(HashMap::new()),
@@ -2412,6 +2586,7 @@ impl Workspace {
             // testing_stub skips Workspace::new and therefore the
             // proxy boot. Tests don't drive real subprocesses.
             proxy: None,
+            team_spawn_in_flight: Mutex::new(std::collections::HashSet::new()),
             command_intercept: Mutex::new(None),
             test_extra_projects: Mutex::new(Vec::new()),
         };
@@ -3891,7 +4066,12 @@ mod team_spawn_tests {
         let project_key = ProjectKey::new("proj-x");
         let team = vec![Role::Planner, Role::Reviewer, Role::Tester];
 
-        workspace.spawn_team_for_lead(lead_sid, &project_key, &team);
+        workspace.spawn_team_for_lead_with_resume(
+            lead_sid,
+            &project_key,
+            &team,
+            &std::collections::HashMap::new(),
+        );
 
         let dispatched = workspace.drain_test_dispatch_buffer();
         assert_eq!(dispatched.len(), 3, "one SpawnWorker per configured role");
@@ -3926,7 +4106,154 @@ mod team_spawn_tests {
     fn spawn_team_for_lead_with_empty_team_dispatches_nothing() {
         let (workspace, _update_rx) = Workspace::testing_stub();
         workspace.enable_test_dispatch_intercept();
-        workspace.spawn_team_for_lead("lead-uuid", &ProjectKey::new("proj-x"), &Vec::<Role>::new());
+        workspace.spawn_team_for_lead_with_resume(
+            "lead-uuid",
+            &ProjectKey::new("proj-x"),
+            &Vec::<Role>::new(),
+            &std::collections::HashMap::new(),
+        );
         assert!(workspace.drain_test_dispatch_buffer().is_empty());
+    }
+
+    /// #157: all-fresh path — when no roles have a matching entry in
+    /// `resume_map`, every dispatched `SpawnWorker` carries
+    /// `resume_existing = None`.
+    #[test]
+    fn spawn_team_for_lead_with_resume_all_fresh() {
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        workspace.enable_test_dispatch_intercept();
+        let team = vec![Role::Planner, Role::Reviewer];
+        workspace.spawn_team_for_lead_with_resume(
+            "lead-uuid",
+            &ProjectKey::new("proj-x"),
+            &team,
+            &std::collections::HashMap::new(),
+        );
+        let dispatched = workspace.drain_test_dispatch_buffer();
+        assert_eq!(dispatched.len(), 2);
+        for cmd in dispatched {
+            match cmd {
+                Command::SpawnWorker { resume_existing, .. } => {
+                    assert!(resume_existing.is_none(), "all-fresh path passes None");
+                }
+                other => panic!("expected SpawnWorker, got {other:?}"),
+            }
+        }
+    }
+
+    /// #157: all-resume path — every role has a matching entry in
+    /// `resume_map`, so every dispatched `SpawnWorker` carries
+    /// `resume_existing = Some(<expected_session_id>)`.
+    #[test]
+    fn spawn_team_for_lead_with_resume_all_resume() {
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        workspace.enable_test_dispatch_intercept();
+        let team = vec![Role::Planner, Role::Reviewer];
+        let mut resume_map = std::collections::HashMap::new();
+        resume_map.insert("planner".to_owned(), "planner-uuid".to_owned());
+        resume_map.insert("reviewer".to_owned(), "reviewer-uuid".to_owned());
+        workspace.spawn_team_for_lead_with_resume(
+            "lead-uuid",
+            &ProjectKey::new("proj-x"),
+            &team,
+            &resume_map,
+        );
+        let dispatched = workspace.drain_test_dispatch_buffer();
+        assert_eq!(dispatched.len(), 2);
+        for cmd in dispatched {
+            match cmd {
+                Command::SpawnWorker { label, resume_existing, .. } => {
+                    let expected = resume_map.get(&label).cloned();
+                    assert_eq!(resume_existing, expected, "resume_existing matches map entry");
+                }
+                other => panic!("expected SpawnWorker, got {other:?}"),
+            }
+        }
+    }
+
+    /// #157: mixed path — one role resumes, one is fresh.
+    #[test]
+    fn spawn_team_for_lead_with_resume_mixed() {
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        workspace.enable_test_dispatch_intercept();
+        let team = vec![Role::Planner, Role::Reviewer];
+        let mut resume_map = std::collections::HashMap::new();
+        resume_map.insert("planner".to_owned(), "planner-uuid".to_owned());
+        // reviewer absent: fresh-spawn.
+        workspace.spawn_team_for_lead_with_resume(
+            "lead-uuid",
+            &ProjectKey::new("proj-x"),
+            &team,
+            &resume_map,
+        );
+        let dispatched = workspace.drain_test_dispatch_buffer();
+        assert_eq!(dispatched.len(), 2);
+        let mut planner_resume: Option<String> = None;
+        let mut reviewer_resume: Option<String> = None;
+        for cmd in dispatched {
+            match cmd {
+                Command::SpawnWorker { label, resume_existing, .. } => match label.as_str() {
+                    "planner" => planner_resume = resume_existing,
+                    "reviewer" => reviewer_resume = resume_existing,
+                    other => panic!("unexpected label {other}"),
+                },
+                other => panic!("expected SpawnWorker, got {other:?}"),
+            }
+        }
+        assert_eq!(planner_resume, Some("planner-uuid".to_owned()));
+        assert!(reviewer_resume.is_none(), "reviewer not in map → fresh-spawn");
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+mod worker_resume_kick_skip_tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    fn write_jsonl(config_dir: &std::path::Path, session_id: &str, body: &str) {
+        let project_dir = forge_sdk::projects_dir_for(config_dir).join("test-proj");
+        fs::create_dir_all(&project_dir).expect("project dir");
+        let path = project_dir.join(format!("{session_id}.jsonl"));
+        fs::write(&path, body).expect("write jsonl");
+    }
+
+    /// #157: 0 user turns (empty JSONL or no file) means the worker
+    /// hasn't progressed past the kick. Re-kick on resume.
+    #[test]
+    fn worker_has_progress_past_kick_zero_user_turns_returns_false() {
+        let cfg = tempdir().expect("cfg");
+        let session_id = "550e8400-e29b-41d4-a716-446655440010";
+        write_jsonl(cfg.path(), session_id, "");
+        let (workspace, _) = Workspace::testing_stub_with_config_dir(cfg.path().to_path_buf());
+        assert!(!workspace.worker_has_progress_past_kick(session_id));
+    }
+
+    /// #157: 1 user turn means the kick landed but the worker
+    /// crashed / didn't progress. Re-fire so work actually starts.
+    #[test]
+    fn worker_has_progress_past_kick_one_user_turn_returns_false() {
+        let cfg = tempdir().expect("cfg");
+        let session_id = "550e8400-e29b-41d4-a716-446655440011";
+        let body = r#"{"type":"user","timestamp":"2026-04-22T00:00:00.000Z","cwd":"/p","message":{"content":"kick"}}
+"#;
+        write_jsonl(cfg.path(), session_id, body);
+        let (workspace, _) = Workspace::testing_stub_with_config_dir(cfg.path().to_path_buf());
+        assert!(!workspace.worker_has_progress_past_kick(session_id));
+    }
+
+    /// #157: 2+ user turns means the worker is past the kick. Skip
+    /// re-kicking to preserve in-flight state.
+    #[test]
+    fn worker_has_progress_past_kick_two_user_turns_returns_true() {
+        let cfg = tempdir().expect("cfg");
+        let session_id = "550e8400-e29b-41d4-a716-446655440012";
+        let body = r#"{"type":"user","timestamp":"2026-04-22T00:00:00.000Z","cwd":"/p","message":{"content":"kick"}}
+{"type":"user","timestamp":"2026-04-22T00:01:00.000Z","cwd":"/p","message":{"content":"follow-up"}}
+"#;
+        write_jsonl(cfg.path(), session_id, body);
+        let (workspace, _) = Workspace::testing_stub_with_config_dir(cfg.path().to_path_buf());
+        assert!(workspace.worker_has_progress_past_kick(session_id));
     }
 }

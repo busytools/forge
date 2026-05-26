@@ -192,15 +192,30 @@ pub enum Command {
         wrapped: WrappedPrompt,
     },
     /// Spawn a new worker session in `project_key`. Dispatched by
-    /// the `workers__spawn` MCP Tool impl after caller-tag validation.
+    /// the `workers__spawn` MCP Tool impl after caller-tag validation,
+    /// or by the engineering-team Connected hook when reviving
+    /// across-restart workers.
+    ///
+    /// `resume_existing`: when `Some(session_id)`, the handler resumes
+    /// the named session via `SessionTarget::Session` instead of
+    /// spawning fresh. The session_id MUST already carry the
+    /// `forge:worker:<label>` tag (the team Connected hook verifies
+    /// this before dispatching). `WorkerEntry::needs_tag` is set false
+    /// on the resume path since the tag is already on disk. `None`
+    /// preserves the original fresh-spawn path used by `workers__spawn`.
+    ///
     /// `return_to` carries the spawn result back to the calling tool
     /// invocation; `Ok((session_id, tag))` on success, `Err(message)`
-    /// on failure (e.g. tag-write failed; see spawn handler).
+    /// on failure (e.g. tag-write failed; see spawn handler). On the
+    /// resume path the team Connected hook ignores the reply (the
+    /// worker is for the lead's benefit, not in response to a tool
+    /// call).
     SpawnWorker {
         project_key: crate::ProjectKey,
         label: String,
         charter: String,
         spawned_by_session_id: String,
+        resume_existing: Option<String>,
         return_to: oneshot::Sender<Result<WorkerSpawnReply, String>>,
     },
     /// Close (terminate agent + remove from `live_workers`) the
