@@ -202,6 +202,69 @@ pub fn resolve_lead_session(sessions: &[SDKSessionInfo]) -> Option<&SDKSessionIn
         .or_else(|| latest_with(|s| s.tag.is_none()))
 }
 
+/// Scan the catalog for `forge:worker:<label>` tagged sessions whose
+/// `cwd` falls under `project_dir` (the project's filesystem root).
+/// Returns one entry per role label, keyed by label and valued by
+/// session_id. Used by the engineering-team Connected hook to decide
+/// which roles to resume vs spawn fresh on forge restart.
+///
+/// Why scan the whole catalog rather than just `project_dir`'s own
+/// subdir: workers spawned with `--worktree=<label>` `chdir` into
+/// `<project_dir>/.claude/worktrees/<label>/` and claude indexes
+/// their JSONLs under a DIFFERENT `<config_dir>/projects/<subdir>/`
+/// keyed by the worktree path, not the main repo. A `directory=Some`
+/// scan only walks one subdir; a worker in a worktree lives in a
+/// SIBLING subdir, missing the filter. Switch to `directory=None`
+/// (walk every project subdir) and filter by `cwd.starts_with
+/// (project_dir)` so we catch:
+///
+/// - lead sessions: cwd == project_dir (matches)
+/// - workers in non-git projects: cwd == project_dir (matches)
+/// - workers in git worktrees: cwd == `<project_dir>/.claude/worktrees/<label>/`
+///   (starts with project_dir, matches)
+///
+/// Workers from OTHER projects have cwds outside `project_dir` and
+/// are filtered out. Untagged or `forge:lead`-tagged sessions are
+/// filtered out by the tag-prefix check.
+async fn scan_worker_resume_map(
+    config_dir: &std::path::Path,
+    project_dir: &std::path::Path,
+) -> HashMap<String, String> {
+    let sessions =
+        forge_agent::userdata::catalog::scan::list_sessions(config_dir, None, None, 0, true).await;
+    build_resume_map_from_sessions(&sessions, project_dir)
+}
+
+/// Pure-function inner of [`scan_worker_resume_map`] — pulls the
+/// catalog scan out so the filtering logic can be unit-tested without
+/// the async filesystem walk. Takes the already-scanned `sessions`
+/// slice and a `project_dir` prefix; returns label -> session_id for
+/// each worker-tagged session whose `cwd` starts with `project_dir`.
+#[must_use]
+fn build_resume_map_from_sessions(
+    sessions: &[SDKSessionInfo],
+    project_dir: &std::path::Path,
+) -> HashMap<String, String> {
+    let project_dir_str = project_dir.to_string_lossy().to_string();
+    let mut resume_map: HashMap<String, String> = HashMap::new();
+    for info in sessions {
+        let Some(cwd) = info.cwd.as_deref() else {
+            continue;
+        };
+        if !cwd.starts_with(&project_dir_str) {
+            continue;
+        }
+        let Some(tag) = info.tag.as_deref() else {
+            continue;
+        };
+        let Some(label) = tag.strip_prefix(forge_primitives::FORGE_WORKER_TAG_PREFIX) else {
+            continue;
+        };
+        resume_map.entry(label.to_owned()).or_insert_with(|| info.session_id.clone());
+    }
+    resume_map
+}
+
 impl Workspace {
     /// Builds a Workspace, runs the catalog scan, and loads
     /// `<config_dir>/forge.toml`. Errors if `forge.toml` is missing
@@ -1491,24 +1554,7 @@ impl Workspace {
         let workspace = Arc::clone(self);
         let config_dir = self.config_dir.clone();
         handle.spawn(async move {
-            let project_dir_str = project_dir.to_string_lossy().to_string();
-            let sessions = forge_agent::userdata::catalog::scan::list_sessions(
-                &config_dir,
-                Some(&project_dir_str),
-                None,
-                0,
-                true,
-            )
-            .await;
-            let mut resume_map: std::collections::HashMap<String, String> =
-                std::collections::HashMap::new();
-            for info in &sessions {
-                if let Some(tag) = &info.tag
-                    && let Some(label) = tag.strip_prefix(forge_primitives::FORGE_WORKER_TAG_PREFIX)
-                {
-                    resume_map.entry(label.to_owned()).or_insert_with(|| info.session_id.clone());
-                }
-            }
+            let resume_map = scan_worker_resume_map(&config_dir, &project_dir).await;
             tracing::info!(
                 target: "forge_workspace::team",
                 project = %project_key.as_str(),
@@ -4202,6 +4248,153 @@ mod team_spawn_tests {
         }
         assert_eq!(planner_resume, Some("planner-uuid".to_owned()));
         assert!(reviewer_resume.is_none(), "reviewer not in map → fresh-spawn");
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+mod build_resume_map_tests {
+    use super::*;
+
+    fn mk_info(session_id: &str, cwd: Option<&str>, tag: Option<&str>) -> SDKSessionInfo {
+        SDKSessionInfo {
+            session_id: session_id.to_owned(),
+            summary: "test".to_owned(),
+            last_modified: 0,
+            file_size: None,
+            custom_title: None,
+            first_prompt: None,
+            git_branch: None,
+            cwd: cwd.map(str::to_owned),
+            tag: tag.map(str::to_owned),
+            created_at: None,
+        }
+    }
+
+    /// Regression for the reviewer-flagged miss on PR #164: workers
+    /// spawned with `--worktree=<label>` `chdir` into
+    /// `<project>/.claude/worktrees/<label>/` which is indexed under
+    /// a SIBLING `<config_dir>/projects/<sanitize(worktree_path)>/`
+    /// subdir. A `directory=Some(<project>)` scan misses them. The
+    /// cwd-prefix filter catches them because every worktree cwd
+    /// starts with `<project>`.
+    #[test]
+    fn build_resume_map_finds_workers_in_worktree_subdirs() {
+        let project_dir = std::path::Path::new("/Users/me/Projects/forge");
+        let sessions = vec![
+            mk_info(
+                "lead-uuid",
+                Some("/Users/me/Projects/forge"),
+                Some(forge_primitives::FORGE_LEAD_TAG),
+            ),
+            mk_info(
+                "planner-uuid",
+                Some("/Users/me/Projects/forge/.claude/worktrees/planner"),
+                Some("forge:worker:planner"),
+            ),
+            mk_info(
+                "reviewer-uuid",
+                Some("/Users/me/Projects/forge/.claude/worktrees/reviewer"),
+                Some("forge:worker:reviewer"),
+            ),
+        ];
+        let map = build_resume_map_from_sessions(&sessions, project_dir);
+        assert_eq!(map.len(), 2, "only worker-tagged sessions land in the map");
+        assert_eq!(map.get("planner"), Some(&"planner-uuid".to_owned()));
+        assert_eq!(map.get("reviewer"), Some(&"reviewer-uuid".to_owned()));
+    }
+
+    /// Workers from OTHER projects must NOT appear in this project's
+    /// resume map - their cwd doesn't start with `project_dir`.
+    #[test]
+    fn build_resume_map_filters_out_workers_from_other_projects() {
+        let project_dir = std::path::Path::new("/Users/me/Projects/forge");
+        let sessions = vec![
+            mk_info(
+                "ours",
+                Some("/Users/me/Projects/forge/.claude/worktrees/planner"),
+                Some("forge:worker:planner"),
+            ),
+            mk_info(
+                "theirs",
+                Some("/Users/me/Projects/granite/.claude/worktrees/planner"),
+                Some("forge:worker:planner"),
+            ),
+        ];
+        let map = build_resume_map_from_sessions(&sessions, project_dir);
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.get("planner"), Some(&"ours".to_owned()));
+    }
+
+    /// Lead-tagged sessions and untagged sessions are filtered out -
+    /// only `forge:worker:*`-tagged sessions count.
+    #[test]
+    fn build_resume_map_ignores_non_worker_tags() {
+        let project_dir = std::path::Path::new("/Users/me/Projects/forge");
+        let sessions = vec![
+            mk_info(
+                "lead",
+                Some("/Users/me/Projects/forge"),
+                Some(forge_primitives::FORGE_LEAD_TAG),
+            ),
+            mk_info("legacy-untagged", Some("/Users/me/Projects/forge"), None),
+            mk_info(
+                "planner",
+                Some("/Users/me/Projects/forge/.claude/worktrees/planner"),
+                Some("forge:worker:planner"),
+            ),
+        ];
+        let map = build_resume_map_from_sessions(&sessions, project_dir);
+        assert_eq!(map.len(), 1);
+        assert!(map.contains_key("planner"));
+    }
+
+    /// Non-git project: workers run in the project's main cwd (no
+    /// worktree). The cwd-prefix filter still catches them since
+    /// project's main cwd == project_dir.
+    #[test]
+    fn build_resume_map_finds_workers_in_non_git_project() {
+        let project_dir = std::path::Path::new("/Users/me/Projects/non-git");
+        let sessions = vec![mk_info(
+            "tester-uuid",
+            Some("/Users/me/Projects/non-git"),
+            Some("forge:worker:tester"),
+        )];
+        let map = build_resume_map_from_sessions(&sessions, project_dir);
+        assert_eq!(map.get("tester"), Some(&"tester-uuid".to_owned()));
+    }
+
+    /// Sessions with no `cwd` field (uncommon - filesystem write
+    /// race?) are ignored rather than panic.
+    #[test]
+    fn build_resume_map_skips_sessions_with_no_cwd() {
+        let project_dir = std::path::Path::new("/Users/me/Projects/forge");
+        let sessions = vec![mk_info("orphan", None, Some("forge:worker:planner"))];
+        let map = build_resume_map_from_sessions(&sessions, project_dir);
+        assert!(map.is_empty());
+    }
+
+    /// Duplicate label sightings: first hit wins. With
+    /// `list_sessions` returning sorted-by-mtime-desc, "first" is the
+    /// most recent worker JSONL for that label, which is the right
+    /// resume target.
+    #[test]
+    fn build_resume_map_first_hit_wins_for_duplicate_labels() {
+        let project_dir = std::path::Path::new("/Users/me/Projects/forge");
+        let sessions = vec![
+            mk_info(
+                "newer",
+                Some("/Users/me/Projects/forge/.claude/worktrees/planner"),
+                Some("forge:worker:planner"),
+            ),
+            mk_info(
+                "older",
+                Some("/Users/me/Projects/forge/.claude/worktrees/planner"),
+                Some("forge:worker:planner"),
+            ),
+        ];
+        let map = build_resume_map_from_sessions(&sessions, project_dir);
+        assert_eq!(map.get("planner"), Some(&"newer".to_owned()));
     }
 }
 
