@@ -57,7 +57,41 @@ impl Role {
             _ => None,
         }
     }
+
+    /// Initial user-turn message dispatched to this role's worker
+    /// session on its first `Connected` event. Claude sessions don't
+    /// act until a user message arrives - this kick gets the role's
+    /// first scan running and gives the worker a concrete starting
+    /// action plus a report-back target. After this initial turn the
+    /// worker idles until lead routes new work (no self-firing timer
+    /// in v1; recurring autonomous polling is a v2 candidate).
+    pub fn initial_kick(self) -> &'static str {
+        match self {
+            Self::Planner => PLANNER_INITIAL_KICK,
+            Self::Implementer => IMPLEMENTER_INITIAL_KICK,
+            Self::Reviewer => REVIEWER_INITIAL_KICK,
+            Self::Debugger => DEBUGGER_INITIAL_KICK,
+            Self::Tester => TESTER_INITIAL_KICK,
+        }
+    }
 }
+
+// ===== Initial-kick constants =====
+//
+// Per-role first-turn messages. Each kick names the canonical gh
+// command from the role's charter, gives a clear "active" framing,
+// and ends with a report-back to lead so the lead session gets
+// visibility on what the workers found (or that they're idle).
+
+const PLANNER_INITIAL_KICK: &str = "You are now active. Run `gh issue list -l untriaged --json number,labels,title,body --limit 20` to find untriaged issues. For each, classify (feature / bug / chore / ambiguous), apply the appropriate label via `gh issue edit`, and route per your charter. If no untriaged issues exist, also try `gh issue list --json number,labels,title,body --limit 20` for any unlabeled items. Report back to lead via `workers__tell(\"lead\", ...)` with either 'dispatched N items: ...' or 'no triage backlog, idle'.";
+
+const IMPLEMENTER_INITIAL_KICK: &str = "You are now active. You wait for plans pushed by the planner; none have arrived yet. Run your safety-net check: `gh issue list -l \"feature,planned\" --json number,title --limit 10`. If you find planned issues, confirm with the planner via `workers__ask(\"planner\", \"is issue #N ready for me?\")` before starting any implementation. Report back to lead via `workers__tell(\"lead\", ...)` with either 'starting work on #N' or 'idle, no planned work queued'.";
+
+const REVIEWER_INITIAL_KICK: &str = "You are now active. Run `gh pr list --search \"review:none\" --json number,title,author,isDraft --limit 10` to find PRs awaiting review. Skip drafts. For each non-draft PR ready for review, decide whether to start now (priority + PR size). Report back to lead via `workers__tell(\"lead\", ...)` with either 'reviewing PR #N now' or 'no PRs awaiting review, idle'.";
+
+const DEBUGGER_INITIAL_KICK: &str = "You are now active. Run `gh issue list -l bug --json number,title,body --limit 10` to find bug issues. For any you'd investigate now (recent, reproducible - remember your iron law: reproduce first), commit to starting. Report back to lead via `workers__tell(\"lead\", ...)` with either 'investigating bug #N now' or 'no bugs to investigate, idle'.";
+
+const TESTER_INITIAL_KICK: &str = "You are now active. Run `gh pr list --state open --json number,title --limit 10` and then `gh pr checks #N` for each. Note any failing checks. Also check `gh run list --branch main --limit 3` for main-branch CI status. Report back to lead via `workers__tell(\"lead\", ...)` with either 'CI failing on PR #N: <signature>' / 'main appears broken: <signature>' if applicable, or 'CI green across all open PRs and main' if clean.";
 
 // ===== Charter constants =====
 
@@ -374,5 +408,47 @@ mod tests {
         assert!(!LEAD_CHARTER.trim().is_empty());
         assert!(LEAD_CHARTER.contains("engineering lead"));
         assert!(LEAD_CHARTER.contains("workers__list"));
+    }
+
+    #[test]
+    fn initial_kicks_are_non_empty_and_distinct() {
+        let mut seen = std::collections::HashSet::new();
+        for role in ALL_ROLES {
+            let k = role.initial_kick();
+            assert!(!k.trim().is_empty(), "{role:?} kick must be non-empty");
+            assert!(seen.insert(k), "{role:?} kick duplicated another role's");
+        }
+    }
+
+    #[test]
+    fn initial_kicks_open_with_activation_signal_and_mention_canonical_gh_command() {
+        // Each kick must (a) frame the worker as active so the LLM
+        // knows it should start producing output, and (b) name the
+        // specific `gh` command from its charter's Inputs section so
+        // the worker has a concrete first action.
+        for role in ALL_ROLES {
+            assert!(
+                role.initial_kick().contains("You are now active"),
+                "{role:?} kick must open with an activation framing",
+            );
+        }
+        assert!(Role::Planner.initial_kick().contains("gh issue list -l untriaged"));
+        assert!(Role::Implementer.initial_kick().contains("gh issue list -l \"feature,planned\""));
+        assert!(Role::Reviewer.initial_kick().contains("gh pr list --search"));
+        assert!(Role::Debugger.initial_kick().contains("gh issue list -l bug"));
+        assert!(Role::Tester.initial_kick().contains("gh pr list --state open"));
+    }
+
+    #[test]
+    fn initial_kicks_each_specify_report_back_to_lead() {
+        // Every kick must end with a hand-off to lead so the lead
+        // session gets visibility into whether the worker found work
+        // or is idle.
+        for role in ALL_ROLES {
+            assert!(
+                role.initial_kick().contains("workers__tell(\"lead\""),
+                "{role:?} kick must include the report-back-to-lead instruction",
+            );
+        }
     }
 }

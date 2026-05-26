@@ -1206,6 +1206,19 @@ impl Workspace {
     /// just closed), or [`DispatchError::SessionClosed`] when the
     /// task's command receiver has been dropped.
     pub fn dispatch(self: &Arc<Self>, cmd: Command) -> Result<(), DispatchError> {
+        // Test intercept (when armed): capture EVERY Command - both
+        // app-level and per-session - before any routing. Tests use
+        // this to assert what would have been dispatched without
+        // spinning up real subprocesses or stub SessionTasks. Always
+        // a no-op in production builds without the testing feature.
+        #[cfg(any(test, feature = "testing"))]
+        {
+            let mut intercept = self.command_intercept.lock();
+            if let Some(buffer) = intercept.as_mut() {
+                buffer.push(cmd);
+                return Ok(());
+            }
+        }
         if let Some(key) = cmd.key() {
             let key = key.clone();
             let senders = self.command_senders.lock();
@@ -1240,19 +1253,6 @@ impl Workspace {
                 Err(DispatchError::UnknownSession(key))
             }
         } else {
-            // Test intercept: when enabled, capture the app-level
-            // Command into the buffer and skip the spawn handler.
-            // Engineering-team tests use this to assert what
-            // would have been dispatched without spinning up
-            // real subprocesses. Always disabled in production.
-            #[cfg(any(test, feature = "testing"))]
-            {
-                let mut intercept = self.command_intercept.lock();
-                if let Some(buffer) = intercept.as_mut() {
-                    buffer.push(cmd);
-                    return Ok(());
-                }
-            }
             // App-level commands. The `spawn::*` handlers are sync —
             // they emit one event, kick off `get_agent_handle_with_spawn_key`
             // (which internally tokio::spawns the agent), and return.
