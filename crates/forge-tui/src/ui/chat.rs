@@ -316,6 +316,7 @@ fn measure_message_height_at(
     let is_last_message = idx + 1 == msg_count;
     let sp = msg_spinner(base, idx, active_turn_assistant, &app.messages()[idx]);
     let suppress_group_header = message::compute_suppress_group_header(app.messages(), idx);
+    let envelope_streak_position = message::compute_envelope_streak_position(app.messages(), idx);
     let (h, rendered_lines) = measure_message_height(
         &mut app.active_messages_mut()[idx],
         &sp,
@@ -326,6 +327,7 @@ fn measure_message_height_at(
             tools_collapsed,
             include_trailing_separator: !is_last_message,
             suppress_group_header,
+            envelope_streak_position,
         },
     );
     app.sync_render_cache_message(idx);
@@ -743,10 +745,12 @@ fn render_culled_messages(
         let before = out.len();
         let message_height = app.viewport().message_height(i);
         let suppress_group_header = message::compute_suppress_group_header(app.messages(), i);
+        let envelope_streak_position = message::compute_envelope_streak_position(app.messages(), i);
         let options = message::MessageRenderOptions {
             tools_collapsed,
             include_trailing_separator: i + 1 != msg_count,
             suppress_group_header,
+            envelope_streak_position,
         };
         if structural_skip > 0 {
             let remaining_skip = message::render_message_from_offset_internal_with_mode(
@@ -1431,6 +1435,7 @@ mod tests {
                     tools_collapsed,
                     include_trailing_separator: false,
                     suppress_group_header: false,
+                    envelope_streak_position: None,
                 },
             ),
             &mut full_lines,
@@ -1491,6 +1496,7 @@ mod tests {
                     tools_collapsed,
                     include_trailing_separator: false,
                     suppress_group_header: false,
+                    envelope_streak_position: None,
                 },
             ),
             &mut full_lines,

@@ -438,6 +438,100 @@ pub(crate) fn render_inbound(kind: &PeerInboundKind, collapsed: bool) -> Vec<Lin
     }
 }
 
+/// #163 v1: compact follower render for envelopes inside a same-
+/// project streak. Drops the kind-label / id / org chrome that
+/// `render_peer_card` carries, leaving just a one-line worker tag
+/// header (`  ▶ <worker>`) followed by the body's lines.
+///
+/// `same_worker = true` is the same-worker-sub-streak case: the
+/// worker label line is omitted entirely and the body just
+/// continues from the previous envelope's body, visually reading
+/// as one paragraph.
+///
+/// `kind` carries the envelope kind only so notice variants (caller
+/// timeout, recipient expired, delivery failure, worker spawn
+/// failed) still use a color cue + icon hint. The kind label TEXT
+/// is dropped per the design.
+///
+/// v2 follow-up tracks moving the body inline with the worker tag
+/// header via a hanging-indent wrap; v1 stays two-line for
+/// readability + simplicity. See follow-up issue filed from the
+/// #163 PR description.
+pub(crate) fn render_inbound_follower(
+    kind: &PeerInboundKind,
+    same_worker: bool,
+    collapsed: bool,
+) -> Vec<Line<'static>> {
+    // Extract the sender label + body + color cue from the kind.
+    let (worker_label, body, kind_color) = match kind {
+        PeerInboundKind::Question { from, body, .. } => {
+            (from.as_str(), body.as_str(), theme::RUST_ORANGE)
+        }
+        PeerInboundKind::Message { from, body, .. } => {
+            (from.as_str(), body.as_str(), theme::SUBAGENT_TOKEN)
+        }
+        PeerInboundKind::Reply { from, body, .. } => (from.as_str(), body.as_str(), Color::Green),
+        PeerInboundKind::LateReply { from, body, .. } => {
+            (from.as_str(), body.as_str(), Color::Green)
+        }
+        PeerInboundKind::CallerTimeout { target, body, .. } => {
+            (target.as_str(), body.as_str(), theme::STATUS_ERROR)
+        }
+        PeerInboundKind::RecipientExpired { from, body, .. } => {
+            (from.as_str(), body.as_str(), theme::STATUS_WARNING)
+        }
+        PeerInboundKind::DeliveryFailure { target, reason, .. } => {
+            (target.as_str(), reason.as_str(), theme::STATUS_ERROR)
+        }
+        PeerInboundKind::WorkerSpawnFailed { label, reason, .. } => {
+            (label.as_str(), reason.as_str(), theme::STATUS_ERROR)
+        }
+    };
+
+    let mut lines = Vec::new();
+    if !same_worker {
+        // `  ▶ <worker>` header line. ▶ glyph (U+25B6) per the
+        // signed-off mockup; kept in `kind_color` for the kind cue
+        // (orange for ask, blue for tell, green for reply, error
+        // tints for failure variants). Worker label in BOLD orange
+        // to match the BOLD-orange sender treatment in
+        // `render_peer_card`'s starter shape so the eye reads
+        // streak-starter and streak-follower as the same
+        // identity at the same visual weight.
+        let mut header = Line::default();
+        header.spans.push(Span::raw("  "));
+        header.spans.push(Span::styled(
+            FOLLOWER_ICON.to_owned(),
+            Style::default().fg(kind_color).add_modifier(Modifier::BOLD),
+        ));
+        header.spans.push(Span::raw(" "));
+        header.spans.push(Span::styled(
+            worker_label.to_owned(),
+            Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
+        ));
+        lines.push(header);
+    }
+    // Body lines, indented to match the starter shape's body indent
+    // (4-space `  │  ` connector ≈ 5-char-ish; here we drop the tree
+    // connector + use 4-space indent for a flatter follower look).
+    if collapsed {
+        push_collapsed_summary(&mut lines, body);
+    } else {
+        for raw_line in body.split('\n') {
+            let mut row = Line::default();
+            row.spans.push(Span::raw("    "));
+            row.spans.push(Span::styled(raw_line.to_owned(), Style::default().fg(theme::DIM)));
+            lines.push(row);
+        }
+    }
+    lines
+}
+
+/// Icon for streak-follower envelopes (#163). Distinct from the
+/// streak-starter's status+kind-icon pair so the eye can spot a
+/// follower at a glance.
+const FOLLOWER_ICON: &str = "\u{25B6}"; // ▶
+
 /// Build the styled lines for an outbound peer or worker block.
 /// Used by the chat renderer for `mcp__forge__peers__*` and
 /// `mcp__forge__workers__*` tool_use cards in place of the default
@@ -982,6 +1076,94 @@ mod tests {
         assert!(detect_inbound("Hello, world!").is_none());
         assert!(detect_inbound("[Not a peer wrapper]").is_none());
         assert!(detect_inbound("[Question with no id]\n\nbody").is_none());
+    }
+
+    // ---------------------------------------------------------------
+    // #163 v1: compact follower renderer.
+    // ---------------------------------------------------------------
+
+    /// Helper: render and convert to plain-string lines for
+    /// readable assertions.
+    fn render_follower_to_strings(kind: &PeerInboundKind, same_worker: bool) -> Vec<String> {
+        let lines = render_inbound_follower(kind, same_worker, false);
+        lines
+            .into_iter()
+            .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+            .collect()
+    }
+
+    /// FollowerNewWorker (same_worker = false): the compact renderer
+    /// produces a `  ▶ <worker>` header line plus body lines under it.
+    /// Drops the kind-label / id / org meta that the streak-starter
+    /// shape carries.
+    #[test]
+    fn render_inbound_follower_emits_worker_label_header() {
+        let kind = PeerInboundKind::Message {
+            id: "t-12345678".to_owned(),
+            from: "planner".to_owned(),
+            org: "worker in forge".to_owned(),
+            hop: 1,
+            hop_max: 10,
+            body: "dispatched #149 to implementer".to_owned(),
+        };
+        let lines = render_follower_to_strings(&kind, false);
+        assert_eq!(lines.len(), 2, "expected header + one body line, got {lines:?}");
+        // Header has the ▶ glyph + worker label. id / org / kind-label
+        // are intentionally absent.
+        assert!(lines[0].contains("\u{25B6}"), "header carries ▶ glyph: {:?}", lines[0]);
+        assert!(lines[0].contains("planner"), "header carries worker label: {:?}", lines[0]);
+        assert!(
+            !lines[0].contains("message"),
+            "no kind-label in header (#163 spec): {:?}",
+            lines[0]
+        );
+        assert!(!lines[0].contains("t-12345678"), "no id in header (#163 spec): {:?}", lines[0]);
+        assert!(
+            !lines[0].contains("worker in forge"),
+            "no org in header (#163 spec): {:?}",
+            lines[0]
+        );
+        assert!(lines[1].contains("dispatched #149"), "body on its own line: {:?}", lines[1]);
+    }
+
+    /// FollowerSameWorker (same_worker = true): the worker label
+    /// header is dropped entirely; only body lines render. The
+    /// resulting envelope visually continues the previous envelope's
+    /// body as one paragraph.
+    #[test]
+    fn render_inbound_follower_same_worker_drops_label_line() {
+        let kind = PeerInboundKind::Message {
+            id: "t-12345678".to_owned(),
+            from: "planner".to_owned(),
+            org: "worker in forge".to_owned(),
+            hop: 1,
+            hop_max: 10,
+            body: "also queued #158 behind it".to_owned(),
+        };
+        let lines = render_follower_to_strings(&kind, true);
+        assert_eq!(lines.len(), 1, "same-worker drops header, one body line: {lines:?}");
+        assert!(!lines[0].contains("\u{25B6}"), "no ▶ glyph on same-worker follower");
+        assert!(!lines[0].contains("planner"), "no worker label on same-worker follower");
+        assert!(lines[0].contains("also queued #158"));
+    }
+
+    /// Multi-line body wraps to multiple lines under the worker
+    /// label. The header counts as 1 line; each body \n increments.
+    #[test]
+    fn render_inbound_follower_multiline_body() {
+        let kind = PeerInboundKind::Message {
+            id: "t-12345678".to_owned(),
+            from: "planner".to_owned(),
+            org: "worker in forge".to_owned(),
+            hop: 1,
+            hop_max: 10,
+            body: "line one\nline two\nline three".to_owned(),
+        };
+        let lines = render_follower_to_strings(&kind, false);
+        assert_eq!(lines.len(), 4, "1 header + 3 body lines");
+        assert!(lines[1].contains("line one"));
+        assert!(lines[2].contains("line two"));
+        assert!(lines[3].contains("line three"));
     }
 
     #[test]
