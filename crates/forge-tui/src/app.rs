@@ -139,6 +139,17 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
     let tick_duration = Duration::from_millis(4);
     let mut last_render = Instant::now();
 
+    // #217 render throttle: scratch terminal + cached signature of
+    // the last drawn frame. Each redraw tick renders into the
+    // scratch backend, hashes the resulting buffer, and skips the
+    // real `terminal.draw` flush when the hash matches the
+    // previously drawn frame. Backpressure from tmux-like terminals
+    // (645 ms stalls observed in the perf log) drops out for
+    // unchanged-state ticks. The scratch terminal carries no I/O
+    // cost; only the back buffer is touched.
+    let mut scratch_terminal: Option<ratatui::Terminal<ratatui::backend::TestBackend>> = None;
+    let mut last_drawn_signature: Option<u64> = None;
+
     loop {
         start_connection(app);
 
@@ -283,28 +294,52 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
             app.needs_redraw = true;
         }
         if app.needs_redraw {
-            if let Some(ref mut perf) = app.perf {
-                perf.next_frame();
+            let frame_size = terminal.size()?;
+            let skip_real_draw = render_throttle_should_skip(
+                &mut scratch_terminal,
+                frame_size,
+                app,
+                &mut last_drawn_signature,
+            )?;
+            if !skip_real_draw {
+                if let Some(ref mut perf) = app.perf {
+                    perf.next_frame();
+                }
+                // FPS overlay is always-on (see
+                // `chat_view::render_perf_fps_overlay`), not gated on the `perf`
+                // Cargo feature. `mark_frame_presented` keeps the EMA fresh so the
+                // overlay shows real numbers in any build. Gated on the
+                // real-draw branch so a skipped frame doesn't fake a present.
+                app.mark_frame_presented(Instant::now());
+                // `Timer` is `Drop`-implementing under `feature = "perf"` and a
+                // unit struct otherwise. Explicit `drop()` enforces the desired
+                // lifetime in both feature paths; clippy can't see the cfg
+                // branch where Drop matters.
+                #[allow(clippy::drop_non_drop)]
+                {
+                    let timer = app.perf.as_ref().map(|p| p.start("frame_total"));
+                    let draw_timer = app.perf.as_ref().map(|p| p.start("frame::terminal_draw"));
+                    terminal.draw(|f| crate::ui::render(f, app))?;
+                    drop(draw_timer);
+                    drop(timer);
+                }
+                // Post-draw side effects (cache-metric enforcement,
+                // log countdown, warn cooldown). Kept out of the
+                // render path so the scratch pass doesn't bump
+                // counters on skip frames or double-count them on
+                // change frames.
+                crate::ui::emit_post_draw_metrics(app);
             }
-            // FPS overlay is always-on (see
-            // `chat_view::render_perf_fps_overlay`), not gated on the `perf`
-            // Cargo feature. `mark_frame_presented` keeps the EMA fresh so the
-            // overlay shows real numbers in any build.
-            app.mark_frame_presented(Instant::now());
-            // `Timer` is `Drop`-implementing under `feature = "perf"` and a
-            // unit struct otherwise. Explicit `drop()` enforces the desired
-            // lifetime in both feature paths; clippy can't see the cfg
-            // branch where Drop matters.
-            #[allow(clippy::drop_non_drop)]
-            {
-                let timer = app.perf.as_ref().map(|p| p.start("frame_total"));
-                let draw_timer = app.perf.as_ref().map(|p| p.start("frame::terminal_draw"));
-                terminal.draw(|f| crate::ui::render(f, app))?;
-                drop(draw_timer);
-                drop(timer);
-            }
-            app.needs_redraw = false;
+            // `last_render` paces the tick-sleep ceiling and must
+            // advance on EVERY decision the throttle made (skip or
+            // draw). Otherwise, while a worker session animates,
+            // the buffer hash stays equal between spinner
+            // advances, the throttle skips every intervening tick,
+            // `last_render` never moves, `tick_duration.
+            // saturating_sub(...)` saturates to 0, and the loop
+            // hot-spins at scratch-render cost.
             last_render = Instant::now();
+            app.needs_redraw = false;
         }
     }
 
@@ -357,6 +392,49 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
     ratatui::restore();
 
     Ok(())
+}
+
+/// #217 throttle: render into a scratch `TestBackend` matching the
+/// real terminal's size, hash the resulting buffer, and decide
+/// whether the real `terminal.draw` can be skipped because the
+/// visible state is byte-equal to the previously drawn frame.
+///
+/// `scratch_terminal` is lazy-initialised on the first call and
+/// resized on size mismatch (terminal resize). `last_drawn_signature`
+/// is updated only when a real draw is about to happen (the
+/// scratch-only path leaves it untouched so a future tick whose
+/// state diverges from the LAST DRAWN frame still fires the real
+/// draw, even if intermediate ticks rendered different scratch
+/// content).
+///
+/// `frame_size` is the real terminal's current dimensions. Taking
+/// `Size` directly (rather than `&Terminal`) keeps the helper
+/// testable without a real crossterm backend - tests construct any
+/// `Size` they want and observe the throttle decision.
+///
+/// Returns `true` when the caller should skip the real draw.
+pub(crate) fn render_throttle_should_skip(
+    scratch_terminal: &mut Option<ratatui::Terminal<ratatui::backend::TestBackend>>,
+    frame_size: ratatui::layout::Size,
+    app: &mut App,
+    last_drawn_signature: &mut Option<u64>,
+) -> anyhow::Result<bool> {
+    let scratch = if let Some(t) = scratch_terminal {
+        t
+    } else {
+        let backend = ratatui::backend::TestBackend::new(frame_size.width, frame_size.height);
+        scratch_terminal.insert(ratatui::Terminal::new(backend)?)
+    };
+    if scratch.size()? != frame_size {
+        scratch.backend_mut().resize(frame_size.width, frame_size.height);
+    }
+    scratch.draw(|f| crate::ui::render(f, app))?;
+    let signature = crate::ui::buffer_signature(scratch.backend().buffer());
+    if Some(signature) == *last_drawn_signature {
+        return Ok(true);
+    }
+    *last_drawn_signature = Some(signature);
+    Ok(false)
 }
 
 fn advance_spinner_frame(app: &mut App, now: Instant) {
@@ -1003,5 +1081,59 @@ mod tests {
         assert_eq!(app.spinner_frame, 1);
         advance_spinner_frame(&mut app, base + Duration::from_millis(121));
         assert_eq!(app.spinner_frame, 2);
+    }
+
+    #[test]
+    fn render_throttle_first_call_does_not_skip() {
+        // With no prior `last_drawn_signature`, the throttle MUST
+        // return `false` so the run loop performs the real draw and
+        // primes the cache.
+        let mut app = App::test_default();
+        let mut scratch: Option<ratatui::Terminal<ratatui::backend::TestBackend>> = None;
+        let mut last_sig: Option<u64> = None;
+        let size = ratatui::layout::Size { width: 120, height: 40 };
+
+        let skip =
+            render_throttle_should_skip(&mut scratch, size, &mut app, &mut last_sig).unwrap();
+        assert!(!skip, "first call must not skip - no prior signature");
+        assert!(last_sig.is_some(), "first call must prime last_drawn_signature");
+    }
+
+    #[test]
+    fn render_throttle_skips_unchanged_state() {
+        // Second call on an unmutated App must hit the equal-
+        // signature branch and return `true` so the run loop skips
+        // the real `terminal.draw`. This is the throttle's
+        // happy-path behavior - the whole point of the feature.
+        let mut app = App::test_default();
+        let mut scratch: Option<ratatui::Terminal<ratatui::backend::TestBackend>> = None;
+        let mut last_sig: Option<u64> = None;
+        let size = ratatui::layout::Size { width: 120, height: 40 };
+
+        let _ = render_throttle_should_skip(&mut scratch, size, &mut app, &mut last_sig).unwrap();
+        let skip =
+            render_throttle_should_skip(&mut scratch, size, &mut app, &mut last_sig).unwrap();
+        assert!(skip, "second call on unchanged App must skip");
+    }
+
+    #[test]
+    fn render_throttle_redraws_after_state_mutation() {
+        // A mutation that visibly changes the rendered output must
+        // make the throttle return `false` so the run loop fires the
+        // real `terminal.draw` against the new state.
+        let mut app = App::test_default();
+        let mut scratch: Option<ratatui::Terminal<ratatui::backend::TestBackend>> = None;
+        let mut last_sig: Option<u64> = None;
+        let size = ratatui::layout::Size { width: 120, height: 40 };
+
+        let _ = render_throttle_should_skip(&mut scratch, size, &mut app, &mut last_sig).unwrap();
+        // Toggling `help_open` makes `chat_view::render` allocate a
+        // non-zero help row and call `help::render`, which changes
+        // the rendered cells.
+        app.help_open = true;
+
+        let skip =
+            render_throttle_should_skip(&mut scratch, size, &mut app, &mut last_sig).unwrap();
+        assert!(!skip, "mutated App must trigger a real draw, got skip=true");
     }
 }
