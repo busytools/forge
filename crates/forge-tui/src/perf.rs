@@ -366,7 +366,7 @@ mod enabled {
             let _logger = PerfLogger::open(tmp.path()).expect("perf log opens");
 
             // Fill the buffer past cap with sub-events.
-            for _ in 0..(FRAME_BUFFER_CAP + 500) {
+            for _ in 0..(FRAME_BUFFER_CAP + 10) {
                 write_entry("msg::cache_miss", 0.0, None);
             }
             // Parents emit at end-of-frame after sub-events have
@@ -393,6 +393,41 @@ mod enabled {
             assert!(has("ui::render"), "ui::render missing from flushed batch");
             assert!(has("frame::terminal_draw"), "frame::terminal_draw missing from flushed batch");
             assert!(has("frame_total"), "frame_total missing from flushed batch");
+        }
+
+        #[test]
+        fn non_parent_subevents_capped_at_buffer_limit() {
+            // Inverse contract for `parent_spans_survive_*`: non-
+            // parent sub-events that overflow the cap MUST drop. A
+            // future broadening of `is_parent_span` (e.g. to a
+            // `contains` check, or a prefix that catches `msg::`)
+            // would silently let memory grow per-frame; this test
+            // pins the exact post-flush metric count so that drift
+            // trips the check.
+            reset_thread_locals();
+            let tmp = tempfile::NamedTempFile::new().unwrap();
+            let _logger = PerfLogger::open(tmp.path()).expect("perf log opens");
+
+            for _ in 0..(FRAME_BUFFER_CAP + 10) {
+                write_entry("msg::cache_miss", 0.0, None);
+            }
+            write_entry("frame_total", SLOW_FRAME_THRESHOLD_MS + 1.0, None);
+
+            close_log_file();
+            let lines = read_log_lines(tmp.path());
+
+            let metrics: Vec<String> = lines
+                .iter()
+                .filter_map(|line| {
+                    let v: serde_json::Value = serde_json::from_str(line).ok()?;
+                    v.get("metric")?.as_str().map(str::to_owned)
+                })
+                .collect();
+            // Cap sub-events + `frame_total` (parent, always pushed)
+            // = FRAME_BUFFER_CAP + 1 entries.
+            assert_eq!(metrics.len(), FRAME_BUFFER_CAP + 1);
+            assert_eq!(metrics.iter().filter(|m| *m == "msg::cache_miss").count(), FRAME_BUFFER_CAP);
+            assert_eq!(metrics.iter().filter(|m| *m == "frame_total").count(), 1);
         }
 
         #[test]
