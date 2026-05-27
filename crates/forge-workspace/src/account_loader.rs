@@ -289,9 +289,33 @@ pub async fn run_recovery_poll(workspace_weak: Weak<Workspace>) {
 
         while let Some(result) = join_set.join_next().await {
             let Ok((key, config_dir, logged_in)) = result else {
+                // join_set itself errored. Tokio JoinError covers
+                // task panic + task cancellation; either way we
+                // can't distinguish the account that failed at this
+                // point, so log without a key.
+                tracing::warn!(
+                    target: "forge_workspace::account_loader",
+                    event_name = "recovery_poll_join_error",
+                    "recovery-poll JoinSet returned an error; account auth_status result lost for this cycle",
+                );
                 continue;
             };
             if !logged_in {
+                // Differentiates the kept-Bailed cycle from the
+                // pre-recovery cycle in logs. Auth_status's own
+                // warn logs cover WHY (binary missing, exit
+                // non-zero, malformed JSON, or loggedIn=false);
+                // this trace closes the decision trail at the
+                // recovery-poll layer so a triage can see "yes,
+                // we checked auth_status and decided not to
+                // recover" rather than guessing why the account
+                // stayed Bailed.
+                tracing::trace!(
+                    target: "forge_workspace::account_loader",
+                    event_name = "recovery_poll_kept_bailed",
+                    account = %key.0,
+                    "auth_status did not report logged-in; account stays Bailed for this cycle",
+                );
                 continue;
             }
 
