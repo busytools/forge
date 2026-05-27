@@ -102,14 +102,19 @@ pub fn bridge_diagnostics_enabled() -> bool {
 /// sensible; the four targets at `debug` are the ones we actually
 /// stare at when triaging UI/event drops (session lifecycle, command
 /// dispatch, input submission, bridge connect path). `tui_markdown`
-/// is pinned to `warn` because it emits a per-frame "no markdown
-/// extensions" debug line that swamps everything else.
+/// is pinned to `error` because it emits per-frame WARN events for
+/// every HTML element and unknown-language code block it encounters
+/// during streaming markdown rendering (peaks at 50K+/sec on chats
+/// with HTML content). Dropping to `error` rejects the events at the
+/// tracing filter before serialisation. The architectural fix
+/// (HTML-strip in `preprocess_markdown` at the call site) lands as
+/// a separate PR; this filter bump is defence-in-depth.
 const DEFAULT_LOG_DIRECTIVES: &str = "info,\
     app.session=debug,\
     app.command=debug,\
     app.input=debug,\
     bridge.lifecycle=debug,\
-    tui_markdown=warn";
+    tui_markdown=error";
 
 fn build_filter_directives(cli: &Cli) -> String {
     let mut directives = cli
@@ -596,9 +601,11 @@ mod tests {
         assert!(DEFAULT_LOG_DIRECTIVES.contains("app.command=debug"));
         assert!(DEFAULT_LOG_DIRECTIVES.contains("app.input=debug"));
         assert!(DEFAULT_LOG_DIRECTIVES.contains("bridge.lifecycle=debug"));
-        // tui_markdown emits a per-frame "no markdown extensions"
-        // debug line; pinning it to warn keeps it out of the log.
-        assert!(DEFAULT_LOG_DIRECTIVES.contains("tui_markdown=warn"));
+        // tui_markdown emits per-frame WARN events for every HTML
+        // tag + unknown code-block language during streaming markdown
+        // rendering. Pinning to `error` rejects them at the filter
+        // before serialisation - 50K+/sec at peak otherwise.
+        assert!(DEFAULT_LOG_DIRECTIVES.contains("tui_markdown=error"));
     }
 
     #[test]
