@@ -1019,67 +1019,71 @@ chat continues here…
 
 <div class="surface" id="peer-block">
   <div class="surface-head">
-    <h4>Outbound peer block - replaces the default tool_use card for <code>ask_agent</code> / <code>tell_agent</code></h4>
-    <div class="when">visible: every <code>mcp__forge__peers__ask_agent</code> / <code>mcp__forge__peers__tell_agent</code> tool call the LLM emits</div>
+    <h4>Peer / worker chat blocks - one shape for every inbound + outbound envelope</h4>
+    <div class="when">visible: every <code>mcp__forge__peers__*</code> / <code>mcp__forge__workers__ask|tell</code> tool call the LLM emits, and every inbound wrapped envelope (<code>[Question ...]</code>, <code>[Message ...]</code>, <code>[Reply ...]</code>, <code>[Late reply ...]</code>, <code>[Ask ... timed out ...]</code>, <code>[Ask ... has expired ...]</code>, <code>[Ask ... failed to deliver: ...]</code>, <code>[Worker ... spawn failed ...]</code>)</div>
   </div>
   <div class="surface-body">
-    <p>Single header line + body lines indented 3 cols. Arrow icon is <code>→</code> in RUST_ORANGE (ask) or SUBAGENT_TOKEN light-blue (tell). The body preview is truncated at 200 chars with a trailing <code>…</code>; pending correlation id renders as <code>q-…</code> until the tool result arrives and the renderer can pull the real id.</p>
+    <p>Five TitleCase verbs cover every variant; direction is implied by the verb, so no extra arrow chrome. Each row reads <code>▶ Verb name</code> with the body indented under the standard tool-card tree connectors (<code>│  </code> for continuation, <code>└─ </code> for the last line). Same <code>Forge</code> role header that introduces assistant streams introduces these too - one identity, not two.</p>
+    <table>
+      <thead>
+        <tr><th>Verb</th><th>Direction</th><th>Wire shape</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>Tell</code></td><td>outbound unsolicited</td><td><code>workers__tell</code> / <code>peers__tell_agent</code></td></tr>
+        <tr><td><code>Ask</code></td><td>outbound question</td><td><code>workers__ask</code> / <code>peers__ask_agent</code></td></tr>
+        <tr><td><code>Message</code></td><td>inbound unsolicited</td><td><code>[Message id=... from agent ...]</code></td></tr>
+        <tr><td><code>Question</code></td><td>inbound question</td><td><code>[Question id=... from agent ...]</code></td></tr>
+        <tr><td><code>Reply</code></td><td>inbound response</td><td><code>[Reply id=... from agent ...]</code> · <code>[Late reply ...]</code> carries a <code>⚠ late</code> modifier</td></tr>
+      </tbody>
+    </table>
     <div class="term">
       <pre class="indent">
-   <span class="accent">→</span> <span class="accent bold">ask</span> <span class="dim">·</span> <span class="accent bold">granite-backend</span> <span class="dim">·</span> <span class="dim">q-7f3a92e0</span>
+   <span class="accent bold">Forge</span>
 
-   <span class="dim">What's the test setup look like in this project?</span>
+     <span class="accent bold">▶</span> <span class="bold">Tell planner</span>
+     <span class="dim">└─ Re-stating tight: #178 go option A, #179+#180 brainstorm, #182 opt-in.</span>
 
-   <span class="subagent">→</span> <span class="subagent bold">tell</span> <span class="dim">·</span> <span class="accent bold">forge</span> <span class="dim">·</span> <span class="dim">t-c45a8f12</span>
+     <span class="accent bold">▶</span> <span class="bold">Ask planner</span>
+     <span class="dim">└─ Is the seam plan ready for the workspace.rs split?</span>
 
-   <span class="dim">FYI I just pushed the rewriter cleanup.</span></pre>
+     <span class="accent bold">▶</span> <span class="bold">Message planner</span>
+     <span class="dim">└─ Plan for #185 sent to implementer with background-priority note (queue...</span>
+
+     <span class="accent bold">▶</span> <span class="bold">Message implementer</span>
+     <span class="dim">│  PR #187 open (draft, closes #184). Worker-resume tag-path bug fix;</span>
+     <span class="dim">│  reviewer pinged. Heads-up: #187's diff shows -105 lines as artifact...</span>
+     <span class="dim">└─ Queued: #185 after these two land.</span>
+
+     <span class="accent bold">▶</span> <span class="bold">Reply planner</span>
+     <span class="dim">└─ Yes - seam plan attached, six carve-outs roughly 300 LOC each. Sign-of...</span>
+
+     <span class="accent bold">▶</span> <span class="bold">Question hub-modules@Granite</span>
+     <span class="dim">└─ Should we proceed with the runner upgrade now or wait for CI to drain?</span></pre>
     </div>
-    <dl>
-      <dt>code</dt><dd><code>crates/forge-tui/src/ui/peer_block.rs::detect_outbound</code> + <code>render_outbound</code> · invoked from <code>ui::message::append_assistant_tool_block</code> before the default tool-use card path</dd>
-      <dt>arguments read</dt><dd><code>target</code> from <code>raw_input.target</code> · body from <code>raw_input.prompt</code> (ask) / <code>raw_input.message</code> (tell) · correlation id pulled from the tool result's JSON (<code>"correlation_id": "q-XXXXXXXX"</code>) when it lands; <code>q-…</code> placeholder until then</dd>
-      <dt>suppression</dt><dd><code>crates/forge-tui/src/ui/tool_call.rs</code> sets <code>ToolCallInfo.hidden = true</code> for any tool whose name starts with <code>mcp__forge__peers__</code>, matching the existing TodoWrite pattern</dd>
-    </dl>
-  </div>
-</div>
-
-<div class="surface">
-  <div class="surface-head">
-    <h4>Inbound peer blocks - replace the default user-message rendering for wrapped envelopes</h4>
-    <div class="when">visible: every user-turn message whose text starts with a recognised peer envelope (<code>[Question id=...]</code>, <code>[Message id=...]</code>, <code>[Reply id=...]</code>, <code>[Late reply id=...]</code>, <code>[Ask id=... to agent ... timed out ...]</code>, <code>[Ask id=... from agent ... has expired ...]</code>, <code>[Ask id=... to agent ... failed to deliver: ...]</code>)</div>
-  </div>
-  <div class="surface-body">
-    <p>Same shape as the outbound block - header line with leading icon + colored label + DIM-separated metadata, body lines indented 3 cols in dim gray. Seven variants, each with its own icon + accent. Inbound envelopes that don't match any of the prefixes fall through to the default user-message rendering, so malformed wrappers don't break the chat.</p>
+    <p>Notices stay single-line with a <code>⚠</code> modifier inline. <code>⏳</code> only appears while a question is pending; collapses once the reply lands.</p>
     <div class="term">
       <pre class="indent">
-   <span class="accent">◀</span> <span class="accent bold">question</span> <span class="dim">·</span> <span class="accent bold">forge</span> <span class="dim">·</span> <span class="dim">q-7f3a92e0</span> <span class="dim">·</span> <span class="dim">hop 1/10</span> <span class="dim">·</span> <span class="dim">(Personal)</span>
+     <span class="accent bold">▶</span> <span class="bold">Ask planner</span> <span class="dim">-</span> <span class="warning">⚠ timed out</span>
+     <span class="dim">└─ was: "Is the seam plan ready for the workspace.rs split?"</span>
 
-   <span class="dim">What's the test setup look like?</span>
+     <span class="accent bold">▶</span> <span class="bold">Tell planner</span> <span class="dim">-</span> <span class="warning">⚠ undeliverable</span>
+     <span class="dim">└─ reason: target sleeping</span>
 
-   <span class="subagent">◀</span> <span class="subagent bold">message</span> <span class="dim">·</span> <span class="accent bold">forge</span> <span class="dim">·</span> <span class="dim">t-c45a8f12</span> <span class="dim">·</span> <span class="dim">(Personal)</span>
+     <span class="accent bold">▶</span> <span class="bold">Reply planner</span> <span class="dim">-</span> <span class="warning">⚠ late</span>
+     <span class="dim">└─ Sorry for the delay - the original ask had already expired.</span>
 
-   <span class="dim">FYI I just pushed the rewriter cleanup.</span>
-
-   <span class="success">◀</span> <span class="success bold">reply</span> <span class="dim">·</span> <span class="accent bold">granite-backend</span> <span class="dim">·</span> <span class="dim">q-7f3a92e0</span> <span class="dim">·</span> <span class="dim">(Granite)</span>
-
-   <span class="dim">We use pgtemp for ephemeral postgres in CI.</span>
-
-   <span class="success">◀</span> <span class="success bold">reply</span> <span class="dim">·</span> <span class="accent bold">granite-backend</span> <span class="dim">·</span> <span class="dim">q-7f3a92e0</span> <span class="warning">·</span> <span class="warning">⌛ late</span> <span class="dim">·</span> <span class="dim">(Granite)</span>
-
-   <span class="dim">Sorry for the delay - the original ask had already expired.</span>
-
-   <span class="error">⚠</span> <span class="error bold">timeout</span> <span class="dim">·</span> <span class="accent bold">ask to granite-backend</span> <span class="dim">·</span> <span class="dim">q-7f3a92e0</span> <span class="dim">·</span> <span class="dim">no reply after 30 min</span> <span class="dim">·</span> <span class="dim">(Granite)</span>
-
-   <span class="warning">⏱</span> <span class="warning bold">ask expired</span> <span class="dim">·</span> <span class="accent bold">forge</span> <span class="dim">·</span> <span class="dim">q-7f3a92e0</span> <span class="dim">·</span> <span class="dim">your reply will be tagged late</span> <span class="dim">·</span> <span class="dim">(Personal)</span>
-
-   <span class="error">⚠</span> <span class="error bold">failed to deliver</span> <span class="dim">·</span> <span class="accent bold">granite-liq-bot</span> <span class="dim">·</span> <span class="dim">q-d31fa8a3</span> <span class="dim">·</span> <span class="dim">(Granite)</span>
-
-   <span class="dim">target spawn failed: all pinned accounts are rate-limited</span></pre>
+     <span class="accent bold">▶</span> <span class="bold">Question forge</span> <span class="dim">-</span> <span class="warning">⚠ expired</span>
+     <span class="dim">└─ your reply will be tagged late.</span></pre>
     </div>
     <dl>
-      <dt>code</dt><dd><code>crates/forge-tui/src/ui/peer_block.rs::detect_inbound</code> + <code>render_inbound</code> · invoked from <code>ui::message::append_user_blocks</code> before the default text rendering</dd>
-      <dt>variants</dt><dd><code>Question</code> · <code>Message</code> · <code>Reply</code> · <code>LateReply</code> (carries <code>⌛ late</code> warning chip) · <code>CallerTimeout</code> (caller-side; the 30 min timer expired) · <code>RecipientExpired</code> (recipient-side; the caller's ask is no longer pending) · <code>DeliveryFailure</code> (caller-side; spawn / channel / connection error)</dd>
+      <dt>code</dt><dd><code>crates/forge-tui/src/ui/peer_block.rs::detect_inbound</code> + <code>detect_outbound</code> + <code>render_block</code> (one renderer takes a TitleCase verb + name + optional modifier + body) · invoked from <code>ui::message::append_assistant_tool_block</code> + <code>append_user_blocks</code></dd>
+      <dt>cross-org disambiguation</dt><dd>peer rows from a foreign org render as <code><name>@<org></code>; same-org peers and workers (always same-org) render the bare name. The lead session's own org (from <code>forge.toml</code>) is the reference</dd>
+      <dt>collapse / expand</dt><dd>body ellipsed to one line by default (collapsed shape: <code>└─ &lt;first 60 chars&gt;…</code>); click the row to expand the full body inline. Same affordance pattern the existing peer block uses for collapsed-by-default</dd>
+      <dt>same-worker streak</dt><dd>three consecutive envelopes from the same worker (per <code>chat::group_envelope_streak</code>) stack body lines under one header - no repeated <code>▶ Message &lt;same-name&gt;</code> rows. Same-project envelope streaks (different workers in the same project) still get one header per worker</dd>
+      <dt>variants</dt><dd>5 main verbs (<code>Tell</code> · <code>Ask</code> · <code>Message</code> · <code>Question</code> · <code>Reply</code>) + 4 notice modifiers (<code>⚠ timed out</code> · <code>⚠ undeliverable</code> · <code>⚠ late</code> · <code>⚠ expired</code>). <code>[Worker ... spawn failed ...]</code> stays as a one-line system notice (no body chrome) because it's a workspace-generated lifecycle event, not a peer comm</dd>
+      <dt>dropped from prior shape</dt><dd>status glyph (<code>✓</code> / <code>⚠</code> / <code>✗</code>), kind icons (<code>←</code> / <code>→</code> / <code>↩</code>), correlation id chrome (<code>· q-...</code>), <code>(org)</code> meta on same-org rows, lowercase / TitleCase identity mismatch between <code>Forge</code> and <code>(worker in ...)</code>. <code>workers__spawn</code> / <code>workers__list</code> revert to standard tool_call rendering (they're worker lifecycle, not peer comm)</dd>
       <dt>parser shape</dt><dd>pure prefix string-match + manual field extraction (<code>take_until</code>, <code>rest_after_id</code>, <code>id_before</code>, <code>extract_from_agent_after</code>). No regex. Malformed envelopes fall through to the default user-message rendering rather than erroring</dd>
-      <dt>body truncation</dt><dd>truncates at 200 chars + trailing <code>…</code>; multi-line bodies keep their newlines so the rendered block reads as multi-line prose</dd>
+      <dt>suppression</dt><dd><code>crates/forge-tui/src/ui/tool_call.rs</code> sets <code>ToolCallInfo.hidden = true</code> for <code>mcp__forge__peers__*</code> and <code>mcp__forge__workers__ask</code> / <code>workers__tell</code>; <code>workers__spawn</code> / <code>workers__list</code> render as standard tool cards</dd>
     </dl>
   </div>
 </div>

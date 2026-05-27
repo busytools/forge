@@ -229,22 +229,23 @@ fn append_user_blocks(
                 if let Some(kind) = peer_block::detect_inbound(&block.text) {
                     let trailing_gap = block.trailing_blank_lines();
                     let collapsed = block.peer_collapsed_override.unwrap_or(tools_collapsed);
-                    // #163: streak-follower envelopes use the compact
-                    // renderer (worker label header + body, no
-                    // kind-label / id / org meta). Streak-starters and
-                    // standalone envelopes keep the existing card
-                    // chrome.
-                    let (lines, suppress_trailing_gap) = match envelope_streak_position {
-                        Some(EnvelopeStreakPosition::FollowerNewWorker) => {
-                            (peer_block::render_inbound_follower(&kind, false, collapsed), true)
-                        }
-                        Some(EnvelopeStreakPosition::FollowerSameWorker) => {
-                            (peer_block::render_inbound_follower(&kind, true, collapsed), true)
-                        }
-                        Some(EnvelopeStreakPosition::Start) | None => {
-                            (peer_block::render_inbound(&kind, collapsed), false)
-                        }
-                    };
+                    // #163 + #189: same-worker streak followers drop
+                    // the `▶ Verb name` header line and just stack body
+                    // lines under the previous envelope. Different-worker
+                    // followers and streak-starters get the full header
+                    // shape - one identity per row.
+                    let suppress_header = matches!(
+                        envelope_streak_position,
+                        Some(EnvelopeStreakPosition::FollowerSameWorker)
+                    );
+                    let suppress_trailing_gap = matches!(
+                        envelope_streak_position,
+                        Some(
+                            EnvelopeStreakPosition::FollowerNewWorker
+                                | EnvelopeStreakPosition::FollowerSameWorker
+                        )
+                    );
+                    let lines = peer_block::render_inbound(&kind, suppress_header, collapsed);
                     let y_in_msg = layout.height;
                     let height = rendered_lines_height(&lines, width);
                     layout.push_wrapped_lines(lines, width);
