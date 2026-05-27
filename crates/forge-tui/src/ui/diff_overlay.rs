@@ -886,12 +886,16 @@ fn fit_box_content(text: &str, max_chars: usize) -> String {
     if count <= max_chars {
         return text.to_owned();
     }
-    if max_chars <= 1 {
-        return "\u{2026}".to_owned();
+    // When the budget is too small to fit the 3-char `...` marker,
+    // just take that many raw chars so the output still respects
+    // `max_chars`. Skipping the marker is the lesser harm versus
+    // overflowing the box width.
+    if max_chars < 3 {
+        return text.chars().take(max_chars).collect();
     }
-    let take = max_chars.saturating_sub(1);
+    let take = max_chars.saturating_sub(3);
     let truncated: String = text.chars().take(take).collect();
-    format!("{truncated}\u{2026}")
+    format!("{truncated}...")
 }
 
 fn gutter_width_for(file: &FileHunks) -> usize {
