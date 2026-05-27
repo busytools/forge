@@ -1105,12 +1105,13 @@ fn role_label_line(msg: &ChatMessage) -> Line<'static> {
             // label "User" misrepresents them as human input.
             // Distinguish: real human input keeps the "User" label;
             // any User message whose first text block is a peer-
-            // envelope bracket re-labels as "forge". Reserves the
+            // envelope bracket re-labels as `Forge` to match the
+            // matching Assistant-side outbound label. Reserves the
             // "User" treatment for things actually typed by the
             // human at the prompt.
             if is_peer_envelope_user_message(msg) {
                 Line::from(Span::styled(
-                    "forge",
+                    "Forge",
                     Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
                 ))
             } else {
@@ -1140,20 +1141,39 @@ fn is_peer_envelope_user_message(msg: &ChatMessage) -> bool {
     msg.is_peer_envelope
 }
 
-/// Extract the `sender_org` tag from this message's first inbound peer
-/// envelope, if any. Returns `None` for non-User messages, messages
-/// with no envelope, or messages whose first text block does not match
-/// a recognised envelope shape. Drives the same-project envelope
-/// grouping at `compute_suppress_group_header` (chat-iteration level).
+/// Extract the `sender_org` tag from this message's peer envelope,
+/// if any. Drives the same-project envelope grouping at
+/// `compute_suppress_group_header` (chat-iteration level).
+///
+/// Two envelope shapes count:
+/// - **Inbound** (User role): a `[Question id=...]` / `[Message id=...]`
+///   bracket whose `(org '...')` field is the wire-level sender_org.
+/// - **Assistant peer-outbound**: an Assistant turn carrying a
+///   `mcp__forge__peers__*` / `mcp__forge__workers__{ask,tell}`
+///   tool_use card. These have no native org, but they belong to
+///   the same Forge-mediated conversation as the surrounding
+///   inbound envelopes - synthesise `"Personal"` so streak detection
+///   folds across them (the most common case is a worker's chat
+///   interleaving inbound from lead with outbound to lead, both of
+///   which share the lead's `"Personal"` org).
+///
+/// Returns `None` for everything else: plain user input, regular
+/// assistant text, system notices, non-peer tool_use cards.
 pub(crate) fn message_envelope_org(msg: &ChatMessage) -> Option<String> {
-    use crate::ui::peer_block::detect_inbound;
-    if !matches!(msg.role, MessageRole::User) {
-        return None;
-    }
-    msg.blocks.iter().find_map(|block| match block {
-        MessageBlock::Text(text) => detect_inbound(&text.text).map(|kind| kind.org().to_owned()),
+    use crate::ui::peer_block::{detect_inbound, detect_outbound};
+    match msg.role {
+        MessageRole::User => msg.blocks.iter().find_map(|block| match block {
+            MessageBlock::Text(text) => {
+                detect_inbound(&text.text).map(|kind| kind.org().to_owned())
+            }
+            _ => None,
+        }),
+        MessageRole::Assistant => msg.blocks.iter().find_map(|block| match block {
+            MessageBlock::ToolCall(tc) => detect_outbound(tc).map(|_| "Personal".to_owned()),
+            _ => None,
+        }),
         _ => None,
-    })
+    }
 }
 
 /// Decide whether `messages[idx]` should suppress its role-label line.
@@ -2845,7 +2865,7 @@ mod tests {
     }
 
     /// Render-time effect: with `suppress_group_header = true`, the
-    /// envelope render does NOT include the "forge" role label line.
+    /// envelope render does NOT include the `Forge` role label line.
     /// With it false, the label IS present. Same envelope text, only
     /// the flag changes.
     #[test]
@@ -2885,8 +2905,38 @@ mod tests {
         );
         let without_label = render_lines_to_strings(&lines_without);
 
-        assert_eq!(with_label.first().map(String::as_str), Some("forge"));
-        assert_ne!(without_label.first().map(String::as_str), Some("forge"));
+        assert_eq!(with_label.first().map(String::as_str), Some("Forge"));
+        assert_ne!(without_label.first().map(String::as_str), Some("Forge"));
         assert!(lines_without.len() < lines_with.len(), "suppressing the label drops one line");
+    }
+
+    /// Build an Assistant message that carries a peer-outbound
+    /// `mcp__forge__workers__tell` tool_use card. Mirrors what the
+    /// worker emits when its LLM calls `workers__tell(target, msg)`.
+    fn make_assistant_with_workers_tell(target: &str, body: &str) -> ChatMessage {
+        let mut tc = make_tool_call_info(
+            "tc-tell",
+            "mcp__forge__workers__tell",
+            crate::agent::model::ToolCallStatus::Completed,
+            "",
+        );
+        tc.raw_input = Some(serde_json::json!({ "label": target, "message": body }));
+        ChatMessage::new(MessageRole::Assistant, vec![MessageBlock::ToolCall(Box::new(tc))], None)
+    }
+
+    #[test]
+    fn compute_suppress_group_header_folds_across_assistant_peer_outbound() {
+        // A worker's chat interleaves inbound envelopes (from lead)
+        // with Assistant turns carrying the worker's own outbound
+        // `workers__tell` / `workers__ask` tool_use cards. The
+        // streak should fold under one `Forge` header rather than
+        // re-printing the role label on every other row.
+        let messages = vec![
+            make_peer_envelope_message("forge", "Personal", "first inbound"),
+            make_assistant_with_workers_tell("lead", "outbound to lead"),
+            make_peer_envelope_message("forge", "Personal", "second inbound"),
+        ];
+        assert!(compute_suppress_group_header(&messages, 1));
+        assert!(compute_suppress_group_header(&messages, 2));
     }
 }
