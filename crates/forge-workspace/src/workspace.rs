@@ -52,6 +52,34 @@ const WORKER_TAG_RETRY_ATTEMPTS: u32 = 30;
 /// total wait at a few seconds.
 const WORKER_TAG_RETRY_DELAY: Duration = Duration::from_millis(100);
 
+/// Per-session chip the Projects pane renders next to each row.
+/// Carries the assigned account display name + the visual-state
+/// category derived by `Workspace::session_chip_for`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionChipInfo {
+    /// Account `display_name` from forge.toml `[[accounts]]`.
+    pub account_name: String,
+    /// Render category: drives the chip's color + optional prefix
+    /// glyph.
+    pub state: SessionChipState,
+}
+
+/// Visual category for a session chip. The renderer maps these to
+/// foreground colors + (for `Bailed`) a leading `⚠ ` glyph.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionChipState {
+    /// Account is Ready and within budget. DIM foreground.
+    Normal,
+    /// Account is Ready but its 5h budget window is currently
+    /// capped. Yellow foreground signals "still works but expect
+    /// throttle until the 5h window resets."
+    FiveHourCap,
+    /// Account flipped to Bailed. Red foreground + `⚠ ` prefix.
+    /// The session's spawn would fall through to round-robin until
+    /// the recovery poll flips the account back to Ready.
+    Bailed,
+}
+
 /// Multi-session orchestrator. Owns the project catalog snapshot
 /// loaded from `<config_dir>/forge.toml` and the pool of currently
 /// spawned [`forge_agent::Agent`] handles, one per active session.
@@ -874,6 +902,50 @@ impl Workspace {
     pub fn account_loading_snapshot(&self) -> Vec<(String, crate::account::LoadingState)> {
         let accounts = self.accounts.lock();
         accounts.ordered_keys.iter().map(|k| (k.0.clone(), accounts.loading_state(k))).collect()
+    }
+
+    /// Resolve `(project, session_label)` to the per-session chip
+    /// the Projects pane renders next to each row: the assigned
+    /// account name + its current visual-state category. Returns
+    /// `None` when the plan isn't populated, the project isn't
+    /// known, or the label has no assignment.
+    ///
+    /// State derivation:
+    /// - `LoadingState::Bailed` -> `SessionChipState::Bailed`
+    ///   (renderer renders red with a `⚠ ` prefix).
+    /// - `Ready` + 5h `UsageWindow::is_currently_limited` true ->
+    ///   `FiveHourCap` (yellow; the session still runs but the
+    ///   user should know they're inside the 5h budget cap window).
+    /// - Otherwise -> `Normal` (DIM; default chip).
+    #[must_use]
+    pub fn session_chip_for(
+        &self,
+        project_key: &ProjectKey,
+        label: &str,
+    ) -> Option<SessionChipInfo> {
+        let plan_guard = self.assignment_plan.lock();
+        let plan = plan_guard.as_ref()?;
+        let account_key = plan.lookup(project_key, &label.to_owned())?.clone();
+        drop(plan_guard);
+
+        let accounts = self.accounts.lock();
+        let loading = accounts.loading_state(&account_key);
+        let usage = accounts.usage(&account_key).cloned();
+        drop(accounts);
+
+        let state = match loading {
+            crate::account::LoadingState::Bailed => SessionChipState::Bailed,
+            crate::account::LoadingState::Ready => {
+                let limited = usage
+                    .as_ref()
+                    .and_then(|u| u.five_hour.as_ref())
+                    .is_some_and(forge_primitives::usage::UsageWindow::is_currently_limited);
+                if limited { SessionChipState::FiveHourCap } else { SessionChipState::Normal }
+            }
+            _ => SessionChipState::Normal,
+        };
+
+        Some(SessionChipInfo { account_name: account_key.0, state })
     }
 
     /// Crate-internal accessor for the assignment plan. Returns the

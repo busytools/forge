@@ -81,7 +81,7 @@ pub use protocol::{Command, DispatchError, PendingInteractionSlot, SessionUpdate
 pub use target::{ProjectKey, SessionKey, SessionTarget};
 pub use ui::{SpinnerStyle, UiSettings};
 pub use views::{ProjectView, SessionView};
-pub use workspace::{Workspace, resolve_lead_session};
+pub use workspace::{SessionChipInfo, SessionChipState, Workspace, resolve_lead_session};
 
 // MCP (peers / workers) public surface. The `mcp` module itself is
 // crate-private now; these flat re-exports expose only the types
