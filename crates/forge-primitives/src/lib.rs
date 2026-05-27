@@ -48,6 +48,7 @@ pub mod command;
 pub mod content;
 pub mod error;
 pub mod git;
+pub mod git_diff;
 pub mod hooks;
 pub mod ids;
 pub mod image;

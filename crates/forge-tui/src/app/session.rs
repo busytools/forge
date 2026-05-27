@@ -275,7 +275,7 @@ pub struct UiSession {
     /// Latest poll result. `None` until the first scan completes
     /// (post-Connect). Replaces the retired `GitContextWatcher`
     /// branch push — the snapshot carries branch info too.
-    pub git_diff_snapshot: Option<forge_workspace::env::git_diff::GitDiffSnapshot>,
+    pub git_diff_snapshot: Option<forge_primitives::git_diff::GitDiffSnapshot>,
     /// Generation epoch. Bumped on cwd change (Connected,
     /// SessionReplaced). Spawned scanner echoes it into its event
     /// so `drain_events` can drop stale results from a previous

@@ -17,8 +17,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc as std_mpsc;
 use std::time::{Duration, Instant};
 
+use forge_primitives::git_diff::GitDiffSnapshot;
 use forge_workspace::SessionKey;
-use forge_workspace::env::git_diff::GitDiffSnapshot;
 
 use crate::app::App;
 use crate::app::session::UiSession;
