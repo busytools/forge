@@ -209,6 +209,36 @@ pub fn load_initial_kick(label: &str) -> Result<String, CharterError> {
     }
 }
 
+/// Optional resume-specific kick. When a worker session is resumed
+/// rather than freshly spawned, the kick-on-Connected hook uses this
+/// content (if present) to re-orient the worker — explicit "you're
+/// picking up where you left off" framing instead of the
+/// fresh-start framing in `kick.md`.
+///
+/// Returns:
+/// - `Ok(Some(text))` when `<label>/resume-kick.md` exists.
+/// - `Ok(None)` when the file is absent — caller falls back to the
+///   default kick (or skips entirely per the
+///   `worker_has_progress_past_kick` gate). Absent is the common case
+///   for roles whose default behaviour is fine post-resume.
+/// - `Err(CharterError)` only on label-validation failure or IO
+///   error other than NotFound. NotFound is intentionally folded
+///   into `Ok(None)` so callers don't need to pattern-match on the
+///   missing-file case.
+///
+/// # Errors
+///
+/// See [`CharterError`]; NotFound on the file specifically is NOT an
+/// error — it returns `Ok(None)`.
+pub fn load_resume_kick(label: &str) -> Result<Option<String>, CharterError> {
+    let path = role_dir(label)?.join("resume-kick.md");
+    match std::fs::read_to_string(&path) {
+        Ok(s) => Ok(Some(s)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(source) => Err(CharterError::ReadFailed { label: label.to_owned(), path, source }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
