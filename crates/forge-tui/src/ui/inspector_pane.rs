@@ -476,8 +476,8 @@ fn append_git_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
     // Layer 1 sub-section - uncommitted edits vs HEAD. Skipped
     // when the tree is clean (`worktree == None` AND
     // `worktree_scan_ok == true`). When the per-layer scan
-    // failed, surface a "(scan failed)" stub so the user sees
-    // SOMETHING — silent vanish is the bug F3 closed.
+    // failed, surface a "(scan failed)" stub so the user sees the
+    // failure instead of a clean-tree render.
     if let Some(stats) = snapshot.worktree.as_ref() {
         append_diff_layer(lines, &uncommitted_display(stats), width);
     } else if !snapshot.worktree_scan_ok {
