@@ -48,7 +48,7 @@
 //! - `○` DIM glyph + gray text for `Pending` (truncates with `…`)
 
 use forge_primitives::git::{GitBranch, GitIssueRef, GitPrInfo};
-use forge_workspace::env::git_diff::{GitBranchAhead, GitDiffFile, GitDiffSnapshot, GitDiffStats};
+use forge_primitives::git_diff::{GitBranchAhead, GitDiffFile, GitDiffSnapshot, GitDiffStats};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
