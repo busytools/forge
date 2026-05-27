@@ -1020,6 +1020,90 @@ mod tests {
         assert!(is_rate_limited(&snap));
     }
 
+    /// Build a snapshot exercising the opus-specific 7-day window.
+    /// Max-plan accounts hit the opus cap independently of the
+    /// shared 7-day envelope, and `is_rate_limited` must walk every
+    /// window in the four-tuple - a future short-circuit on
+    /// `seven_day` would silently break Max-plan classification.
+    fn opus_only_capped_snapshot(util: f64, resets_at: Option<SystemTime>) -> UsageSnapshot {
+        UsageSnapshot {
+            source: UsageSourceKind::Oauth,
+            fetched_at: SystemTime::UNIX_EPOCH,
+            five_hour: Some(UsageWindow {
+                utilization: 30.0,
+                resets_at: Some(SystemTime::now() + std::time::Duration::from_secs(3600)),
+                reset_description: None,
+            }),
+            seven_day: Some(UsageWindow {
+                utilization: 30.0,
+                resets_at: Some(SystemTime::now() + std::time::Duration::from_secs(3600)),
+                reset_description: None,
+            }),
+            seven_day_opus: Some(UsageWindow {
+                utilization: util,
+                resets_at,
+                reset_description: None,
+            }),
+            seven_day_sonnet: None,
+            extra_usage: None,
+        }
+    }
+
+    /// Sister of `opus_only_capped_snapshot` for the sonnet 7-day
+    /// window. Same rationale: a sonnet-only cap must bubble through
+    /// `is_rate_limited` even when no other window is at the limit.
+    fn sonnet_only_capped_snapshot(util: f64, resets_at: Option<SystemTime>) -> UsageSnapshot {
+        UsageSnapshot {
+            source: UsageSourceKind::Oauth,
+            fetched_at: SystemTime::UNIX_EPOCH,
+            five_hour: Some(UsageWindow {
+                utilization: 30.0,
+                resets_at: Some(SystemTime::now() + std::time::Duration::from_secs(3600)),
+                reset_description: None,
+            }),
+            seven_day: Some(UsageWindow {
+                utilization: 30.0,
+                resets_at: Some(SystemTime::now() + std::time::Duration::from_secs(3600)),
+                reset_description: None,
+            }),
+            seven_day_opus: None,
+            seven_day_sonnet: Some(UsageWindow {
+                utilization: util,
+                resets_at,
+                reset_description: None,
+            }),
+            extra_usage: None,
+        }
+    }
+
+    #[test]
+    fn is_rate_limited_fires_on_opus_only_capped_window() {
+        // Max-plan reality: shared 5h + 7d windows healthy, opus-7d
+        // at cap. The picker must classify as rate-limited or the
+        // account keeps getting picked and trips API 429s.
+        let future = SystemTime::now() + std::time::Duration::from_secs(60);
+        let snap = opus_only_capped_snapshot(100.0, Some(future));
+        assert!(is_rate_limited(&snap), "opus 7d cap (alone) must be detected");
+    }
+
+    #[test]
+    fn is_rate_limited_fires_on_sonnet_only_capped_window() {
+        // Symmetry with opus: sonnet-7d at cap must also bubble up.
+        let future = SystemTime::now() + std::time::Duration::from_secs(60);
+        let snap = sonnet_only_capped_snapshot(100.0, Some(future));
+        assert!(is_rate_limited(&snap), "sonnet 7d cap (alone) must be detected");
+    }
+
+    #[test]
+    fn is_rate_limited_false_when_opus_capped_but_reset_passed() {
+        // Stale opus-window snapshot - resets_at has come and gone.
+        // Must classify as NOT rate-limited so the picker reconsiders
+        // the account; the same self-clearing applies per-window.
+        let past = SystemTime::now() - std::time::Duration::from_secs(60);
+        let snap = opus_only_capped_snapshot(100.0, Some(past));
+        assert!(!is_rate_limited(&snap), "stale opus window must self-clear like any other");
+    }
+
     #[test]
     fn is_rate_limited_false_when_window_at_cap_but_no_reset_scheduled() {
         // None means "no scheduled reset" - we cannot prove the limit
