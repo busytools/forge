@@ -1456,14 +1456,26 @@ fn preprocess_markdown(text: &str) -> String {
 /// Conservative: a `<` is treated as a tag start only when followed
 /// by an ASCII alphabetic character or `/` so `1 < 2` and `<<EOF`
 /// stay literal. Unclosed `<...` (no `>` on the line) is preserved
-/// verbatim. Caller must already have decided the line is OUTSIDE
-/// a fenced code block - this helper does no fence tracking.
+/// verbatim. Inline backtick spans (single `\``) pass through
+/// untouched so language generics in `Vec<T>` / `Map<K, V>` / JSX
+/// (`<App />` shown as code) survive intact - the strip would
+/// otherwise mistake them for HTML tags. Caller must already have
+/// decided the line is OUTSIDE a fenced code block - this helper
+/// does no triple-backtick fence tracking.
 fn strip_html_tags(line: &str) -> String {
     let mut out = String::with_capacity(line.len());
     let bytes = line.as_bytes();
     let mut i = 0;
+    let mut in_backticks = false;
     while i < bytes.len() {
-        if bytes[i] == b'<'
+        if bytes[i] == b'`' {
+            in_backticks = !in_backticks;
+            out.push('`');
+            i += 1;
+            continue;
+        }
+        if !in_backticks
+            && bytes[i] == b'<'
             && i + 1 < bytes.len()
             && (bytes[i + 1].is_ascii_alphabetic() || bytes[i + 1] == b'/')
             && let Some(rel_close) = bytes[i + 1..].iter().position(|&b| b == b'>')
@@ -1721,6 +1733,24 @@ mod tests {
         // And the fence markers themselves survive intact.
         assert!(result.contains("```rust"));
         assert!(result.contains("```\n"));
+    }
+
+    #[test]
+    fn preprocess_preserves_html_inside_inline_backticks() {
+        // Inline code spans (single backticks) carry the same
+        // tag-shaped technical content as fenced blocks: `Vec<T>`,
+        // `Map<K, V>`, `<App />`, `List<Integer>`, etc. Stripping
+        // there mangles legitimate generics in chat output. Lock
+        // the round-trip.
+        let result = preprocess_markdown("The type is `Vec<T>` here.");
+        assert!(
+            result.contains("`Vec<T>`"),
+            "single-backtick code must preserve `<>`, got: {result:?}"
+        );
+        let result2 = preprocess_markdown("JSX: `<App />` renders.");
+        assert!(result2.contains("`<App />`"), "got: {result2:?}");
+        let result3 = preprocess_markdown("Generic: `Map<K, V>` value.");
+        assert!(result3.contains("`Map<K, V>`"), "got: {result3:?}");
     }
 
     #[test]
