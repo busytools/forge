@@ -57,6 +57,14 @@ const MAX_LOADING_ITERATIONS: u32 = 12;
 /// 30 s polling interval for the recovery loop.
 const RECOVERY_POLL_INTERVAL: Duration = Duration::from_secs(30);
 
+/// Per-call timeout for `claude auth status` invocations from the
+/// recovery poll. The shellout is normally ~50 ms (see auth_status.rs);
+/// 5 s is a generous upper bound that absorbs a slow keychain prompt
+/// or a network-mounted home dir without holding up the rest of the
+/// recovery cycle for an unresponsive process. On timeout the
+/// account stays Bailed and the next 30 s tick retries.
+const RECOVERY_AUTH_STATUS_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Run the boot-time loading state machine for one account until it
 /// reaches a terminal `LoadingState`.
 ///
@@ -237,14 +245,52 @@ pub async fn run_recovery_poll(workspace_weak: Weak<Workspace>) {
             continue;
         }
 
+        // Fan out the auth_status shellouts concurrently via JoinSet
+        // so N bailed accounts don't add their per-call latency
+        // sequentially. Each call wraps in a 5s timeout - a wedged
+        // claude process (rare but observed during network-mounted
+        // home dir hiccups) shouldn't block the rest of the cycle.
+        let mut join_set = tokio::task::JoinSet::new();
         for (key, config_dir) in bailed {
             let dir = config_dir.clone();
-            let logged_in = tokio::task::spawn_blocking(move || {
-                auth_status::account_info_from_shell(&dir).is_some()
-            })
-            .await
-            .unwrap_or(false);
+            let key_for_task = key.clone();
+            join_set.spawn(async move {
+                let outcome = tokio::time::timeout(
+                    RECOVERY_AUTH_STATUS_TIMEOUT,
+                    tokio::task::spawn_blocking(move || {
+                        auth_status::account_info_from_shell(&dir).is_some()
+                    }),
+                )
+                .await;
+                let logged_in = match outcome {
+                    Ok(Ok(b)) => b,
+                    Ok(Err(join_err)) => {
+                        tracing::warn!(
+                            target: "forge_workspace::account_loader",
+                            account = %key_for_task.0,
+                            error = %join_err,
+                            "recovery poll auth_status spawn_blocking panicked; treating as not-logged-in",
+                        );
+                        false
+                    }
+                    Err(_) => {
+                        tracing::warn!(
+                            target: "forge_workspace::account_loader",
+                            account = %key_for_task.0,
+                            timeout_secs = RECOVERY_AUTH_STATUS_TIMEOUT.as_secs(),
+                            "recovery poll auth_status timed out; account stays Bailed for this cycle",
+                        );
+                        false
+                    }
+                };
+                (key_for_task, config_dir, logged_in)
+            });
+        }
 
+        while let Some(result) = join_set.join_next().await {
+            let Ok((key, config_dir, logged_in)) = result else {
+                continue;
+            };
             if !logged_in {
                 continue;
             }
