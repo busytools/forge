@@ -278,7 +278,7 @@
 <header>
   <h1>forge<span class="tag">TUI map · what's on screen, where, when</span></h1>
   <p>
-    Visual truth doc for forge-tui. <strong>Current implemented state only — no future ideas, no aspirational sketches.</strong> Every UI surface the running TUI can render today is captured here, regardless of when in a session each one is actually visible. Anything new arrives in the same PR that lands the code change.
+    Visual truth doc for forge-tui. <strong>Current implemented state only - no future ideas, no aspirational sketches.</strong> Every UI surface the running TUI can render today is captured here, regardless of when in a session each one is actually visible. Anything new arrives in the same PR that lands the code change.
   </p>
   <p class="meta">v0.16.0 baseline · 2026-05-21 · open in any modern browser</p>
 </header>
@@ -308,7 +308,7 @@
 <h2 class="section-title" id="workspace">Workspace</h2>
 
 <p class="intro">
-  forge ships as a 5-crate runtime workspace. Only <code>forge-tui</code> renders to the terminal; the other four layer underneath through strict acyclic dependencies. <code>forge-test-harness</code> is the wire-conformance harness — not in the runtime path.
+  forge ships as a 5-crate runtime workspace. Only <code>forge-tui</code> renders to the terminal; the other four layer underneath through strict acyclic dependencies. <code>forge-test-harness</code> is the wire-conformance harness - not in the runtime path.
 </p>
 
 <div class="crates">
@@ -348,7 +348,7 @@
 <h2 class="section-title" id="layout">Layout</h2>
 
 <p class="intro">
-  forge-tui's main frame is a strict vertical stack composed by <code>layout::compute</code>, flanked by inline side panes at the wider tiers. <strong>This stack only renders in <code>ActiveView::Chat</code>.</strong> When the user opens <code>/config</code>, forge swaps the entire frame to <code>ActiveView::Config</code> — chat / input / side panes all disappear. At terminal widths ≥160 cols the chat frame is flanked by a 40ch <a href="#projects-pane">Projects pane</a> on the left (carrying the account / mode / model / usage / location panel at its bottom) and a 40ch <a href="#inspector-pane">Inspector pane</a> on the right (carrying the live <code>TASKS</code> list from <code>TodoWrite</code>); between 120–159 cols both panes shrink to 30ch with truncation; below 120 cols a single-row top bar replaces both panes — tapping the <code>▤</code> icon (or <kbd>Ctrl+B</kbd>) opens the Projects overlay, tapping <code>▦</code> (or <kbd>Ctrl+E</kbd>) opens the Inspector overlay.
+  forge-tui's main frame is a strict vertical stack composed by <code>layout::compute</code>, flanked by inline side panes at the wider tiers. <strong>This stack only renders in <code>ActiveView::Chat</code>.</strong> When the user opens <code>/config</code>, forge swaps the entire frame to <code>ActiveView::Config</code> - chat / input / side panes all disappear. At terminal widths ≥160 cols the chat frame is flanked by a 40ch <a href="#projects-pane">Projects pane</a> on the left (carrying the account / mode / model / usage / location panel at its bottom) and a 40ch <a href="#inspector-pane">Inspector pane</a> on the right (carrying the live <code>TASKS</code> list from <code>TodoWrite</code>); between 120–159 cols both panes shrink to 30ch with truncation; below 120 cols a single-row top bar replaces both panes - tapping the <code>▤</code> icon (or <kbd>Ctrl+B</kbd>) opens the Projects overlay, tapping <code>▦</code> (or <kbd>Ctrl+E</kbd>) opens the Inspector overlay.
 </p>
 
 <p class="intro">
@@ -356,15 +356,15 @@
 </p>
 
 <ol style="color: var(--muted); font-size: 13px; line-height: 1.7; margin: 0 0 16px 22px;">
-  <li><code>body</code> — chat scrollback (Min 3 rows, takes the flex)</li>
-  <li><code>input_sep</code> — full-width <code>─</code> separator (1 row, DIM)</li>
-  <li><code>input</code> — input field (1 row, grows up to N as user types)</li>
-  <li><code>input_bottom_sep</code> — full-width <code>─</code> separator (1 row, DIM)</li>
-  <li><code>help</code> — help overlay (0 when inactive, else <code>HELP_PANEL_HEIGHT = 14</code>)</li>
+  <li><code>body</code> - chat scrollback (Min 3 rows, takes the flex)</li>
+  <li><code>input_sep</code> - full-width <code>─</code> separator (1 row, DIM)</li>
+  <li><code>input</code> - input field (1 row, grows up to N as user types)</li>
+  <li><code>input_bottom_sep</code> - full-width <code>─</code> separator (1 row, DIM)</li>
+  <li><code>help</code> - help overlay (0 when inactive, else <code>HELP_PANEL_HEIGHT = 14</code>)</li>
 </ol>
 
 <p class="intro" style="margin-top: 8px;">
-  The mode / model / fast-mode / cwd / branch / usage <strong>status used to sit as 2 rows below the input</strong>; that row is gone. Mode / Model / Fast / Effort / usage moved to the <a href="#projects-pane">Projects pane</a>'s bottom panel together with the account name and a per-window usage bar (5h, 7d); cwd and branch moved to the right-hand <a href="#inspector-pane">Inspector pane</a>'s <code>GIT</code> section (which also surfaces the per-file diff stats). The live todo list <strong>used to sit above the input</strong> as the <code>todo</code> panel (closed = 1-line compact, open = up to 5 rows, toggle on <kbd>Ctrl+T</kbd>); that panel is gone too — todos now render in the Inspector pane as its <code>TASKS</code> section.
+  The mode / model / fast-mode / cwd / branch / usage <strong>status used to sit as 2 rows below the input</strong>; that row is gone. Mode / Model / Fast / Effort / usage moved to the <a href="#projects-pane">Projects pane</a>'s bottom panel together with the account name and a per-window usage bar (5h, 7d); cwd and branch moved to the right-hand <a href="#inspector-pane">Inspector pane</a>'s <code>GIT</code> section (which also surfaces the per-file diff stats). The live todo list <strong>used to sit above the input</strong> as the <code>todo</code> panel (closed = 1-line compact, open = up to 5 rows, toggle on <kbd>Ctrl+T</kbd>); that panel is gone too - todos now render in the Inspector pane as its <code>TASKS</code> section.
 </p>
 
 <p class="intro">
@@ -379,7 +379,7 @@
 
   <span class="accent-bold">Claude</span>
   Assistant prose, full markdown rendering. Code blocks, lists, inline emphasis,
-  links — all handled via <span class="dim">tui-markdown</span> / <span class="dim">syntect</span>.
+  links - all handled via <span class="dim">tui-markdown</span> / <span class="dim">syntect</span>.
 
   <span class="success">✓</span> <span class="bold">⬚</span> <span class="bold">Read</span> crates/forge-tui/src/app.rs
   <span class="success">✓</span> <span class="bold">▣</span> <span class="bold">Edit</span> crates/forge-tui/src/app.rs (+12, -3)
@@ -394,16 +394,16 @@
 </pre>
 </div>
 
-<p class="caption">Left padding is 2 cols across the chat body. Two horizontal <code>─</code> separators in DIM frame the input — one above, one below. The bottom of the chat frame ends at the lower <code>─</code>; the status pieces that used to sit below the input now live in the <a href="#projects-pane">Projects pane</a>'s bottom panel, and the todo list that used to sit above the input is now in the <a href="#inspector-pane">Inspector pane</a>'s <code>TASKS</code> section.</p>
+<p class="caption">Left padding is 2 cols across the chat body. Two horizontal <code>─</code> separators in DIM frame the input - one above, one below. The bottom of the chat frame ends at the lower <code>─</code>; the status pieces that used to sit below the input now live in the <a href="#projects-pane">Projects pane</a>'s bottom panel, and the todo list that used to sit above the input is now in the <a href="#inspector-pane">Inspector pane</a>'s <code>TASKS</code> section.</p>
 
 <div class="surface" id="projects-pane">
   <div class="surface-head">
     <h4>Projects pane (Wide / Medium / Narrow tiers)</h4>
-    <div class="when">visible: at all terminal widths — Wide (≥160) renders a 40ch inline pane, Medium (120–159) a 30ch inline pane, Narrow (&lt;120) a single-line top bar with on-demand full-screen overlay</div>
+    <div class="when">visible: at all terminal widths - Wide (≥160) renders a 40ch inline pane, Medium (120–159) a 30ch inline pane, Narrow (&lt;120) a single-line top bar with on-demand full-screen overlay</div>
   </div>
   <div class="surface-body">
     <p>Left-side pane, 40ch wide, docked to the left of the chat frame. Lists projects from <code>forge.toml</code>'s <code>[[projects]]</code>. Each project renders as a single bold row; the active project is in <code>RUST_ORANGE</code> bold, background projects use the terminal's default fg + bold. The active project's drilldown (only) renders its sessions immediately beneath: lead first (<code>◆</code>), extras after, with the currently-viewed session marked <code>•</code>. Sort is most-recently-active first; alphabetical tie-break.</p>
-    <p>Project rows are mouse-only; chat input keeps keyboard focus. Click any project header to switch the active session to that project's lead — if the lead is already in-process, the swap is instant; if the project is sleeping (no in-process session yet), the click hands off to <code>workspace.get_agent_handle(SessionTarget::Named(name))</code> and a synthetic <code>__spawn_&lt;project&gt;__</code> bucket fronts a "Waking…" placeholder welcome until <code>Connected</code> arrives and migrates the bucket onto the real session UUID. Click any session row in the active project's drilldown to switch directly to that session.</p>
+    <p>Project rows are mouse-only; chat input keeps keyboard focus. Click any project header to switch the active session to that project's lead - if the lead is already in-process, the swap is instant; if the project is sleeping (no in-process session yet), the click hands off to <code>workspace.get_agent_handle(SessionTarget::Named(name))</code> and a synthetic <code>__spawn_&lt;project&gt;__</code> bucket fronts a "Waking…" placeholder welcome until <code>Connected</code> arrives and migrates the bucket onto the real session UUID. Click any session row in the active project's drilldown to switch directly to that session.</p>
     <div class="term">
       <pre class="indent">
   <span class="accent-bold">PROJECTS</span>
@@ -446,15 +446,15 @@
   <span class="dim">  claude   </span>v2.0.45<span class="warning">  ↑ v2.0.50</span>
 </pre>
     </div>
-    <p>The pane has <strong>two anchored regions</strong>: the project list grows from the top, and the <strong>account / status panel</strong> is hard-docked at the bottom. The dim <code>─</code> rule between them sits at a fixed row from the bottom — a permanent gutter, not a separator that floats based on list length. <strong>The two never overlap.</strong> When the project list outgrows its region the list scrolls within itself; the panel never gives up its rows. The empty space above the rule in the mockup above shows what a short project list looks like — the panel still sits at the bottom, gravity is preserved.</p>
-    <p>The panel's job is to read like <strong>account chrome</strong>, not "current status." Even though Mode / Model / Ctx flip when the user switches to another session in another project, the panel's shape, position, and labelling stay put. The Profile line at the top of the panel is the anchor — when you switch from your <code>Subspace</code> account's forge session to your <code>Granite</code> account's hub-modules session, Profile flips and Mode / Model / Ctx flip with it, but the panel itself doesn't move. The panel renders, in order:</p>
+    <p>The pane has <strong>two anchored regions</strong>: the project list grows from the top, and the <strong>account / status panel</strong> is hard-docked at the bottom. The dim <code>─</code> rule between them sits at a fixed row from the bottom - a permanent gutter, not a separator that floats based on list length. <strong>The two never overlap.</strong> When the project list outgrows its region the list scrolls within itself; the panel never gives up its rows. The empty space above the rule in the mockup above shows what a short project list looks like - the panel still sits at the bottom, gravity is preserved.</p>
+    <p>The panel's job is to read like <strong>account chrome</strong>, not "current status." Even though Mode / Model / Ctx flip when the user switches to another session in another project, the panel's shape, position, and labelling stay put. The Profile line at the top of the panel is the anchor - when you switch from your <code>Subspace</code> account's forge session to your <code>Granite</code> account's hub-modules session, Profile flips and Mode / Model / Ctx flip with it, but the panel itself doesn't move. The panel renders, in order:</p>
     <ul style="color: var(--muted); font-size: 13px; line-height: 1.7; margin: 0 0 12px 18px;">
-      <li><strong>Identity / posture</strong> — <code>Profile</code> (active account display name from <code>forge.toml</code>'s <code>[[accounts]]</code>, via <code>app.active_account_display_name</code>), <code>Org</code> (organization on the active account, sourced from <code>AccountInfo.organization</code> — dim <code>—</code> placeholder until the SDK reports one), <code>ID</code> (first 8 chars of the active <code>session_id</code> with a trailing <code>⧉</code> glyph at the right gutter — click the glyph to copy the full session id to the OS clipboard via <code>arboard</code>), <code>Mode</code> (permission mode badge — same colors as the old footer used: <code>auto</code> / <code>acceptEdits</code> yellow, <code>plan</code> blue, <code>bypassPermissions</code> / <code>dontAsk</code> red, <code>default</code> dim), <code>Model</code> (the SDK's <code>display_name_long</code> with any <code>(… context)</code> wrapper folded inline, e.g. <code>Claude Opus 4.7</code> or <code>Sonnet (200K context)</code> → <code>Sonnet 200K</code>), <code>Effort</code> (always shown on its own row so a long model name can never push it off-screen).</li>
-      <li><strong>Usage bars</strong> — three 12-cell filling bars: <code>Ctx</code> (per-session context %), <code>5h</code> (5-hour plan window), <code>7d</code> (combined 7-day window). The fill colour is a <strong>per-cell position gradient</strong>, not a threshold step: cells 1–3 green, 4–6 yellow, 7–9 orange, 10–12 red, so the rightmost filled cell tells you which zone the bar is in. Empty cells stay <code>░</code> in DIM. The <code>Ctx</code> bar is followed by a DIM, right-justified token-count on the next line (e.g. <code>1M</code> / <code>200K</code>) — the model's raw context-window size from `ContextUsageResponse.raw_max_tokens`. The <code>5h</code> and <code>7d</code> rows are followed by a DIM, right-justified duration on the next line (e.g. <code>1h 48m</code> / <code>4d 4h</code>) — the legacy <code>resets in</code> prose was dropped so the eye lands on the time, not the verb. A single blank row separates each bar group from the next.</li>
-      <li><strong>Versions</strong> — two trailing rows: <code>forge</code> (the running binary's <code>CARGO_PKG_VERSION</code>) and <code>claude</code> (the version reported by <code>claude --version</code> on the local machine). When the npm registry probe finds a strictly-newer published version under the <code>@anthropic-ai/claude-code</code> <code>latest</code> dist-tag, a <span class="warning">yellow <code>↑ vX.Y.Z</code></span> indicator appends to the <code>claude</code> row. Probes run once at app startup in parallel via <code>Workspace::fetch_cli_version_info</code>; missing values render as <code>—</code> so the row count stays constant.</li>
+      <li><strong>Identity / posture</strong> - <code>Profile</code> (active account display name from <code>forge.toml</code>'s <code>[[accounts]]</code>, via <code>app.active_account_display_name</code>), <code>Org</code> (organization on the active account, sourced from <code>AccountInfo.organization</code> - dim <code>-</code> placeholder until the SDK reports one), <code>ID</code> (first 8 chars of the active <code>session_id</code> with a trailing <code>⧉</code> glyph at the right gutter - click the glyph to copy the full session id to the OS clipboard via <code>arboard</code>), <code>Mode</code> (permission mode badge - same colors as the old footer used: <code>auto</code> / <code>acceptEdits</code> yellow, <code>plan</code> blue, <code>bypassPermissions</code> / <code>dontAsk</code> red, <code>default</code> dim), <code>Model</code> (the SDK's <code>display_name_long</code> with any <code>(… context)</code> wrapper folded inline, e.g. <code>Claude Opus 4.7</code> or <code>Sonnet (200K context)</code> → <code>Sonnet 200K</code>), <code>Effort</code> (always shown on its own row so a long model name can never push it off-screen).</li>
+      <li><strong>Usage bars</strong> - three 12-cell filling bars: <code>Ctx</code> (per-session context %), <code>5h</code> (5-hour plan window), <code>7d</code> (combined 7-day window). The fill colour is a <strong>per-cell position gradient</strong>, not a threshold step: cells 1–3 green, 4–6 yellow, 7–9 orange, 10–12 red, so the rightmost filled cell tells you which zone the bar is in. Empty cells stay <code>░</code> in DIM. The <code>Ctx</code> bar is followed by a DIM, right-justified token-count on the next line (e.g. <code>1M</code> / <code>200K</code>) - the model's raw context-window size from `ContextUsageResponse.raw_max_tokens`. The <code>5h</code> and <code>7d</code> rows are followed by a DIM, right-justified duration on the next line (e.g. <code>1h 48m</code> / <code>4d 4h</code>) - the legacy <code>resets in</code> prose was dropped so the eye lands on the time, not the verb. A single blank row separates each bar group from the next.</li>
+      <li><strong>Versions</strong> - two trailing rows: <code>forge</code> (the running binary's <code>CARGO_PKG_VERSION</code>) and <code>claude</code> (the version reported by <code>claude --version</code> on the local machine). When the npm registry probe finds a strictly-newer published version under the <code>@anthropic-ai/claude-code</code> <code>latest</code> dist-tag, a <span class="warning">yellow <code>↑ vX.Y.Z</code></span> indicator appends to the <code>claude</code> row. Probes run once at app startup in parallel via <code>Workspace::fetch_cli_version_info</code>; missing values render as <code>-</code> so the row count stays constant.</li>
     </ul>
     <p>The <code>📁 cwd</code> and <code>⎇ branch</code> rows that used to sit at the bottom of this panel moved to the right-hand <a href="#inspector-pane">Inspector pane</a>'s <code>GIT</code> section.</p>
-    <p>At Narrow tier (&lt;120 cols), the inline pane is replaced by a single-line top bar showing <code>▤  &lt;active-project&gt;·&lt;active-session&gt;</code>. Tap <code>▤</code> (or <kbd>Ctrl+B</kbd>) to expand the overlay — full-screen list of projects with the active project's drilldown, the same account / status panel docked at the bottom, and a <code>✕</code> glyph in the banner to dismiss. Picking a project / session row in the overlay switches active session AND closes the overlay in one action. <kbd>Esc</kbd> also closes. Aggregate unread badge on <code>▤</code> is deferred to a follow-up issue.</p>
+    <p>At Narrow tier (&lt;120 cols), the inline pane is replaced by a single-line top bar showing <code>▤  &lt;active-project&gt;·&lt;active-session&gt;</code>. Tap <code>▤</code> (or <kbd>Ctrl+B</kbd>) to expand the overlay - full-screen list of projects with the active project's drilldown, the same account / status panel docked at the bottom, and a <code>✕</code> glyph in the banner to dismiss. Picking a project / session row in the overlay switches active session AND closes the overlay in one action. <kbd>Esc</kbd> also closes. Aggregate unread badge on <code>▤</code> is deferred to a follow-up issue.</p>
     <div class="term">
       <pre class="indent">
 <span class="dim">▤</span>  forge·main
@@ -496,12 +496,12 @@ chat continues here…
     </div>
     <dl>
       <dt>code</dt><dd><code>crates/forge-tui/src/ui/projects_pane.rs::render</code> (inline) · <code>::render_overlay</code> (Narrow overlay) · <code>::render_account_status_footer</code> (the bottom panel, called from both render paths) · <code>crates/forge-tui/src/ui/top_bar.rs::render</code> (Narrow top bar) · click handling in <code>crates/forge-tui/src/app/events/mouse.rs</code> · sleeping-project spawn in <code>crates/forge-tui/src/app/connect.rs::spawn_for_sleeping_project</code></dd>
-      <dt>color</dt><dd>banner (<code>PROJECTS</code> / <code>▤ PROJECTS</code>): <code>RUST_ORANGE</code> bold · rule: <code>DIM</code> · active project: <code>RUST_ORANGE</code> bold · background project: default fg + bold · session-row state glyph + lead marker (<code>◆</code>): <code>DIM</code> · current marker (<code>•</code>): <code>RUST_ORANGE</code> · session label: default fg · top-bar <code>▤</code> icon: <code>DIM</code> when overlay closed, <code>RUST_ORANGE</code> bold when open · overlay <code>✕</code>: <code>DIM</code> · panel labels (<code>Profile</code>, <code>Mode</code>, <code>Model</code>, <code>Effort</code>, <code>Fast</code>, <code>Ctx</code>, <code>5h</code>, <code>7d</code>): <code>DIM</code> · panel values: default fg unless badge-colored (Mode badge follows the legacy footer mode colors; Fast follows the legacy <code>FAST:*</code> colors) · usage bar fill: per-cell position gradient — cells 1–3 <span class="success">green</span>, 4–6 <span class="warning">yellow</span>, 7–9 <span class="accent">orange</span>, 10–12 <span class="error">red</span>; empty cells (<code>░</code>) DIM · ETA duration lines: <code>DIM</code></dd>
-      <dt>state glyphs</dt><dd>session lifecycle prefix in the active project's drilldown — <code>⠋</code> Running / Spawning · <code>△</code> Attention (background paused on a permission prompt) · <code>·</code> Sleeping · <code> </code> (space) Idle. Background-project rows render no state glyph; only the active project's sessions show one.</dd>
+      <dt>color</dt><dd>banner (<code>PROJECTS</code> / <code>▤ PROJECTS</code>): <code>RUST_ORANGE</code> bold · rule: <code>DIM</code> · active project: <code>RUST_ORANGE</code> bold · background project: default fg + bold · session-row state glyph + lead marker (<code>◆</code>): <code>DIM</code> · current marker (<code>•</code>): <code>RUST_ORANGE</code> · session label: default fg · top-bar <code>▤</code> icon: <code>DIM</code> when overlay closed, <code>RUST_ORANGE</code> bold when open · overlay <code>✕</code>: <code>DIM</code> · panel labels (<code>Profile</code>, <code>Mode</code>, <code>Model</code>, <code>Effort</code>, <code>Fast</code>, <code>Ctx</code>, <code>5h</code>, <code>7d</code>): <code>DIM</code> · panel values: default fg unless badge-colored (Mode badge follows the legacy footer mode colors; Fast follows the legacy <code>FAST:*</code> colors) · usage bar fill: per-cell position gradient - cells 1–3 <span class="success">green</span>, 4–6 <span class="warning">yellow</span>, 7–9 <span class="accent">orange</span>, 10–12 <span class="error">red</span>; empty cells (<code>░</code>) DIM · ETA duration lines: <code>DIM</code></dd>
+      <dt>state glyphs</dt><dd>session lifecycle prefix in the active project's drilldown - <code>⠋</code> Running / Spawning · <code>△</code> Attention (background paused on a permission prompt) · <code>·</code> Sleeping · <code> </code> (space) Idle. Background-project rows render no state glyph; only the active project's sessions show one.</dd>
       <dt>click</dt><dd>project header → <code>switch_to_project_lead</code>: in-process lead → instant <code>switch_active_session</code>; sleeping lead → <code>spawn_for_sleeping_project</code> (synthetic bucket + async <code>get_agent_handle</code>). Active-project session row → direct <code>switch_active_session</code> on that session. At Narrow tier, both also close the overlay; the <code>▤</code> top-bar icon toggles overlay open/close, and the overlay <code>✕</code> glyph dismisses without switching.</dd>
-      <dt>toggle</dt><dd><code>Ctrl+B</code> at Wide / Medium tiers hides / restores the inline pane (in-memory only — each launch starts visible). At Narrow tier <code>Ctrl+B</code> toggles the transient overlay flag. <kbd>Esc</kbd> also closes the overlay.</dd>
-      <dt>scope</dt><dd>All three tiers ship: Wide (≥160) inline 40ch · Medium (120–159) inline 30ch with truncation · Narrow (&lt;120) top-bar + overlay. Click + toggle behaviour tier-agnostic for the inline pane; Narrow uses overlay + <code>✕</code> semantics. Mouse-only interaction in v1 (plus <kbd>Ctrl+B</kbd> / <kbd>Esc</kbd>) — chat input always has keyboard focus.</dd>
-      <dt>layout</dt><dd>The pane is vertically split into two anchored regions: <strong>top</strong> for the project list, <strong>bottom</strong> for the account / status panel. The panel reserves a fixed 17 rows from the bottom up (rule + 5 identity rows + 1 blank + 1 Ctx bar + 1 blank + 2 (5h bar + ETA) + 1 blank + 2 (7d bar + ETA) + 1 blank + 2 version rows). The project list takes everything above. When the project list overflows its region it scrolls within itself; the panel's rows are never reclaimed. If the project list is short, the unused rows in the list region render blank — the panel does NOT slide upward to close the gap. The panel is skipped entirely when the pane height drops below 24 rows so the project list keeps at least 7 rows.</dd>
+      <dt>toggle</dt><dd><code>Ctrl+B</code> at Wide / Medium tiers hides / restores the inline pane (in-memory only - each launch starts visible). At Narrow tier <code>Ctrl+B</code> toggles the transient overlay flag. <kbd>Esc</kbd> also closes the overlay.</dd>
+      <dt>scope</dt><dd>All three tiers ship: Wide (≥160) inline 40ch · Medium (120–159) inline 30ch with truncation · Narrow (&lt;120) top-bar + overlay. Click + toggle behaviour tier-agnostic for the inline pane; Narrow uses overlay + <code>✕</code> semantics. Mouse-only interaction in v1 (plus <kbd>Ctrl+B</kbd> / <kbd>Esc</kbd>) - chat input always has keyboard focus.</dd>
+      <dt>layout</dt><dd>The pane is vertically split into two anchored regions: <strong>top</strong> for the project list, <strong>bottom</strong> for the account / status panel. The panel reserves a fixed 17 rows from the bottom up (rule + 5 identity rows + 1 blank + 1 Ctx bar + 1 blank + 2 (5h bar + ETA) + 1 blank + 2 (7d bar + ETA) + 1 blank + 2 version rows). The project list takes everything above. When the project list overflows its region it scrolls within itself; the panel's rows are never reclaimed. If the project list is short, the unused rows in the list region render blank - the panel does NOT slide upward to close the gap. The panel is skipped entirely when the pane height drops below 24 rows so the project list keeps at least 7 rows.</dd>
     </dl>
   </div>
 </div>
@@ -558,13 +558,15 @@ chat continues here…
 <div class="surface" id="inspector-pane">
   <div class="surface-head">
     <h4>Inspector pane (Wide / Medium / Narrow tiers)</h4>
-    <div class="when">visible: at all terminal widths — Wide (≥160) renders a 40ch inline pane on the right of chat, Medium (120–159) a 30ch inline pane, Narrow (&lt;120) an <code>Inspector ▦</code> icon on the top bar with on-demand full-screen overlay</div>
+    <div class="when">visible: at all terminal widths - Wide (≥160) renders a 40ch inline pane on the right of chat, Medium (120–159) a 30ch inline pane, Narrow (&lt;120) an <code>Inspector ▦</code> icon on the top bar with on-demand full-screen overlay</div>
   </div>
   <div class="surface-body">
-    <p>Right-side pane, 40ch wide, docked to the right of the chat frame. Mirror of the <a href="#projects-pane">Projects pane</a> on the left in chrome (banner + rule), Narrow-tier overlay semantics, and persisted-visibility model. The horizontal layout is asymmetric on purpose: the left pane has a <code>│</code> separator + 1-col padding between it and the chat column; the right pane sits flush against the chat column, using the chat's own scrollbar rail (<code>▕</code>) as the visual divider. The pane's own 2-col content indent provides breathing room from the scrollbar. Reads strictly from the active session — switching projects via the left pane swaps the Inspector's content alongside it.</p>
-    <p>The <strong>banner</strong> (<code>INSPECTOR</code> heading + DIM rule beneath it) is pinned at the top — it never scrolls. Everything below it (starting with the <code>GIT</code> section) is a scrollable body: mouse wheel over the body advances the active session's <code>inspector_scroll_offset</code> by 3 lines per notch, and a vertical scrollbar appears on the right edge whenever the body overflows the visible area. The offset lives on <code>UiSession</code>, so switching away to another session and returning preserves where you were looking, same shape as chat scrollback. Same scroll behaviour applies at Narrow tier inside the full-screen overlay.</p>
-    <p>The pane carries four sections: <strong>GIT</strong> (always rendered), <strong>WORKTREE</strong> (rendered when a project path resolves — see shape table below for suppression rules), <strong>TASKS</strong> (rendered when the active session has todos or a pending verification nudge), and <strong>PROCESSES</strong> (rendered when claude's spawned process tree has at least one descendant alive — foreground / backgrounded <code>Bash</code>, <code>Monitor</code> streams, grandchildren like <code>rustc</code> workers, or wire-only <code>CronCreate</code> registrations). DIM <code>─</code> horizontal rules separate adjacent sections so each surface reads visually distinct. The chat scrollback no longer surfaces a <code>TodoWrite</code> tool-call card; updates land transparently in the <code>TASKS</code> section. Sections render in order: GIT → WORKTREE → TASKS → PROCESSES; each downstream section is hidden when its content set is empty. PROCESSES is a live monitor sourced from <code>sysinfo</code>'s descendant walk — when the last process exits the section disappears.</p>
-    <p>The <strong>GIT</strong> section shows the active session's cwd, the current branch on its own line, a sub-label row below it carrying the diff context (<code>worktree</code> or <code>vs &lt;default&gt;</code>) with aggregate <code>+N -M</code> totals right-justified, an optional <code>PR #N → closes #M #K</code> row when the scanner resolved an open pull request for the branch, and a box-drawing tree of the top-N changed files grouped by directory. Single-child directory chains fold into one row so paths like <code>crates/forge-agent/src/env/</code> appear as a single header above their file children. The diff side is polled — <code>git_diff</code> shells out to <code>git --numstat</code> every 10 s for the active session only; a 1 s ticker pokes the drain pump, the rule "snapshot is <code>None</code> OR age ≥ 10 s → fetch" decides whether to spawn a scan. The PR side rides on the same poll but is branch-keyed: the scanner only shells out to <code>gh pr list</code> when the branch name changed since the previous snapshot, so steady-state scans on the same branch reuse the cached PR / closes data for free.</p>
+    <p>Right-side pane, 40ch wide, docked to the right of the chat frame. Mirror of the <a href="#projects-pane">Projects pane</a> on the left in chrome (banner + rule), Narrow-tier overlay semantics, and persisted-visibility model. The horizontal layout is asymmetric on purpose: the left pane has a <code>│</code> separator + 1-col padding between it and the chat column; the right pane sits flush against the chat column, using the chat's own scrollbar rail (<code>▕</code>) as the visual divider. The pane's own 2-col content indent provides breathing room from the scrollbar. Reads strictly from the active session - switching projects via the left pane swaps the Inspector's content alongside it.</p>
+    <p>The <strong>banner</strong> (<code>INSPECTOR</code> heading + DIM rule beneath it) is pinned at the top - it never scrolls. Everything below it (starting with the <code>GIT</code> section) is a scrollable body: mouse wheel over the body advances the active session's <code>inspector_scroll_offset</code> by 3 lines per notch, and a vertical scrollbar appears on the right edge whenever the body overflows the visible area. The offset lives on <code>UiSession</code>, so switching away to another session and returning preserves where you were looking, same shape as chat scrollback. Same scroll behaviour applies at Narrow tier inside the full-screen overlay.</p>
+    <p>The pane carries three sections: <strong>GIT</strong> (always rendered), <strong>TASKS</strong> (rendered when the focused session has todos or a pending verification nudge), and <strong>PROCESSES</strong> (rendered when claude's spawned process tree has at least one descendant alive - foreground / backgrounded <code>Bash</code>, <code>Monitor</code> streams, grandchildren like <code>rustc</code> workers, or wire-only <code>CronCreate</code> registrations). DIM <code>─</code> horizontal rules separate adjacent sections so each surface reads visually distinct. The chat scrollback no longer surfaces a <code>TodoWrite</code> tool-call card; updates land transparently in the <code>TASKS</code> section. Sections render in order: GIT → TASKS → PROCESSES; each downstream section is hidden when its content set is empty. PROCESSES is a live monitor sourced from <code>sysinfo</code>'s descendant walk - when the last process exits the section disappears.</p>
+    <p>The <strong>GIT</strong> section shows the focused session's cwd, the current branch on its own line, an optional <code>PR #N → closes #M #K</code> row when the scanner resolved an open pull request, and up to two stacked diff sub-sections - <strong>layer 1</strong> (<code>uncommitted</code>: dirty / staged / unstaged tree vs HEAD) and <strong>layer 2</strong> (<code>N commits vs &lt;default&gt;</code>: commits ahead of the resolved default branch). Each sub-section carries its own subtitle row + right-justified <code>+A -R</code> totals + box-drawing tree of the top-N changed files grouped by directory. Single-child directory chains fold into one row so paths like <code>crates/forge-agent/src/env/</code> render as a single header above their file children. The diff side is polled - <code>git_diff</code> shells out to <code>git --numstat</code> every 10 s for the focused session only; a 1 s ticker pokes the drain pump, the rule "snapshot is <code>None</code> OR age ≥ 10 s → fetch" decides whether to spawn a scan. The PR side rides on the same poll but is branch-keyed: the scanner only shells out to <code>gh pr list</code> when the branch name changed since the previous snapshot, so steady-state scans on the same branch reuse the cached PR / closes data for free.</p>
+    <p>The section <strong>follows the focused session</strong>, not the lead's. When a worker is selected, the scan runs against the worker's worktree path (<code>&lt;project_root&gt;/.claude/worktrees/&lt;label&gt;/</code>) so the user sees the worker's branch + in-progress edits, not the lead's view of <code>main</code>. The cwd resolution is handled by <code>Workspace::git_scan_cwd_for_session</code> - composing <code>worker_lookup_for_session</code> with the same <code>worker_tag_dir</code> helper that drives the tag-write path.</p>
+    <p>For a worker on a topic branch with uncommitted edits, both layers populate together - layer 1 shows the in-progress edits, layer 2 shows the committed-but-unmerged work. For the lead on <code>main</code> with a clean tree, neither layer renders and the panel collapses to just the branch row (byte-identical to today's clean-default render). Either layer can render alone when the other is empty.</p>
     <div class="term">
       <pre class="indent">
   <span class="accent-bold">INSPECTOR</span>
@@ -572,21 +574,22 @@ chat continues here…
 
   <span class="dim bold">  GIT</span>                              <span class="dim">🦉</span>
 
-  <span class="dim">  ~/Projects/forge</span>
-  <span class="dim">  ⎇</span> <span class="accent">feat/x</span>
-  <span class="dim">    vs main           </span><span class="success">+1667</span> <span class="error">-1139</span>
-  <span class="dim">    PR </span><span class="accent">#1234</span><span class="dim"> → closes #1230 #1228</span>
+  <span class="dim">  ~/Projects/forge/.claude/worktrees/implementer</span>
+  <span class="dim">  ⎇</span> <span class="accent">implementer/issue-185-inspector-git-follows-focus</span>
+  <span class="dim">    PR </span><span class="accent">#188</span><span class="dim"> → closes #185</span>
+  <span class="dim">    uncommitted        </span><span class="success">+42</span> <span class="error">-8</span>
+
+  <span class="dim">  crates/forge-tui/src/ui</span>
+  <span class="dim">  └─ inspector_pane.rs</span>      <span class="success">+42</span> <span class="error">-8</span>
+
+  <span class="dim">    3 commits vs main  </span><span class="success">+1667</span> <span class="error">-1139</span>
 
   <span class="dim">  crates</span>
   <span class="dim">  ├─ forge-agent/src/env</span>
-  <span class="dim">  │  ├─ git_diff.rs</span>      <span class="success">+648</span> <span class="error">-0</span>
-  <span class="dim">  │  └─ git.rs</span>             <span class="success">+0</span> <span class="error">-559</span>
+  <span class="dim">  │  └─ git_diff.rs</span>         <span class="success">+648</span> <span class="error">-559</span>
   <span class="dim">  └─ forge-tui/src</span>
-  <span class="dim">     ├─ app</span>
-  <span class="dim">     │  ├─ git_diff.rs</span>   <span class="success">+427</span> <span class="error">-0</span>
-  <span class="dim">     │  └─ git_context.rs</span>   <span class="success">+0</span> <span class="error">-179</span>
-  <span class="dim">     └─ ui</span>
-  <span class="dim">        └─ inspector_pane.rs</span> <span class="success">+340</span> <span class="error">-21</span>
+  <span class="dim">     ├─ app/diff_overlay.rs</span> <span class="success">+19</span> <span class="error">-13</span>
+  <span class="dim">     └─ ui/inspector_pane.rs</span> <span class="success">+340</span> <span class="error">-200</span>
   <span class="dim italic">  +22 more</span>
 
   <span class="dim">─────────────────────────</span>
@@ -601,50 +604,26 @@ chat continues here…
   <span class="dim">  ○</span> Open PR
 </pre>
     </div>
-    <p>GIT renders one of five shapes, all keyed off <code>UiSession.git_diff_snapshot</code>:</p>
+    <p>GIT renders one of these shapes, all keyed off <code>UiSession.git_diff_snapshot</code>:</p>
     <ul style="color: var(--muted); font-size: 13px; line-height: 1.7; margin: 0 0 12px 18px;">
-      <li><strong>No snapshot yet</strong> (pre-first-scan window) — only the path row renders. Branch + tree are added once the first poll completes.</li>
-      <li><strong>Not a git repo</strong> (<code>GitDiffView::NoRepo</code>) — only the path row renders. No branch, no tree.</li>
-      <li><strong>Clean default branch</strong> (<code>GitDiffView::CleanDefault</code>) — path + branch row in DIM with no trailing totals (or yellow <code>HEAD</code> for detached HEAD + clean tree). No tree.</li>
-      <li><strong>Worktree dirty</strong> (<code>GitDiffView::Worktree</code>) — path + branch row with right-justified aggregate <code>+TOTAL -TOTAL</code> totals + box-drawing tree of the top-5 modified files + optional <code>+N more</code> overflow.</li>
-      <li><strong>Feature branch clean</strong> (<code>GitDiffView::BranchVsDefault</code>) — path + branch in <span class="accent">RUST_ORANGE</span> with right-justified branch-vs-default totals + the same tree shape, sourced from <code>git diff &lt;default&gt;...HEAD</code>.</li>
+      <li><strong>No snapshot yet</strong> (pre-first-scan window) - only the path row renders. Branch + layers are added once the first poll completes.</li>
+      <li><strong>Not a git repo</strong> (<code>snapshot.in_repo = false</code>, scanner healthy) - the whole section is suppressed. The user sees no GIT header at all.</li>
+      <li><strong>Clean tree on default branch</strong> - path + branch row in DIM. Both <code>worktree</code> and <code>branch_ahead</code> are <code>None</code>, no sub-sections render (or yellow <code>HEAD</code> for detached HEAD + clean tree).</li>
+      <li><strong>Uncommitted edits only</strong> - layer 1 sub-section renders below the branch row: <code>uncommitted</code> subtitle + <code>+A -R</code> totals + file tree.</li>
+      <li><strong>Committed but unmerged only</strong> - layer 2 sub-section renders: <code>N commits vs &lt;default&gt;</code> subtitle + totals + file tree. Singular form <code>1 commit vs &lt;default&gt;</code> when only one commit ahead.</li>
+      <li><strong>Both layers</strong> - layers 1 and 2 stack, layer 1 first (uncommitted is the more-recent surface). Each carries its own subtitle + tree.</li>
+      <li><strong>Scanner unhealthy</strong> (<code>snapshot.in_repo = false</code>, <code>scanner_ok = false</code>) - DIM-warning line "<code>git scanner unhealthy, see logs (target: agent.env_git)</code>" replaces the layer content, surfacing the failure separately from a legitimate non-repo.</li>
     </ul>
-    <p>The GIT section header carries a <code>🦉</code> glyph at its right edge whenever the snapshot has a diff to show — i.e. for <code>Worktree</code> and <code>BranchVsDefault</code> views. Clicking it opens the full-screen <a href="#diff">Diff overlay</a> with the same auto-detected target the section uses to fetch the snapshot. Hidden for <code>CleanDefault</code> / <code>NoRepo</code> — nothing to expand into. The file tree below the header stays read-only; the only diff entry point on this pane is the header glyph.</p>
-    <p>The <code>PR #N</code> row is appended below the diff subtitle whenever the branch has an open pull request resolved by <code>gh pr list --head &lt;branch&gt;</code>. The PR number lights up in <span class="accent">RUST_ORANGE</span> (the headline); the <code>PR</code> label, the <code>→</code> separator, the <code>closes</code> label, and the issue numbers all sit in <code>DIM</code> as supporting context. When the closing-issue list would overflow the pane width, fitted issues render in order and the tail collapses to a trailing <code>…</code> (or to a bare <code>→ …</code> when not even one issue number fits alongside the chrome). Rows are suppressed entirely when there's no open PR, when the branch is the default branch or detached, when <code>gh</code> isn't installed / authenticated, or when the remote isn't a GitHub repository.</p>
-    <p>The <strong>WORKTREE</strong> section sits between GIT and TASKS with its own DIM <code>─</code> separator. It answers "is this session running in a worktree, and if so where" without forcing the operator to <code>pwd</code> in chat. Three render shapes, keyed off whether the active session is a project lead or a worker (and whether the project is a git repo at all):</p>
-    <div class="term">
-      <pre class="indent">
-  <span class="accent-bold">INSPECTOR</span>
-  <span class="dim">─────────────────────────</span>
-
-  <span class="dim bold">  GIT</span>
-  <span class="dim">  …</span>
-
-  <span class="dim">─────────────────────────</span>
-
-  <span class="dim bold">  WORKTREE</span>
-
-  <span class="dim">  status</span>  running in worktree reviewer
-  <span class="dim">  name  </span>  reviewer
-  <span class="dim">  branch</span>  worktree-reviewer
-  <span class="dim">  path  </span>  /Users/me/Projects/forge/.claude/worktrees/reviewer
-</pre>
-    </div>
-    <p>The three shapes:</p>
-    <ul style="color: var(--muted); font-size: 13px; line-height: 1.7; margin: 0 0 12px 18px;">
-      <li><strong>Shape A - lead in main repo (git project).</strong> Active session is a project lead and the GIT scanner confirmed the cwd is a git repo. One DIM body line: <code>main repo · /Users/me/Projects/forge</code>. Suppressed entirely when GIT's snapshot reports <code>NoRepo</code> (the "main repo" framing is meaningless outside a repo), mirroring the GIT-section <code>NoRepo</code> suppression.</li>
-      <li><strong>Shape B - worker WITH worktree</strong> (<code>WorkerEntry.is_git_repo_at_spawn = true</code>). Claude auto-created a worktree at <code>&lt;project_path&gt;/.claude/worktrees/&lt;label&gt;/</code> on the <code>worktree-&lt;label&gt;</code> branch. Four KV rows render: <code>status</code> (<code>running in worktree &lt;label&gt;</code> when Running, <code>spawning &lt;label&gt; in worktree …</code> when Spawning), <code>name</code> (the user-supplied label), <code>branch</code> (<code>worktree-&lt;label&gt;</code>), <code>path</code> (the absolute path). No <code>base</code> row by design - the worker's branch identity is self-contained.</li>
-      <li><strong>Shape C - worker WITHOUT worktree</strong> (<code>WorkerEntry.is_git_repo_at_spawn = false</code>). The project isn't a git repo, so <code>claude --worktree</code> no-ops and the worker runs in the project cwd directly. One DIM body line: <code>not a git repo · /Users/me/Projects/notes</code>. The <code>status</code> KV row above still renders without the "in worktree" suffix (<code>running</code> when Running, <code>spawning &lt;label&gt; …</code> when Spawning).</li>
-    </ul>
-    <p>KV layout: 6-char label column in <code>DIM</code>, two spaces, then the value in default fg (the path / branch / label reads more clearly without DIM, matching the GIT section's path row contrast). The <code>status</code> row is the one cell where the value reads almost as prose - it is the "what is this worker doing right now" signal.</p>
+    <p>The GIT section header carries a <code>🦉</code> glyph at its right edge whenever the snapshot has at least one layer to show. Clicking it opens the full-screen <a href="#diff">Diff overlay</a>; the auto-detected target prefers layer 1 (<code>HEAD</code>) when both are populated, falling back to the default branch when only layer 2 is set. Hidden when both layers are empty - nothing to expand into. The file trees below the header stay read-only; the only diff entry point on this pane is the header glyph.</p>
+    <p>The <code>PR #N</code> row is appended directly below the branch row (above any diff layers) whenever the branch has an open pull request resolved by <code>gh pr list --head &lt;branch&gt;</code>. The PR number lights up in <span class="accent">RUST_ORANGE</span> (the headline); the <code>PR</code> label, the <code>→</code> separator, the <code>closes</code> label, and the issue numbers all sit in <code>DIM</code> as supporting context. When the closing-issue list would overflow the pane width, fitted issues render in order and the tail collapses to a trailing <code>…</code> (or to a bare <code>→ …</code> when not even one issue number fits alongside the chrome). Rows are suppressed entirely when there's no open PR, when the branch is the default branch or detached, when <code>gh</code> isn't installed / authenticated, or when the remote isn't a GitHub repository.</p>
     <p>When a worker is closed (the <code>x</code> button on its <a href="#projects-pane-workers">tree-child row</a>, or a cascade triggered by the lead's close), a system-message toast lands in the active session's chat. Git-repo workers read <code>Worker &lt;label&gt; closed. Worktree preserved at .claude/worktrees/&lt;label&gt;/</code> so the operator knows the worktree survives; non-git workers read the bare <code>Worker &lt;label&gt; closed.</code> form. The toast routes through <code>push_system_message_with_severity(_, Info, _)</code> from the <code>WorkerStatusChanged { Removed }</code> handler.</p>
     <p>Item glyphs and styles:</p>
     <ul style="color: var(--muted); font-size: 13px; line-height: 1.7; margin: 0 0 12px 18px;">
-      <li><span class="success">✓</span> green — <code>Completed</code> (text DIM + crossed-out)</li>
-      <li><span class="accent">▸</span> RUST_ORANGE — <code>InProgress</code> (text white bold; uses <code>active_form</code> when present, else <code>content</code>; <strong>wraps</strong> onto continuation lines indented under the glyph)</li>
-      <li><span class="dim">○</span> DIM — <code>Pending</code> (text gray)</li>
+      <li><span class="success">✓</span> green - <code>Completed</code> (text DIM + crossed-out)</li>
+      <li><span class="accent">▸</span> RUST_ORANGE - <code>InProgress</code> (text white bold; uses <code>active_form</code> when present, else <code>content</code>; <strong>wraps</strong> onto continuation lines indented under the glyph)</li>
+      <li><span class="dim">○</span> DIM - <code>Pending</code> (text gray)</li>
     </ul>
-    <p>Only the in-progress item wraps. Completed and pending items truncate with <code>…</code> at the pane's right edge — they're scannable status, not actionable text. At Medium tier (30ch) truncation is routine; at Wide tier (40ch) most items fit.</p>
+    <p>Only the in-progress item wraps. Completed and pending items truncate with <code>…</code> at the pane's right edge - they're scannable status, not actionable text. At Medium tier (30ch) truncation is routine; at Wide tier (40ch) most items fit.</p>
     <p>When <code>TodoWriteOutputMetadata.verification_nudge_needed</code> is set, a one-line dim-yellow notice sits between the rule and the <code>TASKS</code> header until the next <code>TodoWrite</code> clears it:</p>
     <div class="term">
       <pre class="indent">
@@ -659,17 +638,17 @@ chat continues here…
     </div>
     <p>The <strong>PROCESSES</strong> section surfaces <strong>currently-running</strong> work in the active session, sitting below TASKS with its own DIM <code>─</code> separator. The data source is <strong>path A+</strong>: the OS process tree under the spawned <code>claude</code> binary is the source of truth for what's alive; wire-tracked tool calls overlay their description when their <code>raw_input.command</code> substring-matches an OS process's cmdline. Four row kinds appear:</p>
     <ul style="color: var(--muted); font-size: 13px; line-height: 1.7; margin: 0 0 12px 18px;">
-      <li><strong>Backgrounded Bash</strong> — OS process that matched a wire-tracked <code>Bash</code> with <code>run_in_background: true</code> (or claude's CLI auto-promoted foreground Bash). Headline = the assistant's <code>description</code>; detail = the actual OS cmdline.</li>
-      <li><strong>Monitor</strong> — OS process that matched a wire-tracked <code>Monitor</code> streaming watcher. Persistent / timeout flags carry through to the metadata row.</li>
-      <li><strong>Process</strong> — OS process with no matching wire tool call. Foreground <code>Bash</code> invocations, grandchildren (e.g. <code>rustc</code> workers under a <code>cargo build</code>), or anything that's detached from claude's tool registry. Headline = OS process name; detail = OS cmdline.</li>
-      <li><strong>Cron</strong> — wire-only. <code>CronCreate</code> registers a schedule; there's no process to walk. Headline = cron expression; detail = prompt.</li>
+      <li><strong>Backgrounded Bash</strong> - OS process that matched a wire-tracked <code>Bash</code> with <code>run_in_background: true</code> (or claude's CLI auto-promoted foreground Bash). Headline = the assistant's <code>description</code>; detail = the actual OS cmdline.</li>
+      <li><strong>Monitor</strong> - OS process that matched a wire-tracked <code>Monitor</code> streaming watcher. Persistent / timeout flags carry through to the metadata row.</li>
+      <li><strong>Process</strong> - OS process with no matching wire tool call. Foreground <code>Bash</code> invocations, grandchildren (e.g. <code>rustc</code> workers under a <code>cargo build</code>), or anything that's detached from claude's tool registry. Headline = OS process name; detail = OS cmdline.</li>
+      <li><strong>Cron</strong> - wire-only. <code>CronCreate</code> registers a schedule; there's no process to walk. Headline = cron expression; detail = prompt.</li>
     </ul>
     <p>Each row renders across two or three lines: a status-glyph headline, an optional <code>└─</code> continuation carrying the underlying cmdline or cron prompt in DIM, and a <code>└─</code> metadata continuation carrying kind label · status · flags · memory (e.g. <code>Bash · running · 32 MB</code>, <code>Monitor · running · persistent · 8 MB</code>, <code>Process · running · 256 MB</code>, <code>Cron · recurring · session-only</code>). Rows sort by resident memory descending; a sanity cap of 50 keeps a runaway process tree from blowing the body line count, but the inspector pane itself scrolls (the scrollbar IS the overflow indicator) so the section is no longer trimmed to top-N for display. Memory rendering is tier-gated: Wide (≥36 cols of pane width) shows the <code>· 12 MB</code> suffix, Medium drops it so the metadata fits. Status glyphs:</p>
     <ul style="color: var(--muted); font-size: 13px; line-height: 1.7; margin: 0 0 12px 18px;">
-      <li><span class="accent">▸</span> RUST_ORANGE — <code>InProgress</code> wire-tracked Bash / Monitor (text white bold)</li>
-      <li><span class="dim">▸</span> DIM — generic <code>Process</code> row (unmatched OS process; text gray)</li>
-      <li><span class="dim">⏰</span> DIM — <code>InProgress</code> Cron (the rare in-flight case)</li>
-      <li><span class="dim">○</span> DIM — <code>Pending</code> (about to run / awaiting permission; text gray)</li>
+      <li><span class="accent">▸</span> RUST_ORANGE - <code>InProgress</code> wire-tracked Bash / Monitor (text white bold)</li>
+      <li><span class="dim">▸</span> DIM - generic <code>Process</code> row (unmatched OS process; text gray)</li>
+      <li><span class="dim">⏰</span> DIM - <code>InProgress</code> Cron (the rare in-flight case)</li>
+      <li><span class="dim">○</span> DIM - <code>Pending</code> (about to run / awaiting permission; text gray)</li>
     </ul>
     <div class="term">
       <pre class="indent">
@@ -696,8 +675,8 @@ chat continues here…
 
 </pre>
     </div>
-    <p>Persistent monitors are explicitly excluded from the end-of-turn status sweep (<code>finalize_open_tool_calls</code>) — they outlive the turn that started them by design. The wire-enrichment matcher uses substring containment so the shell wrapper claude adds around user-typed commands (<code>/bin/zsh -c -l eval '…' &lt; /dev/null</code>) still resolves to the correct description.</p>
-    <p>Empty TASKS state — when the active session has no todos, the GIT section renders without a TASKS separator below it. With a clean default branch + no diff to show:</p>
+    <p>Persistent monitors are explicitly excluded from the end-of-turn status sweep (<code>finalize_open_tool_calls</code>) - they outlive the turn that started them by design. The wire-enrichment matcher uses substring containment so the shell wrapper claude adds around user-typed commands (<code>/bin/zsh -c -l eval '…' &lt; /dev/null</code>) still resolves to the correct description.</p>
+    <p>Empty TASKS state - when the active session has no todos, the GIT section renders without a TASKS separator below it. With a clean default branch + no diff to show:</p>
     <div class="term">
       <pre class="indent">
   <span class="accent-bold">INSPECTOR</span>
@@ -709,7 +688,7 @@ chat continues here…
   <span class="dim">  ⎇</span> <span class="dim">main</span>
 </pre>
     </div>
-    <p>At Narrow tier (&lt;120 cols), the inline pane is replaced by an <code>Inspector ▦</code> icon on the right end of the same top bar that hosts the <code>▤</code> Projects icon on the left. Tap <code>Inspector ▦</code> (or <kbd>Ctrl+E</kbd>) to expand the overlay — full-screen rendering of the same content with a <code>✕</code> glyph in the banner to dismiss. <kbd>Esc</kbd> also closes. The Projects overlay and the Inspector overlay are mutually exclusive: opening one closes the other.</p>
+    <p>At Narrow tier (&lt;120 cols), the inline pane is replaced by an <code>Inspector ▦</code> icon on the right end of the same top bar that hosts the <code>▤</code> Projects icon on the left. Tap <code>Inspector ▦</code> (or <kbd>Ctrl+E</kbd>) to expand the overlay - full-screen rendering of the same content with a <code>✕</code> glyph in the banner to dismiss. <kbd>Esc</kbd> also closes. The Projects overlay and the Inspector overlay are mutually exclusive: opening one closes the other.</p>
     <div class="term">
       <pre class="indent">
 <span class="dim">▤</span>  forge·main                                  <span class="dim">▦</span>
@@ -724,28 +703,23 @@ chat continues here…
 
 <span class="dim bold">  GIT</span>                                              <span class="dim">🦉</span>
 
-<span class="dim">  ~/Projects/forge</span>
-<span class="dim">  ⎇</span> <span class="accent">feat/x</span>
-<span class="dim">    vs main                                </span><span class="success">+1667</span> <span class="error">-1139</span>
-<span class="dim">    PR </span><span class="accent">#1234</span><span class="dim"> → closes #1230 #1228</span>
+<span class="dim">  ~/Projects/forge/.claude/worktrees/implementer</span>
+<span class="dim">  ⎇</span> <span class="accent">implementer/issue-185-inspector-git-follows-focus</span>
+<span class="dim">    PR </span><span class="accent">#188</span><span class="dim"> → closes #185</span>
+<span class="dim">    uncommitted                            </span><span class="success">+42</span> <span class="error">-8</span>
+
+<span class="dim">  crates/forge-tui/src/ui</span>
+<span class="dim">  └─ inspector_pane.rs</span>                       <span class="success">+42</span> <span class="error">-8</span>
+
+<span class="dim">    3 commits vs main                      </span><span class="success">+1667</span> <span class="error">-1139</span>
 
 <span class="dim">  crates</span>
 <span class="dim">  ├─ forge-agent/src/env</span>
-<span class="dim">  │  ├─ git_diff.rs</span>                       <span class="success">+648</span> <span class="error">-0</span>
-<span class="dim">  │  └─ git.rs</span>                              <span class="success">+0</span> <span class="error">-559</span>
+<span class="dim">  │  └─ git_diff.rs</span>                          <span class="success">+648</span> <span class="error">-559</span>
 <span class="dim">  └─ forge-tui/src</span>
-<span class="dim">     ├─ app</span>
-<span class="dim">     │  ├─ git_diff.rs</span>                    <span class="success">+427</span> <span class="error">-0</span>
-<span class="dim">     │  └─ git_context.rs</span>                   <span class="success">+0</span> <span class="error">-179</span>
-<span class="dim">     └─ ui</span>
-<span class="dim">        └─ inspector_pane.rs</span>             <span class="success">+340</span> <span class="error">-21</span>
+<span class="dim">     ├─ app/diff_overlay.rs</span>                  <span class="success">+19</span> <span class="error">-13</span>
+<span class="dim">     └─ ui/inspector_pane.rs</span>                <span class="success">+340</span> <span class="error">-200</span>
 <span class="dim italic">  +22 more</span>
-
-<span class="dim">─────────────────────────────────────────────────</span>
-
-<span class="dim bold">  WORKTREE</span>
-
-<span class="dim">  main repo · /Users/me/Projects/forge</span>
 
 <span class="dim">─────────────────────────────────────────────────</span>
 
@@ -759,18 +733,18 @@ chat continues here…
 </pre>
     </div>
     <dl>
-      <dt>code</dt><dd><code>crates/forge-tui/src/ui/inspector_pane.rs::render</code> (inline) · <code>::render_overlay</code> (Narrow overlay) · <code>crates/forge-tui/src/ui/top_bar.rs::render</code> (Narrow top bar — both icons) · click handling in <code>crates/forge-tui/src/app/events/mouse.rs</code> · git-diff poller in <code>crates/forge-tui/src/app/git_diff.rs</code> (1 s ticker + 10 s staleness rule) → <code>forge_workspace::scan_git_diff</code> → <code>forge_agent::env::git_diff::scan</code> · WORKTREE section in <code>crates/forge-tui/src/ui/inspector_pane.rs::append_worktree_section</code> (lead path uses <code>App::cwd</code>, worker path looks up <code>Workspace::worker_lookup_for_session</code> + <code>list_live_workers</code>) · worker-status string formatters in <code>crates/forge-tui/src/ui/worker_status.rs</code> (<code>format_spawning_status</code> / <code>format_running_status</code> / <code>format_close_toast</code>) · close-toast emit site in <code>crates/forge-tui/src/app/events/client.rs</code> (the <code>WorkerStatusChanged { Removed }</code> arm)</dd>
-      <dt>color</dt><dd>banner (<code>INSPECTOR</code> / <code>INSPECTOR ▦</code>): <code>RUST_ORANGE</code> bold · banner rule + GIT/WORKTREE/TASKS/PROCESSES separator rules: <code>DIM</code> · section headers (<code>GIT</code>, <code>WORKTREE</code>, <code>TASKS</code>, <code>PROCESSES</code>): <code>DIM</code> bold · GIT header <code>🦉</code> open-diff affordance: <code>DIM</code> (right-justified on the GIT section header; visible only when the snapshot is <code>Worktree</code> or <code>BranchVsDefault</code>) · GIT path: <code>DIM</code> · GIT branch glyph (<code>⎇</code>): <code>DIM</code> · GIT branch name: <code>DIM</code> on default branch, <span class="accent">RUST_ORANGE</span> on a feature branch, <span class="warning">yellow</span> (<code>HEAD</code>) for detached HEAD · GIT diff-subtitle label (<code>worktree</code> / <code>vs &lt;default&gt;</code>): <code>DIM</code> · GIT subtitle-row aggregate <code>+N</code>: <span class="success">green</span>, <code>-M</code>: <span class="error">red</span> (right-justified on the subtitle row; only when the snapshot carries a diff) · GIT <code>PR</code> label + <code>→</code> separator + <code>closes</code> label + issue numbers: <code>DIM</code> · GIT PR number (<code>#1234</code>): <span class="accent">RUST_ORANGE</span> (the headline) · GIT PR truncation ellipsis (<code>…</code>): <code>DIM</code> · GIT tree connectors (<code>├─</code> / <code>└─</code> / <code>│</code>) + directory labels + file leaf labels: <code>DIM</code> · GIT per-file <code>+N</code>: <span class="success">green</span>, <code>-M</code>: <span class="error">red</span> · GIT <code>+N more</code> overflow: <code>DIM</code> italic · WORKTREE KV label column (<code>status</code> / <code>name</code> / <code>branch</code> / <code>path</code>): <code>DIM</code> · WORKTREE KV value column (status text / worker label / branch name / path): default fg (white) for KV rows; <code>main repo · &lt;cwd&gt;</code> (Shape A) and <code>not a git repo · &lt;cwd&gt;</code> (Shape C) one-liners: <code>DIM</code> · TASKS completed glyph (<code>✓</code>) + text: <span class="success">green</span> glyph, <code>DIM</code> crossed-out text · TASKS in-progress glyph (<code>▸</code>) + text: <code>RUST_ORANGE</code> glyph, white bold text · TASKS pending glyph (<code>○</code>) + text: <code>DIM</code> · verification nudge line: <span class="warning">yellow</span> · PROCESSES wire-tracked Bash/Monitor glyph (<code>▸</code>): <span class="accent">RUST_ORANGE</span>, headline white bold · PROCESSES generic Process glyph (<code>▸</code>): <code>DIM</code>, headline gray · PROCESSES Cron glyph (<code>⏰</code>): <code>DIM</code> · PROCESSES pending glyph (<code>○</code>): <code>DIM</code> · PROCESSES <code>└─</code> continuation connectors + detail/metadata text + memory suffix: <code>DIM</code> · PROCESSES scrollbar thumb (right-edge vertical bar): <code>DIM</code> · top-bar <code>▦</code> icon: <code>DIM</code> when overlay closed, <code>RUST_ORANGE</code> bold when open · overlay <code>✕</code>: <code>DIM</code></dd>
-      <dt>data source</dt><dd>GIT: <code>UiSession.git_diff_snapshot</code> — produced by the agent-side scanner (<code>forge_agent::env::git_diff::scan</code>) which shells out to <code>git rev-parse</code> / <code>symbolic-ref</code> / <code>status --porcelain</code> / <code>diff --numstat</code>, plus <code>gh pr list --head &lt;branch&gt; --state open --json number,url,closingIssuesReferences --limit 1</code> for the PR row (branch-keyed cache: only invoked when the branch name changed from the previous snapshot — same-branch scans reuse cached <code>pr</code> / <code>closes</code> for free). Mediated by <code>forge_workspace::Workspace::scan_git_diff(cwd, prev)</code>, which threads the prior snapshot through for the cache hit. Polled every 10 s for the active session only — synthetic spawn buckets and pre-Connect buckets skip refresh. Cwd changes invalidate the cached snapshot via a generation epoch bump so any in-flight scan against the old cwd is dropped. WORKTREE: lead-path data is <code>App::cwd</code> (already populated from the session's <code>cwd_raw</code> bind, per Hard Rule #15 - never the launch dir). Worker-path data is the per-project <code>WorkerEntry { label, charter, status, is_git_repo_at_spawn, session_id, spawned_at, spawned_by_session_id }</code> from <code>Workspace::list_live_workers(project_key)</code>; the project-path lookup uses <code>Workspace::list_projects()</code> filtered by <code>WorkerEntry.project_key</code>. Suppressed in the pre-Connect window (no active session) or when GIT's snapshot reports <code>NoRepo</code> for a lead. No polling - purely reactive on <code>SessionUpdate::WorkerStatusChanged</code> for workers and on <code>cwd_raw</code> changes for leads. Worker close-toast pathway: the same <code>SessionUpdate::WorkerStatusChanged { action: Removed, status, is_git_repo_at_spawn }</code> event that fades the projects-pane row also fires a system-message <code>Info</code> push into the active session's chat, formatted by <code>format_close_toast</code>. TASKS: per-active-session <code>app.todos()</code> (the <code>UiSession.todos</code> bucket from PR #109). <code>TodoWriteOutputMetadata.verification_nudge_needed</code> from the latest <code>TodoWrite</code> tool result drives the nudge line. PROCESSES: <code>crate::app::processes::collect_active_processes(app)</code> consumes the active session's <code>UiSession.process_snapshot</code> (refreshed every 2 s by <code>crate::app::process_scanner</code> → <code>forge_workspace::Workspace::scan_processes(claude_pid)</code> → <code>forge_agent::env::processes::scan</code> which walks <code>sysinfo</code>'s descendants of the claude PID), then enriches each entry by substring-matching the OS cmdline against wire-tracked alive tool calls' <code>raw_input.command</code>. Wire-alive lookup uses <code>SessionTurnState.alive_task_ids</code> + <code>task_tool_use_ids</code> (maintained by <code>task_started</code> / <code>task_updated</code> wire frames). Matched OS entries inherit the wire description as headline + <code>BashBackgrounded</code> / <code>Monitor</code> kind; unmatched entries fall back to <code>Process</code> kind with the OS process name. <code>Cron</code> rows (always wire-only — <code>CronCreate</code> is a registration, not a process) tag along separately. Rows sort by resident memory descending; a 50-row sanity cap is applied at the collector level. The inspector pane itself scrolls (per-session offset on <code>UiSession.inspector_scroll_offset</code>, advanced by mouse wheel over the body) so the section is no longer trimmed to top-N for display. Memory rendering is gated on inspector pane width ≥ 36 cols. Claude PID is plumbed through <code>forge_sdk::Client::claude_pid</code> → <code>AgentHandle::claude_pid</code> → <code>Workspace::claude_pid(SessionKey)</code> at the spawn-time stamp before the subprocess reader consumes the <code>tokio::process::Child</code>.</dd>
-      <dt>click</dt><dd>v1: GIT section header's <code>🦉</code> glyph opens the <a href="#diff">Diff overlay</a> for the current snapshot (only present when there's a diff to show). Body items stay read-only — file tree, branch line, PR row, TASKS rows, PROCESSES rows are all non-clickable. Future could surface a click-to-expand for truncated items, or a click-to-toggle-complete affordance on TASKS. At Narrow tier the <code>▦</code> top-bar icon toggles overlay open/close; the overlay <code>✕</code> glyph dismisses.</dd>
-      <dt>toggle</dt><dd><kbd>Ctrl+E</kbd> at Wide / Medium tiers hides / restores the inline pane (in-memory only — each launch starts visible). At Narrow tier <kbd>Ctrl+E</kbd> toggles the transient overlay flag. <kbd>Esc</kbd> also closes the overlay. Mirror of the left pane's <kbd>Ctrl+B</kbd>.</dd>
-      <dt>scope</dt><dd>All three tiers ship: Wide (≥160) inline 40ch · Medium (120–159) inline 30ch with item truncation · Narrow (&lt;120) top-bar icon + overlay. Four sections live: <code>GIT</code> (always), <code>WORKTREE</code> (lead in a git project, or any worker), <code>TASKS</code> (when todos / nudge present), <code>PROCESSES</code> (when long-running tool calls present). The pane scaffold remains sized to accommodate additional sections (e.g. SUBAGENTS once the multi-agent epic lands) stacking under PROCESSES without restructuring.</dd>
+      <dt>code</dt><dd><code>crates/forge-tui/src/ui/inspector_pane.rs::render</code> (inline) · <code>::render_overlay</code> (Narrow overlay) · <code>crates/forge-tui/src/ui/top_bar.rs::render</code> (Narrow top bar - both icons) · click handling in <code>crates/forge-tui/src/app/events/mouse.rs</code> · git-diff poller in <code>crates/forge-tui/src/app/git_diff.rs</code> (1 s ticker + 10 s staleness rule) → <code>forge_workspace::scan_git_diff</code> → <code>forge_agent::env::git_diff::scan</code> · worktree-aware cwd resolution in <code>forge_workspace::Workspace::git_scan_cwd_for_session</code> (composes <code>worker_lookup_for_session</code> + <code>worker_tag_dir</code>) so worker sessions scan their <code>.claude/worktrees/&lt;label&gt;/</code> path, not the project root · worker close-toast pathway in <code>crates/forge-tui/src/ui/worker_status.rs::format_close_toast</code> + emit site in <code>crates/forge-tui/src/app/events/client.rs</code> (the <code>WorkerStatusChanged { Removed }</code> arm)</dd>
+      <dt>color</dt><dd>banner (<code>INSPECTOR</code> / <code>INSPECTOR ▦</code>): <code>RUST_ORANGE</code> bold · banner rule + GIT/TASKS/PROCESSES separator rules: <code>DIM</code> · section headers (<code>GIT</code>, <code>TASKS</code>, <code>PROCESSES</code>): <code>DIM</code> bold · GIT header <code>🦉</code> open-diff affordance: <code>DIM</code> (right-justified on the GIT section header; visible only when at least one diff layer is populated) · GIT path: <code>DIM</code> · GIT branch glyph (<code>⎇</code>): <code>DIM</code> · GIT branch name: <code>DIM</code> on default branch, <span class="accent">RUST_ORANGE</span> on a feature branch, <span class="warning">yellow</span> (<code>HEAD</code>) for detached HEAD · GIT layer-1 subtitle (<code>uncommitted</code>) and layer-2 subtitle (<code>N commits vs &lt;default&gt;</code>): <code>DIM</code> · GIT subtitle-row aggregate <code>+A</code>: <span class="success">green</span>, <code>-R</code>: <span class="error">red</span> (right-justified per layer) · GIT <code>PR</code> label + <code>→</code> separator + <code>closes</code> label + issue numbers: <code>DIM</code> · GIT PR number (<code>#1234</code>): <span class="accent">RUST_ORANGE</span> (the headline) · GIT PR truncation ellipsis (<code>…</code>): <code>DIM</code> · GIT tree connectors (<code>├─</code> / <code>└─</code> / <code>│</code>) + directory labels + file leaf labels: <code>DIM</code> · GIT per-file <code>+N</code>: <span class="success">green</span>, <code>-M</code>: <span class="error">red</span> · GIT <code>+N more</code> overflow: <code>DIM</code> italic · TASKS completed glyph (<code>✓</code>) + text: <span class="success">green</span> glyph, <code>DIM</code> crossed-out text · TASKS in-progress glyph (<code>▸</code>) + text: <code>RUST_ORANGE</code> glyph, white bold text · TASKS pending glyph (<code>○</code>) + text: <code>DIM</code> · verification nudge line: <span class="warning">yellow</span> · PROCESSES wire-tracked Bash/Monitor glyph (<code>▸</code>): <span class="accent">RUST_ORANGE</span>, headline white bold · PROCESSES generic Process glyph (<code>▸</code>): <code>DIM</code>, headline gray · PROCESSES Cron glyph (<code>⏰</code>): <code>DIM</code> · PROCESSES pending glyph (<code>○</code>): <code>DIM</code> · PROCESSES <code>└─</code> continuation connectors + detail/metadata text + memory suffix: <code>DIM</code> · PROCESSES scrollbar thumb (right-edge vertical bar): <code>DIM</code> · top-bar <code>▦</code> icon: <code>DIM</code> when overlay closed, <code>RUST_ORANGE</code> bold when open · overlay <code>✕</code>: <code>DIM</code></dd>
+      <dt>data source</dt><dd>GIT: <code>UiSession.git_diff_snapshot</code> - produced by the agent-side scanner (<code>forge_agent::env::git_diff::scan</code>) which shells out to <code>git rev-parse</code> / <code>symbolic-ref</code> / <code>status --porcelain</code> / <code>diff --numstat</code> / <code>rev-list --count</code> (for layer 2's commit count), plus <code>gh pr list --head &lt;branch&gt; --state open --json number,url,closingIssuesReferences --limit 1</code> for the PR row (branch-keyed cache: only invoked when the branch name changed from the previous snapshot - same-branch scans reuse cached <code>pr</code> / <code>closes</code> for free). Mediated by <code>forge_workspace::Workspace::scan_git_diff(cwd, prev)</code>, which threads the prior snapshot through for the cache hit. The cwd is resolved per-session by <code>Workspace::git_scan_cwd_for_session</code>: project leads scan their <code>cwd_raw</code> as-is, git-repo workers scan their worktree path (<code>&lt;cwd_raw&gt;/.claude/worktrees/&lt;label&gt;/</code>) so the snapshot reflects the worker's branch + edits, not the lead's. Polled every 10 s for the focused session only - synthetic spawn buckets and pre-Connect buckets skip refresh. Cwd changes invalidate the cached snapshot via a generation epoch bump so any in-flight scan against the old cwd is dropped. Snapshot exposes <code>worktree: Option&lt;GitDiffStats&gt;</code> (layer 1) and <code>branch_ahead: Option&lt;GitBranchAhead&gt;</code> (layer 2) independently; both can be populated together for a worker on a topic branch with in-progress edits. Worker close-toast pathway: the <code>SessionUpdate::WorkerStatusChanged { action: Removed, status, is_git_repo_at_spawn }</code> event that fades the projects-pane row also fires a system-message <code>Info</code> push into the active session's chat, formatted by <code>format_close_toast</code>. TASKS: per-focused-session <code>app.todos()</code> (the <code>UiSession.todos</code> bucket from PR #109). <code>TodoWriteOutputMetadata.verification_nudge_needed</code> from the latest <code>TodoWrite</code> tool result drives the nudge line. PROCESSES: <code>crate::app::processes::collect_active_processes(app)</code> consumes the focused session's <code>UiSession.process_snapshot</code> (refreshed every 2 s by <code>crate::app::process_scanner</code> → <code>forge_workspace::Workspace::scan_processes(claude_pid)</code> → <code>forge_agent::env::processes::scan</code> which walks <code>sysinfo</code>'s descendants of the claude PID), then enriches each entry by substring-matching the OS cmdline against wire-tracked alive tool calls' <code>raw_input.command</code>. Wire-alive lookup uses <code>SessionTurnState.alive_task_ids</code> + <code>task_tool_use_ids</code> (maintained by <code>task_started</code> / <code>task_updated</code> wire frames). Matched OS entries inherit the wire description as headline + <code>BashBackgrounded</code> / <code>Monitor</code> kind; unmatched entries fall back to <code>Process</code> kind with the OS process name. <code>Cron</code> rows (always wire-only - <code>CronCreate</code> is a registration, not a process) tag along separately. Rows sort by resident memory descending; a 50-row sanity cap is applied at the collector level. The inspector pane itself scrolls (per-session offset on <code>UiSession.inspector_scroll_offset</code>, advanced by mouse wheel over the body) so the section is no longer trimmed to top-N for display. Memory rendering is gated on inspector pane width ≥ 36 cols. Claude PID is plumbed through <code>forge_sdk::Client::claude_pid</code> → <code>AgentHandle::claude_pid</code> → <code>Workspace::claude_pid(SessionKey)</code> at the spawn-time stamp before the subprocess reader consumes the <code>tokio::process::Child</code>.</dd>
+      <dt>click</dt><dd>v1: GIT section header's <code>🦉</code> glyph opens the <a href="#diff">Diff overlay</a> for the current snapshot (only present when at least one diff layer is populated). Body items stay read-only - file tree, branch line, PR row, TASKS rows, PROCESSES rows are all non-clickable. Future could surface a click-to-expand for truncated items, or a click-to-toggle-complete affordance on TASKS. At Narrow tier the <code>▦</code> top-bar icon toggles overlay open/close; the overlay <code>✕</code> glyph dismisses.</dd>
+      <dt>toggle</dt><dd><kbd>Ctrl+E</kbd> at Wide / Medium tiers hides / restores the inline pane (in-memory only - each launch starts visible). At Narrow tier <kbd>Ctrl+E</kbd> toggles the transient overlay flag. <kbd>Esc</kbd> also closes the overlay. Mirror of the left pane's <kbd>Ctrl+B</kbd>.</dd>
+      <dt>scope</dt><dd>All three tiers ship: Wide (≥160) inline 40ch · Medium (120–159) inline 30ch with item truncation · Narrow (&lt;120) top-bar icon + overlay. Three sections live: <code>GIT</code> (always - except when the focused session's cwd is a clean non-repo and the scanner is healthy, then the section is suppressed entirely), <code>TASKS</code> (when todos / nudge present), <code>PROCESSES</code> (when long-running tool calls present). The pane scaffold remains sized to accommodate additional sections (e.g. SUBAGENTS once the multi-agent epic lands) stacking under PROCESSES without restructuring.</dd>
     </dl>
   </div>
 </div>
 
 <!-- ============================================================== -->
-<h2 class="section-title" id="launchpad">Launchpad — project picker</h2>
+<h2 class="section-title" id="launchpad">Launchpad - project picker</h2>
 
 <p class="intro">
   Floor of the UI. Renders as the entire frame when forge is invoked
@@ -778,7 +752,7 @@ chat continues here…
   user runs <code>/launchpad</code> mid-session. Both side panes hide
   while launchpad is up; the ANSI Shadow wordmark + version metadata
   + org-grouped project picker + footer hint own the full window
-  width. <code>Esc</code> is a no-op — the launchpad has nothing to
+  width. <code>Esc</code> is a no-op - the launchpad has nothing to
   dismiss to. <code>Ctrl+Q</code> still quits.
 </p>
 
@@ -828,14 +802,14 @@ chat continues here…
       <dt>code</dt><dd><code>crates/forge-tui/src/ui/launchpad.rs</code> (renderer) + <code>crates/forge-tui/src/app/launchpad.rs</code> (state + keyboard handler) · wordmark stored as <code>const FORGE_WORDMARK: [&amp;str; 6]</code> (43 cols × 6 rows ANSI Shadow figlet)</dd>
       <dt>color</dt><dd>wordmark: <code>RUST_ORANGE</code> + BOLD · version lines / org headers / tree connectors / footer hint / account hints / pending glyphs (<code>○</code>) / picker rules: <code>DIM</code> · idle <code>●</code>: <code>RUST_ORANGE</code> · running / spawning spinner: <code>RUST_ORANGE</code> · failed <code>✗</code>: <code>STATUS_ERROR</code> · selection indicator: <code>RUST_ORANGE</code> + BOLD <code>▶</code> arrow in a reserved 2-cell column at the row's left edge for clickable selections, <code>DIM</code> + BOLD <code>▶</code> when the selected row is in <code>Spawning</code> (signals "selected but not yet actionable") · spawning row name: <code>DIM</code> (not BOLD) reinforces "not yet interactive" · update indicator (<code>↑ vX.Y.Z available</code>): <code>RUST_ORANGE</code></dd>
       <dt>data sources</dt><dd>Projects via <code>Workspace::list_projects()</code> grouped by org (alpha-sorted, alpha-sorted within each org) · per-row lifecycle from <code>UiSession::lifecycle_state</code> with fallback to <code>Sleeping</code> · last-activity from <code>ProjectView::sessions[0].last_activity</code> · account hint from <code>ProjectView::primary_account_hint()</code> (first item of the org's <code>accounts</code> list, lowercased) · forge version from <code>FORGE_VERSION_SHORT</code> · claude version + update flag from <code>app.cli_version_info</code> (async npm probe)</dd>
-      <dt>keys</dt><dd><kbd>↑</kbd> <kbd>↓</kbd> / <kbd>k</kbd> <kbd>j</kbd> navigate · <kbd>Enter</kbd> intent-aware (open / start / blocked / no-op — see "Click intent" below) · <kbd>r</kbd> retry (only when row is Failed) · <kbd>?</kbd> toggle help (≡ <code>/help</code>) · <kbd>Esc</kbd> no-op · <kbd>Ctrl+Q</kbd> quit (≡ <code>/quit</code>) · <kbd>Ctrl+B</kbd> <kbd>Ctrl+E</kbd> swallowed (no panes to toggle)</dd>
+      <dt>keys</dt><dd><kbd>↑</kbd> <kbd>↓</kbd> / <kbd>k</kbd> <kbd>j</kbd> navigate · <kbd>Enter</kbd> intent-aware (open / start / blocked / no-op - see "Click intent" below) · <kbd>r</kbd> retry (only when row is Failed) · <kbd>?</kbd> toggle help (≡ <code>/help</code>) · <kbd>Esc</kbd> no-op · <kbd>Ctrl+Q</kbd> quit (≡ <code>/quit</code>) · <kbd>Ctrl+B</kbd> <kbd>Ctrl+E</kbd> swallowed (no panes to toggle)</dd>
       <dt>click intent</dt><dd>Enter behavior depends on the selected row's lifecycle. Footer hint reflects this label.<ul>
         <li><strong>Idle / Running / Attention / AuthRequired / LoggedOut</strong> → "<code>enter  open</code>" → switch chat view to the session.</li>
         <li><strong>Sleeping</strong> → "<code>enter  start</code>" → dispatch <code>Command::SpawnProject</code> and stay on the launchpad. The row transitions Sleeping → Spawning → Idle; a second Enter once it reaches Idle takes the user into chat. Avoids the chat-view "Connecting to Claude Code…" stub for cold projects.</li>
         <li><strong>Spawning</strong> → "<code>enter  ⏳ spawning…</code>" → no-op. The row's dimmed name + DIM-coloured arrow when selected signal that the project isn't ready. User waits.</li>
         <li><strong>Failed</strong> → "<code>r  retry</code>" → no-op on Enter; press <kbd>r</kbd> for the explicit retry path (drops failed bucket + dispatches fresh <code>SpawnProject</code>).</li>
       </ul></dd>
-      <dt>slash subset</dt><dd>The launchpad has no input area, so slash commands are reached through the corresponding keybindings: <code>/help</code> ≡ <kbd>?</kbd>, <code>/quit</code> ≡ <kbd>Ctrl+Q</kbd>. <code>/config</code> and <code>/plugins</code> live behind a picked project — open one with <kbd>Enter</kbd> first. The candidate-filter logic still recognises the four-command subset for any caller that queries it (kept in sync with the spec for forward compatibility).</dd>
+      <dt>slash subset</dt><dd>The launchpad has no input area, so slash commands are reached through the corresponding keybindings: <code>/help</code> ≡ <kbd>?</kbd>, <code>/quit</code> ≡ <kbd>Ctrl+Q</kbd>. <code>/config</code> and <code>/plugins</code> live behind a picked project - open one with <kbd>Enter</kbd> first. The candidate-filter logic still recognises the four-command subset for any caller that queries it (kept in sync with the spec for forward compatibility).</dd>
       <dt>config</dt><dd><code>[ui] launchpad_spinner</code> (one of <code>braille</code> / <code>phase_of_moon</code> / <code>pulse</code> / <code>forge_dot</code> / <code>ember</code>, default <code>braille</code>) controls the per-row + cold-boot spinner glyph.</dd>
     </dl>
   </div>
@@ -850,7 +824,7 @@ chat continues here…
     <p>Each picker row's appearance depends on the session's lifecycle state. The glyph and the right-column label change in lockstep so the user can scan the picker for "who's live, who's spawning, who's idle, who failed."</p>
     <div class="term">
       <pre class="indent">
-        ├─ <span class="rust-orange">●</span>  <span class="bold">forge        </span><span class="dim">(personal)        now</span>   <span class="dim"># Connected (Idle): RUST_ORANGE bullet, bold name, relative-time — clickable</span>
+        ├─ <span class="rust-orange">●</span>  <span class="bold">forge        </span><span class="dim">(personal)        now</span>   <span class="dim"># Connected (Idle): RUST_ORANGE bullet, bold name, relative-time - clickable</span>
         ├─ <span class="rust-orange">⠹</span>  <span class="dim">hub-modules    (personal)   spawning</span>   <span class="dim"># Spawning: spinner frame in RUST_ORANGE, dim name (not bold) signals "not yet clickable"</span>
         ├─ <span class="dim">○  trader-cc    (personal)         2d</span>   <span class="dim"># Sleeping / AuthRequired / LoggedOut / Attention: dim circle, dim name</span>
         └─ <span style="color:#cf6171">✗</span>  <span class="bold">core-v1      </span><span class="dim">(granite)       failed</span>
@@ -859,13 +833,13 @@ chat continues here…
     <dl>
       <dt>Failed row</dt><dd>The error description renders as a DIM-red sub-row directly beneath the project name column (indented 8 cells from row start), truncated to picker width with <code>…</code>. The raw message lives in <code>UiSession::last_connection_error</code> (populated by the connection-failed event handler, cleared on a successful reconnect).</dd>
       <dt>Retry</dt><dd>Pressing <kbd>r</kbd> while a Failed row is highlighted drops the failed bucket and dispatches a fresh <code>Command::SpawnProject</code>. Footer hint shows <code>r  retry</code> whenever the selected row is in Failed lifecycle (replaces the <code>enter  open</code> slot, since Enter is a no-op on Failed).</dd>
-      <dt>Selection indicator</dt><dd>A <code>RUST_ORANGE</code> BOLD <code>▶</code> arrow renders in a reserved 2-cell column on the left edge of the highlighted row; the rest of the row keeps its native state colors (state glyph, name, hints all visible). When the selected row is in the <code>Spawning</code> lifecycle, the arrow drops to <code>DIM</code> so the user can tell the focused row isn't actionable — Enter won't take them anywhere until the spawn completes. The previous full-row band design was dropped because <code>RUST_ORANGE</code> on <code>RUST_ORANGE</code> made the <code>●</code> idle bullet and running/spawning spinner invisible on the selected row.</dd>
+      <dt>Selection indicator</dt><dd>A <code>RUST_ORANGE</code> BOLD <code>▶</code> arrow renders in a reserved 2-cell column on the left edge of the highlighted row; the rest of the row keeps its native state colors (state glyph, name, hints all visible). When the selected row is in the <code>Spawning</code> lifecycle, the arrow drops to <code>DIM</code> so the user can tell the focused row isn't actionable - Enter won't take them anywhere until the spawn completes. The previous full-row band design was dropped because <code>RUST_ORANGE</code> on <code>RUST_ORANGE</code> made the <code>●</code> idle bullet and running/spawning spinner invisible on the selected row.</dd>
     </dl>
   </div>
 </div>
 
 <!-- ============================================================== -->
-<h2 class="section-title" id="chat">Chat — message types</h2>
+<h2 class="section-title" id="chat">Chat - message types</h2>
 
 <p class="intro">Every message in the scrollback belongs to one role. Roles render with different visual treatments today.</p>
 
@@ -898,7 +872,7 @@ chat continues here…
     <div class="term">
       <pre class="indent">
   <span class="accent-bold">Claude</span>
-  Looking at <span class="dim">crates/forge-tui/src/app/events/rate_limit.rs</span> — the warning chip
+  Looking at <span class="dim">crates/forge-tui/src/app/events/rate_limit.rs</span> - the warning chip
   has only one wording today. I'll add a quieter branch for the
   near-threshold-no-overage case.
 
@@ -949,7 +923,7 @@ chat continues here…
 <!-- ============================================================== -->
 <h2 class="section-title" id="tools">Tool calls</h2>
 
-<p class="intro">Every tool invocation renders through the same path: a single title row at column 2 (status icon + kind icon + display title) followed, when there's body content, by lines prefixed with <code>  │  </code> (DIM). No bordered cards — Bash, Read, Edit, Grep, etc. all share one shape. The body content varies by tool kind (raw terminal output for Bash, syntax-highlighted code for Read, unified diff for Edit / Write / MultiEdit, etc.).</p>
+<p class="intro">Every tool invocation renders through the same path: a single title row at column 2 (status icon + kind icon + display title) followed, when there's body content, by lines prefixed with <code>  │  </code> (DIM). No bordered cards - Bash, Read, Edit, Grep, etc. all share one shape. The body content varies by tool kind (raw terminal output for Bash, syntax-highlighted code for Read, unified diff for Edit / Write / MultiEdit, etc.).</p>
 
 <div class="surface">
   <div class="surface-head">
@@ -957,9 +931,9 @@ chat continues here…
     <div class="when">visible: any tool call that isn't Bash / TodoWrite / Subagent</div>
   </div>
   <div class="surface-body">
-    <p>Single line: 2-space indent + status icon (success / fail / spinner) in status color + space + tool kind icon (white bold) + space + <strong>kind label</strong> (white bold — "Read", "Edit", "Bash", etc. from <code>theme::tool_name_label</code>) + space + display title (markdown inline spans, default fg). Body lines (when present) prefix each with "<code>  │  </code>" dim (5 chars: 2 + box-drawing-vertical + 2), last line with "<code>  └─ </code>" dim (5 chars). If <code>tc.title</code> from claude already starts with the kind label (e.g. claude often sends "Read /path/to/file.rs"), the duplicate prefix is stripped so the column reads cleanly.</p>
-    <p><strong>Collapsed</strong> (when collapse is in effect and the tool call has no diff / pending permission / pending question): the body collapses to a single summary line "<code>  └─ &lt;content_summary&gt;  click or ctrl+x to expand</code>" (all DIM). The summary text comes from <code>content_summary</code> — last non-empty line of terminal output (capped at 80 chars), or the file name for a Diff, or an MCP resource path, etc.</p>
-    <p><strong>Collapse precedence:</strong> per-tool override (<code>tc.collapsed_override: Option&lt;bool&gt;</code>, set by clicking the tool's row) wins; otherwise the global <code>app.tools_collapsed</code> default applies. Ctrl+X flips the global default — per-tool overrides survive the toggle, so you can keep specific tools pinned in their preferred state. Diff / permission / question short-circuits still keep those interactions visible regardless.</p>
+    <p>Single line: 2-space indent + status icon (success / fail / spinner) in status color + space + tool kind icon (white bold) + space + <strong>kind label</strong> (white bold - "Read", "Edit", "Bash", etc. from <code>theme::tool_name_label</code>) + space + display title (markdown inline spans, default fg). Body lines (when present) prefix each with "<code>  │  </code>" dim (5 chars: 2 + box-drawing-vertical + 2), last line with "<code>  └─ </code>" dim (5 chars). If <code>tc.title</code> from claude already starts with the kind label (e.g. claude often sends "Read /path/to/file.rs"), the duplicate prefix is stripped so the column reads cleanly.</p>
+    <p><strong>Collapsed</strong> (when collapse is in effect and the tool call has no diff / pending permission / pending question): the body collapses to a single summary line "<code>  └─ &lt;content_summary&gt;  click or ctrl+x to expand</code>" (all DIM). The summary text comes from <code>content_summary</code> - last non-empty line of terminal output (capped at 80 chars), or the file name for a Diff, or an MCP resource path, etc.</p>
+    <p><strong>Collapse precedence:</strong> per-tool override (<code>tc.collapsed_override: Option&lt;bool&gt;</code>, set by clicking the tool's row) wins; otherwise the global <code>app.tools_collapsed</code> default applies. Ctrl+X flips the global default - per-tool overrides survive the toggle, so you can keep specific tools pinned in their preferred state. Diff / permission / question short-circuits still keep those interactions visible regardless.</p>
     <div class="term">
       <pre class="indent">
   <span class="success">✓</span> <span class="bold">⬚</span> <span class="bold">Read</span> /path/to/file.rs
@@ -975,7 +949,7 @@ chat continues here…
       <dt>code</dt><dd><code>crates/forge-tui/src/ui/tool_call/standard.rs::render_tool_call_title</code></dd>
       <dt>icons + labels</dt><dd>per <code>theme::tool_name_label</code>: Read (⬚) · Write / Edit / MultiEdit / NotebookEdit / Delete (▣) · Grep / Glob / LS (⌕) · Bash (▶) · WebFetch / WebSearch (⊕) · Move / EnterWorktree (⇄) · ExitPlanMode / Config (⊙) · TodoWrite (◌) · Task / Agent → "Subagent" (◇) · fallback "Tool" (○)</dd>
       <dt>duplication strip</dt><dd>if <code>tc.title</code> starts with "<code>&lt;kind&gt; </code>" (kind label + space), the prefix is stripped so we don't render "Read Read /path"</dd>
-      <dt>plan-mode aliases</dt><dd>when <code>current_mode_id == "plan"</code>: Write title becomes "Create Plan", Edit/MultiEdit becomes "Update Plan". The kind label still renders ("Write Create Plan" / "Edit Update Plan") — the alias replaces the path, the kind label still names the tool.</dd>
+      <dt>plan-mode aliases</dt><dd>when <code>current_mode_id == "plan"</code>: Write title becomes "Create Plan", Edit/MultiEdit becomes "Update Plan". The kind label still renders ("Write Create Plan" / "Edit Update Plan") - the alias replaces the path, the kind label still names the tool.</dd>
     </dl>
   </div>
 </div>
@@ -986,7 +960,7 @@ chat continues here…
     <div class="when">visible: every Bash tool call</div>
   </div>
   <div class="surface-body">
-    <p>Same standard tool-call shape — status icon + <code>▶</code> kind icon (white bold) + the command as the title. Body lines prefixed with <code>  │  </code> (DIM) carry the terminal output through <code>render_terminal_output</code> (ANSI handling, output cap at <code>TERMINAL_MAX_LINES = 12</code>). Last line uses <code>  └─ </code>. No bordered card — Bash flows through the same path every other tool uses.</p>
+    <p>Same standard tool-call shape - status icon + <code>▶</code> kind icon (white bold) + the command as the title. Body lines prefixed with <code>  │  </code> (DIM) carry the terminal output through <code>render_terminal_output</code> (ANSI handling, output cap at <code>TERMINAL_MAX_LINES = 12</code>). Last line uses <code>  └─ </code>. No bordered card - Bash flows through the same path every other tool uses.</p>
     <div class="term">
       <pre class="indent">
   <span class="success">✓</span> <span class="bold">▶</span> <span class="bold">Bash</span> cargo nextest run -p forge-tui events::rate_limit
@@ -998,8 +972,8 @@ chat continues here…
     <dl>
       <dt>code</dt><dd>title via <code>standard::render_tool_call_title</code>, body via <code>standard::render_tool_content</code> (which dispatches to <code>render_terminal_output</code> when <code>tc.is_execute_tool()</code>). When the run failed, only the first non-empty stderr line is shown via <code>failed_execute_first_line</code>.</dd>
       <dt>icon</dt><dd>kind icon <code>▶</code> (<code>U+25B6</code>) in white bold (matches every other tool icon's coloring). Replaces the previous chevron <code>⟩</code> (the lone directional outlier).</dd>
-      <dt>collapse</dt><dd>same Ctrl+X / click behaviour as other tools — collapses to the single-line summary <code>  └─ &lt;last output line&gt;  click or ctrl+x to expand</code> in DIM.</dd>
-      <dt>resolves</dt><dd><a href="https://github.com/busytools/forge/issues/39">#39</a> — Bash no longer has its own bordered card. Same shape as Edit / Read / Grep. <code>render_execute_with_borders</code> deleted entirely.</dd>
+      <dt>collapse</dt><dd>same Ctrl+X / click behaviour as other tools - collapses to the single-line summary <code>  └─ &lt;last output line&gt;  click or ctrl+x to expand</code> in DIM.</dd>
+      <dt>resolves</dt><dd><a href="https://github.com/busytools/forge/issues/39">#39</a> - Bash no longer has its own bordered card. Same shape as Edit / Read / Grep. <code>render_execute_with_borders</code> deleted entirely.</dd>
     </dl>
   </div>
 </div>
@@ -1007,7 +981,7 @@ chat continues here…
 <div class="surface">
   <div class="surface-head">
     <h4>TodoWrite tool call</h4>
-    <div class="when">visible: never in chat — TodoWrite is silent in the scrollback. The live todo state lives in the <a href="#inspector-pane">Inspector pane</a>'s <code>TASKS</code> section.</div>
+    <div class="when">visible: never in chat - TodoWrite is silent in the scrollback. The live todo state lives in the <a href="#inspector-pane">Inspector pane</a>'s <code>TASKS</code> section.</div>
   </div>
   <div class="surface-body">
     <p>The chat-stream tool-call card for <code>TodoWrite</code> is suppressed. Every <code>TodoWrite</code> call updates the Inspector pane in place; no chat noise. When <code>TodoWriteOutputMetadata.verification_nudge_needed</code> is set, the nudge surfaces as a dim-yellow line in the Inspector above the <code>TASKS</code> header (see <a href="#inspector-pane">Inspector pane</a>).</p>
@@ -1020,7 +994,7 @@ chat continues here…
     <div class="when">visible: when an assistant spawns a subagent (Task or Agent tool)</div>
   </div>
   <div class="surface-body">
-    <p>Same standard tool-call shape — status icon + diamond kind icon (white bold) + display title. Subagents have an extended summary limit (<code>IN_PROGRESS_SUBAGENT_COLLAPSED_TEXT_SUMMARY_LIMIT = 180</code> chars vs <code>DEFAULT_COLLAPSED_TEXT_SUMMARY_LIMIT = 60</code> for everything else) so collapsed subagent rows show more progress text. <code>SUBAGENT_TOKEN</code> (light blue) is reserved for token mentions of subagent names elsewhere; the tool-call row itself follows the standard color palette.</p>
+    <p>Same standard tool-call shape - status icon + diamond kind icon (white bold) + display title. Subagents have an extended summary limit (<code>IN_PROGRESS_SUBAGENT_COLLAPSED_TEXT_SUMMARY_LIMIT = 180</code> chars vs <code>DEFAULT_COLLAPSED_TEXT_SUMMARY_LIMIT = 60</code> for everything else) so collapsed subagent rows show more progress text. <code>SUBAGENT_TOKEN</code> (light blue) is reserved for token mentions of subagent names elsewhere; the tool-call row itself follows the standard color palette.</p>
     <div class="term">
       <pre class="indent">
   <span class="success">✓</span> <span class="bold">◇</span> Explore the rate-limit code paths
@@ -1028,24 +1002,24 @@ chat continues here…
     </div>
     <dl>
       <dt>code</dt><dd><code>crates/forge-tui/src/ui/tool_call/standard.rs</code> · <code>matches!(tc.sdk_tool_name.as_str(), "Agent" | "Task")</code> selects the longer summary limit</dd>
-      <dt>backgrounded badges</dt><dd>via <code>tool_output_badge_spans</code> — <code>  [backgrounded]</code> when <code>task_metadata.is_backgrounded == Some(true)</code> · <code>  [assistant backgrounded]</code> for Bash that the assistant auto-backgrounded (signalled in <code>BashOutputMetadata.assistant_auto_backgrounded</code>)</dd>
+      <dt>backgrounded badges</dt><dd>via <code>tool_output_badge_spans</code> - <code>  [backgrounded]</code> when <code>task_metadata.is_backgrounded == Some(true)</code> · <code>  [assistant backgrounded]</code> for Bash that the assistant auto-backgrounded (signalled in <code>BashOutputMetadata.assistant_auto_backgrounded</code>)</dd>
     </dl>
   </div>
 </div>
 
 <!-- ============================================================== -->
-<h2 class="section-title" id="peers">Peer MCP — cross-agent coordination</h2>
+<h2 class="section-title" id="peers">Peer MCP - cross-agent coordination</h2>
 
 <p class="intro">
-  Every spawned <code>claude</code> child gets an in-process MCP server (<code>mcp__forge__*</code>) exposing four tools — <code>peers__whoami</code>, <code>peers__list_agents</code>, <code>peers__tell_agent</code>, <code>peers__ask_agent</code>. The forge.toml project name is the agent identity (one session per project). When the LLM in project <strong>A</strong> calls <code>ask_agent</code>, forge wraps the prompt in a bracket-prefixed envelope (e.g. <code>[Question id=q-XXXXXXXX hop=1/10 from agent 'A' (org 'Personal') - reply with tell_agent in_reply_to=q-XXXXXXXX]</code>) and dispatches it as a synthetic user turn to project <strong>B</strong>. B's reply lands as another wrapped envelope on A's chat. The chat renderer pattern-matches the wrappers at render time and shows a styled <a href="#peer-block">peer block</a> instead of the raw bracket prose.
+  Every spawned <code>claude</code> child gets an in-process MCP server (<code>mcp__forge__*</code>) exposing four tools - <code>peers__whoami</code>, <code>peers__list_agents</code>, <code>peers__tell_agent</code>, <code>peers__ask_agent</code>. The forge.toml project name is the agent identity (one session per project). When the LLM in project <strong>A</strong> calls <code>ask_agent</code>, forge wraps the prompt in a bracket-prefixed envelope (e.g. <code>[Question id=q-XXXXXXXX hop=1/10 from agent 'A' (org 'Personal') - reply with tell_agent in_reply_to=q-XXXXXXXX]</code>) and dispatches it as a synthetic user turn to project <strong>B</strong>. B's reply lands as another wrapped envelope on A's chat. The chat renderer pattern-matches the wrappers at render time and shows a styled <a href="#peer-block">peer block</a> instead of the raw bracket prose.
 </p>
 <p class="intro">
-  Tool calls for <code>mcp__forge__peers__*</code> are auto-approved by <code>forge-sdk::control_dispatch</code> — the LLM never sees a permission prompt for peer coordination. The default tool-use card is suppressed via <code>hidden: true</code> on <code>ToolCallInfo</code> so the chat shows the styled <a href="#peer-block">outbound peer block</a> in its place. See the <a href="#projects-pane">Projects pane</a> for the per-row in-flight badge cluster.
+  Tool calls for <code>mcp__forge__peers__*</code> are auto-approved by <code>forge-sdk::control_dispatch</code> - the LLM never sees a permission prompt for peer coordination. The default tool-use card is suppressed via <code>hidden: true</code> on <code>ToolCallInfo</code> so the chat shows the styled <a href="#peer-block">outbound peer block</a> in its place. See the <a href="#projects-pane">Projects pane</a> for the per-row in-flight badge cluster.
 </p>
 
 <div class="surface" id="peer-block">
   <div class="surface-head">
-    <h4>Outbound peer block — replaces the default tool_use card for <code>ask_agent</code> / <code>tell_agent</code></h4>
+    <h4>Outbound peer block - replaces the default tool_use card for <code>ask_agent</code> / <code>tell_agent</code></h4>
     <div class="when">visible: every <code>mcp__forge__peers__ask_agent</code> / <code>mcp__forge__peers__tell_agent</code> tool call the LLM emits</div>
   </div>
   <div class="surface-body">
@@ -1070,11 +1044,11 @@ chat continues here…
 
 <div class="surface">
   <div class="surface-head">
-    <h4>Inbound peer blocks — replace the default user-message rendering for wrapped envelopes</h4>
+    <h4>Inbound peer blocks - replace the default user-message rendering for wrapped envelopes</h4>
     <div class="when">visible: every user-turn message whose text starts with a recognised peer envelope (<code>[Question id=...]</code>, <code>[Message id=...]</code>, <code>[Reply id=...]</code>, <code>[Late reply id=...]</code>, <code>[Ask id=... to agent ... timed out ...]</code>, <code>[Ask id=... from agent ... has expired ...]</code>, <code>[Ask id=... to agent ... failed to deliver: ...]</code>)</div>
   </div>
   <div class="surface-body">
-    <p>Same shape as the outbound block — header line with leading icon + colored label + DIM-separated metadata, body lines indented 3 cols in dim gray. Seven variants, each with its own icon + accent. Inbound envelopes that don't match any of the prefixes fall through to the default user-message rendering, so malformed wrappers don't break the chat.</p>
+    <p>Same shape as the outbound block - header line with leading icon + colored label + DIM-separated metadata, body lines indented 3 cols in dim gray. Seven variants, each with its own icon + accent. Inbound envelopes that don't match any of the prefixes fall through to the default user-message rendering, so malformed wrappers don't break the chat.</p>
     <div class="term">
       <pre class="indent">
    <span class="accent">◀</span> <span class="accent bold">question</span> <span class="dim">·</span> <span class="accent bold">forge</span> <span class="dim">·</span> <span class="dim">q-7f3a92e0</span> <span class="dim">·</span> <span class="dim">hop 1/10</span> <span class="dim">·</span> <span class="dim">(Personal)</span>
@@ -1091,7 +1065,7 @@ chat continues here…
 
    <span class="success">◀</span> <span class="success bold">reply</span> <span class="dim">·</span> <span class="accent bold">granite-backend</span> <span class="dim">·</span> <span class="dim">q-7f3a92e0</span> <span class="warning">·</span> <span class="warning">⌛ late</span> <span class="dim">·</span> <span class="dim">(Granite)</span>
 
-   <span class="dim">Sorry for the delay — the original ask had already expired.</span>
+   <span class="dim">Sorry for the delay - the original ask had already expired.</span>
 
    <span class="error">⚠</span> <span class="error bold">timeout</span> <span class="dim">·</span> <span class="accent bold">ask to granite-backend</span> <span class="dim">·</span> <span class="dim">q-7f3a92e0</span> <span class="dim">·</span> <span class="dim">no reply after 30 min</span> <span class="dim">·</span> <span class="dim">(Granite)</span>
 
@@ -1156,12 +1130,12 @@ chat continues here…
       <tbody>
         <tr>
           <td><code>peers__whoami</code></td>
-          <td>—</td>
+          <td>-</td>
           <td>Returns the caller's own <code>PeerStatus</code> (project name, org, cwd, current model, in-flight outgoing/incoming counts).</td>
         </tr>
         <tr>
           <td><code>peers__list_agents</code></td>
-          <td>—</td>
+          <td>-</td>
           <td>Returns every project listed in <code>forge.toml</code> with its current liveness (running / sleeping / failed), current model, and in-flight counters. The caller's own row is included so the LLM can reason about its own identity in the list.</td>
         </tr>
         <tr>
@@ -1198,9 +1172,9 @@ chat continues here…
     <ul style="color: var(--muted); font-size: 13px; line-height: 1.7; margin: 0 0 12px 18px;">
       <li><strong>Login hint</strong> (when CLI reports <code>app.login_hint</code>): "<em>Authentication required: &lt;method&gt; -- &lt;description&gt;</em>" in Yellow + dim hint "<em>Run `claude auth login` in another terminal to authenticate</em>" beneath. Two lines.</li>
       <li><strong>Cancel hint</strong> (during cancellation): spinner + "<em>Cancelling current turn... draft will auto-submit when ready.</em>" in DIM. One line.</li>
-      <li><strong>Prompt suggestion</strong>: "<em>Suggestion: &lt;text&gt;    Tab to accept</em>" — "Suggestion:" in DIM, suggestion in white, accept-hint in DIM. One line.</li>
+      <li><strong>Prompt suggestion</strong>: "<em>Suggestion: &lt;text&gt;    Tab to accept</em>" - "Suggestion:" in DIM, suggestion in white, accept-hint in DIM. One line.</li>
     </ul>
-    <p>When <code>app.status == AppStatus::Connecting</code>, the entire input area is replaced with a spinner + "<em>Connecting to Claude Code...</em>" in DIM (no separators are drawn around it for that variant — the input area takes its own row).</p>
+    <p>When <code>app.status == AppStatus::Connecting</code>, the entire input area is replaced with a spinner + "<em>Connecting to Claude Code...</em>" in DIM (no separators are drawn around it for that variant - the input area takes its own row).</p>
     <div class="term">
       <pre class="indent">
   <span class="muted-c">────────────────────────────────────────────────────────────────────────────</span>
@@ -1225,11 +1199,11 @@ chat continues here…
 <div class="surface">
   <div class="surface-head">
     <h4>Autocomplete dropdown</h4>
-    <div class="when">visible: while user is typing one of three triggers — <code>/</code> (slash), <code>@</code> (file mention), <code>&amp;</code> (subagent)</div>
+    <div class="when">visible: while user is typing one of three triggers - <code>/</code> (slash), <code>@</code> (file mention), <code>&amp;</code> (subagent)</div>
   </div>
   <div class="surface-body">
     <p>Rounded-border dropdown anchored to the input. Title format depends on context: <code> Commands (N) </code> for slash command names, <code> /&lt;cmd&gt; Args (N) </code> for slash-command arguments (e.g. <code> /model Args (3) </code>), <code> Files &amp; Folders </code> for <code>@</code>, <code> Subagents (N) </code> for <code>&amp;</code>. Title rendered in DIM. Border DIM. Max <code>MAX_VISIBLE = 8</code> rows visible; scrolls in place.</p>
-    <p>Each item: 3-char selection prefix (<code> ▸ </code> in RUST_ORANGE bold for selected, <code>   </code> for others) + primary text (default fg, with case-insensitive match-substring highlight when there's a query) + optional secondary description (DIM). Slash commands typed in the <em>input area</em> are colored <code>SLASH_COMMAND</code> (light magenta) by <code>input.rs</code> — but <strong>inside the dropdown</strong>, slash items use default fg, not magenta.</p>
+    <p>Each item: 3-char selection prefix (<code> ▸ </code> in RUST_ORANGE bold for selected, <code>   </code> for others) + primary text (default fg, with case-insensitive match-substring highlight when there's a query) + optional secondary description (DIM). Slash commands typed in the <em>input area</em> are colored <code>SLASH_COMMAND</code> (light magenta) by <code>input.rs</code> - but <strong>inside the dropdown</strong>, slash items use default fg, not magenta.</p>
     <div class="term">
       <pre class="indent">
   <span class="dim">╭ </span><span class="dim">Commands (4)</span><span class="dim"> ───────────────────────────────────────────────────────╮</span>
@@ -1240,11 +1214,11 @@ chat continues here…
   <span class="dim">╰─────────────────────────────────────────────────────────────────────╯</span>
   <span class="accent">❯</span> <span class="slash">/m</span>_</pre>
     </div>
-    <p class="hint">Underlines mark match-highlighted regions (rendered with a different style — fg colour or background, depending on the implementation; not strictly underlines in the running TUI).</p>
+    <p class="hint">Underlines mark match-highlighted regions (rendered with a different style - fg colour or background, depending on the implementation; not strictly underlines in the running TUI).</p>
     <dl>
       <dt>code</dt><dd><code>crates/forge-tui/src/ui/autocomplete.rs</code> · positioning via <code>choose_dropdown_x</code> / <code>choose_dropdown_y</code> (renders above OR below the input depending on space)</dd>
       <dt>three triggers</dt><dd><code>/</code> = slash · <code>@</code> = file mention (paths from <code>FileIndex</code>) · <code>&amp;</code> = subagent invocation</dd>
-      <dt>known issues</dt><dd><a href="https://github.com/busytools/forge/issues/46">#46</a> — pre-init gap (CLI emits init only post-first-turn; fallback list needed)  ·  <a href="https://github.com/busytools/forge/issues/47">#47</a> — slash commands render as full expanded prompt text on session resume</dd>
+      <dt>known issues</dt><dd><a href="https://github.com/busytools/forge/issues/46">#46</a> - pre-init gap (CLI emits init only post-first-turn; fallback list needed)  ·  <a href="https://github.com/busytools/forge/issues/47">#47</a> - slash commands render as full expanded prompt text on session resume</dd>
     </dl>
   </div>
 </div>
@@ -1255,13 +1229,13 @@ chat continues here…
 <div class="surface">
   <div class="surface-head">
     <h4>Dock-morph widget</h4>
-    <div class="when">visible: whenever the active session's <code>prompt_queue</code> has a head — permission requests, plan-approval (ExitPlanMode), or AskUserQuestion all route through the same widget</div>
+    <div class="when">visible: whenever the active session's <code>prompt_queue</code> has a head - permission requests, plan-approval (ExitPlanMode), or AskUserQuestion all route through the same widget</div>
   </div>
   <div class="surface-body">
-    <p>One renderer, three modes (single-select / multi-select / selection+text). When a prompt arrives the chat-input box at the bottom of the screen <strong>morphs</strong> — text-entry slot disappears, the orange thick chrome stays put, options appear inside with a <code>▸</code> pointer on the focused row, arrow keys move focus, Enter confirms, Esc cancels.</p>
+    <p>One renderer, three modes (single-select / multi-select / selection+text). When a prompt arrives the chat-input box at the bottom of the screen <strong>morphs</strong> - text-entry slot disappears, the orange thick chrome stays put, options appear inside with a <code>▸</code> pointer on the focused row, arrow keys move focus, Enter confirms, Esc cancels.</p>
     <p>The tool block above keeps its normal in-progress render (no inline expansion). Per-session FIFO queue: when more than one prompt is pending, a dim "<code>▼ N more pending after this</code>" line appears at the top of the dock body; otherwise that line is hidden.</p>
 
-    <p><strong>Common-case permission</strong> — no decision_reason or display_description (most Bash / Edit / Read calls land here):</p>
+    <p><strong>Common-case permission</strong> - no decision_reason or display_description (most Bash / Edit / Read calls land here):</p>
     <div class="term">
       <pre class="indent"><span class="accent bold">┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓</span>
 <span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
@@ -1277,7 +1251,7 @@ chat continues here…
 <span class="accent bold">┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛</span></pre>
     </div>
 
-    <p><strong>Permission with full CLI context</strong> — Read outside workspace (yellow <code>⚠</code> = <code>decision_reason</code>, dim line below = <code>display.description</code>; "Allow always" entries derive from <code>permission_suggestions</code>):</p>
+    <p><strong>Permission with full CLI context</strong> - Read outside workspace (yellow <code>⚠</code> = <code>decision_reason</code>, dim line below = <code>display.description</code>; "Allow always" entries derive from <code>permission_suggestions</code>):</p>
     <div class="term">
       <pre class="indent"><span class="accent bold">┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓</span>
 <span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
@@ -1295,7 +1269,7 @@ chat continues here…
 <span class="accent bold">┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛</span></pre>
     </div>
 
-    <p><strong>AskUserQuestion</strong> — multi-select with notes-option toggled. Question header gets a <code>?</code> in RUST_ORANGE, the question body is white below it, options use checkbox markers (<code>[x]</code> / <code>[ ]</code>) before the icon; toggling the <code>… Tell Claude something else</code> entry expands an inline notes editor:</p>
+    <p><strong>AskUserQuestion</strong> - multi-select with notes-option toggled. Question header gets a <code>?</code> in RUST_ORANGE, the question body is white below it, options use checkbox markers (<code>[x]</code> / <code>[ ]</code>) before the icon; toggling the <code>… Tell Claude something else</code> entry expands an inline notes editor:</p>
     <div class="term">
       <pre class="indent"><span class="accent bold">┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓</span>
 <span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
@@ -1313,7 +1287,7 @@ chat continues here…
 <span class="accent bold">┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛</span></pre>
     </div>
 
-    <p><strong>Queue indicator</strong> — when the queue depth is &gt; 1 (e.g. a background session's prompt is queued behind the active prompt), a dim line at the top of the dock body shows the count:</p>
+    <p><strong>Queue indicator</strong> - when the queue depth is &gt; 1 (e.g. a background session's prompt is queued behind the active prompt), a dim line at the top of the dock body shows the count:</p>
     <div class="term">
       <pre class="indent"><span class="accent bold">┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓</span>
 <span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
@@ -1332,10 +1306,10 @@ chat continues here…
 
     <h5>Icon vocabulary</h5>
     <ul>
-      <li><span class="success">✓</span> green — <code>PermissionOptionKind::Allow</code> (any Allow variant)</li>
-      <li><span class="error">✗</span> red — <code>PermissionOptionKind::Deny</code> (any Deny variant)</li>
-      <li><span style="color:#6ba3e5">✎</span> blue — <code>PermissionOptionKind::Edit</code> (Allow with edits — synthesized for editable tools: Bash, Edit, Write, MultiEdit, NotebookEdit)</li>
-      <li><span class="dim">…</span> dim — <code>PermissionOptionKind::Notes</code> (the synthesized "Tell Claude something else" escape hatch; always last in the option list)</li>
+      <li><span class="success">✓</span> green - <code>PermissionOptionKind::Allow</code> (any Allow variant)</li>
+      <li><span class="error">✗</span> red - <code>PermissionOptionKind::Deny</code> (any Deny variant)</li>
+      <li><span style="color:#6ba3e5">✎</span> blue - <code>PermissionOptionKind::Edit</code> (Allow with edits - synthesized for editable tools: Bash, Edit, Write, MultiEdit, NotebookEdit)</li>
+      <li><span class="dim">…</span> dim - <code>PermissionOptionKind::Notes</code> (the synthesized "Tell Claude something else" escape hatch; always last in the option list)</li>
     </ul>
 
     <h5>Where options come from</h5>
@@ -1343,28 +1317,28 @@ chat continues here…
     <ul>
       <li><code>addRules</code> (Read outside workspace) → "Allow always for {tool} · paths matching {pattern}". macOS <code>/tmp</code> + <code>/private/tmp</code> mirror entries are deduped for display but both rule entries are kept on the wire so the CLI installs both.</li>
       <li><code>addDirectories</code> (Write / Edit outside workspace) → "Allow always &amp; add {dirs} to allowed dirs".</li>
-      <li><code>setMode</code> (typically arrives on the prompt that intercepts plan-mode — Write outside workspace) → "Allow always &amp; switch to {mode} mode". Note: ExitPlanMode itself sends <code>permission_suggestions: null</code>; the mode switch lives on the earlier intercept prompt, not on ExitPlanMode.</li>
+      <li><code>setMode</code> (typically arrives on the prompt that intercepts plan-mode - Write outside workspace) → "Allow always &amp; switch to {mode} mode". Note: ExitPlanMode itself sends <code>permission_suggestions: null</code>; the mode switch lives on the earlier intercept prompt, not on ExitPlanMode.</li>
     </ul>
     <p>Plus two universally-synthesized options: <code>… Tell Claude something else</code> (always last) routes to <code>deny(notes_text)</code> on the wire; <code>✎ Allow with edits</code> (only for editable tools) routes to <code>allow_with_input(edited_value)</code>.</p>
 
     <h5>Keymap</h5>
     <dl>
       <dt>option-picker mode (default)</dt>
-      <dd><code>↑</code> / <code>↓</code> / <code>←</code> / <code>→</code> — move option focus (wraps top↔bottom)<br>
-      <code>Home</code> / <code>End</code> — jump to first / last option<br>
-      <code>Space</code> — multi-select only: toggle current option<br>
-      <code>Enter</code> — Notes-kind option → Submit (notes text routed from canonical <code>App.input</code> editor); Edit-kind option → enter editing-input mode (Consumed); otherwise → Submit<br>
-      <code>Esc</code> — Cancel<br>
-      <code>Tab</code> / <code>BackTab</code> / printable chars / <code>Backspace</code> / <code>Delete</code> — when focused option is Notes-kind, route to <code>App.input</code> editor (canonical chat-input handler — handles unicode, paste bursts, SuperWhisper insertions, cursor navigation). Otherwise Consumed (swallowed).</dd>
+      <dd><code>↑</code> / <code>↓</code> / <code>←</code> / <code>→</code> - move option focus (wraps top↔bottom)<br>
+      <code>Home</code> / <code>End</code> - jump to first / last option<br>
+      <code>Space</code> - multi-select only: toggle current option<br>
+      <code>Enter</code> - Notes-kind option → Submit (notes text routed from canonical <code>App.input</code> editor); Edit-kind option → enter editing-input mode (Consumed); otherwise → Submit<br>
+      <code>Esc</code> - Cancel<br>
+      <code>Tab</code> / <code>BackTab</code> / printable chars / <code>Backspace</code> / <code>Delete</code> - when focused option is Notes-kind, route to <code>App.input</code> editor (canonical chat-input handler - handles unicode, paste bursts, SuperWhisper insertions, cursor navigation). Otherwise Consumed (swallowed).</dd>
     </dl>
 
     <h5>State + dispatch</h5>
     <dl>
-      <dt>renderer</dt><dd><code>crates/forge-tui/src/ui/prompt.rs::render</code> — draws the orange thick chrome itself; callers don't render a separate block.</dd>
+      <dt>renderer</dt><dd><code>crates/forge-tui/src/ui/prompt.rs::render</code> - draws the orange thick chrome itself; callers don't render a separate block.</dd>
       <dt>state</dt><dd><code>crates/forge-tui/src/app/prompt.rs::PromptState</code> (per-prompt) on <code>UiSession.prompt_queue: VecDeque&lt;PromptState&gt;</code> (per-session FIFO).</dd>
       <dt>keymap</dt><dd><code>crates/forge-tui/src/app/prompt.rs::handle_key_option_picker</code> / <code>handle_key_editing_input</code>. Top-level dispatch via <code>dispatch_key</code> called from <code>crates/forge-tui/src/app/keys.rs::dispatch_key_by_focus</code> when the active session has a queued prompt. Notes-kind keystrokes route to <code>App.input</code> editor directly.</dd>
-      <dt>response dispatch</dt><dd><code>crates/forge-tui/src/app/prompt.rs::submit_prompt</code> / <code>cancel_prompt</code> — builds <code>PermissionOutcome</code> / <code>QuestionOutcome</code> from the picked option's <code>action</code> + notes + edited_input, dispatches via <code>events::turn::dispatch_permission_outcome</code> / <code>dispatch_question_outcome</code>.</dd>
-      <dt>option construction</dt><dd><code>crates/forge-agent/src/forge_sdk_worker.rs::build_permission_options</code> — derives contextual options from <code>ctx.suggestions</code>; appends "Allow with edits" for editable tools and "Tell Claude something else" universally.</dd>
+      <dt>response dispatch</dt><dd><code>crates/forge-tui/src/app/prompt.rs::submit_prompt</code> / <code>cancel_prompt</code> - builds <code>PermissionOutcome</code> / <code>QuestionOutcome</code> from the picked option's <code>action</code> + notes + edited_input, dispatches via <code>events::turn::dispatch_permission_outcome</code> / <code>dispatch_question_outcome</code>.</dd>
+      <dt>option construction</dt><dd><code>crates/forge-agent/src/forge_sdk_worker.rs::build_permission_options</code> - derives contextual options from <code>ctx.suggestions</code>; appends "Allow with edits" for editable tools and "Tell Claude something else" universally.</dd>
       <dt>chat-input draft preservation</dt><dd>When a prompt arrives onto an empty queue, <code>snapshot_draft_if_needed</code> captures any in-flight chat-input text and clears the editor. When the last prompt resolves (queue empties), <code>restore_draft_if_empty_queue</code> puts it back verbatim.</dd>
     </dl>
   </div>
@@ -1382,9 +1356,9 @@ chat continues here…
     <p>Rounded-border panel above the input area, fixed height (<code>HELP_PANEL_HEIGHT = 14</code>), max <code>MAX_ROWS = 10</code> content rows. Title format: leading "<code> Help </code>" (RUST_ORANGE bold) + bracketed tabs "<code>[Keys | Slash | Subagents]</code>" with the active tab in RUST_ORANGE bold and inactive tabs in DIM (separators "<code> | </code>" and brackets in DIM) + a hint suffix in DIM. The hint changes per view: "<code>  (&lt; &gt; switch tabs)</code>" on the Keys view; "<code>  (&lt; &gt; tabs  ▲▼ scroll)</code>" on the Slash and Subagents views.</p>
     <p>Three views with different layouts:</p>
     <ul style="color: var(--muted); font-size: 13px; line-height: 1.7; margin: 0 0 12px 18px;">
-      <li><strong>Keys</strong> — items distributed top-half-left / bottom-half-right (so scanning down each column reads chronologically). Each cell: <code>label : description</code> with label in BOLD and <code> : </code> separator in DIM.</li>
-      <li><strong>Slash commands</strong> — single-column two-column list (name + description) via <code>two_column_list</code>. Built-in commands: <code>/config</code>, <code>/effort</code>, <code>/mcp</code>, <code>/plugins</code>. Plus user-installed commands.</li>
-      <li><strong>Subagents</strong> — same two-column shape as Slash, listing user-defined subagents and their descriptions.</li>
+      <li><strong>Keys</strong> - items distributed top-half-left / bottom-half-right (so scanning down each column reads chronologically). Each cell: <code>label : description</code> with label in BOLD and <code> : </code> separator in DIM.</li>
+      <li><strong>Slash commands</strong> - single-column two-column list (name + description) via <code>two_column_list</code>. Built-in commands: <code>/config</code>, <code>/effort</code>, <code>/mcp</code>, <code>/plugins</code>. Plus user-installed commands.</li>
+      <li><strong>Subagents</strong> - same two-column shape as Slash, listing user-defined subagents and their descriptions.</li>
     </ul>
     <div class="term">
       <pre class="indent">
@@ -1397,9 +1371,9 @@ chat continues here…
   <span class="dim">╰─────────────────────────────────────────────────────────────────────╯</span></pre>
     </div>
     <dl>
-      <dt>code</dt><dd><code>crates/forge-tui/src/ui/help.rs</code> — <code>render_keys_help</code> for Keys, <code>render_two_column_help</code> for Slash / Subagents</dd>
+      <dt>code</dt><dd><code>crates/forge-tui/src/ui/help.rs</code> - <code>render_keys_help</code> for Keys, <code>render_two_column_help</code> for Slash / Subagents</dd>
       <dt>tabs</dt><dd>switch with <code>&lt;</code> / <code>&gt;</code> arrows; arrow keys scroll within Slash / Subagents</dd>
-      <dt>platform-aware bindings</dt><dd>Input-editing shortcuts swap modifiers per OS — macOS uses <code>Cmd+Z</code> / <code>Cmd+Shift+Z</code> (undo / redo), <code>Alt+Left/Right</code> (word nav), <code>Alt+Backspace/Delete</code> (word delete), and <code>Cmd+C</code> / <code>Cmd+V</code> for copy / paste. Linux + Windows use <code>Ctrl+</code> for all of these. <code>Ctrl+C</code> still works as fallback copy + interrupt-on-empty everywhere. Constants: <code>CMD_MOD</code> / <code>WORD_NAV_MOD</code> / <code>WORD_NAV_MOD_EXCLUDED</code> in <code>app/keys.rs</code>. Reaching the app on macOS requires the kitty enhanced-keyboard protocol (Ghostty / kitty / WezTerm); forge-tui negotiates the relevant flags at startup.</dd>
+      <dt>platform-aware bindings</dt><dd>Input-editing shortcuts swap modifiers per OS - macOS uses <code>Cmd+Z</code> / <code>Cmd+Shift+Z</code> (undo / redo), <code>Alt+Left/Right</code> (word nav), <code>Alt+Backspace/Delete</code> (word delete), and <code>Cmd+C</code> / <code>Cmd+V</code> for copy / paste. Linux + Windows use <code>Ctrl+</code> for all of these. <code>Ctrl+C</code> still works as fallback copy + interrupt-on-empty everywhere. Constants: <code>CMD_MOD</code> / <code>WORD_NAV_MOD</code> / <code>WORD_NAV_MOD_EXCLUDED</code> in <code>app/keys.rs</code>. Reaching the app on macOS requires the kitty enhanced-keyboard protocol (Ghostty / kitty / WezTerm); forge-tui negotiates the relevant flags at startup.</dd>
     </dl>
   </div>
 </div>
@@ -1416,7 +1390,7 @@ chat continues here…
     <div class="when">visible: appears as the first message in a fresh chat (first turn before any user input)</div>
   </div>
   <div class="surface-body">
-    <p>Banner is the literal text "<strong>Overview</strong>" in RUST_ORANGE bold. Body is a Ferris-says ASCII art block (in RUST_ORANGE) plus a metadata block (Version, Account, cwd, Session ID) and a single rotating tip. Rendered as a regular message in the scrollback (role <code>MessageRole::Welcome</code>) — not a screen overlay. Tip is selected from <code>WELCOME_TIPS</code> by <code>tip_seed % WELCOME_TIPS.len()</code>. The second metadata line shows <code>Account: &lt;display_name&gt; · &lt;tier&gt;</code> when forge-workspace picked the active account from <code>forge.toml</code>'s <code>[[accounts]]</code>; falls back to <code>Subscription: &lt;tier&gt;</code> when forge wasn't launched via the workspace (direct <code>Agent::spawn</code> from tests / smoke).</p>
+    <p>Banner is the literal text "<strong>Overview</strong>" in RUST_ORANGE bold. Body is a Ferris-says ASCII art block (in RUST_ORANGE) plus a metadata block (Version, Account, cwd, Session ID) and a single rotating tip. Rendered as a regular message in the scrollback (role <code>MessageRole::Welcome</code>) - not a screen overlay. Tip is selected from <code>WELCOME_TIPS</code> by <code>tip_seed % WELCOME_TIPS.len()</code>. The second metadata line shows <code>Account: &lt;display_name&gt; · &lt;tier&gt;</code> when forge-workspace picked the active account from <code>forge.toml</code>'s <code>[[accounts]]</code>; falls back to <code>Subscription: &lt;tier&gt;</code> when forge wasn't launched via the workspace (direct <code>Agent::spawn</code> from tests / smoke).</p>
     <div class="term">
       <pre class="indent">
   <span class="accent-bold">Overview</span>
@@ -1451,7 +1425,7 @@ chat continues here…
 <h2 class="section-title" id="settings">Plugins + MCP standalone views</h2>
 
 <p class="intro">
-  After the Config screen was retired, <code>/plugins</code> opens <code>ActiveView::Plugins</code> and <code>/mcp</code> opens <code>ActiveView::Mcp</code> — each is its own full-frame top-level view. Both share the same render shell (outer titled box + body + DIM status row + RUST_ORANGE help line) via <code>ui::config::render_view</code>; the body comes from the view-specific renderer (<code>ui::config::plugins::render</code> or <code>ui::config::mcp::render</code>). No tab header; no <code>Config</code> wrapper title.
+  After the Config screen was retired, <code>/plugins</code> opens <code>ActiveView::Plugins</code> and <code>/mcp</code> opens <code>ActiveView::Mcp</code> - each is its own full-frame top-level view. Both share the same render shell (outer titled box + body + DIM status row + RUST_ORANGE help line) via <code>ui::config::render_view</code>; the body comes from the view-specific renderer (<code>ui::config::plugins::render</code> or <code>ui::config::mcp::render</code>). No tab header; no <code>Config</code> wrapper title.
 </p>
 
 <div class="surface">
@@ -1460,7 +1434,7 @@ chat continues here…
     <div class="when">visible: when the MCP tab is active</div>
   </div>
   <div class="surface-body">
-    <p>Top: a status-badge summary line — <code>total N</code> (white-on-black), <code>connected N</code> (black-on-RUST_ORANGE), <code>needs auth N</code> (black-on-STATUS_WARNING), <code>pending N</code> (black-on-cyan), <code>disabled N</code> (white-on-DarkGray), <code>failed N</code> (white-on-STATUS_ERROR), and a <code>refreshing</code> badge when in-flight. Then optional "Last MCP error: …" line in STATUS_ERROR. Then per-server list rows: marker (<code>&gt;</code> selected / space) + name + status badge + scope badge + transport badge + a 1-line summary in DIM beneath.</p>
+    <p>Top: a status-badge summary line - <code>total N</code> (white-on-black), <code>connected N</code> (black-on-RUST_ORANGE), <code>needs auth N</code> (black-on-STATUS_WARNING), <code>pending N</code> (black-on-cyan), <code>disabled N</code> (white-on-DarkGray), <code>failed N</code> (white-on-STATUS_ERROR), and a <code>refreshing</code> badge when in-flight. Then optional "Last MCP error: …" line in STATUS_ERROR. Then per-server list rows: marker (<code>&gt;</code> selected / space) + name + status badge + scope badge + transport badge + a 1-line summary in DIM beneath.</p>
     <div class="term">
       <pre class="indent">
   <span style="background: white; color: black; padding: 0 4px;">total 4</span>  <span style="background: var(--rust-orange); color: black; padding: 0 4px;">connected 2</span>  <span style="background: var(--status-warn); color: black; padding: 0 4px;">needs auth 1</span>  <span style="background: gray; color: white; padding: 0 4px;">disabled 0</span>  <span style="background: var(--status-error); color: white; padding: 0 4px;">failed 1</span>
@@ -1489,7 +1463,7 @@ chat continues here…
     <div class="when">visible: when the Plugins tab is active</div>
   </div>
   <div class="surface-body">
-    <p>Has its own nested tab strip: <strong>Installed · Plugins · Marketplace</strong>. Each sub-tab label format is <code>" Tabname (count) "</code> (with leading and trailing spaces and the active count in parens). Active sub-tab is black-on-RUST_ORANGE bold; inactive sub-tabs are white bold. Sub-tabs separated by 2 spaces (no separator glyph). The Plugins / Marketplace sub-tabs include a search field above the list — its block title is "<code> Search </code>" (RUST_ORANGE border + cursor block when focused) or "<code> Search (Up to focus) </code>" (DIM border when not). The Installed sub-tab shows a "Configured marketplaces" header above the list instead.</p>
+    <p>Has its own nested tab strip: <strong>Installed · Plugins · Marketplace</strong>. Each sub-tab label format is <code>" Tabname (count) "</code> (with leading and trailing spaces and the active count in parens). Active sub-tab is black-on-RUST_ORANGE bold; inactive sub-tabs are white bold. Sub-tabs separated by 2 spaces (no separator glyph). The Plugins / Marketplace sub-tabs include a search field above the list - its block title is "<code> Search </code>" (RUST_ORANGE border + cursor block when focused) or "<code> Search (Up to focus) </code>" (DIM border when not). The Installed sub-tab shows a "Configured marketplaces" header above the list instead.</p>
     <div class="term">
       <pre class="indent">
   <span style="background: var(--rust-orange); color: black; font-weight: 700;"> Installed (4) </span>  <span class="bold">Plugins (12)</span>  <span class="bold">Marketplace (2)</span>
@@ -1545,7 +1519,7 @@ chat continues here…
     <dl>
       <dt>code</dt><dd><code>crates/forge-tui/src/ui/diff.rs::render_diff</code> · uses <code>similar</code> crate's <code>unified_diff</code> with default 3-line context</dd>
       <dt>colors</dt><dd>Repository tag: DIM · Hunk header: <code>Color::Cyan</code> · Add: <code>Color::Green</code> · Delete: <code>Color::Red</code> · Context: default fg</dd>
-      <dt>indenting</dt><dd>Diff body sits inside the standard tool-call body indent. Each line is the standard body prefix (<code>  │  </code> or <code>  └─ </code> in DIM, 5 cells) followed by <code>DIFF_BODY_INDENT = "  "</code> (2 cells), then the diff content — so diff content starts at column 7. Write-tool diffs cap their length via <code>cap_write_diff_lines</code> (head + ellipsis + tail). Plan-file paths bypass the diff renderer and render as markdown via <code>render_plan_content</code>.</dd>
+      <dt>indenting</dt><dd>Diff body sits inside the standard tool-call body indent. Each line is the standard body prefix (<code>  │  </code> or <code>  └─ </code> in DIM, 5 cells) followed by <code>DIFF_BODY_INDENT = "  "</code> (2 cells), then the diff content - so diff content starts at column 7. Write-tool diffs cap their length via <code>cap_write_diff_lines</code> (head + ellipsis + tail). Plan-file paths bypass the diff renderer and render as markdown via <code>render_plan_content</code>.</dd>
     </dl>
   </div>
 </div>
@@ -1553,18 +1527,18 @@ chat continues here…
 <div class="surface">
   <div class="surface-head">
     <h4>Full-screen diff overlay (<code>/diff</code>)</h4>
-    <div class="when">visible: when <code>/diff</code> or <code>/diff &lt;target&gt;</code> runs, or when the Inspector <a href="#inspector-pane">GIT section</a>'s <code>🦉</code> glyph is clicked. Lives in <code>ActiveView::Diff</code> — chat / input / projects pane / inspector pane all disappear while it's up, same overlay pattern as <a href="#settings">Config</a> / <a href="#sessions">Session picker</a> / <a href="#welcome">Trust</a>.</div>
+    <div class="when">visible: when <code>/diff</code> or <code>/diff &lt;target&gt;</code> runs, or when the Inspector <a href="#inspector-pane">GIT section</a>'s <code>🦉</code> glyph is clicked. Lives in <code>ActiveView::Diff</code> - chat / input / projects pane / inspector pane all disappear while it's up, same overlay pattern as <a href="#settings">Config</a> / <a href="#sessions">Session picker</a> / <a href="#welcome">Trust</a>.</div>
   </div>
   <div class="surface-body">
     <p>Click-to-review viewer for changes against any git ref. Mouse wheel scrolls the diff body, click a file in the FILES rail to switch context, click a diff line to attach a comment, <kbd>Esc</kbd> closes and (when there are pending comments) bundles them into a one-shot chat message to the agent.</p>
 
-    <p>The default <code>/diff</code> (no args) reads the Inspector <a href="#inspector-pane">GIT section</a>'s snapshot and picks a target accordingly: <strong>worktree dirty</strong> on any branch → <code>git diff HEAD</code>; <strong>feature branch clean</strong> → <code>git diff &lt;default-branch&gt;</code>. Six distinct empty-state cases each surface a specific system notice in chat instead of opening the overlay: no Inspector snapshot yet ("try again in a moment"), <code>NoRepo</code> ("Not a git repository"), scanner crashed (see HIGH-2 distinction below), feature-branch with unresolvable default ref (suggests explicit <code>/diff &lt;ref&gt;</code>), and clean default ("No changes vs <em>&lt;name&gt;</em>"). <code>/diff &lt;target&gt;</code> takes a ref / branch / SHA and runs <code>git diff &lt;target&gt;</code> directly — comparing the named ref against the working tree (captures committed + uncommitted in one view, so <code>/diff main</code> from a feature branch shows the full PR-equivalent picture).</p>
+    <p>The default <code>/diff</code> (no args) reads the Inspector <a href="#inspector-pane">GIT section</a>'s snapshot and picks a target accordingly: <strong>worktree dirty</strong> on any branch → <code>git diff HEAD</code>; <strong>feature branch clean</strong> → <code>git diff &lt;default-branch&gt;</code>. Six distinct empty-state cases each surface a specific system notice in chat instead of opening the overlay: no Inspector snapshot yet ("try again in a moment"), <code>NoRepo</code> ("Not a git repository"), scanner crashed (see HIGH-2 distinction below), feature-branch with unresolvable default ref (suggests explicit <code>/diff &lt;ref&gt;</code>), and clean default ("No changes vs <em>&lt;name&gt;</em>"). <code>/diff &lt;target&gt;</code> takes a ref / branch / SHA and runs <code>git diff &lt;target&gt;</code> directly - comparing the named ref against the working tree (captures committed + uncommitted in one view, so <code>/diff main</code> from a feature branch shows the full PR-equivalent picture).</p>
 
     <p>Two horizontally-stacked surfaces with chrome mirroring the chat's <a href="#projects-pane">Projects pane</a>: single-banner-row + DIM rule + 2-col content indent, 40ch (Wide) / 30ch (Medium) FILES rail width, <code>│</code> separator between rail and right pane.</p>
 
     <ul style="color: var(--muted); font-size: 13px; line-height: 1.7; margin: 0 0 12px 18px;">
-      <li><strong>FILES rail:</strong> banner <code>FILES</code> + DIM rule + blank row, followed by a box-drawing tree mirroring the <a href="#inspector-pane">Inspector GIT section</a>'s shape — single-child directory chains collapse (<code>crates/forge-tui/src/app/</code> renders as one row). Directory rows render the label in <span class="dim">DIM</span> with no marker. File leaves carry: connector (<code>├─</code>/<code>└─</code> DIM), current-file marker (<code>▸</code> in <span class="accent">RUST_ORANGE</span> when this is the viewed file, blank otherwise), status glyph (<code>M</code>/<code>A</code>/<code>D</code>/<code>R</code>/<code>C</code>/<code>T</code>/<code>U</code>/<code>!</code> for Unmerged) + filename + optional <code>💬 N</code> badge in <span class="accent">RUST_ORANGE</span> when N saved comments are anchored in that file. Click a file leaf → switch right pane to that file + reset body scroll + close any open comment editor (prior_comment preserved per the helper). Click a directory row → no-op in v1. Mouse wheel over the rail advances <code>rail_scroll</code> so long lists are scrollable (renderer clamps against <code>max(0, total_rows - visible)</code>). Untracked files (capped at 4 per scan, each ≤1KB content) appear with the <code>U</code> glyph. When the cap is exceeded, a yellow <code>+N untracked suppressed (cap M)</code> line is appended below the tree so a fresh-repo state doesn't render identically to a clean tree.</li>
-      <li><strong>DIFF body:</strong> banner <code>DIFF · &lt;current-file-path&gt;  +N -M</code> (the per-file added / removed counts append whenever the currently-viewed file has non-zero deltas — green <code>+N</code>, red <code>-M</code>; dismissal is keyboard-only via <kbd>Esc</kbd>, advertised in the footer hint) + DIM rule + blank row. GitHub-style <strong>split view</strong>: the OLD file (context + removed) renders in the left column, the NEW file (context + added) in the right, separated by a DIM <code>│</code> divider at the pane midpoint. Each column has its own gutter (line number from the relevant side) + <code>-</code>/<code>+</code>/space marker + syntax-highlighted text. Unbalanced rows (more removals than additions in a chunk, or vice versa) fill the empty side with blank padding so the divider position stays consistent down the body. Pairing is done per-hunk: consecutive removed / added runs zip into the first <code>min(|R|,|A|)</code> paired-modification rows, then standalones for whichever side has excess; context lines flush any pending change buffer first, then appear on both sides. <strong>Added lines</strong> render with a dark-green background tint (<code>#033a16</code>, matching GitHub's dark-mode added-line surface); <strong>removed lines</strong> with a dark-red tint (<code>#67060c</code>); context lines stay on the default background. Hunk headers (<code>@@ -X,Y +A,B @@</code>) span the full pane in <code>Color::Cyan</code>. <strong>Syntax highlighting</strong> drives the in-text colors via <code>syntect</code> (Rust / TS / JS / Python / Go / JSON / TOML / YAML / Markdown / Shell). One <code>LineHighlighter</code> per (file, side) preserves multi-line construct state (block comments, multi-line strings) within each column. Below <code>MIN_WIDTH_FOR_SPLIT = 100</code> cols the body renders a yellow "Terminal too narrow — resize to ≥ 100 cols and re-open /diff." notice instead. Click any diff line to mount an inline comment editor (see "Comment workflow" below); the click handler picks <code>left</code> or <code>right</code> by comparing the click column against the pane midpoint. Saved comments render as bordered mini-boxes anchored below the half of the row they were anchored to: <code>┌── 💬 Comment on line &lt;N&gt; ──┐</code> + body rows (wrapped to box width) + <code>└─...─┘</code>, all in <span class="accent">RUST_ORANGE</span> borders. Mouse wheel over the body advances <code>body_scroll</code>; rail and body scroll independently. <code>body_scroll</code> is clamped against the rendered line count on each render so a wheel-past-end leaves the tail visible instead of a blank pane.</li>
+      <li><strong>FILES rail:</strong> banner <code>FILES</code> + DIM rule + blank row, followed by a box-drawing tree mirroring the <a href="#inspector-pane">Inspector GIT section</a>'s shape - single-child directory chains collapse (<code>crates/forge-tui/src/app/</code> renders as one row). Directory rows render the label in <span class="dim">DIM</span> with no marker. File leaves carry: connector (<code>├─</code>/<code>└─</code> DIM), current-file marker (<code>▸</code> in <span class="accent">RUST_ORANGE</span> when this is the viewed file, blank otherwise), status glyph (<code>M</code>/<code>A</code>/<code>D</code>/<code>R</code>/<code>C</code>/<code>T</code>/<code>U</code>/<code>!</code> for Unmerged) + filename + optional <code>💬 N</code> badge in <span class="accent">RUST_ORANGE</span> when N saved comments are anchored in that file. Click a file leaf → switch right pane to that file + reset body scroll + close any open comment editor (prior_comment preserved per the helper). Click a directory row → no-op in v1. Mouse wheel over the rail advances <code>rail_scroll</code> so long lists are scrollable (renderer clamps against <code>max(0, total_rows - visible)</code>). Untracked files (capped at 4 per scan, each ≤1KB content) appear with the <code>U</code> glyph. When the cap is exceeded, a yellow <code>+N untracked suppressed (cap M)</code> line is appended below the tree so a fresh-repo state doesn't render identically to a clean tree.</li>
+      <li><strong>DIFF body:</strong> banner <code>DIFF · &lt;current-file-path&gt;  +N -M</code> (the per-file added / removed counts append whenever the currently-viewed file has non-zero deltas - green <code>+N</code>, red <code>-M</code>; dismissal is keyboard-only via <kbd>Esc</kbd>, advertised in the footer hint) + DIM rule + blank row. GitHub-style <strong>split view</strong>: the OLD file (context + removed) renders in the left column, the NEW file (context + added) in the right, separated by a DIM <code>│</code> divider at the pane midpoint. Each column has its own gutter (line number from the relevant side) + <code>-</code>/<code>+</code>/space marker + syntax-highlighted text. Unbalanced rows (more removals than additions in a chunk, or vice versa) fill the empty side with blank padding so the divider position stays consistent down the body. Pairing is done per-hunk: consecutive removed / added runs zip into the first <code>min(|R|,|A|)</code> paired-modification rows, then standalones for whichever side has excess; context lines flush any pending change buffer first, then appear on both sides. <strong>Added lines</strong> render with a dark-green background tint (<code>#033a16</code>, matching GitHub's dark-mode added-line surface); <strong>removed lines</strong> with a dark-red tint (<code>#67060c</code>); context lines stay on the default background. Hunk headers (<code>@@ -X,Y +A,B @@</code>) span the full pane in <code>Color::Cyan</code>. <strong>Syntax highlighting</strong> drives the in-text colors via <code>syntect</code> (Rust / TS / JS / Python / Go / JSON / TOML / YAML / Markdown / Shell). One <code>LineHighlighter</code> per (file, side) preserves multi-line construct state (block comments, multi-line strings) within each column. Below <code>MIN_WIDTH_FOR_SPLIT = 100</code> cols the body renders a yellow "Terminal too narrow - resize to ≥ 100 cols and re-open /diff." notice instead. Click any diff line to mount an inline comment editor (see "Comment workflow" below); the click handler picks <code>left</code> or <code>right</code> by comparing the click column against the pane midpoint. Saved comments render as bordered mini-boxes anchored below the half of the row they were anchored to: <code>┌── 💬 Comment on line &lt;N&gt; ──┐</code> + body rows (wrapped to box width) + <code>└─...─┘</code>, all in <span class="accent">RUST_ORANGE</span> borders. Mouse wheel over the body advances <code>body_scroll</code>; rail and body scroll independently. <code>body_scroll</code> is clamped against the rendered line count on each render so a wheel-past-end leaves the tail visible instead of a blank pane.</li>
       <li><strong>Footer:</strong> bottom row of the overlay shows pending comment count + key hints. With an editor open: "<code>Enter save · Esc cancel input</code>". With saved comments and no editor: "<code>N comments pending · click a diff line to comment · Esc submit &amp; close</code>". With nothing pending: "<code>click a diff line to comment · Esc close</code>".</li>
     </ul>
 
@@ -1588,23 +1562,23 @@ chat continues here…
                                 <span class="dim">│</span>
                                 <span class="dim">│</span>  <span class="accent">3 comments</span> <span class="dim">pending  ·  click a diff line </span><span class="accent">to comment</span><span class="dim">   ·  Esc </span><span class="accent">submit &amp; close</span></pre>
     </div>
-    <p>Below <code>MIN_WIDTH_FOR_SPLIT</code> (100 cols) — the body is replaced by a yellow notice:</p>
+    <p>Below <code>MIN_WIDTH_FOR_SPLIT</code> (100 cols) - the body is replaced by a yellow notice:</p>
     <div class="term">
-      <pre class="indent">  <span class="accent-bold">  FILES</span>      <span class="dim">│</span>  <span class="warning">Terminal too narrow — resize to ≥ 100 cols and re-open /diff.</span></pre>
+      <pre class="indent">  <span class="accent-bold">  FILES</span>      <span class="dim">│</span>  <span class="warning">Terminal too narrow - resize to ≥ 100 cols and re-open /diff.</span></pre>
     </div>
 
     <h5 style="margin-top: 18px;">Comment workflow</h5>
-    <p>Click on any diff line (added / removed / context — hunk headers are non-interactive) mounts a <code>tui_textarea::TextArea</code> inline below the clicked line. The editor renders with a <span class="accent">RUST_ORANGE</span> <code>│</code> left margin to visually anchor it to the diff; an empty editor shows a DIM "<code>(type your comment, Enter to save, Esc to cancel)</code>" placeholder so first-keystroke shape is obvious. Multi-line edits expand the editor inline; the body keeps scrolling smoothly around it via <code>body_scroll</code>.</p>
+    <p>Click on any diff line (added / removed / context - hunk headers are non-interactive) mounts a <code>tui_textarea::TextArea</code> inline below the clicked line. The editor renders with a <span class="accent">RUST_ORANGE</span> <code>│</code> left margin to visually anchor it to the diff; an empty editor shows a DIM "<code>(type your comment, Enter to save, Esc to cancel)</code>" placeholder so first-keystroke shape is obvious. Multi-line edits expand the editor inline; the body keeps scrolling smoothly around it via <code>body_scroll</code>.</p>
 
     <ul style="color: var(--muted); font-size: 13px; line-height: 1.7; margin: 0 0 12px 18px;">
-      <li><kbd>Enter</kbd> saves the comment, closes the editor, and renders a bordered mini-box (title <code>💬 Comment on line &lt;N&gt;</code> + wrapped body rows) in place. Save is idempotent — re-saving on the same anchor replaces the prior entry. Empty saves on a fresh editor are treated as cancel (no chip); empty saves on a reopened chip are treated as delete (matches GitHub's clear-and-save semantics).</li>
+      <li><kbd>Enter</kbd> saves the comment, closes the editor, and renders a bordered mini-box (title <code>💬 Comment on line &lt;N&gt;</code> + wrapped body rows) in place. Save is idempotent - re-saving on the same anchor replaces the prior entry. Empty saves on a fresh editor are treated as cancel (no chip); empty saves on a reopened chip are treated as delete (matches GitHub's clear-and-save semantics).</li>
       <li><kbd>Esc</kbd> with an editor open cancels just the editor; the overlay stays. Without an editor open, <kbd>Esc</kbd> closes the overlay and (if comments are pending) bundles them into a single markdown user message and dispatches it through the same path a typed prompt takes. The bubble appears in chat immediately + the agent receives the bundle as a fresh prompt.</li>
       <li>Click on an existing <code>💬</code> chip pulls the saved comment back into the editor for re-edit. Saving the edited text puts the chip back in place; cancelling leaves it gone (matches GitHub's edit-or-delete semantics).</li>
-      <li>Switching files via the FILES rail closes any open editor — the editor is anchored to a specific line, and orphaning it on a file switch would confuse the geometry. Saved comments survive file switches; only the in-progress editor drops.</li>
+      <li>Switching files via the FILES rail closes any open editor - the editor is anchored to a specific line, and orphaning it on a file switch would confuse the geometry. Saved comments survive file switches; only the in-progress editor drops.</li>
       <li>Bracketed paste while an editor is open routes to the TextArea so SuperWhisper transcripts / clipboard / pasted code blocks all land as expected. Paste outside an open editor is a no-op (nothing for it to land on).</li>
     </ul>
 
-    <p>The bundled markdown shape, grouped by file. Each comment quotes only its anchor diff line — not the surrounding hunk — so the agent gets precise per-line context and the bundle stays compact even for comments on a hot file with thousands of changed lines:</p>
+    <p>The bundled markdown shape, grouped by file. Each comment quotes only its anchor diff line - not the surrounding hunk - so the agent gets precise per-line context and the bundle stays compact even for comments on a hot file with thousands of changed lines:</p>
     <div class="term"><pre class="indent">
 ## Diff review (target `HEAD`)
 
@@ -1640,7 +1614,7 @@ use a let-else with explicit error path
 </pre></div>
 
     <h5 style="margin-top: 18px;">Narrow tier (&lt;120 cols)</h5>
-    <p>The FILES rail collapses on narrow terminals; the overlay renders just the diff body with a one-row header carrying the current file's path and <code>◀ N/M ▶</code> cycle controls. Click <code>◀</code> to go to the previous file (wraps to the last); click <code>▶</code> for the next (wraps to the first). The rest of the workflow stays the same — click a diff line to comment, <kbd>Esc</kbd> bundles &amp; submits.</p>
+    <p>The FILES rail collapses on narrow terminals; the overlay renders just the diff body with a one-row header carrying the current file's path and <code>◀ N/M ▶</code> cycle controls. Click <code>◀</code> to go to the previous file (wraps to the last); click <code>▶</code> for the next (wraps to the first). The rest of the workflow stays the same - click a diff line to comment, <kbd>Esc</kbd> bundles &amp; submits.</p>
 
     <div class="term">
       <pre class="indent">
@@ -1663,22 +1637,22 @@ use a let-else with explicit error path
     <p>Six distinct user-facing messages cover every failure / empty-state path so the user always knows what happened and what to do:</p>
 
     <ul style="color: var(--muted); font-size: 13px; line-height: 1.7; margin: 0 0 12px 18px;">
-      <li><code>DefaultTarget::NoSnapshot</code> ("Git scanner hasn't run yet — try /diff again in a moment.") — overlay doesn't open; chat gets the notice.</li>
-      <li><code>DefaultTarget::NotARepo</code> ("Not a git repository.") — cwd legitimately isn't inside a git tree.</li>
-      <li><code>DefaultTarget::ScannerFailed</code> ("Git scanner hit an error — see tracing logs (target: agent.env_git). Try /diff again in a moment.") — the Inspector scan's rev-parse subprocess hit Failed / Oversize. Distinct from NotARepo because the user IS in a repo; git just couldn't run. The Inspector GIT section paints a sibling yellow "<em>git scanner unhealthy — see logs (target: agent.env_git)</em>" row so the failure is visible even without opening /diff.</li>
-      <li><code>DefaultTarget::NoDefault</code> ("Branch has changes but the default ref couldn't be resolved (no origin/HEAD, no main, no master). Run /diff &lt;ref&gt; with an explicit target.") — feature branch with no resolvable default ref.</li>
-      <li><code>DefaultTarget::Clean { default_branch }</code> ("No changes vs <em>&lt;name&gt;</em>." or "No changes vs HEAD." when the default ref is unknown) — clean tree against the resolved default.</li>
-      <li>Inside the overlay: when the hunk scanner returns <code>scanner_ok = false</code> (Failed / Oversize on the underlying <code>git diff</code> calls), the right pane shows <code>"Scan failed for `&lt;target&gt;` — see tracing logs (target: agent.env_git). Press Esc to retry."</code> in red, embedding the diff target so a typo'd ref is visible at the failure site. Overrides the per-file empty-hunks fallback when files in the rail are partially populated (e.g. only <code>--no-ext-diff</code> failed).</li>
+      <li><code>DefaultTarget::NoSnapshot</code> ("Git scanner hasn't run yet - try /diff again in a moment.") - overlay doesn't open; chat gets the notice.</li>
+      <li><code>DefaultTarget::NotARepo</code> ("Not a git repository.") - cwd legitimately isn't inside a git tree.</li>
+      <li><code>DefaultTarget::ScannerFailed</code> ("Git scanner hit an error - see tracing logs (target: agent.env_git). Try /diff again in a moment.") - the Inspector scan's rev-parse subprocess hit Failed / Oversize. Distinct from NotARepo because the user IS in a repo; git just couldn't run. The Inspector GIT section paints a sibling yellow "<em>git scanner unhealthy - see logs (target: agent.env_git)</em>" row so the failure is visible even without opening /diff.</li>
+      <li><code>DefaultTarget::NoDefault</code> ("Branch has changes but the default ref couldn't be resolved (no origin/HEAD, no main, no master). Run /diff &lt;ref&gt; with an explicit target.") - feature branch with no resolvable default ref.</li>
+      <li><code>DefaultTarget::Clean { default_branch }</code> ("No changes vs <em>&lt;name&gt;</em>." or "No changes vs HEAD." when the default ref is unknown) - clean tree against the resolved default.</li>
+      <li>Inside the overlay: when the hunk scanner returns <code>scanner_ok = false</code> (Failed / Oversize on the underlying <code>git diff</code> calls), the right pane shows <code>"Scan failed for `&lt;target&gt;` - see tracing logs (target: agent.env_git). Press Esc to retry."</code> in red, embedding the diff target so a typo'd ref is visible at the failure site. Overrides the per-file empty-hunks fallback when files in the rail are partially populated (e.g. only <code>--no-ext-diff</code> failed).</li>
     </ul>
 
-    <p>The drain pump that lands scan results (<code>drain_events</code>) gates on three conditions before opening the overlay: (1) the scan's <code>seq</code> must match the latest <code>App.diff_scan_seq</code> (a rapid second <code>/diff</code> bumps the counter so the older scan's event drops silently as superseded); (2) <code>active_view == Chat</code> (user must still be in chat to receive the overlay — navigated-away case drops silently with a DEBUG log); (3) <code>event.cwd == active_session.cwd_raw</code> (session-switch mid-scan drops the stale result silently with a DEBUG log). No chat-message noise on the navigated-away paths — the user explicitly switched view or session, so surfacing a later notice would be surprising. Each skip path emits a DEBUG-level trace log under <code>APP_SESSION</code> for triage.</p>
+    <p>The drain pump that lands scan results (<code>drain_events</code>) gates on three conditions before opening the overlay: (1) the scan's <code>seq</code> must match the latest <code>App.diff_scan_seq</code> (a rapid second <code>/diff</code> bumps the counter so the older scan's event drops silently as superseded); (2) <code>active_view == Chat</code> (user must still be in chat to receive the overlay - navigated-away case drops silently with a DEBUG log); (3) <code>event.cwd == active_session.cwd_raw</code> (session-switch mid-scan drops the stale result silently with a DEBUG log). No chat-message noise on the navigated-away paths - the user explicitly switched view or session, so surfacing a later notice would be surprising. Each skip path emits a DEBUG-level trace log under <code>APP_SESSION</code> for triage.</p>
 
     <dl>
       <dt>code</dt><dd><code>crates/forge-tui/src/ui/diff_overlay.rs::render</code> (overlay scaffold) · <code>crates/forge-tui/src/app/diff_overlay.rs</code> (state + drain + key/mouse) · <code>/diff</code> slash handler at <code>crates/forge-tui/src/app/slash/executors.rs::handle_diff_submit</code> · Inspector <code>🦉</code> hit-test at <code>crates/forge-tui/src/ui/inspector_pane.rs::render_scrollable_body</code> stamping <code>PaneHitTarget::InspectorGitOpenDiff</code> · scanner at <code>crates/forge-agent/src/env/git_diff/hunks.rs::scan</code> running <code>git diff &lt;target&gt; --name-status</code> + <code>--no-ext-diff</code> + <code>ls-files --others</code>, returning a <code>ScanOutcome { files, scanner_ok, untracked_suppressed }</code> · workspace facade at <code>forge_workspace::Workspace::scan_git_diff_hunks(cwd, target)</code>.</dd>
       <dt>color</dt><dd>left banner (<code>FILES</code>) + right banner (<code>DIFF</code>): <code>RUST_ORANGE</code> bold · right banner <code>·</code> separator + current file path: <code>DIM</code> · banner rules + column separator (<code>│</code>): <code>DIM</code> · file-rail status glyphs: <code>M</code> / <code>R</code> / <code>C</code> / <code>T</code> <span class="accent">RUST_ORANGE</span>, <code>A</code> <span class="success">green</span>, <code>D</code> <span class="error">red</span>, <code>U</code> <span class="warning">yellow</span>, <code>!</code> (Unmerged) <span class="error">red</span> · file-rail currently-viewed marker (<code>▸</code>): <span class="accent">RUST_ORANGE</span> · file path in rail: default fg · "<code>+N untracked suppressed (cap M)</code>" line: <span class="warning">yellow</span> · diff body hunk headers (<code>@@</code>): <code>Color::Cyan</code> · added lines marker (<code>+</code>): <span class="success">green</span> · removed lines marker (<code>-</code>): <span class="error">red</span> · context-line marker (space) + gutter line numbers: <code>DIM</code> · context line text + added line text + removed line text: default fg (no background tint) · "Scan failed" body message: <span class="error">red</span> · "Terminal too short" warning when <code>pane_area.height &lt; 3</code>: <span class="warning">yellow</span>.</dd>
-      <dt>click</dt><dd>FILES rail row → switch right pane to that file, reset <code>body_scroll</code> to 0, close any open comment editor. Diff line → open a <code>tui_textarea::TextArea</code> inline below the clicked line; <kbd>Enter</kbd> saves, <kbd>Esc</kbd> cancels just the editor. Saved <code>💬</code> chip → reopens the saved comment for re-edit. <kbd>Esc</kbd> with no editor open → close overlay; if comments are pending, bundle them into a markdown chat message and dispatch it as a fresh prompt to the agent (one bubble, one turn). Dismissal is keyboard-only — the banner has no click affordance. Inspector pane's <code>🦉</code> glyph → enter overlay via <code>open_default</code> (auto-detected target). Mouse wheel over FILES rail advances <code>rail_scroll</code>; over the body advances <code>body_scroll</code>.</dd>
-      <dt>data source</dt><dd><code>forge_agent::env::git_diff::hunks::scan(cwd, target)</code> runs three subprocess calls per invocation: <code>git diff &lt;target&gt; --name-status</code> (file list with M/A/D/R/C/T/U classification), <code>git diff &lt;target&gt; --no-ext-diff</code> (full unified diff content — <code>--no-ext-diff</code> defeats user-configured difftastic / delta so the parser sees standard format), and <code>git ls-files --others --exclude-standard</code> (untracked files, only when <code>target == "HEAD"</code>; capped at <code>MAX_UNTRACKED_FILES=4</code>, each read up to <code>MAX_UNTRACKED_FILE_SIZE=1024</code> bytes). Returns <code>ScanOutcome { files, scanner_ok, untracked_suppressed }</code> — <code>scanner_ok</code> is <code>false</code> when any subprocess hit Failed / Oversize so the renderer surfaces "Scan failed" instead of an ambiguous empty pane; <code>untracked_suppressed</code> carries the cap-overflow count for the rail's yellow notice. Unknown <code>--name-status</code> codes (X, B) and malformed <code>@@</code> headers fire WARN logs under <code>agent.env_git</code> and drop the entry. Single-shot scan on overlay open — no polling.</dd>
-      <dt>scope</dt><dd>Wide tier (≥160): 40ch FILES rail (matches <a href="#projects-pane">Projects pane</a>'s Wide-tier width) + DIFF body fills the rest. Medium tier (120–159): 30ch FILES rail (matches Projects pane's Medium-tier width) + DIFF body fills the rest, file paths front-truncate as needed. Narrow tier (&lt;120): FILES rail collapses; the overlay renders the body only with a one-row header carrying <code>DIFF · &lt;path&gt;  ◀ N/M ▶  +N -M</code>. Persisted state: none — the overlay state is fully transient, doesn't survive a session restart. Comments survive the duration of a single open; <kbd>Esc</kbd> bundles them into chat and discards local state.</dd>
+      <dt>click</dt><dd>FILES rail row → switch right pane to that file, reset <code>body_scroll</code> to 0, close any open comment editor. Diff line → open a <code>tui_textarea::TextArea</code> inline below the clicked line; <kbd>Enter</kbd> saves, <kbd>Esc</kbd> cancels just the editor. Saved <code>💬</code> chip → reopens the saved comment for re-edit. <kbd>Esc</kbd> with no editor open → close overlay; if comments are pending, bundle them into a markdown chat message and dispatch it as a fresh prompt to the agent (one bubble, one turn). Dismissal is keyboard-only - the banner has no click affordance. Inspector pane's <code>🦉</code> glyph → enter overlay via <code>open_default</code> (auto-detected target). Mouse wheel over FILES rail advances <code>rail_scroll</code>; over the body advances <code>body_scroll</code>.</dd>
+      <dt>data source</dt><dd><code>forge_agent::env::git_diff::hunks::scan(cwd, target)</code> runs three subprocess calls per invocation: <code>git diff &lt;target&gt; --name-status</code> (file list with M/A/D/R/C/T/U classification), <code>git diff &lt;target&gt; --no-ext-diff</code> (full unified diff content - <code>--no-ext-diff</code> defeats user-configured difftastic / delta so the parser sees standard format), and <code>git ls-files --others --exclude-standard</code> (untracked files, only when <code>target == "HEAD"</code>; capped at <code>MAX_UNTRACKED_FILES=4</code>, each read up to <code>MAX_UNTRACKED_FILE_SIZE=1024</code> bytes). Returns <code>ScanOutcome { files, scanner_ok, untracked_suppressed }</code> - <code>scanner_ok</code> is <code>false</code> when any subprocess hit Failed / Oversize so the renderer surfaces "Scan failed" instead of an ambiguous empty pane; <code>untracked_suppressed</code> carries the cap-overflow count for the rail's yellow notice. Unknown <code>--name-status</code> codes (X, B) and malformed <code>@@</code> headers fire WARN logs under <code>agent.env_git</code> and drop the entry. Single-shot scan on overlay open - no polling.</dd>
+      <dt>scope</dt><dd>Wide tier (≥160): 40ch FILES rail (matches <a href="#projects-pane">Projects pane</a>'s Wide-tier width) + DIFF body fills the rest. Medium tier (120–159): 30ch FILES rail (matches Projects pane's Medium-tier width) + DIFF body fills the rest, file paths front-truncate as needed. Narrow tier (&lt;120): FILES rail collapses; the overlay renders the body only with a one-row header carrying <code>DIFF · &lt;path&gt;  ◀ N/M ▶  +N -M</code>. Persisted state: none - the overlay state is fully transient, doesn't survive a session restart. Comments survive the duration of a single open; <kbd>Esc</kbd> bundles them into chat and discards local state.</dd>
     </dl>
   </div>
 </div>
@@ -1730,7 +1704,7 @@ use a let-else with explicit error path
     <div class="when">visible: when wire reports <code>RateLimitStatus::AllowedWarning</code> or <code>Rejected</code></div>
   </div>
   <div class="surface-body">
-    <p>System notice — Warning severity for <code>AllowedWarning</code>, Error severity for <code>Rejected</code>. Body comes from <code>format_rate_limit_summary</code> (in <code>app/events/rate_limit.rs</code>). Three message branches:</p>
+    <p>System notice - Warning severity for <code>AllowedWarning</code>, Error severity for <code>Rejected</code>. Body comes from <code>format_rate_limit_summary</code> (in <code>app/events/rate_limit.rs</code>). Three message branches:</p>
     <ul style="color: var(--muted); font-size: 13px; line-height: 1.7; margin: 0 0 12px 18px;">
       <li><strong>Org-level disabled extra usage</strong> (Rejected + no primary context + <code>overage_disabled_reason == "org_level_disabled"</code>) → "<em>Extra usage credit is required to continue. Use /extra-usage to enable it, /model to switch models, or wait for the rate-limit window to reset.</em>"</li>
       <li><strong>Near threshold without overage</strong> (AllowedWarning + <code>is_using_overage = false</code> + <code>surpassed_threshold &gt; 0</code>) → "<em>Near rate-limit threshold. Resets in 4h 23m at 14:30 UTC.</em>"</li>
@@ -1749,7 +1723,7 @@ use a let-else with explicit error path
     <div class="when">visible: appended as the body of a failed tool call</div>
   </div>
   <div class="surface-body">
-    <p>Failed tool calls render with the <code>✗</code> status icon (red). For standard rows, the error message body comes from <code>render_tool_use_error_content</code> — every non-empty line of the message gets <code>STATUS_ERROR</code> colour (the entire body is red, not just the first line). For Bash specifically, failure renders inside the bordered card body via <code>failed_execute_first_line</code> — only the first non-empty stderr line shown, in <code>STATUS_ERROR</code>. <code>looks_like_internal_error</code> payloads get a different treatment via <code>render_internal_failure_content</code>: a bold red "Internal Agent SDK error" header followed by an <code>summarize_internal_error</code> body line in red.</p>
+    <p>Failed tool calls render with the <code>✗</code> status icon (red). For standard rows, the error message body comes from <code>render_tool_use_error_content</code> - every non-empty line of the message gets <code>STATUS_ERROR</code> colour (the entire body is red, not just the first line). For Bash specifically, failure renders inside the bordered card body via <code>failed_execute_first_line</code> - only the first non-empty stderr line shown, in <code>STATUS_ERROR</code>. <code>looks_like_internal_error</code> payloads get a different treatment via <code>render_internal_failure_content</code>: a bold red "Internal Agent SDK error" header followed by an <code>summarize_internal_error</code> body line in red.</p>
     <div class="term">
       <pre class="indent">
   <span class="error">✗</span> <span class="bold">⬚</span> crates/forge-tui/src/missing.rs
@@ -1827,7 +1801,7 @@ use a let-else with explicit error path
 <!-- ============================================================== -->
 <h2 class="section-title" id="glyphs">Glyphs in use</h2>
 
-<p class="intro">Inventory of every Unicode character used as chrome — borders, icons, status, separators. Tool icons are all closed geometric shapes (no directional outliers).</p>
+<p class="intro">Inventory of every Unicode character used as chrome - borders, icons, status, separators. Tool icons are all closed geometric shapes (no directional outliers).</p>
 
 <table class="glyph-table">
   <thead>
@@ -1845,30 +1819,30 @@ use a let-else with explicit error path
     <tr><td class="glyph">╯</td><td class="codepoint">U+256F</td><td>bottom-right corner</td><td></td></tr>
     <tr><td class="glyph">─</td><td class="codepoint">U+2500</td><td>horizontal lines</td><td>also <code>theme::SEPARATOR_CHAR</code> (used between chat and input, banner rules, Inspector pane GIT/TASKS separator, etc.)</td></tr>
     <tr><td class="glyph">│</td><td class="codepoint">U+2502</td><td>vertical lines</td><td>standard tool body prefix (<code>  │  </code>) · overlay borders · Inspector GIT tree continuation column</td></tr>
-    <tr><td class="glyph">├</td><td class="codepoint">U+251C</td><td>Inspector GIT tree connector</td><td>tee-right — marks a non-last child in the file tree, combined with <code>─</code> as <code>├─ </code></td></tr>
+    <tr><td class="glyph">├</td><td class="codepoint">U+251C</td><td>Inspector GIT tree connector</td><td>tee-right - marks a non-last child in the file tree, combined with <code>─</code> as <code>├─ </code></td></tr>
     <tr><td class="glyph">└</td><td class="codepoint">U+2514</td><td>tool body last-line corner · Inspector GIT tree connector</td><td>combined with <code>─</code> as <code>└─ </code> for the final body row, also the last-child connector in the GIT file tree</td></tr>
-    <tr><td class="glyph">⬚</td><td class="codepoint">U+2B1A</td><td>Read tool icon</td><td>open square — read-only inspection</td></tr>
-    <tr><td class="glyph">▣</td><td class="codepoint">U+25A3</td><td>Write/Edit/MultiEdit/NotebookEdit/Delete</td><td>filled square — mutation</td></tr>
+    <tr><td class="glyph">⬚</td><td class="codepoint">U+2B1A</td><td>Read tool icon</td><td>open square - read-only inspection</td></tr>
+    <tr><td class="glyph">▣</td><td class="codepoint">U+25A3</td><td>Write/Edit/MultiEdit/NotebookEdit/Delete</td><td>filled square - mutation</td></tr>
     <tr><td class="glyph">⌕</td><td class="codepoint">U+2315</td><td>Glob/Grep/LS</td><td>magnifier</td></tr>
-    <tr><td class="glyph">▶</td><td class="codepoint">U+25B6</td><td>Bash</td><td>black right-pointing triangle — execute. Used in the bordered Bash card title (RUST_ORANGE)</td></tr>
-    <tr><td class="glyph">◇</td><td class="codepoint">U+25C7</td><td>Task/Agent (Subagent)</td><td>diamond — delegated worker</td></tr>
-    <tr><td class="glyph">⊕</td><td class="codepoint">U+2295</td><td>WebFetch/WebSearch</td><td>circled plus — fetch from outside</td></tr>
-    <tr><td class="glyph">⊙</td><td class="codepoint">U+2299</td><td>ExitPlanMode/Config</td><td>circled dot — meta op</td></tr>
-    <tr><td class="glyph">◌</td><td class="codepoint">U+25CC</td><td>TodoWrite</td><td>dotted circle — checklist</td></tr>
+    <tr><td class="glyph">▶</td><td class="codepoint">U+25B6</td><td>Bash</td><td>black right-pointing triangle - execute. Used in the bordered Bash card title (RUST_ORANGE)</td></tr>
+    <tr><td class="glyph">◇</td><td class="codepoint">U+25C7</td><td>Task/Agent (Subagent)</td><td>diamond - delegated worker</td></tr>
+    <tr><td class="glyph">⊕</td><td class="codepoint">U+2295</td><td>WebFetch/WebSearch</td><td>circled plus - fetch from outside</td></tr>
+    <tr><td class="glyph">⊙</td><td class="codepoint">U+2299</td><td>ExitPlanMode/Config</td><td>circled dot - meta op</td></tr>
+    <tr><td class="glyph">◌</td><td class="codepoint">U+25CC</td><td>TodoWrite</td><td>dotted circle - checklist</td></tr>
     <tr><td class="glyph">⇄</td><td class="codepoint">U+21C4</td><td>Move/EnterWorktree</td><td>bidirectional arrows</td></tr>
-    <tr><td class="glyph">○</td><td class="codepoint">U+25CB</td><td>fallback tool icon · todo Pending · permission/plan-approval unfocused</td><td>open circle — reused across multiple semantics (single code point)</td></tr>
+    <tr><td class="glyph">○</td><td class="codepoint">U+25CB</td><td>fallback tool icon · todo Pending · permission/plan-approval unfocused</td><td>open circle - reused across multiple semantics (single code point)</td></tr>
     <tr><td class="glyph">✓</td><td class="codepoint">U+2713</td><td>completed status · permission Allow icon · todo Completed</td><td><code>theme::ICON_COMPLETED</code></td></tr>
     <tr><td class="glyph">✗</td><td class="codepoint">U+2717</td><td>failed status · permission Reject icon</td><td><code>theme::ICON_FAILED</code></td></tr>
     <tr><td class="glyph">❯</td><td class="codepoint">U+276F</td><td>input prompt</td><td><code>theme::PROMPT_CHAR</code></td></tr>
-    <tr><td class="glyph">·</td><td class="codepoint">U+00B7</td><td>permission-prompt option separator · Projects pane Sleeping session-state glyph</td><td>middle dot — used to space the inline options in <code>render_permission_lines</code> (<code>"  ·  "</code>, DIM); also the per-session lifecycle glyph for sleeping sessions in the Projects pane drilldown (DIM)</td></tr>
-    <tr><td class="glyph">•</td><td class="codepoint">U+2022</td><td>plan-approval pre-approved actions list · Projects pane current-session marker</td><td>bullet — used in plan-approval prompt's optional pre-approved actions block (DIM); also the marker for the currently-viewed session in the active project's drilldown (RUST_ORANGE)</td></tr>
-    <tr><td class="glyph">◆</td><td class="codepoint">U+25C6</td><td>Projects pane lead-session marker</td><td>black diamond — marks the lead session within the active project's drilldown (DIM); always rendered on the first session row of that project</td></tr>
-    <tr><td class="glyph">△</td><td class="codepoint">U+25B3</td><td>Projects pane Attention session-state glyph</td><td>white up-pointing triangle — session-row lifecycle glyph for a background session paused on a permission prompt (DIM)</td></tr>
-    <tr><td class="glyph">▤</td><td class="codepoint">U+25A4</td><td>Narrow-tier Projects top-bar icon</td><td>square with horizontal fill — single-cell pane icon at the top of the chat area; toggles the Projects overlay on click (DIM when closed, RUST_ORANGE bold when open)</td></tr>
-    <tr><td class="glyph">✕</td><td class="codepoint">U+2715</td><td>Narrow-tier overlay close glyph</td><td>multiplication x — Projects / Inspector pane: sits at the right edge of the overlay banner; click dismisses the overlay without switching session (DIM).</td></tr>
-    <tr><td class="glyph">💬</td><td class="codepoint">U+1F4AC</td><td><a href="#diff">Diff overlay</a> comment chip + per-file badge</td><td>speech balloon — saved per-line comment chip (rendered after its anchor diff line as "<code>💬 L&lt;line&gt; &lt;summary&gt;</code>") and rail badge "<code>💬 N</code>" next to files that have N pending comments. Always RUST_ORANGE.</td></tr>
+    <tr><td class="glyph">·</td><td class="codepoint">U+00B7</td><td>permission-prompt option separator · Projects pane Sleeping session-state glyph</td><td>middle dot - used to space the inline options in <code>render_permission_lines</code> (<code>"  ·  "</code>, DIM); also the per-session lifecycle glyph for sleeping sessions in the Projects pane drilldown (DIM)</td></tr>
+    <tr><td class="glyph">•</td><td class="codepoint">U+2022</td><td>plan-approval pre-approved actions list · Projects pane current-session marker</td><td>bullet - used in plan-approval prompt's optional pre-approved actions block (DIM); also the marker for the currently-viewed session in the active project's drilldown (RUST_ORANGE)</td></tr>
+    <tr><td class="glyph">◆</td><td class="codepoint">U+25C6</td><td>Projects pane lead-session marker</td><td>black diamond - marks the lead session within the active project's drilldown (DIM); always rendered on the first session row of that project</td></tr>
+    <tr><td class="glyph">△</td><td class="codepoint">U+25B3</td><td>Projects pane Attention session-state glyph</td><td>white up-pointing triangle - session-row lifecycle glyph for a background session paused on a permission prompt (DIM)</td></tr>
+    <tr><td class="glyph">▤</td><td class="codepoint">U+25A4</td><td>Narrow-tier Projects top-bar icon</td><td>square with horizontal fill - single-cell pane icon at the top of the chat area; toggles the Projects overlay on click (DIM when closed, RUST_ORANGE bold when open)</td></tr>
+    <tr><td class="glyph">✕</td><td class="codepoint">U+2715</td><td>Narrow-tier overlay close glyph</td><td>multiplication x - Projects / Inspector pane: sits at the right edge of the overlay banner; click dismisses the overlay without switching session (DIM).</td></tr>
+    <tr><td class="glyph">💬</td><td class="codepoint">U+1F4AC</td><td><a href="#diff">Diff overlay</a> comment chip + per-file badge</td><td>speech balloon - saved per-line comment chip (rendered after its anchor diff line as "<code>💬 L&lt;line&gt; &lt;summary&gt;</code>") and rail badge "<code>💬 N</code>" next to files that have N pending comments. Always RUST_ORANGE.</td></tr>
     <tr><td class="glyph">?</td><td class="codepoint">U+003F</td><td>question-prompt header marker · help toggle key</td><td>RUST_ORANGE in question header; same key activates help</td></tr>
-    <tr class="outlier"><td class="glyph">|</td><td class="codepoint">U+007C</td><td>question-prompt horizontal-options separator</td><td>ASCII pipe used between options in the horizontal question layout (<code>"  |  "</code>, DIM) — sits next to box-drawing <code>│</code>; flagged in #40 for replacement</td></tr>
+    <tr class="outlier"><td class="glyph">|</td><td class="codepoint">U+007C</td><td>question-prompt horizontal-options separator</td><td>ASCII pipe used between options in the horizontal question layout (<code>"  |  "</code>, DIM) - sits next to box-drawing <code>│</code>; flagged in #40 for replacement</td></tr>
     <tr><td class="glyph">[ ]</td><td class="codepoint">U+005B / U+005D</td><td>Projects-pane status panel mode badge · multi-select checkbox</td><td>ASCII brackets wrap the panel's <code>Mode</code> badge in the pane footer; the multi-select checkbox in question prompt uses <code>[x]</code> / <code>[ ]</code></td></tr>
     <tr><td class="glyph">████░░░░</td><td class="codepoint">U+2588 / U+2591</td><td>Projects-pane status panel usage bars</td><td>12-cell filling bar for <code>Ctx</code>, <code>5h</code>, <code>7d</code> rows. Filled cells (<code>█</code>) tinted via <code>gauge_style</code> (orange &lt; 65%, yellow ≥ 65%, red ≥ 85%); empty cells (<code>░</code>) DIM</td></tr>
     <tr><td class="glyph">⎇</td><td class="codepoint">U+2387</td><td>Inspector-pane GIT section branch marker</td><td>alternative-key symbol prefix for the branch row in the right-hand <a href="#inspector-pane">Inspector pane</a>'s GIT section (DIM); branch label DIM on the default branch, RUST_ORANGE on a feature branch, yellow (<code>HEAD</code>) when the snapshot reports detached HEAD</td></tr>
@@ -1878,7 +1852,7 @@ use a let-else with explicit error path
   </tbody>
 </table>
 
-<p class="footnote">forge · TUI map · 2026-05-10 · open in any modern browser · prefers Berkeley Mono / JetBrains Mono / IBM Plex Mono / SF Mono · scope: <strong>current state only</strong> — anything new lands here in the same PR that lands the code</p>
+<p class="footnote">forge · TUI map · 2026-05-10 · open in any modern browser · prefers Berkeley Mono / JetBrains Mono / IBM Plex Mono / SF Mono · scope: <strong>current state only</strong> - anything new lands here in the same PR that lands the code</p>
 
 </main>
 </body>

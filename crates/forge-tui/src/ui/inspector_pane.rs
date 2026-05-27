@@ -2,37 +2,32 @@
 //! overlay at Narrow tier).
 //!
 //! Mirror of the left [`crate::ui::projects_pane`] in chrome and
-//! tier behaviour. Two sections separated by a DIM `─` rule:
+//! tier behaviour. Sections separated by a DIM `─` rule:
 //!
-//! - `GIT` — always rendered. Shows the active session's cwd, the
-//!   current branch on its own row, a sub-label row carrying the
-//!   diff context (`worktree` / `vs <default>`) with aggregate
-//!   `+N -M` totals right-justified (when there's a diff), an
-//!   optional `PR #N → closes #M #K` row when the scanner resolved
-//!   an open pull request for the branch, and a box-drawing tree
+//! - `GIT` - always rendered. Shows the focused session's cwd, the
+//!   current branch on its own row, an optional `PR #N → closes #M`
+//!   row, and up to two stacked diff sub-sections - `uncommitted`
+//!   (layer 1, dirty/staged/unstaged tree vs HEAD; suppressed when
+//!   clean) and `N commits vs <default>` (layer 2, branch commits
+//!   ahead of default; suppressed on default branch, on detached
+//!   HEAD, or when default can't be resolved). Each sub-section
+//!   carries its own subtitle + `+A -R` totals + box-drawing tree
 //!   of the top-N changed files grouped by directory. Single-child
-//!   directory chains fold so deep paths render as one row. Sourced
-//!   from `UiSession.git_diff_snapshot`.
-//! - `WORKTREE` — rendered ONLY when the active session is a worker.
-//!   One row each for name / branch / path when claude auto-created
-//!   a worktree (path shown relative to the project root, e.g.
-//!   `.claude/worktrees/<label>/`), or one DIM `not a git repo · <cwd>`
-//!   line when the worker's project isn't a git repo. Suppressed
-//!   entirely for project lead sessions - `main repo · <cwd>` was
-//!   redundant chrome on the chat where the user is already looking
-//!   at the lead's view. Sourced from
-//!   `WorkerEntry.is_git_repo_at_spawn` (via
-//!   `Workspace::worker_lookup_for_session` / `list_live_workers`).
-//! - `TASKS` — rendered when the active session has todos or a
+//!   directory chains fold so deep paths render as one row. For a
+//!   worker on a topic branch with in-progress edits, both layers
+//!   populate so the user sees "all the work this worker has done
+//!   versus main" at a glance. Sourced from
+//!   `UiSession.git_diff_snapshot`.
+//! - `TASKS` - rendered when the active session has todos or a
 //!   pending verification nudge. The live `TodoWrite` snapshot is
 //!   the sole surface for the todo list; the chat-stream
 //!   `TodoWrite` tool-call card is suppressed.
-//! - `PROCESSES` — rendered when the active session has at least
+//! - `PROCESSES` - rendered when the active session has at least
 //!   one currently-in-flight long-running tool call. Three kinds
 //!   surface here: backgrounded `Bash` (via `run_in_background:
 //!   true` OR `assistant_auto_backgrounded`), `Monitor` streaming-
 //!   process watchers, and `CronCreate` scheduled prompts. Live
-//!   monitor only — completed / failed / killed rows are filtered
+//!   monitor only - completed / failed / killed rows are filtered
 //!   out at the collector level so the section disappears once
 //!   work wraps up. Rows are built by
 //!   `crate::app::processes::collect_active_processes` from each
@@ -53,7 +48,7 @@
 //! - `○` DIM glyph + gray text for `Pending` (truncates with `…`)
 
 use forge_primitives::git::{GitBranch, GitIssueRef, GitPrInfo};
-use forge_workspace::env::git_diff::{GitDiffFile, GitDiffSnapshot, GitDiffView};
+use forge_workspace::env::git_diff::{GitBranchAhead, GitDiffFile, GitDiffSnapshot, GitDiffStats};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -128,7 +123,7 @@ pub fn render_overlay(frame: &mut Frame, area: Rect, app: &mut App) {
     ));
     frame.render_widget(Paragraph::new(vec![banner_line, rule_line]), banner_area);
 
-    // Stamp ✕ hit-target — last char on the banner row.
+    // Stamp ✕ hit-target - last char on the banner row.
     let close_x_start =
         area.x.saturating_add(area.width).saturating_sub(u16::try_from(close_chars).unwrap_or(1));
     let close_x_end = area.x.saturating_add(area.width);
@@ -205,7 +200,7 @@ fn render_scrollable_body(frame: &mut Frame, body_area: Rect, app: &mut App) {
 
     frame.render_widget(Paragraph::new(body_lines).scroll((offset, 0)), body_area);
 
-    // Stamp the 🦉 open-review hit target — GIT header is body
+    // Stamp the 🦉 open-review hit target - GIT header is body
     // line 0, so the glyph is visible exactly when `offset == 0`.
     // The 🦉 owl is 2 cells wide and sits with PANE_PAD (1 cell) of
     // trailing pad before the right edge (matches `append_git_section`'s
@@ -224,7 +219,7 @@ fn render_scrollable_body(frame: &mut Frame, body_area: Rect, app: &mut App) {
         });
     }
 
-    // Scrollbar — thumb-only, no rail, painted as a block cell in
+    // Scrollbar - thumb-only, no rail, painted as a block cell in
     // `ROLE_ASSISTANT` colour. Animated when work is in flight so
     // the indicator reads as "alive" vs. a static dot. Matches the
     // chat scrollbar's visual weight (small thumb) plus a subtle
@@ -322,10 +317,10 @@ fn render_inspector_thumb(
 /// (work is in flight), cycle through a 4-frame breathing pattern
 /// driven by `App.spinner_frame` so the thumb reads as "alive". When
 /// `pulse` is `None`, stay on the static block glyph the chat
-/// scrollbar uses — same look, no movement.
+/// scrollbar uses - same look, no movement.
 fn thumb_symbol(pulse: Option<usize>) -> &'static str {
-    const STATIC_THUMB: &str = "\u{2590}"; // ▐ right half block — chat baseline
-    const THIN_THUMB: &str = "\u{2595}"; // ▕ right one-eighth block — pulse-out frame
+    const STATIC_THUMB: &str = "\u{2590}"; // ▐ right half block - chat baseline
+    const THIN_THUMB: &str = "\u{2595}"; // ▕ right one-eighth block - pulse-out frame
     match pulse {
         None => STATIC_THUMB,
         Some(frame) => match frame % 4 {
@@ -350,7 +345,6 @@ const INSPECTOR_THUMB_MAX_CELLS: usize = 1;
 /// distinct rather than two `DIM bold` headers next to each other.
 fn append_body(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
     append_git_section(lines, app, width);
-    append_worktree_section(lines, app, width);
 
     let todos = app.todos();
     // Section visibility gates on PENDING/IN-PROGRESS tasks
@@ -398,23 +392,23 @@ fn push_section_rule(lines: &mut Vec<Line<'static>>, width: u16) {
 /// scanner failures inside a real repo the unhealthy banner still
 /// surfaces so the operator gets a triage signal.
 fn append_git_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
-    // Suppress the whole section when there's no git repo at the
-    // active session's cwd. Without this the user sees an empty
-    // `GIT` header + path in every non-git project. We only know
-    // it's a non-repo once the first scan has landed; pre-scan
-    // (`snapshot.is_none()`) keep rendering the header so the row
-    // animates in once the scanner answers.
+    // Suppress the whole section when the focused session's cwd
+    // isn't inside a git repo (and the scanner ran cleanly so this
+    // isn't a "scanner crashed" failsafe). Without this the user
+    // sees an empty `GIT` header + path in every non-git project.
+    // Pre-scan (`snapshot.is_none()`) keep rendering the header so
+    // the row animates in once the scanner answers.
     if let Some(snapshot) = app.active_session().and_then(|s| s.git_diff_snapshot.as_ref())
         && snapshot.scanner_ok
-        && matches!(snapshot.view, GitDiffView::NoRepo)
+        && !snapshot.in_repo
     {
         return;
     }
 
-    // Section header — DIM bold, flush against the rule above
-    // (mirrors `TASKS`). When the snapshot has a diff to surface
-    // (Worktree / BranchVsDefault), append the `🦉` glyph at the
-    // right edge as the open-diff affordance.
+    // Section header - DIM bold, flush against the rule above
+    // (mirrors `TASKS`). When the snapshot has at least one layer
+    // of diff to surface, append the `🦉` glyph at the right edge
+    // as the open-diff affordance.
     let has_glyph = snapshot_has_diff(app);
     let mut header_spans = vec![Span::styled(
         " GIT".to_owned(),
@@ -434,7 +428,7 @@ fn append_git_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
     // Blank between header and content.
     lines.push(Line::default());
 
-    // Path row — always rendered. Head-truncated so the leaf
+    // Path row - always rendered. Head-truncated so the leaf
     // (project name) is preserved when the path overflows.
     let path_budget = usize::from(width).saturating_sub(usize::from(PANE_PAD));
     let path_value = fit_path_head_truncated(app.cwd(), path_budget);
@@ -449,88 +443,109 @@ fn append_git_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
     };
     if !snapshot.scanner_ok {
         // Scanner crashed (rev-parse Failed / Oversize) and the
-        // view collapsed to NoRepo as a failsafe. Without this row
-        // the section renders identically to a real non-repo
-        // directory — the user has no visual cue that git itself
-        // is unhealthy. The `🦉` glyph still routes through the
-        // ScannerFailed path so a click surfaces the trace target.
+        // snapshot collapsed to in_repo=false as a failsafe. Without
+        // this row the section renders identically to a real non-
+        // repo directory - the user has no visual cue that git
+        // itself is unhealthy. The `🦉` glyph still routes through
+        // the ScannerFailed path so a click surfaces the trace
+        // target.
         lines.push(Line::from(vec![
             Span::raw("  "),
             Span::styled(
-                "git scanner unhealthy — see logs (target: agent.env_git)",
+                "git scanner unhealthy, see logs (target: agent.env_git)",
                 Style::default().fg(theme::STATUS_WARNING),
             ),
         ]));
         return;
     }
-    // Pull the diff display info out of the snapshot. `None` for
-    // `CleanDefault` / `NoRepo` — no subtitle, no totals, no files.
-    let diff = build_diff_display(snapshot);
 
-    // Branch row — just the branch glyph + name. Totals moved to
-    // the subtitle row below so the worktree-vs-vs-default
-    // distinction is unambiguous (the totals follow the label that
-    // describes them).
+    // Branch row - just the branch glyph + name. Diff totals live
+    // on the layer subtitle rows below.
     if let Some((label, color)) = branch_row_for(snapshot) {
         lines.push(branch_line(width, &label, color));
     }
 
-    // Subtitle row — sits directly below the branch row, indented
-    // under the branch name (PANE_PAD + glyph + space = 4 cols) so
-    // it reads as a sub-label of the branch. Carries the diff
-    // label (`worktree` / `vs <default>`) AND the right-justified
-    // `+N -M` totals so both signals land on one line. Only
-    // rendered when there's a diff to describe. DIM label so it
-    // doesn't compete with the branch name for attention; stats
-    // keep their green / red so the numbers stay scannable.
-    if let Some(diff) = diff.as_ref() {
-        lines.push(diff_subtitle_line(width, &diff.subtitle, diff.totals));
-    }
-
-    // PR row — sits below the subtitle (or directly under the
-    // branch row when there's no diff). Same 4-col indent so it
-    // reads as another sub-label of the branch. Renders only when
-    // the scanner resolved a PR for the current branch; truncates
-    // the closing-issue list with `…` when the row would overflow
-    // the pane width.
+    // PR row - sits below the branch row when the scanner resolved
+    // a PR. Renders BEFORE the layered diff sub-sections because PR
+    // info is a property of the branch as a whole, not of either
+    // diff layer.
     if let Some(pr) = snapshot.pr.as_ref() {
         lines.push(pr_line(width, pr, &snapshot.closes));
     }
 
-    let files_slice = diff.as_ref().map_or(&[][..], |d| d.files);
-    let total_files = diff.as_ref().map_or(0, |d| d.total_files);
-
-    if files_slice.is_empty() {
-        return;
+    // Layer 1 sub-section - uncommitted edits vs HEAD. Skipped
+    // when the tree is clean (`worktree == None` AND
+    // `worktree_scan_ok == true`). When the per-layer scan
+    // failed, surface a "(scan failed)" stub so the user sees the
+    // failure instead of a clean-tree render.
+    if let Some(stats) = snapshot.worktree.as_ref() {
+        append_diff_layer(lines, &uncommitted_display(stats), width);
+    } else if !snapshot.worktree_scan_ok {
+        lines.push(diff_layer_failed_line(width, "uncommitted"));
     }
 
-    // Blank between the subtitle row and the file tree.
-    lines.push(Line::default());
-
-    let tree = build_tree(files_slice);
-    render_tree(lines, &tree, width);
-
-    // Overflow row when the trimmed top-N is shorter than the total
-    // changed-files count.
-    if total_files > files_slice.len() {
-        let more = total_files - files_slice.len();
-        lines.push(Line::from(vec![
-            Span::raw(" "),
-            Span::styled(
-                format!("+{more} more"),
-                Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC),
-            ),
-        ]));
+    // Layer 2 sub-section - branch commits ahead of default.
+    // Skipped on the default branch, on detached HEAD, or when
+    // default isn't resolved (`branch_ahead == None`). When BOTH
+    // layers are present, layer 2 renders directly below layer 1
+    // so the user sees in-progress + committed-but-unmerged work
+    // stacked in the same view. The tuple-match here is paired
+    // with the scanner's invariant that `branch_ahead = Some(_)`
+    // is only constructed when `default_branch` resolved; the
+    // explicit `Some(default)` makes the assumption load-bearing
+    // at the call site rather than hidden behind an unwrap. The
+    // `else if` mirrors layer 1's per-layer scan_failed surfacing.
+    //
+    // Tripwire for the F10 invariant: a future change that
+    // constructs `branch_ahead = Some(_)` with `default_branch =
+    // None` would silently no-op the tuple-match. The assert
+    // catches it in debug builds; release builds drop to the
+    // silent fallback, same shape as today.
+    debug_assert!(
+        snapshot.default_branch.is_some() || snapshot.branch_ahead.is_none(),
+        "branch_ahead invariant: default_branch must be Some when branch_ahead is Some",
+    );
+    if let (Some(ahead), Some(default)) =
+        (snapshot.branch_ahead.as_ref(), snapshot.default_branch.as_deref())
+    {
+        append_diff_layer(lines, &branch_ahead_display(ahead, default), width);
+    } else if !snapshot.branch_ahead_scan_ok {
+        lines.push(diff_layer_failed_line(width, "vs default"));
     }
+}
+
+/// Render a single-line "(scan failed)" subtitle for a diff layer
+/// whose per-layer numstat hit a subprocess failure. Same indent
+/// chrome as [`diff_subtitle_line`] so the failure row sits where
+/// the normal subtitle would.
+fn diff_layer_failed_line(width: u16, label: &str) -> Line<'static> {
+    let warn_text = "(scan failed)";
+    let indent_chrome = usize::from(PANE_PAD) + 3;
+    let label_chars = label.chars().count();
+    let warn_chars = warn_text.chars().count();
+    let pad = usize::from(width)
+        .saturating_sub(indent_chrome)
+        .saturating_sub(label_chars)
+        .saturating_sub(1)
+        .saturating_sub(warn_chars)
+        .saturating_sub(usize::from(PANE_PAD));
+    Line::from(vec![
+        Span::raw("    "),
+        Span::styled(label.to_owned(), Style::default().fg(theme::DIM)),
+        Span::raw(" "),
+        Span::raw(" ".repeat(pad)),
+        Span::styled(warn_text.to_owned(), Style::default().fg(theme::STATUS_WARNING)),
+        Span::raw(" "),
+    ])
 }
 
 /// Whether the active session's snapshot warrants the `🦉` open-diff
 /// glyph in the GIT header. Two cases qualify:
-/// - `Worktree` / `BranchVsDefault` — the normal "there's a diff to
-///   review" path.
-/// - `scanner_ok == false` — the Inspector scanner crashed and the
-///   view collapsed to NoRepo as a failsafe. The user needs a way
-///   to escalate; clicking the glyph routes through
+/// - At least one diff layer (`worktree` / `branch_ahead`) is
+///   populated - the normal "there's a diff to review" path.
+/// - `scanner_ok == false` - the Inspector scanner crashed and the
+///   snapshot collapsed to in_repo=false as a failsafe. The user
+///   needs a way to escalate; clicking the glyph routes through
 ///   `open_default → DefaultTarget::ScannerFailed`, surfacing the
 ///   trace-target hint they need to triage.
 fn snapshot_has_diff(app: &App) -> bool {
@@ -540,7 +555,40 @@ fn snapshot_has_diff(app: &App) -> bool {
     if !snapshot.scanner_ok {
         return true;
     }
-    matches!(snapshot.view, GitDiffView::Worktree { .. } | GitDiffView::BranchVsDefault { .. })
+    snapshot.worktree.is_some()
+        || snapshot.branch_ahead.is_some()
+        || !snapshot.worktree_scan_ok
+        || !snapshot.branch_ahead_scan_ok
+}
+
+/// Render one diff layer (subtitle + tree + optional overflow row)
+/// into `lines`. Both `worktree` (layer 1) and `branch_ahead` (layer
+/// 2) flow through this helper so the visual chrome stays in sync.
+fn append_diff_layer(lines: &mut Vec<Line<'static>>, layer: &DiffDisplay<'_>, width: u16) {
+    lines.push(diff_subtitle_line(width, &layer.subtitle, layer.totals));
+
+    if layer.files.is_empty() {
+        return;
+    }
+
+    // Blank between the subtitle row and the file tree.
+    lines.push(Line::default());
+
+    let tree = build_tree(layer.files);
+    render_tree(lines, &tree, width);
+
+    // Overflow row when the trimmed top-N is shorter than the total
+    // changed-files count.
+    if layer.total_files > layer.files.len() {
+        let more = layer.total_files - layer.files.len();
+        lines.push(Line::from(vec![
+            Span::raw(" "),
+            Span::styled(
+                format!("+{more} more"),
+                Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC),
+            ),
+        ]));
+    }
 }
 
 /// Resolve the branch row's `(label, color)` for the snapshot.
@@ -560,7 +608,7 @@ fn branch_row_for(snapshot: &GitDiffSnapshot) -> Option<(String, Color)> {
 /// Render the branch row: `  ⎇ <label>`. Totals + the worktree /
 /// vs-default subtitle land on the next line (see
 /// [`diff_subtitle_line`]) so a worktree-dirty branch row and a
-/// branch-vs-default branch row look identical in chrome — the
+/// branch-vs-default branch row look identical in chrome - the
 /// disambiguation is on the subtitle row directly below.
 fn branch_line(width: u16, label: &str, label_color: Color) -> Line<'static> {
     let glyph_chrome = usize::from(PANE_PAD) + 2; // "  ⎇ "
@@ -575,7 +623,7 @@ fn branch_line(width: u16, label: &str, label_color: Color) -> Line<'static> {
 /// PR row: `    PR #1234 → closes #1230 #1228`. Indented 4 cols to
 /// align with the diff-subtitle row directly above so both read as
 /// sub-labels of the branch. The PR number lights up in
-/// `RUST_ORANGE` (matches the feature-branch convention — the PR is
+/// `RUST_ORANGE` (matches the feature-branch convention - the PR is
 /// the headline); everything else stays DIM. The closing-issue list
 /// is truncated with `…` when it would overflow the pane width;
 /// when even one issue can't fit, the whole `→ closes …` tail
@@ -584,7 +632,7 @@ fn pr_line(width: u16, pr: &GitPrInfo, closes: &[GitIssueRef]) -> Line<'static> 
     let indent = "    "; // 4 cols, mirrors diff_subtitle_line
     let pr_number = format!("#{}", pr.number);
 
-    // Closes-list disabled when empty — just `PR #N`.
+    // Closes-list disabled when empty - just `PR #N`.
     if closes.is_empty() {
         return Line::from(vec![
             Span::raw(indent.to_owned()),
@@ -624,7 +672,7 @@ fn pr_line(width: u16, pr: &GitPrInfo, closes: &[GitIssueRef]) -> Line<'static> 
     }
 
     if shown == 0 {
-        // Nothing fit — show `PR #N → …` so the existence of a
+        // Nothing fit - show `PR #N → …` so the existence of a
         // closes list still surfaces even when we can't render any
         // of it.
         return Line::from(vec![
@@ -671,7 +719,7 @@ fn count_digits(mut n: u64) -> usize {
 /// every other stats column in the section.
 fn diff_subtitle_line(width: u16, label: &str, totals: (u32, u32)) -> Line<'static> {
     let (added, removed) = totals;
-    // Indent is `"    "` painted below at the start of the line —
+    // Indent is `"    "` painted below at the start of the line -
     // 4 cells: PANE_PAD (1) + glyph (1) + 2-cell content gap. Keep
     // this in sync with the literal indent on the Span::raw row
     // below; an off-by-one here makes the line render 1 cell too
@@ -704,10 +752,10 @@ fn diff_subtitle_line(width: u16, label: &str, totals: (u32, u32)) -> Line<'stat
     ])
 }
 
-/// Diff-display info pulled out of a `GitDiffSnapshot` view. `None`
-/// for `CleanDefault` / `NoRepo` (nothing to show); `Some` otherwise
-/// with `subtitle` carrying `"worktree"` for `Worktree` and
-/// `"vs <default>"` for `BranchVsDefault`.
+/// One diff layer's display payload - the rendered subtitle plus
+/// the top-N files + aggregate totals. Built by [`uncommitted_display`]
+/// (layer 1) and [`branch_ahead_display`] (layer 2) so the renderer
+/// can iterate both layers with identical chrome.
 struct DiffDisplay<'a> {
     files: &'a [GitDiffFile],
     total_files: usize,
@@ -715,35 +763,36 @@ struct DiffDisplay<'a> {
     subtitle: String,
 }
 
-fn build_diff_display(snapshot: &GitDiffSnapshot) -> Option<DiffDisplay<'_>> {
-    match &snapshot.view {
-        GitDiffView::NoRepo | GitDiffView::CleanDefault => None,
-        GitDiffView::Worktree { files, total_files, total_added, total_removed } => {
-            Some(DiffDisplay {
-                files,
-                total_files: *total_files,
-                totals: (*total_added, *total_removed),
-                subtitle: "worktree".to_owned(),
-            })
-        }
-        GitDiffView::BranchVsDefault { files, total_files, total_added, total_removed } => {
-            // `BranchVsDefault` is only constructed when the scanner
-            // resolved a default branch (see `git_diff.rs`'s let-else
-            // that collapses to `CleanDefault` when `None`). The
-            // `unwrap_or_default` is defensive: future drift renders
-            // an empty `vs ` instead of panicking.
-            let default = snapshot.default_branch.as_deref().unwrap_or_default();
-            Some(DiffDisplay {
-                files,
-                total_files: *total_files,
-                totals: (*total_added, *total_removed),
-                subtitle: format!("vs {default}"),
-            })
-        }
+/// Layer 1 (uncommitted edits vs HEAD): subtitle is the bare word
+/// `uncommitted` so the user reads it as "the dirty tree" without
+/// having to map "worktree" onto that mental model.
+fn uncommitted_display(stats: &GitDiffStats) -> DiffDisplay<'_> {
+    DiffDisplay {
+        files: &stats.files,
+        total_files: stats.total_files,
+        totals: (stats.total_added, stats.total_removed),
+        subtitle: "uncommitted".to_owned(),
     }
 }
 
-/// Tree node built from the diff's file list — a single trie node
+/// Layer 2 (branch ahead of default): subtitle carries the commit
+/// count so the user knows how many commits produced the stats
+/// (e.g. `3 commits vs main`). Singular form (`1 commit vs main`)
+/// when the branch only has one commit ahead. `default` is
+/// guaranteed non-empty by the scanner: `branch_ahead` is only
+/// constructed when `default_branch` resolved.
+fn branch_ahead_display<'a>(ahead: &'a GitBranchAhead, default: &str) -> DiffDisplay<'a> {
+    let commit_label = if ahead.commit_count == 1 { "commit" } else { "commits" };
+    let subtitle = format!("{} {commit_label} vs {default}", ahead.commit_count);
+    DiffDisplay {
+        files: &ahead.stats.files,
+        total_files: ahead.stats.total_files,
+        totals: (ahead.stats.total_added, ahead.stats.total_removed),
+        subtitle,
+    }
+}
+
+/// Tree node built from the diff's file list - a single trie node
 /// with either a `file_stats` leaf or zero+ `children` (a
 /// directory). After construction we fold any non-root dir whose
 /// only child is itself a dir, collapsing chains like
@@ -783,14 +832,14 @@ fn build_tree(files: &[GitDiffFile]) -> TreeNode {
 fn insert_file(node: &mut TreeNode, path: &str, stats: (u32, u32)) {
     let mut components = path.split('/').filter(|c| !c.is_empty());
     let Some(first) = components.next() else {
-        // Empty path — ignore (defensive; the scanner doesn't emit
+        // Empty path - ignore (defensive; the scanner doesn't emit
         // empty paths but the renderer shouldn't panic if it ever
         // does).
         return;
     };
     let rest: Vec<&str> = components.collect();
     if rest.is_empty() {
-        // Leaf — attach as a file child. Duplicate file names in the
+        // Leaf - attach as a file child. Duplicate file names in the
         // same directory would overwrite here, but git's diff output
         // can't produce that shape (every path is unique).
         node.children.push(TreeNode {
@@ -839,7 +888,7 @@ fn fold_single_child_dirs(node: &mut TreeNode) {
         fold_single_child_dirs(child);
     }
     // Now fold this node's directory children whose only child is a
-    // directory. (Files cannot be folded onto their parent — that
+    // directory. (Files cannot be folded onto their parent - that
     // would lose the file's stats row.)
     for child in &mut node.children {
         while child.is_dir() && child.children.len() == 1 && child.children[0].is_dir() {
@@ -917,7 +966,7 @@ fn tree_row(
         vec![Span::raw(" "), Span::styled(tree_prefix.to_owned(), Style::default().fg(theme::DIM))];
 
     let Some((added, removed)) = file_stats else {
-        // Directory row — just the label, no stats. Truncate the
+        // Directory row - just the label, no stats. Truncate the
         // label if it overflows the available width (rare in
         // practice since folding keeps single-child chains
         // collapsed).
@@ -989,132 +1038,13 @@ fn fit_path_head_truncated(s: &str, max_chars: usize) -> String {
             }
         }
     }
-    // Even the basename overflows — fall back to char-level cut
+    // Even the basename overflows - fall back to char-level cut
     // so we at least preserve the trailing characters.
     let keep = max_chars - 1;
     let skip = total - keep;
     let mut out = String::from("\u{2026}");
     out.extend(s.chars().skip(skip));
     out
-}
-
-/// Dispatch into the WORKTREE section. Three shapes:
-///
-/// - Active session is a worker WITH `is_git_repo_at_spawn = true`:
-///   render Shape B (name / branch / path KV rows).
-/// - Active session is a worker WITH `is_git_repo_at_spawn = false`:
-///   render Shape C (`not a git repo · <cwd>`).
-/// - Active session is a project lead: render Shape A
-///   (`main repo · <cwd>`). Suppressed when the GIT snapshot has
-///   already confirmed the cwd is not a git repo — the "main repo"
-///   framing is meaningless outside a repo, and the empty header
-///   would just add chrome with no signal.
-///
-/// Suppressed entirely in the pre-Connect window (no active session)
-/// or when no project path can be resolved.
-fn append_worktree_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
-    let Some(active_key) = app.active_session_key.as_ref() else {
-        return;
-    };
-    let Some(workspace) = app.workspace.as_ref() else {
-        return;
-    };
-
-    // Worker discriminator: ask the workspace whether this session
-    // appears in any project's live_workers list. Lead sessions in
-    // their project's main repo get no WORKTREE section at all -
-    // "main repo · <cwd>" was redundant chrome when the user is
-    // already looking at the project's lead chat. The section only
-    // appears when there's actual worktree (or non-git-repo) state
-    // to surface, i.e. worker sessions.
-    let Some((project_key, label, _is_git_repo_at_spawn)) =
-        workspace.worker_lookup_for_session(active_key)
-    else {
-        return;
-    };
-    let workers = workspace.list_live_workers(&project_key);
-    let Some(entry) = workers.into_iter().find(|w| w.label == label) else {
-        return;
-    };
-    let Some(project_view) =
-        workspace.list_projects().into_iter().find(|view| view.key == project_key)
-    else {
-        return;
-    };
-    lines.push(Line::default());
-    push_section_rule(lines, width);
-    lines.push(Line::default());
-    append_worktree_section_for_worker(lines, &entry, project_view.path.as_path());
-}
-
-/// Append the WORKTREE section header (` WORKTREE`, DIM BOLD) to
-/// `lines`. Shared between the lead / worker render paths.
-fn push_worktree_header(lines: &mut Vec<Line<'static>>) {
-    lines.push(Line::from(Span::styled(
-        " WORKTREE".to_owned(),
-        Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
-    )));
-    lines.push(Line::default());
-}
-
-/// Shape B/C: the active session is a worker. Branches on
-/// `entry.is_git_repo_at_spawn`:
-///
-/// - `true`: claude auto-created a worktree at
-///   `<project_path>/.claude/worktrees/<label>/` on the
-///   `worktree-<label>` branch. Render three KV rows (name, branch,
-///   path). No `base` row — the original branch is not part of the
-///   per-worker surface.
-/// - `false`: the project is not a git repo, so `--worktree` no-ops
-///   and the worker runs in the project's cwd. One DIM body line
-///   surfaces that.
-fn append_worktree_section_for_worker(
-    lines: &mut Vec<Line<'static>>,
-    entry: &forge_workspace::WorkerEntry,
-    project_path: &std::path::Path,
-) {
-    push_worktree_header(lines);
-    let status_text = match entry.status {
-        forge_primitives::WorkerLiveness::Spawning => {
-            super::worker_status::format_spawning_status(&entry.label, entry.is_git_repo_at_spawn)
-        }
-        forge_primitives::WorkerLiveness::Running => {
-            super::worker_status::format_running_status(&entry.label, entry.is_git_repo_at_spawn)
-        }
-    };
-    lines.push(worktree_kv_row("status", &status_text));
-    if entry.is_git_repo_at_spawn {
-        let branch = format!("worktree-{}", entry.label);
-        // Relative path under the project root. The absolute form was
-        // wrapping off the right edge of the Inspector pane on long
-        // home directories; the relative shape (`.claude/worktrees/
-        // <label>/`) is unambiguous when paired with the worker row
-        // visible in the projects pane right next door.
-        let rel_path = format!(".claude/worktrees/{}/", entry.label);
-        lines.push(worktree_kv_row("name  ", &entry.label));
-        lines.push(worktree_kv_row("branch", &branch));
-        lines.push(worktree_kv_row("path  ", &rel_path));
-    } else {
-        lines.push(Line::from(vec![
-            Span::raw(" "),
-            Span::styled(
-                format!("not a git repo \u{00B7} {}", project_path.display()),
-                Style::default().fg(theme::DIM),
-            ),
-        ]));
-    }
-}
-
-/// One key-value row of the WORKTREE section. Label DIM, value plain
-/// (the project path / branch name reads more clearly without DIM,
-/// matching the GIT section's path row contrast).
-fn worktree_kv_row(label: &str, value: &str) -> Line<'static> {
-    Line::from(vec![
-        Span::raw(" "),
-        Span::styled(label.to_owned(), Style::default().fg(theme::DIM)),
-        Span::raw("  "),
-        Span::raw(value.to_owned()),
-    ])
 }
 
 fn append_tasks_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
@@ -1138,13 +1068,13 @@ fn append_tasks_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
         return;
     }
 
-    // Done / total counter for the header — m is completed, n is the
+    // Done / total counter for the header - m is completed, n is the
     // full todo list (including hidden completed and visible
     // pending/in-progress). Reads at a glance as a progress meter.
     let total = todos.len();
     let done = todos.iter().filter(|t| t.status == TodoStatus::Completed).count();
 
-    // TASKS section header — DIM bold, 2-col indent (matches the
+    // TASKS section header - DIM bold, 2-col indent (matches the
     // left pane's `ACTIVE` / `INACTIVE` section headers). Trailing
     // ` · m/n` count is DIM, separator is the same `·` we use across
     // the rest of the inspector (GIT subtitle, PROCESSES suffixes).
@@ -1175,7 +1105,7 @@ fn append_tasks_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
     //
     // 1. **Everything fits** (total <= cap): show ALL tasks in their
     //    original order, completed included. So a 3-task list with
-    //    1 done + 1 in-progress + 1 pending renders all three —
+    //    1 done + 1 in-progress + 1 pending renders all three -
     //    you can see what's behind you AND what's ahead, not just
     //    the current step.
     // 2. **Total exceeds cap but non-completed fits**: hide
@@ -1191,16 +1121,16 @@ fn append_tasks_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
     let visible_todos: Vec<&_>;
     let hidden: usize;
     if total_count <= TASKS_MAX {
-        // Tier 1 — original order, all included.
+        // Tier 1 - original order, all included.
         visible_todos = todos.iter().collect();
         hidden = 0;
     } else if non_completed.len() <= TASKS_MAX {
-        // Tier 2 — completed silently hidden; m/n header conveys
+        // Tier 2 - completed silently hidden; m/n header conveys
         // the missing count.
         visible_todos = non_completed;
         hidden = 0;
     } else {
-        // Tier 3 — non-completed itself exceeds the cap. Top
+        // Tier 3 - non-completed itself exceeds the cap. Top
         // TASKS_MAX-1 non-completed + `+N more` overflow row.
         let cap = TASKS_MAX.saturating_sub(1);
         visible_todos = non_completed.iter().copied().take(cap).collect();
@@ -1213,7 +1143,7 @@ fn append_tasks_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
         // Glyph language matches PROCESSES + Projects pane:
         // ○ DIM for pending, RUST_ORANGE braille spinner for the
         // currently-running task, ✓ green for completed (hidden in
-        // practice — the visible_todos filter strips them).
+        // practice - the visible_todos filter strips them).
         let (glyph, glyph_color) = match todo.status {
             TodoStatus::Completed => ("\u{2713}".to_owned(), Color::Green),
             TodoStatus::InProgress => (spinner_glyph(spinner_frame), theme::RUST_ORANGE),
@@ -1249,7 +1179,7 @@ fn append_tasks_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
                     Span::styled(first, text_style),
                 ]));
             } else {
-                // Empty `display_text` — still render the glyph row
+                // Empty `display_text` - still render the glyph row
                 // so the pane shape stays consistent.
                 lines.push(Line::from(vec![
                     Span::raw(" "),
@@ -1317,11 +1247,11 @@ const TASKS_MAX: usize = 5;
 /// palette for the headline so scanning the section visually
 /// separates "what's running" from "what's queued in TodoWrite":
 ///
-/// - `▸` RUST_ORANGE  — `BashBackgrounded` / `Monitor` while in-flight
-/// - `\u{23F0}` (`⏰`) DIM — `Cron` (scheduled, not currently firing)
-/// - `\u{2713}` (`✓`) green — completed tool call (any kind)
-/// - `\u{2717}` (`✗`) red — failed / killed
-/// - `\u{25CB}` (`○`) DIM — pending (queued, not yet started)
+/// - `▸` RUST_ORANGE  - `BashBackgrounded` / `Monitor` while in-flight
+/// - `\u{23F0}` (`⏰`) DIM - `Cron` (scheduled, not currently firing)
+/// - `\u{2713}` (`✓`) green - completed tool call (any kind)
+/// - `\u{2717}` (`✗`) red - failed / killed
+/// - `\u{25CB}` (`○`) DIM - pending (queued, not yet started)
 fn append_processes_section(
     lines: &mut Vec<Line<'static>>,
     collection: &ProcessCollection,
@@ -1347,12 +1277,12 @@ fn append_processes_section(
         }
     }
 
-    // No `+N more` footer — the inspector pane scrolls, so the
+    // No `+N more` footer - the inspector pane scrolls, so the
     // scrollbar IS the overflow indicator.
 }
 
 /// Render one process row as a single line. Same shape for
-/// supervisors (depth 0) and descendants (depth ≥ 1) — the only
+/// supervisors (depth 0) and descendants (depth ≥ 1) - the only
 /// difference is depth-0 has no tree-connector chrome, while
 /// depth-≥1 emits per-ancestor continuation cols + a connector.
 ///
@@ -1368,7 +1298,7 @@ fn append_processes_section(
 ///   metadata fills the slot instead.
 ///
 /// The redundant `Bash · running` / `Process · running` metadata
-/// dropped — the glyph + colour already convey kind, "running" is
+/// dropped - the glyph + colour already convey kind, "running" is
 /// implicit (every shown row is running), and "· 83 MB" alone is
 /// enough useful detail. Cron rows still show their `Cron ·
 /// recurring · session-only` metadata because they have no memory
@@ -1387,7 +1317,7 @@ fn append_process_row(
     // only. Depth-0 rows (supervisors + Cron) start flush with
     // PANE_PAD and skip directly to the glyph.
     //
-    // Skip the FIRST ancestor entry — supervisors are visualised as
+    // Skip the FIRST ancestor entry - supervisors are visualised as
     // section roots flush at col 2, not as ancestors needing a
     // continuation column. So depth-1 kids hang their `├─` from col 2
     // directly (matching the Projects pane org-grouped layout) and
@@ -1409,7 +1339,7 @@ fn append_process_row(
 
     // Glyph + space + headline + optional ` · <suffix>`.
     //
-    // Glyph rendering is depth-0 only — supervisors carry the
+    // Glyph rendering is depth-0 only - supervisors carry the
     // spinner/loader glyph (RUST_ORANGE for wire-matched Bash /
     // Monitor; DIM for generic OS processes); descendants drop it
     // because the tree connector + indent already says "child of
@@ -1418,15 +1348,15 @@ fn append_process_row(
     // adds 0 cols past the tree connector itself.
     //
     // Suffix priority:
-    // 1. Memory (`12 MB`) — when `memory_bytes` is set + layout
+    // 1. Memory (`12 MB`) - when `memory_bytes` is set + layout
     //    has room. Drops the redundant `Kind · running` metadata
     //    string since glyph + colour already convey kind and
     //    "running" is implicit.
-    // 2. Cron's `Cron · recurring · session-only` metadata — used
+    // 2. Cron's `Cron · recurring · session-only` metadata - used
     //    when memory is `None` (Cron rows are wire-only, no
     //    backing process). The kind/recurring info IS the useful
     //    signal there.
-    // 3. Nothing — `+N more` overflow rows have no memory + empty
+    // 3. Nothing - `+N more` overflow rows have no memory + empty
     //    metadata, so the row is just glyph + headline.
     let (glyph, glyph_color, headline_style) = glyph_and_style_for(process, spinner_frame);
     let glyph_cols = if process.depth == 0 {
@@ -1434,14 +1364,14 @@ fn append_process_row(
         spans.push(Span::raw(" "));
         2
     } else {
-        // Descendant — glyph + space dropped. Style is reused for
+        // Descendant - glyph + space dropped. Style is reused for
         // the headline below so wire-matched-vs-unmatched colour
         // still differentiates the row.
         let _ = (glyph, glyph_color);
         0
     };
 
-    // Suffix is the useful signal — memory for process-backed rows,
+    // Suffix is the useful signal - memory for process-backed rows,
     // Cron metadata for wire-only registrations. Always include it
     // when set; the headline truncates with `…` to make room.
     let suffix_text: Option<String> = match (include_memory, process.memory_bytes) {
@@ -1493,7 +1423,7 @@ fn glyph_and_style_for(process: &ProcessRow, spinner_frame: usize) -> (String, C
         ToolCallStatus::InProgress => match process.kind {
             ProcessKind::Cron => {
                 // Cron registration completes the moment claude calls
-                // CronCreate — InProgress is rare. Render with the
+                // CronCreate - InProgress is rare. Render with the
                 // schedule glyph regardless.
                 (
                     "\u{23F0}".to_owned(),
@@ -1502,7 +1432,7 @@ fn glyph_and_style_for(process: &ProcessRow, spinner_frame: usize) -> (String, C
                 )
             }
             ProcessKind::Process => {
-                // Unmatched OS process — same spinner as wire-tracked
+                // Unmatched OS process - same spinner as wire-tracked
                 // rows but DIM so the user's eye picks out the
                 // bright-coloured matched rows first. Still animates
                 // because the row IS live work.
@@ -1518,7 +1448,7 @@ fn glyph_and_style_for(process: &ProcessRow, spinner_frame: usize) -> (String, C
                 )
             }
             _ => (
-                // Wire-matched (Bash / Monitor) — RUST_ORANGE spinner
+                // Wire-matched (Bash / Monitor) - RUST_ORANGE spinner
                 // so the row stands out as "tracked work" against the
                 // dim spinners of generic OS processes.
                 spinner_glyph(spinner_frame),
@@ -1552,7 +1482,7 @@ fn wrap_text(s: &str, max_chars: usize) -> Vec<String> {
     for word in s.split_whitespace() {
         let word_chars = word.chars().count();
         if word_chars > max_chars {
-            // Long single token — flush current, then hard-cut the
+            // Long single token - flush current, then hard-cut the
             // long word across multiple lines.
             if !current.is_empty() {
                 out.push(std::mem::take(&mut current));
@@ -1674,7 +1604,7 @@ mod tests {
 
     #[test]
     fn head_truncate_drops_leading_components_first() {
-        // 29-char budget — too tight for the full path, but
+        // 29-char budget - too tight for the full path, but
         // `…/src/env/git_diff.rs` (21 chars) fits cleanly at a
         // component boundary.
         let out = fit_path_head_truncated("crates/forge-agent/src/env/git_diff.rs", 29);
@@ -1683,7 +1613,7 @@ mod tests {
 
     #[test]
     fn head_truncate_basename_overflow_falls_back_to_char_cut() {
-        // No `/` separators at all — has to char-cut.
+        // No `/` separators at all - has to char-cut.
         let out = fit_path_head_truncated("supercalifragilisticexpialidocious", 10);
         assert_eq!(out.chars().count(), 10);
         assert!(out.starts_with('\u{2026}'));
@@ -1695,11 +1625,15 @@ mod tests {
         assert_eq!(fit_path_head_truncated("anything", 1), "\u{2026}");
     }
 
-    fn snap(branch: GitBranch, default: Option<&str>, view: GitDiffView) -> GitDiffSnapshot {
+    fn snap(branch: GitBranch, default: Option<&str>, in_repo: bool) -> GitDiffSnapshot {
         GitDiffSnapshot {
             branch,
             default_branch: default.map(str::to_owned),
-            view,
+            in_repo,
+            worktree: None,
+            worktree_scan_ok: true,
+            branch_ahead: None,
+            branch_ahead_scan_ok: true,
             pr: None,
             closes: Vec::new(),
             scanner_ok: true,
@@ -1708,7 +1642,7 @@ mod tests {
 
     #[test]
     fn branch_row_named_default_renders_dim() {
-        let s = snap(GitBranch::Named("main".into()), Some("main"), GitDiffView::CleanDefault);
+        let s = snap(GitBranch::Named("main".into()), Some("main"), true);
         let (label, color) = branch_row_for(&s).expect("named branch should render a row");
         assert_eq!(label, "main");
         assert_eq!(color, theme::DIM);
@@ -1716,7 +1650,7 @@ mod tests {
 
     #[test]
     fn branch_row_named_feature_renders_rust_orange() {
-        let s = snap(GitBranch::Named("feat/x".into()), Some("main"), GitDiffView::CleanDefault);
+        let s = snap(GitBranch::Named("feat/x".into()), Some("main"), true);
         let (label, color) = branch_row_for(&s).expect("feature branch should render a row");
         assert_eq!(label, "feat/x");
         assert_eq!(color, theme::RUST_ORANGE);
@@ -1726,14 +1660,14 @@ mod tests {
     fn branch_row_named_unknown_default_renders_rust_orange() {
         // `default_branch == None` means we can't prove the branch IS
         // the default, so the feature-branch styling applies.
-        let s = snap(GitBranch::Named("main".into()), None, GitDiffView::CleanDefault);
+        let s = snap(GitBranch::Named("main".into()), None, true);
         let (_label, color) = branch_row_for(&s).expect("named branch should render a row");
         assert_eq!(color, theme::RUST_ORANGE);
     }
 
     #[test]
     fn branch_row_detached_renders_yellow() {
-        let s = snap(GitBranch::Detached, Some("main"), GitDiffView::CleanDefault);
+        let s = snap(GitBranch::Detached, Some("main"), true);
         let (label, color) = branch_row_for(&s).expect("detached HEAD should render a row");
         assert_eq!(label, "HEAD");
         assert_eq!(color, theme::STATUS_WARNING);
@@ -1741,13 +1675,13 @@ mod tests {
 
     #[test]
     fn branch_row_no_repo_collapses_to_none() {
-        let s = snap(GitBranch::NoRepo, None, GitDiffView::NoRepo);
+        let s = snap(GitBranch::NoRepo, None, false);
         assert!(branch_row_for(&s).is_none());
     }
 
     #[test]
     fn branch_row_unknown_collapses_to_none() {
-        let s = snap(GitBranch::Unknown, None, GitDiffView::CleanDefault);
+        let s = snap(GitBranch::Unknown, None, true);
         assert!(branch_row_for(&s).is_none());
     }
 
@@ -1844,7 +1778,7 @@ mod tests {
 
     #[test]
     fn build_tree_does_not_fold_dir_with_single_file_child() {
-        // `ui` has one child but it's a file — fold rule is dir-dir
+        // `ui` has one child but it's a file - fold rule is dir-dir
         // only, so `ui` stays as its own row above the file leaf.
         let files = vec![file("crates/forge-tui/src/ui/inspector_pane.rs", 340, 21)];
         let tree = build_tree(&files);
@@ -1962,7 +1896,7 @@ mod tests {
     fn processes_section_renders_bash_supervisor_as_single_line() {
         // Supervisor rows are single-line: glyph + headline + ` · <memory>`.
         // The verbose `Kind · running` metadata + cmdline continuation
-        // rows were retired — the glyph + colour convey kind and the
+        // rows were retired - the glyph + colour convey kind and the
         // memory suffix is the only useful per-row signal.
         let row = make_row_with_memory(
             ProcessKind::BashBackgrounded,
@@ -1983,7 +1917,7 @@ mod tests {
         // Frame 0 picks `⠋` (the first braille spinner frame).
         assert!(row_text.starts_with(" \u{280B} Run unit tests"), "headline: {row_text:?}");
         assert!(row_text.contains("8 MB"), "memory suffix: {row_text:?}");
-        // No `Bash · running` text — that's the regression check.
+        // No `Bash · running` text - that's the regression check.
         assert!(!row_text.contains("running"), "kind/running text must be dropped: {row_text:?}");
     }
 
@@ -2013,7 +1947,7 @@ mod tests {
     fn processes_section_cron_supervisor_uses_metadata_suffix() {
         // Cron rows have no memory_bytes (wire-only registrations).
         // The metadata string IS the useful signal, so the suffix
-        // slot falls through to it — but only when the row width
+        // slot falls through to it - but only when the row width
         // can fit BOTH the headline and the suffix without
         // truncation. Test at 50 cols where everything fits.
         let row = make_process_row(
@@ -2141,7 +2075,7 @@ mod tests {
 
     #[test]
     fn processes_section_appends_memory_suffix_at_wide_width() {
-        // 40-col Wide-tier inspector — width above the threshold so
+        // 40-col Wide-tier inspector - width above the threshold so
         // the row carries a `· 12 MB` suffix inline with the headline.
         let row = make_row_with_memory(
             ProcessKind::Process,
@@ -2158,7 +2092,7 @@ mod tests {
 
     #[test]
     fn processes_section_drops_memory_suffix_at_medium_width() {
-        // 30-col Medium-tier inspector — width below threshold so
+        // 30-col Medium-tier inspector - width below threshold so
         // the row stays bare (no memory suffix).
         let row = make_row_with_memory(
             ProcessKind::Process,
@@ -2190,148 +2124,12 @@ mod tests {
 
         let headline = line_text(&lines[2]);
         // Unmatched `Process` kind also renders the spinner glyph
-        // (frame 0 = `⠋`) but in DIM — the colour difference vs
+        // (frame 0 = `⠋`) but in DIM - the colour difference vs
         // RUST_ORANGE matched rows is the "is this tracked or not"
         // signal.
         assert!(headline.starts_with(" \u{280B} cargo"), "expected spinner glyph: {headline:?}");
         // Style assertion: pull the glyph span and check its colour.
         let glyph_span = &lines[2].spans[1];
         assert_eq!(glyph_span.style.fg, Some(theme::DIM));
-    }
-
-    fn worker_entry_for_test(
-        label: &str,
-        is_git_repo_at_spawn: bool,
-    ) -> forge_workspace::WorkerEntry {
-        forge_workspace::WorkerEntry {
-            label: label.to_owned(),
-            charter: "test".to_owned(),
-            session_key: forge_workspace::SessionKey::from_session_id("uuid-1"),
-            status: forge_primitives::WorkerLiveness::Running,
-            spawned_at: std::time::SystemTime::UNIX_EPOCH,
-            spawned_by_session_id: "lead-uuid".to_owned(),
-            needs_tag: false,
-            is_git_repo_at_spawn,
-        }
-    }
-
-    #[test]
-    fn render_worktree_section_for_worker_with_worktree_shows_name_branch_path() {
-        // Shape B — worker spawned inside a git repo. Status row +
-        // three KV rows: name (worker label), branch (claude's default
-        // `worktree-<label>`), path (project root + .claude/worktrees/<label>).
-        // No `base` row — explicitly dropped per design discussion.
-        let entry = worker_entry_for_test("reviewer", true);
-        let mut lines = Vec::new();
-        append_worktree_section_for_worker(
-            &mut lines,
-            &entry,
-            std::path::Path::new("/Users/me/Projects/forge"),
-        );
-        // header + blank + status + 3 KV rows = 6 lines.
-        assert_eq!(
-            lines.len(),
-            6,
-            "expected header + blank + status + 3 KV rows, got {}",
-            lines.len()
-        );
-        assert_eq!(line_text(&lines[0]), " WORKTREE");
-        assert!(line_text(&lines[1]).is_empty(), "blank separator missing");
-        let status_row = line_text(&lines[2]);
-        let name_row = line_text(&lines[3]);
-        let branch_row = line_text(&lines[4]);
-        let path_row = line_text(&lines[5]);
-        assert!(status_row.contains("status"), "status label missing: {status_row:?}");
-        assert!(
-            status_row.contains("running in worktree reviewer"),
-            "running-in-worktree text missing: {status_row:?}"
-        );
-        assert!(name_row.contains("name"), "name label missing: {name_row:?}");
-        assert!(name_row.contains("reviewer"), "name value missing: {name_row:?}");
-        assert!(branch_row.contains("branch"), "branch label missing: {branch_row:?}");
-        assert!(branch_row.contains("worktree-reviewer"), "branch value missing: {branch_row:?}");
-        assert!(path_row.contains("path"), "path label missing: {path_row:?}");
-        assert!(
-            path_row.contains(".claude/worktrees/reviewer"),
-            "worktree path missing: {path_row:?}"
-        );
-        // Regression guard: path is relative, no absolute home prefix.
-        assert!(
-            !path_row.contains("/Users/me"),
-            "path must be relative to project root, not absolute: {path_row:?}"
-        );
-        // Regression guard: no `base` row.
-        let joined = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
-        assert!(!joined.contains("base"), "base row must not appear: {joined:?}");
-    }
-
-    #[test]
-    fn render_worktree_section_for_worker_without_worktree_shows_not_a_git_repo() {
-        // Shape C — worker spawned in a non-git-repo project. No
-        // worktree was created (claude --worktree no-ops outside a
-        // repo); the section confirms that fact with one DIM line +
-        // the bare "running" status row above it.
-        let entry = worker_entry_for_test("notes", false);
-        let mut lines = Vec::new();
-        append_worktree_section_for_worker(
-            &mut lines,
-            &entry,
-            std::path::Path::new("/Users/me/Projects/notes"),
-        );
-        // header + blank + status + body = 4 lines.
-        assert_eq!(lines.len(), 4, "expected header + blank + status + body, got {}", lines.len());
-        assert_eq!(line_text(&lines[0]), " WORKTREE");
-        assert!(line_text(&lines[1]).is_empty(), "blank separator missing");
-        let status_row = line_text(&lines[2]);
-        assert!(status_row.contains("status"), "status label missing: {status_row:?}");
-        assert!(status_row.contains("running"), "running text missing: {status_row:?}");
-        assert!(
-            !status_row.contains("worktree"),
-            "worktree must not appear in non-git status: {status_row:?}"
-        );
-        let body = line_text(&lines[3]);
-        assert!(body.contains("not a git repo"), "missing label: {body:?}");
-        assert!(body.contains("/Users/me/Projects/notes"), "missing project path: {body:?}");
-    }
-
-    #[test]
-    fn render_worktree_section_for_spawning_git_worker_status_mentions_worktree() {
-        // Shape B during the Spawning window. The status row should
-        // surface "spawning <label> in worktree …" so the operator
-        // sees the worker is mid-spawn AND that a worktree is being
-        // set up.
-        let mut entry = worker_entry_for_test("reviewer", true);
-        entry.status = forge_primitives::WorkerLiveness::Spawning;
-        let mut lines = Vec::new();
-        append_worktree_section_for_worker(
-            &mut lines,
-            &entry,
-            std::path::Path::new("/Users/me/Projects/forge"),
-        );
-        let status_row = line_text(&lines[2]);
-        assert!(
-            status_row.contains("spawning reviewer in worktree"),
-            "spawning-in-worktree text missing: {status_row:?}"
-        );
-    }
-
-    #[test]
-    fn render_worktree_section_for_spawning_non_git_worker_status_omits_worktree() {
-        // Shape C during the Spawning window. The status row should
-        // surface "spawning <label> …" without any worktree mention.
-        let mut entry = worker_entry_for_test("notes", false);
-        entry.status = forge_primitives::WorkerLiveness::Spawning;
-        let mut lines = Vec::new();
-        append_worktree_section_for_worker(
-            &mut lines,
-            &entry,
-            std::path::Path::new("/Users/me/Projects/notes"),
-        );
-        let status_row = line_text(&lines[2]);
-        assert!(status_row.contains("spawning notes"), "spawning text missing: {status_row:?}");
-        assert!(
-            !status_row.contains("worktree"),
-            "worktree must not appear in non-git status: {status_row:?}"
-        );
     }
 }

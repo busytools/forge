@@ -29,7 +29,7 @@ use tui_textarea::TextArea;
 use super::App;
 use super::view::{ActiveView, set_active_view};
 
-/// Identifies a single rendered diff line — `(file_idx, hunk_idx,
+/// Identifies a single rendered diff line - `(file_idx, hunk_idx,
 /// line_idx_in_hunk)`. Comments attach to a `LineKey`; the body
 /// hit-test resolves a mouse y-coordinate to a key by walking the
 /// rendered body line list.
@@ -43,8 +43,8 @@ pub struct LineKey {
 /// What a single rendered row in the left FILES rail corresponds
 /// to. Built by `render_rail` and stashed on `DiffOverlayState` so
 /// the mouse handler resolves a click (`row + rail_scroll`) into a
-/// file index — or recognises the click as hitting non-interactive
-/// chrome / a directory header — without re-walking the file list.
+/// file index - or recognises the click as hitting non-interactive
+/// chrome / a directory header - without re-walking the file list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RailRowKey {
     /// `FILES` banner. Non-clickable.
@@ -56,7 +56,7 @@ pub enum RailRowKey {
     /// Directory header in the tree (e.g. `crates/`,
     /// `forge-agent/src/env/`). Non-clickable in v1.
     Directory,
-    /// File leaf — click switches the right pane to this file.
+    /// File leaf - click switches the right pane to this file.
     File { file_idx: usize },
     /// `+N untracked suppressed (cap M)` notice row at the bottom
     /// of the rail when the scanner hit its untracked cap. Non-
@@ -78,9 +78,9 @@ pub enum BodyRowKey {
     Blank,
     /// Empty-state notice (scan failed / no file / binary / etc.).
     EmptyState,
-    /// `@@ -A,B +C,D @@` hunk header — non-interactive in v1.
+    /// `@@ -A,B +C,D @@` hunk header - non-interactive in v1.
     HunkHeader { file_idx: usize, hunk_idx: usize },
-    /// A diff row in the split body. Carries both column keys —
+    /// A diff row in the split body. Carries both column keys -
     /// the click handler picks `left` or `right` by comparing the
     /// click column against the pane midpoint. At least one side
     /// is `Some` (the pairing algorithm never emits both-None).
@@ -104,7 +104,7 @@ pub struct HunkComment {
     /// Line number from the relevant side of the diff (new-file
     /// line for context / added, old-file line for removed).
     pub line: u32,
-    /// Full hunk the comment is anchored on — included verbatim in
+    /// Full hunk the comment is anchored on - included verbatim in
     /// the markdown bundle so the agent sees the local context.
     pub hunk_context: Vec<DiffLine>,
     pub comment_text: String,
@@ -150,7 +150,7 @@ pub struct DiffOverlayEvent {
 
 /// Spawn a tokio local task that awaits
 /// [`forge_workspace::Workspace::scan_git_diff_hunks`] and posts a
-/// [`DiffOverlayEvent`] when the scan completes. Best-effort send —
+/// [`DiffOverlayEvent`] when the scan completes. Best-effort send -
 /// receiver going away (app shutdown) just drops the result.
 pub fn spawn_fetch(cwd: PathBuf, target: String, seq: u64, tx: std_mpsc::Sender<DiffOverlayEvent>) {
     tokio::task::spawn_local(async move {
@@ -181,15 +181,21 @@ pub enum DefaultTarget {
     /// The Inspector scanner itself failed (subprocess crash,
     /// timeout, oversize output). Distinct from `NotARepo` because
     /// the user IS in a repo; git just couldn't run. The snapshot
-    /// collapses to `view = NoRepo` as a render failsafe but
-    /// `scanner_ok=false` signals the real story.
+    /// collapses to `in_repo = false` as a render failsafe but
+    /// `scanner_ok = false` signals the real story.
     ScannerFailed,
-    /// Snapshot view is `BranchVsDefault` (so the scanner sees
-    /// committed changes vs SOME default) but the default branch
-    /// itself couldn't be resolved — no `origin/HEAD`, no local
-    /// `main`, no local `master`. Distinct from `Clean` because
-    /// there ARE changes; we just don't know which ref to compare
-    /// against. User needs to pass an explicit `/diff <ref>`.
+    /// Snapshot has `branch_ahead = Some(_)` (so the scanner sees
+    /// committed work) but the default branch itself couldn't be
+    /// resolved - no `origin/HEAD`, no local `main`, no local
+    /// `master`. Distinct from `Clean` because there ARE changes;
+    /// we just don't know which ref to compare against. User needs
+    /// to pass an explicit `/diff <ref>`.
+    ///
+    /// In the current scan logic this is structurally unreachable
+    /// because `branch_ahead` is only constructed when
+    /// `default_branch` resolved. Kept as a defensive case so a
+    /// future refactor that decouples the two doesn't accidentally
+    /// collapse this into `Clean`.
     NoDefault,
     /// Working tree is clean against the resolved default branch.
     /// Genuine "no changes". Branch name is surfaced in the
@@ -206,38 +212,47 @@ pub enum DefaultTarget {
 /// inspector's git-diff scanner polls on that cadence. If the user
 /// switches branches and clicks `🦉` within that window, the resolved
 /// target may not match the live working tree. Mitigation: the scan
-/// itself ALWAYS runs fresh — only the *target ref* (e.g. `main` vs
+/// itself ALWAYS runs fresh - only the *target ref* (e.g. `main` vs
 /// `master`) can be wrong. Worst-case the user sees "no changes" and
 /// reruns `/diff <ref>` explicitly. Not worth the synchronous
 /// refresh cost on the click hot-path.
 pub fn resolve_default_target(app: &App) -> DefaultTarget {
-    use forge_workspace::env::git_diff::GitDiffView;
     let Some(snapshot) = app.active_session().and_then(|s| s.git_diff_snapshot.as_ref()) else {
         return DefaultTarget::NoSnapshot;
     };
-    // Inspector scanner crashed — distinct from "not a repo".
-    // Check before matching view so the failsafe NoRepo doesn't
+    // Inspector scanner crashed; distinct from "not a repo". Check
+    // before any layer match so the in_repo=false failsafe doesn't
     // mask a real subprocess failure.
     if !snapshot.scanner_ok {
         return DefaultTarget::ScannerFailed;
     }
-    match (&snapshot.view, snapshot.default_branch.as_deref()) {
-        (GitDiffView::Worktree { .. }, _) => DefaultTarget::Ref("HEAD".to_owned()),
-        (GitDiffView::BranchVsDefault { .. }, Some(default)) => {
-            DefaultTarget::Ref(default.to_owned())
-        }
-        (GitDiffView::BranchVsDefault { .. }, None) => DefaultTarget::NoDefault,
-        (GitDiffView::NoRepo, _) => DefaultTarget::NotARepo,
-        (GitDiffView::CleanDefault, _) => {
-            DefaultTarget::Clean { default_branch: snapshot.default_branch.clone() }
-        }
+    if !snapshot.in_repo {
+        return DefaultTarget::NotARepo;
     }
+    // Layer 1 wins when both layers are populated: a dirty tree is
+    // what the user clicks `🦉` to inspect, and `HEAD` covers the
+    // uncommitted edits. The committed-but-unmerged work
+    // (`branch_ahead`) is reachable via an explicit `/diff <default>`
+    // - auto-detect prefers the more-recent surface.
+    if snapshot.worktree.is_some() {
+        return DefaultTarget::Ref("HEAD".to_owned());
+    }
+    if snapshot.branch_ahead.is_some() {
+        return match snapshot.default_branch.as_deref() {
+            Some(default) => DefaultTarget::Ref(default.to_owned()),
+            None => DefaultTarget::NoDefault,
+        };
+    }
+    // No layer populated: clean tree on the default branch (or on a
+    // branch with no commits ahead). The renderer hands the user
+    // back the resolved default for context.
+    DefaultTarget::Clean { default_branch: snapshot.default_branch.clone() }
 }
 
 /// Kick off a diff scan against `target` and post the result
 /// through the overlay event channel. Pushes a system message
-/// (via `app::slash::push_system_message`) on every failure path —
-/// workspace not ready, no active session, empty cwd — so callers
+/// (via `app::slash::push_system_message`) on every failure path -
+/// workspace not ready, no active session, empty cwd - so callers
 /// don't need to handle that themselves. Used by `/diff <target>`
 /// directly; `open_default` builds on top of it for the auto-detect
 /// path.
@@ -270,7 +285,7 @@ pub fn open_default(app: &mut App) {
         DefaultTarget::NoSnapshot => {
             crate::app::slash::push_system_message(
                 app,
-                "Git scanner hasn't run yet — try /diff again in a moment.",
+                "Git scanner hasn't run yet - try /diff again in a moment.",
             );
         }
         DefaultTarget::NotARepo => {
@@ -279,7 +294,7 @@ pub fn open_default(app: &mut App) {
         DefaultTarget::ScannerFailed => {
             crate::app::slash::push_system_message(
                 app,
-                "Git scanner hit an error — see tracing logs (target: agent.env_git). Try /diff again in a moment.",
+                "Git scanner hit an error - see tracing logs (target: agent.env_git). Try /diff again in a moment.",
             );
         }
         DefaultTarget::NoDefault => {
@@ -310,17 +325,17 @@ const EVENT_DRAIN_BUDGET: usize = 8;
 ///
 /// Events are dropped (silently) when the user has navigated away
 /// since the scan started:
-/// - `app.active_view != ActiveView::Chat` — user opened config /
+/// - `app.active_view != ActiveView::Chat` - user opened config /
 ///   session picker / launchpad / another overlay while the scan
 ///   was running. Yanking them into the diff view would be
 ///   surprising.
-/// - `event.cwd` doesn't match the active session's `cwd_raw` —
+/// - `event.cwd` doesn't match the active session's `cwd_raw` -
 ///   user switched sessions mid-scan; the result is for a stale
 ///   project, and crosstalking it into the new session would
 ///   confuse.
 ///
 /// Both cases log at DEBUG so a future "why didn't /diff open?"
-/// triage can correlate the event. No chat message is pushed —
+/// triage can correlate the event. No chat message is pushed -
 /// the user explicitly navigated away, so a notice arriving later
 /// would be noise. The user can rerun `/diff` if they want the
 /// scan they kicked off.
@@ -330,7 +345,7 @@ pub fn drain_events(app: &mut App) {
             Ok(event) => event,
             Err(std_mpsc::TryRecvError::Empty | std_mpsc::TryRecvError::Disconnected) => return,
         };
-        // Superseded by a newer /diff invocation — silent drop.
+        // Superseded by a newer /diff invocation - silent drop.
         // No user notice because they didn't navigate away or
         // close anything; they just retriggered and the older
         // scan's result is no longer relevant.
@@ -347,7 +362,7 @@ pub fn drain_events(app: &mut App) {
             continue;
         }
         if app.active_view != ActiveView::Chat {
-            // Silent drop — the user explicitly navigated away, so
+            // Silent drop - the user explicitly navigated away, so
             // a chat message would be surprising noise. DEBUG log
             // remains for triage.
             tracing::debug!(
@@ -361,13 +376,13 @@ pub fn drain_events(app: &mut App) {
             continue;
         }
         // PathBuf comparison normalises trailing separators and
-        // avoids the lossy String round-trip — `cwd_raw` is UTF-8
+        // avoids the lossy String round-trip - `cwd_raw` is UTF-8
         // by construction, `event.cwd` is whatever the scanner
         // received, so converting `cwd_raw` to PathBuf gives an
         // exact match when they refer to the same directory.
         let active_cwd = app.active_session().map(|s| PathBuf::from(&s.cwd_raw));
         if active_cwd.as_deref() != Some(event.cwd.as_path()) {
-            // Silent drop — pushing a chat message into the now-
+            // Silent drop - pushing a chat message into the now-
             // active (different) session about a scan for the OLD
             // session would crosstalk. The user can rerun /diff
             // explicitly if they meant the new session.
@@ -387,7 +402,7 @@ pub fn drain_events(app: &mut App) {
 }
 
 /// All state the diff overlay view needs. Lives on
-/// `App.diff_overlay` (`Option<Self>`) — `Some` while the view is
+/// `App.diff_overlay` (`Option<Self>`) - `Some` while the view is
 /// active, dropped to `None` on close so a stale snapshot can't
 /// leak into the next open.
 #[derive(Debug, Clone)]
@@ -403,7 +418,7 @@ pub struct DiffOverlayState {
     /// Files in the diff, in the order the scanner returned them.
     pub files: Vec<FileHunks>,
     /// Whether the scanner finished cleanly. `false` when one of
-    /// the underlying `git` calls hit Failed / Oversize — the
+    /// the underlying `git` calls hit Failed / Oversize - the
     /// renderer surfaces a distinct empty-state message so the
     /// user knows to retry rather than concluding "no changes."
     pub scanner_ok: bool,
@@ -491,7 +506,7 @@ impl DiffOverlayState {
         }
     }
 
-    /// Build a fresh state for a newly-opened overlay. Test-only —
+    /// Build a fresh state for a newly-opened overlay. Test-only -
     /// production uses [`Self::new_with_event`] so the scanner
     /// outcome flags (`scanner_ok`, `untracked_suppressed`) thread
     /// through from the underlying `ScanOutcome` and the renderer's
@@ -567,7 +582,7 @@ pub(crate) fn open(app: &mut App, state: DiffOverlayState) {
 }
 
 /// Drop the overlay state and transition back to chat. The Esc-
-/// bundle submit path lives in [`close_with_submit`] — call this
+/// bundle submit path lives in [`close_with_submit`] - call this
 /// directly only when comments have already been handled (or the
 /// caller is the Esc-cancel path for the active input editor).
 pub(crate) fn close(app: &mut App) {
@@ -641,15 +656,15 @@ const SCROLL_COLS_PER_STEP: u16 = 8;
 /// Route bracketed paste into the active comment editor. Returns
 /// `true` when the paste was consumed (editor present), `false`
 /// otherwise so the caller can fall through. Plain pastes inside
-/// the diff overlay outside a comment editor are dropped — there's
-/// nothing for them to land on — but a DEBUG log fires so a user
+/// the diff overlay outside a comment editor are dropped - there's
+/// nothing for them to land on - but a DEBUG log fires so a user
 /// reporting "my paste disappeared" can be triaged from logs.
 pub(crate) fn handle_paste(app: &mut App, text: &str) -> bool {
     let Some(overlay) = app.diff_overlay.as_mut() else {
         tracing::debug!(
             target: crate::logging::targets::APP_SESSION,
             event_name = "diff_overlay_paste_dropped_no_overlay",
-            message = "paste in Diff view without overlay state — dropped",
+            message = "paste in Diff view without overlay state - dropped",
             outcome = "dropped",
             paste_chars = text.chars().count(),
         );
@@ -659,7 +674,7 @@ pub(crate) fn handle_paste(app: &mut App, text: &str) -> bool {
         tracing::debug!(
             target: crate::logging::targets::APP_SESSION,
             event_name = "diff_overlay_paste_dropped_no_editor",
-            message = "paste in Diff view without an open comment editor — dropped",
+            message = "paste in Diff view without an open comment editor - dropped",
             outcome = "dropped",
             paste_chars = text.chars().count(),
         );
@@ -676,14 +691,14 @@ pub(crate) fn handle_paste(app: &mut App, text: &str) -> bool {
 /// Esc-cancel, clicking a different diff line, clicking a different
 /// chip, switching files via the rail, narrow-tier arrow clicks.
 /// Without this centralization, every dismissal path that bypasses
-/// Esc would silently destroy the saved comment — the exact bug
+/// Esc would silently destroy the saved comment - the exact bug
 /// `prior_comment` was added to prevent.
 ///
 /// Logs DEBUG with the abandoned char count when text is dropped
 /// (fresh draft, or modifications layered on a reopened chip), so
 /// a "where did my edit go?" triage can correlate from logs.
 /// Returns the abandoned count as a Unicode scalar count for
-/// callers that want it — most don't, but the central log fires
+/// callers that want it - most don't, but the central log fires
 /// regardless.
 fn close_active_input_preserving_prior(overlay: &mut DiffOverlayState) -> usize {
     let Some(input) = overlay.active_input.take() else { return 0 };
@@ -720,7 +735,7 @@ fn close_active_input_preserving_prior(overlay: &mut DiffOverlayState) -> usize 
 
 /// Discard the active comment editor without saving. If the editor
 /// was opened by re-clicking a saved 💬 chip, restore the original
-/// comment so the chip reappears — the user clicked to view/edit,
+/// comment so the chip reappears - the user clicked to view/edit,
 /// not to destroy. Fresh line-click editors have no prior to
 /// restore; their in-progress text is discarded (with the helper's
 /// central DEBUG log noting the abandoned char count).
@@ -738,9 +753,9 @@ fn cancel_active_input(app: &mut App) {
 ///
 /// Empty-text save semantics:
 /// - Fresh line-click editor (no `prior_comment`): treated as
-///   cancel — saving a blank comment would render an empty chip.
+///   cancel - saving a blank comment would render an empty chip.
 /// - Reopened chip editor (with `prior_comment`): treated as
-///   delete — the user cleared all text and pressed Enter to
+///   delete - the user cleared all text and pressed Enter to
 ///   remove the saved comment. The prior is NOT restored.
 fn save_active_input(app: &mut App) {
     let Some(overlay) = app.diff_overlay.as_mut() else { return };
@@ -763,7 +778,7 @@ fn save_active_input(app: &mut App) {
         tracing::warn!(
             target: crate::logging::targets::APP_SESSION,
             event_name = "diff_overlay_save_oob_file_idx",
-            message = "save_active_input hit oob file_idx — body mutated mid-open?",
+            message = "save_active_input hit oob file_idx - body mutated mid-open?",
             outcome = "skipped",
             file_idx = key.file_idx,
             file_count = overlay.files.len(),
@@ -776,7 +791,7 @@ fn save_active_input(app: &mut App) {
         tracing::warn!(
             target: crate::logging::targets::APP_SESSION,
             event_name = "diff_overlay_save_oob_hunk_idx",
-            message = "save_active_input hit oob hunk_idx — body mutated mid-open?",
+            message = "save_active_input hit oob hunk_idx - body mutated mid-open?",
             outcome = "skipped",
             hunk_idx = key.hunk_idx,
             hunk_count = file.hunks.len(),
@@ -789,7 +804,7 @@ fn save_active_input(app: &mut App) {
         tracing::warn!(
             target: crate::logging::targets::APP_SESSION,
             event_name = "diff_overlay_save_oob_line_idx",
-            message = "save_active_input hit oob line_idx — body mutated mid-open?",
+            message = "save_active_input hit oob line_idx - body mutated mid-open?",
             outcome = "skipped",
             line_idx = key.line_idx,
             line_count = hunk.lines.len(),
@@ -826,7 +841,7 @@ fn save_active_input(app: &mut App) {
 
 /// Lines scrolled per wheel notch in the diff body. Same value as
 /// `crate::app::events::mouse::MOUSE_SCROLL_LINES` (which is
-/// `usize` because it feeds `Viewport::scroll_up/down`) — kept as
+/// `usize` because it feeds `Viewport::scroll_up/down`) - kept as
 /// `u16` here because `body_scroll` is `u16` for ratatui's
 /// `Paragraph::scroll`.
 const SCROLL_LINES_PER_NOTCH: u16 = 3;
@@ -871,7 +886,7 @@ pub(crate) fn rail_width_for(terminal_width: u16) -> u16 {
 /// Outcome of a mouse interaction. Some interactions need access
 /// to the full App (key event needs to fire `dispatch_prompt` for
 /// the Esc-bundle path) which the inner `handle_*` borrow doesn't
-/// have — surface them as effects the outer `handle_mouse` runs.
+/// have - surface them as effects the outer `handle_mouse` runs.
 #[derive(Debug, Default)]
 struct MouseEffect {
     redraw: bool,
@@ -904,7 +919,7 @@ pub(crate) fn handle_mouse(app: &mut App, mouse: MouseEvent) {
                 handle_left_click(overlay, mouse.column, mouse.row, terminal_width)
             }
             // Trackpad horizontal swipes don't propagate from at least
-            // Ghostty / iTerm — they're swallowed by the terminal and
+            // Ghostty / iTerm - they're swallowed by the terminal and
             // never reach the SGR mouse stream. Left/Right arrow keys
             // are the only working horizontal-scroll affordance.
             _ => MouseEffect::default(),
@@ -957,7 +972,7 @@ fn handle_left_click(
     // Body click: column past rail+separator. Resolve via body_keys.
     // When the rail isn't rendered (terminal narrower than the split
     // threshold), the renderer paints a "too narrow" notice and
-    // clears `body_keys` — clicks just no-op.
+    // clears `body_keys` - clicks just no-op.
     handle_body_click(overlay, column, row)
 }
 
@@ -966,7 +981,7 @@ fn handle_rail_click(overlay: &mut DiffOverlayState, row: u16) -> MouseEffect {
     // file leaves. We resolve the click by walking `rail_keys`
     // (parallel to the rendered rows) at offset `rail_scroll`.
     // The banner / rule / blank rows live at the head of the list
-    // and don't scroll — they're always at the absolute screen
+    // and don't scroll - they're always at the absolute screen
     // rows 0, 1, 2. The scrollable portion starts at row 3
     // (== FIRST_FILE_ROW_Y).
     let row_idx_in_keys = if row < FIRST_FILE_ROW_Y {
@@ -981,7 +996,7 @@ fn handle_rail_click(overlay: &mut DiffOverlayState, row: u16) -> MouseEffect {
         return MouseEffect::default();
     };
     let RailRowKey::File { file_idx } = key else {
-        // Banner / rule / blank / directory / untracked-notice —
+        // Banner / rule / blank / directory / untracked-notice -
         // non-clickable in v1.
         return MouseEffect::default();
     };
@@ -994,7 +1009,7 @@ fn handle_rail_click(overlay: &mut DiffOverlayState, row: u16) -> MouseEffect {
     overlay.current_file_idx = file_idx;
     overlay.body_scroll = 0;
     overlay.body_scroll_x = 0;
-    // Close the active editor on file switch — the editor is
+    // Close the active editor on file switch - the editor is
     // anchored to a specific line in the previous file, and the
     // helper preserves prior_comment if it was a chip-reopen.
     close_active_input_preserving_prior(overlay);
@@ -1059,14 +1074,14 @@ fn open_input_for_key(overlay: &mut DiffOverlayState, key: LineKey) -> MouseEffe
     // If an editor is already open at the same key, no-op so the
     // click doesn't reset its in-progress text. If at a different
     // key, abandon the in-progress edit (UI matches what GitHub does
-    // — clicking elsewhere closes the open editor without saving).
+    // - clicking elsewhere closes the open editor without saving).
     if let Some(existing) = overlay.active_input.as_ref()
         && existing.key == key
     {
         return MouseEffect::default();
     }
     // Close any existing editor (different line) before opening the
-    // new one — preserves its prior_comment if it was a reopen.
+    // new one - preserves its prior_comment if it was a reopen.
     close_active_input_preserving_prior(overlay);
     let editor = TextArea::default();
     overlay.active_input = Some(ActiveCommentInput { key, editor, prior_comment: None });
@@ -1077,7 +1092,7 @@ fn reopen_comment_for_key(overlay: &mut DiffOverlayState, key: LineKey) -> Mouse
     // Find the saved comment, hydrate a fresh TextArea from its
     // text, drop the saved entry so the chip vanishes WHILE editing
     // (but stash it on `prior_comment` so Esc-cancel can restore it
-    // — losing the saved comment to a misclick-and-reflex-Esc would
+    // - losing the saved comment to a misclick-and-reflex-Esc would
     // destroy review notes the user wrote).
     let position = overlay.comments.iter().position(|c| c.key == key);
     let Some(pos) = position else {
@@ -1105,13 +1120,13 @@ fn reopen_comment_for_key(overlay: &mut DiffOverlayState, key: LineKey) -> Mouse
 ///
 /// Pre-flight: if comments are pending AND the agent isn't ready
 /// to receive a prompt (no active session, pre-Connect), the close
-/// is REFUSED — a system message tells the user to retry once the
+/// is REFUSED - a system message tells the user to retry once the
 /// session connects + a WARN log lets an operator grep for the
 /// held state. Without this, `dispatch_prompt`'s silent no-agent
 /// path would drop the bundle on the floor and the user would
 /// lose their review notes.
 pub(super) fn close_with_submit(app: &mut App) {
-    // Flush the active editor BEFORE the pending check — a reopened
+    // Flush the active editor BEFORE the pending check - a reopened
     // chip moves its saved comment onto `active_input.prior_comment`,
     // so `overlay.comments` is empty while the editor is open. If we
     // checked pending first, a held-no-agent state with only a
@@ -1151,7 +1166,7 @@ pub(super) fn close_with_submit(app: &mut App) {
     // BEFORE close() drops it. Avoids the previous two-step (take
     // comments, then re-read target/cwd) where the second read
     // relied on `unwrap_or_default()` for a value that's never None
-    // in practice — confusing for future maintainers.
+    // in practice - confusing for future maintainers.
     let snapshot = app.diff_overlay.as_mut().map(|o| {
         let comments = std::mem::take(&mut o.comments);
         (comments, o.target.clone(), o.cwd.display().to_string())
@@ -1299,7 +1314,7 @@ mod tests {
     fn rail_click_outside_rail_routes_to_body() {
         // After the body hit-test was added, a click past the rail
         // routes into handle_body_click which finds no body_keys
-        // in a freshly-constructed state — returns no-redraw.
+        // in a freshly-constructed state - returns no-redraw.
         let mut state = sample_state();
         let effect = handle_left_click(&mut state, 50, 4, 160);
         assert!(!effect.redraw);
@@ -1398,7 +1413,7 @@ mod tests {
         state.pane_origin_row = 0;
         state.pane_origin_col = 41;
         state.pane_width = 119;
-        // Click in the (blank) LEFT half — left=None, so no editor opens.
+        // Click in the (blank) LEFT half - left=None, so no editor opens.
         let effect = handle_left_click(&mut state, 60, 4, 160);
         assert!(!effect.redraw);
         assert!(state.active_input.is_none());
@@ -1534,7 +1549,7 @@ mod tests {
 
     #[test]
     fn close_with_submit_refuses_when_agent_not_ready() {
-        // No active agent in the test default — close_with_submit
+        // No active agent in the test default - close_with_submit
         // with pending comments must keep the overlay open + push
         // a system message rather than silently dropping comments.
         let mut app = App::test_default();
@@ -1549,7 +1564,7 @@ mod tests {
         app.diff_overlay = Some(state);
         set_active_view(&mut app, ActiveView::Diff);
         close_with_submit(&mut app);
-        // Overlay still open + comment still alive — user can retry.
+        // Overlay still open + comment still alive - user can retry.
         assert!(app.diff_overlay.is_some(), "overlay stays open when dispatch would silently fail");
         assert_eq!(
             app.diff_overlay.as_ref().map(|o| o.comments.len()),
@@ -1706,7 +1721,7 @@ mod tests {
     fn reopen_edit_then_cancel_drops_edits_and_restores_prior() {
         // F1: user reopens chip, types edits, then dismisses (Esc).
         // Per GitHub edit-modal semantics, the chip restores to its
-        // pre-edit state — the typed-over changes are intentionally
+        // pre-edit state - the typed-over changes are intentionally
         // dropped. Verify the prior is restored verbatim AND the
         // helper reports the divergence as abandoned chars (so the
         // central DEBUG log fires for telemetry).
@@ -1733,7 +1748,7 @@ mod tests {
     fn reopen_no_edit_then_cancel_reports_zero_abandoned() {
         // F1 boundary: when the editor's content equals the prior
         // exactly (user reopened, didn't type), abandoned should be 0
-        // — no telemetry log fires for "viewed and dismissed".
+        // - no telemetry log fires for "viewed and dismissed".
         let mut state = sample_state();
         let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
         let prior = HunkComment {
@@ -1829,7 +1844,7 @@ mod tests {
         };
         let mut editor = TextArea::default();
         editor.insert_str("important review note");
-        // Editor open as a chip reopen — prior_comment Some, no
+        // Editor open as a chip reopen - prior_comment Some, no
         // unsubmitted comments in overlay.comments yet.
         state.active_input =
             Some(ActiveCommentInput { key, editor, prior_comment: Some(prior.clone()) });
@@ -1837,7 +1852,7 @@ mod tests {
         set_active_view(&mut app, ActiveView::Diff);
         close_with_submit(&mut app);
         assert!(app.diff_overlay.is_none(), "overlay closed");
-        // The prior must have made it into the dispatched bundle —
+        // The prior must have made it into the dispatched bundle -
         // inspect the Command::PromptWithImages text the stub
         // receiver picked up.
         let dispatched = rx.try_recv().expect("a prompt was dispatched");
@@ -1890,7 +1905,7 @@ mod tests {
     #[test]
     fn close_with_submit_no_comments_closes_cleanly_even_without_agent() {
         // Empty comments path skips the dispatch entirely, so the
-        // no-agent state shouldn't block closing — the user just
+        // no-agent state shouldn't block closing - the user just
         // wants to dismiss the overlay.
         let mut app = App::test_default();
         app.diff_overlay = Some(sample_state());

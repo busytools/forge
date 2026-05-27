@@ -1893,6 +1893,43 @@ impl Workspace {
         None
     }
 
+    /// Resolve the cwd a git-diff scan should run against for the
+    /// session at `session_key`. Workers spawned in a git repo run
+    /// inside claude's `--worktree <label>` fork (under
+    /// `<project_root>/.claude/worktrees/<label>/`), so `cwd_raw`
+    /// from the `Connected` event carries the project root and
+    /// scanning there would surface the lead's branch / diff, not
+    /// the worker's. Composes [`Self::worker_lookup_for_session`]
+    /// with `worker_tag_dir` (in `crate::mcp::workers::types`) so
+    /// the same helper drives both the tag-write path and the
+    /// git-diff scan.
+    ///
+    /// For non-worker sessions (project leads) or non-git workers,
+    /// returns `cwd_raw` unchanged.
+    #[must_use]
+    pub fn git_scan_cwd_for_session(
+        &self,
+        session_key: &SessionKey,
+        cwd_raw: &std::path::Path,
+    ) -> std::path::PathBuf {
+        if let Some((_, label, is_git_repo_at_spawn)) = self.worker_lookup_for_session(session_key)
+        {
+            crate::mcp::workers::types::worker_tag_dir(cwd_raw, &label, is_git_repo_at_spawn)
+        } else {
+            // Trace-level so a real lookup-miss (race during
+            // worker spawn, lead-session call) leaves a grep-able
+            // trail without flooding normal logs. The lead-session
+            // case is the common path and intentionally not
+            // promoted higher.
+            tracing::trace!(
+                target: "forge_workspace::git_scan",
+                session_key = %session_key.as_str(),
+                "no worker lookup; using cwd_raw unchanged"
+            );
+            cwd_raw.to_path_buf()
+        }
+    }
+
     /// Handle an async worker-spawn failure: classify the error,
     /// dispatch a typed notice to the lead's chat when the
     /// classifier identifies a worktree-creation failure, and roll
