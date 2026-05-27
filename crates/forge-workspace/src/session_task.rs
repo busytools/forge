@@ -807,8 +807,17 @@ fn maybe_kick_worker_on_connected(
     let Some(label) = parse_worker_label_from_synth_key(spawn_key) else {
         return;
     };
-    let Some(role) = crate::team::Role::from_str_ci(&label) else {
-        return;
+    let initial_kick = match crate::team::load_initial_kick(&label) {
+        Ok(kick) => kick,
+        Err(err) => {
+            tracing::warn!(
+                target: "forge_workspace::team",
+                label = %label,
+                error = %err,
+                "no initial-kick file found for worker label; worker spawn proceeds without a kick prompt (worker stays idle until lead dispatches). Populate ~/.claude/forge-team/<label>/kick.md (copy from docs/forge-team-defaults/<label>/) or use the workers__create_role MCP tool."
+            );
+            return;
+        }
     };
     // Resume path: inspect the JSONL turn count before re-firing
     // the kick. The kick lands as a USER turn; a worker that's
@@ -827,7 +836,7 @@ fn maybe_kick_worker_on_connected(
     {
         tracing::info!(
             target: "forge_workspace::team",
-            role = role.label(),
+            label = %label,
             session_id = real_session_id,
             "skipping kick on worker resume with prior progress past initial kick",
         );
@@ -836,12 +845,12 @@ fn maybe_kick_worker_on_connected(
     let target_key = SessionKey::from_session_id(real_session_id.to_owned());
     if let Err(err) = workspace.dispatch(crate::protocol::Command::Prompt {
         key: target_key,
-        text: role.initial_kick().to_owned(),
+        text: initial_kick,
         attachments: Vec::new(),
     }) {
         tracing::error!(
             target: "forge_workspace::team",
-            role = role.label(),
+            label = %label,
             error = ?err,
             "maybe_kick_worker_on_connected: dispatch failed",
         );
@@ -1477,22 +1486,83 @@ mod team_hook_tests {
     use crate::Workspace;
     use crate::protocol::Command;
     use crate::target::ProjectKey;
-    use crate::team::Role;
+    use crate::team::set_forge_team_root_for_test;
+    use std::sync::OnceLock;
 
     fn synth_lead_key(project_name: &str) -> SessionKey {
         SessionKey::from_session_id(format!("__spawn_{project_name}__"))
     }
 
+    /// One-time setup writing the canonical shipped default charters
+    /// (planner / implementer / reviewer / debugger / tester / lead)
+    /// to a shared tempdir + redirecting `forge_team_root()` to it
+    /// for the rest of the process. All tests in this module call
+    /// `ensure_test_charter_root()` before exercising the team-spawn
+    /// or kick paths.
+    fn ensure_test_charter_root() {
+        static ROOT: OnceLock<tempfile::TempDir> = OnceLock::new();
+        let dir = ROOT.get_or_init(|| {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let root = tmp.path();
+            // Seed using the shipped defaults under docs/forge-team-defaults/.
+            // `include_str!` paths are relative to THIS source file.
+            for (label, charter, kick) in [
+                (
+                    "planner",
+                    include_str!("../../../docs/forge-team-defaults/planner/charter.md"),
+                    include_str!("../../../docs/forge-team-defaults/planner/kick.md"),
+                ),
+                (
+                    "implementer",
+                    include_str!("../../../docs/forge-team-defaults/implementer/charter.md"),
+                    include_str!("../../../docs/forge-team-defaults/implementer/kick.md"),
+                ),
+                (
+                    "reviewer",
+                    include_str!("../../../docs/forge-team-defaults/reviewer/charter.md"),
+                    include_str!("../../../docs/forge-team-defaults/reviewer/kick.md"),
+                ),
+                (
+                    "debugger",
+                    include_str!("../../../docs/forge-team-defaults/debugger/charter.md"),
+                    include_str!("../../../docs/forge-team-defaults/debugger/kick.md"),
+                ),
+                (
+                    "tester",
+                    include_str!("../../../docs/forge-team-defaults/tester/charter.md"),
+                    include_str!("../../../docs/forge-team-defaults/tester/kick.md"),
+                ),
+                (
+                    "lead",
+                    include_str!("../../../docs/forge-team-defaults/lead/charter.md"),
+                    include_str!("../../../docs/forge-team-defaults/lead/kick.md"),
+                ),
+            ] {
+                let dir = root.join(label);
+                std::fs::create_dir_all(&dir).expect("create role dir");
+                std::fs::write(dir.join("charter.md"), charter).expect("write charter");
+                std::fs::write(dir.join("kick.md"), kick).expect("write kick");
+            }
+            set_forge_team_root_for_test(Some(root.to_owned()));
+            tmp
+        });
+        // The first caller initialised the override; subsequent
+        // callers just need to confirm the override is still set
+        // (defensive against test ordering rewriting it).
+        let _ = dir;
+    }
+
     /// A lead Connected for a project carrying a team config
-    /// triggers one `Command::SpawnWorker` per configured role.
+    /// triggers one `Command::SpawnWorker` per configured label.
     #[test]
     fn lead_connected_with_team_triggers_team_spawn() {
+        ensure_test_charter_root();
         let (workspace, _update_rx) = Workspace::testing_stub();
         workspace.enable_test_dispatch_intercept();
         workspace.seed_test_project_with_team(
             "proj-x",
             "/tmp/proj-x",
-            &[Role::Planner, Role::Reviewer],
+            &["planner".to_owned(), "reviewer".to_owned()],
         );
 
         on_connected_for_test(&workspace, &synth_lead_key("proj-x"), "lead-uuid");
@@ -1523,7 +1593,7 @@ mod team_hook_tests {
     fn worker_connected_does_not_trigger_team_spawn() {
         let (workspace, _update_rx) = Workspace::testing_stub();
         workspace.enable_test_dispatch_intercept();
-        workspace.seed_test_project_with_team("proj-z", "/tmp/proj-z", &[Role::Planner]);
+        workspace.seed_test_project_with_team("proj-z", "/tmp/proj-z", &["planner".to_owned()]);
 
         let worker_synth = SessionKey::from_session_id("__spawn_worker_proj-z_planner_abc__");
         on_connected_for_test(&workspace, &worker_synth, "worker-uuid");
@@ -1538,9 +1608,10 @@ mod team_hook_tests {
     /// gate trips and the trigger no-ops.
     #[test]
     fn second_lead_connected_does_not_double_spawn() {
+        ensure_test_charter_root();
         let (workspace, _update_rx) = Workspace::testing_stub();
         workspace.enable_test_dispatch_intercept();
-        workspace.seed_test_project_with_team("proj-x", "/tmp/proj-x", &[Role::Planner]);
+        workspace.seed_test_project_with_team("proj-x", "/tmp/proj-x", &["planner".to_owned()]);
 
         let lead_synth = synth_lead_key("proj-x");
 
@@ -1585,6 +1656,7 @@ mod team_hook_tests {
     /// the worker's real session_id.
     #[test]
     fn worker_connected_for_role_label_dispatches_kick_prompt() {
+        ensure_test_charter_root();
         let (workspace, _update_rx) = Workspace::testing_stub();
         workspace.enable_test_dispatch_intercept();
 
