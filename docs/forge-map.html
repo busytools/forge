@@ -854,7 +854,12 @@ chat continues here…
 
       <span class="dim">────────────────────────────────────────────────────────</span>
         <span class="dim">Busytools</span>
-        <span class="dim">├─ ●  forge       </span> <span class="dim">(personal)        now</span>
+        <span class="dim">├─ ●  forge       </span> <span class="dim">(granite)         now</span>
+        <span class="dim">  │   ├─ planner   (granite1)</span>
+        <span class="dim">  │   ├─ implementer (personal)</span>
+        <span class="dim">  │   ├─ reviewer  (subspace)</span>
+        <span class="dim">  │   ├─ debugger  (granite)</span>
+        <span class="dim">  │   └─ tester    (granite1)</span>
         <span class="dim">└─ ○  trader-cc   </span> <span class="dim">(personal)         2d</span>
               <span class="dim">no usable accounts</span>
       <span class="dim">────────────────────────────────────────────────────────</span>
@@ -869,6 +874,7 @@ chat continues here…
       </dd>
       <dt>click gate</dt><dd>Every project row downgrades to <code>Block</code> click intent while any account is non-terminal. Footer hint reads <code>⏳ loading accounts…</code> instead of the per-row spawn label. Once every account reaches Ready or Bailed, the gate lifts; rows un-dim and Enter resumes normal behavior.</dd>
       <dt>per-project pool</dt><dd>A project's pool intersects its <code>[[orgs]].accounts</code> allow-list with the set of <code>Ready</code> accounts. Projects whose pool resolves to empty (every allowed account ended in <code>Bailed</code>) render a DIM <code>no usable accounts</code> sub-row and stay unclickable even after the gate lifts.</dd>
+      <dt>per-row account chip</dt><dd>Each project row carries a trailing <code>(&lt;account&gt;)</code> chip showing the lead session's assigned account from the AssignmentPlan; team-worker rows nested under the project carry their own chips for each declared <code>team = [...]</code> label. Chip color tracks the assigned account's runtime state: DIM = Normal, STATUS_WARNING = 5h cap hit, STATUS_ERROR + <code>⚠</code> = account flipped to Bailed mid-session. Worker rows are info-only on the launchpad (selection stays on the project row).</dd>
       <dt>code</dt><dd><code>crates/forge-workspace/src/account.rs</code> (LoadingState enum + AccountStateMap.all_loaded) · <code>crates/forge-workspace/src/account_loader.rs</code> (per-account state machine) · <code>crates/forge-workspace/src/assignment_plan.rs</code> (deterministic <code>(project, label) -&gt; account</code> mapping) · <code>crates/forge-tui/src/ui/launchpad.rs</code> (chip row + effective_click_intent gate)</dd>
       <dt>recovery</dt><dd>A 30 s background poll re-runs the loading flow for Bailed accounts. When <code>claude auth status</code> flips back to logged-in, the recovery poll transitions the account Bailed -&gt; Loading -&gt; Ready (or back to Bailed) and recomputes the assignment plan with a frozen overlay - existing sessions keep their boot-time account, only NEW sessions pick up the recovered account.</dd>
     </dl>
