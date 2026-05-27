@@ -279,10 +279,7 @@ impl WorkerFacade for ProdWorkerFacade {
             return WorkerIdentity { name: caller.as_str().to_owned(), org: String::new() };
         };
         if cp.is_lead {
-            return WorkerIdentity {
-                name: cp.project_key.as_str().to_owned(),
-                org: "Personal".to_owned(),
-            };
+            return WorkerIdentity { name: LEAD_LABEL.to_owned(), org: "Personal".to_owned() };
         }
         let label = ws
             .list_live_workers(&cp.project_key)
@@ -544,10 +541,7 @@ impl WorkerFacade for MockWorkerFacade {
             return WorkerIdentity { name: caller.as_str().to_owned(), org: String::new() };
         };
         if cp.is_lead {
-            return WorkerIdentity {
-                name: cp.project_key.as_str().to_owned(),
-                org: "Personal".to_owned(),
-            };
+            return WorkerIdentity { name: LEAD_LABEL.to_owned(), org: "Personal".to_owned() };
         }
         let label = self.workers.lock().get(cp.project_key.as_str()).and_then(|ws| {
             ws.iter().find(|w| w.session_id == caller.as_str()).map(|w| w.label.clone())
@@ -739,7 +733,13 @@ mod mock_tests {
     }
 
     #[test]
-    fn caller_identity_lead_returns_project_key_and_personal() {
+    fn caller_identity_lead_returns_lead_label_and_personal() {
+        // Lead callers stamp the symbolic `lead` label into the
+        // wire envelope's `sender_name`, not the sanitized project
+        // path - workers address the lead via `workers__tell("lead",
+        // ...)`, so the reverse direction must match for the chat
+        // surfaces to render `▶ Message lead` instead of the
+        // hyphenated env-key path.
         let mock = MockWorkerFacade::new();
         let lead = SessionKey::from_session_id("lead-uuid");
         mock.callers.lock().insert(
@@ -747,7 +747,7 @@ mod mock_tests {
             CallerProject { project_key: crate::ProjectKey::new("forge"), is_lead: true },
         );
         let id = mock.caller_identity(&lead);
-        assert_eq!(id.name, "forge");
+        assert_eq!(id.name, LEAD_LABEL);
         assert_eq!(id.org, "Personal");
     }
 
