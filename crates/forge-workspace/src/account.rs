@@ -109,6 +109,17 @@ pub(crate) struct AccountState {
     /// from `consecutive_failures` so a real `RateLimited` series
     /// doesn't drive the auth-recovery clear (and vice versa).
     pub consecutive_unauthorized: u32,
+    /// One-shot arming flag for the `has_just_cleared_cap_window`
+    /// scheduler hook. Without it, a stale-reset snapshot paired with
+    /// sustained probe failure would re-trigger the override every
+    /// poll cycle, defeating the exponential backoff schedule -
+    /// forge would hammer Anthropic's `/api/oauth/usage` endpoint once
+    /// per minute through a multi-hour outage instead of backing off.
+    /// `set_usage` arms it (a fresh snapshot earns one override
+    /// attempt once its `resets_at` passes); `disarm_override` clears
+    /// it after the scheduler fires an override. False until the
+    /// first successful probe lands a snapshot.
+    pub override_armed: bool,
 }
 
 /// Number of consecutive `Unauthorized` / `Expired` probe results
@@ -160,6 +171,7 @@ impl AccountStateMap {
                     next_probe_at: None,
                     consecutive_failures: 0,
                     consecutive_unauthorized: 0,
+                    override_armed: false,
                 },
             );
         }
@@ -228,6 +240,24 @@ impl AccountStateMap {
             state.next_probe_at = None;
             state.consecutive_failures = 0;
             state.consecutive_unauthorized = 0;
+            // Arm the scheduler-hook override: this fresh snapshot
+            // earns ONE probe attempt once its `resets_at` passes.
+            // Without re-arming, the hook stays disarmed forever after
+            // its first fire and the stale-cache bar never gets a fresh
+            // probe even on a healthy account.
+            state.override_armed = true;
+        }
+    }
+
+    /// Disarm the scheduler hook for `key` after firing an override
+    /// probe attempt. One-shot semantics: the hook fires once per
+    /// arming (i.e. once per fresh snapshot). Subsequent stale-reset
+    /// state must wait for the next successful probe (which re-arms
+    /// via `set_usage`) or until the existing backoff timer
+    /// (`next_probe_at`) elapses.
+    pub fn disarm_override(&mut self, key: &AccountKey) {
+        if let Some(state) = self.by_key.get_mut(key) {
+            state.override_armed = false;
         }
     }
 
@@ -299,17 +329,26 @@ impl AccountStateMap {
 
     /// `true` when at least one cached window shows the account just
     /// transitioned out of its cap (utilization at-or-above 100%,
-    /// `resets_at` now in the past). The scheduler ORs this with
-    /// `should_probe_now` so a fresh probe lands on the next poll
-    /// cycle after the reset moment, instead of waiting through the
-    /// remainder of an active backoff window. Without the hook, an
-    /// account 429'd with a multi-hour `Retry-After` keeps painting
-    /// the stale "100%" bar for hours past the actual reset because
-    /// the next probe is gated until the backoff timer elapses.
+    /// `resets_at` now in the past) AND the override hook is armed.
+    /// The scheduler ORs this with `should_probe_now` so a fresh probe
+    /// lands on the next poll cycle after the reset moment, instead of
+    /// waiting through the remainder of an active backoff window.
+    /// Without the hook, an account 429'd with a multi-hour
+    /// `Retry-After` keeps painting the stale "100%" bar for hours
+    /// past the actual reset because the next probe is gated until the
+    /// backoff timer elapses.
+    ///
+    /// The `override_armed` gate enforces one-shot semantics: each
+    /// successful probe arms the hook exactly once, and the scheduler
+    /// disarms it after firing. A persistently failing probe series
+    /// won't keep tripping the override every cycle.
     pub fn has_just_cleared_cap_window(&self, key: &AccountKey) -> bool {
         let Some(state) = self.by_key.get(key) else {
             return false;
         };
+        if !state.override_armed {
+            return false;
+        }
         let Some(usage) = state.usage.as_ref() else {
             return false;
         };
@@ -1035,6 +1074,73 @@ mod tests {
         let k = AccountKey("Granite".to_owned());
         map.set_usage(&k, snap);
         assert!(!map.has_just_cleared_cap_window(&k));
+    }
+
+    #[test]
+    fn override_disarms_after_firing_and_does_not_refire_until_rearmed() {
+        // Setup mirrors the production sustained-failure shape: a
+        // stale cached snapshot (util=100, resets_at in the past)
+        // plus an active backoff timer from a recent 429. Without
+        // the disarm gate, every poll cycle would re-fire the hook
+        // and hammer Anthropic through the entire backoff window.
+        let past = SystemTime::now() - std::time::Duration::from_secs(60);
+        let stale = snapshot_with_resets(Some((100.0, Some(past))), None);
+        let mut map = AccountStateMap::new(&[make_account("Granite")]);
+        let k = AccountKey("Granite".to_owned());
+        map.set_usage(&k, stale);
+        // Push next_probe_at into the future so should_probe_now is
+        // false: this is the "in backoff" state the scheduler hook is
+        // meant to override.
+        map.set_last_error(
+            &k,
+            UsageFetchStatus::RateLimited,
+            Some(std::time::Duration::from_secs(3000)),
+        );
+        assert!(!map.should_probe_now(&k), "backoff active");
+        assert!(map.has_just_cleared_cap_window(&k), "hook fires while armed");
+
+        // Scheduler picks up the account via the hook + fires its
+        // override probe; disarm runs.
+        map.disarm_override(&k);
+        assert!(!map.has_just_cleared_cap_window(&k), "disarmed; no second override this cycle");
+        assert!(!map.should_probe_now(&k), "backoff still active");
+        // Combined scheduler signal: neither predicate fires - the
+        // account waits for the backoff timer to elapse.
+        assert!(
+            !map.should_probe_now(&k) && !map.has_just_cleared_cap_window(&k),
+            "scheduler must respect backoff once the override has been consumed",
+        );
+    }
+
+    #[test]
+    fn fresh_set_usage_rearms_override_for_next_reset_boundary() {
+        // After the override fires + disarms once, a NEW successful
+        // probe (set_usage) must re-arm the hook so future stale-reset
+        // boundaries can still trigger their one-shot override.
+        let past = SystemTime::now() - std::time::Duration::from_secs(60);
+        let stale = snapshot_with_resets(Some((100.0, Some(past))), None);
+        let mut map = AccountStateMap::new(&[make_account("Granite")]);
+        let k = AccountKey("Granite".to_owned());
+        map.set_usage(&k, stale.clone());
+        map.disarm_override(&k);
+        assert!(!map.has_just_cleared_cap_window(&k), "disarmed");
+
+        // A fresh probe lands - even if the snapshot is STILL
+        // stale-reset, the hook re-arms because set_usage represents
+        // a brand-new probe attempt's success.
+        map.set_usage(&k, stale);
+        assert!(map.has_just_cleared_cap_window(&k), "fresh set_usage re-arms the hook");
+    }
+
+    #[test]
+    fn override_not_armed_on_construction_so_hook_skips_cold_accounts() {
+        // Without an arming step, a brand-new AccountStateMap entry
+        // must NOT fire the hook even if some hypothetical stale
+        // snapshot were planted manually. Cold accounts are picked up
+        // via cold-cache `should_probe_now == true`, not the override.
+        let map = AccountStateMap::new(&[make_account("Granite")]);
+        let k = AccountKey("Granite".to_owned());
+        assert!(!map.has_just_cleared_cap_window(&k), "no arm = no override");
     }
 
     #[test]
