@@ -49,21 +49,24 @@ pub fn render_diff(diff: &model::Diff, width: u16) -> Vec<Line<'static>> {
 
         for change in hunk.iter_changes() {
             let value = change.as_str().unwrap_or("").trim_end_matches('\n');
-            let (marker, marker_style, line_number) = match change.tag() {
+            let (marker, marker_style, line_number, row_bg) = match change.tag() {
                 similar::ChangeTag::Delete => (
                     "-",
                     Style::default().fg(Color::Red),
                     change.old_index().map(|index| index + 1),
+                    Some(theme::DIFF_DELETION_BG),
                 ),
                 similar::ChangeTag::Insert => (
                     "+",
                     Style::default().fg(Color::Green),
                     change.new_index().map(|index| index + 1),
+                    Some(theme::DIFF_ADDITION_BG),
                 ),
                 similar::ChangeTag::Equal => (
                     " ",
                     Style::default().fg(theme::DIM),
                     change.new_index().map(|index| index + 1),
+                    None,
                 ),
             };
 
@@ -94,6 +97,7 @@ pub fn render_diff(diff: &model::Diff, width: u16) -> Vec<Line<'static>> {
                 leading_indent,
                 &content_chunks,
                 content_width,
+                row_bg,
             ));
         }
     }
@@ -156,7 +160,10 @@ pub fn render_raw_unified_diff(text: &str) -> Vec<Line<'static>> {
 }
 
 fn render_raw_diff_line(line: &str) -> Line<'static> {
-    let style = if line.starts_with("diff --git ")
+    // File-header lines stay un-tinted so the metadata band reads
+    // distinct from the actual diff payload. Body `+` / `-` lines pick
+    // up the GitHub-style row tint via the theme constants.
+    let (style, row_bg) = if line.starts_with("diff --git ")
         || line.starts_with("index ")
         || line.starts_with("new file mode ")
         || line.starts_with("deleted file mode ")
@@ -164,24 +171,28 @@ fn render_raw_diff_line(line: &str) -> Line<'static> {
         || line.starts_with("rename from ")
         || line.starts_with("rename to ")
     {
-        Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+        (Style::default().fg(Color::White).add_modifier(Modifier::BOLD), None)
     } else if line.starts_with("@@") {
-        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+        (Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD), None)
     } else if line.starts_with("+++ ") {
-        Style::default().fg(Color::Green)
+        (Style::default().fg(Color::Green), None)
     } else if line.starts_with("--- ") {
-        Style::default().fg(Color::Red)
+        (Style::default().fg(Color::Red), None)
     } else if line.starts_with('+') {
-        Style::default().fg(Color::Green)
+        (Style::default().fg(Color::Green), Some(theme::DIFF_ADDITION_BG))
     } else if line.starts_with('-') {
-        Style::default().fg(Color::Red)
+        (Style::default().fg(Color::Red), Some(theme::DIFF_DELETION_BG))
     } else if line.starts_with('\\') {
-        Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC)
+        (Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC), None)
     } else {
-        Style::default().fg(theme::DIM)
+        (Style::default().fg(theme::DIM), None)
     };
 
-    Line::from(Span::styled(line.to_owned(), style))
+    let mut rendered = Line::from(Span::styled(line.to_owned(), style));
+    if let Some(bg) = row_bg {
+        rendered = rendered.style(Style::default().bg(bg));
+    }
+    rendered
 }
 
 #[derive(Clone, Copy)]
@@ -237,6 +248,7 @@ fn render_wrapped_diff_row(
     leading_indent: &str,
     content_chunks: &[StyledChunk],
     content_width: usize,
+    row_bg: Option<Color>,
 ) -> Vec<Line<'static>> {
     let number_style = Style::default().fg(theme::DIM);
     let leading_indent_width = display_width(leading_indent);
@@ -272,7 +284,11 @@ fn render_wrapped_diff_row(
                 spans.push(Span::styled(leading_indent.to_owned(), marker_style));
             }
             spans.extend(content_line.spans);
-            Line::from(spans)
+            let mut line = Line::from(spans);
+            if let Some(bg) = row_bg {
+                line = line.style(Style::default().bg(bg));
+            }
+            line
         })
         .collect()
 }
@@ -506,6 +522,47 @@ mod tests {
             body_colors.len() >= 2,
             "rust insert line should expose >=2 distinct fg colors (syntect-tokenized), got: {body_colors:?}"
         );
+    }
+
+    /// Each row's line-level background carries the GitHub-style
+    /// added / deleted tint - insert lines fill the row with
+    /// `DIFF_ADDITION_BG`, delete lines with `DIFF_DELETION_BG`,
+    /// context rows stay un-tinted. Covers both render paths
+    /// (`render_diff` for the Edit-tool inline shape and
+    /// `render_raw_unified_diff` for the slash-command path).
+    #[test]
+    fn render_diff_tints_change_rows_with_github_bg() {
+        let lines = render_diff(
+            &model::Diff::new("src/lib.rs", "fn one() {}\nfn TWO() {}\nfn three() {}\n".to_owned())
+                .old_text(Some("fn one() {}\nfn two() {}\nfn three() {}\n")),
+            80,
+        );
+        let line_for = |needle: &str| {
+            lines
+                .iter()
+                .find(|l| l.spans.iter().any(|s| s.content.contains(needle)))
+                .unwrap_or_else(|| panic!("no row containing `{needle}`"))
+        };
+        let insert_line = line_for("TWO");
+        let delete_line = line_for("two");
+        let context_line = line_for("one");
+        assert_eq!(insert_line.style.bg, Some(theme::DIFF_ADDITION_BG));
+        assert_eq!(delete_line.style.bg, Some(theme::DIFF_DELETION_BG));
+        assert!(context_line.style.bg.is_none(), "context row stays un-tinted: {context_line:?}");
+    }
+
+    #[test]
+    fn render_raw_diff_line_tints_body_change_rows_not_headers() {
+        let insert = render_raw_diff_line("+ added line");
+        let delete = render_raw_diff_line("- removed line");
+        let context = render_raw_diff_line(" context line");
+        let hunk = render_raw_diff_line("@@ -1,3 +1,3 @@");
+        let file_header = render_raw_diff_line("+++ b/src/lib.rs");
+        assert_eq!(insert.style.bg, Some(theme::DIFF_ADDITION_BG));
+        assert_eq!(delete.style.bg, Some(theme::DIFF_DELETION_BG));
+        assert!(context.style.bg.is_none());
+        assert!(hunk.style.bg.is_none(), "hunk header stays un-tinted");
+        assert!(file_header.style.bg.is_none(), "+++ file header stays un-tinted");
     }
 
     /// Context lines (unchanged equal rows) must keep the DIM modifier
