@@ -392,6 +392,13 @@ impl Workspace {
         let open_sessions: std::collections::HashSet<SessionKey> =
             self.pool.lock().keys().cloned().collect();
 
+        // One catalog acquire for the whole walk - the loop body is
+        // a HashMap lookup + bounded cloning over owned session info
+        // and never re-enters the catalog, so holding the lock for
+        // the duration is cheap. The prior per-iteration
+        // acquire/drop showed up as the dominant hot spot in
+        // `ui::render` under projects with ~14 entries.
+        let catalog = self.catalog.lock();
         let mut views = Vec::with_capacity(self.config.projects.len());
         for project in &self.config.projects {
             let key =
@@ -399,7 +406,6 @@ impl Workspace {
                     Some(&project.path.to_string_lossy()),
                 ));
 
-            let catalog = self.catalog.lock();
             let sessions: Vec<SessionView> = catalog
                 .get(&key)
                 .map(|entries| {
@@ -419,7 +425,6 @@ impl Workspace {
                         .collect()
                 })
                 .unwrap_or_default();
-            drop(catalog);
 
             views.push(ProjectView {
                 key,
