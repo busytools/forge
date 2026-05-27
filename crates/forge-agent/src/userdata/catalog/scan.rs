@@ -593,7 +593,13 @@ fn read_session_lite(path: &Path) -> Option<LiteSessionFile> {
 fn find_session_tag<R: BufRead>(reader: R) -> Option<String> {
     let mut last_tag: Option<String> = None;
     for line in reader.lines() {
-        let Ok(line) = line else { break };
+        let line = match line {
+            Ok(l) => l,
+            Err(e) => {
+                tracing::debug!(target: crate::logging::targets::CATALOG_SCAN, error = %e, step = "tag_scan_line", "lite-read tag-scan line read failed; ending scan with last seen tag");
+                break;
+            }
+        };
         if !line.starts_with("{\"type\":\"tag\"") {
             continue;
         }
