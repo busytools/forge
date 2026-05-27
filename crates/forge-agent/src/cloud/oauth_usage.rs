@@ -3,9 +3,10 @@
 //! Fetches per-account rate-limit utilisation from
 //! `https://api.anthropic.com/api/oauth/usage` using the OAuth
 //! bearer credentials resolved by
-//! [`super::oauth_credentials::load_oauth_credentials`] (file or —
-//! on macOS — keychain). The `Authorization` header never escapes
-//! this module.
+//! [`super::oauth_credentials::load_oauth_credentials`] (macOS
+//! keychain only - the file source was removed in #237-B; see the
+//! module docs in `oauth_credentials.rs` for the rationale). The
+//! `Authorization` header never escapes this module.
 //!
 //! The response shape mirrors the live API as of 2026-04, exposed as
 //! plain optional fields. Timestamp parsing is left to consumers
