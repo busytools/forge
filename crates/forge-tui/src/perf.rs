@@ -426,7 +426,10 @@ mod enabled {
             // Cap sub-events + `frame_total` (parent, always pushed)
             // = FRAME_BUFFER_CAP + 1 entries.
             assert_eq!(metrics.len(), FRAME_BUFFER_CAP + 1);
-            assert_eq!(metrics.iter().filter(|m| *m == "msg::cache_miss").count(), FRAME_BUFFER_CAP);
+            assert_eq!(
+                metrics.iter().filter(|m| *m == "msg::cache_miss").count(),
+                FRAME_BUFFER_CAP
+            );
             assert_eq!(metrics.iter().filter(|m| *m == "frame_total").count(), 1);
         }
 
@@ -434,7 +437,9 @@ mod enabled {
         fn fast_frame_discards_buffered_samples() {
             // Healthy frame: buffer accumulates a few samples, then
             // `frame_total` arrives below the slow threshold; nothing
-            // gets written beyond the per-run `run_started` header.
+            // gets written beyond the per-run `run_started` header
+            // AND the buffer empties so leftover samples can't leak
+            // into the next slow-frame flush.
             reset_thread_locals();
             let tmp = tempfile::NamedTempFile::new().unwrap();
             let _logger = PerfLogger::open(tmp.path()).expect("perf log opens");
@@ -456,6 +461,11 @@ mod enabled {
             // Only the run_started header lands; no per-sample
             // entries.
             assert_eq!(sample_kinds, vec!["run_started".to_owned()]);
+            // And the buffer itself empties so a subsequent slow
+            // frame can't pick up stale entries from this one. Pins
+            // the `buf.clear()` branch against an accidental swap to
+            // a partial drain.
+            FRAME_BUFFER.with(|b| assert!(b.borrow().is_empty()));
         }
     }
 }
