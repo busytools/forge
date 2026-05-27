@@ -30,7 +30,7 @@ pub const SUBAGENT_TOKEN: Color = Color::LightBlue;
 // Values match GitHub's `--bgColor-success-muted` / `--bgColor-danger-muted`
 // pre-composited against the dark-default canvas (rgba(46, 160, 67, 0.15)
 // and rgba(248, 81, 73, 0.15) over #0d1117 respectively, with a small
-// terminal-visibility bump). The prior values were too saturated — the
+// terminal-visibility bump). The prior values were too saturated - the
 // red especially read as a vivid danger flash rather than a quiet
 // "deletion" surface; the green was less egregious but still bright.
 pub const DIFF_ADDITION_BG: Color = Color::Rgb(15, 49, 30);
