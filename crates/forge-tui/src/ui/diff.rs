@@ -266,6 +266,18 @@ fn render_wrapped_diff_row(
     );
     let continuation_prefix = " ".repeat(line_number_width + 5);
 
+    // Total row width to fill when `row_bg` is set. Mirrors the
+    // diff_overlay.rs `build_split_half` pattern: ratatui's
+    // `Line.style.bg` only paints behind the actual char cells the
+    // spans emit; the gap between the last content char and the
+    // right edge of the row stays terminal-default. To make the
+    // tint visually extend across the whole row, we (a) propagate
+    // `row_bg` onto every existing span that doesn't already carry
+    // a bg, and (b) push a trailing bg-styled space-pad span sized
+    // to the remaining width. Equal/context rows (`row_bg = None`)
+    // skip both steps and render exactly as before.
+    let total_row_width = line_number_width + 5 + content_width;
+
     content_lines
         .into_iter()
         .enumerate()
@@ -284,6 +296,27 @@ fn render_wrapped_diff_row(
                 spans.push(Span::styled(leading_indent.to_owned(), marker_style));
             }
             spans.extend(content_line.spans);
+            if let Some(bg) = row_bg {
+                // Propagate the row bg onto every span that doesn't
+                // already carry a bg. This fills the inter-span gaps
+                // (e.g. between the line-number column's default-bg
+                // gutter and the syntect-highlighted content) which
+                // Line.style.bg alone wouldn't reach.
+                for span in &mut spans {
+                    if span.style.bg.is_none() {
+                        span.style = span.style.bg(bg);
+                    }
+                }
+                // Pad to full row width so the bg tint extends to the
+                // right edge.
+                let used: usize = spans.iter().map(Span::width).sum();
+                if used < total_row_width {
+                    spans.push(Span::styled(
+                        " ".repeat(total_row_width - used),
+                        Style::default().bg(bg),
+                    ));
+                }
+            }
             let mut line = Line::from(spans);
             if let Some(bg) = row_bg {
                 line = line.style(Style::default().bg(bg));
@@ -549,6 +582,46 @@ mod tests {
         assert_eq!(insert_line.style.bg, Some(theme::DIFF_ADDITION_BG));
         assert_eq!(delete_line.style.bg, Some(theme::DIFF_DELETION_BG));
         assert!(context_line.style.bg.is_none(), "context row stays un-tinted: {context_line:?}");
+    }
+
+    /// #211 regression: when row_bg is set, the row must be padded to
+    /// full panel width with a trailing bg-styled space span so the
+    /// tint visually extends across the whole row (ratatui's
+    /// `Line.style.bg` alone only paints behind the actual span
+    /// chars; the right-of-content gap stays terminal-default).
+    /// Pre-#211, the bg was set on Line.style but no padding ran, so
+    /// the user saw a thin sliver of tint behind the text instead of
+    /// a full GitHub-style row band.
+    #[test]
+    fn render_diff_pads_tinted_rows_to_full_panel_width() {
+        let width: u16 = 80;
+        let lines = render_diff(
+            &model::Diff::new("src/lib.rs", "fn TWO() {}\n".to_owned())
+                .old_text(Some("fn two() {}\n")),
+            width,
+        );
+        let usize_width = usize::from(width);
+
+        let line_for = |needle: &str| {
+            lines
+                .iter()
+                .find(|l| l.spans.iter().any(|s| s.content.contains(needle)))
+                .unwrap_or_else(|| panic!("no row containing `{needle}`"))
+        };
+
+        for needle in ["TWO", "two"] {
+            let row = line_for(needle);
+            let total_width: usize = row.spans.iter().map(Span::width).sum();
+            assert_eq!(
+                total_width, usize_width,
+                "tinted {needle} row must pad to full panel width ({usize_width}); got {total_width} via {row:?}"
+            );
+            let trailing = row.spans.last().expect("trailing pad span");
+            assert!(
+                trailing.style.bg.is_some(),
+                "trailing pad span must carry the row bg so the tint extends to the right edge"
+            );
+        }
     }
 
     #[test]
