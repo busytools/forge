@@ -1197,8 +1197,15 @@ fn truncate_path_front(path: &str, max_width: usize) -> String {
     if path.chars().count() <= max_width {
         return path.to_owned();
     }
-    // Reserve 3 cols for the leading `...` ellipsis marker.
-    let keep = max_width.saturating_sub(3);
+    // When the budget is too small to fit the 3-char `...` marker,
+    // just take the last `max_width` chars so the output still
+    // respects `max_width`. Skipping the marker is the lesser harm
+    // versus overflowing the rail width.
+    if max_width < 3 {
+        let skip = path.chars().count().saturating_sub(max_width);
+        return path.chars().skip(skip).collect();
+    }
+    let keep = max_width - 3;
     let mut chars = path.chars();
     let skip = path.chars().count().saturating_sub(keep);
     for _ in 0..skip {
