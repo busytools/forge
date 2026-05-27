@@ -84,6 +84,13 @@ pub struct Workspace {
     /// Account picker state. Updated on every spawn; refreshed by
     /// the in-memory usage poller.
     accounts: Mutex<AccountStateMap>,
+    /// Deterministic per-session account assignment. `None` until the
+    /// boot-time loading tasks reach `all_loaded()`; populated by
+    /// `recompute_plan_if_ready`. Spawn paths consult this for
+    /// CLAUDE_CONFIG_DIR selection; the launchpad gates clickable
+    /// project rows on it being `Some` AND the project having a
+    /// non-empty pool. See `crate::assignment_plan`.
+    assignment_plan: Mutex<Option<crate::assignment_plan::AssignmentPlan>>,
     /// Fan-in [`SessionUpdate`] sender. Cloned and handed to TUI-side
     /// modules (slash executors, plugin install, service-status check)
     /// via [`Self::update_sender`] so they can emit presentation
@@ -338,6 +345,7 @@ impl Workspace {
             catalog: Mutex::new(catalog),
             pool: Mutex::new(HashMap::new()),
             accounts: Mutex::new(accounts),
+            assignment_plan: Mutex::new(None),
             update_tx,
             update_rx_slot: Mutex::new(Some(update_rx)),
             command_senders: Mutex::new(HashMap::new()),
@@ -823,6 +831,67 @@ impl Workspace {
     /// so only intentional callers reach in.
     pub(crate) fn account_states(&self) -> &Mutex<AccountStateMap> {
         &self.accounts
+    }
+
+    /// Crate-internal accessor for the assignment plan. Returns the
+    /// `Mutex<Option<...>>` so callers (the launchpad render path
+    /// and the spawn-path integration in §2.5) can take the lock
+    /// briefly without paying for an Option clone. `None` means
+    /// the boot-time loading tasks haven't all reached terminal
+    /// yet; `Some` means the plan is live and the launchpad can
+    /// un-dim project rows.
+    // Callers land in Sections 2.5 / 3 / 4 of #246. Temporary
+    // `dead_code` allow until those commits land within the same PR.
+    #[allow(dead_code)]
+    pub(crate) fn assignment_plan(&self) -> &Mutex<Option<crate::assignment_plan::AssignmentPlan>> {
+        &self.assignment_plan
+    }
+
+    /// Recompute the `AssignmentPlan` from the current ready-account
+    /// set when every account has reached a terminal `LoadingState`.
+    /// No-op when accounts are still loading - the boot-time
+    /// `account_loader` task re-calls this after each state
+    /// transition, so the plan ends up populated on the first
+    /// `all_loaded`-true call. Subsequent transitions (e.g., a
+    /// runtime 401 flipping a Ready account to Bailed) also trigger
+    /// a recompute via the same path; Section 4.4 of #246 swaps
+    /// this for a frozen-overlay variant that preserves existing
+    /// assignments while extending the plan with newly-recovered
+    /// accounts.
+    pub(crate) fn recompute_plan_if_ready(&self) {
+        use crate::account::LoadingState;
+        use crate::assignment_plan::{ProjectInput, compute_plan};
+
+        let ready_accounts: Vec<AccountKey> = {
+            let accounts = self.accounts.lock();
+            if !accounts.all_loaded() {
+                return;
+            }
+            accounts
+                .by_key
+                .iter()
+                .filter(|(_, s)| matches!(s.loading, LoadingState::Ready))
+                .map(|(k, _)| k.clone())
+                .collect()
+        };
+
+        let projects: Vec<ProjectInput> = self
+            .config
+            .projects
+            .iter()
+            .map(|p| ProjectInput {
+                key: ProjectKey::new(
+                    forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+                        &p.path.to_string_lossy(),
+                    )),
+                ),
+                accounts: p.accounts.clone(),
+                team: p.team.clone(),
+            })
+            .collect();
+
+        let plan = compute_plan(&ready_accounts, &projects);
+        *self.assignment_plan.lock() = Some(plan);
     }
 
     /// Spawn one boot-time loading task per `[[accounts]]` entry in
@@ -2952,6 +3021,7 @@ impl Workspace {
             catalog: Mutex::new(HashMap::new()),
             pool: Mutex::new(HashMap::new()),
             accounts: Mutex::new(AccountStateMap::empty_for_test()),
+            assignment_plan: Mutex::new(None),
             update_tx,
             update_rx_slot: Mutex::new(None),
             command_senders: Mutex::new(HashMap::new()),

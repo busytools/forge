@@ -77,6 +77,7 @@ pub async fn run_account_loading(
                     }
                 };
                 workspace.account_states().lock().set_usage(&account_key, snapshot);
+                workspace.recompute_plan_if_ready();
                 tracing::info!(
                     target: "forge_workspace::account_loader",
                     account = %account_key.0,
@@ -121,6 +122,7 @@ pub async fn run_account_loading(
                             .account_states()
                             .lock()
                             .set_loading(&account_key, LoadingState::Bailed);
+                        workspace.recompute_plan_if_ready();
                         return;
                     }
                 }
