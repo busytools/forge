@@ -514,24 +514,30 @@ impl Workspace {
             }
         }
 
-        // Resolve the project's pinned `accounts = [...]` for the
-        // target. Project-rooted targets read it directly off the
-        // matching `LoadedProject`; session-id targets look up the
-        // originating project via catalog cwd → `LoadedProject.path`
-        // match so a resumed session honours its project's pin. The
-        // pin is required at the config layer (load fails otherwise),
-        // so a target that resolves to a known project always carries
-        // a non-empty list.
-        let project_account_pin = self.project_accounts_for(&target);
-
-        // Pick the account with the most usage budget remaining
-        // within the pinned subset. Unknown-usage accounts (cold
-        // cache, fetch failed) sort first so the picker forces data
-        // acquisition. No fallback outside the pin.
-        let (account_key, account_dir) = {
-            let accounts = self.accounts.lock();
-            accounts.pick_for_project(&project_account_pin)
-        };
+        // Resolve which account this spawn lands under. Two paths:
+        //
+        // 1. AssignmentPlan lookup (preferred, deterministic): when
+        //    the boot-time loading tasks have populated the plan
+        //    AND we can derive (project_key, session_label) from
+        //    target + spawn_key, look up the assignment directly.
+        //    Lead sessions use label = "lead"; worker sessions look
+        //    up their WorkerEntry in `live_workers` (which
+        //    `handle_spawn_worker` inserted before reaching here)
+        //    and read its label.
+        //
+        // 2. Round-robin fallback: pick_for_project. Used when the
+        //    plan isn't populated yet (boot-time spawn before
+        //    all_loaded), the label isn't in the plan (an adhoc
+        //    worker spawned before `extend_plan_for_adhoc_worker`
+        //    fires), or the target couldn't be resolved to a known
+        //    project. Preserves the pre-#246 behaviour for cold-
+        //    boot and unforeseen paths.
+        let (account_key, account_dir) =
+            self.plan_assignment(&target, spawn_key.as_ref()).unwrap_or_else(|| {
+                let project_account_pin = self.project_accounts_for(&target);
+                let accounts = self.accounts.lock();
+                accounts.pick_for_project(&project_account_pin)
+            });
 
         // Slow path: spawn fresh Agent bound to the picked account's
         // config_dir. The Agent stores it as a typed field; every
@@ -845,6 +851,119 @@ impl Workspace {
     #[allow(dead_code)]
     pub(crate) fn assignment_plan(&self) -> &Mutex<Option<crate::assignment_plan::AssignmentPlan>> {
         &self.assignment_plan
+    }
+
+    /// Look up the deterministic account assignment for a spawn
+    /// target. Returns `(AccountKey, config_dir)` when:
+    /// - the assignment plan is populated (`Some`), AND
+    /// - the spawn resolves to a known (project_key, session_label)
+    ///   pair, AND
+    /// - the plan has an entry for that pair.
+    ///
+    /// Returns `None` for any miss so the caller falls back to the
+    /// pre-#246 round-robin (`pick_for_project`). This keeps boot-
+    /// time spawns (plan not yet populated) working and absorbs
+    /// edge cases like adhoc workers spawned before
+    /// `extend_plan_for_adhoc_worker` runs.
+    pub(crate) fn plan_assignment(
+        &self,
+        target: &SessionTarget,
+        spawn_key: Option<&SessionKey>,
+    ) -> Option<(AccountKey, std::path::PathBuf)> {
+        let (project_key, label) = self.plan_lookup_keys(target, spawn_key)?;
+        let plan_guard = self.assignment_plan.lock();
+        let plan = plan_guard.as_ref()?;
+        let account_key = plan.lookup(&project_key, &label)?.clone();
+        drop(plan_guard);
+        let accounts = self.accounts.lock();
+        let dir = accounts.config_dir(&account_key)?.clone();
+        Some((account_key, dir))
+    }
+
+    /// Derive `(project_key, session_label)` from a spawn target +
+    /// optional synth spawn key.
+    ///
+    /// - Worker spawns (`spawn_key` points at an existing
+    ///   `WorkerEntry` in `live_workers`): the entry's
+    ///   `(project_key, label)` is the answer. This is the path
+    ///   `handle_spawn_worker` -> `get_agent_handle_with_spawn_key`
+    ///   takes after inserting the WorkerEntry as `Spawning`.
+    /// - Lead spawns (no spawn_key or a non-worker synth key):
+    ///   `label = "lead"`; `project_key` derives from the target.
+    /// - Session-id targets where the resumed session has no
+    ///   recoverable project mapping: returns `None` so the caller
+    ///   falls back to round-robin.
+    fn plan_lookup_keys(
+        &self,
+        target: &SessionTarget,
+        spawn_key: Option<&SessionKey>,
+    ) -> Option<(ProjectKey, String)> {
+        if let Some(key) = spawn_key
+            && let Some(pair) = self.worker_label_for_spawn_key(key)
+        {
+            return Some(pair);
+        }
+        let project_key = self.target_to_project_key(target)?;
+        Some((project_key, "lead".to_owned()))
+    }
+
+    /// Walk `live_workers` looking for an entry whose `session_key`
+    /// matches `spawn_key`. The map has bounded size in practice
+    /// (per-project worker counts are small), so an O(N*M) walk is
+    /// fine - the alternative would be a second index keyed by
+    /// session_key, which adds maintenance burden for marginal gain.
+    fn worker_label_for_spawn_key(&self, spawn_key: &SessionKey) -> Option<(ProjectKey, String)> {
+        let workers = self.live_workers.lock();
+        for (project_key, entries) in workers.iter() {
+            for entry in entries {
+                if &entry.session_key == spawn_key {
+                    return Some((project_key.clone(), entry.label.clone()));
+                }
+            }
+        }
+        None
+    }
+
+    /// Resolve a `SessionTarget` to its on-disk-sanitised project
+    /// key. Returns `None` for `Session(...)` targets when the
+    /// catalog can't map the session's cwd back to a known project
+    /// (e.g., a session whose cwd has since changed).
+    fn target_to_project_key(&self, target: &SessionTarget) -> Option<ProjectKey> {
+        let project_key_for = |path: &std::path::Path| -> ProjectKey {
+            ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+                &path.to_string_lossy(),
+            )))
+        };
+        match target {
+            SessionTarget::Default => Some(project_key_for(&self.config.default_project().path)),
+            SessionTarget::Named(name) => {
+                self.find_project_by_name(name).ok().map(|p| project_key_for(&p.path))
+            }
+            SessionTarget::FreshInProject { project_key, .. } => Some(project_key.clone()),
+            SessionTarget::Session(key) => {
+                let cwd = self.session_cwd_for(key)?;
+                let cwd_path = std::path::PathBuf::from(&cwd);
+                self.config
+                    .projects
+                    .iter()
+                    .find(|p| p.path == cwd_path)
+                    .map(|p| project_key_for(&p.path))
+            }
+        }
+    }
+
+    /// Extend the assignment plan with a new adhoc worker. Called
+    /// from `handle_spawn_worker` (Section 2.5 of #246) so workers
+    /// spawned via `workers__spawn` are assigned through the same
+    /// plan-driven rotation as boot-time team members. No-op when
+    /// the plan isn't populated yet (boot still in flight) - the
+    /// fallback `pick_for_project` path takes over in that case.
+    pub(crate) fn extend_plan_for_adhoc_worker(&self, project_key: &ProjectKey, label: &str) {
+        let mut plan_guard = self.assignment_plan.lock();
+        let Some(plan) = plan_guard.as_mut() else {
+            return;
+        };
+        plan.assign_adhoc_worker(project_key, &label.to_owned());
     }
 
     /// Recompute the `AssignmentPlan` from the current ready-account
