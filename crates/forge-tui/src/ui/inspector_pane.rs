@@ -495,6 +495,16 @@ fn append_git_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
     // explicit `Some(default)` makes the assumption load-bearing
     // at the call site rather than hidden behind an unwrap. The
     // `else if` mirrors layer 1's per-layer scan_failed surfacing.
+    //
+    // Tripwire for the F10 invariant: a future change that
+    // constructs `branch_ahead = Some(_)` with `default_branch =
+    // None` would silently no-op the tuple-match. The assert
+    // catches it in debug builds; release builds drop to the
+    // silent fallback, same shape as today.
+    debug_assert!(
+        snapshot.default_branch.is_some() || snapshot.branch_ahead.is_none(),
+        "branch_ahead invariant: default_branch must be Some when branch_ahead is Some",
+    );
     if let (Some(ahead), Some(default)) =
         (snapshot.branch_ahead.as_ref(), snapshot.default_branch.as_deref())
     {
