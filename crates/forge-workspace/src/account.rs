@@ -253,7 +253,7 @@ impl AccountStateMap {
     /// the default cadence. Also transitions `loading` to `Ready` -
     /// a successful probe is the terminal-success state for the
     /// boot-time loading task. Silent no-op when `key` isn't
-    /// registered (defensive — invariant says every poller key was
+    /// registered (defensive - invariant says every poller key was
     /// inserted in `new()`).
     pub fn set_usage(&mut self, key: &AccountKey, snapshot: UsageSnapshot) {
         if let Some(state) = self.by_key.get_mut(key) {

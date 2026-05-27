@@ -1182,7 +1182,8 @@ impl Workspace {
     /// The TUI's bottom panel + the spawn-path picker both read
     /// from that cache.
     ///
-    /// Call once at construction, AFTER `spawn_initial_account_probe`.
+    /// Call once at construction, AFTER `start_account_loading_tasks`
+    /// (which subsumed the old `spawn_initial_account_probe` in #246).
     /// A `usage_poller_started` flag guards against duplicate
     /// spawns - second and later calls return without spawning so a
     /// forge-tui programming error can't multiply the poll rate.
@@ -1198,10 +1199,11 @@ impl Workspace {
         let span = tracing::info_span!("usage_poller");
         tokio::spawn(
             async move {
-                // Skip the immediate-fire tick: `spawn_initial_account_probe`
-                // already drove the live boot probe. Firing again right
-                // away would burn another round of Anthropic-side per-IP
-                // rate-limiter capacity for no gain. First tick of this
+                // Skip the immediate-fire tick: the boot-time loading
+                // tasks (`start_account_loading_tasks`, #246) already
+                // drove the live probes. Firing again right away would
+                // burn another round of Anthropic-side per-IP rate-
+                // limiter capacity for no gain. First tick of this
                 // interval lands one USAGE_POLL_INTERVAL after boot.
                 let mut interval = tokio::time::interval_at(
                     tokio::time::Instant::now() + USAGE_POLL_INTERVAL,
