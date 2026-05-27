@@ -3475,8 +3475,17 @@ fn transition_worker_to_running(
 /// { StatusChanged }`. Called by the `Connected`-never-arrived
 /// paths (subprocess exit, ConnectionFailed event, resume rejected
 /// by claude when the fall-through-to-fresh path declines to
-/// retry). Idempotent - calling twice with the same diagnostic is
-/// a no-op after the first flip.
+/// retry).
+///
+/// Idempotent: when the entry is already `Failed` with an identical
+/// diagnostic, this is a no-op (no mutation, no event emission). A
+/// fresh diagnostic for an already-Failed entry DOES re-emit so the
+/// UI picks up the new reason text.
+///
+/// Also clears `needs_tag` because a Failed worker won't be reached
+/// by the opportunistic tag-retry path - leaving the flag set keeps
+/// stale state on the entry the next time the worker resumes and
+/// transitions back to Running.
 ///
 /// The diagnostic should be the first line of claude's stderr (when
 /// available) or the error variant name. Keep it short - the
@@ -3491,10 +3500,21 @@ pub(crate) fn transition_worker_to_failed(
     let updated = {
         let mut workers = workspace.live_workers.lock();
         workers.get_mut(project_key).and_then(|entries| {
-            entries.iter_mut().find(|e| e.session_key == *session_key).map(|entry| {
+            entries.iter_mut().find(|e| e.session_key == *session_key).and_then(|entry| {
+                // Idempotency: same status + same diagnostic -> no-op.
+                if entry.status == forge_primitives::WorkerLiveness::Failed
+                    && entry.diagnostic == diagnostic
+                {
+                    return None;
+                }
                 entry.status = forge_primitives::WorkerLiveness::Failed;
                 entry.diagnostic = diagnostic;
-                (entry.to_status(), entry.is_git_repo_at_spawn)
+                // Clear needs_tag - a Failed worker won't reach the
+                // opportunistic tag-retry path, and leaving the flag
+                // set would keep stale state if the entry later
+                // transitions back to Running on a successful resume.
+                entry.needs_tag = false;
+                Some((entry.to_status(), entry.is_git_repo_at_spawn))
             })
         })
     };
@@ -5784,8 +5804,18 @@ mod async_worker_spawn_failure_tests {
     }
 
     /// #146: double-fire safety - a second ConnectionFailed for the
-    /// same worker (after the first call removed its WorkerEntry)
-    /// must be a no-op rather than re-dispatching the notice.
+    /// same worker (after the first call removed its WorkerEntry on
+    /// the WORKTREE-classified path) must be a no-op rather than
+    /// re-dispatching the notice.
+    ///
+    /// The message used here MUST classify as worktree-creation
+    /// failure - that's the path that still removes the entry under
+    /// #245 Layer C. The non-worktree path transitions to Failed
+    /// instead of removing, so it wouldn't exercise the
+    /// double-fire-after-removal semantics this test is pinning.
+    /// `classify_worker_spawn_failure` validates the predicate
+    /// upfront so a future rewording that breaks the contract
+    /// surfaces here instead of as a confusing failure further down.
     #[tokio::test]
     async fn async_failure_double_fire_is_no_op() {
         let (workspace, _update_rx) = Workspace::testing_stub();
@@ -5799,19 +5829,135 @@ mod async_worker_spawn_failure_tests {
         install_lead_in_pool(&workspace, lead_id);
 
         let session_key = SessionKey::from_session_id(synth_key);
-        assert!(workspace.handle_async_worker_spawn_failure(
-            &session_key,
-            "fatal: 'reviewer' is already used by worktree at /a"
-        ));
+        let worktree_msg = "fatal: 'reviewer' is already used by worktree at /a";
+        // Pin the test's premise: this message must classify as
+        // WorktreeCreationFailed so we exercise the remove-then-no-op
+        // path. If a future change to the classifier breaks this
+        // assumption, the test below would change shape (transition-
+        // to-Failed isn't a no-op on re-fire).
+        assert!(
+            matches!(
+                crate::mcp::workers::facade::classify_worker_spawn_failure(worktree_msg, true),
+                crate::mcp::workers::facade::WorkerSpawnError::WorktreeCreationFailed { .. },
+            ),
+            "test fixture must classify as worktree failure to exercise the removal path",
+        );
+
+        assert!(workspace.handle_async_worker_spawn_failure(&session_key, worktree_msg));
         let _ = workspace.drain_test_dispatch_buffer();
 
         // Second call: WorkerEntry already gone, returns false, no
         // new dispatch.
-        assert!(!workspace.handle_async_worker_spawn_failure(
-            &session_key,
-            "fatal: 'reviewer' is already used by worktree at /a"
-        ));
+        assert!(!workspace.handle_async_worker_spawn_failure(&session_key, worktree_msg));
         assert!(workspace.drain_test_dispatch_buffer().is_empty());
+    }
+
+    /// #245 Layer C test gap 12 + 11: direct unit coverage for
+    /// [`transition_worker_to_failed`].
+    ///
+    /// Covers:
+    /// - First call flips status + records diagnostic
+    /// - Second call with identical diagnostic is a no-op (no
+    ///   extra event emission)
+    /// - Second call with a NEW diagnostic re-emits + records new
+    ///   diagnostic
+    /// - needs_tag is cleared on transition
+    #[tokio::test]
+    async fn transition_worker_to_failed_idempotent_for_identical_diagnostic() {
+        let (workspace, mut update_rx) = Workspace::testing_stub();
+        let project_key = ProjectKey::new("proj-x");
+        let synth_key = "__spawn_worker_proj-x_reviewer_abc__";
+        let session_key = SessionKey::from_session_id(synth_key);
+        // Worker starts Spawning + needs_tag = true (mirrors
+        // fresh-spawn state pre-Connected).
+        workspace
+            .insert_live_worker(&project_key, fake_worker("reviewer", synth_key, "lead", true));
+
+        // First call: flips to Failed, records diagnostic, clears
+        // needs_tag, emits WorkerStatusChanged.
+        transition_worker_to_failed(
+            &workspace,
+            &project_key,
+            &session_key,
+            Some("spawn failed".to_owned()),
+        );
+
+        let entries = workspace.list_live_workers(&project_key);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].status, forge_primitives::WorkerLiveness::Failed);
+        assert_eq!(entries[0].diagnostic.as_deref(), Some("spawn failed"));
+        assert!(!entries[0].needs_tag, "needs_tag must be cleared on Failed transition");
+
+        // Drain the first event so the next assertion is unambiguous.
+        let _ = update_rx.try_recv().expect("first transition emitted event");
+
+        // Second call with identical diagnostic: no-op, no new event.
+        transition_worker_to_failed(
+            &workspace,
+            &project_key,
+            &session_key,
+            Some("spawn failed".to_owned()),
+        );
+        let second_event = update_rx.try_recv();
+        assert!(
+            second_event.is_err(),
+            "identical diagnostic re-fire must NOT emit a new event; got {second_event:?}",
+        );
+
+        // Third call with NEW diagnostic: re-emits + records new text.
+        transition_worker_to_failed(
+            &workspace,
+            &project_key,
+            &session_key,
+            Some("more specific reason".to_owned()),
+        );
+        let third_event = update_rx.try_recv();
+        assert!(third_event.is_ok(), "fresh diagnostic must re-emit");
+        let entries = workspace.list_live_workers(&project_key);
+        assert_eq!(entries[0].diagnostic.as_deref(), Some("more specific reason"));
+    }
+
+    /// #245 Layer C test gap 11: a worker that flipped to Failed
+    /// then transitions back to Running (e.g. a successful resume
+    /// after the user fixed the underlying problem) must clear the
+    /// stale diagnostic field. Without this, the Projects pane
+    /// would render a healthy Running worker with a phantom
+    /// failure sub-row underneath.
+    #[tokio::test]
+    async fn transition_worker_to_running_clears_prior_failed_diagnostic() {
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        let project_key = ProjectKey::new("proj-x");
+        let synth_key = "__spawn_worker_proj-x_reviewer_abc__";
+        let session_key = SessionKey::from_session_id(synth_key);
+        workspace
+            .insert_live_worker(&project_key, fake_worker("reviewer", synth_key, "lead", true));
+
+        // Flip to Failed with a diagnostic.
+        transition_worker_to_failed(
+            &workspace,
+            &project_key,
+            &session_key,
+            Some("connection refused".to_owned()),
+        );
+        assert_eq!(
+            workspace.list_live_workers(&project_key)[0].diagnostic.as_deref(),
+            Some("connection refused"),
+        );
+
+        // Transition back to Running. Diagnostic must clear.
+        transition_worker_to_running(
+            &workspace,
+            &project_key,
+            &session_key,
+            TagWriteResult::Succeeded,
+        );
+        let entry = &workspace.list_live_workers(&project_key)[0];
+        assert_eq!(entry.status, forge_primitives::WorkerLiveness::Running);
+        assert!(
+            entry.diagnostic.is_none(),
+            "diagnostic must clear when worker transitions back to Running; got {:?}",
+            entry.diagnostic,
+        );
     }
 
     /// #146: lead-session-gone path - the worker was spawned by a
