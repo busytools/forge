@@ -7,22 +7,24 @@
 //!    into user-turn text (e.g. `[Question id=q-... hop=1/10 from
 //!    agent 'forge' (org 'Personal') - reply with tell_agent
 //!    in_reply_to=q-...]\n\n<body>`) and render a styled block in
-//!    place of the default user-message bubble. Catches all seven
+//!    place of the default user-message bubble. Catches all eight
 //!    kinds the workspace produces (`Question`, `Message`, `Reply`,
-//!    `Late reply`, `Ask ... timed out` (caller-side),
-//!    `Ask ... has expired` (recipient-side),
-//!    `Ask ... failed to deliver`).
+//!    `LateReply`, caller-side `CallerTimeout`, recipient-side
+//!    `RecipientExpired`, `DeliveryFailure`, `WorkerSpawnFailed`).
 //!
 //! 2. **Outbound rendering**. Replace the default tool_use card for
-//!    `mcp__forge__peers__ask_agent` / `peers__tell_agent` with a
-//!    one-line "→ ask · target · q-id" / "→ tell · target · t-id"
-//!    block + a body preview pulled from the tool arguments.
+//!    `mcp__forge__peers__ask_agent` / `peers__tell_agent` /
+//!    `workers__ask` / `workers__tell` with a one-line
+//!    `▶ Verb name` row + a body preview pulled from the tool
+//!    arguments. `workers__spawn` / `workers__list` are NOT handled
+//!    here - they render as standard tool cards because they're
+//!    worker-lifecycle tool calls, not peer comms.
 //!
-//! Pure rendering — no I/O, no state. Each call parses the text
+//! Pure rendering - no I/O, no state. Each call parses the text
 //! fresh; results aren't cached (text is small, render frames don't
 //! call this hot enough to need a cache).
 //!
-//! Visual reference: `.superpowers/brainstorm/peer-mcp-v1-mockup.html`.
+//! Visual reference: `docs/forge-map.html#peer-block`.
 
 use crate::app::ToolCallInfo;
 use crate::ui::theme;
@@ -30,32 +32,30 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
 /// One inbound peer block parsed from the user-turn text.
+///
+/// Wire envelopes carry several fields (correlation id, hop counter,
+/// originating org) that the previous chrome surfaced as DIM meta
+/// chunks. The redesigned chat block hides those by default - the
+/// parser still skips past them in the prefix, but the type only
+/// retains what the renderer or chat-streak grouping reads.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum PeerInboundKind {
     Question {
-        id: String,
         from: String,
         org: String,
-        hop: u8,
-        hop_max: u8,
         body: String,
     },
     Message {
-        id: String,
         from: String,
         org: String,
-        hop: u8,
-        hop_max: u8,
         body: String,
     },
     Reply {
-        id: String,
         from: String,
         org: String,
         body: String,
     },
     LateReply {
-        id: String,
         from: String,
         org: String,
         body: String,
@@ -63,7 +63,6 @@ pub(crate) enum PeerInboundKind {
     /// `[Ask id=... to agent 'X' (org 'Y') timed out after 30 minutes - no reply received.]`
     /// Caller-side notice that their own ask hit the 30-min timer.
     CallerTimeout {
-        id: String,
         target: String,
         org: String,
         body: String,
@@ -71,7 +70,6 @@ pub(crate) enum PeerInboundKind {
     /// `[Ask id=... from agent 'A' (org 'O') has expired - any reply you produce will be tagged late.]`
     /// Recipient-side notice that the caller's ask has been abandoned.
     RecipientExpired {
-        id: String,
         from: String,
         org: String,
         body: String,
@@ -79,7 +77,6 @@ pub(crate) enum PeerInboundKind {
     /// `[Ask id=... to agent 'X' (org 'Y') failed to deliver: <reason>]`
     /// Caller-side delivery failure (spawn / connection / channel).
     DeliveryFailure {
-        id: String,
         target: String,
         org: String,
         reason: String,
@@ -88,16 +85,18 @@ pub(crate) enum PeerInboundKind {
     /// Lead-side notice that a team worker's async spawn failed
     /// (subprocess crashed inside the `--worktree` machinery before
     /// reaching `Connected`). Reason text is verbatim from claude's
-    /// stderr.
+    /// stderr. Kept as a one-line system notice rather than a peer
+    /// row because it's a workspace-generated lifecycle event, not a
+    /// peer comm - touching its render shape is out of scope for
+    /// #189.
     WorkerSpawnFailed {
-        id: String,
         label: String,
         reason: String,
     },
 }
 
 impl PeerInboundKind {
-    /// The `sender_org` field threaded through every variant — drives
+    /// The `sender_org` field threaded through every variant - drives
     /// same-project envelope grouping at the chat-iteration level
     /// (see `crate::ui::chat`). Variants that carry an explicit org
     /// return it; the worker-spawn-failure notice has no org of its
@@ -119,50 +118,33 @@ impl PeerInboundKind {
 }
 
 /// One outbound peer or worker block parsed from a `mcp__forge__peers__*`
-/// or `mcp__forge__workers__*` tool_use card. The correlation id is
-/// `None` until the tool call's result arrives. The `family` flag
-/// distinguishes the visual labelling (peers cross-project, workers
-/// project-internal child agents).
+/// or `mcp__forge__workers__ask|tell` tool_use card. The redesigned
+/// chrome drops the family / correlation_id chrome - both peer and
+/// worker calls render with the same `▶ Verb name` shape.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum PeerOutboundKind {
-    Ask {
-        family: OutboundFamily,
-        target: String,
-        body: String,
-        correlation_id: Option<String>,
-    },
-    Tell {
-        family: OutboundFamily,
-        target: String,
-        body: String,
-        correlation_id: Option<String>,
-    },
-    /// `workers__spawn` - distinct from Ask/Tell because there's no
-    /// pre-existing target to address; the call creates a new worker.
-    /// Body carries the charter so the chat row reads as
-    /// `→ spawn <label>` followed by the charter prose.
-    WorkerSpawn {
-        label: String,
-        charter: String,
-    },
-    /// `workers__list` - no arguments, no body; one-line header.
-    WorkerList,
+    Ask { target: String, body: String },
+    Tell { target: String, body: String },
 }
 
-/// Visual family of an outbound block. `Peers` are cross-project
-/// (`mcp__forge__peers__*`); `Workers` are project-internal
-/// (`mcp__forge__workers__*`).
+/// Modifier suffix surfaced inline after the `Verb name` header when
+/// the envelope is a notice variant (timeout / undeliverable / late /
+/// expired). Renders as ` - ⚠ <label>` in `STATUS_WARNING`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum OutboundFamily {
-    Peers,
-    Workers,
+enum NoticeModifier {
+    TimedOut,
+    Undeliverable,
+    Late,
+    Expired,
 }
 
-impl OutboundFamily {
+impl NoticeModifier {
     const fn label(self) -> &'static str {
         match self {
-            Self::Peers => "peer",
-            Self::Workers => "worker",
+            Self::TimedOut => "timed out",
+            Self::Undeliverable => "undeliverable",
+            Self::Late => "late",
+            Self::Expired => "expired",
         }
     }
 }
@@ -177,503 +159,225 @@ pub(crate) fn detect_inbound(text: &str) -> Option<PeerInboundKind> {
     let header = &bracketed[..close_idx];
     let after_bracket = &bracketed[close_idx + 1..];
     // The wrapper formats land the body after `]\n\n`. Some notice
-    // variants have an empty body — the bracket itself is the whole
+    // variants have an empty body - the bracket itself is the whole
     // message, possibly followed by `\n\n` + extra context. Both
     // are valid.
     let body = after_bracket.strip_prefix("\n\n").unwrap_or("").to_owned();
 
     if let Some(rest) = header.strip_prefix("Question id=") {
-        let (id, rest) = take_until(rest, " hop=")?;
-        let (hop_str, rest) = take_until(rest, " from agent ")?;
+        let (_id, rest) = take_until(rest, " hop=")?;
+        let (_hop, rest) = take_until(rest, " from agent ")?;
         let (from, org) = extract_from_agent_after(rest)?;
-        let (hop, hop_max) = parse_hop(hop_str).unwrap_or((1, 10));
-        return Some(PeerInboundKind::Question {
-            id: id.to_owned(),
-            from,
-            org,
-            hop,
-            hop_max,
-            body,
-        });
+        return Some(PeerInboundKind::Question { from, org, body });
     }
 
     if let Some(rest) = header.strip_prefix("Message id=") {
-        let (id, rest) = take_until(rest, " hop=")?;
-        let (hop_str, rest) = take_until(rest, " from agent ")?;
+        let (_id, rest) = take_until(rest, " hop=")?;
+        let (_hop, rest) = take_until(rest, " from agent ")?;
         let (from, org) = extract_from_agent_after(rest)?;
-        let (hop, hop_max) = parse_hop(hop_str).unwrap_or((1, 10));
-        return Some(PeerInboundKind::Message { id: id.to_owned(), from, org, hop, hop_max, body });
+        return Some(PeerInboundKind::Message { from, org, body });
     }
 
     if let Some(rest) = header.strip_prefix("Reply id=") {
-        let (id, rest) = take_until(rest, " from agent ")?;
+        let (_id, rest) = take_until(rest, " from agent ")?;
         let (from, org) = extract_from_agent_after(rest)?;
-        return Some(PeerInboundKind::Reply { id: id.to_owned(), from, org, body });
+        return Some(PeerInboundKind::Reply { from, org, body });
     }
 
     if let Some(rest) = header.strip_prefix("Late reply id=") {
-        let (id, rest) = take_until(rest, " from agent ")?;
+        let (_id, rest) = take_until(rest, " from agent ")?;
         let (from, org) = extract_from_agent_after(rest)?;
-        return Some(PeerInboundKind::LateReply { id: id.to_owned(), from, org, body });
+        return Some(PeerInboundKind::LateReply { from, org, body });
     }
 
     if let Some(rest) = header.strip_prefix("Ask id=") {
-        // Caller-side timeout — `to agent 'X' (org 'Y') timed out ...`
+        // Caller-side timeout - `to agent 'X' (org 'Y') timed out ...`
         if let Some(rest_to) = rest_after_id(rest, " to agent ")
             && header.contains("timed out after 30 minutes")
         {
-            let id = id_before(rest, " to agent ")?;
             let (target, org) = extract_from_agent_after(rest_to)?;
-            return Some(PeerInboundKind::CallerTimeout { id: id.to_owned(), target, org, body });
+            return Some(PeerInboundKind::CallerTimeout { target, org, body });
         }
-        // Caller-side delivery failure — `to agent 'X' (org 'Y') failed to deliver: <reason>`
+        // Caller-side delivery failure - `to agent 'X' (org 'Y') failed to deliver: <reason>`
         if let Some(rest_to) = rest_after_id(rest, " to agent ")
             && header.contains("failed to deliver:")
         {
-            let id = id_before(rest, " to agent ")?;
             let (target, org, trailing) = extract_from_agent_after_with_trailer(rest_to)?;
             let reason = trailing
                 .split_once("failed to deliver:")
                 .map(|(_, after)| after.trim().to_owned())
                 .unwrap_or_default();
-            return Some(PeerInboundKind::DeliveryFailure {
-                id: id.to_owned(),
-                target,
-                org,
-                reason,
-            });
+            return Some(PeerInboundKind::DeliveryFailure { target, org, reason });
         }
-        // Recipient-side expired — `from agent 'A' (org 'O') has expired ...`
+        // Recipient-side expired - `from agent 'A' (org 'O') has expired ...`
         if let Some(rest_from) = rest_after_id(rest, " from agent ")
             && header.contains("has expired")
         {
-            let id = id_before(rest, " from agent ")?;
             let (from, org) = extract_from_agent_after(rest_from)?;
-            return Some(PeerInboundKind::RecipientExpired { id: id.to_owned(), from, org, body });
+            return Some(PeerInboundKind::RecipientExpired { from, org, body });
         }
     }
 
-    // `[Worker '<label>' spawn failed id=<id>: <reason>]` - lead-local
-    // notice that an async worker spawn failed inside claude's
-    // `--worktree` machinery. Distinct prefix from the four canonical
-    // peer envelopes so the existing parsers don't ambiguous-match.
     if let Some(rest) = header.strip_prefix("Worker '") {
         let (label, rest) = take_until(rest, "' spawn failed id=")?;
-        let (id, rest) = take_until(rest, ": ")?;
+        let (_id, reason) = take_until(rest, ": ")?;
         return Some(PeerInboundKind::WorkerSpawnFailed {
-            id: id.to_owned(),
             label: label.to_owned(),
-            reason: rest.to_owned(),
+            reason: reason.to_owned(),
         });
     }
 
     None
 }
 
-/// Detect an outbound peer or worker tool_use card. Returns `None`
-/// for any tool that isn't one of the four peers / four workers
-/// shapes. Workers and peers share the same chat-card style; the
-/// `family` field on the returned kind picks the labelling.
+/// Detect a peer / worker outbound tool_use card. Returns `None` for
+/// every other tool (the chat renderer falls through to the default
+/// tool-card rendering) and explicitly for `workers__spawn` /
+/// `workers__list` - those are worker-lifecycle tool calls that render
+/// as standard tool cards rather than peer comms.
 pub(crate) fn detect_outbound(tc: &ToolCallInfo) -> Option<PeerOutboundKind> {
     let raw = tc.raw_input.as_ref()?;
-    let correlation_id = extract_correlation_id_from_result(tc);
     match tc.sdk_tool_name.as_str() {
         "mcp__forge__peers__ask_agent" => {
             let target = raw.get("target")?.as_str()?.to_owned();
             let body = raw.get("prompt").and_then(|v| v.as_str()).unwrap_or("").to_owned();
-            Some(PeerOutboundKind::Ask {
-                family: OutboundFamily::Peers,
-                target,
-                body,
-                correlation_id,
-            })
+            Some(PeerOutboundKind::Ask { target, body })
         }
         "mcp__forge__peers__tell_agent" => {
             let target = raw.get("target")?.as_str()?.to_owned();
             let body = raw.get("message").and_then(|v| v.as_str()).unwrap_or("").to_owned();
-            Some(PeerOutboundKind::Tell {
-                family: OutboundFamily::Peers,
-                target,
-                body,
-                correlation_id,
-            })
+            Some(PeerOutboundKind::Tell { target, body })
         }
         "mcp__forge__workers__ask" => {
             let target = raw.get("label")?.as_str()?.to_owned();
             let body = raw.get("question").and_then(|v| v.as_str()).unwrap_or("").to_owned();
-            Some(PeerOutboundKind::Ask {
-                family: OutboundFamily::Workers,
-                target,
-                body,
-                correlation_id,
-            })
+            Some(PeerOutboundKind::Ask { target, body })
         }
         "mcp__forge__workers__tell" => {
             let target = raw.get("label")?.as_str()?.to_owned();
             let body = raw.get("message").and_then(|v| v.as_str()).unwrap_or("").to_owned();
-            Some(PeerOutboundKind::Tell {
-                family: OutboundFamily::Workers,
-                target,
-                body,
-                correlation_id,
-            })
+            Some(PeerOutboundKind::Tell { target, body })
         }
-        "mcp__forge__workers__spawn" => {
-            let label = raw.get("label")?.as_str()?.to_owned();
-            let charter = raw.get("charter").and_then(|v| v.as_str()).unwrap_or("").to_owned();
-            Some(PeerOutboundKind::WorkerSpawn { label, charter })
-        }
-        "mcp__forge__workers__list" => Some(PeerOutboundKind::WorkerList),
         _ => None,
     }
 }
 
-/// Build the styled lines for an inbound peer block. The chat
-/// renderer calls this after `detect_inbound` matches and SKIPS the
-/// default user-message rendering for the same text.
+/// Build the styled lines for an inbound peer block.
 ///
-/// Visual shape mirrors a standard tool-call card: header
-/// `  <status> <kind-icon-bold> <kind-label-bold> <sender bold orange> <meta dim…>`
-/// then body lines under `  │  ` / `  └─ ` tree connectors —
-/// peer rows visually rhyme with the tool rows above and below them.
-pub(crate) fn render_inbound(kind: &PeerInboundKind, collapsed: bool) -> Vec<Line<'static>> {
+/// `suppress_header = true` is the same-worker streak-follower case:
+/// the `▶ Verb name` line is dropped and only the body lines render,
+/// so consecutive messages from the same worker stack as one
+/// paragraph.
+pub(crate) fn render_inbound(
+    kind: &PeerInboundKind,
+    suppress_header: bool,
+    collapsed: bool,
+) -> Vec<Line<'static>> {
     match kind {
-        PeerInboundKind::Question { id, from, org, hop, hop_max, body } => render_peer_card(
-            PeerCardStatus::Ok,
-            INBOUND_ICON,
-            theme::RUST_ORANGE,
-            "question",
-            from,
-            &dim_meta(&[format!("· {id}"), format!("· hop {hop}/{hop_max}"), format!("· ({org})")]),
-            body,
-            collapsed,
-        ),
-        PeerInboundKind::Message { id, from, org, body, .. } => render_peer_card(
-            PeerCardStatus::Ok,
-            INBOUND_ICON,
-            theme::SUBAGENT_TOKEN,
-            "message",
-            from,
-            &dim_meta(&[format!("· {id}"), format!("· ({org})")]),
-            body,
-            collapsed,
-        ),
-        PeerInboundKind::Reply { id, from, org, body } => render_peer_card(
-            PeerCardStatus::Ok,
-            REPLY_INBOUND_ICON,
-            Color::Green,
-            "reply",
-            from,
-            &dim_meta(&[format!("· {id}"), format!("· ({org})")]),
-            body,
-            collapsed,
-        ),
-        PeerInboundKind::LateReply { id, from, org, body } => {
-            let mut meta = dim_meta(&[format!("· {id}")]);
-            meta.push(Span::styled(" · ".to_owned(), Style::default().fg(theme::DIM)));
-            meta.push(Span::styled(
-                "\u{231b} late".to_owned(),
-                Style::default().fg(theme::STATUS_WARNING),
-            ));
-            meta.push(Span::styled(format!(" · ({org})"), Style::default().fg(theme::DIM)));
-            render_peer_card(
-                PeerCardStatus::Warning,
-                REPLY_INBOUND_ICON,
-                Color::Green,
-                "reply",
-                from,
-                &meta,
-                body,
-                collapsed,
-            )
+        PeerInboundKind::Question { from, body, .. } => {
+            render_block("Question", from, None, body, suppress_header, collapsed)
         }
-        PeerInboundKind::CallerTimeout { id, target, org, body } => render_peer_card(
-            PeerCardStatus::Warning,
-            INBOUND_ICON,
-            theme::STATUS_ERROR,
-            "ask timed out",
-            target,
-            &dim_meta(&[
-                format!("· {id}"),
-                "· no reply after 30 min".to_owned(),
-                format!("· ({org})"),
-            ]),
-            body,
-            collapsed,
-        ),
-        PeerInboundKind::RecipientExpired { id, from, org, body } => render_peer_card(
-            PeerCardStatus::Warning,
-            INBOUND_ICON,
-            theme::STATUS_WARNING,
-            "ask expired",
+        PeerInboundKind::Message { from, body, .. } => {
+            render_block("Message", from, None, body, suppress_header, collapsed)
+        }
+        PeerInboundKind::Reply { from, body, .. } => {
+            render_block("Reply", from, None, body, suppress_header, collapsed)
+        }
+        PeerInboundKind::LateReply { from, body, .. } => render_block(
+            "Reply",
             from,
-            &dim_meta(&[
-                format!("· {id}"),
-                "· your reply will be tagged late".to_owned(),
-                format!("· ({org})"),
-            ]),
+            Some(NoticeModifier::Late),
             body,
+            suppress_header,
             collapsed,
         ),
-        PeerInboundKind::DeliveryFailure { id, target, org, reason } => render_peer_card(
-            PeerCardStatus::Error,
-            INBOUND_ICON,
-            theme::STATUS_ERROR,
-            "failed to deliver",
+        PeerInboundKind::CallerTimeout { target, body, .. } => render_block(
+            "Ask",
             target,
-            &dim_meta(&[format!("· {id}"), format!("· ({org})")]),
-            reason,
+            Some(NoticeModifier::TimedOut),
+            body,
+            suppress_header,
             collapsed,
         ),
-        PeerInboundKind::WorkerSpawnFailed { id, label, reason } => render_peer_card(
-            PeerCardStatus::Error,
-            INBOUND_ICON,
-            theme::STATUS_ERROR,
-            "worker spawn failed",
-            label,
-            &dim_meta(&[format!("· {id}")]),
-            reason,
+        PeerInboundKind::RecipientExpired { from, body, .. } => render_block(
+            "Question",
+            from,
+            Some(NoticeModifier::Expired),
+            body,
+            suppress_header,
             collapsed,
         ),
+        PeerInboundKind::DeliveryFailure { target, reason, .. } => render_block(
+            "Ask",
+            target,
+            Some(NoticeModifier::Undeliverable),
+            reason,
+            suppress_header,
+            collapsed,
+        ),
+        PeerInboundKind::WorkerSpawnFailed { label, reason } => {
+            render_worker_spawn_failed(label, reason)
+        }
     }
 }
 
-/// #163 v1: compact follower render for envelopes inside a same-
-/// project streak. Drops the kind-label / id / org chrome that
-/// `render_peer_card` carries, leaving just a one-line worker tag
-/// header (`  ▶ <worker>`) followed by the body's lines.
+/// Build the styled lines for an outbound peer / worker block.
+pub(crate) fn render_outbound(kind: &PeerOutboundKind, collapsed: bool) -> Vec<Line<'static>> {
+    match kind {
+        PeerOutboundKind::Ask { target, body } => {
+            render_block("Ask", target, None, body, false, collapsed)
+        }
+        PeerOutboundKind::Tell { target, body } => {
+            render_block("Tell", target, None, body, false, collapsed)
+        }
+    }
+}
+
+/// Header glyph for every chat block. Distinct enough from the
+/// standard tool-card glyphs (`✓` / `⚠` / `✗`) to read as "this is a
+/// peer / worker row, not a tool call".
+const ROW_GLYPH: &str = "\u{25B6}"; // ▶
+
+/// Unified renderer for the new chat-block shape:
 ///
-/// `same_worker = true` is the same-worker-sub-streak case: the
-/// worker label line is omitted entirely and the body just
-/// continues from the previous envelope's body, visually reading
-/// as one paragraph.
+/// ```text
+///   ▶ Verb name[ - ⚠ modifier]
+///   │  body line 1
+///   └─ body line 2
+/// ```
 ///
-/// `kind` carries the envelope kind only so notice variants (caller
-/// timeout, recipient expired, delivery failure, worker spawn
-/// failed) still use a color cue + icon hint. The kind label TEXT
-/// is dropped per the design.
-///
-/// v2 follow-up tracks moving the body inline with the worker tag
-/// header via a hanging-indent wrap; v1 stays two-line for
-/// readability + simplicity. See follow-up issue filed from the
-/// #163 PR description.
-pub(crate) fn render_inbound_follower(
-    kind: &PeerInboundKind,
-    same_worker: bool,
+/// `suppress_header = true` drops the header row and renders the body
+/// alone (same-worker streak follower).
+fn render_block(
+    verb: &str,
+    name: &str,
+    modifier: Option<NoticeModifier>,
+    body: &str,
+    suppress_header: bool,
     collapsed: bool,
 ) -> Vec<Line<'static>> {
-    // Extract the sender label + body + color cue from the kind.
-    let (worker_label, body, kind_color) = match kind {
-        PeerInboundKind::Question { from, body, .. } => {
-            (from.as_str(), body.as_str(), theme::RUST_ORANGE)
-        }
-        PeerInboundKind::Message { from, body, .. } => {
-            (from.as_str(), body.as_str(), theme::SUBAGENT_TOKEN)
-        }
-        PeerInboundKind::Reply { from, body, .. } => (from.as_str(), body.as_str(), Color::Green),
-        PeerInboundKind::LateReply { from, body, .. } => {
-            (from.as_str(), body.as_str(), Color::Green)
-        }
-        PeerInboundKind::CallerTimeout { target, body, .. } => {
-            (target.as_str(), body.as_str(), theme::STATUS_ERROR)
-        }
-        PeerInboundKind::RecipientExpired { from, body, .. } => {
-            (from.as_str(), body.as_str(), theme::STATUS_WARNING)
-        }
-        PeerInboundKind::DeliveryFailure { target, reason, .. } => {
-            (target.as_str(), reason.as_str(), theme::STATUS_ERROR)
-        }
-        PeerInboundKind::WorkerSpawnFailed { label, reason, .. } => {
-            (label.as_str(), reason.as_str(), theme::STATUS_ERROR)
-        }
-    };
-
     let mut lines = Vec::new();
-    if !same_worker {
-        // `  ▶ <worker>` header line. ▶ glyph (U+25B6) per the
-        // signed-off mockup; kept in `kind_color` for the kind cue
-        // (orange for ask, blue for tell, green for reply, error
-        // tints for failure variants). Worker label in BOLD orange
-        // to match the BOLD-orange sender treatment in
-        // `render_peer_card`'s starter shape so the eye reads
-        // streak-starter and streak-follower as the same
-        // identity at the same visual weight.
+    if !suppress_header {
         let mut header = Line::default();
         header.spans.push(Span::raw("  "));
         header.spans.push(Span::styled(
-            FOLLOWER_ICON.to_owned(),
-            Style::default().fg(kind_color).add_modifier(Modifier::BOLD),
+            ROW_GLYPH.to_owned(),
+            Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
         ));
         header.spans.push(Span::raw(" "));
         header.spans.push(Span::styled(
-            worker_label.to_owned(),
-            Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
+            format!("{verb} {name}"),
+            Style::default().add_modifier(Modifier::BOLD),
         ));
+        if let Some(m) = modifier {
+            header.spans.push(Span::styled(" - ".to_owned(), Style::default().fg(theme::DIM)));
+            header.spans.push(Span::styled(
+                format!("\u{26a0} {}", m.label()),
+                Style::default().fg(theme::STATUS_WARNING),
+            ));
+        }
         lines.push(header);
     }
-    // Body lines, indented to match the starter shape's body indent
-    // (4-space `  │  ` connector ≈ 5-char-ish; here we drop the tree
-    // connector + use 4-space indent for a flatter follower look).
-    if collapsed {
-        push_collapsed_summary(&mut lines, body);
-    } else {
-        for raw_line in body.split('\n') {
-            let mut row = Line::default();
-            row.spans.push(Span::raw("    "));
-            row.spans.push(Span::styled(raw_line.to_owned(), Style::default().fg(theme::DIM)));
-            lines.push(row);
-        }
-    }
-    lines
-}
-
-/// Icon for streak-follower envelopes (#163). Distinct from the
-/// streak-starter's status+kind-icon pair so the eye can spot a
-/// follower at a glance.
-const FOLLOWER_ICON: &str = "\u{25B6}"; // ▶
-
-/// Build the styled lines for an outbound peer or worker block.
-/// Used by the chat renderer for `mcp__forge__peers__*` and
-/// `mcp__forge__workers__*` tool_use cards in place of the default
-/// tool-card rendering. Same tool-card shape as [`render_inbound`].
-/// The `family` field on the kind picks the labelling - workers
-/// rows read as `worker ask`, peers rows read as `peer ask`, etc.
-pub(crate) fn render_outbound(kind: &PeerOutboundKind, collapsed: bool) -> Vec<Line<'static>> {
-    match kind {
-        PeerOutboundKind::Ask { family, target, body, correlation_id } => {
-            let id_label = correlation_id.clone().unwrap_or_else(|| "q-…".to_owned());
-            render_peer_card(
-                PeerCardStatus::Ok,
-                OUTBOUND_ICON,
-                theme::RUST_ORANGE,
-                &format!("{} ask", family.label()),
-                target,
-                &dim_meta(&[format!("· {id_label}")]),
-                body,
-                collapsed,
-            )
-        }
-        PeerOutboundKind::Tell { family, target, body, correlation_id } => {
-            let id_label = correlation_id.clone().unwrap_or_else(|| "t-…".to_owned());
-            render_peer_card(
-                PeerCardStatus::Ok,
-                OUTBOUND_ICON,
-                theme::SUBAGENT_TOKEN,
-                &format!("{} tell", family.label()),
-                target,
-                &dim_meta(&[format!("· {id_label}")]),
-                body,
-                collapsed,
-            )
-        }
-        PeerOutboundKind::WorkerSpawn { label, charter } => render_peer_card(
-            PeerCardStatus::Ok,
-            OUTBOUND_ICON,
-            theme::RUST_ORANGE,
-            "worker spawn",
-            label,
-            &dim_meta(&[]),
-            charter,
-            collapsed,
-        ),
-        PeerOutboundKind::WorkerList => render_peer_card(
-            PeerCardStatus::Ok,
-            OUTBOUND_ICON,
-            theme::SUBAGENT_TOKEN,
-            "worker list",
-            "",
-            &dim_meta(&[]),
-            "",
-            collapsed,
-        ),
-    }
-}
-
-/// Leading kind-icon glyphs for the header row. Outbound + inbound
-/// are paired arrows pointing in opposite directions — same glyph
-/// family so the two row shapes read as a consistent pair rather
-/// than mixing arrow + triangle styles.
-const INBOUND_ICON: &str = "\u{2190}"; // ←
-const OUTBOUND_ICON: &str = "\u{2192}"; // →
-/// #143 item 4: distinguish Reply / LateReply envelopes from
-/// unsolicited Message envelopes with a hook-arrow glyph. Replies
-/// semantically close an inflight ask; the ↩ shape carries that
-/// "this answers something" signal at a glance, where ← reads as
-/// "incoming peer message" without distinguishing the two.
-const REPLY_INBOUND_ICON: &str = "\u{21A9}"; // ↩
-
-/// Status-icon classification — drives the leading glyph + colour.
-/// Mirrors the standard tool card's `✓` / `⚠` / `✗` semantics so a
-/// glance picks up "happy / heads-up / broken" without reading the
-/// label.
-#[derive(Copy, Clone)]
-enum PeerCardStatus {
-    Ok,
-    Warning,
-    Error,
-}
-
-impl PeerCardStatus {
-    const fn glyph(self) -> &'static str {
-        match self {
-            Self::Ok => "\u{2713}",      // ✓
-            Self::Warning => "\u{26a0}", // ⚠
-            Self::Error => "\u{2717}",   // ✗
-        }
-    }
-
-    const fn color(self) -> Color {
-        match self {
-            Self::Ok => Color::Green,
-            Self::Warning => theme::STATUS_WARNING,
-            Self::Error => theme::STATUS_ERROR,
-        }
-    }
-}
-
-/// Tool-card-shaped renderer shared by inbound + outbound peer
-/// blocks. Header layout matches `tool_call::standard::render_tool_call_title`:
-///
-/// `  <status> <kind-icon BOLD coloured> <kind-label BOLD coloured> <name BOLD orange> <meta dim…>`
-///
-/// Body lines are pushed under `  │  ` / `  └─ ` tree connectors —
-/// same glyph pair the standard tool card uses, so peer rows visually
-/// rhyme with adjacent tool rows. When the body is empty (notice
-/// variants without a trailing prose body), the header line stands
-/// on its own with no tree underneath.
-fn render_peer_card(
-    status: PeerCardStatus,
-    kind_icon: &str,
-    kind_color: Color,
-    label: &str,
-    name: &str,
-    meta_spans: &[Span<'static>],
-    body: &str,
-    collapsed: bool,
-) -> Vec<Line<'static>> {
-    let mut header = Line::default();
-    header.spans.push(Span::raw("  "));
-    header.spans.push(Span::styled(status.glyph().to_owned(), Style::default().fg(status.color())));
-    header.spans.push(Span::raw(" "));
-    header.spans.push(Span::styled(
-        kind_icon.to_owned(),
-        Style::default().fg(kind_color).add_modifier(Modifier::BOLD),
-    ));
-    header.spans.push(Span::raw(" "));
-    header.spans.push(Span::styled(
-        label.to_owned(),
-        Style::default().fg(kind_color).add_modifier(Modifier::BOLD),
-    ));
-    header.spans.push(Span::raw(" "));
-    header.spans.push(Span::styled(
-        name.to_owned(),
-        Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
-    ));
-    for span in meta_spans {
-        header.spans.push(span.clone());
-    }
-
-    let mut lines = vec![header];
     if collapsed {
         push_collapsed_summary(&mut lines, body);
     } else {
@@ -682,8 +386,31 @@ fn render_peer_card(
     lines
 }
 
-/// One-line collapsed summary that matches the standard tool-card
-/// shape: `  └─ <first line of body, truncated>  click or ctrl+x to expand`.
+/// One-off renderer for the `WorkerSpawnFailed` lifecycle notice.
+/// Kept distinct from `render_block` because the spawn failure is a
+/// workspace-generated system event, not a peer comm; carrying it
+/// through the verb-row shape would force a non-fitting verb. The
+/// ✗-glyph + plain prose treatment signals "system notice, not a
+/// peer row" at a glance.
+fn render_worker_spawn_failed(label: &str, reason: &str) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    let mut header = Line::default();
+    header.spans.push(Span::raw("  "));
+    header.spans.push(Span::styled(
+        "\u{2717}".to_owned(),
+        Style::default().fg(theme::STATUS_ERROR).add_modifier(Modifier::BOLD),
+    ));
+    header.spans.push(Span::raw(" "));
+    header.spans.push(Span::styled(
+        format!("Worker '{label}' spawn failed"),
+        Style::default().fg(theme::STATUS_ERROR).add_modifier(Modifier::BOLD),
+    ));
+    lines.push(header);
+    push_tree_body_lines(&mut lines, reason);
+    lines
+}
+
+/// One-line collapsed summary shape: `  └─ <first line of body, truncated>  click or ctrl+x to expand`.
 /// Skips entirely when the body is empty so notice variants (which
 /// have no prose body) don't render an orphan `└─ click to expand`
 /// row pointing at nothing.
@@ -714,27 +441,12 @@ fn push_collapsed_summary(lines: &mut Vec<Line<'static>>, body: &str) {
     lines.push(line);
 }
 
-/// Build a flat list of DIM spans for a series of metadata fragments
-/// shown in the header (e.g. `· q-7f3a92e0`, `· hop 1/10`, `· (Org)`).
-/// Each fragment is rendered with the dim theme colour; the caller is
-/// expected to embed the `·` separator prefix in the fragment string
-/// itself. A single leading space precedes each fragment so they
-/// visually separate from the bold name span.
-fn dim_meta(fragments: &[String]) -> Vec<Span<'static>> {
-    let mut spans = Vec::with_capacity(fragments.len() * 2);
-    for fragment in fragments {
-        spans.push(Span::raw(" "));
-        spans.push(Span::styled(fragment.clone(), Style::default().fg(theme::DIM)));
-    }
-    spans
-}
-
-/// Push the body lines under `│  ` / `└─ ` tree connectors —
-/// matches `tool_call::standard::render_tool_content`'s pipe / corner
-/// glyph pair. Renders the FULL body when expanded — no truncation;
-/// the collapsed summary (see [`push_collapsed_summary`]) is the only
-/// place we truncate, and only to fit a single summary row.
-/// When the body is empty, pushes nothing so the header stands alone.
+/// Push the body lines under `│  ` / `└─ ` tree connectors - matches
+/// `tool_call::standard::render_tool_content`'s pipe / corner glyph
+/// pair. Renders the FULL body when expanded - no truncation; the
+/// collapsed summary (see [`push_collapsed_summary`]) is the only
+/// place we truncate, and only to fit a single summary row. When the
+/// body is empty, pushes nothing so the header stands alone.
 fn push_tree_body_lines(lines: &mut Vec<Line<'static>>, body: &str) {
     let body = body.trim();
     if body.is_empty() {
@@ -762,7 +474,7 @@ fn push_tree_body_lines(lines: &mut Vec<Line<'static>>, body: &str) {
 // ---------- parsing helpers ----------
 
 /// Split `s` at the first occurrence of `marker`. Returns
-/// `(before, after_marker)` — the marker itself is consumed.
+/// `(before, after_marker)` - the marker itself is consumed.
 /// `None` when the marker isn't found.
 fn take_until<'a>(s: &'a str, marker: &str) -> Option<(&'a str, &'a str)> {
     let idx = s.find(marker)?;
@@ -777,13 +489,6 @@ fn rest_after_id<'a>(after_id: &'a str, marker: &str) -> Option<&'a str> {
     Some(&after_id[idx + marker.len()..])
 }
 
-/// After the `id=` slice has been peeled off, return the id portion
-/// (everything before `marker`).
-fn id_before<'a>(after_id: &'a str, marker: &str) -> Option<&'a str> {
-    let idx = after_id.find(marker)?;
-    Some(&after_id[..idx])
-}
-
 /// Given a slice starting at `'X' (org 'Y') ...`, extract `X` and
 /// `Y`. Returns `None` when the format doesn't match.
 fn extract_from_agent_after(rest: &str) -> Option<(String, String)> {
@@ -793,7 +498,7 @@ fn extract_from_agent_after(rest: &str) -> Option<(String, String)> {
     Some((name.to_owned(), org.to_owned()))
 }
 
-/// Same as `extract_from_agent_after` but also returns the trailer —
+/// Same as `extract_from_agent_after` but also returns the trailer -
 /// the substring after `')`. Used by the delivery-failure parser
 /// which needs name, org, AND the trailing reason text.
 fn extract_from_agent_after_with_trailer(rest: &str) -> Option<(String, String, String)> {
@@ -803,53 +508,19 @@ fn extract_from_agent_after_with_trailer(rest: &str) -> Option<(String, String, 
     Some((name.to_owned(), org.to_owned(), trailing.to_owned()))
 }
 
-/// Parse `k/M` into `(k, M)`. Tolerates bad input.
-fn parse_hop(s: &str) -> Option<(u8, u8)> {
-    let (a, b) = take_until(s, "/")?;
-    Some((a.parse().ok()?, b.parse().ok()?))
-}
-
-/// Pull a correlation id out of a tool result's text (the JSON the
-/// peer tools emit). Returns `None` when the call hasn't completed
-/// yet, or when the parse fails.
-fn extract_correlation_id_from_result(tc: &ToolCallInfo) -> Option<String> {
-    use crate::agent::model::{ContentBlock, ToolCallContent};
-    for content in &tc.content {
-        if let ToolCallContent::Content(chunk) = content
-            && let ContentBlock::Text(text_content) = &chunk.content
-        {
-            let text = &text_content.text;
-            // Body is pretty-printed JSON containing
-            //   "correlation_id": "q-XXXXXXXX"
-            // Find that field. Don't full-parse — tool result strings
-            // can be noisy at the edges.
-            if let Some(start) = text.find("\"correlation_id\": \"") {
-                let rest = &text[start + "\"correlation_id\": \"".len()..];
-                if let Some(end) = rest.find('"') {
-                    return Some(rest[..end].to_owned());
-                }
-            }
-        }
-    }
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn detect_question_inbound() {
-        let text = "[Question id=q-7f3a92e0 hop=1/10 from agent 'forge' (org 'Personal') - reply with tell_agent in_reply_to=q-7f3a92e0]\n\nWhat's the test setup look like?";
-        let kind = detect_inbound(text).expect("question parsed");
+        let text = "[Question id=q-7f3a92e0 hop=1/10 from agent 'forge' (org 'Personal') - reply with tell_agent in_reply_to=q-7f3a92e0]\n\nWhat's the test setup?";
+        let kind = detect_inbound(text).expect("question");
         match kind {
-            PeerInboundKind::Question { id, from, org, hop, hop_max, body } => {
-                assert_eq!(id, "q-7f3a92e0");
+            PeerInboundKind::Question { from, org, body } => {
                 assert_eq!(from, "forge");
                 assert_eq!(org, "Personal");
-                assert_eq!(hop, 1);
-                assert_eq!(hop_max, 10);
-                assert_eq!(body, "What's the test setup look like?");
+                assert_eq!(body, "What's the test setup?");
             }
             other => panic!("expected Question, got {other:?}"),
         }
@@ -857,14 +528,13 @@ mod tests {
 
     #[test]
     fn detect_message_inbound() {
-        let text = "[Message id=t-c45a8f12 hop=1/10 from agent 'forge' (org 'Personal')]\n\nFYI I just pushed the rewriter cleanup.";
-        let kind = detect_inbound(text).expect("message parsed");
+        let text = "[Message id=t-c45a8f12 hop=2/10 from agent 'granite-backend' (org 'Granite')]\n\nFYI rewriter cleanup just landed.";
+        let kind = detect_inbound(text).expect("message");
         match kind {
-            PeerInboundKind::Message { id, from, org, body, .. } => {
-                assert_eq!(id, "t-c45a8f12");
-                assert_eq!(from, "forge");
-                assert_eq!(org, "Personal");
-                assert_eq!(body, "FYI I just pushed the rewriter cleanup.");
+            PeerInboundKind::Message { from, org, body } => {
+                assert_eq!(from, "granite-backend");
+                assert_eq!(org, "Granite");
+                assert_eq!(body, "FYI rewriter cleanup just landed.");
             }
             other => panic!("expected Message, got {other:?}"),
         }
@@ -872,14 +542,13 @@ mod tests {
 
     #[test]
     fn detect_reply_inbound() {
-        let text = "[Reply id=q-7f3a92e0 from agent 'granite-backend' (org 'Granite') to your earlier ask]\n\nWe use pgtemp.";
-        let kind = detect_inbound(text).expect("reply parsed");
+        let text = "[Reply id=q-7f3a92e0 from agent 'granite-backend' (org 'Granite') to your earlier ask]\n\nWe use pgtemp for ephemeral postgres in CI.";
+        let kind = detect_inbound(text).expect("reply");
         match kind {
-            PeerInboundKind::Reply { id, from, org, body } => {
-                assert_eq!(id, "q-7f3a92e0");
+            PeerInboundKind::Reply { from, org, body } => {
                 assert_eq!(from, "granite-backend");
                 assert_eq!(org, "Granite");
-                assert_eq!(body, "We use pgtemp.");
+                assert_eq!(body, "We use pgtemp for ephemeral postgres in CI.");
             }
             other => panic!("expected Reply, got {other:?}"),
         }
@@ -887,18 +556,17 @@ mod tests {
 
     #[test]
     fn detect_late_reply_inbound() {
-        let text = "[Late reply id=q-7f3a92e0 from agent 'granite-backend' (org 'Granite') - your ask expired before this reply was sent]\n\nSorry for the delay.";
-        let kind = detect_inbound(text).expect("late reply parsed");
+        let text = "[Late reply id=q-7f3a92e0 from agent 'granite-backend' (org 'Granite') ...]\n\nSorry for the delay.";
+        let kind = detect_inbound(text).expect("late reply");
         assert!(matches!(kind, PeerInboundKind::LateReply { .. }));
     }
 
     #[test]
     fn detect_caller_timeout_inbound() {
-        let text = "[Ask id=q-7f3a92e0 to agent 'granite-backend' (org 'Granite') timed out after 30 minutes - no reply received. Any reply after this point will be tagged late.]";
-        let kind = detect_inbound(text).expect("caller timeout parsed");
+        let text = "[Ask id=q-7f3a92e0 to agent 'granite-backend' (org 'Granite') timed out after 30 minutes - no reply received. ...]\n\nwas: \"...\"";
+        let kind = detect_inbound(text).expect("timeout");
         match kind {
-            PeerInboundKind::CallerTimeout { id, target, org, .. } => {
-                assert_eq!(id, "q-7f3a92e0");
+            PeerInboundKind::CallerTimeout { target, org, .. } => {
                 assert_eq!(target, "granite-backend");
                 assert_eq!(org, "Granite");
             }
@@ -908,11 +576,10 @@ mod tests {
 
     #[test]
     fn detect_recipient_expired_inbound() {
-        let text = "[Ask id=q-7f3a92e0 from agent 'forge' (org 'Personal') has expired - any reply you produce will be tagged late.]";
-        let kind = detect_inbound(text).expect("recipient expired parsed");
+        let text = "[Ask id=q-7f3a92e0 from agent 'forge' (org 'Personal') has expired - any reply you produce will be tagged late.]\n\n";
+        let kind = detect_inbound(text).expect("expired");
         match kind {
-            PeerInboundKind::RecipientExpired { id, from, org, .. } => {
-                assert_eq!(id, "q-7f3a92e0");
+            PeerInboundKind::RecipientExpired { from, org, .. } => {
                 assert_eq!(from, "forge");
                 assert_eq!(org, "Personal");
             }
@@ -922,156 +589,26 @@ mod tests {
 
     #[test]
     fn detect_delivery_failure_inbound() {
-        let text = "[Ask id=q-d31fa8a3 to agent 'granite-liq-bot' (org 'Granite') failed to deliver: target spawn failed: all pinned accounts are rate-limited]";
-        let kind = detect_inbound(text).expect("delivery failure parsed");
+        let text = "[Ask id=q-d31fa8a3 to agent 'granite-liq-bot' (org 'Granite') failed to deliver: target spawn failed: all pinned accounts are rate-limited]\n\n";
+        let kind = detect_inbound(text).expect("delivery failure");
         match kind {
-            PeerInboundKind::DeliveryFailure { id, target, reason, .. } => {
-                assert_eq!(id, "q-d31fa8a3");
+            PeerInboundKind::DeliveryFailure { target, org, reason } => {
                 assert_eq!(target, "granite-liq-bot");
-                assert!(reason.contains("rate-limited"), "got: {reason}");
+                assert_eq!(org, "Granite");
+                assert!(reason.contains("rate-limited"), "reason carries failure detail: {reason}");
             }
             other => panic!("expected DeliveryFailure, got {other:?}"),
         }
     }
 
-    /// #146: async-path WorkerSpawnFailed notice parses with the
-    /// label + id + reason intact. The reason carries verbatim
-    /// claude stderr (may contain spaces, quotes, etc.) - this
-    /// fixture uses the empty-repo "Failed to resolve base branch"
-    /// case the issue calls out.
     #[test]
     fn detect_worker_spawn_failed_inbound() {
-        let text = "[Worker 'reviewer' spawn failed id=t-c45a8f12: Failed to resolve base branch \"HEAD\": git rev-parse failed]";
-        let kind = detect_inbound(text).expect("worker spawn failed parsed");
+        let text = "[Worker 'planner' spawn failed id=plan-7f3a: spawned with --worktree but git CLI not found]\n\n";
+        let kind = detect_inbound(text).expect("worker spawn failed");
         match kind {
-            PeerInboundKind::WorkerSpawnFailed { id, label, reason } => {
-                assert_eq!(id, "t-c45a8f12");
-                assert_eq!(label, "reviewer");
-                assert!(reason.starts_with("Failed to resolve base branch"));
-            }
-            other => panic!("expected WorkerSpawnFailed, got {other:?}"),
-        }
-    }
-
-    /// I3 — cross-crate roundtrip guard. workspace's
-    /// `WrappedPrompt::to_prose` (emitter) and forge-tui's
-    /// `detect_inbound` (parser) hand-roll the same wire format in two
-    /// crates. Without a roundtrip test, schema drift goes silent: a
-    /// new field on one side keeps the other side's tests green while
-    /// the live chat block stops rendering. These tests build a typed
-    /// `WrappedPrompt` in workspace, emit it via `to_prose`, then feed
-    /// the result to `detect_inbound` and assert the parsed kind
-    /// matches what was emitted.
-    #[test]
-    fn roundtrip_question_to_prose_through_detect_inbound() {
-        use forge_workspace::{CorrelationId, WrappedKind, WrappedPrompt};
-        let w = WrappedPrompt {
-            correlation_id: CorrelationId::from_external("q-7f3a92e0").expect("valid id"),
-            kind: WrappedKind::Question,
-            sender_name: "forge".to_owned(),
-            sender_org: "Personal".to_owned(),
-            hop: 1,
-            hop_limit: 10,
-            body: "What's the test setup look like?".to_owned(),
-        };
-        let kind = detect_inbound(&w.to_prose()).expect("roundtrip parses");
-        match kind {
-            PeerInboundKind::Question { id, from, org, hop, hop_max, body } => {
-                assert_eq!(id, "q-7f3a92e0");
-                assert_eq!(from, "forge");
-                assert_eq!(org, "Personal");
-                assert_eq!(hop, 1);
-                assert_eq!(hop_max, 10);
-                assert_eq!(body, "What's the test setup look like?");
-            }
-            other => panic!("expected Question, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn roundtrip_message_to_prose_through_detect_inbound() {
-        use forge_workspace::{CorrelationId, WrappedKind, WrappedPrompt};
-        let w = WrappedPrompt {
-            correlation_id: CorrelationId::from_external("t-c45a8f12").expect("valid id"),
-            kind: WrappedKind::Message,
-            sender_name: "forge".to_owned(),
-            sender_org: "Personal".to_owned(),
-            hop: 1,
-            hop_limit: 10,
-            body: "FYI I just pushed the rewriter cleanup.".to_owned(),
-        };
-        let kind = detect_inbound(&w.to_prose()).expect("roundtrip parses");
-        assert!(matches!(kind, PeerInboundKind::Message { .. }));
-    }
-
-    #[test]
-    fn roundtrip_reply_to_prose_through_detect_inbound() {
-        use forge_workspace::{CorrelationId, WrappedKind, WrappedPrompt};
-        let w = WrappedPrompt {
-            correlation_id: CorrelationId::from_external("q-7f3a92e0").expect("valid id"),
-            kind: WrappedKind::Reply,
-            sender_name: "granite-backend".to_owned(),
-            sender_org: "Granite".to_owned(),
-            hop: 0,
-            hop_limit: 10,
-            body: "We use pgtemp.".to_owned(),
-        };
-        let kind = detect_inbound(&w.to_prose()).expect("roundtrip parses");
-        match kind {
-            PeerInboundKind::Reply { id, from, org, body } => {
-                assert_eq!(id, "q-7f3a92e0");
-                assert_eq!(from, "granite-backend");
-                assert_eq!(org, "Granite");
-                assert_eq!(body, "We use pgtemp.");
-            }
-            other => panic!("expected Reply, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn roundtrip_delivery_failure_through_detect_inbound() {
-        use forge_workspace::{CorrelationId, WrappedKind, WrappedPrompt};
-        let w = WrappedPrompt {
-            correlation_id: CorrelationId::from_external("q-d31fa8a3").expect("valid id"),
-            kind: WrappedKind::DeliveryFailureNotice,
-            sender_name: "granite-liq-bot".to_owned(),
-            sender_org: "Granite".to_owned(),
-            hop: 0,
-            hop_limit: 10,
-            body: "target session connection lost".to_owned(),
-        };
-        let kind = detect_inbound(&w.to_prose()).expect("roundtrip parses");
-        match kind {
-            PeerInboundKind::DeliveryFailure { id, target, reason, .. } => {
-                assert_eq!(id, "q-d31fa8a3");
-                assert_eq!(target, "granite-liq-bot");
-                assert!(reason.contains("connection lost"), "got: {reason}");
-            }
-            other => panic!("expected DeliveryFailure, got {other:?}"),
-        }
-    }
-
-    /// #146 roundtrip: workspace's WrappedPrompt → to_prose →
-    /// detect_inbound parses back to PeerInboundKind::WorkerSpawnFailed
-    /// with all fields preserved.
-    #[test]
-    fn roundtrip_worker_spawn_failed_through_detect_inbound() {
-        use forge_workspace::{CorrelationId, WrappedKind, WrappedPrompt};
-        let w = WrappedPrompt {
-            correlation_id: CorrelationId::from_external("t-c45a8f12").expect("valid id"),
-            kind: WrappedKind::WorkerSpawnFailedNotice,
-            sender_name: "reviewer".to_owned(),
-            sender_org: String::new(),
-            hop: 1,
-            hop_limit: 10,
-            body: "Failed to resolve base branch \"HEAD\": git rev-parse failed".to_owned(),
-        };
-        let kind = detect_inbound(&w.to_prose()).expect("roundtrip parses");
-        match kind {
-            PeerInboundKind::WorkerSpawnFailed { id, label, reason } => {
-                assert_eq!(id, "t-c45a8f12");
-                assert_eq!(label, "reviewer");
-                assert!(reason.starts_with("Failed to resolve base branch"));
+            PeerInboundKind::WorkerSpawnFailed { label, reason } => {
+                assert_eq!(label, "planner");
+                assert!(reason.contains("git CLI not found"), "reason text: {reason}");
             }
             other => panic!("expected WorkerSpawnFailed, got {other:?}"),
         }
@@ -1079,251 +616,137 @@ mod tests {
 
     #[test]
     fn detect_inbound_rejects_non_peer_text() {
-        assert!(detect_inbound("Hello, world!").is_none());
-        assert!(detect_inbound("[Not a peer wrapper]").is_none());
-        assert!(detect_inbound("[Question with no id]\n\nbody").is_none());
+        assert!(detect_inbound("plain user message").is_none());
+        assert!(detect_inbound("[not-a-peer-prefix]").is_none());
+        assert!(detect_inbound("[Question id=q-bad").is_none());
     }
 
-    // ---------------------------------------------------------------
-    // #163 v1: compact follower renderer.
-    // ---------------------------------------------------------------
-
-    /// Helper: render and convert to plain-string lines for
-    /// readable assertions.
-    fn render_follower_to_strings(kind: &PeerInboundKind, same_worker: bool) -> Vec<String> {
-        let lines = render_inbound_follower(kind, same_worker, false);
+    fn render_lines_to_strings(lines: &[Line<'static>]) -> Vec<String> {
         lines
-            .into_iter()
-            .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.clone().into_owned()).collect::<String>())
             .collect()
     }
 
-    /// FollowerNewWorker (same_worker = false): the compact renderer
-    /// produces a `  ▶ <worker>` header line plus body lines under it.
-    /// Drops the kind-label / id / org meta that the streak-starter
-    /// shape carries.
     #[test]
-    fn render_inbound_follower_emits_worker_label_header() {
-        let kind = PeerInboundKind::Message {
-            id: "t-12345678".to_owned(),
-            from: "planner".to_owned(),
-            org: "worker in forge".to_owned(),
-            hop: 1,
-            hop_max: 10,
-            body: "dispatched #149 to implementer".to_owned(),
-        };
-        let lines = render_follower_to_strings(&kind, false);
-        assert_eq!(lines.len(), 2, "expected header + one body line, got {lines:?}");
-        // Header has the ▶ glyph + worker label. id / org / kind-label
-        // are intentionally absent.
-        assert!(lines[0].contains("\u{25B6}"), "header carries ▶ glyph: {:?}", lines[0]);
-        assert!(lines[0].contains("planner"), "header carries worker label: {:?}", lines[0]);
-        assert!(
-            !lines[0].contains("message"),
-            "no kind-label in header (#163 spec): {:?}",
-            lines[0]
-        );
-        assert!(!lines[0].contains("t-12345678"), "no id in header (#163 spec): {:?}", lines[0]);
-        assert!(
-            !lines[0].contains("worker in forge"),
-            "no org in header (#163 spec): {:?}",
-            lines[0]
-        );
-        assert!(lines[1].contains("dispatched #149"), "body on its own line: {:?}", lines[1]);
-    }
-
-    /// FollowerSameWorker (same_worker = true): the worker label
-    /// header is dropped entirely; only body lines render. The
-    /// resulting envelope visually continues the previous envelope's
-    /// body as one paragraph.
-    #[test]
-    fn render_inbound_follower_same_worker_drops_label_line() {
-        let kind = PeerInboundKind::Message {
-            id: "t-12345678".to_owned(),
-            from: "planner".to_owned(),
-            org: "worker in forge".to_owned(),
-            hop: 1,
-            hop_max: 10,
-            body: "also queued #158 behind it".to_owned(),
-        };
-        let lines = render_follower_to_strings(&kind, true);
-        assert_eq!(lines.len(), 1, "same-worker drops header, one body line: {lines:?}");
-        assert!(!lines[0].contains("\u{25B6}"), "no ▶ glyph on same-worker follower");
-        assert!(!lines[0].contains("planner"), "no worker label on same-worker follower");
-        assert!(lines[0].contains("also queued #158"));
-    }
-
-    /// Multi-line body wraps to multiple lines under the worker
-    /// label. The header counts as 1 line; each body \n increments.
-    #[test]
-    fn render_inbound_follower_multiline_body() {
-        let kind = PeerInboundKind::Message {
-            id: "t-12345678".to_owned(),
-            from: "planner".to_owned(),
-            org: "worker in forge".to_owned(),
-            hop: 1,
-            hop_max: 10,
-            body: "line one\nline two\nline three".to_owned(),
-        };
-        let lines = render_follower_to_strings(&kind, false);
-        assert_eq!(lines.len(), 4, "1 header + 3 body lines");
-        assert!(lines[1].contains("line one"));
-        assert!(lines[2].contains("line two"));
-        assert!(lines[3].contains("line three"));
-    }
-
-    #[test]
-    fn render_inbound_question_produces_styled_lines() {
+    fn render_inbound_question_full_shape() {
         let kind = PeerInboundKind::Question {
-            id: "q-7f3a92e0".to_owned(),
-            from: "forge".to_owned(),
-            org: "Personal".to_owned(),
-            hop: 1,
-            hop_max: 10,
-            body: "What's the setup?".to_owned(),
+            from: "planner".into(),
+            org: "Personal".into(),
+            body: "Is the seam plan ready?".into(),
         };
-        let lines = render_inbound(&kind, false);
-        assert!(!lines.is_empty(), "non-empty");
-        // First line is the header with the question icon + label.
-        let header_text: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(header_text.contains("question"), "header has label: {header_text}");
-        assert!(header_text.contains("forge"), "header has sender: {header_text}");
-        assert!(header_text.contains("q-7f3a92e0"), "header has id: {header_text}");
+        let lines = render_inbound(&kind, false, false);
+        let s = render_lines_to_strings(&lines);
+        assert!(s[0].contains("\u{25B6}"), "header has ▶ glyph: {:?}", s[0]);
+        assert!(s[0].contains("Question planner"), "verb + name: {:?}", s[0]);
+        assert!(!s[0].contains("Personal"), "org suppressed: {:?}", s[0]);
+        assert!(s.last().unwrap().contains("Is the seam plan ready?"));
     }
 
     #[test]
-    fn render_outbound_ask_block() {
+    fn render_inbound_late_reply_shows_modifier() {
+        let kind = PeerInboundKind::LateReply {
+            from: "granite-backend".into(),
+            org: "Granite".into(),
+            body: "Sorry for the delay.".into(),
+        };
+        let lines = render_inbound(&kind, false, false);
+        let s = render_lines_to_strings(&lines);
+        assert!(s[0].contains("Reply granite-backend"));
+        assert!(s[0].contains("\u{26a0} late"), "modifier ⚠ late: {:?}", s[0]);
+    }
+
+    #[test]
+    fn render_inbound_caller_timeout_shows_ask_with_modifier() {
+        let kind = PeerInboundKind::CallerTimeout {
+            target: "planner".into(),
+            org: "Personal".into(),
+            body: "was: \"is the seam plan ready?\"".into(),
+        };
+        let lines = render_inbound(&kind, false, false);
+        let s = render_lines_to_strings(&lines);
+        assert!(s[0].contains("Ask planner"), "verb + target: {:?}", s[0]);
+        assert!(s[0].contains("\u{26a0} timed out"), "modifier ⚠ timed out: {:?}", s[0]);
+    }
+
+    #[test]
+    fn render_inbound_suppress_header_drops_verb_line() {
+        let kind = PeerInboundKind::Message {
+            from: "implementer".into(),
+            org: "Personal".into(),
+            body: "PR #187 open.".into(),
+        };
+        let lines = render_inbound(&kind, true, false);
+        let s = render_lines_to_strings(&lines);
+        // No verb header, only body lines under tree connectors.
+        assert!(!s.iter().any(|line| line.contains("\u{25B6}")), "no ▶ header: {s:?}");
+        assert!(s.iter().any(|line| line.contains("PR #187 open.")), "body present: {s:?}");
+    }
+
+    #[test]
+    fn render_inbound_collapsed_shows_summary_with_hint() {
+        let kind = PeerInboundKind::Message {
+            from: "planner".into(),
+            org: "Personal".into(),
+            body: "first line\nsecond line".into(),
+        };
+        let lines = render_inbound(&kind, false, true);
+        let s = render_lines_to_strings(&lines);
+        assert!(s.iter().any(|line| line.contains("click or ctrl+x to expand")));
+        // Only the first line is surfaced in the summary, not the second.
+        assert!(s.iter().any(|line| line.contains("first line")));
+        assert!(!s.iter().any(|line| line.contains("second line")));
+    }
+
+    #[test]
+    fn render_inbound_expanded_keeps_full_body() {
+        let kind = PeerInboundKind::Message {
+            from: "planner".into(),
+            org: "Personal".into(),
+            body: "one\ntwo\nthree".into(),
+        };
+        let lines = render_inbound(&kind, false, false);
+        let s = render_lines_to_strings(&lines);
+        assert!(s.iter().any(|line| line.contains("one")));
+        assert!(s.iter().any(|line| line.contains("two")));
+        assert!(s.iter().any(|line| line.contains("three")));
+    }
+
+    #[test]
+    fn render_outbound_ask_shape() {
         let kind = PeerOutboundKind::Ask {
-            family: OutboundFamily::Peers,
-            target: "granite-backend".to_owned(),
-            body: "What's the test setup?".to_owned(),
-            correlation_id: Some("q-7f3a92e0".to_owned()),
+            target: "planner".into(),
+            body: "Is the seam plan ready?".into(),
         };
         let lines = render_outbound(&kind, false);
-        assert!(!lines.is_empty());
-        let header_text: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(header_text.contains("ask"), "header has label: {header_text}");
-        assert!(header_text.contains("granite-backend"), "header has target: {header_text}");
-        assert!(header_text.contains("q-7f3a92e0"), "header has id: {header_text}");
+        let s = render_lines_to_strings(&lines);
+        assert!(s[0].contains("Ask planner"), "verb + target: {:?}", s[0]);
+        assert!(s[0].contains("\u{25B6}"), "▶ glyph: {:?}", s[0]);
     }
 
     #[test]
-    fn render_outbound_with_pending_correlation_id() {
+    fn render_outbound_tell_shape() {
         let kind = PeerOutboundKind::Tell {
-            family: OutboundFamily::Peers,
-            target: "forge".to_owned(),
-            body: "fyi".to_owned(),
-            correlation_id: None,
+            target: "planner".into(),
+            body: "FYI: PR #187 is open.".into(),
         };
         let lines = render_outbound(&kind, false);
-        let header_text: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(header_text.contains("tell"));
-        // Pending id placeholder (tells use `t-…`).
-        assert!(header_text.contains("t-…"));
+        let s = render_lines_to_strings(&lines);
+        assert!(s[0].contains("Tell planner"));
     }
 
-    /// Expanded view must render the FULL body — no truncation,
-    /// no ellipsis. Truncation only lives in the collapsed summary.
     #[test]
-    fn expanded_body_is_not_truncated() {
-        let body = "x".repeat(500);
-        let kind = PeerInboundKind::Reply {
-            id: "q-1".to_owned(),
-            from: "a".to_owned(),
-            org: "o".to_owned(),
-            body: body.clone(),
+    fn render_worker_spawn_failed_uses_distinct_chrome() {
+        let kind = PeerInboundKind::WorkerSpawnFailed {
+            label: "planner".into(),
+            reason: "git not found".into(),
         };
-        let lines = render_inbound(&kind, false);
-        let body_text: String =
-            lines.iter().skip(1).flat_map(|l| l.spans.iter().map(|s| s.content.as_ref())).collect();
-        assert!(
-            !body_text.contains('\u{2026}'),
-            "expanded body must not contain a truncation ellipsis: {body_text:?}"
-        );
-        // The full 500-char run should appear somewhere in the body
-        // rows (it's a single line so it lands on one row).
-        assert!(body_text.contains(body.as_str()), "expanded body must contain the full prose");
-    }
-
-    /// Collapsed inbound block should be exactly 2 lines: header +
-    /// `  └─ <summary> click or ctrl+x to expand`.
-    #[test]
-    fn render_inbound_collapsed_shape() {
-        let kind = PeerInboundKind::Question {
-            id: "q-1".to_owned(),
-            from: "forge".to_owned(),
-            org: "Personal".to_owned(),
-            hop: 1,
-            hop_max: 10,
-            body: "Line 1\nLine 2\nLine 3".to_owned(),
-        };
-        let lines = render_inbound(&kind, true);
-        assert_eq!(lines.len(), 2, "collapsed = header + summary row");
-        let last_text: String = lines[1].spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(last_text.starts_with("  \u{2514}\u{2500} "), "tree corner present: {last_text}");
-        assert!(last_text.contains("click or ctrl+x to expand"), "expand hint: {last_text}");
-        assert!(last_text.contains("Line 1"), "summary shows first body line: {last_text}");
-        assert!(!last_text.contains("Line 2"), "summary stops at first body line: {last_text}");
-    }
-
-    #[test]
-    fn render_outbound_collapsed_shape() {
-        let kind = PeerOutboundKind::Ask {
-            family: OutboundFamily::Peers,
-            target: "granite-backend".to_owned(),
-            body: "Long prompt\nspanning\nmultiple lines".to_owned(),
-            correlation_id: Some("q-1".to_owned()),
-        };
-        let lines = render_outbound(&kind, true);
-        assert_eq!(lines.len(), 2);
-        let last_text: String = lines[1].spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(last_text.contains("click or ctrl+x to expand"));
-    }
-
-    #[test]
-    fn render_outbound_workers_spawn_shows_label_and_charter() {
-        let kind = PeerOutboundKind::WorkerSpawn {
-            label: "reviewer".to_owned(),
-            charter: "be terse".to_owned(),
-        };
-        let lines = render_outbound(&kind, false);
-        assert!(!lines.is_empty());
-        let header_text: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(
-            header_text.contains("worker spawn"),
-            "header carries the worker label: {header_text}"
-        );
-        assert!(header_text.contains("reviewer"), "header has target: {header_text}");
-        let body_text: String =
-            lines.iter().skip(1).flat_map(|l| l.spans.iter().map(|s| s.content.as_ref())).collect();
-        assert!(body_text.contains("be terse"), "charter prose appears in body: {body_text}");
-    }
-
-    #[test]
-    fn render_outbound_workers_tell_uses_workers_labelling() {
-        let kind = PeerOutboundKind::Tell {
-            family: OutboundFamily::Workers,
-            target: "reviewer".to_owned(),
-            body: "hello".to_owned(),
-            correlation_id: Some("t-abc".to_owned()),
-        };
-        let lines = render_outbound(&kind, false);
-        let header_text: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(
-            header_text.contains("worker tell"),
-            "workers family swaps the label: {header_text}"
-        );
-        assert!(header_text.contains("reviewer"));
-    }
-
-    #[test]
-    fn render_outbound_workers_list_is_header_only() {
-        let kind = PeerOutboundKind::WorkerList;
-        let lines = render_outbound(&kind, false);
-        // No args + no body means no tree children - just the header row.
-        assert_eq!(lines.len(), 1, "workers__list is a header-only block");
-        let header_text: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(header_text.contains("worker list"));
+        let lines = render_inbound(&kind, false, false);
+        let s = render_lines_to_strings(&lines);
+        // Uses ✗ rather than ▶ to mark it as a system notice, not a peer row.
+        assert!(s[0].contains("\u{2717}"), "✗ glyph: {:?}", s[0]);
+        assert!(s[0].contains("Worker 'planner' spawn failed"));
+        assert!(s.last().unwrap().contains("git not found"));
     }
 
     fn make_tc(sdk_tool_name: &str, raw_input: serde_json::Value) -> crate::app::ToolCallInfo {
@@ -1357,31 +780,65 @@ mod tests {
     }
 
     #[test]
-    fn detect_outbound_recognises_workers_spawn() {
-        let raw = serde_json::json!({"label": "reviewer", "charter": "be terse"});
-        let tc = make_tc("mcp__forge__workers__spawn", raw);
-        let kind = detect_outbound(&tc).expect("workers__spawn detected");
-        match kind {
-            PeerOutboundKind::WorkerSpawn { label, charter } => {
-                assert_eq!(label, "reviewer");
-                assert_eq!(charter, "be terse");
+    fn detect_outbound_recognises_peers_ask_with_target_arg() {
+        let tc = make_tc(
+            "mcp__forge__peers__ask_agent",
+            serde_json::json!({ "target": "granite-backend", "prompt": "?" }),
+        );
+        match detect_outbound(&tc) {
+            Some(PeerOutboundKind::Ask { target, body }) => {
+                assert_eq!(target, "granite-backend");
+                assert_eq!(body, "?");
             }
-            other => panic!("expected WorkerSpawn, got {other:?}"),
+            other => panic!("expected Ask, got {other:?}"),
         }
     }
 
     #[test]
     fn detect_outbound_recognises_workers_ask_with_label_arg() {
-        let raw = serde_json::json!({"label": "reviewer", "question": "ready?"});
-        let tc = make_tc("mcp__forge__workers__ask", raw);
-        let kind = detect_outbound(&tc).expect("workers__ask detected");
-        match kind {
-            PeerOutboundKind::Ask { family, target, body, .. } => {
-                assert_eq!(family, OutboundFamily::Workers);
-                assert_eq!(target, "reviewer");
+        let tc = make_tc(
+            "mcp__forge__workers__ask",
+            serde_json::json!({ "label": "planner", "question": "ready?" }),
+        );
+        match detect_outbound(&tc) {
+            Some(PeerOutboundKind::Ask { target, body }) => {
+                assert_eq!(target, "planner");
                 assert_eq!(body, "ready?");
             }
-            other => panic!("expected Ask{{Workers}}, got {other:?}"),
+            other => panic!("expected Ask, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn detect_outbound_recognises_workers_tell_with_label_arg() {
+        let tc = make_tc(
+            "mcp__forge__workers__tell",
+            serde_json::json!({ "label": "implementer", "message": "PR #199 ready" }),
+        );
+        match detect_outbound(&tc) {
+            Some(PeerOutboundKind::Tell { target, body }) => {
+                assert_eq!(target, "implementer");
+                assert_eq!(body, "PR #199 ready");
+            }
+            other => panic!("expected Tell, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn detect_outbound_ignores_workers_spawn_and_list() {
+        let spawn = make_tc(
+            "mcp__forge__workers__spawn",
+            serde_json::json!({ "label": "planner", "charter": "..." }),
+        );
+        assert!(detect_outbound(&spawn).is_none(), "spawn falls through to standard tool card");
+
+        let list = make_tc("mcp__forge__workers__list", serde_json::json!({}));
+        assert!(detect_outbound(&list).is_none(), "list falls through to standard tool card");
+    }
+
+    #[test]
+    fn detect_outbound_ignores_other_tools() {
+        let tc = make_tc("Bash", serde_json::json!({ "command": "ls" }));
+        assert!(detect_outbound(&tc).is_none());
     }
 }
