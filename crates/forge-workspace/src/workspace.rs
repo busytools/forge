@@ -2285,48 +2285,67 @@ impl Workspace {
         None
     }
 
-    /// Look up a project root path by its `ProjectKey`. Searches
-    /// the test overlay first (under `cfg(test)` / `feature =
-    /// "testing"`), then `config.projects`. Returns `None` when no
-    /// loaded project's path canonicalises to the given key.
-    ///
-    /// Used by [`Self::git_scan_cwd_for_session`] to derive the
-    /// project root from a worker's project_key without depending
-    /// on the worker's `cwd_raw` value (which carries the project
-    /// root for fresh spawns and the worktree path for resumed
-    /// sessions - the two cases would otherwise need different
-    /// composition logic).
     /// Resolve the cwd to pass to `claude --resume` for the session
     /// at `session_key`. Three-step fallback:
     /// 1. `session_cwd_for(key)` - the catalog scan returns the
     ///    original cwd from the session's `system/init` row. Works
     ///    for lead sessions; returns None for worker-tagged sessions
     ///    (the catalog walk excludes them).
-    /// 2. Worker fallback (#245 Layer B): when the session is a
-    ///    live worker, return the owning project's root. claude's
-    ///    `--worktree <label>` flag composes the actual cwd
-    ///    (`<project_root>/.claude/worktrees/<label>/`) at spawn time,
-    ///    so passing the project root - not the worktree path -
-    ///    gives claude the right git context to derive the JSONL
-    ///    location. Without this, claude inherits the forge
-    ///    binary's process cwd (whatever directory forge was
-    ///    launched from), derives the wrong JSONL path, and exits
-    ///    with "No conversation found with session ID:".
+    /// 2. Worker fallback (#245 Layer B): when the session is a live
+    ///    worker, compose the cwd via [`worker_tag_dir`] - the same
+    ///    helper that decided where claude wrote the JSONL at spawn
+    ///    time. For git-repo workers that's
+    ///    `<project_root>/.claude/worktrees/<label>`; for non-git
+    ///    workers it's `<project_root>` unmodified.
+    ///
+    ///    Critically, `claude --resume` does NOT receive a
+    ///    `--worktree` flag (see `SessionLaunchSettings::extra_args`
+    ///    in `forge-agent/src/client.rs` - lead/resume paths leave
+    ///    extra_args empty), so the subprocess cwd is the ONLY signal
+    ///    claude uses to derive the JSONL location. Passing just the
+    ///    project root for a git worker makes claude look under the
+    ///    project's sanitised dir, miss the worker JSONL (which lives
+    ///    under the worktree's sanitised dir), and exit with "No
+    ///    conversation found with session ID:". Composing with
+    ///    `worker_tag_dir` gives claude the right anchor so it
+    ///    resolves the worker JSONL on the first try.
     /// 3. Default to empty string. Pass through and let the bridge
     ///    surface ConnectionFailed - the session can't be resumed
-    ///    cleanly anyway.
+    ///    cleanly anyway. Logs a warn so a regression is visible in
+    ///    the field instead of silently failing later.
+    ///
+    /// [`worker_tag_dir`]: crate::mcp::workers::types::worker_tag_dir
     pub(crate) fn resume_cwd_for_session(&self, session_key: &SessionKey) -> String {
         if let Some(cwd) = self.session_cwd_for(session_key) {
             return cwd;
         }
-        if let Some((project_key, _label, _is_git)) = self.worker_lookup_for_session(session_key)
+        if let Some((project_key, label, is_git)) = self.worker_lookup_for_session(session_key)
             && let Some(root) = self.project_root_for_key(&project_key)
         {
-            return root.to_string_lossy().into_owned();
+            return crate::mcp::workers::types::worker_tag_dir(&root, &label, is_git)
+                .to_string_lossy()
+                .into_owned();
         }
+        tracing::warn!(
+            target: "forge_workspace::workspace",
+            session_key = %session_key.as_str(),
+            "resume_cwd_for_session: no catalog cwd and no live worker entry; \
+             passing empty cwd to claude (resume will fail with ConnectionFailed)",
+        );
         String::new()
     }
 
+    /// Look up a project root path by its `ProjectKey`. Searches
+    /// the test overlay first (under `cfg(test)` / `feature =
+    /// "testing"`), then `config.projects`. Returns `None` when no
+    /// loaded project's path canonicalises to the given key.
+    ///
+    /// Used by [`Self::git_scan_cwd_for_session`] and
+    /// [`Self::resume_cwd_for_session`] to derive the project root
+    /// from a worker's project_key without depending on the worker's
+    /// `cwd_raw` value (which carries the project root for fresh
+    /// spawns and the worktree path for resumed sessions - the two
+    /// cases would otherwise need different composition logic).
     pub(crate) fn project_root_for_key(&self, target: &ProjectKey) -> Option<std::path::PathBuf> {
         let derive_key = |project: &LoadedProject| {
             ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
@@ -2406,18 +2425,36 @@ impl Workspace {
         project_root.join(".claude/worktrees").join(&label)
     }
 
-    /// Handle an async worker-spawn failure: classify the error,
-    /// dispatch a typed notice to the lead's chat when the
-    /// classifier identifies a worktree-creation failure, and roll
-    /// back the worker's `WorkerEntry` regardless of classifier
-    /// outcome (parity with the sync rollback in
-    /// `handle_spawn_worker`).
+    /// Handle an async worker-spawn failure. Two paths, branching
+    /// on the classifier outcome (#245 Layer C):
     ///
-    /// Returns `true` when the caller IS a worker (so it knows to
-    /// suppress nothing - the existing `ConnectionFailed` emission
-    /// still fires for the TUI side). `false` for lead sessions or
-    /// any other non-worker, in which case the caller's existing
-    /// behaviour proceeds unchanged.
+    /// - **Worktree-creation failure** (the worker never actually
+    ///   started because git worktree setup failed): roll back the
+    ///   `WorkerEntry` (the worker doesn't exist; the user-visible
+    ///   signal is a typed notice routed to the lead's chat) and
+    ///   emit `WorkerStatusChanged { Removed }`. Mirrors the sync
+    ///   rollback in `handle_spawn_worker`.
+    /// - **Any other failure** (resume against missing JSONL,
+    ///   generic dispatch error, claude subprocess exit, etc.):
+    ///   keep the `WorkerEntry` and transition it to
+    ///   [`WorkerLiveness::Failed`] with the first line of the
+    ///   message as the diagnostic. The Projects pane renders the
+    ///   worker as a red `✕` with a DIM sub-row carrying the
+    ///   diagnostic, so a stuck-Spawning-forever case becomes
+    ///   visible instead of silently disappearing.
+    ///
+    /// The classifier uses `is_git_repo_at_spawn` + substring match
+    /// against the bridge-wrapped message; see
+    /// [`classify_worker_spawn_failure`] for the routing rules and
+    /// the bridge-prefix contract.
+    ///
+    /// Returns `true` when the caller IS a worker (so it knows the
+    /// failure was consumed here - the existing `ConnectionFailed`
+    /// emission still fires for the TUI side). `false` for lead
+    /// sessions or any other non-worker, in which case the caller's
+    /// existing behaviour proceeds unchanged.
+    ///
+    /// [`classify_worker_spawn_failure`]: crate::mcp::workers::facade::classify_worker_spawn_failure
     pub(crate) fn handle_async_worker_spawn_failure(
         self: &Arc<Self>,
         session_key: &SessionKey,
@@ -5940,10 +5977,13 @@ mod git_scan_cwd_tests {
     // ---------------------------------------------------------------
 
     #[test]
-    fn resume_cwd_for_session_returns_project_root_for_worker_with_no_catalog_cwd() {
-        // Worker session with no catalog entry (the common case -
-        // workers are excluded from the catalog walk by tag filter).
-        // The fallback resolves to the owning project's root.
+    fn resume_cwd_for_session_returns_worktree_for_git_worker_with_no_catalog_cwd() {
+        // Git-repo worker (the hub-modules babysitter / librarian
+        // case from #245). Layer B composes the worker's worktree
+        // path so claude resolves the JSONL on the first try -
+        // passing just the project root would make claude look under
+        // the wrong sanitised dir and surface "No conversation
+        // found".
         let (ws, _rx) = Workspace::testing_stub();
         let (project_root, session_key) = seed_project_and_worker(
             &ws,
@@ -5956,8 +5996,29 @@ mod git_scan_cwd_tests {
         let resolved = ws.resume_cwd_for_session(&session_key);
         assert_eq!(
             resolved,
+            project_root.join(".claude/worktrees/babysitter").to_string_lossy(),
+            "git-repo worker resume cwd must compose the worktree path via worker_tag_dir",
+        );
+    }
+
+    #[test]
+    fn resume_cwd_for_session_returns_project_root_for_non_git_worker() {
+        // Non-git project: worker_tag_dir leaves the path as the
+        // project root, so the fallback returns the root verbatim.
+        let (ws, _rx) = Workspace::testing_stub();
+        let (project_root, session_key) = seed_project_and_worker(
+            &ws,
+            "non-git-proj",
+            "/tmp/test-non-git",
+            "implementer",
+            "worker-uuid-non-git",
+            false,
+        );
+        let resolved = ws.resume_cwd_for_session(&session_key);
+        assert_eq!(
+            resolved,
             project_root.to_string_lossy(),
-            "worker resume cwd must fall back to the project root, not empty string",
+            "non-git worker resume cwd must equal the project root (no worktree subdir)",
         );
     }
 
@@ -5973,21 +6034,32 @@ mod git_scan_cwd_tests {
 
     #[test]
     fn resume_cwd_for_session_prefers_catalog_cwd_over_worker_fallback() {
-        // When the catalog DOES carry a cwd for the session (lead
-        // sessions, or any catalog-recorded session), the catalog
-        // path wins - the worker fallback is a fallback, not an
-        // override. The lead path stays unchanged so existing
-        // lead-resume behavior is preserved.
+        // When the catalog DOES carry a cwd for the session, the
+        // catalog path wins - the worker fallback is a fallback, not
+        // an override. Lead-resume behaviour stays unchanged: leads
+        // are catalog-recorded, so they always hit branch 1.
+        //
+        // To prove the precedence we seed a worker entry AND a
+        // catalog row for the same session_key, with DIFFERENT cwd
+        // values. The catalog cwd must win.
         let (ws, _rx) = Workspace::testing_stub();
-        ws.seed_test_project_with_team("forge", "/tmp/test-forge-lead-cwd", &[]);
-        // We don't have direct catalog-seeding helpers in this
-        // module; rely on the function's documented behavior:
-        // `session_cwd_for` checked first; on miss, worker fallback
-        // checked second. The integration shape is covered by the
-        // prior two tests + the lead-session no-fallback path.
-        let leadless = SessionKey::from_session_id("lead-not-in-catalog");
-        // No catalog entry, no worker entry -> empty.
-        assert_eq!(ws.resume_cwd_for_session(&leadless), "");
+        let project_root = "/tmp/test-precedence";
+        let session_id = "shared-session-uuid";
+        let (_, session_key) = seed_project_and_worker(
+            &ws,
+            "precedence-proj",
+            project_root,
+            "implementer",
+            session_id,
+            true,
+        );
+        // Seed a catalog cwd for the same session_id pointing at a
+        // distinct path; the precedence test fails if the worker
+        // fallback overrides it.
+        let catalog_cwd = "/tmp/test-precedence-catalog-cwd";
+        ws.record_connected_session(catalog_cwd, session_id, None);
+        let resolved = ws.resume_cwd_for_session(&session_key);
+        assert_eq!(resolved, catalog_cwd, "catalog cwd must win over the worker_tag_dir fallback");
     }
 
     // ---------------------------------------------------------------
