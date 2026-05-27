@@ -1927,29 +1927,61 @@ impl Workspace {
         None
     }
 
+    /// Look up a project root path by its `ProjectKey`. Searches
+    /// the test overlay first (under `cfg(test)` / `feature =
+    /// "testing"`), then `config.projects`. Returns `None` when no
+    /// loaded project's path canonicalises to the given key.
+    ///
+    /// Used by [`Self::git_scan_cwd_for_session`] to derive the
+    /// project root from a worker's project_key without depending
+    /// on the worker's `cwd_raw` value (which carries the project
+    /// root for fresh spawns and the worktree path for resumed
+    /// sessions - the two cases would otherwise need different
+    /// composition logic).
+    pub(crate) fn project_root_for_key(&self, target: &ProjectKey) -> Option<std::path::PathBuf> {
+        let derive_key = |project: &LoadedProject| {
+            ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+                &project.path.to_string_lossy(),
+            )))
+        };
+        #[cfg(any(test, feature = "testing"))]
+        {
+            if let Some(project) =
+                self.test_extra_projects.lock().iter().find(|p| &derive_key(p) == target).cloned()
+            {
+                return Some(project.path);
+            }
+        }
+        self.config.projects.iter().find(|p| &derive_key(p) == target).map(|p| p.path.clone())
+    }
+
     /// Resolve the cwd a git-diff scan should run against for the
     /// session at `session_key`. Workers spawned in a git repo run
-    /// inside claude's `--worktree <label>` fork (under
-    /// `<project_root>/.claude/worktrees/<label>/`), so `cwd_raw`
-    /// from the `Connected` event carries the project root and
-    /// scanning there would surface the lead's branch / diff, not
-    /// the worker's. Composes [`Self::worker_lookup_for_session`]
-    /// with `worker_tag_dir` (in `crate::mcp::workers::types`) so
-    /// the same helper drives both the tag-write path and the
-    /// git-diff scan.
+    /// inside claude's `--worktree <label>` fork at
+    /// `<project_root>/.claude/worktrees/<label>/`, and the worker's
+    /// `cwd_raw` carries different values depending on lifecycle:
+    /// - fresh spawn -> `cwd_raw = <project_root>` (the value claude
+    ///   sends in `AgentEvent::Connected.cwd` before it chdirs into
+    ///   the worktree),
+    /// - resumed session -> `cwd_raw = <project_root>/.claude/worktrees/<label>`
+    ///   (claude chdirs before writing the first catalog row, so the
+    ///   resume path reads the worktree path back as `cwd`).
     ///
-    /// For non-worker sessions (project leads) or non-git workers,
-    /// returns `cwd_raw` unchanged.
+    /// Anchor the composition on the worker's `project_key` (via
+    /// [`Self::worker_lookup_for_session`] + the internal
+    /// `project_root_for_key` lookup) rather than `cwd_raw` so both
+    /// lifecycle states resolve to the same final path. For non-
+    /// worker sessions (project leads), non-git workers, or projects
+    /// whose root can't be resolved, returns `cwd_raw` unchanged.
     #[must_use]
     pub fn git_scan_cwd_for_session(
         &self,
         session_key: &SessionKey,
         cwd_raw: &std::path::Path,
     ) -> std::path::PathBuf {
-        if let Some((_, label, is_git_repo_at_spawn)) = self.worker_lookup_for_session(session_key)
-        {
-            crate::mcp::workers::types::worker_tag_dir(cwd_raw, &label, is_git_repo_at_spawn)
-        } else {
+        let Some((project_key, label, is_git_repo_at_spawn)) =
+            self.worker_lookup_for_session(session_key)
+        else {
             // Trace-level so a real lookup-miss (race during
             // worker spawn, lead-session call) leaves a grep-able
             // trail without flooding normal logs. The lead-session
@@ -1960,8 +1992,29 @@ impl Workspace {
                 session_key = %session_key.as_str(),
                 "no worker lookup; using cwd_raw unchanged"
             );
-            cwd_raw.to_path_buf()
+            return cwd_raw.to_path_buf();
+        };
+        if !is_git_repo_at_spawn {
+            // Non-git workers don't fork into a worktree; they run
+            // in the project root itself, so `cwd_raw` is already
+            // the correct scan target.
+            return cwd_raw.to_path_buf();
         }
+        let Some(project_root) = self.project_root_for_key(&project_key) else {
+            // Project lookup miss is structurally unusual (a worker
+            // entry exists but its project_key doesn't resolve to a
+            // loaded project) - log so a regression on the
+            // forge.toml refresh path is visible, then fall back to
+            // cwd_raw rather than synthesise a wrong path.
+            tracing::warn!(
+                target: "forge_workspace::git_scan",
+                session_key = %session_key.as_str(),
+                project_key = project_key.as_str(),
+                "worker entry present but project_root lookup missed; falling back to cwd_raw"
+            );
+            return cwd_raw.to_path_buf();
+        };
+        project_root.join(".claude/worktrees").join(&label)
     }
 
     /// Handle an async worker-spawn failure: classify the error,
@@ -5277,5 +5330,126 @@ mod async_worker_spawn_failure_tests {
             workspace.list_live_workers(&project_key).is_empty(),
             "WorkerEntry still rolls back even when notice is dropped",
         );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
+mod git_scan_cwd_tests {
+    use super::*;
+    use crate::mcp::workers::types::WorkerEntry;
+    use forge_primitives::WorkerLiveness;
+    use std::time::SystemTime;
+
+    fn worker_entry(label: &str, session_key: &SessionKey, is_git: bool) -> WorkerEntry {
+        WorkerEntry {
+            label: label.into(),
+            charter: "test charter".into(),
+            session_key: session_key.clone(),
+            status: WorkerLiveness::Running,
+            spawned_at: SystemTime::UNIX_EPOCH,
+            spawned_by_session_id: "lead-uuid".into(),
+            needs_tag: false,
+            is_git_repo_at_spawn: is_git,
+        }
+    }
+
+    /// Seed a project + a worker for it. Returns the project_root
+    /// path the project_key derives from, and the worker's session
+    /// key for the caller to drive `git_scan_cwd_for_session`.
+    fn seed_project_and_worker(
+        ws: &Arc<Workspace>,
+        project_name: &str,
+        project_root: &str,
+        worker_label: &str,
+        worker_session: &str,
+        is_git: bool,
+    ) -> (std::path::PathBuf, SessionKey) {
+        ws.seed_test_project_with_team(project_name, project_root, &[]);
+        let project_key = ProjectKey::new(
+            forge_agent::userdata::catalog::scan::project_key_for_directory(Some(project_root)),
+        );
+        let session_key = SessionKey::from_session_id(worker_session);
+        ws.insert_live_worker(&project_key, worker_entry(worker_label, &session_key, is_git));
+        (std::path::PathBuf::from(project_root), session_key)
+    }
+
+    #[test]
+    fn git_scan_cwd_resolves_worktree_when_cwd_raw_is_project_root() {
+        // Fresh-spawn path: `cwd_raw` is the project root (the value
+        // claude sends in `AgentEvent::Connected.cwd` before it
+        // chdirs into the worktree). The function must compose
+        // `<project_root>/.claude/worktrees/<label>` for git workers.
+        let (ws, _rx) = Workspace::testing_stub();
+        let (project_root, session_key) = seed_project_and_worker(
+            &ws,
+            "forge",
+            "/tmp/test-forge-fresh",
+            "implementer",
+            "worker-uuid-fresh",
+            true,
+        );
+        let resolved = ws.git_scan_cwd_for_session(&session_key, &project_root);
+        assert_eq!(
+            resolved,
+            project_root.join(".claude/worktrees").join("implementer"),
+            "fresh-spawn cwd_raw must resolve to the worktree path"
+        );
+    }
+
+    #[test]
+    fn git_scan_cwd_resolves_worktree_when_cwd_raw_is_already_worktree_path() {
+        // Resumed-worker path: `cwd_raw` is already
+        // `<project_root>/.claude/worktrees/<label>` because the
+        // catalog row was written after claude chdir'd. Old behavior
+        // composed `worker_tag_dir(cwd_raw, label, true)` and doubled
+        // the suffix - new behavior anchors on the project_key, so
+        // both inputs converge on the same final path.
+        let (ws, _rx) = Workspace::testing_stub();
+        let (project_root, session_key) = seed_project_and_worker(
+            &ws,
+            "forge",
+            "/tmp/test-forge-resume",
+            "implementer",
+            "worker-uuid-resume",
+            true,
+        );
+        let already_worktree = project_root.join(".claude/worktrees").join("implementer");
+        let resolved = ws.git_scan_cwd_for_session(&session_key, &already_worktree);
+        assert_eq!(
+            resolved, already_worktree,
+            "resume cwd_raw must NOT double the worktree suffix"
+        );
+    }
+
+    #[test]
+    fn git_scan_cwd_returns_cwd_unchanged_for_lead_session() {
+        // Non-worker sessions take the fall-through branch and the
+        // raw cwd survives unchanged. No `live_workers` entry exists
+        // for the lead.
+        let (ws, _rx) = Workspace::testing_stub();
+        ws.seed_test_project_with_team("forge", "/tmp/test-forge-lead", &[]);
+        let lead_key = SessionKey::from_session_id("lead-uuid");
+        let lead_cwd = std::path::PathBuf::from("/tmp/test-forge-lead");
+        let resolved = ws.git_scan_cwd_for_session(&lead_key, &lead_cwd);
+        assert_eq!(resolved, lead_cwd, "lead sessions must get cwd_raw unchanged");
+    }
+
+    #[test]
+    fn git_scan_cwd_returns_cwd_unchanged_for_non_git_worker() {
+        // Non-git workers don't have a worktree fork; they run in
+        // the project root itself. Returning cwd_raw unchanged
+        // matches the pre-fix behavior for this case.
+        let (ws, _rx) = Workspace::testing_stub();
+        let (project_root, session_key) = seed_project_and_worker(
+            &ws,
+            "forge",
+            "/tmp/test-forge-nongit",
+            "researcher",
+            "worker-uuid-nongit",
+            false,
+        );
+        let resolved = ws.git_scan_cwd_for_session(&session_key, &project_root);
+        assert_eq!(resolved, project_root, "non-git worker must use cwd_raw unchanged");
     }
 }
