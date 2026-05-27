@@ -5817,4 +5817,283 @@ mod git_scan_cwd_tests {
         let resolved = ws.git_scan_cwd_for_session(&session_key, &project_root);
         assert_eq!(resolved, project_root, "non-git worker must use cwd_raw unchanged");
     }
+
+    // ---------------------------------------------------------------
+    // #246: recompute_plan_if_ready + extend_plan_for_adhoc_worker +
+    // session_chip_for. Build a real workspace from the local
+    // `make_workspace_dir_246` helper (single account "Subspace",
+    // single project "forge") + manually drive the loading state via
+    // account_states().lock().set_*().
+    // ---------------------------------------------------------------
+
+    fn make_workspace_dir_246() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("forge.toml"),
+            r#"
+[[orgs]]
+name = "Default"
+accounts = ["Subspace"]
+
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+auto_start = true
+
+[[accounts]]
+display_name = "Subspace"
+config_dir = "~/.claude-subspace"
+"#,
+        )
+        .expect("write forge.toml");
+        dir
+    }
+
+    #[tokio::test]
+    async fn recompute_plan_if_ready_noop_while_loading() {
+        let dir = make_workspace_dir_246();
+        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        // Fresh workspace: account starts in `Loading`. all_loaded
+        // returns false; recompute must not populate the plan.
+        workspace.recompute_plan_if_ready();
+        let plan = workspace.assignment_plan().lock();
+        assert!(plan.is_none(), "plan stays None while accounts are still Loading");
+    }
+
+    #[tokio::test]
+    async fn recompute_plan_if_ready_populates_plan_when_all_ready() {
+        let dir = make_workspace_dir_246();
+        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        // Transition the lone account to Ready by injecting a snapshot.
+        {
+            let mut accounts = workspace.account_states().lock();
+            let snapshot = forge_primitives::usage::UsageSnapshot {
+                source: forge_primitives::usage::UsageSourceKind::Oauth,
+                fetched_at: std::time::SystemTime::UNIX_EPOCH,
+                five_hour: None,
+                seven_day: None,
+                seven_day_opus: None,
+                seven_day_sonnet: None,
+                extra_usage: None,
+            };
+            accounts.set_usage(&AccountKey("Subspace".to_owned()), snapshot);
+        }
+
+        workspace.recompute_plan_if_ready();
+        let plan = workspace.assignment_plan().lock();
+        let plan = plan.as_ref().expect("plan populates once all_loaded fires");
+        let project_key =
+            ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+                &dir.path().join("..").join("Projects").join("forge").to_string_lossy(),
+            )));
+        // Don't assert the exact project_key (path expansion is
+        // env-dependent); just assert SOMETHING got assigned to
+        // the lone project.
+        let _ = project_key;
+        assert!(!plan.is_empty(), "plan must have at least one assignment for the lone project");
+    }
+
+    #[tokio::test]
+    async fn recompute_plan_if_ready_uses_frozen_overlay_on_recompute() {
+        let dir = make_workspace_dir_246();
+        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        {
+            let mut accounts = workspace.account_states().lock();
+            let snapshot = forge_primitives::usage::UsageSnapshot {
+                source: forge_primitives::usage::UsageSourceKind::Oauth,
+                fetched_at: std::time::SystemTime::UNIX_EPOCH,
+                five_hour: None,
+                seven_day: None,
+                seven_day_opus: None,
+                seven_day_sonnet: None,
+                extra_usage: None,
+            };
+            accounts.set_usage(&AccountKey("Subspace".to_owned()), snapshot);
+        }
+
+        workspace.recompute_plan_if_ready();
+        let first_plan = workspace.assignment_plan().lock().clone();
+
+        // Recompute should be idempotent on the same ready set
+        // (frozen overlay merges; existing assignments preserved).
+        workspace.recompute_plan_if_ready();
+        let second_plan = workspace.assignment_plan().lock().clone();
+        assert!(first_plan.is_some());
+        assert!(second_plan.is_some());
+        // Same plan contents (the frozen overlay preserves entries).
+        let first = first_plan.expect("first");
+        let second = second_plan.expect("second");
+        assert_eq!(
+            first.lookup(
+                &ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(
+                    Some(workspace.config.projects[0].path.to_string_lossy().as_ref())
+                ),),
+                &"lead".to_owned(),
+            ),
+            second.lookup(
+                &ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(
+                    Some(workspace.config.projects[0].path.to_string_lossy().as_ref())
+                ),),
+                &"lead".to_owned(),
+            ),
+            "frozen overlay preserves the same lead assignment across recomputes",
+        );
+    }
+
+    #[tokio::test]
+    async fn extend_plan_for_adhoc_worker_noop_when_plan_unpopulated() {
+        // Before the plan is populated, the helper must be a no-op
+        // (doesn't panic; doesn't side-effect through to lookups).
+        let dir = make_workspace_dir_246();
+        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        let project_key =
+            ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+                workspace.config.projects[0].path.to_string_lossy().as_ref(),
+            )));
+        workspace.extend_plan_for_adhoc_worker(&project_key, "reviewer");
+        assert!(workspace.assignment_plan().lock().is_none(), "plan still unpopulated");
+    }
+
+    #[tokio::test]
+    async fn extend_plan_for_adhoc_worker_extends_when_plan_populated() {
+        let dir = make_workspace_dir_246();
+        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        {
+            let mut accounts = workspace.account_states().lock();
+            let snapshot = forge_primitives::usage::UsageSnapshot {
+                source: forge_primitives::usage::UsageSourceKind::Oauth,
+                fetched_at: std::time::SystemTime::UNIX_EPOCH,
+                five_hour: None,
+                seven_day: None,
+                seven_day_opus: None,
+                seven_day_sonnet: None,
+                extra_usage: None,
+            };
+            accounts.set_usage(&AccountKey("Subspace".to_owned()), snapshot);
+        }
+        workspace.recompute_plan_if_ready();
+        let project_key =
+            ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+                workspace.config.projects[0].path.to_string_lossy().as_ref(),
+            )));
+        workspace.extend_plan_for_adhoc_worker(&project_key, "reviewer");
+        let plan = workspace.assignment_plan().lock();
+        let plan = plan.as_ref().expect("populated");
+        assert!(
+            plan.lookup(&project_key, &"reviewer".to_owned()).is_some(),
+            "extend_plan_for_adhoc_worker adds the adhoc label to the plan",
+        );
+    }
+
+    #[tokio::test]
+    async fn session_chip_for_returns_none_when_plan_unpopulated() {
+        let dir = make_workspace_dir_246();
+        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        let project_key =
+            ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+                workspace.config.projects[0].path.to_string_lossy().as_ref(),
+            )));
+        assert!(workspace.session_chip_for(&project_key, "lead").is_none());
+    }
+
+    #[tokio::test]
+    async fn session_chip_for_normal_branch_for_ready_account() {
+        let dir = make_workspace_dir_246();
+        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        {
+            let mut accounts = workspace.account_states().lock();
+            let snapshot = forge_primitives::usage::UsageSnapshot {
+                source: forge_primitives::usage::UsageSourceKind::Oauth,
+                fetched_at: std::time::SystemTime::UNIX_EPOCH,
+                // 5h window not at cap -> Normal branch.
+                five_hour: Some(forge_primitives::usage::UsageWindow {
+                    utilization: 30.0,
+                    resets_at: Some(
+                        std::time::SystemTime::now() + std::time::Duration::from_secs(3600),
+                    ),
+                    reset_description: None,
+                }),
+                seven_day: None,
+                seven_day_opus: None,
+                seven_day_sonnet: None,
+                extra_usage: None,
+            };
+            accounts.set_usage(&AccountKey("Subspace".to_owned()), snapshot);
+        }
+        workspace.recompute_plan_if_ready();
+        let project_key =
+            ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+                workspace.config.projects[0].path.to_string_lossy().as_ref(),
+            )));
+        let chip = workspace.session_chip_for(&project_key, "lead").expect("chip");
+        assert_eq!(chip.state, SessionChipState::Normal);
+        assert_eq!(chip.account_name, "Subspace");
+    }
+
+    #[tokio::test]
+    async fn session_chip_for_five_hour_cap_branch() {
+        let dir = make_workspace_dir_246();
+        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        {
+            let mut accounts = workspace.account_states().lock();
+            let snapshot = forge_primitives::usage::UsageSnapshot {
+                source: forge_primitives::usage::UsageSourceKind::Oauth,
+                fetched_at: std::time::SystemTime::UNIX_EPOCH,
+                // 5h window at 100% with future resets_at -> FiveHourCap branch.
+                five_hour: Some(forge_primitives::usage::UsageWindow {
+                    utilization: 100.0,
+                    resets_at: Some(
+                        std::time::SystemTime::now() + std::time::Duration::from_secs(3600),
+                    ),
+                    reset_description: None,
+                }),
+                seven_day: None,
+                seven_day_opus: None,
+                seven_day_sonnet: None,
+                extra_usage: None,
+            };
+            accounts.set_usage(&AccountKey("Subspace".to_owned()), snapshot);
+        }
+        workspace.recompute_plan_if_ready();
+        let project_key =
+            ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+                workspace.config.projects[0].path.to_string_lossy().as_ref(),
+            )));
+        let chip = workspace.session_chip_for(&project_key, "lead").expect("chip");
+        assert_eq!(chip.state, SessionChipState::FiveHourCap);
+    }
+
+    #[tokio::test]
+    async fn session_chip_for_bailed_branch() {
+        let dir = make_workspace_dir_246();
+        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        // Plan needs SOMETHING in it for session_chip_for to look up.
+        // Snapshot first then transition to Bailed (preserves plan
+        // assignment, just changes loading state).
+        {
+            let mut accounts = workspace.account_states().lock();
+            let snapshot = forge_primitives::usage::UsageSnapshot {
+                source: forge_primitives::usage::UsageSourceKind::Oauth,
+                fetched_at: std::time::SystemTime::UNIX_EPOCH,
+                five_hour: None,
+                seven_day: None,
+                seven_day_opus: None,
+                seven_day_sonnet: None,
+                extra_usage: None,
+            };
+            accounts.set_usage(&AccountKey("Subspace".to_owned()), snapshot);
+        }
+        workspace.recompute_plan_if_ready();
+        // Now flip to Bailed.
+        workspace
+            .account_states()
+            .lock()
+            .set_loading(&AccountKey("Subspace".to_owned()), crate::account::LoadingState::Bailed);
+        let project_key =
+            ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+                workspace.config.projects[0].path.to_string_lossy().as_ref(),
+            )));
+        let chip = workspace.session_chip_for(&project_key, "lead").expect("chip");
+        assert_eq!(chip.state, SessionChipState::Bailed);
+    }
 }
