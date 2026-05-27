@@ -327,6 +327,20 @@ impl AccountStateMap {
         state.next_probe_at.is_none_or(|t| t <= std::time::Instant::now())
     }
 
+    /// Combined scheduler signal: probe `key` on the current cycle if
+    /// the normal backoff gate (`should_probe_now`) is open OR the
+    /// one-shot reset-clear override hook (`has_just_cleared_cap_window`)
+    /// is firing. Both sides of the OR carry through to the workspace
+    /// poller, which calls this method to decide which accounts to
+    /// probe each tick. Centralising the OR here keeps a future
+    /// refactor from accidentally dropping one half of the signal -
+    /// the unit test pins the truth table that the scheduler relies
+    /// on, regardless of whether the call site spells out both
+    /// predicates inline.
+    pub fn scheduler_should_probe(&self, key: &AccountKey) -> bool {
+        self.should_probe_now(key) || self.has_just_cleared_cap_window(key)
+    }
+
     /// `true` when at least one cached window shows the account just
     /// transitioned out of its cap (utilization at-or-above 100%,
     /// `resets_at` now in the past) AND the override hook is armed.
@@ -1225,6 +1239,73 @@ mod tests {
         let map = AccountStateMap::new(&[make_account("Granite")]);
         let k = AccountKey("Granite".to_owned());
         assert!(!map.has_just_cleared_cap_window(&k), "no arm = no override");
+    }
+
+    // -------------------------------------------------------------
+    // Scheduler OR truth table - pins the combined signal the
+    // workspace poller relies on. A future refactor that swaps the
+    // OR for AND or drops one half loses the behavior with CI green
+    // unless this table covers it.
+    // -------------------------------------------------------------
+
+    #[test]
+    fn scheduler_should_probe_fires_via_should_probe_now_alone() {
+        // Cold-cache account: no failures yet, no snapshot. The normal
+        // `should_probe_now` returns true (next_probe_at is None);
+        // the hook returns false (no snapshot to override against).
+        // OR result: true.
+        let map = AccountStateMap::new(&[make_account("Granite")]);
+        let k = AccountKey("Granite".to_owned());
+        assert!(map.should_probe_now(&k));
+        assert!(!map.has_just_cleared_cap_window(&k));
+        assert!(map.scheduler_should_probe(&k), "OR true via should_probe_now");
+    }
+
+    #[test]
+    fn scheduler_should_probe_fires_via_hook_alone_during_active_backoff() {
+        // The signature override scenario from the planner: a stale
+        // cached snapshot (util=100, resets_at in the past) paired
+        // with an active backoff timer from a recent 429. The hook
+        // must be the deciding factor:
+        // - should_probe_now == false (backoff active)
+        // - has_just_cleared_cap_window == true (armed + stale reset)
+        // - scheduler_should_probe == true (OR fires)
+        let past = SystemTime::now() - std::time::Duration::from_secs(60);
+        let stale = snapshot_with_resets(Some((100.0, Some(past))), None);
+        let mut map = AccountStateMap::new(&[make_account("Granite")]);
+        let k = AccountKey("Granite".to_owned());
+        map.set_usage(&k, stale);
+        map.set_last_error(
+            &k,
+            UsageFetchStatus::RateLimited,
+            Some(std::time::Duration::from_secs(3000)),
+        );
+
+        assert!(!map.should_probe_now(&k), "backoff active");
+        assert!(map.has_just_cleared_cap_window(&k), "armed + stale reset");
+        assert!(map.scheduler_should_probe(&k), "OR fires when hook alone is true");
+    }
+
+    #[test]
+    fn scheduler_should_probe_skips_when_both_predicates_false() {
+        // Backoff active AND the snapshot has a future resets_at (no
+        // stale state). Both sides of the OR return false; the
+        // account is skipped this cycle and waits for the backoff
+        // timer to elapse.
+        let future = SystemTime::now() + std::time::Duration::from_secs(60);
+        let live = snapshot_with_resets(Some((100.0, Some(future))), None);
+        let mut map = AccountStateMap::new(&[make_account("Granite")]);
+        let k = AccountKey("Granite".to_owned());
+        map.set_usage(&k, live);
+        map.set_last_error(
+            &k,
+            UsageFetchStatus::RateLimited,
+            Some(std::time::Duration::from_secs(3000)),
+        );
+
+        assert!(!map.should_probe_now(&k));
+        assert!(!map.has_just_cleared_cap_window(&k));
+        assert!(!map.scheduler_should_probe(&k), "OR false when both sides are false");
     }
 
     #[test]

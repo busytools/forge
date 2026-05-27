@@ -898,16 +898,14 @@ impl Workspace {
                 .iter()
                 // Skip accounts inside an active backoff window - a
                 // recent probe failed and re-probing now would just
-                // re-trip the same rate limit. `should_probe_now`
-                // returns true for cold-cache accounts (no failure
-                // history) so first-run probes always go through.
-                // `has_just_cleared_cap_window` is the override: if
-                // the cached snapshot's reset moment has passed, run
-                // a fresh probe regardless of the backoff timer so
-                // the bar can drop the stale "100%" reading promptly.
-                .filter(|key| {
-                    accounts.should_probe_now(key) || accounts.has_just_cleared_cap_window(key)
-                })
+                // re-trip the same rate limit. `scheduler_should_probe`
+                // ORs the backoff gate (`should_probe_now`) with the
+                // one-shot reset-clear override hook
+                // (`has_just_cleared_cap_window`): cold-cache accounts
+                // probe immediately, and a snapshot whose resets_at
+                // moment has passed gets a fresh probe via the
+                // override even if the backoff timer is still active.
+                .filter(|key| accounts.scheduler_should_probe(key))
                 .filter_map(|key| accounts.config_dir(key).map(|dir| (key.clone(), dir.clone())))
                 .collect()
         };
