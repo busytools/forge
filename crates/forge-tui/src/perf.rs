@@ -53,10 +53,24 @@ mod enabled {
     /// fires). 1024 spans/marks per frame is comfortably above the
     /// natural per-frame budget for active sessions with many
     /// visible messages + tool calls (observed up to ~250 per slow
-    /// frame in chats with 30+ messages). The `frame_total` Timer
-    /// itself is always pushed regardless of cap (see `write_entry`)
-    /// so the parent span never gets dropped from a flushed batch.
+    /// frame in chats with 30+ messages). Parent spans (`frame::*`,
+    /// `ui::*`, `frame_total`) are always pushed regardless of cap
+    /// so the structural framing of a slow frame survives a
+    /// sub-event overflow; only the leaf sub-events drop at cap.
     const FRAME_BUFFER_CAP: usize = 1024;
+
+    /// Name prefixes for frame-level "parent" spans whose presence
+    /// is structural for analysis. Parents are exempt from
+    /// `FRAME_BUFFER_CAP` because they emit late in the frame's
+    /// scope (the bracketing `Timer` drops at end of block) and
+    /// would otherwise be silently lost when sub-events fill the
+    /// buffer first. Matches the emit sites in `app.rs`
+    /// (`frame::terminal_draw`) and `ui/chat_view.rs` (`ui::*`).
+    const PARENT_SPAN_PREFIXES: &[&str] = &["frame::", "ui::"];
+
+    fn is_parent_span(name: &str) -> bool {
+        name == "frame_total" || PARENT_SPAN_PREFIXES.iter().any(|p| name.starts_with(p))
+    }
 
     /// One buffered sample awaiting the per-frame flush decision.
     /// Storage is cheap (constant size, no heap alloc beyond the
@@ -149,12 +163,15 @@ mod enabled {
         let to_flush: Option<Vec<BufferedSample>> = FRAME_BUFFER.with(|b| {
             let mut buf = b.borrow_mut();
             let is_frame_total = name == "frame_total";
-            // `frame_total` is the framing span — without it, a
-            // flushed batch can't be tied back to a specific frame
-            // duration. Always push it regardless of cap so the
-            // parent span survives. Sub-spans get dropped at cap to
-            // bound memory.
-            if is_frame_total || buf.len() < FRAME_BUFFER_CAP {
+            // Parent spans (`frame::*`, `ui::*`, `frame_total`) are
+            // exempt from the cap so the framing of a slow frame
+            // survives even when sub-events have already filled
+            // the buffer. Without this, a frame with 200+ chat /
+            // tool-call sub-events plus its 5-10 pane parents
+            // would silently lose the parents because parent
+            // Timers drop at end of scope, after sub-events have
+            // already pushed.
+            if is_parent_span(name) || buf.len() < FRAME_BUFFER_CAP {
                 buf.push(BufferedSample { name, ms, extra });
             }
             if !is_frame_total {
@@ -303,6 +320,152 @@ mod enabled {
         fn drop(&mut self) {
             let ms = self.start.elapsed().as_secs_f64() * 1000.0;
             write_entry(self.name, ms, self.extra);
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use std::io::Read;
+
+        /// Drain the in-memory thread-local state between tests so a
+        /// previous test's leftover buffer / log handle can't leak
+        /// across cases. Tests run on separate threads under nextest,
+        /// so this is belt-and-braces, but cheap.
+        fn reset_thread_locals() {
+            LOG_FILE.with(|f| *f.borrow_mut() = None);
+            FRAME_COUNTER.with(|c| *c.borrow_mut() = 0);
+            RUN_ID.with(|r| r.borrow_mut().clear());
+            FRAME_BUFFER.with(|b| b.borrow_mut().clear());
+        }
+
+        /// Drop the BufWriter so its contents land on disk before
+        /// we read the file back. `Self::open` stamps the writer
+        /// into LOG_FILE; replacing it with None forces a drop.
+        fn close_log_file() {
+            LOG_FILE.with(|f| *f.borrow_mut() = None);
+        }
+
+        fn read_log_lines(path: &Path) -> Vec<String> {
+            let mut buf = String::new();
+            File::open(path).unwrap().read_to_string(&mut buf).unwrap();
+            buf.lines().map(str::to_owned).collect()
+        }
+
+        #[test]
+        fn parent_spans_survive_when_subevents_exceed_buffer_cap() {
+            // Reproduces the #213 scenario: a frame whose sub-event
+            // count exceeds `FRAME_BUFFER_CAP` before its parent
+            // spans (`ui::render`, `ui::chat`, `frame::terminal_draw`)
+            // get pushed. Previously the parents were silently
+            // dropped from the flushed batch because only
+            // `frame_total` was exempt from the cap; the fix extends
+            // the exemption to every `ui::*` / `frame::*` prefix.
+            reset_thread_locals();
+            let tmp = tempfile::NamedTempFile::new().unwrap();
+            let _logger = PerfLogger::open(tmp.path()).expect("perf log opens");
+
+            // Fill the buffer past cap with sub-events.
+            for _ in 0..(FRAME_BUFFER_CAP + 10) {
+                write_entry("msg::cache_miss", 0.0, None);
+            }
+            // Parents emit at end-of-frame after sub-events have
+            // filled the buffer.
+            write_entry("ui::chat", 1.0, None);
+            write_entry("ui::render", 2.0, None);
+            write_entry("frame::terminal_draw", 3.0, None);
+            // Slow `frame_total` triggers the flush.
+            write_entry("frame_total", SLOW_FRAME_THRESHOLD_MS + 1.0, None);
+
+            close_log_file();
+            let lines = read_log_lines(tmp.path());
+
+            let metrics: Vec<String> = lines
+                .iter()
+                .filter_map(|line| {
+                    let v: serde_json::Value = serde_json::from_str(line).ok()?;
+                    v.get("metric")?.as_str().map(str::to_owned)
+                })
+                .collect();
+
+            let has = |needle: &str| metrics.iter().any(|m| m == needle);
+            assert!(has("ui::chat"), "ui::chat missing from flushed batch");
+            assert!(has("ui::render"), "ui::render missing from flushed batch");
+            assert!(has("frame::terminal_draw"), "frame::terminal_draw missing from flushed batch");
+            assert!(has("frame_total"), "frame_total missing from flushed batch");
+        }
+
+        #[test]
+        fn non_parent_subevents_capped_at_buffer_limit() {
+            // Inverse contract for `parent_spans_survive_*`: non-
+            // parent sub-events that overflow the cap MUST drop. A
+            // future broadening of `is_parent_span` (e.g. to a
+            // `contains` check, or a prefix that catches `msg::`)
+            // would silently let memory grow per-frame; this test
+            // pins the exact post-flush metric count so that drift
+            // trips the check.
+            reset_thread_locals();
+            let tmp = tempfile::NamedTempFile::new().unwrap();
+            let _logger = PerfLogger::open(tmp.path()).expect("perf log opens");
+
+            for _ in 0..(FRAME_BUFFER_CAP + 10) {
+                write_entry("msg::cache_miss", 0.0, None);
+            }
+            write_entry("frame_total", SLOW_FRAME_THRESHOLD_MS + 1.0, None);
+
+            close_log_file();
+            let lines = read_log_lines(tmp.path());
+
+            let metrics: Vec<String> = lines
+                .iter()
+                .filter_map(|line| {
+                    let v: serde_json::Value = serde_json::from_str(line).ok()?;
+                    v.get("metric")?.as_str().map(str::to_owned)
+                })
+                .collect();
+            // Cap sub-events + `frame_total` (parent, always pushed)
+            // = FRAME_BUFFER_CAP + 1 entries.
+            assert_eq!(metrics.len(), FRAME_BUFFER_CAP + 1);
+            assert_eq!(
+                metrics.iter().filter(|m| *m == "msg::cache_miss").count(),
+                FRAME_BUFFER_CAP
+            );
+            assert_eq!(metrics.iter().filter(|m| *m == "frame_total").count(), 1);
+        }
+
+        #[test]
+        fn fast_frame_discards_buffered_samples() {
+            // Healthy frame: buffer accumulates a few samples, then
+            // `frame_total` arrives below the slow threshold; nothing
+            // gets written beyond the per-run `run_started` header
+            // AND the buffer empties so leftover samples can't leak
+            // into the next slow-frame flush.
+            reset_thread_locals();
+            let tmp = tempfile::NamedTempFile::new().unwrap();
+            let _logger = PerfLogger::open(tmp.path()).expect("perf log opens");
+
+            write_entry("ui::chat", 0.5, None);
+            write_entry("msg::cache_hit", 0.0, None);
+            write_entry("frame_total", SLOW_FRAME_THRESHOLD_MS / 2.0, None);
+
+            close_log_file();
+            let lines = read_log_lines(tmp.path());
+
+            let sample_kinds: Vec<String> = lines
+                .iter()
+                .filter_map(|line| {
+                    let v: serde_json::Value = serde_json::from_str(line).ok()?;
+                    v.get("kind")?.as_str().map(str::to_owned)
+                })
+                .collect();
+            // Only the run_started header lands; no per-sample
+            // entries.
+            assert_eq!(sample_kinds, vec!["run_started".to_owned()]);
+            // And the buffer itself empties so a subsequent slow
+            // frame can't pick up stale entries from this one. Pins
+            // the `buf.clear()` branch against an accidental swap to
+            // a partial drain.
+            FRAME_BUFFER.with(|b| assert!(b.borrow().is_empty()));
         }
     }
 }
