@@ -82,8 +82,10 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
     crate::app::process_scanner::spawn_ticker(process_scan_event_tx.clone());
     // Kick off the 60 s background account-usage poller. Boot
     // seeded from forge-state.toml in `Workspace::new`; `main`
-    // fired a single live probe via `spawn_initial_account_probe`;
-    // the poller carries the refresh cadence from here on.
+    // started per-account loading tasks via
+    // `start_account_loading_tasks` (which subsumed the old single
+    // initial probe in #246); the poller carries the refresh
+    // cadence from here on.
     workspace.start_usage_poller();
     let perf_path = match crate::logging::resolve_perf_path(cli) {
         Ok(path) => path,

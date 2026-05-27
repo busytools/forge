@@ -52,6 +52,34 @@ const WORKER_TAG_RETRY_ATTEMPTS: u32 = 30;
 /// total wait at a few seconds.
 const WORKER_TAG_RETRY_DELAY: Duration = Duration::from_millis(100);
 
+/// Per-session chip the Projects pane renders next to each row.
+/// Carries the assigned account display name + the visual-state
+/// category derived by `Workspace::session_chip_for`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionChipInfo {
+    /// Account `display_name` from forge.toml `[[accounts]]`.
+    pub account_name: String,
+    /// Render category: drives the chip's color + optional prefix
+    /// glyph.
+    pub state: SessionChipState,
+}
+
+/// Visual category for a session chip. The renderer maps these to
+/// foreground colors + (for `Bailed`) a leading `⚠ ` glyph.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionChipState {
+    /// Account is Ready and within budget. DIM foreground.
+    Normal,
+    /// Account is Ready but its 5h budget window is currently
+    /// capped. Yellow foreground signals "still works but expect
+    /// throttle until the 5h window resets."
+    FiveHourCap,
+    /// Account flipped to Bailed. Red foreground + `⚠ ` prefix.
+    /// The session's spawn would fall through to round-robin until
+    /// the recovery poll flips the account back to Ready.
+    Bailed,
+}
+
 /// Multi-session orchestrator. Owns the project catalog snapshot
 /// loaded from `<config_dir>/forge.toml` and the pool of currently
 /// spawned [`forge_agent::Agent`] handles, one per active session.
@@ -84,6 +112,13 @@ pub struct Workspace {
     /// Account picker state. Updated on every spawn; refreshed by
     /// the in-memory usage poller.
     accounts: Mutex<AccountStateMap>,
+    /// Deterministic per-session account assignment. `None` until the
+    /// boot-time loading tasks reach `all_loaded()`; populated by
+    /// `recompute_plan_if_ready`. Spawn paths consult this for
+    /// CLAUDE_CONFIG_DIR selection; the launchpad gates clickable
+    /// project rows on it being `Some` AND the project having a
+    /// non-empty pool. See `crate::assignment_plan`.
+    assignment_plan: Mutex<Option<crate::assignment_plan::AssignmentPlan>>,
     /// Fan-in [`SessionUpdate`] sender. Cloned and handed to TUI-side
     /// modules (slash executors, plugin install, service-status check)
     /// via [`Self::update_sender`] so they can emit presentation
@@ -338,6 +373,7 @@ impl Workspace {
             catalog: Mutex::new(catalog),
             pool: Mutex::new(HashMap::new()),
             accounts: Mutex::new(accounts),
+            assignment_plan: Mutex::new(None),
             update_tx,
             update_rx_slot: Mutex::new(Some(update_rx)),
             command_senders: Mutex::new(HashMap::new()),
@@ -506,24 +542,30 @@ impl Workspace {
             }
         }
 
-        // Resolve the project's pinned `accounts = [...]` for the
-        // target. Project-rooted targets read it directly off the
-        // matching `LoadedProject`; session-id targets look up the
-        // originating project via catalog cwd → `LoadedProject.path`
-        // match so a resumed session honours its project's pin. The
-        // pin is required at the config layer (load fails otherwise),
-        // so a target that resolves to a known project always carries
-        // a non-empty list.
-        let project_account_pin = self.project_accounts_for(&target);
-
-        // Pick the account with the most usage budget remaining
-        // within the pinned subset. Unknown-usage accounts (cold
-        // cache, fetch failed) sort first so the picker forces data
-        // acquisition. No fallback outside the pin.
-        let (account_key, account_dir) = {
-            let accounts = self.accounts.lock();
-            accounts.pick_for_project(&project_account_pin)
-        };
+        // Resolve which account this spawn lands under. Two paths:
+        //
+        // 1. AssignmentPlan lookup (preferred, deterministic): when
+        //    the boot-time loading tasks have populated the plan
+        //    AND we can derive (project_key, session_label) from
+        //    target + spawn_key, look up the assignment directly.
+        //    Lead sessions use label = "lead"; worker sessions look
+        //    up their WorkerEntry in `live_workers` (which
+        //    `handle_spawn_worker` inserted before reaching here)
+        //    and read its label.
+        //
+        // 2. Round-robin fallback: pick_for_project. Used when the
+        //    plan isn't populated yet (boot-time spawn before
+        //    all_loaded), the label isn't in the plan (an adhoc
+        //    worker spawned before `extend_plan_for_adhoc_worker`
+        //    fires), or the target couldn't be resolved to a known
+        //    project. Preserves the pre-#246 behaviour for cold-
+        //    boot and unforeseen paths.
+        let (account_key, account_dir) =
+            self.plan_assignment(&target, spawn_key.as_ref()).unwrap_or_else(|| {
+                let project_account_pin = self.project_accounts_for(&target);
+                let accounts = self.accounts.lock();
+                accounts.pick_for_project(&project_account_pin)
+            });
 
         // Slow path: spawn fresh Agent bound to the picked account's
         // config_dir. The Agent stores it as a typed field; every
@@ -817,20 +859,317 @@ impl Workspace {
         }
     }
 
-    /// Kick off a single live account-usage probe in the background.
-    /// Called once at startup, after `Workspace::new` has seeded the
-    /// in-memory map from the on-disk cache. The 60 s background
-    /// poller takes over from here. There is no retry-until-success
-    /// loop - Anthropic's per-IP rate-limiter on `/api/oauth/usage`
-    /// makes bursting counterproductive, and the on-disk cache means
-    /// the launchpad picker has tier data immediately regardless of
-    /// whether the live probe succeeds.
-    pub fn spawn_initial_account_probe(self: &Arc<Self>) {
-        let workspace = Arc::clone(self);
-        let span = tracing::info_span!("initial_account_probe");
+    /// Crate-internal accessor for the boot-time loading task to
+    /// drive `LoadingState` transitions on the workspace's account
+    /// map. Not exposed beyond the crate - the field stays private
+    /// so only intentional callers reach in.
+    pub(crate) fn account_states(&self) -> &Mutex<AccountStateMap> {
+        &self.accounts
+    }
+
+    /// `true` when every `[[accounts]]` entry has reached a terminal
+    /// `LoadingState`. The launchpad reads this to decide whether
+    /// project rows are clickable - clicking before all accounts
+    /// resolve means the spawn-time picker falls back to round-robin
+    /// (with potentially-undesirable account choice) instead of the
+    /// deterministic plan. Public so forge-tui can gate keyboard +
+    /// mouse handlers on it without reaching into the crate-private
+    /// account map.
+    #[must_use]
+    pub fn all_accounts_loaded(&self) -> bool {
+        self.accounts.lock().all_loaded()
+    }
+
+    /// `true` when the assignment plan is populated AND has at least
+    /// one entry for `project_key`. Projects whose pool resolved to
+    /// empty at compute time (e.g., every allowed account Bailed)
+    /// produce zero entries; the launchpad surfaces a
+    /// `no usable accounts` hint for those rows and keeps them
+    /// unclickable. Returns `false` when the plan isn't populated yet.
+    /// Public for forge-tui to consult during render.
+    #[must_use]
+    pub fn project_has_assigned_account(&self, project_key: &ProjectKey) -> bool {
+        let plan = self.assignment_plan.lock();
+        plan.as_ref().is_some_and(|p| !p.project_has_no_assignments(project_key))
+    }
+
+    /// Snapshot of `(AccountKey display name, LoadingState)` pairs in
+    /// declaration order. Forge-tui's launchpad renders the per-
+    /// account loading glyph row from this; the order matches
+    /// `forge.toml`'s `[[accounts]]` declarations so the glyphs sit
+    /// next to the user's mental model of which-account-is-which.
+    #[must_use]
+    pub fn account_loading_snapshot(&self) -> Vec<(String, crate::account::LoadingState)> {
+        let accounts = self.accounts.lock();
+        accounts.ordered_keys.iter().map(|k| (k.0.clone(), accounts.loading_state(k))).collect()
+    }
+
+    /// Resolve `(project, session_label)` to the per-session chip
+    /// the Projects pane renders next to each row: the assigned
+    /// account name + its current visual-state category. Returns
+    /// `None` when the plan isn't populated, the project isn't
+    /// known, or the label has no assignment.
+    ///
+    /// State derivation:
+    /// - `LoadingState::Bailed` -> `SessionChipState::Bailed`
+    ///   (renderer renders red with a `⚠ ` prefix).
+    /// - `Ready` + 5h `UsageWindow::is_currently_limited` true ->
+    ///   `FiveHourCap` (yellow; the session still runs but the
+    ///   user should know they're inside the 5h budget cap window).
+    /// - Otherwise -> `Normal` (DIM; default chip).
+    #[must_use]
+    pub fn session_chip_for(
+        &self,
+        project_key: &ProjectKey,
+        label: &str,
+    ) -> Option<SessionChipInfo> {
+        let plan_guard = self.assignment_plan.lock();
+        let plan = plan_guard.as_ref()?;
+        let account_key = plan.lookup(project_key, &label.to_owned())?.clone();
+        drop(plan_guard);
+
+        let accounts = self.accounts.lock();
+        let loading = accounts.loading_state(&account_key);
+        let usage = accounts.usage(&account_key).cloned();
+        drop(accounts);
+
+        let state = match loading {
+            crate::account::LoadingState::Bailed => SessionChipState::Bailed,
+            crate::account::LoadingState::Ready => {
+                let limited = usage
+                    .as_ref()
+                    .and_then(|u| u.five_hour.as_ref())
+                    .is_some_and(forge_primitives::usage::UsageWindow::is_currently_limited);
+                if limited { SessionChipState::FiveHourCap } else { SessionChipState::Normal }
+            }
+            _ => SessionChipState::Normal,
+        };
+
+        Some(SessionChipInfo { account_name: account_key.0, state })
+    }
+
+    /// Crate-internal accessor for the assignment plan. Returns the
+    /// `Mutex<Option<...>>` so callers (the launchpad render path
+    /// and the spawn-path integration in §2.5) can take the lock
+    /// briefly without paying for an Option clone. `None` means
+    /// the boot-time loading tasks haven't all reached terminal
+    /// yet; `Some` means the plan is live and the launchpad can
+    /// un-dim project rows.
+    // Callers land in Sections 2.5 / 3 / 4 of #246. Temporary
+    // `dead_code` allow until those commits land within the same PR.
+    #[allow(dead_code)]
+    pub(crate) fn assignment_plan(&self) -> &Mutex<Option<crate::assignment_plan::AssignmentPlan>> {
+        &self.assignment_plan
+    }
+
+    /// Look up the deterministic account assignment for a spawn
+    /// target. Returns `(AccountKey, config_dir)` when:
+    /// - the assignment plan is populated (`Some`), AND
+    /// - the spawn resolves to a known (project_key, session_label)
+    ///   pair, AND
+    /// - the plan has an entry for that pair.
+    ///
+    /// Returns `None` for any miss so the caller falls back to the
+    /// pre-#246 round-robin (`pick_for_project`). This keeps boot-
+    /// time spawns (plan not yet populated) working and absorbs
+    /// edge cases like adhoc workers spawned before
+    /// `extend_plan_for_adhoc_worker` runs.
+    pub(crate) fn plan_assignment(
+        &self,
+        target: &SessionTarget,
+        spawn_key: Option<&SessionKey>,
+    ) -> Option<(AccountKey, std::path::PathBuf)> {
+        let (project_key, label) = self.plan_lookup_keys(target, spawn_key)?;
+        let plan_guard = self.assignment_plan.lock();
+        let plan = plan_guard.as_ref()?;
+        let account_key = plan.lookup(&project_key, &label)?.clone();
+        drop(plan_guard);
+        let accounts = self.accounts.lock();
+        let dir = accounts.config_dir(&account_key)?.clone();
+        Some((account_key, dir))
+    }
+
+    /// Derive `(project_key, session_label)` from a spawn target +
+    /// optional synth spawn key.
+    ///
+    /// - Worker spawns (`spawn_key` points at an existing
+    ///   `WorkerEntry` in `live_workers`): the entry's
+    ///   `(project_key, label)` is the answer. This is the path
+    ///   `handle_spawn_worker` -> `get_agent_handle_with_spawn_key`
+    ///   takes after inserting the WorkerEntry as `Spawning`.
+    /// - Lead spawns (no spawn_key or a non-worker synth key):
+    ///   `label = "lead"`; `project_key` derives from the target.
+    /// - Session-id targets where the resumed session has no
+    ///   recoverable project mapping: returns `None` so the caller
+    ///   falls back to round-robin.
+    fn plan_lookup_keys(
+        &self,
+        target: &SessionTarget,
+        spawn_key: Option<&SessionKey>,
+    ) -> Option<(ProjectKey, String)> {
+        if let Some(key) = spawn_key
+            && let Some(pair) = self.worker_label_for_spawn_key(key)
+        {
+            return Some(pair);
+        }
+        let project_key = self.target_to_project_key(target)?;
+        Some((project_key, "lead".to_owned()))
+    }
+
+    /// Walk `live_workers` looking for an entry whose `session_key`
+    /// matches `spawn_key`. The map has bounded size in practice
+    /// (per-project worker counts are small), so an O(N*M) walk is
+    /// fine - the alternative would be a second index keyed by
+    /// session_key, which adds maintenance burden for marginal gain.
+    fn worker_label_for_spawn_key(&self, spawn_key: &SessionKey) -> Option<(ProjectKey, String)> {
+        let workers = self.live_workers.lock();
+        for (project_key, entries) in workers.iter() {
+            for entry in entries {
+                if &entry.session_key == spawn_key {
+                    return Some((project_key.clone(), entry.label.clone()));
+                }
+            }
+        }
+        None
+    }
+
+    /// Resolve a `SessionTarget` to its on-disk-sanitised project
+    /// key. Returns `None` for `Session(...)` targets when the
+    /// catalog can't map the session's cwd back to a known project
+    /// (e.g., a session whose cwd has since changed).
+    fn target_to_project_key(&self, target: &SessionTarget) -> Option<ProjectKey> {
+        let project_key_for = |path: &std::path::Path| -> ProjectKey {
+            ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+                &path.to_string_lossy(),
+            )))
+        };
+        match target {
+            SessionTarget::Default => Some(project_key_for(&self.config.default_project().path)),
+            SessionTarget::Named(name) => {
+                self.find_project_by_name(name).ok().map(|p| project_key_for(&p.path))
+            }
+            SessionTarget::FreshInProject { project_key, .. } => Some(project_key.clone()),
+            SessionTarget::Session(key) => {
+                let cwd = self.session_cwd_for(key)?;
+                let cwd_path = std::path::PathBuf::from(&cwd);
+                self.config
+                    .projects
+                    .iter()
+                    .find(|p| p.path == cwd_path)
+                    .map(|p| project_key_for(&p.path))
+            }
+        }
+    }
+
+    /// Extend the assignment plan with a new adhoc worker. Called
+    /// from `handle_spawn_worker` (Section 2.5 of #246) so workers
+    /// spawned via `workers__spawn` are assigned through the same
+    /// plan-driven rotation as boot-time team members. No-op when
+    /// the plan isn't populated yet (boot still in flight) - the
+    /// fallback `pick_for_project` path takes over in that case.
+    pub(crate) fn extend_plan_for_adhoc_worker(&self, project_key: &ProjectKey, label: &str) {
+        let mut plan_guard = self.assignment_plan.lock();
+        let Some(plan) = plan_guard.as_mut() else {
+            return;
+        };
+        plan.assign_adhoc_worker(project_key, &label.to_owned());
+    }
+
+    /// Recompute the `AssignmentPlan` from the current ready-account
+    /// set when every account has reached a terminal `LoadingState`.
+    /// No-op when accounts are still loading - the boot-time
+    /// `account_loader` task re-calls this after each state
+    /// transition, so the plan ends up populated on the first
+    /// `all_loaded`-true call. Subsequent transitions (e.g., a
+    /// runtime 401 flipping a Ready account to Bailed) also trigger
+    /// a recompute via the same path; Section 4.4 of #246 swaps
+    /// this for a frozen-overlay variant that preserves existing
+    /// assignments while extending the plan with newly-recovered
+    /// accounts.
+    pub(crate) fn recompute_plan_if_ready(&self) {
+        use crate::account::LoadingState;
+        use crate::assignment_plan::{ProjectInput, compute_plan};
+
+        let ready_accounts: Vec<AccountKey> = {
+            let accounts = self.accounts.lock();
+            if !accounts.all_loaded() {
+                return;
+            }
+            accounts
+                .by_key
+                .iter()
+                .filter(|(_, s)| matches!(s.loading, LoadingState::Ready))
+                .map(|(k, _)| k.clone())
+                .collect()
+        };
+
+        let projects: Vec<ProjectInput> = self
+            .config
+            .projects
+            .iter()
+            .map(|p| ProjectInput {
+                key: ProjectKey::new(
+                    forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+                        &p.path.to_string_lossy(),
+                    )),
+                ),
+                accounts: p.accounts.clone(),
+                team: p.team.clone(),
+            })
+            .collect();
+
+        let fresh = compute_plan(&ready_accounts, &projects);
+        let mut plan_guard = self.assignment_plan.lock();
+        match plan_guard.as_mut() {
+            // First compute - just store. Boot-time path.
+            None => *plan_guard = Some(fresh),
+            // Subsequent recompute (e.g., Bailed account recovered).
+            // Frozen overlay preserves existing (project, label)
+            // assignments so mid-run sessions don't shift to a
+            // newly-recovered account; extends the plan with
+            // newly-recovered accounts for future spawns.
+            Some(existing) => existing.merge_frozen(fresh),
+        }
+    }
+
+    /// Spawn one boot-time loading task per `[[accounts]]` entry in
+    /// `forge.toml`. Each task runs the per-account loading state
+    /// machine (in the crate-private `account_loader` module) until
+    /// the account reaches a terminal `LoadingState` (`Ready` or
+    /// `Bailed`). Called once at startup, replacing the older
+    /// "single-probe-then-poll" boot model with the explicit loading
+    /// gate that the launchpad now consults via
+    /// `AccountStateMap::all_loaded()`.
+    pub fn start_account_loading_tasks(self: &Arc<Self>) {
+        let entries: Vec<(AccountKey, std::path::PathBuf)> = {
+            let accounts = self.accounts.lock();
+            accounts
+                .ordered_keys
+                .iter()
+                .filter_map(|key| accounts.config_dir(key).map(|dir| (key.clone(), dir.clone())))
+                .collect()
+        };
+        for (key, dir) in entries {
+            let span = tracing::info_span!("account_loading", account = %key.0);
+            let weak = Arc::downgrade(self);
+            tokio::spawn(
+                async move {
+                    crate::account_loader::run_account_loading(dir, key, weak).await;
+                }
+                .instrument(span),
+            );
+        }
+
+        // Background recovery poll: watches Bailed accounts and
+        // re-runs the loading flow when `claude auth status` flips
+        // back to logged-in. One task per Workspace lifetime. Holds
+        // Weak so the task auto-exits on workspace shutdown rather
+        // than keeping the Arc alive past drop.
+        let weak = Arc::downgrade(self);
+        let span = tracing::info_span!("account_recovery_poll");
         tokio::spawn(
             async move {
-                workspace.refresh_account_usage_once().await;
+                crate::account_loader::run_recovery_poll(weak).await;
             }
             .instrument(span),
         );
@@ -843,7 +1182,8 @@ impl Workspace {
     /// The TUI's bottom panel + the spawn-path picker both read
     /// from that cache.
     ///
-    /// Call once at construction, AFTER `spawn_initial_account_probe`.
+    /// Call once at construction, AFTER `start_account_loading_tasks`
+    /// (which subsumed the old `spawn_initial_account_probe` in #246).
     /// A `usage_poller_started` flag guards against duplicate
     /// spawns - second and later calls return without spawning so a
     /// forge-tui programming error can't multiply the poll rate.
@@ -859,10 +1199,11 @@ impl Workspace {
         let span = tracing::info_span!("usage_poller");
         tokio::spawn(
             async move {
-                // Skip the immediate-fire tick: `spawn_initial_account_probe`
-                // already drove the live boot probe. Firing again right
-                // away would burn another round of Anthropic-side per-IP
-                // rate-limiter capacity for no gain. First tick of this
+                // Skip the immediate-fire tick: the boot-time loading
+                // tasks (`start_account_loading_tasks`, #246) already
+                // drove the live probes. Firing again right away would
+                // burn another round of Anthropic-side per-IP rate-
+                // limiter capacity for no gain. First tick of this
                 // interval lands one USAGE_POLL_INTERVAL after boot.
                 let mut interval = tokio::time::interval_at(
                     tokio::time::Instant::now() + USAGE_POLL_INTERVAL,
@@ -2934,6 +3275,7 @@ impl Workspace {
             catalog: Mutex::new(HashMap::new()),
             pool: Mutex::new(HashMap::new()),
             accounts: Mutex::new(AccountStateMap::empty_for_test()),
+            assignment_plan: Mutex::new(None),
             update_tx,
             update_rx_slot: Mutex::new(None),
             command_senders: Mutex::new(HashMap::new()),
@@ -5474,5 +5816,284 @@ mod git_scan_cwd_tests {
         );
         let resolved = ws.git_scan_cwd_for_session(&session_key, &project_root);
         assert_eq!(resolved, project_root, "non-git worker must use cwd_raw unchanged");
+    }
+
+    // ---------------------------------------------------------------
+    // #246: recompute_plan_if_ready + extend_plan_for_adhoc_worker +
+    // session_chip_for. Build a real workspace from the local
+    // `make_workspace_dir_246` helper (single account "Subspace",
+    // single project "forge") + manually drive the loading state via
+    // account_states().lock().set_*().
+    // ---------------------------------------------------------------
+
+    fn make_workspace_dir_246() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("forge.toml"),
+            r#"
+[[orgs]]
+name = "Default"
+accounts = ["Subspace"]
+
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+auto_start = true
+
+[[accounts]]
+display_name = "Subspace"
+config_dir = "~/.claude-subspace"
+"#,
+        )
+        .expect("write forge.toml");
+        dir
+    }
+
+    #[tokio::test]
+    async fn recompute_plan_if_ready_noop_while_loading() {
+        let dir = make_workspace_dir_246();
+        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        // Fresh workspace: account starts in `Loading`. all_loaded
+        // returns false; recompute must not populate the plan.
+        workspace.recompute_plan_if_ready();
+        let plan = workspace.assignment_plan().lock();
+        assert!(plan.is_none(), "plan stays None while accounts are still Loading");
+    }
+
+    #[tokio::test]
+    async fn recompute_plan_if_ready_populates_plan_when_all_ready() {
+        let dir = make_workspace_dir_246();
+        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        // Transition the lone account to Ready by injecting a snapshot.
+        {
+            let mut accounts = workspace.account_states().lock();
+            let snapshot = forge_primitives::usage::UsageSnapshot {
+                source: forge_primitives::usage::UsageSourceKind::Oauth,
+                fetched_at: std::time::SystemTime::UNIX_EPOCH,
+                five_hour: None,
+                seven_day: None,
+                seven_day_opus: None,
+                seven_day_sonnet: None,
+                extra_usage: None,
+            };
+            accounts.set_usage(&AccountKey("Subspace".to_owned()), snapshot);
+        }
+
+        workspace.recompute_plan_if_ready();
+        let plan = workspace.assignment_plan().lock();
+        let plan = plan.as_ref().expect("plan populates once all_loaded fires");
+        let project_key =
+            ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+                &dir.path().join("..").join("Projects").join("forge").to_string_lossy(),
+            )));
+        // Don't assert the exact project_key (path expansion is
+        // env-dependent); just assert SOMETHING got assigned to
+        // the lone project.
+        let _ = project_key;
+        assert!(!plan.is_empty(), "plan must have at least one assignment for the lone project");
+    }
+
+    #[tokio::test]
+    async fn recompute_plan_if_ready_uses_frozen_overlay_on_recompute() {
+        let dir = make_workspace_dir_246();
+        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        {
+            let mut accounts = workspace.account_states().lock();
+            let snapshot = forge_primitives::usage::UsageSnapshot {
+                source: forge_primitives::usage::UsageSourceKind::Oauth,
+                fetched_at: std::time::SystemTime::UNIX_EPOCH,
+                five_hour: None,
+                seven_day: None,
+                seven_day_opus: None,
+                seven_day_sonnet: None,
+                extra_usage: None,
+            };
+            accounts.set_usage(&AccountKey("Subspace".to_owned()), snapshot);
+        }
+
+        workspace.recompute_plan_if_ready();
+        let first_plan = workspace.assignment_plan().lock().clone();
+
+        // Recompute should be idempotent on the same ready set
+        // (frozen overlay merges; existing assignments preserved).
+        workspace.recompute_plan_if_ready();
+        let second_plan = workspace.assignment_plan().lock().clone();
+        assert!(first_plan.is_some());
+        assert!(second_plan.is_some());
+        // Same plan contents (the frozen overlay preserves entries).
+        let first = first_plan.expect("first");
+        let second = second_plan.expect("second");
+        assert_eq!(
+            first.lookup(
+                &ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(
+                    Some(workspace.config.projects[0].path.to_string_lossy().as_ref())
+                ),),
+                &"lead".to_owned(),
+            ),
+            second.lookup(
+                &ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(
+                    Some(workspace.config.projects[0].path.to_string_lossy().as_ref())
+                ),),
+                &"lead".to_owned(),
+            ),
+            "frozen overlay preserves the same lead assignment across recomputes",
+        );
+    }
+
+    #[tokio::test]
+    async fn extend_plan_for_adhoc_worker_noop_when_plan_unpopulated() {
+        // Before the plan is populated, the helper must be a no-op
+        // (doesn't panic; doesn't side-effect through to lookups).
+        let dir = make_workspace_dir_246();
+        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        let project_key =
+            ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+                workspace.config.projects[0].path.to_string_lossy().as_ref(),
+            )));
+        workspace.extend_plan_for_adhoc_worker(&project_key, "reviewer");
+        assert!(workspace.assignment_plan().lock().is_none(), "plan still unpopulated");
+    }
+
+    #[tokio::test]
+    async fn extend_plan_for_adhoc_worker_extends_when_plan_populated() {
+        let dir = make_workspace_dir_246();
+        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        {
+            let mut accounts = workspace.account_states().lock();
+            let snapshot = forge_primitives::usage::UsageSnapshot {
+                source: forge_primitives::usage::UsageSourceKind::Oauth,
+                fetched_at: std::time::SystemTime::UNIX_EPOCH,
+                five_hour: None,
+                seven_day: None,
+                seven_day_opus: None,
+                seven_day_sonnet: None,
+                extra_usage: None,
+            };
+            accounts.set_usage(&AccountKey("Subspace".to_owned()), snapshot);
+        }
+        workspace.recompute_plan_if_ready();
+        let project_key =
+            ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+                workspace.config.projects[0].path.to_string_lossy().as_ref(),
+            )));
+        workspace.extend_plan_for_adhoc_worker(&project_key, "reviewer");
+        let plan = workspace.assignment_plan().lock();
+        let plan = plan.as_ref().expect("populated");
+        assert!(
+            plan.lookup(&project_key, &"reviewer".to_owned()).is_some(),
+            "extend_plan_for_adhoc_worker adds the adhoc label to the plan",
+        );
+    }
+
+    #[tokio::test]
+    async fn session_chip_for_returns_none_when_plan_unpopulated() {
+        let dir = make_workspace_dir_246();
+        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        let project_key =
+            ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+                workspace.config.projects[0].path.to_string_lossy().as_ref(),
+            )));
+        assert!(workspace.session_chip_for(&project_key, "lead").is_none());
+    }
+
+    #[tokio::test]
+    async fn session_chip_for_normal_branch_for_ready_account() {
+        let dir = make_workspace_dir_246();
+        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        {
+            let mut accounts = workspace.account_states().lock();
+            let snapshot = forge_primitives::usage::UsageSnapshot {
+                source: forge_primitives::usage::UsageSourceKind::Oauth,
+                fetched_at: std::time::SystemTime::UNIX_EPOCH,
+                // 5h window not at cap -> Normal branch.
+                five_hour: Some(forge_primitives::usage::UsageWindow {
+                    utilization: 30.0,
+                    resets_at: Some(
+                        std::time::SystemTime::now() + std::time::Duration::from_secs(3600),
+                    ),
+                    reset_description: None,
+                }),
+                seven_day: None,
+                seven_day_opus: None,
+                seven_day_sonnet: None,
+                extra_usage: None,
+            };
+            accounts.set_usage(&AccountKey("Subspace".to_owned()), snapshot);
+        }
+        workspace.recompute_plan_if_ready();
+        let project_key =
+            ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+                workspace.config.projects[0].path.to_string_lossy().as_ref(),
+            )));
+        let chip = workspace.session_chip_for(&project_key, "lead").expect("chip");
+        assert_eq!(chip.state, SessionChipState::Normal);
+        assert_eq!(chip.account_name, "Subspace");
+    }
+
+    #[tokio::test]
+    async fn session_chip_for_five_hour_cap_branch() {
+        let dir = make_workspace_dir_246();
+        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        {
+            let mut accounts = workspace.account_states().lock();
+            let snapshot = forge_primitives::usage::UsageSnapshot {
+                source: forge_primitives::usage::UsageSourceKind::Oauth,
+                fetched_at: std::time::SystemTime::UNIX_EPOCH,
+                // 5h window at 100% with future resets_at -> FiveHourCap branch.
+                five_hour: Some(forge_primitives::usage::UsageWindow {
+                    utilization: 100.0,
+                    resets_at: Some(
+                        std::time::SystemTime::now() + std::time::Duration::from_secs(3600),
+                    ),
+                    reset_description: None,
+                }),
+                seven_day: None,
+                seven_day_opus: None,
+                seven_day_sonnet: None,
+                extra_usage: None,
+            };
+            accounts.set_usage(&AccountKey("Subspace".to_owned()), snapshot);
+        }
+        workspace.recompute_plan_if_ready();
+        let project_key =
+            ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+                workspace.config.projects[0].path.to_string_lossy().as_ref(),
+            )));
+        let chip = workspace.session_chip_for(&project_key, "lead").expect("chip");
+        assert_eq!(chip.state, SessionChipState::FiveHourCap);
+    }
+
+    #[tokio::test]
+    async fn session_chip_for_bailed_branch() {
+        let dir = make_workspace_dir_246();
+        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        // Plan needs SOMETHING in it for session_chip_for to look up.
+        // Snapshot first then transition to Bailed (preserves plan
+        // assignment, just changes loading state).
+        {
+            let mut accounts = workspace.account_states().lock();
+            let snapshot = forge_primitives::usage::UsageSnapshot {
+                source: forge_primitives::usage::UsageSourceKind::Oauth,
+                fetched_at: std::time::SystemTime::UNIX_EPOCH,
+                five_hour: None,
+                seven_day: None,
+                seven_day_opus: None,
+                seven_day_sonnet: None,
+                extra_usage: None,
+            };
+            accounts.set_usage(&AccountKey("Subspace".to_owned()), snapshot);
+        }
+        workspace.recompute_plan_if_ready();
+        // Now flip to Bailed.
+        workspace
+            .account_states()
+            .lock()
+            .set_loading(&AccountKey("Subspace".to_owned()), crate::account::LoadingState::Bailed);
+        let project_key =
+            ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+                workspace.config.projects[0].path.to_string_lossy().as_ref(),
+            )));
+        let chip = workspace.session_chip_for(&project_key, "lead").expect("chip");
+        assert_eq!(chip.state, SessionChipState::Bailed);
     }
 }

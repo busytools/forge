@@ -76,12 +76,16 @@ fn run() -> anyhow::Result<()> {
             return Err(anyhow::anyhow!("forge: {err}"));
         }
 
-        // Kick off a single live account-usage probe in the background.
-        // The on-disk forge-state.toml has already seeded the in-memory
-        // map at `Workspace::new`; this fires the live refresh so the
-        // numbers are current. The 60 s poller starts after, run by
-        // `start_usage_poller` from forge-tui's connect path.
-        workspace.spawn_initial_account_probe();
+        // Kick off the per-account boot-time loading state machine
+        // (one task per `[[accounts]]` entry) in the background. Each
+        // task drives its account from `Loading` through to a
+        // terminal `Ready` or `Bailed`; the launchpad consults
+        // `all_loaded()` across the map to decide when to un-dim the
+        // project rows. The on-disk forge-state.toml has already
+        // seeded the in-memory map at `Workspace::new`. The 60 s
+        // poller starts after, run by `start_usage_poller` from
+        // forge-tui's connect path.
+        workspace.start_account_loading_tasks();
 
         // Create the app (instant, no I/O). The TUI holds an
         // `Arc<Workspace>` clone; main keeps the original so it

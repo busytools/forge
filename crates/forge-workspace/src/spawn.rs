@@ -533,6 +533,12 @@ pub(crate) fn handle_spawn_worker(
         is_git_repo_at_spawn: is_git,
     };
     workspace.insert_live_worker(&project_key, entry.clone());
+    // Extend the assignment plan so this adhoc worker's account is
+    // picked from the same rotation as the boot-time team members.
+    // No-op when the plan isn't populated yet (boot still in
+    // flight); the fallback round-robin in
+    // get_agent_handle_with_spawn_key takes over in that case.
+    workspace.extend_plan_for_adhoc_worker(&project_key, label);
     try_emit(
         workspace,
         "spawn_worker::WorkerStatusChanged::Added",

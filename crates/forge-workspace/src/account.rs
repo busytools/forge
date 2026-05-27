@@ -65,6 +65,38 @@ pub enum UsageFetchStatus {
     Other,
 }
 
+/// Boot-time loading state for an account. The launchpad gates click
+/// and spawn until every account in the map has resolved to `Ready`
+/// or `Bailed`; both terminal states feed into the assignment-plan
+/// computation, while `Loading` and `Refreshing` keep the launchpad
+/// dim. A bailed account's `usage` is `None` by construction (the
+/// loader clears it on the transition).
+///
+/// Replaces the PR #238 `consecutive_unauthorized` counter: any
+/// auth-recovery 401 series that previously incremented the counter
+/// now drives the loading task into `Bailed` directly, with the
+/// same cache-clear side-effect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoadingState {
+    /// First-pass keychain fetch + probe in progress. The launchpad
+    /// shows `○` (yellow) for this account.
+    Loading,
+    /// A 401 with `loggedIn=true` triggered a `claude -p hi` refresh;
+    /// next iteration will re-probe with the rotated token. Glyph is
+    /// the same yellow `○` as `Loading` (user-visible distinction is
+    /// not necessary; the launchpad gate cares about terminal-vs-not).
+    Refreshing,
+    /// Probe returned 200; account is usable and may be assigned to
+    /// sessions. Launchpad glyph: `●` (green).
+    Ready,
+    /// Either `loggedIn=false` from `claude auth status` or the
+    /// refresh path itself failed terminally. User must `/login`
+    /// interactively; the 30 s recovery poll will retry from
+    /// `Loading` once auth_status flips back. Launchpad glyph: `⚠`
+    /// (red).
+    Bailed,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct AccountState {
     pub config_dir: PathBuf,
@@ -99,16 +131,6 @@ pub(crate) struct AccountState {
     /// next-probe delay (capped at a sensible ceiling). Reset to
     /// 0 on success.
     pub consecutive_failures: u32,
-    /// Consecutive probe failures classified as `Unauthorized` or
-    /// `Expired` (the auth-recovery family). When this hits
-    /// `UNAUTHORIZED_CACHE_CLEAR_THRESHOLD`, the cached `UsageWindow`
-    /// snapshot is dropped so the bottom panel surfaces the
-    /// `⚠ unauthorized - /login` label rather than rendering the
-    /// stale %bar as if it were live. Reset to 0 on any non-auth
-    /// probe result (success, `RateLimited`, network error). Distinct
-    /// from `consecutive_failures` so a real `RateLimited` series
-    /// doesn't drive the auth-recovery clear (and vice versa).
-    pub consecutive_unauthorized: u32,
     /// One-shot arming flag for the `has_just_cleared_cap_window`
     /// scheduler hook. Without it, a stale-reset snapshot paired with
     /// sustained probe failure would re-trigger the override every
@@ -118,17 +140,15 @@ pub(crate) struct AccountState {
     /// `set_usage` arms it (a fresh snapshot earns one override
     /// attempt once its `resets_at` passes); `disarm_override` clears
     /// it after the scheduler fires an override. False until the
-    /// first successful probe lands a snapshot.
+    /// first successful probe lands a snapshot. Distinct from
+    /// `LoadingState` - rate-limit concern, not auth-recovery.
     pub override_armed: bool,
+    /// Where this account sits in the boot-time loading state
+    /// machine. The launchpad's "all accounts loaded" gate consults
+    /// this across every account; the assignment plan only includes
+    /// accounts whose state is `Ready`.
+    pub loading: LoadingState,
 }
-
-/// Number of consecutive `Unauthorized` / `Expired` probe results
-/// before the cached `UsageWindow` is invalidated. At the default
-/// 60 s probe cadence this is ~3 minutes, which absorbs a transient
-/// 401 (e.g. proxy hiccup mid-refresh) but still surfaces a real
-/// auth-expiry promptly. Saturated - the counter stops growing past
-/// this so continued failures don't overflow or repeatedly clear.
-const UNAUTHORIZED_CACHE_CLEAR_THRESHOLD: u32 = 3;
 
 #[derive(Debug)]
 pub(crate) struct AccountStateMap {
@@ -170,8 +190,8 @@ impl AccountStateMap {
                     last_error: None,
                     next_probe_at: None,
                     consecutive_failures: 0,
-                    consecutive_unauthorized: 0,
                     override_armed: false,
+                    loading: LoadingState::Loading,
                 },
             );
         }
@@ -230,22 +250,40 @@ impl AccountStateMap {
     /// Replace the cached usage snapshot for `key` and clear any
     /// stale `last_error`. Resets the consecutive-failure counter
     /// and clears the next-probe gate so this account returns to
-    /// the default cadence. Silent no-op when `key` isn't registered
-    /// (defensive — invariant says every poller key was inserted in
-    /// `new()`).
+    /// the default cadence. Also transitions `loading` to `Ready` -
+    /// a successful probe is the terminal-success state for the
+    /// boot-time loading task. Silent no-op when `key` isn't
+    /// registered (defensive - invariant says every poller key was
+    /// inserted in `new()`).
     pub fn set_usage(&mut self, key: &AccountKey, snapshot: UsageSnapshot) {
         if let Some(state) = self.by_key.get_mut(key) {
             state.usage = Some(snapshot);
             state.last_error = None;
             state.next_probe_at = None;
             state.consecutive_failures = 0;
-            state.consecutive_unauthorized = 0;
+            state.loading = LoadingState::Ready;
             // Arm the scheduler-hook override: this fresh snapshot
             // earns ONE probe attempt once its `resets_at` passes.
             // Without re-arming, the hook stays disarmed forever after
             // its first fire and the stale-cache bar never gets a fresh
             // probe even on a healthy account.
             state.override_armed = true;
+        }
+    }
+
+    /// Drive a `LoadingState` transition for `key`. Used by the
+    /// boot-time loading task to step between `Loading` →
+    /// `Refreshing` → terminal, and by the recovery poll to flip a
+    /// `Bailed` account back to `Loading` once `auth_status` reports
+    /// logged-in. Setting `Bailed` clears the cached `usage` so the
+    /// renderer drops the stale %bar (replaces the PR #238 3-strike
+    /// counter; bailed accounts have no live snapshot by construction).
+    pub fn set_loading(&mut self, key: &AccountKey, loading: LoadingState) {
+        if let Some(state) = self.by_key.get_mut(key) {
+            state.loading = loading;
+            if loading == LoadingState::Bailed {
+                state.usage = None;
+            }
         }
     }
 
@@ -284,23 +322,38 @@ impl AccountStateMap {
         if let Some(state) = self.by_key.get_mut(key) {
             state.last_error = Some(status);
             state.consecutive_failures = state.consecutive_failures.saturating_add(1);
-            // Auth-recovery cache-clear: count consecutive
-            // `Unauthorized` / `Expired` strikes; once the
-            // threshold is reached, drop the cached snapshot so the
-            // renderer surfaces the error label instead of the
-            // stale %bar. Any non-auth result resets the counter
-            // (the cache stays valid for `RateLimited` / network
-            // errors). See #237-A.
+            // Auth-recovery cache-clear: an Unauthorized or Expired
+            // probe response means the account's keychain token is
+            // dead. Transition `loading` to `Bailed` and drop the
+            // cached `usage` so the renderer surfaces the error label
+            // instead of the stale %bar. The 30 s recovery poll
+            // (account_loader::run_recovery_poll) picks the account
+            // back up once `claude auth status` reports logged-in,
+            // re-running the full loading flow. Other statuses leave
+            // `loading` alone (a transient `RateLimited` or
+            // `NetworkFailed` is not auth-related; the cache stays
+            // and the account remains Ready for the assignment plan).
+            // Replaces the PR #238 `consecutive_unauthorized` 3-strike
+            // counter - the recovery poll absorbs transient 401s.
             if matches!(status, UsageFetchStatus::Unauthorized | UsageFetchStatus::Expired) {
-                state.consecutive_unauthorized = state
-                    .consecutive_unauthorized
-                    .saturating_add(1)
-                    .min(UNAUTHORIZED_CACHE_CLEAR_THRESHOLD);
-                if state.consecutive_unauthorized >= UNAUTHORIZED_CACHE_CLEAR_THRESHOLD {
-                    state.usage = None;
+                let prev = state.loading;
+                state.loading = LoadingState::Bailed;
+                state.usage = None;
+                // Surface the transition so an operator triaging
+                // "account suddenly stopped working" can see WHEN the
+                // bail happened + which probe-class triggered it.
+                // Without this log a Ready -> Bailed flip is silent
+                // until the recovery poll runs 30 s later.
+                if prev != LoadingState::Bailed {
+                    tracing::warn!(
+                        target: "forge_workspace::account",
+                        event_name = "account_bailed",
+                        account = %key.0,
+                        prev_state = ?prev,
+                        status = ?status,
+                        "account transitioned to Bailed via probe failure; recovery poll will retry every 30s",
+                    );
                 }
-            } else {
-                state.consecutive_unauthorized = 0;
             }
             // Anthropic returns `Retry-After: 0` on the /api/oauth/usage
             // 429 path, which is "no specific hint" rather than "you can
@@ -325,6 +378,35 @@ impl AccountStateMap {
     pub fn should_probe_now(&self, key: &AccountKey) -> bool {
         let Some(state) = self.by_key.get(key) else { return true };
         state.next_probe_at.is_none_or(|t| t <= std::time::Instant::now())
+    }
+
+    /// `true` when every account in the map has reached a terminal
+    /// `LoadingState` (`Ready` or `Bailed`). The launchpad uses this
+    /// as the gate for un-dimming project rows + un-blocking clicks;
+    /// the assignment-plan compute step also fires off this signal.
+    /// Empty maps return `true` (vacuous; no accounts means no work
+    /// to wait on - relevant in the testing-stub path).
+    // Caller lands in Section 2.4 (workspace.rs::recompute_plan_if_ready)
+    // of #246. Temporary `dead_code` allow until that commit lands within
+    // the same PR.
+    #[allow(dead_code)]
+    pub fn all_loaded(&self) -> bool {
+        self.by_key
+            .values()
+            .all(|s| matches!(s.loading, LoadingState::Ready | LoadingState::Bailed))
+    }
+
+    /// Snapshot the current `LoadingState` for `key`. Returns
+    /// `LoadingState::Loading` by default for unknown keys
+    /// (defensive - the launchpad's render path may briefly hold an
+    /// account key that hasn't yet been registered in the map during
+    /// reload).
+    // Caller lands in Section 1.4 (account_loader.rs) + 3.1 (launchpad)
+    // of #246. Temporary `dead_code` allow until those commits land
+    // within the same PR.
+    #[allow(dead_code)]
+    pub fn loading_state(&self, key: &AccountKey) -> LoadingState {
+        self.by_key.get(key).map_or(LoadingState::Loading, |s| s.loading)
     }
 
     /// Combined scheduler signal: probe `key` on the current cycle if
@@ -405,27 +487,40 @@ impl AccountStateMap {
     pub fn pick_for_project(&self, allowed: &[String]) -> (AccountKey, PathBuf) {
         debug_assert!(!allowed.is_empty(), "pick_for_project requires a non-empty allow list");
         // Resolve allow-list entries to known keys, preserving
-        // allow-list order. Carry usage + last_error so tier_of can
-        // see probe failures, not just usage data — an account whose
-        // probe perpetually 429s or has expired OAuth credentials
-        // must classify as Unusable, not Usable-with-no-data.
-        let candidates: Vec<(&AccountKey, Option<&UsageSnapshot>, Option<UsageFetchStatus>)> =
-            allowed
-                .iter()
-                .filter_map(|name| self.ordered_keys.iter().find(|k| k.0 == *name))
-                .map(|k| {
-                    let state = self.by_key.get(k);
-                    (k, state.and_then(|s| s.usage.as_ref()), state.and_then(|s| s.last_error))
-                })
-                .collect();
+        // allow-list order. Carry usage + last_error + loading so
+        // tier_of can see the full picture - an account whose
+        // boot-time loading task ended in `Bailed` (auth_status said
+        // logged-out, refresh failed, etc.) must NOT be picked even
+        // if its last_error is None - tier_of's existing inputs
+        // wouldn't catch a Bailed-without-recent-error case, which
+        // is the exact shape after the recovery poll transitions
+        // Loading -> Bailed without firing set_last_error.
+        let candidates: Vec<(
+            &AccountKey,
+            Option<&UsageSnapshot>,
+            Option<UsageFetchStatus>,
+            LoadingState,
+        )> = allowed
+            .iter()
+            .filter_map(|name| self.ordered_keys.iter().find(|k| k.0 == *name))
+            .map(|k| {
+                let state = self.by_key.get(k);
+                (
+                    k,
+                    state.and_then(|s| s.usage.as_ref()),
+                    state.and_then(|s| s.last_error),
+                    state.map_or(LoadingState::Loading, |s| s.loading),
+                )
+            })
+            .collect();
         // Usable subset, in allow-list order. Round-robin rotates
-        // across this filtered list so saturated / expired accounts
-        // never get picked even when their slot in the cursor cycle
-        // comes up.
+        // across this filtered list so saturated / expired / bailed
+        // accounts never get picked even when their slot in the
+        // cursor cycle comes up.
         let usable: Vec<&AccountKey> = candidates
             .iter()
-            .filter(|(_, u, e)| tier_of(*u, *e) == 0)
-            .map(|(k, _, _)| *k)
+            .filter(|(_, u, e, l)| tier_of(*u, *e) == 0 && *l != LoadingState::Bailed)
+            .map(|(k, _, _, _)| *k)
             .collect();
         let picked = if usable.is_empty() {
             // Every allow-list entry is Unusable. Spawn must still
@@ -440,7 +535,7 @@ impl AccountStateMap {
                     );
                     self.ordered_keys.first().cloned().unwrap_or(AccountKey(String::new()))
                 },
-                |(k, _, _)| (*k).clone(),
+                |(k, _, _, _)| (*k).clone(),
             )
         } else {
             // `Relaxed` is sufficient: the cursor only needs to
@@ -457,14 +552,14 @@ impl AccountStateMap {
         // logs without re-running with extra instrumentation.
         let decision_summary: Vec<String> = candidates
             .iter()
-            .map(|(k, u, e)| {
+            .map(|(k, u, e, l)| {
                 let tier = tier_of(*u, *e);
                 let usage_state = match u {
                     None => "no-snapshot".to_owned(),
                     Some(s) => format!("5h={:.0}%/7d={:.0}%", five_hour_util(s), seven_day_util(s)),
                 };
                 let err_state = e.map_or("none".to_owned(), |e| format!("{e:?}"));
-                format!("{}=tier{}({usage_state},err={err_state})", k.0, tier)
+                format!("{}=tier{}({usage_state},err={err_state},loading={l:?})", k.0, tier)
             })
             .collect();
         tracing::debug!(
@@ -1326,16 +1421,16 @@ mod tests {
     }
 
     // ---------------------------------------------------------------
-    // #237-A: consecutive Unauthorized probes invalidate stale cache.
+    // #246: LoadingState gates the launchpad + drives assignment plan.
     //
-    // Symptom: a token expires, the existing snapshot keeps rendering
-    // as "7d cap" in the bottom panel because Anthropic 429s the probe
-    // endpoint as a side-effect of the 401 (the probe path retries
-    // under the hood and only the outer error surfaces). The cached
-    // `UsageWindow` survives, so the renderer keeps drawing the prior
-    // %bar. After N=3 consecutive `Unauthorized` / `Expired` probes,
-    // clear the cached snapshot so the existing
-    // `⚠ unauthorized - /login` error label takes over.
+    // Replaces the PR #238 `consecutive_unauthorized` 3-strike counter:
+    // a single 401 now transitions to `LoadingState::Bailed` (clearing
+    // the cached usage), and the 30 s recovery poll
+    // (account_loader::run_recovery_poll) is what absorbs transient
+    // failures by retrying from Loading once auth_status reports
+    // logged-in. The user-visible effect is the same - bailed accounts
+    // surface the `⚠ unauthorized - /login` label instead of a stale
+    // %bar - just the storage shape moved.
     // ---------------------------------------------------------------
 
     fn key(name: &str) -> AccountKey {
@@ -1343,93 +1438,207 @@ mod tests {
     }
 
     #[test]
-    fn three_consecutive_unauthorized_probes_clear_usage_cache() {
+    fn loading_state_initial_is_loading() {
+        // Brand-new account state has no probe result yet; the launchpad
+        // dims its row + footer glyph until the loading task lands a
+        // terminal verdict (Ready or Bailed).
+        let map = AccountStateMap::new(&[make_account("Granite")]);
+        assert_eq!(map.loading_state(&key("Granite")), LoadingState::Loading);
+    }
+
+    #[test]
+    fn loading_state_returns_loading_for_unknown_key() {
+        // Defensive: the launchpad render path may briefly hold a key
+        // that hasn't been registered yet; treat unknown keys as
+        // Loading rather than panicking.
+        let map = AccountStateMap::new(&[make_account("Granite")]);
+        assert_eq!(map.loading_state(&key("NotRegistered")), LoadingState::Loading);
+    }
+
+    #[test]
+    fn set_usage_transitions_loading_to_ready() {
+        let mut map = AccountStateMap::new(&[make_account("Granite")]);
+        let k = key("Granite");
+        assert_eq!(map.loading_state(&k), LoadingState::Loading);
+        map.set_usage(&k, snapshot(Some(30.0), Some(40.0)));
+        assert_eq!(map.loading_state(&k), LoadingState::Ready);
+    }
+
+    #[test]
+    fn set_last_error_unauthorized_transitions_to_bailed_and_clears_usage() {
+        // Subsumes the PR #238 three-strike test. Single Unauthorized
+        // (not three) now flips loading to Bailed and clears the
+        // cached usage so the renderer drops the stale %bar in favour
+        // of the unauthorized label. The recovery poll re-runs the
+        // loading task once auth_status reports logged-in.
         let mut map = AccountStateMap::new(&[make_account("Personal")]);
         let k = key("Personal");
         map.set_usage(&k, snapshot(Some(30.0), Some(40.0)));
         assert!(map.usage(&k).is_some(), "cache primed");
+        assert_eq!(map.loading_state(&k), LoadingState::Ready);
 
         map.set_last_error(&k, UsageFetchStatus::Unauthorized, None);
-        map.set_last_error(&k, UsageFetchStatus::Unauthorized, None);
-        assert!(map.usage(&k).is_some(), "cache survives 2 strikes");
 
-        map.set_last_error(&k, UsageFetchStatus::Unauthorized, None);
-        assert!(map.usage(&k).is_none(), "cache cleared on the 3rd consecutive Unauthorized probe");
+        assert_eq!(map.loading_state(&k), LoadingState::Bailed);
+        assert!(map.usage(&k).is_none(), "Bailed clears usage by construction");
     }
 
     #[test]
-    fn expired_status_counts_toward_unauthorized_strikes() {
-        // `Expired` is the same auth-recovery family as `Unauthorized`
-        // and must increment the same counter (mixed sequences too).
+    fn set_last_error_expired_transitions_to_bailed_and_clears_usage() {
+        // Expired is in the same auth-recovery family as Unauthorized;
+        // both drive the same Bailed transition.
         let mut map = AccountStateMap::new(&[make_account("Personal")]);
         let k = key("Personal");
         map.set_usage(&k, snapshot(Some(30.0), Some(40.0)));
 
-        map.set_last_error(&k, UsageFetchStatus::Unauthorized, None);
         map.set_last_error(&k, UsageFetchStatus::Expired, None);
-        map.set_last_error(&k, UsageFetchStatus::Unauthorized, None);
-        assert!(map.usage(&k).is_none(), "Expired must count toward the unauthorized strike total");
+
+        assert_eq!(map.loading_state(&k), LoadingState::Bailed);
+        assert!(map.usage(&k).is_none());
     }
 
     #[test]
-    fn unauthorized_counter_resets_on_success() {
-        let mut map = AccountStateMap::new(&[make_account("Personal")]);
-        let k = key("Personal");
+    fn set_last_error_rate_limited_leaves_loading_unchanged() {
+        // RateLimited is a probe-side throttle, not an auth failure;
+        // loading state must NOT transition to Bailed. The cached
+        // usage is also preserved so the bottom panel can keep showing
+        // the last known-good bars while the probe backs off.
+        let mut map = AccountStateMap::new(&[make_account("Granite")]);
+        let k = key("Granite");
         map.set_usage(&k, snapshot(Some(30.0), Some(40.0)));
+        assert_eq!(map.loading_state(&k), LoadingState::Ready);
 
-        map.set_last_error(&k, UsageFetchStatus::Unauthorized, None);
-        map.set_last_error(&k, UsageFetchStatus::Unauthorized, None);
-        // A successful probe resets the counter; subsequent 2
-        // Unauthorized probes must NOT clear the cache.
-        map.set_usage(&k, snapshot(Some(35.0), Some(45.0)));
-        map.set_last_error(&k, UsageFetchStatus::Unauthorized, None);
-        map.set_last_error(&k, UsageFetchStatus::Unauthorized, None);
-        assert!(
-            map.usage(&k).is_some(),
-            "counter must reset on success so 2 fresh strikes don't clear"
-        );
-    }
-
-    #[test]
-    fn unauthorized_counter_resets_on_rate_limited() {
-        // `RateLimited` is a real upstream state - keep the cached
-        // window so the bottom panel can show the rate-limit indicator
-        // against the last-known-good %bar. A subsequent burst of
-        // Unauthorized must start from 0, not from the prior strike.
-        let mut map = AccountStateMap::new(&[make_account("Personal")]);
-        let k = key("Personal");
-        map.set_usage(&k, snapshot(Some(30.0), Some(40.0)));
-
-        map.set_last_error(&k, UsageFetchStatus::Unauthorized, None);
-        map.set_last_error(&k, UsageFetchStatus::Unauthorized, None);
         map.set_last_error(&k, UsageFetchStatus::RateLimited, None);
-        assert!(map.usage(&k).is_some(), "RateLimited preserves cache");
-        // Counter is back to 0; the next two strikes are not yet
-        // enough to clear.
+
+        assert_eq!(map.loading_state(&k), LoadingState::Ready, "RateLimited preserves Ready");
+        assert!(map.usage(&k).is_some(), "cache preserved under RateLimited");
+    }
+
+    #[test]
+    fn set_last_error_network_failed_leaves_loading_unchanged() {
+        // Network errors are transient and unknown - the loading state
+        // stays at whatever it was, and the cache is preserved.
+        let mut map = AccountStateMap::new(&[make_account("Granite")]);
+        let k = key("Granite");
+        map.set_usage(&k, snapshot(Some(30.0), Some(40.0)));
+
+        map.set_last_error(&k, UsageFetchStatus::NetworkFailed, None);
+
+        assert_eq!(map.loading_state(&k), LoadingState::Ready);
+        assert!(map.usage(&k).is_some());
+    }
+
+    #[test]
+    fn set_loading_bailed_clears_usage() {
+        // Driven by the loading task to clear stale snapshots when
+        // transitioning to Bailed; mirrors the side-effect that
+        // set_last_error performs for the auth-error case.
+        let mut map = AccountStateMap::new(&[make_account("Granite")]);
+        let k = key("Granite");
+        map.set_usage(&k, snapshot(Some(30.0), Some(40.0)));
+
+        map.set_loading(&k, LoadingState::Bailed);
+
+        assert_eq!(map.loading_state(&k), LoadingState::Bailed);
+        assert!(map.usage(&k).is_none(), "explicit set_loading(Bailed) also clears usage");
+    }
+
+    #[test]
+    fn set_loading_to_loading_does_not_clear_usage() {
+        // Recovery poll transitions Bailed → Loading when auth_status
+        // flips back. The transition itself shouldn't wipe a cache
+        // that might've been re-primed since the bail. (In practice
+        // the cache is already None on a Bailed account, but the
+        // contract should be explicit.)
+        let mut map = AccountStateMap::new(&[make_account("Granite")]);
+        let k = key("Granite");
+        map.set_usage(&k, snapshot(Some(30.0), Some(40.0)));
+
+        map.set_loading(&k, LoadingState::Loading);
+
+        assert_eq!(map.loading_state(&k), LoadingState::Loading);
+        assert!(map.usage(&k).is_some(), "transition to Loading preserves any cached snapshot");
+    }
+
+    #[test]
+    fn bailed_account_recovers_to_ready_via_set_usage() {
+        // Recovery flow: account got Bailed by a probe failure; the
+        // recovery poll's re-run of loading lands a fresh probe;
+        // set_usage transitions back to Ready, re-priming the cache.
+        let mut map = AccountStateMap::new(&[make_account("Personal")]);
+        let k = key("Personal");
+        map.set_usage(&k, snapshot(Some(30.0), Some(40.0)));
         map.set_last_error(&k, UsageFetchStatus::Unauthorized, None);
-        map.set_last_error(&k, UsageFetchStatus::Unauthorized, None);
-        assert!(
-            map.usage(&k).is_some(),
-            "RateLimited must reset the counter (2 fresh strikes don't clear)"
+        assert_eq!(map.loading_state(&k), LoadingState::Bailed);
+
+        map.set_usage(&k, snapshot(Some(50.0), Some(60.0)));
+
+        assert_eq!(map.loading_state(&k), LoadingState::Ready);
+        assert!(map.usage(&k).is_some());
+    }
+
+    #[test]
+    fn all_loaded_true_for_empty_map() {
+        let map = AccountStateMap::empty_for_test();
+        assert!(map.all_loaded(), "empty map is vacuously all-loaded");
+    }
+
+    #[test]
+    fn all_loaded_false_when_any_loading() {
+        let map = AccountStateMap::new(&[make_account("Granite"), make_account("Personal")]);
+        assert!(!map.all_loaded(), "fresh accounts start in Loading; gate must stay closed");
+    }
+
+    #[test]
+    fn all_loaded_false_when_any_refreshing() {
+        let mut map = AccountStateMap::new(&[make_account("Granite"), make_account("Personal")]);
+        map.set_loading(&key("Granite"), LoadingState::Refreshing);
+        map.set_usage(&key("Personal"), snapshot(Some(10.0), Some(20.0)));
+        assert!(!map.all_loaded(), "Refreshing is mid-flight, not terminal");
+    }
+
+    #[test]
+    fn pick_for_project_skips_bailed_accounts() {
+        // Bailed account is in the allow list with no last_error (the
+        // recovery poll explicitly transitioned via set_loading, not
+        // set_last_error). Without the LoadingState filter, tier_of
+        // would classify it as tier 0 (usable=true) because both
+        // usage and last_error are None. The picker must NOT return
+        // it; the Ready account must win.
+        let mut map = AccountStateMap::new(&[make_account("Granite"), make_account("Personal")]);
+        // Granite: ready
+        map.set_usage(&key("Granite"), snapshot(Some(20.0), Some(20.0)));
+        // Personal: bailed via direct set_loading (mirrors recovery
+        // poll's auth_status=logged_out -> Bailed path, which has
+        // no associated last_error).
+        map.set_loading(&key("Personal"), LoadingState::Bailed);
+        let (picked, _) = map.pick_for_project(&["Granite".to_owned(), "Personal".to_owned()]);
+        assert_eq!(
+            picked.0, "Granite",
+            "pick_for_project must skip Bailed even without a recent last_error",
         );
     }
 
     #[test]
-    fn unauthorized_counter_saturates_no_double_clear() {
-        // After the cache is cleared, continued Unauthorized probes
-        // must NOT panic (overflow) and must not re-trigger the
-        // clear path in a way that interferes with re-priming the
-        // cache once auth recovers.
-        let mut map = AccountStateMap::new(&[make_account("Personal")]);
-        let k = key("Personal");
-        map.set_usage(&k, snapshot(Some(30.0), Some(40.0)));
+    fn pick_for_project_all_bailed_falls_back_to_first() {
+        // Every allow-list entry is Bailed. The fallback path still
+        // returns the first allow-list entry so spawn proceeds and
+        // the user sees the spawned subprocess's own error rather
+        // than forge silently refusing.
+        let mut map = AccountStateMap::new(&[make_account("Granite"), make_account("Personal")]);
+        map.set_loading(&key("Granite"), LoadingState::Bailed);
+        map.set_loading(&key("Personal"), LoadingState::Bailed);
+        let (picked, _) = map.pick_for_project(&["Granite".to_owned(), "Personal".to_owned()]);
+        assert_eq!(picked.0, "Granite");
+    }
 
-        for _ in 0..10 {
-            map.set_last_error(&k, UsageFetchStatus::Unauthorized, None);
-        }
-        assert!(map.usage(&k).is_none(), "cache stays cleared");
-        // Recovery: a successful probe primes a fresh snapshot.
-        map.set_usage(&k, snapshot(Some(50.0), Some(60.0)));
-        assert!(map.usage(&k).is_some(), "recovery primes a fresh cache");
+    #[test]
+    fn all_loaded_true_when_mix_of_ready_and_bailed() {
+        let mut map = AccountStateMap::new(&[make_account("Granite"), make_account("Personal")]);
+        map.set_usage(&key("Granite"), snapshot(Some(10.0), Some(20.0)));
+        map.set_last_error(&key("Personal"), UsageFetchStatus::Unauthorized, None);
+        assert_eq!(map.loading_state(&key("Granite")), LoadingState::Ready);
+        assert_eq!(map.loading_state(&key("Personal")), LoadingState::Bailed);
+        assert!(map.all_loaded(), "Ready + Bailed are both terminal states");
     }
 }

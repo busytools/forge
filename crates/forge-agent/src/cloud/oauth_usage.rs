@@ -95,7 +95,7 @@ async fn oauth_usage_user_agent() -> Result<&'static str, OauthUsageError> {
 pub async fn oauth_usage(config_dir: &Path) -> Result<OauthUsage, OauthUsageError> {
     let credentials = load_oauth_credentials(config_dir).ok_or(OauthUsageError::NoCredentials)?;
 
-    let first = do_probe(&credentials).await;
+    let first = probe(&credentials).await;
     match first {
         Err(OauthUsageError::Unauthorized(status))
             if credentials.expires_at.is_none_or(|t| t < std::time::SystemTime::now()) =>
@@ -111,7 +111,7 @@ pub async fn oauth_usage(config_dir: &Path) -> Result<OauthUsage, OauthUsageErro
             // change. Try one refresh + retry; on any refresh failure,
             // fall through to the original Unauthorized.
             match refresh_via_cli_spawn(config_dir).await {
-                Ok(new_creds) => do_probe(&new_creds).await,
+                Ok(new_creds) => probe(&new_creds).await,
                 Err(refresh_err) => {
                     tracing::warn!(
                         target: "forge_agent::cloud::oauth_usage",
@@ -129,9 +129,15 @@ pub async fn oauth_usage(config_dir: &Path) -> Result<OauthUsage, OauthUsageErro
 }
 
 /// One round-trip against `/api/oauth/usage` using `credentials.access_token`.
-/// Factored out so the refresh path can reuse the same probe code
-/// without re-loading the credentials from the keychain twice.
-async fn do_probe(credentials: &OauthCredentials) -> Result<OauthUsage, OauthUsageError> {
+///
+/// Exposed as a separate entry point from [`oauth_usage`] so the
+/// boot-time per-account loading task in
+/// `forge_workspace::account_loader` can drive its own refresh logic
+/// (the loading state machine wants the raw probe result to branch
+/// on `auth_status` rather than going through `oauth_usage`'s
+/// internal auto-refresh). Other callers should still prefer
+/// `oauth_usage` for the auto-refresh convenience.
+pub async fn probe(credentials: &OauthCredentials) -> Result<OauthUsage, OauthUsageError> {
     let headers = oauth_headers(&credentials.access_token).await?;
     let client = crate::http_trust::with_extra_roots(
         reqwest::Client::builder().timeout(OAUTH_TIMEOUT).default_headers(headers),
