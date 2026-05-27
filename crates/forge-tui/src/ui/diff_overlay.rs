@@ -46,7 +46,7 @@ use crate::ui::highlight::LineHighlighter;
 use crate::ui::theme;
 
 /// Minimum terminal width to render the split view. Below this we
-/// show a "resize" notice — the body needs room for the rail plus
+/// show a "resize" notice - the body needs room for the rail plus
 /// two columns of readable code, and squeezing harder loses more
 /// than it saves.
 const MIN_WIDTH_FOR_SPLIT: u16 = 100;
@@ -97,7 +97,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         render_separator(frame, sep_area);
         if pane_area.height >= 1 {
             frame.render_widget(
-                Paragraph::new("  Terminal too short — resize and re-open /diff.")
+                Paragraph::new("  Terminal too short - resize and re-open /diff.")
                     .style(Style::default().fg(theme::STATUS_WARNING)),
                 pane_area,
             );
@@ -117,7 +117,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     // Build the body line list up-front so we know its total
     // height; clamp body_scroll against (total - visible_tail) so
     // a wheel-past-end leaves a useful one-screen-of-tail visible.
-    // Banner + rule + blank are PINNED — they don't scroll with the
+    // Banner + rule + blank are PINNED - they don't scroll with the
     // body, so the diff target / per-file totals stay visible while
     // the user pages through hunks.
     let (body_lines, body_keys) = build_pane_lines(overlay, pane_area);
@@ -160,7 +160,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
 fn render_missing_state(frame: &mut Frame, area: Rect) {
     frame.render_widget(
-        Paragraph::new("Diff overlay opened without state. This is a bug — press Esc to return.")
+        Paragraph::new("Diff overlay opened without state. This is a bug - press Esc to return.")
             .style(Style::default().fg(theme::STATUS_ERROR)),
         area,
     );
@@ -200,7 +200,7 @@ fn render_rail(frame: &mut Frame, area: Rect, app: &mut App) {
         // Surface the cap overflow so a fresh-repo state with many
         // untracked files doesn't render identically to a clean
         // tree. Yellow signals "suppressed work-product, not a
-        // failure" — matches the Untracked status glyph colour.
+        // failure" - matches the Untracked status glyph colour.
         all_lines.push(Line::from(Span::styled(
             format!(
                 "  +{} untracked suppressed (cap {})",
@@ -364,7 +364,7 @@ fn emit_rail_node(
     let line_prefix = format!("{prefix}{connector}");
     match node.leaf.as_ref() {
         None => {
-            // Directory — append trailing `/` so the eye reads it as
+            // Directory - append trailing `/` so the eye reads it as
             // a folder, not a file with no extension.
             lines.push(rail_directory_row(&line_prefix, &node.label, inner_width));
             keys.push(RailRowKey::Directory);
@@ -511,7 +511,7 @@ fn render_footer(frame: &mut Frame, area: Rect, overlay: &DiffOverlayState) {
 /// content). Lifted out of the renderer so the top-level `render`
 /// can compute total height and clamp `body_scroll` before drawing.
 /// Returns the lines + a parallel `BodyRowKey` vector indexed by
-/// row offset — the click handler reads it to resolve a mouse y
+/// row offset - the click handler reads it to resolve a mouse y
 /// coordinate into an action.
 fn build_pane_lines(
     overlay: &DiffOverlayState,
@@ -532,18 +532,18 @@ fn build_pane_lines(
     // have file entries) but `--no-ext-diff` failed (so every
     // file's `hunks` is empty). Without this guard the renderer
     // would fall into `Some(file) if file.hunks.is_empty()` and
-    // print "(binary file or no diff content)" — a lie that
+    // print "(binary file or no diff content)" - a lie that
     // trains the user to ignore a real subprocess crash.
     if !overlay.scanner_ok {
         // Include the target ref so a user who typoed (`/diff develpoment`)
         // can spot the mistake without dismissing the overlay to scroll
         // chat. Spell out `target: agent.env_git` because that's the
-        // actual tracing-target string an operator would grep for —
+        // actual tracing-target string an operator would grep for -
         // `ENV_GIT` was the const identifier, which doesn't match
         // anything in the log stream.
         lines.push(Line::from(Span::styled(
             format!(
-                "  Scan failed for `{}` — see tracing logs (target: agent.env_git). Press Esc to retry.",
+                "  Scan failed for `{}` - see tracing logs (target: agent.env_git). Press Esc to retry.",
                 overlay.target,
             ),
             Style::default().fg(theme::STATUS_ERROR),
@@ -562,13 +562,13 @@ fn build_pane_lines(
         Some(file) if file.hunks.is_empty() => {
             // An Untracked file with no hunks comes from one of
             // the scan_untracked drop paths (size-cap exceeded,
-            // non-regular file, IO error) — all of which log WARN
+            // non-regular file, IO error) - all of which log WARN
             // under the agent.env_git tracing target. The
             // tracked-file case is a real binary diff from git.
             // Differentiate so the user knows whether to grep logs
             // vs accept the answer.
             let message = if file.status == FileStatus::Untracked {
-                "  (untracked, content not surfaced — see logs (target: agent.env_git))"
+                "  (untracked, content not surfaced - see logs (target: agent.env_git))"
             } else {
                 "  (binary file or no diff content)"
             };
@@ -666,9 +666,9 @@ fn index_comments_by_key(
 ) -> std::collections::HashMap<LineKey, &HunkComment> {
     let mut map = std::collections::HashMap::with_capacity(comments.len());
     for c in comments {
-        // Last-write-wins on duplicate keys (which shouldn't happen —
+        // Last-write-wins on duplicate keys (which shouldn't happen -
         // saving a comment on a line that already has one replaces
-        // the existing entry — but stay defensive).
+        // the existing entry - but stay defensive).
         map.insert(c.key, c);
     }
     map
@@ -676,7 +676,7 @@ fn index_comments_by_key(
 
 /// Render a saved comment as a bordered mini-box, mirroring the
 /// active editor's dialog shape but smaller. Reading it as a box
-/// instantly signals "annotation" — the previous single-line chip
+/// instantly signals "annotation" - the previous single-line chip
 /// (`💬 L<n> <text>`) blended into the surrounding diff context.
 /// Multi-line comment text wraps into multiple body rows. All
 /// emitted rows carry [`BodyRowKey::CommentChip`] so clicking
@@ -688,7 +688,7 @@ fn index_comments_by_key(
 ///   │ deadline                            │
 ///   └─────────────────────────────────────┘
 /// ```
-/// Background tint for the comment-chip interior — very dark
+/// Background tint for the comment-chip interior - very dark
 /// warm-brown so the box reads as a contained annotation block
 /// even when the right border slips off-screen. Picked to harmonize
 /// with `RUST_ORANGE` borders without competing with the diff lines'
@@ -712,7 +712,7 @@ fn render_comment_chip(
     let body_style = Style::default().bg(CHIP_BG);
 
     // Top border with embedded title. Whole row carries CHIP_BG so
-    // the entire box surface is tinted — eye reads it as one block
+    // the entire box surface is tinted - eye reads it as one block
     // regardless of whether the rightmost cells (incl. `┐`) end up
     // clipped on a narrow viewport.
     //
@@ -732,8 +732,8 @@ fn render_comment_chip(
     ]));
     keys.push(BodyRowKey::CommentChip(key));
 
-    // Body — wrap the comment_text into rows that fit the box's
-    // inner width (`│ … │` consumes 4 cells of chrome). Keep the
+    // Body - wrap the comment_text into rows that fit the box's
+    // inner width (`│ ... │` consumes 4 cells of chrome). Keep the
     // wrap simple: break on the box width and on explicit newlines.
     let inner_width = box_width.saturating_sub(4);
     let wrapped = wrap_chip_body(&comment.comment_text, inner_width);
@@ -831,9 +831,9 @@ fn render_active_input(
     ]));
     keys.push(BodyRowKey::InputRow(input.key));
 
-    // Body rows — one per editor line. Empty editor shows a single
+    // Body rows - one per editor line. Empty editor shows a single
     // placeholder row so the user sees where typing will land.
-    let inner_width = box_width.saturating_sub(2); // `│ … │`
+    let inner_width = box_width.saturating_sub(2); // `│ ... │`
     let editor_lines = input.editor.lines();
     let body_rows: Vec<String> =
         if editor_lines.is_empty() || editor_lines.iter().all(String::is_empty) {
@@ -880,18 +880,22 @@ fn render_active_input(
 
 /// Trim `text` to fit within `max_chars` columns. Used by the
 /// editor dialog body to keep rows from overflowing the box width.
-/// Falls back to `…`-suffix when truncation is needed.
+/// Falls back to `...`-suffix when truncation is needed.
 fn fit_box_content(text: &str, max_chars: usize) -> String {
     let count = text.chars().count();
     if count <= max_chars {
         return text.to_owned();
     }
-    if max_chars <= 1 {
-        return "\u{2026}".to_owned();
+    // When the budget is too small to fit the 3-char `...` marker,
+    // just take that many raw chars so the output still respects
+    // `max_chars`. Skipping the marker is the lesser harm versus
+    // overflowing the box width.
+    if max_chars < 3 {
+        return text.chars().take(max_chars).collect();
     }
-    let take = max_chars.saturating_sub(1);
+    let take = max_chars.saturating_sub(3);
     let truncated: String = text.chars().take(take).collect();
-    format!("{truncated}\u{2026}")
+    format!("{truncated}...")
 }
 
 fn gutter_width_for(file: &FileHunks) -> usize {
@@ -933,7 +937,7 @@ fn split_diff_row(
     // Per-side body width: pane minus 2-col leading indent minus the
     // 3-col divider zone (space + '│' + space). Splits as floor/ceil
     // so any leftover odd column goes to the right (additions) side
-    // — gives the `+` half a touch more breathing room than the `-`
+    // - gives the `+` half a touch more breathing room than the `-`
     // half, which mirrors how most users read a diff (focus right).
     let indent_cols: usize = 2;
     let divider_cols: usize = 3;
@@ -956,7 +960,7 @@ fn split_diff_row(
 }
 
 /// Build one half (left or right) of a split row. `key` of `None`
-/// means this side is blank — fill with spaces sized to match the
+/// means this side is blank - fill with spaces sized to match the
 /// other side so columns stay aligned.
 fn build_split_half(
     file: &FileHunks,
@@ -1085,7 +1089,7 @@ fn skip_spans_columns(spans: Vec<Span<'static>>, skip_cols: usize) -> Vec<Span<'
             remaining -= span_width;
             continue;
         }
-        // Partial skip inside this span — slice off the leading
+        // Partial skip inside this span - slice off the leading
         // `remaining` cols and keep the tail.
         let mut buf = String::with_capacity(span.content.len());
         let mut to_skip = remaining;
@@ -1117,7 +1121,7 @@ fn skip_spans_columns(spans: Vec<Span<'static>>, skip_cols: usize) -> Vec<Span<'
 ///
 /// Takes `&mut App` so the renderer can write the pane geometry
 /// (`pane_origin_*`, `pane_width`) and the parallel `body_keys`
-/// index back to overlay state — without this writeback, the
+/// index back to overlay state - without this writeback, the
 /// click hit-tester finds an empty `body_keys` and silently no-ops.
 /// Render the "terminal too narrow" notice in place of the body.
 /// The split view needs both columns of readable code plus the rail;
@@ -1127,7 +1131,7 @@ fn skip_spans_columns(spans: Vec<Span<'static>>, skip_cols: usize) -> Vec<Span<'
 /// hit-test against stale wide-tier values.
 fn render_too_narrow_notice(frame: &mut Frame, area: Rect, app: &mut App) {
     let msg =
-        format!("Terminal too narrow — resize to ≥ {MIN_WIDTH_FOR_SPLIT} cols and re-open /diff.");
+        format!("Terminal too narrow - resize to ≥ {MIN_WIDTH_FOR_SPLIT} cols and re-open /diff.");
     frame
         .render_widget(Paragraph::new(msg).style(Style::default().fg(theme::STATUS_WARNING)), area);
     if let Some(o) = app.diff_overlay.as_mut() {
@@ -1147,7 +1151,7 @@ fn banner_row(label: &'static str) -> Line<'static> {
 }
 
 /// Build the pane banner line. The footer hint already advertises
-/// `Esc close`, so the banner is informational only — no in-banner
+/// `Esc close`, so the banner is informational only - no in-banner
 /// affordance to dismiss.
 fn pane_banner_row(overlay: &DiffOverlayState) -> Line<'static> {
     let dim = Style::default().fg(theme::DIM);
@@ -1193,14 +1197,22 @@ fn truncate_path_front(path: &str, max_width: usize) -> String {
     if path.chars().count() <= max_width {
         return path.to_owned();
     }
-    let keep = max_width.saturating_sub(1);
+    // When the budget is too small to fit the 3-char `...` marker,
+    // just take the last `max_width` chars so the output still
+    // respects `max_width`. Skipping the marker is the lesser harm
+    // versus overflowing the rail width.
+    if max_width < 3 {
+        let skip = path.chars().count().saturating_sub(max_width);
+        return path.chars().skip(skip).collect();
+    }
+    let keep = max_width - 3;
     let mut chars = path.chars();
     let skip = path.chars().count().saturating_sub(keep);
     for _ in 0..skip {
         chars.next();
     }
     let mut out = String::with_capacity(max_width);
-    out.push('…');
+    out.push_str("...");
     out.extend(chars);
     out
 }
@@ -1210,7 +1222,7 @@ mod tests {
     use super::*;
 
     // `rail_width_for` tests live next to the function definition in
-    // `crate::app::diff_overlay::tests` — this module only tests the
+    // `crate::app::diff_overlay::tests` - this module only tests the
     // renderer-local helpers below.
 
     #[test]
@@ -1222,7 +1234,7 @@ mod tests {
     fn truncate_path_front_front_truncates_long_paths() {
         let out = truncate_path_front("crates/forge-tui/src/ui/inspector_pane.rs", 20);
         assert_eq!(out.chars().count(), 20);
-        assert!(out.starts_with('…'));
+        assert!(out.starts_with("..."));
         assert!(out.ends_with("inspector_pane.rs"));
     }
 
