@@ -85,10 +85,6 @@ pub enum LoadingState {
     /// next iteration will re-probe with the rotated token. Glyph is
     /// the same yellow `○` as `Loading` (user-visible distinction is
     /// not necessary; the launchpad gate cares about terminal-vs-not).
-    // Constructor lands in Section 1.4 (account_loader.rs) of #246.
-    // Temporary `dead_code` allow until that commit lands within the
-    // same PR.
-    #[allow(dead_code)]
     Refreshing,
     /// Probe returned 200; account is usable and may be assigned to
     /// sessions. Launchpad glyph: `●` (green).
@@ -282,9 +278,6 @@ impl AccountStateMap {
     /// logged-in. Setting `Bailed` clears the cached `usage` so the
     /// renderer drops the stale %bar (replaces the PR #238 3-strike
     /// counter; bailed accounts have no live snapshot by construction).
-    // Caller lands in Section 1.4 (account_loader.rs) of #246. Temporary
-    // `dead_code` allow until that commit lands within the same PR.
-    #[allow(dead_code)]
     pub fn set_loading(&mut self, key: &AccountKey, loading: LoadingState) {
         if let Some(state) = self.by_key.get_mut(key) {
             state.loading = loading;

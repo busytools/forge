@@ -59,6 +59,7 @@
 
 mod account;
 mod account_cache;
+mod account_loader;
 mod config;
 mod domain_session;
 mod error;

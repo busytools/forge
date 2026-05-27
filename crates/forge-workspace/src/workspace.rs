@@ -817,23 +817,41 @@ impl Workspace {
         }
     }
 
-    /// Kick off a single live account-usage probe in the background.
-    /// Called once at startup, after `Workspace::new` has seeded the
-    /// in-memory map from the on-disk cache. The 60 s background
-    /// poller takes over from here. There is no retry-until-success
-    /// loop - Anthropic's per-IP rate-limiter on `/api/oauth/usage`
-    /// makes bursting counterproductive, and the on-disk cache means
-    /// the launchpad picker has tier data immediately regardless of
-    /// whether the live probe succeeds.
-    pub fn spawn_initial_account_probe(self: &Arc<Self>) {
-        let workspace = Arc::clone(self);
-        let span = tracing::info_span!("initial_account_probe");
-        tokio::spawn(
-            async move {
-                workspace.refresh_account_usage_once().await;
-            }
-            .instrument(span),
-        );
+    /// Crate-internal accessor for the boot-time loading task to
+    /// drive `LoadingState` transitions on the workspace's account
+    /// map. Not exposed beyond the crate - the field stays private
+    /// so only intentional callers reach in.
+    pub(crate) fn account_states(&self) -> &Mutex<AccountStateMap> {
+        &self.accounts
+    }
+
+    /// Spawn one boot-time loading task per `[[accounts]]` entry in
+    /// `forge.toml`. Each task runs the per-account loading state
+    /// machine (in the crate-private `account_loader` module) until
+    /// the account reaches a terminal `LoadingState` (`Ready` or
+    /// `Bailed`). Called once at startup, replacing the older
+    /// "single-probe-then-poll" boot model with the explicit loading
+    /// gate that the launchpad now consults via
+    /// `AccountStateMap::all_loaded()`.
+    pub fn start_account_loading_tasks(self: &Arc<Self>) {
+        let entries: Vec<(AccountKey, std::path::PathBuf)> = {
+            let accounts = self.accounts.lock();
+            accounts
+                .ordered_keys
+                .iter()
+                .filter_map(|key| accounts.config_dir(key).map(|dir| (key.clone(), dir.clone())))
+                .collect()
+        };
+        for (key, dir) in entries {
+            let span = tracing::info_span!("account_loading", account = %key.0);
+            let workspace = Arc::clone(self);
+            tokio::spawn(
+                async move {
+                    crate::account_loader::run_account_loading(dir, key, workspace).await;
+                }
+                .instrument(span),
+            );
+        }
     }
 
     /// Spawn the 60 s background account-usage poller. Fetches
