@@ -60,6 +60,7 @@
 mod account;
 mod account_cache;
 mod account_loader;
+mod assignment_plan;
 mod config;
 mod domain_session;
 mod error;
