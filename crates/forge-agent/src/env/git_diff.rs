@@ -258,20 +258,21 @@ pub async fn scan(cwd: &Path, prev: Option<&GitDiffSnapshot>) -> GitDiffSnapshot
 
     let default_branch = resolve_default_branch(cwd).await;
     let on_default = default_branch.as_ref().is_some_and(|default| default == &raw_branch);
-    let dirty = is_worktree_dirty(cwd).await;
+    let dirty_probe = is_worktree_dirty(cwd).await;
 
-    // Layer 1: uncommitted edits vs HEAD. Same probe as before;
-    // populated whenever the working tree is dirty regardless of
-    // which branch we're on. None when clean. `worktree_scan_ok`
-    // distinguishes "tree was clean, nothing to show" from "tree
-    // was dirty but the numstat subprocess failed".
-    let (worktree, worktree_scan_ok) = if dirty {
-        match numstat(cwd, &["diff", "--numstat", "HEAD"]).await {
+    // Layer 1: uncommitted edits vs HEAD. `worktree_scan_ok`
+    // distinguishes "tree was clean, nothing to show" from the
+    // failure modes: dirty probe itself failed, OR dirty probe
+    // succeeded but the subsequent numstat failed. Either failure
+    // upstream of the layer trips the flag so the renderer surfaces
+    // "(scan failed)" instead of silently dropping to clean-tree.
+    let (worktree, worktree_scan_ok) = match dirty_probe {
+        None => (None, false),
+        Some(false) => (None, true),
+        Some(true) => match numstat(cwd, &["diff", "--numstat", "HEAD"]).await {
             Some(stats) => (Some(stats), true),
             None => (None, false),
-        }
-    } else {
-        (None, true)
+        },
     };
 
     // Layer 2: commits the branch has ahead of the default branch.
@@ -430,10 +431,17 @@ async fn resolve_default_branch(cwd: &Path) -> Option<String> {
     None
 }
 
-async fn is_worktree_dirty(cwd: &Path) -> bool {
+/// Returns `Some(dirty)` when `git status` ran cleanly (`Ok` /
+/// `Empty`); `None` when the subprocess hit `Failed` / `Oversize`.
+/// Callers thread the `None` signal into `worktree_scan_ok=false`
+/// so the renderer can surface "(scan failed)" for layer 1 instead
+/// of silently rendering a clean tree when the probe upstream of
+/// numstat collapsed.
+async fn is_worktree_dirty(cwd: &Path) -> Option<bool> {
     match run_git(cwd, &["status", "--porcelain=v1", "--untracked-files=no"]).await {
-        GitOutput::Ok(s) => !s.trim().is_empty(),
-        GitOutput::Empty | GitOutput::Failed | GitOutput::Oversize => false,
+        GitOutput::Ok(s) => Some(!s.trim().is_empty()),
+        GitOutput::Empty => Some(false),
+        GitOutput::Failed | GitOutput::Oversize => None,
     }
 }
 
