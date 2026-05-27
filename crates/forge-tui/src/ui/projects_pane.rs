@@ -1454,8 +1454,8 @@ fn needs_user_recovery(status: forge_workspace::UsageFetchStatus) -> bool {
 fn usage_error_label(status: forge_workspace::UsageFetchStatus, seven_day_at_cap: bool) -> String {
     use forge_workspace::UsageFetchStatus;
     match status {
-        UsageFetchStatus::Expired => "⚠ expired — /login".to_owned(),
-        UsageFetchStatus::Unauthorized => "⚠ unauthorized — /login".to_owned(),
+        UsageFetchStatus::Expired => "⚠ expired - /login".to_owned(),
+        UsageFetchStatus::Unauthorized => "⚠ unauthorized - /login".to_owned(),
         UsageFetchStatus::RateLimited => {
             if seven_day_at_cap {
                 "7d cap".to_owned()
@@ -2121,17 +2121,17 @@ mod tests {
     #[test]
     fn usage_error_label_unauthorized_unchanged() {
         let label = usage_error_label(forge_workspace::UsageFetchStatus::Unauthorized, false);
-        assert_eq!(label, "⚠ unauthorized — /login");
+        assert_eq!(label, "⚠ unauthorized - /login");
         // 7d-at-cap flag must NOT affect auth errors - they need /login
         // regardless of the 7d window state.
         let with_cap = usage_error_label(forge_workspace::UsageFetchStatus::Unauthorized, true);
-        assert_eq!(with_cap, "⚠ unauthorized — /login");
+        assert_eq!(with_cap, "⚠ unauthorized - /login");
     }
 
     #[test]
     fn usage_error_label_expired_unchanged() {
         let label = usage_error_label(forge_workspace::UsageFetchStatus::Expired, false);
-        assert_eq!(label, "⚠ expired — /login");
+        assert_eq!(label, "⚠ expired - /login");
     }
 
     #[test]

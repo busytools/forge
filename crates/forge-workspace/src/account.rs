@@ -103,7 +103,7 @@ pub(crate) struct AccountState {
     /// `Expired` (the auth-recovery family). When this hits
     /// `UNAUTHORIZED_CACHE_CLEAR_THRESHOLD`, the cached `UsageWindow`
     /// snapshot is dropped so the bottom panel surfaces the
-    /// `⚠ unauthorized — /login` label rather than rendering the
+    /// `⚠ unauthorized - /login` label rather than rendering the
     /// stale %bar as if it were live. Reset to 0 on any non-auth
     /// probe result (success, `RateLimited`, network error). Distinct
     /// from `consecutive_failures` so a real `RateLimited` series
@@ -888,7 +888,7 @@ mod tests {
     // `UsageWindow` survives, so the renderer keeps drawing the prior
     // %bar. After N=3 consecutive `Unauthorized` / `Expired` probes,
     // clear the cached snapshot so the existing
-    // `⚠ unauthorized — /login` error label takes over.
+    // `⚠ unauthorized - /login` error label takes over.
     // ---------------------------------------------------------------
 
     fn key(name: &str) -> AccountKey {
