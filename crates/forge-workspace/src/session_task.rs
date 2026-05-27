@@ -807,6 +807,52 @@ fn maybe_kick_worker_on_connected(
     let Some(label) = parse_worker_label_from_synth_key(spawn_key) else {
         return;
     };
+    let is_resume = is_resume_worker_synth_key(spawn_key);
+
+    // Resume path: prefer the resume-specific kick when the role
+    // ships one. `<label>/resume-kick.md` is opt-in (absent file is
+    // expected for most roles); when present, it represents the
+    // explicit "you're picking up, re-orient" framing. Override the
+    // past-progress guard so a re-orient lands even for workers that
+    // had progressed past their initial kick — the whole point of a
+    // resume-kick is to wake the worker up post-restart.
+    let kick_text = if is_resume {
+        match crate::team::load_resume_kick(&label) {
+            Ok(Some(text)) => Some(text),
+            Ok(None) => None,
+            Err(err) => {
+                tracing::warn!(
+                    target: "forge_workspace::team",
+                    label = %label,
+                    error = %err,
+                    "resume-kick lookup failed; falling back to initial-kick (or skip per past-progress guard)"
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    if let Some(resume_kick) = kick_text {
+        let target_key = SessionKey::from_session_id(real_session_id.to_owned());
+        if let Err(err) = workspace.dispatch(crate::protocol::Command::Prompt {
+            key: target_key,
+            text: resume_kick,
+            attachments: Vec::new(),
+        }) {
+            tracing::error!(
+                target: "forge_workspace::team",
+                label = %label,
+                error = ?err,
+                "maybe_kick_worker_on_connected: resume-kick dispatch failed",
+            );
+        }
+        return;
+    }
+
+    // Fall-through: fresh spawn OR resume-without-resume-kick. Load
+    // the regular `<label>/kick.md`.
     let initial_kick = match crate::team::load_initial_kick(&label) {
         Ok(kick) => kick,
         Err(err) => {
@@ -819,26 +865,24 @@ fn maybe_kick_worker_on_connected(
             return;
         }
     };
-    // Resume path: inspect the JSONL turn count before re-firing
-    // the kick. The kick lands as a USER turn; a worker that's
-    // already executed past the kick has at least one MORE user
-    // turn in its history (the next prompt from the lead, or an
-    // MCP-driven peer/worker message). Threshold is 2: a JSONL with
-    // exactly 1 user turn means the worker received the kick but
-    // crashed / didn't progress before forge restarted, so we
-    // re-fire to actually start the work. 2+ means the worker has
-    // moved past the kick — leave it alone, since a re-kick would
-    // override its in-flight state. Fresh-spawn path skips this
-    // check (no JSONL exists yet; user_turn_count would be 0
-    // anyway).
-    if is_resume_worker_synth_key(spawn_key)
-        && workspace.worker_has_progress_past_kick(real_session_id)
-    {
+    // Resume path WITHOUT a resume-kick.md: inspect the JSONL turn
+    // count before re-firing the regular kick. The kick lands as a
+    // USER turn; a worker that's already executed past the kick has
+    // at least one MORE user turn in its history (the next prompt
+    // from the lead, or an MCP-driven peer/worker message).
+    // Threshold is 2: a JSONL with exactly 1 user turn means the
+    // worker received the kick but crashed / didn't progress before
+    // forge restarted, so we re-fire to actually start the work. 2+
+    // means the worker has moved past the kick — leave it alone,
+    // since a re-kick would override its in-flight state. Fresh-
+    // spawn path skips this check (no JSONL exists yet;
+    // user_turn_count would be 0 anyway).
+    if is_resume && workspace.worker_has_progress_past_kick(real_session_id) {
         tracing::info!(
             target: "forge_workspace::team",
             label = %label,
             session_id = real_session_id,
-            "skipping kick on worker resume with prior progress past initial kick",
+            "skipping kick on worker resume with prior progress past initial kick (no resume-kick.md available)",
         );
         return;
     }
