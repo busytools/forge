@@ -26,9 +26,11 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use parking_lot::Mutex;
+#[cfg(target_os = "macos")]
 use serde_json::Value;
 
 use crate::cloud::auth_status;
+#[cfg(target_os = "macos")]
 use crate::cloud::time::parse_timestamp_value;
 
 pub use forge_primitives::cloud::oauth_credentials::OauthCredentials;
@@ -338,6 +340,7 @@ fn load_oauth_credentials_from_keychain(config_dir: &Path) -> Option<OauthCreden
     parse_oauth_credentials(&json)
 }
 
+#[cfg(target_os = "macos")]
 fn parse_oauth_credentials(json: &Value) -> Option<OauthCredentials> {
     let Some(oauth) = json.get("claudeAiOauth") else {
         tracing::debug!(
@@ -394,70 +397,82 @@ fn parse_oauth_credentials(json: &Value) -> Option<OauthCredentials> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{Duration, UNIX_EPOCH};
 
-    fn parse_str(json: &str) -> Option<OauthCredentials> {
-        let value: Value = serde_json::from_str(json).ok()?;
-        parse_oauth_credentials(&value)
-    }
+    /// Parser-surface tests are gated on macOS because the
+    /// `parse_oauth_credentials` helper itself is only compiled on
+    /// macOS - it has no caller on non-macos targets (the file source
+    /// is gone; the keychain source doesn't exist outside macOS), so
+    /// the function is `#[cfg(target_os = "macos")]` to satisfy
+    /// `-D dead_code`. Tests gated the same way keep the symbol's
+    /// availability symmetric with its definition.
+    #[cfg(target_os = "macos")]
+    mod parser {
+        use super::*;
+        use std::time::{Duration, UNIX_EPOCH};
 
-    #[test]
-    fn returns_none_for_empty_json() {
-        assert!(parse_str("{}").is_none());
-    }
+        fn parse_str(json: &str) -> Option<OauthCredentials> {
+            let value: Value = serde_json::from_str(json).ok()?;
+            parse_oauth_credentials(&value)
+        }
 
-    #[test]
-    fn returns_none_for_missing_oauth_block() {
-        assert!(parse_str(r#"{"somethingElse":true}"#).is_none());
-    }
+        #[test]
+        fn returns_none_for_empty_json() {
+            assert!(parse_str("{}").is_none());
+        }
 
-    #[test]
-    fn returns_none_for_empty_access_token() {
-        let json = r#"{"claudeAiOauth":{"accessToken":"","refreshToken":"tok"}}"#;
-        assert!(parse_str(json).is_none());
-    }
+        #[test]
+        fn returns_none_for_missing_oauth_block() {
+            assert!(parse_str(r#"{"somethingElse":true}"#).is_none());
+        }
 
-    #[test]
-    fn returns_none_for_non_string_access_token() {
-        let json = r#"{"claudeAiOauth":{"accessToken":42}}"#;
-        assert!(parse_str(json).is_none());
-    }
+        #[test]
+        fn returns_none_for_empty_access_token() {
+            let json = r#"{"claudeAiOauth":{"accessToken":"","refreshToken":"tok"}}"#;
+            assert!(parse_str(json).is_none());
+        }
 
-    #[test]
-    fn returns_credentials_for_valid_oauth() {
-        let json = r#"{"claudeAiOauth":{"accessToken":"sk-ant-oat01-test","refreshToken":"sk-ant-ort01-test","expiresAt":9999999999999}}"#;
-        let credentials = parse_str(json).expect("credentials");
-        assert_eq!(credentials.access_token, "sk-ant-oat01-test");
-        assert!(credentials.expires_at.is_some());
-    }
+        #[test]
+        fn returns_none_for_non_string_access_token() {
+            let json = r#"{"claudeAiOauth":{"accessToken":42}}"#;
+            assert!(parse_str(json).is_none());
+        }
 
-    #[test]
-    fn parses_expiry_in_seconds() {
-        let json = r#"{"claudeAiOauth":{"accessToken":"token","expiresAt":1}}"#;
-        let credentials = parse_str(json).expect("credentials");
-        assert_eq!(credentials.expires_at, Some(UNIX_EPOCH + Duration::from_secs(1)));
-    }
+        #[test]
+        fn returns_credentials_for_valid_oauth() {
+            let json = r#"{"claudeAiOauth":{"accessToken":"sk-ant-oat01-test","refreshToken":"sk-ant-ort01-test","expiresAt":9999999999999}}"#;
+            let credentials = parse_str(json).expect("credentials");
+            assert_eq!(credentials.access_token, "sk-ant-oat01-test");
+            assert!(credentials.expires_at.is_some());
+        }
 
-    #[test]
-    fn parses_expiry_in_milliseconds() {
-        let json = r#"{"claudeAiOauth":{"accessToken":"token","expiresAt":1700000000001}}"#;
-        let credentials = parse_str(json).expect("credentials");
-        assert_eq!(
-            credentials.expires_at,
-            Some(UNIX_EPOCH + Duration::from_millis(1_700_000_000_001))
-        );
-    }
+        #[test]
+        fn parses_expiry_in_seconds() {
+            let json = r#"{"claudeAiOauth":{"accessToken":"token","expiresAt":1}}"#;
+            let credentials = parse_str(json).expect("credentials");
+            assert_eq!(credentials.expires_at, Some(UNIX_EPOCH + Duration::from_secs(1)));
+        }
 
-    #[test]
-    fn parses_expiry_string_form() {
-        let json = r#"{"claudeAiOauth":{"accessToken":"token","expiresAt":"42"}}"#;
-        let credentials = parse_str(json).expect("credentials");
-        assert_eq!(credentials.expires_at, Some(UNIX_EPOCH + Duration::from_secs(42)));
-    }
+        #[test]
+        fn parses_expiry_in_milliseconds() {
+            let json = r#"{"claudeAiOauth":{"accessToken":"token","expiresAt":1700000000001}}"#;
+            let credentials = parse_str(json).expect("credentials");
+            assert_eq!(
+                credentials.expires_at,
+                Some(UNIX_EPOCH + Duration::from_millis(1_700_000_000_001))
+            );
+        }
 
-    #[test]
-    fn returns_none_for_malformed_json() {
-        assert!(parse_str("not json at all").is_none());
+        #[test]
+        fn parses_expiry_string_form() {
+            let json = r#"{"claudeAiOauth":{"accessToken":"token","expiresAt":"42"}}"#;
+            let credentials = parse_str(json).expect("credentials");
+            assert_eq!(credentials.expires_at, Some(UNIX_EPOCH + Duration::from_secs(42)));
+        }
+
+        #[test]
+        fn returns_none_for_malformed_json() {
+            assert!(parse_str("not json at all").is_none());
+        }
     }
 
     #[test]
