@@ -1912,23 +1912,21 @@ impl Workspace {
         session_key: &SessionKey,
         cwd_raw: &std::path::Path,
     ) -> std::path::PathBuf {
-        match self.worker_lookup_for_session(session_key) {
-            Some((_, label, is_git_repo_at_spawn)) => {
-                crate::mcp::workers::types::worker_tag_dir(cwd_raw, &label, is_git_repo_at_spawn)
-            }
-            None => {
-                // Trace-level so a real lookup-miss (race during
-                // worker spawn, lead-session call) leaves a
-                // grep-able trail without flooding normal logs.
-                // The lead-session case is the common path and
-                // intentionally not promoted higher.
-                tracing::trace!(
-                    target: "forge_workspace::git_scan",
-                    session_key = %session_key.as_str(),
-                    "no worker lookup; using cwd_raw unchanged"
-                );
-                cwd_raw.to_path_buf()
-            }
+        if let Some((_, label, is_git_repo_at_spawn)) = self.worker_lookup_for_session(session_key)
+        {
+            crate::mcp::workers::types::worker_tag_dir(cwd_raw, &label, is_git_repo_at_spawn)
+        } else {
+            // Trace-level so a real lookup-miss (race during
+            // worker spawn, lead-session call) leaves a grep-able
+            // trail without flooding normal logs. The lead-session
+            // case is the common path and intentionally not
+            // promoted higher.
+            tracing::trace!(
+                target: "forge_workspace::git_scan",
+                session_key = %session_key.as_str(),
+                "no worker lookup; using cwd_raw unchanged"
+            );
+            cwd_raw.to_path_buf()
         }
     }
 

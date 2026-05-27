@@ -240,18 +240,17 @@ fn apply_timer_tick(app: &mut App) {
         app.workspace.is_some(),
         "workspace unset after init (apply_timer_tick); MVVM contract violated",
     );
-    let cwd = match app.workspace.as_ref() {
-        Some(workspace) => workspace.git_scan_cwd_for_session(&active_key, &cwd_raw_path),
-        None => {
-            tracing::warn!(
-                target: crate::logging::targets::APP_SESSION,
-                event_name = "git_diff_workspace_unset",
-                message = "App.workspace is None during apply_timer_tick; scanning cwd_raw without worker-cwd resolution",
-                outcome = "fallback",
-                key = %active_key.as_str(),
-            );
-            cwd_raw_path
-        }
+    let cwd = if let Some(workspace) = app.workspace.as_ref() {
+        workspace.git_scan_cwd_for_session(&active_key, &cwd_raw_path)
+    } else {
+        tracing::warn!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "git_diff_workspace_unset",
+            message = "App.workspace is None during apply_timer_tick; scanning cwd_raw without worker-cwd resolution",
+            outcome = "fallback",
+            key = %active_key.as_str(),
+        );
+        cwd_raw_path
     };
     let generation = session.git_diff_generation;
     let scan_in_flight = Arc::clone(&session.git_diff_scan_in_flight);
