@@ -225,10 +225,29 @@ pub async fn refresh_via_cli_spawn(config_dir: &Path) -> Result<OauthCredentials
     cmd.args(["-p", "hi"]);
     cmd.env("CLAUDE_CONFIG_DIR", config_dir);
     cmd.current_dir(&tmp_dir);
-    let output = tokio::time::timeout(REFRESH_TIMEOUT, cmd.output())
-        .await
-        .map_err(|_| RefreshError::Timeout)?
-        .map_err(|e| RefreshError::SpawnFailed(e.to_string()))?;
+    // kill_on_drop = true so dropping the future on a timeout actually
+    // terminates the child. Without it, `tokio::time::timeout` drops
+    // the future but the child keeps running in the background: a
+    // mid-keychain-write at the 10 s mark would land async after we
+    // already surfaced Unauthorized (user sees the error despite a
+    // fresh entry arriving seconds later), and two concurrent timed-
+    // out refreshes could leave racing CLI processes both writing the
+    // same keychain entry.
+    cmd.kill_on_drop(true);
+    let started = std::time::Instant::now();
+    let output = if let Ok(result) = tokio::time::timeout(REFRESH_TIMEOUT, cmd.output()).await {
+        result.map_err(|e| RefreshError::SpawnFailed(e.to_string()))?
+    } else {
+        tracing::warn!(
+            target: crate::logging::targets::OAUTH_CREDENTIALS,
+            event_name = "oauth_refresh_timeout",
+            config_dir = %config_dir.display(),
+            elapsed_secs = started.elapsed().as_secs_f64(),
+            timeout_secs = REFRESH_TIMEOUT.as_secs(),
+            "refresh spawn killed after timeout",
+        );
+        return Err(RefreshError::Timeout);
+    };
     if !output.status.success() {
         return Err(RefreshError::ExitNonZero(output.status.code()));
     }
