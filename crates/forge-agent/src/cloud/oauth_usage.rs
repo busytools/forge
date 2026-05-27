@@ -3,9 +3,10 @@
 //! Fetches per-account rate-limit utilisation from
 //! `https://api.anthropic.com/api/oauth/usage` using the OAuth
 //! bearer credentials resolved by
-//! [`super::oauth_credentials::load_oauth_credentials`] (file or —
-//! on macOS — keychain). The `Authorization` header never escapes
-//! this module.
+//! [`super::oauth_credentials::load_oauth_credentials`] (macOS
+//! keychain only - the file source was removed in #237-B; see the
+//! module docs in `oauth_credentials.rs` for the rationale). The
+//! `Authorization` header never escapes this module.
 //!
 //! The response shape mirrors the live API as of 2026-04, exposed as
 //! plain optional fields. Timestamp parsing is left to consumers
@@ -22,7 +23,7 @@ pub use forge_primitives::usage::oauth::{
     OauthExtraUsage, OauthUsage, OauthUsageError, OauthUsageWindow,
 };
 
-use super::oauth_credentials::load_oauth_credentials;
+use super::oauth_credentials::{OauthCredentials, load_oauth_credentials, refresh_via_cli_spawn};
 
 const OAUTH_USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 const OAUTH_BETA_HEADER: &str = "oauth-2025-04-20";
@@ -69,14 +70,23 @@ async fn oauth_usage_user_agent() -> Result<&'static str, OauthUsageError> {
 }
 
 /// Fetch the live OAuth usage payload from the Anthropic API using
-/// the bearer in `<config_dir>/.credentials.json` (or, on macOS, the
-/// matching keychain entry — see
-/// [`super::oauth_credentials::load_oauth_credentials`] for the
-/// resolution order).
+/// the bearer the macOS keychain holds for `config_dir` (see
+/// [`super::oauth_credentials::load_oauth_credentials`]).
 ///
 /// The caller (typically a `ForgeSdkBridge`) is the source of truth
 /// for `config_dir`; there is no fallback to a process-env-derived
 /// path.
+///
+/// Refresh fast-path: when the cached token's `expires_at` is in the
+/// past OR absent entirely, AND the live probe returns `Unauthorized`,
+/// fires [`refresh_via_cli_spawn`] once to nudge the claude CLI into
+/// rotating the keychain entry, then retries the probe with the
+/// freshly-read token. Any refresh failure (binary missing, timeout,
+/// non-zero exit, keychain still expired) surfaces the original
+/// `Unauthorized` so the #237-A cache-invalidation pathway picks up
+/// after the usual 3-strike threshold. Other 401 causes (valid
+/// token + revoked / scope mismatch) skip refresh entirely - the
+/// expiry check filters them out.
 ///
 /// # Errors
 ///
@@ -85,11 +95,43 @@ async fn oauth_usage_user_agent() -> Result<&'static str, OauthUsageError> {
 pub async fn oauth_usage(config_dir: &Path) -> Result<OauthUsage, OauthUsageError> {
     let credentials = load_oauth_credentials(config_dir).ok_or(OauthUsageError::NoCredentials)?;
 
-    // `credentials.expires_at` is a stale cache: the CLI refreshes
-    // the access token silently before each of its own requests,
-    // out-of-band from our probe. Trust the upstream API response
-    // (401 → Unauthorized, anything else → live) instead of the
-    // on-disk timestamp.
+    let first = do_probe(&credentials).await;
+    match first {
+        Err(OauthUsageError::Unauthorized(status))
+            if credentials.expires_at.is_none_or(|t| t < std::time::SystemTime::now()) =>
+        {
+            // Local view of the token agrees with the server's verdict
+            // (401): expires_at is either in the past OR absent
+            // entirely. Treating None as "missing expiry = expired" is
+            // the safe call here - refresh is one-shot (the per-account
+            // mutex prevents a probe storm), and surfacing 401 forever
+            // with no refresh attempt is worse than firing one refresh
+            // against a credential blob whose expiresAt field was
+            // omitted by an older claude write or a future schema
+            // change. Try one refresh + retry; on any refresh failure,
+            // fall through to the original Unauthorized.
+            match refresh_via_cli_spawn(config_dir).await {
+                Ok(new_creds) => do_probe(&new_creds).await,
+                Err(refresh_err) => {
+                    tracing::warn!(
+                        target: "forge_agent::cloud::oauth_usage",
+                        event_name = "oauth_usage_refresh_failed",
+                        config_dir = %config_dir.display(),
+                        error = %refresh_err,
+                        "refresh attempt did not produce fresh creds; surfacing original Unauthorized",
+                    );
+                    Err(OauthUsageError::Unauthorized(status))
+                }
+            }
+        }
+        other => other,
+    }
+}
+
+/// One round-trip against `/api/oauth/usage` using `credentials.access_token`.
+/// Factored out so the refresh path can reuse the same probe code
+/// without re-loading the credentials from the keychain twice.
+async fn do_probe(credentials: &OauthCredentials) -> Result<OauthUsage, OauthUsageError> {
     let headers = oauth_headers(&credentials.access_token).await?;
     let client = crate::http_trust::with_extra_roots(
         reqwest::Client::builder().timeout(OAUTH_TIMEOUT).default_headers(headers),
@@ -104,7 +146,7 @@ pub async fn oauth_usage(config_dir: &Path) -> Result<OauthUsage, OauthUsageErro
         .map_err(|error| OauthUsageError::Network(error.to_string()))?;
 
     let status = response.status().as_u16();
-    // Parse Retry-After BEFORE consuming the response body — once
+    // Parse Retry-After BEFORE consuming the response body - once
     // we call .bytes() the response object is moved. Anthropic
     // returns 429 with a per-account hold-down value in seconds;
     // honouring it prevents the poller from re-tripping the limit
@@ -127,7 +169,7 @@ pub async fn oauth_usage(config_dir: &Path) -> Result<OauthUsage, OauthUsageErro
     // probe" suspicion. Log status + a body suffix for every
     // non-200 response so a triage can correlate "which account /
     // when / what did the API actually say." Successful 200s are
-    // logged at trace level (high volume — 60 s poll × N accounts)
+    // logged at trace level (high volume - 60 s poll × N accounts)
     // with no body. config_dir is logged at the caller (workspace
     // poll loop) so we don't repeat it here.
     if status == 200 {
