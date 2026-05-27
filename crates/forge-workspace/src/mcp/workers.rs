@@ -1878,6 +1878,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn create_role_overwrite_true_replaces_all_three_files() {
+        // overwrite=true success path: seed stale charter + kick +
+        // resume-kick, call with new content for all three, assert
+        // on-disk content matches the new payload. The existing
+        // three regression tests cover additive shape + refusal;
+        // this one locks the actual replacement behavior.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let _guard = redirect_forge_team_root(tmp.path().to_path_buf());
+
+        let role_dir = tmp.path().join("researcher");
+        std::fs::create_dir_all(&role_dir).unwrap();
+        std::fs::write(role_dir.join("charter.md"), b"stale charter").unwrap();
+        std::fs::write(role_dir.join("kick.md"), b"stale kick").unwrap();
+        std::fs::write(role_dir.join("resume-kick.md"), b"stale resume-kick").unwrap();
+
+        let mock = Arc::new(MockWorkerFacade::new());
+        let tool = lead_create_role_tool(mock);
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({
+                    "label": "researcher",
+                    "charter": "fresh charter",
+                    "initial_kick": "fresh kick",
+                    "resume_kick": "fresh resume-kick",
+                    "overwrite": true,
+                }),
+            })
+            .await;
+
+        assert!(
+            !output.is_error,
+            "overwrite=true must succeed when all three exist: {:?}",
+            output.blocks
+        );
+        let charter_disk = std::fs::read_to_string(role_dir.join("charter.md")).unwrap();
+        let kick_disk = std::fs::read_to_string(role_dir.join("kick.md")).unwrap();
+        let resume_kick_disk = std::fs::read_to_string(role_dir.join("resume-kick.md")).unwrap();
+        assert_eq!(charter_disk, "fresh charter");
+        assert_eq!(kick_disk, "fresh kick");
+        assert_eq!(resume_kick_disk, "fresh resume-kick");
+    }
+
+    #[tokio::test]
     async fn create_role_overwrite_refuses_when_any_of_three_exists() {
         // overwrite=false + resume-kick.md already present: refuse.
         // Locks the existence-check covering all three target sites,
