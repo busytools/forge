@@ -829,7 +829,11 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         );
     }
 
-    enforce_and_emit_cache_metrics(app);
+    // Cache-metric emission moved to a post-draw hook (run only on
+    // real `terminal.draw`, not the throttle's scratch pass) so the
+    // counters don't double on change frames and don't advance "for
+    // free" on skip frames. The run loop calls
+    // `crate::ui::emit_post_draw_metrics` after the real draw.
 }
 
 fn emit_render_summary(
@@ -902,7 +906,7 @@ fn remember_render_trace_state(
     true
 }
 
-fn enforce_and_emit_cache_metrics(app: &mut App) {
+pub(crate) fn enforce_and_emit_cache_metrics(app: &mut App) {
     let budget_stats = app.enforce_render_cache_budget();
     crate::perf::mark_with("cache::bytes_before", "bytes", budget_stats.total_before_bytes);
     crate::perf::mark_with("cache::bytes_after", "bytes", budget_stats.total_after_bytes);
