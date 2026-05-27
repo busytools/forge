@@ -185,7 +185,7 @@ fn render_scrollable_body(frame: &mut Frame, body_area: Rect, app: &mut App) {
 
     let mut body_lines: Vec<Line<'static>> = Vec::new();
     {
-        let _t = crate::perf::start("inspector_pane::append_body");
+        let _t = crate::perf::start("ui::inspector_pane::append_body");
         append_body(&mut body_lines, app, body_area.width);
     }
     let has_open_diff_glyph = snapshot_has_diff(app);
@@ -350,7 +350,7 @@ const INSPECTOR_THUMB_MAX_CELLS: usize = 1;
 /// distinct rather than two `DIM bold` headers next to each other.
 fn append_body(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
     {
-        let _t = crate::perf::start("inspector_pane::git_section");
+        let _t = crate::perf::start("ui::inspector_pane::git_section");
         append_git_section(lines, app, width);
     }
 
@@ -364,7 +364,7 @@ fn append_body(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
         lines.push(Line::default());
         push_section_rule(lines, width);
         lines.push(Line::default());
-        let _t = crate::perf::start("inspector_pane::tasks_section");
+        let _t = crate::perf::start("ui::inspector_pane::tasks_section");
         append_tasks_section(lines, app, width);
     }
 
@@ -584,11 +584,11 @@ fn append_diff_layer(lines: &mut Vec<Line<'static>>, layer: &DiffDisplay<'_>, wi
     lines.push(Line::default());
 
     let tree = {
-        let _t = crate::perf::start("inspector_pane::build_tree");
+        let _t = crate::perf::start("ui::inspector_pane::build_tree");
         build_tree(layer.files)
     };
     {
-        let _t = crate::perf::start("inspector_pane::render_tree");
+        let _t = crate::perf::start("ui::inspector_pane::render_tree");
         render_tree(lines, &tree, width);
     }
 
