@@ -99,6 +99,18 @@ pub(crate) struct AccountState {
     /// next-probe delay (capped at a sensible ceiling). Reset to
     /// 0 on success.
     pub consecutive_failures: u32,
+    /// Time at which to fire a targeted "clear-check" probe after a
+    /// `RateLimited` response. Set to `now + Retry-After + jitter` so
+    /// forge catches the cap clearing as soon as Anthropic's stated
+    /// retry-after window elapses, rather than waiting up to a full
+    /// 60 s natural-cadence tick. Additive to (not replacing) the
+    /// regular cadence - the scheduler fires probes for accounts
+    /// whose `should_probe_now` OR `should_clear_check_now` is true.
+    /// Cleared on any non-`RateLimited` response (success, auth
+    /// error, network error); refreshed on a second consecutive
+    /// `RateLimited` with the new server-stated retry-after. `None`
+    /// when the account is not in a rate-limited hold.
+    pub pending_clear_check_at: Option<std::time::Instant>,
 }
 
 #[derive(Debug)]
@@ -141,6 +153,7 @@ impl AccountStateMap {
                     last_error: None,
                     next_probe_at: None,
                     consecutive_failures: 0,
+                    pending_clear_check_at: None,
                 },
             );
         }
@@ -208,6 +221,10 @@ impl AccountStateMap {
             state.last_error = None;
             state.next_probe_at = None;
             state.consecutive_failures = 0;
+            // Successful probe means the rate-limited hold (if any)
+            // cleared. Drop the targeted clear-check timer; the
+            // regular cadence resumes from here.
+            state.pending_clear_check_at = None;
         }
     }
 
@@ -248,7 +265,32 @@ impl AccountStateMap {
                 _ => backoff_delay(state.consecutive_failures),
             };
             state.next_probe_at = Some(std::time::Instant::now() + delay);
+            // Targeted clear-check timer: only meaningful when the
+            // server's stated Retry-After is the source of the
+            // delay (i.e. a real `RateLimited` response with a
+            // sub-second-or-larger hint). Any other failure
+            // (Unauthorized / network / Other), or a `RateLimited`
+            // without a usable Retry-After, falls back to the
+            // regular cadence so we don't probe blindly.
+            if matches!(status, UsageFetchStatus::RateLimited)
+                && let Some(retry) = retry_after
+                && retry >= std::time::Duration::from_secs(1)
+            {
+                let jitter = clear_check_jitter(retry);
+                state.pending_clear_check_at = Some(std::time::Instant::now() + retry + jitter);
+            } else {
+                state.pending_clear_check_at = None;
+            }
         }
+    }
+
+    /// True when the account has a pending clear-check timer that has
+    /// elapsed, meaning the scheduler should fire a probe even if
+    /// `should_probe_now` is in a backoff window. Cold-cache accounts
+    /// and accounts not currently rate-limited return `false`.
+    pub fn should_clear_check_now(&self, key: &AccountKey) -> bool {
+        let Some(state) = self.by_key.get(key) else { return false };
+        state.pending_clear_check_at.is_some_and(|t| std::time::Instant::now() >= t)
     }
 
     /// `true` when the poller may probe `key` now. `false` when the
@@ -414,6 +456,28 @@ fn backoff_delay(consecutive_failures: u32) -> std::time::Duration {
     let exp = consecutive_failures.min(20); // shift saturates at 20; well under u64::MAX
     let seconds = 30_u64.saturating_mul(1_u64 << exp.saturating_sub(1));
     Duration::from_secs(seconds).min(CAP)
+}
+
+/// Additive jitter for a rate-limit clear-check timer. Returns a
+/// value in `[0, magnitude]` where `magnitude = clamp(retry_after /
+/// 10, 1 s, 30 s)`. Always non-negative so the resulting probe time
+/// never precedes Anthropic's stated Retry-After. Source of pseudo-
+/// randomness is the system clock's nanosecond fraction - non-crypto,
+/// just enough to break thundering-herd synchronisation when multiple
+/// accounts rate-limit at the same instant.
+fn clear_check_jitter(retry_after: std::time::Duration) -> std::time::Duration {
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    let magnitude_secs = (retry_after.as_secs_f64() * 0.1).clamp(1.0, 30.0);
+    // 30s -> 3e10 nanos, well within u64 range.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let magnitude_nanos = (magnitude_secs * 1e9) as u64;
+    if magnitude_nanos == 0 {
+        return Duration::ZERO;
+    }
+    let entropy_nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0_u64, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX));
+    Duration::from_nanos(entropy_nanos % magnitude_nanos)
 }
 
 fn five_hour_util(snapshot: &UsageSnapshot) -> f64 {
@@ -838,5 +902,186 @@ mod tests {
         assert!(is_rate_limited(&snapshot(Some(0.0), Some(100.0))));
         assert!(is_rate_limited(&snapshot(Some(100.0), Some(100.0))));
         assert!(!is_rate_limited(&snapshot(Some(99.9), Some(99.9))));
+    }
+
+    fn key(name: &str) -> AccountKey {
+        AccountKey(name.to_owned())
+    }
+
+    // ---------------------------------------------------------------
+    // #237-D: targeted clear-check probe at Retry-After + jitter.
+    //
+    // Anthropic 429s the usage probe and sends a `Retry-After` header
+    // pointing at the cap-reset instant. Without a targeted timer the
+    // next probe waits up to ~60 s (the natural cadence), so the
+    // bottom panel keeps showing "rate-limited" / "7d cap" for up to
+    // a full poll cycle after the cap actually clears. Stamp
+    // `pending_clear_check_at = now + Retry-After + jitter` on
+    // `RateLimited`; the scheduler OR-includes that flag with
+    // `should_probe_now`, so the probe fires at the server-stated
+    // reset (plus a small additive jitter to break thundering-herd
+    // synchronisation across accounts that 429 simultaneously).
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn rate_limited_with_retry_after_sets_clear_check_timer() {
+        // Setter fires the timer at `now + retry_after + jitter`
+        // for a real `RateLimited` response. Bound the assertion
+        // window so the test isn't flaky against clock drift /
+        // scheduling jitter.
+        let mut map = AccountStateMap::new(&[make_account("Personal")]);
+        let k = key("Personal");
+        let before = std::time::Instant::now();
+        let retry_after = std::time::Duration::from_secs(120);
+        map.set_last_error(&k, UsageFetchStatus::RateLimited, Some(retry_after));
+        let state = map.by_key.get(&k).expect("state");
+        let target = state.pending_clear_check_at.expect("flag set");
+        let elapsed = target.saturating_duration_since(before);
+        // Window: [retry_after, retry_after + max_jitter + small clock budget].
+        // max_jitter = 10% of 120s = 12s.
+        assert!(
+            elapsed >= retry_after,
+            "target must not precede now + retry_after (got {elapsed:?})"
+        );
+        assert!(
+            elapsed <= retry_after + std::time::Duration::from_secs(13),
+            "target must not exceed retry_after + 12s jitter + 1s slack (got {elapsed:?})"
+        );
+    }
+
+    #[test]
+    fn clear_check_timer_cleared_on_success() {
+        let mut map = AccountStateMap::new(&[make_account("Personal")]);
+        let k = key("Personal");
+        map.set_last_error(
+            &k,
+            UsageFetchStatus::RateLimited,
+            Some(std::time::Duration::from_secs(120)),
+        );
+        assert!(map.by_key.get(&k).unwrap().pending_clear_check_at.is_some());
+        map.set_usage(&k, snapshot(Some(30.0), Some(40.0)));
+        assert!(
+            map.by_key.get(&k).unwrap().pending_clear_check_at.is_none(),
+            "successful probe must clear the targeted timer"
+        );
+    }
+
+    #[test]
+    fn clear_check_timer_cleared_on_non_rate_limited_failure() {
+        // Unauthorized / network failure isn't a rate-limit hold, so
+        // there's no targeted retry-after to wait on; drop the flag
+        // so the scheduler doesn't fire a stale clear-check.
+        let mut map = AccountStateMap::new(&[make_account("Personal")]);
+        let k = key("Personal");
+        map.set_last_error(
+            &k,
+            UsageFetchStatus::RateLimited,
+            Some(std::time::Duration::from_secs(120)),
+        );
+        assert!(map.by_key.get(&k).unwrap().pending_clear_check_at.is_some());
+        map.set_last_error(&k, UsageFetchStatus::Unauthorized, None);
+        assert!(
+            map.by_key.get(&k).unwrap().pending_clear_check_at.is_none(),
+            "non-rate-limited failure must clear the targeted timer"
+        );
+    }
+
+    #[test]
+    fn clear_check_timer_refreshes_on_second_rate_limited() {
+        // Second consecutive RateLimited with a larger Retry-After
+        // (Anthropic extended the hold) refreshes the timer to the
+        // new value rather than stacking.
+        let mut map = AccountStateMap::new(&[make_account("Personal")]);
+        let k = key("Personal");
+        map.set_last_error(
+            &k,
+            UsageFetchStatus::RateLimited,
+            Some(std::time::Duration::from_secs(60)),
+        );
+        let first = map.by_key.get(&k).unwrap().pending_clear_check_at.expect("first timer");
+        let before_second = std::time::Instant::now();
+        map.set_last_error(
+            &k,
+            UsageFetchStatus::RateLimited,
+            Some(std::time::Duration::from_secs(300)),
+        );
+        let second = map.by_key.get(&k).unwrap().pending_clear_check_at.expect("second timer");
+        assert!(second > first, "second timer must be later than the first");
+        let elapsed = second.saturating_duration_since(before_second);
+        assert!(
+            elapsed >= std::time::Duration::from_secs(300),
+            "second timer honours new retry-after"
+        );
+    }
+
+    #[test]
+    fn rate_limited_without_retry_after_does_not_set_timer() {
+        // Sub-second Retry-After is treated as missing (same rule as
+        // `next_probe_at` exponential fallback). Don't set a useless
+        // timer that fires immediately.
+        let mut map = AccountStateMap::new(&[make_account("Personal")]);
+        let k = key("Personal");
+        map.set_last_error(&k, UsageFetchStatus::RateLimited, None);
+        assert!(
+            map.by_key.get(&k).unwrap().pending_clear_check_at.is_none(),
+            "no Retry-After hint => no targeted timer"
+        );
+        map.set_last_error(
+            &k,
+            UsageFetchStatus::RateLimited,
+            Some(std::time::Duration::from_millis(500)),
+        );
+        assert!(
+            map.by_key.get(&k).unwrap().pending_clear_check_at.is_none(),
+            "sub-second Retry-After treated as missing"
+        );
+    }
+
+    #[test]
+    fn should_clear_check_now_false_until_timer_elapses() {
+        let mut map = AccountStateMap::new(&[make_account("Personal")]);
+        let k = key("Personal");
+        // Cold state: no flag, no fire.
+        assert!(!map.should_clear_check_now(&k));
+        // Set a flag well in the future: still not fire-eligible.
+        map.set_last_error(
+            &k,
+            UsageFetchStatus::RateLimited,
+            Some(std::time::Duration::from_secs(120)),
+        );
+        assert!(!map.should_clear_check_now(&k), "fresh 120s timer must not fire immediately");
+        // Plant a flag in the past: now fire-eligible.
+        let past = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_secs(5))
+            .expect("monotonic clock is at least 5s past boot");
+        map.by_key.get_mut(&k).unwrap().pending_clear_check_at = Some(past);
+        assert!(map.should_clear_check_now(&k), "elapsed timer must report fire-eligible");
+    }
+
+    #[test]
+    fn clear_check_jitter_is_bounded_and_spreads() {
+        // Magnitude clamp: 10% of retry_after, bounded to [1s, 30s].
+        // For retry_after=120s, magnitude=12s.
+        let retry_after = std::time::Duration::from_secs(120);
+        let max_jitter = std::time::Duration::from_secs(12);
+        let mut samples = Vec::with_capacity(200);
+        for _ in 0..200 {
+            let j = clear_check_jitter(retry_after);
+            assert!(j <= max_jitter, "jitter exceeds magnitude: {j:?}");
+            samples.push(j);
+        }
+        // Spread: the 200 samples should cover more than one distinct
+        // value. The clock advances by at least 1 ns between calls,
+        // so the entropy source moves; the bucketed mod must produce
+        // at least 2 distinct values across the sample window. If
+        // not, the entropy source has collapsed and the
+        // thundering-herd prevention is dead.
+        samples.sort();
+        samples.dedup();
+        assert!(
+            samples.len() >= 2,
+            "expected the jitter source to span more than one bucket, got {} distinct value(s)",
+            samples.len()
+        );
     }
 }

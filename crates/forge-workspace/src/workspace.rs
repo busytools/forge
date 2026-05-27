@@ -896,12 +896,19 @@ impl Workspace {
             accounts
                 .ordered_keys
                 .iter()
-                // Skip accounts inside an active backoff window - a
-                // recent probe failed and re-probing now would just
-                // re-trip the same rate limit. `should_probe_now`
-                // returns true for cold-cache accounts (no failure
-                // history) so first-run probes always go through.
-                .filter(|key| accounts.should_probe_now(key))
+                // Two fire conditions, OR-ed:
+                //   - `should_probe_now`: regular cadence window for
+                //     accounts not in a recent-failure backoff.
+                //   - `should_clear_check_now`: targeted clear-check
+                //     timer (set from `RateLimited` + Retry-After) has
+                //     elapsed, so probe even if the regular backoff
+                //     window is still in effect. This catches
+                //     Anthropic cap-clears at the server-stated reset
+                //     time instead of waiting up to the full 60 s
+                //     natural cadence.
+                .filter(|key| {
+                    accounts.should_probe_now(key) || accounts.should_clear_check_now(key)
+                })
                 .filter_map(|key| accounts.config_dir(key).map(|dir| (key.clone(), dir.clone())))
                 .collect()
         };
