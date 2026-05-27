@@ -843,7 +843,7 @@ fn parse_session_info_from_lite(
         .or_else(|| extract_json_string_field(head, "gitBranch"));
     let cwd = extract_json_string_field(head, "cwd").or_else(|| project_path.map(str::to_string));
     // Tag is pre-extracted by `read_session_lite` via a full-file
-    // line-scan — neither head nor tail alone covers every position
+    // line-scan; neither head nor tail alone covers every position
     // a `{"type":"tag"}` row can land at.
     let tag = lite.tag.clone();
     let created_at = extract_json_string_field(first_line, "timestamp")
@@ -1211,7 +1211,7 @@ mod tests {
     fn read_session_info_finds_tag_at_start_of_large_file() {
         // The bug shape: tag row is written at session start and sits
         // permanently near byte 0. Tail-only extraction scans only
-        // the last LITE_READ_BUF_SIZE bytes — for any transcript
+        // the last LITE_READ_BUF_SIZE bytes, so for any transcript
         // > ~130 KB the tag falls outside the tail window and resume
         // sees `info.tag = None`. Build a transcript well past two
         // window-widths so the bug is unambiguous.
@@ -1236,7 +1236,7 @@ mod tests {
     fn read_session_info_finds_tag_mid_file() {
         // The `/new` case (PR #167): user fires `/new` mid-session and
         // the CLI appends a fresh tag row at the current cursor. For a
-        // large transcript that's neither head nor tail — it lands in
+        // large transcript that's neither head nor tail, it lands in
         // the middle, where neither window sees it.
         let window = usize::try_from(LITE_READ_BUF_SIZE).unwrap();
         let tmp = tempfile::tempdir().unwrap();
@@ -1266,7 +1266,7 @@ mod tests {
         // Preserve PR #167 semantics: when the JSONL carries multiple
         // tag rows (original spawn tag + later `/new` re-tag), the
         // most recent one wins. File must be larger than two window
-        // widths so neither tag lands in head or tail — otherwise the
+        // widths so neither tag lands in head or tail, otherwise the
         // old tail-only path would coincidentally pick the right one
         // and mask a behavioural regression.
         let window = usize::try_from(LITE_READ_BUF_SIZE).unwrap();
