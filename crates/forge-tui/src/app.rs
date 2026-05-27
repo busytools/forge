@@ -307,7 +307,8 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
                 // FPS overlay is always-on (see
                 // `chat_view::render_perf_fps_overlay`), not gated on the `perf`
                 // Cargo feature. `mark_frame_presented` keeps the EMA fresh so the
-                // overlay shows real numbers in any build.
+                // overlay shows real numbers in any build. Gated on the
+                // real-draw branch so a skipped frame doesn't fake a present.
                 app.mark_frame_presented(Instant::now());
                 // `Timer` is `Drop`-implementing under `feature = "perf"` and a
                 // unit struct otherwise. Explicit `drop()` enforces the desired
@@ -321,8 +322,22 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
                     drop(draw_timer);
                     drop(timer);
                 }
-                last_render = Instant::now();
+                // Post-draw side effects (cache-metric enforcement,
+                // log countdown, warn cooldown). Kept out of the
+                // render path so the scratch pass doesn't bump
+                // counters on skip frames or double-count them on
+                // change frames.
+                crate::ui::emit_post_draw_metrics(app);
             }
+            // `last_render` paces the tick-sleep ceiling and must
+            // advance on EVERY decision the throttle made (skip or
+            // draw). Otherwise, while a worker session animates,
+            // the buffer hash stays equal between spinner
+            // advances, the throttle skips every intervening tick,
+            // `last_render` never moves, `tick_duration.
+            // saturating_sub(...)` saturates to 0, and the loop
+            // hot-spins at scratch-render cost.
+            last_render = Instant::now();
             app.needs_redraw = false;
         }
     }
