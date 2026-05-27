@@ -681,6 +681,11 @@ fn append_worker_tree_children(
             && app.sessions.get(&worker.session_key).is_some_and(|b| !b.prompt_queue.is_empty());
         let (glyph, glyph_color) = if needs_attention {
             ("\u{25b3}".to_owned(), theme::STATUS_WARNING)
+        } else if matches!(worker.status, forge_primitives::WorkerLiveness::Failed) {
+            // Failed worker (#245 Layer A): `✕` in STATUS_ERROR. The
+            // diagnostic sub-row beneath this row carries the
+            // human-readable reason (set by transition_worker_to_failed).
+            ("\u{2715}".to_owned(), theme::STATUS_ERROR)
         } else {
             glyph_for_lifecycle(lifecycle, is_focused, spinner_frame)
         };
@@ -708,6 +713,28 @@ fn append_worker_tree_children(
         ));
         spans.push(Span::raw(" "));
         lines.push(Line::from(spans));
+
+        // Diagnostic sub-row for Failed workers (#245 Layer A): when
+        // `worker.diagnostic` is `Some`, append a DIM line directly
+        // below the worker row indented to align with the worker's
+        // label column. Truncates to the row width with the standard
+        // `…` ellipsis. Skipped when status != Failed or diagnostic
+        // is None (idle workers + the post-flap window where the
+        // recovery path cleared the diagnostic).
+        if matches!(worker.status, forge_primitives::WorkerLiveness::Failed) {
+            let diagnostic = worker.diagnostic.as_deref().unwrap_or("spawn failed");
+            // Indent = 1 left pad + 3 `│  ` + 3 tree connector + 1
+            // glyph + 1 sep = 9. Leave the close button column free.
+            let indent: usize = 9;
+            let right_chrome: usize = 1 + 3 + 1; // sep + ` x ` + gutter
+            let total_width = usize::from(area.width);
+            let budget = total_width.saturating_sub(indent).saturating_sub(right_chrome);
+            let truncated = truncate_with_ellipsis(diagnostic, budget);
+            lines.push(Line::from(vec![
+                Span::raw(" ".repeat(indent)),
+                Span::styled(truncated, Style::default().fg(theme::DIM)),
+            ]));
+        }
 
         // Hit targets. The label area covers the row from x_start at
         // the indent + connector through to before the close button.
@@ -1845,6 +1872,7 @@ mod tests {
             spawned_by_session_id: "lead".into(),
             needs_tag: false,
             is_git_repo_at_spawn: false,
+            diagnostic: None,
         };
         workspace.insert_live_worker(&project_key, entry.clone());
 
@@ -1910,6 +1938,7 @@ mod tests {
                 spawned_by_session_id: "lead".into(),
                 needs_tag: false,
                 is_git_repo_at_spawn: false,
+                diagnostic: None,
             },
         );
         workspace.insert_live_worker(
@@ -1923,6 +1952,7 @@ mod tests {
                 spawned_by_session_id: "lead".into(),
                 needs_tag: false,
                 is_git_repo_at_spawn: false,
+                diagnostic: None,
             },
         );
 
@@ -2044,6 +2074,7 @@ mod tests {
                 spawned_by_session_id: "lead".into(),
                 needs_tag: false,
                 is_git_repo_at_spawn: false,
+                diagnostic: None,
             },
         );
         // Active session is something else - the worker is
@@ -2100,6 +2131,7 @@ mod tests {
                 spawned_by_session_id: "lead".into(),
                 needs_tag: false,
                 is_git_repo_at_spawn: false,
+                diagnostic: None,
             },
         );
         // Active session IS the worker - override must NOT fire.
@@ -2153,6 +2185,7 @@ mod tests {
                 spawned_by_session_id: "lead".into(),
                 needs_tag: false,
                 is_git_repo_at_spawn: false,
+                diagnostic: None,
             },
         );
 
@@ -2203,6 +2236,97 @@ mod tests {
         assert!(
             highlighted,
             "project row must highlight when active session is a resumed worker (cwd_raw + catalog both miss); got lines: {lines:?}",
+        );
+    }
+
+    // ----------------------------------------------------------------
+    // #245 Layer A: WorkerLiveness::Failed renders with ✕ glyph in
+    // STATUS_ERROR + a DIM diagnostic sub-row beneath the worker label.
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn failed_worker_renders_x_glyph_and_diagnostic_sub_row() {
+        use forge_workspace::ProjectKey;
+        use forge_workspace::SessionKey;
+        use forge_workspace::WorkerEntry;
+        use std::time::SystemTime;
+
+        let mut app = App::test_default();
+        let workspace = app.workspace.clone().expect("workspace stub");
+        let project_key = ProjectKey::new_for_test("forge");
+        workspace.insert_live_worker(
+            &project_key,
+            WorkerEntry {
+                label: "reviewer".into(),
+                charter: "be sharp".into(),
+                session_key: SessionKey::from_session_id("worker-1"),
+                status: forge_primitives::WorkerLiveness::Failed,
+                spawned_at: SystemTime::UNIX_EPOCH,
+                spawned_by_session_id: "lead".into(),
+                needs_tag: false,
+                is_git_repo_at_spawn: false,
+                diagnostic: Some("No conversation found".into()),
+            },
+        );
+
+        let project =
+            ProjectView::new_for_test(project_key, "forge", "~/Projects/forge", Vec::new());
+        let area = Rect { x: 0, y: 0, width: 40, height: 20 };
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        append_worker_tree_children(&mut lines, area, &mut app, &project, 0);
+
+        // Expect: leading spacer + worker row + diagnostic sub-row.
+        assert_eq!(lines.len(), 3, "Failed worker row should include a diagnostic sub-line");
+        let worker_row: String = lines[1].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            worker_row.contains('\u{2715}'),
+            "worker row must carry ✕ glyph for Failed status: {worker_row:?}",
+        );
+        let sub_row: String = lines[2].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            sub_row.contains("No conversation found"),
+            "diagnostic sub-row must surface the captured stderr: {sub_row:?}",
+        );
+    }
+
+    #[test]
+    fn failed_worker_without_diagnostic_uses_spawn_failed_fallback() {
+        // A worker that hit ConnectionFailed before stderr was
+        // captured (or with empty stderr) still gets a sub-row so the
+        // user sees the failure - just with a generic placeholder.
+        use forge_workspace::ProjectKey;
+        use forge_workspace::SessionKey;
+        use forge_workspace::WorkerEntry;
+        use std::time::SystemTime;
+
+        let mut app = App::test_default();
+        let workspace = app.workspace.clone().expect("workspace stub");
+        let project_key = ProjectKey::new_for_test("forge");
+        workspace.insert_live_worker(
+            &project_key,
+            WorkerEntry {
+                label: "reviewer".into(),
+                charter: "be sharp".into(),
+                session_key: SessionKey::from_session_id("worker-1"),
+                status: forge_primitives::WorkerLiveness::Failed,
+                spawned_at: SystemTime::UNIX_EPOCH,
+                spawned_by_session_id: "lead".into(),
+                needs_tag: false,
+                is_git_repo_at_spawn: false,
+                diagnostic: None,
+            },
+        );
+
+        let project =
+            ProjectView::new_for_test(project_key, "forge", "~/Projects/forge", Vec::new());
+        let area = Rect { x: 0, y: 0, width: 40, height: 20 };
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        append_worker_tree_children(&mut lines, area, &mut app, &project, 0);
+
+        let sub_row: String = lines[2].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            sub_row.contains("spawn failed"),
+            "fallback diagnostic must render when diagnostic is None: {sub_row:?}",
         );
     }
 

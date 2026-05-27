@@ -1066,6 +1066,7 @@ config_dir = "~/.claude-subspace"
             spawned_by_session_id: "lead-uuid".into(),
             needs_tag: false,
             is_git_repo_at_spawn: false,
+            diagnostic: None,
         }
     }
 
@@ -1270,6 +1271,7 @@ config_dir = "~/.claude-subspace"
                 spawned_by_session_id: "lead".into(),
                 needs_tag: true,
                 is_git_repo_at_spawn: false,
+                diagnostic: None,
             },
         );
 

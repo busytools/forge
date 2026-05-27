@@ -3367,11 +3367,63 @@ fn transition_worker_to_running(
             entries.iter_mut().find(|e| e.session_key == *session_key).map(|entry| {
                 entry.status = forge_primitives::WorkerLiveness::Running;
                 entry.needs_tag = matches!(result, TagWriteResult::DeferredNotFound);
+                // Clear any stale diagnostic from a prior Failed
+                // transition - the worker is alive again.
+                entry.diagnostic = None;
                 (entry.to_status(), entry.is_git_repo_at_spawn)
             })
         })
     };
     if let Some((status, is_git_repo_at_spawn)) = updated {
+        let _ = workspace.update_tx.send(SessionUpdate::WorkerStatusChanged {
+            project_key: project_key.clone(),
+            action: crate::protocol::WorkerStatusAction::StatusChanged,
+            status,
+            is_git_repo_at_spawn,
+        });
+    }
+}
+
+/// Shared transition: flip a worker's status to `Failed` with a
+/// human-readable `diagnostic`, and emit `WorkerStatusChanged
+/// { StatusChanged }`. Called by the `Connected`-never-arrived
+/// paths (subprocess exit, ConnectionFailed event, resume rejected
+/// by claude when the fall-through-to-fresh path declines to
+/// retry). Idempotent - calling twice with the same diagnostic is
+/// a no-op after the first flip.
+///
+/// The diagnostic should be the first line of claude's stderr (when
+/// available) or the error variant name. Keep it short - the
+/// Projects pane renders it as a one-row sub-line below the worker
+/// label, truncated to the row's available width.
+// Caller lands in #245 Layer C (fall-through-to-fresh path). Temporary
+// `dead_code` allow until that wiring lands within the same PR.
+#[allow(dead_code)]
+pub(crate) fn transition_worker_to_failed(
+    workspace: &Arc<Workspace>,
+    project_key: &ProjectKey,
+    session_key: &SessionKey,
+    diagnostic: Option<String>,
+) {
+    let updated = {
+        let mut workers = workspace.live_workers.lock();
+        workers.get_mut(project_key).and_then(|entries| {
+            entries.iter_mut().find(|e| e.session_key == *session_key).map(|entry| {
+                entry.status = forge_primitives::WorkerLiveness::Failed;
+                entry.diagnostic = diagnostic;
+                (entry.to_status(), entry.is_git_repo_at_spawn)
+            })
+        })
+    };
+    if let Some((status, is_git_repo_at_spawn)) = updated {
+        tracing::warn!(
+            target: "forge_workspace::workspace",
+            event_name = "worker_failed",
+            project = %project_key.as_str(),
+            session = %session_key.as_str(),
+            diagnostic = ?status.diagnostic,
+            "worker session transitioned to Failed; row will render with diagnostic sub-line",
+        );
         let _ = workspace.update_tx.send(SessionUpdate::WorkerStatusChanged {
             project_key: project_key.clone(),
             action: crate::protocol::WorkerStatusAction::StatusChanged,
@@ -4336,6 +4388,7 @@ mod workers_state_tests {
             spawned_by_session_id: "lead-uuid".into(),
             needs_tag: false,
             is_git_repo_at_spawn: false,
+            diagnostic: None,
         }
     }
 
@@ -4432,6 +4485,7 @@ mod release_session_cascade_tests {
             spawned_by_session_id: "lead-uuid".into(),
             needs_tag: false,
             is_git_repo_at_spawn: false,
+            diagnostic: None,
         }
     }
 
@@ -4713,6 +4767,7 @@ mod tag_retry_tests {
             spawned_by_session_id: "lead".into(),
             needs_tag,
             is_git_repo_at_spawn: false,
+            diagnostic: None,
         }
     }
 
@@ -5533,6 +5588,7 @@ mod async_worker_spawn_failure_tests {
             spawned_by_session_id: lead_id.to_owned(),
             needs_tag: true,
             is_git_repo_at_spawn: is_git,
+            diagnostic: None,
         }
     }
 
@@ -5716,6 +5772,7 @@ mod git_scan_cwd_tests {
             spawned_by_session_id: "lead-uuid".into(),
             needs_tag: false,
             is_git_repo_at_spawn: is_git,
+            diagnostic: None,
         }
     }
 

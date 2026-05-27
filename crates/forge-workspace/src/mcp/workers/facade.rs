@@ -775,6 +775,7 @@ mod mock_tests {
                 session_id: "worker-uuid".into(),
                 spawned_at: std::time::SystemTime::UNIX_EPOCH,
                 spawned_by_session_id: "lead-uuid".into(),
+                diagnostic: None,
             }],
         );
         let id = mock.caller_identity(&worker_key);

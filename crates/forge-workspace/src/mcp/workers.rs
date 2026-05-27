@@ -1097,6 +1097,7 @@ mod tests {
             session_id: format!("session-{label}"),
             spawned_at: std::time::SystemTime::UNIX_EPOCH,
             spawned_by_session_id: "lead-uuid".to_owned(),
+            diagnostic: None,
         }
     }
 
@@ -1445,6 +1446,7 @@ mod tests {
             session_id: session_id.to_owned(),
             spawned_at: std::time::SystemTime::UNIX_EPOCH,
             spawned_by_session_id: lead_uuid.to_owned(),
+            diagnostic: None,
         }
     }
 

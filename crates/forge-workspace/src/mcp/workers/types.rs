@@ -98,6 +98,7 @@ mod is_git_repo_at_spawn_tests {
             spawned_by_session_id: "lead-uuid".into(),
             needs_tag: false,
             is_git_repo_at_spawn: is_git,
+            diagnostic: None,
         }
     }
 

@@ -495,9 +495,7 @@ fn push_project_row(
         .workspace
         .as_ref()
         .and_then(|ws| find_project_key(ws.list_projects().as_slice(), &row.project_name))
-        .and_then(|key| {
-            app.workspace.as_ref().and_then(|ws| ws.session_chip_for(&key, "lead"))
-        });
+        .and_then(|key| app.workspace.as_ref().and_then(|ws| ws.session_chip_for(&key, "lead")));
     let (chip_spans, chip_width) = account_chip_spans(chip_info.as_ref());
 
     // Fixed column widths so rows align across projects + workers:
@@ -564,11 +562,7 @@ const CHIP_COLUMN_WIDTH: usize = 13;
 /// account mapping before clicking the project. Workers are
 /// info-only on the launchpad — clicks land on the project lead
 /// row; the worker rows are not selectable.
-fn push_worker_rows(
-    lines: &mut Vec<Line<'static>>,
-    project: &ProjectView,
-    app: &App,
-) {
+fn push_worker_rows(lines: &mut Vec<Line<'static>>, project: &ProjectView, app: &App) {
     if project.team.is_empty() {
         return;
     }
@@ -614,17 +608,16 @@ fn push_worker_rows(
 /// account name truncates to fit within `CHIP_MAX_WIDTH - 2`
 /// brackets minus the prefix.
 fn account_chip_spans(chip: Option<&SessionChipInfo>) -> (Vec<Span<'static>>, usize) {
+    const CHIP_MAX_WIDTH: usize = 12;
     let Some(chip) = chip else {
         return (Vec::new(), 0);
     };
-    const CHIP_MAX_WIDTH: usize = 12;
     let (style, prefix) = match chip.state {
         SessionChipState::Normal => (Style::default().fg(theme::DIM), ""),
         SessionChipState::FiveHourCap => (Style::default().fg(theme::STATUS_WARNING), ""),
         SessionChipState::Bailed => (Style::default().fg(theme::STATUS_ERROR), "\u{26a0} "),
     };
-    let name_budget =
-        CHIP_MAX_WIDTH.saturating_sub(2).saturating_sub(prefix.chars().count());
+    let name_budget = CHIP_MAX_WIDTH.saturating_sub(2).saturating_sub(prefix.chars().count());
     let name = truncate_to(&chip.account_name, name_budget);
     let text = format!("({prefix}{name})");
     let width = text.chars().count();
@@ -634,10 +627,7 @@ fn account_chip_spans(chip: Option<&SessionChipInfo>) -> (Vec<Span<'static>>, us
 /// Lookup helper: given a `ProjectView` list + a project name,
 /// return the matching `ProjectKey`. Returns `None` when no project
 /// is found.
-fn find_project_key(
-    projects: &[ProjectView],
-    name: &str,
-) -> Option<forge_workspace::ProjectKey> {
+fn find_project_key(projects: &[ProjectView], name: &str) -> Option<forge_workspace::ProjectKey> {
     projects.iter().find(|p| p.name == name).map(|p| p.key.clone())
 }
 
