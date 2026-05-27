@@ -26,7 +26,7 @@
 //!      dimmed on the launchpad until something resolves.
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use tracing::Instrument;
@@ -49,18 +49,22 @@ const RECOVERY_POLL_INTERVAL: Duration = Duration::from_secs(30);
 /// Run the boot-time loading state machine for one account until it
 /// reaches a terminal `LoadingState`.
 ///
-/// Takes `Arc<Workspace>` so the recovery poll (Section 4.3 of #246)
-/// can reuse the same entry point - both call sites need access to
-/// the workspace's account map + (later) the assignment-plan
-/// recompute trigger. The task acquires the parking_lot lock only
-/// for the duration of single mutator calls, never across an
-/// `await`, so it doesn't block other workspace operations.
+/// Takes `Weak<Workspace>` so the task auto-exits when the workspace
+/// is dropped during shutdown - same pattern `start_usage_poller`
+/// uses. Each iteration upgrades the weak; failure to upgrade means
+/// the workspace is gone and the task returns. The lock is only
+/// acquired for single mutator calls, never across an await, so
+/// other workspace operations aren't blocked.
 pub async fn run_account_loading(
     config_dir: PathBuf,
     account_key: AccountKey,
-    workspace: Arc<Workspace>,
+    workspace_weak: Weak<Workspace>,
 ) {
     loop {
+        let Some(workspace) = workspace_weak.upgrade() else {
+            // Workspace dropped during shutdown; exit cleanly.
+            return;
+        };
         let probe_result = match oauth_credentials::load_oauth_credentials(&config_dir) {
             Some(creds) => oauth_usage::probe(&creds).await,
             None => Err(OauthUsageError::NoCredentials),
@@ -172,7 +176,7 @@ pub async fn run_account_loading(
 /// `Loading` and spawns a fresh `run_account_loading` task. A
 /// subsequent successful probe lands the new snapshot; a subsequent
 /// failure flips back to Bailed and the next 30 s tick reevaluates.
-pub async fn run_recovery_poll(workspace: Arc<Workspace>) {
+pub async fn run_recovery_poll(workspace_weak: Weak<Workspace>) {
     let mut tick = tokio::time::interval(RECOVERY_POLL_INTERVAL);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     // Drain the immediate-fire tick - the boot-time loading tasks
@@ -181,6 +185,10 @@ pub async fn run_recovery_poll(workspace: Arc<Workspace>) {
     tick.tick().await;
     loop {
         tick.tick().await;
+        let Some(workspace) = workspace_weak.upgrade() else {
+            // Workspace dropped during shutdown; exit cleanly.
+            return;
+        };
 
         // Snapshot the bailed accounts under the parking_lot lock,
         // then drop the lock before any awaits.
@@ -215,13 +223,14 @@ pub async fn run_recovery_poll(workspace: Arc<Workspace>) {
             // it calls recompute_plan_if_ready which (via the
             // frozen overlay added in Section 4.4) extends the plan
             // with the newly-recovered account while preserving
-            // existing assignments.
+            // existing assignments. Pass Weak<Workspace> so the
+            // re-spawn task also auto-exits on shutdown.
             workspace.account_states().lock().set_loading(&key, LoadingState::Loading);
-            let workspace_clone = Arc::clone(&workspace);
+            let weak_clone = Arc::downgrade(&workspace);
             let span = tracing::info_span!("account_recovery_loading", account = %key.0);
             tokio::spawn(
                 async move {
-                    run_account_loading(config_dir, key, workspace_clone).await;
+                    run_account_loading(config_dir, key, weak_clone).await;
                 }
                 .instrument(span),
             );

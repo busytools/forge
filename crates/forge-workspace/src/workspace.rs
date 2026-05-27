@@ -1151,10 +1151,10 @@ impl Workspace {
         };
         for (key, dir) in entries {
             let span = tracing::info_span!("account_loading", account = %key.0);
-            let workspace = Arc::clone(self);
+            let weak = Arc::downgrade(self);
             tokio::spawn(
                 async move {
-                    crate::account_loader::run_account_loading(dir, key, workspace).await;
+                    crate::account_loader::run_account_loading(dir, key, weak).await;
                 }
                 .instrument(span),
             );
@@ -1162,12 +1162,14 @@ impl Workspace {
 
         // Background recovery poll: watches Bailed accounts and
         // re-runs the loading flow when `claude auth status` flips
-        // back to logged-in. One task per Workspace lifetime.
-        let workspace = Arc::clone(self);
+        // back to logged-in. One task per Workspace lifetime. Holds
+        // Weak so the task auto-exits on workspace shutdown rather
+        // than keeping the Arc alive past drop.
+        let weak = Arc::downgrade(self);
         let span = tracing::info_span!("account_recovery_poll");
         tokio::spawn(
             async move {
-                crate::account_loader::run_recovery_poll(workspace).await;
+                crate::account_loader::run_recovery_poll(weak).await;
             }
             .instrument(span),
         );
