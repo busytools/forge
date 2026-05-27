@@ -265,13 +265,47 @@ pub fn open_with_target(app: &mut App, target: String) {
         crate::app::slash::push_system_message(app, "Cannot open diff: active session has no cwd.");
         return;
     }
+    let cwd = resolve_active_diff_cwd(app, &cwd_raw);
     // Bump the seq before spawning so the new scan's events
     // outrank anything still in flight from an earlier /diff call.
     // Old events arriving on the channel after this bump will be
     // dropped by drain_events as superseded.
     app.diff_scan_seq = app.diff_scan_seq.wrapping_add(1);
     let seq = app.diff_scan_seq;
-    spawn_fetch(PathBuf::from(cwd_raw), target, seq, app.diff_overlay_event_tx.clone());
+    spawn_fetch(cwd, target, seq, app.diff_overlay_event_tx.clone());
+}
+
+/// Resolve the cwd a diff scan should run against for the active
+/// session. Workers spawned in a git repo run inside claude's
+/// `--worktree <label>` fork at
+/// `<project_root>/.claude/worktrees/<label>`, but `cwd_raw` carries
+/// the lead's project root because the worker bucket is forked from
+/// the pre-Connect `AgentEvent::Connected.cwd`. Mirror
+/// `git_diff::apply_timer_tick`'s resolution so the overlay opens
+/// against the worker's branch, not the lead's. For lead sessions,
+/// non-git workers, or any session not registered as a live worker,
+/// `git_scan_cwd_for_session` returns `cwd_raw` unchanged.
+fn resolve_active_diff_cwd(app: &App, cwd_raw: &str) -> PathBuf {
+    let cwd_raw_path = PathBuf::from(cwd_raw);
+    let Some(active_key) = app.active_session_key.as_ref() else {
+        return cwd_raw_path;
+    };
+    debug_assert!(
+        app.workspace.is_some(),
+        "workspace unset after init (diff_overlay::resolve_active_diff_cwd); MVVM contract violated",
+    );
+    if let Some(workspace) = app.workspace.as_ref() {
+        workspace.git_scan_cwd_for_session(active_key, &cwd_raw_path)
+    } else {
+        tracing::warn!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "diff_overlay_workspace_unset",
+            message = "App.workspace is None during diff overlay cwd resolution; using cwd_raw without worker-cwd resolution",
+            outcome = "fallback",
+            key = %active_key.as_str(),
+        );
+        cwd_raw_path
+    }
 }
 
 /// Auto-detect the diff target from the Inspector GIT snapshot and
@@ -375,12 +409,17 @@ pub fn drain_events(app: &mut App) {
             );
             continue;
         }
-        // PathBuf comparison normalises trailing separators and
-        // avoids the lossy String round-trip - `cwd_raw` is UTF-8
-        // by construction, `event.cwd` is whatever the scanner
-        // received, so converting `cwd_raw` to PathBuf gives an
-        // exact match when they refer to the same directory.
-        let active_cwd = app.active_session().map(|s| PathBuf::from(&s.cwd_raw));
+        // Comparison must use the SAME resolved cwd that
+        // `open_with_target` passed to `spawn_fetch` - the event's
+        // `cwd` echoes whatever the scanner received. For worker
+        // sessions the scanner runs against the worktree fork
+        // (`<project_root>/.claude/worktrees/<label>`), not the raw
+        // `cwd_raw`, so comparing against `cwd_raw` would silently
+        // drop every worker event.
+        let active_cwd = app
+            .active_session()
+            .map(|s| s.cwd_raw.clone())
+            .map(|raw| resolve_active_diff_cwd(app, &raw));
         if active_cwd.as_deref() != Some(event.cwd.as_path()) {
             // Silent drop - pushing a chat message into the now-
             // active (different) session about a scan for the OLD
@@ -1937,5 +1976,60 @@ mod tests {
     fn rail_width_hidden_below_medium_threshold() {
         assert_eq!(rail_width_for(119), 0);
         assert_eq!(rail_width_for(80), 0);
+    }
+
+    #[test]
+    fn resolve_active_diff_cwd_routes_git_worker_to_worktree_path() {
+        // Bug #208: workers spawned with `is_git_repo_at_spawn = true`
+        // run inside `.claude/worktrees/<label>/`, but `cwd_raw`
+        // carries the lead's project root. The overlay must resolve
+        // to the worker's worktree so the diff opens against the
+        // worker's branch, not an empty lead diff.
+        use forge_primitives::WorkerLiveness;
+        use forge_workspace::{ProjectKey, SessionKey, WorkerEntry};
+
+        let mut app = App::test_default();
+        let workspace =
+            app.workspace.clone().expect("App::test_default seeds a workspace via testing_stub");
+
+        let project_key = ProjectKey::new_for_test("forge");
+        let worker_key = SessionKey::from_session_id("worker-uuid");
+        workspace.insert_live_worker(
+            &project_key,
+            WorkerEntry {
+                label: "implementer".into(),
+                charter: "test charter".into(),
+                session_key: worker_key.clone(),
+                status: WorkerLiveness::Running,
+                spawned_at: std::time::SystemTime::UNIX_EPOCH,
+                spawned_by_session_id: "lead-uuid".into(),
+                needs_tag: false,
+                is_git_repo_at_spawn: true,
+            },
+        );
+
+        let mut session = crate::app::session::UiSession::new(worker_key.clone());
+        session.cwd_raw = "/tmp/project".into();
+        app.sessions.insert(worker_key.clone(), session);
+        app.active_session_key = Some(worker_key);
+
+        let resolved = resolve_active_diff_cwd(&app, "/tmp/project");
+        assert_eq!(resolved, PathBuf::from("/tmp/project/.claude/worktrees/implementer"));
+    }
+
+    #[test]
+    fn resolve_active_diff_cwd_returns_cwd_raw_for_lead_session() {
+        // Lead sessions (and non-worker callers in general) get
+        // `cwd_raw` back unchanged - the worker resolution short-
+        // circuits via `worker_lookup_for_session` returning None.
+        let mut app = App::test_default();
+        let lead_key = forge_workspace::SessionKey::from_session_id("lead-uuid");
+        let mut session = crate::app::session::UiSession::new(lead_key.clone());
+        session.cwd_raw = "/tmp/project".into();
+        app.sessions.insert(lead_key.clone(), session);
+        app.active_session_key = Some(lead_key);
+
+        let resolved = resolve_active_diff_cwd(&app, "/tmp/project");
+        assert_eq!(resolved, PathBuf::from("/tmp/project"));
     }
 }
