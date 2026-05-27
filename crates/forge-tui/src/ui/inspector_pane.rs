@@ -388,8 +388,8 @@ fn push_section_rule(lines: &mut Vec<Line<'static>>, width: u16) {
 }
 
 /// Append the GIT section to `lines`. Hidden entirely when the
-/// active session's cwd is not inside a git repository (clean
-/// `NoRepo` view + `scanner_ok = true`). For real repos the section
+/// active session's cwd is not inside a git repository (`in_repo =
+/// false` + `scanner_ok = true`). For real repos the section
 /// renders header + path + branch + diff + file tree as usual; for
 /// scanner failures inside a real repo the unhealthy banner still
 /// surfaces so the operator gets a triage signal.
