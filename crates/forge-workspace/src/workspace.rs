@@ -901,7 +901,13 @@ impl Workspace {
                 // re-trip the same rate limit. `should_probe_now`
                 // returns true for cold-cache accounts (no failure
                 // history) so first-run probes always go through.
-                .filter(|key| accounts.should_probe_now(key))
+                // `has_just_cleared_cap_window` is the override: if
+                // the cached snapshot's reset moment has passed, run
+                // a fresh probe regardless of the backoff timer so
+                // the bar can drop the stale "100%" reading promptly.
+                .filter(|key| {
+                    accounts.should_probe_now(key) || accounts.has_just_cleared_cap_window(key)
+                })
                 .filter_map(|key| accounts.config_dir(key).map(|dir| (key.clone(), dir.clone())))
                 .collect()
         };
