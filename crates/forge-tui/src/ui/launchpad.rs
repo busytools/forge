@@ -13,7 +13,7 @@
 use std::time::SystemTime;
 
 use forge_primitives::SessionLifecycleState;
-use forge_workspace::{ProjectView, SessionKey, SpinnerStyle};
+use forge_workspace::{ProjectView, SessionChipInfo, SessionChipState, SessionKey, SpinnerStyle};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -430,6 +430,17 @@ fn render_picker(frame: &mut Frame, area: Rect, app: &mut App, rows: &[PickerRow
         if let Some(err) = &row.error {
             push_error_row(&mut lines, err, area.width);
         }
+        // Worker rows: show forge.toml team labels (if any) nested
+        // under the project, each with its assigned-account chip
+        // from the AssignmentPlan. Info-only, not selectable.
+        let project_view = app
+            .workspace
+            .as_ref()
+            .map(|ws| ws.list_projects())
+            .and_then(|list| list.into_iter().find(|p| p.name == row.project_name));
+        if let Some(project) = project_view.as_ref() {
+            push_worker_rows(&mut lines, project, app);
+        }
         // Surface a "no usable accounts" hint when the project's
         // pool resolved to empty (every allowed account Bailed, or
         // forge.toml allow-list has no known accounts). The row
@@ -437,15 +448,11 @@ fn render_picker(frame: &mut Frame, area: Rect, app: &mut App, rows: &[PickerRow
         // downgrade; the hint explains why.
         if let Some(workspace) = app.workspace.as_ref()
             && workspace.all_accounts_loaded()
+            && project_view
+                .as_ref()
+                .is_some_and(|p| !workspace.project_has_assigned_account(&p.key))
         {
-            let project_key = workspace
-                .list_projects()
-                .into_iter()
-                .find(|p| p.name == row.project_name)
-                .map(|p| p.key);
-            if project_key.as_ref().is_some_and(|k| !workspace.project_has_assigned_account(k)) {
-                push_no_usable_accounts_row(&mut lines, area.width);
-            }
+            push_no_usable_accounts_row(&mut lines, area.width);
         }
     }
 
@@ -480,11 +487,21 @@ fn push_project_row(
         ClickIntent::Block => Style::default().fg(theme::DIM),
     };
 
-    // No account hint — the picker doesn't run until spawn, so
-    // showing a name here would imply a decision that hasn't
-    // happened. The actual account is chosen by `pick_for_project`
-    // against live usage data when the row is clicked.
-    let name_width: usize = 26;
+    // Account chip: the assignment-plan slot for this project's lead
+    // session. Populated once accounts finish loading + the plan
+    // computes. Width-conditional via `account_chip_spans`.
+    let chip_info = app
+        .workspace
+        .as_ref()
+        .and_then(|ws| find_project_key(ws.list_projects().as_slice(), &row.project_name))
+        .and_then(|key| {
+            app.workspace.as_ref().and_then(|ws| ws.session_chip_for(&key, "lead"))
+        });
+    let (chip_spans, chip_width) = account_chip_spans(chip_info.as_ref());
+
+    // Column widths: name is the elastic part; chip and right share
+    // a fixed budget so the time column stays right-justified.
+    let name_width: usize = 22usize.saturating_sub(chip_width);
     let right_width: usize = 10;
 
     let name_label = truncate_to(&row.project_name, name_width);
@@ -509,7 +526,7 @@ fn push_project_row(
         Span::raw(" ".repeat(SELECTION_PREFIX_WIDTH))
     };
 
-    lines.push(Line::from(vec![
+    let mut spans: Vec<Span<'static>> = vec![
         prefix_span,
         Span::styled(connector.to_owned(), dim),
         Span::raw(" ".to_owned()),
@@ -517,9 +534,94 @@ fn push_project_row(
         Span::raw(" ".to_owned()),
         Span::styled(name_label, name_style),
         Span::raw(" ".repeat(name_pad)),
-        Span::raw("  ".to_owned()),
-        Span::styled(format!("{right_label:>right_width$}"), dim),
-    ]));
+    ];
+    spans.extend(chip_spans);
+    spans.push(Span::raw("  ".to_owned()));
+    spans.push(Span::styled(format!("{right_label:>right_width$}"), dim));
+    lines.push(Line::from(spans));
+}
+
+/// Append one row per declared team worker (from forge.toml's
+/// `team = [...]` for this project) directly below the project's
+/// row. Each row shows the worker label + its assigned-account chip
+/// from the AssignmentPlan, so the user can see the per-session
+/// account mapping before clicking the project. Workers are
+/// info-only on the launchpad — clicks land on the project lead
+/// row; the worker rows are not selectable.
+fn push_worker_rows(
+    lines: &mut Vec<Line<'static>>,
+    project: &ProjectView,
+    app: &App,
+) {
+    if project.team.is_empty() {
+        return;
+    }
+    let dim = Style::default().fg(theme::DIM);
+    let workers = &project.team;
+    let count = workers.len();
+    for (idx, label) in workers.iter().enumerate() {
+        let is_last = idx + 1 == count;
+        let tree_glyph = if is_last { "└─" } else { "├─" };
+        let chip_info =
+            app.workspace.as_ref().and_then(|ws| ws.session_chip_for(&project.key, label));
+        let (chip_spans, chip_width) = account_chip_spans(chip_info.as_ref());
+        let name_width: usize = 18usize.saturating_sub(chip_width.min(10));
+        let name_label = truncate_to(label, name_width);
+        let name_pad = name_width.saturating_sub(name_label.chars().count());
+
+        // Indent enough so the worker tree connector hangs off the
+        // project row's name column (2 selection prefix + 2 project
+        // connector + 1 sp + 1 glyph + 1 sp = 7 cells), then `│  ` (3)
+        // as a vertical continuation, then `├─`/`└─` connector.
+        let mut spans: Vec<Span<'static>> = vec![
+            Span::raw(" ".repeat(SELECTION_PREFIX_WIDTH)),
+            Span::styled("│ ".to_owned(), dim),
+            Span::raw(" ".repeat(3)),
+            Span::styled(tree_glyph.to_owned(), dim),
+            Span::raw(" ".to_owned()),
+            Span::styled(name_label, Style::default().fg(theme::DIM)),
+            Span::raw(" ".repeat(name_pad)),
+        ];
+        spans.extend(chip_spans);
+        lines.push(Line::from(spans));
+    }
+}
+
+/// Build the per-session account chip spans + printed width.
+/// `(spans, width)`; on no-chip-yet returns `(vec![], 0)` so callers
+/// can unconditionally extend.
+///
+/// Chip text is `[<account>]`; color tracks the underlying
+/// `SessionChipState`: `Normal` = DIM, `FiveHourCap` =
+/// STATUS_WARNING, `Bailed` = STATUS_ERROR with a `⚠ ` prefix. The
+/// account name truncates to fit within `CHIP_MAX_WIDTH - 2`
+/// brackets minus the prefix.
+fn account_chip_spans(chip: Option<&SessionChipInfo>) -> (Vec<Span<'static>>, usize) {
+    let Some(chip) = chip else {
+        return (Vec::new(), 0);
+    };
+    const CHIP_MAX_WIDTH: usize = 12;
+    let (style, prefix) = match chip.state {
+        SessionChipState::Normal => (Style::default().fg(theme::DIM), ""),
+        SessionChipState::FiveHourCap => (Style::default().fg(theme::STATUS_WARNING), ""),
+        SessionChipState::Bailed => (Style::default().fg(theme::STATUS_ERROR), "\u{26a0} "),
+    };
+    let name_budget =
+        CHIP_MAX_WIDTH.saturating_sub(2).saturating_sub(prefix.chars().count());
+    let name = truncate_to(&chip.account_name, name_budget);
+    let text = format!("({prefix}{name})");
+    let width = text.chars().count();
+    (vec![Span::raw(" "), Span::styled(text, style)], 1 + width)
+}
+
+/// Lookup helper: given a `ProjectView` list + a project name,
+/// return the matching `ProjectKey`. Returns `None` when no project
+/// is found.
+fn find_project_key(
+    projects: &[ProjectView],
+    name: &str,
+) -> Option<forge_workspace::ProjectKey> {
+    projects.iter().find(|p| p.name == name).map(|p| p.key.clone())
 }
 
 fn push_error_row(lines: &mut Vec<Line<'static>>, error: &str, area_width: u16) {

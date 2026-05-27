@@ -17,7 +17,7 @@
 use std::time::{Instant, SystemTime};
 
 use forge_primitives::PeerInflightStats;
-use forge_workspace::{ProjectView, SessionChipInfo, SessionChipState};
+use forge_workspace::ProjectView;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -501,14 +501,7 @@ fn append_org_project_row(
         // panes.
         let (badge_spans, badge_width) =
             peer_badge_spans(&badge_input.stats, badge_input.last_failure_at, Instant::now());
-        // Session chip (`[<account>]`) shows which account this
-        // session is spawned under. Width-conditional: hidden on
-        // narrow panes (<26ch); on the active row the chip sits
-        // between the badge cluster and the close button.
-        let chip_info =
-            app.workspace.as_ref().and_then(|ws| ws.session_chip_for(&project.key, "lead"));
-        let (chip_spans, chip_width) = session_chip_spans(chip_info.as_ref(), area.width);
-        let name_budget = total_name_budget.saturating_sub(badge_width).saturating_sub(chip_width);
+        let name_budget = total_name_budget.saturating_sub(badge_width);
         let label = truncate_with_ellipsis(project.name.as_str(), name_budget);
         let label_pad = name_budget.saturating_sub(label.chars().count());
         spans.push(Span::styled(glyph, Style::default().fg(glyph_color)));
@@ -519,8 +512,6 @@ fn append_org_project_row(
         // timed-out, ·N✕ delivery-failed). Failure badges fade after
         // 60 s so the sidebar doesn't stay red after a single hiccup.
         spans.extend(badge_spans);
-        // Session chip (when width permits).
-        spans.extend(chip_spans);
         // 1-col separator before the button — matches the 1-col
         // separator before the `time` column on idle rows.
         spans.push(Span::raw(" "));
@@ -646,17 +637,8 @@ fn append_worker_tree_children(
         let row_y = area.y + line_count_as_u16(lines);
         let is_last = idx + 1 == worker_count;
         let tree_glyph = if is_last { "\u{2514}\u{2500} " } else { "\u{251C}\u{2500} " };
-        // Worker chip: assignment for `(project_key, worker.label)`.
-        // Width-conditional via session_chip_spans; truncates name
-        // or hides entirely on narrow panes.
-        let chip_info = app
-            .workspace
-            .as_ref()
-            .and_then(|ws| ws.session_chip_for(&project.key, worker.label.as_str()));
-        let (chip_spans, chip_width) = session_chip_spans(chip_info.as_ref(), area.width);
-        let label_budget_with_chip = label_budget.saturating_sub(chip_width);
-        let label = truncate_with_ellipsis(worker.label.as_str(), label_budget_with_chip);
-        let label_pad = label_budget_with_chip.saturating_sub(label.chars().count());
+        let label = truncate_with_ellipsis(worker.label.as_str(), label_budget);
+        let label_pad = label_budget.saturating_sub(label.chars().count());
         let is_focused = active_session_key.as_ref() == Some(&worker.session_key);
         let label_style = if is_focused {
             // Active worker - mirror the lead row's focused style
@@ -712,10 +694,6 @@ fn append_worker_tree_children(
             Span::styled(label, label_style),
             Span::raw(" ".repeat(label_pad)),
         ];
-        // Worker chip sits between the label area and the close
-        // button; absent on narrow panes via session_chip_spans's
-        // own width gate.
-        spans.extend(chip_spans);
         spans.push(Span::raw(" "));
         spans.push(Span::styled(
             " x ".to_owned(),
@@ -765,56 +743,6 @@ fn append_worker_tree_children(
     }
 }
 
-/// Minimum pane width (in cells) at which the per-session account
-/// chip renders. Below this the chip is hidden to leave the
-/// pre-existing badge cluster + close button room to breathe;
-/// the account assignment is still visible via the launchpad
-/// chip row, just not duplicated per-session in cramped widths.
-/// 26 matches the Wide-tier minimum referenced throughout the
-/// projects-pane chrome calculations.
-const SESSION_CHIP_MIN_PANE_WIDTH: u16 = 26;
-
-/// Hard cap on the chip text (`[<account>]`) width including the
-/// brackets. Long account names truncate with the standard `…`
-/// helper to fit. 9 cells: `[<6-char name>…]` worst case after
-/// truncation; comfortable on Wide tier (26ch+) without consuming
-/// the badge cluster's reserved room.
-const SESSION_CHIP_MAX_WIDTH: usize = 9;
-
-/// Build the per-session chip spans + their printed width. Returns
-/// `(spans, width)`; on miss returns `(vec![], 0)` so callers can
-/// unconditionally extend their span list.
-///
-/// Width-conditional: the chip only renders when `pane_width >=
-/// SESSION_CHIP_MIN_PANE_WIDTH`. The account name truncates to fit
-/// `SESSION_CHIP_MAX_WIDTH - 2` (brackets). Color tracks the
-/// `SessionChipState` from `Workspace::session_chip_for`:
-/// `Normal` = DIM, `FiveHourCap` = STATUS_WARNING, `Bailed` =
-/// STATUS_ERROR with a `⚠ ` prefix.
-fn session_chip_spans(
-    chip: Option<&SessionChipInfo>,
-    pane_width: u16,
-) -> (Vec<Span<'static>>, usize) {
-    if pane_width < SESSION_CHIP_MIN_PANE_WIDTH {
-        return (Vec::new(), 0);
-    }
-    let Some(chip) = chip else {
-        return (Vec::new(), 0);
-    };
-    let (style, prefix) = match chip.state {
-        SessionChipState::Normal => (Style::default().fg(theme::DIM), ""),
-        SessionChipState::FiveHourCap => (Style::default().fg(theme::STATUS_WARNING), ""),
-        SessionChipState::Bailed => (Style::default().fg(theme::STATUS_ERROR), "\u{26a0} "),
-    };
-    // Account name budget = SESSION_CHIP_MAX_WIDTH minus 2 brackets
-    // minus the prefix width.
-    let name_budget =
-        SESSION_CHIP_MAX_WIDTH.saturating_sub(2).saturating_sub(prefix.chars().count());
-    let name = truncate_with_ellipsis(&chip.account_name, name_budget);
-    let text = format!("[{prefix}{name}]");
-    let width = text.chars().count();
-    (vec![Span::raw(" "), Span::styled(text, style)], 1 + width)
-}
 
 /// Chrome budget for an org-grouped row:
 /// `<1 PANE_PAD><3 connector><1 glyph><1 sp><name><1 sp><RIGHT col><1 right pad>`
