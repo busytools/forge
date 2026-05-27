@@ -1256,13 +1256,15 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     // for accounts past budget). Surface "7d cap" on the 5h
     // indicator instead of the generic "rate-limited" so the user
     // reads "budget exhausted, not transient throttle." 99% catches
-    // floor + tiny inflight overage.
-    let seven_day_at_cap = app
-        .usage()
-        .snapshot
-        .as_ref()
-        .and_then(|s| s.seven_day.as_ref())
-        .is_some_and(|w| w.utilization >= 99.0);
+    // floor + tiny inflight overage. Gating on resets_at > now keeps
+    // a stale 100% reading from rendering "7d cap" forever after
+    // the window has actually reset - matching the resets_at-driven
+    // classification used by the account picker.
+    let seven_day_at_cap =
+        app.usage().snapshot.as_ref().and_then(|s| s.seven_day.as_ref()).is_some_and(|w| {
+            w.utilization >= 99.0
+                && w.resets_at.is_some_and(|when| when > std::time::SystemTime::now())
+        });
 
     // Rows 9..=10: 5h bar + ETA row.
     push_usage_window_lines(
