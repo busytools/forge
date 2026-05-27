@@ -139,6 +139,17 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
     let tick_duration = Duration::from_millis(4);
     let mut last_render = Instant::now();
 
+    // #217 render throttle: scratch terminal + cached signature of
+    // the last drawn frame. Each redraw tick renders into the
+    // scratch backend, hashes the resulting buffer, and skips the
+    // real `terminal.draw` flush when the hash matches the
+    // previously drawn frame. Backpressure from tmux-like terminals
+    // (645 ms stalls observed in the perf log) drops out for
+    // unchanged-state ticks. The scratch terminal carries no I/O
+    // cost; only the back buffer is touched.
+    let mut scratch_terminal: Option<ratatui::Terminal<ratatui::backend::TestBackend>> = None;
+    let mut last_drawn_signature: Option<u64> = None;
+
     loop {
         start_connection(app);
 
@@ -283,28 +294,36 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
             app.needs_redraw = true;
         }
         if app.needs_redraw {
-            if let Some(ref mut perf) = app.perf {
-                perf.next_frame();
-            }
-            // FPS overlay is always-on (see
-            // `chat_view::render_perf_fps_overlay`), not gated on the `perf`
-            // Cargo feature. `mark_frame_presented` keeps the EMA fresh so the
-            // overlay shows real numbers in any build.
-            app.mark_frame_presented(Instant::now());
-            // `Timer` is `Drop`-implementing under `feature = "perf"` and a
-            // unit struct otherwise. Explicit `drop()` enforces the desired
-            // lifetime in both feature paths; clippy can't see the cfg
-            // branch where Drop matters.
-            #[allow(clippy::drop_non_drop)]
-            {
-                let timer = app.perf.as_ref().map(|p| p.start("frame_total"));
-                let draw_timer = app.perf.as_ref().map(|p| p.start("frame::terminal_draw"));
-                terminal.draw(|f| crate::ui::render(f, app))?;
-                drop(draw_timer);
-                drop(timer);
+            let skip_real_draw = render_throttle_should_skip(
+                &mut scratch_terminal,
+                &terminal,
+                app,
+                &mut last_drawn_signature,
+            )?;
+            if !skip_real_draw {
+                if let Some(ref mut perf) = app.perf {
+                    perf.next_frame();
+                }
+                // FPS overlay is always-on (see
+                // `chat_view::render_perf_fps_overlay`), not gated on the `perf`
+                // Cargo feature. `mark_frame_presented` keeps the EMA fresh so the
+                // overlay shows real numbers in any build.
+                app.mark_frame_presented(Instant::now());
+                // `Timer` is `Drop`-implementing under `feature = "perf"` and a
+                // unit struct otherwise. Explicit `drop()` enforces the desired
+                // lifetime in both feature paths; clippy can't see the cfg
+                // branch where Drop matters.
+                #[allow(clippy::drop_non_drop)]
+                {
+                    let timer = app.perf.as_ref().map(|p| p.start("frame_total"));
+                    let draw_timer = app.perf.as_ref().map(|p| p.start("frame::terminal_draw"));
+                    terminal.draw(|f| crate::ui::render(f, app))?;
+                    drop(draw_timer);
+                    drop(timer);
+                }
+                last_render = Instant::now();
             }
             app.needs_redraw = false;
-            last_render = Instant::now();
         }
     }
 
@@ -357,6 +376,45 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
     ratatui::restore();
 
     Ok(())
+}
+
+/// #217 throttle: render into a scratch `TestBackend` matching the
+/// real terminal's size, hash the resulting buffer, and decide
+/// whether the real `terminal.draw` can be skipped because the
+/// visible state is byte-equal to the previously drawn frame.
+///
+/// `scratch_terminal` is lazy-initialised on the first call and
+/// resized on size mismatch (terminal resize). `last_drawn_signature`
+/// is updated only when a real draw is about to happen (the
+/// scratch-only path leaves it untouched so a future tick whose
+/// state diverges from the LAST DRAWN frame still fires the real
+/// draw, even if intermediate ticks rendered different scratch
+/// content).
+///
+/// Returns `true` when the caller should skip the real draw.
+fn render_throttle_should_skip(
+    scratch_terminal: &mut Option<ratatui::Terminal<ratatui::backend::TestBackend>>,
+    real_terminal: &ratatui::Terminal<ratatui::prelude::CrosstermBackend<std::io::Stdout>>,
+    app: &mut App,
+    last_drawn_signature: &mut Option<u64>,
+) -> anyhow::Result<bool> {
+    let frame_size = real_terminal.size()?;
+    let scratch = if let Some(t) = scratch_terminal {
+        t
+    } else {
+        let backend = ratatui::backend::TestBackend::new(frame_size.width, frame_size.height);
+        scratch_terminal.insert(ratatui::Terminal::new(backend)?)
+    };
+    if scratch.size()? != frame_size {
+        scratch.backend_mut().resize(frame_size.width, frame_size.height);
+    }
+    scratch.draw(|f| crate::ui::render(f, app))?;
+    let signature = crate::ui::buffer_signature(scratch.backend().buffer());
+    if Some(signature) == *last_drawn_signature {
+        return Ok(true);
+    }
+    *last_drawn_signature = Some(signature);
+    Ok(false)
 }
 
 fn advance_spinner_frame(app: &mut App, now: Instant) {
