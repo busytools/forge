@@ -48,7 +48,9 @@
 //! - `○` DIM glyph + gray text for `Pending` (truncates with `…`)
 
 use forge_primitives::git::{GitBranch, GitIssueRef, GitPrInfo};
-use forge_primitives::git_diff::{GitBranchAhead, GitDiffFile, GitDiffSnapshot, GitDiffStats};
+use forge_primitives::git_diff::{
+    GitBranchAhead, GitDiffFile, GitDiffSnapshot, GitDiffStats, LayerState,
+};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -473,44 +475,46 @@ fn append_git_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
         lines.push(pr_line(width, pr, &snapshot.closes));
     }
 
-    // Layer 1 sub-section - uncommitted edits vs HEAD. Skipped
-    // when the tree is clean (`worktree == None` AND
-    // `worktree_scan_ok == true`). When the per-layer scan
-    // failed, surface a "(scan failed)" stub so the user sees the
-    // failure instead of a clean-tree render.
-    if let Some(stats) = snapshot.worktree.as_ref() {
-        append_diff_layer(lines, &uncommitted_display(stats), width);
-    } else if !snapshot.worktree_scan_ok {
-        lines.push(diff_layer_failed_line(width, "uncommitted"));
+    // Layer 1 sub-section - uncommitted edits vs HEAD. Three legal
+    // states encoded as `LayerState`: Clean (skip), Populated (render),
+    // ScanFailed (surface a "(scan failed)" stub so the user sees the
+    // failure instead of a clean-tree render).
+    match &snapshot.worktree {
+        LayerState::Clean => {}
+        LayerState::Populated(stats) => {
+            append_diff_layer(lines, &uncommitted_display(stats), width);
+        }
+        LayerState::ScanFailed => {
+            lines.push(diff_layer_failed_line(width, "uncommitted"));
+        }
     }
 
     // Layer 2 sub-section - branch commits ahead of default.
     // Skipped on the default branch, on detached HEAD, or when
-    // default isn't resolved (`branch_ahead == None`). When BOTH
-    // layers are present, layer 2 renders directly below layer 1
-    // so the user sees in-progress + committed-but-unmerged work
-    // stacked in the same view. The tuple-match here is paired
-    // with the scanner's invariant that `branch_ahead = Some(_)`
-    // is only constructed when `default_branch` resolved; the
-    // explicit `Some(default)` makes the assumption load-bearing
-    // at the call site rather than hidden behind an unwrap. The
-    // `else if` mirrors layer 1's per-layer scan_failed surfacing.
+    // default isn't resolved. When BOTH layers are present, layer 2
+    // renders directly below layer 1 so the user sees in-progress +
+    // committed-but-unmerged work stacked in the same view. The
+    // explicit `Some(default)` pair makes the assumption
+    // load-bearing at the call site rather than hidden behind an
+    // unwrap. The ScanFailed branch mirrors layer 1's surfacing.
     //
     // Tripwire for the F10 invariant: a future change that
-    // constructs `branch_ahead = Some(_)` with `default_branch =
-    // None` would silently no-op the tuple-match. The assert
-    // catches it in debug builds; release builds drop to the
+    // constructs `branch_ahead = Populated(_)` with `default_branch
+    // = None` would silently fall through to the no-op branch. The
+    // assert catches it in debug builds; release builds drop to the
     // silent fallback, same shape as today.
     debug_assert!(
-        snapshot.default_branch.is_some() || snapshot.branch_ahead.is_none(),
-        "branch_ahead invariant: default_branch must be Some when branch_ahead is Some",
+        snapshot.default_branch.is_some() || !snapshot.branch_ahead.is_populated(),
+        "branch_ahead invariant: default_branch must be Some when branch_ahead is Populated",
     );
-    if let (Some(ahead), Some(default)) =
-        (snapshot.branch_ahead.as_ref(), snapshot.default_branch.as_deref())
-    {
-        append_diff_layer(lines, &branch_ahead_display(ahead, default), width);
-    } else if !snapshot.branch_ahead_scan_ok {
-        lines.push(diff_layer_failed_line(width, "vs default"));
+    match (&snapshot.branch_ahead, snapshot.default_branch.as_deref()) {
+        (LayerState::Populated(ahead), Some(default)) => {
+            append_diff_layer(lines, &branch_ahead_display(ahead, default), width);
+        }
+        (LayerState::ScanFailed, _) => {
+            lines.push(diff_layer_failed_line(width, "vs default"));
+        }
+        _ => {}
     }
 }
 
@@ -555,10 +559,8 @@ fn snapshot_has_diff(app: &App) -> bool {
     if !snapshot.scanner_ok {
         return true;
     }
-    snapshot.worktree.is_some()
-        || snapshot.branch_ahead.is_some()
-        || !snapshot.worktree_scan_ok
-        || !snapshot.branch_ahead_scan_ok
+    !matches!(snapshot.worktree, LayerState::Clean)
+        || !matches!(snapshot.branch_ahead, LayerState::Clean)
 }
 
 /// Render one diff layer (subtitle + tree + optional overflow row)
@@ -1630,10 +1632,8 @@ mod tests {
             branch,
             default_branch: default.map(str::to_owned),
             in_repo,
-            worktree: None,
-            worktree_scan_ok: true,
-            branch_ahead: None,
-            branch_ahead_scan_ok: true,
+            worktree: LayerState::Clean,
+            branch_ahead: LayerState::Clean,
             pr: None,
             closes: Vec::new(),
             scanner_ok: true,

@@ -12,12 +12,14 @@
 //!
 //! The snapshot exposes two independent diff layers so callers can
 //! render both simultaneously when both apply (worker on a topic
-//! branch with uncommitted edits, for instance):
-//! - `worktree`: uncommitted edits vs HEAD (the dirty tree). `None`
-//!   when the tree is clean.
+//! branch with uncommitted edits, for instance). Each layer is a
+//! [`LayerState`] with three variants:
+//! - `worktree`: uncommitted edits vs HEAD (the dirty tree).
+//!   `Clean` when the tree is clean.
 //! - `branch_ahead`: the branch's commits ahead of the default
-//!   branch. `None` on the default branch, on detached HEAD, or
-//!   when there's no resolvable default.
+//!   branch. `Clean` on the default branch, on detached HEAD, or
+//!   when there's no resolvable default. `ScanFailed` carries the
+//!   per-layer subprocess-error signal.
 //!
 //! `scan` always returns a value. Subprocess failures, missing
 //! repos, oversize output, and timeouts all collapse to a snapshot
@@ -29,7 +31,9 @@ use std::path::Path;
 use std::time::Duration;
 
 use forge_primitives::git::{GitBranch, GitIssueRef, GitPrInfo};
-use forge_primitives::git_diff::{GitBranchAhead, GitDiffFile, GitDiffSnapshot, GitDiffStats};
+use forge_primitives::git_diff::{
+    GitBranchAhead, GitDiffFile, GitDiffSnapshot, GitDiffStats, LayerState,
+};
 use serde::Deserialize;
 use tokio::process::Command;
 use tokio::time::timeout;
@@ -77,17 +81,15 @@ pub async fn scan(cwd: &Path, prev: Option<&GitDiffSnapshot>) -> GitDiffSnapshot
         GitOutput::Empty => {
             // Empty output from rev-parse means "cwd genuinely
             // isn't a git repo" - scanner_ok=true since git itself
-            // ran fine and reported the state correctly. Per-layer
-            // flags stay true: there's nothing to scan, so there's
+            // ran fine and reported the state correctly. Layer
+            // states stay Clean: there's nothing to scan, so there's
             // nothing that could have failed.
             return GitDiffSnapshot {
                 branch: GitBranch::NoRepo,
                 default_branch: None,
                 in_repo: false,
-                worktree: None,
-                worktree_scan_ok: true,
-                branch_ahead: None,
-                branch_ahead_scan_ok: true,
+                worktree: LayerState::Clean,
+                branch_ahead: LayerState::Clean,
                 pr: None,
                 closes: Vec::new(),
                 scanner_ok: true,
@@ -98,17 +100,15 @@ pub async fn scan(cwd: &Path, prev: Option<&GitDiffSnapshot>) -> GitDiffSnapshot
             // in_repo=false as the failsafe so existing render paths
             // don't crash; scanner_ok=false tells consumers to
             // surface "scan failed" rather than "not a git
-            // repository." Per-layer flags stay true here too: the
-            // overall scanner_ok=false banner subsumes the per-layer
-            // signal in this collapsed state.
+            // repository." Layer states stay Clean: the overall
+            // scanner_ok=false banner subsumes the per-layer signal
+            // in this collapsed state.
             return GitDiffSnapshot {
                 branch: GitBranch::NoRepo,
                 default_branch: None,
                 in_repo: false,
-                worktree: None,
-                worktree_scan_ok: true,
-                branch_ahead: None,
-                branch_ahead_scan_ok: true,
+                worktree: LayerState::Clean,
+                branch_ahead: LayerState::Clean,
                 pr: None,
                 closes: Vec::new(),
                 scanner_ok: false,
@@ -128,18 +128,18 @@ pub async fn scan(cwd: &Path, prev: Option<&GitDiffSnapshot>) -> GitDiffSnapshot
     let on_default = default_branch.as_ref().is_some_and(|default| default == &raw_branch);
     let dirty_probe = is_worktree_dirty(cwd).await;
 
-    // Layer 1: uncommitted edits vs HEAD. `worktree_scan_ok`
-    // distinguishes "tree was clean, nothing to show" from the
-    // failure modes: dirty probe itself failed, OR dirty probe
-    // succeeded but the subsequent numstat failed. Either failure
-    // upstream of the layer trips the flag so the renderer surfaces
-    // "(scan failed)" instead of silently dropping to clean-tree.
-    let (worktree, worktree_scan_ok) = match dirty_probe {
-        None => (None, false),
-        Some(false) => (None, true),
+    // Layer 1: uncommitted edits vs HEAD. The three legal states
+    // (clean tree, populated diff, scan failed) are unrepresentable
+    // as illegal combinations because `LayerState` encodes them
+    // directly. Either upstream failure (dirty probe OR numstat)
+    // collapses to `ScanFailed` so the renderer surfaces "(scan
+    // failed)" instead of silently dropping to clean-tree.
+    let worktree: LayerState<GitDiffStats> = match dirty_probe {
+        None => LayerState::ScanFailed,
+        Some(false) => LayerState::Clean,
         Some(true) => match numstat(cwd, &["diff", "--numstat", "HEAD"]).await {
-            Some(stats) => (Some(stats), true),
-            None => (None, false),
+            Ok(stats) => LayerState::Populated(stats),
+            Err(_) => LayerState::ScanFailed,
         },
     };
 
@@ -148,17 +148,16 @@ pub async fn scan(cwd: &Path, prev: Option<&GitDiffSnapshot>) -> GitDiffSnapshot
     // ahead from), on the default branch itself (the diff against
     // itself is empty by construction), and when default_branch is
     // unknown (no sensible base). A clean branch sitting at the
-    // merge-base with no commits ahead collapses to None as well so
-    // the renderer doesn't show an empty layer-2 row.
-    // `branch_ahead_scan_ok` carries the same scan-vs-empty
-    // distinction as `worktree_scan_ok` for this layer.
-    let (branch_ahead, branch_ahead_scan_ok) = if !detached && !on_default {
+    // merge-base with no commits ahead collapses to `Clean` so the
+    // renderer doesn't show an empty layer-2 row. `ScanFailed`
+    // carries the subprocess-error signal mirroring layer 1.
+    let branch_ahead: LayerState<GitBranchAhead> = if !detached && !on_default {
         if let Some(default) = default_branch.as_deref() {
             let range = format!("{default}...HEAD");
             match numstat(cwd, &["diff", "--numstat", &range]).await {
-                Some(stats) => match commit_count_in_range(cwd, default, "HEAD").await {
-                    None => (None, false),
-                    Some(0) => (None, true),
+                Ok(stats) => match commit_count_in_range(cwd, default, "HEAD").await {
+                    None => LayerState::ScanFailed,
+                    Some(0) => LayerState::Clean,
                     Some(commit_count) => {
                         // `commit_count == 0` is the cleanest signal
                         // that the branch has no commits ahead of
@@ -168,16 +167,16 @@ pub async fn scan(cwd: &Path, prev: Option<&GitDiffSnapshot>) -> GitDiffSnapshot
                         // case where commit_count == 0 but stats
                         // showed files, producing a "0 commits vs
                         // main" subtitle that read oddly to the user.
-                        (Some(GitBranchAhead { commit_count, stats }), true)
+                        LayerState::Populated(GitBranchAhead { commit_count, stats })
                     }
                 },
-                None => (None, false),
+                Err(_) => LayerState::ScanFailed,
             }
         } else {
-            (None, true)
+            LayerState::Clean
         }
     } else {
-        (None, true)
+        LayerState::Clean
     };
 
     // PR / closes only make sense for named non-default branches -
@@ -193,18 +192,16 @@ pub async fn scan(cwd: &Path, prev: Option<&GitDiffSnapshot>) -> GitDiffSnapshot
     // scanner_ok=true here - we've passed the rev-parse gate and
     // every downstream subprocess (default-branch resolution,
     // numstat, gh pr) is best-effort; failures collapse to safe
-    // defaults plus per-layer `*_scan_ok` flags so the renderer can
-    // surface them at the layer level rather than poisoning the
-    // overall snapshot. The scanner_ok=false case is only the
-    // rev-parse-failed return at the top of this function.
+    // defaults plus per-layer `LayerState::ScanFailed` so the
+    // renderer can surface them at the layer level rather than
+    // poisoning the overall snapshot. The scanner_ok=false case is
+    // only the rev-parse-failed return at the top of this function.
     GitDiffSnapshot {
         branch,
         default_branch,
         in_repo: true,
         worktree,
-        worktree_scan_ok,
         branch_ahead,
-        branch_ahead_scan_ok,
         pr,
         closes,
         scanner_ok: true,
@@ -214,7 +211,7 @@ pub async fn scan(cwd: &Path, prev: Option<&GitDiffSnapshot>) -> GitDiffSnapshot
 /// Count commits in `<base>..HEAD` via `git rev-list --count`.
 /// Returns `None` on any failure path (subprocess error, parse
 /// failure, anomalous empty output) so callers can route the
-/// signal into `branch_ahead_scan_ok=false` instead of masking the
+/// signal into `LayerState::ScanFailed` instead of masking the
 /// failure as 0. Each non-Ok branch emits a WARN log mirroring the
 /// `gh_pr_lookup_*` pattern.
 async fn commit_count_in_range(cwd: &Path, base: &str, head: &str) -> Option<u32> {
@@ -293,7 +290,7 @@ async fn resolve_default_branch(cwd: &Path) -> Option<String> {
 
 /// Returns `Some(dirty)` when `git status` ran cleanly (`Ok` /
 /// `Empty`); `None` when the subprocess hit `Failed` / `Oversize`.
-/// Callers thread the `None` signal into `worktree_scan_ok=false`
+/// Callers thread the `None` signal into `LayerState::ScanFailed`
 /// so the renderer can surface "(scan failed)" for layer 1 instead
 /// of silently rendering a clean tree when the probe upstream of
 /// numstat collapsed.
@@ -305,21 +302,39 @@ async fn is_worktree_dirty(cwd: &Path) -> Option<bool> {
     }
 }
 
+/// Underlying `git diff --numstat` subprocess didn't return a usable
+/// result. Callers map this to `LayerState::ScanFailed` so the
+/// renderer can surface the failure. The variants carry enough
+/// classification to triage from the WARN log emitted by `run_git`;
+/// downstream callers don't differentiate them today but the type
+/// keeps the option open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NumstatError {
+    /// Subprocess crashed, timed out, or exited non-zero. See
+    /// `git_subprocess_failed` / `git_subprocess_nonzero_exit` /
+    /// `git_subprocess_timeout` WARN events.
+    Subprocess,
+    /// Stdout exceeded the per-command size cap. See
+    /// `git_subprocess_oversize` WARN event.
+    Oversize,
+}
+
 /// Run `git <args>` and parse the `--numstat` output. Returns the
 /// top-`TOP_FILE_COUNT` files (sorted by total changes desc, alpha
 /// tie-break) plus the full file count and overall add/remove
 /// totals.
-/// Returns `None` when the underlying `git` subprocess hit
-/// `Failed` / `Oversize`; callers use that signal to set the
-/// per-layer `*_scan_ok` flag false so the renderer can distinguish
-/// "scan failed" from "clean tree, nothing to show". `Empty`
-/// (exit 0, no stdout) collapses to a zero-row stats block since
-/// that's the legitimate "no diff to report" outcome.
-async fn numstat(cwd: &Path, args: &[&str]) -> Option<GitDiffStats> {
+/// Returns `Err(NumstatError)` when the underlying `git` subprocess
+/// hit `Failed` / `Oversize`; callers map that signal to
+/// `LayerState::ScanFailed` so the renderer can distinguish "scan
+/// failed" from "clean tree, nothing to show". `Empty` (exit 0, no
+/// stdout) collapses to a zero-row stats block since that's the
+/// legitimate "no diff to report" outcome.
+async fn numstat(cwd: &Path, args: &[&str]) -> Result<GitDiffStats, NumstatError> {
     let raw = match run_git(cwd, args).await {
         GitOutput::Ok(s) => s,
         GitOutput::Empty => String::new(),
-        GitOutput::Failed | GitOutput::Oversize => return None,
+        GitOutput::Failed => return Err(NumstatError::Subprocess),
+        GitOutput::Oversize => return Err(NumstatError::Oversize),
     };
     let mut files = parse_numstat(&raw);
     let total_files = files.len();
@@ -331,7 +346,7 @@ async fn numstat(cwd: &Path, args: &[&str]) -> Option<GitDiffStats> {
         b_total.cmp(&a_total).then_with(|| a.path.cmp(&b.path))
     });
     files.truncate(TOP_FILE_COUNT);
-    Some(GitDiffStats { files, total_files, total_added, total_removed })
+    Ok(GitDiffStats { files, total_files, total_added, total_removed })
 }
 
 /// Parse `<added>\t<removed>\t<path>` lines. Skips binary entries
@@ -732,8 +747,8 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let snap = scan(dir.path(), None).await;
         assert!(!snap.in_repo);
-        assert!(snap.worktree.is_none());
-        assert!(snap.branch_ahead.is_none());
+        assert!(matches!(snap.worktree, LayerState::Clean));
+        assert!(matches!(snap.branch_ahead, LayerState::Clean));
         assert!(snap.default_branch.is_none());
     }
 
@@ -745,8 +760,8 @@ mod tests {
         commit_all(&dir, "init");
         let snap = scan(dir.path(), None).await;
         assert!(snap.in_repo);
-        assert!(snap.worktree.is_none(), "clean tree → no layer 1");
-        assert!(snap.branch_ahead.is_none(), "on default → no layer 2");
+        assert!(matches!(snap.worktree, LayerState::Clean), "clean tree → no layer 1");
+        assert!(matches!(snap.branch_ahead, LayerState::Clean), "on default → no layer 2");
         assert_eq!(snap.default_branch.as_deref(), Some("main"));
     }
 
@@ -759,8 +774,11 @@ mod tests {
         // Dirty: modify the tracked file without committing.
         write_file(&dir, "README.md", "second\nthird\n");
         let snap = scan(dir.path(), None).await;
-        let stats = snap.worktree.as_ref().expect("layer 1 populated on dirty tree");
-        assert!(snap.branch_ahead.is_none(), "on default branch → layer 2 stays empty");
+        let stats = snap.worktree.as_populated().expect("layer 1 populated on dirty tree");
+        assert!(
+            matches!(snap.branch_ahead, LayerState::Clean),
+            "on default branch → layer 2 stays empty"
+        );
         assert_eq!(stats.total_files, 1);
         assert_eq!(stats.files[0].path, "README.md");
         assert!(stats.files[0].added >= 1);
@@ -782,8 +800,8 @@ mod tests {
         commit_all(&dir, "feat commit");
 
         let snap = scan(dir.path(), None).await;
-        assert!(snap.worktree.is_none(), "clean tree → no layer 1");
-        let ahead = snap.branch_ahead.as_ref().expect("layer 2 populated on feature branch");
+        assert!(matches!(snap.worktree, LayerState::Clean), "clean tree → no layer 1");
+        let ahead = snap.branch_ahead.as_populated().expect("layer 2 populated on feature branch");
         assert_eq!(ahead.commit_count, 1, "one commit on feature branch beyond main");
         assert_eq!(ahead.stats.total_files, 1);
         assert_eq!(ahead.stats.files[0].path, "feat.rs");
@@ -811,8 +829,8 @@ mod tests {
         write_file(&dir, "feat.rs", "fn x() {}\nfn y() {}\n");
 
         let snap = scan(dir.path(), None).await;
-        let worktree = snap.worktree.as_ref().expect("layer 1 populated on dirty tree");
-        let ahead = snap.branch_ahead.as_ref().expect("layer 2 populated on feature branch");
+        let worktree = snap.worktree.as_populated().expect("layer 1 populated on dirty tree");
+        let ahead = snap.branch_ahead.as_populated().expect("layer 2 populated on feature branch");
         // Layer 1: in-progress edits to feat.rs.
         assert_eq!(worktree.total_files, 1);
         assert_eq!(worktree.files[0].path, "feat.rs");
@@ -839,9 +857,9 @@ mod tests {
         write_file(&dir, "README.md", "third\n");
 
         let snap = scan(dir.path(), None).await;
-        assert!(snap.worktree.is_some(), "detached + dirty → layer 1 populated");
+        assert!(snap.worktree.is_populated(), "detached + dirty → layer 1 populated");
         assert!(
-            snap.branch_ahead.is_none(),
+            matches!(snap.branch_ahead, LayerState::Clean),
             "detached HEAD has no branch name, layer 2 stays empty"
         );
     }
@@ -860,8 +878,8 @@ mod tests {
         run(&["checkout", "-q", "HEAD~1"]);
         let snap = scan(dir.path(), None).await;
         assert!(snap.in_repo);
-        assert!(snap.worktree.is_none());
-        assert!(snap.branch_ahead.is_none());
+        assert!(matches!(snap.worktree, LayerState::Clean));
+        assert!(matches!(snap.branch_ahead, LayerState::Clean));
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -886,7 +904,7 @@ mod tests {
             .expect("git ok");
 
         let snap = scan(dir.path(), None).await;
-        let stats = snap.worktree.as_ref().expect("dirty tree → layer 1 populated");
+        let stats = snap.worktree.as_populated().expect("dirty tree → layer 1 populated");
         assert_eq!(stats.total_files, 3);
         // Sum of per-file added/removed equals the overall total.
         let per_file_added: u32 = stats.files.iter().map(|f| f.added).sum();
@@ -932,10 +950,8 @@ mod tests {
             branch: GitBranch::Named("feat/x".into()),
             default_branch: Some("main".into()),
             in_repo: true,
-            worktree: None,
-            worktree_scan_ok: true,
-            branch_ahead: None,
-            branch_ahead_scan_ok: true,
+            worktree: LayerState::Clean,
+            branch_ahead: LayerState::Clean,
             pr: Some(pr.clone()),
             closes: closes.clone(),
             scanner_ok: true,
@@ -957,10 +973,8 @@ mod tests {
             branch: GitBranch::Named("feat/x".into()),
             default_branch: Some("main".into()),
             in_repo: true,
-            worktree: None,
-            worktree_scan_ok: true,
-            branch_ahead: None,
-            branch_ahead_scan_ok: true,
+            worktree: LayerState::Clean,
+            branch_ahead: LayerState::Clean,
             pr: Some(GitPrInfo { number: 42, url: "https://example/pull/42".into() }),
             closes: Vec::new(),
             scanner_ok: true,
@@ -982,10 +996,8 @@ mod tests {
             branch: GitBranch::Detached,
             default_branch: Some("main".into()),
             in_repo: true,
-            worktree: None,
-            worktree_scan_ok: true,
-            branch_ahead: None,
-            branch_ahead_scan_ok: true,
+            worktree: LayerState::Clean,
+            branch_ahead: LayerState::Clean,
             pr: Some(GitPrInfo { number: 42, url: "url".into() }),
             closes: Vec::new(),
             scanner_ok: true,
@@ -1021,10 +1033,8 @@ mod tests {
             branch: GitBranch::Named("feat/cache".into()),
             default_branch: Some("main".into()),
             in_repo: true,
-            worktree: None,
-            worktree_scan_ok: true,
-            branch_ahead: None,
-            branch_ahead_scan_ok: true,
+            worktree: LayerState::Clean,
+            branch_ahead: LayerState::Clean,
             pr: Some(synthetic_pr.clone()),
             closes: synthetic_closes.clone(),
             scanner_ok: true,
@@ -1050,10 +1060,8 @@ mod tests {
             branch: GitBranch::Named("main".into()),
             default_branch: Some("main".into()),
             in_repo: true,
-            worktree: None,
-            worktree_scan_ok: true,
-            branch_ahead: None,
-            branch_ahead_scan_ok: true,
+            worktree: LayerState::Clean,
+            branch_ahead: LayerState::Clean,
             pr: Some(GitPrInfo { number: 1, url: "url".into() }),
             closes: Vec::new(),
             scanner_ok: true,
