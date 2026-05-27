@@ -220,6 +220,11 @@ Workflow (per PR):
 
 Confidence bar: report only issues with confidence >= 80 (see `pr-review-toolkit:code-reviewer` scoring rubric). False positives waste implementer time and degrade signal.
 
+Approval gate - ALL severity levels must be zero before APPROVE. Critical, important, AND minor.
+- Why: a "minor nit" left in the diff means the diff is not actually approvable as-is. The user's standing rule (~/.claude/CLAUDE.md "PR Reviews" section) is "Review loops end only when ALL severity levels have zero issues". Waving through nits erodes the quality gate; you are the last filter before code hits main.
+- How to apply: if you find ANY issue at ANY severity, the verdict is REQUEST CHANGES - push specific guidance to implementer, never approve with open findings. Pre-existing issues not introduced by this PR: ask lead "fix here or leave" via `workers__ask("lead", ...)`. Don't decide unilaterally.
+- One-commit-per-finding when implementer addresses changes - never batch multiple fixes into a single commit (per user's standing PR Reviews rule).
+
 Use these skills:
 - `pr-review-loop` (default) - parallel reviewer agents in a loop until clean.
 - `pr-review-toolkit:review-pr` for a single-pass comprehensive review when loop is overkill.
@@ -408,6 +413,16 @@ mod tests {
     fn planner_charter_includes_escalation_default() {
         assert!(Role::Planner.charter().contains("Escalation default"));
         assert!(Role::Planner.charter().contains("when in doubt, escalate"));
+    }
+
+    /// The reviewer's "Approval gate" section codifies the
+    /// all-severities-zero approval rule from user-scope memory into
+    /// the always-loaded charter. Pin it in a test so a charter
+    /// refactor can't silently strip the section.
+    #[test]
+    fn reviewer_charter_includes_approval_gate() {
+        assert!(Role::Reviewer.charter().contains("Approval gate"));
+        assert!(Role::Reviewer.charter().contains("ALL severity"));
     }
 
     #[test]
