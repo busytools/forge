@@ -130,7 +130,8 @@ pub enum PaneHitTarget {
     /// Click on the `🦉` glyph at the right edge of the Inspector
     /// pane's `GIT` section header → open the full-screen Diff
     /// overlay with auto-detected target. Only stamped when the
-    /// snapshot has a diff to show (Worktree / BranchVsDefault)
+    /// snapshot has a diff to show (either layer populated, i.e.
+    /// `worktree` or `branch_ahead` is `LayerState::Populated`)
     /// AND the inspector scroll offset is 0 (otherwise the header
     /// is off-screen).
     InspectorGitOpenDiff { y: u16, height: u16, x_start: u16, x_end: u16 },

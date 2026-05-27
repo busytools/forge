@@ -49,9 +49,10 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
 /// `/diff [target]` — open the full-screen diff overlay.
 ///
 /// No arg → delegate to `diff_overlay::open_default`, which mirrors
-/// the Inspector GIT section's view auto-detect: `Worktree` ⇒
-/// `HEAD`, `BranchVsDefault` ⇒ the default branch, `CleanDefault` /
-/// `NoRepo` ⇒ system notice "No changes" with no overlay opened.
+/// the Inspector GIT section's auto-detect: layer 1 populated
+/// (`worktree`) ⇒ `HEAD`, layer 2 populated (`branch_ahead`) ⇒ the
+/// default branch, both layers `Clean` ⇒ system notice "No changes"
+/// with no overlay opened.
 /// One positional arg → passed verbatim as the two-dot `git diff
 /// <target>` ref (so `/diff main` shows committed + uncommitted on
 /// a feature branch in one view).
