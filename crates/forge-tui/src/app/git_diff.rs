@@ -301,16 +301,15 @@ pub fn spawn_periodic_timer(tx: std_mpsc::Sender<GitDiffEvent>) {
 mod tests {
     use super::*;
     use forge_primitives::git::GitBranch;
+    use forge_primitives::git_diff::LayerState;
 
     fn snapshot() -> GitDiffSnapshot {
         GitDiffSnapshot {
             branch: GitBranch::Named("main".into()),
             default_branch: Some("main".into()),
             in_repo: true,
-            worktree: None,
-            worktree_scan_ok: true,
-            branch_ahead: None,
-            branch_ahead_scan_ok: true,
+            worktree: LayerState::Clean,
+            branch_ahead: LayerState::Clean,
             pr: None,
             closes: Vec::new(),
             scanner_ok: true,
