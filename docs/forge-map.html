@@ -838,6 +838,43 @@ chat continues here…
   </div>
 </div>
 
+<div class="surface">
+  <div class="surface-head">
+    <h4>Account loading gate (#246)</h4>
+    <div class="when">launchpad blocks project-row clicks until every account resolves</div>
+  </div>
+  <div class="surface-body">
+    <p>Forge boots into a per-account loading state machine, one tokio task per <code>[[accounts]]</code> entry in <code>forge.toml</code>. Each task drives its account through <code>Loading</code> -&gt; <code>Refreshing</code> -&gt; <code>Ready</code> or <code>Bailed</code> via probe (<code>/api/oauth/usage</code>) + auth-recovery refresh (<code>claude -p hi</code>). The launchpad's identity block carries a centred chip row showing each account's current state; project rows stay dimmed + unclickable until <em>every</em> account has reached a terminal state.</p>
+    <div class="term">
+      <pre class="indent">
+                                  <span class="dim">v0.15.1 · 7d88141</span>
+                                  <span class="dim">claude 2.1.133</span>
+
+          <span style="color:#cfc26b">○</span> <span class="dim">gateway</span>   <span style="color:#cfc26b">○</span> <span class="dim">gateway1</span>   <span style="color:#7eb87a">●</span> <span class="dim">personal</span>   <span style="color:#cf6171">⚠</span> <span class="dim">stargate</span>
+
+      <span class="dim">────────────────────────────────────────────────────────</span>
+        <span class="dim">Busytools</span>
+        <span class="dim">├─ ●  forge       </span> <span class="dim">(personal)        now</span>
+        <span class="dim">└─ ○  web-api   </span> <span class="dim">(personal)         2d</span>
+              <span class="dim">no usable accounts</span>
+      <span class="dim">────────────────────────────────────────────────────────</span>
+
+ <span class="dim">↑↓  navigate     enter  ⏳ loading accounts…     ?  help     ctrl+q  quit</span></pre>
+    </div>
+    <dl>
+      <dt>state glyphs</dt><dd>
+        <code style="color:#cfc26b">○</code> yellow = Loading or Refreshing (probe in flight / refresh in flight) ·
+        <code style="color:#7eb87a">●</code> green = Ready (fresh probe; account available for assignment) ·
+        <code style="color:#cf6171">⚠</code> red = Bailed (auth_status says logged-out, or refresh failed terminally; needs <code>/login</code>)
+      </dd>
+      <dt>click gate</dt><dd>Every project row downgrades to <code>Block</code> click intent while any account is non-terminal. Footer hint reads <code>⏳ loading accounts…</code> instead of the per-row spawn label. Once every account reaches Ready or Bailed, the gate lifts; rows un-dim and Enter resumes normal behavior.</dd>
+      <dt>per-project pool</dt><dd>A project's pool intersects its <code>[[orgs]].accounts</code> allow-list with the set of <code>Ready</code> accounts. Projects whose pool resolves to empty (every allowed account ended in <code>Bailed</code>) render a DIM <code>no usable accounts</code> sub-row and stay unclickable even after the gate lifts.</dd>
+      <dt>code</dt><dd><code>crates/forge-workspace/src/account.rs</code> (LoadingState enum + AccountStateMap.all_loaded) · <code>crates/forge-workspace/src/account_loader.rs</code> (per-account state machine) · <code>crates/forge-workspace/src/assignment_plan.rs</code> (deterministic <code>(project, label) -&gt; account</code> mapping) · <code>crates/forge-tui/src/ui/launchpad.rs</code> (chip row + effective_click_intent gate)</dd>
+      <dt>recovery</dt><dd>A 30 s background poll re-runs the loading flow for Bailed accounts. When <code>claude auth status</code> flips back to logged-in, the recovery poll transitions the account Bailed -&gt; Loading -&gt; Ready (or back to Bailed) and recomputes the assignment plan with a frozen overlay - existing sessions keep their boot-time account, only NEW sessions pick up the recovered account.</dd>
+    </dl>
+  </div>
+</div>
+
 <!-- ============================================================== -->
 <h2 class="section-title" id="chat">Chat - message types</h2>
 

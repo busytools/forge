@@ -59,6 +59,8 @@
 
 mod account;
 mod account_cache;
+mod account_loader;
+mod assignment_plan;
 mod config;
 mod domain_session;
 mod error;
@@ -72,14 +74,14 @@ pub mod ui;
 mod views;
 mod workspace;
 
-pub use account::UsageFetchStatus;
+pub use account::{LoadingState, UsageFetchStatus};
 pub use domain_session::DomainSession;
 pub use error::WorkspaceError;
 pub use protocol::{Command, DispatchError, PendingInteractionSlot, SessionUpdate, TurnErrorClass};
 pub use target::{ProjectKey, SessionKey, SessionTarget};
 pub use ui::{SpinnerStyle, UiSettings};
 pub use views::{ProjectView, SessionView};
-pub use workspace::{Workspace, resolve_lead_session};
+pub use workspace::{SessionChipInfo, SessionChipState, Workspace, resolve_lead_session};
 
 // MCP (peers / workers) public surface. The `mcp` module itself is
 // crate-private now; these flat re-exports expose only the types
