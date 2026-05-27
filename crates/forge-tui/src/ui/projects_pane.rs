@@ -364,13 +364,27 @@ fn append_project_rows(
         // the three signals so snapshot tests (which don't seed
         // cwd_raw on test UiSessions) and the production hot path
         // both highlight correctly.
+        //
+        // The third signal (`worker_match`) matters for **resumed
+        // workers** specifically: their `cwd_raw` carries the
+        // worktree path (claude chdir'd before writing the catalog
+        // row that the resume path reads) rather than the project
+        // root, and their JSONL is tagged under a per-worker project
+        // key in the catalog rather than the parent. Fresh-spawned
+        // workers accidentally pass `cwd_match` because their
+        // pre-Connect bucket still has `cwd_raw == project.path`,
+        // which is why the bug only surfaced after #225 fixed the
+        // resume session_key seed. Same family as #232.
         let is_active_project = active_session_key.as_ref().is_some_and(|k| {
             let cwd_match = app
                 .sessions
                 .get(k)
                 .is_some_and(|s| s.cwd_raw.as_str() == project_path_str.as_str());
             let catalog_match = project.sessions.iter().any(|s| s.session == *k);
-            cwd_match || catalog_match
+            let worker_match = app.workspace.as_ref().is_some_and(|ws| {
+                ws.list_live_workers(&project.key).iter().any(|w| w.session_key == *k)
+            });
+            cwd_match || catalog_match || worker_match
         });
         let live = live_session.or(synthetic).map(|(key, lifecycle)| {
             let badges = badges_for(&key);
@@ -2098,6 +2112,94 @@ mod tests {
         let any_triangle =
             lines.iter().any(|line| line.spans.iter().any(|s| s.content.contains('\u{25b3}')));
         assert!(!any_triangle, "focused worker with pending prompt must NOT flip to yellow △");
+    }
+
+    // ----------------------------------------------------------------
+    // #241: resumed-worker project-row highlight. Same family as #232.
+    // For resumed workers, cwd_raw carries the worktree path (not the
+    // project root) and the catalog tags the JSONL under a per-worker
+    // project key (not the parent). Both legacy is_active_project
+    // signals (cwd_match, catalog_match) miss this shape, so the
+    // project row would never highlight while focus is on a resumed
+    // worker. The third signal `worker_match` covers this case via
+    // workspace.list_live_workers(project_key).
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn project_row_highlights_when_active_session_is_a_resumed_worker() {
+        use crate::app::session::UiSession;
+        use forge_workspace::{ProjectKey, SessionKey, WorkerEntry};
+        use std::time::SystemTime;
+
+        let mut app = App::test_default();
+        let workspace = app.workspace.clone().expect("workspace stub");
+
+        let project_key = ProjectKey::new_for_test("forge");
+        let lead_session_key = SessionKey::from_session_id("lead-session-1");
+        let worker_session_key = SessionKey::from_session_id("worker-resume-session-1");
+
+        workspace.insert_live_worker(
+            &project_key,
+            WorkerEntry {
+                label: "reviewer".into(),
+                charter: "be sharp".into(),
+                session_key: worker_session_key.clone(),
+                status: forge_primitives::WorkerLiveness::Running,
+                spawned_at: SystemTime::UNIX_EPOCH,
+                spawned_by_session_id: "lead".into(),
+                needs_tag: false,
+                is_git_repo_at_spawn: false,
+            },
+        );
+
+        // Plant the lead's bucket so the project row has a live lead
+        // to render (production state when the user has a project
+        // open with at least one running session). Lead's cwd_raw
+        // matches the project path so live_session resolution picks
+        // it up - that's the LIVE branch (not the IDLE one) where
+        // is_active_project drives the row's highlight style.
+        let lead_bucket = app
+            .sessions
+            .entry(lead_session_key.clone())
+            .or_insert_with(|| UiSession::new(lead_session_key.clone()));
+        lead_bucket.cwd_raw = "~/Projects/forge".to_owned();
+
+        // Active session IS the worker, NOT the lead; mirrors the
+        // user pane-switching to a resumed worker. Worker's bucket
+        // has cwd_raw pointing at the worktree path (NOT the project
+        // root) so the cwd_match signal would miss.
+        let worker_bucket = app
+            .sessions
+            .entry(worker_session_key.clone())
+            .or_insert_with(|| UiSession::new(worker_session_key.clone()));
+        worker_bucket.cwd_raw = "/Users/test/Projects/forge/.claude/worktrees/reviewer".to_owned();
+        app.active_session_key = Some(worker_session_key.clone());
+
+        // ProjectView with NO catalog session matching the worker's
+        // session_key (mirrors the resumed-worker case: JSONL tagged
+        // under a per-worker project key, not the parent). This rules
+        // out the legacy catalog_match signal too.
+        let project =
+            ProjectView::new_for_test(project_key.clone(), "forge", "~/Projects/forge", Vec::new());
+
+        let area = Rect { x: 0, y: 0, width: 32, height: 30 };
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        append_project_rows(&mut lines, area, &mut app, std::slice::from_ref(&project));
+
+        // Focused project rows style the project name in RUST_ORANGE
+        // (see append_org_project_row's name_style branch). If the
+        // worker_match signal is missing, the row would render in the
+        // default-bold style and the project name span would not
+        // carry the accent foreground.
+        let highlighted = lines.iter().any(|line| {
+            line.spans
+                .iter()
+                .any(|s| s.content.contains("forge") && s.style.fg == Some(theme::RUST_ORANGE))
+        });
+        assert!(
+            highlighted,
+            "project row must highlight when active session is a resumed worker (cwd_raw + catalog both miss); got lines: {lines:?}",
+        );
     }
 
     // ----------------------------------------------------------------
