@@ -489,7 +489,8 @@ fn push_project_row(
 
     // Account chip: the assignment-plan slot for this project's lead
     // session. Populated once accounts finish loading + the plan
-    // computes. Width-conditional via `account_chip_spans`.
+    // computes. Padded to a fixed column (CHIP_COLUMN_WIDTH) so chips
+    // land at the same x across every project and worker row.
     let chip_info = app
         .workspace
         .as_ref()
@@ -499,13 +500,13 @@ fn push_project_row(
         });
     let (chip_spans, chip_width) = account_chip_spans(chip_info.as_ref());
 
-    // Column widths: name is the elastic part; chip and right share
-    // a fixed budget so the time column stays right-justified.
-    let name_width: usize = 22usize.saturating_sub(chip_width);
+    // Fixed column widths so rows align across projects + workers:
+    //   chrome (7) + name (PROJECT_NAME_WIDTH) + chip column (padded
+    //   to CHIP_COLUMN_WIDTH) + right (time).
+    let name_label = truncate_to(&row.project_name, PROJECT_NAME_WIDTH);
+    let name_pad = PROJECT_NAME_WIDTH.saturating_sub(name_label.chars().count());
+    let chip_col_pad = CHIP_COLUMN_WIDTH.saturating_sub(chip_width);
     let right_width: usize = 10;
-
-    let name_label = truncate_to(&row.project_name, name_width);
-    let name_pad = name_width.saturating_sub(name_label.chars().count());
     let right_label = truncate_to(&row.last_activity_label, right_width);
 
     let dim = Style::default().fg(theme::DIM);
@@ -536,10 +537,25 @@ fn push_project_row(
         Span::raw(" ".repeat(name_pad)),
     ];
     spans.extend(chip_spans);
+    spans.push(Span::raw(" ".repeat(chip_col_pad)));
     spans.push(Span::raw("  ".to_owned()));
     spans.push(Span::styled(format!("{right_label:>right_width$}"), dim));
     lines.push(Line::from(spans));
 }
+
+/// Project-row name column width. Fixed so the trailing chip column
+/// + time column land at the same x across every project row.
+const PROJECT_NAME_WIDTH: usize = 14;
+
+/// Worker-row name column width. Workers are indented 3 cells deeper
+/// (the worker subtree connector), so the name column is correspondingly
+/// narrower to keep the trailing chip column aligned with project rows.
+const WORKER_NAME_WIDTH: usize = 11;
+
+/// Chip column width — the leading-space + `(<account>)` chip pads to
+/// this width so the time column (project rows) lands at a fixed x.
+/// 13 = 1 space + 12 (CHIP_MAX_WIDTH in `account_chip_spans`).
+const CHIP_COLUMN_WIDTH: usize = 13;
 
 /// Append one row per declared team worker (from forge.toml's
 /// `team = [...]` for this project) directly below the project's
@@ -564,15 +580,16 @@ fn push_worker_rows(
         let tree_glyph = if is_last { "└─" } else { "├─" };
         let chip_info =
             app.workspace.as_ref().and_then(|ws| ws.session_chip_for(&project.key, label));
-        let (chip_spans, chip_width) = account_chip_spans(chip_info.as_ref());
-        let name_width: usize = 18usize.saturating_sub(chip_width.min(10));
-        let name_label = truncate_to(label, name_width);
-        let name_pad = name_width.saturating_sub(name_label.chars().count());
+        let (chip_spans, _chip_width) = account_chip_spans(chip_info.as_ref());
+        let name_label = truncate_to(label, WORKER_NAME_WIDTH);
+        let name_pad = WORKER_NAME_WIDTH.saturating_sub(name_label.chars().count());
 
-        // Indent enough so the worker tree connector hangs off the
-        // project row's name column (2 selection prefix + 2 project
-        // connector + 1 sp + 1 glyph + 1 sp = 7 cells), then `│  ` (3)
-        // as a vertical continuation, then `├─`/`└─` connector.
+        // Worker-row chrome: 2 (selection prefix) + 2 (`│ `) + 3
+        // (vertical continuation gap) + 2 (`├─`/`└─` tree connector)
+        // + 1 (sp) = 10 cells. Plus name column (WORKER_NAME_WIDTH),
+        // chip rendered after. Project-row chrome is only 7 cells +
+        // PROJECT_NAME_WIDTH (14) = 21 cells. So worker chrome+name
+        // = 10 + 11 = 21 — same trailing column for the chip.
         let mut spans: Vec<Span<'static>> = vec![
             Span::raw(" ".repeat(SELECTION_PREFIX_WIDTH)),
             Span::styled("│ ".to_owned(), dim),
