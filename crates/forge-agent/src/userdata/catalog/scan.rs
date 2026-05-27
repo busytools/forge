@@ -490,12 +490,17 @@ pub fn get_session_messages(
 // ---------------------------------------------------------------------------
 
 /// Head / tail snapshot of a session file — enough to recover all
-/// [`SDKSessionInfo`] fields without a full scan.
+/// [`SDKSessionInfo`] fields without a full scan. The `tag` field is
+/// populated by a separate streaming line-scan because tag rows can
+/// appear anywhere in the file (start-of-file at spawn, mid-file via
+/// `/new` re-tag) and the head + tail windows miss both cases on
+/// large transcripts.
 struct LiteSessionFile {
     mtime: u64,
     size: u64,
     head: String,
     tail: String,
+    tag: Option<String>,
 }
 
 /// Open a session file, stat it, read at most [`LITE_READ_BUF_SIZE`]
@@ -568,7 +573,43 @@ fn read_session_lite(path: &Path) -> Option<LiteSessionFile> {
         String::from_utf8_lossy(&tail_bytes).into_owned()
     };
 
-    Some(LiteSessionFile { mtime, size, head, tail })
+    let tag = match file.seek(SeekFrom::Start(0)) {
+        Ok(_) => find_session_tag(BufReader::new(&mut file)),
+        Err(e) => {
+            tracing::debug!(target: crate::logging::targets::CATALOG_SCAN, path = %path.display(), error = %e, step = "seek_tag_scan", "lite-read tag-scan failed; resume will treat as untagged");
+            None
+        }
+    };
+
+    Some(LiteSessionFile { mtime, size, head, tail, tag })
+}
+
+/// Line-iterate a JSONL stream and return the value of the LAST
+/// `{"type":"tag"}` row's `"tag"` field. Empty strings are filtered.
+/// Returns `None` when no tag row is present or any read errors out.
+///
+/// Last-wins semantics preserve PR #167: a `/new` re-tag appended
+/// later in the transcript supersedes the original spawn tag.
+fn find_session_tag<R: BufRead>(reader: R) -> Option<String> {
+    let mut last_tag: Option<String> = None;
+    for line in reader.lines() {
+        let line = match line {
+            Ok(l) => l,
+            Err(e) => {
+                tracing::debug!(target: crate::logging::targets::CATALOG_SCAN, error = %e, step = "tag_scan_line", "lite-read tag-scan line read failed; ending scan with last seen tag");
+                break;
+            }
+        };
+        if !line.starts_with("{\"type\":\"tag\"") {
+            continue;
+        }
+        if let Some(tag) = extract_last_json_string_field(&line, "tag")
+            && !tag.is_empty()
+        {
+            last_tag = Some(tag);
+        }
+    }
+    last_tag
 }
 
 /// Find the first byte offset where `needle` begins in `haystack`.
@@ -801,14 +842,10 @@ fn parse_session_info_from_lite(
     let git_branch = extract_last_json_string_field(tail, "gitBranch")
         .or_else(|| extract_json_string_field(head, "gitBranch"));
     let cwd = extract_json_string_field(head, "cwd").or_else(|| project_path.map(str::to_string));
-    // Scope tag extraction to `{"type":"tag"}` lines — a bare scan for
-    // `"tag"` would match tool_use inputs (git tag, Docker tags, etc.).
-    let tag = tail
-        .lines()
-        .rev()
-        .find(|l| l.starts_with("{\"type\":\"tag\""))
-        .and_then(|l| extract_last_json_string_field(l, "tag"))
-        .filter(|v| !v.is_empty());
+    // Tag is pre-extracted by `read_session_lite` via a full-file
+    // line-scan; neither head nor tail alone covers every position
+    // a `{"type":"tag"}` row can land at.
+    let tag = lite.tag.clone();
     let created_at = extract_json_string_field(first_line, "timestamp")
         .and_then(|ts| parse_rfc3339_ms(&ts).ok());
 
@@ -934,7 +971,7 @@ mod tests {
     #[test]
     fn parse_session_info_skips_sidechain() {
         let head = "{\"isSidechain\":true,\"type\":\"user\"}\n".to_string();
-        let lite = LiteSessionFile { mtime: 0, size: 1, head: head.clone(), tail: head };
+        let lite = LiteSessionFile { mtime: 0, size: 1, head: head.clone(), tail: head, tag: None };
         assert!(parse_session_info_from_lite("abc", &lite, None).is_none());
     }
 
@@ -946,6 +983,7 @@ mod tests {
             size: content.len() as u64,
             head: content.clone(),
             tail: content,
+            tag: Some("meta".to_string()),
         };
         // No custom_title, no aiTitle, no lastPrompt, no summary,
         // no first_prompt → skipped.
@@ -963,6 +1001,7 @@ mod tests {
             size: content.len() as u64,
             head: content.clone(),
             tail: content,
+            tag: Some("mytag".to_string()),
         };
         let info = parse_session_info_from_lite("abc", &lite, None).expect("some");
         assert_eq!(info.first_prompt.as_deref(), Some("hello"));
@@ -974,21 +1013,13 @@ mod tests {
     }
 
     #[test]
-    fn parse_session_info_ignores_tag_on_tool_use_lines() {
+    fn find_session_tag_ignores_tag_on_tool_use_lines() {
         // A git-tag tool_use shouldn't be picked up as a session tag —
         // the `"tag"` string appears but the line isn't `{"type":"tag"`.
         let content = r#"{"type":"user","message":{"content":"hi"}}
 {"type":"assistant","message":{"content":[{"type":"tool_use","input":{"command":"git tag","tag":"v1.0"}}]}}
-"#
-        .to_string();
-        let lite = LiteSessionFile {
-            mtime: 0,
-            size: content.len() as u64,
-            head: content.clone(),
-            tail: content,
-        };
-        let info = parse_session_info_from_lite("abc", &lite, None).expect("some");
-        assert_eq!(info.tag, None);
+"#;
+        assert_eq!(find_session_tag(std::io::Cursor::new(content)), None);
     }
 
     #[test]
@@ -1002,6 +1033,7 @@ mod tests {
             size: content.len() as u64,
             head: content.clone(),
             tail: content,
+            tag: None,
         };
         let info = parse_session_info_from_lite("abc", &lite, None).expect("some");
         assert_eq!(info.summary, "Curated");
@@ -1119,6 +1151,7 @@ mod tests {
             size: content.len() as u64,
             head: content.clone(),
             tail: content,
+            tag: Some("forge:worker:reviewer".to_string()),
         };
         let info = parse_session_info_from_lite("abc", &lite, None).expect("some");
         assert_eq!(info.tag.as_deref(), Some("forge:worker:reviewer"));
@@ -1156,5 +1189,104 @@ mod tests {
         assert_eq!(apply_limit_offset(msgs.clone(), Some(2), 1).len(), 2);
         assert_eq!(apply_limit_offset(msgs.clone(), Some(10), 3).len(), 1);
         assert_eq!(apply_limit_offset(msgs, Some(0), 0).len(), 0);
+    }
+
+    // -----------------------------------------------------------------
+    // Tag-scan regression tests.
+    //
+    // The tag row is written ONCE at session start and persists for the
+    // life of the JSONL; PR #167's `/new` flow can re-write a tag
+    // mid-file. The lite head/tail window misses both cases on large
+    // transcripts. These tests exercise the full-file scan path via
+    // `read_session_info`.
+    // -----------------------------------------------------------------
+
+    fn write_session_jsonl(dir: &Path, name: &str, body: &str) -> PathBuf {
+        let path = dir.join(format!("{name}.jsonl"));
+        fs::write(&path, body).unwrap();
+        path
+    }
+
+    #[test]
+    fn read_session_info_finds_tag_at_start_of_large_file() {
+        // The bug shape: tag row is written at session start and sits
+        // permanently near byte 0. Tail-only extraction scans only
+        // the last LITE_READ_BUF_SIZE bytes, so for any transcript
+        // > ~130 KB the tag falls outside the tail window and resume
+        // sees `info.tag = None`. Build a transcript well past two
+        // window-widths so the bug is unambiguous.
+        let window = usize::try_from(LITE_READ_BUF_SIZE).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let mut body = String::new();
+        body.push_str(
+            "{\"type\":\"user\",\"timestamp\":\"2026-04-22T00:00:00.000Z\",\"message\":{\"content\":\"hello\"}}\n",
+        );
+        body.push_str("{\"type\":\"tag\",\"tag\":\"forge:worker:reviewer\"}\n");
+        let filler = "{\"type\":\"assistant\",\"message\":{\"content\":\"x\"}}\n";
+        while body.len() < window * 3 {
+            body.push_str(filler);
+        }
+        let path = write_session_jsonl(tmp.path(), "abc", &body);
+
+        let info = read_session_info(&path).expect("session info parsed");
+        assert_eq!(info.tag.as_deref(), Some("forge:worker:reviewer"));
+    }
+
+    #[test]
+    fn read_session_info_finds_tag_mid_file() {
+        // The `/new` case (PR #167): user fires `/new` mid-session and
+        // the CLI appends a fresh tag row at the current cursor. For a
+        // large transcript that's neither head nor tail, it lands in
+        // the middle, where neither window sees it.
+        let window = usize::try_from(LITE_READ_BUF_SIZE).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let mut body = String::new();
+        body.push_str(
+            "{\"type\":\"user\",\"timestamp\":\"2026-04-22T00:00:00.000Z\",\"message\":{\"content\":\"hello\"}}\n",
+        );
+        let filler = "{\"type\":\"assistant\",\"message\":{\"content\":\"x\"}}\n";
+        // Push past the head window with filler, then plant the tag.
+        while body.len() < window + 4_096 {
+            body.push_str(filler);
+        }
+        body.push_str("{\"type\":\"tag\",\"tag\":\"forge:worker:tester\"}\n");
+        // Then push past the tail window with more filler so the tag
+        // sits in the middle region neither head nor tail covers.
+        while body.len() < window * 3 {
+            body.push_str(filler);
+        }
+        let path = write_session_jsonl(tmp.path(), "abc", &body);
+
+        let info = read_session_info(&path).expect("session info parsed");
+        assert_eq!(info.tag.as_deref(), Some("forge:worker:tester"));
+    }
+
+    #[test]
+    fn read_session_info_picks_last_tag_when_multiple() {
+        // Preserve PR #167 semantics: when the JSONL carries multiple
+        // tag rows (original spawn tag + later `/new` re-tag), the
+        // most recent one wins. File must be larger than two window
+        // widths so neither tag lands in head or tail, otherwise the
+        // old tail-only path would coincidentally pick the right one
+        // and mask a behavioural regression.
+        let window = usize::try_from(LITE_READ_BUF_SIZE).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let mut body = String::new();
+        body.push_str(
+            "{\"type\":\"user\",\"timestamp\":\"2026-04-22T00:00:00.000Z\",\"message\":{\"content\":\"hi\"}}\n",
+        );
+        body.push_str("{\"type\":\"tag\",\"tag\":\"first\"}\n");
+        let filler = "{\"type\":\"assistant\",\"message\":{\"content\":\"x\"}}\n";
+        while body.len() < window + 4_096 {
+            body.push_str(filler);
+        }
+        body.push_str("{\"type\":\"tag\",\"tag\":\"second\"}\n");
+        while body.len() < window * 3 {
+            body.push_str(filler);
+        }
+        let path = write_session_jsonl(tmp.path(), "abc", &body);
+
+        let info = read_session_info(&path).expect("session info parsed");
+        assert_eq!(info.tag.as_deref(), Some("second"));
     }
 }
