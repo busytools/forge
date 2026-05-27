@@ -226,11 +226,14 @@ fn apply_timer_tick(app: &mut App) {
     if !should_refresh(session) {
         return;
     }
-    // For git-repo worker sessions, `cwd_raw` carries the project
-    // root (pre-fork value from `AgentEvent::Connected.cwd`); the
-    // worker actually runs inside `<root>/.claude/worktrees/<label>/`.
-    // Resolve the worktree-aware cwd via the workspace so the scan
-    // lands on the worker's branch, not the lead's. The workspace
+    // For git-repo worker sessions the scan must run inside the
+    // `<project_root>/.claude/worktrees/<label>` fork, but `cwd_raw`
+    // varies by lifecycle: fresh spawns carry the project root
+    // (the pre-fork value from `AgentEvent::Connected.cwd`), resumed
+    // sessions carry the worktree path itself (claude chdir'd
+    // before writing the catalog row that the resume path reads).
+    // `git_scan_cwd_for_session` anchors on the worker's project_key
+    // so both shapes converge on the same final path. The workspace
     // is supposed to be Some after init (MVVM contract); a None
     // here is a structural break - trip the debug_assert and warn
     // the release path so the silent fallback to `cwd_raw_path`

@@ -278,10 +278,12 @@ pub fn open_with_target(app: &mut App, target: String) {
 /// Resolve the cwd a diff scan should run against for the active
 /// session. Workers spawned in a git repo run inside claude's
 /// `--worktree <label>` fork at
-/// `<project_root>/.claude/worktrees/<label>`, but `cwd_raw` carries
-/// the lead's project root because the worker bucket is forked from
-/// the pre-Connect `AgentEvent::Connected.cwd`. Mirror
-/// `git_diff::apply_timer_tick`'s resolution so the overlay opens
+/// `<project_root>/.claude/worktrees/<label>`, but `cwd_raw` varies
+/// by lifecycle: fresh spawns carry the project root, resumed
+/// sessions carry the worktree path itself.
+/// `git_scan_cwd_for_session` anchors on the worker's project_key so
+/// both lifecycle states converge on the same final path. Mirror its
+/// call from `git_diff::apply_timer_tick` so the overlay opens
 /// against the worker's branch, not the lead's. For lead sessions,
 /// non-git workers, or any session not registered as a live worker,
 /// `git_scan_cwd_for_session` returns `cwd_raw` unchanged.
@@ -1992,7 +1994,16 @@ mod tests {
         let workspace =
             app.workspace.clone().expect("App::test_default seeds a workspace via testing_stub");
 
-        let project_key = ProjectKey::new_for_test("forge");
+        // Seed a loaded project so `git_scan_cwd_for_session` can
+        // resolve the project_root via `project_root_for_key`. The
+        // post-#232 implementation composes the worktree path from
+        // the project_root rather than `cwd_raw`, so a worker entry
+        // without a matching project would now fall back to cwd_raw.
+        let project_root = "/tmp/project";
+        workspace.seed_test_project_with_team("forge", project_root, &[]);
+        let project_key = ProjectKey::new_for_test(
+            forge_workspace::userdata::catalog::scan::project_key_for_directory(Some(project_root)),
+        );
         let worker_key = SessionKey::from_session_id("worker-uuid");
         workspace.insert_live_worker(
             &project_key,
@@ -2009,11 +2020,11 @@ mod tests {
         );
 
         let mut session = crate::app::session::UiSession::new(worker_key.clone());
-        session.cwd_raw = "/tmp/project".into();
+        session.cwd_raw = project_root.into();
         app.sessions.insert(worker_key.clone(), session);
         app.active_session_key = Some(worker_key);
 
-        let resolved = resolve_active_diff_cwd(&app, "/tmp/project");
+        let resolved = resolve_active_diff_cwd(&app, project_root);
         assert_eq!(resolved, PathBuf::from("/tmp/project/.claude/worktrees/implementer"));
     }
 
