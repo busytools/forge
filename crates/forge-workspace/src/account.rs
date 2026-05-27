@@ -35,7 +35,7 @@
 
 use std::path::PathBuf;
 
-use forge_primitives::usage::UsageSnapshot;
+use forge_primitives::usage::{UsageSnapshot, UsageWindow};
 
 use crate::config::LoadedAccount;
 
@@ -109,6 +109,17 @@ pub(crate) struct AccountState {
     /// from `consecutive_failures` so a real `RateLimited` series
     /// doesn't drive the auth-recovery clear (and vice versa).
     pub consecutive_unauthorized: u32,
+    /// One-shot arming flag for the `has_just_cleared_cap_window`
+    /// scheduler hook. Without it, a stale-reset snapshot paired with
+    /// sustained probe failure would re-trigger the override every
+    /// poll cycle, defeating the exponential backoff schedule -
+    /// forge would hammer Anthropic's `/api/oauth/usage` endpoint once
+    /// per minute through a multi-hour outage instead of backing off.
+    /// `set_usage` arms it (a fresh snapshot earns one override
+    /// attempt once its `resets_at` passes); `disarm_override` clears
+    /// it after the scheduler fires an override. False until the
+    /// first successful probe lands a snapshot.
+    pub override_armed: bool,
 }
 
 /// Number of consecutive `Unauthorized` / `Expired` probe results
@@ -160,6 +171,7 @@ impl AccountStateMap {
                     next_probe_at: None,
                     consecutive_failures: 0,
                     consecutive_unauthorized: 0,
+                    override_armed: false,
                 },
             );
         }
@@ -228,6 +240,24 @@ impl AccountStateMap {
             state.next_probe_at = None;
             state.consecutive_failures = 0;
             state.consecutive_unauthorized = 0;
+            // Arm the scheduler-hook override: this fresh snapshot
+            // earns ONE probe attempt once its `resets_at` passes.
+            // Without re-arming, the hook stays disarmed forever after
+            // its first fire and the stale-cache bar never gets a fresh
+            // probe even on a healthy account.
+            state.override_armed = true;
+        }
+    }
+
+    /// Disarm the scheduler hook for `key` after firing an override
+    /// probe attempt. One-shot semantics: the hook fires once per
+    /// arming (i.e. once per fresh snapshot). Subsequent stale-reset
+    /// state must wait for the next successful probe (which re-arms
+    /// via `set_usage`) or until the existing backoff timer
+    /// (`next_probe_at`) elapses.
+    pub fn disarm_override(&mut self, key: &AccountKey) {
+        if let Some(state) = self.by_key.get_mut(key) {
+            state.override_armed = false;
         }
     }
 
@@ -295,6 +325,58 @@ impl AccountStateMap {
     pub fn should_probe_now(&self, key: &AccountKey) -> bool {
         let Some(state) = self.by_key.get(key) else { return true };
         state.next_probe_at.is_none_or(|t| t <= std::time::Instant::now())
+    }
+
+    /// Combined scheduler signal: probe `key` on the current cycle if
+    /// the normal backoff gate (`should_probe_now`) is open OR the
+    /// one-shot reset-clear override hook (`has_just_cleared_cap_window`)
+    /// is firing. Both sides of the OR carry through to the workspace
+    /// poller, which calls this method to decide which accounts to
+    /// probe each tick. Centralising the OR here keeps a future
+    /// refactor from accidentally dropping one half of the signal -
+    /// the unit test pins the truth table that the scheduler relies
+    /// on, regardless of whether the call site spells out both
+    /// predicates inline.
+    pub fn scheduler_should_probe(&self, key: &AccountKey) -> bool {
+        self.should_probe_now(key) || self.has_just_cleared_cap_window(key)
+    }
+
+    /// `true` when at least one cached window shows the account just
+    /// transitioned out of its cap (utilization at-or-above 100%,
+    /// `resets_at` now in the past) AND the override hook is armed.
+    /// The scheduler ORs this with `should_probe_now` so a fresh probe
+    /// lands on the next poll cycle after the reset moment, instead of
+    /// waiting through the remainder of an active backoff window.
+    /// Without the hook, an account 429'd with a multi-hour
+    /// `Retry-After` keeps painting the stale "100%" bar for hours
+    /// past the actual reset because the next probe is gated until the
+    /// backoff timer elapses.
+    ///
+    /// The `override_armed` gate enforces one-shot semantics: each
+    /// successful probe arms the hook exactly once, and the scheduler
+    /// disarms it after firing. A persistently failing probe series
+    /// won't keep tripping the override every cycle.
+    pub fn has_just_cleared_cap_window(&self, key: &AccountKey) -> bool {
+        let Some(state) = self.by_key.get(key) else {
+            return false;
+        };
+        if !state.override_armed {
+            return false;
+        }
+        let Some(usage) = state.usage.as_ref() else {
+            return false;
+        };
+        let now = std::time::SystemTime::now();
+        let windows = [
+            usage.five_hour.as_ref(),
+            usage.seven_day.as_ref(),
+            usage.seven_day_opus.as_ref(),
+            usage.seven_day_sonnet.as_ref(),
+        ];
+        windows
+            .into_iter()
+            .flatten()
+            .any(|w| w.utilization >= 100.0 && w.resets_at.is_some_and(|when| when <= now))
     }
 
     /// Look up the cached usage snapshot for `key`. `None` when the
@@ -423,12 +505,28 @@ fn tier_of(usage: Option<&UsageSnapshot>, last_error: Option<UsageFetchStatus>) 
     u8::from(saturated || probe_blocked)
 }
 
-/// True when either window has hit 100% utilisation. Such an account
-/// will immediately trip the API rate limit on the next request, so
-/// it's excluded from the "available" tier and only used as a
-/// fallback when every pinned account is rate-limited.
+/// True when ANY window in the snapshot is currently at-or-beyond
+/// the plan cap AND its scheduled reset has not yet passed. Such an
+/// account will immediately trip the API rate limit on the next
+/// request, so it's excluded from the "available" tier and only used
+/// as a fallback when every pinned account is rate-limited.
+///
+/// Each window's predicate (`UsageWindow::is_currently_limited`) gates
+/// on `resets_at` so a stale cached snapshot from before the window
+/// reset doesn't keep the account permanently classified as
+/// rate-limited. The pair "utilization >= 100% AND resets_at > now"
+/// is what makes the classification self-clearing across the reset
+/// boundary - earlier shapes that checked utilization alone needed
+/// a separate cache-invalidation pathway, which has churned through
+/// several abandoned designs.
 fn is_rate_limited(snapshot: &UsageSnapshot) -> bool {
-    five_hour_util(snapshot) >= 100.0 || seven_day_util(snapshot) >= 100.0
+    let windows = [
+        snapshot.five_hour.as_ref(),
+        snapshot.seven_day.as_ref(),
+        snapshot.seven_day_opus.as_ref(),
+        snapshot.seven_day_sonnet.as_ref(),
+    ];
+    windows.into_iter().flatten().any(UsageWindow::is_currently_limited)
 }
 
 /// Per-account exponential backoff schedule for usage-probe
@@ -486,18 +584,28 @@ mod tests {
         }
     }
 
+    /// Default snapshot fixture used by every account-picker test. The
+    /// `resets_at` value matters: under the resets_at-driven predicate,
+    /// a window at 100% utilization with `resets_at = None` is NOT
+    /// classified as rate-limited (None means "no future reset to clear
+    /// this", which would strand the account forever). Real probes
+    /// always emit a future `resets_at` alongside the percentage, so
+    /// the fixture mirrors that by defaulting to a reset 1 hour out.
+    /// The few tests that need an EXPIRED reset (the staleness case)
+    /// build their snapshot inline rather than through this helper.
     fn snapshot(five_hour: Option<f64>, seven_day: Option<f64>) -> UsageSnapshot {
+        let future = SystemTime::now() + std::time::Duration::from_secs(3600);
         UsageSnapshot {
             source: UsageSourceKind::Oauth,
             fetched_at: SystemTime::UNIX_EPOCH,
             five_hour: five_hour.map(|util| UsageWindow {
                 utilization: util,
-                resets_at: None,
+                resets_at: Some(future),
                 reset_description: None,
             }),
             seven_day: seven_day.map(|util| UsageWindow {
                 utilization: util,
-                resets_at: None,
+                resets_at: Some(future),
                 reset_description: None,
             }),
             seven_day_opus: None,
@@ -876,6 +984,345 @@ mod tests {
         assert!(is_rate_limited(&snapshot(Some(0.0), Some(100.0))));
         assert!(is_rate_limited(&snapshot(Some(100.0), Some(100.0))));
         assert!(!is_rate_limited(&snapshot(Some(99.9), Some(99.9))));
+    }
+
+    /// Build a snapshot with explicit `resets_at` values per window. The
+    /// public `snapshot()` helper hides this for the common test case
+    /// (resets in the future); this variant lets the
+    /// staleness/transition tests drive the resets_at clock.
+    fn snapshot_with_resets(
+        five_hour: Option<(f64, Option<SystemTime>)>,
+        seven_day: Option<(f64, Option<SystemTime>)>,
+    ) -> UsageSnapshot {
+        UsageSnapshot {
+            source: UsageSourceKind::Oauth,
+            fetched_at: SystemTime::UNIX_EPOCH,
+            five_hour: five_hour.map(|(util, resets_at)| UsageWindow {
+                utilization: util,
+                resets_at,
+                reset_description: None,
+            }),
+            seven_day: seven_day.map(|(util, resets_at)| UsageWindow {
+                utilization: util,
+                resets_at,
+                reset_description: None,
+            }),
+            seven_day_opus: None,
+            seven_day_sonnet: None,
+            extra_usage: None,
+        }
+    }
+
+    #[test]
+    fn is_rate_limited_false_when_cached_window_reset_already_passed() {
+        // Stale cached snapshot: probe reported 100% an hour ago but
+        // the reset moment has come and gone. Predicate must return
+        // false so the rotation re-considers the account WITHOUT
+        // waiting for a fresh probe to overwrite the cache.
+        let past = SystemTime::now() - std::time::Duration::from_secs(60);
+        let snap = snapshot_with_resets(Some((100.0, Some(past))), Some((50.0, Some(past))));
+        assert!(!is_rate_limited(&snap), "stale 100% reading must not strand the account");
+    }
+
+    #[test]
+    fn is_rate_limited_true_when_only_one_window_is_capped_and_still_in_window() {
+        // 5h at 100% + still in window; 7d below cap. Either window
+        // can keep the account out of the pool while it's in its
+        // hold-down period.
+        let future = SystemTime::now() + std::time::Duration::from_secs(60);
+        let snap = snapshot_with_resets(Some((100.0, Some(future))), Some((30.0, Some(future))));
+        assert!(is_rate_limited(&snap));
+    }
+
+    /// Build a snapshot exercising the opus-specific 7-day window.
+    /// Max-plan accounts hit the opus cap independently of the
+    /// shared 7-day envelope, and `is_rate_limited` must walk every
+    /// window in the four-tuple - a future short-circuit on
+    /// `seven_day` would silently break Max-plan classification.
+    fn opus_only_capped_snapshot(util: f64, resets_at: Option<SystemTime>) -> UsageSnapshot {
+        UsageSnapshot {
+            source: UsageSourceKind::Oauth,
+            fetched_at: SystemTime::UNIX_EPOCH,
+            five_hour: Some(UsageWindow {
+                utilization: 30.0,
+                resets_at: Some(SystemTime::now() + std::time::Duration::from_secs(3600)),
+                reset_description: None,
+            }),
+            seven_day: Some(UsageWindow {
+                utilization: 30.0,
+                resets_at: Some(SystemTime::now() + std::time::Duration::from_secs(3600)),
+                reset_description: None,
+            }),
+            seven_day_opus: Some(UsageWindow {
+                utilization: util,
+                resets_at,
+                reset_description: None,
+            }),
+            seven_day_sonnet: None,
+            extra_usage: None,
+        }
+    }
+
+    /// Sister of `opus_only_capped_snapshot` for the sonnet 7-day
+    /// window. Same rationale: a sonnet-only cap must bubble through
+    /// `is_rate_limited` even when no other window is at the limit.
+    fn sonnet_only_capped_snapshot(util: f64, resets_at: Option<SystemTime>) -> UsageSnapshot {
+        UsageSnapshot {
+            source: UsageSourceKind::Oauth,
+            fetched_at: SystemTime::UNIX_EPOCH,
+            five_hour: Some(UsageWindow {
+                utilization: 30.0,
+                resets_at: Some(SystemTime::now() + std::time::Duration::from_secs(3600)),
+                reset_description: None,
+            }),
+            seven_day: Some(UsageWindow {
+                utilization: 30.0,
+                resets_at: Some(SystemTime::now() + std::time::Duration::from_secs(3600)),
+                reset_description: None,
+            }),
+            seven_day_opus: None,
+            seven_day_sonnet: Some(UsageWindow {
+                utilization: util,
+                resets_at,
+                reset_description: None,
+            }),
+            extra_usage: None,
+        }
+    }
+
+    #[test]
+    fn is_rate_limited_fires_on_opus_only_capped_window() {
+        // Max-plan reality: shared 5h + 7d windows healthy, opus-7d
+        // at cap. The picker must classify as rate-limited or the
+        // account keeps getting picked and trips API 429s.
+        let future = SystemTime::now() + std::time::Duration::from_secs(60);
+        let snap = opus_only_capped_snapshot(100.0, Some(future));
+        assert!(is_rate_limited(&snap), "opus 7d cap (alone) must be detected");
+    }
+
+    #[test]
+    fn is_rate_limited_fires_on_sonnet_only_capped_window() {
+        // Symmetry with opus: sonnet-7d at cap must also bubble up.
+        let future = SystemTime::now() + std::time::Duration::from_secs(60);
+        let snap = sonnet_only_capped_snapshot(100.0, Some(future));
+        assert!(is_rate_limited(&snap), "sonnet 7d cap (alone) must be detected");
+    }
+
+    #[test]
+    fn is_rate_limited_false_when_opus_capped_but_reset_passed() {
+        // Stale opus-window snapshot - resets_at has come and gone.
+        // Must classify as NOT rate-limited so the picker reconsiders
+        // the account; the same self-clearing applies per-window.
+        let past = SystemTime::now() - std::time::Duration::from_secs(60);
+        let snap = opus_only_capped_snapshot(100.0, Some(past));
+        assert!(!is_rate_limited(&snap), "stale opus window must self-clear like any other");
+    }
+
+    #[test]
+    fn is_rate_limited_false_when_window_at_cap_but_no_reset_scheduled() {
+        // None means "no scheduled reset" - we cannot prove the limit
+        // is still in effect. Treating it as limited would forever
+        // strand the account on a single bad cached reading.
+        let snap = snapshot_with_resets(Some((100.0, None)), Some((100.0, None)));
+        assert!(!is_rate_limited(&snap), "None resets_at must not classify as limited");
+    }
+
+    #[test]
+    fn has_just_cleared_cap_window_true_when_cached_window_reset_passed() {
+        // Cache snapshot has util 100% with resets_at in the past:
+        // the scheduler hook must fire so a fresh probe overwrites
+        // the stale bar.
+        let past = SystemTime::now() - std::time::Duration::from_secs(60);
+        let stale = snapshot_with_resets(Some((100.0, Some(past))), Some((30.0, Some(past))));
+        let mut map = AccountStateMap::new(&[make_account("Gateway")]);
+        let k = AccountKey("Gateway".to_owned());
+        map.set_usage(&k, stale);
+        assert!(map.has_just_cleared_cap_window(&k));
+    }
+
+    #[test]
+    fn has_just_cleared_cap_window_false_when_window_still_in_cap() {
+        // Cap window still active: hook must not fire (the existing
+        // `should_probe_now` gate covers normal cadence).
+        let future = SystemTime::now() + std::time::Duration::from_secs(60);
+        let live = snapshot_with_resets(Some((100.0, Some(future))), Some((30.0, Some(future))));
+        let mut map = AccountStateMap::new(&[make_account("Gateway")]);
+        let k = AccountKey("Gateway".to_owned());
+        map.set_usage(&k, live);
+        assert!(!map.has_just_cleared_cap_window(&k));
+    }
+
+    #[test]
+    fn has_just_cleared_cap_window_false_when_no_snapshot_cached() {
+        // Cold cache - nothing to compare against. Hook returns false;
+        // the normal cold-cache `should_probe_now == true` already
+        // schedules the first probe.
+        let map = AccountStateMap::new(&[make_account("Gateway")]);
+        assert!(!map.has_just_cleared_cap_window(&AccountKey("Gateway".to_owned())));
+    }
+
+    #[test]
+    fn has_just_cleared_cap_window_false_when_below_cap() {
+        // Below-cap snapshot with a past resets_at: NOT a freshly
+        // cleared cap, just a stale-but-irrelevant timestamp. The
+        // hook only cares about the at-cap transition.
+        let past = SystemTime::now() - std::time::Duration::from_secs(60);
+        let snap = snapshot_with_resets(Some((50.0, Some(past))), Some((30.0, Some(past))));
+        let mut map = AccountStateMap::new(&[make_account("Gateway")]);
+        let k = AccountKey("Gateway".to_owned());
+        map.set_usage(&k, snap);
+        assert!(!map.has_just_cleared_cap_window(&k));
+    }
+
+    #[test]
+    fn override_disarms_after_firing_and_does_not_refire_until_rearmed() {
+        // Setup mirrors the production sustained-failure shape: a
+        // stale cached snapshot (util=100, resets_at in the past)
+        // plus an active backoff timer from a recent 429. Without
+        // the disarm gate, every poll cycle would re-fire the hook
+        // and hammer Anthropic through the entire backoff window.
+        let past = SystemTime::now() - std::time::Duration::from_secs(60);
+        let stale = snapshot_with_resets(Some((100.0, Some(past))), None);
+        let mut map = AccountStateMap::new(&[make_account("Gateway")]);
+        let k = AccountKey("Gateway".to_owned());
+        map.set_usage(&k, stale);
+        // Push next_probe_at into the future so should_probe_now is
+        // false: this is the "in backoff" state the scheduler hook is
+        // meant to override.
+        map.set_last_error(
+            &k,
+            UsageFetchStatus::RateLimited,
+            Some(std::time::Duration::from_secs(3000)),
+        );
+        assert!(!map.should_probe_now(&k), "backoff active");
+        assert!(map.has_just_cleared_cap_window(&k), "hook fires while armed");
+
+        // Scheduler picks up the account via the hook + fires its
+        // override probe; disarm runs.
+        map.disarm_override(&k);
+        assert!(!map.has_just_cleared_cap_window(&k), "disarmed; no second override this cycle");
+        assert!(!map.should_probe_now(&k), "backoff still active");
+        // Combined scheduler signal: neither predicate fires - the
+        // account waits for the backoff timer to elapse.
+        assert!(
+            !map.should_probe_now(&k) && !map.has_just_cleared_cap_window(&k),
+            "scheduler must respect backoff once the override has been consumed",
+        );
+    }
+
+    #[test]
+    fn fresh_set_usage_rearms_override_for_next_reset_boundary() {
+        // After the override fires + disarms once, a NEW successful
+        // probe (set_usage) must re-arm the hook so future stale-reset
+        // boundaries can still trigger their one-shot override.
+        let past = SystemTime::now() - std::time::Duration::from_secs(60);
+        let stale = snapshot_with_resets(Some((100.0, Some(past))), None);
+        let mut map = AccountStateMap::new(&[make_account("Gateway")]);
+        let k = AccountKey("Gateway".to_owned());
+        map.set_usage(&k, stale.clone());
+        map.disarm_override(&k);
+        assert!(!map.has_just_cleared_cap_window(&k), "disarmed");
+
+        // A fresh probe lands - even if the snapshot is STILL
+        // stale-reset, the hook re-arms because set_usage represents
+        // a brand-new probe attempt's success.
+        map.set_usage(&k, stale);
+        assert!(map.has_just_cleared_cap_window(&k), "fresh set_usage re-arms the hook");
+    }
+
+    #[test]
+    fn override_not_armed_on_construction_so_hook_skips_cold_accounts() {
+        // Without an arming step, a brand-new AccountStateMap entry
+        // must NOT fire the hook even if some hypothetical stale
+        // snapshot were planted manually. Cold accounts are picked up
+        // via cold-cache `should_probe_now == true`, not the override.
+        let map = AccountStateMap::new(&[make_account("Gateway")]);
+        let k = AccountKey("Gateway".to_owned());
+        assert!(!map.has_just_cleared_cap_window(&k), "no arm = no override");
+    }
+
+    // -------------------------------------------------------------
+    // Scheduler OR truth table - pins the combined signal the
+    // workspace poller relies on. A future refactor that swaps the
+    // OR for AND or drops one half loses the behavior with CI green
+    // unless this table covers it.
+    // -------------------------------------------------------------
+
+    #[test]
+    fn scheduler_should_probe_fires_via_should_probe_now_alone() {
+        // Cold-cache account: no failures yet, no snapshot. The normal
+        // `should_probe_now` returns true (next_probe_at is None);
+        // the hook returns false (no snapshot to override against).
+        // OR result: true.
+        let map = AccountStateMap::new(&[make_account("Gateway")]);
+        let k = AccountKey("Gateway".to_owned());
+        assert!(map.should_probe_now(&k));
+        assert!(!map.has_just_cleared_cap_window(&k));
+        assert!(map.scheduler_should_probe(&k), "OR true via should_probe_now");
+    }
+
+    #[test]
+    fn scheduler_should_probe_fires_via_hook_alone_during_active_backoff() {
+        // The signature override scenario from the planner: a stale
+        // cached snapshot (util=100, resets_at in the past) paired
+        // with an active backoff timer from a recent 429. The hook
+        // must be the deciding factor:
+        // - should_probe_now == false (backoff active)
+        // - has_just_cleared_cap_window == true (armed + stale reset)
+        // - scheduler_should_probe == true (OR fires)
+        let past = SystemTime::now() - std::time::Duration::from_secs(60);
+        let stale = snapshot_with_resets(Some((100.0, Some(past))), None);
+        let mut map = AccountStateMap::new(&[make_account("Gateway")]);
+        let k = AccountKey("Gateway".to_owned());
+        map.set_usage(&k, stale);
+        map.set_last_error(
+            &k,
+            UsageFetchStatus::RateLimited,
+            Some(std::time::Duration::from_secs(3000)),
+        );
+
+        assert!(!map.should_probe_now(&k), "backoff active");
+        assert!(map.has_just_cleared_cap_window(&k), "armed + stale reset");
+        assert!(map.scheduler_should_probe(&k), "OR fires when hook alone is true");
+    }
+
+    #[test]
+    fn scheduler_should_probe_skips_when_both_predicates_false() {
+        // Backoff active AND the snapshot has a future resets_at (no
+        // stale state). Both sides of the OR return false; the
+        // account is skipped this cycle and waits for the backoff
+        // timer to elapse.
+        let future = SystemTime::now() + std::time::Duration::from_secs(60);
+        let live = snapshot_with_resets(Some((100.0, Some(future))), None);
+        let mut map = AccountStateMap::new(&[make_account("Gateway")]);
+        let k = AccountKey("Gateway".to_owned());
+        map.set_usage(&k, live);
+        map.set_last_error(
+            &k,
+            UsageFetchStatus::RateLimited,
+            Some(std::time::Duration::from_secs(3000)),
+        );
+
+        assert!(!map.should_probe_now(&k));
+        assert!(!map.has_just_cleared_cap_window(&k));
+        assert!(!map.scheduler_should_probe(&k), "OR false when both sides are false");
+    }
+
+    #[test]
+    fn pick_returns_account_once_cached_window_reset_passes() {
+        // Cached snapshot says 100% but the resets_at has come and gone
+        // (no fresh probe has overwritten the cache yet). The picker
+        // must put the account back into the usable tier rather than
+        // hold it out indefinitely.
+        let past = SystemTime::now() - std::time::Duration::from_secs(60);
+        let stale_snap = snapshot_with_resets(Some((100.0, Some(past))), Some((100.0, Some(past))));
+        let mut map = AccountStateMap::new(&[make_account("Gateway"), make_account("Stargate")]);
+        map.set_usage(&AccountKey("Gateway".to_owned()), stale_snap);
+        // Stargate stays healthy (snapshot helper sets resets_at in
+        // the future so 100% IS still limited for Stargate).
+        map.set_usage(&AccountKey("Stargate".to_owned()), snapshot(Some(100.0), Some(100.0)));
+        let (picked, _) = map.pick_for_project(&["Gateway".to_owned(), "Stargate".to_owned()]);
+        assert_eq!(picked.0, "Gateway", "stale-reset Gateway usable; live-capped Stargate not");
     }
 
     // ---------------------------------------------------------------

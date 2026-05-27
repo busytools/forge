@@ -898,13 +898,36 @@ impl Workspace {
                 .iter()
                 // Skip accounts inside an active backoff window - a
                 // recent probe failed and re-probing now would just
-                // re-trip the same rate limit. `should_probe_now`
-                // returns true for cold-cache accounts (no failure
-                // history) so first-run probes always go through.
-                .filter(|key| accounts.should_probe_now(key))
+                // re-trip the same rate limit. `scheduler_should_probe`
+                // ORs the backoff gate (`should_probe_now`) with the
+                // one-shot reset-clear override hook
+                // (`has_just_cleared_cap_window`): cold-cache accounts
+                // probe immediately, and a snapshot whose resets_at
+                // moment has passed gets a fresh probe via the
+                // override even if the backoff timer is still active.
+                .filter(|key| accounts.scheduler_should_probe(key))
                 .filter_map(|key| accounts.config_dir(key).map(|dir| (key.clone(), dir.clone())))
                 .collect()
         };
+
+        // Disarm any account where the override hook was the deciding
+        // factor (should_probe_now was false but the hook said yes).
+        // One-shot semantics: each successful probe arms the hook once
+        // via set_usage; the override fires once, and subsequent
+        // stale-reset state respects the backoff schedule until a
+        // fresh snapshot lands. Without this disarm, a persistently
+        // failing probe series would re-trigger the override every
+        // poll cycle, defeating the exponential backoff. Held in its
+        // own lock acquisition so it doesn't contend with the
+        // per-iteration set_usage / set_last_error locks below.
+        {
+            let mut accounts = self.accounts.lock();
+            for (key, _) in &entries {
+                if !accounts.should_probe_now(key) {
+                    accounts.disarm_override(key);
+                }
+            }
+        }
         // Sequential probes. Anthropic's `/api/oauth/usage` endpoint
         // has a per-IP burst limit; parallel spawns trip the limit
         // and produce HTTP 429s even well under the user's own quota.
