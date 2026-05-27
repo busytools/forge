@@ -99,7 +99,25 @@ pub(crate) struct AccountState {
     /// next-probe delay (capped at a sensible ceiling). Reset to
     /// 0 on success.
     pub consecutive_failures: u32,
+    /// Consecutive probe failures classified as `Unauthorized` or
+    /// `Expired` (the auth-recovery family). When this hits
+    /// `UNAUTHORIZED_CACHE_CLEAR_THRESHOLD`, the cached `UsageWindow`
+    /// snapshot is dropped so the bottom panel surfaces the
+    /// `⚠ unauthorized — /login` label rather than rendering the
+    /// stale %bar as if it were live. Reset to 0 on any non-auth
+    /// probe result (success, `RateLimited`, network error). Distinct
+    /// from `consecutive_failures` so a real `RateLimited` series
+    /// doesn't drive the auth-recovery clear (and vice versa).
+    pub consecutive_unauthorized: u32,
 }
+
+/// Number of consecutive `Unauthorized` / `Expired` probe results
+/// before the cached `UsageWindow` is invalidated. At the default
+/// 60 s probe cadence this is ~3 minutes, which absorbs a transient
+/// 401 (e.g. proxy hiccup mid-refresh) but still surfaces a real
+/// auth-expiry promptly. Saturated - the counter stops growing past
+/// this so continued failures don't overflow or repeatedly clear.
+const UNAUTHORIZED_CACHE_CLEAR_THRESHOLD: u32 = 3;
 
 #[derive(Debug)]
 pub(crate) struct AccountStateMap {
@@ -141,6 +159,7 @@ impl AccountStateMap {
                     last_error: None,
                     next_probe_at: None,
                     consecutive_failures: 0,
+                    consecutive_unauthorized: 0,
                 },
             );
         }
@@ -208,6 +227,7 @@ impl AccountStateMap {
             state.last_error = None;
             state.next_probe_at = None;
             state.consecutive_failures = 0;
+            state.consecutive_unauthorized = 0;
         }
     }
 
@@ -234,6 +254,24 @@ impl AccountStateMap {
         if let Some(state) = self.by_key.get_mut(key) {
             state.last_error = Some(status);
             state.consecutive_failures = state.consecutive_failures.saturating_add(1);
+            // Auth-recovery cache-clear: count consecutive
+            // `Unauthorized` / `Expired` strikes; once the
+            // threshold is reached, drop the cached snapshot so the
+            // renderer surfaces the error label instead of the
+            // stale %bar. Any non-auth result resets the counter
+            // (the cache stays valid for `RateLimited` / network
+            // errors). See #237-A.
+            if matches!(status, UsageFetchStatus::Unauthorized | UsageFetchStatus::Expired) {
+                state.consecutive_unauthorized = state
+                    .consecutive_unauthorized
+                    .saturating_add(1)
+                    .min(UNAUTHORIZED_CACHE_CLEAR_THRESHOLD);
+                if state.consecutive_unauthorized >= UNAUTHORIZED_CACHE_CLEAR_THRESHOLD {
+                    state.usage = None;
+                }
+            } else {
+                state.consecutive_unauthorized = 0;
+            }
             // Anthropic returns `Retry-After: 0` on the /api/oauth/usage
             // 429 path, which is "no specific hint" rather than "you can
             // retry now". Trusting it literally schedules next_probe_at
@@ -838,5 +876,113 @@ mod tests {
         assert!(is_rate_limited(&snapshot(Some(0.0), Some(100.0))));
         assert!(is_rate_limited(&snapshot(Some(100.0), Some(100.0))));
         assert!(!is_rate_limited(&snapshot(Some(99.9), Some(99.9))));
+    }
+
+    // ---------------------------------------------------------------
+    // #237-A: consecutive Unauthorized probes invalidate stale cache.
+    //
+    // Symptom: a token expires, the existing snapshot keeps rendering
+    // as "7d cap" in the bottom panel because Anthropic 429s the probe
+    // endpoint as a side-effect of the 401 (the probe path retries
+    // under the hood and only the outer error surfaces). The cached
+    // `UsageWindow` survives, so the renderer keeps drawing the prior
+    // %bar. After N=3 consecutive `Unauthorized` / `Expired` probes,
+    // clear the cached snapshot so the existing
+    // `⚠ unauthorized — /login` error label takes over.
+    // ---------------------------------------------------------------
+
+    fn key(name: &str) -> AccountKey {
+        AccountKey(name.to_owned())
+    }
+
+    #[test]
+    fn three_consecutive_unauthorized_probes_clear_usage_cache() {
+        let mut map = AccountStateMap::new(&[make_account("Personal")]);
+        let k = key("Personal");
+        map.set_usage(&k, snapshot(Some(30.0), Some(40.0)));
+        assert!(map.usage(&k).is_some(), "cache primed");
+
+        map.set_last_error(&k, UsageFetchStatus::Unauthorized, None);
+        map.set_last_error(&k, UsageFetchStatus::Unauthorized, None);
+        assert!(map.usage(&k).is_some(), "cache survives 2 strikes");
+
+        map.set_last_error(&k, UsageFetchStatus::Unauthorized, None);
+        assert!(map.usage(&k).is_none(), "cache cleared on the 3rd consecutive Unauthorized probe");
+    }
+
+    #[test]
+    fn expired_status_counts_toward_unauthorized_strikes() {
+        // `Expired` is the same auth-recovery family as `Unauthorized`
+        // and must increment the same counter (mixed sequences too).
+        let mut map = AccountStateMap::new(&[make_account("Personal")]);
+        let k = key("Personal");
+        map.set_usage(&k, snapshot(Some(30.0), Some(40.0)));
+
+        map.set_last_error(&k, UsageFetchStatus::Unauthorized, None);
+        map.set_last_error(&k, UsageFetchStatus::Expired, None);
+        map.set_last_error(&k, UsageFetchStatus::Unauthorized, None);
+        assert!(map.usage(&k).is_none(), "Expired must count toward the unauthorized strike total");
+    }
+
+    #[test]
+    fn unauthorized_counter_resets_on_success() {
+        let mut map = AccountStateMap::new(&[make_account("Personal")]);
+        let k = key("Personal");
+        map.set_usage(&k, snapshot(Some(30.0), Some(40.0)));
+
+        map.set_last_error(&k, UsageFetchStatus::Unauthorized, None);
+        map.set_last_error(&k, UsageFetchStatus::Unauthorized, None);
+        // A successful probe resets the counter; subsequent 2
+        // Unauthorized probes must NOT clear the cache.
+        map.set_usage(&k, snapshot(Some(35.0), Some(45.0)));
+        map.set_last_error(&k, UsageFetchStatus::Unauthorized, None);
+        map.set_last_error(&k, UsageFetchStatus::Unauthorized, None);
+        assert!(
+            map.usage(&k).is_some(),
+            "counter must reset on success so 2 fresh strikes don't clear"
+        );
+    }
+
+    #[test]
+    fn unauthorized_counter_resets_on_rate_limited() {
+        // `RateLimited` is a real upstream state - keep the cached
+        // window so the bottom panel can show the rate-limit indicator
+        // against the last-known-good %bar. A subsequent burst of
+        // Unauthorized must start from 0, not from the prior strike.
+        let mut map = AccountStateMap::new(&[make_account("Personal")]);
+        let k = key("Personal");
+        map.set_usage(&k, snapshot(Some(30.0), Some(40.0)));
+
+        map.set_last_error(&k, UsageFetchStatus::Unauthorized, None);
+        map.set_last_error(&k, UsageFetchStatus::Unauthorized, None);
+        map.set_last_error(&k, UsageFetchStatus::RateLimited, None);
+        assert!(map.usage(&k).is_some(), "RateLimited preserves cache");
+        // Counter is back to 0; the next two strikes are not yet
+        // enough to clear.
+        map.set_last_error(&k, UsageFetchStatus::Unauthorized, None);
+        map.set_last_error(&k, UsageFetchStatus::Unauthorized, None);
+        assert!(
+            map.usage(&k).is_some(),
+            "RateLimited must reset the counter (2 fresh strikes don't clear)"
+        );
+    }
+
+    #[test]
+    fn unauthorized_counter_saturates_no_double_clear() {
+        // After the cache is cleared, continued Unauthorized probes
+        // must NOT panic (overflow) and must not re-trigger the
+        // clear path in a way that interferes with re-priming the
+        // cache once auth recovers.
+        let mut map = AccountStateMap::new(&[make_account("Personal")]);
+        let k = key("Personal");
+        map.set_usage(&k, snapshot(Some(30.0), Some(40.0)));
+
+        for _ in 0..10 {
+            map.set_last_error(&k, UsageFetchStatus::Unauthorized, None);
+        }
+        assert!(map.usage(&k).is_none(), "cache stays cleared");
+        // Recovery: a successful probe primes a fresh snapshot.
+        map.set_usage(&k, snapshot(Some(50.0), Some(60.0)));
+        assert!(map.usage(&k).is_some(), "recovery primes a fresh cache");
     }
 }
