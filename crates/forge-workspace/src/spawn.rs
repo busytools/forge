@@ -21,7 +21,7 @@ use crate::mcp::peers::facade::PeerStatsDelta;
 use crate::mcp::peers::types::WrappedPrompt;
 use crate::protocol::{Command, SessionUpdate, WorkerSpawnReply, WorkerStatusAction};
 use crate::target::ProjectKey;
-use crate::team::{LEAD_CHARTER, Role};
+use crate::team::{LEAD_LABEL, load_charter};
 use crate::workspace::Workspace;
 use crate::{SessionKey, SessionTarget};
 
@@ -51,17 +51,24 @@ fn build_worker_extra_args(is_git_repo: bool, label: &str) -> Vec<(String, Optio
 
 /// If the project has a non-empty `team` list and the launch settings
 /// don't already carry a `charter`, stamp the engineering-team lead
-/// charter so the spawned lead session knows it has a team. No-op when
-/// the team is empty or a charter was already set (worker spawns set
-/// the worker's own charter; we never overwrite that).
-fn apply_lead_charter_if_team(team: &[Role], settings: &mut SessionLaunchSettings) {
+/// charter (loaded from `~/.claude/forge-team/lead/charter.md`) so the
+/// spawned lead session knows it has a team. No-op when the team is
+/// empty or a charter was already set (worker spawns set the worker's
+/// own charter; we never overwrite that). Returns an error when the
+/// lead charter file is missing — caller surfaces this to the user so
+/// they know to populate `~/.claude/forge-team/lead/charter.md`.
+fn apply_lead_charter_if_team(
+    team: &[String],
+    settings: &mut SessionLaunchSettings,
+) -> Result<(), crate::team::CharterError> {
     if team.is_empty() {
-        return;
+        return Ok(());
     }
     if settings.charter.is_some() {
-        return;
+        return Ok(());
     }
-    settings.charter = Some(LEAD_CHARTER.to_owned());
+    settings.charter = Some(load_charter(LEAD_LABEL)?);
+    Ok(())
 }
 
 /// Emit a `SessionUpdate` and log at debug when the receiver is gone
@@ -99,7 +106,17 @@ pub(crate) fn handle_spawn_project(
         return;
     };
 
-    apply_lead_charter_if_team(&project.team, &mut launch_settings);
+    if let Err(charter_err) = apply_lead_charter_if_team(&project.team, &mut launch_settings) {
+        tracing::warn!(
+            target: "forge_workspace::spawn",
+            project = project_name,
+            error = %charter_err,
+            "lead charter missing for project with team configured; project spawn proceeds without lead charter (workers won't auto-spawn). Populate ~/.claude/forge-team/lead/charter.md (copy from docs/forge-team-defaults/lead/) or use the workers__create_role MCP tool."
+        );
+        // Continue without the lead charter; the session can still
+        // function as a normal claude session, just without the team
+        // auto-spawn.
+    }
 
     let synth_key = SessionKey::from_session_id(format!("__spawn_{project_name}__"));
     try_emit(
@@ -1400,32 +1417,32 @@ config_dir = "~/.claude-stargate"
 mod team_charter_tests {
     use super::*;
 
-    #[test]
-    fn project_with_team_gets_lead_charter() {
-        let team = vec![Role::Planner, Role::Reviewer];
-        let mut settings = SessionLaunchSettings::default();
-        apply_lead_charter_if_team(&team, &mut settings);
-        assert_eq!(settings.charter.as_deref(), Some(LEAD_CHARTER));
-    }
+    // The empty-team and existing-charter short-circuits don't touch
+    // disk so they're exercisable without a fixture. The non-empty
+    // path (load lead charter from disk) is integration-covered in
+    // `tests/engineering_team_e2e.rs` with a tempdir fixture.
 
     #[test]
     fn project_without_team_skips_lead_charter() {
-        let team: Vec<Role> = Vec::new();
+        let team: Vec<String> = Vec::new();
         let mut settings = SessionLaunchSettings::default();
-        apply_lead_charter_if_team(&team, &mut settings);
+        apply_lead_charter_if_team(&team, &mut settings)
+            .expect("empty team short-circuits without touching disk");
         assert!(settings.charter.is_none());
     }
 
     #[test]
     fn existing_charter_is_preserved_not_overwritten() {
         // Defensive: if a caller (test fixture, worker resume, etc.)
-        // already set charter, don't clobber it.
-        let team = vec![Role::Planner];
+        // already set charter, don't clobber it. The short-circuit
+        // fires before any disk read.
+        let team = vec!["planner".to_owned()];
         let mut settings = SessionLaunchSettings {
             charter: Some("pre-existing".into()),
             ..SessionLaunchSettings::default()
         };
-        apply_lead_charter_if_team(&team, &mut settings);
+        apply_lead_charter_if_team(&team, &mut settings)
+            .expect("pre-existing charter short-circuits without touching disk");
         assert_eq!(settings.charter.as_deref(), Some("pre-existing"));
     }
 }

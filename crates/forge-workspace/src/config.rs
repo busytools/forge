@@ -138,9 +138,12 @@ pub(crate) struct LoadedProject {
     /// `true` when the project should spawn automatically at forge
     /// launch.
     pub auto_start: bool,
-    /// Parsed + validated team list for this project. Empty means
-    /// no team. See `crate::team::Role`.
-    pub team: Vec<crate::team::Role>,
+    /// Validated team labels for this project (format only —
+    /// existence of the per-label charter files at
+    /// `~/.claude/forge-team/<label>/{charter,kick}.md` is checked
+    /// lazily at spawn time, not here). Empty means no team. See
+    /// `crate::team::Role` + `crate::team::validate_label`.
+    pub team: Vec<String>,
 }
 
 impl LoadedConfig {
@@ -243,26 +246,26 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
             if !seen_project_names.insert(project_entry.name.clone()) {
                 return Err(WorkspaceError::DuplicateProject { path, name: project_entry.name });
             }
-            let mut team_roles: Vec<crate::team::Role> =
-                Vec::with_capacity(project_entry.team.len());
-            let mut seen_roles: std::collections::HashSet<crate::team::Role> =
+            let mut team_labels: Vec<String> = Vec::with_capacity(project_entry.team.len());
+            let mut seen_labels: std::collections::HashSet<String> =
                 std::collections::HashSet::new();
-            for raw_role in &project_entry.team {
-                let role = crate::team::Role::from_str_ci(raw_role).ok_or_else(|| {
-                    WorkspaceError::UnknownTeamRole {
+            for raw_label in &project_entry.team {
+                let label = raw_label.trim().to_owned();
+                if let Err(label_err) = crate::team::validate_label(&label) {
+                    return Err(WorkspaceError::UnknownTeamRole {
                         path: path.clone(),
                         project_name: project_entry.name.clone(),
-                        role: raw_role.clone(),
-                    }
-                })?;
-                if !seen_roles.insert(role) {
+                        role: format!("{raw_label} ({label_err})"),
+                    });
+                }
+                if !seen_labels.insert(label.clone()) {
                     return Err(WorkspaceError::DuplicateTeamRole {
                         path: path.clone(),
                         project_name: project_entry.name.clone(),
-                        role: raw_role.clone(),
+                        role: raw_label.clone(),
                     });
                 }
-                team_roles.push(role);
+                team_labels.push(label);
             }
             projects.push(LoadedProject {
                 name: project_entry.name,
@@ -271,7 +274,7 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
                 org: org_entry.name.clone(),
                 accounts: org_entry.accounts.clone(),
                 auto_start: project_entry.auto_start,
-                team: team_roles,
+                team: team_labels,
             });
         }
         orgs.push(LoadedOrg { name: org_entry.name, accounts: org_entry.accounts });
@@ -646,7 +649,6 @@ config_dir = "~/.claude-other"
 #[cfg(test)]
 mod team_tests {
     use super::*;
-    use crate::team::Role;
 
     fn write_config(dir: &std::path::Path, contents: &str) {
         std::fs::write(dir.join("forge.toml"), contents).expect("write forge.toml");
@@ -698,7 +700,13 @@ config_dir = "/tmp/acct-a"
         let p = cfg.projects.iter().find(|p| p.name == "p1").expect("p1 present");
         assert_eq!(
             p.team,
-            vec![Role::Planner, Role::Implementer, Role::Reviewer, Role::Debugger, Role::Tester]
+            vec![
+                "planner".to_owned(),
+                "implementer".to_owned(),
+                "reviewer".to_owned(),
+                "debugger".to_owned(),
+                "tester".to_owned(),
+            ]
         );
     }
 
@@ -723,11 +731,14 @@ config_dir = "/tmp/acct-a"
         );
         let cfg = load_from_dir(tmp.path()).expect("load ok");
         let p = cfg.projects.iter().find(|p| p.name == "p1").expect("p1 present");
-        assert_eq!(p.team, vec![Role::Reviewer, Role::Planner]);
+        assert_eq!(p.team, vec!["reviewer".to_owned(), "planner".to_owned()]);
     }
 
     #[test]
-    fn unknown_role_in_team_rejects_with_clear_error() {
+    fn arbitrary_role_label_accepted_existence_checked_lazily_at_spawn() {
+        // Post-#220 the team field is an open set: any well-formed
+        // label is accepted at config-load. The disk-side existence
+        // check fires when a worker actually spawns.
         let tmp = tempfile::tempdir().expect("tempdir");
         write_config(
             tmp.path(),
@@ -738,7 +749,36 @@ accounts = ["acct-a"]
 [[orgs.projects]]
 name = "p1"
 path = "/tmp/p1"
-team = ["planner", "manager"]
+team = ["planner", "researcher", "data-modules/custom"]
+
+[[accounts]]
+display_name = "acct-a"
+config_dir = "/tmp/acct-a"
+"#,
+        );
+        let cfg = load_from_dir(tmp.path()).expect("open-set labels load ok");
+        let p = cfg.projects.iter().find(|p| p.name == "p1").expect("p1 present");
+        assert_eq!(
+            p.team,
+            vec!["planner".to_owned(), "researcher".to_owned(), "data-modules/custom".to_owned(),]
+        );
+    }
+
+    #[test]
+    fn malformed_label_rejected_at_config_load() {
+        // Path-traversal-shaped labels reject loud; ditto empty / `.`
+        // / leading `/`.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        write_config(
+            tmp.path(),
+            r#"
+[[orgs]]
+name = "TestOrg"
+accounts = ["acct-a"]
+[[orgs.projects]]
+name = "p1"
+path = "/tmp/p1"
+team = ["planner", "../escape"]
 
 [[accounts]]
 display_name = "acct-a"
@@ -747,7 +787,7 @@ config_dir = "/tmp/acct-a"
         );
         let err = load_from_dir(tmp.path()).expect_err("must reject");
         let msg = format!("{err}");
-        assert!(msg.contains("manager"), "error must name the unknown role; got: {msg}");
+        assert!(msg.contains("escape"), "error must name the malformed label; got: {msg}");
         assert!(msg.contains("p1"), "error must name the project; got: {msg}");
     }
 
@@ -774,7 +814,7 @@ config_dir = "/tmp/acct-a"
         );
         let err = load_from_dir(tmp.path()).expect_err("must reject");
         let msg = format!("{err}");
-        assert!(msg.contains("planner"), "error must name duplicate role; got: {msg}");
+        assert!(msg.contains("planner"), "error must name duplicate label; got: {msg}");
         assert!(msg.contains("p1"), "error must name the project; got: {msg}");
     }
 }

@@ -1,0 +1,1 @@
+You are now active. Run `gh issue list -l bug --json number,title,body --limit 10` to find bug issues. For any you'd investigate now (recent, reproducible - remember your iron law: reproduce first), commit to starting. Report back to lead via `workers__tell("lead", ...)` with either 'investigating bug #N now' or 'no bugs to investigate, idle'.

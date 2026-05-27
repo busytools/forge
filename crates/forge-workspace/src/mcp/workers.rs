@@ -57,8 +57,9 @@ pub(crate) fn add_tools(
     let spawn = Spawn { facade: facade.clone(), caller_key: caller_key.clone() };
     let list = List { facade: facade.clone(), caller_key: caller_key.clone() };
     let tell = Tell { facade: facade.clone(), caller_key: caller_key.clone() };
-    let ask = Ask { facade, caller_key };
-    builder.tool(spawn).tool(list).tool(tell).tool(ask)
+    let ask = Ask { facade: facade.clone(), caller_key: caller_key.clone() };
+    let create_role = CreateRole { facade, caller_key };
+    builder.tool(spawn).tool(list).tool(tell).tool(ask).tool(create_role)
 }
 
 /// `workers__spawn` - lead-only. Allocates a new SessionTask in the
@@ -693,6 +694,190 @@ impl Tool for Ask {
     }
 }
 
+/// `workers__create_role` - lead-only. Writes charter + initial-kick
+/// files for a new role under `~/.claude/forge-team/<label>/`. The
+/// next forge restart can then include `<label>` in `forge.toml`'s
+/// `team = [...]` to spawn workers with this charter.
+///
+/// Arguments:
+/// - `label` (string, required) - the role label, may contain `/` for
+///   namespace subdirectories (e.g. `data-modules/researcher`). Validated
+///   against `..` / `.` / empty segments to prevent path traversal.
+/// - `charter` (string, required) - markdown body of the charter. The
+///   spawned worker's LLM sees this as a system-prompt addendum.
+/// - `initial_kick` (string, required) - the worker's first-turn message
+///   on connect. Drives the worker's initial action + report-back.
+/// - `overwrite` (bool, optional, default false) - if false (default),
+///   refuses when either file already exists. Set true to replace.
+///
+/// Returns a JSON object: `{ "label": "...", "charter_path": "...", "kick_path": "..." }`.
+pub(crate) struct CreateRole {
+    pub(crate) facade: Arc<dyn WorkerFacade>,
+    pub(crate) caller_key: CallerKeyResolver,
+}
+
+#[derive(serde::Deserialize)]
+struct CreateRoleArgs {
+    label: String,
+    charter: String,
+    initial_kick: String,
+    #[serde(default)]
+    overwrite: bool,
+}
+
+#[async_trait::async_trait]
+impl Tool for CreateRole {
+    #[allow(clippy::unnecessary_literal_bound)]
+    fn name(&self) -> &str {
+        "workers__create_role"
+    }
+
+    #[allow(clippy::unnecessary_literal_bound)]
+    fn description(&self) -> &str {
+        "Create a new engineering-team role by writing its charter and \
+         initial-kick files under `~/.claude/forge-team/<label>/`. \
+         Lead-only. The label may contain `/` for namespace subdirectories \
+         (e.g. `data-modules/researcher` writes to \
+         `~/.claude/forge-team/data-modules/researcher/charter.md`). After \
+         creation, add the label to `forge.toml`'s `team = [...]` and \
+         restart forge to spawn workers with this charter. Refuses by \
+         default if the files already exist; pass `overwrite=true` to \
+         replace. Validates the label against path-traversal (no `..`, \
+         no leading `/`, no empty / `.` segments)."
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "label": {
+                    "type": "string",
+                    "description": "Role label. May contain `/` for namespace subdirectories (e.g. `data-modules/researcher`). Non-empty after trim. Rejected if it contains `..` / `.` segments or starts with `/`.",
+                },
+                "charter": {
+                    "type": "string",
+                    "description": "Markdown body of the role charter. Threaded into the spawned worker's system prompt so the worker LLM understands its mission, inputs, outputs, workflow, boundaries, and anti-patterns. Non-empty after trim.",
+                },
+                "initial_kick": {
+                    "type": "string",
+                    "description": "First-turn message dispatched to the worker on Connected. Drives the worker's initial action + report-back. Non-empty after trim.",
+                },
+                "overwrite": {
+                    "type": "boolean",
+                    "description": "Replace existing files when true. Default false: refuses if either file already exists.",
+                },
+            },
+            "required": ["label", "charter", "initial_kick"],
+            "additionalProperties": false,
+        })
+    }
+
+    async fn call(&self, input: ToolInput) -> ToolOutput {
+        let args: CreateRoleArgs = match serde_json::from_value(input.value) {
+            Ok(a) => a,
+            Err(err) => return tool_error(format!("invalid arguments: {err}")),
+        };
+
+        let caller_key = match self.caller_key.current() {
+            Ok(k) => k,
+            Err(err) => return tool_error(err.to_string()),
+        };
+
+        // Lead-only: workers cannot create roles in v1.
+        let Some(caller_project) = self.facade.caller_project(&caller_key) else {
+            return tool_error(
+                "workers__create_role: caller resolves to no known project".to_owned(),
+            );
+        };
+        if !caller_project.is_lead {
+            return tool_error(
+                "workers__create_role is lead-only; this session is a worker. Workers cannot create roles in v1.".to_owned(),
+            );
+        }
+
+        // Trim then validate non-empty content.
+        let label = args.label.trim().to_owned();
+        let charter = args.charter.trim_end().to_owned();
+        let initial_kick = args.initial_kick.trim_end().to_owned();
+        if charter.is_empty() {
+            return tool_error("charter must be non-empty after trim".to_owned());
+        }
+        if initial_kick.is_empty() {
+            return tool_error("initial_kick must be non-empty after trim".to_owned());
+        }
+
+        // Validate label format + reject reserved keyword.
+        if label == crate::team::LEAD_LABEL {
+            return tool_error(format!(
+                "label '{}' is reserved — it addresses the caller's lead via \
+                 workers__tell / workers__ask and ships as a built-in default. \
+                 Pick a different label.",
+                crate::team::LEAD_LABEL
+            ));
+        }
+        if let Err(err) = crate::team::validate_label(&label) {
+            return tool_error(err.to_string());
+        }
+
+        let role_dir = match crate::team::role_dir(&label) {
+            Ok(d) => d,
+            Err(err) => return tool_error(err.to_string()),
+        };
+        let charter_path = role_dir.join("charter.md");
+        let kick_path = role_dir.join("kick.md");
+
+        // Refuse when files exist + overwrite=false.
+        if !args.overwrite && (charter_path.exists() || kick_path.exists()) {
+            return tool_error(format!(
+                "role '{label}' already has charter or kick files at {}. Pass overwrite=true to replace.",
+                role_dir.display()
+            ));
+        }
+
+        // Create parent dir (including namespace subdirectories).
+        if let Err(err) = std::fs::create_dir_all(&role_dir) {
+            return tool_error(format!(
+                "failed to create role directory {}: {err}",
+                role_dir.display()
+            ));
+        }
+        if let Err(err) = atomic_write(&charter_path, charter.as_bytes()) {
+            return tool_error(format!(
+                "failed to write charter at {}: {err}",
+                charter_path.display()
+            ));
+        }
+        if let Err(err) = atomic_write(&kick_path, initial_kick.as_bytes()) {
+            return tool_error(format!("failed to write kick at {}: {err}", kick_path.display()));
+        }
+
+        let body = serde_json::json!({
+            "label": label,
+            "charter_path": charter_path.display().to_string(),
+            "kick_path": kick_path.display().to_string(),
+        });
+        match serde_json::to_string_pretty(&body) {
+            Ok(json) => ToolOutput::text(json),
+            Err(err) => tool_error(format!("response serialization failed: {err}")),
+        }
+    }
+}
+
+/// Write-then-rename for crash-safe file replacement. The temp file
+/// lives in the same directory as the final path so rename is
+/// guaranteed-atomic on the same filesystem.
+fn atomic_write(path: &std::path::Path, contents: &[u8]) -> std::io::Result<()> {
+    let parent = path.parent().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "path has no parent")
+    })?;
+    let temp = parent.join(format!(
+        ".{}.tmp",
+        path.file_name().map_or("write", |f| f.to_str().unwrap_or("write"))
+    ));
+    std::fs::write(&temp, contents)?;
+    std::fs::rename(&temp, path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1146,12 +1331,18 @@ mod tests {
     }
 
     #[test]
-    fn build_server_registers_all_four_workers_tools() {
+    fn build_server_registers_all_workers_tools() {
         let mock = MockWorkerFacade::new();
         let facade = mock.into_arc();
         let server = build_server(facade, CallerKeyResolver::from_fixed(fake_key("test")));
         let debug = format!("{server:?}");
-        for expected in ["workers__spawn", "workers__list", "workers__tell", "workers__ask"] {
+        for expected in [
+            "workers__spawn",
+            "workers__list",
+            "workers__tell",
+            "workers__ask",
+            "workers__create_role",
+        ] {
             assert!(
                 debug.contains(expected),
                 "build_server must include {expected}; debug: {debug}",
