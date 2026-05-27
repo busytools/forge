@@ -234,10 +234,10 @@ pub fn resolve_default_target(app: &App) -> DefaultTarget {
     // uncommitted edits. The committed-but-unmerged work
     // (`branch_ahead`) is reachable via an explicit `/diff <default>`
     // - auto-detect prefers the more-recent surface.
-    if snapshot.worktree.is_some() {
+    if snapshot.worktree.is_populated() {
         return DefaultTarget::Ref("HEAD".to_owned());
     }
-    if snapshot.branch_ahead.is_some() {
+    if snapshot.branch_ahead.is_populated() {
         return match snapshot.default_branch.as_deref() {
             Some(default) => DefaultTarget::Ref(default.to_owned()),
             None => DefaultTarget::NoDefault,
