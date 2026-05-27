@@ -43,6 +43,17 @@ use crate::workspace::Workspace;
 /// that we don't burn CPU through a sustained outage.
 const PROBE_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 
+/// Hard cap on loading-loop iterations before the task gives up and
+/// bails the account. Without the cap, a refresh that succeeds but
+/// yields a token that still 401s on probe would spin the loop
+/// forever, burning quota on every cycle. 12 iterations at the
+/// 2 s default sleep is ~24 s upper bound, which is generous for
+/// recovery from transient errors but bounded against infinite
+/// thrash. Each retry budget also counts against the spawn cost
+/// of `refresh_via_cli_spawn` (a billed API call), so the cap is
+/// also a runaway-cost guard.
+const MAX_LOADING_ITERATIONS: u32 = 12;
+
 /// 30 s polling interval for the recovery loop.
 const RECOVERY_POLL_INTERVAL: Duration = Duration::from_secs(30);
 
@@ -60,7 +71,27 @@ pub async fn run_account_loading(
     account_key: AccountKey,
     workspace_weak: Weak<Workspace>,
 ) {
+    let mut iteration = 0u32;
     loop {
+        iteration += 1;
+        if iteration > MAX_LOADING_ITERATIONS {
+            // Spun the full retry budget without reaching a terminal
+            // state. Force-bail so the account doesn't keep hammering
+            // refresh + probe forever. Common cause: refresh succeeds
+            // but the rotated token still 401s (server-side scope or
+            // org change forge can't recover from automatically).
+            if let Some(workspace) = workspace_weak.upgrade() {
+                tracing::warn!(
+                    target: "forge_workspace::account_loader",
+                    account = %account_key.0,
+                    iterations = MAX_LOADING_ITERATIONS,
+                    "loading task hit retry cap without reaching terminal; transitioning to Bailed",
+                );
+                workspace.account_states().lock().set_loading(&account_key, LoadingState::Bailed);
+                workspace.recompute_plan_if_ready();
+            }
+            return;
+        }
         let Some(workspace) = workspace_weak.upgrade() else {
             // Workspace dropped during shutdown; exit cleanly.
             return;
