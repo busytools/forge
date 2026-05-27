@@ -168,3 +168,4 @@ pub use mcp::peers::facade::CallerKeyResolver;
 pub use mcp::workers::build_server as build_workers_server;
 #[cfg(feature = "testing")]
 pub use mcp::workers::facade::{CallerProject, MockWorkerFacade, WorkerFacade};
+pub use mcp::workers::facade::{LEAD_LABEL, PERSONAL_ORG};
