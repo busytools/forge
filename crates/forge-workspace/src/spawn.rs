@@ -506,10 +506,26 @@ pub(crate) fn handle_spawn_worker(
     // disk in the JSONL (the team Connected hook only resumes sessions
     // whose tag matches `forge:worker:<label>` so this invariant is
     // guaranteed by the caller).
+    //
+    // #222: for resume, seed `session_key` with the REAL session_id
+    // (from `resume_existing`) rather than the synth key. The fresh
+    // spawn path needs the synth-key placeholder because the real
+    // session_id isn't known until claude's first `system/init` event;
+    // `migrate_session_task` rewrites the WorkerEntry alongside the
+    // pool maps when Connected fires (workspace.rs:2620-2633). The
+    // resume path knows the real session_id up front, so workspace
+    // keys the SessionTask under the real id directly + `rekey_to`
+    // becomes a no-op on Connected + `migrate_session_task` never
+    // fires + the synth-key WorkerEntry would never get rekeyed.
+    // Result: workers stuck visible-as-synth-key in workers__list and
+    // TUI bucket lookups failing with "bucket not yet present".
     let entry = crate::mcp::workers::types::WorkerEntry {
         label: label.to_owned(),
         charter: charter.clone(),
-        session_key: synth_key.clone(),
+        session_key: match &resume_existing {
+            Some(real) => SessionKey::from_session_id(real.clone()),
+            None => synth_key.clone(),
+        },
         status: forge_primitives::WorkerLiveness::Spawning,
         spawned_at: std::time::SystemTime::now(),
         spawned_by_session_id,
