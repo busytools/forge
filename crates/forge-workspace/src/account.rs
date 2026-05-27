@@ -471,27 +471,40 @@ impl AccountStateMap {
     pub fn pick_for_project(&self, allowed: &[String]) -> (AccountKey, PathBuf) {
         debug_assert!(!allowed.is_empty(), "pick_for_project requires a non-empty allow list");
         // Resolve allow-list entries to known keys, preserving
-        // allow-list order. Carry usage + last_error so tier_of can
-        // see probe failures, not just usage data — an account whose
-        // probe perpetually 429s or has expired OAuth credentials
-        // must classify as Unusable, not Usable-with-no-data.
-        let candidates: Vec<(&AccountKey, Option<&UsageSnapshot>, Option<UsageFetchStatus>)> =
-            allowed
-                .iter()
-                .filter_map(|name| self.ordered_keys.iter().find(|k| k.0 == *name))
-                .map(|k| {
-                    let state = self.by_key.get(k);
-                    (k, state.and_then(|s| s.usage.as_ref()), state.and_then(|s| s.last_error))
-                })
-                .collect();
+        // allow-list order. Carry usage + last_error + loading so
+        // tier_of can see the full picture - an account whose
+        // boot-time loading task ended in `Bailed` (auth_status said
+        // logged-out, refresh failed, etc.) must NOT be picked even
+        // if its last_error is None - tier_of's existing inputs
+        // wouldn't catch a Bailed-without-recent-error case, which
+        // is the exact shape after the recovery poll transitions
+        // Loading -> Bailed without firing set_last_error.
+        let candidates: Vec<(
+            &AccountKey,
+            Option<&UsageSnapshot>,
+            Option<UsageFetchStatus>,
+            LoadingState,
+        )> = allowed
+            .iter()
+            .filter_map(|name| self.ordered_keys.iter().find(|k| k.0 == *name))
+            .map(|k| {
+                let state = self.by_key.get(k);
+                (
+                    k,
+                    state.and_then(|s| s.usage.as_ref()),
+                    state.and_then(|s| s.last_error),
+                    state.map_or(LoadingState::Loading, |s| s.loading),
+                )
+            })
+            .collect();
         // Usable subset, in allow-list order. Round-robin rotates
-        // across this filtered list so saturated / expired accounts
-        // never get picked even when their slot in the cursor cycle
-        // comes up.
+        // across this filtered list so saturated / expired / bailed
+        // accounts never get picked even when their slot in the
+        // cursor cycle comes up.
         let usable: Vec<&AccountKey> = candidates
             .iter()
-            .filter(|(_, u, e)| tier_of(*u, *e) == 0)
-            .map(|(k, _, _)| *k)
+            .filter(|(_, u, e, l)| tier_of(*u, *e) == 0 && *l != LoadingState::Bailed)
+            .map(|(k, _, _, _)| *k)
             .collect();
         let picked = if usable.is_empty() {
             // Every allow-list entry is Unusable. Spawn must still
@@ -506,7 +519,7 @@ impl AccountStateMap {
                     );
                     self.ordered_keys.first().cloned().unwrap_or(AccountKey(String::new()))
                 },
-                |(k, _, _)| (*k).clone(),
+                |(k, _, _, _)| (*k).clone(),
             )
         } else {
             // `Relaxed` is sufficient: the cursor only needs to
@@ -523,14 +536,14 @@ impl AccountStateMap {
         // logs without re-running with extra instrumentation.
         let decision_summary: Vec<String> = candidates
             .iter()
-            .map(|(k, u, e)| {
+            .map(|(k, u, e, l)| {
                 let tier = tier_of(*u, *e);
                 let usage_state = match u {
                     None => "no-snapshot".to_owned(),
                     Some(s) => format!("5h={:.0}%/7d={:.0}%", five_hour_util(s), seven_day_util(s)),
                 };
                 let err_state = e.map_or("none".to_owned(), |e| format!("{e:?}"));
-                format!("{}=tier{}({usage_state},err={err_state})", k.0, tier)
+                format!("{}=tier{}({usage_state},err={err_state},loading={l:?})", k.0, tier)
             })
             .collect();
         tracing::debug!(
@@ -1566,6 +1579,41 @@ mod tests {
         map.set_loading(&key("Granite"), LoadingState::Refreshing);
         map.set_usage(&key("Personal"), snapshot(Some(10.0), Some(20.0)));
         assert!(!map.all_loaded(), "Refreshing is mid-flight, not terminal");
+    }
+
+    #[test]
+    fn pick_for_project_skips_bailed_accounts() {
+        // Bailed account is in the allow list with no last_error (the
+        // recovery poll explicitly transitioned via set_loading, not
+        // set_last_error). Without the LoadingState filter, tier_of
+        // would classify it as tier 0 (usable=true) because both
+        // usage and last_error are None. The picker must NOT return
+        // it; the Ready account must win.
+        let mut map = AccountStateMap::new(&[make_account("Granite"), make_account("Personal")]);
+        // Granite: ready
+        map.set_usage(&key("Granite"), snapshot(Some(20.0), Some(20.0)));
+        // Personal: bailed via direct set_loading (mirrors recovery
+        // poll's auth_status=logged_out -> Bailed path, which has
+        // no associated last_error).
+        map.set_loading(&key("Personal"), LoadingState::Bailed);
+        let (picked, _) = map.pick_for_project(&["Granite".to_owned(), "Personal".to_owned()]);
+        assert_eq!(
+            picked.0, "Granite",
+            "pick_for_project must skip Bailed even without a recent last_error",
+        );
+    }
+
+    #[test]
+    fn pick_for_project_all_bailed_falls_back_to_first() {
+        // Every allow-list entry is Bailed. The fallback path still
+        // returns the first allow-list entry so spawn proceeds and
+        // the user sees the spawned subprocess's own error rather
+        // than forge silently refusing.
+        let mut map = AccountStateMap::new(&[make_account("Granite"), make_account("Personal")]);
+        map.set_loading(&key("Granite"), LoadingState::Bailed);
+        map.set_loading(&key("Personal"), LoadingState::Bailed);
+        let (picked, _) = map.pick_for_project(&["Granite".to_owned(), "Personal".to_owned()]);
+        assert_eq!(picked.0, "Granite");
     }
 
     #[test]
