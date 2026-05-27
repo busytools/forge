@@ -531,6 +531,7 @@ pub(crate) fn handle_spawn_worker(
         spawned_by_session_id,
         needs_tag: !is_resume,
         is_git_repo_at_spawn: is_git,
+        diagnostic: None,
     };
     workspace.insert_live_worker(&project_key, entry.clone());
     // Extend the assignment plan so this adhoc worker's account is

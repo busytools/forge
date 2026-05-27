@@ -649,6 +649,13 @@ fn append_worker_tree_children(
             match worker.status {
                 forge_primitives::WorkerLiveness::Running => Style::default(),
                 forge_primitives::WorkerLiveness::Spawning => Style::default().fg(theme::DIM),
+                // Failed - label renders in STATUS_ERROR so the
+                // worker row's overall state reads as "broken" at
+                // a glance; the diagnostic sub-row (below the row
+                // body) carries the human-readable reason.
+                forge_primitives::WorkerLiveness::Failed => {
+                    Style::default().fg(theme::STATUS_ERROR)
+                }
             }
         };
 
@@ -742,7 +749,6 @@ fn append_worker_tree_children(
         }
     }
 }
-
 
 /// Chrome budget for an org-grouped row:
 /// `<1 PANE_PAD><3 connector><1 glyph><1 sp><name><1 sp><RIGHT col><1 right pad>`
