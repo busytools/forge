@@ -1396,10 +1396,32 @@ fn tint_lines(lines: &mut [Line<'static>], color: Color) {
 /// Headings (`# Title`) become `**Title**` (bold) with a blank line before.
 /// Handles variations: `#Title`, `#  Title`, `  ## Title  `, etc.
 /// Links are left as-is -- `tui_markdown` handles `[title](url)` natively.
+///
+/// HTML tags outside fenced code blocks are stripped because
+/// `tui_markdown::from_str` emits per-element WARN events for every
+/// HTML element it encounters (peaks at 50K+/sec on streaming chats
+/// with HTML content). `<br>` / `<br/>` / `<br />` become newlines
+/// to preserve the author's line-break intent; other tags
+/// (`<div>`, `<b>`, `<i>`, ...) drop the tag and keep the inner
+/// content. Inside fenced code blocks (triple-backtick), HTML-like
+/// text is preserved verbatim so Rust generics (`Vec<T>`), JSX, and
+/// other code that LOOKS like HTML survives untouched.
 fn preprocess_markdown(text: &str) -> String {
     let mut result = String::with_capacity(text.len());
+    let mut in_fence = false;
     for line in text.lines() {
         let trimmed = line.trim();
+        if trimmed.starts_with("```") {
+            in_fence = !in_fence;
+            result.push_str(line);
+            result.push('\n');
+            continue;
+        }
+        if in_fence {
+            result.push_str(line);
+            result.push('\n');
+            continue;
+        }
         if trimmed.starts_with('#') {
             // Strip all leading '#' characters
             let after_hashes = trimmed.trim_start_matches('#');
@@ -1411,18 +1433,63 @@ fn preprocess_markdown(text: &str) -> String {
                     result.push('\n');
                 }
                 result.push_str("**");
-                result.push_str(content);
+                result.push_str(&strip_html_tags(content));
                 result.push_str("**\n");
                 continue;
             }
         }
-        result.push_str(line);
+        let stripped = strip_html_tags(line);
+        result.push_str(&stripped);
         result.push('\n');
     }
     if !text.ends_with('\n') {
         result.pop();
     }
     result
+}
+
+/// Strip HTML tags from a single line. `<br>`, `<br/>`, `<br />` (and
+/// trailing-attribute variants) become `\n` so the author's intended
+/// line break still renders; other tags drop entirely and inner text
+/// is preserved (`<div>foo</div>` -> `foo`, `<b>x</b>` -> `x`).
+///
+/// Conservative: a `<` is treated as a tag start only when followed
+/// by an ASCII alphabetic character or `/` so `1 < 2` and `<<EOF`
+/// stay literal. Unclosed `<...` (no `>` on the line) is preserved
+/// verbatim. Caller must already have decided the line is OUTSIDE
+/// a fenced code block - this helper does no fence tracking.
+fn strip_html_tags(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'<'
+            && i + 1 < bytes.len()
+            && (bytes[i + 1].is_ascii_alphabetic() || bytes[i + 1] == b'/')
+            && let Some(rel_close) = bytes[i + 1..].iter().position(|&b| b == b'>')
+        {
+            let close_idx = i + 1 + rel_close;
+            let body = &line[i + 1..close_idx];
+            let normalized = body.trim_start_matches('/').trim_end_matches('/').trim();
+            let tag_name = normalized.split_whitespace().next().unwrap_or("").to_ascii_lowercase();
+            if tag_name == "br" {
+                out.push('\n');
+            }
+            // Any other recognised tag drops; inner content
+            // between open + close already lies outside the
+            // bracket pair on this line and is consumed by the
+            // outer loop after we advance past the close.
+            i = close_idx + 1;
+            continue;
+        }
+        // Advance one char at a time so UTF-8 boundaries hold. The
+        // outer `i < bytes.len()` guarantees `line[i..]` is non-empty
+        // and yields at least one char.
+        let Some(ch) = line[i..].chars().next() else { break };
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
 }
 
 /// Render a text block with caching. Uses paragraph-level incremental markdown
@@ -1606,6 +1673,65 @@ mod tests {
         let result = preprocess_markdown(input);
         assert!(result.contains("**First**"));
         assert!(result.contains("**Second**"));
+    }
+
+    #[test]
+    fn preprocess_br_becomes_newline() {
+        // `<br>` (and `<br/>`, `<br />`) renders today as a silent
+        // gap because tui_markdown drops the tag. Strip it to `\n`
+        // so the line break still appears in the rendered output.
+        let result = preprocess_markdown("foo<br>bar");
+        assert!(result.contains("foo\nbar"), "<br> must convert to newline, got: {result:?}");
+        let result2 = preprocess_markdown("foo<br/>bar");
+        assert!(result2.contains("foo\nbar"));
+        let result3 = preprocess_markdown("foo<br />bar");
+        assert!(result3.contains("foo\nbar"));
+    }
+
+    #[test]
+    fn preprocess_block_html_drops_tag_keeps_content() {
+        // `<div>foo</div>` becomes `foo` - tag silenced (no WARN
+        // spam) and content preserved.
+        let result = preprocess_markdown("<div>hello world</div>");
+        assert!(result.contains("hello world"));
+        assert!(!result.contains("<div>"));
+        assert!(!result.contains("</div>"));
+    }
+
+    #[test]
+    fn preprocess_inline_html_drops_tag_keeps_content() {
+        // Inline `<b>...</b>` / `<i>...</i>` lose the tag but keep
+        // the inner text. Markdown can re-bold via `**` if the
+        // upstream prompt wants it; this layer doesn't translate.
+        let result = preprocess_markdown("This is <b>bold</b> text");
+        assert!(result.contains("This is bold text"), "got: {result:?}");
+    }
+
+    #[test]
+    fn preprocess_preserves_html_inside_fenced_code() {
+        // Rust generics, JSX, and other code that LOOKS like HTML
+        // inside a triple-backtick block must survive untouched.
+        // Otherwise we'd mangle `Vec<T>` -> `Vec` etc.
+        let input = "```rust\nlet v: Vec<String> = vec![];\n```\n";
+        let result = preprocess_markdown(input);
+        assert!(
+            result.contains("Vec<String>"),
+            "code-fence content must preserve `<>`, got: {result:?}"
+        );
+        // And the fence markers themselves survive intact.
+        assert!(result.contains("```rust"));
+        assert!(result.contains("```\n"));
+    }
+
+    #[test]
+    fn preprocess_leaves_literal_lt_alone() {
+        // `<` not followed by a tag character (alphabetic / `/`) is
+        // preserved verbatim so `1 < 2` and `<<EOF` style stay
+        // unmangled.
+        let result = preprocess_markdown("if 1 < 2 then ok");
+        assert!(result.contains("1 < 2"));
+        let result2 = preprocess_markdown("here doc <<EOF");
+        assert!(result2.contains("<<EOF"));
     }
 
     #[test]
