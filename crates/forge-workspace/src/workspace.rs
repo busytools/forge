@@ -2423,7 +2423,20 @@ impl Workspace {
         session_key: &SessionKey,
         message: &str,
     ) -> bool {
-        let Some((project_key, entry)) = self.remove_worker_by_session_key(session_key) else {
+        // Look up the worker entry WITHOUT removing it yet - the
+        // worktree-failure path still removes (rollback semantics
+        // for "worker never existed"); the general-failure path
+        // transitions to Failed so the user sees what happened.
+        let lookup = {
+            let workers = self.live_workers.lock();
+            workers.iter().find_map(|(project_key, entries)| {
+                entries
+                    .iter()
+                    .find(|e| e.session_key == *session_key)
+                    .map(|entry| (project_key.clone(), entry.clone()))
+            })
+        };
+        let Some((project_key, entry)) = lookup else {
             return false;
         };
         // Classify against the entry's recorded is_git_repo_at_spawn
@@ -2435,6 +2448,10 @@ impl Workspace {
         if let crate::mcp::workers::facade::WorkerSpawnError::WorktreeCreationFailed { reason } =
             &classified
         {
+            // Worktree-creation failure: roll back the worker entry
+            // (the worker never existed; the user-visible signal is
+            // the typed notice routed to the lead, not the worker row).
+            self.remove_worker_by_session_key(session_key);
             // Notice goes to the lead session that spawned this
             // worker. Use the workspace's update channel + a fresh
             // Command::Prompt so the lead's claude subprocess sees
@@ -2475,19 +2492,26 @@ impl Workspace {
                     "worker spawn failed but lead session is gone; dropping notice",
                 );
             }
+            // Emit WorkerStatusChanged::Removed - parity with the
+            // sync rollback in handle_spawn_worker.
+            let _ = self.update_tx.send(SessionUpdate::WorkerStatusChanged {
+                project_key,
+                action: crate::protocol::WorkerStatusAction::Removed,
+                status: entry.to_status(),
+                is_git_repo_at_spawn: entry.is_git_repo_at_spawn,
+            });
+        } else {
+            // Non-worktree failure (resume not found, generic
+            // ConnectionFailed, etc.): transition to Failed via
+            // Layer A's machinery. The worker entry stays visible
+            // in `live_workers` + the Projects pane renders it as
+            // `✕` with the captured message as the diagnostic
+            // sub-row. Without this, the worker would vanish (as
+            // it did pre-#245) and the user would be left wondering
+            // why a team worker disappeared mid-flight.
+            let diagnostic = message.lines().next().map(str::to_owned);
+            transition_worker_to_failed(self, &project_key, session_key, diagnostic);
         }
-        // Emit WorkerStatusChanged::Removed regardless of classifier
-        // outcome - sync rollback in handle_spawn_worker does this
-        // unconditionally on dispatch failure, async parity requires
-        // the same. Without it, the LLM sees a typed failure notice
-        // AND a stale worker entry in workers__list, or for non-
-        // worktree-failure cases just a stale entry with no notice.
-        let _ = self.update_tx.send(SessionUpdate::WorkerStatusChanged {
-            project_key,
-            action: crate::protocol::WorkerStatusAction::Removed,
-            status: entry.to_status(),
-            is_git_repo_at_spawn: entry.is_git_repo_at_spawn,
-        });
         true
     }
 
@@ -3421,9 +3445,6 @@ fn transition_worker_to_running(
 /// available) or the error variant name. Keep it short - the
 /// Projects pane renders it as a one-row sub-line below the worker
 /// label, truncated to the row's available width.
-// Caller lands in #245 Layer C (fall-through-to-fresh path). Temporary
-// `dead_code` allow until that wiring lands within the same PR.
-#[allow(dead_code)]
 pub(crate) fn transition_worker_to_failed(
     workspace: &Arc<Workspace>,
     project_key: &ProjectKey,
@@ -5670,12 +5691,14 @@ mod async_worker_spawn_failure_tests {
         );
     }
 
-    /// #146: async failure with a non-worktree-classified message
-    /// must NOT dispatch a notice, but MUST still roll back the
-    /// WorkerEntry (sync-rollback parity per the plan's bundle
-    /// decision).
+    /// #146 + #245 Layer C: async failure with a non-worktree-classified
+    /// message must NOT dispatch a lead-notice. Behaviour was changed
+    /// in #245: previously the entry was rolled back (removed); now it
+    /// transitions to `WorkerLiveness::Failed` with the message as
+    /// diagnostic, so the user sees the failure surfaced on the row
+    /// rather than the worker silently vanishing.
     #[tokio::test]
-    async fn async_failure_without_worktree_classification_skips_notice_but_rolls_back() {
+    async fn async_failure_without_worktree_classification_transitions_to_failed() {
         let (workspace, _update_rx) = Workspace::testing_stub();
         workspace.enable_test_dispatch_intercept();
 
@@ -5696,9 +5719,17 @@ mod async_worker_spawn_failure_tests {
         let prompts: Vec<&Command> =
             dispatched.iter().filter(|c| matches!(c, Command::Prompt { .. })).collect();
         assert!(prompts.is_empty(), "non-worktree classifier outcome must NOT dispatch a notice");
+        let entries = workspace.list_live_workers(&project_key);
+        assert_eq!(entries.len(), 1, "non-worktree failure keeps the entry visible");
         assert!(
-            workspace.list_live_workers(&project_key).is_empty(),
-            "WorkerEntry rollback fires regardless of classifier outcome",
+            matches!(entries[0].status, forge_primitives::WorkerLiveness::Failed),
+            "non-worktree failure transitions to Failed; got {:?}",
+            entries[0].status,
+        );
+        assert_eq!(
+            entries[0].diagnostic.as_deref(),
+            Some("agent spawn failed: subprocess exited with code 2"),
+            "diagnostic captures the ConnectionFailed message",
         );
     }
 
