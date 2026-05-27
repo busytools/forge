@@ -716,8 +716,12 @@ impl Tool for Ask {
 ///   or skips per the past-progress guard).
 /// - `overwrite` (bool, optional, default false) - if false (default),
 ///   refuses when ANY of the target files already exist. Set true to
-///   replace. The existence check covers the resume-kick path only when
-///   `resume_kick` was provided.
+///   replace. Both the existence check and the overwrite scope are
+///   limited to the files the call writes: when `resume_kick=None`,
+///   an existing `resume-kick.md` is neither read as a collision nor
+///   touched. A role whose resume-kick was provisioned manually
+///   survives a charter-only refresh that passes `overwrite=true`
+///   without `resume_kick`.
 ///
 /// Returns a JSON object:
 /// `{ "label", "charter_path", "kick_path", "resume_kick_path"? }`.
@@ -761,9 +765,13 @@ impl Tool for CreateRole {
          After creation, add the label to `forge.toml`'s \
          `team = [...]` and restart forge to spawn workers with this \
          charter. Refuses by default if any target file already \
-         exists; pass `overwrite=true` to replace. Validates the label \
-         against path-traversal (no `..`, no leading `/`, no empty / \
-         `.` segments)."
+         exists; pass `overwrite=true` to replace. The overwrite \
+         scope is limited to the files the call writes: when \
+         `resume_kick` is omitted, an existing `resume-kick.md` is \
+         neither read as a collision nor touched, so a manually \
+         provisioned resume-kick survives a charter-only refresh. \
+         Validates the label against path-traversal (no `..`, no \
+         leading `/`, no empty / `.` segments)."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -788,7 +796,7 @@ impl Tool for CreateRole {
                 },
                 "overwrite": {
                     "type": "boolean",
-                    "description": "Replace existing files when true. Default false: refuses if ANY target file already exists (charter, kick, or - when `resume_kick` is provided - resume-kick).",
+                    "description": "Replace existing files when true. Default false: refuses if ANY target file already exists (charter, kick, or - when `resume_kick` is provided - resume-kick). The overwrite scope is limited to the files the call writes: a `resume_kick=None` call never touches an existing resume-kick.md, even with `overwrite=true`, so a manually provisioned resume-kick survives a charter-only refresh.",
                 },
             },
             "required": ["label", "charter", "initial_kick"],
