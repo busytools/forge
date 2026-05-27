@@ -294,9 +294,10 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
             app.needs_redraw = true;
         }
         if app.needs_redraw {
+            let frame_size = terminal.size()?;
             let skip_real_draw = render_throttle_should_skip(
                 &mut scratch_terminal,
-                &terminal,
+                frame_size,
                 app,
                 &mut last_drawn_signature,
             )?;
@@ -406,14 +407,18 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
 /// draw, even if intermediate ticks rendered different scratch
 /// content).
 ///
+/// `frame_size` is the real terminal's current dimensions. Taking
+/// `Size` directly (rather than `&Terminal`) keeps the helper
+/// testable without a real crossterm backend - tests construct any
+/// `Size` they want and observe the throttle decision.
+///
 /// Returns `true` when the caller should skip the real draw.
-fn render_throttle_should_skip(
+pub(crate) fn render_throttle_should_skip(
     scratch_terminal: &mut Option<ratatui::Terminal<ratatui::backend::TestBackend>>,
-    real_terminal: &ratatui::Terminal<ratatui::prelude::CrosstermBackend<std::io::Stdout>>,
+    frame_size: ratatui::layout::Size,
     app: &mut App,
     last_drawn_signature: &mut Option<u64>,
 ) -> anyhow::Result<bool> {
-    let frame_size = real_terminal.size()?;
     let scratch = if let Some(t) = scratch_terminal {
         t
     } else {
@@ -1076,5 +1081,59 @@ mod tests {
         assert_eq!(app.spinner_frame, 1);
         advance_spinner_frame(&mut app, base + Duration::from_millis(121));
         assert_eq!(app.spinner_frame, 2);
+    }
+
+    #[test]
+    fn render_throttle_first_call_does_not_skip() {
+        // With no prior `last_drawn_signature`, the throttle MUST
+        // return `false` so the run loop performs the real draw and
+        // primes the cache.
+        let mut app = App::test_default();
+        let mut scratch: Option<ratatui::Terminal<ratatui::backend::TestBackend>> = None;
+        let mut last_sig: Option<u64> = None;
+        let size = ratatui::layout::Size { width: 120, height: 40 };
+
+        let skip =
+            render_throttle_should_skip(&mut scratch, size, &mut app, &mut last_sig).unwrap();
+        assert!(!skip, "first call must not skip - no prior signature");
+        assert!(last_sig.is_some(), "first call must prime last_drawn_signature");
+    }
+
+    #[test]
+    fn render_throttle_skips_unchanged_state() {
+        // Second call on an unmutated App must hit the equal-
+        // signature branch and return `true` so the run loop skips
+        // the real `terminal.draw`. This is the throttle's
+        // happy-path behavior - the whole point of the feature.
+        let mut app = App::test_default();
+        let mut scratch: Option<ratatui::Terminal<ratatui::backend::TestBackend>> = None;
+        let mut last_sig: Option<u64> = None;
+        let size = ratatui::layout::Size { width: 120, height: 40 };
+
+        let _ = render_throttle_should_skip(&mut scratch, size, &mut app, &mut last_sig).unwrap();
+        let skip =
+            render_throttle_should_skip(&mut scratch, size, &mut app, &mut last_sig).unwrap();
+        assert!(skip, "second call on unchanged App must skip");
+    }
+
+    #[test]
+    fn render_throttle_redraws_after_state_mutation() {
+        // A mutation that visibly changes the rendered output must
+        // make the throttle return `false` so the run loop fires the
+        // real `terminal.draw` against the new state.
+        let mut app = App::test_default();
+        let mut scratch: Option<ratatui::Terminal<ratatui::backend::TestBackend>> = None;
+        let mut last_sig: Option<u64> = None;
+        let size = ratatui::layout::Size { width: 120, height: 40 };
+
+        let _ = render_throttle_should_skip(&mut scratch, size, &mut app, &mut last_sig).unwrap();
+        // Toggling `help_open` makes `chat_view::render` allocate a
+        // non-zero help row and call `help::render`, which changes
+        // the rendered cells.
+        app.help_open = true;
+
+        let skip =
+            render_throttle_should_skip(&mut scratch, size, &mut app, &mut last_sig).unwrap();
+        assert!(!skip, "mutated App must trigger a real draw, got skip=true");
     }
 }

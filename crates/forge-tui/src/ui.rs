@@ -130,6 +130,23 @@ mod throttle_tests {
     }
 
     #[test]
+    fn buffer_signature_differs_after_state_mutation() {
+        // Companion to `buffer_signature_stable_for_unchanged_app`.
+        // Stability alone passes for any pure function; the
+        // throttle's correctness also depends on a state mutation
+        // that visibly changes rendered cells producing a different
+        // signature. Without this, a regression that returned a
+        // constant hash would skip every frame and freeze the UI.
+        let mut app = App::test_default();
+        let term_a = render_into_test_backend(120, 40, &mut app);
+        let sig_a = buffer_signature(term_a.backend().buffer());
+        app.help_open = true;
+        let term_b = render_into_test_backend(120, 40, &mut app);
+        let sig_b = buffer_signature(term_b.backend().buffer());
+        assert_ne!(sig_a, sig_b, "visible-state mutation must change the signature");
+    }
+
+    #[test]
     fn buffer_signature_differs_on_resize() {
         // Different terminal dimensions must produce different
         // signatures so a resize forces the real draw even if the
