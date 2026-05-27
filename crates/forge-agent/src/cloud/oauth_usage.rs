@@ -77,8 +77,8 @@ async fn oauth_usage_user_agent() -> Result<&'static str, OauthUsageError> {
 /// path.
 ///
 /// Refresh fast-path: when the cached token's `expires_at` is in the
-/// past AND the live probe returns `Unauthorized`, fires
-/// [`refresh_via_cli_spawn`] once to nudge the claude CLI into
+/// past OR absent entirely, AND the live probe returns `Unauthorized`,
+/// fires [`refresh_via_cli_spawn`] once to nudge the claude CLI into
 /// rotating the keychain entry, then retries the probe with the
 /// freshly-read token. Any refresh failure (binary missing, timeout,
 /// non-zero exit, keychain still expired) surfaces the original
@@ -97,12 +97,18 @@ pub async fn oauth_usage(config_dir: &Path) -> Result<OauthUsage, OauthUsageErro
     let first = do_probe(&credentials).await;
     match first {
         Err(OauthUsageError::Unauthorized(status))
-            if credentials.expires_at.is_some_and(|t| t < std::time::SystemTime::now()) =>
+            if credentials.expires_at.is_none_or(|t| t < std::time::SystemTime::now()) =>
         {
-            // Local view of the token (`expires_at`) agrees with the
-            // server's verdict (401). Try one refresh + retry; on any
-            // refresh failure, fall through to the original
-            // Unauthorized.
+            // Local view of the token agrees with the server's verdict
+            // (401): expires_at is either in the past OR absent
+            // entirely. Treating None as "missing expiry = expired" is
+            // the safe call here - refresh is one-shot (the per-account
+            // mutex prevents a probe storm), and surfacing 401 forever
+            // with no refresh attempt is worse than firing one refresh
+            // against a credential blob whose expiresAt field was
+            // omitted by an older claude write or a future schema
+            // change. Try one refresh + retry; on any refresh failure,
+            // fall through to the original Unauthorized.
             match refresh_via_cli_spawn(config_dir).await {
                 Ok(new_creds) => do_probe(&new_creds).await,
                 Err(refresh_err) => {
