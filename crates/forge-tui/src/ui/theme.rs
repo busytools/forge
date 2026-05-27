@@ -23,6 +23,12 @@ pub const STATUS_WARNING: Color = Color::Yellow;
 pub const SLASH_COMMAND: Color = Color::LightMagenta;
 pub const SUBAGENT_TOKEN: Color = Color::LightBlue;
 
+// Diff row background tints - GitHub dark-mode added / removed surface.
+// Single source of truth shared by the /diff overlay and the
+// Edit-tool inline diff renderer.
+pub const DIFF_ADDITION_BG: Color = Color::Rgb(3, 58, 22);
+pub const DIFF_DELETION_BG: Color = Color::Rgb(103, 6, 12);
+
 /// SDK tool icon + label pair. Monochrome Unicode symbols.
 /// Unknown tool names fall back to a generic Tool label.
 pub fn tool_name_label(sdk_tool_name: &str) -> (&'static str, &'static str) {

@@ -917,13 +917,6 @@ fn hunk_header_row(hunk: &Hunk) -> Line<'static> {
     Line::from(Span::styled(text, Style::default().fg(Color::Cyan)))
 }
 
-/// Background tint for added lines — dark green matching GitHub's
-/// dark-mode added-line surface.
-const ADDED_BG: Color = Color::Rgb(3, 58, 22);
-/// Background tint for removed lines — dark red matching GitHub's
-/// dark-mode removed-line surface.
-const REMOVED_BG: Color = Color::Rgb(103, 6, 12);
-
 /// Build one split-view body row: left column + divider + right
 /// column. Each column carries `[gutter] [+/-] [highlighted text]`,
 /// truncated to fit. Empty sides (unbalanced rows) render as blank
@@ -1031,8 +1024,8 @@ fn build_split_half(
 
 fn marker_for_kind(kind: DiffLineKind) -> (&'static str, Color, Option<Color>) {
     match kind {
-        DiffLineKind::Added => ("+", Color::Green, Some(ADDED_BG)),
-        DiffLineKind::Removed => ("-", Color::Red, Some(REMOVED_BG)),
+        DiffLineKind::Added => ("+", Color::Green, Some(theme::DIFF_ADDITION_BG)),
+        DiffLineKind::Removed => ("-", Color::Red, Some(theme::DIFF_DELETION_BG)),
         DiffLineKind::Context => (" ", theme::DIM, None),
     }
 }
