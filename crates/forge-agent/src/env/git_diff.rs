@@ -272,12 +272,12 @@ async fn resolve_default_branch(cwd: &Path) -> Option<String> {
         }
     }
     // No `origin/HEAD`, no `main`, no `master`. A feature-branch
-    // diff has no meaningful base, so the renderer collapses to
-    // `CleanDefault` - meaning the user sees branch + path with no
-    // diff stats even when the branch has commits relative to some
-    // other default (e.g. `develop`). Surfacing WARN here so the
-    // failure is grep-able when the user reports "the GIT section
-    // never shows my branch's diff".
+    // diff has no meaningful base, so layer 2 collapses to
+    // `LayerState::Clean` - meaning the user sees branch + path
+    // with no diff stats even when the branch has commits relative
+    // to some other default (e.g. `develop`). Surfacing WARN here
+    // so the failure is grep-able when the user reports "the GIT
+    // section never shows my branch's diff".
     tracing::warn!(
         target: crate::logging::targets::ENV_GIT,
         cwd = %cwd.display(),
