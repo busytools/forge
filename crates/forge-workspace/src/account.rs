@@ -336,8 +336,24 @@ impl AccountStateMap {
             // Replaces the PR #238 `consecutive_unauthorized` 3-strike
             // counter - the recovery poll absorbs transient 401s.
             if matches!(status, UsageFetchStatus::Unauthorized | UsageFetchStatus::Expired) {
+                let prev = state.loading;
                 state.loading = LoadingState::Bailed;
                 state.usage = None;
+                // Surface the transition so an operator triaging
+                // "account suddenly stopped working" can see WHEN the
+                // bail happened + which probe-class triggered it.
+                // Without this log a Ready -> Bailed flip is silent
+                // until the recovery poll runs 30 s later.
+                if prev != LoadingState::Bailed {
+                    tracing::warn!(
+                        target: "forge_workspace::account",
+                        event_name = "account_bailed",
+                        account = %key.0,
+                        prev_state = ?prev,
+                        status = ?status,
+                        "account transitioned to Bailed via probe failure; recovery poll will retry every 30s",
+                    );
+                }
             }
             // Anthropic returns `Retry-After: 0` on the /api/oauth/usage
             // 429 path, which is "no specific hint" rather than "you can
