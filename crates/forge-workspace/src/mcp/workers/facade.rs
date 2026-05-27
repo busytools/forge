@@ -60,6 +60,13 @@ pub enum WorkerLeadDeliverError {
 /// no live worker can shadow the keyword.
 pub const LEAD_LABEL: &str = "lead";
 
+/// Org string stamped into a lead caller's wire envelope (and the
+/// matching synthetic org for Assistant peer-outbound tool_use rows
+/// on the lead-worker chat surface). Pairs with [`LEAD_LABEL`] so
+/// both sides of the wire envelope stay in sync when they describe
+/// the lead's identity.
+pub const PERSONAL_ORG: &str = "Personal";
+
 /// Synchronous error from `spawn_worker`. All gating happens before
 /// the workspace dispatch is even issued.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -279,7 +286,10 @@ impl WorkerFacade for ProdWorkerFacade {
             return WorkerIdentity { name: caller.as_str().to_owned(), org: String::new() };
         };
         if cp.is_lead {
-            return WorkerIdentity { name: LEAD_LABEL.to_owned(), org: "Personal".to_owned() };
+            return WorkerIdentity {
+                name: LEAD_LABEL.to_owned(),
+                org: PERSONAL_ORG.to_owned(),
+            };
         }
         let label = ws
             .list_live_workers(&cp.project_key)
@@ -541,7 +551,10 @@ impl WorkerFacade for MockWorkerFacade {
             return WorkerIdentity { name: caller.as_str().to_owned(), org: String::new() };
         };
         if cp.is_lead {
-            return WorkerIdentity { name: LEAD_LABEL.to_owned(), org: "Personal".to_owned() };
+            return WorkerIdentity {
+                name: LEAD_LABEL.to_owned(),
+                org: PERSONAL_ORG.to_owned(),
+            };
         }
         let label = self.workers.lock().get(cp.project_key.as_str()).and_then(|ws| {
             ws.iter().find(|w| w.session_id == caller.as_str()).map(|w| w.label.clone())

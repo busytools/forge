@@ -1169,7 +1169,9 @@ pub(crate) fn message_envelope_org(msg: &ChatMessage) -> Option<String> {
             _ => None,
         }),
         MessageRole::Assistant => msg.blocks.iter().find_map(|block| match block {
-            MessageBlock::ToolCall(tc) => detect_outbound(tc).map(|_| "Personal".to_owned()),
+            MessageBlock::ToolCall(tc) => {
+                detect_outbound(tc).map(|_| forge_workspace::PERSONAL_ORG.to_owned())
+            }
             _ => None,
         }),
         _ => None,

@@ -162,6 +162,7 @@ pub use forge_agent::AgentEvent;
 // requires the server-builder, the resolver, and the facade trait /
 // mock to be visible cross-crate. Gating on `testing` keeps them out
 // of production builds.
+pub use mcp::workers::facade::{LEAD_LABEL, PERSONAL_ORG};
 #[cfg(feature = "testing")]
 pub use mcp::peers::facade::CallerKeyResolver;
 #[cfg(feature = "testing")]
