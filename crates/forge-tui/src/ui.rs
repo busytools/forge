@@ -75,6 +75,18 @@ pub(crate) fn buffer_signature(buf: &Buffer) -> u64 {
     hasher.finish()
 }
 
+/// Side-effect hook fired by the run loop AFTER a real
+/// `terminal.draw`, never after a scratch throttle render. Chat
+/// cache-metric enforcement walks the cache + bumps log / warn
+/// counters that the throttle's scratch render must not double on
+/// change frames or advance "for free" on skip frames. The render
+/// path itself stays free of these side effects.
+pub fn emit_post_draw_metrics(app: &mut App) {
+    if matches!(app.active_view, ActiveView::Chat) {
+        chat::enforce_and_emit_cache_metrics(app);
+    }
+}
+
 pub(crate) fn refresh_selection_snapshot(app: &mut App) {
     let Some(selection) = app.selection() else {
         return;
