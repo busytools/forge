@@ -1508,12 +1508,12 @@ impl Workspace {
             return;
         }
         for role in team {
-            let resume_existing = resume_map.get(role.label()).cloned();
+            let resume_existing = resume_map.get(&role.label).cloned();
             let (tx, _rx) = tokio::sync::oneshot::channel();
             let cmd = crate::protocol::Command::SpawnWorker {
                 project_key: project_key.clone(),
-                label: role.label().to_owned(),
-                charter: role.charter().to_owned(),
+                label: role.label.clone(),
+                charter: role.charter.clone(),
                 spawned_by_session_id: lead_session_id.to_owned(),
                 resume_existing,
                 return_to: tx,
@@ -1522,9 +1522,9 @@ impl Workspace {
                 tracing::error!(
                     target: "forge_workspace::team",
                     project = %project_key.as_str(),
-                    role = role.label(),
+                    label = %role.label,
                     error = ?err,
-                    "spawn_team_for_lead: dispatch failed for role"
+                    "spawn_team_for_lead: dispatch failed for label"
                 );
             }
         }
@@ -1543,12 +1543,38 @@ impl Workspace {
     /// scan is in flight). The first-pass `live_workers.is_empty()`
     /// gate in `session_task::maybe_spawn_team_on_connected` catches
     /// the post-scan case; this guard covers the during-scan window.
+    /// Load every label's charter + initial kick (file-driven loader)
+    /// before spawning. Returns the loaded set, skipping (with a warn
+    /// log) any label whose files are missing — so a single bad label
+    /// in `team = [...]` doesn't block the rest of the team.
+    fn load_team_roles(
+        team: &[String],
+        project_key: &crate::target::ProjectKey,
+    ) -> Vec<crate::team::Role> {
+        let mut loaded: Vec<crate::team::Role> = Vec::with_capacity(team.len());
+        for label in team {
+            match crate::team::Role::load(label) {
+                Ok(role) => loaded.push(role),
+                Err(err) => {
+                    tracing::warn!(
+                        target: "forge_workspace::team",
+                        project = %project_key.as_str(),
+                        label = %label,
+                        error = %err,
+                        "no charter / kick file found for worker label; spawn skipped. Populate ~/.claude/forge-team/<label>/charter.md and kick.md (copy from docs/forge-team-defaults/<label>/) or use the workers__create_role MCP tool."
+                    );
+                }
+            }
+        }
+        loaded
+    }
+
     pub(crate) fn spawn_team_for_lead_with_catalog_scan(
         self: &Arc<Self>,
         lead_session_id: String,
         project_key: crate::target::ProjectKey,
         project_dir: PathBuf,
-        team: Vec<crate::team::Role>,
+        team: Vec<String>,
     ) {
         if team.is_empty() {
             return;
@@ -1576,10 +1602,11 @@ impl Workspace {
                 project = %project_key.as_str(),
                 "no tokio runtime in scope; falling back to sync team-spawn (test path)",
             );
+            let loaded = Self::load_team_roles(&team, &project_key);
             self.spawn_team_for_lead_with_resume(
                 &lead_session_id,
                 &project_key,
-                &team,
+                &loaded,
                 &std::collections::HashMap::new(),
             );
             self.release_team_spawn(&project_key);
@@ -1589,18 +1616,20 @@ impl Workspace {
         let config_dir = self.config_dir.clone();
         handle.spawn(async move {
             let resume_map = scan_worker_resume_map(&config_dir, &project_dir).await;
+            let loaded = Self::load_team_roles(&team, &project_key);
             tracing::info!(
                 target: "forge_workspace::team",
                 project = %project_key.as_str(),
                 lead_session_id = %lead_session_id,
                 resume_count = resume_map.len(),
-                fresh_count = team.len().saturating_sub(resume_map.len()),
-                "team-spawn catalog scan complete; dispatching SpawnWorker per role",
+                fresh_count = loaded.len().saturating_sub(resume_map.len()),
+                missing_count = team.len().saturating_sub(loaded.len()),
+                "team-spawn catalog scan complete; dispatching SpawnWorker per label",
             );
             workspace.spawn_team_for_lead_with_resume(
                 &lead_session_id,
                 &project_key,
-                &team,
+                &loaded,
                 &resume_map,
             );
             workspace.release_team_spawn(&project_key);
@@ -2878,7 +2907,7 @@ impl Workspace {
     /// by `find_project_view_by_name`. Used by engineering-team tests
     /// to drive the Connected-hook team-spawn trigger without
     /// writing a real `forge.toml`. Test-only.
-    pub fn seed_test_project_with_team(&self, name: &str, path: &str, team: &[crate::team::Role]) {
+    pub fn seed_test_project_with_team(&self, name: &str, path: &str, team: &[String]) {
         self.test_extra_projects.lock().push(crate::config::LoadedProject {
             name: name.to_owned(),
             path: std::path::PathBuf::from(path),
@@ -4688,13 +4717,21 @@ mod team_spawn_tests {
     use crate::protocol::Command;
     use crate::team::Role;
 
+    fn role(label: &str) -> Role {
+        Role {
+            label: label.to_owned(),
+            charter: format!("test charter for {label}"),
+            initial_kick: format!("test kick for {label}"),
+        }
+    }
+
     #[test]
     fn spawn_team_for_lead_dispatches_one_command_per_role() {
         let (workspace, _update_rx) = Workspace::testing_stub();
         workspace.enable_test_dispatch_intercept();
         let lead_sid = "lead-uuid";
         let project_key = ProjectKey::new("proj-x");
-        let team = vec![Role::Planner, Role::Reviewer, Role::Tester];
+        let team = vec![role("planner"), role("reviewer"), role("tester")];
 
         workspace.spawn_team_for_lead_with_resume(
             lead_sid,
@@ -4752,7 +4789,7 @@ mod team_spawn_tests {
     fn spawn_team_for_lead_with_resume_all_fresh() {
         let (workspace, _update_rx) = Workspace::testing_stub();
         workspace.enable_test_dispatch_intercept();
-        let team = vec![Role::Planner, Role::Reviewer];
+        let team = vec![role("planner"), role("reviewer")];
         workspace.spawn_team_for_lead_with_resume(
             "lead-uuid",
             &ProjectKey::new("proj-x"),
@@ -4778,7 +4815,7 @@ mod team_spawn_tests {
     fn spawn_team_for_lead_with_resume_all_resume() {
         let (workspace, _update_rx) = Workspace::testing_stub();
         workspace.enable_test_dispatch_intercept();
-        let team = vec![Role::Planner, Role::Reviewer];
+        let team = vec![role("planner"), role("reviewer")];
         let mut resume_map = std::collections::HashMap::new();
         resume_map.insert("planner".to_owned(), "planner-uuid".to_owned());
         resume_map.insert("reviewer".to_owned(), "reviewer-uuid".to_owned());
@@ -4806,7 +4843,7 @@ mod team_spawn_tests {
     fn spawn_team_for_lead_with_resume_mixed() {
         let (workspace, _update_rx) = Workspace::testing_stub();
         workspace.enable_test_dispatch_intercept();
-        let team = vec![Role::Planner, Role::Reviewer];
+        let team = vec![role("planner"), role("reviewer")];
         let mut resume_map = std::collections::HashMap::new();
         resume_map.insert("planner".to_owned(), "planner-uuid".to_owned());
         // reviewer absent: fresh-spawn.

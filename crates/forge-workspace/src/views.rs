@@ -36,12 +36,14 @@ pub struct ProjectView {
     /// loader enforces). The launchpad picker reads the first entry
     /// as the row's account hint via [`Self::primary_account_hint`].
     pub accounts: Vec<String>,
-    /// Engineering-team roles configured for this project via the
-    /// `team = [...]` field in `forge.toml`. Empty means no team;
-    /// when non-empty the project's lead session stamps the
-    /// `LEAD_CHARTER` system-prompt addendum and auto-spawns one
-    /// worker per role on `Connected`. See `crate::team::Role`.
-    pub team: Vec<crate::team::Role>,
+    /// Engineering-team role labels configured for this project via
+    /// the `team = [...]` field in `forge.toml`. Empty means no team;
+    /// when non-empty the project's lead session stamps the lead
+    /// charter (from `~/.claude/forge-team/lead/charter.md`) and
+    /// auto-spawns one worker per label on `Connected`. Each label
+    /// resolves to a charter + kick file under `~/.claude/forge-team/
+    /// <label>/`. See `crate::team::Role`.
+    pub team: Vec<String>,
     pub sessions: Vec<SessionView>,
 }
 
