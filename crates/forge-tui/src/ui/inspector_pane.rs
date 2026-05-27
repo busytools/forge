@@ -184,7 +184,10 @@ fn render_scrollable_body(frame: &mut Frame, body_area: Rect, app: &mut App) {
     }
 
     let mut body_lines: Vec<Line<'static>> = Vec::new();
-    append_body(&mut body_lines, app, body_area.width);
+    {
+        let _t = crate::perf::start("ui::inspector_pane::append_body");
+        append_body(&mut body_lines, app, body_area.width);
+    }
     let has_open_diff_glyph = snapshot_has_diff(app);
     let total = body_lines.len();
     let visible = usize::from(body_area.height);
@@ -346,7 +349,10 @@ const INSPECTOR_THUMB_MAX_CELLS: usize = 1;
 /// account-panel boundary, so the two surfaces read as visually
 /// distinct rather than two `DIM bold` headers next to each other.
 fn append_body(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
-    append_git_section(lines, app, width);
+    {
+        let _t = crate::perf::start("ui::inspector_pane::git_section");
+        append_git_section(lines, app, width);
+    }
 
     let todos = app.todos();
     // Section visibility gates on PENDING/IN-PROGRESS tasks
@@ -358,6 +364,7 @@ fn append_body(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
         lines.push(Line::default());
         push_section_rule(lines, width);
         lines.push(Line::default());
+        let _t = crate::perf::start("ui::inspector_pane::tasks_section");
         append_tasks_section(lines, app, width);
     }
 
@@ -576,8 +583,14 @@ fn append_diff_layer(lines: &mut Vec<Line<'static>>, layer: &DiffDisplay<'_>, wi
     // Blank between the subtitle row and the file tree.
     lines.push(Line::default());
 
-    let tree = build_tree(layer.files);
-    render_tree(lines, &tree, width);
+    let tree = {
+        let _t = crate::perf::start("ui::inspector_pane::build_tree");
+        build_tree(layer.files)
+    };
+    {
+        let _t = crate::perf::start("ui::inspector_pane::render_tree");
+        render_tree(lines, &tree, width);
+    }
 
     // Overflow row when the trimmed top-N is shorter than the total
     // changed-files count.
