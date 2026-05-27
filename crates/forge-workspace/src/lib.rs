@@ -74,7 +74,7 @@ pub mod ui;
 mod views;
 mod workspace;
 
-pub use account::UsageFetchStatus;
+pub use account::{LoadingState, UsageFetchStatus};
 pub use domain_session::DomainSession;
 pub use error::WorkspaceError;
 pub use protocol::{Command, DispatchError, PendingInteractionSlot, SessionUpdate, TurnErrorClass};

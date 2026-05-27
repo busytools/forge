@@ -79,6 +79,36 @@ fn click_intent(lifecycle: SessionLifecycleState) -> ClickIntent {
     }
 }
 
+/// Effective click intent including the boot-time gate. When the
+/// workspace's account-loading tasks haven't all settled, every
+/// project row downgrades to `Block` so the launchpad can't spawn
+/// against a partial assignment plan. Same downgrade when the
+/// project's own pool resolves to empty (every allowed account
+/// Bailed) - the row stays unclickable with a `no usable accounts`
+/// hint.
+fn effective_click_intent(
+    app: &App,
+    project_name: &str,
+    lifecycle: SessionLifecycleState,
+) -> ClickIntent {
+    let Some(workspace) = app.workspace.as_ref() else {
+        return click_intent(lifecycle);
+    };
+    if !workspace.all_accounts_loaded() {
+        return ClickIntent::Block;
+    }
+    // Resolve the project's pool through the assignment plan. The
+    // launchpad only shows projects from forge.toml, so the lookup
+    // should always succeed; if it doesn't, conservatively Block.
+    let project_key =
+        workspace.list_projects().into_iter().find(|p| p.name == project_name).map(|p| p.key);
+    let pool_ok = project_key.is_some_and(|k| workspace.project_has_assigned_account(&k));
+    if !pool_ok {
+        return ClickIntent::Block;
+    }
+    click_intent(lifecycle)
+}
+
 /// One selectable row in the picker — the data the renderer needs
 /// to draw the row plus the metadata the keyboard handler needs to
 /// resolve a pick into a project + lifecycle.
@@ -293,9 +323,53 @@ fn render_identity_block(frame: &mut Frame, area: Rect, app: &App, y: u16) {
             Style::default().fg(theme::RUST_ORANGE),
         ));
     }
+    // Per-account loading glyph row: one centred line with each
+    // account's name + state glyph. Yellow `○` for Loading or
+    // Refreshing (mid-flight), green `●` for Ready, red `⚠` for
+    // Bailed. Order matches forge.toml's `[[accounts]]` so the user
+    // can scan left-to-right against their mental layout.
+    if let Some(workspace) = app.workspace.as_ref() {
+        let snapshot = workspace.account_loading_snapshot();
+        if !snapshot.is_empty() {
+            lines.push(Line::default());
+            lines.push(centered_account_status_line(&snapshot, area.width));
+        }
+    }
     let block_area =
         Rect { x: area.x, y, width: area.width, height: u16::try_from(lines.len()).unwrap_or(0) };
     frame.render_widget(Paragraph::new(lines), block_area);
+}
+
+/// Render a centred line of per-account state chips. Each chip is
+/// `<glyph> <name>` separated by `  ` (two spaces) so the user can
+/// distinguish chips at a glance without staring at the row.
+fn centered_account_status_line(
+    snapshot: &[(String, forge_workspace::LoadingState)],
+    area_width: u16,
+) -> Line<'static> {
+    use forge_workspace::LoadingState;
+    let dim = Style::default().fg(theme::DIM);
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut text_width: usize = 0;
+    for (idx, (name, state)) in snapshot.iter().enumerate() {
+        if idx > 0 {
+            spans.push(Span::styled("  ".to_owned(), dim));
+            text_width += 2;
+        }
+        let (glyph, color) = match state {
+            LoadingState::Loading | LoadingState::Refreshing => ("○", Color::Yellow),
+            LoadingState::Ready => ("●", Color::Green),
+            LoadingState::Bailed => ("⚠", theme::STATUS_WARNING),
+        };
+        spans.push(Span::styled(glyph.to_owned(), Style::default().fg(color)));
+        spans.push(Span::styled(format!(" {name}"), dim));
+        text_width += 1 + 1 + name.chars().count();
+    }
+    let pad = usize::from(area_width).saturating_sub(text_width) / 2;
+    let mut out: Vec<Span<'static>> = Vec::with_capacity(spans.len() + 1);
+    out.push(Span::raw(" ".repeat(pad)));
+    out.extend(spans);
+    Line::from(out)
 }
 
 fn centered_text_line(text: &str, area_width: u16, style: Style) -> Line<'static> {
@@ -356,6 +430,23 @@ fn render_picker(frame: &mut Frame, area: Rect, app: &mut App, rows: &[PickerRow
         if let Some(err) = &row.error {
             push_error_row(&mut lines, err, area.width);
         }
+        // Surface a "no usable accounts" hint when the project's
+        // pool resolved to empty (every allowed account Bailed, or
+        // forge.toml allow-list has no known accounts). The row
+        // stays unclickable via `effective_click_intent`'s Block
+        // downgrade; the hint explains why.
+        if let Some(workspace) = app.workspace.as_ref()
+            && workspace.all_accounts_loaded()
+        {
+            let project_key = workspace
+                .list_projects()
+                .into_iter()
+                .find(|p| p.name == row.project_name)
+                .map(|p| p.key);
+            if project_key.as_ref().is_some_and(|k| !workspace.project_has_assigned_account(k)) {
+                push_no_usable_accounts_row(&mut lines, area.width);
+            }
+        }
     }
 
     lines.push(rule_line());
@@ -375,7 +466,7 @@ fn push_project_row(
     let connector = if row.is_last_in_org { "└─" } else { "├─" };
     let (glyph, glyph_color) =
         glyph_for_row(row.lifecycle, app.launchpad.spinner_style, app.launchpad.opened_at);
-    let intent = click_intent(row.lifecycle);
+    let intent = effective_click_intent(app, &row.project_name, row.lifecycle);
     // Base name style — BOLD when the row is interactive (Idle /
     // Running / Sleeping / Failed), DIM when not (Spawning waits for
     // its subprocess). Selection on a clickable row layers on its
@@ -441,6 +532,20 @@ fn push_error_row(lines: &mut Vec<Line<'static>>, error: &str, area_width: u16) 
     lines.push(Line::from(vec![Span::raw(" ".repeat(pad)), Span::styled(truncated, style)]));
 }
 
+/// Inline hint for a project whose AssignmentPlan pool is empty
+/// (every allowed account ended in `Bailed`). Same indent + style
+/// shape as `push_error_row`; uses DIM rather than STATUS_ERROR
+/// because the condition is recoverable (user needs to `/login` an
+/// account in the allow-list) rather than a hard error.
+fn push_no_usable_accounts_row(lines: &mut Vec<Line<'static>>, area_width: u16) {
+    let style = Style::default().fg(theme::DIM);
+    let pad: usize = 8;
+    let message = "no usable accounts";
+    let budget = usize::from(area_width).saturating_sub(pad + 2);
+    let truncated = truncate_to(message, budget);
+    lines.push(Line::from(vec![Span::raw(" ".repeat(pad)), Span::styled(truncated, style)]));
+}
+
 fn glyph_for_row(
     lifecycle: SessionLifecycleState,
     style: SpinnerStyle,
@@ -489,12 +594,20 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App, rows: &[PickerRow]) {
     let selected_row = rows.get(app.launchpad.selected_index);
     // The Enter-action label tracks click intent so the hint always
     // matches what would happen if the user pressed Enter on the
-    // currently-focused row.
-    let enter_label = match selected_row.map(|r| click_intent(r.lifecycle)) {
-        Some(ClickIntent::SpawnAndWait) => "enter  start",
-        Some(ClickIntent::Block) => "enter  ⏳ spawning…",
-        Some(ClickIntent::Retry) => "r  retry",
-        Some(ClickIntent::EnterChat) | None => "enter  open",
+    // currently-focused row. When the loading gate is down, every
+    // row reads as Block - the label surfaces that as "loading
+    // accounts" instead of the spawn-busy "spawning…" so the user
+    // understands the wait is a one-off, not per-row.
+    let loading = app.workspace.as_ref().is_some_and(|w| !w.all_accounts_loaded());
+    let enter_label = if loading {
+        "enter  ⏳ loading accounts…"
+    } else {
+        match selected_row.map(|r| effective_click_intent(app, &r.project_name, r.lifecycle)) {
+            Some(ClickIntent::SpawnAndWait) => "enter  start",
+            Some(ClickIntent::Block) => "enter  ⏳ spawning…",
+            Some(ClickIntent::Retry) => "r  retry",
+            Some(ClickIntent::EnterChat) | None => "enter  open",
+        }
     };
     let hint = format!(" ↑↓  navigate     {enter_label}     ?  help     ctrl+q  quit");
     let line = Line::from(vec![Span::styled(hint, dim)]);
@@ -551,7 +664,7 @@ pub fn pick_selected_project(app: &mut App) {
     let Some((project_name, lifecycle)) = resolve_selection(app) else {
         return;
     };
-    match click_intent(lifecycle) {
+    match effective_click_intent(app, &project_name, lifecycle) {
         ClickIntent::EnterChat => switch_to_project_and_focus(app, &project_name),
         ClickIntent::SpawnAndWait => spawn_project_in_background(app, &project_name),
         ClickIntent::Block | ClickIntent::Retry => {}

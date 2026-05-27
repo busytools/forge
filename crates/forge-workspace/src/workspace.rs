@@ -839,6 +839,43 @@ impl Workspace {
         &self.accounts
     }
 
+    /// `true` when every `[[accounts]]` entry has reached a terminal
+    /// `LoadingState`. The launchpad reads this to decide whether
+    /// project rows are clickable - clicking before all accounts
+    /// resolve means the spawn-time picker falls back to round-robin
+    /// (with potentially-undesirable account choice) instead of the
+    /// deterministic plan. Public so forge-tui can gate keyboard +
+    /// mouse handlers on it without reaching into the crate-private
+    /// account map.
+    #[must_use]
+    pub fn all_accounts_loaded(&self) -> bool {
+        self.accounts.lock().all_loaded()
+    }
+
+    /// `true` when the assignment plan is populated AND has at least
+    /// one entry for `project_key`. Projects whose pool resolved to
+    /// empty at compute time (e.g., every allowed account Bailed)
+    /// produce zero entries; the launchpad surfaces a
+    /// `no usable accounts` hint for those rows and keeps them
+    /// unclickable. Returns `false` when the plan isn't populated yet.
+    /// Public for forge-tui to consult during render.
+    #[must_use]
+    pub fn project_has_assigned_account(&self, project_key: &ProjectKey) -> bool {
+        let plan = self.assignment_plan.lock();
+        plan.as_ref().is_some_and(|p| !p.project_has_no_assignments(project_key))
+    }
+
+    /// Snapshot of `(AccountKey display name, LoadingState)` pairs in
+    /// declaration order. Forge-tui's launchpad renders the per-
+    /// account loading glyph row from this; the order matches
+    /// `forge.toml`'s `[[accounts]]` declarations so the glyphs sit
+    /// next to the user's mental model of which-account-is-which.
+    #[must_use]
+    pub fn account_loading_snapshot(&self) -> Vec<(String, crate::account::LoadingState)> {
+        let accounts = self.accounts.lock();
+        accounts.ordered_keys.iter().map(|k| (k.0.clone(), accounts.loading_state(k))).collect()
+    }
+
     /// Crate-internal accessor for the assignment plan. Returns the
     /// `Mutex<Option<...>>` so callers (the launchpad render path
     /// and the spawn-path integration in §2.5) can take the lock
