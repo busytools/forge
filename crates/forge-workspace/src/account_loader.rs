@@ -29,7 +29,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use forge_agent::cloud::{oauth, oauth_credentials, oauth_usage};
+use tracing::Instrument;
+
+use forge_agent::cloud::{auth_status, oauth, oauth_credentials, oauth_usage};
 use forge_primitives::usage::oauth::OauthUsageError;
 
 use crate::account::{AccountKey, LoadingState, UsageFetchStatus};
@@ -40,6 +42,9 @@ use crate::workspace::Workspace;
 /// passing network glitch resolves within a few seconds; long enough
 /// that we don't burn CPU through a sustained outage.
 const PROBE_RETRY_INTERVAL: Duration = Duration::from_secs(2);
+
+/// 30 s polling interval for the recovery loop.
+const RECOVERY_POLL_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Run the boot-time loading state machine for one account until it
 /// reaches a terminal `LoadingState`.
@@ -149,6 +154,77 @@ pub async fn run_account_loading(
                 );
                 tokio::time::sleep(PROBE_RETRY_INTERVAL).await;
             }
+        }
+    }
+}
+
+/// Background poll that watches Bailed accounts and re-runs the
+/// boot-time loading flow whenever `claude auth status` reports the
+/// account is logged-in again. Ticks every
+/// [`RECOVERY_POLL_INTERVAL`]; one tokio task for the workspace
+/// lifetime, spawned at `Workspace::start_account_loading_tasks`.
+///
+/// The auth_status shell-out runs under `spawn_blocking` (it's a
+/// synchronous std::process::Command shellout from
+/// `forge_agent::cloud::auth_status`) so it doesn't stall the tokio
+/// reactor. For each Bailed account whose `auth_status` flips back
+/// to logged-in, the recovery task transitions the account to
+/// `Loading` and spawns a fresh `run_account_loading` task. A
+/// subsequent successful probe lands the new snapshot; a subsequent
+/// failure flips back to Bailed and the next 30 s tick reevaluates.
+pub async fn run_recovery_poll(workspace: Arc<Workspace>) {
+    let mut tick = tokio::time::interval(RECOVERY_POLL_INTERVAL);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // Drain the immediate-fire tick - the boot-time loading tasks
+    // are still running when this poll starts; first useful tick is
+    // one interval out.
+    tick.tick().await;
+    loop {
+        tick.tick().await;
+
+        // Snapshot the bailed accounts under the parking_lot lock,
+        // then drop the lock before any awaits.
+        let bailed: Vec<(AccountKey, std::path::PathBuf)> = {
+            let accounts = workspace.account_states().lock();
+            accounts
+                .by_key
+                .iter()
+                .filter(|(_, s)| s.loading == LoadingState::Bailed)
+                .map(|(k, s)| (k.clone(), s.config_dir.clone()))
+                .collect()
+        };
+
+        if bailed.is_empty() {
+            continue;
+        }
+
+        for (key, config_dir) in bailed {
+            let dir = config_dir.clone();
+            let logged_in = tokio::task::spawn_blocking(move || {
+                auth_status::account_info_from_shell(&dir).is_some()
+            })
+            .await
+            .unwrap_or(false);
+
+            if !logged_in {
+                continue;
+            }
+
+            // Transition Bailed -> Loading + re-spawn the loading
+            // task. The loading task runs until terminal; on Ready
+            // it calls recompute_plan_if_ready which (via the
+            // frozen overlay added in Section 4.4) extends the plan
+            // with the newly-recovered account while preserving
+            // existing assignments.
+            workspace.account_states().lock().set_loading(&key, LoadingState::Loading);
+            let workspace_clone = Arc::clone(&workspace);
+            let span = tracing::info_span!("account_recovery_loading", account = %key.0);
+            tokio::spawn(
+                async move {
+                    run_account_loading(config_dir, key, workspace_clone).await;
+                }
+                .instrument(span),
+            );
         }
     }
 }

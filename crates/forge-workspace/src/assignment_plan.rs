@@ -93,6 +93,43 @@ impl AssignmentPlan {
         self.assignments.get(&(project.clone(), label.clone()))
     }
 
+    /// Merge `fresh` into this plan in frozen-overlay mode: keep
+    /// every existing `(project, label) -> account` assignment,
+    /// add only entries from `fresh` that aren't already present,
+    /// and refresh the per-project bookkeeping (`slots`) so future
+    /// `assign_adhoc_worker` calls use the recovered pool.
+    ///
+    /// Called by `Workspace::recompute_plan_if_ready` after the
+    /// boot-time plan has been populated (subsequent re-computes
+    /// from runtime state transitions). Without the frozen overlay
+    /// a recovered Bailed account would shift existing sessions to
+    /// different accounts mid-run, breaking the wire-identity
+    /// invariant.
+    pub fn merge_frozen(&mut self, fresh: AssignmentPlan) {
+        for (key, account) in fresh.assignments {
+            self.assignments.entry(key).or_insert(account);
+        }
+        // Refresh slots so adhoc workers see the new pool sizes /
+        // offsets. The `next_session_n` field carries the count of
+        // assignments at compute time; preserve the higher count
+        // (if existing plan has issued more adhoc workers than the
+        // fresh plan, those extra entries are still in
+        // `assignments` and the counter must not regress).
+        for (project_key, mut fresh_slot) in fresh.slots {
+            match self.slots.get(&project_key) {
+                Some(existing) => {
+                    if existing.next_session_n > fresh_slot.next_session_n {
+                        fresh_slot.next_session_n = existing.next_session_n;
+                    }
+                    self.slots.insert(project_key, fresh_slot);
+                }
+                None => {
+                    self.slots.insert(project_key, fresh_slot);
+                }
+            }
+        }
+    }
+
     /// `true` when the plan has zero entries for `project`. Surfaced
     /// to the launchpad so projects whose pool resolved to empty
     /// (every allowed account Bailed, or the allow-list contains no
@@ -386,5 +423,75 @@ mod tests {
         // No project entry at all -> trivially no assignments.
         let plan = AssignmentPlan::default();
         assert!(plan.project_has_no_assignments(&pk("nope")));
+    }
+
+    #[test]
+    fn merge_frozen_preserves_existing_assignments() {
+        // Boot-time: one ready account; all forge sessions land on it.
+        let boot_accounts = vec![ak("a")];
+        let projects = vec![project("p", &["a", "b"], &["w1"])];
+        let mut plan = compute_plan(&boot_accounts, &projects);
+        assert_eq!(plan.lookup(&pk("p"), &"lead".into()), Some(&ak("a")));
+        assert_eq!(plan.lookup(&pk("p"), &"w1".into()), Some(&ak("a")));
+
+        // Recovery: account "b" comes back online. Fresh plan would
+        // distribute across [a, b] but the frozen overlay must
+        // PRESERVE the existing (lead, w1) -> a assignments.
+        let recovered_accounts = vec![ak("a"), ak("b")];
+        let fresh = compute_plan(&recovered_accounts, &projects);
+        plan.merge_frozen(fresh);
+
+        assert_eq!(
+            plan.lookup(&pk("p"), &"lead".into()),
+            Some(&ak("a")),
+            "lead must keep its boot-time account",
+        );
+        assert_eq!(
+            plan.lookup(&pk("p"), &"w1".into()),
+            Some(&ak("a")),
+            "w1 must keep its boot-time account",
+        );
+    }
+
+    #[test]
+    fn merge_frozen_extends_with_new_adhoc_targets() {
+        // After merge, the per-project slot's pool covers the
+        // recovered accounts so future adhoc workers can land on
+        // them. Existing sessions stay put.
+        let boot_accounts = vec![ak("a")];
+        let projects = vec![project("p", &["a", "b"], &[])];
+        let mut plan = compute_plan(&boot_accounts, &projects);
+
+        let recovered_accounts = vec![ak("a"), ak("b")];
+        let fresh = compute_plan(&recovered_accounts, &projects);
+        plan.merge_frozen(fresh);
+
+        // The next adhoc worker (session_n = 1 - boot only assigned
+        // lead at session_n = 0) lands on pool[1] = b.
+        let assigned = plan.assign_adhoc_worker(&pk("p"), &"w1".into());
+        assert_eq!(
+            assigned,
+            Some(ak("b")),
+            "adhoc worker after recovery lands on the recovered account",
+        );
+    }
+
+    #[test]
+    fn merge_frozen_preserves_adhoc_counter_progress() {
+        // Boot + 2 adhoc workers issued. Recovery shouldn't roll the
+        // counter back so a third adhoc lands at the right slot.
+        let accounts = vec![ak("a"), ak("b"), ak("c")];
+        let projects = vec![project("p", &["a", "b", "c"], &[])];
+        let mut plan = compute_plan(&accounts, &projects);
+        let _ = plan.assign_adhoc_worker(&pk("p"), &"w1".into()); // slot 1 -> b
+        let _ = plan.assign_adhoc_worker(&pk("p"), &"w2".into()); // slot 2 -> c
+
+        // Re-compute against the same ready set (e.g., a Bailed
+        // account elsewhere recovered without affecting this
+        // project's pool). The frozen overlay must keep counter at 3.
+        let fresh = compute_plan(&accounts, &projects);
+        plan.merge_frozen(fresh);
+        let assigned = plan.assign_adhoc_worker(&pk("p"), &"w3".into()); // slot 3 mod 3 = 0 -> a
+        assert_eq!(assigned, Some(ak("a")));
     }
 }

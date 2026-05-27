@@ -1046,8 +1046,18 @@ impl Workspace {
             })
             .collect();
 
-        let plan = compute_plan(&ready_accounts, &projects);
-        *self.assignment_plan.lock() = Some(plan);
+        let fresh = compute_plan(&ready_accounts, &projects);
+        let mut plan_guard = self.assignment_plan.lock();
+        match plan_guard.as_mut() {
+            // First compute - just store. Boot-time path.
+            None => *plan_guard = Some(fresh),
+            // Subsequent recompute (e.g., Bailed account recovered).
+            // Frozen overlay preserves existing (project, label)
+            // assignments so mid-run sessions don't shift to a
+            // newly-recovered account; extends the plan with
+            // newly-recovered accounts for future spawns.
+            Some(existing) => existing.merge_frozen(fresh),
+        }
     }
 
     /// Spawn one boot-time loading task per `[[accounts]]` entry in
@@ -1077,6 +1087,18 @@ impl Workspace {
                 .instrument(span),
             );
         }
+
+        // Background recovery poll: watches Bailed accounts and
+        // re-runs the loading flow when `claude auth status` flips
+        // back to logged-in. One task per Workspace lifetime.
+        let workspace = Arc::clone(self);
+        let span = tracing::info_span!("account_recovery_poll");
+        tokio::spawn(
+            async move {
+                crate::account_loader::run_recovery_poll(workspace).await;
+            }
+            .instrument(span),
+        );
     }
 
     /// Spawn the 60 s background account-usage poller. Fetches
