@@ -288,22 +288,21 @@ pub async fn scan(cwd: &Path, prev: Option<&GitDiffSnapshot>) -> GitDiffSnapshot
         if let Some(default) = default_branch.as_deref() {
             let range = format!("{default}...HEAD");
             match numstat(cwd, &["diff", "--numstat", &range]).await {
-                Some(stats) => {
-                    let commit_count = commit_count_in_range(cwd, default, "HEAD").await;
-                    // `commit_count == 0` is the cleanest signal that
-                    // the branch has no commits ahead of default;
-                    // gate on that alone. The earlier `&& stats.
-                    // total_files == 0` clause masked the racy
-                    // merge-base / force-push corner case where
-                    // commit_count == 0 but stats showed files,
-                    // producing a "0 commits vs main" subtitle that
-                    // read oddly to the user.
-                    if commit_count == 0 {
-                        (None, true)
-                    } else {
+                Some(stats) => match commit_count_in_range(cwd, default, "HEAD").await {
+                    None => (None, false),
+                    Some(0) => (None, true),
+                    Some(commit_count) => {
+                        // `commit_count == 0` is the cleanest signal
+                        // that the branch has no commits ahead of
+                        // default; gate on that alone. The earlier
+                        // `&& stats.total_files == 0` clause masked
+                        // the racy merge-base / force-push corner
+                        // case where commit_count == 0 but stats
+                        // showed files, producing a "0 commits vs
+                        // main" subtitle that read oddly to the user.
                         (Some(GitBranchAhead { commit_count, stats }), true)
                     }
-                }
+                },
                 None => (None, false),
             }
         } else {
@@ -345,16 +344,16 @@ pub async fn scan(cwd: &Path, prev: Option<&GitDiffSnapshot>) -> GitDiffSnapshot
 }
 
 /// Count commits in `<base>..HEAD` via `git rev-list --count`.
-/// Returns 0 on any failure path (subprocess error, parse failure,
-/// anomalous empty output) so the surrounding scan logic stays
-/// infallible. Each non-Ok branch emits a WARN log mirroring the
-/// `gh_pr_lookup_*` pattern so a silent "0 commits ahead" can be
-/// traced to a real failure rather than a clean range.
-async fn commit_count_in_range(cwd: &Path, base: &str, head: &str) -> u32 {
+/// Returns `None` on any failure path (subprocess error, parse
+/// failure, anomalous empty output) so callers can route the
+/// signal into `branch_ahead_scan_ok=false` instead of masking the
+/// failure as 0. Each non-Ok branch emits a WARN log mirroring the
+/// `gh_pr_lookup_*` pattern.
+async fn commit_count_in_range(cwd: &Path, base: &str, head: &str) -> Option<u32> {
     let range = format!("{base}..{head}");
     match run_git(cwd, &["rev-list", "--count", &range]).await {
         GitOutput::Ok(s) => match s.trim().parse::<u32>() {
-            Ok(count) => count,
+            Ok(count) => Some(count),
             Err(err) => {
                 tracing::warn!(
                     target: crate::logging::targets::ENV_GIT,
@@ -366,7 +365,7 @@ async fn commit_count_in_range(cwd: &Path, base: &str, head: &str) -> u32 {
                     range = %range,
                     raw = %s.trim(),
                 );
-                0
+                None
             }
         },
         GitOutput::Empty => {
@@ -383,9 +382,9 @@ async fn commit_count_in_range(cwd: &Path, base: &str, head: &str) -> u32 {
                 outcome = "anomalous",
                 range = %range,
             );
-            0
+            None
         }
-        GitOutput::Failed | GitOutput::Oversize => 0,
+        GitOutput::Failed | GitOutput::Oversize => None,
     }
 }
 
