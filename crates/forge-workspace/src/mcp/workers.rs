@@ -695,9 +695,10 @@ impl Tool for Ask {
 }
 
 /// `workers__create_role` - lead-only. Writes charter + initial-kick
-/// files for a new role under `~/.claude/forge-team/<label>/`. The
-/// next forge restart can then include `<label>` in `forge.toml`'s
-/// `team = [...]` to spawn workers with this charter.
+/// (and, optionally, resume-kick) files for a new role under
+/// `~/.claude/forge-team/<label>/`. The next forge restart can then
+/// include `<label>` in `forge.toml`'s `team = [...]` to spawn workers
+/// with this charter.
 ///
 /// Arguments:
 /// - `label` (string, required) - the role label, may contain `/` for
@@ -707,10 +708,26 @@ impl Tool for Ask {
 ///   spawned worker's LLM sees this as a system-prompt addendum.
 /// - `initial_kick` (string, required) - the worker's first-turn message
 ///   on connect. Drives the worker's initial action + report-back.
+/// - `resume_kick` (string, optional) - the worker's re-orient message
+///   when a session is resumed rather than freshly spawned. When `Some`,
+///   writes `<label>/resume-kick.md` alongside the other two. When
+///   absent or `None`, the resume-kick file is not written (PR #226's
+///   opt-in convention: absent = caller falls back to the default kick
+///   or skips per the past-progress guard).
 /// - `overwrite` (bool, optional, default false) - if false (default),
-///   refuses when either file already exists. Set true to replace.
+///   refuses when ANY of the target files already exist. Set true to
+///   replace. Both the existence check and the overwrite scope are
+///   limited to the files the call writes: when `resume_kick=None`,
+///   an existing `resume-kick.md` is neither read as a collision nor
+///   touched. A role whose resume-kick was provisioned manually
+///   survives a charter-only refresh that passes `overwrite=true`
+///   without `resume_kick`.
 ///
-/// Returns a JSON object: `{ "label": "...", "charter_path": "...", "kick_path": "..." }`.
+/// Returns a JSON object:
+/// `{ "label", "charter_path", "kick_path", "resume_kick_path"? }`.
+/// The `resume_kick_path` field is present iff `resume_kick` was
+/// provided; absent (not null) otherwise so callers that don't read it
+/// see no change.
 pub(crate) struct CreateRole {
     pub(crate) facade: Arc<dyn WorkerFacade>,
     pub(crate) caller_key: CallerKeyResolver,
@@ -721,6 +738,8 @@ struct CreateRoleArgs {
     label: String,
     charter: String,
     initial_kick: String,
+    #[serde(default)]
+    resume_kick: Option<String>,
     #[serde(default)]
     overwrite: bool,
 }
@@ -736,14 +755,23 @@ impl Tool for CreateRole {
     fn description(&self) -> &str {
         "Create a new engineering-team role by writing its charter and \
          initial-kick files under `~/.claude/forge-team/<label>/`. \
-         Lead-only. The label may contain `/` for namespace subdirectories \
-         (e.g. `hub-modules/researcher` writes to \
-         `~/.claude/forge-team/hub-modules/researcher/charter.md`). After \
-         creation, add the label to `forge.toml`'s `team = [...]` and \
-         restart forge to spawn workers with this charter. Refuses by \
-         default if the files already exist; pass `overwrite=true` to \
-         replace. Validates the label against path-traversal (no `..`, \
-         no leading `/`, no empty / `.` segments)."
+         Optionally writes a `resume-kick.md` companion when \
+         `resume_kick` is provided (PR #226's opt-in convention - when \
+         present, the file re-orients the worker on session resume \
+         instead of using the fresh-spawn kick). Lead-only. The label \
+         may contain `/` for namespace subdirectories (e.g. \
+         `hub-modules/researcher` writes to \
+         `~/.claude/forge-team/hub-modules/researcher/charter.md`). \
+         After creation, add the label to `forge.toml`'s \
+         `team = [...]` and restart forge to spawn workers with this \
+         charter. Refuses by default if any target file already \
+         exists; pass `overwrite=true` to replace. The overwrite \
+         scope is limited to the files the call writes: when \
+         `resume_kick` is omitted, an existing `resume-kick.md` is \
+         neither read as a collision nor touched, so a manually \
+         provisioned resume-kick survives a charter-only refresh. \
+         Validates the label against path-traversal (no `..`, no \
+         leading `/`, no empty / `.` segments)."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -762,9 +790,13 @@ impl Tool for CreateRole {
                     "type": "string",
                     "description": "First-turn message dispatched to the worker on Connected. Drives the worker's initial action + report-back. Non-empty after trim.",
                 },
+                "resume_kick": {
+                    "type": "string",
+                    "description": "Optional re-orient message used when a worker session is resumed (rather than freshly spawned). When provided, writes `<label>/resume-kick.md` alongside the other two files; when absent or empty after trim, the resume-kick file is not written and the resume path falls back to the default kick (or skips per the past-progress guard). Non-empty after trim when provided.",
+                },
                 "overwrite": {
                     "type": "boolean",
-                    "description": "Replace existing files when true. Default false: refuses if either file already exists.",
+                    "description": "Replace existing files when true. Default false: refuses if ANY target file already exists (charter, kick, or - when `resume_kick` is provided - resume-kick). The overwrite scope is limited to the files the call writes: a `resume_kick=None` call never touches an existing resume-kick.md, even with `overwrite=true`, so a manually provisioned resume-kick survives a charter-only refresh.",
                 },
             },
             "required": ["label", "charter", "initial_kick"],
@@ -805,6 +837,23 @@ impl Tool for CreateRole {
         if initial_kick.is_empty() {
             return tool_error("initial_kick must be non-empty after trim".to_owned());
         }
+        // `resume_kick` is opt-in: absent or `None` -> don't write
+        // the file. When provided, hold it to the same non-empty
+        // contract the other two prompts use so a stray empty arg
+        // doesn't plant a zero-byte file the resume path would then
+        // dispatch as the worker's first turn.
+        let resume_kick = match args.resume_kick.as_ref() {
+            Some(text) => {
+                let trimmed = text.trim_end().to_owned();
+                if trimmed.is_empty() {
+                    return tool_error(
+                        "resume_kick must be non-empty after trim when provided".to_owned(),
+                    );
+                }
+                Some(trimmed)
+            }
+            None => None,
+        };
 
         // Validate label format + reject reserved keyword.
         if label == crate::team::LEAD_LABEL {
@@ -825,13 +874,21 @@ impl Tool for CreateRole {
         };
         let charter_path = role_dir.join("charter.md");
         let kick_path = role_dir.join("kick.md");
+        let resume_kick_path = role_dir.join("resume-kick.md");
 
-        // Refuse when files exist + overwrite=false.
-        if !args.overwrite && (charter_path.exists() || kick_path.exists()) {
-            return tool_error(format!(
-                "role '{label}' already has charter or kick files at {}. Pass overwrite=true to replace.",
-                role_dir.display()
-            ));
+        // Refuse when ANY target file exists + overwrite=false. The
+        // resume-kick path only joins the existence-check when
+        // `resume_kick` was supplied; absent input means we're not
+        // writing that file, so a pre-existing resume-kick.md is none
+        // of our business.
+        if !args.overwrite {
+            let resume_collision = resume_kick.is_some() && resume_kick_path.exists();
+            if charter_path.exists() || kick_path.exists() || resume_collision {
+                return tool_error(format!(
+                    "role '{label}' already has one or more target files at {}. Pass overwrite=true to replace.",
+                    role_dir.display()
+                ));
+            }
         }
 
         // Create parent dir (including namespace subdirectories).
@@ -850,12 +907,28 @@ impl Tool for CreateRole {
         if let Err(err) = atomic_write(&kick_path, initial_kick.as_bytes()) {
             return tool_error(format!("failed to write kick at {}: {err}", kick_path.display()));
         }
+        if let Some(ref text) = resume_kick
+            && let Err(err) = atomic_write(&resume_kick_path, text.as_bytes())
+        {
+            return tool_error(format!(
+                "failed to write resume-kick at {}: {err}",
+                resume_kick_path.display()
+            ));
+        }
 
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "label": label,
             "charter_path": charter_path.display().to_string(),
             "kick_path": kick_path.display().to_string(),
         });
+        if resume_kick.is_some()
+            && let Some(map) = body.as_object_mut()
+        {
+            map.insert(
+                "resume_kick_path".to_owned(),
+                serde_json::Value::String(resume_kick_path.display().to_string()),
+            );
+        }
         match serde_json::to_string_pretty(&body) {
             Ok(json) => ToolOutput::text(json),
             Err(err) => tool_error(format!("response serialization failed: {err}")),
@@ -1708,5 +1781,182 @@ mod tests {
             .await;
         assert!(output.is_error);
         assert!(output.blocks[0].text.contains("in_reply_to"));
+    }
+
+    /// RAII guard that restores the prior `forge_team_root` override
+    /// on drop so a panicking test doesn't leak a stale tempdir
+    /// override onto its neighbours. The Mutex inside
+    /// `test_forge_team_root` keeps the override globally consistent
+    /// while we hold the guard.
+    struct ForgeTeamRootGuard {
+        prior: Option<std::path::PathBuf>,
+    }
+
+    impl Drop for ForgeTeamRootGuard {
+        fn drop(&mut self) {
+            crate::team::set_forge_team_root_for_test(self.prior.take());
+        }
+    }
+
+    fn redirect_forge_team_root(root: std::path::PathBuf) -> ForgeTeamRootGuard {
+        let prior = crate::team::set_forge_team_root_for_test(Some(root));
+        ForgeTeamRootGuard { prior }
+    }
+
+    fn lead_create_role_tool(mock: Arc<MockWorkerFacade>) -> CreateRole {
+        let lead_key = fake_key("lead-uuid");
+        mock.callers.lock().insert(lead_key.clone(), lead_caller("forge"));
+        let facade: Arc<dyn WorkerFacade> = mock;
+        CreateRole { facade, caller_key: CallerKeyResolver::from_fixed(lead_key) }
+    }
+
+    #[tokio::test]
+    async fn create_role_writes_three_files_when_resume_kick_some() {
+        // resume_kick present: all three files land + the returned
+        // JSON carries `resume_kick_path`.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let _guard = redirect_forge_team_root(tmp.path().to_path_buf());
+
+        let mock = Arc::new(MockWorkerFacade::new());
+        let tool = lead_create_role_tool(mock);
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({
+                    "label": "researcher",
+                    "charter": "Investigate $TOPIC and summarise findings.",
+                    "initial_kick": "Pick the first topic from the queue and report back.",
+                    "resume_kick": "Resume the in-flight investigation; check your notes first.",
+                }),
+            })
+            .await;
+
+        assert!(!output.is_error, "create_role with resume_kick must succeed: {:?}", output.blocks);
+
+        let charter_disk = tmp.path().join("researcher").join("charter.md");
+        let kick_disk = tmp.path().join("researcher").join("kick.md");
+        let resume_kick_disk = tmp.path().join("researcher").join("resume-kick.md");
+        assert!(charter_disk.exists(), "charter.md must exist on disk");
+        assert!(kick_disk.exists(), "kick.md must exist on disk");
+        assert!(resume_kick_disk.exists(), "resume-kick.md must exist on disk");
+        let body: serde_json::Value =
+            serde_json::from_str(&output.blocks[0].text).expect("returned JSON parses");
+        assert!(body.get("resume_kick_path").is_some(), "JSON must include resume_kick_path");
+        assert_eq!(
+            body["resume_kick_path"].as_str().unwrap(),
+            resume_kick_disk.display().to_string(),
+        );
+    }
+
+    #[tokio::test]
+    async fn create_role_omits_resume_kick_when_none() {
+        // No resume_kick arg: only two files written + returned JSON
+        // omits `resume_kick_path` (additive contract preserved).
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let _guard = redirect_forge_team_root(tmp.path().to_path_buf());
+
+        let mock = Arc::new(MockWorkerFacade::new());
+        let tool = lead_create_role_tool(mock);
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({
+                    "label": "researcher",
+                    "charter": "charter body",
+                    "initial_kick": "kick body",
+                }),
+            })
+            .await;
+
+        assert!(!output.is_error);
+        let resume_kick_disk = tmp.path().join("researcher").join("resume-kick.md");
+        assert!(!resume_kick_disk.exists(), "resume-kick.md must NOT be written when arg is None");
+        let body: serde_json::Value =
+            serde_json::from_str(&output.blocks[0].text).expect("returned JSON parses");
+        assert!(
+            body.get("resume_kick_path").is_none(),
+            "JSON must omit resume_kick_path when arg is None: {body:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn create_role_overwrite_true_replaces_all_three_files() {
+        // overwrite=true success path: seed stale charter + kick +
+        // resume-kick, call with new content for all three, assert
+        // on-disk content matches the new payload. The existing
+        // three regression tests cover additive shape + refusal;
+        // this one locks the actual replacement behavior.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let _guard = redirect_forge_team_root(tmp.path().to_path_buf());
+
+        let role_dir = tmp.path().join("researcher");
+        std::fs::create_dir_all(&role_dir).unwrap();
+        std::fs::write(role_dir.join("charter.md"), b"stale charter").unwrap();
+        std::fs::write(role_dir.join("kick.md"), b"stale kick").unwrap();
+        std::fs::write(role_dir.join("resume-kick.md"), b"stale resume-kick").unwrap();
+
+        let mock = Arc::new(MockWorkerFacade::new());
+        let tool = lead_create_role_tool(mock);
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({
+                    "label": "researcher",
+                    "charter": "fresh charter",
+                    "initial_kick": "fresh kick",
+                    "resume_kick": "fresh resume-kick",
+                    "overwrite": true,
+                }),
+            })
+            .await;
+
+        assert!(
+            !output.is_error,
+            "overwrite=true must succeed when all three exist: {:?}",
+            output.blocks
+        );
+        let charter_disk = std::fs::read_to_string(role_dir.join("charter.md")).unwrap();
+        let kick_disk = std::fs::read_to_string(role_dir.join("kick.md")).unwrap();
+        let resume_kick_disk = std::fs::read_to_string(role_dir.join("resume-kick.md")).unwrap();
+        assert_eq!(charter_disk, "fresh charter");
+        assert_eq!(kick_disk, "fresh kick");
+        assert_eq!(resume_kick_disk, "fresh resume-kick");
+    }
+
+    #[tokio::test]
+    async fn create_role_overwrite_refuses_when_any_of_three_exists() {
+        // overwrite=false + resume-kick.md already present: refuse.
+        // Locks the existence-check covering all three target sites,
+        // not just the original two.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let _guard = redirect_forge_team_root(tmp.path().to_path_buf());
+
+        // Seed only the resume-kick file in advance; charter + kick
+        // are absent. Without the broadened existence-check, the
+        // tool would happily overwrite the existing resume-kick.md.
+        let role_dir = tmp.path().join("researcher");
+        std::fs::create_dir_all(&role_dir).unwrap();
+        std::fs::write(role_dir.join("resume-kick.md"), b"prior content").unwrap();
+
+        let mock = Arc::new(MockWorkerFacade::new());
+        let tool = lead_create_role_tool(mock);
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({
+                    "label": "researcher",
+                    "charter": "new charter",
+                    "initial_kick": "new kick",
+                    "resume_kick": "new resume kick",
+                }),
+            })
+            .await;
+
+        assert!(output.is_error, "must refuse when resume-kick.md already exists");
+        assert!(
+            output.blocks[0].text.contains("overwrite=true"),
+            "error message must hint at overwrite=true: {:?}",
+            output.blocks[0].text,
+        );
+        // And the prior content is untouched.
+        let kept =
+            std::fs::read_to_string(role_dir.join("resume-kick.md")).expect("prior content kept");
+        assert_eq!(kept, "prior content");
     }
 }
