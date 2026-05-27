@@ -286,10 +286,7 @@ impl WorkerFacade for ProdWorkerFacade {
             return WorkerIdentity { name: caller.as_str().to_owned(), org: String::new() };
         };
         if cp.is_lead {
-            return WorkerIdentity {
-                name: LEAD_LABEL.to_owned(),
-                org: PERSONAL_ORG.to_owned(),
-            };
+            return WorkerIdentity { name: LEAD_LABEL.to_owned(), org: PERSONAL_ORG.to_owned() };
         }
         let label = ws
             .list_live_workers(&cp.project_key)
@@ -551,10 +548,7 @@ impl WorkerFacade for MockWorkerFacade {
             return WorkerIdentity { name: caller.as_str().to_owned(), org: String::new() };
         };
         if cp.is_lead {
-            return WorkerIdentity {
-                name: LEAD_LABEL.to_owned(),
-                org: PERSONAL_ORG.to_owned(),
-            };
+            return WorkerIdentity { name: LEAD_LABEL.to_owned(), org: PERSONAL_ORG.to_owned() };
         }
         let label = self.workers.lock().get(cp.project_key.as_str()).and_then(|ws| {
             ws.iter().find(|w| w.session_id == caller.as_str()).map(|w| w.label.clone())

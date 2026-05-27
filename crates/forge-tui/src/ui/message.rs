@@ -1150,13 +1150,14 @@ fn is_peer_envelope_user_message(msg: &ChatMessage) -> bool {
 ///   bracket whose `(org '...')` field is the wire-level sender_org.
 /// - **Assistant peer-outbound**: an Assistant turn carrying a
 ///   `mcp__forge__peers__{ask,tell}_agent` /
-///   `mcp__forge__workers__{ask,tell}` tool_use card. These have no
-///   native org, but they belong to the same Forge-mediated
-///   conversation as the surrounding inbound envelopes - synthesise
-///   `"Personal"` so streak detection folds across them (the most
-///   common case is a worker's chat interleaving inbound from lead
-///   with outbound to lead, both of which share the lead's
-///   `"Personal"` org).
+///   `mcp__forge__workers__{ask,tell}` tool_use card. Synthesise the
+///   lead's `PERSONAL_ORG` so the worker-chat case (inbound from
+///   lead with `"Personal"` org, interleaved with outbound to lead)
+///   folds under one header. The synthetic org is hard-coded rather
+///   than derived from the call's target, so a cross-project peer
+///   outbound to a non-Personal target won't fold against its own
+///   surrounding inbound; that case is rare today and left to a
+///   follow-up if it shows up in practice.
 ///
 /// Returns `None` for everything else: plain user input, regular
 /// assistant text, system notices, non-peer tool_use cards.
