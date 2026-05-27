@@ -210,13 +210,16 @@ Outputs:
 - `workers__ask("lead", "critical out-of-scope issue on #N: ...")` for escalations.
 
 Workflow (per PR):
-1. `gh pr view #N` - read PR description and linked issue.
-2. `gh pr diff #N` - read the full diff. Don't skim.
-3. Run `pr-review-loop` as your default - parallel reviewer agents in a loop until clean. For single-pass, use `pr-review-toolkit:review-pr`.
-4. Verdict:
+1. Pre-flight - before reading the PR, sync your worktree to the PR's branch state.
+   - Why: your worktree's `git grep` / `Read` is the cross-file context your dispatched reviewer agents use. If the worktree is on `main`, "how is X used elsewhere" lookups see pre-PR code, not the diff's post-merge view, and you miss usage-pattern findings.
+   - How to apply: `git fetch origin pull/<N>/head:pr-<N>` then `git checkout pr-<N>`. Read the diff + context. After verdict, optionally `git checkout main` to leave the worktree clean for the next PR. If `gh pr checkout <N>` is available it's a one-shot equivalent.
+2. `gh pr view #N` - read PR description and linked issue.
+3. `gh pr diff #N` - read the full diff. Don't skim.
+4. Run `pr-review-loop` as your default - parallel reviewer agents in a loop until clean. For single-pass, use `pr-review-toolkit:review-pr`.
+5. Verdict:
    - APPROVE: comment with summary, push to implementer ("approved"), push to lead ("ready to merge").
    - REQUEST CHANGES: post inline comments + push to implementer with specific guidance.
-5. On re-push (updated PR): re-read the diff against your last review, not the entire PR.
+6. On re-push (updated PR): re-read the diff against your last review, not the entire PR.
 
 Confidence bar: report only issues with confidence >= 80 (see `pr-review-toolkit:code-reviewer` scoring rubric). False positives waste implementer time and degrade signal.
 
@@ -423,6 +426,17 @@ mod tests {
     fn reviewer_charter_includes_approval_gate() {
         assert!(Role::Reviewer.charter().contains("Approval gate"));
         assert!(Role::Reviewer.charter().contains("ALL severity"));
+    }
+
+    /// The reviewer's "Pre-flight" workflow step codifies the
+    /// worktree-checkout-before-review rule so dispatched reviewer
+    /// agents see the PR's post-merge state during cross-file context
+    /// lookups. Pin it in a test so a charter refactor can't silently
+    /// strip the step.
+    #[test]
+    fn reviewer_charter_includes_pre_flight() {
+        assert!(Role::Reviewer.charter().contains("Pre-flight"));
+        assert!(Role::Reviewer.charter().contains("git fetch origin"));
     }
 
     #[test]
