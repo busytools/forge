@@ -168,13 +168,17 @@ pub struct ScanOutcome {
 /// while still giving a 16× speedup over a sequential loop.
 const MAX_INFLIGHT_FETCHES: usize = 16;
 
-/// Top-level scanner entry. `target` is passed verbatim to
-/// `git diff <target>`, comparing the named ref against the working
-/// tree — `"HEAD"` for working-tree-vs-HEAD (uncommitted only),
-/// `"main"` for everything since `main` (committed + uncommitted),
-/// any other ref / SHA for that comparison. NOT a `..` or `...`
-/// range syntax; the renderer-side language ("two-dot semantics")
-/// describes the result, not the input shape.
+/// Top-level scanner entry. `target` is a plain ref / SHA / `"HEAD"`
+/// (not a `..`/`...` range — the helper [`diff_ref_spec`] picks the
+/// shape for us). `"HEAD"` runs a two-dot working-tree diff
+/// (uncommitted only); any other ref runs `git diff <target>...HEAD`,
+/// the three-dot form that surfaces what THIS branch contributed
+/// vs the merge-base with `target`. Three-dot matches the Inspector
+/// GIT panel's branch-ahead scanner (see
+/// [`forge_agent::env::git_diff::scan`]'s
+/// `format!("{default}...HEAD")`), so the panel + overlay agree on
+/// what's diffable even after a squash-merge where two-dot
+/// `git diff main HEAD` would be empty.
 ///
 /// Returns a [`ScanOutcome`] — `files` carries one [`FileHunks`]
 /// per changed file in the order `git diff --name-status` reports
@@ -187,7 +191,8 @@ pub async fn scan(cwd: &Path, target: &str) -> ScanOutcome {
     let mut scanner_ok = true;
     let mut untracked_suppressed: usize = 0;
 
-    let name_status = match run_git(cwd, &["diff", target, "--name-status"]).await {
+    let ref_spec = diff_ref_spec(target);
+    let name_status = match run_git(cwd, &["diff", &ref_spec, "--name-status"]).await {
         GitOutput::Ok(s) => s,
         GitOutput::Empty => String::new(),
         GitOutput::Failed | GitOutput::Oversize => {
@@ -214,9 +219,11 @@ pub async fn scan(cwd: &Path, target: &str) -> ScanOutcome {
         // drops before the stream runs — we mutate `files[idx]`
         // inside the consume loop.
         let paths: Vec<String> = files.iter().map(|f| f.path.clone()).collect();
+        let ref_spec_for_fetch = ref_spec.clone();
         let mut stream =
-            futures::stream::iter(paths.into_iter().enumerate().map(|(idx, path)| async move {
-                (idx, fetch_file_hunks(cwd, target, &path).await)
+            futures::stream::iter(paths.into_iter().enumerate().map(|(idx, path)| {
+                let ref_spec = ref_spec_for_fetch.clone();
+                async move { (idx, fetch_file_hunks(cwd, &ref_spec, &path).await) }
             }))
             .buffer_unordered(MAX_INFLIGHT_FETCHES);
         while let Some((idx, result)) = stream.next().await {
@@ -251,14 +258,40 @@ enum FileScanOutcome {
     SubprocessFailed,
 }
 
+/// Translate a caller-supplied diff `target` into the git ref-spec
+/// the underlying subprocess receives.
+///
+/// - `HEAD` -> `HEAD` (two-dot semantics: working tree vs HEAD,
+///   which is what the user means by "uncommitted edits").
+/// - Anything else (branch name, SHA) -> `<target>...HEAD`
+///   (three-dot semantics: diff from the merge-base of `target` and
+///   `HEAD` to `HEAD`, i.e. "what did THIS branch contribute").
+///
+/// Why the asymmetry: after a squash-merge of the branch into the
+/// target, two-dot `git diff main HEAD` is empty (content already in
+/// main with a different SHA) while three-dot `git diff main...HEAD`
+/// still surfaces the branch's contributions vs the merge-base. The
+/// Inspector GIT panel uses three-dot via
+/// `forge_agent::env::git_diff::scan`'s `format!("{default}...HEAD")`
+/// at the branch-ahead layer; this helper keeps the overlay scanner
+/// in sync so the panel + overlay never disagree on what's diffable.
+fn diff_ref_spec(target: &str) -> String {
+    if target == "HEAD" { "HEAD".to_owned() } else { format!("{target}...HEAD") }
+}
+
 /// Fetch hunks for one file via
-/// `git diff <target> --no-ext-diff -- <path>`. The `--` separator
+/// `git diff <ref_spec> --no-ext-diff -- <path>`. The `--` separator
 /// ensures the path isn't reinterpreted as a flag for files like
 /// `--foo`. Binary files and submodule entries return `Ok(vec![])`
 /// — that's the legitimate "no @@ hunks" case and matches the
 /// rendering convention for those file kinds.
-async fn fetch_file_hunks(cwd: &Path, target: &str, path: &str) -> FileScanOutcome {
-    let section = match run_git(cwd, &["diff", target, "--no-ext-diff", "--", path]).await {
+///
+/// `ref_spec` is the already-resolved diff range from
+/// [`diff_ref_spec`] (e.g. `HEAD` for working-tree diffs, or
+/// `main...HEAD` for branch-against-default). Callers must pre-resolve
+/// the spec so the per-file and top-level scans agree.
+async fn fetch_file_hunks(cwd: &Path, ref_spec: &str, path: &str) -> FileScanOutcome {
+    let section = match run_git(cwd, &["diff", ref_spec, "--no-ext-diff", "--", path]).await {
         GitOutput::Ok(s) => s,
         GitOutput::Empty => return FileScanOutcome::Ok(Vec::new()),
         GitOutput::Failed | GitOutput::Oversize => return FileScanOutcome::SubprocessFailed,
@@ -806,5 +839,32 @@ diff --git a/x.rs b/x.rs
         };
         assert_eq!(file.added_count(), 1);
         assert_eq!(file.removed_count(), 0);
+    }
+
+    /// `diff_ref_spec` keeps `HEAD` as a two-dot working-tree diff
+    /// (otherwise `HEAD...HEAD` would be empty since HEAD is its
+    /// own merge-base with itself), and converts any other target
+    /// to a three-dot range. Three-dot is the same form the
+    /// Inspector GIT panel uses for branch-ahead at
+    /// `forge_agent::env::git_diff::scan` (`format!("{default}...HEAD")`);
+    /// keeping them in sync prevents the overlay-empty / panel-says-
+    /// 142-lines asymmetry that surfaces after squash-merges.
+    #[test]
+    fn diff_ref_spec_passes_head_through_unchanged() {
+        assert_eq!(diff_ref_spec("HEAD"), "HEAD");
+    }
+
+    #[test]
+    fn diff_ref_spec_converts_branch_to_three_dot_range() {
+        assert_eq!(diff_ref_spec("main"), "main...HEAD");
+        assert_eq!(diff_ref_spec("master"), "master...HEAD");
+        assert_eq!(diff_ref_spec("origin/main"), "origin/main...HEAD");
+    }
+
+    #[test]
+    fn diff_ref_spec_treats_sha_like_a_branch() {
+        // Commit SHAs benefit from three-dot the same way branches
+        // do — diff vs merge-base, not vs the tip directly.
+        assert_eq!(diff_ref_spec("abc1234"), "abc1234...HEAD");
     }
 }
