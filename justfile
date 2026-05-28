@@ -15,22 +15,31 @@ fmt:
 
 # Lint everything (lib, tests, examples, bins) with warnings as errors.
 # Mirrors CI's `cargo clippy --all-targets --workspace -- -D warnings`.
+# `RUSTFLAGS=-D warnings` matches CI's workflow-level env (#257); the
+# `-- -D warnings` after the dash-dash applies to clippy's own lints
+# and the env covers everything else cargo invokes (rustc compile
+# warnings on test/example/bin targets that clippy might let through).
 clippy:
-    cargo clippy --all-targets --workspace -- -D warnings
+    RUSTFLAGS="-D warnings" cargo clippy --all-targets --workspace -- -D warnings
 
 # Run the forge-sdk test suite via nextest.
+# `RUSTFLAGS=-D warnings` mirrors CI; without it the test-target
+# compile is less strict than CI and an unused-import in a test mod
+# would pass local but fail CI.
 test:
-    cargo nextest run -p forge-sdk
+    RUSTFLAGS="-D warnings" cargo nextest run -p forge-sdk
 
 # Run tests across the whole workspace (includes forge-test-harness replay).
 # Mirrors CI's `cargo nextest run --workspace --all-features` so feature-
 # gated test mods that CI runs aren't silently skipped locally.
+# `RUSTFLAGS=-D warnings` mirrors CI's workflow-level env (#257).
 test-all:
-    cargo nextest run --workspace --all-features
+    RUSTFLAGS="-D warnings" cargo nextest run --workspace --all-features
 
 # Run wire-conformance replays against every committed baseline.
+# `RUSTFLAGS=-D warnings` mirrors CI's workflow-level env (#257).
 conformance:
-    cargo nextest run -p forge-test-harness
+    RUSTFLAGS="-D warnings" cargo nextest run -p forge-test-harness
 
 # Live-capture a single SDK-wire conformance scenario against the real CLI.
 # Usage: `just conformance-capture-sdk wire_capture_trivial_prompt`
@@ -43,8 +52,12 @@ conformance-capture-sdk test:
 
 # Build docs with warnings as errors. Mirrors CI's
 # `cargo doc --workspace --no-deps --all-features`.
+# `RUSTDOCFLAGS=-D warnings` denies rustdoc lints (broken links,
+# private intra-doc links, etc.); `RUSTFLAGS=-D warnings` mirrors
+# CI's workflow-level env so the underlying compile that `cargo doc`
+# drives is also strict (#257).
 doc:
-    RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
+    RUSTDOCFLAGS="-D warnings" RUSTFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
 
 # Full pre-commit / pre-PR verification loop.
 check: fmt-check clippy test-all doc
