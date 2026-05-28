@@ -53,4 +53,9 @@ forge-agent = { workspace = true, features = ["testing"] }
 # `forge_primitives::SessionKey`. Mirroring the same hop the testing
 # feature does for forge-agent.
 forge-primitives = { workspace = true, features = ["test-helpers"] }
+# `test-util` enables `#[tokio::test(start_paused = true)]` +
+# `tokio::time::{advance, pause}`. Required by the kick-dispatcher
+# stagger tests (#259) — without paused-time control they'd race the
+# real-time `KICK_DISPATCH_INTERVAL` sleep.
+tokio = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }
