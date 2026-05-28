@@ -54,6 +54,7 @@ sysinfo = { version = "0.32", default-features = false, features = ["system"] }
 futures = "0.3.31"
 arboard = { version = "3.6.1", features = ["image-data"] }
 which = "8.0.2"
+rlimit = "0.10"
 
 # Wire-classification rewriter — MITM proxy stack that rewrites the 6
 # classification channels the `claude` CLI broadcasts (bootstrap qs,
