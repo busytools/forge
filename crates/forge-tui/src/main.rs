@@ -31,6 +31,11 @@ fn run() -> anyhow::Result<()> {
     }
 
     let _logging = forge_tui::logging::LoggingRuntime::init(&cli)?;
+    // Raise the FD soft limit BEFORE any code that opens sockets /
+    // files / pipes so the bump applies to every subsequent opener
+    // (tokio runtime, wire-rewriter proxy, workspace I/O, etc). Sits
+    // AFTER tracing init so the bump's log line lands. See #251.
+    forge_tui::startup::raise_fd_limit();
     let perf_path = forge_tui::logging::resolve_perf_path(&cli)?;
 
     #[cfg(not(feature = "perf"))]
