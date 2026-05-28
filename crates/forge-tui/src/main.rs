@@ -92,6 +92,13 @@ fn run() -> anyhow::Result<()> {
         // forge-tui's connect path.
         workspace.start_account_loading_tasks();
 
+        // Spawn the worker-kick drainer task (#259). Routes every
+        // `maybe_kick_worker_on_connected` enqueue through a single
+        // `KICK_DISPATCH_INTERVAL`-spaced dispatcher so multi-worker
+        // boots don't hit Anthropic's per-IP burst limit. Idempotent
+        // - the start helper no-ops a second call.
+        workspace.start_kick_dispatcher();
+
         // Create the app (instant, no I/O). The TUI holds an
         // `Arc<Workspace>` clone; main keeps the original so it
         // can drain the pool after the event loop returns.
