@@ -264,31 +264,82 @@ fn rewrite_cc_entrypoint(s: &str) -> String {
 /// NOT add native-only flags forge isn't requesting (those may
 /// require feature support forge doesn't have - adding them blindly
 /// risks server-side errors).
-const FORGE_ONLY_ANTHROPIC_BETAS: &[&str] = &[
-    "claude-code-20250219",
-    "extended-cache-ttl-2025-04-11",
-    "advanced-tool-use-2025-11-20",
-    "effort-2025-11-24",
-    "afk-mode-2026-01-31",
-];
+///
+/// As of native CLI 2.1.153 (#262 audit run), every previously
+/// forge-only flag is now native-emitted in at least one of native's
+/// per-call variants (`claude-code-prefix` variant carries
+/// `claude-code-20250219` + `extended-cache-ttl-2025-04-11` +
+/// `advanced-tool-use-2025-11-20` + `effort-2025-11-24` +
+/// `afk-mode-2026-01-31`). Stripping them now makes forge look LESS
+/// like native, not more. List kept empty as a hook for future CLI
+/// versions that re-introduce strippable forge-only flags - the
+/// `rewrite_anthropic_beta` consumer site stays wired so a future
+/// drift surfaces here.
+const FORGE_ONLY_ANTHROPIC_BETAS: &[&str] = &[];
 
-/// Rewrite an `anthropic-beta` header value: strip every flag in
-/// `FORGE_ONLY_ANTHROPIC_BETAS` from the comma-joined list,
-/// re-serialise the remainder. Returns `None` when nothing was
-/// stripped (header passes through unchanged).
+/// `anthropic-beta` flags native interactive `claude` sends in EVERY
+/// variant (long, claude-code-prefix, short - see #262 issue body for
+/// the captured native sets). If forge's outgoing header doesn't
+/// already carry one of these, the rewriter injects it so the wire
+/// shape matches native.
+///
+/// Injection order matters for byte-equivalence with native's header.
+/// Per #262's enumerated native variants, the canonical position of
+/// `redact-thinking-2026-02-12` is immediately after
+/// `interleaved-thinking-2025-05-14`. The rewriter probes for
+/// `interleaved-thinking-2025-05-14` in the existing flags and
+/// inserts after it; if absent (an unusual header shape) the flag
+/// appends at the end.
+const NATIVE_REQUIRED_ANTHROPIC_BETAS: &[&str] = &["redact-thinking-2026-02-12"];
+
+/// Canonical anchor flag the injection logic uses to place
+/// `NATIVE_REQUIRED_ANTHROPIC_BETAS` entries in the position native
+/// emits them. `redact-thinking-2026-02-12` sits immediately after
+/// this anchor in every native variant captured for #262.
+const ANTHROPIC_BETA_INJECT_ANCHOR: &str = "interleaved-thinking-2025-05-14";
+
+/// Rewrite an `anthropic-beta` header value to match native CLI's
+/// per-call shape. Two transforms:
+///
+/// 1. Strip every flag in `FORGE_ONLY_ANTHROPIC_BETAS` from the
+///    comma-joined list (currently empty post-CLI-2.1.153; see the
+///    const's doc-comment for why).
+/// 2. Inject every flag in `NATIVE_REQUIRED_ANTHROPIC_BETAS` that
+///    isn't already present, ordered against `ANTHROPIC_BETA_INJECT_ANCHOR`.
+///
+/// Returns `None` when neither transform changed the set (header
+/// passes through unchanged).
 #[must_use]
 pub fn rewrite_anthropic_beta(header_value: &str) -> Option<String> {
     let parts: Vec<&str> = header_value.split(',').map(str::trim).collect();
-    let mut kept: Vec<&str> = Vec::with_capacity(parts.len());
+    let mut kept: Vec<String> = Vec::with_capacity(parts.len());
     let mut stripped = 0usize;
     for part in parts {
         if FORGE_ONLY_ANTHROPIC_BETAS.contains(&part) {
             stripped += 1;
         } else if !part.is_empty() {
-            kept.push(part);
+            kept.push(part.to_owned());
         }
     }
-    if stripped == 0 {
+    let mut injected = 0usize;
+    for flag in NATIVE_REQUIRED_ANTHROPIC_BETAS {
+        if kept.iter().any(|p| p == flag) {
+            continue;
+        }
+        // Insert immediately after the canonical anchor for byte-
+        // equivalent ordering with native's header. If the anchor
+        // isn't present, append at the end - this is unusual (every
+        // native variant contains the anchor) but the append keeps
+        // the rewriter robust to header-shape surprises rather than
+        // dropping the required flag.
+        if let Some(pos) = kept.iter().position(|p| p == ANTHROPIC_BETA_INJECT_ANCHOR) {
+            kept.insert(pos + 1, (*flag).to_owned());
+        } else {
+            kept.push((*flag).to_owned());
+        }
+        injected += 1;
+    }
+    if stripped == 0 && injected == 0 {
         return None;
     }
     Some(kept.join(","))
@@ -783,37 +834,94 @@ mod tests {
     }
 
     #[test]
-    fn anthropic_beta_strips_forge_only_flags() {
-        // Sample of forge-specific betas mixed
-        // with native-also-requested ones. Strip the forge-only.
-        let input = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advisor-tool-2026-03-01,advanced-tool-use-2025-11-20,effort-2025-11-24,afk-mode-2026-01-31,extended-cache-ttl-2025-04-11,cache-diagnosis-2026-04-07";
-        let out = rewrite_anthropic_beta(input).expect("should rewrite");
-        assert!(!out.contains("claude-code-20250219"));
-        assert!(!out.contains("extended-cache-ttl-2025-04-11"));
-        assert!(!out.contains("advanced-tool-use-2025-11-20"));
-        assert!(!out.contains("effort-2025-11-24"));
-        assert!(!out.contains("afk-mode-2026-01-31"));
-        // Shared / native flags retained:
-        assert!(out.contains("oauth-2025-04-20"));
-        assert!(out.contains("interleaved-thinking-2025-05-14"));
-        assert!(out.contains("context-management-2025-06-27"));
-        assert!(out.contains("prompt-caching-scope-2026-01-05"));
-        assert!(out.contains("advisor-tool-2026-03-01"));
-        assert!(out.contains("cache-diagnosis-2026-04-07"));
+    fn anthropic_beta_passes_through_native_2_1_153_long_variant_after_redact_inject() {
+        // Native CLI 2.1.153 "long" variant from #262's enumerated
+        // capture, minus `redact-thinking-2026-02-12` (the flag
+        // forge's outgoing header is missing). The rewriter should
+        // inject `redact-thinking-2026-02-12` immediately after
+        // `interleaved-thinking-2025-05-14` and pass everything else
+        // through unchanged.
+        let input = "oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advisor-tool-2026-03-01,cache-diagnosis-2026-04-07";
+        let out = rewrite_anthropic_beta(input).expect("should rewrite (inject redact-thinking)");
+        assert_eq!(
+            out,
+            "oauth-2025-04-20,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advisor-tool-2026-03-01,cache-diagnosis-2026-04-07",
+        );
     }
 
     #[test]
-    fn anthropic_beta_no_op_when_only_shared_flags() {
-        // Native's sample - no forge-only flags. Nothing to strip.
-        let input = "oauth-2025-04-20,interleaved-thinking-2025-05-14";
+    fn anthropic_beta_post_cli_2_1_153_no_longer_strips_previously_forge_only_flags() {
+        // Pre-2.1.153 forge-only flags (claude-code-20250219,
+        // extended-cache-ttl-2025-04-11, advanced-tool-use-2025-11-20,
+        // effort-2025-11-24, afk-mode-2026-01-31) are now native-emitted
+        // in the claude-code-prefix variant per #262. The rewriter must
+        // NOT strip them anymore - stripping would make forge look LESS
+        // like native, not more.
+        let input = "claude-code-20250219,extended-cache-ttl-2025-04-11,advanced-tool-use-2025-11-20,effort-2025-11-24,afk-mode-2026-01-31";
+        // Rewrite either returns None (pass-through) OR returns a
+        // string that preserves every one of these flags. Both shapes
+        // are acceptable here since `redact-thinking-2026-02-12`
+        // injection only fires when the anchor flag is present.
+        let out = rewrite_anthropic_beta(input);
+        match out {
+            None => {}
+            Some(rewritten) => {
+                assert!(rewritten.contains("claude-code-20250219"), "got: {rewritten}");
+                assert!(rewritten.contains("extended-cache-ttl-2025-04-11"), "got: {rewritten}");
+                assert!(rewritten.contains("advanced-tool-use-2025-11-20"), "got: {rewritten}");
+                assert!(rewritten.contains("effort-2025-11-24"), "got: {rewritten}");
+                assert!(rewritten.contains("afk-mode-2026-01-31"), "got: {rewritten}");
+            }
+        }
+    }
+
+    #[test]
+    fn anthropic_beta_no_op_when_native_set_already_complete() {
+        // Native already carries `redact-thinking-2026-02-12` (the
+        // captured native "long" variant from #262). Nothing to
+        // strip, nothing to inject - rewriter returns None.
+        let input = "oauth-2025-04-20,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advisor-tool-2026-03-01,cache-diagnosis-2026-04-07";
         assert!(rewrite_anthropic_beta(input).is_none());
     }
 
     #[test]
+    fn anthropic_beta_injects_redact_thinking_in_canonical_position() {
+        // Inject-only path with no strip: forge sends a minimal set
+        // that includes the anchor but is missing the required flag.
+        // The new flag must land immediately after the anchor.
+        let input =
+            "oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13";
+        let out = rewrite_anthropic_beta(input).expect("should rewrite (inject)");
+        assert_eq!(
+            out,
+            "oauth-2025-04-20,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,thinking-token-count-2026-05-13",
+        );
+    }
+
+    #[test]
+    fn anthropic_beta_inject_falls_back_to_append_when_anchor_absent() {
+        // Defensive: if the anchor `interleaved-thinking-2025-05-14`
+        // isn't in the header (unusual - every native variant has it),
+        // the rewriter still injects the required flag, just at the
+        // end. Keeps the rewriter robust to header-shape surprises.
+        let input = "oauth-2025-04-20,context-management-2025-06-27";
+        let out = rewrite_anthropic_beta(input).expect("should rewrite (append-inject)");
+        assert_eq!(
+            out,
+            "oauth-2025-04-20,context-management-2025-06-27,redact-thinking-2026-02-12"
+        );
+    }
+
+    #[test]
     fn anthropic_beta_trims_whitespace_and_drops_empty() {
-        let input = " effort-2025-11-24 , oauth-2025-04-20 , afk-mode-2026-01-31 ";
+        // Whitespace + empties get normalised; injection still
+        // applies to the cleaned-up set.
+        let input = " oauth-2025-04-20 , interleaved-thinking-2025-05-14 , , ";
         let out = rewrite_anthropic_beta(input).expect("should rewrite");
-        assert_eq!(out, "oauth-2025-04-20");
+        assert_eq!(
+            out,
+            "oauth-2025-04-20,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12",
+        );
     }
 
     #[test]
