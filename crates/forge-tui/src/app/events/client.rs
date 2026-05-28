@@ -1940,6 +1940,7 @@ mod tests {
                 session_id: "uuid-1".to_owned(),
                 spawned_at: std::time::SystemTime::UNIX_EPOCH,
                 spawned_by_session_id: "lead-uuid".to_owned(),
+                diagnostic: None,
             },
             is_git_repo_at_spawn,
         }

@@ -57,6 +57,7 @@ async fn worker_to_worker_tell_scenario() {
             session_id: "beta-session-uuid-stub".into(),
             spawned_at: SystemTime::now(),
             spawned_by_session_id: "lead-test-session".into(),
+            diagnostic: None,
         }],
     );
     let facade: Arc<dyn WorkerFacade> = Arc::new(mock);

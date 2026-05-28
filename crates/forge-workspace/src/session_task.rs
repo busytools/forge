@@ -1684,6 +1684,7 @@ mod team_hook_tests {
                 spawned_by_session_id: "lead-uuid".into(),
                 needs_tag: false,
                 is_git_repo_at_spawn: false,
+                diagnostic: None,
             },
         );
 

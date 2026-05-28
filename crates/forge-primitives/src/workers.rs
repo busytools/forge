@@ -26,11 +26,18 @@ pub fn worker_tag(label: &str) -> String {
 /// Liveness of a worker session in the workspace's `live_workers`
 /// map. `Spawning` is the brief window between
 /// `Command::SpawnWorker` dispatch and the new session's
-/// `Connected` event.
+/// `Connected` event. `Failed` is set when spawn / resume fails
+/// terminally - claude rejected the resume (e.g.,
+/// `No conversation found`), the subprocess exited non-zero, or
+/// the connection broke before `Connected` fired. The
+/// human-readable reason lives on the sibling `diagnostic` field
+/// of [`WorkerStatus`] / `WorkerEntry`; keeping it off the enum
+/// preserves the `Copy` bound that every match site relies on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WorkerLiveness {
     Spawning,
     Running,
+    Failed,
 }
 
 /// Snapshot of one worker. Returned by `workers__list` and threaded
@@ -46,6 +53,16 @@ pub struct WorkerStatus {
     /// call. In v1 this is always the project's lead; field exists
     /// pre-baked for v2 worker-spawn-from-worker (currently gated).
     pub spawned_by_session_id: String,
+    /// Human-readable failure reason when `status == Failed` (the
+    /// first line of claude's stderr, or the error variant name when
+    /// stderr was empty). `None` when the worker isn't in `Failed`
+    /// state or no diagnostic could be captured. The Projects pane
+    /// renders this as a dim sub-row beneath the worker label so the
+    /// user can tell at a glance whether the failure is recoverable
+    /// (e.g., "No conversation found" -> fresh spawn flow kicks in)
+    /// or terminal (e.g., spawn binary missing).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diagnostic: Option<String>,
 }
 
 #[cfg(test)]
@@ -77,5 +94,51 @@ mod tests {
     #[test]
     fn worker_prefix_constant_value() {
         assert_eq!(FORGE_WORKER_TAG_PREFIX, "forge:worker:");
+    }
+
+    #[test]
+    fn worker_liveness_failed_is_copy_unit_variant() {
+        // Failed stays a unit variant so the enum keeps `Copy`. The
+        // human-readable diagnostic lives on WorkerStatus's sibling
+        // field, not inside the variant. The Copy bound matters
+        // because every existing match site (and `matches!` invocation)
+        // moves the value into the match arm; converting to a tuple
+        // variant would ripple through ~10 sites.
+        fn requires_copy<T: Copy>(_: T) {}
+        requires_copy(WorkerLiveness::Failed);
+        assert!(matches!(WorkerLiveness::Failed, WorkerLiveness::Failed));
+    }
+
+    #[test]
+    fn worker_status_diagnostic_round_trips_through_serde() {
+        let status = WorkerStatus {
+            label: "reviewer".into(),
+            charter: "be sharp".into(),
+            status: WorkerLiveness::Failed,
+            session_id: "uuid-1".into(),
+            spawned_at: SystemTime::UNIX_EPOCH,
+            spawned_by_session_id: "lead-uuid".into(),
+            diagnostic: Some("No conversation found".into()),
+        };
+        let json = serde_json::to_string(&status).expect("serialize");
+        let back: WorkerStatus = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.diagnostic.as_deref(), Some("No conversation found"));
+        assert_eq!(back.status, WorkerLiveness::Failed);
+    }
+
+    #[test]
+    fn worker_status_diagnostic_defaults_to_none_when_absent_in_payload() {
+        // Pre-#245 payloads have no `diagnostic` field; serde default
+        // must yield None so old wire shapes still decode cleanly.
+        let json = r#"{
+            "label": "reviewer",
+            "charter": "be sharp",
+            "status": "Running",
+            "session_id": "uuid-1",
+            "spawned_at": { "secs_since_epoch": 0, "nanos_since_epoch": 0 },
+            "spawned_by_session_id": "lead-uuid"
+        }"#;
+        let status: WorkerStatus = serde_json::from_str(json).expect("decode legacy shape");
+        assert_eq!(status.diagnostic, None);
     }
 }
