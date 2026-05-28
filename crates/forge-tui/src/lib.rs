@@ -3,6 +3,7 @@ pub mod app;
 pub mod error;
 pub mod logging;
 pub mod perf;
+pub mod startup;
 pub mod ui;
 
 use clap::{Parser, ValueEnum};
