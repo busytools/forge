@@ -835,19 +835,15 @@ fn maybe_kick_worker_on_connected(
     };
 
     if let Some(resume_kick) = kick_text {
-        let target_key = SessionKey::from_session_id(real_session_id.to_owned());
-        if let Err(err) = workspace.dispatch(crate::protocol::Command::Prompt {
-            key: target_key,
-            text: resume_kick,
-            attachments: Vec::new(),
-        }) {
-            tracing::error!(
-                target: "forge_workspace::team",
-                label = %label,
-                error = ?err,
-                "maybe_kick_worker_on_connected: resume-kick dispatch failed",
-            );
-        }
+        // #259: kicks route through the workspace-level dispatcher so
+        // multi-worker boots don't fire N simultaneous Prompts at
+        // Anthropic's per-IP burst limit. The drainer fires one per
+        // `KICK_DISPATCH_INTERVAL`; the first kick of an empty queue
+        // has zero added latency.
+        workspace.enqueue_kick(crate::workspace::KickRequest {
+            session_key: SessionKey::from_session_id(real_session_id.to_owned()),
+            prompt_body: resume_kick,
+        });
         return;
     }
 
@@ -886,19 +882,11 @@ fn maybe_kick_worker_on_connected(
         );
         return;
     }
-    let target_key = SessionKey::from_session_id(real_session_id.to_owned());
-    if let Err(err) = workspace.dispatch(crate::protocol::Command::Prompt {
-        key: target_key,
-        text: initial_kick,
-        attachments: Vec::new(),
-    }) {
-        tracing::error!(
-            target: "forge_workspace::team",
-            label = %label,
-            error = ?err,
-            "maybe_kick_worker_on_connected: dispatch failed",
-        );
-    }
+    // #259: same dispatcher route as the resume-kick branch above.
+    workspace.enqueue_kick(crate::workspace::KickRequest {
+        session_key: SessionKey::from_session_id(real_session_id.to_owned()),
+        prompt_body: initial_kick,
+    });
 }
 
 /// Test-only entry point for the Connected team hooks.
@@ -1696,17 +1684,30 @@ mod team_hook_tests {
         assert_eq!(second_spawns, 0, "second Connected must not double-spawn");
     }
 
-    /// Worker Connected with a role-matching label dispatches a
+    /// Worker Connected with a role-matching label enqueues a kick
+    /// onto the workspace dispatcher (#259) which fans out as a
     /// `Command::Prompt` carrying the role's initial-kick text to
-    /// the worker's real session_id.
-    #[test]
-    fn worker_connected_for_role_label_dispatches_kick_prompt() {
+    /// the worker's real session_id. End-to-end: enqueue happens in
+    /// `maybe_kick_worker_on_connected`; the drainer task (started
+    /// here via `start_kick_dispatcher`) reads the channel and calls
+    /// `Workspace::dispatch` which lands in the intercept buffer.
+    /// Paused time + a yield-loop are the deterministic way to drive
+    /// the drainer one step.
+    #[tokio::test(start_paused = true)]
+    async fn worker_connected_for_role_label_dispatches_kick_prompt() {
         ensure_test_charter_root();
         let (workspace, _update_rx) = Workspace::testing_stub();
         workspace.enable_test_dispatch_intercept();
+        workspace.start_kick_dispatcher();
 
         let worker_synth = SessionKey::from_session_id("__spawn_worker_forge_planner_abc123__");
         on_connected_for_test(&workspace, &worker_synth, "worker-uuid");
+
+        // Drainer pulls the just-enqueued kick on the next runtime
+        // yield; the first kick of an empty channel has zero added
+        // latency by design (the sleep happens AFTER the dispatch).
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
 
         let dispatched = workspace.drain_test_dispatch_buffer();
         let prompts: Vec<&Command> =

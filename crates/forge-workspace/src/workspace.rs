@@ -52,6 +52,32 @@ const WORKER_TAG_RETRY_ATTEMPTS: u32 = 30;
 /// total wait at a few seconds.
 const WORKER_TAG_RETRY_DELAY: Duration = Duration::from_millis(100);
 
+/// Minimum gap between successive worker-kick dispatches (#259).
+/// Multi-worker teams hit Anthropic's per-IP burst limit when all
+/// `maybe_kick_worker_on_connected` paths fire `Command::Prompt`
+/// within the same tick at boot; routing every kick through a
+/// workspace-level mpsc + a drainer task that sleeps this interval
+/// between sends spreads them out enough to avoid the burst
+/// rejection. The first kick in an empty channel fires with zero
+/// added latency; only subsequent kicks pay the sleep. Worst case
+/// at typical team sizes (7-10 workers) is ~5-7 s to fully kick
+/// the cohort, vs ~1 s pre-#259 with most kicks rejected.
+const KICK_DISPATCH_INTERVAL: Duration = Duration::from_millis(750);
+
+/// One enqueue onto the workspace-level worker-kick channel
+/// (#259). Built by `maybe_kick_worker_on_connected` (and any
+/// future kick site); drained by the workspace's
+/// `start_kick_dispatcher` task, which fires one `Command::Prompt`
+/// per `KICK_DISPATCH_INTERVAL` tick. Same payload shape as the
+/// existing `Command::Prompt` carries (no attachments are ever
+/// part of a kick prompt - kicks are pure text from
+/// `<label>/kick.md` or `<label>/resume-kick.md`).
+#[derive(Debug, Clone)]
+pub(crate) struct KickRequest {
+    pub session_key: SessionKey,
+    pub prompt_body: String,
+}
+
 /// Per-session chip the Projects pane renders next to each row.
 /// Carries the assigned account display name + the visual-state
 /// category derived by `Workspace::session_chip_for`.
@@ -166,6 +192,18 @@ pub struct Workspace {
     /// Set the first time [`Self::start_usage_poller`] runs. Subsequent
     /// calls early-return to avoid spawning duplicate poller tasks.
     usage_poller_started: std::sync::atomic::AtomicBool,
+    /// Sender half of the worker-kick channel (#259). Cloned via
+    /// [`Self::enqueue_kick`] by `maybe_kick_worker_on_connected`
+    /// (and any future kick site). The matching receiver lives in
+    /// `kick_dispatcher_rx_slot` until [`Self::start_kick_dispatcher`]
+    /// takes it out and spawns the drainer task.
+    kick_dispatcher_tx: mpsc::UnboundedSender<KickRequest>,
+    /// Single-take slot holding the matching receiver.
+    /// [`Self::start_kick_dispatcher`] pops it on first call and
+    /// hands it to the drainer task; subsequent calls find `None`
+    /// and no-op (mirrors `start_usage_poller`'s guard against
+    /// duplicate spawns).
+    kick_dispatcher_rx_slot: Mutex<Option<mpsc::UnboundedReceiver<KickRequest>>>,
     /// Wire-classification rewriter proxy started at workspace boot.
     /// Stamped onto every `Agent::spawn` so spawned subprocesses
     /// inherit `HTTPS_PROXY` + `NODE_EXTRA_CA_CERTS` and their wire
@@ -367,6 +405,7 @@ impl Workspace {
         accounts.seed_from_cache(&state.account_usage);
 
         let (update_tx, update_rx) = mpsc::unbounded_channel::<SessionUpdate>();
+        let (kick_dispatcher_tx, kick_dispatcher_rx) = mpsc::unbounded_channel::<KickRequest>();
         Ok(Self {
             config_dir,
             config,
@@ -382,6 +421,8 @@ impl Workspace {
             inflight_asks: Mutex::new(HashMap::new()),
             peer_stats: Mutex::new(HashMap::new()),
             usage_poller_started: std::sync::atomic::AtomicBool::new(false),
+            kick_dispatcher_tx,
+            kick_dispatcher_rx_slot: Mutex::new(Some(kick_dispatcher_rx)),
             proxy: Some(proxy),
             team_spawn_in_flight: Mutex::new(std::collections::HashSet::new()),
             #[cfg(any(test, feature = "testing"))]
@@ -1181,6 +1222,81 @@ impl Workspace {
     /// A `usage_poller_started` flag guards against duplicate
     /// spawns - second and later calls return without spawning so a
     /// forge-tui programming error can't multiply the poll rate.
+    /// Enqueue a worker kick on the dispatcher channel (#259). The
+    /// drainer task fires one `Command::Prompt` per
+    /// `KICK_DISPATCH_INTERVAL`, so simultaneous boot-time kicks
+    /// across a team of N workers spread out as N × INTERVAL instead
+    /// of all hitting Anthropic's per-IP burst limit in the same tick.
+    ///
+    /// Send errors (channel closed - workspace has shut down) are
+    /// logged at `error` because they signal a kick was dropped after
+    /// `maybe_kick_worker_on_connected` already decided to send. The
+    /// worker stays idle in that case; this is rare in practice
+    /// (workspace shutdown drains all sessions before the kick path
+    /// could fire), but the log line preserves diagnosability.
+    pub(crate) fn enqueue_kick(&self, request: KickRequest) {
+        if let Err(err) = self.kick_dispatcher_tx.send(request) {
+            tracing::error!(
+                target: "forge_workspace::workspace",
+                error = %err,
+                "enqueue_kick: channel closed (workspace shutting down?); kick dropped",
+            );
+        }
+    }
+
+    /// Spawn the worker-kick drainer task (#259). Takes the receiver
+    /// out of `kick_dispatcher_rx_slot` and starts a tokio task that
+    /// loops on `recv()`, calls [`Self::dispatch`] for each request,
+    /// then sleeps `KICK_DISPATCH_INTERVAL` before the next pull.
+    ///
+    /// Call once at construction, AFTER `Workspace::new` returns and
+    /// the result is Arc-wrapped (mirrors `start_account_loading_tasks`
+    /// / `start_usage_poller` shape). Subsequent calls find the slot
+    /// empty and no-op, so a forge-tui programming error can't
+    /// duplicate the drainer.
+    ///
+    /// The drainer holds an `Arc::downgrade(self)` so the task exits
+    /// cleanly when the workspace is dropped: each `upgrade()` returns
+    /// `None` and the loop breaks. No explicit shutdown signal needed.
+    pub fn start_kick_dispatcher(self: &Arc<Self>) {
+        let Some(mut rx) = self.kick_dispatcher_rx_slot.lock().take() else {
+            tracing::debug!(
+                target: "forge_workspace::workspace",
+                "start_kick_dispatcher called more than once; ignoring",
+            );
+            return;
+        };
+        let weak = Arc::downgrade(self);
+        let span = tracing::info_span!("kick_dispatcher");
+        tokio::spawn(
+            async move {
+                while let Some(req) = rx.recv().await {
+                    let Some(workspace) = weak.upgrade() else {
+                        return; // Workspace dropped; exit cleanly.
+                    };
+                    let session_key = req.session_key.clone();
+                    if let Err(err) = workspace.dispatch(crate::protocol::Command::Prompt {
+                        key: req.session_key,
+                        text: req.prompt_body,
+                        attachments: Vec::new(),
+                    }) {
+                        tracing::error!(
+                            target: "forge_workspace::workspace",
+                            key = %session_key.as_str(),
+                            error = ?err,
+                            "kick dispatcher: dispatch failed; kick dropped",
+                        );
+                    }
+                    // Drop the Arc before sleeping so the workspace
+                    // isn't held alive across the interval.
+                    drop(workspace);
+                    tokio::time::sleep(KICK_DISPATCH_INTERVAL).await;
+                }
+            }
+            .instrument(span),
+        );
+    }
+
     pub fn start_usage_poller(self: &Arc<Self>) {
         if self.usage_poller_started.swap(true, std::sync::atomic::Ordering::AcqRel) {
             tracing::debug!(
@@ -3355,6 +3471,7 @@ impl Workspace {
         config_dir: PathBuf,
     ) -> (Arc<Self>, mpsc::UnboundedReceiver<SessionUpdate>) {
         let (update_tx, update_rx) = mpsc::unbounded_channel::<SessionUpdate>();
+        let (kick_dispatcher_tx, kick_dispatcher_rx) = mpsc::unbounded_channel::<KickRequest>();
         let workspace = Self {
             config_dir,
             config: LoadedConfig::empty_for_test(),
@@ -3370,6 +3487,8 @@ impl Workspace {
             inflight_asks: Mutex::new(HashMap::new()),
             peer_stats: Mutex::new(HashMap::new()),
             usage_poller_started: std::sync::atomic::AtomicBool::new(false),
+            kick_dispatcher_tx,
+            kick_dispatcher_rx_slot: Mutex::new(Some(kick_dispatcher_rx)),
             // testing_stub skips Workspace::new and therefore the
             // proxy boot. Tests don't drive real subprocesses.
             proxy: None,
@@ -6485,5 +6604,164 @@ config_dir = "~/.claude-stargate"
             )));
         let chip = workspace.session_chip_for(&project_key, "lead").expect("chip");
         assert_eq!(chip.state, SessionChipState::Bailed);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
+mod kick_dispatcher_tests {
+    //! Cover for `start_kick_dispatcher` plus `enqueue_kick` (#259).
+    //!
+    //! Tests observe via `command_intercept` (`enable_test_dispatch_intercept`
+    //! plus `drain_test_dispatch_buffer`); the drainer calls
+    //! `Workspace::dispatch(Command::Prompt {..})` for each
+    //! `KickRequest`, which the intercept buffer captures verbatim.
+    //!
+    //! Time is paused (`start_paused = true`) so the drainer's
+    //! `tokio::time::sleep(KICK_DISPATCH_INTERVAL)` advances only when
+    //! the test explicitly advances the clock. Without that, the
+    //! drainer would race the assertions in real time.
+    use super::*;
+    use crate::protocol::Command;
+    use std::time::Duration;
+
+    /// Helper: synthetic session_key for kick tests.
+    fn sk(name: &str) -> SessionKey {
+        SessionKey::from_session_id(format!("kick-test-{name}"))
+    }
+
+    /// Helper: assert the intercept buffer's Prompt commands match
+    /// `expected` SessionKeys in order. Filters out any non-Prompt
+    /// commands the dispatch path might queue.
+    fn assert_dispatched_kick_keys(
+        workspace: &Arc<Workspace>,
+        expected: &[SessionKey],
+        context: &str,
+    ) {
+        let dispatched = workspace.drain_test_dispatch_buffer();
+        let keys: Vec<SessionKey> = dispatched
+            .into_iter()
+            .filter_map(|c| match c {
+                Command::Prompt { key, .. } => Some(key),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(keys, expected.to_vec(), "{context}: dispatched keys mismatch");
+    }
+
+    /// First-kick latency is zero (drainer pulls immediately), and
+    /// the SECOND kick waits `KICK_DISPATCH_INTERVAL` before firing.
+    /// Pinning the stagger interval prevents a regression where the
+    /// drainer sleeps before its first send (which would be a
+    /// straightforward off-by-one bug given the loop's structure).
+    #[tokio::test(start_paused = true)]
+    async fn dispatcher_fires_first_kick_immediately_then_staggers() {
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        workspace.enable_test_dispatch_intercept();
+        workspace.start_kick_dispatcher();
+
+        let a = sk("a");
+        let b = sk("b");
+        workspace
+            .enqueue_kick(KickRequest { session_key: a.clone(), prompt_body: "kick a".into() });
+        workspace
+            .enqueue_kick(KickRequest { session_key: b.clone(), prompt_body: "kick b".into() });
+
+        // Yield once so the drainer task gets a turn; it should fire
+        // the first kick before sleeping. With paused time the sleep
+        // doesn't advance, so the SECOND kick stays pending.
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+        assert_dispatched_kick_keys(&workspace, std::slice::from_ref(&a), "after first yield");
+
+        // Advance time past the interval; drainer wakes, fires the
+        // second kick, then sleeps again with the queue now empty.
+        tokio::time::advance(KICK_DISPATCH_INTERVAL).await;
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+        assert_dispatched_kick_keys(&workspace, std::slice::from_ref(&b), "after interval advance");
+    }
+
+    /// Multi-worker burst: 7 simultaneous enqueues produce exactly
+    /// one dispatch per interval, all 7 dispatched after 6 advances.
+    /// Mirrors the issue's reproduction shape (forge boot with 5+
+    /// team workers).
+    #[tokio::test(start_paused = true)]
+    async fn dispatcher_staggers_seven_simultaneous_kicks_one_per_interval() {
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        workspace.enable_test_dispatch_intercept();
+        workspace.start_kick_dispatcher();
+
+        let keys: Vec<SessionKey> = (0..7).map(|i| sk(&format!("worker-{i}"))).collect();
+        for key in &keys {
+            workspace.enqueue_kick(KickRequest {
+                session_key: key.clone(),
+                prompt_body: format!("kick {}", key.as_str()),
+            });
+        }
+
+        // First kick fires before any sleep.
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+        assert_dispatched_kick_keys(&workspace, &keys[0..1], "boot tick");
+
+        // Six more intervals → six more kicks → all 7 dispatched.
+        for i in 1..7 {
+            tokio::time::advance(KICK_DISPATCH_INTERVAL).await;
+            tokio::task::yield_now().await;
+            tokio::task::yield_now().await;
+            assert_dispatched_kick_keys(
+                &workspace,
+                &keys[i..=i],
+                &format!("after interval advance {i}"),
+            );
+        }
+    }
+
+    /// `start_kick_dispatcher` is idempotent: a second call after the
+    /// receiver has been taken finds the slot empty and no-ops. A
+    /// regression that spawns two drainers would fire each kick TWICE
+    /// (both drainers would race for the same receiver - actually
+    /// only the first would get the item due to mpsc semantics, but
+    /// the SECOND drainer would burn task slots forever waiting on
+    /// an empty channel). Pin by counting dispatches against a known
+    /// queue.
+    #[tokio::test(start_paused = true)]
+    async fn start_kick_dispatcher_is_idempotent() {
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        workspace.enable_test_dispatch_intercept();
+        workspace.start_kick_dispatcher();
+        workspace.start_kick_dispatcher(); // no-op second call
+
+        workspace.enqueue_kick(KickRequest { session_key: sk("only"), prompt_body: "k".into() });
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+        let dispatched = workspace.drain_test_dispatch_buffer();
+        let prompts: Vec<&Command> =
+            dispatched.iter().filter(|c| matches!(c, Command::Prompt { .. })).collect();
+        assert_eq!(prompts.len(), 1, "second start_kick_dispatcher must not duplicate dispatches");
+    }
+
+    /// `enqueue_kick` after workspace drop is logged but doesn't
+    /// panic. The channel's sender is held on `Workspace`, so dropping
+    /// the workspace closes the channel; the drainer (if still alive)
+    /// exits its recv loop. Verifying the no-panic shape protects the
+    /// shutdown-race window where a final Connected event might queue
+    /// a kick after the drop began.
+    ///
+    /// We don't drop the Arc here (testing_stub gives one out and the
+    /// test holds it for the duration). What we DO verify: `enqueue_kick`
+    /// returns successfully when the dispatcher hasn't been started -
+    /// the message just sits in the channel until either the drainer
+    /// is started or the workspace is dropped. Either way, no panic.
+    #[tokio::test]
+    async fn enqueue_kick_without_dispatcher_started_does_not_panic() {
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        // Note: NOT calling start_kick_dispatcher.
+        workspace.enqueue_kick(KickRequest { session_key: sk("orphan"), prompt_body: "k".into() });
+        // No assertion target other than "we got here without panicking".
+        // A future change that makes enqueue_kick require a started
+        // dispatcher would fail this test.
+        let _ = Duration::from_millis(0); // touch Duration to keep the use site live
     }
 }
