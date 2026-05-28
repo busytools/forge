@@ -693,13 +693,7 @@ impl Workspace {
                 }
             }
             SessionTarget::Session(key) => {
-                // `claude --resume` indexes by project key derived from
-                // the subprocess cwd, so we must spawn in the session's
-                // original cwd. Source it from the catalog; if the
-                // catalog has no record (or no cwd) the session can't
-                // be resumed cleanly anyway - pass through and let the
-                // bridge surface ConnectionFailed.
-                let cwd = self.session_cwd_for(&key).unwrap_or_default();
+                let cwd = self.resume_cwd_for_session(&key);
                 handle.resume_session(key.as_str().to_owned(), cwd, settings)?;
             }
             SessionTarget::FreshInProject { project_key, .. } => {
@@ -2291,17 +2285,67 @@ impl Workspace {
         None
     }
 
+    /// Resolve the cwd to pass to `claude --resume` for the session
+    /// at `session_key`. Three-step fallback:
+    /// 1. `session_cwd_for(key)` - the catalog scan returns the
+    ///    original cwd from the session's `system/init` row. Works
+    ///    for lead sessions; returns None for worker-tagged sessions
+    ///    (the catalog walk excludes them).
+    /// 2. Worker fallback (#245 Layer B): when the session is a live
+    ///    worker, compose the cwd via [`worker_tag_dir`] - the same
+    ///    helper that decided where claude wrote the JSONL at spawn
+    ///    time. For git-repo workers that's
+    ///    `<project_root>/.claude/worktrees/<label>`; for non-git
+    ///    workers it's `<project_root>` unmodified.
+    ///
+    ///    Critically, `claude --resume` does NOT receive a
+    ///    `--worktree` flag (see `SessionLaunchSettings::extra_args`
+    ///    in `forge-agent/src/client.rs` - lead/resume paths leave
+    ///    extra_args empty), so the subprocess cwd is the ONLY signal
+    ///    claude uses to derive the JSONL location. Passing just the
+    ///    project root for a git worker makes claude look under the
+    ///    project's sanitised dir, miss the worker JSONL (which lives
+    ///    under the worktree's sanitised dir), and exit with "No
+    ///    conversation found with session ID:". Composing with
+    ///    `worker_tag_dir` gives claude the right anchor so it
+    ///    resolves the worker JSONL on the first try.
+    /// 3. Default to empty string. Pass through and let the bridge
+    ///    surface ConnectionFailed - the session can't be resumed
+    ///    cleanly anyway. Logs a warn so a regression is visible in
+    ///    the field instead of silently failing later.
+    ///
+    /// [`worker_tag_dir`]: crate::mcp::workers::types::worker_tag_dir
+    pub(crate) fn resume_cwd_for_session(&self, session_key: &SessionKey) -> String {
+        if let Some(cwd) = self.session_cwd_for(session_key) {
+            return cwd;
+        }
+        if let Some((project_key, label, is_git)) = self.worker_lookup_for_session(session_key)
+            && let Some(root) = self.project_root_for_key(&project_key)
+        {
+            return crate::mcp::workers::types::worker_tag_dir(&root, &label, is_git)
+                .to_string_lossy()
+                .into_owned();
+        }
+        tracing::warn!(
+            target: "forge_workspace::workspace",
+            session_key = %session_key.as_str(),
+            "resume_cwd_for_session: no catalog cwd and no live worker entry; \
+             passing empty cwd to claude (resume will fail with ConnectionFailed)",
+        );
+        String::new()
+    }
+
     /// Look up a project root path by its `ProjectKey`. Searches
     /// the test overlay first (under `cfg(test)` / `feature =
     /// "testing"`), then `config.projects`. Returns `None` when no
     /// loaded project's path canonicalises to the given key.
     ///
-    /// Used by [`Self::git_scan_cwd_for_session`] to derive the
-    /// project root from a worker's project_key without depending
-    /// on the worker's `cwd_raw` value (which carries the project
-    /// root for fresh spawns and the worktree path for resumed
-    /// sessions - the two cases would otherwise need different
-    /// composition logic).
+    /// Used by [`Self::git_scan_cwd_for_session`] and
+    /// [`Self::resume_cwd_for_session`] to derive the project root
+    /// from a worker's project_key without depending on the worker's
+    /// `cwd_raw` value (which carries the project root for fresh
+    /// spawns and the worktree path for resumed sessions - the two
+    /// cases would otherwise need different composition logic).
     pub(crate) fn project_root_for_key(&self, target: &ProjectKey) -> Option<std::path::PathBuf> {
         let derive_key = |project: &LoadedProject| {
             ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
@@ -2381,24 +2425,55 @@ impl Workspace {
         project_root.join(".claude/worktrees").join(&label)
     }
 
-    /// Handle an async worker-spawn failure: classify the error,
-    /// dispatch a typed notice to the lead's chat when the
-    /// classifier identifies a worktree-creation failure, and roll
-    /// back the worker's `WorkerEntry` regardless of classifier
-    /// outcome (parity with the sync rollback in
-    /// `handle_spawn_worker`).
+    /// Handle an async worker-spawn failure. Two paths, branching
+    /// on the classifier outcome (#245 Layer C):
     ///
-    /// Returns `true` when the caller IS a worker (so it knows to
-    /// suppress nothing - the existing `ConnectionFailed` emission
-    /// still fires for the TUI side). `false` for lead sessions or
-    /// any other non-worker, in which case the caller's existing
-    /// behaviour proceeds unchanged.
+    /// - **Worktree-creation failure** (the worker never actually
+    ///   started because git worktree setup failed): roll back the
+    ///   `WorkerEntry` (the worker doesn't exist; the user-visible
+    ///   signal is a typed notice routed to the lead's chat) and
+    ///   emit `WorkerStatusChanged { Removed }`. Mirrors the sync
+    ///   rollback in `handle_spawn_worker`.
+    /// - **Any other failure** (resume against missing JSONL,
+    ///   generic dispatch error, claude subprocess exit, etc.):
+    ///   keep the `WorkerEntry` and transition it to
+    ///   [`WorkerLiveness::Failed`] with the first line of the
+    ///   message as the diagnostic. The Projects pane renders the
+    ///   worker as a red `✕` with a DIM sub-row carrying the
+    ///   diagnostic, so a stuck-Spawning-forever case becomes
+    ///   visible instead of silently disappearing.
+    ///
+    /// The classifier uses `is_git_repo_at_spawn` + substring match
+    /// against the bridge-wrapped message; see
+    /// [`classify_worker_spawn_failure`] for the routing rules and
+    /// the bridge-prefix contract.
+    ///
+    /// Returns `true` when the caller IS a worker (so it knows the
+    /// failure was consumed here - the existing `ConnectionFailed`
+    /// emission still fires for the TUI side). `false` for lead
+    /// sessions or any other non-worker, in which case the caller's
+    /// existing behaviour proceeds unchanged.
+    ///
+    /// [`classify_worker_spawn_failure`]: crate::mcp::workers::facade::classify_worker_spawn_failure
     pub(crate) fn handle_async_worker_spawn_failure(
         self: &Arc<Self>,
         session_key: &SessionKey,
         message: &str,
     ) -> bool {
-        let Some((project_key, entry)) = self.remove_worker_by_session_key(session_key) else {
+        // Look up the worker entry WITHOUT removing it yet - the
+        // worktree-failure path still removes (rollback semantics
+        // for "worker never existed"); the general-failure path
+        // transitions to Failed so the user sees what happened.
+        let lookup = {
+            let workers = self.live_workers.lock();
+            workers.iter().find_map(|(project_key, entries)| {
+                entries
+                    .iter()
+                    .find(|e| e.session_key == *session_key)
+                    .map(|entry| (project_key.clone(), entry.clone()))
+            })
+        };
+        let Some((project_key, entry)) = lookup else {
             return false;
         };
         // Classify against the entry's recorded is_git_repo_at_spawn
@@ -2410,6 +2485,10 @@ impl Workspace {
         if let crate::mcp::workers::facade::WorkerSpawnError::WorktreeCreationFailed { reason } =
             &classified
         {
+            // Worktree-creation failure: roll back the worker entry
+            // (the worker never existed; the user-visible signal is
+            // the typed notice routed to the lead, not the worker row).
+            self.remove_worker_by_session_key(session_key);
             // Notice goes to the lead session that spawned this
             // worker. Use the workspace's update channel + a fresh
             // Command::Prompt so the lead's claude subprocess sees
@@ -2450,19 +2529,26 @@ impl Workspace {
                     "worker spawn failed but lead session is gone; dropping notice",
                 );
             }
+            // Emit WorkerStatusChanged::Removed - parity with the
+            // sync rollback in handle_spawn_worker.
+            let _ = self.update_tx.send(SessionUpdate::WorkerStatusChanged {
+                project_key,
+                action: crate::protocol::WorkerStatusAction::Removed,
+                status: entry.to_status(),
+                is_git_repo_at_spawn: entry.is_git_repo_at_spawn,
+            });
+        } else {
+            // Non-worktree failure (resume not found, generic
+            // ConnectionFailed, etc.): transition to Failed via
+            // Layer A's machinery. The worker entry stays visible
+            // in `live_workers` + the Projects pane renders it as
+            // `✕` with the captured message as the diagnostic
+            // sub-row. Without this, the worker would vanish (as
+            // it did pre-#245) and the user would be left wondering
+            // why a team worker disappeared mid-flight.
+            let diagnostic = message.lines().next().map(str::to_owned);
+            transition_worker_to_failed(self, &project_key, session_key, diagnostic);
         }
-        // Emit WorkerStatusChanged::Removed regardless of classifier
-        // outcome - sync rollback in handle_spawn_worker does this
-        // unconditionally on dispatch failure, async parity requires
-        // the same. Without it, the LLM sees a typed failure notice
-        // AND a stale worker entry in workers__list, or for non-
-        // worktree-failure cases just a stale entry with no notice.
-        let _ = self.update_tx.send(SessionUpdate::WorkerStatusChanged {
-            project_key,
-            action: crate::protocol::WorkerStatusAction::Removed,
-            status: entry.to_status(),
-            is_git_repo_at_spawn: entry.is_git_repo_at_spawn,
-        });
         true
     }
 
@@ -3367,11 +3453,80 @@ fn transition_worker_to_running(
             entries.iter_mut().find(|e| e.session_key == *session_key).map(|entry| {
                 entry.status = forge_primitives::WorkerLiveness::Running;
                 entry.needs_tag = matches!(result, TagWriteResult::DeferredNotFound);
+                // Clear any stale diagnostic from a prior Failed
+                // transition - the worker is alive again.
+                entry.diagnostic = None;
                 (entry.to_status(), entry.is_git_repo_at_spawn)
             })
         })
     };
     if let Some((status, is_git_repo_at_spawn)) = updated {
+        let _ = workspace.update_tx.send(SessionUpdate::WorkerStatusChanged {
+            project_key: project_key.clone(),
+            action: crate::protocol::WorkerStatusAction::StatusChanged,
+            status,
+            is_git_repo_at_spawn,
+        });
+    }
+}
+
+/// Shared transition: flip a worker's status to `Failed` with a
+/// human-readable `diagnostic`, and emit `WorkerStatusChanged
+/// { StatusChanged }`. Called by the `Connected`-never-arrived
+/// paths (subprocess exit, ConnectionFailed event, resume rejected
+/// by claude when the fall-through-to-fresh path declines to
+/// retry).
+///
+/// Idempotent: when the entry is already `Failed` with an identical
+/// diagnostic, this is a no-op (no mutation, no event emission). A
+/// fresh diagnostic for an already-Failed entry DOES re-emit so the
+/// UI picks up the new reason text.
+///
+/// Also clears `needs_tag` because a Failed worker won't be reached
+/// by the opportunistic tag-retry path - leaving the flag set keeps
+/// stale state on the entry the next time the worker resumes and
+/// transitions back to Running.
+///
+/// The diagnostic should be the first line of claude's stderr (when
+/// available) or the error variant name. Keep it short - the
+/// Projects pane renders it as a one-row sub-line below the worker
+/// label, truncated to the row's available width.
+pub(crate) fn transition_worker_to_failed(
+    workspace: &Arc<Workspace>,
+    project_key: &ProjectKey,
+    session_key: &SessionKey,
+    diagnostic: Option<String>,
+) {
+    let updated = {
+        let mut workers = workspace.live_workers.lock();
+        workers.get_mut(project_key).and_then(|entries| {
+            entries.iter_mut().find(|e| e.session_key == *session_key).and_then(|entry| {
+                // Idempotency: same status + same diagnostic -> no-op.
+                if entry.status == forge_primitives::WorkerLiveness::Failed
+                    && entry.diagnostic == diagnostic
+                {
+                    return None;
+                }
+                entry.status = forge_primitives::WorkerLiveness::Failed;
+                entry.diagnostic = diagnostic;
+                // Clear needs_tag - a Failed worker won't reach the
+                // opportunistic tag-retry path, and leaving the flag
+                // set would keep stale state if the entry later
+                // transitions back to Running on a successful resume.
+                entry.needs_tag = false;
+                Some((entry.to_status(), entry.is_git_repo_at_spawn))
+            })
+        })
+    };
+    if let Some((status, is_git_repo_at_spawn)) = updated {
+        tracing::warn!(
+            target: "forge_workspace::workspace",
+            event_name = "worker_failed",
+            project = %project_key.as_str(),
+            session = %session_key.as_str(),
+            diagnostic = ?status.diagnostic,
+            "worker session transitioned to Failed; row will render with diagnostic sub-line",
+        );
         let _ = workspace.update_tx.send(SessionUpdate::WorkerStatusChanged {
             project_key: project_key.clone(),
             action: crate::protocol::WorkerStatusAction::StatusChanged,
@@ -4336,6 +4491,7 @@ mod workers_state_tests {
             spawned_by_session_id: "lead-uuid".into(),
             needs_tag: false,
             is_git_repo_at_spawn: false,
+            diagnostic: None,
         }
     }
 
@@ -4432,6 +4588,7 @@ mod release_session_cascade_tests {
             spawned_by_session_id: "lead-uuid".into(),
             needs_tag: false,
             is_git_repo_at_spawn: false,
+            diagnostic: None,
         }
     }
 
@@ -4713,6 +4870,7 @@ mod tag_retry_tests {
             spawned_by_session_id: "lead".into(),
             needs_tag,
             is_git_repo_at_spawn: false,
+            diagnostic: None,
         }
     }
 
@@ -5533,6 +5691,7 @@ mod async_worker_spawn_failure_tests {
             spawned_by_session_id: lead_id.to_owned(),
             needs_tag: true,
             is_git_repo_at_spawn: is_git,
+            diagnostic: None,
         }
     }
 
@@ -5589,12 +5748,14 @@ mod async_worker_spawn_failure_tests {
         );
     }
 
-    /// #146: async failure with a non-worktree-classified message
-    /// must NOT dispatch a notice, but MUST still roll back the
-    /// WorkerEntry (sync-rollback parity per the plan's bundle
-    /// decision).
+    /// #146 + #245 Layer C: async failure with a non-worktree-classified
+    /// message must NOT dispatch a lead-notice. Behaviour was changed
+    /// in #245: previously the entry was rolled back (removed); now it
+    /// transitions to `WorkerLiveness::Failed` with the message as
+    /// diagnostic, so the user sees the failure surfaced on the row
+    /// rather than the worker silently vanishing.
     #[tokio::test]
-    async fn async_failure_without_worktree_classification_skips_notice_but_rolls_back() {
+    async fn async_failure_without_worktree_classification_transitions_to_failed() {
         let (workspace, _update_rx) = Workspace::testing_stub();
         workspace.enable_test_dispatch_intercept();
 
@@ -5615,9 +5776,17 @@ mod async_worker_spawn_failure_tests {
         let prompts: Vec<&Command> =
             dispatched.iter().filter(|c| matches!(c, Command::Prompt { .. })).collect();
         assert!(prompts.is_empty(), "non-worktree classifier outcome must NOT dispatch a notice");
+        let entries = workspace.list_live_workers(&project_key);
+        assert_eq!(entries.len(), 1, "non-worktree failure keeps the entry visible");
         assert!(
-            workspace.list_live_workers(&project_key).is_empty(),
-            "WorkerEntry rollback fires regardless of classifier outcome",
+            matches!(entries[0].status, forge_primitives::WorkerLiveness::Failed),
+            "non-worktree failure transitions to Failed; got {:?}",
+            entries[0].status,
+        );
+        assert_eq!(
+            entries[0].diagnostic.as_deref(),
+            Some("agent spawn failed: subprocess exited with code 2"),
+            "diagnostic captures the ConnectionFailed message",
         );
     }
 
@@ -5635,8 +5804,18 @@ mod async_worker_spawn_failure_tests {
     }
 
     /// #146: double-fire safety - a second ConnectionFailed for the
-    /// same worker (after the first call removed its WorkerEntry)
-    /// must be a no-op rather than re-dispatching the notice.
+    /// same worker (after the first call removed its WorkerEntry on
+    /// the WORKTREE-classified path) must be a no-op rather than
+    /// re-dispatching the notice.
+    ///
+    /// The message used here MUST classify as worktree-creation
+    /// failure - that's the path that still removes the entry under
+    /// #245 Layer C. The non-worktree path transitions to Failed
+    /// instead of removing, so it wouldn't exercise the
+    /// double-fire-after-removal semantics this test is pinning.
+    /// `classify_worker_spawn_failure` validates the predicate
+    /// upfront so a future rewording that breaks the contract
+    /// surfaces here instead of as a confusing failure further down.
     #[tokio::test]
     async fn async_failure_double_fire_is_no_op() {
         let (workspace, _update_rx) = Workspace::testing_stub();
@@ -5650,19 +5829,135 @@ mod async_worker_spawn_failure_tests {
         install_lead_in_pool(&workspace, lead_id);
 
         let session_key = SessionKey::from_session_id(synth_key);
-        assert!(workspace.handle_async_worker_spawn_failure(
-            &session_key,
-            "fatal: 'reviewer' is already used by worktree at /a"
-        ));
+        let worktree_msg = "fatal: 'reviewer' is already used by worktree at /a";
+        // Pin the test's premise: this message must classify as
+        // WorktreeCreationFailed so we exercise the remove-then-no-op
+        // path. If a future change to the classifier breaks this
+        // assumption, the test below would change shape (transition-
+        // to-Failed isn't a no-op on re-fire).
+        assert!(
+            matches!(
+                crate::mcp::workers::facade::classify_worker_spawn_failure(worktree_msg, true),
+                crate::mcp::workers::facade::WorkerSpawnError::WorktreeCreationFailed { .. },
+            ),
+            "test fixture must classify as worktree failure to exercise the removal path",
+        );
+
+        assert!(workspace.handle_async_worker_spawn_failure(&session_key, worktree_msg));
         let _ = workspace.drain_test_dispatch_buffer();
 
         // Second call: WorkerEntry already gone, returns false, no
         // new dispatch.
-        assert!(!workspace.handle_async_worker_spawn_failure(
-            &session_key,
-            "fatal: 'reviewer' is already used by worktree at /a"
-        ));
+        assert!(!workspace.handle_async_worker_spawn_failure(&session_key, worktree_msg));
         assert!(workspace.drain_test_dispatch_buffer().is_empty());
+    }
+
+    /// #245 Layer C test gap 12 + 11: direct unit coverage for
+    /// [`transition_worker_to_failed`].
+    ///
+    /// Covers:
+    /// - First call flips status + records diagnostic
+    /// - Second call with identical diagnostic is a no-op (no
+    ///   extra event emission)
+    /// - Second call with a NEW diagnostic re-emits + records new
+    ///   diagnostic
+    /// - needs_tag is cleared on transition
+    #[tokio::test]
+    async fn transition_worker_to_failed_idempotent_for_identical_diagnostic() {
+        let (workspace, mut update_rx) = Workspace::testing_stub();
+        let project_key = ProjectKey::new("proj-x");
+        let synth_key = "__spawn_worker_proj-x_reviewer_abc__";
+        let session_key = SessionKey::from_session_id(synth_key);
+        // Worker starts Spawning + needs_tag = true (mirrors
+        // fresh-spawn state pre-Connected).
+        workspace
+            .insert_live_worker(&project_key, fake_worker("reviewer", synth_key, "lead", true));
+
+        // First call: flips to Failed, records diagnostic, clears
+        // needs_tag, emits WorkerStatusChanged.
+        transition_worker_to_failed(
+            &workspace,
+            &project_key,
+            &session_key,
+            Some("spawn failed".to_owned()),
+        );
+
+        let entries = workspace.list_live_workers(&project_key);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].status, forge_primitives::WorkerLiveness::Failed);
+        assert_eq!(entries[0].diagnostic.as_deref(), Some("spawn failed"));
+        assert!(!entries[0].needs_tag, "needs_tag must be cleared on Failed transition");
+
+        // Drain the first event so the next assertion is unambiguous.
+        let _ = update_rx.try_recv().expect("first transition emitted event");
+
+        // Second call with identical diagnostic: no-op, no new event.
+        transition_worker_to_failed(
+            &workspace,
+            &project_key,
+            &session_key,
+            Some("spawn failed".to_owned()),
+        );
+        let second_event = update_rx.try_recv();
+        assert!(
+            second_event.is_err(),
+            "identical diagnostic re-fire must NOT emit a new event; got {second_event:?}",
+        );
+
+        // Third call with NEW diagnostic: re-emits + records new text.
+        transition_worker_to_failed(
+            &workspace,
+            &project_key,
+            &session_key,
+            Some("more specific reason".to_owned()),
+        );
+        let third_event = update_rx.try_recv();
+        assert!(third_event.is_ok(), "fresh diagnostic must re-emit");
+        let entries = workspace.list_live_workers(&project_key);
+        assert_eq!(entries[0].diagnostic.as_deref(), Some("more specific reason"));
+    }
+
+    /// #245 Layer C test gap 11: a worker that flipped to Failed
+    /// then transitions back to Running (e.g. a successful resume
+    /// after the user fixed the underlying problem) must clear the
+    /// stale diagnostic field. Without this, the Projects pane
+    /// would render a healthy Running worker with a phantom
+    /// failure sub-row underneath.
+    #[tokio::test]
+    async fn transition_worker_to_running_clears_prior_failed_diagnostic() {
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        let project_key = ProjectKey::new("proj-x");
+        let synth_key = "__spawn_worker_proj-x_reviewer_abc__";
+        let session_key = SessionKey::from_session_id(synth_key);
+        workspace
+            .insert_live_worker(&project_key, fake_worker("reviewer", synth_key, "lead", true));
+
+        // Flip to Failed with a diagnostic.
+        transition_worker_to_failed(
+            &workspace,
+            &project_key,
+            &session_key,
+            Some("connection refused".to_owned()),
+        );
+        assert_eq!(
+            workspace.list_live_workers(&project_key)[0].diagnostic.as_deref(),
+            Some("connection refused"),
+        );
+
+        // Transition back to Running. Diagnostic must clear.
+        transition_worker_to_running(
+            &workspace,
+            &project_key,
+            &session_key,
+            TagWriteResult::Succeeded,
+        );
+        let entry = &workspace.list_live_workers(&project_key)[0];
+        assert_eq!(entry.status, forge_primitives::WorkerLiveness::Running);
+        assert!(
+            entry.diagnostic.is_none(),
+            "diagnostic must clear when worker transitions back to Running; got {:?}",
+            entry.diagnostic,
+        );
     }
 
     /// #146: lead-session-gone path - the worker was spawned by a
@@ -5716,6 +6011,7 @@ mod git_scan_cwd_tests {
             spawned_by_session_id: "lead-uuid".into(),
             needs_tag: false,
             is_git_repo_at_spawn: is_git,
+            diagnostic: None,
         }
     }
 
@@ -5816,6 +6112,100 @@ mod git_scan_cwd_tests {
         );
         let resolved = ws.git_scan_cwd_for_session(&session_key, &project_root);
         assert_eq!(resolved, project_root, "non-git worker must use cwd_raw unchanged");
+    }
+
+    // ---------------------------------------------------------------
+    // #245 Layer B: resume_cwd_for_session falls back to the owning
+    // worker's project_root when the catalog has no recorded cwd.
+    // Without this, claude --resume inherits the forge binary's
+    // process cwd and derives the JSONL location against the wrong
+    // git root (the bug documented in #245).
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn resume_cwd_for_session_returns_worktree_for_git_worker_with_no_catalog_cwd() {
+        // Git-repo worker (the hub-modules babysitter / librarian
+        // case from #245). Layer B composes the worker's worktree
+        // path so claude resolves the JSONL on the first try -
+        // passing just the project root would make claude look under
+        // the wrong sanitised dir and surface "No conversation
+        // found".
+        let (ws, _rx) = Workspace::testing_stub();
+        let (project_root, session_key) = seed_project_and_worker(
+            &ws,
+            "hub-modules",
+            "/tmp/test-hub-modules",
+            "babysitter",
+            "worker-uuid-hub",
+            true,
+        );
+        let resolved = ws.resume_cwd_for_session(&session_key);
+        assert_eq!(
+            resolved,
+            project_root.join(".claude/worktrees/babysitter").to_string_lossy(),
+            "git-repo worker resume cwd must compose the worktree path via worker_tag_dir",
+        );
+    }
+
+    #[test]
+    fn resume_cwd_for_session_returns_project_root_for_non_git_worker() {
+        // Non-git project: worker_tag_dir leaves the path as the
+        // project root, so the fallback returns the root verbatim.
+        let (ws, _rx) = Workspace::testing_stub();
+        let (project_root, session_key) = seed_project_and_worker(
+            &ws,
+            "non-git-proj",
+            "/tmp/test-non-git",
+            "implementer",
+            "worker-uuid-non-git",
+            false,
+        );
+        let resolved = ws.resume_cwd_for_session(&session_key);
+        assert_eq!(
+            resolved,
+            project_root.to_string_lossy(),
+            "non-git worker resume cwd must equal the project root (no worktree subdir)",
+        );
+    }
+
+    #[test]
+    fn resume_cwd_for_session_returns_empty_for_unknown_session() {
+        // Non-worker, non-catalog session - the function returns
+        // empty string and lets the bridge surface ConnectionFailed
+        // (current behaviour for genuinely-orphan sessions).
+        let (ws, _rx) = Workspace::testing_stub();
+        let unknown = SessionKey::from_session_id("not-a-known-session");
+        assert_eq!(ws.resume_cwd_for_session(&unknown), "");
+    }
+
+    #[test]
+    fn resume_cwd_for_session_prefers_catalog_cwd_over_worker_fallback() {
+        // When the catalog DOES carry a cwd for the session, the
+        // catalog path wins - the worker fallback is a fallback, not
+        // an override. Lead-resume behaviour stays unchanged: leads
+        // are catalog-recorded, so they always hit branch 1.
+        //
+        // To prove the precedence we seed a worker entry AND a
+        // catalog row for the same session_key, with DIFFERENT cwd
+        // values. The catalog cwd must win.
+        let (ws, _rx) = Workspace::testing_stub();
+        let project_root = "/tmp/test-precedence";
+        let session_id = "shared-session-uuid";
+        let (_, session_key) = seed_project_and_worker(
+            &ws,
+            "precedence-proj",
+            project_root,
+            "implementer",
+            session_id,
+            true,
+        );
+        // Seed a catalog cwd for the same session_id pointing at a
+        // distinct path; the precedence test fails if the worker
+        // fallback overrides it.
+        let catalog_cwd = "/tmp/test-precedence-catalog-cwd";
+        ws.record_connected_session(catalog_cwd, session_id, None);
+        let resolved = ws.resume_cwd_for_session(&session_key);
+        assert_eq!(resolved, catalog_cwd, "catalog cwd must win over the worker_tag_dir fallback");
     }
 
     // ---------------------------------------------------------------

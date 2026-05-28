@@ -798,6 +798,7 @@ mod workers_command_tests {
                 session_id: "abc".into(),
                 spawned_at: SystemTime::UNIX_EPOCH,
                 spawned_by_session_id: "lead-uuid".into(),
+                diagnostic: None,
             },
             is_git_repo_at_spawn: true,
         };

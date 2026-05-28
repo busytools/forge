@@ -55,6 +55,13 @@ pub struct WorkerEntry {
     /// in claude's auto-created `<project>/.claude/worktrees/<label>/`;
     /// `false` means non-git-repo project (no worktree, plain cwd).
     pub is_git_repo_at_spawn: bool,
+    /// Human-readable failure reason when `status == Failed` (set by
+    /// `transition_worker_to_failed` on `Connected`-never-arrived
+    /// outcomes). `None` otherwise. The Projects pane renders this
+    /// as a DIM sub-row beneath the worker label so the failure
+    /// cause is visible without having to switch into the worker's
+    /// chat view.
+    pub diagnostic: Option<String>,
 }
 
 impl WorkerEntry {
@@ -70,6 +77,7 @@ impl WorkerEntry {
             session_id: self.session_key.as_str().to_owned(),
             spawned_at: self.spawned_at,
             spawned_by_session_id: self.spawned_by_session_id.clone(),
+            diagnostic: self.diagnostic.clone(),
         }
     }
 }
@@ -90,6 +98,7 @@ mod is_git_repo_at_spawn_tests {
             spawned_by_session_id: "lead-uuid".into(),
             needs_tag: false,
             is_git_repo_at_spawn: is_git,
+            diagnostic: None,
         }
     }
 

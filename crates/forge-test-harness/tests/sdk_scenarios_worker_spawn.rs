@@ -64,6 +64,7 @@ async fn worker_spawn_scenario() {
             session_id: "worker-session-uuid-stub".into(),
             spawned_at: SystemTime::now(),
             spawned_by_session_id: "lead-test-session".into(),
+            diagnostic: None,
         }],
     );
     let facade: Arc<dyn WorkerFacade> = Arc::new(mock);
