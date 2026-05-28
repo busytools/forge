@@ -169,16 +169,15 @@ pub struct ScanOutcome {
 const MAX_INFLIGHT_FETCHES: usize = 16;
 
 /// Top-level scanner entry. `target` is a plain ref / SHA / `"HEAD"`
-/// (not a `..`/`...` range — the helper [`diff_ref_spec`] picks the
+/// (not a `..`/`...` range — the helper `diff_ref_spec` picks the
 /// shape for us). `"HEAD"` runs a two-dot working-tree diff
 /// (uncommitted only); any other ref runs `git diff <target>...HEAD`,
 /// the three-dot form that surfaces what THIS branch contributed
 /// vs the merge-base with `target`. Three-dot matches the Inspector
-/// GIT panel's branch-ahead scanner (see
-/// [`forge_agent::env::git_diff::scan`]'s
-/// `format!("{default}...HEAD")`), so the panel + overlay agree on
-/// what's diffable even after a squash-merge where two-dot
-/// `git diff main HEAD` would be empty.
+/// GIT panel's branch-ahead scanner (which composes
+/// `format!("{default}...HEAD")` via the same helper), so the panel
+/// and overlay agree on what's diffable even after a squash-merge
+/// where two-dot `git diff main HEAD` would be empty.
 ///
 /// Returns a [`ScanOutcome`] — `files` carries one [`FileHunks`]
 /// per changed file in the order `git diff --name-status` reports
@@ -220,12 +219,11 @@ pub async fn scan(cwd: &Path, target: &str) -> ScanOutcome {
         // inside the consume loop.
         let paths: Vec<String> = files.iter().map(|f| f.path.clone()).collect();
         let ref_spec_for_fetch = ref_spec.clone();
-        let mut stream =
-            futures::stream::iter(paths.into_iter().enumerate().map(|(idx, path)| {
-                let ref_spec = ref_spec_for_fetch.clone();
-                async move { (idx, fetch_file_hunks(cwd, &ref_spec, &path).await) }
-            }))
-            .buffer_unordered(MAX_INFLIGHT_FETCHES);
+        let mut stream = futures::stream::iter(paths.into_iter().enumerate().map(|(idx, path)| {
+            let ref_spec = ref_spec_for_fetch.clone();
+            async move { (idx, fetch_file_hunks(cwd, &ref_spec, &path).await) }
+        }))
+        .buffer_unordered(MAX_INFLIGHT_FETCHES);
         while let Some((idx, result)) = stream.next().await {
             match result {
                 FileScanOutcome::Ok(hunks) => files[idx].hunks = hunks,
