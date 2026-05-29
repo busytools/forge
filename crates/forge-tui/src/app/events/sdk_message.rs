@@ -1100,42 +1100,28 @@ fn handle_task_updated(app: &mut App, msg: Message) {
     use forge_primitives::ToolCallUpdateFields;
 
     let Message::TaskUpdated { task_id, patch, .. } = msg else { return };
-    let tool_use_id = app.with_turn_state(|ts| ts.task_tool_use_ids.get(&task_id).cloned());
-    let Some(tool_use_id) = tool_use_id else {
-        tracing::debug!(
-            target: crate::logging::targets::APP_SESSION,
-            event_name = "task_updated_no_mapping",
-            message = "task_updated for unknown task_id - dropped",
-            outcome = "dropped",
-            task_id = %task_id,
-        );
-        return;
-    };
-
     let Some(wire_status) = patch.status.as_deref() else {
         // No status delta in this patch (e.g. partial update that
         // only stamped end_time). Nothing for the renderer to do.
         return;
     };
-    let mapped_status = map_task_updated_status_to_tool_status(wire_status);
-    apply_tool_call_update(
-        app,
-        &tool_use_id,
-        ToolCallUpdateFields { status: Some(mapped_status), ..Default::default() },
-    );
+    let is_terminal = matches!(wire_status, "completed" | "failed" | "killed" | "stopped");
 
-    // Drain the alive-task set on terminal transitions so the
-    // PROCESSES section can drop the row. Wire vocabulary
-    // `completed` / `failed` / `killed` / `stopped` all count as
-    // terminal - anything else (`running`, `pending`, etc.) leaves
-    // the task in the alive set.
-    if matches!(wire_status, "completed" | "failed" | "killed" | "stopped") {
-        let task_id_owned = task_id;
-        // #273 Task 8: transition the matching MonitorEntry into a
-        // terminal status mirroring the wire vocabulary. The
-        // `set_monitor_status_by_task_id` helper handles the
-        // all-completed clear so the MONITORS Inspector section
-        // drops out when no Running entry remains.
+    // #275 Bug 3: Monitor + Workflow status transitions are keyed
+    // by `task_id` directly (not `tool_use_id`), so they run
+    // BEFORE the `task_tool_use_ids` lookup. The lookup is gated
+    // on TurnState, which `default()`-resets at every turn
+    // finalisation (5 sites in `events/turn.rs`). Monitor's
+    // `task_updated { status: "completed" }` arrives AFTER its
+    // initiating turn Result'd (Monitor runs in the background) -
+    // by then the mapping is empty and the old structure
+    // early-returned, leaving the MonitorEntry stuck on `· running`
+    // forever and `clear_monitors_if_all_terminal` never
+    // re-evaluating. `set_monitor_status_by_task_id` mirrors
+    // `handle_task_notification`'s direct `task_id` routing
+    // pattern (the working precedent for the per-event tail
+    // surface).
+    if is_terminal {
         let monitor_status = match wire_status {
             "completed" => Some(crate::app::state::types::MonitorStatus::Completed),
             "failed" | "killed" | "stopped" => {
@@ -1144,16 +1130,41 @@ fn handle_task_updated(app: &mut App, msg: Message) {
             _ => None,
         };
         if let Some(status) = monitor_status {
-            app.set_monitor_status_by_task_id(&task_id_owned, status);
+            app.set_monitor_status_by_task_id(&task_id, status);
         }
         // #273 Task 9: same shape for WorkflowEntry - any terminal
         // status (completed | failed | killed | stopped) collapses
-        // the workflow row to its summarised one-liner.
-        app.set_workflow_completed_by_task_id(&task_id_owned);
+        // the workflow row to its summarised one-liner. Idempotent
+        // when the entry is already Completed.
+        app.set_workflow_completed_by_task_id(&task_id);
+        let task_id_owned = task_id.clone();
         let _: () = app.with_turn_state_mut(|ts| {
             ts.alive_task_ids.remove(&task_id_owned);
         });
     }
+
+    // The standard tool-call card update still requires the
+    // `tool_use_id` mapping to apply a status patch to the
+    // chat-stream card. If the mapping is missing (turn already
+    // finalised + TurnState reset), skip just THIS path - the
+    // MONITORS / WORKFLOWS sections are already updated above.
+    let tool_use_id = app.with_turn_state(|ts| ts.task_tool_use_ids.get(&task_id).cloned());
+    let Some(tool_use_id) = tool_use_id else {
+        tracing::debug!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "task_updated_no_tool_use_mapping",
+            message = "task_updated tool-call card skipped (mapping reset by turn finalisation); section row already updated",
+            outcome = "skipped",
+            task_id = %task_id,
+        );
+        return;
+    };
+    let mapped_status = map_task_updated_status_to_tool_status(wire_status);
+    apply_tool_call_update(
+        app,
+        &tool_use_id,
+        ToolCallUpdateFields { status: Some(mapped_status), ..Default::default() },
+    );
 }
 
 /// Map the wire-side `task_updated.patch.status` string to the
@@ -1627,6 +1638,135 @@ mod queued_command_tests {
         let prompt = json!({"weird": "shape"});
         let out = extract_queued_command_text(&prompt);
         assert!(out.contains("weird"));
+    }
+}
+
+#[cfg(test)]
+mod task_updated_section_routing_tests {
+    //! #275 Bug 3: Monitor + Workflow status transitions in
+    //! `handle_task_updated` run BEFORE the `task_tool_use_ids`
+    //! lookup so they survive the turn-finalisation reset that
+    //! drops the mapping. Without this, Monitor's terminal
+    //! `task_updated` arriving after Result early-returned and
+    //! the MONITORS row stayed on `· running` forever.
+    use super::handle_task_updated;
+    use crate::app::App;
+    use crate::app::state::types::{MonitorEntry, MonitorStatus};
+    use forge_primitives::{Message, messages::TaskUpdatePatch};
+
+    fn push_monitor(app: &mut App, task_id: &str) {
+        let entry = MonitorEntry {
+            tool_use_id: format!("tu_{task_id}"),
+            task_id: Some(task_id.to_owned()),
+            description: format!("test monitor {task_id}"),
+            command: "true".to_owned(),
+            persistent: false,
+            timeout_ms: 0,
+            status: MonitorStatus::Running,
+            output_tail: std::collections::VecDeque::new(),
+            expanded_in_inspector: false,
+        };
+        app.monitors_mut().push(entry);
+    }
+
+    fn task_updated(task_id: &str, status: &str) -> Message {
+        Message::TaskUpdated {
+            task_id: task_id.to_owned(),
+            patch: TaskUpdatePatch {
+                status: Some(status.to_owned()),
+                end_time: None,
+            },
+            uuid: String::new(),
+            session_id: String::new(),
+        }
+    }
+
+    #[test]
+    fn monitor_transitions_to_completed_after_turn_finalisation() {
+        // Reproduce the user-reported Bug 3a sequence: Monitor
+        // launched in turn A -> turn A Result'd (mapping reset) ->
+        // Monitor's `task_updated { status: "completed" }` arrives.
+        // BEFORE this fix the early-return at the missing
+        // `task_tool_use_ids` lookup dropped the transition. After
+        // the fix the section row flips to Completed.
+        let mut app = App::test_default();
+        push_monitor(&mut app, "task_1");
+        // Simulate turn finalisation: TurnState's task_tool_use_ids
+        // mapping is empty (the `default()` after Result).
+        // No task_started has populated it for `task_1`.
+        handle_task_updated(&mut app, task_updated("task_1", "completed"));
+        // Monitor was cleared via the all-completed predicate since
+        // this was the only running monitor; verifying via post-clear
+        // empty state.
+        assert!(
+            app.monitors().is_empty(),
+            "all-completed clear should drain the MONITORS list; got {} entries",
+            app.monitors().len(),
+        );
+    }
+
+    #[test]
+    fn monitor_killed_status_maps_to_stopped() {
+        let mut app = App::test_default();
+        push_monitor(&mut app, "task_2");
+        handle_task_updated(&mut app, task_updated("task_2", "killed"));
+        assert!(app.monitors().is_empty());
+    }
+
+    #[test]
+    fn two_monitors_completing_in_order_clears_section() {
+        // Bug 3b: clear_monitors_if_all_terminal re-evaluates only
+        // when status transitions actually fire. Both monitors'
+        // task_updated events must transition them; once the second
+        // flips terminal, the section drops out.
+        let mut app = App::test_default();
+        push_monitor(&mut app, "task_a");
+        push_monitor(&mut app, "task_b");
+        handle_task_updated(&mut app, task_updated("task_a", "completed"));
+        // task_a transitioned to Completed; task_b still Running.
+        // The all-completed predicate watches for "any still Running",
+        // so the section persists with both entries (task_a renders
+        // as collapsed completed; task_b as running).
+        assert_eq!(app.monitors().len(), 2);
+        let task_a = app.monitors().iter().find(|m| m.task_id.as_deref() == Some("task_a"));
+        let task_b = app.monitors().iter().find(|m| m.task_id.as_deref() == Some("task_b"));
+        assert_eq!(task_a.map(|m| m.status), Some(MonitorStatus::Completed));
+        assert_eq!(task_b.map(|m| m.status), Some(MonitorStatus::Running));
+        handle_task_updated(&mut app, task_updated("task_b", "completed"));
+        // Now everything's terminal; section drains.
+        assert!(app.monitors().is_empty());
+    }
+
+    #[test]
+    fn double_completed_event_is_idempotent() {
+        // Duplicate task_updated events (e.g. retry) must not
+        // panic and must not double-clear.
+        let mut app = App::test_default();
+        push_monitor(&mut app, "task_dup");
+        handle_task_updated(&mut app, task_updated("task_dup", "completed"));
+        // Already cleared.
+        assert!(app.monitors().is_empty());
+        // Second arrival: target task_id no longer exists in
+        // monitors; lookup misses; no panic.
+        handle_task_updated(&mut app, task_updated("task_dup", "completed"));
+        assert!(app.monitors().is_empty());
+    }
+
+    #[test]
+    fn no_status_field_in_patch_skips_transition() {
+        // Partial patch (end_time only, no status) leaves the
+        // monitor running.
+        let mut app = App::test_default();
+        push_monitor(&mut app, "task_partial");
+        let msg = Message::TaskUpdated {
+            task_id: "task_partial".to_owned(),
+            patch: TaskUpdatePatch { status: None, end_time: Some(42) },
+            uuid: String::new(),
+            session_id: String::new(),
+        };
+        handle_task_updated(&mut app, msg);
+        assert_eq!(app.monitors().len(), 1);
+        assert_eq!(app.monitors()[0].status, MonitorStatus::Running);
     }
 }
 
