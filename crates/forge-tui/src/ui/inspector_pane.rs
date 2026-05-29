@@ -1325,21 +1325,15 @@ fn append_monitor_row(
         Span::styled(persistent_suffix.to_owned(), Style::default().fg(theme::DIM)),
     ]));
 
-    // Tail lines - show when:
-    //  - the monitor is still running (live tail), OR
-    //  - the user has explicitly expanded the entry, OR
-    //  - #277 Bug 5b: the tail is non-empty for a completed entry.
-    //    Without this branch, completed Monitors that landed their
-    //    `task_notification.output_file` tail are hidden (the tail
-    //    was the whole point of the file read). The empty-tail
-    //    case still short-circuits above so silent-completed
-    //    Monitors don't get a vestigial expanded view.
+    // #277 Bug 5b: tail renders whenever the buffer is non-empty -
+    // running, completed, expanded, all the same. The earlier gate
+    // hid tails for completed-and-collapsed entries, but the file
+    // read from `task_notification.output_file` is the whole point
+    // of capturing the tail; suppressing it on completion silenced
+    // the user-visible payload. Empty-tail short-circuits below
+    // preserve the no-output edge case so silent-completed
+    // Monitors don't render a vestigial empty body row.
     if monitor.output_tail.is_empty() {
-        return;
-    }
-    let show_tail =
-        monitor.is_running() || monitor.expanded_in_inspector || !monitor.output_tail.is_empty();
-    if !show_tail {
         return;
     }
     // Tail-row chrome: 1-col indent + box-drawing connector + space
