@@ -1265,8 +1265,16 @@ fn append_monitors_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16
     lines.push(Line::default());
 
     let inner_width = usize::from(width);
-    for monitor in monitors {
+    let last_idx = monitors.len().saturating_sub(1);
+    for (idx, monitor) in monitors.iter().enumerate() {
         append_monitor_row(lines, monitor, inner_width);
+        // #277 Bug 6: blank between entries so multiple Monitor
+        // rows don't visually crowd together. Skip after the last
+        // row to avoid leaving a trailing blank at the end of the
+        // section (matches TASKS' inter-entry spacing).
+        if idx < last_idx {
+            lines.push(Line::default());
+        }
     }
 }
 
@@ -1375,8 +1383,14 @@ fn append_workflows_section(lines: &mut Vec<Line<'static>>, app: &App, width: u1
     lines.push(Line::default());
 
     let inner_width = usize::from(width);
-    for workflow in workflows {
+    let last_idx = workflows.len().saturating_sub(1);
+    for (idx, workflow) in workflows.iter().enumerate() {
         append_workflow_row(lines, workflow, inner_width, app.spinner_frame);
+        // #277 Bug 6: blank between entries (matches the MONITORS
+        // section's inter-entry spacing).
+        if idx < last_idx {
+            lines.push(Line::default());
+        }
     }
 }
 
@@ -2758,5 +2772,97 @@ mod tests {
                 line_text(line),
             );
         }
+    }
+
+    // ---------------------------------------------------------
+    // #277 Bug 6: blank-line spacing between MONITORS / WORKFLOWS
+    // entries.
+    // ---------------------------------------------------------
+
+    fn build_session_with_monitors(monitors: Vec<crate::app::MonitorEntry>) -> App {
+        let mut app = App::test_default();
+        *app.monitors_mut() = monitors;
+        app
+    }
+
+    fn build_session_with_workflows(workflows: Vec<crate::app::WorkflowEntry>) -> App {
+        let mut app = App::test_default();
+        *app.workflows_mut() = workflows;
+        app
+    }
+
+    #[test]
+    fn monitors_section_inserts_blank_line_between_entries() {
+        let entries = vec![
+            make_monitor_entry("tu_a", "first-monitor", false, crate::app::MonitorStatus::Running),
+            make_monitor_entry("tu_b", "second-monitor", false, crate::app::MonitorStatus::Running),
+        ];
+        let app = build_session_with_monitors(entries);
+        let mut lines = Vec::new();
+        append_monitors_section(&mut lines, &app, 60);
+        // Expected layout:
+        //   0: " MONITORS"
+        //   1: blank (header -> first-row separator)
+        //   2: first row headline
+        //   3: blank (between entries — Bug 6)
+        //   4: second row headline
+        // No trailing blank after the last entry.
+        assert_eq!(lines.len(), 5, "got {} lines: {lines:?}", lines.len());
+        assert!(line_text(&lines[0]).contains("MONITORS"));
+        assert!(line_text(&lines[1]).is_empty());
+        assert!(line_text(&lines[2]).contains("first-monitor"));
+        assert!(line_text(&lines[3]).is_empty(), "Bug 6: blank between entries");
+        assert!(line_text(&lines[4]).contains("second-monitor"));
+    }
+
+    #[test]
+    fn monitors_section_single_entry_has_no_trailing_blank() {
+        let app = build_session_with_monitors(vec![make_monitor_entry(
+            "tu_solo",
+            "solo-monitor",
+            false,
+            crate::app::MonitorStatus::Running,
+        )]);
+        let mut lines = Vec::new();
+        append_monitors_section(&mut lines, &app, 60);
+        // 1 header + 1 blank + 1 row = 3 lines; no trailing blank.
+        assert_eq!(lines.len(), 3);
+        assert!(line_text(&lines[2]).contains("solo-monitor"));
+    }
+
+    #[test]
+    fn workflows_section_inserts_blank_line_between_entries() {
+        let entries = vec![
+            make_workflow_entry(
+                "wf_a",
+                "first-workflow",
+                crate::app::WorkflowStatus::InProgress,
+            ),
+            make_workflow_entry(
+                "wf_b",
+                "second-workflow",
+                crate::app::WorkflowStatus::InProgress,
+            ),
+        ];
+        let app = build_session_with_workflows(entries);
+        let mut lines = Vec::new();
+        append_workflows_section(&mut lines, &app, 60);
+        // Layout shape matches MONITORS: header + blank + row + blank-between + row.
+        // Find the two workflow rows; assert there's a blank between them.
+        let first_idx = lines
+            .iter()
+            .position(|l| line_text(l).contains("first-workflow"))
+            .expect("first workflow row");
+        let second_idx = lines
+            .iter()
+            .position(|l| line_text(l).contains("second-workflow"))
+            .expect("second workflow row");
+        assert!(second_idx > first_idx, "second comes after first");
+        assert_eq!(
+            second_idx,
+            first_idx + 2,
+            "Bug 6: exactly one blank line separates the two workflow rows",
+        );
+        assert!(line_text(&lines[first_idx + 1]).is_empty(), "Bug 6: blank between entries");
     }
 }

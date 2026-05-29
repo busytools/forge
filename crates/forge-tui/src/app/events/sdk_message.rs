@@ -1708,67 +1708,80 @@ mod task_updated_section_routing_tests {
         // BEFORE this fix the early-return at the missing
         // `task_tool_use_ids` lookup dropped the transition. After
         // the fix the section row flips to Completed.
+        //
+        // #277 Bug 5a contract: the entry STAYS in the list after
+        // task_updated; auto-clear is deferred to
+        // `handle_task_notification` so the tail can populate first.
         let mut app = App::test_default();
         push_monitor(&mut app, "task_1");
         // Simulate turn finalisation: TurnState's task_tool_use_ids
         // mapping is empty (the `default()` after Result).
         // No task_started has populated it for `task_1`.
         handle_task_updated(&mut app, task_updated("task_1", "completed"));
-        // Monitor was cleared via the all-completed predicate since
-        // this was the only running monitor; verifying via post-clear
-        // empty state.
-        assert!(
-            app.monitors().is_empty(),
-            "all-completed clear should drain the MONITORS list; got {} entries",
-            app.monitors().len(),
-        );
+        // Status transitioned; entry persists waiting for
+        // task_notification.
+        assert_eq!(app.monitors().len(), 1);
+        assert_eq!(app.monitors()[0].status, MonitorStatus::Completed);
     }
 
     #[test]
     fn monitor_killed_status_maps_to_stopped() {
+        // #277 Bug 5a: status transitions but auto-clear waits for
+        // task_notification. Status check pins the mapping
+        // (killed/stopped wire string -> Stopped MonitorStatus).
         let mut app = App::test_default();
         push_monitor(&mut app, "task_2");
         handle_task_updated(&mut app, task_updated("task_2", "killed"));
-        assert!(app.monitors().is_empty());
+        assert_eq!(app.monitors().len(), 1);
+        assert_eq!(app.monitors()[0].status, MonitorStatus::Stopped);
     }
 
     #[test]
     fn two_monitors_completing_in_order_clears_section() {
         // Bug 3b: clear_monitors_if_all_terminal re-evaluates only
-        // when status transitions actually fire. Both monitors'
-        // task_updated events must transition them; once the second
-        // flips terminal, the section drops out.
+        // when the explicit driver runs. After both monitors have
+        // transitioned out of Running, an explicit
+        // `clear_monitors_if_all_terminal` call (driven by
+        // `handle_task_notification` in production) drains the
+        // section. Pre-Bug-5a, the task_updated handler ran the
+        // clear directly; post-fix, the call is explicit so this
+        // test invokes it the way `handle_task_notification` would.
         let mut app = App::test_default();
         push_monitor(&mut app, "task_a");
         push_monitor(&mut app, "task_b");
         handle_task_updated(&mut app, task_updated("task_a", "completed"));
         // task_a transitioned to Completed; task_b still Running.
-        // The all-completed predicate watches for "any still Running",
-        // so the section persists with both entries (task_a renders
-        // as collapsed completed; task_b as running).
+        // No clear runs yet (Bug 5a defers it).
         assert_eq!(app.monitors().len(), 2);
         let task_a = app.monitors().iter().find(|m| m.task_id.as_deref() == Some("task_a"));
         let task_b = app.monitors().iter().find(|m| m.task_id.as_deref() == Some("task_b"));
         assert_eq!(task_a.map(|m| m.status), Some(MonitorStatus::Completed));
         assert_eq!(task_b.map(|m| m.status), Some(MonitorStatus::Running));
         handle_task_updated(&mut app, task_updated("task_b", "completed"));
-        // Now everything's terminal; section drains.
+        // Both terminal. Still 2 entries until clear fires.
+        assert_eq!(app.monitors().len(), 2);
+        // Explicit clear (what `handle_task_notification` runs in
+        // production) drains the section.
+        app.clear_monitors_if_all_terminal();
         assert!(app.monitors().is_empty());
     }
 
     #[test]
     fn double_completed_event_is_idempotent() {
         // Duplicate task_updated events (e.g. retry) must not
-        // panic and must not double-clear.
+        // panic. After #277 Bug 5a the entry persists post-status-flip
+        // until an explicit clear runs; second arrival just re-stamps
+        // Completed on the same entry.
         let mut app = App::test_default();
         push_monitor(&mut app, "task_dup");
         handle_task_updated(&mut app, task_updated("task_dup", "completed"));
-        // Already cleared.
-        assert!(app.monitors().is_empty());
-        // Second arrival: target task_id no longer exists in
-        // monitors; lookup misses; no panic.
+        assert_eq!(app.monitors().len(), 1);
+        assert_eq!(app.monitors()[0].status, MonitorStatus::Completed);
+        // Second arrival: same task_id, same target status.
+        // Idempotent - no panic, no duplicate entry.
         handle_task_updated(&mut app, task_updated("task_dup", "completed"));
-        assert!(app.monitors().is_empty());
+        assert_eq!(app.monitors().len(), 1);
+        assert_eq!(app.monitors()[0].status, MonitorStatus::Completed);
     }
 
     #[test]
