@@ -563,7 +563,7 @@ chat continues here…
   <div class="surface-body">
     <p>Right-side pane, 40ch wide, docked to the right of the chat frame. Mirror of the <a href="#projects-pane">Projects pane</a> on the left in chrome (banner + rule), Narrow-tier overlay semantics, and persisted-visibility model. The horizontal layout is asymmetric on purpose: the left pane has a <code>│</code> separator + 1-col padding between it and the chat column; the right pane sits flush against the chat column, using the chat's own scrollbar rail (<code>▕</code>) as the visual divider. The pane's own 2-col content indent provides breathing room from the scrollbar. Reads strictly from the active session - switching projects via the left pane swaps the Inspector's content alongside it.</p>
     <p>The <strong>banner</strong> (<code>INSPECTOR</code> heading + DIM rule beneath it) is pinned at the top - it never scrolls. Everything below it (starting with the <code>GIT</code> section) is a scrollable body: mouse wheel over the body advances the active session's <code>inspector_scroll_offset</code> by 3 lines per notch, and a vertical scrollbar appears on the right edge whenever the body overflows the visible area. The offset lives on <code>UiSession</code>, so switching away to another session and returning preserves where you were looking, same shape as chat scrollback. Same scroll behaviour applies at Narrow tier inside the full-screen overlay.</p>
-    <p>The pane carries three sections: <strong>GIT</strong> (always rendered), <strong>TASKS</strong> (rendered when the focused session has todos or a pending verification nudge), and <strong>PROCESSES</strong> (rendered when claude's spawned process tree has at least one descendant alive - foreground / backgrounded <code>Bash</code>, <code>Monitor</code> streams, grandchildren like <code>rustc</code> workers, or wire-only <code>CronCreate</code> registrations). DIM <code>─</code> horizontal rules separate adjacent sections so each surface reads visually distinct. The chat scrollback no longer surfaces a <code>TodoWrite</code> tool-call card; updates land transparently in the <code>TASKS</code> section. Sections render in order: GIT → TASKS → PROCESSES; each downstream section is hidden when its content set is empty. PROCESSES is a live monitor sourced from <code>sysinfo</code>'s descendant walk - when the last process exits the section disappears.</p>
+    <p>The pane carries five sections: <strong>GIT</strong> (always rendered), <strong>TASKS</strong> (rendered when the focused session has todos or a pending verification nudge), <strong>WORKFLOWS</strong> (rendered when any <code>Workflow</code> tool call from this session is live or recently completed), <strong>MONITORS</strong> (rendered when any <code>Monitor</code> tool call from this session is running or recently stopped), and <strong>PROCESSES</strong> (rendered when claude's spawned process tree has at least one descendant alive - foreground / backgrounded <code>Bash</code>, grandchildren like <code>rustc</code> workers, or wire-only <code>CronCreate</code> registrations). DIM <code>─</code> horizontal rules separate adjacent sections so each surface reads visually distinct. The chat scrollback no longer surfaces <code>Task*</code> (formerly <code>TodoWrite</code>) / <code>Workflow</code> / <code>Monitor</code> tool-call cards beyond minimal start/end notices; the live state lands transparently in the corresponding Inspector section. Sections render in order: GIT → TASKS → WORKFLOWS → MONITORS → PROCESSES; each downstream section is hidden when its content set is empty. PROCESSES is a live monitor sourced from <code>sysinfo</code>'s descendant walk - when the last process exits the section disappears. Monitor tool calls now route to the dedicated <code>MONITORS</code> section instead of overlaying a PROCESSES row (the prior "Monitor row" kind in PROCESSES is retired).</p>
     <p>The <strong>GIT</strong> section shows the focused session's cwd, the current branch on its own line, an optional <code>PR #N → closes #M #K</code> row when the scanner resolved an open pull request, and up to two stacked diff sub-sections - <strong>layer 1</strong> (<code>uncommitted</code>: dirty / staged / unstaged tree vs HEAD) and <strong>layer 2</strong> (<code>N commits vs &lt;default&gt;</code>: commits ahead of the resolved default branch). Each sub-section carries its own subtitle row + right-justified <code>+A -R</code> totals + box-drawing tree of the top-N changed files grouped by directory. Single-child directory chains fold into one row so paths like <code>crates/forge-agent/src/env/</code> render as a single header above their file children. The diff side is polled - <code>git_diff</code> shells out to <code>git --numstat</code> every 10 s for the focused session only; a 1 s ticker pokes the drain pump, the rule "snapshot is <code>None</code> OR age ≥ 10 s → fetch" decides whether to spawn a scan. The PR side rides on the same poll but is branch-keyed: the scanner only shells out to <code>gh pr list</code> when the branch name changed since the previous snapshot, so steady-state scans on the same branch reuse the cached PR / closes data for free.</p>
     <p>The section <strong>follows the focused session</strong>, not the lead's. When a worker is selected, the scan runs against the worker's worktree path (<code>&lt;project_root&gt;/.claude/worktrees/&lt;label&gt;/</code>) so the user sees the worker's branch + in-progress edits, not the lead's view of <code>main</code>. The cwd resolution is handled by <code>Workspace::git_scan_cwd_for_session</code> - composing <code>worker_lookup_for_session</code> with the same <code>worker_tag_dir</code> helper that drives the tag-write path.</p>
     <p>For a worker on a topic branch with uncommitted edits, both layers populate together - layer 1 shows the in-progress edits, layer 2 shows the committed-but-unmerged work. For the lead on <code>main</code> with a clean tree, neither layer renders and the panel collapses to just the branch row (byte-identical to today's clean-default render). Either layer can render alone when the other is empty.</p>
@@ -636,16 +636,15 @@ chat continues here…
   <span class="accent">  ▸</span> <span class="bold">Open PR</span>
 </pre>
     </div>
-    <p>The <strong>PROCESSES</strong> section surfaces <strong>currently-running</strong> work in the active session, sitting below TASKS with its own DIM <code>─</code> separator. The data source is <strong>path A+</strong>: the OS process tree under the spawned <code>claude</code> binary is the source of truth for what's alive; wire-tracked tool calls overlay their description when their <code>raw_input.command</code> substring-matches an OS process's cmdline. Four row kinds appear:</p>
+    <p>The <strong>PROCESSES</strong> section surfaces <strong>currently-running</strong> work in the active session, sitting below MONITORS with its own DIM <code>─</code> separator. The data source is <strong>path A+</strong>: the OS process tree under the spawned <code>claude</code> binary is the source of truth for what's alive; wire-tracked tool calls overlay their description when their <code>raw_input.command</code> substring-matches an OS process's cmdline. Three row kinds appear (Monitor was retired from PROCESSES in #273; its dedicated <a href="#inspector-monitors">MONITORS section</a> is the authoritative surface):</p>
     <ul style="color: var(--muted); font-size: 13px; line-height: 1.7; margin: 0 0 12px 18px;">
       <li><strong>Backgrounded Bash</strong> - OS process that matched a wire-tracked <code>Bash</code> with <code>run_in_background: true</code> (or claude's CLI auto-promoted foreground Bash). Headline = the assistant's <code>description</code>; detail = the actual OS cmdline.</li>
-      <li><strong>Monitor</strong> - OS process that matched a wire-tracked <code>Monitor</code> streaming watcher. Persistent / timeout flags carry through to the metadata row.</li>
       <li><strong>Process</strong> - OS process with no matching wire tool call. Foreground <code>Bash</code> invocations, grandchildren (e.g. <code>rustc</code> workers under a <code>cargo build</code>), or anything that's detached from claude's tool registry. Headline = OS process name; detail = OS cmdline.</li>
       <li><strong>Cron</strong> - wire-only. <code>CronCreate</code> registers a schedule; there's no process to walk. Headline = cron expression; detail = prompt.</li>
     </ul>
-    <p>Each row renders across two or three lines: a status-glyph headline, an optional <code>└─</code> continuation carrying the underlying cmdline or cron prompt in DIM, and a <code>└─</code> metadata continuation carrying kind label · status · flags · memory (e.g. <code>Bash · running · 32 MB</code>, <code>Monitor · running · persistent · 8 MB</code>, <code>Process · running · 256 MB</code>, <code>Cron · recurring · session-only</code>). Rows sort by resident memory descending; a sanity cap of 50 keeps a runaway process tree from blowing the body line count, but the inspector pane itself scrolls (the scrollbar IS the overflow indicator) so the section is no longer trimmed to top-N for display. Memory rendering is tier-gated: Wide (≥36 cols of pane width) shows the <code>· 12 MB</code> suffix, Medium drops it so the metadata fits. Status glyphs:</p>
+    <p>Each row renders across two or three lines: a status-glyph headline, an optional <code>└─</code> continuation carrying the underlying cmdline or cron prompt in DIM, and a <code>└─</code> metadata continuation carrying kind label · status · flags · memory (e.g. <code>Bash · running · 32 MB</code>, <code>Process · running · 256 MB</code>, <code>Cron · recurring · session-only</code>). Rows sort by resident memory descending; a sanity cap of 50 keeps a runaway process tree from blowing the body line count, but the inspector pane itself scrolls (the scrollbar IS the overflow indicator) so the section is no longer trimmed to top-N for display. Memory rendering is tier-gated: Wide (≥36 cols of pane width) shows the <code>· 12 MB</code> suffix, Medium drops it so the metadata fits. Status glyphs:</p>
     <ul style="color: var(--muted); font-size: 13px; line-height: 1.7; margin: 0 0 12px 18px;">
-      <li><span class="accent">▸</span> RUST_ORANGE - <code>InProgress</code> wire-tracked Bash / Monitor (text white bold)</li>
+      <li><span class="accent">▸</span> RUST_ORANGE - <code>InProgress</code> wire-tracked Bash (text white bold)</li>
       <li><span class="dim">▸</span> DIM - generic <code>Process</code> row (unmatched OS process; text gray)</li>
       <li><span class="dim">⏰</span> DIM - <code>InProgress</code> Cron (the rare in-flight case)</li>
       <li><span class="dim">○</span> DIM - <code>Pending</code> (about to run / awaiting permission; text gray)</li>
@@ -669,13 +668,61 @@ chat continues here…
   <span class="dim">    └─ rustc --crate-name forge_tui --edition=2021 ...</span>
   <span class="dim">    └─ Process · running · 512 MB</span>
 
-  <span class="accent">  ▸</span> <span class="bold">PR #120 CI watch</span>
-  <span class="dim">    └─ gh run watch 25838877846</span>
-  <span class="dim">    └─ Monitor · running · persistent · 8 MB</span>
-
 </pre>
     </div>
-    <p>Persistent monitors are explicitly excluded from the end-of-turn status sweep (<code>finalize_open_tool_calls</code>) - they outlive the turn that started them by design. The wire-enrichment matcher uses substring containment so the shell wrapper claude adds around user-typed commands (<code>/bin/zsh -c -l eval '…' &lt; /dev/null</code>) still resolves to the correct description.</p>
+    <p>The wire-enrichment matcher uses substring containment so the shell wrapper claude adds around user-typed commands (<code>/bin/zsh -c -l eval '…' &lt; /dev/null</code>) still resolves to the correct description.</p>
+
+    <p id="inspector-workflows"><strong>WORKFLOWS section</strong>: surfaces the in-flight <code>Workflow</code> tool calls for the active session, with completed entries persisting only while any other entry is still running. Each Workflow entry shows: <code>◆ &lt;meta.name&gt;</code> header + per-phase tree (in-progress phase carries the spinner; completed phases show <code>✓</code>; pending phases show <code>○</code>; log lines from <code>log()</code> calls render DIM under the active phase). On completion the entry collapses to a one-line summary (click to re-expand to the full tree).</p>
+    <p><strong>All-completed clear</strong>: the section auto-clears when the last in-flight Workflow transitions to completed — same self-managing pattern as TASKS' <code>set_todos</code> all-completed clearing. While at least one Workflow is in-flight, the section is visible and completed entries persist below the in-flight ones with the <code>[▶ expand]</code> affordance. The moment no in-flight entries remain, the entire section drops out (returns when the next <code>Workflow</code> tool call fires).</p>
+    <div class="term">
+      <pre class="indent">
+  <span class="accent-bold">INSPECTOR</span>
+  <span class="dim">─────────────────────────</span>
+
+  <span class="dim bold">  WORKFLOWS</span>
+
+  <span class="bold">  ◆</span> <span class="bold">minimal-ping</span>
+  <span class="dim">  ├ </span><span class="success">✓</span> Ping <span class="dim">· done</span>
+  <span class="dim">  │   └ log: "dispatching single structured agent"</span>
+  <span class="dim">  └ </span><span class="dim">⠋</span> Synthesize <span class="dim">· in progress</span>
+  <span class="dim">      └ log: "schema validated, awaiting model"</span>
+
+  <span class="success">  ✓</span> <span class="dim">◆ big-fan-out · done</span> <span class="dim">[▶ expand]</span>
+</pre>
+    </div>
+    <dl style="margin-left: 16px;">
+      <dt>code</dt><dd><code>crates/forge-tui/src/ui/inspector_pane.rs::append_workflows_section</code> (new) · state on <code>UiSession.workflows: Vec&lt;WorkflowEntry&gt;</code></dd>
+      <dt>color</dt><dd>section header (<code>WORKFLOWS</code>): <code>DIM</code> bold · in-progress phase glyph (<code>⠋</code>): <code>DIM</code> (spinner) · completed phase glyph (<code>✓</code>): <span class="success">green</span> · pending phase glyph (<code>○</code>): <code>DIM</code> · phase title in-progress: white bold · phase title completed: <code>DIM</code> · phase title pending: <code>DIM</code> · log lines: <code>DIM</code> · collapsed completed entry: <code>DIM</code> with <code>[▶ expand]</code> affordance</dd>
+      <dt>phase events</dt><dd><code>system/workflow_phase</code> (per-phase transition with <code>{phase_name, task_id}</code>) and <code>system/workflow_log</code> (<code>{message, phase_name}</code>) — subject to confirmation at implementation; #273 plan notes this as a runtime unknown that may degrade to "static phase list shown on completion" if events don't actually stream</dd>
+      <dt>data source</dt><dd><code>tool_input.script</code> parsed for <code>meta</code> block (simple substring extraction, no JS interpreter) · phase transitions + logs from <code>system/workflow_*</code> events · final result + completion from tool_result</dd>
+      <dt>graceful fallback</dt><dd>if <code>meta</code> parsing fails (malformed script, missing <code>export const meta</code>), the WORKFLOWS entry renders as a single static "<code>◆ Workflow · &lt;status&gt;</code>" line without a phase tree</dd>
+    </dl>
+
+    <p id="inspector-monitors"><strong>MONITORS section</strong>: surfaces the running <code>Monitor</code> tool calls for the active session, with stopped entries persisting only while any other Monitor is still running. Each Monitor entry shows: <code>◉ &lt;description&gt;</code> header + status (<code>running</code> / <code>stopped</code> / <code>completed</code>) + persistence flag + tail of the last 12 output lines from <code>system/task_progress</code> events (matches Bash <code>TERMINAL_MAX_LINES</code>). Stopped entries collapse to a one-line summary (click to re-expand to status + tail).</p>
+    <p><strong>All-completed clear</strong>: the section auto-clears when the last running Monitor transitions to stopped or completed — same self-managing pattern as TASKS' <code>set_todos</code> all-completed clearing. While at least one Monitor is running, the section is visible and stopped entries persist below the running ones with the <code>[▶ expand]</code> affordance. The moment no running monitors remain, the entire section drops out (returns when the next <code>Monitor</code> tool call fires).</p>
+    <div class="term">
+      <pre class="indent">
+  <span class="accent-bold">INSPECTOR</span>
+  <span class="dim">─────────────────────────</span>
+
+  <span class="dim bold">  MONITORS</span>
+
+  <span class="accent bold">  ◉</span> <span class="bold">forge-monitor-test</span> <span class="dim">· running · persistent</span>
+  <span class="dim">  │  $ for i in 1 2 3; do echo monitor-line-$i; sleep 0.3; done</span>
+  <span class="dim">  │  monitor-line-1</span>
+  <span class="dim">  │  monitor-line-2</span>
+  <span class="dim">  └─ monitor-line-3</span>
+
+  <span class="success">  ✓</span> <span class="dim">◉ PR #120 CI watch · stopped</span> <span class="dim">[▶ expand]</span>
+</pre>
+    </div>
+    <dl style="margin-left: 16px;">
+      <dt>code</dt><dd><code>crates/forge-tui/src/ui/inspector_pane.rs::append_monitors_section</code> (new) · state on <code>UiSession.monitors: Vec&lt;MonitorEntry&gt;</code> with a ring-buffer per entry for the last 12 output lines</dd>
+      <dt>color</dt><dd>section header (<code>MONITORS</code>): <code>DIM</code> bold · running glyph (<code>◉</code>): <span class="accent">RUST_ORANGE</span> bold, description white bold · stopped/completed glyph (<code>✓</code>): <span class="success">green</span>, description and metadata <code>DIM</code> · status + persistence metadata: <code>DIM</code> · tail output lines: <code>DIM</code> with standard <code>│  </code> / <code>└─ </code> tree connectors · collapsed stopped entry: <code>DIM</code> with <code>[▶ expand]</code> affordance</dd>
+      <dt>data source</dt><dd><code>tool_input</code> for description + command + persistent + timeout_ms · <code>system/task_progress</code> events for tail output lines (ring buffer capped at 12, oldest dropped) · status transitions from <code>task_started</code> → <code>task_updated</code> → <code>task_completed</code></dd>
+      <dt>retired path</dt><dd>The prior <code>Monitor</code> row-kind in the PROCESSES section (where wire-tracked Monitor matched an OS process by cmdline substring) is removed in #273 — MONITORS is the authoritative surface</dd>
+    </dl>
+
     <p>Empty TASKS state - when the active session has no todos, the GIT section renders without a TASKS separator below it. With a clean default branch + no diff to show:</p>
     <div class="term">
       <pre class="indent">
@@ -911,10 +958,10 @@ chat continues here…
     <div class="when">visible: every assistant turn</div>
   </div>
   <div class="surface-body">
-    <p>Role banner is the literal text "<strong>Claude</strong>" in <code>theme::ROLE_ASSISTANT</code> (RUST_ORANGE) bold. Body is full markdown via <code>tui-markdown</code> (which uses <code>pulldown-cmark</code>) with <code>syntect</code> for fenced code blocks.</p>
+    <p>Role banner is the literal text "<strong>Claude</strong>" in <code>theme::ROLE_ASSISTANT</code> (RUST_ORANGE) bold, followed by a DIM duration chip <code> · 12.4s</code> on completed turns (sourced from <code>system/turn_duration</code>, CLI 2.1.156+). Body is full markdown via <code>tui-markdown</code> (which uses <code>pulldown-cmark</code>) with <code>syntect</code> for fenced code blocks.</p>
     <div class="term">
       <pre class="indent">
-  <span class="accent-bold">Claude</span>
+  <span class="accent-bold">Claude</span><span class="dim"> · 12.4s</span>
   Looking at <span class="dim">crates/forge-tui/src/app/events/rate_limit.rs</span> - the warning chip
   has only one wording today. I'll add a quieter branch for the
   near-threshold-no-overage case.
@@ -933,7 +980,53 @@ chat continues here…
     </div>
     <dl>
       <dt>code</dt><dd><code>crates/forge-tui/src/ui/message.rs::assistant_role_label_line</code> · markdown via <code>crates/forge-tui/src/ui/markdown.rs</code></dd>
-      <dt>color</dt><dd>banner: RUST_ORANGE bold  ·  body: terminal default fg with markdown styles  ·  inline code: <code>theme::DIM</code> tint</dd>
+      <dt>color</dt><dd>banner: RUST_ORANGE bold  ·  duration chip: <code>theme::DIM</code>  ·  body: terminal default fg with markdown styles  ·  inline code: <code>theme::DIM</code> tint</dd>
+      <dt>duration formatting</dt><dd>&lt; 60s → <code>12.4s</code> (one decimal) · ≥ 60s → <code>1m 04s</code> · ≥ 1h → <code>1h 02m 04s</code></dd>
+    </dl>
+  </div>
+</div>
+
+<div class="surface">
+  <div class="surface-head">
+    <h4>Assistant turn — in-progress (thinking tokens)</h4>
+    <div class="when">visible: while assistant turn is streaming, after first <code>system/thinking_tokens</code> event fires</div>
+  </div>
+  <div class="surface-body">
+    <p>The spinner row that today renders as a bare <code>⠋</code> picks up a DIM token-counter chip when <code>system/thinking_tokens</code> events arrive (CLI 2.1.156+, fires repeatedly during model thinking with cumulative <code>estimated_tokens</code>). Format: <code>⠋ thinking · 1.2k tok</code>. Token count uses k/M abbreviations (<code>1.2k</code>, <code>15k</code>, <code>1.4M</code>). Reverts to bare spinner if no <code>thinking_tokens</code> event fires for the turn. Once the first content token streams in, this line is replaced by the normal banner + body.</p>
+    <div class="term">
+      <pre class="indent">
+  <span class="dim">⠋ thinking · 1.2k tok</span></pre>
+    </div>
+    <dl>
+      <dt>code</dt><dd><code>crates/forge-tui/src/ui/message.rs</code> (spinner-row render extended to consume <code>SystemEvent::ThinkingTokens</code>)</dd>
+      <dt>color</dt><dd>spinner + chip: <code>theme::DIM</code></dd>
+    </dl>
+  </div>
+</div>
+
+<div class="surface">
+  <div class="surface-head">
+    <h4>Stop-hook summary (end-of-turn)</h4>
+    <div class="when">visible: end of an assistant turn whose <code>system/stop_hook_summary</code> event reports <code>actions &gt; 0</code></div>
+  </div>
+  <div class="surface-body">
+    <p>Optional collapsed-by-default 1-liner appended to the end of an assistant turn when one or more <code>Stop</code>-event hooks executed during the turn. Click the <code>[▶ expand]</code> affordance (or keyboard toggle) to expand the summary text inline. When <code>actions == 0</code> the surface is hidden entirely (no row reserved). Sourced from <code>system/stop_hook_summary</code> (CLI 2.1.156+).</p>
+    <p>Collapsed:</p>
+    <div class="term">
+      <pre class="indent">
+  <span class="dim">↳ hook summary · 3 actions [▶ expand]</span></pre>
+    </div>
+    <p>Expanded:</p>
+    <div class="term">
+      <pre class="indent">
+  <span class="dim">↳ hook summary · 3 actions [▼ collapse]</span>
+  <span class="dim">    Posted to Slack #ops · attached transcript.</span>
+  <span class="dim">    Wrote /tmp/forge-handoff.log.</span>
+  <span class="dim">    Bumped #142 to Done in Linear.</span></pre>
+    </div>
+    <dl>
+      <dt>code</dt><dd><code>crates/forge-tui/src/ui/message.rs</code> + per-message expand-state on <code>UiSession</code> (matches existing tool-card collapse pattern)</dd>
+      <dt>color</dt><dd>line + body: <code>theme::DIM</code></dd>
     </dl>
   </div>
 </div>
@@ -1023,11 +1116,67 @@ chat continues here…
 
 <div class="surface">
   <div class="surface-head">
-    <h4>TodoWrite tool call</h4>
-    <div class="when">visible: never in chat - TodoWrite is silent in the scrollback. The live todo state lives in the <a href="#inspector-pane">Inspector pane</a>'s <code>TASKS</code> section.</div>
+    <h4>Task* family (TaskCreate · TaskUpdate · TaskList · TaskGet)</h4>
+    <div class="when">visible: never in chat - the Task* family is silent in the scrollback. The live task state lives in the <a href="#inspector-pane">Inspector pane</a>'s <code>TASKS</code> section.</div>
   </div>
   <div class="surface-body">
-    <p>The chat-stream tool-call card for <code>TodoWrite</code> is suppressed. Every <code>TodoWrite</code> call updates the Inspector pane in place; no chat noise. When <code>TodoWriteOutputMetadata.verification_nudge_needed</code> is set, the nudge surfaces as a dim-yellow line in the Inspector above the <code>TASKS</code> header (see <a href="#inspector-pane">Inspector pane</a>).</p>
+    <p>CLI 2.1.156 retired the single-call <code>TodoWrite</code> in favour of an id-keyed quartet — <code>TaskCreate</code> (push one item, id parsed from result-text <code>Task #N created successfully:</code>), <code>TaskUpdate</code> (mutate by <code>taskId</code>; <code>status=deleted</code> removes), <code>TaskList</code> and <code>TaskGet</code> (read-only). Every call updates the Inspector pane in place; no chat noise. PR #269 shipped the renderer + reducer; PR #271's wire-conformance scenario locks the result-text parser shape.</p>
+  </div>
+</div>
+
+<div class="surface">
+  <div class="surface-head">
+    <h4>Workflow tool call (chat surface)</h4>
+    <div class="when">visible: minimal start/end notice in chat; live phase-tree state lives in <a href="#inspector-pane">Inspector pane</a> <code>WORKFLOWS</code> section</div>
+  </div>
+  <div class="surface-body">
+    <p>Workflow's <code>tool_input.script</code> carries a JS source blob with <code>export const meta = {name, description, phases: [{title, detail}]}</code>. The chat surface stays minimal — a single start-line when invoked + a single done-line on completion. The live phase tree lives in the <a href="#inspector-pane">Inspector pane</a>'s <code>WORKFLOWS</code> section (same pattern as Task* → TASKS).</p>
+    <div class="term">
+      <pre class="indent">
+  <span class="dim">◆ Workflow started · minimal-ping</span>
+  …
+  <span class="dim">◆ Workflow done · minimal-ping · ✓ result: {"answer": "pong", "confidence": 1}</span></pre>
+    </div>
+    <dl>
+      <dt>code</dt><dd><code>crates/forge-tui/src/ui/tool_call.rs</code> sets the chat card to the minimal-notice shape; <code>meta.name</code> + final-result summary parsed from the script source / tool_result. State accumulates on <code>UiSession.workflows</code> (new field) — see Inspector WORKFLOWS section</dd>
+      <dt>icon</dt><dd>kind icon <code>◆</code> (<code>U+25C6</code>, filled diamond) — distinct from Task/Agent <code>◇</code> (hollow diamond); same color palette. DIM in chat (minimal); RUST_ORANGE in the Inspector header</dd>
+    </dl>
+  </div>
+</div>
+
+<div class="surface">
+  <div class="surface-head">
+    <h4>Monitor tool call (chat surface)</h4>
+    <div class="when">visible: minimal start/end notice in chat; live state lives in <a href="#inspector-pane">Inspector pane</a> <code>MONITORS</code> section</div>
+  </div>
+  <div class="surface-body">
+    <p>Monitor's <code>tool_input</code> is <code>{description, command, persistent: bool, timeout_ms: u64}</code>. Chat surface stays minimal — a single start-line on invocation + a single stop/done-line on TaskStop or natural completion. The live state (per-monitor status + tail of output) lives in the <a href="#inspector-pane">Inspector pane</a>'s <code>MONITORS</code> section.</p>
+    <div class="term">
+      <pre class="indent">
+  <span class="dim">◉ Monitor started · forge-monitor-test (persistent)</span>
+  …
+  <span class="dim">◉ Monitor stopped · forge-monitor-test</span></pre>
+    </div>
+    <p><code>TaskStop</code> renders as a standard tool_use card with the <code>◍</code> glyph (paired with Monitor like <code>KillBash</code> with Bash); side-effect (status transitions to stopped) flows via the existing <code>task_updated</code> event and updates the MONITORS section.</p>
+    <dl>
+      <dt>code</dt><dd><code>crates/forge-tui/src/ui/tool_call.rs</code> sets the chat card to the minimal-notice shape; state accumulates on <code>UiSession.monitors</code> (new field) — see Inspector MONITORS section. The PROCESSES section's earlier "Monitor row" handling (when wire-tracked Monitor matched an OS process via cmdline substring) is REMOVED — MONITORS section is the authoritative surface now</dd>
+      <dt>icon</dt><dd>Monitor: <code>◉</code> (<code>U+25C9</code>, fisheye - read-only task observability with persistent semantics); TaskStop: <code>◍</code> (<code>U+25CD</code>, circle with vertical fill - terminate). DIM in chat (minimal); RUST_ORANGE in the Inspector header for active monitors</dd>
+    </dl>
+  </div>
+</div>
+
+<div class="surface">
+  <div class="surface-head">
+    <h4>AskUserQuestion (multi-question dispatch)</h4>
+    <div class="when">visible: every <code>AskUserQuestion</code> tool call (CLI 2.1.156+) - the model asks structured multi-option questions. UI is the existing <a href="#prompts">dock-morph widget</a></div>
+  </div>
+  <div class="surface-body">
+    <p>AskUserQuestion's <code>tool_input.questions</code> is an array — a single tool call can carry N questions. forge dispatches each question onto the session's <code>prompt_queue</code> as a separate <code>PromptState</code>; the existing <a href="#prompts">dock-morph widget</a> already supports the Q-of-N indicator (see the "Q2 of 3" mockup in §prompts). No new chat-card rendering — the tool itself is silent in the scrollback; the dock-morph widget is the UI.</p>
+    <p>Wire shape per question: <code>{question, header, multiSelect, options: [{label, description}]}</code>. The <code>"(Recommended)"</code> suffix on <code>label</code> is a CLI-side convention — forge strips it, marks the option as recommended (bold), and pre-selects it. The universal "<code>… Tell Claude something else</code>" escape-hatch is appended to every question's options list (consistent with permission prompts).</p>
+    <dl>
+      <dt>code</dt><dd><code>crates/forge-tui/src/app/events/tool_calls.rs</code> dispatches the AskUserQuestion tool_use to a sibling of <code>build_permission_options</code> (<code>build_question_options</code>) per question, pushing N <code>PromptState</code> entries onto <code>UiSession.prompt_queue</code></dd>
+      <dt>icon</dt><dd>no chat-card icon (tool is silent in scrollback); the dock-morph widget's <code>?</code> in RUST_ORANGE on the question header is the visual signal</dd>
+    </dl>
   </div>
 </div>
 
@@ -1873,9 +2022,18 @@ use a let-else with explicit error path
     <tr><td class="glyph">▶</td><td class="codepoint">U+25B6</td><td>Bash</td><td>black right-pointing triangle - execute. Used in the bordered Bash card title (RUST_ORANGE)</td></tr>
     <tr><td class="glyph">◇</td><td class="codepoint">U+25C7</td><td>Task/Agent (Subagent)</td><td>diamond - delegated worker</td></tr>
     <tr><td class="glyph">⊕</td><td class="codepoint">U+2295</td><td>WebFetch/WebSearch</td><td>circled plus - fetch from outside</td></tr>
-    <tr><td class="glyph">⊙</td><td class="codepoint">U+2299</td><td>ExitPlanMode/Config</td><td>circled dot - meta op</td></tr>
-    <tr><td class="glyph">◌</td><td class="codepoint">U+25CC</td><td>TodoWrite</td><td>dotted circle - checklist</td></tr>
-    <tr><td class="glyph">⇄</td><td class="codepoint">U+21C4</td><td>Move/EnterWorktree</td><td>bidirectional arrows</td></tr>
+    <tr><td class="glyph">⊙</td><td class="codepoint">U+2299</td><td>EnterPlanMode/ExitPlanMode/Config</td><td>circled dot - meta op</td></tr>
+    <tr><td class="glyph">⇄</td><td class="codepoint">U+21C4</td><td>Move/EnterWorktree/ExitWorktree</td><td>bidirectional arrows - directory + worktree transitions</td></tr>
+    <tr><td class="glyph">◆</td><td class="codepoint">U+25C6</td><td>Workflow</td><td>filled diamond - agent-script flow (distinct from Task/Agent's hollow ◇)</td></tr>
+    <tr><td class="glyph">◉</td><td class="codepoint">U+25C9</td><td>TaskOutput · Monitor</td><td>fisheye - read-only task observability (Monitor reuses the backgrounded-task render pattern; TaskOutput is the read-only inspector of an in-flight task)</td></tr>
+    <tr><td class="glyph">◍</td><td class="codepoint">U+25CD</td><td>TaskStop</td><td>circle with vertical fill - terminate a Monitor / Workflow / scheduled task (paired with TaskOutput / Monitor like KillBash with Bash)</td></tr>
+    <tr><td class="glyph">⏲</td><td class="codepoint">U+23F2</td><td>ScheduleWakeup</td><td>timer-clock - schedule a one-shot wake-up at a future timestamp</td></tr>
+    <tr><td class="glyph">⏳</td><td class="codepoint">U+23F3</td><td>CronCreate · CronDelete · CronList</td><td>hourglass - Cron-family scheduled-recurring (shared across create/delete/list since they're a unit)</td></tr>
+    <tr><td class="glyph">✦</td><td class="codepoint">U+2726</td><td>Skill</td><td>four-pointed star - meta capability (skill invocation)</td></tr>
+    <tr><td class="glyph">⌖</td><td class="codepoint">U+2316</td><td>ToolSearch</td><td>position-indicator - sibling of magnifier ⌕ for searching among available tools</td></tr>
+    <tr><td class="glyph">▲</td><td class="codepoint">U+25B2</td><td>PushNotification</td><td>up-pointing triangle - outbound signal (push to user)</td></tr>
+    <tr><td class="glyph">⇨</td><td class="codepoint">U+21E8</td><td>RemoteTrigger</td><td>rightward arrow - fire-and-forget remote trigger</td></tr>
+    <tr><td class="glyph">⚙</td><td class="codepoint">U+2699</td><td>LSP</td><td>gear - tooling integration (language server protocol calls)</td></tr>
     <tr><td class="glyph">○</td><td class="codepoint">U+25CB</td><td>fallback tool icon · todo Pending · permission/plan-approval unfocused</td><td>open circle - reused across multiple semantics (single code point)</td></tr>
     <tr><td class="glyph">✓</td><td class="codepoint">U+2713</td><td>completed status · permission Allow icon · todo Completed</td><td><code>theme::ICON_COMPLETED</code></td></tr>
     <tr><td class="glyph">✗</td><td class="codepoint">U+2717</td><td>failed status · permission Reject icon</td><td><code>theme::ICON_FAILED</code></td></tr>
