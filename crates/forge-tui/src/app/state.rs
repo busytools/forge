@@ -1666,6 +1666,31 @@ impl App {
         persistent: bool,
         timeout_ms: u64,
     ) -> bool {
+        // #277 Bug 3b: a fresh live Monitor tool_use is `Running`
+        // until the wire emits a terminal `task_updated`. But during
+        // `load_resume_history` replay the replay walker doesn't pipe
+        // terminal `task_updated` events back into the status
+        // setter, so a Monitor that was historically completed gets
+        // restored as `Running` and stays that way forever - blocking
+        // `clear_monitors_if_all_terminal` for legit completed
+        // siblings. Restored Monitors land in `Stopped` initially;
+        // a terminal `task_updated` arriving later in the same
+        // replay walk (or live afterwards) re-flips via
+        // `set_monitor_status_by_task_id` to the wire's terminal
+        // variant. The setter is gated on the wire's `is_terminal`
+        // check at `sdk_message.rs:1116-1141`, so only completed /
+        // failed / killed / stopped events drive a re-flip - a
+        // `running` event mid-walk does NOT push Stopped back to
+        // Running. That's intentional: the value of starting in
+        // Stopped is to keep blocked monitors out of the
+        // all-terminal-clear predicate; if a historical Monitor
+        // genuinely WAS still running at replay time, the next
+        // live event resolves it on its own terms.
+        let initial_status = if self.replay_in_progress {
+            crate::app::state::types::MonitorStatus::Stopped
+        } else {
+            crate::app::state::types::MonitorStatus::Running
+        };
         let monitors = self.monitors_mut();
         if let Some(existing) = monitors.iter_mut().find(|m| m.tool_use_id == tool_use_id) {
             existing.description = description;
@@ -1681,7 +1706,7 @@ impl App {
             command,
             persistent,
             timeout_ms,
-            status: crate::app::state::types::MonitorStatus::Running,
+            status: initial_status,
             output_file: None,
             output_tail: std::collections::VecDeque::new(),
             expanded_in_inspector: false,
@@ -1701,11 +1726,16 @@ impl App {
     }
 
     /// #273 Task 8: Transition the matching Monitor entry to a
-    /// terminal status. Once any entry transitions, the all-completed
-    /// predicate is rechecked: when no entry is still `Running`, the
-    /// full `monitors` Vec is drained so the MONITORS Inspector
-    /// section drops out entirely (matches the TODOS section's
-    /// auto-clear shape).
+    /// terminal status. The all-completed predicate is no longer
+    /// run here; #277 Bug 5a deferred that trigger to
+    /// `handle_task_notification` so the
+    /// `task_updated terminal -> task_notification with output_file`
+    /// wire ordering can stamp the tail before the entry gets
+    /// drained. Callers that mutate status without going through
+    /// `handle_task_notification` (e.g. test scaffolding,
+    /// hypothetical future event types) should call
+    /// `clear_monitors_if_all_terminal` themselves if they need
+    /// the auto-clear behaviour.
     pub fn set_monitor_status_by_tool_use_id(
         &mut self,
         tool_use_id: &str,
@@ -1714,12 +1744,12 @@ impl App {
         if let Some(entry) = self.monitors_mut().iter_mut().find(|m| m.tool_use_id == tool_use_id) {
             entry.status = status;
         }
-        self.clear_monitors_if_all_terminal();
     }
 
     /// #273 Task 8: Same as `set_monitor_status_by_tool_use_id` but
     /// keyed by the wire `task_id`. Used by lifecycle event handlers
-    /// that only carry the task_id (e.g. wire `TaskUpdated`).
+    /// that only carry the task_id (e.g. wire `TaskUpdated`). #277
+    /// Bug 5a: auto-clear deferred (see the sibling helper above).
     pub fn set_monitor_status_by_task_id(
         &mut self,
         task_id: &str,
@@ -1730,7 +1760,6 @@ impl App {
         {
             entry.status = status;
         }
-        self.clear_monitors_if_all_terminal();
     }
 
     /// #273 Task 8: Push a single output line into the matching
@@ -1800,7 +1829,13 @@ impl App {
     /// #273 Task 8: Drain the MONITORS list once every entry has
     /// transitioned out of `Running`. Matches the TODOs all-completed
     /// auto-clear shape so the Inspector section drops out entirely.
-    fn clear_monitors_if_all_terminal(&mut self) {
+    /// #277 Bug 5a: now called explicitly from
+    /// `handle_task_notification` rather than implicitly from
+    /// `set_monitor_status_by_task_id`, so the
+    /// `task_updated terminal -> task_notification with output_file`
+    /// wire ordering can stamp the tail before the entry gets
+    /// drained.
+    pub fn clear_monitors_if_all_terminal(&mut self) {
         let monitors = self.monitors_mut();
         if !monitors.is_empty() && monitors.iter().all(|m| !m.is_running()) {
             monitors.clear();
@@ -4860,5 +4895,172 @@ mod tests {
         // Debug derive works
         let dbg = format!("{:?}", InvalidationLevel::MessagesFrom(3));
         assert!(dbg.contains("MessagesFrom"));
+    }
+
+    // -----------------------------------------------------------
+    // #277 Bug 3b: replay-orphan Monitor state.
+    // -----------------------------------------------------------
+
+    #[test]
+    fn upsert_monitor_during_replay_starts_in_stopped_state() {
+        // During `load_resume_history` (replay_in_progress = true)
+        // the wire walker doesn't re-emit terminal `task_updated`
+        // events into the status setter. A replayed Monitor that
+        // historically completed must NOT be reconstructed as
+        // Running, otherwise it blocks
+        // `clear_monitors_if_all_terminal` for any live sibling.
+        let mut app = make_test_app();
+        app.replay_in_progress = true;
+        app.upsert_monitor_from_tool_input(
+            "tu_replay",
+            "historical monitor".to_owned(),
+            "true".to_owned(),
+            false,
+            0,
+        );
+        let monitors = app.monitors();
+        assert_eq!(monitors.len(), 1);
+        assert_eq!(
+            monitors[0].status,
+            crate::app::state::types::MonitorStatus::Stopped,
+            "replay-inserted monitor must default to Stopped, not Running",
+        );
+    }
+
+    #[test]
+    fn upsert_monitor_live_path_still_starts_running() {
+        // Outside replay (replay_in_progress = false), live Monitor
+        // tool_use events keep their existing Running default so the
+        // ◉ glyph + " · running" badge animate while the watched
+        // command runs.
+        let mut app = make_test_app();
+        assert!(!app.replay_in_progress, "live default");
+        app.upsert_monitor_from_tool_input(
+            "tu_live",
+            "live monitor".to_owned(),
+            "true".to_owned(),
+            true,
+            300_000,
+        );
+        let monitors = app.monitors();
+        assert_eq!(monitors.len(), 1);
+        assert_eq!(monitors[0].status, crate::app::state::types::MonitorStatus::Running);
+    }
+
+    // -----------------------------------------------------------
+    // #277 Bug 5a: auto-clear race against task_notification.
+    // -----------------------------------------------------------
+
+    #[test]
+    fn set_monitor_status_no_longer_clears_implicitly() {
+        // Pre-#277 the status setter called
+        // `clear_monitors_if_all_terminal` at its end. That dropped
+        // single-monitor entries before `task_notification` could
+        // stamp the tail. Bug 5a deferred the trigger to
+        // `handle_task_notification`. Confirm the setter no longer
+        // drains the Vec on its own.
+        let mut app = make_test_app();
+        app.upsert_monitor_from_tool_input(
+            "tu_solo",
+            "solo monitor".to_owned(),
+            "true".to_owned(),
+            false,
+            0,
+        );
+        app.stamp_monitor_task_id("tu_solo", "task_solo".to_owned());
+        app.set_monitor_status_by_task_id(
+            "task_solo",
+            crate::app::state::types::MonitorStatus::Completed,
+        );
+        // Entry survives the status flip - waiting for
+        // handle_task_notification to call the clear.
+        assert_eq!(app.monitors().len(), 1);
+        assert_eq!(app.monitors()[0].status, crate::app::state::types::MonitorStatus::Completed,);
+    }
+
+    #[test]
+    fn explicit_clear_drains_when_all_terminal() {
+        // The clear helper is now `pub` so `handle_task_notification`
+        // can call it. Verify the predicate still drains correctly.
+        let mut app = make_test_app();
+        app.upsert_monitor_from_tool_input("tu_a", "a".to_owned(), "true".to_owned(), false, 0);
+        app.upsert_monitor_from_tool_input("tu_b", "b".to_owned(), "true".to_owned(), false, 0);
+        app.stamp_monitor_task_id("tu_a", "task_a".to_owned());
+        app.stamp_monitor_task_id("tu_b", "task_b".to_owned());
+        app.set_monitor_status_by_task_id(
+            "task_a",
+            crate::app::state::types::MonitorStatus::Completed,
+        );
+        app.set_monitor_status_by_task_id(
+            "task_b",
+            crate::app::state::types::MonitorStatus::Completed,
+        );
+        // Without the explicit call the entries persist (Bug 5a).
+        assert_eq!(app.monitors().len(), 2);
+        app.clear_monitors_if_all_terminal();
+        assert!(app.monitors().is_empty());
+    }
+
+    #[test]
+    fn explicit_clear_skips_when_any_still_running() {
+        let mut app = make_test_app();
+        app.upsert_monitor_from_tool_input(
+            "tu_run",
+            "still running".to_owned(),
+            "true".to_owned(),
+            false,
+            0,
+        );
+        app.upsert_monitor_from_tool_input(
+            "tu_done",
+            "done".to_owned(),
+            "true".to_owned(),
+            false,
+            0,
+        );
+        app.stamp_monitor_task_id("tu_done", "task_done".to_owned());
+        app.set_monitor_status_by_task_id(
+            "task_done",
+            crate::app::state::types::MonitorStatus::Completed,
+        );
+        app.clear_monitors_if_all_terminal();
+        // Predicate sees the Running entry and skips the drain.
+        assert_eq!(app.monitors().len(), 2);
+    }
+
+    #[test]
+    fn replay_restored_monitor_accepts_terminal_completed_event() {
+        // Replay inserts the entry in Stopped. A subsequent terminal
+        // `task_updated` (routed via `set_monitor_status_by_task_id`)
+        // re-flips Stopped -> Completed. After #277 Bug 5a the
+        // setter no longer drains the section implicitly, so the
+        // entry persists post-flip and the invariant is checkable
+        // directly. The `expect` makes the test fail loudly if a
+        // future refactor restores the implicit clear and the
+        // entry goes missing.
+        let mut app = make_test_app();
+        app.replay_in_progress = true;
+        app.upsert_monitor_from_tool_input(
+            "tu_replay",
+            "historical monitor".to_owned(),
+            "true".to_owned(),
+            false,
+            0,
+        );
+        // Stamp task_id so the by_task_id setter can find it.
+        app.stamp_monitor_task_id("tu_replay", "task_x".to_owned());
+        app.set_monitor_status_by_task_id(
+            "task_x",
+            crate::app::state::types::MonitorStatus::Completed,
+        );
+        let monitor = app
+            .monitors()
+            .first()
+            .expect("replay-restored entry must persist post-Bug-5a setter call");
+        assert_eq!(
+            monitor.status,
+            crate::app::state::types::MonitorStatus::Completed,
+            "terminal event must re-flip the replay-restored entry",
+        );
     }
 }
