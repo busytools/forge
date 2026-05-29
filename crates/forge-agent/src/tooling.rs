@@ -13,8 +13,8 @@
 use serde_json::{Map, Value, json};
 
 use forge_primitives::{
-    BashOutputMetadata, ChunkContent, TodoWriteOutputMetadata, ToolCall, ToolCallContent,
-    ToolCallLocation, ToolCallUpdateFields, ToolOutputMetadata,
+    BashOutputMetadata, ChunkContent, ToolCall, ToolCallContent, ToolCallLocation,
+    ToolCallUpdateFields, ToolOutputMetadata,
 };
 
 // Tool-result preview-size cap. Only the preview limit surfaces in
@@ -684,21 +684,6 @@ fn extract_tool_output_metadata(
             if let Some(b) = candidate.get("assistantAutoBackgrounded").and_then(Value::as_bool) {
                 return Some(ToolOutputMetadata {
                     bash: Some(BashOutputMetadata { assistant_auto_backgrounded: Some(b) }),
-                    todo_write: None,
-                });
-            }
-        }
-        return None;
-    }
-
-    if tool_name == "TodoWrite" {
-        for candidate in &candidates {
-            if let Some(b) = candidate.get("verificationNudgeNeeded").and_then(Value::as_bool) {
-                return Some(ToolOutputMetadata {
-                    bash: None,
-                    todo_write: Some(TodoWriteOutputMetadata {
-                        verification_nudge_needed: Some(b),
-                    }),
                 });
             }
         }
