@@ -2802,7 +2802,7 @@ mod tests {
         //   0: " MONITORS"
         //   1: blank (header -> first-row separator)
         //   2: first row headline
-        //   3: blank (between entries — Bug 6)
+        //   3: blank (between entries - Bug 6)
         //   4: second row headline
         // No trailing blank after the last entry.
         assert_eq!(lines.len(), 5, "got {} lines: {lines:?}", lines.len());
