@@ -161,6 +161,79 @@ pub enum Message {
         usage: Option<TaskUsage>,
     },
 
+    /// CLI-side per-turn estimated thinking-token count, fires
+    /// repeatedly during model thinking. Subtype `"thinking_tokens"`
+    /// (#273). The renderer consumes `estimated_tokens` for the
+    /// in-progress spinner chip `⠋ thinking · N tok`; the delta field
+    /// is captured for future per-tick rate analysis.
+    ThinkingTokens {
+        /// Cumulative estimated reasoning-token count for the current
+        /// in-flight assistant turn.
+        estimated_tokens: u64,
+        /// Delta since the previous `thinking_tokens` event in this
+        /// turn. Surfaces the per-tick growth rate; the CLI emits a
+        /// new event roughly every ~50 tokens.
+        estimated_tokens_delta: i64,
+        /// Unique identifier for this thinking-tokens event.
+        uuid: String,
+        /// Session id the event applies to.
+        session_id: String,
+    },
+
+    /// Assistant-turn wall-clock + message-count summary emitted at
+    /// the end of each turn. Subtype `"turn_duration"` (#273). The
+    /// renderer composes `Claude · N.Ns` banner-side chip from
+    /// `ms`.
+    TurnDuration {
+        /// Total wall-clock duration of the turn in milliseconds.
+        /// Wire field is `durationMs` (camelCase).
+        ms: u64,
+        /// Number of assistant + tool messages in the turn. Wire
+        /// field is `messageCount`. Optional because older CLI
+        /// versions may omit it.
+        message_count: Option<u64>,
+        /// Parent tool-use id when the turn is a sub-agent.
+        parent_tool_use_id: Option<String>,
+        /// Session id the event applies to.
+        session_id: String,
+        /// Unique identifier for this turn_duration event.
+        uuid: String,
+    },
+
+    /// Stop-hook execution summary surfaced at end-of-turn. Subtype
+    /// `"stop_hook_summary"` (#273). The renderer composes a
+    /// collapsed 1-liner `↳ hook summary · N actions [▶ expand]`
+    /// from `actions` (wire `hookCount`); expanded view enumerates
+    /// `hook_infos`.
+    StopHookSummary {
+        /// Number of hooks that fired. Wire field is `hookCount`.
+        /// Renderer hides the surface entirely when this is 0.
+        actions: u32,
+        /// Per-hook breakdown. Wire field is `hookInfos`. Each entry
+        /// carries the command string + its duration in ms.
+        hook_infos: Vec<StopHookInfo>,
+        /// Whether any hook produced output. Wire field is
+        /// `hasOutput`. Forwarded to the renderer so a zero-actions
+        /// + has-output edge case can be surfaced if needed.
+        has_output: bool,
+        /// Suggestion vs blocking level. Wire field is `level`.
+        level: String,
+        /// Whether any hook prevented turn continuation. Wire field
+        /// is `preventedContinuation`.
+        prevented_continuation: bool,
+        /// Stop reason string from the CLI; usually empty.
+        stop_reason: String,
+        /// `tool_use_id` the hook batch was bound to. Wire field is
+        /// `toolUseID`.
+        tool_use_id: String,
+        /// Parent tool-use id when the hook fires in a sub-agent context.
+        parent_tool_use_id: Option<String>,
+        /// Session id the event applies to.
+        session_id: String,
+        /// Unique identifier for this stop_hook_summary event.
+        uuid: String,
+    },
+
     /// Rate-limit state transition. The CLI emits this when the current
     /// rate-limit window changes state (e.g. `allowed` → `allowed_warning`).
     /// Wire shape mirrors +
@@ -303,6 +376,9 @@ impl Message {
             | Message::TaskUpdated { session_id, .. }
             | Message::TaskProgress { session_id, .. }
             | Message::TaskNotification { session_id, .. }
+            | Message::ThinkingTokens { session_id, .. }
+            | Message::TurnDuration { session_id, .. }
+            | Message::StopHookSummary { session_id, .. }
             | Message::Result { session_id, .. }
             | Message::StreamEvent { session_id, .. } => Some(session_id.as_str()),
             Message::System { session_id, .. } => session_id.as_deref(),
@@ -475,6 +551,19 @@ pub struct Usage {
     /// Tokens read from the prompt cache this turn.
     #[serde(default)]
     pub cache_read_input_tokens: u64,
+}
+
+/// Per-hook entry inside a `stop_hook_summary` system event (#273).
+/// Wire fields are camelCase (`durationMs`); the renderer reads
+/// the `command` text for the expanded body.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StopHookInfo {
+    /// Command line that fired.
+    pub command: String,
+    /// How long the hook took, in milliseconds. Wire field is
+    /// `durationMs`.
+    #[serde(rename = "durationMs")]
+    pub duration_ms: u64,
 }
 
 /// Usage counters reported inside task-progress and task-notification frames.
@@ -682,6 +771,41 @@ enum TypedSystemRepr {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         usage: Option<TaskUsage>,
     },
+    ThinkingTokens {
+        estimated_tokens: u64,
+        estimated_tokens_delta: i64,
+        uuid: String,
+        session_id: String,
+    },
+    TurnDuration {
+        #[serde(rename = "durationMs")]
+        ms: u64,
+        #[serde(default, rename = "messageCount", skip_serializing_if = "Option::is_none")]
+        message_count: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_tool_use_id: Option<String>,
+        session_id: String,
+        uuid: String,
+    },
+    StopHookSummary {
+        #[serde(rename = "hookCount")]
+        actions: u32,
+        #[serde(default, rename = "hookInfos")]
+        hook_infos: Vec<StopHookInfo>,
+        #[serde(rename = "hasOutput")]
+        has_output: bool,
+        level: String,
+        #[serde(rename = "preventedContinuation")]
+        prevented_continuation: bool,
+        #[serde(rename = "stopReason")]
+        stop_reason: String,
+        #[serde(rename = "toolUseID")]
+        tool_use_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_tool_use_id: Option<String>,
+        session_id: String,
+        uuid: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -762,6 +886,53 @@ impl From<MessageRepr> for Message {
                 session_id,
                 tool_use_id,
                 usage,
+            },
+            MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::ThinkingTokens {
+                estimated_tokens,
+                estimated_tokens_delta,
+                uuid,
+                session_id,
+            })) => Message::ThinkingTokens {
+                estimated_tokens,
+                estimated_tokens_delta,
+                uuid,
+                session_id,
+            },
+            MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::TurnDuration {
+                ms,
+                message_count,
+                parent_tool_use_id,
+                session_id,
+                uuid,
+            })) => Message::TurnDuration {
+                ms,
+                message_count,
+                parent_tool_use_id,
+                session_id,
+                uuid,
+            },
+            MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::StopHookSummary {
+                actions,
+                hook_infos,
+                has_output,
+                level,
+                prevented_continuation,
+                stop_reason,
+                tool_use_id,
+                parent_tool_use_id,
+                session_id,
+                uuid,
+            })) => Message::StopHookSummary {
+                actions,
+                hook_infos,
+                has_output,
+                level,
+                prevented_continuation,
+                stop_reason,
+                tool_use_id,
+                parent_tool_use_id,
+                session_id,
+                uuid,
             },
             MessageRepr::System(SystemRepr::Generic(GenericSystemRepr {
                 subtype,
@@ -919,6 +1090,53 @@ impl From<Message> for MessageRepr {
                 session_id,
                 tool_use_id,
                 usage,
+            })),
+            Message::ThinkingTokens {
+                estimated_tokens,
+                estimated_tokens_delta,
+                uuid,
+                session_id,
+            } => MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::ThinkingTokens {
+                estimated_tokens,
+                estimated_tokens_delta,
+                uuid,
+                session_id,
+            })),
+            Message::TurnDuration {
+                ms,
+                message_count,
+                parent_tool_use_id,
+                session_id,
+                uuid,
+            } => MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::TurnDuration {
+                ms,
+                message_count,
+                parent_tool_use_id,
+                session_id,
+                uuid,
+            })),
+            Message::StopHookSummary {
+                actions,
+                hook_infos,
+                has_output,
+                level,
+                prevented_continuation,
+                stop_reason,
+                tool_use_id,
+                parent_tool_use_id,
+                session_id,
+                uuid,
+            } => MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::StopHookSummary {
+                actions,
+                hook_infos,
+                has_output,
+                level,
+                prevented_continuation,
+                stop_reason,
+                tool_use_id,
+                parent_tool_use_id,
+                session_id,
+                uuid,
             })),
             Message::RateLimitEvent { rate_limit_info, uuid, session_id } => {
                 MessageRepr::RateLimitEvent { rate_limit_info, uuid, session_id }
@@ -1233,5 +1451,167 @@ mod tests_message_extras {
         let decoded: AssistantMessageError =
             serde_json::from_value(json!("unknown")).expect("deserialize");
         assert_eq!(decoded, AssistantMessageError::Unknown);
+    }
+
+    // ----------------------------------------------------------------
+    // #273: CLI 2.1.156 system events (thinking_tokens / turn_duration
+    // / stop_hook_summary). Wire shapes captured in
+    // crates/forge-test-harness/baselines/sdk/2.1.156/* and pinned by
+    // the roundtrip tests below.
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn thinking_tokens_decodes_from_wire_shape() {
+        // Wire shape (verbatim from
+        // `baselines/sdk/2.1.156/subagent_*` captures): fields are
+        // snake_case (NOT camelCase as the EPIC body suggested).
+        let raw = json!({
+            "type": "system",
+            "subtype": "thinking_tokens",
+            "estimated_tokens": 1234,
+            "estimated_tokens_delta": 56,
+            "uuid": "tt-uuid",
+            "session_id": "sess-tt",
+        });
+        let msg: Message = serde_json::from_value(raw.clone()).expect("decode");
+        let Message::ThinkingTokens { estimated_tokens, estimated_tokens_delta, uuid, session_id } =
+            msg
+        else {
+            panic!("expected ThinkingTokens, got {msg:?}");
+        };
+        assert_eq!(estimated_tokens, 1234);
+        assert_eq!(estimated_tokens_delta, 56);
+        assert_eq!(uuid, "tt-uuid");
+        assert_eq!(session_id, "sess-tt");
+        // Roundtrip: re-serialize and confirm the wire-shape JSON matches.
+        let encoded = serde_json::to_value(&Message::ThinkingTokens {
+            estimated_tokens: 1234,
+            estimated_tokens_delta: 56,
+            uuid: "tt-uuid".to_owned(),
+            session_id: "sess-tt".to_owned(),
+        })
+        .expect("encode");
+        assert_eq!(encoded, raw);
+    }
+
+    #[test]
+    fn turn_duration_decodes_from_wire_shape() {
+        // Wire shape: `durationMs` camelCase, plus optional
+        // `message_count` and `parent_tool_use_id`. Variant field
+        // `ms: u64` maps via #[serde(rename = "durationMs")].
+        let raw = json!({
+            "type": "system",
+            "subtype": "turn_duration",
+            "durationMs": 31051,
+            "messageCount": 29,
+            "parent_tool_use_id": "uuid_25",
+            "session_id": "sess-td",
+            "uuid": "td-uuid",
+        });
+        let msg: Message = serde_json::from_value(raw).expect("decode");
+        let Message::TurnDuration {
+            ms,
+            message_count,
+            parent_tool_use_id,
+            session_id,
+            uuid,
+        } = msg
+        else {
+            panic!("expected TurnDuration, got {msg:?}");
+        };
+        assert_eq!(ms, 31051);
+        assert_eq!(message_count, Some(29));
+        assert_eq!(parent_tool_use_id.as_deref(), Some("uuid_25"));
+        assert_eq!(session_id, "sess-td");
+        assert_eq!(uuid, "td-uuid");
+    }
+
+    #[test]
+    fn turn_duration_roundtrip_emits_wire_camel_case_keys() {
+        let msg = Message::TurnDuration {
+            ms: 1500,
+            message_count: Some(3),
+            parent_tool_use_id: None,
+            session_id: "sess-rt".to_owned(),
+            uuid: "rt-uuid".to_owned(),
+        };
+        let encoded = serde_json::to_value(&msg).expect("encode");
+        // durationMs / messageCount preserved.
+        assert_eq!(encoded.get("durationMs").and_then(|v| v.as_u64()), Some(1500));
+        assert_eq!(encoded.get("messageCount").and_then(|v| v.as_u64()), Some(3));
+        // parent_tool_use_id: None skipped from the output entirely.
+        assert!(
+            encoded.get("parent_tool_use_id").is_none(),
+            "None-valued parent_tool_use_id must NOT serialize",
+        );
+    }
+
+    #[test]
+    fn stop_hook_summary_decodes_from_wire_shape() {
+        // Wire shape (verbatim from `baselines/sdk/2.1.156/...`):
+        // rich object with `hookCount` + `hookInfos` array + optional
+        // `parent_tool_use_id`. The renderer reads `hookCount`
+        // (mapped to `actions: u32`) for the collapsed 1-liner and
+        // `hookInfos` for the expanded body. No top-level `summary`
+        // string in the wire; the EPIC's nominal `summary: Option<String>`
+        // is preserved as an optional defensive field for future shapes
+        // that might add one.
+        let raw = json!({
+            "type": "system",
+            "subtype": "stop_hook_summary",
+            "hasOutput": true,
+            "hookCount": 2,
+            "hookErrors": [],
+            "hookInfos": [
+                {"command": "bash ~/.claude/hooks/cmux-notify.sh", "durationMs": 980},
+                {"command": "${CLAUDE_PLUGIN_ROOT}/hooks/stop-hook.sh", "durationMs": 17},
+            ],
+            "level": "suggestion",
+            "parent_tool_use_id": "uuid_2",
+            "preventedContinuation": false,
+            "session_id": "session_0",
+            "stopReason": "",
+            "toolUseID": "5e586a7f",
+            "uuid": "uuid_3",
+        });
+        let msg: Message = serde_json::from_value(raw).expect("decode");
+        let Message::StopHookSummary { actions, hook_infos, parent_tool_use_id, session_id, .. } =
+            msg
+        else {
+            panic!("expected StopHookSummary, got {msg:?}");
+        };
+        assert_eq!(actions, 2, "hookCount -> actions");
+        assert_eq!(hook_infos.len(), 2);
+        assert_eq!(hook_infos[0].command, "bash ~/.claude/hooks/cmux-notify.sh");
+        assert_eq!(hook_infos[0].duration_ms, 980);
+        assert_eq!(parent_tool_use_id.as_deref(), Some("uuid_2"));
+        assert_eq!(session_id, "session_0");
+    }
+
+    #[test]
+    fn stop_hook_summary_with_zero_hooks_decodes_cleanly() {
+        // The renderer hides the surface when `actions == 0`. Confirm
+        // the decoder still produces a clean variant with empty
+        // `hook_infos`.
+        let raw = json!({
+            "type": "system",
+            "subtype": "stop_hook_summary",
+            "hasOutput": false,
+            "hookCount": 0,
+            "hookErrors": [],
+            "hookInfos": [],
+            "level": "suggestion",
+            "preventedContinuation": false,
+            "session_id": "session_z",
+            "stopReason": "",
+            "toolUseID": "tu-z",
+            "uuid": "uuid_z",
+        });
+        let msg: Message = serde_json::from_value(raw).expect("decode");
+        let Message::StopHookSummary { actions, hook_infos, .. } = msg else {
+            panic!("expected StopHookSummary");
+        };
+        assert_eq!(actions, 0);
+        assert!(hook_infos.is_empty());
     }
 }

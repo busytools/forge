@@ -44,6 +44,14 @@ pub(super) fn handle_sdk_message(app: &mut App, msg: Message) {
         // `Error` / forward-compat `Unknown` frames are no-ops today.
         // Re-add a handler if a downstream consumer needs to react.
         Message::StreamEvent { .. } | Message::Error { .. } | Message::Unknown { .. } => {}
+        // #273: typed wrappers around the CLI 2.1.156 system events.
+        // The decoder lands them as typed variants; the per-event
+        // reducers (Tasks 4-6) consume `app.session_state` mutations.
+        // Until those tasks wire the renderers, the variants land at
+        // the dispatch but produce no UI side-effect.
+        Message::ThinkingTokens { .. }
+        | Message::TurnDuration { .. }
+        | Message::StopHookSummary { .. } => {}
     }
 }
 
