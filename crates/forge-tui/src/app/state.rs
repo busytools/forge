@@ -1682,6 +1682,7 @@ impl App {
             persistent,
             timeout_ms,
             status: crate::app::state::types::MonitorStatus::Running,
+            output_file: None,
             output_tail: std::collections::VecDeque::new(),
             expanded_in_inspector: false,
         });
@@ -1739,6 +1740,68 @@ impl App {
             self.monitors_mut().iter_mut().find(|m| m.task_id.as_deref() == Some(task_id))
         {
             entry.push_output(line);
+        }
+    }
+
+    /// #275 Task 4: Stamp the `output_file` path on the matching
+    /// Monitor entry. The CLI carries this via
+    /// `task_notification.output_file`. Idempotent: same path
+    /// overwrites cleanly so repeated `task_notification` events
+    /// don't drift the entry's source-of-truth.
+    pub fn set_monitor_output_file_by_task_id(
+        &mut self,
+        task_id: &str,
+        path: std::path::PathBuf,
+    ) {
+        if let Some(entry) =
+            self.monitors_mut().iter_mut().find(|m| m.task_id.as_deref() == Some(task_id))
+        {
+            entry.output_file = Some(path);
+        }
+    }
+
+    /// #275 Task 4: REPLACE the matching Monitor's `output_tail`
+    /// with the supplied lines (typically the most-recent N lines
+    /// of its `output_file`). The file is authoritative - the
+    /// renderer's tail must match the file, not accumulate stale
+    /// entries from prior events. No-op if no entry matches.
+    pub fn replace_monitor_output_tail_by_task_id(
+        &mut self,
+        task_id: &str,
+        lines: Vec<String>,
+    ) {
+        if let Some(entry) =
+            self.monitors_mut().iter_mut().find(|m| m.task_id.as_deref() == Some(task_id))
+        {
+            entry.output_tail = lines.into_iter().collect();
+        }
+    }
+
+    /// #275 Task 4: read the matching Monitor's stored `output_file`
+    /// and refresh its `output_tail` with the last
+    /// `MonitorEntry::OUTPUT_TAIL_MAX` lines. Called on each
+    /// `task_notification` / `task_progress` event for the monitor.
+    /// Silently no-ops when:
+    /// - the matching entry has no stored `output_file` yet
+    ///   (Monitor just started, hasn't received its first
+    ///   `task_notification` with the path)
+    /// - the helper returns `None` (file missing / permission denied
+    ///   / IO error - the helper logs the WARN; we preserve the
+    ///   prior tail)
+    pub fn refresh_monitor_output_tail_from_file(&mut self, task_id: &str) {
+        let path = self
+            .monitors()
+            .iter()
+            .find(|m| m.task_id.as_deref() == Some(task_id))
+            .and_then(|m| m.output_file.clone());
+        let Some(path) = path else {
+            return;
+        };
+        if let Some(lines) = crate::app::monitor_output::read_output_file_tail(
+            &path,
+            crate::app::state::types::MonitorEntry::OUTPUT_TAIL_MAX,
+        ) {
+            self.replace_monitor_output_tail_by_task_id(task_id, lines);
         }
     }
 

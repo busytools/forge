@@ -98,9 +98,19 @@ pub struct MonitorEntry {
     /// chat one-liner (`◉ Monitor started · ...` vs `◉ Monitor
     /// stopped · ...`).
     pub status: MonitorStatus,
+    /// #275 Task 4: path to the local-bash task's `output_file`
+    /// (CLI writes the watched command's stdout here). Stamped from
+    /// `task_notification.output_file`. The Monitor section reads
+    /// this on `task_notification` / `task_progress` events to
+    /// refresh the visible tail. `None` when the wire hasn't carried
+    /// a file path yet (Monitor just started).
+    pub output_file: Option<std::path::PathBuf>,
     /// Rolling 12-line tail of monitor output (most-recent at the
     /// end). Bounded so a long-running Monitor doesn't grow the
-    /// Inspector pane indefinitely.
+    /// Inspector pane indefinitely. #275 Task 4: now populated from
+    /// the on-disk `output_file` (the actual watched-command stdout)
+    /// rather than from `task_notification.summary` (which only ever
+    /// carried "Monitor X stream ended" / similar boilerplate).
     pub output_tail: std::collections::VecDeque<String>,
     /// Per-row expand toggle for the Inspector section. Click on the
     /// row in the Inspector flips this; `false` collapses to a
@@ -518,6 +528,7 @@ mod tests {
             persistent: true,
             timeout_ms: 0,
             status: MonitorStatus::Running,
+            output_file: None,
             output_tail: std::collections::VecDeque::new(),
             expanded_in_inspector: false,
         };
@@ -636,6 +647,7 @@ mod tests {
             persistent: false,
             timeout_ms: 0,
             status: MonitorStatus::Running,
+            output_file: None,
             output_tail: std::collections::VecDeque::new(),
             expanded_in_inspector: false,
         };

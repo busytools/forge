@@ -2332,6 +2332,7 @@ mod tests {
             persistent,
             timeout_ms: 0,
             status,
+            output_file: None,
             output_tail: std::collections::VecDeque::new(),
             expanded_in_inspector: false,
         }

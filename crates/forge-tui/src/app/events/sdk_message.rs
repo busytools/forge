@@ -1077,6 +1077,14 @@ fn handle_task_progress(app: &mut App, msg: Message) {
     if !workflow_progress.is_empty() && !task_id.is_empty() {
         app.apply_workflow_progress_by_task_id(&task_id, &workflow_progress);
     }
+    // #275 Task 4: refresh the matching Monitor's output_tail from
+    // disk on each progress event so the file's growth is reflected
+    // in the Inspector without waiting for the next task_notification.
+    // No-op when the task isn't a Monitor or its output_file isn't
+    // stamped yet.
+    if !task_id.is_empty() {
+        app.refresh_monitor_output_tail_from_file(&task_id);
+    }
 }
 
 /// Apply a `TaskUpdated` patch to the originating tool call.
@@ -1185,22 +1193,24 @@ fn map_task_updated_status_to_tool_status(wire_status: &str) -> forge_primitives
 }
 
 fn handle_task_notification(app: &mut App, msg: Message) {
-    let Message::TaskNotification { tool_use_id, task_id, summary, .. } = msg else { return };
+    let Message::TaskNotification { tool_use_id, task_id, output_file, summary, .. } = msg else {
+        return;
+    };
     let id = tool_use_id.as_deref().unwrap_or("");
     if !id.is_empty() {
         apply_tool_summary_update(app, id, &summary);
     }
-    // #273 Task 8: Monitor's per-event signal arrives here. The
-    // wire emits one `system/task_notification` per Monitor lifecycle
-    // event ("stream ended", "timeout", interim summaries) with the
-    // `summary` field carrying the human-readable line. Push onto
-    // the matching MonitorEntry's `output_tail` ring; status
-    // transitions still flow through `TaskUpdated` (terminal
-    // `completed` / `failed` / `killed` / `stopped` → terminal
-    // MonitorStatus). Raw bash stdout lives in `output_file` and is
-    // intentionally out of scope per the captured wire's design.
-    if !task_id.is_empty() && !summary.trim().is_empty() {
-        app.push_monitor_output_by_task_id(&task_id, summary.clone());
+    // #275 Task 4: stamp the `output_file` path on the matching
+    // MonitorEntry (idempotent) and refresh the tail from disk.
+    // The wire carries `output_file` because the CLI's local-bash
+    // Monitor flavour streams the watched command's stdout to
+    // `/private/tmp/.../tasks/<task_id>.output` rather than over the
+    // wire. The summary line alone is insufficient (it's always
+    // "Monitor X stream ended" or similar boilerplate); the user
+    // needs the actual command output.
+    if !task_id.is_empty() && !output_file.is_empty() {
+        app.set_monitor_output_file_by_task_id(&task_id, std::path::PathBuf::from(&output_file));
+        app.refresh_monitor_output_tail_from_file(&task_id);
     }
 }
 
@@ -1663,6 +1673,7 @@ mod task_updated_section_routing_tests {
             persistent: false,
             timeout_ms: 0,
             status: MonitorStatus::Running,
+            output_file: None,
             output_tail: std::collections::VecDeque::new(),
             expanded_in_inspector: false,
         };
@@ -1839,6 +1850,162 @@ mod turn_duration_stamp_tests {
         handle_turn_duration(&mut app, 7_500);
         assert_eq!(app.messages()[0].turn_duration_ms, Some(3_000));
         assert_eq!(app.messages()[2].turn_duration_ms, Some(7_500));
+    }
+}
+
+#[cfg(test)]
+mod monitor_output_file_wiring_tests {
+    //! #275 Task 4: `handle_task_notification` reads the
+    //! `output_file` from disk and replaces the MonitorEntry's
+    //! `output_tail` with the last 12 lines. `handle_task_progress`
+    //! re-reads on each event so the tail grows with the running
+    //! command.
+    use super::{handle_task_notification, handle_task_progress};
+    use crate::app::App;
+    use crate::app::state::types::{MonitorEntry, MonitorStatus};
+    use forge_primitives::{
+        Message, TaskNotificationStatus, TaskUsage, messages::WorkflowProgressEvent,
+    };
+    use std::io::Write;
+
+    fn push_monitor(app: &mut App, task_id: &str) {
+        let entry = MonitorEntry {
+            tool_use_id: format!("tu_{task_id}"),
+            task_id: Some(task_id.to_owned()),
+            description: format!("monitor {task_id}"),
+            command: "true".to_owned(),
+            persistent: true,
+            timeout_ms: 0,
+            status: MonitorStatus::Running,
+            output_file: None,
+            output_tail: std::collections::VecDeque::new(),
+            expanded_in_inspector: false,
+        };
+        app.monitors_mut().push(entry);
+    }
+
+    fn write_tmp(contents: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir();
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        contents.hash(&mut hasher);
+        let id = hasher.finish();
+        let pid = std::process::id();
+        let path = dir.join(format!("forge_monitor_wiring_test_{pid}_{id}.log"));
+        let mut f = std::fs::File::create(&path).expect("create");
+        f.write_all(contents.as_bytes()).expect("write");
+        path
+    }
+
+    fn notification(task_id: &str, output_file: &str, summary: &str) -> Message {
+        Message::TaskNotification {
+            task_id: task_id.to_owned(),
+            status: TaskNotificationStatus::Completed,
+            output_file: output_file.to_owned(),
+            summary: summary.to_owned(),
+            uuid: String::new(),
+            session_id: String::new(),
+            tool_use_id: None,
+            usage: None,
+        }
+    }
+
+    #[test]
+    fn task_notification_replaces_tail_with_file_contents() {
+        let path = write_tmp(
+            "line 01\nline 02\nline 03\nline 04\nline 05\nline 06\nline 07\nline 08\nline 09\nline 10\nline 11\nline 12\nline 13\nline 14\nline 15\n",
+        );
+        let mut app = App::test_default();
+        push_monitor(&mut app, "task_tail");
+        handle_task_notification(
+            &mut app,
+            notification("task_tail", path.to_str().unwrap(), "Monitor stream ended"),
+        );
+        let tail: Vec<&str> = app.monitors()[0].output_tail.iter().map(String::as_str).collect();
+        // Last 12 of 15.
+        assert_eq!(tail.len(), 12);
+        assert_eq!(tail.first(), Some(&"line 04"));
+        assert_eq!(tail.last(), Some(&"line 15"));
+        // output_file stamped for the next refresh.
+        assert_eq!(app.monitors()[0].output_file.as_ref(), Some(&path));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn empty_output_file_path_falls_back_to_summary_only_behaviour() {
+        // Wire field absent (empty string): no file read, no panic,
+        // no path stamp. The pre-#275-Task-4 behaviour where the
+        // summary line is the only tail signal is preserved.
+        let mut app = App::test_default();
+        push_monitor(&mut app, "task_no_file");
+        handle_task_notification(&mut app, notification("task_no_file", "", "Monitor X"));
+        assert!(app.monitors()[0].output_file.is_none());
+        assert!(app.monitors()[0].output_tail.is_empty());
+    }
+
+    #[test]
+    fn missing_output_file_on_disk_preserves_prior_tail() {
+        // Wire carries an output_file path that doesn't exist on
+        // disk (Monitor just started, OS hasn't created it yet).
+        // `read_output_file_tail` returns None; we preserve the
+        // previously-stored tail. Stamp the path so subsequent
+        // refreshes pick it up once the file lands.
+        let mut app = App::test_default();
+        push_monitor(&mut app, "task_late");
+        // Pre-populate tail to verify it survives the missing-file path.
+        app.monitors_mut()[0].output_tail.push_back("prior tail line".to_owned());
+        handle_task_notification(
+            &mut app,
+            notification(
+                "task_late",
+                "/nonexistent/forge_monitor_late_file.log",
+                "Monitor just started",
+            ),
+        );
+        let tail: Vec<&str> = app.monitors()[0].output_tail.iter().map(String::as_str).collect();
+        // Prior tail preserved.
+        assert_eq!(tail, vec!["prior tail line"]);
+        // Path stamped for next refresh.
+        assert!(app.monitors()[0].output_file.is_some());
+    }
+
+    #[test]
+    fn task_progress_re_reads_stored_output_file() {
+        // Simulate Monitor grow: first notification reads the file
+        // with 3 lines; we then append more lines on disk + fire
+        // task_progress. The progress handler re-reads and updates
+        // the tail to reflect the growth.
+        let path = write_tmp("a\nb\nc\n");
+        let mut app = App::test_default();
+        push_monitor(&mut app, "task_grow");
+        handle_task_notification(
+            &mut app,
+            notification("task_grow", path.to_str().unwrap(), "started"),
+        );
+        let tail_before: Vec<String> = app.monitors()[0].output_tail.iter().cloned().collect();
+        assert_eq!(tail_before, vec!["a", "b", "c"]);
+
+        // Append more lines.
+        use std::fs::OpenOptions;
+        let mut f = OpenOptions::new().append(true).open(&path).expect("append");
+        f.write_all(b"d\ne\n").expect("write");
+        drop(f);
+
+        // task_progress (no workflow_progress; pure refresh trigger).
+        let progress = Message::TaskProgress {
+            task_id: "task_grow".to_owned(),
+            description: String::new(),
+            usage: TaskUsage { total_tokens: 0, tool_uses: 0, duration_ms: 0 },
+            uuid: String::new(),
+            session_id: String::new(),
+            tool_use_id: None,
+            last_tool_name: None,
+            workflow_progress: Vec::<WorkflowProgressEvent>::new(),
+        };
+        handle_task_progress(&mut app, progress);
+        let tail_after: Vec<String> = app.monitors()[0].output_tail.iter().cloned().collect();
+        assert_eq!(tail_after, vec!["a", "b", "c", "d", "e"]);
+        let _ = std::fs::remove_file(&path);
     }
 }
 
