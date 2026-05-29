@@ -1317,12 +1317,21 @@ fn append_monitor_row(
         Span::styled(persistent_suffix.to_owned(), Style::default().fg(theme::DIM)),
     ]));
 
-    // Tail lines - show always while running, also when explicitly
-    // expanded. The buffer is bounded at MonitorEntry::OUTPUT_TAIL_MAX.
+    // Tail lines - show when:
+    //  - the monitor is still running (live tail), OR
+    //  - the user has explicitly expanded the entry, OR
+    //  - #277 Bug 5b: the tail is non-empty for a completed entry.
+    //    Without this branch, completed Monitors that landed their
+    //    `task_notification.output_file` tail are hidden (the tail
+    //    was the whole point of the file read). The empty-tail
+    //    case still short-circuits above so silent-completed
+    //    Monitors don't get a vestigial expanded view.
     if monitor.output_tail.is_empty() {
         return;
     }
-    let show_tail = monitor.is_running() || monitor.expanded_in_inspector;
+    let show_tail = monitor.is_running()
+        || monitor.expanded_in_inspector
+        || !monitor.output_tail.is_empty();
     if !show_tail {
         return;
     }
@@ -2477,14 +2486,35 @@ mod tests {
     }
 
     #[test]
-    fn monitors_section_suppresses_tail_for_collapsed_stopped_entry() {
+    fn monitors_section_shows_tail_for_stopped_entry_with_populated_tail() {
+        // #277 Bug 5b: the prior gate hid the tail for any
+        // non-running, non-expanded entry. After the relaxation,
+        // a completed Monitor that has captured an output_tail
+        // (from `task_notification.output_file`) renders its tail
+        // by default - that's the whole point of capturing the
+        // file contents. The expanded flag still surfaces the
+        // tail for empty-or-otherwise edge cases.
         let mut entry =
             make_monitor_entry("tu", "ci-watch", false, crate::app::MonitorStatus::Stopped);
         entry.output_tail.push_back("stream ended".to_owned());
         let mut lines = Vec::new();
         append_monitor_row(&mut lines, &entry, 60);
-        // Stopped + not expanded → headline only.
-        assert_eq!(lines.len(), 1);
+        // Stopped + collapsed + non-empty tail → tail renders.
+        assert_eq!(lines.len(), 2);
+        assert!(line_text(&lines[1]).contains("stream ended"));
+    }
+
+    #[test]
+    fn monitors_section_hides_tail_for_stopped_entry_with_empty_tail() {
+        // Empty `output_tail` short-circuits before the show_tail
+        // predicate runs; ensure the no-output path still produces
+        // just the headline (no vestigial empty-body row).
+        let entry =
+            make_monitor_entry("tu", "ci-watch", false, crate::app::MonitorStatus::Stopped);
+        // No `output_tail` pushed.
+        let mut lines = Vec::new();
+        append_monitor_row(&mut lines, &entry, 60);
+        assert_eq!(lines.len(), 1, "no tail content → headline only");
     }
 
     #[test]

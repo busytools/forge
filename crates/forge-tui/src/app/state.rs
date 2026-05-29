@@ -1717,11 +1717,16 @@ impl App {
     }
 
     /// #273 Task 8: Transition the matching Monitor entry to a
-    /// terminal status. Once any entry transitions, the all-completed
-    /// predicate is rechecked: when no entry is still `Running`, the
-    /// full `monitors` Vec is drained so the MONITORS Inspector
-    /// section drops out entirely (matches the TODOS section's
-    /// auto-clear shape).
+    /// terminal status. The all-completed predicate is no longer
+    /// run here; #277 Bug 5a deferred that trigger to
+    /// `handle_task_notification` so the
+    /// `task_updated terminal -> task_notification with output_file`
+    /// wire ordering can stamp the tail before the entry gets
+    /// drained. Callers that mutate status without going through
+    /// `handle_task_notification` (e.g. test scaffolding,
+    /// hypothetical future event types) should call
+    /// `clear_monitors_if_all_terminal` themselves if they need
+    /// the auto-clear behaviour.
     pub fn set_monitor_status_by_tool_use_id(
         &mut self,
         tool_use_id: &str,
@@ -1730,12 +1735,12 @@ impl App {
         if let Some(entry) = self.monitors_mut().iter_mut().find(|m| m.tool_use_id == tool_use_id) {
             entry.status = status;
         }
-        self.clear_monitors_if_all_terminal();
     }
 
     /// #273 Task 8: Same as `set_monitor_status_by_tool_use_id` but
     /// keyed by the wire `task_id`. Used by lifecycle event handlers
-    /// that only carry the task_id (e.g. wire `TaskUpdated`).
+    /// that only carry the task_id (e.g. wire `TaskUpdated`). #277
+    /// Bug 5a: auto-clear deferred (see the sibling helper above).
     pub fn set_monitor_status_by_task_id(
         &mut self,
         task_id: &str,
@@ -1746,7 +1751,6 @@ impl App {
         {
             entry.status = status;
         }
-        self.clear_monitors_if_all_terminal();
     }
 
     /// #273 Task 8: Push a single output line into the matching
@@ -1816,7 +1820,13 @@ impl App {
     /// #273 Task 8: Drain the MONITORS list once every entry has
     /// transitioned out of `Running`. Matches the TODOs all-completed
     /// auto-clear shape so the Inspector section drops out entirely.
-    fn clear_monitors_if_all_terminal(&mut self) {
+    /// #277 Bug 5a: now called explicitly from
+    /// `handle_task_notification` rather than implicitly from
+    /// `set_monitor_status_by_task_id`, so the
+    /// `task_updated terminal -> task_notification with output_file`
+    /// wire ordering can stamp the tail before the entry gets
+    /// drained.
+    pub fn clear_monitors_if_all_terminal(&mut self) {
         let monitors = self.monitors_mut();
         if !monitors.is_empty() && monitors.iter().all(|m| !m.is_running()) {
             monitors.clear();
@@ -4926,6 +4936,102 @@ mod tests {
         let monitors = app.monitors();
         assert_eq!(monitors.len(), 1);
         assert_eq!(monitors[0].status, crate::app::state::types::MonitorStatus::Running);
+    }
+
+    // -----------------------------------------------------------
+    // #277 Bug 5a: auto-clear race against task_notification.
+    // -----------------------------------------------------------
+
+    #[test]
+    fn set_monitor_status_no_longer_clears_implicitly() {
+        // Pre-#277 the status setter called
+        // `clear_monitors_if_all_terminal` at its end. That dropped
+        // single-monitor entries before `task_notification` could
+        // stamp the tail. Bug 5a deferred the trigger to
+        // `handle_task_notification`. Confirm the setter no longer
+        // drains the Vec on its own.
+        let mut app = make_test_app();
+        app.upsert_monitor_from_tool_input(
+            "tu_solo",
+            "solo monitor".to_owned(),
+            "true".to_owned(),
+            false,
+            0,
+        );
+        app.stamp_monitor_task_id("tu_solo", "task_solo".to_owned());
+        app.set_monitor_status_by_task_id(
+            "task_solo",
+            crate::app::state::types::MonitorStatus::Completed,
+        );
+        // Entry survives the status flip - waiting for
+        // handle_task_notification to call the clear.
+        assert_eq!(app.monitors().len(), 1);
+        assert_eq!(
+            app.monitors()[0].status,
+            crate::app::state::types::MonitorStatus::Completed,
+        );
+    }
+
+    #[test]
+    fn explicit_clear_drains_when_all_terminal() {
+        // The clear helper is now `pub` so `handle_task_notification`
+        // can call it. Verify the predicate still drains correctly.
+        let mut app = make_test_app();
+        app.upsert_monitor_from_tool_input(
+            "tu_a",
+            "a".to_owned(),
+            "true".to_owned(),
+            false,
+            0,
+        );
+        app.upsert_monitor_from_tool_input(
+            "tu_b",
+            "b".to_owned(),
+            "true".to_owned(),
+            false,
+            0,
+        );
+        app.stamp_monitor_task_id("tu_a", "task_a".to_owned());
+        app.stamp_monitor_task_id("tu_b", "task_b".to_owned());
+        app.set_monitor_status_by_task_id(
+            "task_a",
+            crate::app::state::types::MonitorStatus::Completed,
+        );
+        app.set_monitor_status_by_task_id(
+            "task_b",
+            crate::app::state::types::MonitorStatus::Completed,
+        );
+        // Without the explicit call the entries persist (Bug 5a).
+        assert_eq!(app.monitors().len(), 2);
+        app.clear_monitors_if_all_terminal();
+        assert!(app.monitors().is_empty());
+    }
+
+    #[test]
+    fn explicit_clear_skips_when_any_still_running() {
+        let mut app = make_test_app();
+        app.upsert_monitor_from_tool_input(
+            "tu_run",
+            "still running".to_owned(),
+            "true".to_owned(),
+            false,
+            0,
+        );
+        app.upsert_monitor_from_tool_input(
+            "tu_done",
+            "done".to_owned(),
+            "true".to_owned(),
+            false,
+            0,
+        );
+        app.stamp_monitor_task_id("tu_done", "task_done".to_owned());
+        app.set_monitor_status_by_task_id(
+            "task_done",
+            crate::app::state::types::MonitorStatus::Completed,
+        );
+        app.clear_monitors_if_all_terminal();
+        // Predicate sees the Running entry and skips the drain.
+        assert_eq!(app.monitors().len(), 2);
     }
 
     #[test]

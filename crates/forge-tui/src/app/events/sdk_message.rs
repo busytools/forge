@@ -1212,6 +1212,17 @@ fn handle_task_notification(app: &mut App, msg: Message) {
         app.set_monitor_output_file_by_task_id(&task_id, std::path::PathBuf::from(&output_file));
         app.refresh_monitor_output_tail_from_file(&task_id);
     }
+    // #277 Bug 5a: wire ordering is
+    // `task_updated terminal -> task_notification with output_file`.
+    // The status flip lands first (transitioning the MonitorEntry
+    // out of Running); without deferring the auto-clear, the
+    // single-monitor case would drain the Vec at task_updated time
+    // and the subsequent task_notification would find no entry to
+    // stamp the tail into. Auto-clear runs HERE so the tail has
+    // already populated by the time the section drops out (or
+    // persists, for completed-with-tail Monitors per Bug 5b's
+    // render-gate relaxation).
+    app.clear_monitors_if_all_terminal();
 }
 
 /// Apply a `TaskProgress` notification to App state - bumps the
