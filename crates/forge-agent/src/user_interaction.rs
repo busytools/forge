@@ -514,7 +514,7 @@ mod tests {
             json!({"description": 42, "command": "y"}),
             json!(["not", "an", "object"]),
         ] {
-            assert!(parse_monitor_input(&malformed).is_none(), "expected None for {malformed:?}",);
+            assert!(parse_monitor_input(&malformed).is_none(), "expected None for {malformed:?}");
         }
     }
 
@@ -531,7 +531,7 @@ mod tests {
         for malformed in
             [json!({}), json!({"script": ""}), json!({"script": 42}), json!({"other": "x"})]
         {
-            assert!(parse_workflow_input(&malformed).is_none(), "expected None for {malformed:?}",);
+            assert!(parse_workflow_input(&malformed).is_none(), "expected None for {malformed:?}");
         }
     }
 }

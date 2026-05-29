@@ -310,7 +310,7 @@ fn append_stop_hook_summary(
     if expanded {
         for hook in hooks {
             let body = Line::from(Span::styled(
-                format!("    {} · {}", hook.command, format_turn_duration(hook.duration_ms),),
+                format!("    {} · {}", hook.command, format_turn_duration(hook.duration_ms)),
                 Style::default().fg(theme::DIM),
             ));
             layout.push_wrapped_line(body, width);

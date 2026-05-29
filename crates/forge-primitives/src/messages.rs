@@ -1523,8 +1523,8 @@ mod tests_message_extras {
         };
         let encoded = serde_json::to_value(&msg).expect("encode");
         // durationMs / messageCount preserved.
-        assert_eq!(encoded.get("durationMs").and_then(|v| v.as_u64()), Some(1500));
-        assert_eq!(encoded.get("messageCount").and_then(|v| v.as_u64()), Some(3));
+        assert_eq!(encoded.get("durationMs").and_then(serde_json::Value::as_u64), Some(1500));
+        assert_eq!(encoded.get("messageCount").and_then(serde_json::Value::as_u64), Some(3));
         // parent_tool_use_id: None skipped from the output entirely.
         assert!(
             encoded.get("parent_tool_use_id").is_none(),
