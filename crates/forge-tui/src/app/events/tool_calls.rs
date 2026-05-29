@@ -32,6 +32,20 @@ pub(super) fn handle_tool_call(app: &mut App, tc: model::ToolCall) {
         );
     }
 
+    // #273 Task 9: Workflow tool_use → push a UiSession.workflows
+    // entry. `meta_name` / `meta_description` are extracted from
+    // the script's `export const meta = {...}` block via the
+    // substring parser; malformed scripts still get an entry with
+    // the literal "Workflow" fallback so the chat one-liner +
+    // Inspector row always render.
+    if sdk_tool_name == "Workflow"
+        && let Some(input) = tc.raw_input.as_ref()
+        && let Some(parsed) = forge_workspace::user_interaction::parse_workflow_input(input)
+    {
+        let (meta_name, meta_description) = crate::ui::workflow_meta_fields(&parsed.script);
+        app.upsert_workflow_from_tool_input(&id_str, meta_name, meta_description);
+    }
+
     let tool_info = build_tool_info_from_tool_call(app, tc, sdk_tool_name, &scope);
     log_command_started(app, &tool_info);
     log_terminal_spawned(app, &tool_info, "initial");

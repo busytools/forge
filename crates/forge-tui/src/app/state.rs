@@ -21,10 +21,11 @@ pub use tool_call_info::{TerminalSnapshotMode, ToolCallInfo, is_execute_tool_nam
 pub use types::{
     AppStatus, ExtraUsage, HelpView, HistoryRetentionPolicy, HistoryRetentionStats, LoginHint,
     McpState, MessageUsage, ModeInfo, ModeState, MonitorEntry, MonitorStatus, PasteSessionState,
-    PendingCommandAck, RecentSessionInfo, RenderCacheBudget, ScrollbarDragState, SelectionKind,
-    SelectionPoint, SelectionState, SessionTurnState, SessionUsageState, StopHookEntry,
-    StopHookSummaryState, TodoItem, TodoStatus, ToolCallScope, UsageSnapshot, UsageSourceKind,
-    UsageSourceMode, UsageState, UsageWindow,
+    PendingCommandAck, PhaseEntry, PhaseStatus, RecentSessionInfo, RenderCacheBudget,
+    ScrollbarDragState, SelectionKind, SelectionPoint, SelectionState, SessionTurnState,
+    SessionUsageState, StopHookEntry, StopHookSummaryState, TodoItem, TodoStatus, ToolCallScope,
+    UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState, UsageWindow, WorkflowEntry,
+    WorkflowStatus,
 };
 pub use viewport::{
     ChatViewport, LayoutInvalidation, LayoutInvalidation as InvalidationLevel,
@@ -1755,6 +1756,102 @@ impl App {
         let monitors = self.monitors_mut();
         if !monitors.is_empty() && monitors.iter().all(|m| !m.is_running()) {
             monitors.clear();
+        }
+    }
+
+    /// #273 Task 9: Active session's WORKFLOW entries.
+    pub fn workflows(&self) -> &[crate::app::state::types::WorkflowEntry] {
+        self.active_session().map_or(&[], |s| s.workflows.as_slice())
+    }
+
+    /// #273 Task 9: Mutable accessor for the active session's
+    /// WORKFLOWS list. Auto-creates the pre-Connect bucket if
+    /// missing.
+    pub(crate) fn workflows_mut(&mut self) -> &mut Vec<crate::app::state::types::WorkflowEntry> {
+        &mut self.active_bucket_mut().workflows
+    }
+
+    /// #273 Task 9: Insert / refresh a `WorkflowEntry` from a
+    /// `Workflow` tool_use's parsed input. Idempotent: a matching
+    /// `tool_use_id` refreshes `meta_name` / `meta_description`
+    /// without touching `phases` / `status`. Returns true on new
+    /// insertion.
+    pub fn upsert_workflow_from_tool_input(
+        &mut self,
+        tool_use_id: &str,
+        meta_name: String,
+        meta_description: Option<String>,
+    ) -> bool {
+        let workflows = self.workflows_mut();
+        if let Some(existing) = workflows.iter_mut().find(|w| w.tool_use_id == tool_use_id) {
+            existing.meta_name = meta_name;
+            existing.meta_description = meta_description;
+            return false;
+        }
+        workflows.push(crate::app::state::types::WorkflowEntry {
+            tool_use_id: tool_use_id.to_owned(),
+            task_id: None,
+            meta_name,
+            meta_description,
+            phases: Vec::new(),
+            status: crate::app::state::types::WorkflowStatus::InProgress,
+            final_result_summary: None,
+            expanded_in_inspector: false,
+        });
+        true
+    }
+
+    /// #273 Task 9: Stamp `task_id` on a workflow entry (from
+    /// `TaskStarted`'s task_id ↔ tool_use_id mapping). No-op when
+    /// no entry matches or the entry already has a task_id.
+    pub fn stamp_workflow_task_id(&mut self, tool_use_id: &str, task_id: String) {
+        if let Some(entry) =
+            self.workflows_mut().iter_mut().find(|w| w.tool_use_id == tool_use_id)
+            && entry.task_id.is_none()
+        {
+            entry.task_id = Some(task_id);
+        }
+    }
+
+    /// #273 Task 9: Apply a `workflow_progress` snapshot to the
+    /// matching workflow (keyed by `task_id`). The wire snapshot is
+    /// monotonic (start → progress → done), so the latest event
+    /// authoritatively determines each phase's status.
+    pub fn apply_workflow_progress_by_task_id(
+        &mut self,
+        task_id: &str,
+        events: &[forge_primitives::WorkflowProgressEvent],
+    ) {
+        if let Some(entry) = self
+            .workflows_mut()
+            .iter_mut()
+            .find(|w| w.task_id.as_deref() == Some(task_id))
+        {
+            entry.apply_workflow_progress(events);
+        }
+        self.clear_workflows_if_all_terminal();
+    }
+
+    /// #273 Task 9: Transition a workflow into the terminal
+    /// `Completed` status (called from `TaskUpdated` terminal
+    /// patch). Triggers the all-completed clear.
+    pub fn set_workflow_completed_by_task_id(&mut self, task_id: &str) {
+        if let Some(entry) = self
+            .workflows_mut()
+            .iter_mut()
+            .find(|w| w.task_id.as_deref() == Some(task_id))
+        {
+            entry.status = crate::app::state::types::WorkflowStatus::Completed;
+        }
+        self.clear_workflows_if_all_terminal();
+    }
+
+    /// Drain the WORKFLOWS list once every entry has finished —
+    /// matches the MONITORS / TODOs all-completed clear shape.
+    fn clear_workflows_if_all_terminal(&mut self) {
+        let workflows = self.workflows_mut();
+        if !workflows.is_empty() && workflows.iter().all(|w| !w.is_in_progress()) {
+            workflows.clear();
         }
     }
 

@@ -58,13 +58,14 @@ pub use state::{
     InvalidationLevel, LayoutInvalidation, LoginHint, McpState, MessageBlock, MessageRenderCache,
     MessageRenderCacheKey, MessageRenderSignature, MessageRole, MessageUsage, ModeInfo, ModeState,
     MonitorEntry, MonitorStatus, NoticeBlock, NoticeDedupKey, NoticeStage, PaneHitTarget,
-    PasteSessionState, PendingCommandAck, RateLimitIncidentKey, RecentSessionInfo,
-    ScrollbarGeometry, SelectionKind, SelectionPoint, SelectionState, SessionTurnState,
-    SessionUsageState, StopHookEntry, StopHookSummaryState, SystemSeverity, TerminalSnapshotMode,
-    TextBlock, TextBlockSpacing, TodoItem, TodoStatus, ToolCallInfo, ToolCallScope,
-    TurnNoticeLocation, TurnNoticeRef, UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState,
-    UsageWindow, WelcomeBlock, compute_scrollbar_geometry, hash_text_block_content,
-    hash_welcome_block_content, is_execute_tool_name,
+    PasteSessionState, PendingCommandAck, PhaseEntry, PhaseStatus, RateLimitIncidentKey,
+    RecentSessionInfo, ScrollbarGeometry, SelectionKind, SelectionPoint, SelectionState,
+    SessionTurnState, SessionUsageState, StopHookEntry, StopHookSummaryState, SystemSeverity,
+    TerminalSnapshotMode, TextBlock, TextBlockSpacing, TodoItem, TodoStatus, ToolCallInfo,
+    ToolCallScope, TurnNoticeLocation, TurnNoticeRef, UsageSnapshot, UsageSourceKind,
+    UsageSourceMode, UsageState, UsageWindow, WelcomeBlock, WorkflowEntry, WorkflowStatus,
+    compute_scrollbar_geometry, hash_text_block_content, hash_welcome_block_content,
+    is_execute_tool_name,
 };
 pub use view::ActiveView;
 

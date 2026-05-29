@@ -90,6 +90,7 @@ pub use image::{
 };
 pub use mcp_ui_sync::McpOperationError;
 pub use messages::StopHookInfo;
+pub use messages::WorkflowProgressEvent;
 pub use messages::{
     AssistantEnvelope, AssistantMessageError, Message, RateLimitInfo, RateLimitStatus,
     RateLimitType, StopReason, TaskNotificationStatus, TaskUsage, Usage, UserEnvelope,

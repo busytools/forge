@@ -129,6 +129,12 @@ pub enum Message {
         tool_use_id: Option<String>,
         /// Name of the last tool the sub-agent invoked, if any.
         last_tool_name: Option<String>,
+        /// #273 Task 9: Workflow tool's per-event snapshot of the
+        /// workflow's phase + agent state. Empty for non-Workflow
+        /// task_progress events. Each event carries the FULL
+        /// snapshot (not a delta), so the renderer can rebuild the
+        /// per-phase tree from a single most-recent event.
+        workflow_progress: Vec<WorkflowProgressEvent>,
     },
 
     /// Terminal notification when a sub-agent `Task` completes,
@@ -610,6 +616,76 @@ pub struct TaskUpdatePatch {
     pub end_time: Option<u64>,
 }
 
+/// #273 Task 9: Workflow's per-event snapshot of the workflow's
+/// phase + agent state, ridden via `Message::TaskProgress`'s
+/// `workflow_progress` field.
+///
+/// The CLI fires one `system/task_progress` per workflow-internal
+/// state change; each event carries the FULL workflow snapshot at
+/// that instant (not a delta). Two flavours of entry are observed in
+/// captured wire (see `~/Projects/forge/.claude/skills/claude-cli-upgrade/reference-captures/workflow.jsonl`):
+///
+/// 1. `workflow_phase` — phase-level marker emitted when the
+///    workflow's `phase()` call fires. Carries the phase index +
+///    title.
+/// 2. `workflow_agent` — agent-level event tracking an agent call's
+///    state transition (`start` → `progress` → `done`). Carries the
+///    parent phase index, the agent's queued model, the running
+///    tool name (when known), a short prompt preview, and (on
+///    `done`) the result preview.
+///
+/// Both share the same wire envelope discriminated by `type`. The
+/// type stays open via `#[serde(other)]` on the trailing variant
+/// so future CLI additions decode cleanly without a primitives
+/// bump.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum WorkflowProgressEvent {
+    /// Phase-level marker — emitted when the workflow's `phase()`
+    /// call fires.
+    WorkflowPhase {
+        index: u32,
+        title: String,
+    },
+    /// Agent-level event — emitted on each state transition for an
+    /// agent call inside a phase. Only the fields the renderer
+    /// actually surfaces are decoded; the wire also carries
+    /// `queuedAt`, `startedAt`, `lastProgressAt`, `attempt`,
+    /// `tokens`, `toolCalls`, `durationMs`, `model`, `agentId`,
+    /// `promptPreview` etc. which are skipped here to keep the
+    /// rendered surface focused.
+    WorkflowAgent {
+        index: u32,
+        label: String,
+        #[serde(rename = "phaseIndex")]
+        phase_index: u32,
+        #[serde(rename = "phaseTitle")]
+        phase_title: String,
+        /// Current agent state on the wire: `start`, `progress`,
+        /// `done`. Free-form string so future states decode
+        /// without a primitives bump.
+        state: String,
+        /// Latest tool the agent invoked, when known. `None` on
+        /// initial `start` events.
+        #[serde(rename = "lastToolName", default, skip_serializing_if = "Option::is_none")]
+        last_tool_name: Option<String>,
+        /// Short summary of the latest tool's output.
+        #[serde(rename = "lastToolSummary", default, skip_serializing_if = "Option::is_none")]
+        last_tool_summary: Option<String>,
+        /// Final structured-output preview emitted with the
+        /// `state: done` event. JSON-stringified per the CLI's
+        /// `resultPreview` field.
+        #[serde(rename = "resultPreview", default, skip_serializing_if = "Option::is_none")]
+        result_preview: Option<String>,
+    },
+    /// Unrecognised workflow event — preserved across decode to
+    /// avoid serde refusing the surrounding `task_progress`. Not
+    /// surfaced anywhere; the renderer treats unknown event types
+    /// as no-ops.
+    #[serde(other)]
+    Other,
+}
+
 // ---------------------------------------------------------------------------
 // Wire shim — serde sees this, users never do.
 //
@@ -758,6 +834,13 @@ enum TypedSystemRepr {
         tool_use_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         last_tool_name: Option<String>,
+        /// #273 Task 9: Workflow tool's per-event snapshot of the
+        /// workflow's phase + agent state. Present only when the
+        /// originating tool is `Workflow`; otherwise omitted. Each
+        /// event is the FULL snapshot (not a delta) of every phase
+        /// + agent currently known to the workflow.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        workflow_progress: Vec<WorkflowProgressEvent>,
     },
     TaskNotification {
         task_id: String,
@@ -859,6 +942,7 @@ impl From<MessageRepr> for Message {
                 session_id,
                 tool_use_id,
                 last_tool_name,
+                workflow_progress,
             })) => Message::TaskProgress {
                 task_id,
                 description,
@@ -867,6 +951,7 @@ impl From<MessageRepr> for Message {
                 session_id,
                 tool_use_id,
                 last_tool_name,
+                workflow_progress,
             },
             MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::TaskNotification {
                 task_id,
@@ -1059,6 +1144,7 @@ impl From<Message> for MessageRepr {
                 session_id,
                 tool_use_id,
                 last_tool_name,
+                workflow_progress,
             } => MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::TaskProgress {
                 task_id,
                 description,
@@ -1067,6 +1153,7 @@ impl From<Message> for MessageRepr {
                 session_id,
                 tool_use_id,
                 last_tool_name,
+                workflow_progress,
             })),
             Message::TaskNotification {
                 task_id,
@@ -1573,6 +1660,111 @@ mod tests_message_extras {
         assert_eq!(hook_infos[0].duration_ms, 980);
         assert_eq!(parent_tool_use_id.as_deref(), Some("uuid_2"));
         assert_eq!(session_id, "session_0");
+    }
+
+    #[test]
+    fn workflow_task_progress_decodes_workflow_progress_array() {
+        // Wire shape from `~/Projects/forge/.claude/skills/claude-cli-upgrade/reference-captures/workflow.jsonl`.
+        // Each `system/task_progress` for a Workflow tool carries a
+        // FULL `workflow_progress` snapshot — phase markers + the
+        // currently active agent's state.
+        let raw = json!({
+            "type": "system",
+            "subtype": "task_progress",
+            "task_id": "woc6i1sab",
+            "tool_use_id": "toolu_01XapnWmqm6an1tJYxJn72xs",
+            "description": "Ping: ping",
+            "usage": {"total_tokens": 54707, "tool_uses": 1, "duration_ms": 4826},
+            "last_tool_name": "ping",
+            "summary": "Minimal one-agent workflow: ask for a fixed structured fact",
+            "workflow_progress": [
+                {"type": "workflow_phase", "index": 1, "title": "Ping"},
+                {
+                    "type": "workflow_agent",
+                    "index": 1,
+                    "label": "ping",
+                    "phaseIndex": 1,
+                    "phaseTitle": "Ping",
+                    "state": "done",
+                    "lastToolName": "StructuredOutput",
+                    "lastToolSummary": "pong",
+                    "resultPreview": "{\"answer\":\"pong\",\"confidence\":1}",
+                    "agentId": "abf",
+                    "model": "claude-opus-4-7",
+                    "queuedAt": 1780047148162u64,
+                    "startedAt": 1780047148173u64,
+                    "attempt": 1,
+                    "promptPreview": "Reply with the single word pong.",
+                    "lastProgressAt": 1780047153041u64,
+                    "tokens": 54707,
+                    "toolCalls": 1,
+                    "durationMs": 4868,
+                },
+            ],
+            "uuid": "8f030768-6fda-4ea9-a122-9beb16e8d6e3",
+            "session_id": "session_z",
+        });
+        let msg: Message = serde_json::from_value(raw).expect("decode");
+        let Message::TaskProgress { workflow_progress, task_id, tool_use_id, .. } = msg else {
+            panic!("expected TaskProgress");
+        };
+        assert_eq!(task_id, "woc6i1sab");
+        assert_eq!(tool_use_id.as_deref(), Some("toolu_01XapnWmqm6an1tJYxJn72xs"));
+        assert_eq!(workflow_progress.len(), 2);
+        let WorkflowProgressEvent::WorkflowPhase { index, title } = &workflow_progress[0] else {
+            panic!("first event must be WorkflowPhase, got {:?}", workflow_progress[0]);
+        };
+        assert_eq!(*index, 1);
+        assert_eq!(title, "Ping");
+        let WorkflowProgressEvent::WorkflowAgent {
+            phase_index,
+            phase_title,
+            state,
+            last_tool_name,
+            last_tool_summary,
+            result_preview,
+            ..
+        } = &workflow_progress[1]
+        else {
+            panic!("second event must be WorkflowAgent, got {:?}", workflow_progress[1]);
+        };
+        assert_eq!(*phase_index, 1);
+        assert_eq!(phase_title, "Ping");
+        assert_eq!(state, "done");
+        assert_eq!(last_tool_name.as_deref(), Some("StructuredOutput"));
+        assert_eq!(last_tool_summary.as_deref(), Some("pong"));
+        assert_eq!(result_preview.as_deref(), Some("{\"answer\":\"pong\",\"confidence\":1}"));
+    }
+
+    #[test]
+    fn workflow_task_progress_without_workflow_progress_decodes_with_empty_default() {
+        // Non-Workflow task_progress events omit the `workflow_progress`
+        // field; serde default fills with empty vec so the existing
+        // sub-agent task_progress handler stays untouched.
+        let raw = json!({
+            "type": "system",
+            "subtype": "task_progress",
+            "task_id": "t-sub",
+            "description": "subagent halfway",
+            "usage": {"total_tokens": 10, "tool_uses": 1, "duration_ms": 100},
+            "uuid": "u-sub",
+            "session_id": "sess",
+        });
+        let msg: Message = serde_json::from_value(raw).expect("decode");
+        let Message::TaskProgress { workflow_progress, .. } = msg else {
+            panic!("expected TaskProgress");
+        };
+        assert!(workflow_progress.is_empty());
+    }
+
+    #[test]
+    fn workflow_progress_unknown_type_decodes_as_other() {
+        // Future CLI may add new workflow event types. Confirm they
+        // decode as the `Other` variant rather than failing the
+        // surrounding `task_progress` decode.
+        let raw = json!({"type": "workflow_future", "anything": 42});
+        let event: WorkflowProgressEvent = serde_json::from_value(raw).expect("decode");
+        assert!(matches!(event, WorkflowProgressEvent::Other));
     }
 
     #[test]

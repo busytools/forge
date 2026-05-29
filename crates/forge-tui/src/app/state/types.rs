@@ -131,6 +131,189 @@ impl MonitorEntry {
     }
 }
 
+/// #273 Task 9: lifecycle status of a Workflow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkflowStatus {
+    /// Workflow is in progress — phases / agents may still fire.
+    InProgress,
+    /// All phases reported terminal; renderer collapses the tree
+    /// to a single-liner and the section auto-clears once every
+    /// session workflow shares this status.
+    Completed,
+}
+
+/// #273 Task 9: per-phase status (mirrors the wire `state` field's
+/// canonical values).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PhaseStatus {
+    /// Phase has been declared by the workflow but no agent has
+    /// started in it yet.
+    Pending,
+    /// At least one agent inside the phase is `start` / `progress`.
+    InProgress,
+    /// Every agent inside the phase reported `done`.
+    Completed,
+}
+
+/// #273 Task 9: one phase row inside a WorkflowEntry's per-phase
+/// tree. The renderer walks `phases` in `index` order; per-phase
+/// logs are the truncated lifecycle markers (last_tool_name +
+/// last_tool_summary + resultPreview) captured from
+/// `WorkflowProgressEvent` events.
+#[derive(Debug, Clone)]
+pub struct PhaseEntry {
+    /// 1-indexed phase number from the wire `index` field — matches
+    /// the order `phase()` is called inside the script.
+    pub index: u32,
+    /// Phase title (from `phase("Ping")` literal).
+    pub title: String,
+    /// Current status — drives the glyph in the tree.
+    pub status: PhaseStatus,
+    /// Bounded ring buffer of per-phase log lines (each line is a
+    /// captured agent transition summary). Capped at
+    /// `WorkflowEntry::PHASE_LOG_MAX`.
+    pub logs: std::collections::VecDeque<String>,
+}
+
+impl PhaseEntry {
+    /// Push a log line, evicting oldest at capacity.
+    pub fn push_log(&mut self, line: String) {
+        if self.logs.len() == WorkflowEntry::PHASE_LOG_MAX {
+            self.logs.pop_front();
+        }
+        self.logs.push_back(line);
+    }
+}
+
+/// #273 Task 9: a single Workflow entry surfaced in chat + the
+/// Inspector WORKFLOWS section. Populated on `Workflow` tool_use;
+/// `phases` / `final_result_summary` updated from each
+/// `Message::TaskProgress` carrying `workflow_progress` events.
+#[derive(Debug, Clone)]
+pub struct WorkflowEntry {
+    /// `tool_use_id` from the Workflow tool_use block.
+    pub tool_use_id: String,
+    /// Task id assigned by the CLI when the Workflow starts
+    /// (`tool_use_result.taskId` or `TaskStarted` mapping).
+    pub task_id: Option<String>,
+    /// `name` from the script's `export const meta = {...}` block,
+    /// or the literal `"Workflow"` fallback.
+    pub meta_name: String,
+    /// Optional `description` field from the meta block. Surfaces
+    /// as a DIM subtitle row in the Inspector tree.
+    pub meta_description: Option<String>,
+    /// Phase tree — built / rebuilt from each TaskProgress's full
+    /// `workflow_progress` snapshot. Order matches phase index.
+    pub phases: Vec<PhaseEntry>,
+    /// Lifecycle status. Drives chat one-liner shape (`started` vs
+    /// `done`) and the per-row collapsed glyph in the Inspector.
+    pub status: WorkflowStatus,
+    /// Final result preview captured from the terminating
+    /// `workflow_agent.state == "done"` event's `resultPreview`.
+    pub final_result_summary: Option<String>,
+    /// Per-row expand toggle for the Inspector. Click flips this.
+    pub expanded_in_inspector: bool,
+}
+
+impl WorkflowEntry {
+    /// Maximum log lines kept per phase. Bounded so the Inspector
+    /// row doesn't grow unbounded for a long-lived workflow.
+    pub const PHASE_LOG_MAX: usize = 8;
+
+    /// True when this workflow has at least one phase that hasn't
+    /// reached `Completed`. The all-completed predicate drives the
+    /// WORKFLOWS-section auto-clear.
+    #[must_use]
+    pub fn is_in_progress(&self) -> bool {
+        self.status == WorkflowStatus::InProgress
+    }
+
+    /// Apply a full `workflow_progress` snapshot from a single
+    /// `system/task_progress` event. The wire shape is a complete
+    /// snapshot (not a delta), so this rebuilds the phase list.
+    /// Phase-level logs accumulate across snapshots; agent
+    /// transition events append to the matching phase.
+    pub fn apply_workflow_progress(
+        &mut self,
+        events: &[forge_primitives::WorkflowProgressEvent],
+    ) {
+        use forge_primitives::WorkflowProgressEvent;
+
+        // Build the phase set first so phases with no agent
+        // activity yet still surface.
+        for event in events {
+            if let WorkflowProgressEvent::WorkflowPhase { index, title } = event {
+                let already = self.phases.iter().any(|p| p.index == *index);
+                if !already {
+                    self.phases.push(PhaseEntry {
+                        index: *index,
+                        title: title.clone(),
+                        status: PhaseStatus::Pending,
+                        logs: std::collections::VecDeque::new(),
+                    });
+                }
+            }
+        }
+
+        // Walk agent events and update each matching phase. The
+        // most recent state-per-agent wins (snapshots are
+        // monotonic: start -> progress -> done).
+        for event in events {
+            let WorkflowProgressEvent::WorkflowAgent {
+                phase_index,
+                phase_title,
+                state,
+                last_tool_name,
+                last_tool_summary,
+                result_preview,
+                ..
+            } = event
+            else {
+                continue;
+            };
+            // Ensure phase exists (wire sometimes emits an agent
+            // before a workflow_phase marker — defensive create).
+            let phase = match self.phases.iter_mut().find(|p| p.index == *phase_index) {
+                Some(p) => p,
+                None => {
+                    self.phases.push(PhaseEntry {
+                        index: *phase_index,
+                        title: phase_title.clone(),
+                        status: PhaseStatus::Pending,
+                        logs: std::collections::VecDeque::new(),
+                    });
+                    self.phases
+                        .iter_mut()
+                        .find(|p| p.index == *phase_index)
+                        .expect("just pushed")
+                }
+            };
+            phase.status = match state.as_str() {
+                "done" => PhaseStatus::Completed,
+                "start" | "progress" => PhaseStatus::InProgress,
+                _ => phase.status,
+            };
+            if let Some(summary) = last_tool_summary.as_deref().filter(|s| !s.is_empty()) {
+                let tool = last_tool_name.as_deref().unwrap_or("agent");
+                phase.push_log(format!("{tool}: {summary}"));
+            } else if let Some(tool) = last_tool_name.as_deref().filter(|s| !s.is_empty()) {
+                phase.push_log(format!("running {tool}"));
+            }
+            if state == "done"
+                && let Some(preview) = result_preview.as_deref().filter(|s| !s.is_empty())
+            {
+                self.final_result_summary = Some(preview.to_owned());
+                // Once we see a done state with a result preview,
+                // also recheck whether ALL phases are complete.
+                if self.phases.iter().all(|p| p.status == PhaseStatus::Completed) {
+                    self.status = WorkflowStatus::Completed;
+                }
+                return;
+            }
+        }
+    }
+}
+
 /// A single inspector task item from Claude's `TaskCreate`/`TaskUpdate`
 /// family (#268). CLI 2.1.156 deprecated the older `TodoWrite` tool;
 /// forge no longer renders TodoWrite output. The `id` is assigned by
@@ -356,6 +539,98 @@ mod tests {
             Some("line 16"),
             "newest line stays at the back of the ring",
         );
+    }
+
+    #[test]
+    fn workflow_entry_applies_progress_snapshot_to_build_phase_tree() {
+        let mut entry = WorkflowEntry {
+            tool_use_id: "tu".to_owned(),
+            task_id: Some("task_1".to_owned()),
+            meta_name: "minimal-ping".to_owned(),
+            meta_description: Some("sanity".to_owned()),
+            phases: Vec::new(),
+            status: WorkflowStatus::InProgress,
+            final_result_summary: None,
+            expanded_in_inspector: false,
+        };
+        let events = vec![
+            forge_primitives::WorkflowProgressEvent::WorkflowPhase {
+                index: 1,
+                title: "Ping".to_owned(),
+            },
+            forge_primitives::WorkflowProgressEvent::WorkflowAgent {
+                index: 1,
+                label: "ping".to_owned(),
+                phase_index: 1,
+                phase_title: "Ping".to_owned(),
+                state: "start".to_owned(),
+                last_tool_name: None,
+                last_tool_summary: None,
+                result_preview: None,
+            },
+        ];
+        entry.apply_workflow_progress(&events);
+        assert_eq!(entry.phases.len(), 1);
+        assert_eq!(entry.phases[0].title, "Ping");
+        assert_eq!(entry.phases[0].status, PhaseStatus::InProgress);
+        assert_eq!(entry.status, WorkflowStatus::InProgress);
+    }
+
+    #[test]
+    fn workflow_entry_completes_on_terminal_done_event_with_result() {
+        let mut entry = WorkflowEntry {
+            tool_use_id: "tu".to_owned(),
+            task_id: Some("task_1".to_owned()),
+            meta_name: "ping".to_owned(),
+            meta_description: None,
+            phases: vec![PhaseEntry {
+                index: 1,
+                title: "Ping".to_owned(),
+                status: PhaseStatus::InProgress,
+                logs: std::collections::VecDeque::new(),
+            }],
+            status: WorkflowStatus::InProgress,
+            final_result_summary: None,
+            expanded_in_inspector: false,
+        };
+        let events = vec![forge_primitives::WorkflowProgressEvent::WorkflowAgent {
+            index: 1,
+            label: "ping".to_owned(),
+            phase_index: 1,
+            phase_title: "Ping".to_owned(),
+            state: "done".to_owned(),
+            last_tool_name: Some("StructuredOutput".to_owned()),
+            last_tool_summary: Some("pong".to_owned()),
+            result_preview: Some("{\"answer\":\"pong\"}".to_owned()),
+        }];
+        entry.apply_workflow_progress(&events);
+        assert_eq!(entry.phases[0].status, PhaseStatus::Completed);
+        assert_eq!(entry.status, WorkflowStatus::Completed);
+        assert_eq!(entry.final_result_summary.as_deref(), Some("{\"answer\":\"pong\"}"));
+    }
+
+    #[test]
+    fn workflow_entry_logs_accumulate_with_bounded_ring() {
+        let mut entry = WorkflowEntry {
+            tool_use_id: "tu".to_owned(),
+            task_id: None,
+            meta_name: "w".to_owned(),
+            meta_description: None,
+            phases: vec![PhaseEntry {
+                index: 1,
+                title: "p".to_owned(),
+                status: PhaseStatus::Pending,
+                logs: std::collections::VecDeque::new(),
+            }],
+            status: WorkflowStatus::InProgress,
+            final_result_summary: None,
+            expanded_in_inspector: false,
+        };
+        for i in 0..WorkflowEntry::PHASE_LOG_MAX + 3 {
+            entry.phases[0].push_log(format!("log {i}"));
+        }
+        assert_eq!(entry.phases[0].logs.len(), WorkflowEntry::PHASE_LOG_MAX);
+        assert_eq!(entry.phases[0].logs.front().map(String::as_str), Some("log 3"));
     }
 
     #[test]

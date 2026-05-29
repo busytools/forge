@@ -24,7 +24,7 @@ mod two_column_list;
 pub(crate) mod worker_status;
 mod wrap;
 
-pub use message::{SpinnerState, measure_message_height_cached};
+pub use message::{SpinnerState, measure_message_height_cached, workflow_meta_fields};
 
 use crate::app::ActiveView;
 use crate::app::App;

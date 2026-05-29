@@ -364,10 +364,19 @@ fn append_body(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
         append_tasks_section(lines, app, width);
     }
 
-    // #273 Task 8: MONITORS section sits between TASKS and
+    // #273 Task 9: WORKFLOWS section sits between TASKS and
+    // MONITORS. Auto-clears once every workflow has reached
+    // `Completed`.
+    if !app.workflows().is_empty() {
+        lines.push(Line::default());
+        push_section_rule(lines, width);
+        lines.push(Line::default());
+        append_workflows_section(lines, app, width);
+    }
+
+    // #273 Task 8: MONITORS section sits between WORKFLOWS and
     // PROCESSES; auto-clears when no entry is live (matches the
-    // TASKS section's all-completed shape). #273 Task 9 inserts
-    // WORKFLOWS between TASKS and MONITORS.
+    // TASKS section's all-completed shape).
     if !app.monitors().is_empty() {
         lines.push(Line::default());
         push_section_rule(lines, width);
@@ -1315,6 +1324,127 @@ fn append_monitor_row(
             Span::styled(truncated, Style::default().fg(theme::DIM)),
         ]));
     }
+}
+
+/// #273 Task 9: append the WORKFLOWS Inspector section. Header +
+/// one row per workflow entry with the meta name + status, then
+/// (when running or expanded) a per-phase tree showing status
+/// glyph + title + log tail. Section is hidden when
+/// `UiSession.workflows` is empty (auto-clears once every entry
+/// transitions to `Completed`).
+fn append_workflows_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
+    let workflows = app.workflows();
+    if workflows.is_empty() {
+        return;
+    }
+
+    lines.push(Line::from(Span::styled(
+        " WORKFLOWS".to_owned(),
+        Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::default());
+
+    let glyph_indent = PANE_PAD + 2;
+    let text_budget = usize::from(width)
+        .saturating_sub(usize::from(glyph_indent))
+        .saturating_sub(usize::from(PANE_PAD));
+
+    for workflow in workflows {
+        append_workflow_row(lines, workflow, text_budget, app.spinner_frame);
+    }
+}
+
+/// Render one Workflow entry into the Inspector body. Layout:
+/// header (glyph + meta_name + status badge), optional description
+/// subtitle, then a tree of phases with logs as continuation rows.
+fn append_workflow_row(
+    lines: &mut Vec<Line<'static>>,
+    workflow: &crate::app::WorkflowEntry,
+    text_budget: usize,
+    spinner_frame: usize,
+) {
+    use crate::app::{PhaseStatus, WorkflowStatus};
+
+    let (status_label, status_color) = match workflow.status {
+        WorkflowStatus::InProgress => ("in progress", theme::RUST_ORANGE),
+        WorkflowStatus::Completed => ("done", Color::Green),
+    };
+    let glyph = if workflow.is_in_progress() {
+        spinner_frame_char(spinner_frame)
+    } else {
+        "\u{25c6}"
+    };
+    let glyph_color =
+        if workflow.is_in_progress() { theme::RUST_ORANGE } else { Color::Green };
+    let header_text = truncate_or_pass(&workflow.meta_name, text_budget.max(8));
+    lines.push(Line::from(vec![
+        Span::raw("  ".to_owned()),
+        Span::styled(glyph.to_owned(), Style::default().fg(glyph_color)),
+        Span::raw(" ".to_owned()),
+        Span::styled(header_text, Style::default().add_modifier(Modifier::BOLD)),
+        Span::styled(" \u{00B7} ".to_owned(), Style::default().fg(theme::DIM)),
+        Span::styled(status_label.to_owned(), Style::default().fg(status_color)),
+    ]));
+
+    if let Some(desc) = workflow.meta_description.as_deref().filter(|d| !d.is_empty()) {
+        let row = truncate_or_pass(desc, text_budget.max(8));
+        lines.push(Line::from(vec![
+            Span::raw("    ".to_owned()),
+            Span::styled(row, Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC)),
+        ]));
+    }
+
+    // Show the phase tree when the workflow is running OR the user
+    // expanded it explicitly. A completed-and-collapsed workflow
+    // shows just the header + (optional) final_result_summary.
+    let show_tree = workflow.is_in_progress() || workflow.expanded_in_inspector;
+    if show_tree {
+        let phase_count = workflow.phases.len();
+        for (i, phase) in workflow.phases.iter().enumerate() {
+            let is_last = i + 1 == phase_count;
+            let connector = if is_last { "  \u{2514} " } else { "  \u{251c} " };
+            let (phase_glyph, phase_color) = match phase.status {
+                PhaseStatus::Completed => ("\u{2713}", Color::Green),
+                PhaseStatus::InProgress => (spinner_frame_char(spinner_frame), theme::RUST_ORANGE),
+                PhaseStatus::Pending => ("\u{25CB}", theme::DIM),
+            };
+            let row = truncate_or_pass(&phase.title, text_budget.max(8));
+            lines.push(Line::from(vec![
+                Span::styled(connector.to_owned(), Style::default().fg(theme::DIM)),
+                Span::styled(phase_glyph.to_owned(), Style::default().fg(phase_color)),
+                Span::raw(" ".to_owned()),
+                Span::styled(row, Style::default().fg(theme::DIM)),
+            ]));
+            let logs_indent = if is_last { "      " } else { "  \u{2502}   " };
+            for log in &phase.logs {
+                let log_row = truncate_or_pass(log, text_budget.saturating_sub(4).max(4));
+                lines.push(Line::from(vec![
+                    Span::styled(logs_indent.to_owned(), Style::default().fg(theme::DIM)),
+                    Span::styled(log_row, Style::default().fg(theme::DIM)),
+                ]));
+            }
+        }
+    }
+
+    if let Some(summary) = workflow.final_result_summary.as_deref().filter(|s| !s.is_empty()) {
+        let row = truncate_or_pass(summary, text_budget.max(8));
+        lines.push(Line::from(vec![
+            Span::raw("  \u{2514} ".to_owned()),
+            Span::styled("\u{2713} ".to_owned(), Style::default().fg(Color::Green)),
+            Span::styled(row, Style::default().fg(theme::DIM)),
+        ]));
+    }
+}
+
+/// Pick the active spinner frame character from the shared SPINNER
+/// table. Exposed as a tiny helper so both monitor + workflow rows
+/// use the same animation.
+fn spinner_frame_char(frame: usize) -> &'static str {
+    const FRAMES: &[&str] = &[
+        "\u{280B}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283C}", "\u{2834}", "\u{2826}",
+        "\u{2827}", "\u{2807}", "\u{280F}",
+    ];
+    FRAMES[frame % FRAMES.len()]
 }
 
 /// Helper: truncate a string to `max_chars` columns, appending a
@@ -2288,6 +2418,119 @@ mod tests {
         // Expanded → headline + 1 tail row.
         assert_eq!(lines.len(), 2);
         assert!(line_text(&lines[1]).contains("stream ended"));
+    }
+
+    // ---------------------------------------------------------
+    // #273 Task 9: WORKFLOWS Inspector section.
+    // ---------------------------------------------------------
+
+    fn make_workflow_entry(
+        tool_use_id: &str,
+        meta_name: &str,
+        status: crate::app::WorkflowStatus,
+    ) -> crate::app::WorkflowEntry {
+        crate::app::WorkflowEntry {
+            tool_use_id: tool_use_id.to_owned(),
+            task_id: Some("task_1".to_owned()),
+            meta_name: meta_name.to_owned(),
+            meta_description: None,
+            phases: Vec::new(),
+            status,
+            final_result_summary: None,
+            expanded_in_inspector: false,
+        }
+    }
+
+    #[test]
+    fn workflows_section_renders_in_progress_header_with_phase_tree() {
+        let mut workflow = make_workflow_entry(
+            "tu",
+            "minimal-ping",
+            crate::app::WorkflowStatus::InProgress,
+        );
+        workflow.phases = vec![crate::app::PhaseEntry {
+            index: 1,
+            title: "Ping".to_owned(),
+            status: crate::app::PhaseStatus::InProgress,
+            logs: std::collections::VecDeque::from([
+                "running StructuredOutput".to_owned(),
+            ]),
+        }];
+        let mut lines = Vec::new();
+        append_workflow_row(&mut lines, &workflow, 60, 0);
+        assert!(lines.iter().any(|l| line_text(l).contains("minimal-ping")));
+        assert!(
+            lines
+                .iter()
+                .any(|l| line_text(l).contains("Ping") && line_text(l).contains("\u{251c}")
+                    || line_text(l).contains("Ping") && line_text(l).contains("\u{2514}")),
+            "expected phase row glyph; got {:?}",
+            lines.iter().map(line_text).collect::<Vec<_>>(),
+        );
+        assert!(lines.iter().any(|l| line_text(l).contains("running StructuredOutput")));
+    }
+
+    #[test]
+    fn workflows_section_collapses_completed_to_header_only_with_summary() {
+        let mut workflow = make_workflow_entry(
+            "tu",
+            "ping",
+            crate::app::WorkflowStatus::Completed,
+        );
+        workflow.phases = vec![crate::app::PhaseEntry {
+            index: 1,
+            title: "Ping".to_owned(),
+            status: crate::app::PhaseStatus::Completed,
+            logs: std::collections::VecDeque::new(),
+        }];
+        workflow.final_result_summary = Some("{\"answer\":\"pong\"}".to_owned());
+        let mut lines = Vec::new();
+        append_workflow_row(&mut lines, &workflow, 60, 0);
+        // Collapsed completed entry: header + summary line only;
+        // phase tree suppressed because `expanded_in_inspector =
+        // false` and `is_in_progress() = false`.
+        assert_eq!(lines.len(), 2);
+        assert!(line_text(&lines[0]).contains("ping") && line_text(&lines[0]).contains("done"));
+        assert!(line_text(&lines[1]).contains("{\"answer\":\"pong\"}"));
+    }
+
+    #[test]
+    fn workflows_section_shows_phase_tree_when_expanded_after_completion() {
+        let mut workflow = make_workflow_entry(
+            "tu",
+            "ping",
+            crate::app::WorkflowStatus::Completed,
+        );
+        workflow.phases = vec![crate::app::PhaseEntry {
+            index: 1,
+            title: "Ping".to_owned(),
+            status: crate::app::PhaseStatus::Completed,
+            logs: std::collections::VecDeque::new(),
+        }];
+        workflow.expanded_in_inspector = true;
+        let mut lines = Vec::new();
+        append_workflow_row(&mut lines, &workflow, 60, 0);
+        // Expanded → header + phase tree row.
+        assert!(
+            lines
+                .iter()
+                .any(|l| line_text(l).contains("Ping") && line_text(l).contains("\u{2514}")),
+            "expected phase row in expanded view; got {:?}",
+            lines.iter().map(line_text).collect::<Vec<_>>(),
+        );
+    }
+
+    #[test]
+    fn workflows_section_renders_meta_description_as_dim_subtitle() {
+        let mut workflow = make_workflow_entry(
+            "tu",
+            "minimal-ping",
+            crate::app::WorkflowStatus::InProgress,
+        );
+        workflow.meta_description = Some("sanity".to_owned());
+        let mut lines = Vec::new();
+        append_workflow_row(&mut lines, &workflow, 60, 0);
+        assert!(lines.iter().any(|l| line_text(l).contains("sanity")));
     }
 
     #[test]

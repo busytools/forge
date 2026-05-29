@@ -1012,15 +1012,28 @@ fn handle_task_started(app: &mut App, msg: Message) {
         // #273 Task 8: stamp the wire-level task_id on the matching
         // MonitorEntry so subsequent `task_notification` / `task_updated`
         // events (keyed by task_id) can route to the right row.
-        app.stamp_monitor_task_id(id, task_id);
+        app.stamp_monitor_task_id(id, task_id.clone());
+        // #273 Task 9: same shape for WorkflowEntry — both surfaces
+        // share the task_id↔tool_use_id routing key.
+        app.stamp_workflow_task_id(id, task_id);
     }
 }
 
 fn handle_task_progress(app: &mut App, msg: Message) {
-    let Message::TaskProgress { tool_use_id, .. } = msg else { return };
+    let Message::TaskProgress { tool_use_id, task_id, workflow_progress, .. } = msg else {
+        return;
+    };
     let id = tool_use_id.as_deref().unwrap_or("");
     if !id.is_empty() {
         apply_tool_progress_update(app, id, "Task");
+    }
+    // #273 Task 9: Workflow's per-event state arrives ridden in
+    // `workflow_progress` on the same system/task_progress envelope.
+    // Drop into the matching WorkflowEntry's per-phase tree; the
+    // all-completed clear fires when the final `state: done`
+    // transitions the entry to Completed.
+    if !workflow_progress.is_empty() && !task_id.is_empty() {
+        app.apply_workflow_progress_by_task_id(&task_id, &workflow_progress);
     }
 }
 
@@ -1091,6 +1104,10 @@ fn handle_task_updated(app: &mut App, msg: Message) {
         if let Some(status) = monitor_status {
             app.set_monitor_status_by_task_id(&task_id_owned, status);
         }
+        // #273 Task 9: same shape for WorkflowEntry — any terminal
+        // status (completed | failed | killed | stopped) collapses
+        // the workflow row to its summarised one-liner.
+        app.set_workflow_completed_by_task_id(&task_id_owned);
         let _: () = app.with_turn_state_mut(|ts| {
             ts.alive_task_ids.remove(&task_id_owned);
         });

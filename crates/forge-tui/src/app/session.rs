@@ -17,7 +17,7 @@ use crate::app::state::render_budget::{RenderCacheEvictionKey, RenderCacheSlotSt
 use crate::app::state::types::{
     HistoryRetentionPolicy, HistoryRetentionStats, LoginHint, McpState, ModeState, MonitorEntry,
     PasteSessionState, PendingCommandAck, RecentSessionInfo, SelectionState, SessionUsageState,
-    StopHookSummaryState, TodoItem, ToolCallScope, UsageState,
+    StopHookSummaryState, TodoItem, ToolCallScope, UsageState, WorkflowEntry,
 };
 use crate::app::state::viewport::ChatViewport;
 use crate::app::state::{ChatRenderTraceState, TerminalToolCallRef, TurnNoticeRef};
@@ -299,6 +299,14 @@ pub struct UiSession {
     /// `MonitorEntry::OUTPUT_TAIL_MAX` per entry.
     pub monitors: Vec<MonitorEntry>,
 
+    /// #273 Task 9: in-flight Workflow entries surfaced as the
+    /// Inspector WORKFLOWS section + the chat one-liner notice.
+    /// Populated when a `Workflow` tool_use enters the assistant
+    /// stream; per-phase state mutated from each `task_progress`
+    /// event carrying a `workflow_progress` snapshot. Auto-clears
+    /// once every entry transitions out of `InProgress`.
+    pub workflows: Vec<WorkflowEntry>,
+
     // ---- Git diff snapshot (Inspector GIT section) ----
     /// Latest poll result. `None` until the first scan completes
     /// (post-Connect). Replaces the retired `GitContextWatcher`
@@ -476,6 +484,7 @@ impl Default for UiSession {
             last_stop_hook_summary: None,
             stop_hook_summary_expanded: std::collections::HashMap::default(),
             monitors: Vec::default(),
+            workflows: Vec::default(),
             git_diff_snapshot: None,
             git_diff_generation: 0,
             git_diff_scan_in_flight: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
