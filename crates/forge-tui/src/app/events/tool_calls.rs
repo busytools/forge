@@ -113,14 +113,27 @@ fn build_tool_info_from_tool_call(
         None
     };
 
-    // CLI 2.1.156 Task* family (TaskCreate / TaskUpdate / TaskList /
-    // TaskGet) is silent in the chat scrollback - the Inspector pane
-    // is the sole surface for the task list (#268). TaskGet / TaskList
-    // carry no state mutation; they're suppressed purely for visual
-    // coherence (the chat row would surface noise the user already
-    // sees in the inspector).
-    let is_task_family =
-        matches!(sdk_tool_name.as_str(), "TaskCreate" | "TaskUpdate" | "TaskList" | "TaskGet",);
+    // CLI 2.1.156 chat-suppressed tools (#268 + #273):
+    // - Task* family (TaskCreate / TaskUpdate / TaskList / TaskGet) —
+    //   Inspector TASKS section is the authoritative surface.
+    // - TaskOutput / TaskStop — paired with Monitor / Workflow; their
+    //   side-effects surface via the MONITORS / WORKFLOWS sections.
+    // - AskUserQuestion — dock-morph widget renders instead of a card.
+    // - Monitor / Workflow — minimal DIM start/stop notices come from
+    //   `ui::tool_call`'s task-render helpers; the standard tool-call
+    //   card is suppressed.
+    let is_task_family = matches!(
+        sdk_tool_name.as_str(),
+        "TaskCreate"
+            | "TaskUpdate"
+            | "TaskList"
+            | "TaskGet"
+            | "TaskOutput"
+            | "TaskStop"
+            | "AskUserQuestion"
+            | "Monitor"
+            | "Workflow",
+    );
     let mut tool_info = ToolCallInfo {
         id: tc.tool_call_id,
         title: shorten_tool_title(&tc.title, &app.cwd_raw()),

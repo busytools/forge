@@ -188,6 +188,73 @@ pub fn build_updated_input(
     Value::Object(merged)
 }
 
+// ----------------------------------------------------------------
+// #273: CLI 2.1.156 Monitor + Workflow typed tool_use inputs.
+//
+// Placement follows the AskUserQuestion convention above — agent-layer
+// types co-located with their parsers. The renderer consumes these
+// via the standard `raw_input: Value` -> parse path; the typed
+// structs give Tasks 8/9 a clean shape to mutate `UiSession.monitors`
+// + `UiSession.workflows` from.
+// ----------------------------------------------------------------
+
+pub const MONITOR_TOOL_NAME: &str = "Monitor";
+pub const WORKFLOW_TOOL_NAME: &str = "Workflow";
+
+/// `Monitor` tool's `tool_use.input` payload. The renderer consumes
+/// `description` for the chat one-liner + the MONITORS-section
+/// header; `command` is informational; `persistent` toggles the
+/// "(persistent)" suffix on the chat notice; `timeout_ms` is
+/// honoured by the CLI's task-lifecycle handler.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MonitorInput {
+    pub description: String,
+    pub command: String,
+    pub persistent: bool,
+    pub timeout_ms: u64,
+}
+
+/// Parse a `Monitor` tool_use's `raw_input` into a `MonitorInput`.
+/// Returns `None` when `description` or `command` is missing or
+/// non-string — both are required for a meaningful render.
+#[must_use]
+pub fn parse_monitor_input(input: &Value) -> Option<MonitorInput> {
+    let obj = input.as_object()?;
+    let description = obj.get("description").and_then(Value::as_str)?.trim().to_owned();
+    let command = obj.get("command").and_then(Value::as_str)?.trim().to_owned();
+    if description.is_empty() || command.is_empty() {
+        return None;
+    }
+    let persistent = obj.get("persistent").and_then(Value::as_bool).unwrap_or(false);
+    // Wire field is `timeout_ms` per plan; default to 0 (which the
+    // renderer reads as "no explicit timeout, persistent or
+    // CLI-default").
+    let timeout_ms = obj.get("timeout_ms").and_then(Value::as_u64).unwrap_or(0);
+    Some(MonitorInput { description, command, persistent, timeout_ms })
+}
+
+/// `Workflow` tool's `tool_use.input` payload. The CLI parses +
+/// executes the JS source itself; forge preserves the script
+/// verbatim for the WORKFLOWS-section header (`meta` block is
+/// extracted via substring at render time in Task 9).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowInput {
+    pub script: String,
+}
+
+/// Parse a `Workflow` tool_use's `raw_input` into a `WorkflowInput`.
+/// Returns `None` when `script` is missing or non-string — the
+/// renderer can't show a phase tree or even an inferred meta name
+/// without the source.
+#[must_use]
+pub fn parse_workflow_input(input: &Value) -> Option<WorkflowInput> {
+    let script = input.as_object()?.get("script").and_then(Value::as_str)?.to_owned();
+    if script.is_empty() {
+        return None;
+    }
+    Some(WorkflowInput { script })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -301,5 +368,70 @@ mod tests {
     fn derive_annotation_falls_through_when_nothing_to_say() {
         let opts: Vec<TuiQuestionOption> = Vec::new();
         assert!(derive_annotation(&opts, None).is_none());
+    }
+
+    // ----------------------------------------------------------------
+    // #273: Monitor + Workflow typed input parsers.
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn parse_monitor_input_reads_required_and_optional_fields() {
+        let input = json!({
+            "description": "watch redis",
+            "command": "redis-cli monitor",
+            "persistent": true,
+            "timeout_ms": 300_000,
+        });
+        let parsed = parse_monitor_input(&input).expect("valid input");
+        assert_eq!(parsed.description, "watch redis");
+        assert_eq!(parsed.command, "redis-cli monitor");
+        assert!(parsed.persistent);
+        assert_eq!(parsed.timeout_ms, 300_000);
+    }
+
+    #[test]
+    fn parse_monitor_input_defaults_persistent_and_timeout() {
+        let input = json!({"description": "logs", "command": "tail -F app.log"});
+        let parsed = parse_monitor_input(&input).expect("valid input");
+        assert!(!parsed.persistent, "persistent defaults to false");
+        assert_eq!(parsed.timeout_ms, 0, "timeout_ms defaults to 0");
+    }
+
+    #[test]
+    fn parse_monitor_input_returns_none_when_required_fields_missing() {
+        for malformed in [
+            json!({}),
+            json!({"description": "x"}),
+            json!({"command": "y"}),
+            json!({"description": "", "command": "y"}),
+            json!({"description": "x", "command": ""}),
+            json!({"description": 42, "command": "y"}),
+            json!(["not", "an", "object"]),
+        ] {
+            assert!(
+                parse_monitor_input(&malformed).is_none(),
+                "expected None for {malformed:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn parse_workflow_input_preserves_script_verbatim() {
+        let script = "export const meta = { name: 'minimal-ping' }\nphase('Ping')";
+        let input = json!({"script": script});
+        let parsed = parse_workflow_input(&input).expect("valid input");
+        assert_eq!(parsed.script, script);
+    }
+
+    #[test]
+    fn parse_workflow_input_returns_none_when_script_missing_or_empty() {
+        for malformed in
+            [json!({}), json!({"script": ""}), json!({"script": 42}), json!({"other": "x"})]
+        {
+            assert!(
+                parse_workflow_input(&malformed).is_none(),
+                "expected None for {malformed:?}",
+            );
+        }
     }
 }
