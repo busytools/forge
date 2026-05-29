@@ -5,7 +5,7 @@
 //! and routes them to per-variant handlers below. Each handler
 //! destructures the typed message variant directly and mutates App
 //! state. `Message::System { data: Value, .. }` is the one variant
-//! that still walks JSON — its subtype shapes aren't first-class on
+//! that still walks JSON - its subtype shapes aren't first-class on
 //! the typed envelope, so per-subtype handlers branch on
 //! narrow `.get()` lookups against `data`.
 //!
@@ -44,11 +44,61 @@ pub(super) fn handle_sdk_message(app: &mut App, msg: Message) {
         // `Error` / forward-compat `Unknown` frames are no-ops today.
         // Re-add a handler if a downstream consumer needs to react.
         Message::StreamEvent { .. } | Message::Error { .. } | Message::Unknown { .. } => {}
+        // #273: typed wrappers around the CLI 2.1.156 system events.
+        Message::ThinkingTokens { estimated_tokens, .. } => {
+            handle_thinking_tokens(app, estimated_tokens);
+        }
+        Message::TurnDuration { ms, .. } => handle_turn_duration(app, ms),
+        Message::StopHookSummary { actions, hook_infos, .. } => {
+            handle_stop_hook_summary(app, actions, hook_infos);
+        }
     }
 }
 
+/// #273: Set the active session's latest thinking-token count.
+/// The renderer reads it via `App::latest_thinking_tokens` to format
+/// the spinner chip `⠋ thinking · N tok`. Repeated events overwrite;
+/// the field is cleared on turn end (in `handle_result`).
+fn handle_thinking_tokens(app: &mut App, estimated_tokens: u64) {
+    app.set_latest_thinking_tokens(Some(estimated_tokens));
+}
+
+/// #273: Persist the just-completed turn's wall-clock duration so the
+/// assistant banner chip `Claude · N.Ns` shows on the active turn's
+/// banner row. The field is per-session and survives across turns
+/// (each turn overwrites with its own duration on completion).
+fn handle_turn_duration(app: &mut App, ms: u64) {
+    app.set_last_turn_duration_ms(Some(ms));
+}
+
+/// #273: Capture the stop-hook summary for the active assistant
+/// message. The renderer surfaces a collapsed 1-liner
+/// `↳ hook summary · N actions [▶ expand]` when `actions > 0`;
+/// hidden entirely when `actions == 0`.
+fn handle_stop_hook_summary(
+    app: &mut App,
+    actions: u32,
+    hook_infos: Vec<forge_primitives::StopHookInfo>,
+) {
+    let Some(message_idx) = app.active_turn_assistant_idx() else {
+        return;
+    };
+    let hooks: Vec<crate::app::state::types::StopHookEntry> = hook_infos
+        .into_iter()
+        .map(|h| crate::app::state::types::StopHookEntry {
+            command: h.command,
+            duration_ms: h.duration_ms,
+        })
+        .collect();
+    app.set_last_stop_hook_summary(Some(crate::app::state::types::StopHookSummaryState {
+        message_idx,
+        actions,
+        hooks,
+    }));
+}
+
 /// Apply a typed `forge_primitives::FastModeState` to App state.
-/// Idempotent — same state in re-applies as a no-op.
+/// Idempotent - same state in re-applies as a no-op.
 ///
 /// Converts the wire-side `forge_primitives::FastModeState` to the
 /// App-side `model::FastModeState`. Both enums share the same
@@ -92,7 +142,7 @@ fn handle_assistant(app: &mut App, msg: Message) {
     // Projects pane row spins. Covers the case where the user
     // clicks a project whose turn was ALREADY in flight when they
     // clicked (e.g. auto_start session received its first
-    // continuation from claude before the user looked at it) —
+    // continuation from claude before the user looked at it) -
     // input_submit's lifecycle write only fires on user-typed
     // prompts, so without this hook the bucket would stay Idle
     // even while assistant content streams in. Active or
@@ -104,7 +154,7 @@ fn handle_assistant(app: &mut App, msg: Message) {
     // on-disk history through this same dispatcher so content
     // blocks / tool_use / todos land via shared code. Replay
     // messages are historical, not live wire content, so they
-    // must not flip lifecycle to Running — otherwise an
+    // must not flip lifecycle to Running - otherwise an
     // auto_start session's resume leaves the bucket pinned on
     // Running with no balancing Result to flip it back, and the
     // Projects pane spinner sticks until the first real turn
@@ -126,7 +176,7 @@ fn handle_assistant(app: &mut App, msg: Message) {
     if !message.model.is_empty() {
         app.set_observed_assistant_model(Some(message.model.clone()));
     }
-    // Outer-envelope error capture — `app.turn_state.last_assistant_error`
+    // Outer-envelope error capture - `app.turn_state.last_assistant_error`
     // is consulted by `apply_result_finalize` to classify TurnError
     // variants.
     if let Some(err) = error {
@@ -209,7 +259,7 @@ fn walk_assistant_content(
                 // doesn't enumerate: `mcp_tool_result`,
                 // `web_fetch_tool_result`, etc. (full set lives in the
                 // tooling module's `TOOL_RESULT_TYPES`). They share the
-                // `tool_use_id` + `content` + `is_error` shape — pull
+                // `tool_use_id` + `content` + `is_error` shape - pull
                 // those off the raw value.
                 let Some(record) = raw.as_object() else { continue };
                 let Some(tool_use_id) =
@@ -222,7 +272,7 @@ fn walk_assistant_content(
                 apply_tool_result_block(app, tool_use_id, is_error, raw_content, Some(raw));
             }
             ContentBlock::QueuedCommand { prompt, .. } => {
-                // Symmetric coverage with the user-content walker —
+                // Symmetric coverage with the user-content walker -
                 // claude *might* embed `queued_command` blocks on an
                 // assistant content array as well as the user side.
                 // Edge case (we've only seen them on the user side
@@ -246,13 +296,13 @@ fn handle_user(app: &mut App, msg: Message) {
     // wrapped envelope into the target session's CLI as a user turn.
     // The CLI echoes it back as `Message::User`, but the input-submit
     // local-push convention (the typed-user case already pushed the
-    // bubble) doesn't apply here — no local typing happened, so the
+    // bubble) doesn't apply here - no local typing happened, so the
     // chat buffer never sees the user-turn unless we push it from
     // the SDK echo. Detected via the peer-wrapper prefix so non-peer
     // user echoes (the existing pattern) keep their no-push behavior.
     push_peer_envelope_user_turn_if_present(app, &message.content);
     // Sub-agent tool_use_result envelopes carry parent_tool_use_id at
-    // the message level — wire the implicit parent linkage so the
+    // the message level - wire the implicit parent linkage so the
     // tool_call lifecycle picks up sub-agent results correctly.
     if let Some(result) = tool_use_result.as_ref()
         && let Some(tool_use_id) = parent_tool_use_id.as_deref()
@@ -271,7 +321,7 @@ fn handle_user(app: &mut App, msg: Message) {
 
 /// Push a peer-wrapper-prefixed user turn into the chat buffer.
 ///
-/// The detection key is `peer_block::detect_inbound` — same matcher
+/// The detection key is `peer_block::detect_inbound` - same matcher
 /// the renderer uses, so any envelope shape recognised at render time
 /// is also pushed here. Falls through silently for plain user echoes
 /// (the dominant case) so we don't double-push the locally-pushed
@@ -344,7 +394,7 @@ fn walk_user_tool_results(app: &mut App, content: &[forge_primitives::ContentBlo
             ContentBlock::Unknown { type_str, raw }
                 if forge_workspace::tooling::is_tool_result_block_type(type_str) =>
             {
-                // Same fallback as `walk_assistant_content` — wire
+                // Same fallback as `walk_assistant_content` - wire
                 // tool-result variants outside the typed enum.
                 let Some(record) = raw.as_object() else { continue };
                 let Some(tool_use_id) =
@@ -358,7 +408,7 @@ fn walk_user_tool_results(app: &mut App, content: &[forge_primitives::ContentBlo
             }
             ContentBlock::QueuedCommand { prompt, .. } => {
                 // Claude bundled a user-typed-while-busy message as
-                // a `queued_command` content block — match against
+                // a `queued_command` content block - match against
                 // a pending dimmed bubble (live) or push a fresh
                 // user bubble (replay).
                 let prompt_text = extract_queued_command_text(prompt);
@@ -377,7 +427,7 @@ fn walk_user_tool_results(app: &mut App, content: &[forge_primitives::ContentBlo
 /// `[image]` / `[document]` placeholders so the user sees something
 /// rather than blank.
 ///
-/// This is invoked twice — once for the user-content walker (live
+/// This is invoked twice - once for the user-content walker (live
 /// mid-turn / replay), once for the assistant-content walker (edge
 /// case).
 pub(super) fn extract_queued_command_text(prompt: &Value) -> String {
@@ -385,7 +435,7 @@ pub(super) fn extract_queued_command_text(prompt: &Value) -> String {
         return s.to_owned();
     }
     let Some(blocks) = prompt.as_array() else {
-        // Object or other — render as JSON literal so the user can
+        // Object or other - render as JSON literal so the user can
         // see SOMETHING. Should never hit in practice.
         return serde_json::to_string(prompt).unwrap_or_else(|_| String::from("[unrenderable]"));
     };
@@ -410,7 +460,7 @@ pub(super) fn extract_queued_command_text(prompt: &Value) -> String {
 /// Process a `queued_command` content-block.
 ///
 /// **Reachability**: claude does NOT emit `queued_command` on
-/// stream-json stdout — it only persists those messages to the
+/// stream-json stdout - it only persists those messages to the
 /// session JSONL as `type:"attachment"` rows. The replay scanner in
 /// `forge_agent::userdata::catalog::scan` hoists those rows into
 /// synthetic user envelopes carrying a single `queued_command`
@@ -418,13 +468,13 @@ pub(super) fn extract_queued_command_text(prompt: &Value) -> String {
 /// session resume; live mid-turn submits never hit it.
 ///
 /// Action: push a regular user bubble. (Live mid-turn submits
-/// already pushed their own bubble at submit time — see
-/// `input_submit::dispatch_prompt` — and never reach this code.)
+/// already pushed their own bubble at submit time - see
+/// `input_submit::dispatch_prompt` - and never reach this code.)
 pub(super) fn handle_queued_command_echo(app: &mut App, prompt_text: &str) {
     use crate::app::{ChatMessage, MessageBlock, MessageRole, TextBlock};
     // Harness-injected `<task-notification>` blobs (background-task
     // completion events) get queued through the same path as
-    // user-typed input. They're plumbing, not a user message — render
+    // user-typed input. They're plumbing, not a user message - render
     // them as user bubbles is misleading on resume (the bottom of the
     // chat fills up with notification chatter that looks like the user
     // typed it). Skip them at the echo path so they don't reach the
@@ -562,14 +612,14 @@ fn finalize_open_tool_calls(app: &mut App, status: forge_primitives::ToolCallSta
                 matches!(t.status, ToolCallStatus::Pending | ToolCallStatus::InProgress)
             })
             .filter(|(_, t)| {
-                // Skip explicit persistent monitors — the docs and
+                // Skip explicit persistent monitors - the docs and
                 // wire shape both say these outlive the turn that
                 // started them.
                 if raw_input_is_persistent(t.raw_input.as_ref()) {
                     return false;
                 }
                 // Defensive: when raw_input is None for a Monitor-named
-                // tool, we can't tell if it's persistent yet — the
+                // tool, we can't tell if it's persistent yet - the
                 // tool_use's input block may not have decoded by the
                 // time the turn ends. Treat as "could be persistent"
                 // and skip finalization rather than risk flipping a
@@ -601,7 +651,7 @@ fn finalize_open_tool_calls(app: &mut App, status: forge_primitives::ToolCallSta
 /// True when `raw_input` is `Some` AND carries `"persistent": true`
 /// at the top level. The `is_some` guard matters: an absent
 /// `raw_input` (tool_use observed but body not yet applied) MUST NOT
-/// be treated as non-persistent — that would race against the
+/// be treated as non-persistent - that would race against the
 /// out-of-order arrival of the tool_use content block and let a
 /// persistent monitor flip to `Completed` before its inputs land.
 fn raw_input_is_persistent(raw_input: Option<&Value>) -> bool {
@@ -621,7 +671,7 @@ fn handle_system(app: &mut App, msg: Message) {
             // mirror + supported_mode_ids recompute. The App-side
             // `apply_current_mode_update` only touches the display
             // struct, so we still need to update `turn_state.mode`
-            // and refresh `supported_mode_ids` ourselves — otherwise
+            // and refresh `supported_mode_ids` ourselves - otherwise
             // the typed mode the `/mode` picker reads goes stale on
             // server-side mode switches.
             if let Some(mode_str) = data.get("permissionMode").and_then(Value::as_str) {
@@ -774,7 +824,7 @@ fn apply_available_agents_from_init(app: &mut App, data: &Value) {
 /// The CLI's `system/init` carries the resolved `model` id but
 /// NOT the `models` catalogue (that lives in the initialize
 /// control_response, which the App already absorbed via Connected).
-/// Reuse `app.available_models` — re-deriving from the init payload's
+/// Reuse `app.available_models` - re-deriving from the init payload's
 /// missing `models` field would return an empty catalogue and reset
 /// `current_model.supports_effort` (and friends) to `false`, dropping
 /// the footer's effort chip and adaptive-thinking flags after the
@@ -951,7 +1001,7 @@ fn handle_task_started(app: &mut App, msg: Message) {
         let task_id_owned = task_id.clone();
         let _: () = app.with_turn_state_mut(|ts| {
             ts.task_tool_use_ids.insert(task_id.clone(), id_owned);
-            // Mark the task alive — drained by handle_task_updated
+            // Mark the task alive - drained by handle_task_updated
             // when patch.status is terminal. This drives PROCESSES
             // visibility: a backgrounded Bash whose tool_result has
             // already arrived (flipping tc.status to Completed) is
@@ -959,14 +1009,31 @@ fn handle_task_started(app: &mut App, msg: Message) {
             // patch lands.
             ts.alive_task_ids.insert(task_id_owned);
         });
+        // #273 Task 8: stamp the wire-level task_id on the matching
+        // MonitorEntry so subsequent `task_notification` / `task_updated`
+        // events (keyed by task_id) can route to the right row.
+        app.stamp_monitor_task_id(id, task_id.clone());
+        // #273 Task 9: same shape for WorkflowEntry - both surfaces
+        // share the task_id↔tool_use_id routing key.
+        app.stamp_workflow_task_id(id, task_id);
     }
 }
 
 fn handle_task_progress(app: &mut App, msg: Message) {
-    let Message::TaskProgress { tool_use_id, .. } = msg else { return };
+    let Message::TaskProgress { tool_use_id, task_id, workflow_progress, .. } = msg else {
+        return;
+    };
     let id = tool_use_id.as_deref().unwrap_or("");
     if !id.is_empty() {
         apply_tool_progress_update(app, id, "Task");
+    }
+    // #273 Task 9: Workflow's per-event state arrives ridden in
+    // `workflow_progress` on the same system/task_progress envelope.
+    // Drop into the matching WorkflowEntry's per-phase tree; the
+    // all-completed clear fires when the final `state: done`
+    // transitions the entry to Completed.
+    if !workflow_progress.is_empty() && !task_id.is_empty() {
+        app.apply_workflow_progress_by_task_id(&task_id, &workflow_progress);
     }
 }
 
@@ -976,7 +1043,7 @@ fn handle_task_progress(app: &mut App, msg: Message) {
 /// (subagent `Task`, backgrounded `Bash`, `Monitor`) carrying a
 /// `patch` object with status / end_time deltas. For PROCESSES
 /// rendering this is the canonical signal that a backgrounded Bash
-/// transitioned from running to completed — without consuming it,
+/// transitioned from running to completed - without consuming it,
 /// the chat-stream tool card and Inspector row both stay stuck on
 /// `in_progress` forever.
 ///
@@ -984,7 +1051,7 @@ fn handle_task_progress(app: &mut App, msg: Message) {
 /// `TurnState::task_tool_use_ids` as `task_id` → `tool_use_id`.
 /// This handler reverses the lookup to find which tool call to
 /// update. If the mapping is absent (out-of-order arrival or
-/// task_started lost), the update is dropped with a debug log —
+/// task_started lost), the update is dropped with a debug log -
 /// there's no recovery path that doesn't risk corrupting an
 /// unrelated tool call.
 fn handle_task_updated(app: &mut App, msg: Message) {
@@ -996,7 +1063,7 @@ fn handle_task_updated(app: &mut App, msg: Message) {
         tracing::debug!(
             target: crate::logging::targets::APP_SESSION,
             event_name = "task_updated_no_mapping",
-            message = "task_updated for unknown task_id — dropped",
+            message = "task_updated for unknown task_id - dropped",
             outcome = "dropped",
             task_id = %task_id,
         );
@@ -1018,10 +1085,29 @@ fn handle_task_updated(app: &mut App, msg: Message) {
     // Drain the alive-task set on terminal transitions so the
     // PROCESSES section can drop the row. Wire vocabulary
     // `completed` / `failed` / `killed` / `stopped` all count as
-    // terminal — anything else (`running`, `pending`, etc.) leaves
+    // terminal - anything else (`running`, `pending`, etc.) leaves
     // the task in the alive set.
     if matches!(wire_status, "completed" | "failed" | "killed" | "stopped") {
         let task_id_owned = task_id;
+        // #273 Task 8: transition the matching MonitorEntry into a
+        // terminal status mirroring the wire vocabulary. The
+        // `set_monitor_status_by_task_id` helper handles the
+        // all-completed clear so the MONITORS Inspector section
+        // drops out when no Running entry remains.
+        let monitor_status = match wire_status {
+            "completed" => Some(crate::app::state::types::MonitorStatus::Completed),
+            "failed" | "killed" | "stopped" => {
+                Some(crate::app::state::types::MonitorStatus::Stopped)
+            }
+            _ => None,
+        };
+        if let Some(status) = monitor_status {
+            app.set_monitor_status_by_task_id(&task_id_owned, status);
+        }
+        // #273 Task 9: same shape for WorkflowEntry - any terminal
+        // status (completed | failed | killed | stopped) collapses
+        // the workflow row to its summarised one-liner.
+        app.set_workflow_completed_by_task_id(&task_id_owned);
         let _: () = app.with_turn_state_mut(|ts| {
             ts.alive_task_ids.remove(&task_id_owned);
         });
@@ -1046,14 +1132,26 @@ fn map_task_updated_status_to_tool_status(wire_status: &str) -> forge_primitives
 }
 
 fn handle_task_notification(app: &mut App, msg: Message) {
-    let Message::TaskNotification { tool_use_id, summary, .. } = msg else { return };
+    let Message::TaskNotification { tool_use_id, task_id, summary, .. } = msg else { return };
     let id = tool_use_id.as_deref().unwrap_or("");
     if !id.is_empty() {
         apply_tool_summary_update(app, id, &summary);
     }
+    // #273 Task 8: Monitor's per-event signal arrives here. The
+    // wire emits one `system/task_notification` per Monitor lifecycle
+    // event ("stream ended", "timeout", interim summaries) with the
+    // `summary` field carrying the human-readable line. Push onto
+    // the matching MonitorEntry's `output_tail` ring; status
+    // transitions still flow through `TaskUpdated` (terminal
+    // `completed` / `failed` / `killed` / `stopped` → terminal
+    // MonitorStatus). Raw bash stdout lives in `output_file` and is
+    // intentionally out of scope per the captured wire's design.
+    if !task_id.is_empty() && !summary.trim().is_empty() {
+        app.push_monitor_output_by_task_id(&task_id, summary.clone());
+    }
 }
 
-/// Apply a `TaskProgress` notification to App state — bumps the
+/// Apply a `TaskProgress` notification to App state - bumps the
 /// `tool_use_id`'s status to `in_progress` if it isn't already in a
 /// terminal/active state.
 fn apply_tool_progress_update(app: &mut App, tool_use_id: &str, name: &str) {
@@ -1080,7 +1178,7 @@ fn apply_tool_progress_update(app: &mut App, tool_use_id: &str, name: &str) {
     );
 }
 
-/// Apply a `TaskNotification` summary to App state — finalises the
+/// Apply a `TaskNotification` summary to App state - finalises the
 /// matching `tool_use_id` with `completed` status (preserving any
 /// existing terminal `failed`/`killed` status) and updates content.
 ///
@@ -1091,7 +1189,7 @@ fn apply_tool_progress_update(app: &mut App, tool_use_id: &str, name: &str) {
 /// status to `Completed` per event would mark a still-running watch
 /// as done in chat-stream + Inspector. Wire captures (2026-05-14)
 /// show `Monitor` doesn't actually deliver via `TaskNotification`
-/// in practice — events arrive via `Result` frames with
+/// in practice - events arrive via `Result` frames with
 /// `origin: task-notification`. This guard remains as defensive
 /// hardening: future CLI versions may route persistent-monitor
 /// events through the same handler, and the cost is one cheap
@@ -1127,7 +1225,7 @@ fn handle_rate_limit_event(app: &mut App, msg: Message) {
     let Message::RateLimitEvent { rate_limit_info, .. } = msg else { return };
     let value = serde_json::to_value(&rate_limit_info).unwrap_or(Value::Null);
     // Per-session config_dir from the workspace's session binding,
-    // NOT `std::env::var("CLAUDE_CONFIG_DIR")` — multiple accounts
+    // NOT `std::env::var("CLAUDE_CONFIG_DIR")` - multiple accounts
     // mean each session has its own bound config_dir, distinct from
     // forge's own host config_dir. Reading from env here would log
     // forge's path on every event regardless of which account
@@ -1137,7 +1235,7 @@ fn handle_rate_limit_event(app: &mut App, msg: Message) {
         .as_ref()
         .and_then(|ws| app.active_session_key.as_ref().and_then(|k| ws.config_dir_for(k)))
         .map_or_else(|| "(unbound)".to_owned(), |p| p.to_string_lossy().into_owned());
-    // Raw payload at debug — useful for triaging whether a notice
+    // Raw payload at debug - useful for triaging whether a notice
     // surfaces from forge cache vs. an account-level Anthropic signal.
     tracing::debug!(
         target: crate::logging::targets::APP_SESSION,
@@ -1159,6 +1257,12 @@ fn handle_result(app: &mut App, msg: Message) {
     else {
         return;
     };
+    // #273: Turn ended - clear per-turn thinking-token chip so the
+    // next in-progress turn starts with a bare spinner (it'll
+    // re-populate once `Message::ThinkingTokens` fires for the new
+    // turn). turn_duration + stop_hook_summary stay - they belong
+    // to the just-completed turn's banner / end-of-turn surfaces.
+    app.set_latest_thinking_tokens(None);
     if let Some(state) = fast_mode_state {
         apply_fast_mode_state(app, state);
     }
@@ -1176,7 +1280,7 @@ fn apply_result_finalize(
     errors_array: Vec<String>,
     terminal_reason: Option<forge_primitives::TerminalReason>,
 ) {
-    // `apply_result_finalize` only runs on the active session — the
+    // `apply_result_finalize` only runs on the active session - the
     // SDK message dispatcher in `super::client` adopts the message's
     // session_id onto the active bucket before firing the sub-
     // handlers. Cloning the active session_key here threads it
@@ -1198,7 +1302,7 @@ fn apply_result_finalize(
     // Build a clean detail string for the renderer to use after its
     // canonical "Turn failed: " prefix. Drop the SDK's default
     // `subtype="success"` (an internal bookkeeping value, not a user
-    // reason). Don't prepend "turn failed:" here — the renderer adds
+    // reason). Don't prepend "turn failed:" here - the renderer adds
     // the prefix once, and doubling it produces "Turn failed: turn
     // failed: ..." in the chat.
     let message = if !errors_array.is_empty() {
@@ -1213,7 +1317,7 @@ fn apply_result_finalize(
     let _: () = app.with_turn_state_mut(|ts| ts.last_assistant_error = None);
 }
 
-/// App-side classifier for `TurnError` payloads — picks one of the
+/// App-side classifier for `TurnError` payloads - picks one of the
 /// `TurnErrorClass` variants based on subtype + error strings, used to
 /// drive UI rendering for the failure case.
 fn classify_turn_error_kind(
@@ -1304,7 +1408,7 @@ mod persistent_guard_tests {
     #[test]
     fn returns_false_for_none_raw_input() {
         // CRITICAL: an absent raw_input MUST NOT be treated as
-        // persistent-false implicitly — but it also can't be treated
+        // persistent-false implicitly - but it also can't be treated
         // as persistent-true. The function returns false here, which
         // is the safe fallback for the `finalize_open_tool_calls`
         // caller (a tool with no decoded raw_input gets swept normally)
@@ -1361,7 +1465,7 @@ mod assistant_lifecycle_gate_tests {
     //! `load_resume_history` reuses the same dispatcher to walk on-disk
     //! history, so without a gate every replayed assistant message
     //! flipped a freshly-resumed bucket to Running with no balancing
-    //! `Result` to flip it back — the Projects pane row stuck on the
+    //! `Result` to flip it back - the Projects pane row stuck on the
     //! spinner glyph until the user submitted a real prompt.
     //!
     //! These tests pin the contract: live messages still flip lifecycle
@@ -1430,7 +1534,7 @@ mod assistant_lifecycle_gate_tests {
         assert_eq!(
             bucket.lifecycle_state,
             SessionLifecycleState::Idle,
-            "replayed assistant message must NOT flip lifecycle — that's what \
+            "replayed assistant message must NOT flip lifecycle - that's what \
              leaves the Projects pane spinner stuck after a launchpad resume",
         );
     }
@@ -1476,7 +1580,7 @@ mod queued_command_tests {
 
     #[test]
     fn non_array_non_string_falls_back_to_json_literal() {
-        // Object shape — render as JSON literal so the user sees
+        // Object shape - render as JSON literal so the user sees
         // something rather than blank.
         let prompt = json!({"weird": "shape"});
         let out = extract_queued_command_text(&prompt);

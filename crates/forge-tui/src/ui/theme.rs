@@ -54,7 +54,13 @@ pub fn tool_name_label(sdk_tool_name: &str) -> (&'static str, &'static str) {
         "Task" | "Agent" => ("\u{25c7}", "Subagent"),
         "WebFetch" => ("\u{2295}", "WebFetch"),
         "WebSearch" => ("\u{2295}", "WebSearch"),
-        "ExitPlanMode" => ("\u{2299}", "ExitPlanMode"),
+        "ExitPlanMode" | "EnterPlanMode" => (
+            "\u{2299}",
+            match sdk_tool_name {
+                "EnterPlanMode" => "EnterPlanMode",
+                _ => "ExitPlanMode",
+            },
+        ),
         // CLI 2.1.156 task surface (#268). The per-row chrome stays
         // chat-suppressed so the glyph only surfaces when a future
         // Inspector view exposes the raw tool calls (today: never).
@@ -63,7 +69,31 @@ pub fn tool_name_label(sdk_tool_name: &str) -> (&'static str, &'static str) {
         "TaskList" => ("\u{25cc}", "TaskList"),
         "TaskGet" => ("\u{25cc}", "TaskGet"),
         "Config" => ("\u{2299}", "Config"),
-        "EnterWorktree" => ("\u{21c4}", "EnterWorktree"),
+        "EnterWorktree" | "ExitWorktree" => (
+            "\u{21c4}",
+            match sdk_tool_name {
+                "ExitWorktree" => "ExitWorktree",
+                _ => "EnterWorktree",
+            },
+        ),
+        // CLI 2.1.156 tool surface (#273). 13 new tool name glyphs +
+        // Workflow's distinct filled-diamond marker.
+        "ScheduleWakeup" => ("\u{23f2}", "ScheduleWakeup"),
+        "Skill" => ("\u{2726}", "Skill"),
+        "ToolSearch" => ("\u{2316}", "ToolSearch"),
+        // Cron* family shares the ⏳ hourglass glyph; per-arm label
+        // preserves the originating tool name for log diagnostics.
+        "CronCreate" => ("\u{23f3}", "CronCreate"),
+        "CronDelete" => ("\u{23f3}", "CronDelete"),
+        "CronList" => ("\u{23f3}", "CronList"),
+        "PushNotification" => ("\u{25b2}", "PushNotification"),
+        "RemoteTrigger" => ("\u{21e8}", "RemoteTrigger"),
+        "LSP" => ("\u{2699}", "LSP"),
+        "TaskOutput" => ("\u{25c9}", "TaskOutput"),
+        "TaskStop" => ("\u{25cd}", "TaskStop"),
+        // Filled diamond ◆ - agent-script flow, distinct from
+        // Task/Agent's hollow ◇ subagent-dispatch glyph.
+        "Workflow" => ("\u{25c6}", "Workflow"),
         _ => ("\u{25cb}", "Tool"),
     }
 }
@@ -76,5 +106,37 @@ mod tests {
     fn task_and_agent_share_subagent_label_and_icon() {
         assert_eq!(tool_name_label("Task"), ("\u{25c7}", "Subagent"));
         assert_eq!(tool_name_label("Agent"), ("\u{25c7}", "Subagent"));
+    }
+
+    /// #273: CLI 2.1.156 tool surface. Glyph picks locked in the
+    /// plan file (`~/Projects/forge/.claude/plans/273.md` glyph
+    /// table). Each entry asserts both glyph + label so a future
+    /// edit that swaps either surfaces here.
+    #[test]
+    fn cli_2_1_156_tool_glyphs_match_plan_picks() {
+        // Reused-glyph row: EnterPlanMode shares the ⊙ Config glyph;
+        // ExitWorktree shares the ⇄ EnterWorktree glyph.
+        assert_eq!(tool_name_label("EnterPlanMode"), ("\u{2299}", "EnterPlanMode"));
+        assert_eq!(tool_name_label("ExitWorktree"), ("\u{21c4}", "ExitWorktree"));
+
+        // New-glyph rows.
+        assert_eq!(tool_name_label("ScheduleWakeup"), ("\u{23f2}", "ScheduleWakeup"));
+        assert_eq!(tool_name_label("Skill"), ("\u{2726}", "Skill"));
+        assert_eq!(tool_name_label("ToolSearch"), ("\u{2316}", "ToolSearch"));
+
+        // Cron family shares the ⏳ hourglass glyph.
+        assert_eq!(tool_name_label("CronCreate"), ("\u{23f3}", "CronCreate"));
+        assert_eq!(tool_name_label("CronDelete"), ("\u{23f3}", "CronDelete"));
+        assert_eq!(tool_name_label("CronList"), ("\u{23f3}", "CronList"));
+
+        assert_eq!(tool_name_label("PushNotification"), ("\u{25b2}", "PushNotification"));
+        assert_eq!(tool_name_label("RemoteTrigger"), ("\u{21e8}", "RemoteTrigger"));
+        assert_eq!(tool_name_label("LSP"), ("\u{2699}", "LSP"));
+        assert_eq!(tool_name_label("TaskOutput"), ("\u{25c9}", "TaskOutput"));
+        assert_eq!(tool_name_label("TaskStop"), ("\u{25cd}", "TaskStop"));
+
+        // Workflow is the filled diamond ◆, distinct from Task/Agent's
+        // hollow ◇ - agent-script flow vs subagent dispatch.
+        assert_eq!(tool_name_label("Workflow"), ("\u{25c6}", "Workflow"));
     }
 }

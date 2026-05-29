@@ -146,6 +146,7 @@ mod tests_task_lifecycle_frames {
                 session_id,
                 tool_use_id,
                 last_tool_name,
+                workflow_progress: _,
             } => {
                 assert_eq!(task_id, "t-2");
                 assert_eq!(description, "halfway");

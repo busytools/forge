@@ -16,7 +16,7 @@ use crate::runtime::{FastModeState, TerminalReason};
 /// One stream-json message.
 ///
 /// Wire-level dispatch on `type` and, for `type="system"`, on `subtype` is
-/// handled by a private shim — users never see it. Every variant here is
+/// handled by a private shim - users never see it. Every variant here is
 /// the user-facing shape.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Message {
@@ -40,7 +40,7 @@ pub enum Message {
         uuid: Option<String>,
     },
 
-    /// A user turn — user prompts or tool-result envelopes.
+    /// A user turn - user prompts or tool-result envelopes.
     User {
         /// The nested user-message envelope.
         message: UserEnvelope,
@@ -48,7 +48,7 @@ pub enum Message {
         session_id: String,
         /// Parent tool-use id when this is a sub-agent turn.
         parent_tool_use_id: Option<String>,
-        /// Stable identifier for this user turn — the `user_message_id`
+        /// Stable identifier for this user turn - the `user_message_id`
         /// `forge_sdk::Client::rewind_files` takes.
         /// the CLI `UserMessage.uuid`. `None` unless the
         /// CLI is configured to emit them
@@ -61,7 +61,7 @@ pub enum Message {
         tool_use_result: Option<Value>,
     },
 
-    /// Out-of-band system event — `subtype` discriminates (e.g. `"init"`).
+    /// Out-of-band system event - `subtype` discriminates (e.g. `"init"`).
     /// Known task-lifecycle and mirror-error subtypes get their own typed
     /// variants below; everything else lands here with the raw payload.
     System {
@@ -99,7 +99,7 @@ pub enum Message {
     /// Without a typed variant, the reducer can't transition a
     /// backgrounded Bash from `running` to `completed`.
     TaskUpdated {
-        /// Stable identifier for this task instance — same id surface
+        /// Stable identifier for this task instance - same id surface
         /// as `task_started` / `task_progress` / `task_notification`.
         task_id: String,
         /// Incremental patch applied to the task's state. Each field
@@ -129,6 +129,12 @@ pub enum Message {
         tool_use_id: Option<String>,
         /// Name of the last tool the sub-agent invoked, if any.
         last_tool_name: Option<String>,
+        /// #273 Task 9: Workflow tool's per-event snapshot of the
+        /// workflow's phase + agent state. Empty for non-Workflow
+        /// task_progress events. Each event carries the FULL
+        /// snapshot (not a delta), so the renderer can rebuild the
+        /// per-phase tree from a single most-recent event.
+        workflow_progress: Vec<WorkflowProgressEvent>,
     },
 
     /// Terminal notification when a sub-agent `Task` completes,
@@ -136,7 +142,7 @@ pub enum Message {
     /// `TaskNotificationMessage`.
     ///
     /// Despite the generic-sounding name, captures confirm this
-    /// variant only fires for the `Task` sub-agent tool — backgrounded
+    /// variant only fires for the `Task` sub-agent tool - backgrounded
     /// `Bash` and `Monitor` use the `task_started` / `task_updated`
     /// pair (see [`Self::TaskStarted`], [`Self::TaskProgress`]) and
     /// Monitor stream events arrive as `Result` frames with
@@ -159,6 +165,79 @@ pub enum Message {
         tool_use_id: Option<String>,
         /// Total usage accumulated over the lifetime of the task, if reported.
         usage: Option<TaskUsage>,
+    },
+
+    /// CLI-side per-turn estimated thinking-token count, fires
+    /// repeatedly during model thinking. Subtype `"thinking_tokens"`
+    /// (#273). The renderer consumes `estimated_tokens` for the
+    /// in-progress spinner chip `⠋ thinking · N tok`; the delta field
+    /// is captured for future per-tick rate analysis.
+    ThinkingTokens {
+        /// Cumulative estimated reasoning-token count for the current
+        /// in-flight assistant turn.
+        estimated_tokens: u64,
+        /// Delta since the previous `thinking_tokens` event in this
+        /// turn. Surfaces the per-tick growth rate; the CLI emits a
+        /// new event roughly every ~50 tokens.
+        estimated_tokens_delta: i64,
+        /// Unique identifier for this thinking-tokens event.
+        uuid: String,
+        /// Session id the event applies to.
+        session_id: String,
+    },
+
+    /// Assistant-turn wall-clock + message-count summary emitted at
+    /// the end of each turn. Subtype `"turn_duration"` (#273). The
+    /// renderer composes `Claude · N.Ns` banner-side chip from
+    /// `ms`.
+    TurnDuration {
+        /// Total wall-clock duration of the turn in milliseconds.
+        /// Wire field is `durationMs` (camelCase).
+        ms: u64,
+        /// Number of assistant + tool messages in the turn. Wire
+        /// field is `messageCount`. Optional because older CLI
+        /// versions may omit it.
+        message_count: Option<u64>,
+        /// Parent tool-use id when the turn is a sub-agent.
+        parent_tool_use_id: Option<String>,
+        /// Session id the event applies to.
+        session_id: String,
+        /// Unique identifier for this turn_duration event.
+        uuid: String,
+    },
+
+    /// Stop-hook execution summary surfaced at end-of-turn. Subtype
+    /// `"stop_hook_summary"` (#273). The renderer composes a
+    /// collapsed 1-liner `↳ hook summary · N actions [▶ expand]`
+    /// from `actions` (wire `hookCount`); expanded view enumerates
+    /// `hook_infos`.
+    StopHookSummary {
+        /// Number of hooks that fired. Wire field is `hookCount`.
+        /// Renderer hides the surface entirely when this is 0.
+        actions: u32,
+        /// Per-hook breakdown. Wire field is `hookInfos`. Each entry
+        /// carries the command string + its duration in ms.
+        hook_infos: Vec<StopHookInfo>,
+        /// Whether any hook produced output. Wire field is
+        /// `hasOutput`. Forwarded to the renderer so a zero-actions
+        /// + has-output edge case can be surfaced if needed.
+        has_output: bool,
+        /// Suggestion vs blocking level. Wire field is `level`.
+        level: String,
+        /// Whether any hook prevented turn continuation. Wire field
+        /// is `preventedContinuation`.
+        prevented_continuation: bool,
+        /// Stop reason string from the CLI; usually empty.
+        stop_reason: String,
+        /// `tool_use_id` the hook batch was bound to. Wire field is
+        /// `toolUseID`.
+        tool_use_id: String,
+        /// Parent tool-use id when the hook fires in a sub-agent context.
+        parent_tool_use_id: Option<String>,
+        /// Session id the event applies to.
+        session_id: String,
+        /// Unique identifier for this stop_hook_summary event.
+        uuid: String,
     },
 
     /// Rate-limit state transition. The CLI emits this when the current
@@ -199,7 +278,7 @@ pub enum Message {
         /// Total cost so far in USD. `None` when the CLI can't compute
         /// or doesn't report (free-tier sessions, error-path results).
         total_cost_usd: Option<f64>,
-        /// Aggregate token usage for the turn. Optional — the CLI
+        /// Aggregate token usage for the turn. Optional - the CLI
         /// omits the field on error-path frames.
         usage: Option<Usage>,
         /// Plain-text result body when the turn produced one (e.g. the
@@ -249,7 +328,7 @@ pub enum Message {
 
     /// Fatal transport error injected into the message stream when the
     /// CLI's read loop fails. the CLI emits this at
-    /// as a last-gasp signal before teardown — emitted by the
+    /// as a last-gasp signal before teardown - emitted by the
     /// CLI's read loop. forge-sdk surfaces it via
     /// the events stream returned by `forge_sdk::Client::spawn` so callers
     /// see the failure on the iterator rather than via a side
@@ -269,14 +348,14 @@ pub enum Message {
     ///
     /// Mirrors the `Unknown` pattern already used by
     /// [`ContentBlock`] and `forge_sdk::control::ControlRequestKind`.
-    /// Never produced by deserialization — `decode_dispatch` filters
+    /// Never produced by deserialization - `decode_dispatch` filters
     /// unknown types into the SDK's `DecodedLine::Unknown`
-    /// before they reach serde — but `Serialize` round-trips `raw`
+    /// before they reach serde - but `Serialize` round-trips `raw`
     /// verbatim so logs / replay capture the original bytes.
     Unknown {
         /// Raw `type` field value as the CLI sent it.
         type_str: String,
-        /// Full original JSON object — preserved for inspection,
+        /// Full original JSON object - preserved for inspection,
         /// replay, or rehydration once the new shape is supported.
         raw: Value,
     },
@@ -287,7 +366,7 @@ impl Message {
     ///
     /// Used by the events stream returned by `forge_sdk::Client::spawn` to bind
     /// the client's `session_id` field on the first frame that carries
-    /// one — the CLI in stream-json interactive mode only emits
+    /// one - the CLI in stream-json interactive mode only emits
     /// `system/init` (the canonical session-id source) AFTER both an
     /// initialize `control_request` AND a user message have been seen,
     /// so the session id isn't known at spawn time.
@@ -303,6 +382,9 @@ impl Message {
             | Message::TaskUpdated { session_id, .. }
             | Message::TaskProgress { session_id, .. }
             | Message::TaskNotification { session_id, .. }
+            | Message::ThinkingTokens { session_id, .. }
+            | Message::TurnDuration { session_id, .. }
+            | Message::StopHookSummary { session_id, .. }
             | Message::Result { session_id, .. }
             | Message::StreamEvent { session_id, .. } => Some(session_id.as_str()),
             Message::System { session_id, .. } => session_id.as_deref(),
@@ -330,7 +412,7 @@ pub struct AssistantEnvelope {
     /// Stop sequence that triggered end-of-turn, if any.
     #[serde(default)]
     pub stop_sequence: Option<String>,
-    /// Token usage for this turn. Optional — error-path frames
+    /// Token usage for this turn. Optional - error-path frames
     /// don't carry a usage block.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<Usage>,
@@ -345,7 +427,7 @@ pub enum AssistantMessageError {
     AuthenticationFailed,
     /// The account hit a billing problem (e.g. no active credits).
     BillingError,
-    /// Rate-limit rejection — retry after the window resets.
+    /// Rate-limit rejection - retry after the window resets.
     RateLimit,
     /// The request was rejected as malformed.
     InvalidRequest,
@@ -360,7 +442,7 @@ pub enum AssistantMessageError {
 pub struct UserEnvelope {
     /// Fixed value `"user"`.
     pub role: String,
-    /// Content blocks — usually `ToolResult` blocks when reporting
+    /// Content blocks - usually `ToolResult` blocks when reporting
     /// tool outputs. Wire shape is `list | str`: a bare string is
     /// accepted on the way in and normalised into a single
     /// [`ContentBlock::Text`] block; serialising always emits the
@@ -403,7 +485,7 @@ pub enum StopReason {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RateLimitStatus {
-    /// Within the window — no restrictions.
+    /// Within the window - no restrictions.
     Allowed,
     /// Approaching the limit; callers should warn / back off soon.
     AllowedWarning,
@@ -443,7 +525,7 @@ pub struct RateLimitInfo {
     /// Which rate-limit window applies.
     #[serde(default, rename = "rateLimitType", skip_serializing_if = "Option::is_none")]
     pub rate_limit_type: Option<RateLimitType>,
-    /// Fraction of the rate limit consumed (0.0 – 1.0).
+    /// Fraction of the rate limit consumed (0.0 - 1.0).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub utilization: Option<f64>,
     /// Status of overage / pay-as-you-go usage, if applicable.
@@ -477,6 +559,19 @@ pub struct Usage {
     pub cache_read_input_tokens: u64,
 }
 
+/// Per-hook entry inside a `stop_hook_summary` system event (#273).
+/// Wire fields are camelCase (`durationMs`); the renderer reads
+/// the `command` text for the expanded body.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StopHookInfo {
+    /// Command line that fired.
+    pub command: String,
+    /// How long the hook took, in milliseconds. Wire field is
+    /// `durationMs`.
+    #[serde(rename = "durationMs")]
+    pub duration_ms: u64,
+}
+
 /// Usage counters reported inside task-progress and task-notification frames.
 ///
 /// `TaskUsage`.
@@ -507,7 +602,7 @@ pub enum TaskNotificationStatus {
 /// Patch payload carried by [`Message::TaskUpdated`]. Fields are
 /// optional because the CLI emits patches that update only the
 /// changed fields. `status` is the free-form wire string (e.g.
-/// `"completed"`, `"running"`, `"killed"`) — keeping it as `String`
+/// `"completed"`, `"running"`, `"killed"`) - keeping it as `String`
 /// rather than an enum lets the reducer accept future statuses
 /// without a forge-primitives bump.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -521,16 +616,83 @@ pub struct TaskUpdatePatch {
     pub end_time: Option<u64>,
 }
 
+/// #273 Task 9: Workflow's per-event snapshot of the workflow's
+/// phase + agent state, ridden via `Message::TaskProgress`'s
+/// `workflow_progress` field.
+///
+/// The CLI fires one `system/task_progress` per workflow-internal
+/// state change; each event carries the FULL workflow snapshot at
+/// that instant (not a delta). Two flavours of entry are observed in
+/// captured wire (see `~/Projects/forge/.claude/skills/claude-cli-upgrade/reference-captures/workflow.jsonl`):
+///
+/// 1. `workflow_phase` - phase-level marker emitted when the
+///    workflow's `phase()` call fires. Carries the phase index +
+///    title.
+/// 2. `workflow_agent` - agent-level event tracking an agent call's
+///    state transition (`start` → `progress` → `done`). Carries the
+///    parent phase index, the agent's queued model, the running
+///    tool name (when known), a short prompt preview, and (on
+///    `done`) the result preview.
+///
+/// Both share the same wire envelope discriminated by `type`. The
+/// type stays open via `#[serde(other)]` on the trailing variant
+/// so future CLI additions decode cleanly without a primitives
+/// bump.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum WorkflowProgressEvent {
+    /// Phase-level marker - emitted when the workflow's `phase()`
+    /// call fires.
+    WorkflowPhase { index: u32, title: String },
+    /// Agent-level event - emitted on each state transition for an
+    /// agent call inside a phase. Only the fields the renderer
+    /// actually surfaces are decoded; the wire also carries
+    /// `queuedAt`, `startedAt`, `lastProgressAt`, `attempt`,
+    /// `tokens`, `toolCalls`, `durationMs`, `model`, `agentId`,
+    /// `promptPreview` etc. which are skipped here to keep the
+    /// rendered surface focused.
+    WorkflowAgent {
+        index: u32,
+        label: String,
+        #[serde(rename = "phaseIndex")]
+        phase_index: u32,
+        #[serde(rename = "phaseTitle")]
+        phase_title: String,
+        /// Current agent state on the wire: `start`, `progress`,
+        /// `done`. Free-form string so future states decode
+        /// without a primitives bump.
+        state: String,
+        /// Latest tool the agent invoked, when known. `None` on
+        /// initial `start` events.
+        #[serde(rename = "lastToolName", default, skip_serializing_if = "Option::is_none")]
+        last_tool_name: Option<String>,
+        /// Short summary of the latest tool's output.
+        #[serde(rename = "lastToolSummary", default, skip_serializing_if = "Option::is_none")]
+        last_tool_summary: Option<String>,
+        /// Final structured-output preview emitted with the
+        /// `state: done` event. JSON-stringified per the CLI's
+        /// `resultPreview` field.
+        #[serde(rename = "resultPreview", default, skip_serializing_if = "Option::is_none")]
+        result_preview: Option<String>,
+    },
+    /// Unrecognised workflow event - preserved across decode to
+    /// avoid serde refusing the surrounding `task_progress`. Not
+    /// surfaced anywhere; the renderer treats unknown event types
+    /// as no-ops.
+    #[serde(other)]
+    Other,
+}
+
 // ---------------------------------------------------------------------------
-// Wire shim — serde sees this, users never do.
+// Wire shim - serde sees this, users never do.
 //
 // `Message` has the user-facing variant layout. `MessageRepr` encodes the
 // actual wire dispatch: first on `type`, then (for `type="system"`) on
 // `subtype`. The cascade works because:
 //
-// * `MessageRepr` is internally-tagged on `type` — serde picks `System(repr)`
+// * `MessageRepr` is internally-tagged on `type` - serde picks `System(repr)`
 //   when `type="system"`, the rest via tag rename.
-// * `SystemRepr` is untagged — serde tries `Typed(TypedSystemRepr)` first
+// * `SystemRepr` is untagged - serde tries `Typed(TypedSystemRepr)` first
 //   (which is itself internally-tagged on `subtype`), then falls back to
 //   `Generic(GenericSystemRepr)` for subtypes we don't recognise.
 // * `TypedSystemRepr` dispatches the known task-lifecycle subtypes.
@@ -538,7 +700,7 @@ pub struct TaskUpdatePatch {
 //   `data: Value`, which is what `Message::System` surfaces to users.
 //
 // `Message::Unknown` is the only variant Serialize/Deserialize don't route
-// through `MessageRepr` — its `raw` field already carries the original
+// through `MessageRepr` - its `raw` field already carries the original
 // JSON, so we emit it verbatim instead of fabricating a synthetic wire
 // shape. Deserialize never produces it; `decode_dispatch` filters unknown
 // types into `DecodedLine::Unknown` before serde sees them.
@@ -639,7 +801,7 @@ enum SystemRepr {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "subtype", rename_all = "snake_case")]
-// Wire-shape enum — variants share the `Task` prefix to match the CLI's wire-tag scheme.
+// Wire-shape enum - variants share the `Task` prefix to match the CLI's wire-tag scheme.
 #[allow(clippy::enum_variant_names)]
 enum TypedSystemRepr {
     TaskStarted {
@@ -669,6 +831,13 @@ enum TypedSystemRepr {
         tool_use_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         last_tool_name: Option<String>,
+        /// #273 Task 9: Workflow tool's per-event snapshot of the
+        /// workflow's phase + agent state. Present only when the
+        /// originating tool is `Workflow`; otherwise omitted. Each
+        /// event is the FULL snapshot (not a delta) of every phase
+        /// + agent currently known to the workflow.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        workflow_progress: Vec<WorkflowProgressEvent>,
     },
     TaskNotification {
         task_id: String,
@@ -681,6 +850,41 @@ enum TypedSystemRepr {
         tool_use_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         usage: Option<TaskUsage>,
+    },
+    ThinkingTokens {
+        estimated_tokens: u64,
+        estimated_tokens_delta: i64,
+        uuid: String,
+        session_id: String,
+    },
+    TurnDuration {
+        #[serde(rename = "durationMs")]
+        ms: u64,
+        #[serde(default, rename = "messageCount", skip_serializing_if = "Option::is_none")]
+        message_count: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_tool_use_id: Option<String>,
+        session_id: String,
+        uuid: String,
+    },
+    StopHookSummary {
+        #[serde(rename = "hookCount")]
+        actions: u32,
+        #[serde(default, rename = "hookInfos")]
+        hook_infos: Vec<StopHookInfo>,
+        #[serde(rename = "hasOutput")]
+        has_output: bool,
+        level: String,
+        #[serde(rename = "preventedContinuation")]
+        prevented_continuation: bool,
+        #[serde(rename = "stopReason")]
+        stop_reason: String,
+        #[serde(rename = "toolUseID")]
+        tool_use_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_tool_use_id: Option<String>,
+        session_id: String,
+        uuid: String,
     },
 }
 
@@ -735,6 +939,7 @@ impl From<MessageRepr> for Message {
                 session_id,
                 tool_use_id,
                 last_tool_name,
+                workflow_progress,
             })) => Message::TaskProgress {
                 task_id,
                 description,
@@ -743,6 +948,7 @@ impl From<MessageRepr> for Message {
                 session_id,
                 tool_use_id,
                 last_tool_name,
+                workflow_progress,
             },
             MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::TaskNotification {
                 task_id,
@@ -763,13 +969,56 @@ impl From<MessageRepr> for Message {
                 tool_use_id,
                 usage,
             },
+            MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::ThinkingTokens {
+                estimated_tokens,
+                estimated_tokens_delta,
+                uuid,
+                session_id,
+            })) => Message::ThinkingTokens {
+                estimated_tokens,
+                estimated_tokens_delta,
+                uuid,
+                session_id,
+            },
+            MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::TurnDuration {
+                ms,
+                message_count,
+                parent_tool_use_id,
+                session_id,
+                uuid,
+            })) => {
+                Message::TurnDuration { ms, message_count, parent_tool_use_id, session_id, uuid }
+            }
+            MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::StopHookSummary {
+                actions,
+                hook_infos,
+                has_output,
+                level,
+                prevented_continuation,
+                stop_reason,
+                tool_use_id,
+                parent_tool_use_id,
+                session_id,
+                uuid,
+            })) => Message::StopHookSummary {
+                actions,
+                hook_infos,
+                has_output,
+                level,
+                prevented_continuation,
+                stop_reason,
+                tool_use_id,
+                parent_tool_use_id,
+                session_id,
+                uuid,
+            },
             MessageRepr::System(SystemRepr::Generic(GenericSystemRepr {
                 subtype,
                 session_id,
                 data,
             })) => {
                 // The CLI's system message wire shape carries the
-                // FULL original dict in `data` — including `type`,
+                // FULL original dict in `data` - including `type`,
                 // `subtype`, and `session_id`. Rust's serde
                 // `#[flatten]` on the private `GenericSystemRepr`
                 // strips those fields because they're claimed by
@@ -892,6 +1141,7 @@ impl From<Message> for MessageRepr {
                 session_id,
                 tool_use_id,
                 last_tool_name,
+                workflow_progress,
             } => MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::TaskProgress {
                 task_id,
                 description,
@@ -900,6 +1150,7 @@ impl From<Message> for MessageRepr {
                 session_id,
                 tool_use_id,
                 last_tool_name,
+                workflow_progress,
             })),
             Message::TaskNotification {
                 task_id,
@@ -919,6 +1170,49 @@ impl From<Message> for MessageRepr {
                 session_id,
                 tool_use_id,
                 usage,
+            })),
+            Message::ThinkingTokens {
+                estimated_tokens,
+                estimated_tokens_delta,
+                uuid,
+                session_id,
+            } => MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::ThinkingTokens {
+                estimated_tokens,
+                estimated_tokens_delta,
+                uuid,
+                session_id,
+            })),
+            Message::TurnDuration { ms, message_count, parent_tool_use_id, session_id, uuid } => {
+                MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::TurnDuration {
+                    ms,
+                    message_count,
+                    parent_tool_use_id,
+                    session_id,
+                    uuid,
+                }))
+            }
+            Message::StopHookSummary {
+                actions,
+                hook_infos,
+                has_output,
+                level,
+                prevented_continuation,
+                stop_reason,
+                tool_use_id,
+                parent_tool_use_id,
+                session_id,
+                uuid,
+            } => MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::StopHookSummary {
+                actions,
+                hook_infos,
+                has_output,
+                level,
+                prevented_continuation,
+                stop_reason,
+                tool_use_id,
+                parent_tool_use_id,
+                session_id,
+                uuid,
             })),
             Message::RateLimitEvent { rate_limit_info, uuid, session_id } => {
                 MessageRepr::RateLimitEvent { rate_limit_info, uuid, session_id }
@@ -964,7 +1258,7 @@ impl From<Message> for MessageRepr {
                 MessageRepr::StreamEvent { uuid, session_id, event, parent_tool_use_id }
             }
             Message::Error { error } => MessageRepr::Error { error },
-            // Defensive sentinel — `Serialize` for `Message` special-cases
+            // Defensive sentinel - `Serialize` for `Message` special-cases
             // `Unknown` to emit `raw` verbatim, so this branch is dead code
             // at runtime. Kept to keep the `From` impl total without
             // `unreachable!()` (banned by the workspace lint set).
@@ -987,7 +1281,7 @@ mod tests_result_message_fields {
     use crate::Message;
     use serde_json::json;
 
-    /// Minimum-viable result frame — only the six required fields.
+    /// Minimum-viable result frame - only the six required fields.
     /// The CLI emits this on error-path turns; forge-sdk must accept
     /// it.
     #[test]
@@ -1029,7 +1323,7 @@ mod tests_result_message_fields {
         }
     }
 
-    /// Full payload — every optional field populated. Exercises the
+    /// Full payload - every optional field populated. Exercises the
     /// `modelUsage` camelCase wire key and captures the result body, the
     /// permission-denial vector, and the error vector.
     #[test]
@@ -1093,7 +1387,7 @@ mod tests_result_message_fields {
         assert_eq!(uuid.as_deref(), Some("res-1"));
     }
 
-    /// modelUsage must serialize back out as camelCase on the wire — the
+    /// modelUsage must serialize back out as camelCase on the wire - the
     /// typical caller-side scenario is round-tripping a decoded result
     /// through session-store persistence.
     #[test]
@@ -1178,7 +1472,7 @@ mod tests_message_extras {
 
     #[test]
     fn assistant_frame_without_usage_now_parses() {
-        // Usage is optional on the wire — error-path assistant
+        // Usage is optional on the wire - error-path assistant
         // frames omit it. forge-sdk must parse them (regression
         // guard against the pre-2026-04-22 required-`usage` shape).
         let raw = json!({
@@ -1227,11 +1521,273 @@ mod tests_message_extras {
     #[test]
     fn unknown_assistant_error_surfaces_as_unknown() {
         // If upstream adds a new error class between parity checks, the
-        // fallback `Unknown` variant absorbs it — callers still see an
+        // fallback `Unknown` variant absorbs it - callers still see an
         // error string that doesn't match any known literal, just
         // remapped.
         let decoded: AssistantMessageError =
             serde_json::from_value(json!("unknown")).expect("deserialize");
         assert_eq!(decoded, AssistantMessageError::Unknown);
+    }
+
+    // ----------------------------------------------------------------
+    // #273: CLI 2.1.156 system events (thinking_tokens / turn_duration
+    // / stop_hook_summary). Wire shapes captured in
+    // crates/forge-test-harness/baselines/sdk/2.1.156/* and pinned by
+    // the roundtrip tests below.
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn thinking_tokens_decodes_from_wire_shape() {
+        // Wire shape (verbatim from
+        // `baselines/sdk/2.1.156/subagent_*` captures): fields are
+        // snake_case (NOT camelCase as the EPIC body suggested).
+        let raw = json!({
+            "type": "system",
+            "subtype": "thinking_tokens",
+            "estimated_tokens": 1234,
+            "estimated_tokens_delta": 56,
+            "uuid": "tt-uuid",
+            "session_id": "sess-tt",
+        });
+        let msg: Message = serde_json::from_value(raw.clone()).expect("decode");
+        let Message::ThinkingTokens { estimated_tokens, estimated_tokens_delta, uuid, session_id } =
+            msg
+        else {
+            panic!("expected ThinkingTokens, got {msg:?}");
+        };
+        assert_eq!(estimated_tokens, 1234);
+        assert_eq!(estimated_tokens_delta, 56);
+        assert_eq!(uuid, "tt-uuid");
+        assert_eq!(session_id, "sess-tt");
+        // Roundtrip: re-serialize and confirm the wire-shape JSON matches.
+        let encoded = serde_json::to_value(&Message::ThinkingTokens {
+            estimated_tokens: 1234,
+            estimated_tokens_delta: 56,
+            uuid: "tt-uuid".to_owned(),
+            session_id: "sess-tt".to_owned(),
+        })
+        .expect("encode");
+        assert_eq!(encoded, raw);
+    }
+
+    #[test]
+    fn turn_duration_decodes_from_wire_shape() {
+        // Wire shape: `durationMs` camelCase, plus optional
+        // `message_count` and `parent_tool_use_id`. Variant field
+        // `ms: u64` maps via #[serde(rename = "durationMs")].
+        let raw = json!({
+            "type": "system",
+            "subtype": "turn_duration",
+            "durationMs": 31051,
+            "messageCount": 29,
+            "parent_tool_use_id": "uuid_25",
+            "session_id": "sess-td",
+            "uuid": "td-uuid",
+        });
+        let msg: Message = serde_json::from_value(raw).expect("decode");
+        let Message::TurnDuration { ms, message_count, parent_tool_use_id, session_id, uuid } = msg
+        else {
+            panic!("expected TurnDuration, got {msg:?}");
+        };
+        assert_eq!(ms, 31051);
+        assert_eq!(message_count, Some(29));
+        assert_eq!(parent_tool_use_id.as_deref(), Some("uuid_25"));
+        assert_eq!(session_id, "sess-td");
+        assert_eq!(uuid, "td-uuid");
+    }
+
+    #[test]
+    fn turn_duration_roundtrip_emits_wire_camel_case_keys() {
+        let msg = Message::TurnDuration {
+            ms: 1500,
+            message_count: Some(3),
+            parent_tool_use_id: None,
+            session_id: "sess-rt".to_owned(),
+            uuid: "rt-uuid".to_owned(),
+        };
+        let encoded = serde_json::to_value(&msg).expect("encode");
+        // durationMs / messageCount preserved.
+        assert_eq!(encoded.get("durationMs").and_then(serde_json::Value::as_u64), Some(1500));
+        assert_eq!(encoded.get("messageCount").and_then(serde_json::Value::as_u64), Some(3));
+        // parent_tool_use_id: None skipped from the output entirely.
+        assert!(
+            encoded.get("parent_tool_use_id").is_none(),
+            "None-valued parent_tool_use_id must NOT serialize",
+        );
+    }
+
+    #[test]
+    fn stop_hook_summary_decodes_from_wire_shape() {
+        // Wire shape (verbatim from `baselines/sdk/2.1.156/...`):
+        // rich object with `hookCount` + `hookInfos` array + optional
+        // `parent_tool_use_id`. The renderer reads `hookCount`
+        // (mapped to `actions: u32`) for the collapsed 1-liner and
+        // `hookInfos` for the expanded body. No top-level `summary`
+        // string in the wire; the EPIC's nominal `summary: Option<String>`
+        // is preserved as an optional defensive field for future shapes
+        // that might add one.
+        let raw = json!({
+            "type": "system",
+            "subtype": "stop_hook_summary",
+            "hasOutput": true,
+            "hookCount": 2,
+            "hookErrors": [],
+            "hookInfos": [
+                {"command": "bash ~/.claude/hooks/cmux-notify.sh", "durationMs": 980},
+                {"command": "${CLAUDE_PLUGIN_ROOT}/hooks/stop-hook.sh", "durationMs": 17},
+            ],
+            "level": "suggestion",
+            "parent_tool_use_id": "uuid_2",
+            "preventedContinuation": false,
+            "session_id": "session_0",
+            "stopReason": "",
+            "toolUseID": "5e586a7f",
+            "uuid": "uuid_3",
+        });
+        let msg: Message = serde_json::from_value(raw).expect("decode");
+        let Message::StopHookSummary {
+            actions, hook_infos, parent_tool_use_id, session_id, ..
+        } = msg
+        else {
+            panic!("expected StopHookSummary, got {msg:?}");
+        };
+        assert_eq!(actions, 2, "hookCount -> actions");
+        assert_eq!(hook_infos.len(), 2);
+        assert_eq!(hook_infos[0].command, "bash ~/.claude/hooks/cmux-notify.sh");
+        assert_eq!(hook_infos[0].duration_ms, 980);
+        assert_eq!(parent_tool_use_id.as_deref(), Some("uuid_2"));
+        assert_eq!(session_id, "session_0");
+    }
+
+    #[test]
+    fn workflow_task_progress_decodes_workflow_progress_array() {
+        // Wire shape from `~/Projects/forge/.claude/skills/claude-cli-upgrade/reference-captures/workflow.jsonl`.
+        // Each `system/task_progress` for a Workflow tool carries a
+        // FULL `workflow_progress` snapshot - phase markers + the
+        // currently active agent's state.
+        let raw = json!({
+            "type": "system",
+            "subtype": "task_progress",
+            "task_id": "woc6i1sab",
+            "tool_use_id": "toolu_01XapnWmqm6an1tJYxJn72xs",
+            "description": "Ping: ping",
+            "usage": {"total_tokens": 54707, "tool_uses": 1, "duration_ms": 4826},
+            "last_tool_name": "ping",
+            "summary": "Minimal one-agent workflow: ask for a fixed structured fact",
+            "workflow_progress": [
+                {"type": "workflow_phase", "index": 1, "title": "Ping"},
+                {
+                    "type": "workflow_agent",
+                    "index": 1,
+                    "label": "ping",
+                    "phaseIndex": 1,
+                    "phaseTitle": "Ping",
+                    "state": "done",
+                    "lastToolName": "StructuredOutput",
+                    "lastToolSummary": "pong",
+                    "resultPreview": "{\"answer\":\"pong\",\"confidence\":1}",
+                    "agentId": "abf",
+                    "model": "claude-opus-4-7",
+                    "queuedAt": 1_780_047_148_162_u64,
+                    "startedAt": 1_780_047_148_173_u64,
+                    "attempt": 1,
+                    "promptPreview": "Reply with the single word pong.",
+                    "lastProgressAt": 1_780_047_153_041_u64,
+                    "tokens": 54707,
+                    "toolCalls": 1,
+                    "durationMs": 4868,
+                },
+            ],
+            "uuid": "8f030768-6fda-4ea9-a122-9beb16e8d6e3",
+            "session_id": "session_z",
+        });
+        let msg: Message = serde_json::from_value(raw).expect("decode");
+        let Message::TaskProgress { workflow_progress, task_id, tool_use_id, .. } = msg else {
+            panic!("expected TaskProgress");
+        };
+        assert_eq!(task_id, "woc6i1sab");
+        assert_eq!(tool_use_id.as_deref(), Some("toolu_01XapnWmqm6an1tJYxJn72xs"));
+        assert_eq!(workflow_progress.len(), 2);
+        let WorkflowProgressEvent::WorkflowPhase { index, title } = &workflow_progress[0] else {
+            panic!("first event must be WorkflowPhase, got {:?}", workflow_progress[0]);
+        };
+        assert_eq!(*index, 1);
+        assert_eq!(title, "Ping");
+        let WorkflowProgressEvent::WorkflowAgent {
+            phase_index,
+            phase_title,
+            state,
+            last_tool_name,
+            last_tool_summary,
+            result_preview,
+            ..
+        } = &workflow_progress[1]
+        else {
+            panic!("second event must be WorkflowAgent, got {:?}", workflow_progress[1]);
+        };
+        assert_eq!(*phase_index, 1);
+        assert_eq!(phase_title, "Ping");
+        assert_eq!(state, "done");
+        assert_eq!(last_tool_name.as_deref(), Some("StructuredOutput"));
+        assert_eq!(last_tool_summary.as_deref(), Some("pong"));
+        assert_eq!(result_preview.as_deref(), Some("{\"answer\":\"pong\",\"confidence\":1}"));
+    }
+
+    #[test]
+    fn workflow_task_progress_without_workflow_progress_decodes_with_empty_default() {
+        // Non-Workflow task_progress events omit the `workflow_progress`
+        // field; serde default fills with empty vec so the existing
+        // sub-agent task_progress handler stays untouched.
+        let raw = json!({
+            "type": "system",
+            "subtype": "task_progress",
+            "task_id": "t-sub",
+            "description": "subagent halfway",
+            "usage": {"total_tokens": 10, "tool_uses": 1, "duration_ms": 100},
+            "uuid": "u-sub",
+            "session_id": "sess",
+        });
+        let msg: Message = serde_json::from_value(raw).expect("decode");
+        let Message::TaskProgress { workflow_progress, .. } = msg else {
+            panic!("expected TaskProgress");
+        };
+        assert!(workflow_progress.is_empty());
+    }
+
+    #[test]
+    fn workflow_progress_unknown_type_decodes_as_other() {
+        // Future CLI may add new workflow event types. Confirm they
+        // decode as the `Other` variant rather than failing the
+        // surrounding `task_progress` decode.
+        let raw = json!({"type": "workflow_future", "anything": 42});
+        let event: WorkflowProgressEvent = serde_json::from_value(raw).expect("decode");
+        assert!(matches!(event, WorkflowProgressEvent::Other));
+    }
+
+    #[test]
+    fn stop_hook_summary_with_zero_hooks_decodes_cleanly() {
+        // The renderer hides the surface when `actions == 0`. Confirm
+        // the decoder still produces a clean variant with empty
+        // `hook_infos`.
+        let raw = json!({
+            "type": "system",
+            "subtype": "stop_hook_summary",
+            "hasOutput": false,
+            "hookCount": 0,
+            "hookErrors": [],
+            "hookInfos": [],
+            "level": "suggestion",
+            "preventedContinuation": false,
+            "session_id": "session_z",
+            "stopReason": "",
+            "toolUseID": "tu-z",
+            "uuid": "uuid_z",
+        });
+        let msg: Message = serde_json::from_value(raw).expect("decode");
+        let Message::StopHookSummary { actions, hook_infos, .. } = msg else {
+            panic!("expected StopHookSummary");
+        };
+        assert_eq!(actions, 0);
+        assert!(hook_infos.is_empty());
     }
 }

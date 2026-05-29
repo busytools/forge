@@ -43,7 +43,7 @@
 //! - `▸` RUST_ORANGE glyph + white bold text for `InProgress`
 //!   (wraps onto continuation lines indented under the glyph;
 //!   uses `active_form` when present, else `content`)
-//! - `○` DIM glyph + gray text for `Pending` (truncates with `…`)
+//! - `○` DIM glyph + gray text for `Pending` (truncates with `...`)
 
 use forge_primitives::git::{GitBranch, GitIssueRef, GitPrInfo};
 use forge_primitives::git_diff::{
@@ -103,7 +103,7 @@ pub fn render_overlay(frame: &mut Frame, area: Rect, app: &mut App) {
 
     let (banner_area, body_area) = split_banner_body(area);
 
-    // Banner row: `INSPECTOR ▦ … ✕` spanning the full overlay width.
+    // Banner row: `INSPECTOR ▦ ... ✕` spanning the full overlay width.
     let banner_label = "INSPECTOR \u{25a6}";
     let close_glyph = "\u{2715}";
     let banner_chars = banner_label.chars().count();
@@ -168,7 +168,7 @@ fn build_inline_banner(width: u16) -> Vec<Line<'static>> {
     ]
 }
 
-/// Render the inspector body (`GIT` → `TASKS` → `PROCESSES` …)
+/// Render the inspector body (`GIT` → `TASKS` → `PROCESSES` ...)
 /// into `body_area` with the active session's scroll offset
 /// applied. Clamps the offset to `[0, max]` (writing the clamped
 /// value back so the wheel handler doesn't desync after the body
@@ -362,6 +362,26 @@ fn append_body(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
         lines.push(Line::default());
         let _t = crate::perf::start("ui::inspector_pane::tasks_section");
         append_tasks_section(lines, app, width);
+    }
+
+    // #273 Task 9: WORKFLOWS section sits between TASKS and
+    // MONITORS. Auto-clears once every workflow has reached
+    // `Completed`.
+    if !app.workflows().is_empty() {
+        lines.push(Line::default());
+        push_section_rule(lines, width);
+        lines.push(Line::default());
+        append_workflows_section(lines, app, width);
+    }
+
+    // #273 Task 8: MONITORS section sits between WORKFLOWS and
+    // PROCESSES; auto-clears when no entry is live (matches the
+    // TASKS section's all-completed shape).
+    if !app.monitors().is_empty() {
+        lines.push(Line::default());
+        push_section_rule(lines, width);
+        lines.push(Line::default());
+        append_monitors_section(lines, app, width);
     }
 
     let processes = collect_active_processes(app);
@@ -636,9 +656,9 @@ fn branch_line(width: u16, label: &str, label_color: Color) -> Line<'static> {
 /// sub-labels of the branch. The PR number lights up in
 /// `RUST_ORANGE` (matches the feature-branch convention - the PR is
 /// the headline); everything else stays DIM. The closing-issue list
-/// is truncated with `…` when it would overflow the pane width;
-/// when even one issue can't fit, the whole `→ closes …` tail
-/// collapses to a single `…` suffix.
+/// is truncated with `...` when it would overflow the pane width;
+/// when even one issue can't fit, the whole `→ closes ...` tail
+/// collapses to a single `...` suffix.
 fn pr_line(width: u16, pr: &GitPrInfo, closes: &[GitIssueRef]) -> Line<'static> {
     let indent = "    "; // 4 cols, mirrors diff_subtitle_line
     let pr_number = format!("#{}", pr.number);
@@ -662,7 +682,7 @@ fn pr_line(width: u16, pr: &GitPrInfo, closes: &[GitIssueRef]) -> Line<'static> 
 
     // Greedily fit issue numbers, separated by single spaces. If
     // even the first issue doesn't fit, the closes tail collapses
-    // to just `…`.
+    // to just `...`.
     let mut closes_str = String::new();
     let mut shown = 0usize;
     for issue in closes {
@@ -683,7 +703,7 @@ fn pr_line(width: u16, pr: &GitPrInfo, closes: &[GitIssueRef]) -> Line<'static> 
     }
 
     if shown == 0 {
-        // Nothing fit - show `PR #N → …` so the existence of a
+        // Nothing fit - show `PR #N → ...` so the existence of a
         // closes list still surfaces even when we can't render any
         // of it.
         return Line::from(vec![
@@ -1020,13 +1040,13 @@ fn tree_row(
 }
 
 /// Head-truncate `s` to at most `max_chars` characters with a
-/// leading `…` ellipsis. Preserves the tail (so the leaf component
+/// leading `...` ellipsis. Preserves the tail (so the leaf component
 /// of a path / filename stays visible). When `s` contains `/`
 /// separators the truncation prefers to drop whole leading
-/// components (yielding `…/foo/bar.rs` rather than chopping
+/// components (yielding `.../foo/bar.rs` rather than chopping
 /// mid-name); falls back to character-level head-truncation when
 /// even the basename is too long. Returns the original string when
-/// it already fits; collapses to `…` at `max_chars` ≤ 1.
+/// it already fits; collapses to `...` at `max_chars` ≤ 1.
 fn fit_path_head_truncated(s: &str, max_chars: usize) -> String {
     let total = s.chars().count();
     if total <= max_chars {
@@ -1037,7 +1057,7 @@ fn fit_path_head_truncated(s: &str, max_chars: usize) -> String {
     }
     // Try component-aware truncation: walk left-to-right over the
     // path components and return the first tail that fits when
-    // prefixed with `…/`. Lands at a `/` boundary so the result
+    // prefixed with `.../`. Lands at a `/` boundary so the result
     // reads as a clean partial path rather than a chopped string.
     let components: Vec<&str> = s.split('/').collect();
     if components.len() > 1 {
@@ -1088,11 +1108,11 @@ fn append_tasks_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
 
     // Item rendering budget: full width minus the 2-col left indent,
     // the 1-col glyph, the 1-col space after the glyph, AND a 2-col
-    // right gutter so truncated `…` items don't butt up against the
+    // right gutter so truncated `...` items don't butt up against the
     // pane edge. Continuation lines for the wrapped in-progress item
     // indent under the text column (start col 5 from the pane's x=0).
     // Right-gutter reservation here mirrors the GIT section's
-    // `…stats column +  PANE_PAD` math so both sections honour the
+    // `...stats column +  PANE_PAD` math so both sections honour the
     // same visual margin.
     let glyph_indent = PANE_PAD + 2; // "  " + glyph + " "
     let text_budget = usize::from(width)
@@ -1191,7 +1211,7 @@ fn append_tasks_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
                 ]));
             }
         } else {
-            // Truncate with `…` at the right edge.
+            // Truncate with `...` at the right edge.
             let truncated = truncate_with_ellipsis(&display_text, text_budget);
             lines.push(Line::from(vec![
                 Span::raw(" "),
@@ -1225,6 +1245,221 @@ fn append_tasks_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
 /// per-parent cap so both surfaces feel consistent.
 const TASKS_MAX: usize = 5;
 
+/// #273 Task 8: append the MONITORS Inspector section. Renders one
+/// row per Monitor entry with the description headline, status
+/// badge, and (when expanded OR currently-running) the tail of
+/// captured `task_notification.summary` lines. Section is hidden
+/// entirely when `UiSession.monitors` is empty (auto-clears once
+/// every entry terminates) so the Inspector doesn't carry a stale
+/// "MONITORS" header with no rows.
+fn append_monitors_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
+    let monitors = app.monitors();
+    if monitors.is_empty() {
+        return;
+    }
+
+    lines.push(Line::from(Span::styled(
+        " MONITORS".to_owned(),
+        Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::default());
+
+    let glyph_indent = PANE_PAD + 2;
+    let text_budget = usize::from(width)
+        .saturating_sub(usize::from(glyph_indent))
+        .saturating_sub(usize::from(PANE_PAD));
+
+    for monitor in monitors {
+        append_monitor_row(lines, monitor, text_budget);
+    }
+}
+
+/// Render one Monitor entry into the Inspector body. Layout:
+/// headline row (glyph + description + status badge + persistent
+/// flag), tail rows (`│   └─ <line>` style continuation) when
+/// expanded or running.
+fn append_monitor_row(
+    lines: &mut Vec<Line<'static>>,
+    monitor: &crate::app::MonitorEntry,
+    text_budget: usize,
+) {
+    use crate::app::MonitorStatus;
+
+    let (status_label, status_color) = match monitor.status {
+        MonitorStatus::Running => ("running", theme::RUST_ORANGE),
+        MonitorStatus::Completed => ("completed", Color::Green),
+        MonitorStatus::Stopped => ("stopped", theme::DIM),
+        MonitorStatus::TimedOut => ("timed out", theme::STATUS_WARNING),
+    };
+    let glyph = if monitor.is_running() { "\u{25c9}" } else { "\u{25cd}" };
+    let glyph_color = if monitor.is_running() { theme::RUST_ORANGE } else { theme::DIM };
+    let persistent_suffix = if monitor.persistent { " \u{00B7} persistent" } else { "" };
+
+    let headline = truncate_or_pass(&monitor.description, text_budget.max(8));
+    lines.push(Line::from(vec![
+        Span::raw("  ".to_owned()),
+        Span::styled(glyph.to_owned(), Style::default().fg(glyph_color)),
+        Span::raw(" ".to_owned()),
+        Span::styled(headline, Style::default().add_modifier(Modifier::BOLD)),
+        Span::styled(" \u{00B7} ".to_owned(), Style::default().fg(theme::DIM)),
+        Span::styled(status_label.to_owned(), Style::default().fg(status_color)),
+        Span::styled(persistent_suffix.to_owned(), Style::default().fg(theme::DIM)),
+    ]));
+
+    // Tail lines - show always while running, also when explicitly
+    // expanded. The buffer is bounded at MonitorEntry::OUTPUT_TAIL_MAX.
+    if monitor.output_tail.is_empty() {
+        return;
+    }
+    let show_tail = monitor.is_running() || monitor.expanded_in_inspector;
+    if !show_tail {
+        return;
+    }
+    let last_idx = monitor.output_tail.len().saturating_sub(1);
+    for (i, line) in monitor.output_tail.iter().enumerate() {
+        let connector = if i == last_idx { "  \u{2514} " } else { "  \u{251c} " };
+        let truncated = truncate_or_pass(line, text_budget.max(8));
+        lines.push(Line::from(vec![
+            Span::styled(connector.to_owned(), Style::default().fg(theme::DIM)),
+            Span::styled(truncated, Style::default().fg(theme::DIM)),
+        ]));
+    }
+}
+
+/// #273 Task 9: append the WORKFLOWS Inspector section. Header +
+/// one row per workflow entry with the meta name + status, then
+/// (when running or expanded) a per-phase tree showing status
+/// glyph + title + log tail. Section is hidden when
+/// `UiSession.workflows` is empty (auto-clears once every entry
+/// transitions to `Completed`).
+fn append_workflows_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
+    let workflows = app.workflows();
+    if workflows.is_empty() {
+        return;
+    }
+
+    lines.push(Line::from(Span::styled(
+        " WORKFLOWS".to_owned(),
+        Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::default());
+
+    let glyph_indent = PANE_PAD + 2;
+    let text_budget = usize::from(width)
+        .saturating_sub(usize::from(glyph_indent))
+        .saturating_sub(usize::from(PANE_PAD));
+
+    for workflow in workflows {
+        append_workflow_row(lines, workflow, text_budget, app.spinner_frame);
+    }
+}
+
+/// Render one Workflow entry into the Inspector body. Layout:
+/// header (glyph + meta_name + status badge), optional description
+/// subtitle, then a tree of phases with logs as continuation rows.
+fn append_workflow_row(
+    lines: &mut Vec<Line<'static>>,
+    workflow: &crate::app::WorkflowEntry,
+    text_budget: usize,
+    spinner_frame: usize,
+) {
+    use crate::app::{PhaseStatus, WorkflowStatus};
+
+    let (status_label, status_color) = match workflow.status {
+        WorkflowStatus::InProgress => ("in progress", theme::RUST_ORANGE),
+        WorkflowStatus::Completed => ("done", Color::Green),
+    };
+    let glyph =
+        if workflow.is_in_progress() { spinner_frame_char(spinner_frame) } else { "\u{25c6}" };
+    let glyph_color = if workflow.is_in_progress() { theme::RUST_ORANGE } else { Color::Green };
+    let header_text = truncate_or_pass(&workflow.meta_name, text_budget.max(8));
+    lines.push(Line::from(vec![
+        Span::raw("  ".to_owned()),
+        Span::styled(glyph.to_owned(), Style::default().fg(glyph_color)),
+        Span::raw(" ".to_owned()),
+        Span::styled(header_text, Style::default().add_modifier(Modifier::BOLD)),
+        Span::styled(" \u{00B7} ".to_owned(), Style::default().fg(theme::DIM)),
+        Span::styled(status_label.to_owned(), Style::default().fg(status_color)),
+    ]));
+
+    if let Some(desc) = workflow.meta_description.as_deref().filter(|d| !d.is_empty()) {
+        let row = truncate_or_pass(desc, text_budget.max(8));
+        lines.push(Line::from(vec![
+            Span::raw("    ".to_owned()),
+            Span::styled(row, Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC)),
+        ]));
+    }
+
+    // Show the phase tree when the workflow is running OR the user
+    // expanded it explicitly. A completed-and-collapsed workflow
+    // shows just the header + (optional) final_result_summary.
+    let show_tree = workflow.is_in_progress() || workflow.expanded_in_inspector;
+    if show_tree {
+        let phase_count = workflow.phases.len();
+        for (i, phase) in workflow.phases.iter().enumerate() {
+            let is_last = i + 1 == phase_count;
+            let connector = if is_last { "  \u{2514} " } else { "  \u{251c} " };
+            let (phase_glyph, phase_color) = match phase.status {
+                PhaseStatus::Completed => ("\u{2713}", Color::Green),
+                PhaseStatus::InProgress => (spinner_frame_char(spinner_frame), theme::RUST_ORANGE),
+                PhaseStatus::Pending => ("\u{25CB}", theme::DIM),
+            };
+            let row = truncate_or_pass(&phase.title, text_budget.max(8));
+            lines.push(Line::from(vec![
+                Span::styled(connector.to_owned(), Style::default().fg(theme::DIM)),
+                Span::styled(phase_glyph.to_owned(), Style::default().fg(phase_color)),
+                Span::raw(" ".to_owned()),
+                Span::styled(row, Style::default().fg(theme::DIM)),
+            ]));
+            let logs_indent = if is_last { "      " } else { "  \u{2502}   " };
+            for log in &phase.logs {
+                let log_row = truncate_or_pass(log, text_budget.saturating_sub(4).max(4));
+                lines.push(Line::from(vec![
+                    Span::styled(logs_indent.to_owned(), Style::default().fg(theme::DIM)),
+                    Span::styled(log_row, Style::default().fg(theme::DIM)),
+                ]));
+            }
+        }
+    }
+
+    if let Some(summary) = workflow.final_result_summary.as_deref().filter(|s| !s.is_empty()) {
+        let row = truncate_or_pass(summary, text_budget.max(8));
+        lines.push(Line::from(vec![
+            Span::raw("  \u{2514} ".to_owned()),
+            Span::styled("\u{2713} ".to_owned(), Style::default().fg(Color::Green)),
+            Span::styled(row, Style::default().fg(theme::DIM)),
+        ]));
+    }
+}
+
+/// Pick the active spinner frame character from the shared SPINNER
+/// table. Exposed as a tiny helper so both monitor + workflow rows
+/// use the same animation.
+fn spinner_frame_char(frame: usize) -> &'static str {
+    const FRAMES: &[&str] = &[
+        "\u{280B}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283C}", "\u{2834}", "\u{2826}",
+        "\u{2827}", "\u{2807}", "\u{280F}",
+    ];
+    FRAMES[frame % FRAMES.len()]
+}
+
+/// Helper: truncate a string to `max_chars` columns, appending a
+/// single `...` ellipsis when the input is longer. Returns the input
+/// unchanged when it already fits.
+fn truncate_or_pass(s: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+    let total = s.chars().count();
+    if total <= max_chars {
+        return s.to_owned();
+    }
+    let keep = max_chars.saturating_sub(1);
+    let mut out: String = s.chars().take(keep).collect();
+    out.push('\u{2026}');
+    out
+}
+
 /// Wrap `s` onto multiple lines so that each piece fits within
 /// `max_chars` columns. Breaks on whitespace where possible; falls
 /// back to hard-cut on long single tokens. Returns an empty `Vec`
@@ -1236,7 +1471,7 @@ const TASKS_MAX: usize = 5;
 /// 1. **Headline:** status glyph + headline text styled per
 ///    [`ProcessKind`].
 /// 2. **Detail** (optional `└─` continuation): the underlying shell
-///    command or cron prompt, DIM, truncated with `…` when it
+///    command or cron prompt, DIM, truncated with `...` when it
 ///    overflows.
 /// 3. **Metadata** (`└─` continuation): kind label · status · flags,
 ///    all DIM.
@@ -1371,7 +1606,7 @@ fn append_process_row(
 
     // Suffix is the useful signal - memory for process-backed rows,
     // Cron metadata for wire-only registrations. Always include it
-    // when set; the headline truncates with `…` to make room.
+    // when set; the headline truncates with `...` to make room.
     let suffix_text: Option<String> = match (include_memory, process.memory_bytes) {
         (true, Some(bytes)) => Some(format_memory_short(bytes)),
         _ => {
@@ -1445,10 +1680,12 @@ fn glyph_and_style_for(process: &ProcessRow, spinner_frame: usize) -> (String, C
                     Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC),
                 )
             }
-            _ => (
-                // Wire-matched (Bash / Monitor) - RUST_ORANGE spinner
-                // so the row stands out as "tracked work" against the
-                // dim spinners of generic OS processes.
+            ProcessKind::BashBackgrounded => (
+                // Wire-matched Bash - RUST_ORANGE spinner so the row
+                // stands out as "tracked work" against the dim
+                // spinners of generic OS processes. (#273 Task 8
+                // retired Monitor from PROCESSES, so this branch is
+                // exclusively Bash.)
                 spinner_glyph(spinner_frame),
                 theme::RUST_ORANGE,
                 Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
@@ -1509,8 +1746,8 @@ fn wrap_text(s: &str, max_chars: usize) -> Vec<String> {
 }
 
 /// Truncate `s` to at most `max_chars` characters with a trailing
-/// `…` ellipsis. Returns the original string if it already fits.
-/// When `max_chars` is `0` or `1` the result is just `…`.
+/// `...` ellipsis. Returns the original string if it already fits.
+/// When `max_chars` is `0` or `1` the result is just `...`.
 fn truncate_with_ellipsis(s: &str, max_chars: usize) -> String {
     if s.chars().count() <= max_chars {
         return s.to_owned();
@@ -1593,7 +1830,7 @@ mod tests {
     fn head_truncate_keeps_tail_with_leading_ellipsis() {
         // Component-aware truncation lands at a `/` boundary, so the
         // result is `≤ max_chars` (not necessarily exactly equal) and
-        // always starts `…/` when at least one component was dropped.
+        // always starts `.../` when at least one component was dropped.
         let out = fit_path_head_truncated("~/Projects/forge/crates/forge-tui", 16);
         assert!(out.chars().count() <= 16, "got {out:?}");
         assert!(out.starts_with("\u{2026}/"), "got {out:?}");
@@ -1603,7 +1840,7 @@ mod tests {
     #[test]
     fn head_truncate_drops_leading_components_first() {
         // 29-char budget - too tight for the full path, but
-        // `…/src/env/git_diff.rs` (21 chars) fits cleanly at a
+        // `.../src/env/git_diff.rs` (21 chars) fits cleanly at a
         // component boundary.
         let out = fit_path_head_truncated("crates/forge-agent/src/env/git_diff.rs", 29);
         assert_eq!(out, "\u{2026}/src/env/git_diff.rs");
@@ -1844,7 +2081,7 @@ mod tests {
     #[test]
     fn pr_line_collapses_to_ellipsis_when_no_issue_fits() {
         // Pane narrower than even one issue number can fit alongside
-        // the chrome; the closes tail should collapse to a bare `…`.
+        // the chrome; the closes tail should collapse to a bare `...`.
         let line = pr_line(20, &pr(9999), &[issue(987_654)]);
         let text = line_text(&line);
         assert!(text.ends_with("\u{2192} \u{2026}"), "expected collapse: {text:?}");
@@ -1918,28 +2155,6 @@ mod tests {
     }
 
     #[test]
-    fn processes_section_renders_persistent_monitor_as_single_line() {
-        // Monitor supervisor: same single-line shape. The `persistent`
-        // flag is part of the metadata string; for Monitor rows that
-        // info is conveyed via the suffix when no memory is set, or
-        // dropped when memory takes the suffix slot. Test pins the
-        // memory-wins path.
-        let row = make_row_with_memory(
-            ProcessKind::Monitor,
-            "PR #120 CI watch",
-            "Monitor · running · persistent",
-            4 * 1024 * 1024,
-        );
-        let mut lines = Vec::new();
-        append_processes_section(&mut lines, &collection(vec![row]), 40, 0);
-
-        let row_text = line_text(&lines[2]);
-        // Monitor is wire-matched → spinner glyph (frame 0 = `⠋`).
-        assert!(row_text.starts_with(" \u{280B} PR #120 CI watch"), "headline: {row_text:?}");
-        assert!(row_text.contains("4 MB"), "memory suffix wins: {row_text:?}");
-    }
-
-    #[test]
     fn processes_section_cron_supervisor_uses_metadata_suffix() {
         // Cron rows have no memory_bytes (wire-only registrations).
         // The metadata string IS the useful signal, so the suffix
@@ -1998,19 +2213,17 @@ mod tests {
     }
 
     #[test]
-    fn processes_section_three_kinds_together_renders_blank_between_rows() {
+    fn processes_section_two_kinds_together_renders_blank_between_rows() {
+        // #273 Task 8 retired Monitor from PROCESSES - verify the
+        // Bash + Cron pair still renders with a separating blank
+        // between rows. Monitor rows are now surfaced by the
+        // dedicated MONITORS section instead.
         let rows = vec![
             make_row_with_memory(
                 ProcessKind::BashBackgrounded,
                 "Run tests",
                 "Bash · running",
                 8 * 1024 * 1024,
-            ),
-            make_row_with_memory(
-                ProcessKind::Monitor,
-                "Watch CI",
-                "Monitor · running · persistent",
-                4 * 1024 * 1024,
             ),
             make_process_row(
                 ProcessKind::Cron,
@@ -2023,12 +2236,10 @@ mod tests {
         let mut lines = Vec::new();
         append_processes_section(&mut lines, &collection(rows), 40, 0);
 
-        // header + blank + 3 single-line rows + 2 blanks between
-        // supervisor rows = 2 + 3 + 2 = 7 lines.
-        assert_eq!(lines.len(), 7, "expected 7 rendered lines, got {}", lines.len());
+        // header + blank + 2 single-line rows + 1 blank between = 5 lines.
+        assert_eq!(lines.len(), 5, "expected 5 rendered lines, got {}", lines.len());
         assert!(line_text(&lines[2]).contains("Run tests"));
-        assert!(line_text(&lines[4]).contains("Watch CI"));
-        assert!(line_text(&lines[6]).contains("*/5 * * * *"));
+        assert!(line_text(&lines[4]).contains("*/5 * * * *"));
     }
 
     #[test]
@@ -2101,6 +2312,212 @@ mod tests {
 
         let row_text = line_text(&lines[2]);
         assert!(!row_text.contains("MB"), "expected no memory suffix on Medium tier: {row_text:?}");
+    }
+
+    // ---------------------------------------------------------
+    // #273 Task 8: MONITORS Inspector section.
+    // ---------------------------------------------------------
+
+    fn make_monitor_entry(
+        tool_use_id: &str,
+        description: &str,
+        persistent: bool,
+        status: crate::app::MonitorStatus,
+    ) -> crate::app::MonitorEntry {
+        crate::app::MonitorEntry {
+            tool_use_id: tool_use_id.to_owned(),
+            task_id: Some("task_1".to_owned()),
+            description: description.to_owned(),
+            command: "tail -F app.log".to_owned(),
+            persistent,
+            timeout_ms: 0,
+            status,
+            output_tail: std::collections::VecDeque::new(),
+            expanded_in_inspector: false,
+        }
+    }
+
+    #[test]
+    fn monitors_section_renders_running_row_with_persistent_badge() {
+        let entry = make_monitor_entry(
+            "tu",
+            "forge-monitor-test",
+            true,
+            crate::app::MonitorStatus::Running,
+        );
+        let mut lines = Vec::new();
+        let text_budget = 40usize;
+        append_monitor_row(&mut lines, &entry, text_budget);
+        let row_text = line_text(&lines[0]);
+        assert!(row_text.starts_with("  \u{25c9}"), "expected fisheye glyph; got {row_text:?}");
+        assert!(row_text.contains("forge-monitor-test"), "headline missing; got {row_text:?}");
+        assert!(row_text.contains("running"), "status badge missing; got {row_text:?}");
+        assert!(row_text.contains("persistent"), "persistent badge missing; got {row_text:?}");
+    }
+
+    #[test]
+    fn monitors_section_renders_stopped_row_with_dim_glyph() {
+        let entry = make_monitor_entry("tu", "ci-watch", false, crate::app::MonitorStatus::Stopped);
+        let mut lines = Vec::new();
+        append_monitor_row(&mut lines, &entry, 40);
+        let row_text = line_text(&lines[0]);
+        // Terminal glyph (◍ U+25CD) for stopped entries.
+        assert!(row_text.contains("\u{25cd}"), "expected stopped glyph; got {row_text:?}");
+        assert!(row_text.contains("stopped"), "stopped badge missing; got {row_text:?}");
+        // Non-persistent has no `persistent` badge.
+        assert!(!row_text.contains("persistent"));
+    }
+
+    #[test]
+    fn monitors_section_renders_output_tail_for_running_entry() {
+        let mut entry = make_monitor_entry(
+            "tu",
+            "forge-monitor-test",
+            true,
+            crate::app::MonitorStatus::Running,
+        );
+        entry.output_tail.push_back("stream started".to_owned());
+        entry.output_tail.push_back("first event landed".to_owned());
+        let mut lines = Vec::new();
+        append_monitor_row(&mut lines, &entry, 40);
+        assert_eq!(lines.len(), 3, "headline + 2 tail rows; got {}", lines.len());
+        assert!(line_text(&lines[1]).contains("stream started"));
+        assert!(line_text(&lines[2]).contains("first event landed"));
+    }
+
+    #[test]
+    fn monitors_section_suppresses_tail_for_collapsed_stopped_entry() {
+        let mut entry =
+            make_monitor_entry("tu", "ci-watch", false, crate::app::MonitorStatus::Stopped);
+        entry.output_tail.push_back("stream ended".to_owned());
+        let mut lines = Vec::new();
+        append_monitor_row(&mut lines, &entry, 40);
+        // Stopped + not expanded → headline only.
+        assert_eq!(lines.len(), 1);
+    }
+
+    #[test]
+    fn monitors_section_shows_tail_for_expanded_stopped_entry() {
+        let mut entry =
+            make_monitor_entry("tu", "ci-watch", false, crate::app::MonitorStatus::Stopped);
+        entry.output_tail.push_back("stream ended".to_owned());
+        entry.expanded_in_inspector = true;
+        let mut lines = Vec::new();
+        append_monitor_row(&mut lines, &entry, 40);
+        // Expanded → headline + 1 tail row.
+        assert_eq!(lines.len(), 2);
+        assert!(line_text(&lines[1]).contains("stream ended"));
+    }
+
+    // ---------------------------------------------------------
+    // #273 Task 9: WORKFLOWS Inspector section.
+    // ---------------------------------------------------------
+
+    fn make_workflow_entry(
+        tool_use_id: &str,
+        meta_name: &str,
+        status: crate::app::WorkflowStatus,
+    ) -> crate::app::WorkflowEntry {
+        crate::app::WorkflowEntry {
+            tool_use_id: tool_use_id.to_owned(),
+            task_id: Some("task_1".to_owned()),
+            meta_name: meta_name.to_owned(),
+            meta_description: None,
+            phases: Vec::new(),
+            status,
+            final_result_summary: None,
+            expanded_in_inspector: false,
+        }
+    }
+
+    #[test]
+    fn workflows_section_renders_in_progress_header_with_phase_tree() {
+        let mut workflow =
+            make_workflow_entry("tu", "minimal-ping", crate::app::WorkflowStatus::InProgress);
+        workflow.phases = vec![crate::app::PhaseEntry {
+            index: 1,
+            title: "Ping".to_owned(),
+            status: crate::app::PhaseStatus::InProgress,
+            logs: std::collections::VecDeque::from(["running StructuredOutput".to_owned()]),
+        }];
+        let mut lines = Vec::new();
+        append_workflow_row(&mut lines, &workflow, 60, 0);
+        assert!(lines.iter().any(|l| line_text(l).contains("minimal-ping")));
+        assert!(
+            lines
+                .iter()
+                .any(|l| line_text(l).contains("Ping") && line_text(l).contains("\u{251c}")
+                    || line_text(l).contains("Ping") && line_text(l).contains("\u{2514}")),
+            "expected phase row glyph; got {:?}",
+            lines.iter().map(line_text).collect::<Vec<_>>(),
+        );
+        assert!(lines.iter().any(|l| line_text(l).contains("running StructuredOutput")));
+    }
+
+    #[test]
+    fn workflows_section_collapses_completed_to_header_only_with_summary() {
+        let mut workflow = make_workflow_entry("tu", "ping", crate::app::WorkflowStatus::Completed);
+        workflow.phases = vec![crate::app::PhaseEntry {
+            index: 1,
+            title: "Ping".to_owned(),
+            status: crate::app::PhaseStatus::Completed,
+            logs: std::collections::VecDeque::new(),
+        }];
+        workflow.final_result_summary = Some("{\"answer\":\"pong\"}".to_owned());
+        let mut lines = Vec::new();
+        append_workflow_row(&mut lines, &workflow, 60, 0);
+        // Collapsed completed entry: header + summary line only;
+        // phase tree suppressed because `expanded_in_inspector =
+        // false` and `is_in_progress() = false`.
+        assert_eq!(lines.len(), 2);
+        assert!(line_text(&lines[0]).contains("ping") && line_text(&lines[0]).contains("done"));
+        assert!(line_text(&lines[1]).contains("{\"answer\":\"pong\"}"));
+    }
+
+    #[test]
+    fn workflows_section_shows_phase_tree_when_expanded_after_completion() {
+        let mut workflow = make_workflow_entry("tu", "ping", crate::app::WorkflowStatus::Completed);
+        workflow.phases = vec![crate::app::PhaseEntry {
+            index: 1,
+            title: "Ping".to_owned(),
+            status: crate::app::PhaseStatus::Completed,
+            logs: std::collections::VecDeque::new(),
+        }];
+        workflow.expanded_in_inspector = true;
+        let mut lines = Vec::new();
+        append_workflow_row(&mut lines, &workflow, 60, 0);
+        // Expanded → header + phase tree row.
+        assert!(
+            lines
+                .iter()
+                .any(|l| line_text(l).contains("Ping") && line_text(l).contains("\u{2514}")),
+            "expected phase row in expanded view; got {:?}",
+            lines.iter().map(line_text).collect::<Vec<_>>(),
+        );
+    }
+
+    #[test]
+    fn workflows_section_renders_meta_description_as_dim_subtitle() {
+        let mut workflow =
+            make_workflow_entry("tu", "minimal-ping", crate::app::WorkflowStatus::InProgress);
+        workflow.meta_description = Some("sanity".to_owned());
+        let mut lines = Vec::new();
+        append_workflow_row(&mut lines, &workflow, 60, 0);
+        assert!(lines.iter().any(|l| line_text(l).contains("sanity")));
+    }
+
+    #[test]
+    fn truncate_or_pass_returns_input_when_under_budget() {
+        assert_eq!(truncate_or_pass("abc", 10), "abc");
+    }
+
+    #[test]
+    fn truncate_or_pass_appends_ellipsis_when_over_budget() {
+        let out = truncate_or_pass("abcdefghij", 5);
+        // 4 chars + 1 ellipsis = 5 columns; not the full input.
+        assert_eq!(out.chars().count(), 5);
+        assert!(out.ends_with('\u{2026}'));
+        assert!(out.starts_with("abcd"));
     }
 
     #[test]
