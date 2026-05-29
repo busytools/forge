@@ -310,11 +310,7 @@ fn append_stop_hook_summary(
     if expanded {
         for hook in hooks {
             let body = Line::from(Span::styled(
-                format!(
-                    "    {} · {}",
-                    hook.command,
-                    format_turn_duration(hook.duration_ms),
-                ),
+                format!("    {} · {}", hook.command, format_turn_duration(hook.duration_ms),),
                 Style::default().fg(theme::DIM),
             ));
             layout.push_wrapped_line(body, width);
@@ -1297,9 +1293,11 @@ fn role_label_line(msg: &ChatMessage, spinner: &SpinnerState) -> Line<'static> {
         // banner. Past turns persist their layout snapshot; surfacing
         // the chip across all prior turns would require per-message
         // duration storage which is out of scope for this PR.
-        MessageRole::Assistant => assistant_role_label_line(
-            if spinner.is_active_turn_assistant { spinner.last_turn_duration_ms } else { None },
-        ),
+        MessageRole::Assistant => assistant_role_label_line(if spinner.is_active_turn_assistant {
+            spinner.last_turn_duration_ms
+        } else {
+            None
+        }),
         MessageRole::System(_) => system_role_label_line(system_severity_from_role(&msg.role)),
     }
 }
@@ -3425,8 +3423,7 @@ mod tests {
         // spinner carries `is_active_turn_assistant=true`. The chip
         // must surface for the active one and be silent for the
         // historical one even when the spinner carries a duration.
-        let active_msg =
-            make_text_message(MessageRole::Assistant, "current response");
+        let active_msg = make_text_message(MessageRole::Assistant, "current response");
         let old_msg = make_text_message(MessageRole::Assistant, "earlier response");
 
         let active_spinner = SpinnerState {
@@ -3449,8 +3446,7 @@ mod tests {
         );
 
         let old_label = role_label_line(&old_msg, &inactive_spinner);
-        let old_rendered: String =
-            old_label.spans.iter().map(|s| s.content.as_ref()).collect();
+        let old_rendered: String = old_label.spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(
             old_rendered, "Forge",
             "historical turn must omit chip even when spinner has duration",
@@ -3477,9 +3473,8 @@ mod tests {
         let spinner = idle_spinner();
         let mut msg = make_text_message(MessageRole::Assistant, "done");
         let mut lines = Vec::new();
-        let context =
-            MessageRenderContext::new(None, 80, 0, stop_hook_options(actions, expanded))
-                .with_stop_hook_hooks(hooks);
+        let context = MessageRenderContext::new(None, 80, 0, stop_hook_options(actions, expanded))
+            .with_stop_hook_hooks(hooks);
         render_message(&mut msg, &spinner, context, &mut lines);
         render_lines_to_strings(&lines)
     }
@@ -3527,10 +3522,7 @@ mod tests {
                 command: "bash ~/.claude/hooks/notify.sh".to_owned(),
                 duration_ms: 980,
             },
-            StopHookEntry {
-                command: "bash ~/.claude/hooks/log.sh".to_owned(),
-                duration_ms: 1_500,
-            },
+            StopHookEntry { command: "bash ~/.claude/hooks/log.sh".to_owned(), duration_ms: 1_500 },
         ];
         let rendered = render_assistant_with_stop_hook(2, true, &hooks);
         assert!(
@@ -3538,13 +3530,15 @@ mod tests {
             "expected expand-state label; got {rendered:?}",
         );
         assert!(
-            rendered.iter().any(|line| line.contains("bash ~/.claude/hooks/notify.sh")
-                && line.contains("0.9s")),
+            rendered.iter().any(
+                |line| line.contains("bash ~/.claude/hooks/notify.sh") && line.contains("0.9s")
+            ),
             "expected first hook row; got {rendered:?}",
         );
         assert!(
-            rendered.iter().any(|line| line.contains("bash ~/.claude/hooks/log.sh")
-                && line.contains("1.5s")),
+            rendered
+                .iter()
+                .any(|line| line.contains("bash ~/.claude/hooks/log.sh") && line.contains("1.5s")),
             "expected second hook row; got {rendered:?}",
         );
     }
@@ -3595,20 +3589,15 @@ mod tests {
         // because the hook rows lift below the chip.
         let spinner = idle_spinner();
         let mut msg = make_text_message(MessageRole::Assistant, "done");
-        let hooks = vec![StopHookEntry {
-            command: "bash hook.sh".to_owned(),
-            duration_ms: 500,
-        }];
+        let hooks = vec![StopHookEntry { command: "bash hook.sh".to_owned(), duration_ms: 500 }];
 
-        let collapsed_ctx =
-            MessageRenderContext::new(None, 80, 0, stop_hook_options(1, false))
-                .with_stop_hook_hooks(hooks.as_slice());
+        let collapsed_ctx = MessageRenderContext::new(None, 80, 0, stop_hook_options(1, false))
+            .with_stop_hook_hooks(hooks.as_slice());
         let collapsed = get_or_build_message_render_cache(&mut msg, &spinner, collapsed_ctx);
         let collapsed_height = collapsed.height();
 
-        let expanded_ctx =
-            MessageRenderContext::new(None, 80, 0, stop_hook_options(1, true))
-                .with_stop_hook_hooks(hooks.as_slice());
+        let expanded_ctx = MessageRenderContext::new(None, 80, 0, stop_hook_options(1, true))
+            .with_stop_hook_hooks(hooks.as_slice());
         let expanded = get_or_build_message_render_cache(&mut msg, &spinner, expanded_ctx);
         let expanded_height = expanded.height();
 

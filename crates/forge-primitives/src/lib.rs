@@ -89,6 +89,7 @@ pub use image::{
     validate_image,
 };
 pub use mcp_ui_sync::McpOperationError;
+pub use messages::StopHookInfo;
 pub use messages::{
     AssistantEnvelope, AssistantMessageError, Message, RateLimitInfo, RateLimitStatus,
     RateLimitType, StopReason, TaskNotificationStatus, TaskUsage, Usage, UserEnvelope,
@@ -124,7 +125,6 @@ pub use session_update::{
     BashOutputMetadata, ChunkContent, TaskMetadata, ToolCall, ToolCallContent, ToolCallLocation,
     ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind, ToolOutputMetadata,
 };
-pub use messages::StopHookInfo;
 pub use subagents::{EffortPreset, SubagentDefinition, SubagentMcpServerRef, SubagentMemory};
 pub use turn_error::TurnErrorClass;
 pub use workers::{

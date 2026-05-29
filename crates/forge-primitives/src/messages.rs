@@ -904,13 +904,9 @@ impl From<MessageRepr> for Message {
                 parent_tool_use_id,
                 session_id,
                 uuid,
-            })) => Message::TurnDuration {
-                ms,
-                message_count,
-                parent_tool_use_id,
-                session_id,
-                uuid,
-            },
+            })) => {
+                Message::TurnDuration { ms, message_count, parent_tool_use_id, session_id, uuid }
+            }
             MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::StopHookSummary {
                 actions,
                 hook_infos,
@@ -1102,19 +1098,15 @@ impl From<Message> for MessageRepr {
                 uuid,
                 session_id,
             })),
-            Message::TurnDuration {
-                ms,
-                message_count,
-                parent_tool_use_id,
-                session_id,
-                uuid,
-            } => MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::TurnDuration {
-                ms,
-                message_count,
-                parent_tool_use_id,
-                session_id,
-                uuid,
-            })),
+            Message::TurnDuration { ms, message_count, parent_tool_use_id, session_id, uuid } => {
+                MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::TurnDuration {
+                    ms,
+                    message_count,
+                    parent_tool_use_id,
+                    session_id,
+                    uuid,
+                }))
+            }
             Message::StopHookSummary {
                 actions,
                 hook_infos,
@@ -1509,13 +1501,7 @@ mod tests_message_extras {
             "uuid": "td-uuid",
         });
         let msg: Message = serde_json::from_value(raw).expect("decode");
-        let Message::TurnDuration {
-            ms,
-            message_count,
-            parent_tool_use_id,
-            session_id,
-            uuid,
-        } = msg
+        let Message::TurnDuration { ms, message_count, parent_tool_use_id, session_id, uuid } = msg
         else {
             panic!("expected TurnDuration, got {msg:?}");
         };
@@ -1575,8 +1561,9 @@ mod tests_message_extras {
             "uuid": "uuid_3",
         });
         let msg: Message = serde_json::from_value(raw).expect("decode");
-        let Message::StopHookSummary { actions, hook_infos, parent_tool_use_id, session_id, .. } =
-            msg
+        let Message::StopHookSummary {
+            actions, hook_infos, parent_tool_use_id, session_id, ..
+        } = msg
         else {
             panic!("expected StopHookSummary, got {msg:?}");
         };

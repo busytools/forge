@@ -390,13 +390,9 @@ fn measure_message_height(
     stop_hook_hooks: &[crate::app::StopHookEntry],
 ) -> (usize, usize) {
     let _t = crate::perf::start_with("chat::measure_msg", "blocks", msg.blocks.len());
-    let render_context = message::MessageRenderContext::new(
-        current_mode_id,
-        width,
-        layout_generation,
-        options,
-    )
-    .with_stop_hook_hooks(stop_hook_hooks);
+    let render_context =
+        message::MessageRenderContext::new(current_mode_id, width, layout_generation, options)
+            .with_stop_hook_hooks(stop_hook_hooks);
     let (h, wrapped_lines) =
         message::measure_message_height_cached_with_context(msg, spinner, render_context);
     crate::perf::mark_with("chat::measure_msg_wrapped_lines", "lines", wrapped_lines);

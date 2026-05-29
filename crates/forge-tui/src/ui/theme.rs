@@ -54,10 +54,13 @@ pub fn tool_name_label(sdk_tool_name: &str) -> (&'static str, &'static str) {
         "Task" | "Agent" => ("\u{25c7}", "Subagent"),
         "WebFetch" => ("\u{2295}", "WebFetch"),
         "WebSearch" => ("\u{2295}", "WebSearch"),
-        "ExitPlanMode" | "EnterPlanMode" => ("\u{2299}", match sdk_tool_name {
-            "EnterPlanMode" => "EnterPlanMode",
-            _ => "ExitPlanMode",
-        }),
+        "ExitPlanMode" | "EnterPlanMode" => (
+            "\u{2299}",
+            match sdk_tool_name {
+                "EnterPlanMode" => "EnterPlanMode",
+                _ => "ExitPlanMode",
+            },
+        ),
         // CLI 2.1.156 task surface (#268). The per-row chrome stays
         // chat-suppressed so the glyph only surfaces when a future
         // Inspector view exposes the raw tool calls (today: never).
@@ -66,10 +69,13 @@ pub fn tool_name_label(sdk_tool_name: &str) -> (&'static str, &'static str) {
         "TaskList" => ("\u{25cc}", "TaskList"),
         "TaskGet" => ("\u{25cc}", "TaskGet"),
         "Config" => ("\u{2299}", "Config"),
-        "EnterWorktree" | "ExitWorktree" => ("\u{21c4}", match sdk_tool_name {
-            "ExitWorktree" => "ExitWorktree",
-            _ => "EnterWorktree",
-        }),
+        "EnterWorktree" | "ExitWorktree" => (
+            "\u{21c4}",
+            match sdk_tool_name {
+                "ExitWorktree" => "ExitWorktree",
+                _ => "EnterWorktree",
+            },
+        ),
         // CLI 2.1.156 tool surface (#273). 13 new tool name glyphs +
         // Workflow's distinct filled-diamond marker.
         "ScheduleWakeup" => ("\u{23f2}", "ScheduleWakeup"),

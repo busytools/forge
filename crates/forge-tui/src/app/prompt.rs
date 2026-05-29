@@ -126,12 +126,8 @@ impl PromptState {
         // #273: first recommended option pre-selects so the user can
         // hit Enter without scrolling. Multi-recommended (defensive)
         // picks the first one in source order.
-        let focused_option_index = request
-            .prompt
-            .options
-            .iter()
-            .position(|opt| opt.recommended)
-            .unwrap_or(0);
+        let focused_option_index =
+            request.prompt.options.iter().position(|opt| opt.recommended).unwrap_or(0);
         options.push(PermissionOption {
             option_id: "tell_claude".into(),
             name: "Tell Claude something else".into(),

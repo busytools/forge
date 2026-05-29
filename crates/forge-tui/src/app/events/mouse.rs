@@ -543,11 +543,7 @@ fn locate_stop_hook_summary_at_click(app: &App, mouse: MouseEvent) -> Option<usi
     }
     let y_start = msg.stop_hook_summary_y_in_msg;
     let y_end = y_start.saturating_add(msg.stop_hook_summary_height);
-    if row_within_msg >= y_start && row_within_msg < y_end {
-        Some(msg_idx)
-    } else {
-        None
-    }
+    if row_within_msg >= y_start && row_within_msg < y_end { Some(msg_idx) } else { None }
 }
 
 /// Map the chat-area click to a `(msg_idx, block_idx)` pair for an
