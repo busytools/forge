@@ -155,7 +155,7 @@ fn build_tool_info_from_tool_call(
     // - Monitor / Workflow - minimal DIM start/stop notices come from
     //   `ui::tool_call`'s task-render helpers; the standard tool-call
     //   card is suppressed.
-    let is_task_family = matches!(
+    let is_chat_suppressed = matches!(
         sdk_tool_name.as_str(),
         "TaskCreate"
             | "TaskUpdate"
@@ -177,7 +177,7 @@ fn build_tool_info_from_tool_call(
         task_metadata: tc.task_metadata,
         status: tc.status,
         content: tc.content,
-        hidden: is_task_family || matches!(scope, ToolCallScope::SubagentChild { .. }),
+        hidden: is_chat_suppressed || matches!(scope, ToolCallScope::SubagentChild { .. }),
         terminal_id,
         terminal_command,
         terminal_output: None,
