@@ -1692,8 +1692,7 @@ impl App {
     /// `tool_use_result` (or from `TaskStarted` mapping). No-op when
     /// no matching entry exists or the entry already has a task_id.
     pub fn stamp_monitor_task_id(&mut self, tool_use_id: &str, task_id: String) {
-        if let Some(entry) =
-            self.monitors_mut().iter_mut().find(|m| m.tool_use_id == tool_use_id)
+        if let Some(entry) = self.monitors_mut().iter_mut().find(|m| m.tool_use_id == tool_use_id)
             && entry.task_id.is_none()
         {
             entry.task_id = Some(task_id);
@@ -1711,9 +1710,7 @@ impl App {
         tool_use_id: &str,
         status: crate::app::state::types::MonitorStatus,
     ) {
-        if let Some(entry) =
-            self.monitors_mut().iter_mut().find(|m| m.tool_use_id == tool_use_id)
-        {
+        if let Some(entry) = self.monitors_mut().iter_mut().find(|m| m.tool_use_id == tool_use_id) {
             entry.status = status;
         }
         self.clear_monitors_if_all_terminal();
@@ -1727,10 +1724,8 @@ impl App {
         task_id: &str,
         status: crate::app::state::types::MonitorStatus,
     ) {
-        if let Some(entry) = self
-            .monitors_mut()
-            .iter_mut()
-            .find(|m| m.task_id.as_deref() == Some(task_id))
+        if let Some(entry) =
+            self.monitors_mut().iter_mut().find(|m| m.task_id.as_deref() == Some(task_id))
         {
             entry.status = status;
         }
@@ -1740,10 +1735,8 @@ impl App {
     /// #273 Task 8: Push a single output line into the matching
     /// monitor's `output_tail`. No-op if no entry matches.
     pub fn push_monitor_output_by_task_id(&mut self, task_id: &str, line: String) {
-        if let Some(entry) = self
-            .monitors_mut()
-            .iter_mut()
-            .find(|m| m.task_id.as_deref() == Some(task_id))
+        if let Some(entry) =
+            self.monitors_mut().iter_mut().find(|m| m.task_id.as_deref() == Some(task_id))
         {
             entry.push_output(line);
         }
@@ -1805,8 +1798,7 @@ impl App {
     /// `TaskStarted`'s task_id ↔ tool_use_id mapping). No-op when
     /// no entry matches or the entry already has a task_id.
     pub fn stamp_workflow_task_id(&mut self, tool_use_id: &str, task_id: String) {
-        if let Some(entry) =
-            self.workflows_mut().iter_mut().find(|w| w.tool_use_id == tool_use_id)
+        if let Some(entry) = self.workflows_mut().iter_mut().find(|w| w.tool_use_id == tool_use_id)
             && entry.task_id.is_none()
         {
             entry.task_id = Some(task_id);
@@ -1822,10 +1814,8 @@ impl App {
         task_id: &str,
         events: &[forge_primitives::WorkflowProgressEvent],
     ) {
-        if let Some(entry) = self
-            .workflows_mut()
-            .iter_mut()
-            .find(|w| w.task_id.as_deref() == Some(task_id))
+        if let Some(entry) =
+            self.workflows_mut().iter_mut().find(|w| w.task_id.as_deref() == Some(task_id))
         {
             entry.apply_workflow_progress(events);
         }
@@ -1836,10 +1826,8 @@ impl App {
     /// `Completed` status (called from `TaskUpdated` terminal
     /// patch). Triggers the all-completed clear.
     pub fn set_workflow_completed_by_task_id(&mut self, task_id: &str) {
-        if let Some(entry) = self
-            .workflows_mut()
-            .iter_mut()
-            .find(|w| w.task_id.as_deref() == Some(task_id))
+        if let Some(entry) =
+            self.workflows_mut().iter_mut().find(|w| w.task_id.as_deref() == Some(task_id))
         {
             entry.status = crate::app::state::types::WorkflowStatus::Completed;
         }

@@ -1369,13 +1369,9 @@ fn append_workflow_row(
         WorkflowStatus::InProgress => ("in progress", theme::RUST_ORANGE),
         WorkflowStatus::Completed => ("done", Color::Green),
     };
-    let glyph = if workflow.is_in_progress() {
-        spinner_frame_char(spinner_frame)
-    } else {
-        "\u{25c6}"
-    };
-    let glyph_color =
-        if workflow.is_in_progress() { theme::RUST_ORANGE } else { Color::Green };
+    let glyph =
+        if workflow.is_in_progress() { spinner_frame_char(spinner_frame) } else { "\u{25c6}" };
+    let glyph_color = if workflow.is_in_progress() { theme::RUST_ORANGE } else { Color::Green };
     let header_text = truncate_or_pass(&workflow.meta_name, text_budget.max(8));
     lines.push(Line::from(vec![
         Span::raw("  ".to_owned()),
@@ -1684,10 +1680,12 @@ fn glyph_and_style_for(process: &ProcessRow, spinner_frame: usize) -> (String, C
                     Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC),
                 )
             }
-            _ => (
-                // Wire-matched (Bash / Monitor) - RUST_ORANGE spinner
-                // so the row stands out as "tracked work" against the
-                // dim spinners of generic OS processes.
+            ProcessKind::BashBackgrounded => (
+                // Wire-matched Bash - RUST_ORANGE spinner so the row
+                // stands out as "tracked work" against the dim
+                // spinners of generic OS processes. (#273 Task 8
+                // retired Monitor from PROCESSES, so this branch is
+                // exclusively Bash.)
                 spinner_glyph(spinner_frame),
                 theme::RUST_ORANGE,
                 Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
@@ -2341,8 +2339,12 @@ mod tests {
 
     #[test]
     fn monitors_section_renders_running_row_with_persistent_badge() {
-        let entry =
-            make_monitor_entry("tu", "forge-monitor-test", true, crate::app::MonitorStatus::Running);
+        let entry = make_monitor_entry(
+            "tu",
+            "forge-monitor-test",
+            true,
+            crate::app::MonitorStatus::Running,
+        );
         let mut lines = Vec::new();
         let text_budget = 40usize;
         append_monitor_row(&mut lines, &entry, text_budget);
@@ -2355,12 +2357,7 @@ mod tests {
 
     #[test]
     fn monitors_section_renders_stopped_row_with_dim_glyph() {
-        let entry = make_monitor_entry(
-            "tu",
-            "ci-watch",
-            false,
-            crate::app::MonitorStatus::Stopped,
-        );
+        let entry = make_monitor_entry("tu", "ci-watch", false, crate::app::MonitorStatus::Stopped);
         let mut lines = Vec::new();
         append_monitor_row(&mut lines, &entry, 40);
         let row_text = line_text(&lines[0]);
@@ -2390,12 +2387,8 @@ mod tests {
 
     #[test]
     fn monitors_section_suppresses_tail_for_collapsed_stopped_entry() {
-        let mut entry = make_monitor_entry(
-            "tu",
-            "ci-watch",
-            false,
-            crate::app::MonitorStatus::Stopped,
-        );
+        let mut entry =
+            make_monitor_entry("tu", "ci-watch", false, crate::app::MonitorStatus::Stopped);
         entry.output_tail.push_back("stream ended".to_owned());
         let mut lines = Vec::new();
         append_monitor_row(&mut lines, &entry, 40);
@@ -2405,12 +2398,8 @@ mod tests {
 
     #[test]
     fn monitors_section_shows_tail_for_expanded_stopped_entry() {
-        let mut entry = make_monitor_entry(
-            "tu",
-            "ci-watch",
-            false,
-            crate::app::MonitorStatus::Stopped,
-        );
+        let mut entry =
+            make_monitor_entry("tu", "ci-watch", false, crate::app::MonitorStatus::Stopped);
         entry.output_tail.push_back("stream ended".to_owned());
         entry.expanded_in_inspector = true;
         let mut lines = Vec::new();
@@ -2443,18 +2432,13 @@ mod tests {
 
     #[test]
     fn workflows_section_renders_in_progress_header_with_phase_tree() {
-        let mut workflow = make_workflow_entry(
-            "tu",
-            "minimal-ping",
-            crate::app::WorkflowStatus::InProgress,
-        );
+        let mut workflow =
+            make_workflow_entry("tu", "minimal-ping", crate::app::WorkflowStatus::InProgress);
         workflow.phases = vec![crate::app::PhaseEntry {
             index: 1,
             title: "Ping".to_owned(),
             status: crate::app::PhaseStatus::InProgress,
-            logs: std::collections::VecDeque::from([
-                "running StructuredOutput".to_owned(),
-            ]),
+            logs: std::collections::VecDeque::from(["running StructuredOutput".to_owned()]),
         }];
         let mut lines = Vec::new();
         append_workflow_row(&mut lines, &workflow, 60, 0);
@@ -2472,11 +2456,7 @@ mod tests {
 
     #[test]
     fn workflows_section_collapses_completed_to_header_only_with_summary() {
-        let mut workflow = make_workflow_entry(
-            "tu",
-            "ping",
-            crate::app::WorkflowStatus::Completed,
-        );
+        let mut workflow = make_workflow_entry("tu", "ping", crate::app::WorkflowStatus::Completed);
         workflow.phases = vec![crate::app::PhaseEntry {
             index: 1,
             title: "Ping".to_owned(),
@@ -2496,11 +2476,7 @@ mod tests {
 
     #[test]
     fn workflows_section_shows_phase_tree_when_expanded_after_completion() {
-        let mut workflow = make_workflow_entry(
-            "tu",
-            "ping",
-            crate::app::WorkflowStatus::Completed,
-        );
+        let mut workflow = make_workflow_entry("tu", "ping", crate::app::WorkflowStatus::Completed);
         workflow.phases = vec![crate::app::PhaseEntry {
             index: 1,
             title: "Ping".to_owned(),
@@ -2522,11 +2498,8 @@ mod tests {
 
     #[test]
     fn workflows_section_renders_meta_description_as_dim_subtitle() {
-        let mut workflow = make_workflow_entry(
-            "tu",
-            "minimal-ping",
-            crate::app::WorkflowStatus::InProgress,
-        );
+        let mut workflow =
+            make_workflow_entry("tu", "minimal-ping", crate::app::WorkflowStatus::InProgress);
         workflow.meta_description = Some("sanity".to_owned());
         let mut lines = Vec::new();
         append_workflow_row(&mut lines, &workflow, 60, 0);

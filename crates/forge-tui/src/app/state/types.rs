@@ -233,10 +233,7 @@ impl WorkflowEntry {
     /// snapshot (not a delta), so this rebuilds the phase list.
     /// Phase-level logs accumulate across snapshots; agent
     /// transition events append to the matching phase.
-    pub fn apply_workflow_progress(
-        &mut self,
-        events: &[forge_primitives::WorkflowProgressEvent],
-    ) {
+    pub fn apply_workflow_progress(&mut self, events: &[forge_primitives::WorkflowProgressEvent]) {
         use forge_primitives::WorkflowProgressEvent;
 
         // Build the phase set first so phases with no agent
@@ -273,20 +270,16 @@ impl WorkflowEntry {
             };
             // Ensure phase exists (wire sometimes emits an agent
             // before a workflow_phase marker — defensive create).
-            let phase = match self.phases.iter_mut().find(|p| p.index == *phase_index) {
-                Some(p) => p,
-                None => {
-                    self.phases.push(PhaseEntry {
-                        index: *phase_index,
-                        title: phase_title.clone(),
-                        status: PhaseStatus::Pending,
-                        logs: std::collections::VecDeque::new(),
-                    });
-                    self.phases
-                        .iter_mut()
-                        .find(|p| p.index == *phase_index)
-                        .expect("just pushed")
-                }
+            if !self.phases.iter().any(|p| p.index == *phase_index) {
+                self.phases.push(PhaseEntry {
+                    index: *phase_index,
+                    title: phase_title.clone(),
+                    status: PhaseStatus::Pending,
+                    logs: std::collections::VecDeque::new(),
+                });
+            }
+            let Some(phase) = self.phases.iter_mut().find(|p| p.index == *phase_index) else {
+                continue;
             };
             phase.status = match state.as_str() {
                 "done" => PhaseStatus::Completed,

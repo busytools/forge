@@ -731,8 +731,8 @@ fn extract_meta_field(script: &str, field: &str) -> Option<String> {
             // didn't check). Token start = preceding char is
             // whitespace / `,` / `{` / newline / nothing.
             let preceding = script[..start].chars().next_back();
-            let token_start = preceding
-                .is_none_or(|c| c.is_whitespace() || c == ',' || c == '{' || c == ';');
+            let token_start =
+                preceding.is_none_or(|c| c.is_whitespace() || c == ',' || c == '{' || c == ';');
             if !token_start {
                 search_from = start + prefix.len();
                 continue;

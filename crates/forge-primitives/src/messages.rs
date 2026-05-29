@@ -643,10 +643,7 @@ pub struct TaskUpdatePatch {
 pub enum WorkflowProgressEvent {
     /// Phase-level marker — emitted when the workflow's `phase()`
     /// call fires.
-    WorkflowPhase {
-        index: u32,
-        title: String,
-    },
+    WorkflowPhase { index: u32, title: String },
     /// Agent-level event — emitted on each state transition for an
     /// agent call inside a phase. Only the fields the renderer
     /// actually surfaces are decoded; the wire also carries
@@ -1691,11 +1688,11 @@ mod tests_message_extras {
                     "resultPreview": "{\"answer\":\"pong\",\"confidence\":1}",
                     "agentId": "abf",
                     "model": "claude-opus-4-7",
-                    "queuedAt": 1780047148162u64,
-                    "startedAt": 1780047148173u64,
+                    "queuedAt": 1_780_047_148_162_u64,
+                    "startedAt": 1_780_047_148_173_u64,
                     "attempt": 1,
                     "promptPreview": "Reply with the single word pong.",
-                    "lastProgressAt": 1780047153041u64,
+                    "lastProgressAt": 1_780_047_153_041_u64,
                     "tokens": 54707,
                     "toolCalls": 1,
                     "durationMs": 4868,
