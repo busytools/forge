@@ -5029,7 +5029,7 @@ mod tests {
     }
 
     #[test]
-    fn upsert_monitor_replay_then_terminal_event_keeps_stopped() {
+    fn replay_restored_monitor_accepts_terminal_completed_event() {
         // The replay walker may emit one or more terminal
         // `task_updated` events after the initial tool_use. Those
         // route through `set_monitor_status_by_task_id` and re-flip
