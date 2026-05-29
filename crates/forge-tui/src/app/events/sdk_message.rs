@@ -63,12 +63,39 @@ fn handle_thinking_tokens(app: &mut App, estimated_tokens: u64) {
     app.set_latest_thinking_tokens(Some(estimated_tokens));
 }
 
-/// #273: Persist the just-completed turn's wall-clock duration so the
-/// assistant banner chip `Claude · N.Ns` shows on the active turn's
-/// banner row. The field is per-session and survives across turns
-/// (each turn overwrites with its own duration on completion).
+/// #273 + #275 Bug 2: Persist the just-completed turn's wall-clock
+/// duration. Two write paths:
+///
+/// 1. **Per-message stamp** (the renderer's source of truth):
+///    walks the session's chat history backwards to find the most
+///    recent Assistant `ChatMessage` and stamps its
+///    `turn_duration_ms` field. The role-label renderer surfaces
+///    the chip from this field, so every completed assistant turn
+///    in scrollback shows its own `Forge - N.Ns` banner chip.
+/// 2. **Spinner cache** (`set_last_turn_duration_ms`): kept for
+///    downstream consumers that read the per-session value (e.g.
+///    instrumentation, telemetry). The renderer no longer reads
+///    this for the chip - that path was the #275 Bug 2 regression
+///    (gated on `is_active_turn_assistant`, which is already false
+///    by the time `TurnDuration` arrives at end-of-turn).
+///
+/// Edge case: if no assistant message exists yet (turn finalised
+/// with only tool calls and no assistant text/notice block), the
+/// per-message stamp silently no-ops. The spinner-cache write
+/// still fires, preserving historical behaviour.
 fn handle_turn_duration(app: &mut App, ms: u64) {
     app.set_last_turn_duration_ms(Some(ms));
+    stamp_turn_duration_on_latest_assistant(app, ms);
+}
+
+fn stamp_turn_duration_on_latest_assistant(app: &mut App, ms: u64) {
+    use crate::app::MessageRole;
+    let messages = app.active_messages_mut();
+    if let Some(msg) = messages.iter_mut().rev().find(|m| matches!(m.role, MessageRole::Assistant))
+    {
+        msg.turn_duration_ms = Some(ms);
+        msg.invalidate_render_cache();
+    }
 }
 
 /// #273: Capture the stop-hook summary for the active assistant
@@ -1600,6 +1627,78 @@ mod queued_command_tests {
         let prompt = json!({"weird": "shape"});
         let out = extract_queued_command_text(&prompt);
         assert!(out.contains("weird"));
+    }
+}
+
+#[cfg(test)]
+mod turn_duration_stamp_tests {
+    //! #275 Bug 2: `handle_turn_duration` stamps `turn_duration_ms`
+    //! on the most recent assistant `ChatMessage` in the session.
+    //! The renderer reads from the per-message field; no longer
+    //! gated on the spinner's `is_active_turn_assistant` flag.
+    use super::handle_turn_duration;
+    use crate::app::{App, ChatMessage, MessageBlock, MessageRole, TextBlock};
+
+    fn push_assistant_message(app: &mut App, text: &str) {
+        app.active_messages_mut().push(ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::Text(TextBlock::from_complete(text))],
+            None,
+        ));
+    }
+
+    fn push_user_message(app: &mut App, text: &str) {
+        app.active_messages_mut().push(ChatMessage::new(
+            MessageRole::User,
+            vec![MessageBlock::Text(TextBlock::from_complete(text))],
+            None,
+        ));
+    }
+
+    #[test]
+    fn stamps_most_recent_assistant_message() {
+        let mut app = App::test_default();
+        push_assistant_message(&mut app, "older turn");
+        push_user_message(&mut app, "next prompt");
+        push_assistant_message(&mut app, "latest turn");
+        handle_turn_duration(&mut app, 12_400);
+        let messages = app.messages();
+        // Older assistant turn untouched; only the most-recent
+        // assistant message gets the stamp.
+        assert_eq!(messages[0].turn_duration_ms, None);
+        assert_eq!(messages[2].turn_duration_ms, Some(12_400));
+    }
+
+    #[test]
+    fn no_op_when_no_assistant_message_exists() {
+        // Edge case: turn finalises before any assistant message
+        // landed (e.g. tool-only turn that errored). `handle_turn_duration`
+        // must not panic; the spinner-cache write still fires for
+        // downstream consumers.
+        let mut app = App::test_default();
+        push_user_message(&mut app, "lonely prompt");
+        handle_turn_duration(&mut app, 5_000);
+        let messages = app.messages();
+        assert_eq!(messages[0].turn_duration_ms, None);
+        // Spinner cache still receives the value.
+        assert_eq!(app.last_turn_duration_ms(), Some(5_000));
+    }
+
+    #[test]
+    fn second_turn_does_not_overwrite_earlier_assistant_stamp() {
+        // Multiple completed turns each carry their own duration in
+        // scrollback. `handle_turn_duration` only touches the latest
+        // assistant; the prior turn's stamp persists.
+        let mut app = App::test_default();
+        push_assistant_message(&mut app, "first turn");
+        handle_turn_duration(&mut app, 3_000);
+        assert_eq!(app.messages()[0].turn_duration_ms, Some(3_000));
+
+        push_user_message(&mut app, "next prompt");
+        push_assistant_message(&mut app, "second turn");
+        handle_turn_duration(&mut app, 7_500);
+        assert_eq!(app.messages()[0].turn_duration_ms, Some(3_000));
+        assert_eq!(app.messages()[2].turn_duration_ms, Some(7_500));
     }
 }
 
