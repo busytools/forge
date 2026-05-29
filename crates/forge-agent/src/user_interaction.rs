@@ -1,5 +1,5 @@
 //! `AskUserQuestion` sequential sequencing. Mirrors upstream's
-//! `agent-sdk/src/bridge/user_interaction.ts` (323 `LoC`) — focused on
+//! `agent-sdk/src/bridge/user_interaction.ts` (323 `LoC`) - focused on
 //! the multi-question loop + answer-payload assembly.
 //!
 //! The actual loop driver lives in `forge_sdk_worker::run_ask_user_question`
@@ -108,7 +108,7 @@ pub fn parse_ask_user_question_prompts(input: &Value) -> Vec<AskUserQuestionProm
     prompts
 }
 
-/// Mirrors `askUserQuestionOptions(prompt)` — synthesises wire
+/// Mirrors `askUserQuestionOptions(prompt)` - synthesises wire
 /// `option_id` slugs as `question_<index>` so the TUI can map back
 /// to the upstream label list when responding.
 fn ask_user_question_wire_options(prompt: &AskUserQuestionPrompt) -> Vec<TuiQuestionOption> {
@@ -215,7 +215,7 @@ pub fn build_updated_input(
 // ----------------------------------------------------------------
 // #273: CLI 2.1.156 Monitor + Workflow typed tool_use inputs.
 //
-// Placement follows the AskUserQuestion convention above — agent-layer
+// Placement follows the AskUserQuestion convention above - agent-layer
 // types co-located with their parsers. The renderer consumes these
 // via the standard `raw_input: Value` -> parse path; the typed
 // structs give Tasks 8/9 a clean shape to mutate `UiSession.monitors`
@@ -240,7 +240,7 @@ pub struct MonitorInput {
 
 /// Parse a `Monitor` tool_use's `raw_input` into a `MonitorInput`.
 /// Returns `None` when `description` or `command` is missing or
-/// non-string — both are required for a meaningful render.
+/// non-string - both are required for a meaningful render.
 #[must_use]
 pub fn parse_monitor_input(input: &Value) -> Option<MonitorInput> {
     let obj = input.as_object()?;
@@ -267,7 +267,7 @@ pub struct WorkflowInput {
 }
 
 /// Parse a `Workflow` tool_use's `raw_input` into a `WorkflowInput`.
-/// Returns `None` when `script` is missing or non-string — the
+/// Returns `None` when `script` is missing or non-string - the
 /// renderer can't show a phase tree or even an inferred meta name
 /// without the source.
 #[must_use]
@@ -417,7 +417,7 @@ mod tests {
     #[test]
     fn parse_recommended_suffix_is_case_sensitive() {
         // Lowercase / mid-string `recommended` stays as a literal
-        // part of the label — CLI emits the canonical
+        // part of the label - CLI emits the canonical
         // ` (Recommended)` form only.
         let input = json!({"questions": [{
             "question": "Q",

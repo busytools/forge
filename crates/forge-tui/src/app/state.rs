@@ -96,9 +96,9 @@ pub struct TurnNoticeRef {
 /// mouse handler on click. Same render-time-stamp pattern as the
 /// per-tool-call expand/collapse.
 ///
-/// `ProjectHeader` and `SessionRow` are y-only — they span the full
+/// `ProjectHeader` and `SessionRow` are y-only - they span the full
 /// pane width, so an x-coord doesn't add information. `TopBarIcon`
-/// and `OverlayClose` are x+y bounded — they target a specific glyph
+/// and `OverlayClose` are x+y bounded - they target a specific glyph
 /// position on a one-row band shared with other content.
 #[derive(Debug, Clone)]
 pub enum PaneHitTarget {
@@ -230,7 +230,7 @@ pub struct ChatRenderTraceState {
     pub selection_snapshot_active: bool,
 }
 
-// `App` is the god struct — bools are independent UI flags (autoscroll, paste-detected, dirty-rerender). Bundling defeats clarity at call sites.
+// `App` is the god struct - bools are independent UI flags (autoscroll, paste-detected, dirty-rerender). Bundling defeats clarity at call sites.
 pub struct App {
     pub active_view: ActiveView,
     pub config: ConfigState,
@@ -277,7 +277,7 @@ pub struct App {
     /// Receiver for `SessionUpdate`s emitted by the workspace. The
     /// main event loop reads from here and dispatches via
     /// `events::apply_session_update`. Replaces the legacy
-    /// `event_tx`/`event_rx` `ClientEvent` channel — user actions
+    /// `event_tx`/`event_rx` `ClientEvent` channel - user actions
     /// flow out via `workspace.dispatch(Command::...)`.
     pub update_rx: mpsc::UnboundedReceiver<forge_workspace::SessionUpdate>,
     /// Sender shared with TUI-internal async tasks (plugin inventory,
@@ -317,7 +317,7 @@ pub struct App {
     pub diff_scan_seq: u64,
     /// Latest installed-vs-published claude CLI version snapshot.
     /// `None` until the startup fetch task lands. Rendered by the
-    /// bottom-left account panel; missing values render as DIM `—`
+    /// bottom-left account panel; missing values render as DIM `-`
     /// so the panel's row count stays constant.
     pub cli_version_info: Option<forge_workspace::env::cli_version::CliVersionInfo>,
     pub spinner_frame: usize,
@@ -326,8 +326,8 @@ pub struct App {
     /// Toggled by Ctrl+X and applied at render/layout time.
     pub tools_collapsed: bool,
     /// Whether the Wide-tier Projects pane is currently visible.
-    /// Toggled by Ctrl+B at Wide / Medium tiers. In-memory only —
-    /// each launch starts visible. Has no effect at Narrow tier —
+    /// Toggled by Ctrl+B at Wide / Medium tiers. In-memory only -
+    /// each launch starts visible. Has no effect at Narrow tier -
     /// that tier renders the top bar unconditionally and uses
     /// [`Self::projects_pane_overlay_open`] for the on-demand
     /// overlay.
@@ -335,29 +335,29 @@ pub struct App {
     /// Scroll offset (in row units) for the Projects pane body. Top
     /// banner row + DIM rule stay pinned regardless; the project /
     /// session list scrolls under them. Bottom account footer also
-    /// stays pinned. In-memory only — each launch starts at 0.
+    /// stays pinned. In-memory only - each launch starts at 0.
     /// Mouse wheel over the pane bumps this; renderer clamps against
     /// `(total_rows - visible_height)` each frame so a wheel-past-end
     /// settles at the bottom rather than scrolling past.
     pub projects_pane_scroll_offset: u16,
     /// Whether the Narrow-tier Projects overlay is currently open.
-    /// Transient — NOT persisted; each launch starts closed. Toggled
+    /// Transient - NOT persisted; each launch starts closed. Toggled
     /// by Ctrl+B at Narrow tier or by clicking the `▤` icon in the
     /// top bar; closed by clicking the overlay's `✕` glyph, by Esc,
     /// or by switching to a project / session row inside the overlay.
     pub projects_pane_overlay_open: bool,
     /// Whether the Wide/Medium-tier Inspector pane is currently
     /// visible (right side, mirror of [`Self::projects_pane_visible`]).
-    /// Toggled by Ctrl+E. In-memory only — each launch starts visible.
-    /// Has no effect at Narrow tier — that tier uses
+    /// Toggled by Ctrl+E. In-memory only - each launch starts visible.
+    /// Has no effect at Narrow tier - that tier uses
     /// [`Self::inspector_pane_overlay_open`] for the on-demand
     /// overlay.
     pub inspector_pane_visible: bool,
     /// Whether the Narrow-tier Inspector overlay is currently open.
-    /// Transient — NOT persisted; each launch starts closed. Toggled
+    /// Transient - NOT persisted; each launch starts closed. Toggled
     /// by Ctrl+E at Narrow tier or by clicking the `▦` icon in the
     /// top bar; closed by clicking the overlay's `✕` glyph or by
-    /// Esc. Mutually exclusive with `projects_pane_overlay_open` —
+    /// Esc. Mutually exclusive with `projects_pane_overlay_open` -
     /// opening one closes the other.
     pub inspector_pane_overlay_open: bool,
     /// Click hit-targets stamped by
@@ -378,17 +378,17 @@ pub struct App {
     pub plugins: PluginsState,
     // `recent_sessions: Vec<RecentSessionInfo>` moved to
     // `UiSession.recent_sessions` (per-session bucket). The session
-    // list is per-project — switching active session via the
+    // list is per-project - switching active session via the
     // Projects pane naturally swaps the list along with the bucket.
     // See `App::recent_sessions` / `App::recent_sessions_mut`.
     /// State for the launchpad view (project picker shown when forge
     /// is invoked without a project argv, or after `/launchpad`).
-    /// Always present — reset whenever the active view transitions
+    /// Always present - reset whenever the active view transitions
     /// to [`ActiveView::Launchpad`] via the launchpad open helper.
     /// When the active view is anything else this is unused but
     /// kept allocated so transitions are cheap.
     pub launchpad: crate::app::LaunchpadState,
-    /// Diff overlay state — `Some` while [`ActiveView::Diff`] is
+    /// Diff overlay state - `Some` while [`ActiveView::Diff`] is
     /// up, `None` otherwise. Dropped on overlay close so a stale
     /// snapshot can't leak into the next open.
     pub diff_overlay: Option<crate::app::DiffOverlayState>,
@@ -413,13 +413,13 @@ pub struct App {
     pub rendered_inspector_body_area: ratatui::layout::Rect,
     /// Rect of the Projects pane's scrollable body (the area below
     /// the pinned `PROJECTS` banner / rule and above the account
-    /// footer). Mirror of `rendered_inspector_body_area` — used by
+    /// footer). Mirror of `rendered_inspector_body_area` - used by
     /// the mouse handler to route wheel events to
     /// `projects_pane_scroll_offset` instead of the chat viewport.
     /// `Rect::default()` until the first projects-pane render.
     pub rendered_projects_pane_body_area: ratatui::layout::Rect,
     // `file_index: FileIndexState` moved to `UiSession.file_index`
-    // (per-session bucket). The scanner is project-scoped — switching
+    // (per-session bucket). The scanner is project-scoped - switching
     // active session shows the new project's files. The channel
     // endpoints (`file_index_event_tx` / `_rx`) stay App-level since
     // the scanner thread is a single workspace-wide pump. See
@@ -456,7 +456,7 @@ pub struct App {
     /// walking on-disk history through the shared SDK-message
     /// dispatcher. Replay reuses the live walker so content blocks,
     /// tool_use, todos, and plans land in the bucket via the same code
-    /// path — but the walker also has side effects that are wrong for
+    /// path - but the walker also has side effects that are wrong for
     /// replay (most notably the lifecycle `Running` write in
     /// `handle_assistant`, added so a mid-turn click flips the
     /// Projects-pane spinner on). Replay messages are historical, not
@@ -588,7 +588,7 @@ impl App {
         // doesn't leave a stale `Thinking`/`Running` status on the
         // incoming bucket. Input state lives on each `UiSession`, so
         // switching `active_session_key` naturally swaps the editor
-        // — no draft snapshot/restore needed.
+        // - no draft snapshot/restore needed.
         let incoming_lifecycle = self
             .sessions
             .get(&key)
@@ -612,14 +612,14 @@ impl App {
         // it's a no-op when the bucket's index is already scanning
         // or has a current root matching the cwd.
         crate::app::file_index::ensure_started(self);
-        // No explicit git-diff refresh on session switch — the 10s
+        // No explicit git-diff refresh on session switch - the 10s
         // timer (which fires its first tick immediately) catches any
         // stale snapshot on the next pump cycle.
         //
         // Activation parity with the chat-direct path
         // (`forge <project>`). That path lands the user in a fully
         // wired session via `apply_connected_presentation`'s active
-        // branch — file index restart, chat focus rebuild, runtime
+        // branch - file index restart, chat focus rebuild, runtime
         // tabs refresh, the same per-session refresh chain. The
         // launchpad-pick path spawns the project in the BACKGROUND
         // branch (because `__conn_pending__` is still active at
@@ -683,7 +683,7 @@ impl App {
     /// Borrow the active session's chat viewport.
     ///
     /// Falls back to a leaked default viewport if the active bucket
-    /// is missing — the production startup path always seeds one,
+    /// is missing - the production startup path always seeds one,
     /// so the fallback is a safety net rather than a hot path.
     pub fn viewport(&self) -> &ChatViewport {
         static FALLBACK: std::sync::OnceLock<ChatViewport> = std::sync::OnceLock::new();
@@ -760,13 +760,13 @@ impl App {
     /// `active_session_key`. The active-path event handlers
     /// (`auth_required`, `connection_failed`) call this from inside
     /// a longer cleanup sequence that still needs to write into the
-    /// active bucket — finalizing in-flight tool calls to Failed,
-    /// pushing system messages — so the user can see what happened.
+    /// active bucket - finalizing in-flight tool calls to Failed,
+    /// pushing system messages - so the user can see what happened.
     /// Removing the bucket here would orphan that work into a
     /// freshly-minted pre-Connect bucket.
     ///
     /// If a synthetic-keyed bucket exists (from an earlier
-    /// `install_testing_stub` before `set_session_id` — test ordering),
+    /// `install_testing_stub` before `set_session_id` - test ordering),
     /// migrates that bucket's contents to the real key so the conn
     /// + session_id end up on the same bucket.
     ///
@@ -821,7 +821,7 @@ impl App {
                 // DomainSession so `AgentHandle` dispatch (which
                 // routes by claude-issued session UUID) finds it.
                 // Auto-create a handle-less domain when the workspace
-                // doesn't yet have one for `key` — covers the rare
+                // doesn't yet have one for `key` - covers the rare
                 // test path that calls `set_session_id` before any
                 // domain is registered.
                 if let Some(ws) = self.workspace.as_ref() {
@@ -849,7 +849,7 @@ impl App {
             // `set_session_id(Some(...))` re-stamps it). Keep
             // the bucket attached to `active_session_key` so
             // the active-path handler can keep writing into it
-            // (failed tool calls, system messages — see doc
+            // (failed tool calls, system messages - see doc
             // comment above). Also clear the workspace's
             // DomainSession session_id so readers observe `None`.
             if let Some(s) = self.try_active_bucket_mut() {
@@ -866,7 +866,7 @@ impl App {
 
     /// `true` when the active session has a registered agent handle
     /// in the workspace's `DomainSession`. Production code consults
-    /// this rather than holding an `Arc<AgentHandle>` directly —
+    /// this rather than holding an `Arc<AgentHandle>` directly -
     /// outbound traffic flows through `Workspace::dispatch` /
     /// `Workspace::refresh_*` calls.
     pub fn has_active_agent(&self) -> bool {
@@ -1041,8 +1041,8 @@ impl App {
     /// Borrow the active session's active task id set.
     ///
     /// Falls back to a leaked empty set when the active bucket is
-    /// missing — matches the existing infallible-reader pattern
-    /// (`viewport()`, `turn_state()`, …).
+    /// missing - matches the existing infallible-reader pattern
+    /// (`viewport()`, `turn_state()`, ...).
     pub fn active_task_ids(&self) -> &HashSet<String> {
         static FALLBACK: std::sync::OnceLock<HashSet<String>> = std::sync::OnceLock::new();
         match self.active_session() {
@@ -1311,7 +1311,7 @@ impl App {
     /// a fetch result onto the bucket that requested it, even if
     /// the user has switched active session mid-fetch. Returns
     /// `None` when the target bucket no longer exists (session
-    /// closed before the result landed — drop the result silently).
+    /// closed before the result landed - drop the result silently).
     pub fn usage_mut_for(&mut self, key: &forge_workspace::SessionKey) -> Option<&mut UsageState> {
         self.sessions.get_mut(key).map(|s| &mut s.usage)
     }
@@ -1834,7 +1834,7 @@ impl App {
         self.clear_workflows_if_all_terminal();
     }
 
-    /// Drain the WORKFLOWS list once every entry has finished —
+    /// Drain the WORKFLOWS list once every entry has finished -
     /// matches the MONITORS / TODOs all-completed clear shape.
     fn clear_workflows_if_all_terminal(&mut self) {
         let workflows = self.workflows_mut();
@@ -2045,14 +2045,14 @@ impl App {
 
     /// Returns `(label, value)` for the welcome message's account
     /// line. The line's *layout slot* is reserved from the first
-    /// frame in workspace mode — `Account: …` shows immediately,
+    /// frame in workspace mode - `Account: ...` shows immediately,
     /// then the value fills in once data lands. Avoids the
     /// alternative options (line pops in late, or flickers
     /// `Granite` → `Granite · team`) that surface as stale UI.
     ///
     /// Resolution table:
     /// - Workspace mode + both pieces → `"Account: name · tier"`.
-    /// - Workspace mode + partial/no data → `"Account: …"` skeleton.
+    /// - Workspace mode + partial/no data → `"Account: ..."` skeleton.
     /// - Legacy mode (no workspace) + tier only → `"Subscription: tier"`.
     /// - Legacy mode + no data → empty (renderer hides line).
     fn welcome_account_display(&self) -> (String, String) {
@@ -2071,7 +2071,7 @@ impl App {
 
         match (workspace_mode, display_name, subscription) {
             (_, Some(name), Some(tier)) => ("Account".to_owned(), format!("{name} · {tier}")),
-            (true, _, _) => ("Account".to_owned(), "…".to_owned()),
+            (true, _, _) => ("Account".to_owned(), "\u{2026}".to_owned()),
             (false, _, Some(tier)) => ("Subscription".to_owned(), tier),
             (false, _, None) => (String::new(), String::new()),
         }
@@ -2127,7 +2127,7 @@ impl App {
         // Carry the build-stamped version (with short SHA) through
         // every sync, not the bare `CARGO_PKG_VERSION`. Otherwise the
         // first sync after construction strips the SHA off the
-        // welcome banner — the launchpad version line still shows
+        // welcome banner - the launchpad version line still shows
         // `+<sha>`, but the chat-view welcome reads as bare
         // `0.15.1`, which makes screenshots ambiguous about which
         // commit was running.
@@ -2693,7 +2693,7 @@ mod tests {
     fn test_default_seeds_pre_connect_bucket_so_accessors_are_infallible() {
         let app = App::test_default();
         // Task 3 onwards: per-session field accessors (messages, viewport,
-        // …) need an active session to read/write. test_default seeds a
+        // ...) need an active session to read/write. test_default seeds a
         // synthetic pre-Connect bucket so call sites stay infallible
         // before Connect lands.
         assert_eq!(app.sessions.len(), 1);
@@ -2740,7 +2740,7 @@ mod tests {
         dest_bucket.session_id =
             Some(forge_primitives::SessionId::new(dest_key.as_str().to_owned()));
         app.sessions.insert(dest_key.clone(), dest_bucket);
-        // Hold the destination's command receiver alive at test scope —
+        // Hold the destination's command receiver alive at test scope -
         // dropping it before `switch_active_session` runs makes the
         // workspace's stub-handle send fail, which routes through the
         // error arm in `request_context_usage_refresh` and resets the
@@ -2780,7 +2780,7 @@ mod tests {
     }
 
     /// Regression: the pre-connect bucket's `cwd_raw` must not be
-    /// seeded from `std::env::current_dir()` — forge.toml is the
+    /// seeded from `std::env::current_dir()` - forge.toml is the
     /// source of truth (Hard Rule #15). In launchpad mode (no argv
     /// project), the pre-connect bucket's `cwd_raw` stays empty so
     /// it cannot collide with any project lookup. This test pins
@@ -2794,7 +2794,7 @@ mod tests {
         // launchpad-mode pre-connect uses an empty `cwd_raw`. Either
         // way, the invariant the production fix relies on is that no
         // real project's `path` ever ends up matching the pre-connect
-        // bucket's `cwd_raw` — there is no way to construct a forge
+        // bucket's `cwd_raw` - there is no way to construct a forge
         // project named `/test` and pre-connect cannot equal a real
         // project's `path` accidentally because nothing reads from
         // `current_dir()` to seed it anymore.
@@ -2808,7 +2808,7 @@ mod tests {
     /// `find_running_bucket_for_path` returns the unique bucket
     /// matching `path` when one exists. The pre-connect bucket
     /// never participates because its `cwd_raw` is sourced from
-    /// `forge.toml`-or-empty, not from `current_dir()` — so it
+    /// `forge.toml`-or-empty, not from `current_dir()` - so it
     /// cannot accidentally match a real project's `path`.
     #[test]
     fn find_running_bucket_for_path_returns_matching_real_bucket() {

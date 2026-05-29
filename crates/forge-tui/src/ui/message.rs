@@ -55,7 +55,7 @@ const WELCOME_TIPS: &[&str] = &[
 /// Snapshot of the app state needed by the spinner -- extracted before
 /// the message loop so we don't need `&App` (which conflicts with `&mut msg`).
 #[derive(Clone, Copy)]
-// Spinner state — bools track frame ticks, blink flag, halted, idle, etc. — separate flags read better than a packed bitmask at call sites.
+// Spinner state - bools track frame ticks, blink flag, halted, idle, etc. - separate flags read better than a packed bitmask at call sites.
 pub struct SpinnerState {
     pub frame: usize,
     /// True when this message owns the currently active assistant turn.
@@ -282,7 +282,7 @@ fn build_message_layout(
 /// `↳ hook summary · N actions [▶ expand]` chip. When `expanded`,
 /// follow with one DIM indented `command · duration` row per hook.
 /// Caller already gated on `actions > 0` so this function assumes
-/// the chip is wanted. Returns `(chip_y_in_msg, chip_height)` — the
+/// the chip is wanted. Returns `(chip_y_in_msg, chip_height)` - the
 /// wrapped-row offset and height of the clickable chip line(s),
 /// excluding the leading blank and any expanded hook rows. Caller
 /// stamps these on the `ChatMessage` so the mouse handler can route
@@ -338,14 +338,14 @@ fn append_user_blocks(
     for block in &mut msg.blocks {
         match block {
             MessageBlock::Text(block) => {
-                // Peer-coordination wrappers (#114) — when the
-                // workspace injects a `[Question id=…]` /
-                // `[Reply id=…]` / etc. user-turn, render a styled
+                // Peer-coordination wrappers (#114) - when the
+                // workspace injects a `[Question id=...]` /
+                // `[Reply id=...]` / etc. user-turn, render a styled
                 // peer block instead of the default user bubble.
                 // Collapse state mirrors the global tool-card
                 // preference so Ctrl+X flips peer rows and tool rows
                 // together. Inbound peer turns don't (yet) have a
-                // per-row override the way ToolCallInfo does — the
+                // per-row override the way ToolCallInfo does - the
                 // global default is the only knob.
                 if let Some(kind) = peer_block::detect_inbound(&block.text) {
                     let trailing_gap = block.trailing_blank_lines();
@@ -540,7 +540,7 @@ fn append_assistant_tool_block(
     if tc.hidden_unless_focused_interaction() {
         return;
     }
-    // Peer-coordination outbound (#114) — replace the default
+    // Peer-coordination outbound (#114) - replace the default
     // tool_use card for `mcp__forge__peers__ask_agent` /
     // `peers__tell_agent` with a styled peer block in the same
     // tool-card shape (status icon + kind label + tree body).
@@ -573,7 +573,7 @@ fn append_assistant_tool_block(
             layout.push_blank();
         }
         // #143 item 5: routine `mcp__forge__*` calls collapse to a
-        // one-line summary by default — the wire shape is
+        // one-line summary by default - the wire shape is
         // predictable and the user-facing intent is target +
         // correlation_id, not the JSON args. A per-tc
         // `collapsed_override` (set by clicking on the row) still
@@ -626,7 +626,7 @@ fn append_assistant_tool_block(
     // Capture the tool's wrapped-row offset within this message *after*
     // any leading blank from the prev-was-tool/has-body-content gap so
     // mouse hit-testing can locate the rendered row range directly
-    // from the tool's own state — no need to walk text-block heights
+    // from the tool's own state - no need to walk text-block heights
     // (which can return None when their cache version is stale).
     let y_in_msg = layout.height;
     layout.push_lines(lines, height, wrapped_lines);
@@ -881,7 +881,7 @@ pub fn measure_message_height_cached_with_tools_collapsed_and_separator_and_mode
     )
 }
 
-/// Lowest-level measurement helper — accepts the full
+/// Lowest-level measurement helper - accepts the full
 /// `MessageRenderOptions` so callers that compute
 /// `suppress_group_header` (chat.rs's measure + render passes for
 /// same-project envelope grouping) can thread it through without
@@ -1399,7 +1399,7 @@ fn role_label_line(msg: &ChatMessage, spinner: &SpinnerState) -> Line<'static> {
         MessageRole::User => {
             // Peer / worker MCP envelopes ride on the User role at
             // the SDK protocol level (claude treats them as user
-            // turns), but they're agent-to-agent traffic — the chat
+            // turns), but they're agent-to-agent traffic - the chat
             // label "User" misrepresents them as human input.
             // Distinguish: real human input keeps the "User" label;
             // any User message whose first text block is a peer-
@@ -1441,7 +1441,7 @@ fn role_label_line(msg: &ChatMessage, spinner: &SpinnerState) -> Line<'static> {
 /// `ChatMessage` (stamped at push time by the
 /// `PeerEnvelopeAppended` path via `ChatMessage::new_peer_envelope`)
 /// rather than walking blocks + running `detect_inbound` per frame.
-/// The walk was a hot path under heavy envelope traffic — the role
+/// The walk was a hot path under heavy envelope traffic - the role
 /// label re-evaluates on every render of every chat message.
 fn is_peer_envelope_user_message(msg: &ChatMessage) -> bool {
     msg.is_peer_envelope
@@ -1522,7 +1522,7 @@ pub(crate) enum EnvelopeStreakPosition {
     FollowerNewWorker,
     /// Subsequent envelope in a same-project streak from the SAME
     /// worker as the previous envelope. Renders compactly without
-    /// the worker label — body continues under the existing tag
+    /// the worker label - body continues under the existing tag
     /// column so a contiguous run of one worker's messages reads as
     /// one paragraph.
     FollowerSameWorker,
@@ -1570,7 +1570,7 @@ pub(crate) fn compute_envelope_streak_position(
     let prev_org = message_envelope_org(&messages[idx - 1]);
     if prev_org.as_deref() != Some(cur_org.as_str()) {
         // Previous message either isn't an envelope or is from a
-        // different project — this envelope starts a fresh streak.
+        // different project - this envelope starts a fresh streak.
         return Some(EnvelopeStreakPosition::Start);
     }
     // Same-project streak follower. Distinguish same-worker
@@ -1672,7 +1672,7 @@ fn welcome_lines(block: &WelcomeBlock, _width: u16) -> Vec<Line<'static>> {
     // (tests / smoke). Width-pad to 13 chars + 1 space = 14 chars
     // total to align with Version/cwd/Session ID rows.
     //
-    // Skip the line entirely when value is empty (no data yet) —
+    // Skip the line entirely when value is empty (no data yet) -
     // avoids flashing a placeholder while the workspace picker /
     // status snapshot are still in flight.
     if !block.subscription.is_empty() {
@@ -2189,7 +2189,7 @@ mod tests {
     #[test]
     fn welcome_lines_render_expected_fields() {
         // Pass a non-empty subscription value so the account line
-        // renders. Empty value would hide the line — see
+        // renders. Empty value would hide the line - see
         // `welcome_lines_skip_account_line_when_value_empty`.
         let message = ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "Pro", "/cwd", "-");
         let MessageBlock::Welcome(block) = &message.blocks[0] else {
@@ -2215,7 +2215,7 @@ mod tests {
     fn welcome_lines_skip_account_line_when_value_empty() {
         // Empty subscription value means no data has loaded yet
         // (workspace picker still in flight or no workspace at
-        // all). The renderer hides the line entirely — better than
+        // all). The renderer hides the line entirely - better than
         // showing a "-" placeholder that flickers when the real
         // value lands.
         let message = ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "", "/cwd", "-");
@@ -3549,7 +3549,7 @@ mod tests {
 
     #[test]
     fn assistant_role_label_chip_only_shows_on_active_turn() {
-        // Two messages — both Assistant — but only the active turn's
+        // Two messages - both Assistant - but only the active turn's
         // spinner carries `is_active_turn_assistant=true`. The chip
         // must surface for the active one and be silent for the
         // historical one even when the spinner carries a duration.
@@ -3638,7 +3638,7 @@ mod tests {
     #[test]
     fn stop_hook_summary_renders_nothing_when_actions_zero() {
         let rendered = render_assistant_with_stop_hook(0, false, &[]);
-        // Forge label + "done" only — no chip, no expand state.
+        // Forge label + "done" only - no chip, no expand state.
         assert!(
             rendered.iter().all(|line| !line.contains("↳ hook summary")),
             "actions==0 must produce no chip; got {rendered:?}",
@@ -3678,7 +3678,7 @@ mod tests {
         // The renderer must stamp `stop_hook_summary_y_in_msg /
         // stop_hook_summary_height` on the ChatMessage so the mouse
         // handler can route clicks back to the toggle. Stamping
-        // happens during `build_message_layout` — invoked through
+        // happens during `build_message_layout` - invoked through
         // any render or measure call.
         let spinner = idle_spinner();
         let mut msg = make_text_message(MessageRole::Assistant, "done");
@@ -3790,7 +3790,7 @@ mod tests {
 
     #[test]
     fn monitor_with_malformed_input_falls_through_to_default_render() {
-        // Missing required `command` field — parser returns None,
+        // Missing required `command` field - parser returns None,
         // helper returns None so the caller falls through to the
         // standard tool-card render path.
         let mut tc = make_tool_call_info(

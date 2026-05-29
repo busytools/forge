@@ -91,7 +91,7 @@ pub fn tool_name_label(sdk_tool_name: &str) -> (&'static str, &'static str) {
         "LSP" => ("\u{2699}", "LSP"),
         "TaskOutput" => ("\u{25c9}", "TaskOutput"),
         "TaskStop" => ("\u{25cd}", "TaskStop"),
-        // Filled diamond ◆ — agent-script flow, distinct from
+        // Filled diamond ◆ - agent-script flow, distinct from
         // Task/Agent's hollow ◇ subagent-dispatch glyph.
         "Workflow" => ("\u{25c6}", "Workflow"),
         _ => ("\u{25cb}", "Tool"),

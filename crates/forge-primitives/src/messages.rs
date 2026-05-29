@@ -16,7 +16,7 @@ use crate::runtime::{FastModeState, TerminalReason};
 /// One stream-json message.
 ///
 /// Wire-level dispatch on `type` and, for `type="system"`, on `subtype` is
-/// handled by a private shim — users never see it. Every variant here is
+/// handled by a private shim - users never see it. Every variant here is
 /// the user-facing shape.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Message {
@@ -40,7 +40,7 @@ pub enum Message {
         uuid: Option<String>,
     },
 
-    /// A user turn — user prompts or tool-result envelopes.
+    /// A user turn - user prompts or tool-result envelopes.
     User {
         /// The nested user-message envelope.
         message: UserEnvelope,
@@ -48,7 +48,7 @@ pub enum Message {
         session_id: String,
         /// Parent tool-use id when this is a sub-agent turn.
         parent_tool_use_id: Option<String>,
-        /// Stable identifier for this user turn — the `user_message_id`
+        /// Stable identifier for this user turn - the `user_message_id`
         /// `forge_sdk::Client::rewind_files` takes.
         /// the CLI `UserMessage.uuid`. `None` unless the
         /// CLI is configured to emit them
@@ -61,7 +61,7 @@ pub enum Message {
         tool_use_result: Option<Value>,
     },
 
-    /// Out-of-band system event — `subtype` discriminates (e.g. `"init"`).
+    /// Out-of-band system event - `subtype` discriminates (e.g. `"init"`).
     /// Known task-lifecycle and mirror-error subtypes get their own typed
     /// variants below; everything else lands here with the raw payload.
     System {
@@ -99,7 +99,7 @@ pub enum Message {
     /// Without a typed variant, the reducer can't transition a
     /// backgrounded Bash from `running` to `completed`.
     TaskUpdated {
-        /// Stable identifier for this task instance — same id surface
+        /// Stable identifier for this task instance - same id surface
         /// as `task_started` / `task_progress` / `task_notification`.
         task_id: String,
         /// Incremental patch applied to the task's state. Each field
@@ -142,7 +142,7 @@ pub enum Message {
     /// `TaskNotificationMessage`.
     ///
     /// Despite the generic-sounding name, captures confirm this
-    /// variant only fires for the `Task` sub-agent tool — backgrounded
+    /// variant only fires for the `Task` sub-agent tool - backgrounded
     /// `Bash` and `Monitor` use the `task_started` / `task_updated`
     /// pair (see [`Self::TaskStarted`], [`Self::TaskProgress`]) and
     /// Monitor stream events arrive as `Result` frames with
@@ -278,7 +278,7 @@ pub enum Message {
         /// Total cost so far in USD. `None` when the CLI can't compute
         /// or doesn't report (free-tier sessions, error-path results).
         total_cost_usd: Option<f64>,
-        /// Aggregate token usage for the turn. Optional — the CLI
+        /// Aggregate token usage for the turn. Optional - the CLI
         /// omits the field on error-path frames.
         usage: Option<Usage>,
         /// Plain-text result body when the turn produced one (e.g. the
@@ -328,7 +328,7 @@ pub enum Message {
 
     /// Fatal transport error injected into the message stream when the
     /// CLI's read loop fails. the CLI emits this at
-    /// as a last-gasp signal before teardown — emitted by the
+    /// as a last-gasp signal before teardown - emitted by the
     /// CLI's read loop. forge-sdk surfaces it via
     /// the events stream returned by `forge_sdk::Client::spawn` so callers
     /// see the failure on the iterator rather than via a side
@@ -348,14 +348,14 @@ pub enum Message {
     ///
     /// Mirrors the `Unknown` pattern already used by
     /// [`ContentBlock`] and `forge_sdk::control::ControlRequestKind`.
-    /// Never produced by deserialization — `decode_dispatch` filters
+    /// Never produced by deserialization - `decode_dispatch` filters
     /// unknown types into the SDK's `DecodedLine::Unknown`
-    /// before they reach serde — but `Serialize` round-trips `raw`
+    /// before they reach serde - but `Serialize` round-trips `raw`
     /// verbatim so logs / replay capture the original bytes.
     Unknown {
         /// Raw `type` field value as the CLI sent it.
         type_str: String,
-        /// Full original JSON object — preserved for inspection,
+        /// Full original JSON object - preserved for inspection,
         /// replay, or rehydration once the new shape is supported.
         raw: Value,
     },
@@ -366,7 +366,7 @@ impl Message {
     ///
     /// Used by the events stream returned by `forge_sdk::Client::spawn` to bind
     /// the client's `session_id` field on the first frame that carries
-    /// one — the CLI in stream-json interactive mode only emits
+    /// one - the CLI in stream-json interactive mode only emits
     /// `system/init` (the canonical session-id source) AFTER both an
     /// initialize `control_request` AND a user message have been seen,
     /// so the session id isn't known at spawn time.
@@ -412,7 +412,7 @@ pub struct AssistantEnvelope {
     /// Stop sequence that triggered end-of-turn, if any.
     #[serde(default)]
     pub stop_sequence: Option<String>,
-    /// Token usage for this turn. Optional — error-path frames
+    /// Token usage for this turn. Optional - error-path frames
     /// don't carry a usage block.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<Usage>,
@@ -427,7 +427,7 @@ pub enum AssistantMessageError {
     AuthenticationFailed,
     /// The account hit a billing problem (e.g. no active credits).
     BillingError,
-    /// Rate-limit rejection — retry after the window resets.
+    /// Rate-limit rejection - retry after the window resets.
     RateLimit,
     /// The request was rejected as malformed.
     InvalidRequest,
@@ -442,7 +442,7 @@ pub enum AssistantMessageError {
 pub struct UserEnvelope {
     /// Fixed value `"user"`.
     pub role: String,
-    /// Content blocks — usually `ToolResult` blocks when reporting
+    /// Content blocks - usually `ToolResult` blocks when reporting
     /// tool outputs. Wire shape is `list | str`: a bare string is
     /// accepted on the way in and normalised into a single
     /// [`ContentBlock::Text`] block; serialising always emits the
@@ -485,7 +485,7 @@ pub enum StopReason {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RateLimitStatus {
-    /// Within the window — no restrictions.
+    /// Within the window - no restrictions.
     Allowed,
     /// Approaching the limit; callers should warn / back off soon.
     AllowedWarning,
@@ -525,7 +525,7 @@ pub struct RateLimitInfo {
     /// Which rate-limit window applies.
     #[serde(default, rename = "rateLimitType", skip_serializing_if = "Option::is_none")]
     pub rate_limit_type: Option<RateLimitType>,
-    /// Fraction of the rate limit consumed (0.0 – 1.0).
+    /// Fraction of the rate limit consumed (0.0 - 1.0).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub utilization: Option<f64>,
     /// Status of overage / pay-as-you-go usage, if applicable.
@@ -602,7 +602,7 @@ pub enum TaskNotificationStatus {
 /// Patch payload carried by [`Message::TaskUpdated`]. Fields are
 /// optional because the CLI emits patches that update only the
 /// changed fields. `status` is the free-form wire string (e.g.
-/// `"completed"`, `"running"`, `"killed"`) — keeping it as `String`
+/// `"completed"`, `"running"`, `"killed"`) - keeping it as `String`
 /// rather than an enum lets the reducer accept future statuses
 /// without a forge-primitives bump.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -625,10 +625,10 @@ pub struct TaskUpdatePatch {
 /// that instant (not a delta). Two flavours of entry are observed in
 /// captured wire (see `~/Projects/forge/.claude/skills/claude-cli-upgrade/reference-captures/workflow.jsonl`):
 ///
-/// 1. `workflow_phase` — phase-level marker emitted when the
+/// 1. `workflow_phase` - phase-level marker emitted when the
 ///    workflow's `phase()` call fires. Carries the phase index +
 ///    title.
-/// 2. `workflow_agent` — agent-level event tracking an agent call's
+/// 2. `workflow_agent` - agent-level event tracking an agent call's
 ///    state transition (`start` → `progress` → `done`). Carries the
 ///    parent phase index, the agent's queued model, the running
 ///    tool name (when known), a short prompt preview, and (on
@@ -641,10 +641,10 @@ pub struct TaskUpdatePatch {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WorkflowProgressEvent {
-    /// Phase-level marker — emitted when the workflow's `phase()`
+    /// Phase-level marker - emitted when the workflow's `phase()`
     /// call fires.
     WorkflowPhase { index: u32, title: String },
-    /// Agent-level event — emitted on each state transition for an
+    /// Agent-level event - emitted on each state transition for an
     /// agent call inside a phase. Only the fields the renderer
     /// actually surfaces are decoded; the wire also carries
     /// `queuedAt`, `startedAt`, `lastProgressAt`, `attempt`,
@@ -675,7 +675,7 @@ pub enum WorkflowProgressEvent {
         #[serde(rename = "resultPreview", default, skip_serializing_if = "Option::is_none")]
         result_preview: Option<String>,
     },
-    /// Unrecognised workflow event — preserved across decode to
+    /// Unrecognised workflow event - preserved across decode to
     /// avoid serde refusing the surrounding `task_progress`. Not
     /// surfaced anywhere; the renderer treats unknown event types
     /// as no-ops.
@@ -684,15 +684,15 @@ pub enum WorkflowProgressEvent {
 }
 
 // ---------------------------------------------------------------------------
-// Wire shim — serde sees this, users never do.
+// Wire shim - serde sees this, users never do.
 //
 // `Message` has the user-facing variant layout. `MessageRepr` encodes the
 // actual wire dispatch: first on `type`, then (for `type="system"`) on
 // `subtype`. The cascade works because:
 //
-// * `MessageRepr` is internally-tagged on `type` — serde picks `System(repr)`
+// * `MessageRepr` is internally-tagged on `type` - serde picks `System(repr)`
 //   when `type="system"`, the rest via tag rename.
-// * `SystemRepr` is untagged — serde tries `Typed(TypedSystemRepr)` first
+// * `SystemRepr` is untagged - serde tries `Typed(TypedSystemRepr)` first
 //   (which is itself internally-tagged on `subtype`), then falls back to
 //   `Generic(GenericSystemRepr)` for subtypes we don't recognise.
 // * `TypedSystemRepr` dispatches the known task-lifecycle subtypes.
@@ -700,7 +700,7 @@ pub enum WorkflowProgressEvent {
 //   `data: Value`, which is what `Message::System` surfaces to users.
 //
 // `Message::Unknown` is the only variant Serialize/Deserialize don't route
-// through `MessageRepr` — its `raw` field already carries the original
+// through `MessageRepr` - its `raw` field already carries the original
 // JSON, so we emit it verbatim instead of fabricating a synthetic wire
 // shape. Deserialize never produces it; `decode_dispatch` filters unknown
 // types into `DecodedLine::Unknown` before serde sees them.
@@ -801,7 +801,7 @@ enum SystemRepr {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "subtype", rename_all = "snake_case")]
-// Wire-shape enum — variants share the `Task` prefix to match the CLI's wire-tag scheme.
+// Wire-shape enum - variants share the `Task` prefix to match the CLI's wire-tag scheme.
 #[allow(clippy::enum_variant_names)]
 enum TypedSystemRepr {
     TaskStarted {
@@ -1018,7 +1018,7 @@ impl From<MessageRepr> for Message {
                 data,
             })) => {
                 // The CLI's system message wire shape carries the
-                // FULL original dict in `data` — including `type`,
+                // FULL original dict in `data` - including `type`,
                 // `subtype`, and `session_id`. Rust's serde
                 // `#[flatten]` on the private `GenericSystemRepr`
                 // strips those fields because they're claimed by
@@ -1258,7 +1258,7 @@ impl From<Message> for MessageRepr {
                 MessageRepr::StreamEvent { uuid, session_id, event, parent_tool_use_id }
             }
             Message::Error { error } => MessageRepr::Error { error },
-            // Defensive sentinel — `Serialize` for `Message` special-cases
+            // Defensive sentinel - `Serialize` for `Message` special-cases
             // `Unknown` to emit `raw` verbatim, so this branch is dead code
             // at runtime. Kept to keep the `From` impl total without
             // `unreachable!()` (banned by the workspace lint set).
@@ -1281,7 +1281,7 @@ mod tests_result_message_fields {
     use crate::Message;
     use serde_json::json;
 
-    /// Minimum-viable result frame — only the six required fields.
+    /// Minimum-viable result frame - only the six required fields.
     /// The CLI emits this on error-path turns; forge-sdk must accept
     /// it.
     #[test]
@@ -1323,7 +1323,7 @@ mod tests_result_message_fields {
         }
     }
 
-    /// Full payload — every optional field populated. Exercises the
+    /// Full payload - every optional field populated. Exercises the
     /// `modelUsage` camelCase wire key and captures the result body, the
     /// permission-denial vector, and the error vector.
     #[test]
@@ -1387,7 +1387,7 @@ mod tests_result_message_fields {
         assert_eq!(uuid.as_deref(), Some("res-1"));
     }
 
-    /// modelUsage must serialize back out as camelCase on the wire — the
+    /// modelUsage must serialize back out as camelCase on the wire - the
     /// typical caller-side scenario is round-tripping a decoded result
     /// through session-store persistence.
     #[test]
@@ -1472,7 +1472,7 @@ mod tests_message_extras {
 
     #[test]
     fn assistant_frame_without_usage_now_parses() {
-        // Usage is optional on the wire — error-path assistant
+        // Usage is optional on the wire - error-path assistant
         // frames omit it. forge-sdk must parse them (regression
         // guard against the pre-2026-04-22 required-`usage` shape).
         let raw = json!({
@@ -1521,7 +1521,7 @@ mod tests_message_extras {
     #[test]
     fn unknown_assistant_error_surfaces_as_unknown() {
         // If upstream adds a new error class between parity checks, the
-        // fallback `Unknown` variant absorbs it — callers still see an
+        // fallback `Unknown` variant absorbs it - callers still see an
         // error string that doesn't match any known literal, just
         // remapped.
         let decoded: AssistantMessageError =
@@ -1663,7 +1663,7 @@ mod tests_message_extras {
     fn workflow_task_progress_decodes_workflow_progress_array() {
         // Wire shape from `~/Projects/forge/.claude/skills/claude-cli-upgrade/reference-captures/workflow.jsonl`.
         // Each `system/task_progress` for a Workflow tool carries a
-        // FULL `workflow_progress` snapshot — phase markers + the
+        // FULL `workflow_progress` snapshot - phase markers + the
         // currently active agent's state.
         let raw = json!({
             "type": "system",

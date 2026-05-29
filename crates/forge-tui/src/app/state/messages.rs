@@ -20,13 +20,13 @@ pub struct ChatMessage {
     /// frame to recompute it. The flag is intrinsic to the message's
     /// FIRST text block: a peer envelope arrives as a User-role
     /// message whose first text block starts with a recognised
-    /// bracket prefix (`[Question id=…]` / `[Message id=…]` / etc.).
+    /// bracket prefix (`[Question id=...]` / `[Message id=...]` / etc.).
     pub is_peer_envelope: bool,
-    /// #273: stop_hook_summary chip hit-test — wrapped-row offset
+    /// #273: stop_hook_summary chip hit-test - wrapped-row offset
     /// inside this message of the clickable chip line(s). `0` when
     /// no chip is rendered. Stamped by `append_stop_hook_summary`.
     pub stop_hook_summary_y_in_msg: usize,
-    /// #273: stop_hook_summary chip hit-test — wrapped-row height of
+    /// #273: stop_hook_summary chip hit-test - wrapped-row height of
     /// the clickable chip line(s) (excludes the leading blank and
     /// any expanded hook rows). `0` when no chip is rendered.
     pub stop_hook_summary_height: usize,
@@ -123,7 +123,7 @@ pub struct MessageRenderCacheKey {
 ///
 /// Hash collisions are theoretically possible (we trust 64-bit
 /// `DefaultHasher`); a collision would manifest as a stale render
-/// surviving past an input change. Acceptable for a render cache —
+/// surviving past an input change. Acceptable for a render cache -
 /// the next genuine state change invalidates everything anyway.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct MessageRenderSignature(pub u64);

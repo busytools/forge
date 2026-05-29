@@ -9,7 +9,7 @@
 //! - Grandchildren (a `cargo` spawning `rustc` workers).
 //! - Anything that detaches from claude's tool registry.
 //!
-//! OS-walk is universal — every descendant of the spawned `claude`
+//! OS-walk is universal - every descendant of the spawned `claude`
 //! shows up. Wire enrichment makes the row read nicely when both
 //! signals agree (e.g. claude's "Run unit tests" description on a
 //! `cargo nextest run` process row).
@@ -96,12 +96,12 @@ pub struct ProcessRow {
 pub enum ProcessKind {
     /// OS process matched against a wire-tracked backgrounded `Bash`.
     BashBackgrounded,
-    /// `CronCreate` registration — wire-only, no OS process.
+    /// `CronCreate` registration - wire-only, no OS process.
     Cron,
     /// OS process with no matching wire tool call (foreground Bash,
     /// grandchildren, anything claude's tool registry doesn't know
     /// about). #273 Task 8: Monitor tool_calls also fall through to
-    /// this variant — their authoritative surface is now the
+    /// this variant - their authoritative surface is now the
     /// dedicated MONITORS Inspector section.
     Process,
     /// Synthetic `+N more` row emitted when a single parent has more
@@ -147,7 +147,7 @@ pub fn collect_active_processes(app: &App) -> ProcessCollection {
     // Snapshot wire-alive tool calls. Two paths into the alive set:
     //
     // 1. **Backgrounded Bash / Monitor.** `task_started` fired on
-    //    the wire and the terminal `task_updated` has NOT — so the
+    //    the wire and the terminal `task_updated` has NOT - so the
     //    tool_use_id is in `alive_task_ids`'s mapped set. Note the
     //    per-tool `tc.status` is unreliable here: claude's
     //    `backgroundTaskId` `tool_result` arrives almost immediately
@@ -156,7 +156,7 @@ pub fn collect_active_processes(app: &App) -> ProcessCollection {
     //
     // 2. **Foreground Bash.** Claude blocks on the call; no
     //    `task_started` ever fires, so path 1 misses it entirely.
-    //    The signal here IS `tc.status == InProgress` — the
+    //    The signal here IS `tc.status == InProgress` - the
     //    `tool_result` hasn't arrived because the command is still
     //    running. Including these in the alive set is what lets
     //    foreground `cargo build` / `git status` / `ls` rows pick
@@ -187,12 +187,12 @@ pub fn collect_active_processes(app: &App) -> ProcessCollection {
 
     let mut rows: Vec<ProcessRow> = Vec::new();
 
-    // 1. OS-walked entries — the source of truth for live work.
+    // 1. OS-walked entries - the source of truth for live work.
     if let Some(snapshot) = session.process_snapshot.as_ref() {
         rows.extend(rows_from_os_snapshot(snapshot, &wire_alive));
     }
 
-    // 2. Cron registrations — wire-only; no backing OS process to
+    // 2. Cron registrations - wire-only; no backing OS process to
     //    walk. Bash / Monitor wire entries that didn't match an OS
     //    row are intentionally dropped (OS walk is the truth of what
     //    is RUNNING). Cron is the exception because the wire IS
@@ -282,7 +282,7 @@ fn emit_with_descendants<'a>(
     next_ancestors.push(!is_last_sibling);
 
     let n = kids.len();
-    // Cap per-parent children at MAX_CHILDREN_PER_PARENT — when a
+    // Cap per-parent children at MAX_CHILDREN_PER_PARENT - when a
     // process spawns a swarm (cargo → N rustc workers, supervisor →
     // N MCP servers) the section would otherwise drown in
     // near-identical rows. Show the top-priority subset (sibling
@@ -354,14 +354,14 @@ fn build_row_for_entry(entry: &ProcessEntry, wire_alive: &[&ToolCallInfo]) -> Pr
         // #273 Task 8: Monitor's authoritative surface is the
         // dedicated MONITORS Inspector section. The PROCESSES row
         // no longer overlays the Monitor description on top of a
-        // matching OS process — that produced double-surfaces (the
+        // matching OS process - that produced double-surfaces (the
         // same description appeared in both MONITORS and PROCESSES).
         // The OS process still surfaces via the generic-OS fallback
         // so the user can still see the underlying work.
         Some(tc) if is_monitor_tool_name(&tc.sdk_tool_name) => generic_os_row(entry),
         Some(tc) if is_execute_tool_name(&tc.sdk_tool_name) => enriched_bash_row(tc, entry),
         // Matched something we don't have a special kind for
-        // (defensive — shouldn't fire today). Fall through to
+        // (defensive - shouldn't fire today). Fall through to
         // the generic OS row so we still surface the process.
         _ => generic_os_row(entry),
     }
@@ -371,7 +371,7 @@ fn build_row_for_entry(entry: &ProcessEntry, wire_alive: &[&ToolCallInfo]) -> Pr
 /// supervisors pin to the top of their sibling group), then PID
 /// ascending as the sole stable tie-break.
 ///
-/// Deliberately NOT sorted by memory — memory fluctuates each poll
+/// Deliberately NOT sorted by memory - memory fluctuates each poll
 /// and using it as a sort key causes the section to reshuffle every
 /// frame, which reads as flicker. PID is fixed for a process's
 /// lifetime so the order is stable across refreshes.
@@ -412,9 +412,9 @@ fn enriched_bash_row(tc: &ToolCallInfo, entry: &ProcessEntry) -> ProcessRow {
     ProcessRow {
         kind: ProcessKind::BashBackgrounded,
         headline,
-        // No cmdline continuation — the wire description already
+        // No cmdline continuation - the wire description already
         // conveys intent ("Run unit tests"); the literal shell
-        // wrapper `/bin/zsh -c -l 'cargo …'` is noise.
+        // wrapper `/bin/zsh -c -l 'cargo ...'` is noise.
         detail: None,
         metadata: "Bash · running".to_owned(),
         status: ToolCallStatus::InProgress,
@@ -429,7 +429,7 @@ fn enriched_bash_row(tc: &ToolCallInfo, entry: &ProcessEntry) -> ProcessRow {
 /// grandchildren, etc.). Headline is the OS process name; detail is
 /// the cmdline.
 fn generic_os_row(entry: &ProcessEntry) -> ProcessRow {
-    // Use the cmdline as headline when available — for unmatched
+    // Use the cmdline as headline when available - for unmatched
     // supervisors that's the only meaningful context (the process
     // name alone is too vague, e.g. "node" tells you nothing about
     // WHICH node process it is). Falls back to the process name
@@ -460,7 +460,7 @@ fn generic_os_row(entry: &ProcessEntry) -> ProcessRow {
 }
 
 /// Cron registration row. Schedule expression as headline, prompt
-/// as detail. No OS process backs this — `memory_bytes` stays
+/// as detail. No OS process backs this - `memory_bytes` stays
 /// `None`, which sorts the row to the bottom of the section.
 fn cron_row(tc: &ToolCallInfo) -> ProcessRow {
     let raw_input = tc.raw_input.as_ref();
@@ -504,7 +504,7 @@ pub fn format_memory_short(bytes: u64) -> String {
     } else if bytes < GB {
         format!("{} MB", bytes / MB)
     } else {
-        // 1 decimal digit for GB — `1.2 GB` reads better than `1228 MB`.
+        // 1 decimal digit for GB - `1.2 GB` reads better than `1228 MB`.
         let gb_tenths = bytes / (GB / 10);
         let whole = gb_tenths / 10;
         let frac = gb_tenths % 10;
@@ -605,7 +605,7 @@ mod tests {
         // Defensive: a fresh App with no active session must not
         // panic and must collapse to an empty collection. (App
         // construction is heavyweight enough that we don't build
-        // one here — we just verify the contract via the empty
+        // one here - we just verify the contract via the empty
         // path's shape.)
         let coll = ProcessCollection { rows: Vec::new() };
         assert!(coll.is_empty());
@@ -655,7 +655,7 @@ mod tests {
         // user sees what's actually running (process name alone like
         // "rustc" or "node" is too vague when there are many).
         assert_eq!(rows[0].headline, "rustc --crate-name forge_tui ...");
-        // `detail` is no longer set on supervisor rows — the cmdline
+        // `detail` is no longer set on supervisor rows - the cmdline
         // IS the headline now.
         assert!(rows[0].detail.is_none());
     }
@@ -695,7 +695,7 @@ mod tests {
         ProcessSnapshot {
             scanned_at: std::time::SystemTime::now(),
             processes: vec![
-                // zsh wrapper — direct child of claude (parent_pid=1
+                // zsh wrapper - direct child of claude (parent_pid=1
                 // which isn't in the snapshot, so this is a root).
                 ProcessEntry {
                     pid: 10,
@@ -705,7 +705,7 @@ mod tests {
                     memory_bytes: 8 * 1024 * 1024,
                     started_at_unix: None,
                 },
-                // cargo — child of zsh.
+                // cargo - child of zsh.
                 ProcessEntry {
                     pid: 20,
                     parent_pid: 10,
@@ -714,7 +714,7 @@ mod tests {
                     memory_bytes: 256 * 1024 * 1024,
                     started_at_unix: None,
                 },
-                // Two rustc workers — children of cargo.
+                // Two rustc workers - children of cargo.
                 ProcessEntry {
                     pid: 30,
                     parent_pid: 20,

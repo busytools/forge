@@ -75,7 +75,7 @@ pub enum MonitorStatus {
 /// timeout).
 #[derive(Debug, Clone)]
 pub struct MonitorEntry {
-    /// `tool_use_id` from the Monitor `tool_use` block — the
+    /// `tool_use_id` from the Monitor `tool_use` block - the
     /// canonical id chat-stream / Inspector / mouse routing all
     /// reference.
     pub tool_use_id: String,
@@ -84,19 +84,19 @@ pub struct MonitorEntry {
     /// confirmation arrives. Used to correlate against `TaskStarted`
     /// / `TaskUpdated` wire events.
     pub task_id: Option<String>,
-    /// `tool_input.description` — the headline label.
+    /// `tool_input.description` - the headline label.
     pub description: String,
-    /// `tool_input.command` — the watched shell command.
+    /// `tool_input.command` - the watched shell command.
     pub command: String,
-    /// `tool_input.persistent` — when true the Monitor stays alive
+    /// `tool_input.persistent` - when true the Monitor stays alive
     /// across multiple events; when false a single exit ends it.
     pub persistent: bool,
-    /// `tool_input.timeout_ms` — zero when no explicit timeout
+    /// `tool_input.timeout_ms` - zero when no explicit timeout
     /// (persistent monitors typically pass zero).
     pub timeout_ms: u64,
     /// Lifecycle status. Drives MONITORS-section visibility and the
-    /// chat one-liner (`◉ Monitor started · …` vs `◉ Monitor
-    /// stopped · …`).
+    /// chat one-liner (`◉ Monitor started · ...` vs `◉ Monitor
+    /// stopped · ...`).
     pub status: MonitorStatus,
     /// Rolling 12-line tail of monitor output (most-recent at the
     /// end). Bounded so a long-running Monitor doesn't grow the
@@ -134,7 +134,7 @@ impl MonitorEntry {
 /// #273 Task 9: lifecycle status of a Workflow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkflowStatus {
-    /// Workflow is in progress — phases / agents may still fire.
+    /// Workflow is in progress - phases / agents may still fire.
     InProgress,
     /// All phases reported terminal; renderer collapses the tree
     /// to a single-liner and the section auto-clears once every
@@ -162,12 +162,12 @@ pub enum PhaseStatus {
 /// `WorkflowProgressEvent` events.
 #[derive(Debug, Clone)]
 pub struct PhaseEntry {
-    /// 1-indexed phase number from the wire `index` field — matches
+    /// 1-indexed phase number from the wire `index` field - matches
     /// the order `phase()` is called inside the script.
     pub index: u32,
     /// Phase title (from `phase("Ping")` literal).
     pub title: String,
-    /// Current status — drives the glyph in the tree.
+    /// Current status - drives the glyph in the tree.
     pub status: PhaseStatus,
     /// Bounded ring buffer of per-phase log lines (each line is a
     /// captured agent transition summary). Capped at
@@ -202,7 +202,7 @@ pub struct WorkflowEntry {
     /// Optional `description` field from the meta block. Surfaces
     /// as a DIM subtitle row in the Inspector tree.
     pub meta_description: Option<String>,
-    /// Phase tree — built / rebuilt from each TaskProgress's full
+    /// Phase tree - built / rebuilt from each TaskProgress's full
     /// `workflow_progress` snapshot. Order matches phase index.
     pub phases: Vec<PhaseEntry>,
     /// Lifecycle status. Drives chat one-liner shape (`started` vs
@@ -269,7 +269,7 @@ impl WorkflowEntry {
                 continue;
             };
             // Ensure phase exists (wire sometimes emits an agent
-            // before a workflow_phase marker — defensive create).
+            // before a workflow_phase marker - defensive create).
             if !self.phases.iter().any(|p| p.index == *phase_index) {
                 self.phases.push(PhaseEntry {
                     index: *phase_index,

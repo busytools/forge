@@ -147,12 +147,12 @@ fn build_tool_info_from_tool_call(
     };
 
     // CLI 2.1.156 chat-suppressed tools (#268 + #273):
-    // - Task* family (TaskCreate / TaskUpdate / TaskList / TaskGet) —
+    // - Task* family (TaskCreate / TaskUpdate / TaskList / TaskGet) -
     //   Inspector TASKS section is the authoritative surface.
-    // - TaskOutput / TaskStop — paired with Monitor / Workflow; their
+    // - TaskOutput / TaskStop - paired with Monitor / Workflow; their
     //   side-effects surface via the MONITORS / WORKFLOWS sections.
-    // - AskUserQuestion — dock-morph widget renders instead of a card.
-    // - Monitor / Workflow — minimal DIM start/stop notices come from
+    // - AskUserQuestion - dock-morph widget renders instead of a card.
+    // - Monitor / Workflow - minimal DIM start/stop notices come from
     //   `ui::tool_call`'s task-render helpers; the standard tool-call
     //   card is suppressed.
     let is_task_family = matches!(

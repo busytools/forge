@@ -43,7 +43,7 @@
 //! - `▸` RUST_ORANGE glyph + white bold text for `InProgress`
 //!   (wraps onto continuation lines indented under the glyph;
 //!   uses `active_form` when present, else `content`)
-//! - `○` DIM glyph + gray text for `Pending` (truncates with `…`)
+//! - `○` DIM glyph + gray text for `Pending` (truncates with `...`)
 
 use forge_primitives::git::{GitBranch, GitIssueRef, GitPrInfo};
 use forge_primitives::git_diff::{
@@ -103,7 +103,7 @@ pub fn render_overlay(frame: &mut Frame, area: Rect, app: &mut App) {
 
     let (banner_area, body_area) = split_banner_body(area);
 
-    // Banner row: `INSPECTOR ▦ … ✕` spanning the full overlay width.
+    // Banner row: `INSPECTOR ▦ ... ✕` spanning the full overlay width.
     let banner_label = "INSPECTOR \u{25a6}";
     let close_glyph = "\u{2715}";
     let banner_chars = banner_label.chars().count();
@@ -168,7 +168,7 @@ fn build_inline_banner(width: u16) -> Vec<Line<'static>> {
     ]
 }
 
-/// Render the inspector body (`GIT` → `TASKS` → `PROCESSES` …)
+/// Render the inspector body (`GIT` → `TASKS` → `PROCESSES` ...)
 /// into `body_area` with the active session's scroll offset
 /// applied. Clamps the offset to `[0, max]` (writing the clamped
 /// value back so the wheel handler doesn't desync after the body
@@ -656,9 +656,9 @@ fn branch_line(width: u16, label: &str, label_color: Color) -> Line<'static> {
 /// sub-labels of the branch. The PR number lights up in
 /// `RUST_ORANGE` (matches the feature-branch convention - the PR is
 /// the headline); everything else stays DIM. The closing-issue list
-/// is truncated with `…` when it would overflow the pane width;
-/// when even one issue can't fit, the whole `→ closes …` tail
-/// collapses to a single `…` suffix.
+/// is truncated with `...` when it would overflow the pane width;
+/// when even one issue can't fit, the whole `→ closes ...` tail
+/// collapses to a single `...` suffix.
 fn pr_line(width: u16, pr: &GitPrInfo, closes: &[GitIssueRef]) -> Line<'static> {
     let indent = "    "; // 4 cols, mirrors diff_subtitle_line
     let pr_number = format!("#{}", pr.number);
@@ -682,7 +682,7 @@ fn pr_line(width: u16, pr: &GitPrInfo, closes: &[GitIssueRef]) -> Line<'static> 
 
     // Greedily fit issue numbers, separated by single spaces. If
     // even the first issue doesn't fit, the closes tail collapses
-    // to just `…`.
+    // to just `...`.
     let mut closes_str = String::new();
     let mut shown = 0usize;
     for issue in closes {
@@ -703,7 +703,7 @@ fn pr_line(width: u16, pr: &GitPrInfo, closes: &[GitIssueRef]) -> Line<'static> 
     }
 
     if shown == 0 {
-        // Nothing fit - show `PR #N → …` so the existence of a
+        // Nothing fit - show `PR #N → ...` so the existence of a
         // closes list still surfaces even when we can't render any
         // of it.
         return Line::from(vec![
@@ -1040,13 +1040,13 @@ fn tree_row(
 }
 
 /// Head-truncate `s` to at most `max_chars` characters with a
-/// leading `…` ellipsis. Preserves the tail (so the leaf component
+/// leading `...` ellipsis. Preserves the tail (so the leaf component
 /// of a path / filename stays visible). When `s` contains `/`
 /// separators the truncation prefers to drop whole leading
-/// components (yielding `…/foo/bar.rs` rather than chopping
+/// components (yielding `.../foo/bar.rs` rather than chopping
 /// mid-name); falls back to character-level head-truncation when
 /// even the basename is too long. Returns the original string when
-/// it already fits; collapses to `…` at `max_chars` ≤ 1.
+/// it already fits; collapses to `...` at `max_chars` ≤ 1.
 fn fit_path_head_truncated(s: &str, max_chars: usize) -> String {
     let total = s.chars().count();
     if total <= max_chars {
@@ -1057,7 +1057,7 @@ fn fit_path_head_truncated(s: &str, max_chars: usize) -> String {
     }
     // Try component-aware truncation: walk left-to-right over the
     // path components and return the first tail that fits when
-    // prefixed with `…/`. Lands at a `/` boundary so the result
+    // prefixed with `.../`. Lands at a `/` boundary so the result
     // reads as a clean partial path rather than a chopped string.
     let components: Vec<&str> = s.split('/').collect();
     if components.len() > 1 {
@@ -1108,11 +1108,11 @@ fn append_tasks_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
 
     // Item rendering budget: full width minus the 2-col left indent,
     // the 1-col glyph, the 1-col space after the glyph, AND a 2-col
-    // right gutter so truncated `…` items don't butt up against the
+    // right gutter so truncated `...` items don't butt up against the
     // pane edge. Continuation lines for the wrapped in-progress item
     // indent under the text column (start col 5 from the pane's x=0).
     // Right-gutter reservation here mirrors the GIT section's
-    // `…stats column +  PANE_PAD` math so both sections honour the
+    // `...stats column +  PANE_PAD` math so both sections honour the
     // same visual margin.
     let glyph_indent = PANE_PAD + 2; // "  " + glyph + " "
     let text_budget = usize::from(width)
@@ -1211,7 +1211,7 @@ fn append_tasks_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
                 ]));
             }
         } else {
-            // Truncate with `…` at the right edge.
+            // Truncate with `...` at the right edge.
             let truncated = truncate_with_ellipsis(&display_text, text_budget);
             lines.push(Line::from(vec![
                 Span::raw(" "),
@@ -1306,7 +1306,7 @@ fn append_monitor_row(
         Span::styled(persistent_suffix.to_owned(), Style::default().fg(theme::DIM)),
     ]));
 
-    // Tail lines — show always while running, also when explicitly
+    // Tail lines - show always while running, also when explicitly
     // expanded. The buffer is bounded at MonitorEntry::OUTPUT_TAIL_MAX.
     if monitor.output_tail.is_empty() {
         return;
@@ -1444,7 +1444,7 @@ fn spinner_frame_char(frame: usize) -> &'static str {
 }
 
 /// Helper: truncate a string to `max_chars` columns, appending a
-/// single `…` ellipsis when the input is longer. Returns the input
+/// single `...` ellipsis when the input is longer. Returns the input
 /// unchanged when it already fits.
 fn truncate_or_pass(s: &str, max_chars: usize) -> String {
     if max_chars == 0 {
@@ -1471,7 +1471,7 @@ fn truncate_or_pass(s: &str, max_chars: usize) -> String {
 /// 1. **Headline:** status glyph + headline text styled per
 ///    [`ProcessKind`].
 /// 2. **Detail** (optional `└─` continuation): the underlying shell
-///    command or cron prompt, DIM, truncated with `…` when it
+///    command or cron prompt, DIM, truncated with `...` when it
 ///    overflows.
 /// 3. **Metadata** (`└─` continuation): kind label · status · flags,
 ///    all DIM.
@@ -1606,7 +1606,7 @@ fn append_process_row(
 
     // Suffix is the useful signal - memory for process-backed rows,
     // Cron metadata for wire-only registrations. Always include it
-    // when set; the headline truncates with `…` to make room.
+    // when set; the headline truncates with `...` to make room.
     let suffix_text: Option<String> = match (include_memory, process.memory_bytes) {
         (true, Some(bytes)) => Some(format_memory_short(bytes)),
         _ => {
@@ -1746,8 +1746,8 @@ fn wrap_text(s: &str, max_chars: usize) -> Vec<String> {
 }
 
 /// Truncate `s` to at most `max_chars` characters with a trailing
-/// `…` ellipsis. Returns the original string if it already fits.
-/// When `max_chars` is `0` or `1` the result is just `…`.
+/// `...` ellipsis. Returns the original string if it already fits.
+/// When `max_chars` is `0` or `1` the result is just `...`.
 fn truncate_with_ellipsis(s: &str, max_chars: usize) -> String {
     if s.chars().count() <= max_chars {
         return s.to_owned();
@@ -1830,7 +1830,7 @@ mod tests {
     fn head_truncate_keeps_tail_with_leading_ellipsis() {
         // Component-aware truncation lands at a `/` boundary, so the
         // result is `≤ max_chars` (not necessarily exactly equal) and
-        // always starts `…/` when at least one component was dropped.
+        // always starts `.../` when at least one component was dropped.
         let out = fit_path_head_truncated("~/Projects/forge/crates/forge-tui", 16);
         assert!(out.chars().count() <= 16, "got {out:?}");
         assert!(out.starts_with("\u{2026}/"), "got {out:?}");
@@ -1840,7 +1840,7 @@ mod tests {
     #[test]
     fn head_truncate_drops_leading_components_first() {
         // 29-char budget - too tight for the full path, but
-        // `…/src/env/git_diff.rs` (21 chars) fits cleanly at a
+        // `.../src/env/git_diff.rs` (21 chars) fits cleanly at a
         // component boundary.
         let out = fit_path_head_truncated("crates/forge-agent/src/env/git_diff.rs", 29);
         assert_eq!(out, "\u{2026}/src/env/git_diff.rs");
@@ -2081,7 +2081,7 @@ mod tests {
     #[test]
     fn pr_line_collapses_to_ellipsis_when_no_issue_fits() {
         // Pane narrower than even one issue number can fit alongside
-        // the chrome; the closes tail should collapse to a bare `…`.
+        // the chrome; the closes tail should collapse to a bare `...`.
         let line = pr_line(20, &pr(9999), &[issue(987_654)]);
         let text = line_text(&line);
         assert!(text.ends_with("\u{2192} \u{2026}"), "expected collapse: {text:?}");
@@ -2214,7 +2214,7 @@ mod tests {
 
     #[test]
     fn processes_section_two_kinds_together_renders_blank_between_rows() {
-        // #273 Task 8 retired Monitor from PROCESSES — verify the
+        // #273 Task 8 retired Monitor from PROCESSES - verify the
         // Bash + Cron pair still renders with a separating blank
         // between rows. Monitor rows are now surfaced by the
         // dedicated MONITORS section instead.

@@ -24,7 +24,7 @@ const SCROLLBAR_MIN_THUMB_HEIGHT: usize = 1;
 /// Visual cap for the chat scrollbar thumb so a short scrollback
 /// doesn't render a thumb that takes up most of the rail. The raw
 /// `viewport² / content` formula grows the thumb as content shrinks
-/// — fine in theory (proportional indicator), distracting in
+/// - fine in theory (proportional indicator), distracting in
 /// practice for a chat surface that briefly overflows by a handful
 /// of rows. Matches the Inspector pane's `INSPECTOR_THUMB_MAX_CELLS`
 /// cap so both surfaces read with the same visual weight.
@@ -149,7 +149,7 @@ fn update_visual_heights(
 
     // Snapshot loop-invariant fields once. `layout_generation` and
     // `tools_collapsed` are stable across the remeasure loops below
-    // — bumping `layout_generation` requires a full
+    // - bumping `layout_generation` requires a full
     // `sync_message_count` / resize, which already ran above.
     let mode_id_owned = app.mode().map(|mode| mode.current_mode_id.clone());
     let mode_id = mode_id_owned.as_deref();
@@ -402,7 +402,7 @@ fn measure_message_height(
 fn build_base_spinner(app: &App) -> SpinnerState {
     // `show_thinking` fires on both `Thinking` (no body streamed yet)
     // and `Running` (mid-stream / tool execution) so the spinner keeps
-    // ticking visibly across the whole turn — not just the pre-body
+    // ticking visibly across the whole turn - not just the pre-body
     // window. Without this, switching back into a still-running
     // session whose assistant placeholder has already streamed some
     // content shows the content frozen with no indicator that more is
@@ -414,13 +414,13 @@ fn build_base_spinner(app: &App) -> SpinnerState {
         show_empty_thinking: turn_in_flight,
         show_thinking: turn_in_flight,
         show_compacting: app.is_compacting(),
-        // #273: only carry the chip during an in-flight turn — once
+        // #273: only carry the chip during an in-flight turn - once
         // the turn ends the field will have been cleared by
         // `handle_result`, but gating here keeps the chip from
         // briefly flashing across the final layout pass.
         thinking_tokens: if turn_in_flight { app.latest_thinking_tokens() } else { None },
         // #273: the duration chip persists across the whole assistant
-        // turn — the value lands once at TurnEnd and stays on
+        // turn - the value lands once at TurnEnd and stays on
         // `UiSession::last_turn_duration_ms` until the next turn
         // updates it. The role-label renderer further gates the chip
         // on `is_active_turn_assistant`, so past turns won't surface
@@ -651,7 +651,7 @@ fn ease_value(current: &mut f32, target: f32, factor: f32) {
 /// Clamp the raw `viewport² / content` thumb to a fixed maximum and
 /// rebuild `thumb_top` against the post-cap track length. Without
 /// this, a chat with content just barely overflowing the viewport
-/// renders a thumb that takes up half the rail — visually noisy and
+/// renders a thumb that takes up half the rail - visually noisy and
 /// inconsistent with the Inspector pane's tiny indicator. Capping
 /// keeps the chat scrollbar a stable small dot regardless of how
 /// much (or little) of the scrollback overflows.
@@ -714,7 +714,7 @@ fn render_scrollbar_overlay(
         return;
     }
 
-    // Thumb only — no rail. The dim `▕` rail looked visually busy
+    // Thumb only - no rail. The dim `▕` rail looked visually busy
     // sitting against the Inspector pane to its right; the thumb
     // alone is enough to indicate scroll position when content
     // overflows. When the content fits the whole right column is
@@ -778,7 +778,7 @@ fn render_culled_messages(
     let mut local_scroll = 0usize;
     let mut rendered_rows = 0usize;
     let mut last_rendered_idx = None;
-    // Snapshot loop-invariant fields once — hoisting avoids N
+    // Snapshot loop-invariant fields once - hoisting avoids N
     // String allocations on remeasure-heavy frames.
     let mode_id_owned = app.mode().map(|mode| mode.current_mode_id.clone());
     let mode_id = mode_id_owned.as_deref();
