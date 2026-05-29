@@ -384,23 +384,6 @@ async fn tool_call_update_via_meta_sets_sdk_tool_name() {
 }
 
 #[tokio::test]
-async fn todowrite_via_update_raw_input_parses_todos() {
-    let mut app = test_app();
-
-    // Wire path: TodoWrite with todos input applies the plan via
-    // apply_plan_if_todo_write at tool_use time. The original
-    // SessionUpdate test split this into create+update; the wire
-    // shape collapses to a single envelope.
-    let raw = serde_json::json!({"todos": [
-        {"content": "Step 1", "status": "pending", "activeForm": "Doing step 1"}
-    ]});
-    send_msg(&mut app, assistant_message(vec![tool_use_block("tc-todo-up", "TodoWrite", raw)]));
-
-    assert_eq!(app.todos().len(), 1);
-    assert_eq!(app.todos()[0].content, "Step 1");
-}
-
-#[tokio::test]
 async fn title_shortened_relative_to_cwd() {
     let mut app = test_app();
     app.set_cwd_raw("/home/user/project");

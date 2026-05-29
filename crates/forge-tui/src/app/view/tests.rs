@@ -49,11 +49,11 @@ fn busy_view_test_app() -> App {
         dialog: DialogState::default(),
     });
     *app.todos_mut() = vec![TodoItem {
+        id: "1".to_owned(),
         content: "todo".to_owned(),
         status: TodoStatus::Pending,
         active_form: "todo".to_owned(),
     }];
-    app.set_todo_verification_nudge(true);
     app
 }
 

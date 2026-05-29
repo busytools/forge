@@ -159,22 +159,6 @@ impl ToolCallLocation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct TodoWriteOutputMetadata {
-    pub verification_nudge_needed: Option<bool>,
-}
-
-impl TodoWriteOutputMetadata {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn verification_nudge_needed(mut self, verification_nudge_needed: Option<bool>) -> Self {
-        self.verification_nudge_needed = verification_nudge_needed;
-        self
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct BashOutputMetadata {
     pub assistant_auto_backgrounded: Option<bool>,
 }
@@ -196,7 +180,6 @@ impl BashOutputMetadata {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ToolOutputMetadata {
     pub bash: Option<BashOutputMetadata>,
-    pub todo_write: Option<TodoWriteOutputMetadata>,
 }
 
 impl ToolOutputMetadata {
@@ -206,11 +189,6 @@ impl ToolOutputMetadata {
 
     pub fn bash(mut self, bash: Option<BashOutputMetadata>) -> Self {
         self.bash = bash;
-        self
-    }
-
-    pub fn todo_write(mut self, todo_write: Option<TodoWriteOutputMetadata>) -> Self {
-        self.todo_write = todo_write;
         self
     }
 }

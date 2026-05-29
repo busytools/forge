@@ -5,7 +5,10 @@ use super::tool_calls::{
     tool_scope_name,
 };
 use crate::agent::model;
-use crate::app::todos::{parse_todos_if_present, set_todos};
+use crate::app::todos::{
+    TaskCreateInput, TaskUpdateInput, apply_task_create, apply_task_update,
+    parse_task_create_input, parse_task_create_result_id, parse_task_update_input,
+};
 
 pub(super) fn handle_tool_call_update_session(app: &mut App, tcu: &model::ToolCallUpdate) {
     let id_str = tcu.tool_call_id.clone();
@@ -58,11 +61,14 @@ pub(super) fn handle_tool_call_update_session(app: &mut App, tcu: &model::ToolCa
         &update_outcome,
     );
     log_command_update_applied(app, &id_str, previous_status, previous_terminal_id.as_deref());
-    if let Some(todos) = update_outcome.pending_todos {
-        set_todos(app, todos);
-    }
-    if let Some(nudge) = update_outcome.pending_verification_nudge {
-        app.set_todo_verification_nudge(nudge);
+    // #268: TaskCreate / TaskUpdate apply directly to `app.todos_mut()`
+    // - they're append / mutate / remove deltas, not full-list
+    // replacements, so they bypass any "all-completed clears" cascade.
+    if let Some(delta) = update_outcome.pending_task_delta {
+        match delta {
+            TaskDelta::Create { input, id } => apply_task_create(app, input, id),
+            TaskDelta::Update(update) => apply_task_update(app, update),
+        }
     }
     if matches!(app.status, AppStatus::Running) && !has_in_progress_tool_calls(app) {
         app.status = AppStatus::Thinking;
@@ -96,13 +102,28 @@ fn apply_tool_scope_status_update(
 struct ToolCallUpdateApplyOutcome {
     changed: bool,
     layout_dirty_idx: Option<usize>,
-    pending_todos: Option<Vec<super::super::TodoItem>>,
-    /// `Some(true)` / `Some(false)` when the update carries a
-    /// `TodoWriteOutputMetadata.verification_nudge_needed` value;
-    /// `None` when this update isn't a TodoWrite tool call or
-    /// doesn't include output metadata. The caller routes this into
-    /// `App::set_todo_verification_nudge`.
-    pending_verification_nudge: Option<bool>,
+    /// `Some(delta)` when this update completed a `TaskCreate` or
+    /// applied a `TaskUpdate` (#268). The outer handler dispatches
+    /// to `apply_task_create` / `apply_task_update` because both
+    /// reducers mutate `app.todos_mut()` and the inner block's
+    /// mutable borrow of `app.active_messages_mut()` would conflict.
+    /// `None` for every other tool call.
+    pending_task_delta: Option<TaskDelta>,
+}
+
+/// #268: Per-call mutation extracted from a `TaskCreate` /
+/// `TaskUpdate` tool call result. Carried out of
+/// `apply_tool_call_update_to_indexed_block` (which holds a mut
+/// borrow on `active_messages_mut`) so the outer handler can apply
+/// it via the `app.todos_mut()` reducer free of borrow conflicts.
+enum TaskDelta {
+    /// `TaskCreate` completed with a parseable `Task #N created
+    /// successfully:` result text. The reducer appends a TodoItem
+    /// keyed by `id`.
+    Create { input: TaskCreateInput, id: String },
+    /// `TaskUpdate` carried a valid `taskId`. The reducer mutates
+    /// the matching item or removes it (status == "deleted").
+    Update(TaskUpdateInput),
 }
 
 fn apply_tool_call_update_to_indexed_block(
@@ -115,8 +136,7 @@ fn apply_tool_call_update_to_indexed_block(
     let mut out = ToolCallUpdateApplyOutcome {
         changed: false,
         layout_dirty_idx: None,
-        pending_todos: None,
-        pending_verification_nudge: None,
+        pending_task_delta: None,
     };
     let terminals = match app.terminals() {
         Some(t) => std::rc::Rc::clone(t),
@@ -149,26 +169,13 @@ fn apply_tool_call_update_to_indexed_block(
         changed |= apply_tool_call_raw_output_update(tc, tcu.fields.raw_output.as_ref());
         changed |= apply_tool_call_name_update(tc, tcu.meta.as_ref());
         changed |= apply_tool_call_hidden_update(tc, tcu.meta.as_ref());
-        out.pending_todos = extract_todo_updates_from_tool_call_update(
-            id_str,
-            &session_id,
-            tc,
-            tcu.fields.raw_input.as_ref(),
-        );
-        if tc.sdk_tool_name == "TodoWrite" {
-            // The TodoWrite output metadata may arrive in this same
-            // update (a separate `fields.output_metadata`) or have
-            // been merged earlier; either way `tc.output_metadata`
-            // is now authoritative. Surface the nudge flag for the
-            // caller to route to the per-session state.
-            let nudge = tc
-                .output_metadata
-                .as_ref()
-                .and_then(|meta| meta.todo_write.as_ref())
-                .and_then(|tw| tw.verification_nudge_needed)
-                .unwrap_or(false);
-            out.pending_verification_nudge = Some(nudge);
-        }
+        // #268: Task* family delta. Read post-apply so `tc.status`
+        // reflects the fields just merged from this update; the
+        // delta fires exactly once per tool_call when the call
+        // reaches `Completed` AND its raw_input + (for TaskCreate)
+        // raw_output are present. TaskGet / TaskList carry no
+        // delta - they're chat-suppressed but produce no state.
+        out.pending_task_delta = extract_task_delta_from_tool_call_update(id_str, &session_id, tc);
         detach_terminal = detach_terminal_if_final(tc);
 
         if changed {
@@ -382,42 +389,81 @@ fn detach_terminal_if_final(tc: &mut ToolCallInfo) -> bool {
     true
 }
 
-fn extract_todo_updates_from_tool_call_update(
+/// #268: Extract a `TaskDelta` for the `TaskCreate` / `TaskUpdate`
+/// family. `TaskList` and `TaskGet` have no state delta; they share
+/// the gate but always return `None` here (they're chat-suppressed
+/// at the tool_call construction site).
+///
+/// `TaskCreate` requires a parseable `id` from the tool's result
+/// text; if the tool hasn't completed or the result text doesn't
+/// match `^Task #N created successfully:`, returns `None`. The
+/// caller is idempotent against `None`, so repeat updates that
+/// arrive before the result lands cost nothing.
+///
+/// `TaskUpdate` requires a parseable `taskId` in `raw_input`; if
+/// the input is missing or malformed (no taskId field, non-string),
+/// returns `None`.
+fn extract_task_delta_from_tool_call_update(
     id_str: &str,
     session_id: &str,
     tc: &ToolCallInfo,
-    raw_input: Option<&serde_json::Value>,
-) -> Option<Vec<super::super::TodoItem>> {
-    if tc.sdk_tool_name != "TodoWrite" {
-        return None;
+) -> Option<TaskDelta> {
+    match tc.sdk_tool_name.as_str() {
+        "TaskCreate" => {
+            if tc.status != model::ToolCallStatus::Completed {
+                // Wait for completion - the id only appears in the
+                // result text the CLI emits at completion time.
+                return None;
+            }
+            let raw_input = tc.raw_input.as_ref()?;
+            let input = parse_task_create_input(raw_input)?;
+            let result_text = tool_call_text_output(tc)?;
+            let id = parse_task_create_result_id(&result_text)?;
+            tracing::info!(
+                target: crate::logging::targets::APP_TOOL,
+                event_name = "task_create_applied",
+                message = "TaskCreate item added to inspector list",
+                outcome = "success",
+                session_id = %session_id,
+                tool_call_id = %id_str,
+                task_id = %id,
+                tool_name = "TaskCreate",
+            );
+            Some(TaskDelta::Create { input, id })
+        }
+        "TaskUpdate" => {
+            let raw_input = tc.raw_input.as_ref()?;
+            let update = parse_task_update_input(raw_input)?;
+            tracing::info!(
+                target: crate::logging::targets::APP_TOOL,
+                event_name = "task_update_applied",
+                message = "TaskUpdate applied to inspector list",
+                outcome = "success",
+                session_id = %session_id,
+                tool_call_id = %id_str,
+                task_id = %update.task_id,
+                tool_name = "TaskUpdate",
+            );
+            Some(TaskDelta::Update(update))
+        }
+        _ => None,
     }
-    let raw_input = raw_input?;
-    if let Some(todos) = parse_todos_if_present(raw_input) {
-        tracing::info!(
-            target: crate::logging::targets::APP_TOOL,
-            event_name = "tool_plan_synchronized",
-            message = "todo plan synchronized from tool update",
-            outcome = "success",
-            session_id = %session_id,
-            tool_call_id = %id_str,
-            count = todos.len(),
-            size_bytes = json_value_size(Some(raw_input)).unwrap_or_default(),
-            tool_name = "TodoWrite",
-            todo_count = todos.len(),
-        );
-        return Some(todos);
+}
+
+/// Concatenate every `ToolCallContent::Content(Text)` block on the
+/// tool call into a single `String`. Non-text blocks (diff, terminal,
+/// mcp resource, image) are skipped - `TaskCreate`'s assigned id
+/// always lives in a Text block per core-v1's wire capture.
+fn tool_call_text_output(tc: &ToolCallInfo) -> Option<String> {
+    let mut parts: Vec<&str> = Vec::new();
+    for content in &tc.content {
+        if let model::ToolCallContent::Content(inner) = content
+            && let model::ContentBlock::Text(text) = &inner.content
+        {
+            parts.push(text.text.as_str());
+        }
     }
-    tracing::debug!(
-        target: crate::logging::targets::APP_TOOL,
-        event_name = "tool_plan_sync_skipped",
-        message = "todo plan sync skipped for tool update",
-        outcome = "skipped",
-        session_id = %session_id,
-        tool_call_id = %id_str,
-        size_bytes = json_value_size(Some(raw_input)).unwrap_or_default(),
-        tool_name = "TodoWrite",
-    );
-    None
+    if parts.is_empty() { None } else { Some(parts.join("\n")) }
 }
 
 pub(super) fn raw_output_to_terminal_text(raw_output: &serde_json::Value) -> Option<String> {

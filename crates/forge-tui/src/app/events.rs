@@ -1140,63 +1140,6 @@ mod tests {
     }
 
     #[test]
-    fn todowrite_tool_call_without_todos_array_preserves_existing_todos() {
-        let mut app = make_test_app();
-        app.todos_mut().push(TodoItem {
-            content: "Existing todo".into(),
-            status: TodoStatus::InProgress,
-            active_form: String::new(),
-        });
-
-        send_msg(
-            &mut app,
-            assistant_message(vec![tool_use_block(
-                "tc-todo-empty",
-                "TodoWrite",
-                serde_json::json!({}),
-            )]),
-        );
-
-        assert_eq!(app.todos().len(), 1);
-        assert_eq!(app.todos()[0].content, "Existing todo");
-        assert_eq!(app.todos()[0].status, TodoStatus::InProgress);
-    }
-
-    #[test]
-    fn todowrite_tool_call_update_without_todos_array_preserves_existing_todos() {
-        let mut app = make_test_app();
-        send_msg(
-            &mut app,
-            assistant_message(vec![tool_use_block(
-                "tc-todo-update",
-                "TodoWrite",
-                serde_json::json!({
-                    "todos": [{"content": "Task A", "status": "in_progress"}]
-                }),
-            )]),
-        );
-        assert_eq!(app.todos().len(), 1);
-        assert_eq!(app.todos()[0].content, "Task A");
-
-        // Re-send the same tool_use with empty input — the wire path
-        // collapses the SessionUpdate ToolCall + ToolCallUpdate split
-        // into a single envelope per tool_use re-emit; an empty input
-        // must not clobber the existing todo list.
-        send_msg(
-            &mut app,
-            assistant_message(vec![tool_use_block(
-                "tc-todo-update",
-                "TodoWrite",
-                serde_json::json!({}),
-            )]),
-        );
-
-        assert_eq!(app.todos().len(), 1);
-        assert_eq!(app.todos()[0].content, "Task A");
-        assert_eq!(app.todos()[0].status, TodoStatus::InProgress);
-    }
-
-    #[test]
     fn has_in_progress_empty_messages() {
         let app = make_test_app();
         assert!(!tool_calls::has_in_progress_tool_calls(&app));
@@ -1378,7 +1321,6 @@ mod tests {
         assert!(!app.tools_collapsed);
         assert!(!app.force_redraw);
         assert!(app.todos().is_empty());
-        assert!(!app.todo_verification_nudge());
         assert!(app.selection().is_none());
         assert!(app.mention().is_none());
         assert!(!app.cancelled_turn_pending_hint());
@@ -1787,11 +1729,11 @@ mod tests {
         app.status = AppStatus::Running;
         app.set_files_accessed(9);
         app.todos_mut().push(TodoItem {
+            id: "1".to_owned(),
             content: "Task".into(),
             status: TodoStatus::InProgress,
             active_form: String::new(),
         });
-        app.set_todo_verification_nudge(true);
         *app.mention_mut() = Some(mention::MentionState::new(0, 0, String::new(), Vec::new()));
         app.mcp_mut().servers.push(forge_primitives::McpServerStatus {
             name: "supabase".into(),
@@ -1825,7 +1767,6 @@ mod tests {
         assert!(matches!(app.messages()[0].role, MessageRole::Welcome));
         assert_eq!(app.files_accessed(), 0);
         assert!(app.todos().is_empty());
-        assert!(!app.todo_verification_nudge());
         assert!(app.mention().is_none());
         assert!(app.mcp().servers.is_empty());
         assert_eq!(app.cwd_raw(), "/replacement");
