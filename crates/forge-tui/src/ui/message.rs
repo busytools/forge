@@ -1,7 +1,8 @@
 use crate::app::{
     BlockCache, CachedMessageSegment, ChatMessage, IncrementalMarkdown, MarkdownRenderKey,
     MessageBlock, MessageRenderCache, MessageRenderCacheKey, MessageRenderSignature, MessageRole,
-    SystemSeverity, TextBlock, WelcomeBlock, hash_text_block_content, hash_welcome_block_content,
+    StopHookEntry, SystemSeverity, TextBlock, WelcomeBlock, hash_text_block_content,
+    hash_welcome_block_content,
 };
 use crate::ui::peer_block;
 use crate::ui::theme;
@@ -54,7 +55,7 @@ const WELCOME_TIPS: &[&str] = &[
 /// Snapshot of the app state needed by the spinner -- extracted before
 /// the message loop so we don't need `&App` (which conflicts with `&mut msg`).
 #[derive(Clone, Copy)]
-// Spinner state — bools track frame ticks, blink flag, halted, idle, etc. — separate flags read better than a packed bitmask at call sites.
+// Spinner state - bools track frame ticks, blink flag, halted, idle, etc. - separate flags read better than a packed bitmask at call sites.
 pub struct SpinnerState {
     pub frame: usize,
     /// True when this message owns the currently active assistant turn.
@@ -65,6 +66,14 @@ pub struct SpinnerState {
     pub show_thinking: bool,
     /// True when this message should show the compaction indicator.
     pub show_compacting: bool,
+    /// #273: Latest cumulative thinking-token count for the current
+    /// turn. `None` when no `Message::ThinkingTokens` event has fired
+    /// yet; the spinner falls back to bare `Thinking...`.
+    pub thinking_tokens: Option<u64>,
+    /// #273: Most recent `Message::TurnDuration` ms. Rendered as
+    /// the banner chip `Forge · 12.4s` on the active assistant
+    /// turn's role-label row. `None` until the first turn completes.
+    pub last_turn_duration_ms: Option<u64>,
 }
 
 struct MessageLayout {
@@ -129,6 +138,12 @@ pub(crate) struct MessageRenderContext<'a> {
     width: u16,
     layout_generation: u64,
     options: MessageRenderOptions,
+    /// #273: Hooks list for the active `Message::StopHookSummary` chip
+    /// bound to this message. Empty slice when no summary applies.
+    /// Lives on the context rather than `MessageRenderOptions` because
+    /// `MessageRenderOptions` must stay `Copy + Default` for the cache
+    /// key plumbing; the slice already inherits the `'a` lifetime here.
+    stop_hook_summary_hooks: &'a [StopHookEntry],
 }
 
 impl<'a> MessageRenderContext<'a> {
@@ -143,17 +158,64 @@ impl<'a> MessageRenderContext<'a> {
             width,
             layout_generation,
             options,
+            stop_hook_summary_hooks: &[],
         }
+    }
+
+    /// #273: Attach a hooks list for the stop_hook_summary chip
+    /// renderer. Caller is responsible for setting
+    /// `options.stop_hook_summary_actions > 0` to actually surface
+    /// the chip; an attached slice with `actions == 0` renders
+    /// nothing.
+    pub(crate) fn with_stop_hook_hooks(mut self, hooks: &'a [StopHookEntry]) -> Self {
+        self.stop_hook_summary_hooks = hooks;
+        self
     }
 }
 
-fn assistant_role_label_line() -> Line<'static> {
-    let spans = vec![Span::styled(
+fn assistant_role_label_line(turn_duration_ms: Option<u64>) -> Line<'static> {
+    let mut spans = vec![Span::styled(
         "Forge",
         Style::default().fg(theme::ROLE_ASSISTANT).add_modifier(Modifier::BOLD),
     )];
-
+    // #273: append `· N.Ns` chip when a `Message::TurnDuration` event
+    // landed for this turn. Banner stays RUST_ORANGE BOLD; the chip
+    // separator + duration both render DIM so the visual hierarchy
+    // reads "primary role label > duration metadata".
+    if let Some(ms) = turn_duration_ms {
+        spans.push(Span::styled(
+            format!(" · {}", format_turn_duration(ms)),
+            Style::default().fg(theme::DIM),
+        ));
+    }
     Line::from(spans)
+}
+
+/// #273: Format a turn-duration milliseconds value for the banner
+/// chip. Buckets:
+///   - `< 60_000` ms -> one-decimal seconds (`12.4s`).
+///   - `60_000..3_600_000` -> integer `Xm Ys` (`1m 04s`).
+///   - `>= 3_600_000` -> `Xh Ym Zs` (`1h 02m 04s`).
+#[must_use]
+pub fn format_turn_duration(ms: u64) -> String {
+    const SEC: u64 = 1_000;
+    const MIN: u64 = 60 * SEC;
+    const HOUR: u64 = 60 * MIN;
+    if ms < MIN {
+        // One decimal, e.g. 12_400 ms -> "12.4s".
+        let whole = ms / SEC;
+        let tenths = (ms % SEC) / 100;
+        return format!("{whole}.{tenths}s");
+    }
+    if ms < HOUR {
+        let minutes = ms / MIN;
+        let seconds = (ms % MIN) / SEC;
+        return format!("{minutes}m {seconds:02}s");
+    }
+    let hours = ms / HOUR;
+    let minutes = (ms % HOUR) / MIN;
+    let seconds = (ms % MIN) / SEC;
+    format!("{hours}h {minutes:02}m {seconds:02}s")
 }
 
 pub(crate) fn render_message(
@@ -173,7 +235,7 @@ fn build_message_layout(
 ) -> MessageLayout {
     let mut layout = MessageLayout::new();
     if !render_context.options.suppress_group_header {
-        layout.push_wrapped_line(role_label_line(msg), render_context.width);
+        layout.push_wrapped_line(role_label_line(msg, spinner), render_context.width);
     }
 
     match msg.role {
@@ -187,6 +249,24 @@ fn build_message_layout(
         ),
         MessageRole::Assistant => {
             append_assistant_blocks(msg, spinner, render_context, &mut layout);
+            // #273: stop_hook_summary chip sits between the
+            // assistant body and the trailing separator so the
+            // visual order reads `body → hook summary chip →
+            // (separator)`. Hidden when `actions == 0`.
+            if render_context.options.stop_hook_summary_actions > 0 {
+                let (chip_y, chip_h) = append_stop_hook_summary(
+                    render_context.options.stop_hook_summary_actions,
+                    render_context.options.stop_hook_summary_expanded,
+                    render_context.stop_hook_summary_hooks,
+                    render_context.width,
+                    &mut layout,
+                );
+                msg.stop_hook_summary_y_in_msg = chip_y;
+                msg.stop_hook_summary_height = chip_h;
+            } else {
+                msg.stop_hook_summary_y_in_msg = 0;
+                msg.stop_hook_summary_height = 0;
+            }
         }
         MessageRole::System(_) => append_system_blocks(msg, render_context.width, &mut layout),
     }
@@ -196,6 +276,47 @@ fn build_message_layout(
     }
 
     layout
+}
+
+/// #273: Render a `Message::StopHookSummary` as a collapsed
+/// `↳ hook summary · N actions [▶ expand]` chip. When `expanded`,
+/// follow with one DIM indented `command · duration` row per hook.
+/// Caller already gated on `actions > 0` so this function assumes
+/// the chip is wanted. Returns `(chip_y_in_msg, chip_height)` - the
+/// wrapped-row offset and height of the clickable chip line(s),
+/// excluding the leading blank and any expanded hook rows. Caller
+/// stamps these on the `ChatMessage` so the mouse handler can route
+/// clicks back to the toggle.
+fn append_stop_hook_summary(
+    actions: u32,
+    expanded: bool,
+    hooks: &[StopHookEntry],
+    width: u16,
+    layout: &mut MessageLayout,
+) -> (usize, usize) {
+    layout.push_blank();
+    let chip_y = layout.height;
+    let toggle_label = if expanded { "[▼ collapse]" } else { "[▶ expand]" };
+    let action_word = if actions == 1 { "action" } else { "actions" };
+    let chip = Line::from(vec![
+        Span::styled(
+            format!("↳ hook summary · {actions} {action_word} "),
+            Style::default().fg(theme::DIM),
+        ),
+        Span::styled(toggle_label.to_owned(), Style::default().fg(theme::DIM)),
+    ]);
+    layout.push_wrapped_line(chip, width);
+    let chip_height = layout.height.saturating_sub(chip_y);
+    if expanded {
+        for hook in hooks {
+            let body = Line::from(Span::styled(
+                format!("    {} · {}", hook.command, format_turn_duration(hook.duration_ms)),
+                Style::default().fg(theme::DIM),
+            ));
+            layout.push_wrapped_line(body, width);
+        }
+    }
+    (chip_y, chip_height)
 }
 
 fn append_welcome_blocks(msg: &mut ChatMessage, width: u16, layout: &mut MessageLayout) {
@@ -217,14 +338,14 @@ fn append_user_blocks(
     for block in &mut msg.blocks {
         match block {
             MessageBlock::Text(block) => {
-                // Peer-coordination wrappers (#114) — when the
-                // workspace injects a `[Question id=…]` /
-                // `[Reply id=…]` / etc. user-turn, render a styled
+                // Peer-coordination wrappers (#114) - when the
+                // workspace injects a `[Question id=...]` /
+                // `[Reply id=...]` / etc. user-turn, render a styled
                 // peer block instead of the default user bubble.
                 // Collapse state mirrors the global tool-card
                 // preference so Ctrl+X flips peer rows and tool rows
                 // together. Inbound peer turns don't (yet) have a
-                // per-row override the way ToolCallInfo does — the
+                // per-row override the way ToolCallInfo does - the
                 // global default is the only knob.
                 if let Some(kind) = peer_block::detect_inbound(&block.text) {
                     let trailing_gap = block.trailing_blank_lines();
@@ -306,7 +427,10 @@ fn append_assistant_blocks(
         return;
     }
     if msg.blocks.is_empty() && spinner.show_empty_thinking {
-        layout.push_wrapped_line(thinking_line(spinner.frame), render_context.width);
+        layout.push_wrapped_line(
+            thinking_line(spinner.frame, spinner.thinking_tokens),
+            render_context.width,
+        );
         return;
     }
 
@@ -326,7 +450,10 @@ fn append_assistant_blocks(
         if state.has_body_content {
             layout.push_blank();
         }
-        layout.push_wrapped_line(thinking_line(spinner.frame), render_context.width);
+        layout.push_wrapped_line(
+            thinking_line(spinner.frame, spinner.thinking_tokens),
+            render_context.width,
+        );
     }
 }
 
@@ -413,7 +540,7 @@ fn append_assistant_tool_block(
     if tc.hidden_unless_focused_interaction() {
         return;
     }
-    // Peer-coordination outbound (#114) — replace the default
+    // Peer-coordination outbound (#114) - replace the default
     // tool_use card for `mcp__forge__peers__ask_agent` /
     // `peers__tell_agent` with a styled peer block in the same
     // tool-card shape (status icon + kind label + tree body).
@@ -421,12 +548,32 @@ fn append_assistant_tool_block(
     // `collapsed_override` wins, otherwise the global default.
     // Click-to-toggle on peer rows currently piggybacks on the
     // existing tool-call row hit-test in mouse.rs.
+    // #273 Task 8 / 9: collapse Monitor + Workflow tool cards to a
+    // single DIM one-liner. These tool calls carry their detail in
+    // the Inspector MONITORS / WORKFLOWS sections; the chat surface
+    // only needs the start/stop signal. Falls through to the
+    // standard tool card when the raw_input is missing or malformed.
+    if let Some(lines) = render_lifecycle_one_liner(tc) {
+        if !state.prev_was_tool && state.has_body_content {
+            layout.push_blank();
+        }
+        let y_in_msg = layout.height;
+        let height = rendered_lines_height(&lines, render_context.width);
+        layout.push_wrapped_lines(lines, render_context.width);
+        tc.last_measured_y_in_msg = y_in_msg;
+        tc.last_measured_height = height;
+        tc.last_measured_width = render_context.width;
+        state.has_body_content = true;
+        state.has_visible_content = true;
+        state.prev_was_tool = true;
+        return;
+    }
     if let Some(kind) = peer_block::detect_outbound(tc) {
         if !state.prev_was_tool && state.has_body_content {
             layout.push_blank();
         }
         // #143 item 5: routine `mcp__forge__*` calls collapse to a
-        // one-line summary by default — the wire shape is
+        // one-line summary by default - the wire shape is
         // predictable and the user-facing intent is target +
         // correlation_id, not the JSON args. A per-tc
         // `collapsed_override` (set by clicking on the row) still
@@ -479,7 +626,7 @@ fn append_assistant_tool_block(
     // Capture the tool's wrapped-row offset within this message *after*
     // any leading blank from the prev-was-tool/has-body-content gap so
     // mouse hit-testing can locate the rendered row range directly
-    // from the tool's own state — no need to walk text-block heights
+    // from the tool's own state - no need to walk text-block heights
     // (which can return None when their cache version is stale).
     let y_in_msg = layout.height;
     layout.push_lines(lines, height, wrapped_lines);
@@ -497,6 +644,116 @@ fn trailing_gap_for_text_like_block(
     trailing_blank_lines: usize,
 ) -> usize {
     if !has_visible_content && rendered_height == 0 { 0 } else { trailing_blank_lines }
+}
+
+/// #273 Tasks 8 + 9: collapse Monitor / Workflow tool_use cards to a
+/// single DIM one-liner. Returns the rendered lines when the tool is
+/// Monitor or Workflow AND has a parseable input; otherwise `None`
+/// (caller falls through to the standard tool-card render).
+///
+/// Render shapes:
+/// - Monitor (running): `◉ Monitor started · <description> (persistent)`
+/// - Monitor (running, non-persistent): `◉ Monitor started · <description>`
+/// - Monitor (terminal): `◉ Monitor stopped · <description>` (or
+///   `· timed out` when killed via timeout)
+/// - Workflow (running): `◆ Workflow started · <meta.name | "Workflow">`
+/// - Workflow (terminal): `◆ Workflow done · <meta.name | "Workflow">`
+fn render_lifecycle_one_liner(tc: &crate::app::ToolCallInfo) -> Option<Vec<Line<'static>>> {
+    use forge_primitives::ToolCallStatus;
+    match tc.sdk_tool_name.as_str() {
+        "Monitor" => {
+            let parsed = tc
+                .raw_input
+                .as_ref()
+                .and_then(forge_workspace::user_interaction::parse_monitor_input)?;
+            let is_terminal = matches!(
+                tc.status,
+                ToolCallStatus::Completed | ToolCallStatus::Failed | ToolCallStatus::Killed
+            );
+            let suffix = if parsed.persistent { " (persistent)" } else { "" };
+            let text = if is_terminal {
+                format!("\u{25c9} Monitor stopped \u{b7} {}{suffix}", parsed.description)
+            } else {
+                format!("\u{25c9} Monitor started \u{b7} {}{suffix}", parsed.description)
+            };
+            Some(vec![Line::from(Span::styled(text, Style::default().fg(theme::DIM)))])
+        }
+        "Workflow" => {
+            let parsed = tc
+                .raw_input
+                .as_ref()
+                .and_then(forge_workspace::user_interaction::parse_workflow_input)?;
+            let meta_name = workflow_meta_name(&parsed.script);
+            let is_terminal = matches!(
+                tc.status,
+                ToolCallStatus::Completed | ToolCallStatus::Failed | ToolCallStatus::Killed
+            );
+            let text = if is_terminal {
+                format!("\u{25c6} Workflow done \u{b7} {meta_name}")
+            } else {
+                format!("\u{25c6} Workflow started \u{b7} {meta_name}")
+            };
+            Some(vec![Line::from(Span::styled(text, Style::default().fg(theme::DIM)))])
+        }
+        _ => None,
+    }
+}
+
+/// #273 Task 9: extract the `name` field from a workflow `script`'s
+/// `export const meta = { name: '...' }` block. Falls back to the
+/// literal `"Workflow"` label when the block isn't present or
+/// doesn't carry a name. Conservative substring-based parser
+/// matches both single-quoted and double-quoted strings.
+pub(crate) fn workflow_meta_name(script: &str) -> String {
+    extract_meta_field(script, "name").unwrap_or_else(|| "Workflow".to_owned())
+}
+
+/// #273 Task 9: extract both the `name` and `description` fields
+/// from a workflow `script`'s meta block. Returns
+/// `(name, description)` where `name` falls back to `"Workflow"`
+/// when missing; `description` is `None` when the meta block lacks
+/// it.
+pub fn workflow_meta_fields(script: &str) -> (String, Option<String>) {
+    let name = workflow_meta_name(script);
+    let description = extract_meta_field(script, "description");
+    (name, description)
+}
+
+/// Internal helper: find `<field>: '<value>'` or `<field>: "<value>"`
+/// substring in the script body and return the unquoted value.
+fn extract_meta_field(script: &str, field: &str) -> Option<String> {
+    for prefix in [format!("{field}:"), format!("{field} :")] {
+        let mut search_from = 0;
+        while let Some(rel) = script[search_from..].find(&prefix) {
+            let start = search_from + rel;
+            // Reject matches that aren't at the start of a token
+            // (e.g. `lastTooLname:` would match `name:` if we
+            // didn't check). Token start = preceding char is
+            // whitespace / `,` / `{` / newline / nothing.
+            let preceding = script[..start].chars().next_back();
+            let token_start =
+                preceding.is_none_or(|c| c.is_whitespace() || c == ',' || c == '{' || c == ';');
+            if !token_start {
+                search_from = start + prefix.len();
+                continue;
+            }
+            let after = &script[start + prefix.len()..];
+            let trimmed = after.trim_start();
+            let quote = trimmed.chars().next()?;
+            if quote != '\'' && quote != '"' {
+                search_from = start + prefix.len();
+                continue;
+            }
+            let body = &trimmed[quote.len_utf8()..];
+            let end = body.find(quote)?;
+            let value = body[..end].trim();
+            if !value.is_empty() {
+                return Some(value.to_owned());
+            }
+            search_from = start + prefix.len();
+        }
+    }
+    None
 }
 
 fn append_system_blocks(msg: &mut ChatMessage, width: u16, layout: &mut MessageLayout) {
@@ -618,11 +875,13 @@ pub fn measure_message_height_cached_with_tools_collapsed_and_separator_and_mode
             include_trailing_separator,
             suppress_group_header: false,
             envelope_streak_position: None,
+            stop_hook_summary_actions: 0,
+            stop_hook_summary_expanded: false,
         },
     )
 }
 
-/// Lowest-level measurement helper — accepts the full
+/// Lowest-level measurement helper - accepts the full
 /// `MessageRenderOptions` so callers that compute
 /// `suppress_group_header` (chat.rs's measure + render passes for
 /// same-project envelope grouping) can thread it through without
@@ -637,6 +896,19 @@ pub fn measure_message_height_cached_with_options(
 ) -> (usize, usize) {
     let render_context =
         MessageRenderContext::new(current_mode_id, width, layout_generation, options);
+    measure_message_height_cached_with_context(msg, spinner, render_context)
+}
+
+/// #273: Context-taking measurement helper. Callers that need to
+/// thread state beyond `MessageRenderOptions` (today: the
+/// stop_hook_summary hooks slice) build a `MessageRenderContext`
+/// themselves and pass it in. Other callers use the simpler
+/// `_with_options` variant which forwards an empty stop-hook slice.
+pub(crate) fn measure_message_height_cached_with_context(
+    msg: &mut ChatMessage,
+    spinner: &SpinnerState,
+    render_context: MessageRenderContext<'_>,
+) -> (usize, usize) {
     let cache = get_or_build_message_render_cache(msg, spinner, render_context);
     (cache.height(), cache.wrapped_lines())
 }
@@ -687,6 +959,8 @@ pub(crate) fn render_message_from_offset_with_tools_collapsed(
             include_trailing_separator: true,
             suppress_group_header: false,
             envelope_streak_position: None,
+            stop_hook_summary_actions: 0,
+            stop_hook_summary_expanded: false,
         },
         skip_rows,
         out,
@@ -822,6 +1096,18 @@ pub(crate) struct MessageRenderOptions {
     /// between full streak-starter chrome and compact follower
     /// shape (#163). `None` for non-envelope messages.
     pub envelope_streak_position: Option<EnvelopeStreakPosition>,
+    /// #273: Action count from the `Message::StopHookSummary` bound
+    /// to this message. `0` -> no chip rendered. Non-zero -> render
+    /// the collapsed `↳ hook summary · N actions [▶ expand]` line at
+    /// the end of the assistant turn. Folded into the cache key so a
+    /// fresh summary event reliably invalidates the prior render.
+    pub stop_hook_summary_actions: u32,
+    /// #273: Toggle for the stop-hook-summary expanded body. When
+    /// true and `stop_hook_summary_actions > 0`, the renderer also
+    /// emits a DIM indented list of `command · duration` rows below
+    /// the chip. Folded into the cache key so click-to-expand flips
+    /// re-render cleanly.
+    pub stop_hook_summary_expanded: bool,
 }
 
 fn get_or_build_message_render_cache<'a>(
@@ -859,10 +1145,13 @@ fn build_message_render_cache_key(
         include_trailing_separator: render_context.options.include_trailing_separator,
         suppress_group_header: render_context.options.suppress_group_header,
         envelope_streak_position_ord,
+        stop_hook_summary_actions: render_context.options.stop_hook_summary_actions,
+        stop_hook_summary_expanded: render_context.options.stop_hook_summary_expanded,
         render_signature: build_message_render_signature(
             msg,
             spinner,
             render_context.tool_render_context,
+            render_context.stop_hook_summary_hooks,
         ),
     }
 }
@@ -871,6 +1160,7 @@ fn build_message_render_signature(
     msg: &ChatMessage,
     spinner: &SpinnerState,
     tool_render_context: tool_call::ToolCallRenderContext<'_>,
+    stop_hook_summary_hooks: &[StopHookEntry],
 ) -> MessageRenderSignature {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
@@ -887,6 +1177,14 @@ fn build_message_render_signature(
     assistant_frame.hash(&mut hasher);
     for block in &msg.blocks {
         hash_message_block_into(&mut hasher, block, spinner, tool_render_context);
+    }
+    // #273: hook list contents drive the expanded body; fold them
+    // into the signature so a fresh `StopHookSummary` with new hook
+    // metadata invalidates the cached layout even when actions count
+    // is unchanged.
+    for hook in stop_hook_summary_hooks {
+        hook.command.hash(&mut hasher);
+        hook.duration_ms.hash(&mut hasher);
     }
     MessageRenderSignature(hasher.finish())
 }
@@ -1092,7 +1390,7 @@ fn should_skip_whole_block(
     false
 }
 
-fn role_label_line(msg: &ChatMessage) -> Line<'static> {
+fn role_label_line(msg: &ChatMessage, spinner: &SpinnerState) -> Line<'static> {
     match msg.role {
         MessageRole::Welcome => Line::from(Span::styled(
             "Overview",
@@ -1101,7 +1399,7 @@ fn role_label_line(msg: &ChatMessage) -> Line<'static> {
         MessageRole::User => {
             // Peer / worker MCP envelopes ride on the User role at
             // the SDK protocol level (claude treats them as user
-            // turns), but they're agent-to-agent traffic — the chat
+            // turns), but they're agent-to-agent traffic - the chat
             // label "User" misrepresents them as human input.
             // Distinguish: real human input keeps the "User" label;
             // any User message whose first text block is a peer-
@@ -1121,7 +1419,15 @@ fn role_label_line(msg: &ChatMessage) -> Line<'static> {
                 ))
             }
         }
-        MessageRole::Assistant => assistant_role_label_line(),
+        // #273: only stamp the duration chip on the active turn's
+        // banner. Past turns persist their layout snapshot; surfacing
+        // the chip across all prior turns would require per-message
+        // duration storage which is out of scope for this PR.
+        MessageRole::Assistant => assistant_role_label_line(if spinner.is_active_turn_assistant {
+            spinner.last_turn_duration_ms
+        } else {
+            None
+        }),
         MessageRole::System(_) => system_role_label_line(system_severity_from_role(&msg.role)),
     }
 }
@@ -1135,7 +1441,7 @@ fn role_label_line(msg: &ChatMessage) -> Line<'static> {
 /// `ChatMessage` (stamped at push time by the
 /// `PeerEnvelopeAppended` path via `ChatMessage::new_peer_envelope`)
 /// rather than walking blocks + running `detect_inbound` per frame.
-/// The walk was a hot path under heavy envelope traffic — the role
+/// The walk was a hot path under heavy envelope traffic - the role
 /// label re-evaluates on every render of every chat message.
 fn is_peer_envelope_user_message(msg: &ChatMessage) -> bool {
     msg.is_peer_envelope
@@ -1216,7 +1522,7 @@ pub(crate) enum EnvelopeStreakPosition {
     FollowerNewWorker,
     /// Subsequent envelope in a same-project streak from the SAME
     /// worker as the previous envelope. Renders compactly without
-    /// the worker label — body continues under the existing tag
+    /// the worker label - body continues under the existing tag
     /// column so a contiguous run of one worker's messages reads as
     /// one paragraph.
     FollowerSameWorker,
@@ -1264,7 +1570,7 @@ pub(crate) fn compute_envelope_streak_position(
     let prev_org = message_envelope_org(&messages[idx - 1]);
     if prev_org.as_deref() != Some(cur_org.as_str()) {
         // Previous message either isn't an envelope or is from a
-        // different project — this envelope starts a fresh streak.
+        // different project - this envelope starts a fresh streak.
         return Some(EnvelopeStreakPosition::Start);
     }
     // Same-project streak follower. Distinguish same-worker
@@ -1287,9 +1593,53 @@ fn system_role_label_line(severity: SystemSeverity) -> Line<'static> {
     Line::from(Span::styled(label, Style::default().fg(color).add_modifier(Modifier::BOLD)))
 }
 
-fn thinking_line(frame: usize) -> Line<'static> {
+fn thinking_line(frame: usize, thinking_tokens: Option<u64>) -> Line<'static> {
     let ch = SPINNER_FRAMES[frame % SPINNER_FRAMES.len()];
-    Line::from(Span::styled(format!("{ch} Thinking..."), Style::default().fg(theme::DIM)))
+    // #273: when ThinkingTokens has fired for the current turn the
+    // chip swaps from `Thinking...` to `thinking · N tok` (with k/M
+    // abbreviation). Falls back to the bare `Thinking...` shape when
+    // no count is available yet (Turn just started, mid-bootstrap).
+    let body = match thinking_tokens {
+        Some(n) => format!("{ch} thinking · {} tok", format_token_count_short(n)),
+        None => format!("{ch} Thinking..."),
+    };
+    Line::from(Span::styled(body, Style::default().fg(theme::DIM)))
+}
+
+/// #273: Format a token count with k / M abbreviation. Threshold
+/// rules:
+///   - < 1_000 -> bare integer (`0`, `42`, `999`).
+///   - 1_000..1_000_000 -> `Nk` or `N.Nk` (one decimal), e.g.
+///     `1199 -> 1.1k`, `15_000 -> 15k`, `999_999 -> 999k`.
+///   - >= 1_000_000 -> `NM` or `N.NM`, e.g. `1_500_000 -> 1.5M`.
+///
+/// The integer / one-decimal split matches the rendered chip width
+/// (max 4 visible chars: `1.4M`, `999k`, `999`) so the spinner row
+/// stays a stable size regardless of the turn's token volume.
+#[must_use]
+pub fn format_token_count_short(n: u64) -> String {
+    const K: u64 = 1_000;
+    const M: u64 = 1_000_000;
+    if n < K {
+        return n.to_string();
+    }
+    if n < M {
+        // < 10k -> one decimal (e.g. 1.2k, 9.9k); >= 10k -> integer
+        // (e.g. 15k, 999k). Truncation via integer division keeps
+        // the chip readable - 1199 reads as 1.1k not 1.2k.
+        if n < 10 * K {
+            let whole = n / K;
+            let tenths = (n / (K / 10)) % 10;
+            return format!("{whole}.{tenths}k");
+        }
+        return format!("{}k", n / K);
+    }
+    if n < 10 * M {
+        let whole = n / M;
+        let tenths = (n / (M / 10)) % 10;
+        return format!("{whole}.{tenths}M");
+    }
+    format!("{}M", n / M)
 }
 
 fn compacting_line(frame: usize) -> Line<'static> {
@@ -1322,7 +1672,7 @@ fn welcome_lines(block: &WelcomeBlock, _width: u16) -> Vec<Line<'static>> {
     // (tests / smoke). Width-pad to 13 chars + 1 space = 14 chars
     // total to align with Version/cwd/Session ID rows.
     //
-    // Skip the line entirely when value is empty (no data yet) —
+    // Skip the line entirely when value is empty (no data yet) -
     // avoids flashing a placeholder while the workspace picker /
     // status snapshot are still in flight.
     if !block.subscription.is_empty() {
@@ -1839,7 +2189,7 @@ mod tests {
     #[test]
     fn welcome_lines_render_expected_fields() {
         // Pass a non-empty subscription value so the account line
-        // renders. Empty value would hide the line — see
+        // renders. Empty value would hide the line - see
         // `welcome_lines_skip_account_line_when_value_empty`.
         let message = ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "Pro", "/cwd", "-");
         let MessageBlock::Welcome(block) = &message.blocks[0] else {
@@ -1865,7 +2215,7 @@ mod tests {
     fn welcome_lines_skip_account_line_when_value_empty() {
         // Empty subscription value means no data has loaded yet
         // (workspace picker still in flight or no workspace at
-        // all). The renderer hides the line entirely — better than
+        // all). The renderer hides the line entirely - better than
         // showing a "-" placeholder that flickers when the real
         // value lands.
         let message = ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "", "/cwd", "-");
@@ -2053,6 +2403,8 @@ mod tests {
             show_empty_thinking: false,
             show_thinking: false,
             show_compacting: false,
+            thinking_tokens: None,
+            last_turn_duration_ms: None,
         }
     }
 
@@ -2062,6 +2414,8 @@ mod tests {
             include_trailing_separator: true,
             suppress_group_header: false,
             envelope_streak_position: None,
+            stop_hook_summary_actions: 0,
+            stop_hook_summary_expanded: false,
         }
     }
 
@@ -2071,6 +2425,8 @@ mod tests {
             include_trailing_separator: false,
             suppress_group_header: false,
             envelope_streak_position: None,
+            stop_hook_summary_actions: 0,
+            stop_hook_summary_expanded: false,
         }
     }
 
@@ -2366,6 +2722,8 @@ mod tests {
                 include_trailing_separator: false,
                 suppress_group_header: false,
                 envelope_streak_position: None,
+                stop_hook_summary_actions: 0,
+                stop_hook_summary_expanded: false,
             },
             0,
             &mut out,
@@ -2398,6 +2756,8 @@ mod tests {
                 include_trailing_separator: false,
                 suppress_group_header: false,
                 envelope_streak_position: None,
+                stop_hook_summary_actions: 0,
+                stop_hook_summary_expanded: false,
             },
             0,
             &mut out,
@@ -2598,6 +2958,8 @@ mod tests {
                         include_trailing_separator: true,
                         suppress_group_header: false,
                         envelope_streak_position: None,
+                        stop_hook_summary_actions: 0,
+                        stop_hook_summary_expanded: false,
                     },
                 ),
                 &mut lines,
@@ -3037,6 +3399,8 @@ mod tests {
             include_trailing_separator: false,
             suppress_group_header: false,
             envelope_streak_position: None,
+            stop_hook_summary_actions: 0,
+            stop_hook_summary_expanded: false,
         };
         let mut lines_with = Vec::new();
         render_message(
@@ -3055,6 +3419,8 @@ mod tests {
             include_trailing_separator: false,
             suppress_group_header: true,
             envelope_streak_position: None,
+            stop_hook_summary_actions: 0,
+            stop_hook_summary_expanded: false,
         };
         let mut lines_without = Vec::new();
         render_message(
@@ -3098,5 +3464,387 @@ mod tests {
         ];
         assert!(compute_suppress_group_header(&messages, 1));
         assert!(compute_suppress_group_header(&messages, 2));
+    }
+
+    // ----------------------------------------------------------------
+    // #273: thinking_tokens spinner chip + format helper.
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn format_token_count_short_threshold_buckets() {
+        // < 1k -> bare integer.
+        assert_eq!(format_token_count_short(0), "0");
+        assert_eq!(format_token_count_short(42), "42");
+        assert_eq!(format_token_count_short(999), "999");
+        // 1k..10k -> one-decimal abbreviation, truncating.
+        assert_eq!(format_token_count_short(1_000), "1.0k");
+        assert_eq!(format_token_count_short(1_199), "1.1k");
+        assert_eq!(format_token_count_short(1_200), "1.2k");
+        assert_eq!(format_token_count_short(9_900), "9.9k");
+        // 10k..1M -> integer abbreviation.
+        assert_eq!(format_token_count_short(15_000), "15k");
+        assert_eq!(format_token_count_short(999_999), "999k");
+        // 1M..10M -> one-decimal.
+        assert_eq!(format_token_count_short(1_500_000), "1.5M");
+        // >= 10M -> integer.
+        assert_eq!(format_token_count_short(15_000_000), "15M");
+    }
+
+    #[test]
+    fn thinking_line_renders_chip_when_token_count_provided() {
+        let line = thinking_line(0, Some(1_234));
+        let rendered: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            rendered.contains("thinking · 1.2k tok"),
+            "expected chip with k abbreviation; got {rendered:?}",
+        );
+    }
+
+    #[test]
+    fn thinking_line_falls_back_to_bare_thinking_when_no_tokens_yet() {
+        let line = thinking_line(0, None);
+        let rendered: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            rendered.contains("Thinking..."),
+            "expected fallback shape when no count; got {rendered:?}",
+        );
+        assert!(!rendered.contains("tok"));
+    }
+
+    // ----------------------------------------------------------------
+    // #273: turn_duration banner chip on the assistant role label.
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn format_turn_duration_buckets() {
+        // < 60s -> one-decimal seconds.
+        assert_eq!(format_turn_duration(0), "0.0s");
+        assert_eq!(format_turn_duration(900), "0.9s");
+        assert_eq!(format_turn_duration(12_400), "12.4s");
+        assert_eq!(format_turn_duration(59_900), "59.9s");
+        // 1m..1h -> integer Xm YYs (zero-padded seconds).
+        assert_eq!(format_turn_duration(60_000), "1m 00s");
+        assert_eq!(format_turn_duration(64_000), "1m 04s");
+        assert_eq!(format_turn_duration(125_000), "2m 05s");
+        assert_eq!(format_turn_duration(3_599_000), "59m 59s");
+        // >= 1h -> Xh YYm ZZs (zero-padded minutes + seconds).
+        assert_eq!(format_turn_duration(3_600_000), "1h 00m 00s");
+        assert_eq!(format_turn_duration(3_724_000), "1h 02m 04s");
+    }
+
+    #[test]
+    fn assistant_role_label_line_renders_chip_when_duration_present() {
+        let line = assistant_role_label_line(Some(12_400));
+        let rendered: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(rendered.starts_with("Forge"), "expected Forge prefix, got {rendered:?}");
+        assert!(rendered.contains("· 12.4s"), "expected duration chip, got {rendered:?}");
+    }
+
+    #[test]
+    fn assistant_role_label_line_omits_chip_when_no_duration() {
+        let line = assistant_role_label_line(None);
+        let rendered: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(rendered, "Forge");
+    }
+
+    #[test]
+    fn assistant_role_label_chip_only_shows_on_active_turn() {
+        // Two messages - both Assistant - but only the active turn's
+        // spinner carries `is_active_turn_assistant=true`. The chip
+        // must surface for the active one and be silent for the
+        // historical one even when the spinner carries a duration.
+        let active_msg = make_text_message(MessageRole::Assistant, "current response");
+        let old_msg = make_text_message(MessageRole::Assistant, "earlier response");
+
+        let active_spinner = SpinnerState {
+            is_active_turn_assistant: true,
+            last_turn_duration_ms: Some(12_400),
+            ..idle_spinner()
+        };
+        let inactive_spinner = SpinnerState {
+            is_active_turn_assistant: false,
+            last_turn_duration_ms: Some(12_400),
+            ..idle_spinner()
+        };
+
+        let active_label = role_label_line(&active_msg, &active_spinner);
+        let active_rendered: String =
+            active_label.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            active_rendered.contains("· 12.4s"),
+            "active turn must carry chip, got {active_rendered:?}",
+        );
+
+        let old_label = role_label_line(&old_msg, &inactive_spinner);
+        let old_rendered: String = old_label.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(
+            old_rendered, "Forge",
+            "historical turn must omit chip even when spinner has duration",
+        );
+    }
+
+    // ----------------------------------------------------------------
+    // #273: stop_hook_summary collapsed chip + expanded body.
+    // ----------------------------------------------------------------
+
+    fn stop_hook_options(actions: u32, expanded: bool) -> MessageRenderOptions {
+        MessageRenderOptions {
+            stop_hook_summary_actions: actions,
+            stop_hook_summary_expanded: expanded,
+            ..options_without_separator()
+        }
+    }
+
+    fn render_assistant_with_stop_hook(
+        actions: u32,
+        expanded: bool,
+        hooks: &[StopHookEntry],
+    ) -> Vec<String> {
+        let spinner = idle_spinner();
+        let mut msg = make_text_message(MessageRole::Assistant, "done");
+        let mut lines = Vec::new();
+        let context = MessageRenderContext::new(None, 80, 0, stop_hook_options(actions, expanded))
+            .with_stop_hook_hooks(hooks);
+        render_message(&mut msg, &spinner, context, &mut lines);
+        render_lines_to_strings(&lines)
+    }
+
+    #[test]
+    fn stop_hook_summary_renders_collapsed_chip_when_actions_positive() {
+        let rendered = render_assistant_with_stop_hook(3, false, &[]);
+        // Forge label + "done" body + chip line.
+        assert_eq!(rendered.first().map(String::as_str), Some("Forge"));
+        assert!(rendered.iter().any(|line| line == "done"), "expected body line; got {rendered:?}");
+        assert!(
+            rendered.iter().any(|line| line.contains("↳ hook summary · 3 actions [▶ expand]")),
+            "expected collapsed chip; got {rendered:?}",
+        );
+        // Body block must NOT render when collapsed.
+        assert!(
+            !rendered.iter().any(|line| line.contains("[▼ collapse]")),
+            "collapsed chip must not show expand-state label; got {rendered:?}",
+        );
+    }
+
+    #[test]
+    fn stop_hook_summary_renders_singular_action_word() {
+        let rendered = render_assistant_with_stop_hook(1, false, &[]);
+        assert!(
+            rendered.iter().any(|line| line.contains("↳ hook summary · 1 action [▶ expand]")),
+            "expected `1 action` (singular); got {rendered:?}",
+        );
+    }
+
+    #[test]
+    fn stop_hook_summary_renders_nothing_when_actions_zero() {
+        let rendered = render_assistant_with_stop_hook(0, false, &[]);
+        // Forge label + "done" only - no chip, no expand state.
+        assert!(
+            rendered.iter().all(|line| !line.contains("↳ hook summary")),
+            "actions==0 must produce no chip; got {rendered:?}",
+        );
+    }
+
+    #[test]
+    fn stop_hook_summary_expanded_renders_hook_rows() {
+        let hooks = vec![
+            StopHookEntry {
+                command: "bash ~/.claude/hooks/notify.sh".to_owned(),
+                duration_ms: 980,
+            },
+            StopHookEntry { command: "bash ~/.claude/hooks/log.sh".to_owned(), duration_ms: 1_500 },
+        ];
+        let rendered = render_assistant_with_stop_hook(2, true, &hooks);
+        assert!(
+            rendered.iter().any(|line| line.contains("↳ hook summary · 2 actions [▼ collapse]")),
+            "expected expand-state label; got {rendered:?}",
+        );
+        assert!(
+            rendered.iter().any(
+                |line| line.contains("bash ~/.claude/hooks/notify.sh") && line.contains("0.9s")
+            ),
+            "expected first hook row; got {rendered:?}",
+        );
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line.contains("bash ~/.claude/hooks/log.sh") && line.contains("1.5s")),
+            "expected second hook row; got {rendered:?}",
+        );
+    }
+
+    #[test]
+    fn stop_hook_summary_stamps_hit_test_fields_when_chip_rendered() {
+        // The renderer must stamp `stop_hook_summary_y_in_msg /
+        // stop_hook_summary_height` on the ChatMessage so the mouse
+        // handler can route clicks back to the toggle. Stamping
+        // happens during `build_message_layout` - invoked through
+        // any render or measure call.
+        let spinner = idle_spinner();
+        let mut msg = make_text_message(MessageRole::Assistant, "done");
+        let mut out = Vec::new();
+        let ctx = MessageRenderContext::new(None, 80, 0, stop_hook_options(2, false))
+            .with_stop_hook_hooks(&[]);
+        render_message(&mut msg, &spinner, ctx, &mut out);
+        assert!(
+            msg.stop_hook_summary_height > 0,
+            "renderer must stamp non-zero height when chip is rendered",
+        );
+        assert!(
+            msg.stop_hook_summary_y_in_msg > 0,
+            "y_in_msg should be > 0 (chip sits after the assistant body)",
+        );
+    }
+
+    #[test]
+    fn stop_hook_summary_stamps_zero_when_no_chip() {
+        // Inverse: when actions==0 the renderer resets the stamped
+        // fields to zero so a previously-rendered chip can't ghost
+        // a click target after the source data is gone.
+        let spinner = idle_spinner();
+        let mut msg = make_text_message(MessageRole::Assistant, "done");
+        msg.stop_hook_summary_y_in_msg = 999;
+        msg.stop_hook_summary_height = 999;
+        let mut out = Vec::new();
+        let ctx = MessageRenderContext::new(None, 80, 0, stop_hook_options(0, false));
+        render_message(&mut msg, &spinner, ctx, &mut out);
+        assert_eq!(msg.stop_hook_summary_height, 0);
+        assert_eq!(msg.stop_hook_summary_y_in_msg, 0);
+    }
+
+    #[test]
+    fn stop_hook_summary_cache_invalidates_when_expand_toggles() {
+        // Toggling `stop_hook_summary_expanded` must rebuild the
+        // cache; the expanded view is taller than the collapsed view
+        // because the hook rows lift below the chip.
+        let spinner = idle_spinner();
+        let mut msg = make_text_message(MessageRole::Assistant, "done");
+        let hooks = vec![StopHookEntry { command: "bash hook.sh".to_owned(), duration_ms: 500 }];
+
+        let collapsed_ctx = MessageRenderContext::new(None, 80, 0, stop_hook_options(1, false))
+            .with_stop_hook_hooks(hooks.as_slice());
+        let collapsed = get_or_build_message_render_cache(&mut msg, &spinner, collapsed_ctx);
+        let collapsed_height = collapsed.height();
+
+        let expanded_ctx = MessageRenderContext::new(None, 80, 0, stop_hook_options(1, true))
+            .with_stop_hook_hooks(hooks.as_slice());
+        let expanded = get_or_build_message_render_cache(&mut msg, &spinner, expanded_ctx);
+        let expanded_height = expanded.height();
+
+        assert!(
+            expanded_height > collapsed_height,
+            "expanded ({expanded_height}) must be taller than collapsed ({collapsed_height})",
+        );
+    }
+
+    // ----------------------------------------------------------------
+    // #273 Task 8 / 9: Monitor + Workflow lifecycle one-liner render.
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn monitor_running_renders_started_notice_with_persistent_suffix() {
+        let mut tc = make_tool_call_info(
+            "toolu_mon",
+            "Monitor",
+            crate::agent::model::ToolCallStatus::InProgress,
+            "",
+        );
+        tc.raw_input = Some(serde_json::json!({
+            "description": "forge-monitor-test",
+            "command": "tail -F app.log",
+            "persistent": true,
+            "timeout_ms": 0,
+        }));
+        let lines = render_lifecycle_one_liner(&tc).expect("Monitor produces lines");
+        assert_eq!(lines.len(), 1);
+        let rendered: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            rendered.contains("\u{25c9} Monitor started \u{00b7} forge-monitor-test (persistent)"),
+            "got {rendered:?}",
+        );
+    }
+
+    #[test]
+    fn monitor_completed_renders_stopped_notice() {
+        let mut tc = make_tool_call_info(
+            "toolu_mon",
+            "Monitor",
+            crate::agent::model::ToolCallStatus::Completed,
+            "",
+        );
+        tc.raw_input = Some(serde_json::json!({
+            "description": "ci-watch",
+            "command": "gh run watch 1",
+            "persistent": false,
+            "timeout_ms": 60000,
+        }));
+        let lines = render_lifecycle_one_liner(&tc).expect("Monitor produces lines");
+        let rendered: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            rendered.contains("\u{25c9} Monitor stopped \u{00b7} ci-watch"),
+            "got {rendered:?}",
+        );
+        // Non-persistent has no `(persistent)` suffix.
+        assert!(!rendered.contains("(persistent)"));
+    }
+
+    #[test]
+    fn monitor_with_malformed_input_falls_through_to_default_render() {
+        // Missing required `command` field - parser returns None,
+        // helper returns None so the caller falls through to the
+        // standard tool-card render path.
+        let mut tc = make_tool_call_info(
+            "toolu_mon",
+            "Monitor",
+            crate::agent::model::ToolCallStatus::InProgress,
+            "",
+        );
+        tc.raw_input = Some(serde_json::json!({ "description": "x" }));
+        assert!(render_lifecycle_one_liner(&tc).is_none());
+    }
+
+    #[test]
+    fn workflow_meta_name_extracts_from_script_block() {
+        let script = "export const meta = {\n  name: 'minimal-ping',\n  description: 'sanity'\n}\n\nphase('Ping')";
+        assert_eq!(workflow_meta_name(script), "minimal-ping");
+    }
+
+    #[test]
+    fn workflow_meta_name_handles_double_quoted_name() {
+        let script = "export const meta = { name: \"snapshot-runner\" }";
+        assert_eq!(workflow_meta_name(script), "snapshot-runner");
+    }
+
+    #[test]
+    fn workflow_meta_name_falls_back_when_block_absent() {
+        let script = "await agent('do thing')";
+        assert_eq!(workflow_meta_name(script), "Workflow");
+    }
+
+    #[test]
+    fn workflow_meta_fields_extracts_name_and_description() {
+        let script = "export const meta = {\n  name: 'minimal-ping',\n  description: 'sanity'\n}";
+        let (name, desc) = workflow_meta_fields(script);
+        assert_eq!(name, "minimal-ping");
+        assert_eq!(desc.as_deref(), Some("sanity"));
+    }
+
+    #[test]
+    fn workflow_meta_fields_returns_none_description_when_absent() {
+        let script = "export const meta = { name: 'short' }";
+        let (name, desc) = workflow_meta_fields(script);
+        assert_eq!(name, "short");
+        assert!(desc.is_none());
+    }
+
+    #[test]
+    fn non_lifecycle_tool_returns_none() {
+        let tc = make_tool_call_info(
+            "toolu_x",
+            "Bash",
+            crate::agent::model::ToolCallStatus::InProgress,
+            "",
+        );
+        assert!(render_lifecycle_one_liner(&tc).is_none());
     }
 }

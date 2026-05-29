@@ -52,6 +52,13 @@ pub struct PermissionOption {
     pub name: String,
     pub kind: PermissionOptionKind,
     pub action: PermissionAction,
+    /// #273: Mirrors `QuestionOption.recommended` so the prompt
+    /// renderer (which speaks PermissionOption) can bold a
+    /// recommended AskUserQuestion option without re-walking the
+    /// upstream QuestionPrompt. `#[serde(default)]` for back-compat
+    /// with captured prompts that predate the field.
+    #[serde(default)]
+    pub recommended: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

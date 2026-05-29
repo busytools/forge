@@ -74,6 +74,7 @@ impl PromptState {
                 name: "Tell Claude something else".into(),
                 kind: forge_primitives::permission_ui::PermissionOptionKind::Notes,
                 action: forge_primitives::permission_ui::PermissionAction::Deny,
+                recommended: false,
             });
         }
 
@@ -101,7 +102,9 @@ impl PromptState {
 
     /// Construct from a wire `QuestionRequest`. Always includes the
     /// forge-synthesized "Tell Claude something else" escape hatch as
-    /// the last option.
+    /// the last option. #273: pre-focuses the first recommended
+    /// option when any option carries the flag; falls back to index
+    /// 0 otherwise.
     pub fn from_question(tool_id: String, request: QuestionRequest) -> Self {
         use forge_primitives::permission_ui::{
             PermissionAction, PermissionOption, PermissionOptionKind,
@@ -117,13 +120,20 @@ impl PromptState {
                 name: opt.label.clone(),
                 kind: PermissionOptionKind::Allow,
                 action: PermissionAction::Allow,
+                recommended: opt.recommended,
             })
             .collect();
+        // #273: first recommended option pre-selects so the user can
+        // hit Enter without scrolling. Multi-recommended (defensive)
+        // picks the first one in source order.
+        let focused_option_index =
+            request.prompt.options.iter().position(|opt| opt.recommended).unwrap_or(0);
         options.push(PermissionOption {
             option_id: "tell_claude".into(),
             name: "Tell Claude something else".into(),
             kind: PermissionOptionKind::Notes,
             action: PermissionAction::Deny,
+            recommended: false,
         });
 
         Self {
@@ -134,7 +144,7 @@ impl PromptState {
             },
             tool_id,
             options,
-            focused_option_index: 0,
+            focused_option_index,
             selected_option_indices: BTreeSet::new(),
             mode: PromptMode::OptionPicker,
             edited_input: None,
@@ -532,12 +542,14 @@ pub(crate) mod tests {
                         label: "Red".into(),
                         description: None,
                         preview: None,
+                        recommended: false,
                     },
                     forge_primitives::question::QuestionOption {
                         option_id: "q1".into(),
                         label: "Blue".into(),
                         description: None,
                         preview: None,
+                        recommended: false,
                     },
                 ],
             },
@@ -567,12 +579,14 @@ pub(crate) mod tests {
                     name: "Allow once".into(),
                     kind: PermissionOptionKind::Allow,
                     action: PermissionAction::Allow,
+                    recommended: false,
                 },
                 PermissionOption {
                     option_id: "deny".into(),
                     name: "Deny".into(),
                     kind: PermissionOptionKind::Deny,
                     action: PermissionAction::Deny,
+                    recommended: false,
                 },
             ],
             display: None,
@@ -612,6 +626,34 @@ pub(crate) mod tests {
     fn from_question_preserves_multi_select_flag() {
         let state = PromptState::from_question("tc-q".into(), make_question_request(true));
         assert!(state.is_multi_select());
+    }
+
+    #[test]
+    fn from_question_preselects_first_recommended_option() {
+        // #273: when the wire `QuestionOption.recommended` flag is set
+        // on any option, the prompt opens with the first recommended
+        // entry focused so the user can hit Enter without scrolling.
+        let mut request = make_question_request(false);
+        request.prompt.options[1].recommended = true;
+        let state = PromptState::from_question("tc-q".into(), request);
+        assert_eq!(state.focused_option_index, 1);
+        // Recommended flag also propagates to the rendered
+        // PermissionOption so the renderer can bold it.
+        assert!(state.options[1].recommended);
+        assert!(!state.options[0].recommended);
+        // The synthesised Notes "Tell Claude something else" never
+        // carries the flag.
+        let last = state.options.last().expect("last");
+        assert_eq!(last.kind, PermissionOptionKind::Notes);
+        assert!(!last.recommended);
+    }
+
+    #[test]
+    fn from_question_defaults_to_first_when_no_recommended() {
+        let state = PromptState::from_question("tc-q".into(), make_question_request(false));
+        assert_eq!(state.focused_option_index, 0);
+        assert!(!state.options[0].recommended);
+        assert!(!state.options[1].recommended);
     }
 
     #[test]

@@ -24,9 +24,9 @@ const SCROLLBAR_MIN_THUMB_HEIGHT: usize = 1;
 /// Visual cap for the chat scrollbar thumb so a short scrollback
 /// doesn't render a thumb that takes up most of the rail. The raw
 /// `viewport² / content` formula grows the thumb as content shrinks
-/// — fine in theory (proportional indicator), distracting in
+/// (fine in theory as a proportional indicator, distracting in
 /// practice for a chat surface that briefly overflows by a handful
-/// of rows. Matches the Inspector pane's `INSPECTOR_THUMB_MAX_CELLS`
+/// of rows). Matches the Inspector pane's `INSPECTOR_THUMB_MAX_CELLS`
 /// cap so both surfaces read with the same visual weight.
 const SCROLLBAR_MAX_THUMB_HEIGHT: usize = 1;
 const SCROLLBAR_TOP_EASE: f32 = 0.35;
@@ -149,7 +149,7 @@ fn update_visual_heights(
 
     // Snapshot loop-invariant fields once. `layout_generation` and
     // `tools_collapsed` are stable across the remeasure loops below
-    // — bumping `layout_generation` requires a full
+    // - bumping `layout_generation` requires a full
     // `sync_message_count` / resize, which already ran above.
     let mode_id_owned = app.mode().map(|mode| mode.current_mode_id.clone());
     let mode_id = mode_id_owned.as_deref();
@@ -317,6 +317,11 @@ fn measure_message_height_at(
     let sp = msg_spinner(base, idx, active_turn_assistant, &app.messages()[idx]);
     let suppress_group_header = message::compute_suppress_group_header(app.messages(), idx);
     let envelope_streak_position = message::compute_envelope_streak_position(app.messages(), idx);
+    // #273: read the snapshot up-front so the immutable borrow of
+    // `app` releases before the `active_messages_mut()` mutable
+    // borrow further down. Owned clone of the hooks list keeps the
+    // lifetime story flat.
+    let stop_hook_snapshot = stop_hook_summary_for(app, idx);
     let (h, rendered_lines) = measure_message_height(
         &mut app.active_messages_mut()[idx],
         &sp,
@@ -328,7 +333,10 @@ fn measure_message_height_at(
             include_trailing_separator: !is_last_message,
             suppress_group_header,
             envelope_streak_position,
+            stop_hook_summary_actions: stop_hook_snapshot.actions,
+            stop_hook_summary_expanded: stop_hook_snapshot.expanded,
         },
+        stop_hook_snapshot.hooks.as_slice(),
     );
     app.sync_render_cache_message(idx);
     stats.measured_msgs += 1;
@@ -336,6 +344,32 @@ fn measure_message_height_at(
     let vp = app.active_viewport_mut();
     vp.set_message_height(idx, h);
     vp.mark_message_height_measured(idx);
+}
+
+/// #273: Snapshot of the per-message stop_hook_summary for the
+/// render passes. Owned so the borrow of `app` releases before
+/// downstream mutable borrows. `actions == 0` when no summary is
+/// attached to `idx`; the renderer is responsible for skipping the
+/// chip in that case.
+#[derive(Default, Clone)]
+struct StopHookSnapshot {
+    actions: u32,
+    expanded: bool,
+    hooks: Vec<crate::app::StopHookEntry>,
+}
+
+fn stop_hook_summary_for(app: &App, idx: usize) -> StopHookSnapshot {
+    let Some(summary) = app.last_stop_hook_summary() else {
+        return StopHookSnapshot::default();
+    };
+    if summary.message_idx != idx {
+        return StopHookSnapshot::default();
+    }
+    StopHookSnapshot {
+        actions: summary.actions,
+        expanded: app.stop_hook_summary_expanded(idx),
+        hooks: summary.hooks.clone(),
+    }
 }
 
 /// Measure message height using ground truth: render the message into a scratch
@@ -353,16 +387,14 @@ fn measure_message_height(
     width: u16,
     layout_generation: u64,
     options: message::MessageRenderOptions,
+    stop_hook_hooks: &[crate::app::StopHookEntry],
 ) -> (usize, usize) {
     let _t = crate::perf::start_with("chat::measure_msg", "blocks", msg.blocks.len());
-    let (h, wrapped_lines) = message::measure_message_height_cached_with_options(
-        msg,
-        spinner,
-        current_mode_id,
-        width,
-        layout_generation,
-        options,
-    );
+    let render_context =
+        message::MessageRenderContext::new(current_mode_id, width, layout_generation, options)
+            .with_stop_hook_hooks(stop_hook_hooks);
+    let (h, wrapped_lines) =
+        message::measure_message_height_cached_with_context(msg, spinner, render_context);
     crate::perf::mark_with("chat::measure_msg_wrapped_lines", "lines", wrapped_lines);
     (h, wrapped_lines)
 }
@@ -370,7 +402,7 @@ fn measure_message_height(
 fn build_base_spinner(app: &App) -> SpinnerState {
     // `show_thinking` fires on both `Thinking` (no body streamed yet)
     // and `Running` (mid-stream / tool execution) so the spinner keeps
-    // ticking visibly across the whole turn — not just the pre-body
+    // ticking visibly across the whole turn - not just the pre-body
     // window. Without this, switching back into a still-running
     // session whose assistant placeholder has already streamed some
     // content shows the content frozen with no indicator that more is
@@ -382,6 +414,18 @@ fn build_base_spinner(app: &App) -> SpinnerState {
         show_empty_thinking: turn_in_flight,
         show_thinking: turn_in_flight,
         show_compacting: app.is_compacting(),
+        // #273: only carry the chip during an in-flight turn - once
+        // the turn ends the field will have been cleared by
+        // `handle_result`, but gating here keeps the chip from
+        // briefly flashing across the final layout pass.
+        thinking_tokens: if turn_in_flight { app.latest_thinking_tokens() } else { None },
+        // #273: the duration chip persists across the whole assistant
+        // turn - the value lands once at TurnEnd and stays on
+        // `UiSession::last_turn_duration_ms` until the next turn
+        // updates it. The role-label renderer further gates the chip
+        // on `is_active_turn_assistant`, so past turns won't surface
+        // a stale chip during a re-render.
+        last_turn_duration_ms: app.last_turn_duration_ms(),
     }
 }
 
@@ -607,7 +651,7 @@ fn ease_value(current: &mut f32, target: f32, factor: f32) {
 /// Clamp the raw `viewport² / content` thumb to a fixed maximum and
 /// rebuild `thumb_top` against the post-cap track length. Without
 /// this, a chat with content just barely overflowing the viewport
-/// renders a thumb that takes up half the rail — visually noisy and
+/// renders a thumb that takes up half the rail - visually noisy and
 /// inconsistent with the Inspector pane's tiny indicator. Capping
 /// keeps the chat scrollbar a stable small dot regardless of how
 /// much (or little) of the scrollback overflows.
@@ -670,7 +714,7 @@ fn render_scrollbar_overlay(
         return;
     }
 
-    // Thumb only — no rail. The dim `▕` rail looked visually busy
+    // Thumb only - no rail. The dim `▕` rail looked visually busy
     // sitting against the Inspector pane to its right; the thumb
     // alone is enough to indicate scroll position when content
     // overflows. When the content fits the whole right column is
@@ -734,7 +778,7 @@ fn render_culled_messages(
     let mut local_scroll = 0usize;
     let mut rendered_rows = 0usize;
     let mut last_rendered_idx = None;
-    // Snapshot loop-invariant fields once — hoisting avoids N
+    // Snapshot loop-invariant fields once - hoisting avoids N
     // String allocations on remeasure-heavy frames.
     let mode_id_owned = app.mode().map(|mode| mode.current_mode_id.clone());
     let mode_id = mode_id_owned.as_deref();
@@ -746,17 +790,22 @@ fn render_culled_messages(
         let message_height = app.viewport().message_height(i);
         let suppress_group_header = message::compute_suppress_group_header(app.messages(), i);
         let envelope_streak_position = message::compute_envelope_streak_position(app.messages(), i);
+        let stop_hook = stop_hook_summary_for(app, i);
         let options = message::MessageRenderOptions {
             tools_collapsed,
             include_trailing_separator: i + 1 != msg_count,
             suppress_group_header,
             envelope_streak_position,
+            stop_hook_summary_actions: stop_hook.actions,
+            stop_hook_summary_expanded: stop_hook.expanded,
         };
+        let ctx = message::MessageRenderContext::new(mode_id, width, layout_generation, options)
+            .with_stop_hook_hooks(stop_hook.hooks.as_slice());
         if structural_skip > 0 {
             let remaining_skip = message::render_message_from_offset_internal_with_mode(
                 &mut app.active_messages_mut()[i],
                 &sp,
-                message::MessageRenderContext::new(mode_id, width, layout_generation, options),
+                ctx,
                 structural_skip,
                 out,
             );
@@ -766,12 +815,7 @@ fn render_culled_messages(
             local_scroll = remaining_skip;
             structural_skip = 0;
         } else {
-            message::render_message(
-                &mut app.active_messages_mut()[i],
-                &sp,
-                message::MessageRenderContext::new(mode_id, width, layout_generation, options),
-                out,
-            );
+            message::render_message(&mut app.active_messages_mut()[i], &sp, ctx, out);
             rendered_rows = rendered_rows.saturating_add(message_height);
         }
         app.sync_render_cache_message(i);
@@ -1077,6 +1121,8 @@ mod tests {
             show_empty_thinking: false,
             show_thinking: false,
             show_compacting: false,
+            thinking_tokens: None,
+            last_turn_duration_ms: None,
         }
     }
 
@@ -1436,6 +1482,8 @@ mod tests {
                     include_trailing_separator: false,
                     suppress_group_header: false,
                     envelope_streak_position: None,
+                    stop_hook_summary_actions: 0,
+                    stop_hook_summary_expanded: false,
                 },
             ),
             &mut full_lines,
@@ -1497,6 +1545,8 @@ mod tests {
                     include_trailing_separator: false,
                     suppress_group_header: false,
                     envelope_streak_position: None,
+                    stop_hook_summary_actions: 0,
+                    stop_hook_summary_expanded: false,
                 },
             ),
             &mut full_lines,

@@ -15,9 +15,9 @@ use crate::app::state::cache_metrics::CacheMetrics;
 use crate::app::state::messages::ChatMessage;
 use crate::app::state::render_budget::{RenderCacheEvictionKey, RenderCacheSlotState};
 use crate::app::state::types::{
-    HistoryRetentionPolicy, HistoryRetentionStats, LoginHint, McpState, ModeState,
+    HistoryRetentionPolicy, HistoryRetentionStats, LoginHint, McpState, ModeState, MonitorEntry,
     PasteSessionState, PendingCommandAck, RecentSessionInfo, SelectionState, SessionUsageState,
-    TodoItem, ToolCallScope, UsageState,
+    StopHookSummaryState, TodoItem, ToolCallScope, UsageState, WorkflowEntry,
 };
 use crate::app::state::viewport::ChatViewport;
 use crate::app::state::{ChatRenderTraceState, TerminalToolCallRef, TurnNoticeRef};
@@ -267,6 +267,46 @@ pub struct UiSession {
     /// right side of the chat view.
     pub todos: Vec<TodoItem>,
 
+    /// Cumulative thinking-token count for the current in-flight
+    /// turn (#273). Set by the `Message::ThinkingTokens` reducer;
+    /// cleared on `Message::Result` (turn end). When `Some`, the
+    /// spinner-chip renders as `⠋ thinking · 1.2k tok`.
+    pub latest_thinking_tokens: Option<u64>,
+
+    /// Last completed turn's wall-clock duration in milliseconds
+    /// from `Message::TurnDuration` (#273). Rendered as the banner
+    /// chip `Claude · 12.4s` next to the assistant role label on
+    /// the active turn.
+    pub last_turn_duration_ms: Option<u64>,
+
+    /// Latest `Message::StopHookSummary` for the current turn
+    /// (#273), bound to the assistant message id. Rendered as a
+    /// collapsed 1-liner `↳ hook summary · N actions [▶ expand]`
+    /// at end-of-turn when `actions > 0`. Cleared on session reset.
+    pub last_stop_hook_summary: Option<StopHookSummaryState>,
+
+    /// Per-message expansion state for the stop-hook summary
+    /// surface (#273). Click `[▶ expand]` toggles the entry.
+    pub stop_hook_summary_expanded: std::collections::HashMap<usize, bool>,
+
+    /// #273 Task 8: in-flight Monitor entries surfaced as the
+    /// Inspector MONITORS section + the chat one-liner notices.
+    /// Populated when a `Monitor` tool_use enters the assistant
+    /// stream; mutated on terminal lifecycle events. The MONITORS
+    /// section drops out entirely (`append_monitors_section`
+    /// early-returns) when no entry is `Running`. Output lines
+    /// arrive through the tail-feed wiring and capped at
+    /// `MonitorEntry::OUTPUT_TAIL_MAX` per entry.
+    pub monitors: Vec<MonitorEntry>,
+
+    /// #273 Task 9: in-flight Workflow entries surfaced as the
+    /// Inspector WORKFLOWS section + the chat one-liner notice.
+    /// Populated when a `Workflow` tool_use enters the assistant
+    /// stream; per-phase state mutated from each `task_progress`
+    /// event carrying a `workflow_progress` snapshot. Auto-clears
+    /// once every entry transitions out of `InProgress`.
+    pub workflows: Vec<WorkflowEntry>,
+
     // ---- Git diff snapshot (Inspector GIT section) ----
     /// Latest poll result. `None` until the first scan completes
     /// (post-Connect). Replaces the retired `GitContextWatcher`
@@ -439,6 +479,12 @@ impl Default for UiSession {
             slash: Option::default(),
             subagent: Option::default(),
             todos: Vec::default(),
+            latest_thinking_tokens: None,
+            last_turn_duration_ms: None,
+            last_stop_hook_summary: None,
+            stop_hook_summary_expanded: std::collections::HashMap::default(),
+            monitors: Vec::default(),
+            workflows: Vec::default(),
             git_diff_snapshot: None,
             git_diff_generation: 0,
             git_diff_scan_in_flight: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
