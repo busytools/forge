@@ -1303,7 +1303,7 @@ fn append_monitor_row(
         + 3                                              // " · " separator
         + status_label.chars().count()                   // status badge text
         + persistent_suffix.chars().count()              // optional " · persistent"
-        + usize::from(PANE_PAD);                         // 1-col right gutter
+        + usize::from(PANE_PAD); // 1-col right gutter
     let header_budget = row_text_budget(inner_width, header_chrome);
 
     let headline = truncate_or_pass(&monitor.description, header_budget);
@@ -1464,8 +1464,7 @@ fn append_workflow_row(
             // ' ') + 3-col pad = 5 cols before the log text. The
             // chrome accounting above matches this exactly.
             let column_glyph = if is_last { ' ' } else { '\u{2502}' };
-            let logs_indent =
-                format!("{}{column_glyph}   ", " ".repeat(usize::from(PANE_PAD)));
+            let logs_indent = format!("{}{column_glyph}   ", " ".repeat(usize::from(PANE_PAD)));
             for log in &phase.logs {
                 let log_row = truncate_or_pass(log, log_budget);
                 lines.push(Line::from(vec![
@@ -2678,8 +2677,12 @@ mod tests {
         let mut all_rows: Vec<Line<'static>> = Vec::new();
 
         // MONITORS header + tail rows (running, persistent, with output).
-        let mut monitor =
-            make_monitor_entry("tu", "A super long Monitor description that overflows the pane width by a lot", true, crate::app::MonitorStatus::Running);
+        let mut monitor = make_monitor_entry(
+            "tu",
+            "A super long Monitor description that overflows the pane width by a lot",
+            true,
+            crate::app::MonitorStatus::Running,
+        );
         monitor.output_tail.push_back(
             "An equally long tail line that also overflows the pane width here too".to_owned(),
         );

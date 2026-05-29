@@ -1748,11 +1748,7 @@ impl App {
     /// `task_notification.output_file`. Idempotent: same path
     /// overwrites cleanly so repeated `task_notification` events
     /// don't drift the entry's source-of-truth.
-    pub fn set_monitor_output_file_by_task_id(
-        &mut self,
-        task_id: &str,
-        path: std::path::PathBuf,
-    ) {
+    pub fn set_monitor_output_file_by_task_id(&mut self, task_id: &str, path: std::path::PathBuf) {
         if let Some(entry) =
             self.monitors_mut().iter_mut().find(|m| m.task_id.as_deref() == Some(task_id))
         {
@@ -1765,11 +1761,7 @@ impl App {
     /// of its `output_file`). The file is authoritative - the
     /// renderer's tail must match the file, not accumulate stale
     /// entries from prior events. No-op if no entry matches.
-    pub fn replace_monitor_output_tail_by_task_id(
-        &mut self,
-        task_id: &str,
-        lines: Vec<String>,
-    ) {
+    pub fn replace_monitor_output_tail_by_task_id(&mut self, task_id: &str, lines: Vec<String>) {
         if let Some(entry) =
             self.monitors_mut().iter_mut().find(|m| m.task_id.as_deref() == Some(task_id))
         {

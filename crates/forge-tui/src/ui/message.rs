@@ -3569,16 +3569,14 @@ mod tests {
         let without_duration = make_text_message(MessageRole::Assistant, "no stamp yet");
 
         let with_label = role_label_line(&with_duration);
-        let with_rendered: String =
-            with_label.spans.iter().map(|s| s.content.as_ref()).collect();
+        let with_rendered: String = with_label.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(
             with_rendered.contains("· 12.4s"),
             "message with stamped turn_duration_ms must carry chip; got {with_rendered:?}",
         );
 
         let bare_label = role_label_line(&without_duration);
-        let bare_rendered: String =
-            bare_label.spans.iter().map(|s| s.content.as_ref()).collect();
+        let bare_rendered: String = bare_label.spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(
             bare_rendered, "Forge",
             "message without turn_duration_ms shows the bare role label",

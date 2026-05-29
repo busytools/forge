@@ -1683,10 +1683,7 @@ mod task_updated_section_routing_tests {
     fn task_updated(task_id: &str, status: &str) -> Message {
         Message::TaskUpdated {
             task_id: task_id.to_owned(),
-            patch: TaskUpdatePatch {
-                status: Some(status.to_owned()),
-                end_time: None,
-            },
+            patch: TaskUpdatePatch { status: Some(status.to_owned()), end_time: None },
             uuid: String::new(),
             session_id: String::new(),
         }
@@ -1885,8 +1882,8 @@ mod monitor_output_file_wiring_tests {
     }
 
     fn write_tmp(contents: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir();
         use std::hash::{Hash, Hasher};
+        let dir = std::env::temp_dir();
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         contents.hash(&mut hasher);
         let id = hasher.finish();
@@ -1986,8 +1983,7 @@ mod monitor_output_file_wiring_tests {
         assert_eq!(tail_before, vec!["a", "b", "c"]);
 
         // Append more lines.
-        use std::fs::OpenOptions;
-        let mut f = OpenOptions::new().append(true).open(&path).expect("append");
+        let mut f = std::fs::OpenOptions::new().append(true).open(&path).expect("append");
         f.write_all(b"d\ne\n").expect("write");
         drop(f);
 

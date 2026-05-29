@@ -72,7 +72,6 @@ pub fn read_output_file_tail(path: &Path, max_lines: usize) -> Option<Vec<String
                     path = %path.display(),
                     error_kind = ?err.kind(),
                 );
-                continue;
             }
         }
     }
@@ -85,10 +84,10 @@ mod tests {
     use std::io::Write;
 
     fn write_tmp(contents: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir();
-        let nonce = std::process::id();
         // Hash the contents so concurrent tests get unique paths.
         use std::hash::{Hash, Hasher};
+        let dir = std::env::temp_dir();
+        let nonce = std::process::id();
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         contents.hash(&mut hasher);
         let id = hasher.finish();
