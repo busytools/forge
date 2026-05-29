@@ -29,6 +29,7 @@ fn inactive_spinner() -> SpinnerState {
         show_empty_thinking: false,
         show_thinking: false,
         show_compacting: false,
+        thinking_tokens: None,
     }
 }
 

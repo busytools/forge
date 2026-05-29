@@ -1577,6 +1577,68 @@ impl App {
 
     // ---- Render cache + history retention accessors ----
 
+    /// Active session's latest thinking-token count for the
+    /// in-flight turn (#273). `None` when no `ThinkingTokens` event
+    /// has fired yet or the turn just ended.
+    pub fn latest_thinking_tokens(&self) -> Option<u64> {
+        self.active_session().and_then(|s| s.latest_thinking_tokens)
+    }
+
+    /// Set the active session's latest thinking-token count.
+    /// Called by the `Message::ThinkingTokens` reducer; passed
+    /// `None` on turn end to clear the chip.
+    pub fn set_latest_thinking_tokens(&mut self, value: Option<u64>) {
+        self.active_bucket_mut().latest_thinking_tokens = value;
+    }
+
+    /// Active session's most recent `Message::TurnDuration` ms
+    /// (#273). Persists across turns; rendered as the banner chip
+    /// `Claude · N.Ns`.
+    pub fn last_turn_duration_ms(&self) -> Option<u64> {
+        self.active_session().and_then(|s| s.last_turn_duration_ms)
+    }
+
+    /// Set the active session's last turn duration. Each turn
+    /// overwrites with its own value when `Message::TurnDuration`
+    /// lands.
+    pub fn set_last_turn_duration_ms(&mut self, value: Option<u64>) {
+        self.active_bucket_mut().last_turn_duration_ms = value;
+    }
+
+    /// Active session's most recent `Message::StopHookSummary`
+    /// (#273). Rendered as the collapsed `↳ hook summary · N actions`
+    /// surface when `actions > 0`.
+    pub fn last_stop_hook_summary(
+        &self,
+    ) -> Option<&crate::app::state::types::StopHookSummaryState> {
+        self.active_session().and_then(|s| s.last_stop_hook_summary.as_ref())
+    }
+
+    /// Set the active session's stop-hook summary. Each turn's
+    /// `Message::StopHookSummary` overwrites the prior value.
+    pub fn set_last_stop_hook_summary(
+        &mut self,
+        value: Option<crate::app::state::types::StopHookSummaryState>,
+    ) {
+        self.active_bucket_mut().last_stop_hook_summary = value;
+    }
+
+    /// Toggle / set the per-message stop-hook-summary expansion
+    /// flag. Default-collapsed; clicking `[▶ expand]` flips to true,
+    /// `[▼ collapse]` flips back.
+    pub fn toggle_stop_hook_summary_expanded(&mut self, message_idx: usize) {
+        let bucket = self.active_bucket_mut();
+        let entry = bucket.stop_hook_summary_expanded.entry(message_idx).or_default();
+        *entry = !*entry;
+    }
+
+    /// Is the stop-hook summary for `message_idx` currently expanded?
+    pub fn stop_hook_summary_expanded(&self, message_idx: usize) -> bool {
+        self.active_session()
+            .and_then(|s| s.stop_hook_summary_expanded.get(&message_idx).copied())
+            .unwrap_or(false)
+    }
+
     /// Borrow the active session's render-cache slot grid.
     pub(crate) fn render_cache_slots(&self) -> &[Vec<render_budget::RenderCacheSlotState>] {
         self.active_session().map_or(&[], |s| s.render_cache_slots.as_slice())
@@ -3249,6 +3311,7 @@ mod tests {
             show_empty_thinking: false,
             show_thinking: false,
             show_compacting: false,
+            thinking_tokens: None,
         };
 
         let _ = crate::ui::measure_message_height_cached(

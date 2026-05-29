@@ -45,14 +45,56 @@ pub(super) fn handle_sdk_message(app: &mut App, msg: Message) {
         // Re-add a handler if a downstream consumer needs to react.
         Message::StreamEvent { .. } | Message::Error { .. } | Message::Unknown { .. } => {}
         // #273: typed wrappers around the CLI 2.1.156 system events.
-        // The decoder lands them as typed variants; the per-event
-        // reducers (Tasks 4-6) consume `app.session_state` mutations.
-        // Until those tasks wire the renderers, the variants land at
-        // the dispatch but produce no UI side-effect.
-        Message::ThinkingTokens { .. }
-        | Message::TurnDuration { .. }
-        | Message::StopHookSummary { .. } => {}
+        Message::ThinkingTokens { estimated_tokens, .. } => {
+            handle_thinking_tokens(app, estimated_tokens);
+        }
+        Message::TurnDuration { ms, .. } => handle_turn_duration(app, ms),
+        Message::StopHookSummary { actions, hook_infos, .. } => {
+            handle_stop_hook_summary(app, actions, hook_infos);
+        }
     }
+}
+
+/// #273: Set the active session's latest thinking-token count.
+/// The renderer reads it via `App::latest_thinking_tokens` to format
+/// the spinner chip `⠋ thinking · N tok`. Repeated events overwrite;
+/// the field is cleared on turn end (in `handle_result`).
+fn handle_thinking_tokens(app: &mut App, estimated_tokens: u64) {
+    app.set_latest_thinking_tokens(Some(estimated_tokens));
+}
+
+/// #273: Persist the just-completed turn's wall-clock duration so the
+/// assistant banner chip `Claude · N.Ns` shows on the active turn's
+/// banner row. The field is per-session and survives across turns
+/// (each turn overwrites with its own duration on completion).
+fn handle_turn_duration(app: &mut App, ms: u64) {
+    app.set_last_turn_duration_ms(Some(ms));
+}
+
+/// #273: Capture the stop-hook summary for the active assistant
+/// message. The renderer surfaces a collapsed 1-liner
+/// `↳ hook summary · N actions [▶ expand]` when `actions > 0`;
+/// hidden entirely when `actions == 0`.
+fn handle_stop_hook_summary(
+    app: &mut App,
+    actions: u32,
+    hook_infos: Vec<forge_primitives::StopHookInfo>,
+) {
+    let Some(message_idx) = app.active_turn_assistant_idx() else {
+        return;
+    };
+    let hooks: Vec<crate::app::state::types::StopHookEntry> = hook_infos
+        .into_iter()
+        .map(|h| crate::app::state::types::StopHookEntry {
+            command: h.command,
+            duration_ms: h.duration_ms,
+        })
+        .collect();
+    app.set_last_stop_hook_summary(Some(crate::app::state::types::StopHookSummaryState {
+        message_idx,
+        actions,
+        hooks,
+    }));
 }
 
 /// Apply a typed `forge_primitives::FastModeState` to App state.
@@ -1167,6 +1209,12 @@ fn handle_result(app: &mut App, msg: Message) {
     else {
         return;
     };
+    // #273: Turn ended - clear per-turn thinking-token chip so the
+    // next in-progress turn starts with a bare spinner (it'll
+    // re-populate once `Message::ThinkingTokens` fires for the new
+    // turn). turn_duration + stop_hook_summary stay - they belong
+    // to the just-completed turn's banner / end-of-turn surfaces.
+    app.set_latest_thinking_tokens(None);
     if let Some(state) = fast_mode_state {
         apply_fast_mode_state(app, state);
     }

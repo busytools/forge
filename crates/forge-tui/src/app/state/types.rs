@@ -24,6 +24,28 @@ pub enum PendingCommandAck {
     ConfigOption { option_id: String },
 }
 
+/// Snapshot of a `Message::StopHookSummary` event bound to an
+/// assistant message in chat (#273). Rendered as a collapsed
+/// 1-liner with `[▶ expand]`; the expanded view enumerates the
+/// per-hook breakdown.
+#[derive(Debug, Clone)]
+pub struct StopHookSummaryState {
+    /// Owning assistant message id, used to anchor the chip + body
+    /// when re-rendering on scroll.
+    pub message_idx: usize,
+    /// Number of hooks that fired. Wire `hookCount`.
+    pub actions: u32,
+    /// Per-hook command + duration. Wire `hookInfos`.
+    pub hooks: Vec<StopHookEntry>,
+}
+
+/// One row in the expanded stop-hook summary.
+#[derive(Debug, Clone)]
+pub struct StopHookEntry {
+    pub command: String,
+    pub duration_ms: u64,
+}
+
 /// A single inspector task item from Claude's `TaskCreate`/`TaskUpdate`
 /// family (#268). CLI 2.1.156 deprecated the older `TodoWrite` tool;
 /// forge no longer renders TodoWrite output. The `id` is assigned by

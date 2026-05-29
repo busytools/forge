@@ -17,7 +17,7 @@ use crate::app::state::render_budget::{RenderCacheEvictionKey, RenderCacheSlotSt
 use crate::app::state::types::{
     HistoryRetentionPolicy, HistoryRetentionStats, LoginHint, McpState, ModeState,
     PasteSessionState, PendingCommandAck, RecentSessionInfo, SelectionState, SessionUsageState,
-    TodoItem, ToolCallScope, UsageState,
+    StopHookSummaryState, TodoItem, ToolCallScope, UsageState,
 };
 use crate::app::state::viewport::ChatViewport;
 use crate::app::state::{ChatRenderTraceState, TerminalToolCallRef, TurnNoticeRef};
@@ -267,6 +267,28 @@ pub struct UiSession {
     /// right side of the chat view.
     pub todos: Vec<TodoItem>,
 
+    /// Cumulative thinking-token count for the current in-flight
+    /// turn (#273). Set by the `Message::ThinkingTokens` reducer;
+    /// cleared on `Message::Result` (turn end). When `Some`, the
+    /// spinner-chip renders as `⠋ thinking · 1.2k tok`.
+    pub latest_thinking_tokens: Option<u64>,
+
+    /// Last completed turn's wall-clock duration in milliseconds
+    /// from `Message::TurnDuration` (#273). Rendered as the banner
+    /// chip `Claude · 12.4s` next to the assistant role label on
+    /// the active turn.
+    pub last_turn_duration_ms: Option<u64>,
+
+    /// Latest `Message::StopHookSummary` for the current turn
+    /// (#273), bound to the assistant message id. Rendered as a
+    /// collapsed 1-liner `↳ hook summary · N actions [▶ expand]`
+    /// at end-of-turn when `actions > 0`. Cleared on session reset.
+    pub last_stop_hook_summary: Option<StopHookSummaryState>,
+
+    /// Per-message expansion state for the stop-hook summary
+    /// surface (#273). Click `[▶ expand]` toggles the entry.
+    pub stop_hook_summary_expanded: std::collections::HashMap<usize, bool>,
+
     // ---- Git diff snapshot (Inspector GIT section) ----
     /// Latest poll result. `None` until the first scan completes
     /// (post-Connect). Replaces the retired `GitContextWatcher`
@@ -439,6 +461,10 @@ impl Default for UiSession {
             slash: Option::default(),
             subagent: Option::default(),
             todos: Vec::default(),
+            latest_thinking_tokens: None,
+            last_turn_duration_ms: None,
+            last_stop_hook_summary: None,
+            stop_hook_summary_expanded: std::collections::HashMap::default(),
             git_diff_snapshot: None,
             git_diff_generation: 0,
             git_diff_scan_in_flight: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),

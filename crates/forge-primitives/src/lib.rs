@@ -124,6 +124,7 @@ pub use session_update::{
     BashOutputMetadata, ChunkContent, TaskMetadata, ToolCall, ToolCallContent, ToolCallLocation,
     ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind, ToolOutputMetadata,
 };
+pub use messages::StopHookInfo;
 pub use subagents::{EffortPreset, SubagentDefinition, SubagentMcpServerRef, SubagentMemory};
 pub use turn_error::TurnErrorClass;
 pub use workers::{

@@ -65,6 +65,10 @@ pub struct SpinnerState {
     pub show_thinking: bool,
     /// True when this message should show the compaction indicator.
     pub show_compacting: bool,
+    /// #273: Latest cumulative thinking-token count for the current
+    /// turn. `None` when no `Message::ThinkingTokens` event has fired
+    /// yet; the spinner falls back to bare `Thinking...`.
+    pub thinking_tokens: Option<u64>,
 }
 
 struct MessageLayout {
@@ -306,7 +310,10 @@ fn append_assistant_blocks(
         return;
     }
     if msg.blocks.is_empty() && spinner.show_empty_thinking {
-        layout.push_wrapped_line(thinking_line(spinner.frame), render_context.width);
+        layout.push_wrapped_line(
+            thinking_line(spinner.frame, spinner.thinking_tokens),
+            render_context.width,
+        );
         return;
     }
 
@@ -326,7 +333,10 @@ fn append_assistant_blocks(
         if state.has_body_content {
             layout.push_blank();
         }
-        layout.push_wrapped_line(thinking_line(spinner.frame), render_context.width);
+        layout.push_wrapped_line(
+            thinking_line(spinner.frame, spinner.thinking_tokens),
+            render_context.width,
+        );
     }
 }
 
@@ -1287,9 +1297,53 @@ fn system_role_label_line(severity: SystemSeverity) -> Line<'static> {
     Line::from(Span::styled(label, Style::default().fg(color).add_modifier(Modifier::BOLD)))
 }
 
-fn thinking_line(frame: usize) -> Line<'static> {
+fn thinking_line(frame: usize, thinking_tokens: Option<u64>) -> Line<'static> {
     let ch = SPINNER_FRAMES[frame % SPINNER_FRAMES.len()];
-    Line::from(Span::styled(format!("{ch} Thinking..."), Style::default().fg(theme::DIM)))
+    // #273: when ThinkingTokens has fired for the current turn the
+    // chip swaps from `Thinking...` to `thinking · N tok` (with k/M
+    // abbreviation). Falls back to the bare `Thinking...` shape when
+    // no count is available yet (Turn just started, mid-bootstrap).
+    let body = match thinking_tokens {
+        Some(n) => format!("{ch} thinking · {} tok", format_token_count_short(n)),
+        None => format!("{ch} Thinking..."),
+    };
+    Line::from(Span::styled(body, Style::default().fg(theme::DIM)))
+}
+
+/// #273: Format a token count with k / M abbreviation. Threshold
+/// rules:
+///   - < 1_000 -> bare integer (`0`, `42`, `999`).
+///   - 1_000..1_000_000 -> `Nk` or `N.Nk` (one decimal), e.g.
+///     `1199 -> 1.1k`, `15_000 -> 15k`, `999_999 -> 999k`.
+///   - >= 1_000_000 -> `NM` or `N.NM`, e.g. `1_500_000 -> 1.5M`.
+///
+/// The integer / one-decimal split matches the rendered chip width
+/// (max 4 visible chars: `1.4M`, `999k`, `999`) so the spinner row
+/// stays a stable size regardless of the turn's token volume.
+#[must_use]
+pub fn format_token_count_short(n: u64) -> String {
+    const K: u64 = 1_000;
+    const M: u64 = 1_000_000;
+    if n < K {
+        return n.to_string();
+    }
+    if n < M {
+        // < 10k -> one decimal (e.g. 1.2k, 9.9k); >= 10k -> integer
+        // (e.g. 15k, 999k). Truncation via integer division keeps
+        // the chip readable - 1199 reads as 1.1k not 1.2k.
+        if n < 10 * K {
+            let whole = n / K;
+            let tenths = (n / (K / 10)) % 10;
+            return format!("{whole}.{tenths}k");
+        }
+        return format!("{}k", n / K);
+    }
+    if n < 10 * M {
+        let whole = n / M;
+        let tenths = (n / (M / 10)) % 10;
+        return format!("{whole}.{tenths}M");
+    }
+    format!("{}M", n / M)
 }
 
 fn compacting_line(frame: usize) -> Line<'static> {
@@ -2053,6 +2107,7 @@ mod tests {
             show_empty_thinking: false,
             show_thinking: false,
             show_compacting: false,
+            thinking_tokens: None,
         }
     }
 
@@ -3098,5 +3153,50 @@ mod tests {
         ];
         assert!(compute_suppress_group_header(&messages, 1));
         assert!(compute_suppress_group_header(&messages, 2));
+    }
+
+    // ----------------------------------------------------------------
+    // #273: thinking_tokens spinner chip + format helper.
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn format_token_count_short_threshold_buckets() {
+        // < 1k -> bare integer.
+        assert_eq!(format_token_count_short(0), "0");
+        assert_eq!(format_token_count_short(42), "42");
+        assert_eq!(format_token_count_short(999), "999");
+        // 1k..10k -> one-decimal abbreviation, truncating.
+        assert_eq!(format_token_count_short(1_000), "1.0k");
+        assert_eq!(format_token_count_short(1_199), "1.1k");
+        assert_eq!(format_token_count_short(1_200), "1.2k");
+        assert_eq!(format_token_count_short(9_900), "9.9k");
+        // 10k..1M -> integer abbreviation.
+        assert_eq!(format_token_count_short(15_000), "15k");
+        assert_eq!(format_token_count_short(999_999), "999k");
+        // 1M..10M -> one-decimal.
+        assert_eq!(format_token_count_short(1_500_000), "1.5M");
+        // >= 10M -> integer.
+        assert_eq!(format_token_count_short(15_000_000), "15M");
+    }
+
+    #[test]
+    fn thinking_line_renders_chip_when_token_count_provided() {
+        let line = thinking_line(0, Some(1_234));
+        let rendered: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            rendered.contains("thinking · 1.2k tok"),
+            "expected chip with k abbreviation; got {rendered:?}",
+        );
+    }
+
+    #[test]
+    fn thinking_line_falls_back_to_bare_thinking_when_no_tokens_yet() {
+        let line = thinking_line(0, None);
+        let rendered: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            rendered.contains("Thinking..."),
+            "expected fallback shape when no count; got {rendered:?}",
+        );
+        assert!(!rendered.contains("tok"));
     }
 }
