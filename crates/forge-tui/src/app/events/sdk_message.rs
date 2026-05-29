@@ -2044,10 +2044,7 @@ mod monitor_output_file_wiring_tests {
         // entry persists (Bug 5a deferred the auto-clear).
         let task_updated_msg = Message::TaskUpdated {
             task_id: "task_wire".to_owned(),
-            patch: TaskUpdatePatch {
-                status: Some("completed".to_owned()),
-                end_time: None,
-            },
+            patch: TaskUpdatePatch { status: Some("completed".to_owned()), end_time: None },
             uuid: String::new(),
             session_id: String::new(),
         };
@@ -2089,10 +2086,7 @@ mod monitor_output_file_wiring_tests {
         push_monitor(&mut app, "task_run");
         let task_updated_msg = Message::TaskUpdated {
             task_id: "task_done".to_owned(),
-            patch: TaskUpdatePatch {
-                status: Some("completed".to_owned()),
-                end_time: None,
-            },
+            patch: TaskUpdatePatch { status: Some("completed".to_owned()), end_time: None },
             uuid: String::new(),
             session_id: String::new(),
         };
