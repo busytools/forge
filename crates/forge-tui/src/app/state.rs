@@ -1674,9 +1674,18 @@ impl App {
         // restored as `Running` and stays that way forever - blocking
         // `clear_monitors_if_all_terminal` for legit completed
         // siblings. Restored Monitors land in `Stopped` initially;
-        // any actual Running event arriving later in the same replay
-        // walk (or live afterwards) re-flips them via
-        // `set_monitor_status_by_task_id`.
+        // a terminal `task_updated` arriving later in the same
+        // replay walk (or live afterwards) re-flips via
+        // `set_monitor_status_by_task_id` to the wire's terminal
+        // variant. The setter is gated on the wire's `is_terminal`
+        // check at `sdk_message.rs:1116-1141`, so only completed /
+        // failed / killed / stopped events drive a re-flip - a
+        // `running` event mid-walk does NOT push Stopped back to
+        // Running. That's intentional: the value of starting in
+        // Stopped is to keep blocked monitors out of the
+        // all-terminal-clear predicate; if a historical Monitor
+        // genuinely WAS still running at replay time, the next
+        // live event resolves it on its own terms.
         let initial_status = if self.replay_in_progress {
             crate::app::state::types::MonitorStatus::Stopped
         } else {
