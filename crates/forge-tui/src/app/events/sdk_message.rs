@@ -1212,6 +1212,17 @@ fn handle_task_notification(app: &mut App, msg: Message) {
         app.set_monitor_output_file_by_task_id(&task_id, std::path::PathBuf::from(&output_file));
         app.refresh_monitor_output_tail_from_file(&task_id);
     }
+    // #277 Bug 5a: wire ordering is
+    // `task_updated terminal -> task_notification with output_file`.
+    // The status flip lands first (transitioning the MonitorEntry
+    // out of Running); without deferring the auto-clear, the
+    // single-monitor case would drain the Vec at task_updated time
+    // and the subsequent task_notification would find no entry to
+    // stamp the tail into. Auto-clear runs HERE so the tail has
+    // already populated by the time the section drops out (or
+    // persists, for completed-with-tail Monitors per Bug 5b's
+    // render-gate relaxation).
+    app.clear_monitors_if_all_terminal();
 }
 
 /// Apply a `TaskProgress` notification to App state - bumps the
@@ -1697,67 +1708,75 @@ mod task_updated_section_routing_tests {
         // BEFORE this fix the early-return at the missing
         // `task_tool_use_ids` lookup dropped the transition. After
         // the fix the section row flips to Completed.
+        //
+        // #277 Bug 5a contract: the entry STAYS in the list after
+        // task_updated; auto-clear is deferred to
+        // `handle_task_notification` so the tail can populate first.
         let mut app = App::test_default();
         push_monitor(&mut app, "task_1");
         // Simulate turn finalisation: TurnState's task_tool_use_ids
         // mapping is empty (the `default()` after Result).
         // No task_started has populated it for `task_1`.
         handle_task_updated(&mut app, task_updated("task_1", "completed"));
-        // Monitor was cleared via the all-completed predicate since
-        // this was the only running monitor; verifying via post-clear
-        // empty state.
-        assert!(
-            app.monitors().is_empty(),
-            "all-completed clear should drain the MONITORS list; got {} entries",
-            app.monitors().len(),
-        );
+        // Status transitioned; entry persists waiting for
+        // task_notification.
+        assert_eq!(app.monitors().len(), 1);
+        assert_eq!(app.monitors()[0].status, MonitorStatus::Completed);
     }
 
     #[test]
     fn monitor_killed_status_maps_to_stopped() {
+        // #277 Bug 5a: status transitions but auto-clear waits for
+        // task_notification. Status check pins the mapping
+        // (killed/stopped wire string -> Stopped MonitorStatus).
         let mut app = App::test_default();
         push_monitor(&mut app, "task_2");
         handle_task_updated(&mut app, task_updated("task_2", "killed"));
-        assert!(app.monitors().is_empty());
+        assert_eq!(app.monitors().len(), 1);
+        assert_eq!(app.monitors()[0].status, MonitorStatus::Stopped);
     }
 
     #[test]
     fn two_monitors_completing_in_order_clears_section() {
-        // Bug 3b: clear_monitors_if_all_terminal re-evaluates only
-        // when status transitions actually fire. Both monitors'
-        // task_updated events must transition them; once the second
-        // flips terminal, the section drops out.
+        // Contract: `clear_monitors_if_all_terminal` only drains the
+        // section once every entry has transitioned out of Running.
+        // The clear is driven by `handle_task_notification`; this
+        // test invokes the helper directly to model that call site.
         let mut app = App::test_default();
         push_monitor(&mut app, "task_a");
         push_monitor(&mut app, "task_b");
         handle_task_updated(&mut app, task_updated("task_a", "completed"));
         // task_a transitioned to Completed; task_b still Running.
-        // The all-completed predicate watches for "any still Running",
-        // so the section persists with both entries (task_a renders
-        // as collapsed completed; task_b as running).
+        // No clear runs yet (Bug 5a defers it).
         assert_eq!(app.monitors().len(), 2);
         let task_a = app.monitors().iter().find(|m| m.task_id.as_deref() == Some("task_a"));
         let task_b = app.monitors().iter().find(|m| m.task_id.as_deref() == Some("task_b"));
         assert_eq!(task_a.map(|m| m.status), Some(MonitorStatus::Completed));
         assert_eq!(task_b.map(|m| m.status), Some(MonitorStatus::Running));
         handle_task_updated(&mut app, task_updated("task_b", "completed"));
-        // Now everything's terminal; section drains.
+        // Both terminal. Still 2 entries until clear fires.
+        assert_eq!(app.monitors().len(), 2);
+        // Explicit clear (what `handle_task_notification` runs in
+        // production) drains the section.
+        app.clear_monitors_if_all_terminal();
         assert!(app.monitors().is_empty());
     }
 
     #[test]
     fn double_completed_event_is_idempotent() {
-        // Duplicate task_updated events (e.g. retry) must not
-        // panic and must not double-clear.
+        // Contract: duplicate task_updated events (e.g. retry) must
+        // re-stamp Completed without panicking or duplicating the
+        // entry.
         let mut app = App::test_default();
         push_monitor(&mut app, "task_dup");
         handle_task_updated(&mut app, task_updated("task_dup", "completed"));
-        // Already cleared.
-        assert!(app.monitors().is_empty());
-        // Second arrival: target task_id no longer exists in
-        // monitors; lookup misses; no panic.
+        assert_eq!(app.monitors().len(), 1);
+        assert_eq!(app.monitors()[0].status, MonitorStatus::Completed);
+        // Second arrival: same task_id, same target status.
+        // Idempotent - no panic, no duplicate entry.
         handle_task_updated(&mut app, task_updated("task_dup", "completed"));
-        assert!(app.monitors().is_empty());
+        assert_eq!(app.monitors().len(), 1);
+        assert_eq!(app.monitors()[0].status, MonitorStatus::Completed);
     }
 
     #[test]
@@ -2001,6 +2020,96 @@ mod monitor_output_file_wiring_tests {
         handle_task_progress(&mut app, progress);
         let tail_after: Vec<String> = app.monitors()[0].output_tail.iter().cloned().collect();
         assert_eq!(tail_after, vec!["a", "b", "c", "d", "e"]);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn bug_5a_wire_sequence_populates_tail_before_section_drains() {
+        // #277 Bug 5a: full end-to-end wire sequence. The actual
+        // wire ordering is `task_updated terminal -> task_notification
+        // with output_file`. Without Bug 5a, the status setter
+        // would drain the monitors Vec at task_updated, leaving
+        // task_notification with no entry to stamp the file path /
+        // tail into. This test threads the entire flow through the
+        // production call sites so a future refactor that drops
+        // the explicit `clear_monitors_if_all_terminal()` from
+        // `handle_task_notification` (or restores it to the status
+        // setter) fails loudly.
+        use forge_primitives::messages::TaskUpdatePatch;
+        let path = write_tmp("captured-line-1\ncaptured-line-2\n");
+        let mut app = App::test_default();
+        push_monitor(&mut app, "task_wire");
+
+        // Step 1: task_updated terminal. Status flips to Completed;
+        // entry persists (Bug 5a deferred the auto-clear).
+        let task_updated_msg = Message::TaskUpdated {
+            task_id: "task_wire".to_owned(),
+            patch: TaskUpdatePatch { status: Some("completed".to_owned()), end_time: None },
+            uuid: String::new(),
+            session_id: String::new(),
+        };
+        super::handle_task_updated(&mut app, task_updated_msg);
+        assert_eq!(
+            app.monitors().len(),
+            1,
+            "task_updated must not drain the section before task_notification stamps the tail",
+        );
+        assert_eq!(app.monitors()[0].status, MonitorStatus::Completed);
+        assert!(
+            app.monitors()[0].output_tail.is_empty(),
+            "tail not stamped yet (task_notification hasn't arrived)",
+        );
+
+        // Step 2: task_notification with output_file. Tail
+        // populates BEFORE the explicit clear at the end of
+        // handle_task_notification drains the section.
+        handle_task_notification(
+            &mut app,
+            notification("task_wire", path.to_str().unwrap(), "Monitor stream ended"),
+        );
+
+        // Section drained (only Monitor was terminal). Capture the
+        // tail-was-populated invariant via a fresh push + render
+        // path - we can't read the section after the drain, so the
+        // assertion is "section drained AS A RESULT OF the
+        // notification, not the task_updated".
+        assert!(
+            app.monitors().is_empty(),
+            "section drained at task_notification time, after tail stamp",
+        );
+
+        // Counter-test the same flow with TWO monitors: the second
+        // one stays Running, so the section persists and we can
+        // inspect the first monitor's tail directly.
+        let mut app = App::test_default();
+        push_monitor(&mut app, "task_done");
+        push_monitor(&mut app, "task_run");
+        let task_updated_msg = Message::TaskUpdated {
+            task_id: "task_done".to_owned(),
+            patch: TaskUpdatePatch { status: Some("completed".to_owned()), end_time: None },
+            uuid: String::new(),
+            session_id: String::new(),
+        };
+        super::handle_task_updated(&mut app, task_updated_msg);
+        handle_task_notification(
+            &mut app,
+            notification("task_done", path.to_str().unwrap(), "Monitor stream ended"),
+        );
+        // task_run still Running so the section persists; the
+        // completed monitor's tail captured from disk.
+        assert_eq!(app.monitors().len(), 2);
+        let done = app
+            .monitors()
+            .iter()
+            .find(|m| m.task_id.as_deref() == Some("task_done"))
+            .expect("completed monitor present");
+        assert_eq!(done.status, MonitorStatus::Completed);
+        let captured: Vec<&str> = done.output_tail.iter().map(String::as_str).collect();
+        assert_eq!(
+            captured,
+            vec!["captured-line-1", "captured-line-2"],
+            "tail must populate before clear fires",
+        );
         let _ = std::fs::remove_file(&path);
     }
 }

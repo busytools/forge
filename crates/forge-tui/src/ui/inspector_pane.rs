@@ -1265,8 +1265,16 @@ fn append_monitors_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16
     lines.push(Line::default());
 
     let inner_width = usize::from(width);
-    for monitor in monitors {
+    let last_idx = monitors.len().saturating_sub(1);
+    for (idx, monitor) in monitors.iter().enumerate() {
         append_monitor_row(lines, monitor, inner_width);
+        // #277 Bug 6: blank between entries so multiple Monitor
+        // rows don't visually crowd together. Skip after the last
+        // row to avoid leaving a trailing blank at the end of the
+        // section (matches TASKS' inter-entry spacing).
+        if idx < last_idx {
+            lines.push(Line::default());
+        }
     }
 }
 
@@ -1317,13 +1325,15 @@ fn append_monitor_row(
         Span::styled(persistent_suffix.to_owned(), Style::default().fg(theme::DIM)),
     ]));
 
-    // Tail lines - show always while running, also when explicitly
-    // expanded. The buffer is bounded at MonitorEntry::OUTPUT_TAIL_MAX.
+    // #277 Bug 5b: tail renders whenever the buffer is non-empty -
+    // running, completed, expanded, all the same. The earlier gate
+    // hid tails for completed-and-collapsed entries, but the file
+    // read from `task_notification.output_file` is the whole point
+    // of capturing the tail; suppressing it on completion silenced
+    // the user-visible payload. Empty-tail short-circuits below
+    // preserve the no-output edge case so silent-completed
+    // Monitors don't render a vestigial empty body row.
     if monitor.output_tail.is_empty() {
-        return;
-    }
-    let show_tail = monitor.is_running() || monitor.expanded_in_inspector;
-    if !show_tail {
         return;
     }
     // Tail-row chrome: 1-col indent + box-drawing connector + space
@@ -1366,8 +1376,14 @@ fn append_workflows_section(lines: &mut Vec<Line<'static>>, app: &App, width: u1
     lines.push(Line::default());
 
     let inner_width = usize::from(width);
-    for workflow in workflows {
+    let last_idx = workflows.len().saturating_sub(1);
+    for (idx, workflow) in workflows.iter().enumerate() {
         append_workflow_row(lines, workflow, inner_width, app.spinner_frame);
+        // #277 Bug 6: blank between entries (matches the MONITORS
+        // section's inter-entry spacing).
+        if idx < last_idx {
+            lines.push(Line::default());
+        }
     }
 }
 
@@ -2477,14 +2493,34 @@ mod tests {
     }
 
     #[test]
-    fn monitors_section_suppresses_tail_for_collapsed_stopped_entry() {
+    fn monitors_section_shows_tail_for_stopped_entry_with_populated_tail() {
+        // #277 Bug 5b: the prior gate hid the tail for any
+        // non-running, non-expanded entry. After the relaxation,
+        // a completed Monitor that has captured an output_tail
+        // (from `task_notification.output_file`) renders its tail
+        // by default - that's the whole point of capturing the
+        // file contents. The expanded flag still surfaces the
+        // tail for empty-or-otherwise edge cases.
         let mut entry =
             make_monitor_entry("tu", "ci-watch", false, crate::app::MonitorStatus::Stopped);
         entry.output_tail.push_back("stream ended".to_owned());
         let mut lines = Vec::new();
         append_monitor_row(&mut lines, &entry, 60);
-        // Stopped + not expanded → headline only.
-        assert_eq!(lines.len(), 1);
+        // Stopped + collapsed + non-empty tail → tail renders.
+        assert_eq!(lines.len(), 2);
+        assert!(line_text(&lines[1]).contains("stream ended"));
+    }
+
+    #[test]
+    fn monitors_section_hides_tail_for_stopped_entry_with_empty_tail() {
+        // Empty `output_tail` short-circuits before the show_tail
+        // predicate runs; ensure the no-output path still produces
+        // just the headline (no vestigial empty-body row).
+        let entry = make_monitor_entry("tu", "ci-watch", false, crate::app::MonitorStatus::Stopped);
+        // No `output_tail` pushed.
+        let mut lines = Vec::new();
+        append_monitor_row(&mut lines, &entry, 60);
+        assert_eq!(lines.len(), 1, "no tail content → headline only");
     }
 
     #[test]
@@ -2728,5 +2764,89 @@ mod tests {
                 line_text(line),
             );
         }
+    }
+
+    // ---------------------------------------------------------
+    // #277 Bug 6: blank-line spacing between MONITORS / WORKFLOWS
+    // entries.
+    // ---------------------------------------------------------
+
+    fn build_session_with_monitors(monitors: Vec<crate::app::MonitorEntry>) -> App {
+        let mut app = App::test_default();
+        *app.monitors_mut() = monitors;
+        app
+    }
+
+    fn build_session_with_workflows(workflows: Vec<crate::app::WorkflowEntry>) -> App {
+        let mut app = App::test_default();
+        *app.workflows_mut() = workflows;
+        app
+    }
+
+    #[test]
+    fn monitors_section_inserts_blank_line_between_entries() {
+        let entries = vec![
+            make_monitor_entry("tu_a", "first-monitor", false, crate::app::MonitorStatus::Running),
+            make_monitor_entry("tu_b", "second-monitor", false, crate::app::MonitorStatus::Running),
+        ];
+        let app = build_session_with_monitors(entries);
+        let mut lines = Vec::new();
+        append_monitors_section(&mut lines, &app, 60);
+        // Expected layout:
+        //   0: " MONITORS"
+        //   1: blank (header -> first-row separator)
+        //   2: first row headline
+        //   3: blank (between entries - Bug 6)
+        //   4: second row headline
+        // No trailing blank after the last entry.
+        assert_eq!(lines.len(), 5, "got {} lines: {lines:?}", lines.len());
+        assert!(line_text(&lines[0]).contains("MONITORS"));
+        assert!(line_text(&lines[1]).is_empty());
+        assert!(line_text(&lines[2]).contains("first-monitor"));
+        assert!(line_text(&lines[3]).is_empty(), "Bug 6: blank between entries");
+        assert!(line_text(&lines[4]).contains("second-monitor"));
+    }
+
+    #[test]
+    fn monitors_section_single_entry_has_no_trailing_blank() {
+        let app = build_session_with_monitors(vec![make_monitor_entry(
+            "tu_solo",
+            "solo-monitor",
+            false,
+            crate::app::MonitorStatus::Running,
+        )]);
+        let mut lines = Vec::new();
+        append_monitors_section(&mut lines, &app, 60);
+        // 1 header + 1 blank + 1 row = 3 lines; no trailing blank.
+        assert_eq!(lines.len(), 3);
+        assert!(line_text(&lines[2]).contains("solo-monitor"));
+    }
+
+    #[test]
+    fn workflows_section_inserts_blank_line_between_entries() {
+        let entries = vec![
+            make_workflow_entry("wf_a", "first-workflow", crate::app::WorkflowStatus::InProgress),
+            make_workflow_entry("wf_b", "second-workflow", crate::app::WorkflowStatus::InProgress),
+        ];
+        let app = build_session_with_workflows(entries);
+        let mut lines = Vec::new();
+        append_workflows_section(&mut lines, &app, 60);
+        // Layout shape matches MONITORS: header + blank + row + blank-between + row.
+        // Find the two workflow rows; assert there's a blank between them.
+        let first_idx = lines
+            .iter()
+            .position(|l| line_text(l).contains("first-workflow"))
+            .expect("first workflow row");
+        let second_idx = lines
+            .iter()
+            .position(|l| line_text(l).contains("second-workflow"))
+            .expect("second workflow row");
+        assert!(second_idx > first_idx, "second comes after first");
+        assert_eq!(
+            second_idx,
+            first_idx + 2,
+            "Bug 6: exactly one blank line separates the two workflow rows",
+        );
+        assert!(line_text(&lines[first_idx + 1]).is_empty(), "Bug 6: blank between entries");
     }
 }
