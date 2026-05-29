@@ -469,15 +469,16 @@ async fn rewrite_request(req: Request<Body>) -> Result<Request<Body>, String> {
     }
 
     // anthropic-beta header: strip forge-only beta flags that native
-    // interactive `claude` never requests. Anthropic's API server
-    // sees explicitly different feature requests when forge asks for
-    // `effort-2025-11-24`, `afk-mode-2026-01-31`, etc. - those flags
-    // uniquely identify the session as forge-driven. Restricted to
-    // Anthropic hosts because the header is Anthropic-specific.
+    // interactive `claude` never requests, and inject native-only
+    // flags forge isn't requesting (the inject is gated on
+    // `path == "/v1/messages"` inside `rewrite_anthropic_beta`
+    // because native only emits those flags on that endpoint; #266).
+    // Restricted to Anthropic hosts because the header is
+    // Anthropic-specific.
     if is_anthropic
         && let Some(beta) = parts.headers.get("anthropic-beta").cloned()
         && let Ok(beta_str) = beta.to_str()
-        && let Some(new_beta) = rewrite_anthropic_beta(beta_str)
+        && let Some(new_beta) = rewrite_anthropic_beta(beta_str, &path)
     {
         debug!(old = %beta_str, new = %new_beta, "anthropic-beta rewritten");
         match new_beta.parse() {

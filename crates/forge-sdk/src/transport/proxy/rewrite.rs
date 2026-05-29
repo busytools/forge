@@ -298,19 +298,32 @@ const NATIVE_REQUIRED_ANTHROPIC_BETAS: &[&str] = &["redact-thinking-2026-02-12"]
 /// this anchor in every native variant captured for #262.
 const ANTHROPIC_BETA_INJECT_ANCHOR: &str = "interleaved-thinking-2025-05-14";
 
+/// Request path on which native interactive `claude` emits the
+/// `NATIVE_REQUIRED_ANTHROPIC_BETAS` flags. The injection step in
+/// [`rewrite_anthropic_beta`] only fires for requests whose path
+/// matches this; non-`/v1/messages` paths (GET /v1/mcp_servers,
+/// POST /api/eval/sdk-*, POST /api/event_logging/v2/batch) pass
+/// through unmodified so forge doesn't OVER-inject vs native
+/// (#266 - the original PR #265 inject was unconditional and
+/// flagged native-vs-forge drift on three sibling endpoints).
+const ANTHROPIC_BETA_INJECT_PATH: &str = "/v1/messages";
+
 /// Rewrite an `anthropic-beta` header value to match native CLI's
 /// per-call shape. Two transforms:
 ///
 /// 1. Strip every flag in `FORGE_ONLY_ANTHROPIC_BETAS` from the
 ///    comma-joined list (currently empty post-CLI-2.1.153; see the
-///    const's doc-comment for why).
-/// 2. Inject every flag in `NATIVE_REQUIRED_ANTHROPIC_BETAS` that
-///    isn't already present, ordered against `ANTHROPIC_BETA_INJECT_ANCHOR`.
+///    const's doc-comment for why). Applies on every Anthropic path.
+/// 2. When `path == ANTHROPIC_BETA_INJECT_PATH` (`/v1/messages`),
+///    inject every flag in `NATIVE_REQUIRED_ANTHROPIC_BETAS` that
+///    isn't already present, ordered against
+///    `ANTHROPIC_BETA_INJECT_ANCHOR`. Non-matching paths skip the
+///    inject step so forge doesn't emit flags native doesn't.
 ///
 /// Returns `None` when neither transform changed the set (header
 /// passes through unchanged).
 #[must_use]
-pub fn rewrite_anthropic_beta(header_value: &str) -> Option<String> {
+pub fn rewrite_anthropic_beta(header_value: &str, path: &str) -> Option<String> {
     let parts: Vec<&str> = header_value.split(',').map(str::trim).collect();
     let mut kept: Vec<String> = Vec::with_capacity(parts.len());
     let mut stripped = 0usize;
@@ -322,22 +335,24 @@ pub fn rewrite_anthropic_beta(header_value: &str) -> Option<String> {
         }
     }
     let mut injected = 0usize;
-    for flag in NATIVE_REQUIRED_ANTHROPIC_BETAS {
-        if kept.iter().any(|p| p == flag) {
-            continue;
+    if path == ANTHROPIC_BETA_INJECT_PATH {
+        for flag in NATIVE_REQUIRED_ANTHROPIC_BETAS {
+            if kept.iter().any(|p| p == flag) {
+                continue;
+            }
+            // Insert immediately after the canonical anchor for byte-
+            // equivalent ordering with native's header. If the anchor
+            // isn't present, append at the end - this is unusual (every
+            // native variant contains the anchor) but the append keeps
+            // the rewriter robust to header-shape surprises rather than
+            // dropping the required flag.
+            if let Some(pos) = kept.iter().position(|p| p == ANTHROPIC_BETA_INJECT_ANCHOR) {
+                kept.insert(pos + 1, (*flag).to_owned());
+            } else {
+                kept.push((*flag).to_owned());
+            }
+            injected += 1;
         }
-        // Insert immediately after the canonical anchor for byte-
-        // equivalent ordering with native's header. If the anchor
-        // isn't present, append at the end - this is unusual (every
-        // native variant contains the anchor) but the append keeps
-        // the rewriter robust to header-shape surprises rather than
-        // dropping the required flag.
-        if let Some(pos) = kept.iter().position(|p| p == ANTHROPIC_BETA_INJECT_ANCHOR) {
-            kept.insert(pos + 1, (*flag).to_owned());
-        } else {
-            kept.push((*flag).to_owned());
-        }
-        injected += 1;
     }
     if stripped == 0 && injected == 0 {
         return None;
@@ -833,6 +848,11 @@ mod tests {
         assert!(!s.contains("sdk-cli"));
     }
 
+    /// Path on which native interactive `claude` emits the inject set.
+    /// Tests that want to assert inject behavior use this; tests that
+    /// want to assert skip behavior use a sibling path.
+    const MESSAGES_PATH: &str = "/v1/messages";
+
     #[test]
     fn anthropic_beta_passes_through_native_2_1_153_long_variant_after_redact_inject() {
         // Native CLI 2.1.153 "long" variant from #262's enumerated
@@ -842,7 +862,8 @@ mod tests {
         // `interleaved-thinking-2025-05-14` and pass everything else
         // through unchanged.
         let input = "oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advisor-tool-2026-03-01,cache-diagnosis-2026-04-07";
-        let out = rewrite_anthropic_beta(input).expect("should rewrite (inject redact-thinking)");
+        let out = rewrite_anthropic_beta(input, MESSAGES_PATH)
+            .expect("should rewrite (inject redact-thinking)");
         assert_eq!(
             out,
             "oauth-2025-04-20,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advisor-tool-2026-03-01,cache-diagnosis-2026-04-07",
@@ -862,7 +883,7 @@ mod tests {
         // string that preserves every one of these flags. Both shapes
         // are acceptable here since `redact-thinking-2026-02-12`
         // injection only fires when the anchor flag is present.
-        let out = rewrite_anthropic_beta(input);
+        let out = rewrite_anthropic_beta(input, MESSAGES_PATH);
         match out {
             None => {}
             Some(rewritten) => {
@@ -881,7 +902,7 @@ mod tests {
         // captured native "long" variant from #262). Nothing to
         // strip, nothing to inject - rewriter returns None.
         let input = "oauth-2025-04-20,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advisor-tool-2026-03-01,cache-diagnosis-2026-04-07";
-        assert!(rewrite_anthropic_beta(input).is_none());
+        assert!(rewrite_anthropic_beta(input, MESSAGES_PATH).is_none());
     }
 
     #[test]
@@ -891,7 +912,7 @@ mod tests {
         // The new flag must land immediately after the anchor.
         let input =
             "oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13";
-        let out = rewrite_anthropic_beta(input).expect("should rewrite (inject)");
+        let out = rewrite_anthropic_beta(input, MESSAGES_PATH).expect("should rewrite (inject)");
         assert_eq!(
             out,
             "oauth-2025-04-20,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,thinking-token-count-2026-05-13",
@@ -905,7 +926,8 @@ mod tests {
         // the rewriter still injects the required flag, just at the
         // end. Keeps the rewriter robust to header-shape surprises.
         let input = "oauth-2025-04-20,context-management-2025-06-27";
-        let out = rewrite_anthropic_beta(input).expect("should rewrite (append-inject)");
+        let out =
+            rewrite_anthropic_beta(input, MESSAGES_PATH).expect("should rewrite (append-inject)");
         assert_eq!(
             out,
             "oauth-2025-04-20,context-management-2025-06-27,redact-thinking-2026-02-12"
@@ -917,11 +939,68 @@ mod tests {
         // Whitespace + empties get normalised; injection still
         // applies to the cleaned-up set.
         let input = " oauth-2025-04-20 , interleaved-thinking-2025-05-14 , , ";
-        let out = rewrite_anthropic_beta(input).expect("should rewrite");
+        let out = rewrite_anthropic_beta(input, MESSAGES_PATH).expect("should rewrite");
         assert_eq!(
             out,
             "oauth-2025-04-20,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12",
         );
+    }
+
+    // ----------------------------------------------------------------
+    // #266: inject step gated on `path == "/v1/messages"`. Native CLI
+    // only emits the NATIVE_REQUIRED set on that endpoint, so forge
+    // must NOT inject on sibling endpoints (mcp_servers, eval/sdk-*,
+    // event_logging/v2/batch) or it over-emits vs native.
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn anthropic_beta_inject_skipped_for_mcp_servers_path() {
+        // /v1/mcp_servers carries its own beta flag(s) but does NOT
+        // emit redact-thinking-2026-02-12 from native. Forge must not
+        // inject it here.
+        let input = "mcp-servers-2025-12-04,interleaved-thinking-2025-05-14";
+        // Native's set on this path is whatever it sends; the rewriter
+        // must pass through unchanged. None means "no transform applied".
+        let out = rewrite_anthropic_beta(input, "/v1/mcp_servers");
+        assert!(out.is_none(), "non-messages paths must pass through unchanged; got: {out:?}");
+    }
+
+    #[test]
+    fn anthropic_beta_inject_skipped_for_eval_sdk_path() {
+        // /api/eval/sdk-<id> is a Statsig-style feature evaluation
+        // probe. Path carries a variable session-id suffix; the
+        // injection gate must NOT match because the predicate is
+        // exact-equal against `/v1/messages`, not a starts_with.
+        let input = "oauth-2025-04-20,interleaved-thinking-2025-05-14";
+        let out = rewrite_anthropic_beta(input, "/api/eval/sdk-zAZxyz123");
+        assert!(out.is_none(), "eval/sdk-* paths must pass through; got: {out:?}");
+    }
+
+    #[test]
+    fn anthropic_beta_inject_skipped_for_event_logging_path() {
+        // /api/event_logging/v2/batch carries telemetry, not chat
+        // turns. Forge must not inject /v1/messages-specific flags
+        // here.
+        let input = "oauth-2025-04-20,interleaved-thinking-2025-05-14";
+        let out = rewrite_anthropic_beta(input, "/api/event_logging/v2/batch");
+        assert!(out.is_none(), "event_logging paths must pass through; got: {out:?}");
+    }
+
+    #[test]
+    fn anthropic_beta_inject_applied_only_on_exact_messages_path() {
+        // Sanity check on the exact-equal predicate: a path that
+        // STARTS WITH /v1/messages but has a suffix (e.g. an unlikely
+        // future /v1/messages/stream) must NOT trigger inject under
+        // the exact predicate. Defensive against accidental
+        // starts_with relaxation in a future refactor.
+        let input = "oauth-2025-04-20,interleaved-thinking-2025-05-14";
+        let out = rewrite_anthropic_beta(input, "/v1/messages/foo");
+        assert!(out.is_none(), "non-exact /v1/messages paths must pass through; got: {out:?}");
+
+        // And the canonical positive case still injects.
+        let out_pos =
+            rewrite_anthropic_beta(input, "/v1/messages").expect("exact /v1/messages must inject");
+        assert!(out_pos.contains("redact-thinking-2026-02-12"));
     }
 
     #[test]
