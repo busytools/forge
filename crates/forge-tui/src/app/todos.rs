@@ -86,20 +86,46 @@ pub(crate) fn parse_task_create_result_id(result_text: &str) -> Option<String> {
 /// Returns `None` when `taskId` is missing or non-string - that
 /// shape can't address an existing item, so there's nothing to
 /// apply.
+///
+/// The `status` field on the parsed projection is a NESTED option:
+/// `None` when the input didn't carry a `status` field at all
+/// (TaskUpdate may carry only `subject` / `activeForm` mutations),
+/// AND `None` when the input did carry a `status` field but its
+/// value isn't one of the recognised variants (a future CLI emitting
+/// e.g. `cancelled` or `InProgress`). The reducer treats both shapes
+/// identically: no status mutation, every other field still applies.
 pub(crate) fn parse_task_update_input(raw_input: &serde_json::Value) -> Option<TaskUpdateInput> {
     let task_id = raw_input.get("taskId").and_then(|v| v.as_str())?.to_owned();
-    let status = raw_input.get("status").and_then(|v| v.as_str()).map(parse_task_status_update);
+    let status = parse_status_field(raw_input);
     let content = raw_input.get("subject").and_then(|v| v.as_str()).map(str::to_owned);
     let active_form = raw_input.get("activeForm").and_then(|v| v.as_str()).map(str::to_owned);
     Some(TaskUpdateInput { task_id, status, content, active_form })
 }
 
-fn parse_task_status_update(status: &str) -> TaskStatusUpdate {
-    match status {
-        "in_progress" => TaskStatusUpdate::InProgress,
-        "completed" => TaskStatusUpdate::Completed,
-        "deleted" => TaskStatusUpdate::Deleted,
-        _ => TaskStatusUpdate::Pending,
+/// Read `raw_input.status` and map a recognised variant to its
+/// `TaskStatusUpdate`. When the field is absent or carries an
+/// unrecognised value, returns `None` so the caller falls through to
+/// no status mutation. A warn-log naming the unknown variant fires
+/// so a future CLI emitting a new shape (e.g. `cancelled`) surfaces
+/// in production logs before the inspector silently drops the
+/// transition.
+fn parse_status_field(raw_input: &serde_json::Value) -> Option<TaskStatusUpdate> {
+    let raw = raw_input.get("status")?.as_str()?;
+    match raw {
+        "pending" => Some(TaskStatusUpdate::Pending),
+        "in_progress" => Some(TaskStatusUpdate::InProgress),
+        "completed" => Some(TaskStatusUpdate::Completed),
+        "deleted" => Some(TaskStatusUpdate::Deleted),
+        other => {
+            tracing::warn!(
+                target: crate::logging::targets::APP_TOOL,
+                event_name = "task_update_unknown_status",
+                message = "TaskUpdate carried an unrecognised status value; no status mutation applied",
+                outcome = "skipped",
+                status = %other,
+            );
+            None
+        }
     }
 }
 
@@ -291,6 +317,75 @@ mod tests {
         );
         assert_eq!(app.todos().len(), 1, "deleted item is removed, the other stays");
         assert_eq!(app.todos()[0].id, "2");
+    }
+
+    #[test]
+    fn parse_task_update_unknown_status_returns_none_and_other_fields_still_apply() {
+        // Future CLI emitting a status value forge doesn't recognise
+        // (e.g. `cancelled`, `InProgress`, `in-progress`) must NOT
+        // silently downgrade to Pending. Status comes back as None;
+        // subject / activeForm still parse so a same-call payload that
+        // also renames the item lands.
+        for unknown in ["cancelled", "InProgress", "in-progress", "PENDING", "archived", ""] {
+            let input = json!({
+                "taskId": "1",
+                "status": unknown,
+                "subject": "Renamed",
+                "activeForm": "Renaming",
+            });
+            let parsed = parse_task_update_input(&input).expect("taskId present");
+            assert_eq!(parsed.task_id, "1");
+            assert!(
+                parsed.status.is_none(),
+                "unknown status {unknown:?} must return None, not silently coerce to Pending",
+            );
+            assert_eq!(parsed.content.as_deref(), Some("Renamed"));
+            assert_eq!(parsed.active_form.as_deref(), Some("Renaming"));
+        }
+    }
+
+    #[test]
+    fn apply_task_update_with_unknown_status_does_not_mutate_status() {
+        // End-to-end: an unknown status in TaskUpdate flows through
+        // parse_task_status_field returning None, the reducer skips
+        // the status mutation, and the item keeps its prior status.
+        // subject / activeForm mutations on the same payload still
+        // land so the inspector reflects the rename.
+        let mut app = App::test_default();
+        apply_task_create(
+            &mut app,
+            TaskCreateInput { content: "Read".into(), active_form: "Reading".into() },
+            "1".to_owned(),
+        );
+        // Drive the item to InProgress first so we have something
+        // distinguishable from the Pending default to protect.
+        apply_task_update(
+            &mut app,
+            TaskUpdateInput {
+                task_id: "1".to_owned(),
+                status: Some(TaskStatusUpdate::InProgress),
+                content: None,
+                active_form: None,
+            },
+        );
+        let parsed = parse_task_update_input(&json!({
+            "taskId": "1",
+            "status": "cancelled",
+            "subject": "Renamed",
+        }))
+        .expect("taskId present");
+        assert!(parsed.status.is_none(), "unknown status maps to None");
+        apply_task_update(&mut app, parsed);
+        assert_eq!(
+            app.todos()[0].status,
+            TodoStatus::InProgress,
+            "status must NOT regress to Pending when the CLI emits an unknown variant",
+        );
+        assert_eq!(
+            app.todos()[0].content,
+            "Renamed",
+            "subject mutation on the same payload still applies",
+        );
     }
 
     #[test]
