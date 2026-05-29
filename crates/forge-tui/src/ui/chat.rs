@@ -387,6 +387,13 @@ fn build_base_spinner(app: &App) -> SpinnerState {
         // `handle_result`, but gating here keeps the chip from
         // briefly flashing across the final layout pass.
         thinking_tokens: if turn_in_flight { app.latest_thinking_tokens() } else { None },
+        // #273: the duration chip persists across the whole assistant
+        // turn — the value lands once at TurnEnd and stays on
+        // `UiSession::last_turn_duration_ms` until the next turn
+        // updates it. The role-label renderer further gates the chip
+        // on `is_active_turn_assistant`, so past turns won't surface
+        // a stale chip during a re-render.
+        last_turn_duration_ms: app.last_turn_duration_ms(),
     }
 }
 
@@ -1083,6 +1090,7 @@ mod tests {
             show_thinking: false,
             show_compacting: false,
             thinking_tokens: None,
+            last_turn_duration_ms: None,
         }
     }
 

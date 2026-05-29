@@ -69,6 +69,10 @@ pub struct SpinnerState {
     /// turn. `None` when no `Message::ThinkingTokens` event has fired
     /// yet; the spinner falls back to bare `Thinking...`.
     pub thinking_tokens: Option<u64>,
+    /// #273: Most recent `Message::TurnDuration` ms. Rendered as
+    /// the banner chip `Forge · 12.4s` on the active assistant
+    /// turn's role-label row. `None` until the first turn completes.
+    pub last_turn_duration_ms: Option<u64>,
 }
 
 struct MessageLayout {
@@ -151,13 +155,49 @@ impl<'a> MessageRenderContext<'a> {
     }
 }
 
-fn assistant_role_label_line() -> Line<'static> {
-    let spans = vec![Span::styled(
+fn assistant_role_label_line(turn_duration_ms: Option<u64>) -> Line<'static> {
+    let mut spans = vec![Span::styled(
         "Forge",
         Style::default().fg(theme::ROLE_ASSISTANT).add_modifier(Modifier::BOLD),
     )];
-
+    // #273: append `· N.Ns` chip when a `Message::TurnDuration` event
+    // landed for this turn. Banner stays RUST_ORANGE BOLD; the chip
+    // separator + duration both render DIM so the visual hierarchy
+    // reads "primary role label > duration metadata".
+    if let Some(ms) = turn_duration_ms {
+        spans.push(Span::styled(
+            format!(" · {}", format_turn_duration(ms)),
+            Style::default().fg(theme::DIM),
+        ));
+    }
     Line::from(spans)
+}
+
+/// #273: Format a turn-duration milliseconds value for the banner
+/// chip. Buckets:
+///   - `< 60_000` ms -> one-decimal seconds (`12.4s`).
+///   - `60_000..3_600_000` -> integer `Xm Ys` (`1m 04s`).
+///   - `>= 3_600_000` -> `Xh Ym Zs` (`1h 02m 04s`).
+#[must_use]
+pub fn format_turn_duration(ms: u64) -> String {
+    const SEC: u64 = 1_000;
+    const MIN: u64 = 60 * SEC;
+    const HOUR: u64 = 60 * MIN;
+    if ms < MIN {
+        // One decimal, e.g. 12_400 ms -> "12.4s".
+        let whole = ms / SEC;
+        let tenths = (ms % SEC) / 100;
+        return format!("{whole}.{tenths}s");
+    }
+    if ms < HOUR {
+        let minutes = ms / MIN;
+        let seconds = (ms % MIN) / SEC;
+        return format!("{minutes}m {seconds:02}s");
+    }
+    let hours = ms / HOUR;
+    let minutes = (ms % HOUR) / MIN;
+    let seconds = (ms % MIN) / SEC;
+    format!("{hours}h {minutes:02}m {seconds:02}s")
 }
 
 pub(crate) fn render_message(
@@ -177,7 +217,7 @@ fn build_message_layout(
 ) -> MessageLayout {
     let mut layout = MessageLayout::new();
     if !render_context.options.suppress_group_header {
-        layout.push_wrapped_line(role_label_line(msg), render_context.width);
+        layout.push_wrapped_line(role_label_line(msg, spinner), render_context.width);
     }
 
     match msg.role {
@@ -1102,7 +1142,7 @@ fn should_skip_whole_block(
     false
 }
 
-fn role_label_line(msg: &ChatMessage) -> Line<'static> {
+fn role_label_line(msg: &ChatMessage, spinner: &SpinnerState) -> Line<'static> {
     match msg.role {
         MessageRole::Welcome => Line::from(Span::styled(
             "Overview",
@@ -1131,7 +1171,13 @@ fn role_label_line(msg: &ChatMessage) -> Line<'static> {
                 ))
             }
         }
-        MessageRole::Assistant => assistant_role_label_line(),
+        // #273: only stamp the duration chip on the active turn's
+        // banner. Past turns persist their layout snapshot; surfacing
+        // the chip across all prior turns would require per-message
+        // duration storage which is out of scope for this PR.
+        MessageRole::Assistant => assistant_role_label_line(
+            if spinner.is_active_turn_assistant { spinner.last_turn_duration_ms } else { None },
+        ),
         MessageRole::System(_) => system_role_label_line(system_severity_from_role(&msg.role)),
     }
 }
@@ -2108,6 +2154,7 @@ mod tests {
             show_thinking: false,
             show_compacting: false,
             thinking_tokens: None,
+            last_turn_duration_ms: None,
         }
     }
 
@@ -3198,5 +3245,79 @@ mod tests {
             "expected fallback shape when no count; got {rendered:?}",
         );
         assert!(!rendered.contains("tok"));
+    }
+
+    // ----------------------------------------------------------------
+    // #273: turn_duration banner chip on the assistant role label.
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn format_turn_duration_buckets() {
+        // < 60s -> one-decimal seconds.
+        assert_eq!(format_turn_duration(0), "0.0s");
+        assert_eq!(format_turn_duration(900), "0.9s");
+        assert_eq!(format_turn_duration(12_400), "12.4s");
+        assert_eq!(format_turn_duration(59_900), "59.9s");
+        // 1m..1h -> integer Xm YYs (zero-padded seconds).
+        assert_eq!(format_turn_duration(60_000), "1m 00s");
+        assert_eq!(format_turn_duration(64_000), "1m 04s");
+        assert_eq!(format_turn_duration(125_000), "2m 05s");
+        assert_eq!(format_turn_duration(3_599_000), "59m 59s");
+        // >= 1h -> Xh YYm ZZs (zero-padded minutes + seconds).
+        assert_eq!(format_turn_duration(3_600_000), "1h 00m 00s");
+        assert_eq!(format_turn_duration(3_724_000), "1h 02m 04s");
+    }
+
+    #[test]
+    fn assistant_role_label_line_renders_chip_when_duration_present() {
+        let line = assistant_role_label_line(Some(12_400));
+        let rendered: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(rendered.starts_with("Forge"), "expected Forge prefix, got {rendered:?}");
+        assert!(rendered.contains("· 12.4s"), "expected duration chip, got {rendered:?}");
+    }
+
+    #[test]
+    fn assistant_role_label_line_omits_chip_when_no_duration() {
+        let line = assistant_role_label_line(None);
+        let rendered: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(rendered, "Forge");
+    }
+
+    #[test]
+    fn assistant_role_label_chip_only_shows_on_active_turn() {
+        // Two messages — both Assistant — but only the active turn's
+        // spinner carries `is_active_turn_assistant=true`. The chip
+        // must surface for the active one and be silent for the
+        // historical one even when the spinner carries a duration.
+        let active_msg =
+            make_text_message(MessageRole::Assistant, "current response");
+        let old_msg = make_text_message(MessageRole::Assistant, "earlier response");
+
+        let active_spinner = SpinnerState {
+            is_active_turn_assistant: true,
+            last_turn_duration_ms: Some(12_400),
+            ..idle_spinner()
+        };
+        let inactive_spinner = SpinnerState {
+            is_active_turn_assistant: false,
+            last_turn_duration_ms: Some(12_400),
+            ..idle_spinner()
+        };
+
+        let active_label = role_label_line(&active_msg, &active_spinner);
+        let active_rendered: String =
+            active_label.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            active_rendered.contains("· 12.4s"),
+            "active turn must carry chip, got {active_rendered:?}",
+        );
+
+        let old_label = role_label_line(&old_msg, &inactive_spinner);
+        let old_rendered: String =
+            old_label.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(
+            old_rendered, "Forge",
+            "historical turn must omit chip even when spinner has duration",
+        );
     }
 }

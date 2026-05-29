@@ -3312,6 +3312,7 @@ mod tests {
             show_thinking: false,
             show_compacting: false,
             thinking_tokens: None,
+            last_turn_duration_ms: None,
         };
 
         let _ = crate::ui::measure_message_height_cached(
