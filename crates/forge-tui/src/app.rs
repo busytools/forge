@@ -15,6 +15,7 @@ mod input_submit;
 mod keys;
 pub(crate) mod launchpad;
 pub(crate) mod mention;
+pub(crate) mod monitor_output;
 mod notify;
 pub(crate) mod paste_burst;
 pub(crate) mod plugins;

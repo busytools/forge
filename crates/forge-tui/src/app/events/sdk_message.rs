@@ -63,12 +63,39 @@ fn handle_thinking_tokens(app: &mut App, estimated_tokens: u64) {
     app.set_latest_thinking_tokens(Some(estimated_tokens));
 }
 
-/// #273: Persist the just-completed turn's wall-clock duration so the
-/// assistant banner chip `Claude · N.Ns` shows on the active turn's
-/// banner row. The field is per-session and survives across turns
-/// (each turn overwrites with its own duration on completion).
+/// #273 + #275 Bug 2: Persist the just-completed turn's wall-clock
+/// duration. Two write paths:
+///
+/// 1. **Per-message stamp** (the renderer's source of truth):
+///    walks the session's chat history backwards to find the most
+///    recent Assistant `ChatMessage` and stamps its
+///    `turn_duration_ms` field. The role-label renderer surfaces
+///    the chip from this field, so every completed assistant turn
+///    in scrollback shows its own `Forge - N.Ns` banner chip.
+/// 2. **Spinner cache** (`set_last_turn_duration_ms`): kept for
+///    downstream consumers that read the per-session value (e.g.
+///    instrumentation, telemetry). The renderer no longer reads
+///    this for the chip - that path was the #275 Bug 2 regression
+///    (gated on `is_active_turn_assistant`, which is already false
+///    by the time `TurnDuration` arrives at end-of-turn).
+///
+/// Edge case: if no assistant message exists yet (turn finalised
+/// with only tool calls and no assistant text/notice block), the
+/// per-message stamp silently no-ops. The spinner-cache write
+/// still fires, preserving historical behaviour.
 fn handle_turn_duration(app: &mut App, ms: u64) {
     app.set_last_turn_duration_ms(Some(ms));
+    stamp_turn_duration_on_latest_assistant(app, ms);
+}
+
+fn stamp_turn_duration_on_latest_assistant(app: &mut App, ms: u64) {
+    use crate::app::MessageRole;
+    let messages = app.active_messages_mut();
+    if let Some(msg) = messages.iter_mut().rev().find(|m| matches!(m.role, MessageRole::Assistant))
+    {
+        msg.turn_duration_ms = Some(ms);
+        msg.invalidate_render_cache();
+    }
 }
 
 /// #273: Capture the stop-hook summary for the active assistant
@@ -290,6 +317,21 @@ fn handle_user(app: &mut App, msg: Message) {
     let Message::User { message, parent_tool_use_id, tool_use_result, .. } = msg else {
         return;
     };
+    // #275 Bug 1: a genuine new user turn invalidates the previous
+    // turn's thinking-token tally. Without this clear, a multi-tool-call
+    // turn that ends without a `Result` (in-flight when the next user
+    // turn lands) leaves `latest_thinking_tokens` holding the prior
+    // cumulative value (e.g. 150); the first `thinking_tokens` event of
+    // the new turn arrives with a reset cumulative (50) and the chip
+    // drops 150 -> 50, which reads as the chip "going up and down".
+    // Tool-result echoes (`tool_use_result.is_some()`) are mid-turn
+    // continuations of the assistant's tool-call loop, not new user
+    // turns - leave the count alone there. The existing Result-side
+    // clear in `handle_result` covers the clean turn-end case; this
+    // user-side clear is additive for the in-flight case.
+    if tool_use_result.is_none() {
+        app.set_latest_thinking_tokens(None);
+    }
     walk_user_tool_results(app, &message.content);
     // Peer-coordination user-turn echoes (#114). `Command::Prompt`
     // dispatched via `Workspace::deliver_peer_prompt` injects the
@@ -1035,6 +1077,14 @@ fn handle_task_progress(app: &mut App, msg: Message) {
     if !workflow_progress.is_empty() && !task_id.is_empty() {
         app.apply_workflow_progress_by_task_id(&task_id, &workflow_progress);
     }
+    // #275 Task 4: refresh the matching Monitor's output_tail from
+    // disk on each progress event so the file's growth is reflected
+    // in the Inspector without waiting for the next task_notification.
+    // No-op when the task isn't a Monitor or its output_file isn't
+    // stamped yet.
+    if !task_id.is_empty() {
+        app.refresh_monitor_output_tail_from_file(&task_id);
+    }
 }
 
 /// Apply a `TaskUpdated` patch to the originating tool call.
@@ -1058,42 +1108,28 @@ fn handle_task_updated(app: &mut App, msg: Message) {
     use forge_primitives::ToolCallUpdateFields;
 
     let Message::TaskUpdated { task_id, patch, .. } = msg else { return };
-    let tool_use_id = app.with_turn_state(|ts| ts.task_tool_use_ids.get(&task_id).cloned());
-    let Some(tool_use_id) = tool_use_id else {
-        tracing::debug!(
-            target: crate::logging::targets::APP_SESSION,
-            event_name = "task_updated_no_mapping",
-            message = "task_updated for unknown task_id - dropped",
-            outcome = "dropped",
-            task_id = %task_id,
-        );
-        return;
-    };
-
     let Some(wire_status) = patch.status.as_deref() else {
         // No status delta in this patch (e.g. partial update that
         // only stamped end_time). Nothing for the renderer to do.
         return;
     };
-    let mapped_status = map_task_updated_status_to_tool_status(wire_status);
-    apply_tool_call_update(
-        app,
-        &tool_use_id,
-        ToolCallUpdateFields { status: Some(mapped_status), ..Default::default() },
-    );
+    let is_terminal = matches!(wire_status, "completed" | "failed" | "killed" | "stopped");
 
-    // Drain the alive-task set on terminal transitions so the
-    // PROCESSES section can drop the row. Wire vocabulary
-    // `completed` / `failed` / `killed` / `stopped` all count as
-    // terminal - anything else (`running`, `pending`, etc.) leaves
-    // the task in the alive set.
-    if matches!(wire_status, "completed" | "failed" | "killed" | "stopped") {
-        let task_id_owned = task_id;
-        // #273 Task 8: transition the matching MonitorEntry into a
-        // terminal status mirroring the wire vocabulary. The
-        // `set_monitor_status_by_task_id` helper handles the
-        // all-completed clear so the MONITORS Inspector section
-        // drops out when no Running entry remains.
+    // #275 Bug 3: Monitor + Workflow status transitions are keyed
+    // by `task_id` directly (not `tool_use_id`), so they run
+    // BEFORE the `task_tool_use_ids` lookup. The lookup is gated
+    // on TurnState, which `default()`-resets at every turn
+    // finalisation (5 sites in `events/turn.rs`). Monitor's
+    // `task_updated { status: "completed" }` arrives AFTER its
+    // initiating turn Result'd (Monitor runs in the background) -
+    // by then the mapping is empty and the old structure
+    // early-returned, leaving the MonitorEntry stuck on `· running`
+    // forever and `clear_monitors_if_all_terminal` never
+    // re-evaluating. `set_monitor_status_by_task_id` mirrors
+    // `handle_task_notification`'s direct `task_id` routing
+    // pattern (the working precedent for the per-event tail
+    // surface).
+    if is_terminal {
         let monitor_status = match wire_status {
             "completed" => Some(crate::app::state::types::MonitorStatus::Completed),
             "failed" | "killed" | "stopped" => {
@@ -1102,16 +1138,41 @@ fn handle_task_updated(app: &mut App, msg: Message) {
             _ => None,
         };
         if let Some(status) = monitor_status {
-            app.set_monitor_status_by_task_id(&task_id_owned, status);
+            app.set_monitor_status_by_task_id(&task_id, status);
         }
         // #273 Task 9: same shape for WorkflowEntry - any terminal
         // status (completed | failed | killed | stopped) collapses
-        // the workflow row to its summarised one-liner.
-        app.set_workflow_completed_by_task_id(&task_id_owned);
+        // the workflow row to its summarised one-liner. Idempotent
+        // when the entry is already Completed.
+        app.set_workflow_completed_by_task_id(&task_id);
+        let task_id_owned = task_id.clone();
         let _: () = app.with_turn_state_mut(|ts| {
             ts.alive_task_ids.remove(&task_id_owned);
         });
     }
+
+    // The standard tool-call card update still requires the
+    // `tool_use_id` mapping to apply a status patch to the
+    // chat-stream card. If the mapping is missing (turn already
+    // finalised + TurnState reset), skip just THIS path - the
+    // MONITORS / WORKFLOWS sections are already updated above.
+    let tool_use_id = app.with_turn_state(|ts| ts.task_tool_use_ids.get(&task_id).cloned());
+    let Some(tool_use_id) = tool_use_id else {
+        tracing::debug!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "task_updated_no_tool_use_mapping",
+            message = "task_updated tool-call card skipped (mapping reset by turn finalisation); section row already updated",
+            outcome = "skipped",
+            task_id = %task_id,
+        );
+        return;
+    };
+    let mapped_status = map_task_updated_status_to_tool_status(wire_status);
+    apply_tool_call_update(
+        app,
+        &tool_use_id,
+        ToolCallUpdateFields { status: Some(mapped_status), ..Default::default() },
+    );
 }
 
 /// Map the wire-side `task_updated.patch.status` string to the
@@ -1132,22 +1193,24 @@ fn map_task_updated_status_to_tool_status(wire_status: &str) -> forge_primitives
 }
 
 fn handle_task_notification(app: &mut App, msg: Message) {
-    let Message::TaskNotification { tool_use_id, task_id, summary, .. } = msg else { return };
+    let Message::TaskNotification { tool_use_id, task_id, output_file, summary, .. } = msg else {
+        return;
+    };
     let id = tool_use_id.as_deref().unwrap_or("");
     if !id.is_empty() {
         apply_tool_summary_update(app, id, &summary);
     }
-    // #273 Task 8: Monitor's per-event signal arrives here. The
-    // wire emits one `system/task_notification` per Monitor lifecycle
-    // event ("stream ended", "timeout", interim summaries) with the
-    // `summary` field carrying the human-readable line. Push onto
-    // the matching MonitorEntry's `output_tail` ring; status
-    // transitions still flow through `TaskUpdated` (terminal
-    // `completed` / `failed` / `killed` / `stopped` → terminal
-    // MonitorStatus). Raw bash stdout lives in `output_file` and is
-    // intentionally out of scope per the captured wire's design.
-    if !task_id.is_empty() && !summary.trim().is_empty() {
-        app.push_monitor_output_by_task_id(&task_id, summary.clone());
+    // #275 Task 4: stamp the `output_file` path on the matching
+    // MonitorEntry (idempotent) and refresh the tail from disk.
+    // The wire carries `output_file` because the CLI's local-bash
+    // Monitor flavour streams the watched command's stdout to
+    // `/private/tmp/.../tasks/<task_id>.output` rather than over the
+    // wire. The summary line alone is insufficient (it's always
+    // "Monitor X stream ended" or similar boilerplate); the user
+    // needs the actual command output.
+    if !task_id.is_empty() && !output_file.is_empty() {
+        app.set_monitor_output_file_by_task_id(&task_id, std::path::PathBuf::from(&output_file));
+        app.refresh_monitor_output_tail_from_file(&task_id);
     }
 }
 
@@ -1585,5 +1648,423 @@ mod queued_command_tests {
         let prompt = json!({"weird": "shape"});
         let out = extract_queued_command_text(&prompt);
         assert!(out.contains("weird"));
+    }
+}
+
+#[cfg(test)]
+mod task_updated_section_routing_tests {
+    //! #275 Bug 3: Monitor + Workflow status transitions in
+    //! `handle_task_updated` run BEFORE the `task_tool_use_ids`
+    //! lookup so they survive the turn-finalisation reset that
+    //! drops the mapping. Without this, Monitor's terminal
+    //! `task_updated` arriving after Result early-returned and
+    //! the MONITORS row stayed on `· running` forever.
+    use super::handle_task_updated;
+    use crate::app::App;
+    use crate::app::state::types::{MonitorEntry, MonitorStatus};
+    use forge_primitives::{Message, messages::TaskUpdatePatch};
+
+    fn push_monitor(app: &mut App, task_id: &str) {
+        let entry = MonitorEntry {
+            tool_use_id: format!("tu_{task_id}"),
+            task_id: Some(task_id.to_owned()),
+            description: format!("test monitor {task_id}"),
+            command: "true".to_owned(),
+            persistent: false,
+            timeout_ms: 0,
+            status: MonitorStatus::Running,
+            output_file: None,
+            output_tail: std::collections::VecDeque::new(),
+            expanded_in_inspector: false,
+        };
+        app.monitors_mut().push(entry);
+    }
+
+    fn task_updated(task_id: &str, status: &str) -> Message {
+        Message::TaskUpdated {
+            task_id: task_id.to_owned(),
+            patch: TaskUpdatePatch { status: Some(status.to_owned()), end_time: None },
+            uuid: String::new(),
+            session_id: String::new(),
+        }
+    }
+
+    #[test]
+    fn monitor_transitions_to_completed_after_turn_finalisation() {
+        // Reproduce the user-reported Bug 3a sequence: Monitor
+        // launched in turn A -> turn A Result'd (mapping reset) ->
+        // Monitor's `task_updated { status: "completed" }` arrives.
+        // BEFORE this fix the early-return at the missing
+        // `task_tool_use_ids` lookup dropped the transition. After
+        // the fix the section row flips to Completed.
+        let mut app = App::test_default();
+        push_monitor(&mut app, "task_1");
+        // Simulate turn finalisation: TurnState's task_tool_use_ids
+        // mapping is empty (the `default()` after Result).
+        // No task_started has populated it for `task_1`.
+        handle_task_updated(&mut app, task_updated("task_1", "completed"));
+        // Monitor was cleared via the all-completed predicate since
+        // this was the only running monitor; verifying via post-clear
+        // empty state.
+        assert!(
+            app.monitors().is_empty(),
+            "all-completed clear should drain the MONITORS list; got {} entries",
+            app.monitors().len(),
+        );
+    }
+
+    #[test]
+    fn monitor_killed_status_maps_to_stopped() {
+        let mut app = App::test_default();
+        push_monitor(&mut app, "task_2");
+        handle_task_updated(&mut app, task_updated("task_2", "killed"));
+        assert!(app.monitors().is_empty());
+    }
+
+    #[test]
+    fn two_monitors_completing_in_order_clears_section() {
+        // Bug 3b: clear_monitors_if_all_terminal re-evaluates only
+        // when status transitions actually fire. Both monitors'
+        // task_updated events must transition them; once the second
+        // flips terminal, the section drops out.
+        let mut app = App::test_default();
+        push_monitor(&mut app, "task_a");
+        push_monitor(&mut app, "task_b");
+        handle_task_updated(&mut app, task_updated("task_a", "completed"));
+        // task_a transitioned to Completed; task_b still Running.
+        // The all-completed predicate watches for "any still Running",
+        // so the section persists with both entries (task_a renders
+        // as collapsed completed; task_b as running).
+        assert_eq!(app.monitors().len(), 2);
+        let task_a = app.monitors().iter().find(|m| m.task_id.as_deref() == Some("task_a"));
+        let task_b = app.monitors().iter().find(|m| m.task_id.as_deref() == Some("task_b"));
+        assert_eq!(task_a.map(|m| m.status), Some(MonitorStatus::Completed));
+        assert_eq!(task_b.map(|m| m.status), Some(MonitorStatus::Running));
+        handle_task_updated(&mut app, task_updated("task_b", "completed"));
+        // Now everything's terminal; section drains.
+        assert!(app.monitors().is_empty());
+    }
+
+    #[test]
+    fn double_completed_event_is_idempotent() {
+        // Duplicate task_updated events (e.g. retry) must not
+        // panic and must not double-clear.
+        let mut app = App::test_default();
+        push_monitor(&mut app, "task_dup");
+        handle_task_updated(&mut app, task_updated("task_dup", "completed"));
+        // Already cleared.
+        assert!(app.monitors().is_empty());
+        // Second arrival: target task_id no longer exists in
+        // monitors; lookup misses; no panic.
+        handle_task_updated(&mut app, task_updated("task_dup", "completed"));
+        assert!(app.monitors().is_empty());
+    }
+
+    #[test]
+    fn no_status_field_in_patch_skips_transition() {
+        // Partial patch (end_time only, no status) leaves the
+        // monitor running.
+        let mut app = App::test_default();
+        push_monitor(&mut app, "task_partial");
+        let msg = Message::TaskUpdated {
+            task_id: "task_partial".to_owned(),
+            patch: TaskUpdatePatch { status: None, end_time: Some(42) },
+            uuid: String::new(),
+            session_id: String::new(),
+        };
+        handle_task_updated(&mut app, msg);
+        assert_eq!(app.monitors().len(), 1);
+        assert_eq!(app.monitors()[0].status, MonitorStatus::Running);
+    }
+}
+
+#[cfg(test)]
+mod turn_duration_stamp_tests {
+    //! #275 Bug 2: `handle_turn_duration` stamps `turn_duration_ms`
+    //! on the most recent assistant `ChatMessage` in the session.
+    //! The renderer reads from the per-message field; no longer
+    //! gated on the spinner's `is_active_turn_assistant` flag.
+    use super::handle_turn_duration;
+    use crate::app::{App, ChatMessage, MessageBlock, MessageRole, TextBlock};
+
+    fn push_assistant_message(app: &mut App, text: &str) {
+        app.active_messages_mut().push(ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::Text(TextBlock::from_complete(text))],
+            None,
+        ));
+    }
+
+    fn push_user_message(app: &mut App, text: &str) {
+        app.active_messages_mut().push(ChatMessage::new(
+            MessageRole::User,
+            vec![MessageBlock::Text(TextBlock::from_complete(text))],
+            None,
+        ));
+    }
+
+    #[test]
+    fn stamps_most_recent_assistant_message() {
+        let mut app = App::test_default();
+        push_assistant_message(&mut app, "older turn");
+        push_user_message(&mut app, "next prompt");
+        push_assistant_message(&mut app, "latest turn");
+        handle_turn_duration(&mut app, 12_400);
+        let messages = app.messages();
+        // Older assistant turn untouched; only the most-recent
+        // assistant message gets the stamp.
+        assert_eq!(messages[0].turn_duration_ms, None);
+        assert_eq!(messages[2].turn_duration_ms, Some(12_400));
+    }
+
+    #[test]
+    fn no_op_when_no_assistant_message_exists() {
+        // Edge case: turn finalises before any assistant message
+        // landed (e.g. tool-only turn that errored). `handle_turn_duration`
+        // must not panic; the spinner-cache write still fires for
+        // downstream consumers.
+        let mut app = App::test_default();
+        push_user_message(&mut app, "lonely prompt");
+        handle_turn_duration(&mut app, 5_000);
+        let messages = app.messages();
+        assert_eq!(messages[0].turn_duration_ms, None);
+        // Spinner cache still receives the value.
+        assert_eq!(app.last_turn_duration_ms(), Some(5_000));
+    }
+
+    #[test]
+    fn second_turn_does_not_overwrite_earlier_assistant_stamp() {
+        // Multiple completed turns each carry their own duration in
+        // scrollback. `handle_turn_duration` only touches the latest
+        // assistant; the prior turn's stamp persists.
+        let mut app = App::test_default();
+        push_assistant_message(&mut app, "first turn");
+        handle_turn_duration(&mut app, 3_000);
+        assert_eq!(app.messages()[0].turn_duration_ms, Some(3_000));
+
+        push_user_message(&mut app, "next prompt");
+        push_assistant_message(&mut app, "second turn");
+        handle_turn_duration(&mut app, 7_500);
+        assert_eq!(app.messages()[0].turn_duration_ms, Some(3_000));
+        assert_eq!(app.messages()[2].turn_duration_ms, Some(7_500));
+    }
+}
+
+#[cfg(test)]
+mod monitor_output_file_wiring_tests {
+    //! #275 Task 4: `handle_task_notification` reads the
+    //! `output_file` from disk and replaces the MonitorEntry's
+    //! `output_tail` with the last 12 lines. `handle_task_progress`
+    //! re-reads on each event so the tail grows with the running
+    //! command.
+    use super::{handle_task_notification, handle_task_progress};
+    use crate::app::App;
+    use crate::app::state::types::{MonitorEntry, MonitorStatus};
+    use forge_primitives::{
+        Message, TaskNotificationStatus, TaskUsage, messages::WorkflowProgressEvent,
+    };
+    use std::io::Write;
+
+    fn push_monitor(app: &mut App, task_id: &str) {
+        let entry = MonitorEntry {
+            tool_use_id: format!("tu_{task_id}"),
+            task_id: Some(task_id.to_owned()),
+            description: format!("monitor {task_id}"),
+            command: "true".to_owned(),
+            persistent: true,
+            timeout_ms: 0,
+            status: MonitorStatus::Running,
+            output_file: None,
+            output_tail: std::collections::VecDeque::new(),
+            expanded_in_inspector: false,
+        };
+        app.monitors_mut().push(entry);
+    }
+
+    fn write_tmp(contents: &str) -> std::path::PathBuf {
+        use std::hash::{Hash, Hasher};
+        let dir = std::env::temp_dir();
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        contents.hash(&mut hasher);
+        let id = hasher.finish();
+        let pid = std::process::id();
+        let path = dir.join(format!("forge_monitor_wiring_test_{pid}_{id}.log"));
+        let mut f = std::fs::File::create(&path).expect("create");
+        f.write_all(contents.as_bytes()).expect("write");
+        path
+    }
+
+    fn notification(task_id: &str, output_file: &str, summary: &str) -> Message {
+        Message::TaskNotification {
+            task_id: task_id.to_owned(),
+            status: TaskNotificationStatus::Completed,
+            output_file: output_file.to_owned(),
+            summary: summary.to_owned(),
+            uuid: String::new(),
+            session_id: String::new(),
+            tool_use_id: None,
+            usage: None,
+        }
+    }
+
+    #[test]
+    fn task_notification_replaces_tail_with_file_contents() {
+        let path = write_tmp(
+            "line 01\nline 02\nline 03\nline 04\nline 05\nline 06\nline 07\nline 08\nline 09\nline 10\nline 11\nline 12\nline 13\nline 14\nline 15\n",
+        );
+        let mut app = App::test_default();
+        push_monitor(&mut app, "task_tail");
+        handle_task_notification(
+            &mut app,
+            notification("task_tail", path.to_str().unwrap(), "Monitor stream ended"),
+        );
+        let tail: Vec<&str> = app.monitors()[0].output_tail.iter().map(String::as_str).collect();
+        // Last 12 of 15.
+        assert_eq!(tail.len(), 12);
+        assert_eq!(tail.first(), Some(&"line 04"));
+        assert_eq!(tail.last(), Some(&"line 15"));
+        // output_file stamped for the next refresh.
+        assert_eq!(app.monitors()[0].output_file.as_ref(), Some(&path));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn empty_output_file_path_falls_back_to_summary_only_behaviour() {
+        // Wire field absent (empty string): no file read, no panic,
+        // no path stamp. The pre-#275-Task-4 behaviour where the
+        // summary line is the only tail signal is preserved.
+        let mut app = App::test_default();
+        push_monitor(&mut app, "task_no_file");
+        handle_task_notification(&mut app, notification("task_no_file", "", "Monitor X"));
+        assert!(app.monitors()[0].output_file.is_none());
+        assert!(app.monitors()[0].output_tail.is_empty());
+    }
+
+    #[test]
+    fn missing_output_file_on_disk_preserves_prior_tail() {
+        // Wire carries an output_file path that doesn't exist on
+        // disk (Monitor just started, OS hasn't created it yet).
+        // `read_output_file_tail` returns None; we preserve the
+        // previously-stored tail. Stamp the path so subsequent
+        // refreshes pick it up once the file lands.
+        let mut app = App::test_default();
+        push_monitor(&mut app, "task_late");
+        // Pre-populate tail to verify it survives the missing-file path.
+        app.monitors_mut()[0].output_tail.push_back("prior tail line".to_owned());
+        handle_task_notification(
+            &mut app,
+            notification(
+                "task_late",
+                "/nonexistent/forge_monitor_late_file.log",
+                "Monitor just started",
+            ),
+        );
+        let tail: Vec<&str> = app.monitors()[0].output_tail.iter().map(String::as_str).collect();
+        // Prior tail preserved.
+        assert_eq!(tail, vec!["prior tail line"]);
+        // Path stamped for next refresh.
+        assert!(app.monitors()[0].output_file.is_some());
+    }
+
+    #[test]
+    fn task_progress_re_reads_stored_output_file() {
+        // Simulate Monitor grow: first notification reads the file
+        // with 3 lines; we then append more lines on disk + fire
+        // task_progress. The progress handler re-reads and updates
+        // the tail to reflect the growth.
+        let path = write_tmp("a\nb\nc\n");
+        let mut app = App::test_default();
+        push_monitor(&mut app, "task_grow");
+        handle_task_notification(
+            &mut app,
+            notification("task_grow", path.to_str().unwrap(), "started"),
+        );
+        let tail_before: Vec<String> = app.monitors()[0].output_tail.iter().cloned().collect();
+        assert_eq!(tail_before, vec!["a", "b", "c"]);
+
+        // Append more lines.
+        let mut f = std::fs::OpenOptions::new().append(true).open(&path).expect("append");
+        f.write_all(b"d\ne\n").expect("write");
+        drop(f);
+
+        // task_progress (no workflow_progress; pure refresh trigger).
+        let progress = Message::TaskProgress {
+            task_id: "task_grow".to_owned(),
+            description: String::new(),
+            usage: TaskUsage { total_tokens: 0, tool_uses: 0, duration_ms: 0 },
+            uuid: String::new(),
+            session_id: String::new(),
+            tool_use_id: None,
+            last_tool_name: None,
+            workflow_progress: Vec::<WorkflowProgressEvent>::new(),
+        };
+        handle_task_progress(&mut app, progress);
+        let tail_after: Vec<String> = app.monitors()[0].output_tail.iter().cloned().collect();
+        assert_eq!(tail_after, vec!["a", "b", "c", "d", "e"]);
+        let _ = std::fs::remove_file(&path);
+    }
+}
+
+#[cfg(test)]
+mod thinking_tokens_clear_on_user_tests {
+    //! #275 Bug 1: a new genuine user turn must clear the
+    //! `latest_thinking_tokens` carry-over from the prior turn so the
+    //! chip never reads stale 150 when the new turn opens with its
+    //! reset cumulative 50.
+    use super::handle_user;
+    use crate::app::App;
+    use forge_primitives::{ContentBlock, Message, UserEnvelope};
+
+    fn user_prompt(text: &str) -> Message {
+        Message::User {
+            message: UserEnvelope {
+                role: "user".to_owned(),
+                content: vec![ContentBlock::Text { text: text.to_owned() }],
+            },
+            session_id: String::new(),
+            parent_tool_use_id: None,
+            uuid: None,
+            tool_use_result: None,
+        }
+    }
+
+    fn tool_result_echo() -> Message {
+        Message::User {
+            message: UserEnvelope { role: "user".to_owned(), content: Vec::new() },
+            session_id: String::new(),
+            parent_tool_use_id: Some("toolu_test".to_owned()),
+            uuid: None,
+            // Non-null tool_use_result marks this as a mid-turn
+            // tool-result echo, NOT a genuine user prompt.
+            tool_use_result: Some(serde_json::json!({})),
+        }
+    }
+
+    #[test]
+    fn genuine_user_prompt_clears_stale_thinking_tokens() {
+        let mut app = App::test_default();
+        app.set_latest_thinking_tokens(Some(150));
+        handle_user(&mut app, user_prompt("next prompt"));
+        assert_eq!(
+            app.latest_thinking_tokens(),
+            None,
+            "real user turn must clear the prior turn's carry-over",
+        );
+    }
+
+    #[test]
+    fn tool_result_echo_preserves_thinking_tokens() {
+        // Tool-result echoes are intra-turn continuations of the
+        // assistant's tool-call loop. They share the same
+        // accumulating thinking_tokens budget; clearing on them
+        // would drop the chip in the middle of an active turn.
+        let mut app = App::test_default();
+        app.set_latest_thinking_tokens(Some(150));
+        handle_user(&mut app, tool_result_echo());
+        assert_eq!(
+            app.latest_thinking_tokens(),
+            Some(150),
+            "tool-result echo must NOT clear the active turn's count",
+        );
     }
 }

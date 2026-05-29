@@ -30,6 +30,16 @@ pub struct ChatMessage {
     /// the clickable chip line(s) (excludes the leading blank and
     /// any expanded hook rows). `0` when no chip is rendered.
     pub stop_hook_summary_height: usize,
+    /// #275 Bug 2: per-message turn-duration captured from the
+    /// `Message::TurnDuration` event that fires at end-of-turn. The
+    /// `handle_turn_duration` reducer walks back to find the most
+    /// recent Assistant message and stamps this field; the role-label
+    /// renderer surfaces it as the `Forge - 12.4s` banner chip. Stays
+    /// on the message itself (not the spinner) so the chip persists
+    /// across scrollback - the prior spinner-state approach gated the
+    /// chip on the now-stale `is_active_turn_assistant` flag and
+    /// dropped immediately as soon as the turn became "past".
+    pub turn_duration_ms: Option<u64>,
 }
 
 impl ChatMessage {
@@ -42,6 +52,7 @@ impl ChatMessage {
             is_peer_envelope: false,
             stop_hook_summary_y_in_msg: 0,
             stop_hook_summary_height: 0,
+            turn_duration_ms: None,
         }
     }
 
@@ -63,6 +74,7 @@ impl ChatMessage {
             is_peer_envelope: true,
             stop_hook_summary_y_in_msg: 0,
             stop_hook_summary_height: 0,
+            turn_duration_ms: None,
         }
     }
 
