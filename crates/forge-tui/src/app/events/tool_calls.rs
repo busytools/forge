@@ -13,6 +13,25 @@ pub(super) fn handle_tool_call(app: &mut App, tc: model::ToolCall) {
     log_tool_call_received(app, &tc, &scope, &sdk_tool_name);
     update_subagent_scope_state(app, &scope, tc.status, &id_str);
 
+    // #273 Task 8: Monitor tool_use → push a UiSession.monitors entry
+    // (idempotent on tool_use_id). Parses the typed input via the
+    // forge-agent parser so the description / command / persistent /
+    // timeout_ms fields share one validation point. Malformed input
+    // (description or command missing) silently no-ops; the standard
+    // tool-card render path still surfaces the call.
+    if sdk_tool_name == "Monitor"
+        && let Some(input) = tc.raw_input.as_ref()
+        && let Some(parsed) = forge_workspace::user_interaction::parse_monitor_input(input)
+    {
+        app.upsert_monitor_from_tool_input(
+            &id_str,
+            parsed.description,
+            parsed.command,
+            parsed.persistent,
+            parsed.timeout_ms,
+        );
+    }
+
     let tool_info = build_tool_info_from_tool_call(app, tc, sdk_tool_name, &scope);
     log_command_started(app, &tool_info);
     log_terminal_spawned(app, &tool_info, "initial");

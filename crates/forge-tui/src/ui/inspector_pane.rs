@@ -364,6 +364,17 @@ fn append_body(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
         append_tasks_section(lines, app, width);
     }
 
+    // #273 Task 8: MONITORS section sits between TASKS and
+    // PROCESSES; auto-clears when no entry is live (matches the
+    // TASKS section's all-completed shape). #273 Task 9 inserts
+    // WORKFLOWS between TASKS and MONITORS.
+    if !app.monitors().is_empty() {
+        lines.push(Line::default());
+        push_section_rule(lines, width);
+        lines.push(Line::default());
+        append_monitors_section(lines, app, width);
+    }
+
     let processes = collect_active_processes(app);
     if !processes.is_empty() {
         lines.push(Line::default());
@@ -1225,6 +1236,104 @@ fn append_tasks_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
 /// per-parent cap so both surfaces feel consistent.
 const TASKS_MAX: usize = 5;
 
+/// #273 Task 8: append the MONITORS Inspector section. Renders one
+/// row per Monitor entry with the description headline, status
+/// badge, and (when expanded OR currently-running) the tail of
+/// captured `task_notification.summary` lines. Section is hidden
+/// entirely when `UiSession.monitors` is empty (auto-clears once
+/// every entry terminates) so the Inspector doesn't carry a stale
+/// "MONITORS" header with no rows.
+fn append_monitors_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
+    let monitors = app.monitors();
+    if monitors.is_empty() {
+        return;
+    }
+
+    lines.push(Line::from(Span::styled(
+        " MONITORS".to_owned(),
+        Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::default());
+
+    let glyph_indent = PANE_PAD + 2;
+    let text_budget = usize::from(width)
+        .saturating_sub(usize::from(glyph_indent))
+        .saturating_sub(usize::from(PANE_PAD));
+
+    for monitor in monitors {
+        append_monitor_row(lines, monitor, text_budget);
+    }
+}
+
+/// Render one Monitor entry into the Inspector body. Layout:
+/// headline row (glyph + description + status badge + persistent
+/// flag), tail rows (`│   └─ <line>` style continuation) when
+/// expanded or running.
+fn append_monitor_row(
+    lines: &mut Vec<Line<'static>>,
+    monitor: &crate::app::MonitorEntry,
+    text_budget: usize,
+) {
+    use crate::app::MonitorStatus;
+
+    let (status_label, status_color) = match monitor.status {
+        MonitorStatus::Running => ("running", theme::RUST_ORANGE),
+        MonitorStatus::Completed => ("completed", Color::Green),
+        MonitorStatus::Stopped => ("stopped", theme::DIM),
+        MonitorStatus::TimedOut => ("timed out", theme::STATUS_WARNING),
+    };
+    let glyph = if monitor.is_running() { "\u{25c9}" } else { "\u{25cd}" };
+    let glyph_color = if monitor.is_running() { theme::RUST_ORANGE } else { theme::DIM };
+    let persistent_suffix = if monitor.persistent { " \u{00B7} persistent" } else { "" };
+
+    let headline = truncate_or_pass(&monitor.description, text_budget.max(8));
+    lines.push(Line::from(vec![
+        Span::raw("  ".to_owned()),
+        Span::styled(glyph.to_owned(), Style::default().fg(glyph_color)),
+        Span::raw(" ".to_owned()),
+        Span::styled(headline, Style::default().add_modifier(Modifier::BOLD)),
+        Span::styled(" \u{00B7} ".to_owned(), Style::default().fg(theme::DIM)),
+        Span::styled(status_label.to_owned(), Style::default().fg(status_color)),
+        Span::styled(persistent_suffix.to_owned(), Style::default().fg(theme::DIM)),
+    ]));
+
+    // Tail lines — show always while running, also when explicitly
+    // expanded. The buffer is bounded at MonitorEntry::OUTPUT_TAIL_MAX.
+    if monitor.output_tail.is_empty() {
+        return;
+    }
+    let show_tail = monitor.is_running() || monitor.expanded_in_inspector;
+    if !show_tail {
+        return;
+    }
+    let last_idx = monitor.output_tail.len().saturating_sub(1);
+    for (i, line) in monitor.output_tail.iter().enumerate() {
+        let connector = if i == last_idx { "  \u{2514} " } else { "  \u{251c} " };
+        let truncated = truncate_or_pass(line, text_budget.max(8));
+        lines.push(Line::from(vec![
+            Span::styled(connector.to_owned(), Style::default().fg(theme::DIM)),
+            Span::styled(truncated, Style::default().fg(theme::DIM)),
+        ]));
+    }
+}
+
+/// Helper: truncate a string to `max_chars` columns, appending a
+/// single `…` ellipsis when the input is longer. Returns the input
+/// unchanged when it already fits.
+fn truncate_or_pass(s: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+    let total = s.chars().count();
+    if total <= max_chars {
+        return s.to_owned();
+    }
+    let keep = max_chars.saturating_sub(1);
+    let mut out: String = s.chars().take(keep).collect();
+    out.push('\u{2026}');
+    out
+}
+
 /// Wrap `s` onto multiple lines so that each piece fits within
 /// `max_chars` columns. Breaks on whitespace where possible; falls
 /// back to hard-cut on long single tokens. Returns an empty `Vec`
@@ -1918,28 +2027,6 @@ mod tests {
     }
 
     #[test]
-    fn processes_section_renders_persistent_monitor_as_single_line() {
-        // Monitor supervisor: same single-line shape. The `persistent`
-        // flag is part of the metadata string; for Monitor rows that
-        // info is conveyed via the suffix when no memory is set, or
-        // dropped when memory takes the suffix slot. Test pins the
-        // memory-wins path.
-        let row = make_row_with_memory(
-            ProcessKind::Monitor,
-            "PR #120 CI watch",
-            "Monitor · running · persistent",
-            4 * 1024 * 1024,
-        );
-        let mut lines = Vec::new();
-        append_processes_section(&mut lines, &collection(vec![row]), 40, 0);
-
-        let row_text = line_text(&lines[2]);
-        // Monitor is wire-matched → spinner glyph (frame 0 = `⠋`).
-        assert!(row_text.starts_with(" \u{280B} PR #120 CI watch"), "headline: {row_text:?}");
-        assert!(row_text.contains("4 MB"), "memory suffix wins: {row_text:?}");
-    }
-
-    #[test]
     fn processes_section_cron_supervisor_uses_metadata_suffix() {
         // Cron rows have no memory_bytes (wire-only registrations).
         // The metadata string IS the useful signal, so the suffix
@@ -1998,19 +2085,17 @@ mod tests {
     }
 
     #[test]
-    fn processes_section_three_kinds_together_renders_blank_between_rows() {
+    fn processes_section_two_kinds_together_renders_blank_between_rows() {
+        // #273 Task 8 retired Monitor from PROCESSES — verify the
+        // Bash + Cron pair still renders with a separating blank
+        // between rows. Monitor rows are now surfaced by the
+        // dedicated MONITORS section instead.
         let rows = vec![
             make_row_with_memory(
                 ProcessKind::BashBackgrounded,
                 "Run tests",
                 "Bash · running",
                 8 * 1024 * 1024,
-            ),
-            make_row_with_memory(
-                ProcessKind::Monitor,
-                "Watch CI",
-                "Monitor · running · persistent",
-                4 * 1024 * 1024,
             ),
             make_process_row(
                 ProcessKind::Cron,
@@ -2023,12 +2108,10 @@ mod tests {
         let mut lines = Vec::new();
         append_processes_section(&mut lines, &collection(rows), 40, 0);
 
-        // header + blank + 3 single-line rows + 2 blanks between
-        // supervisor rows = 2 + 3 + 2 = 7 lines.
-        assert_eq!(lines.len(), 7, "expected 7 rendered lines, got {}", lines.len());
+        // header + blank + 2 single-line rows + 1 blank between = 5 lines.
+        assert_eq!(lines.len(), 5, "expected 5 rendered lines, got {}", lines.len());
         assert!(line_text(&lines[2]).contains("Run tests"));
-        assert!(line_text(&lines[4]).contains("Watch CI"));
-        assert!(line_text(&lines[6]).contains("*/5 * * * *"));
+        assert!(line_text(&lines[4]).contains("*/5 * * * *"));
     }
 
     #[test]
@@ -2101,6 +2184,124 @@ mod tests {
 
         let row_text = line_text(&lines[2]);
         assert!(!row_text.contains("MB"), "expected no memory suffix on Medium tier: {row_text:?}");
+    }
+
+    // ---------------------------------------------------------
+    // #273 Task 8: MONITORS Inspector section.
+    // ---------------------------------------------------------
+
+    fn make_monitor_entry(
+        tool_use_id: &str,
+        description: &str,
+        persistent: bool,
+        status: crate::app::MonitorStatus,
+    ) -> crate::app::MonitorEntry {
+        crate::app::MonitorEntry {
+            tool_use_id: tool_use_id.to_owned(),
+            task_id: Some("task_1".to_owned()),
+            description: description.to_owned(),
+            command: "tail -F app.log".to_owned(),
+            persistent,
+            timeout_ms: 0,
+            status,
+            output_tail: std::collections::VecDeque::new(),
+            expanded_in_inspector: false,
+        }
+    }
+
+    #[test]
+    fn monitors_section_renders_running_row_with_persistent_badge() {
+        let entry =
+            make_monitor_entry("tu", "forge-monitor-test", true, crate::app::MonitorStatus::Running);
+        let mut lines = Vec::new();
+        let text_budget = 40usize;
+        append_monitor_row(&mut lines, &entry, text_budget);
+        let row_text = line_text(&lines[0]);
+        assert!(row_text.starts_with("  \u{25c9}"), "expected fisheye glyph; got {row_text:?}");
+        assert!(row_text.contains("forge-monitor-test"), "headline missing; got {row_text:?}");
+        assert!(row_text.contains("running"), "status badge missing; got {row_text:?}");
+        assert!(row_text.contains("persistent"), "persistent badge missing; got {row_text:?}");
+    }
+
+    #[test]
+    fn monitors_section_renders_stopped_row_with_dim_glyph() {
+        let entry = make_monitor_entry(
+            "tu",
+            "ci-watch",
+            false,
+            crate::app::MonitorStatus::Stopped,
+        );
+        let mut lines = Vec::new();
+        append_monitor_row(&mut lines, &entry, 40);
+        let row_text = line_text(&lines[0]);
+        // Terminal glyph (◍ U+25CD) for stopped entries.
+        assert!(row_text.contains("\u{25cd}"), "expected stopped glyph; got {row_text:?}");
+        assert!(row_text.contains("stopped"), "stopped badge missing; got {row_text:?}");
+        // Non-persistent has no `persistent` badge.
+        assert!(!row_text.contains("persistent"));
+    }
+
+    #[test]
+    fn monitors_section_renders_output_tail_for_running_entry() {
+        let mut entry = make_monitor_entry(
+            "tu",
+            "forge-monitor-test",
+            true,
+            crate::app::MonitorStatus::Running,
+        );
+        entry.output_tail.push_back("stream started".to_owned());
+        entry.output_tail.push_back("first event landed".to_owned());
+        let mut lines = Vec::new();
+        append_monitor_row(&mut lines, &entry, 40);
+        assert_eq!(lines.len(), 3, "headline + 2 tail rows; got {}", lines.len());
+        assert!(line_text(&lines[1]).contains("stream started"));
+        assert!(line_text(&lines[2]).contains("first event landed"));
+    }
+
+    #[test]
+    fn monitors_section_suppresses_tail_for_collapsed_stopped_entry() {
+        let mut entry = make_monitor_entry(
+            "tu",
+            "ci-watch",
+            false,
+            crate::app::MonitorStatus::Stopped,
+        );
+        entry.output_tail.push_back("stream ended".to_owned());
+        let mut lines = Vec::new();
+        append_monitor_row(&mut lines, &entry, 40);
+        // Stopped + not expanded → headline only.
+        assert_eq!(lines.len(), 1);
+    }
+
+    #[test]
+    fn monitors_section_shows_tail_for_expanded_stopped_entry() {
+        let mut entry = make_monitor_entry(
+            "tu",
+            "ci-watch",
+            false,
+            crate::app::MonitorStatus::Stopped,
+        );
+        entry.output_tail.push_back("stream ended".to_owned());
+        entry.expanded_in_inspector = true;
+        let mut lines = Vec::new();
+        append_monitor_row(&mut lines, &entry, 40);
+        // Expanded → headline + 1 tail row.
+        assert_eq!(lines.len(), 2);
+        assert!(line_text(&lines[1]).contains("stream ended"));
+    }
+
+    #[test]
+    fn truncate_or_pass_returns_input_when_under_budget() {
+        assert_eq!(truncate_or_pass("abc", 10), "abc");
+    }
+
+    #[test]
+    fn truncate_or_pass_appends_ellipsis_when_over_budget() {
+        let out = truncate_or_pass("abcdefghij", 5);
+        // 4 chars + 1 ellipsis = 5 columns; not the full input.
+        assert_eq!(out.chars().count(), 5);
+        assert!(out.ends_with('\u{2026}'));
+        assert!(out.starts_with("abcd"));
     }
 
     #[test]

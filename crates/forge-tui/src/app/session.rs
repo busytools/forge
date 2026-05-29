@@ -15,7 +15,7 @@ use crate::app::state::cache_metrics::CacheMetrics;
 use crate::app::state::messages::ChatMessage;
 use crate::app::state::render_budget::{RenderCacheEvictionKey, RenderCacheSlotState};
 use crate::app::state::types::{
-    HistoryRetentionPolicy, HistoryRetentionStats, LoginHint, McpState, ModeState,
+    HistoryRetentionPolicy, HistoryRetentionStats, LoginHint, McpState, ModeState, MonitorEntry,
     PasteSessionState, PendingCommandAck, RecentSessionInfo, SelectionState, SessionUsageState,
     StopHookSummaryState, TodoItem, ToolCallScope, UsageState,
 };
@@ -289,6 +289,16 @@ pub struct UiSession {
     /// surface (#273). Click `[▶ expand]` toggles the entry.
     pub stop_hook_summary_expanded: std::collections::HashMap<usize, bool>,
 
+    /// #273 Task 8: in-flight Monitor entries surfaced as the
+    /// Inspector MONITORS section + the chat one-liner notices.
+    /// Populated when a `Monitor` tool_use enters the assistant
+    /// stream; mutated on terminal lifecycle events. The MONITORS
+    /// section drops out entirely (`append_monitors_section`
+    /// early-returns) when no entry is `Running`. Output lines
+    /// arrive through the tail-feed wiring and capped at
+    /// `MonitorEntry::OUTPUT_TAIL_MAX` per entry.
+    pub monitors: Vec<MonitorEntry>,
+
     // ---- Git diff snapshot (Inspector GIT section) ----
     /// Latest poll result. `None` until the first scan completes
     /// (post-Connect). Replaces the retired `GitContextWatcher`
@@ -465,6 +475,7 @@ impl Default for UiSession {
             last_turn_duration_ms: None,
             last_stop_hook_summary: None,
             stop_hook_summary_expanded: std::collections::HashMap::default(),
+            monitors: Vec::default(),
             git_diff_snapshot: None,
             git_diff_generation: 0,
             git_diff_scan_in_flight: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),

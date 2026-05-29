@@ -20,11 +20,11 @@ pub use messages::{
 pub use tool_call_info::{TerminalSnapshotMode, ToolCallInfo, is_execute_tool_name};
 pub use types::{
     AppStatus, ExtraUsage, HelpView, HistoryRetentionPolicy, HistoryRetentionStats, LoginHint,
-    McpState, MessageUsage, ModeInfo, ModeState, PasteSessionState, PendingCommandAck,
-    RecentSessionInfo, RenderCacheBudget, ScrollbarDragState, SelectionKind, SelectionPoint,
-    SelectionState, SessionTurnState, SessionUsageState, StopHookEntry, StopHookSummaryState,
-    TodoItem, TodoStatus, ToolCallScope, UsageSnapshot, UsageSourceKind, UsageSourceMode,
-    UsageState, UsageWindow,
+    McpState, MessageUsage, ModeInfo, ModeState, MonitorEntry, MonitorStatus, PasteSessionState,
+    PendingCommandAck, RecentSessionInfo, RenderCacheBudget, ScrollbarDragState, SelectionKind,
+    SelectionPoint, SelectionState, SessionTurnState, SessionUsageState, StopHookEntry,
+    StopHookSummaryState, TodoItem, TodoStatus, ToolCallScope, UsageSnapshot, UsageSourceKind,
+    UsageSourceMode, UsageState, UsageWindow,
 };
 pub use viewport::{
     ChatViewport, LayoutInvalidation, LayoutInvalidation as InvalidationLevel,
@@ -1638,6 +1638,124 @@ impl App {
         self.active_session()
             .and_then(|s| s.stop_hook_summary_expanded.get(&message_idx).copied())
             .unwrap_or(false)
+    }
+
+    /// #273 Task 8: Active session's MONITOR entries (chat notice +
+    /// Inspector MONITORS section both read this).
+    pub fn monitors(&self) -> &[crate::app::state::types::MonitorEntry] {
+        self.active_session().map_or(&[], |s| s.monitors.as_slice())
+    }
+
+    /// #273 Task 8: Mutable accessor for the active session's
+    /// MONITORS list. Auto-creates the pre-Connect bucket if missing.
+    pub(crate) fn monitors_mut(&mut self) -> &mut Vec<crate::app::state::types::MonitorEntry> {
+        &mut self.active_bucket_mut().monitors
+    }
+
+    /// #273 Task 8: Insert / update a `MonitorEntry` based on a fresh
+    /// `Monitor` tool_use. Idempotent: a matching `tool_use_id`
+    /// refreshes the existing entry's input fields without touching
+    /// `status` or `output_tail`. Returns true when a new entry was
+    /// pushed.
+    pub fn upsert_monitor_from_tool_input(
+        &mut self,
+        tool_use_id: &str,
+        description: String,
+        command: String,
+        persistent: bool,
+        timeout_ms: u64,
+    ) -> bool {
+        let monitors = self.monitors_mut();
+        if let Some(existing) = monitors.iter_mut().find(|m| m.tool_use_id == tool_use_id) {
+            existing.description = description;
+            existing.command = command;
+            existing.persistent = persistent;
+            existing.timeout_ms = timeout_ms;
+            return false;
+        }
+        monitors.push(crate::app::state::types::MonitorEntry {
+            tool_use_id: tool_use_id.to_owned(),
+            task_id: None,
+            description,
+            command,
+            persistent,
+            timeout_ms,
+            status: crate::app::state::types::MonitorStatus::Running,
+            output_tail: std::collections::VecDeque::new(),
+            expanded_in_inspector: false,
+        });
+        true
+    }
+
+    /// #273 Task 8: Stamp the `task_id` discovered from the Monitor's
+    /// `tool_use_result` (or from `TaskStarted` mapping). No-op when
+    /// no matching entry exists or the entry already has a task_id.
+    pub fn stamp_monitor_task_id(&mut self, tool_use_id: &str, task_id: String) {
+        if let Some(entry) =
+            self.monitors_mut().iter_mut().find(|m| m.tool_use_id == tool_use_id)
+            && entry.task_id.is_none()
+        {
+            entry.task_id = Some(task_id);
+        }
+    }
+
+    /// #273 Task 8: Transition the matching Monitor entry to a
+    /// terminal status. Once any entry transitions, the all-completed
+    /// predicate is rechecked: when no entry is still `Running`, the
+    /// full `monitors` Vec is drained so the MONITORS Inspector
+    /// section drops out entirely (matches the TODOS section's
+    /// auto-clear shape).
+    pub fn set_monitor_status_by_tool_use_id(
+        &mut self,
+        tool_use_id: &str,
+        status: crate::app::state::types::MonitorStatus,
+    ) {
+        if let Some(entry) =
+            self.monitors_mut().iter_mut().find(|m| m.tool_use_id == tool_use_id)
+        {
+            entry.status = status;
+        }
+        self.clear_monitors_if_all_terminal();
+    }
+
+    /// #273 Task 8: Same as `set_monitor_status_by_tool_use_id` but
+    /// keyed by the wire `task_id`. Used by lifecycle event handlers
+    /// that only carry the task_id (e.g. wire `TaskUpdated`).
+    pub fn set_monitor_status_by_task_id(
+        &mut self,
+        task_id: &str,
+        status: crate::app::state::types::MonitorStatus,
+    ) {
+        if let Some(entry) = self
+            .monitors_mut()
+            .iter_mut()
+            .find(|m| m.task_id.as_deref() == Some(task_id))
+        {
+            entry.status = status;
+        }
+        self.clear_monitors_if_all_terminal();
+    }
+
+    /// #273 Task 8: Push a single output line into the matching
+    /// monitor's `output_tail`. No-op if no entry matches.
+    pub fn push_monitor_output_by_task_id(&mut self, task_id: &str, line: String) {
+        if let Some(entry) = self
+            .monitors_mut()
+            .iter_mut()
+            .find(|m| m.task_id.as_deref() == Some(task_id))
+        {
+            entry.push_output(line);
+        }
+    }
+
+    /// #273 Task 8: Drain the MONITORS list once every entry has
+    /// transitioned out of `Running`. Matches the TODOs all-completed
+    /// auto-clear shape so the Inspector section drops out entirely.
+    fn clear_monitors_if_all_terminal(&mut self) {
+        let monitors = self.monitors_mut();
+        if !monitors.is_empty() && monitors.iter().all(|m| !m.is_running()) {
+            monitors.clear();
+        }
     }
 
     /// Borrow the active session's render-cache slot grid.

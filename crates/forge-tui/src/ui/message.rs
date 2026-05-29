@@ -548,6 +548,26 @@ fn append_assistant_tool_block(
     // `collapsed_override` wins, otherwise the global default.
     // Click-to-toggle on peer rows currently piggybacks on the
     // existing tool-call row hit-test in mouse.rs.
+    // #273 Task 8 / 9: collapse Monitor + Workflow tool cards to a
+    // single DIM one-liner. These tool calls carry their detail in
+    // the Inspector MONITORS / WORKFLOWS sections; the chat surface
+    // only needs the start/stop signal. Falls through to the
+    // standard tool card when the raw_input is missing or malformed.
+    if let Some(lines) = render_lifecycle_one_liner(tc) {
+        if !state.prev_was_tool && state.has_body_content {
+            layout.push_blank();
+        }
+        let y_in_msg = layout.height;
+        let height = rendered_lines_height(&lines, render_context.width);
+        layout.push_wrapped_lines(lines, render_context.width);
+        tc.last_measured_y_in_msg = y_in_msg;
+        tc.last_measured_height = height;
+        tc.last_measured_width = render_context.width;
+        state.has_body_content = true;
+        state.has_visible_content = true;
+        state.prev_was_tool = true;
+        return;
+    }
     if let Some(kind) = peer_block::detect_outbound(tc) {
         if !state.prev_was_tool && state.has_body_content {
             layout.push_blank();
@@ -624,6 +644,86 @@ fn trailing_gap_for_text_like_block(
     trailing_blank_lines: usize,
 ) -> usize {
     if !has_visible_content && rendered_height == 0 { 0 } else { trailing_blank_lines }
+}
+
+/// #273 Tasks 8 + 9: collapse Monitor / Workflow tool_use cards to a
+/// single DIM one-liner. Returns the rendered lines when the tool is
+/// Monitor or Workflow AND has a parseable input; otherwise `None`
+/// (caller falls through to the standard tool-card render).
+///
+/// Render shapes:
+/// - Monitor (running): `◉ Monitor started · <description> (persistent)`
+/// - Monitor (running, non-persistent): `◉ Monitor started · <description>`
+/// - Monitor (terminal): `◉ Monitor stopped · <description>` (or
+///   `· timed out` when killed via timeout)
+/// - Workflow (running): `◆ Workflow started · <meta.name | "Workflow">`
+/// - Workflow (terminal): `◆ Workflow done · <meta.name | "Workflow">`
+fn render_lifecycle_one_liner(tc: &crate::app::ToolCallInfo) -> Option<Vec<Line<'static>>> {
+    use forge_primitives::ToolCallStatus;
+    match tc.sdk_tool_name.as_str() {
+        "Monitor" => {
+            let parsed = tc
+                .raw_input
+                .as_ref()
+                .and_then(forge_workspace::user_interaction::parse_monitor_input)?;
+            let is_terminal = matches!(
+                tc.status,
+                ToolCallStatus::Completed | ToolCallStatus::Failed | ToolCallStatus::Killed
+            );
+            let suffix = if parsed.persistent { " (persistent)" } else { "" };
+            let text = if is_terminal {
+                format!("\u{25c9} Monitor stopped \u{b7} {}{suffix}", parsed.description)
+            } else {
+                format!("\u{25c9} Monitor started \u{b7} {}{suffix}", parsed.description)
+            };
+            Some(vec![Line::from(Span::styled(text, Style::default().fg(theme::DIM)))])
+        }
+        "Workflow" => {
+            let parsed = tc
+                .raw_input
+                .as_ref()
+                .and_then(forge_workspace::user_interaction::parse_workflow_input)?;
+            let meta_name = workflow_meta_name(&parsed.script);
+            let is_terminal = matches!(
+                tc.status,
+                ToolCallStatus::Completed | ToolCallStatus::Failed | ToolCallStatus::Killed
+            );
+            let text = if is_terminal {
+                format!("\u{25c6} Workflow done \u{b7} {meta_name}")
+            } else {
+                format!("\u{25c6} Workflow started \u{b7} {meta_name}")
+            };
+            Some(vec![Line::from(Span::styled(text, Style::default().fg(theme::DIM)))])
+        }
+        _ => None,
+    }
+}
+
+/// #273 Task 9: extract the `name` field from a workflow `script`'s
+/// `export const meta = { name: '...' }` block. Falls back to the
+/// literal `"Workflow"` label when the block isn't present or
+/// doesn't carry a name. Conservative substring-based parser
+/// matches both single-quoted and double-quoted strings.
+pub(crate) fn workflow_meta_name(script: &str) -> String {
+    fn extract(script: &str, prefix: &str) -> Option<String> {
+        let start = script.find(prefix)?;
+        let after = &script[start + prefix.len()..];
+        let trimmed = after.trim_start();
+        let quote = trimmed.chars().next()?;
+        if quote != '\'' && quote != '"' {
+            return None;
+        }
+        let body = &trimmed[quote.len_utf8()..];
+        let end = body.find(quote)?;
+        let name = body[..end].trim();
+        if name.is_empty() { None } else { Some(name.to_owned()) }
+    }
+    for prefix in ["name:", "name :"] {
+        if let Some(name) = extract(script, prefix) {
+            return name;
+        }
+    }
+    "Workflow".to_owned()
 }
 
 fn append_system_blocks(msg: &mut ChatMessage, width: u16, layout: &mut MessageLayout) {
@@ -3605,5 +3705,100 @@ mod tests {
             expanded_height > collapsed_height,
             "expanded ({expanded_height}) must be taller than collapsed ({collapsed_height})",
         );
+    }
+
+    // ----------------------------------------------------------------
+    // #273 Task 8 / 9: Monitor + Workflow lifecycle one-liner render.
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn monitor_running_renders_started_notice_with_persistent_suffix() {
+        let mut tc = make_tool_call_info(
+            "toolu_mon",
+            "Monitor",
+            crate::agent::model::ToolCallStatus::InProgress,
+            "",
+        );
+        tc.raw_input = Some(serde_json::json!({
+            "description": "forge-monitor-test",
+            "command": "tail -F app.log",
+            "persistent": true,
+            "timeout_ms": 0,
+        }));
+        let lines = render_lifecycle_one_liner(&tc).expect("Monitor produces lines");
+        assert_eq!(lines.len(), 1);
+        let rendered: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            rendered.contains("\u{25c9} Monitor started \u{00b7} forge-monitor-test (persistent)"),
+            "got {rendered:?}",
+        );
+    }
+
+    #[test]
+    fn monitor_completed_renders_stopped_notice() {
+        let mut tc = make_tool_call_info(
+            "toolu_mon",
+            "Monitor",
+            crate::agent::model::ToolCallStatus::Completed,
+            "",
+        );
+        tc.raw_input = Some(serde_json::json!({
+            "description": "ci-watch",
+            "command": "gh run watch 1",
+            "persistent": false,
+            "timeout_ms": 60000,
+        }));
+        let lines = render_lifecycle_one_liner(&tc).expect("Monitor produces lines");
+        let rendered: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            rendered.contains("\u{25c9} Monitor stopped \u{00b7} ci-watch"),
+            "got {rendered:?}",
+        );
+        // Non-persistent has no `(persistent)` suffix.
+        assert!(!rendered.contains("(persistent)"));
+    }
+
+    #[test]
+    fn monitor_with_malformed_input_falls_through_to_default_render() {
+        // Missing required `command` field — parser returns None,
+        // helper returns None so the caller falls through to the
+        // standard tool-card render path.
+        let mut tc = make_tool_call_info(
+            "toolu_mon",
+            "Monitor",
+            crate::agent::model::ToolCallStatus::InProgress,
+            "",
+        );
+        tc.raw_input = Some(serde_json::json!({ "description": "x" }));
+        assert!(render_lifecycle_one_liner(&tc).is_none());
+    }
+
+    #[test]
+    fn workflow_meta_name_extracts_from_script_block() {
+        let script = "export const meta = {\n  name: 'minimal-ping',\n  description: 'sanity'\n}\n\nphase('Ping')";
+        assert_eq!(workflow_meta_name(script), "minimal-ping");
+    }
+
+    #[test]
+    fn workflow_meta_name_handles_double_quoted_name() {
+        let script = "export const meta = { name: \"snapshot-runner\" }";
+        assert_eq!(workflow_meta_name(script), "snapshot-runner");
+    }
+
+    #[test]
+    fn workflow_meta_name_falls_back_when_block_absent() {
+        let script = "await agent('do thing')";
+        assert_eq!(workflow_meta_name(script), "Workflow");
+    }
+
+    #[test]
+    fn non_lifecycle_tool_returns_none() {
+        let tc = make_tool_call_info(
+            "toolu_x",
+            "Bash",
+            crate::agent::model::ToolCallStatus::InProgress,
+            "",
+        );
+        assert!(render_lifecycle_one_liner(&tc).is_none());
     }
 }

@@ -1009,6 +1009,10 @@ fn handle_task_started(app: &mut App, msg: Message) {
             // patch lands.
             ts.alive_task_ids.insert(task_id_owned);
         });
+        // #273 Task 8: stamp the wire-level task_id on the matching
+        // MonitorEntry so subsequent `task_notification` / `task_updated`
+        // events (keyed by task_id) can route to the right row.
+        app.stamp_monitor_task_id(id, task_id);
     }
 }
 
@@ -1072,6 +1076,21 @@ fn handle_task_updated(app: &mut App, msg: Message) {
     // the task in the alive set.
     if matches!(wire_status, "completed" | "failed" | "killed" | "stopped") {
         let task_id_owned = task_id;
+        // #273 Task 8: transition the matching MonitorEntry into a
+        // terminal status mirroring the wire vocabulary. The
+        // `set_monitor_status_by_task_id` helper handles the
+        // all-completed clear so the MONITORS Inspector section
+        // drops out when no Running entry remains.
+        let monitor_status = match wire_status {
+            "completed" => Some(crate::app::state::types::MonitorStatus::Completed),
+            "failed" | "killed" | "stopped" => {
+                Some(crate::app::state::types::MonitorStatus::Stopped)
+            }
+            _ => None,
+        };
+        if let Some(status) = monitor_status {
+            app.set_monitor_status_by_task_id(&task_id_owned, status);
+        }
         let _: () = app.with_turn_state_mut(|ts| {
             ts.alive_task_ids.remove(&task_id_owned);
         });
@@ -1096,10 +1115,22 @@ fn map_task_updated_status_to_tool_status(wire_status: &str) -> forge_primitives
 }
 
 fn handle_task_notification(app: &mut App, msg: Message) {
-    let Message::TaskNotification { tool_use_id, summary, .. } = msg else { return };
+    let Message::TaskNotification { tool_use_id, task_id, summary, .. } = msg else { return };
     let id = tool_use_id.as_deref().unwrap_or("");
     if !id.is_empty() {
         apply_tool_summary_update(app, id, &summary);
+    }
+    // #273 Task 8: Monitor's per-event signal arrives here. The
+    // wire emits one `system/task_notification` per Monitor lifecycle
+    // event ("stream ended", "timeout", interim summaries) with the
+    // `summary` field carrying the human-readable line. Push onto
+    // the matching MonitorEntry's `output_tail` ring; status
+    // transitions still flow through `TaskUpdated` (terminal
+    // `completed` / `failed` / `killed` / `stopped` → terminal
+    // MonitorStatus). Raw bash stdout lives in `output_file` and is
+    // intentionally out of scope per the captured wire's design.
+    if !task_id.is_empty() && !summary.trim().is_empty() {
+        app.push_monitor_output_by_task_id(&task_id, summary.clone());
     }
 }
 

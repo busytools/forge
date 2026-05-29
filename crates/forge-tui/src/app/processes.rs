@@ -19,7 +19,6 @@
 //! since there's nothing to OS-walk for them.
 
 use std::collections::HashSet;
-use std::fmt::Write;
 
 use forge_workspace::env::processes::{
     ProcessEntry, ProcessSnapshot, process_cmdline_matches_tool_input,
@@ -97,13 +96,13 @@ pub struct ProcessRow {
 pub enum ProcessKind {
     /// OS process matched against a wire-tracked backgrounded `Bash`.
     BashBackgrounded,
-    /// OS process matched against a wire-tracked `Monitor`.
-    Monitor,
     /// `CronCreate` registration — wire-only, no OS process.
     Cron,
     /// OS process with no matching wire tool call (foreground Bash,
     /// grandchildren, anything claude's tool registry doesn't know
-    /// about).
+    /// about). #273 Task 8: Monitor tool_calls also fall through to
+    /// this variant — their authoritative surface is now the
+    /// dedicated MONITORS Inspector section.
     Process,
     /// Synthetic `+N more` row emitted when a single parent has more
     /// children than [`MAX_CHILDREN_PER_PARENT`] allows. Renders as
@@ -352,7 +351,14 @@ fn build_row_for_entry(entry: &ProcessEntry, wire_alive: &[&ToolCallInfo]) -> Pr
         !cmd.is_empty() && process_cmdline_matches_tool_input(&entry.command, cmd)
     });
     match matched {
-        Some(tc) if is_monitor_tool_name(&tc.sdk_tool_name) => enriched_monitor_row(tc, entry),
+        // #273 Task 8: Monitor's authoritative surface is the
+        // dedicated MONITORS Inspector section. The PROCESSES row
+        // no longer overlays the Monitor description on top of a
+        // matching OS process — that produced double-surfaces (the
+        // same description appeared in both MONITORS and PROCESSES).
+        // The OS process still surfaces via the generic-OS fallback
+        // so the user can still see the underlying work.
+        Some(tc) if is_monitor_tool_name(&tc.sdk_tool_name) => generic_os_row(entry),
         Some(tc) if is_execute_tool_name(&tc.sdk_tool_name) => enriched_bash_row(tc, entry),
         // Matched something we don't have a special kind for
         // (defensive — shouldn't fire today). Fall through to
@@ -411,38 +417,6 @@ fn enriched_bash_row(tc: &ToolCallInfo, entry: &ProcessEntry) -> ProcessRow {
         // wrapper `/bin/zsh -c -l 'cargo …'` is noise.
         detail: None,
         metadata: "Bash · running".to_owned(),
-        status: ToolCallStatus::InProgress,
-        memory_bytes: Some(entry.memory_bytes),
-        depth: 0,
-        is_last_sibling: true,
-        ancestor_has_more: Vec::new(),
-    }
-}
-
-/// OS process matched to a wire-tracked `Monitor`. Persistent /
-/// timeout flags carry over from the tool input.
-fn enriched_monitor_row(tc: &ToolCallInfo, entry: &ProcessEntry) -> ProcessRow {
-    let raw_input = tc.raw_input.as_ref();
-    let description = read_str_field(raw_input, "description");
-    let persistent = read_bool_field(raw_input, "persistent").unwrap_or(false);
-    let timeout_ms = read_u64_field(raw_input, "timeout_ms");
-
-    let headline = if description.is_empty() { entry.name.clone() } else { description.to_owned() };
-
-    let mut metadata = String::from("Monitor · running");
-    if persistent {
-        metadata.push_str(" · persistent");
-    } else if let Some(ms) = timeout_ms {
-        let secs = ms / 1000;
-        let _ = write!(metadata, " · {secs}s timeout");
-    }
-
-    ProcessRow {
-        kind: ProcessKind::Monitor,
-        headline,
-        // No cmdline continuation; the description carries intent.
-        detail: None,
-        metadata,
         status: ToolCallStatus::InProgress,
         memory_bytes: Some(entry.memory_bytes),
         depth: 0,
@@ -550,10 +524,6 @@ fn read_str_field<'a>(raw_input: Option<&'a Value>, key: &str) -> &'a str {
 
 fn read_bool_field(raw_input: Option<&Value>, key: &str) -> Option<bool> {
     raw_input.and_then(|v| v.as_object()).and_then(|o| o.get(key)).and_then(Value::as_bool)
-}
-
-fn read_u64_field(raw_input: Option<&Value>, key: &str) -> Option<u64> {
-    raw_input.and_then(|v| v.as_object()).and_then(|o| o.get(key)).and_then(Value::as_u64)
 }
 
 #[cfg(test)]
@@ -691,7 +661,13 @@ mod tests {
     }
 
     #[test]
-    fn rows_from_os_snapshot_uses_monitor_kind_when_wire_matches_monitor() {
+    fn rows_from_os_snapshot_falls_through_to_generic_when_wire_matches_monitor() {
+        // #273 Task 8: Monitor's authoritative surface moved to the
+        // dedicated MONITORS Inspector section. PROCESSES no longer
+        // overlays Monitor descriptions on the matched OS row; the
+        // row falls through to the generic-OS shape so the operator
+        // still sees the underlying work without the double-surface
+        // (description repeated in both MONITORS and PROCESSES).
         let tc = fake_tool_call_info(
             "toolu_2",
             "Monitor",
@@ -706,9 +682,9 @@ mod tests {
         let snapshot =
             ProcessSnapshot { processes: vec![entry], scanned_at: std::time::SystemTime::now() };
         let rows = rows_from_os_snapshot(&snapshot, &tcs[..]);
-        assert_eq!(rows[0].kind, ProcessKind::Monitor);
-        assert_eq!(rows[0].headline, "Watch CI run");
-        assert!(rows[0].metadata.contains("persistent"));
+        assert_eq!(rows[0].kind, ProcessKind::Process);
+        assert_eq!(rows[0].headline, "gh run watch 12345 --exit-status");
+        assert!(!rows[0].metadata.contains("persistent"));
     }
 
     /// Helper: build a multi-entry snapshot expressing a small

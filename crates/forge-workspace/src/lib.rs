@@ -141,6 +141,14 @@ pub mod tooling {
 pub mod translate {
     pub use forge_agent::translate::*;
 }
+/// #273 Task 7 / 8 / 9: pass-through for the agent's typed
+/// tool-input parsers (`AskUserQuestion`, `Monitor`, `Workflow`).
+/// The TUI's tool-call event handlers consume these directly when
+/// surfacing the chat one-liner + Inspector entry for the new CLI
+/// 2.1.156 surfaces.
+pub mod user_interaction {
+    pub use forge_agent::user_interaction::*;
+}
 pub mod userdata {
     pub use forge_agent::userdata::*;
 }
