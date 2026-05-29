@@ -24,9 +24,9 @@ const SCROLLBAR_MIN_THUMB_HEIGHT: usize = 1;
 /// Visual cap for the chat scrollbar thumb so a short scrollback
 /// doesn't render a thumb that takes up most of the rail. The raw
 /// `viewport² / content` formula grows the thumb as content shrinks
-/// - fine in theory (proportional indicator), distracting in
+/// (fine in theory as a proportional indicator, distracting in
 /// practice for a chat surface that briefly overflows by a handful
-/// of rows. Matches the Inspector pane's `INSPECTOR_THUMB_MAX_CELLS`
+/// of rows). Matches the Inspector pane's `INSPECTOR_THUMB_MAX_CELLS`
 /// cap so both surfaces read with the same visual weight.
 const SCROLLBAR_MAX_THUMB_HEIGHT: usize = 1;
 const SCROLLBAR_TOP_EASE: f32 = 0.35;
