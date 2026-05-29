@@ -290,6 +290,21 @@ fn handle_user(app: &mut App, msg: Message) {
     let Message::User { message, parent_tool_use_id, tool_use_result, .. } = msg else {
         return;
     };
+    // #275 Bug 1: a genuine new user turn invalidates the previous
+    // turn's thinking-token tally. Without this clear, a multi-tool-call
+    // turn that ends without a `Result` (in-flight when the next user
+    // turn lands) leaves `latest_thinking_tokens` holding the prior
+    // cumulative value (e.g. 150); the first `thinking_tokens` event of
+    // the new turn arrives with a reset cumulative (50) and the chip
+    // drops 150 -> 50, which reads as the chip "going up and down".
+    // Tool-result echoes (`tool_use_result.is_some()`) are mid-turn
+    // continuations of the assistant's tool-call loop, not new user
+    // turns - leave the count alone there. The existing Result-side
+    // clear in `handle_result` covers the clean turn-end case; this
+    // user-side clear is additive for the in-flight case.
+    if tool_use_result.is_none() {
+        app.set_latest_thinking_tokens(None);
+    }
     walk_user_tool_results(app, &message.content);
     // Peer-coordination user-turn echoes (#114). `Command::Prompt`
     // dispatched via `Workspace::deliver_peer_prompt` injects the
@@ -1585,5 +1600,69 @@ mod queued_command_tests {
         let prompt = json!({"weird": "shape"});
         let out = extract_queued_command_text(&prompt);
         assert!(out.contains("weird"));
+    }
+}
+
+#[cfg(test)]
+mod thinking_tokens_clear_on_user_tests {
+    //! #275 Bug 1: a new genuine user turn must clear the
+    //! `latest_thinking_tokens` carry-over from the prior turn so the
+    //! chip never reads stale 150 when the new turn opens with its
+    //! reset cumulative 50.
+    use super::handle_user;
+    use crate::app::App;
+    use forge_primitives::{ContentBlock, Message, UserEnvelope};
+
+    fn user_prompt(text: &str) -> Message {
+        Message::User {
+            message: UserEnvelope {
+                role: "user".to_owned(),
+                content: vec![ContentBlock::Text { text: text.to_owned() }],
+            },
+            session_id: String::new(),
+            parent_tool_use_id: None,
+            uuid: None,
+            tool_use_result: None,
+        }
+    }
+
+    fn tool_result_echo() -> Message {
+        Message::User {
+            message: UserEnvelope { role: "user".to_owned(), content: Vec::new() },
+            session_id: String::new(),
+            parent_tool_use_id: Some("toolu_test".to_owned()),
+            uuid: None,
+            // Non-null tool_use_result marks this as a mid-turn
+            // tool-result echo, NOT a genuine user prompt.
+            tool_use_result: Some(serde_json::json!({})),
+        }
+    }
+
+    #[test]
+    fn genuine_user_prompt_clears_stale_thinking_tokens() {
+        let mut app = App::test_default();
+        app.set_latest_thinking_tokens(Some(150));
+        handle_user(&mut app, user_prompt("next prompt"));
+        assert_eq!(
+            app.latest_thinking_tokens(),
+            None,
+            "real user turn must clear the prior turn's carry-over",
+        );
+    }
+
+    #[test]
+    fn tool_result_echo_preserves_thinking_tokens() {
+        // Tool-result echoes are intra-turn continuations of the
+        // assistant's tool-call loop. They share the same
+        // accumulating thinking_tokens budget; clearing on them
+        // would drop the chip in the middle of an active turn.
+        let mut app = App::test_default();
+        app.set_latest_thinking_tokens(Some(150));
+        handle_user(&mut app, tool_result_echo());
+        assert_eq!(
+            app.latest_thinking_tokens(),
+            Some(150),
+            "tool-result echo must NOT clear the active turn's count",
+        );
     }
 }
