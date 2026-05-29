@@ -3,8 +3,8 @@
 //! Inspector's MONITORS tail.
 //!
 //! The CLI's local-bash Monitor flavour streams the command's stdout
-//! to a file on disk (path carried via `task_notification.output_file`
-//! - confirmed in
+//! to a file on disk (path carried via `task_notification.output_file`,
+//! confirmed in
 //! `~/Projects/forge/.claude/skills/claude-cli-upgrade/reference-captures/monitor.jsonl`)
 //! rather than over the wire. Without reading that file, the tail
 //! only ever surfaces the "Monitor X stream ended" summary line.
