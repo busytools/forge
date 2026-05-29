@@ -1106,18 +1106,18 @@ fn append_tasks_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
     // Blank between header and first item.
     lines.push(Line::default());
 
-    // Item rendering budget: full width minus the 2-col left indent,
-    // the 1-col glyph, the 1-col space after the glyph, AND a 2-col
-    // right gutter so truncated `...` items don't butt up against the
-    // pane edge. Continuation lines for the wrapped in-progress item
-    // indent under the text column (start col 5 from the pane's x=0).
-    // Right-gutter reservation here mirrors the GIT section's
-    // `...stats column +  PANE_PAD` math so both sections honour the
-    // same visual margin.
-    let glyph_indent = PANE_PAD + 2; // "  " + glyph + " "
-    let text_budget = usize::from(width)
-        .saturating_sub(usize::from(glyph_indent))
-        .saturating_sub(usize::from(PANE_PAD));
+    // #275 Bug 4 / Task 5: chrome accounting routed through the
+    // single `row_text_budget` helper so every inspector section
+    // honours the same 1-col right gutter (TASKS' convention).
+    // Item chrome: 1-col left indent + glyph (1) + space (1) +
+    // 1-col right gutter = 4 cols total. Continuation lines for
+    // wrapped in-progress items indent under the text column
+    // (start col 3 from the pane's x=0) but pay the same chrome
+    // budget; that's by design so wrapped rows have the same
+    // visual right edge as the headline.
+    let glyph_indent = PANE_PAD + 2;
+    let chrome_chars = usize::from(glyph_indent) + usize::from(PANE_PAD);
+    let text_budget = row_text_budget(usize::from(width), chrome_chars);
 
     // Visibility tiering: show as much as fits within TASKS_MAX (5).
     //
@@ -1264,13 +1264,9 @@ fn append_monitors_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16
     )));
     lines.push(Line::default());
 
-    let glyph_indent = PANE_PAD + 2;
-    let text_budget = usize::from(width)
-        .saturating_sub(usize::from(glyph_indent))
-        .saturating_sub(usize::from(PANE_PAD));
-
+    let inner_width = usize::from(width);
     for monitor in monitors {
-        append_monitor_row(lines, monitor, text_budget);
+        append_monitor_row(lines, monitor, inner_width);
     }
 }
 
@@ -1281,7 +1277,7 @@ fn append_monitors_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16
 fn append_monitor_row(
     lines: &mut Vec<Line<'static>>,
     monitor: &crate::app::MonitorEntry,
-    text_budget: usize,
+    inner_width: usize,
 ) {
     use crate::app::MonitorStatus;
 
@@ -1295,9 +1291,24 @@ fn append_monitor_row(
     let glyph_color = if monitor.is_running() { theme::RUST_ORANGE } else { theme::DIM };
     let persistent_suffix = if monitor.persistent { " \u{00B7} persistent" } else { "" };
 
-    let headline = truncate_or_pass(&monitor.description, text_budget.max(8));
+    // #275 Bug 4: chrome accumulator for the header row. The status
+    // badge + persistent suffix are appended AFTER the truncated
+    // headline, so the budget must count them up-front. Without this
+    // accounting the badge overflows the pane and ratatui clips
+    // it - which read as "no status badge ever appears" to the
+    // user.
+    let header_chrome = usize::from(PANE_PAD)           // left indent (matches TASKS)
+        + 1                                              // glyph cell
+        + 1                                              // space after glyph
+        + 3                                              // " · " separator
+        + status_label.chars().count()                   // status badge text
+        + persistent_suffix.chars().count()              // optional " · persistent"
+        + usize::from(PANE_PAD);                         // 1-col right gutter
+    let header_budget = row_text_budget(inner_width, header_chrome);
+
+    let headline = truncate_or_pass(&monitor.description, header_budget);
     lines.push(Line::from(vec![
-        Span::raw("  ".to_owned()),
+        Span::raw(" ".repeat(usize::from(PANE_PAD))),
         Span::styled(glyph.to_owned(), Style::default().fg(glyph_color)),
         Span::raw(" ".to_owned()),
         Span::styled(headline, Style::default().add_modifier(Modifier::BOLD)),
@@ -1315,12 +1326,22 @@ fn append_monitor_row(
     if !show_tail {
         return;
     }
+    // Tail-row chrome: 1-col indent + box-drawing connector + space
+    // + 1-col right gutter. Same budget for every row regardless of
+    // whether the connector is `└` (last) or `├` (mid).
+    let tail_chrome = usize::from(PANE_PAD)
+        + 1   // connector glyph (└ or ├)
+        + 1   // space after connector
+        + usize::from(PANE_PAD);
+    let tail_budget = row_text_budget(inner_width, tail_chrome);
     let last_idx = monitor.output_tail.len().saturating_sub(1);
     for (i, line) in monitor.output_tail.iter().enumerate() {
-        let connector = if i == last_idx { "  \u{2514} " } else { "  \u{251c} " };
-        let truncated = truncate_or_pass(line, text_budget.max(8));
+        let connector_glyph = if i == last_idx { "\u{2514}" } else { "\u{251c}" };
+        let truncated = truncate_or_pass(line, tail_budget);
         lines.push(Line::from(vec![
-            Span::styled(connector.to_owned(), Style::default().fg(theme::DIM)),
+            Span::raw(" ".repeat(usize::from(PANE_PAD))),
+            Span::styled(connector_glyph.to_owned(), Style::default().fg(theme::DIM)),
+            Span::raw(" ".to_owned()),
             Span::styled(truncated, Style::default().fg(theme::DIM)),
         ]));
     }
@@ -1344,13 +1365,9 @@ fn append_workflows_section(lines: &mut Vec<Line<'static>>, app: &App, width: u1
     )));
     lines.push(Line::default());
 
-    let glyph_indent = PANE_PAD + 2;
-    let text_budget = usize::from(width)
-        .saturating_sub(usize::from(glyph_indent))
-        .saturating_sub(usize::from(PANE_PAD));
-
+    let inner_width = usize::from(width);
     for workflow in workflows {
-        append_workflow_row(lines, workflow, text_budget, app.spinner_frame);
+        append_workflow_row(lines, workflow, inner_width, app.spinner_frame);
     }
 }
 
@@ -1360,7 +1377,7 @@ fn append_workflows_section(lines: &mut Vec<Line<'static>>, app: &App, width: u1
 fn append_workflow_row(
     lines: &mut Vec<Line<'static>>,
     workflow: &crate::app::WorkflowEntry,
-    text_budget: usize,
+    inner_width: usize,
     spinner_frame: usize,
 ) {
     use crate::app::{PhaseStatus, WorkflowStatus};
@@ -1372,9 +1389,19 @@ fn append_workflow_row(
     let glyph =
         if workflow.is_in_progress() { spinner_frame_char(spinner_frame) } else { "\u{25c6}" };
     let glyph_color = if workflow.is_in_progress() { theme::RUST_ORANGE } else { Color::Green };
-    let header_text = truncate_or_pass(&workflow.meta_name, text_budget.max(8));
+
+    // #275 Bug 4: same shape as MONITORS header. Badge follows
+    // truncated text; count it in chrome up-front.
+    let header_chrome = usize::from(PANE_PAD)
+        + 1   // glyph
+        + 1   // space
+        + 3   // " · "
+        + status_label.chars().count()
+        + usize::from(PANE_PAD);
+    let header_budget = row_text_budget(inner_width, header_chrome);
+    let header_text = truncate_or_pass(&workflow.meta_name, header_budget);
     lines.push(Line::from(vec![
-        Span::raw("  ".to_owned()),
+        Span::raw(" ".repeat(usize::from(PANE_PAD))),
         Span::styled(glyph.to_owned(), Style::default().fg(glyph_color)),
         Span::raw(" ".to_owned()),
         Span::styled(header_text, Style::default().add_modifier(Modifier::BOLD)),
@@ -1382,8 +1409,11 @@ fn append_workflow_row(
         Span::styled(status_label.to_owned(), Style::default().fg(status_color)),
     ]));
 
+    // Description subtitle: 4-col indent + 1-col right gutter.
+    let desc_chrome = 4 + usize::from(PANE_PAD);
+    let desc_budget = row_text_budget(inner_width, desc_chrome);
     if let Some(desc) = workflow.meta_description.as_deref().filter(|d| !d.is_empty()) {
-        let row = truncate_or_pass(desc, text_budget.max(8));
+        let row = truncate_or_pass(desc, desc_budget);
         lines.push(Line::from(vec![
             Span::raw("    ".to_owned()),
             Span::styled(row, Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC)),
@@ -1395,27 +1425,51 @@ fn append_workflow_row(
     // shows just the header + (optional) final_result_summary.
     let show_tree = workflow.is_in_progress() || workflow.expanded_in_inspector;
     if show_tree {
+        // Phase-row chrome: 1-col indent + connector glyph + space
+        // + phase glyph + space + 1-col right gutter.
+        let phase_chrome = usize::from(PANE_PAD)
+            + 1   // connector (└ or ├)
+            + 1   // space
+            + 1   // phase glyph
+            + 1   // space
+            + usize::from(PANE_PAD);
+        let phase_budget = row_text_budget(inner_width, phase_chrome);
+        // Log-row chrome: 1-col indent + box-drawing column + 3-col
+        // pad + 1-col gutter. Uses the same total chrome the
+        // continuation indent emits (`"  │   "` or six spaces).
+        let log_chrome = usize::from(PANE_PAD)
+            + 1   // column glyph (│) or space
+            + 3   // padding before text
+            + usize::from(PANE_PAD);
+        let log_budget = row_text_budget(inner_width, log_chrome);
         let phase_count = workflow.phases.len();
         for (i, phase) in workflow.phases.iter().enumerate() {
             let is_last = i + 1 == phase_count;
-            let connector = if is_last { "  \u{2514} " } else { "  \u{251c} " };
+            let connector_glyph = if is_last { "\u{2514}" } else { "\u{251c}" };
             let (phase_glyph, phase_color) = match phase.status {
                 PhaseStatus::Completed => ("\u{2713}", Color::Green),
                 PhaseStatus::InProgress => (spinner_frame_char(spinner_frame), theme::RUST_ORANGE),
                 PhaseStatus::Pending => ("\u{25CB}", theme::DIM),
             };
-            let row = truncate_or_pass(&phase.title, text_budget.max(8));
+            let row = truncate_or_pass(&phase.title, phase_budget);
             lines.push(Line::from(vec![
-                Span::styled(connector.to_owned(), Style::default().fg(theme::DIM)),
+                Span::raw(" ".repeat(usize::from(PANE_PAD))),
+                Span::styled(connector_glyph.to_owned(), Style::default().fg(theme::DIM)),
+                Span::raw(" ".to_owned()),
                 Span::styled(phase_glyph.to_owned(), Style::default().fg(phase_color)),
                 Span::raw(" ".to_owned()),
                 Span::styled(row, Style::default().fg(theme::DIM)),
             ]));
-            let logs_indent = if is_last { "      " } else { "  \u{2502}   " };
+            // Continuation indent: 1-col left + column-glyph (│ or
+            // ' ') + 3-col pad = 5 cols before the log text. The
+            // chrome accounting above matches this exactly.
+            let column_glyph = if is_last { ' ' } else { '\u{2502}' };
+            let logs_indent =
+                format!("{}{column_glyph}   ", " ".repeat(usize::from(PANE_PAD)));
             for log in &phase.logs {
-                let log_row = truncate_or_pass(log, text_budget.saturating_sub(4).max(4));
+                let log_row = truncate_or_pass(log, log_budget);
                 lines.push(Line::from(vec![
-                    Span::styled(logs_indent.to_owned(), Style::default().fg(theme::DIM)),
+                    Span::styled(logs_indent.clone(), Style::default().fg(theme::DIM)),
                     Span::styled(log_row, Style::default().fg(theme::DIM)),
                 ]));
             }
@@ -1423,13 +1477,46 @@ fn append_workflow_row(
     }
 
     if let Some(summary) = workflow.final_result_summary.as_deref().filter(|s| !s.is_empty()) {
-        let row = truncate_or_pass(summary, text_budget.max(8));
+        // Summary row chrome: 1-col indent + connector + space + 2-col `✓ `
+        // prefix + 1-col right gutter.
+        let summary_chrome = usize::from(PANE_PAD)
+            + 1   // └
+            + 1   // space
+            + 2   // ✓ + space
+            + usize::from(PANE_PAD);
+        let summary_budget = row_text_budget(inner_width, summary_chrome);
+        let row = truncate_or_pass(summary, summary_budget);
         lines.push(Line::from(vec![
-            Span::raw("  \u{2514} ".to_owned()),
+            Span::raw(" ".repeat(usize::from(PANE_PAD))),
+            Span::styled("\u{2514} ".to_owned(), Style::default().fg(theme::DIM)),
             Span::styled("\u{2713} ".to_owned(), Style::default().fg(Color::Green)),
             Span::styled(row, Style::default().fg(theme::DIM)),
         ]));
     }
+}
+
+/// #275 Bug 4 / Task 5: single source of truth for inspector-row
+/// width budgeting. Every row variant (TASKS / PROCESSES /
+/// MONITORS header / MONITORS tail / WORKFLOWS header / WORKFLOWS
+/// phase / WORKFLOWS log / final-result summary) feeds its actual
+/// chrome glyph count into this helper so all sections observe
+/// the same 1-col right gutter (TASKS' convention) and no variant
+/// silently reintroduces divergence.
+///
+/// `chrome_chars` is the SUM of every non-content cell the row will
+/// emit (left indent + glyph + spaces + connector + status badge +
+/// `... right gutter`). Result is bounded at `max(1)` so a
+/// pathologically narrow pane still produces a usable budget for
+/// `truncate_with_ellipsis` rather than 0 (which would render as a
+/// bare `...`).
+///
+/// Contract: for any row built with this helper,
+/// `chrome_chars + rendered_text_width <= inner_width` always
+/// holds. The 1-col right gutter is folded into `chrome_chars` by
+/// the caller; callers MUST include it so the architectural
+/// gutter-consistency test catches future row variants that forget.
+fn row_text_budget(inner_width: usize, chrome_chars: usize) -> usize {
+    inner_width.saturating_sub(chrome_chars).max(1)
 }
 
 /// Pick the active spinner frame character from the shared SPINNER
@@ -1618,12 +1705,15 @@ fn append_process_row(
         }
     };
     let suffix_chars = suffix_text.as_ref().map_or(0, |s| 3 + s.chars().count()); // " · " + value
+    // #275 Bug 4 / Task 5: every inspector row routes its chrome
+    // budget through `row_text_budget` so PROCESSES + TASKS +
+    // MONITORS + WORKFLOWS observe the same right-gutter contract.
     let chrome_chars = usize::from(PANE_PAD)
         + tree_chrome_cols
         + glyph_cols
         + suffix_chars
         + usize::from(PANE_PAD); // right gutter
-    let headline_budget = usize::from(width).saturating_sub(chrome_chars).max(1);
+    let headline_budget = row_text_budget(usize::from(width), chrome_chars);
     let headline_fitted = truncate_with_ellipsis(&process.headline, headline_budget);
 
     spans.push(Span::styled(headline_fitted, headline_style));
@@ -2347,10 +2437,11 @@ mod tests {
             crate::app::MonitorStatus::Running,
         );
         let mut lines = Vec::new();
-        let text_budget = 40usize;
-        append_monitor_row(&mut lines, &entry, text_budget);
+        // #275 Task 5: pass inner_width (full pane), not text_budget.
+        // The 1-col left indent matches TASKS / PROCESSES.
+        append_monitor_row(&mut lines, &entry, 60);
         let row_text = line_text(&lines[0]);
-        assert!(row_text.starts_with("  \u{25c9}"), "expected fisheye glyph; got {row_text:?}");
+        assert!(row_text.starts_with(" \u{25c9}"), "expected fisheye glyph; got {row_text:?}");
         assert!(row_text.contains("forge-monitor-test"), "headline missing; got {row_text:?}");
         assert!(row_text.contains("running"), "status badge missing; got {row_text:?}");
         assert!(row_text.contains("persistent"), "persistent badge missing; got {row_text:?}");
@@ -2360,7 +2451,7 @@ mod tests {
     fn monitors_section_renders_stopped_row_with_dim_glyph() {
         let entry = make_monitor_entry("tu", "ci-watch", false, crate::app::MonitorStatus::Stopped);
         let mut lines = Vec::new();
-        append_monitor_row(&mut lines, &entry, 40);
+        append_monitor_row(&mut lines, &entry, 60);
         let row_text = line_text(&lines[0]);
         // Terminal glyph (◍ U+25CD) for stopped entries.
         assert!(row_text.contains("\u{25cd}"), "expected stopped glyph; got {row_text:?}");
@@ -2380,7 +2471,7 @@ mod tests {
         entry.output_tail.push_back("stream started".to_owned());
         entry.output_tail.push_back("first event landed".to_owned());
         let mut lines = Vec::new();
-        append_monitor_row(&mut lines, &entry, 40);
+        append_monitor_row(&mut lines, &entry, 60);
         assert_eq!(lines.len(), 3, "headline + 2 tail rows; got {}", lines.len());
         assert!(line_text(&lines[1]).contains("stream started"));
         assert!(line_text(&lines[2]).contains("first event landed"));
@@ -2392,7 +2483,7 @@ mod tests {
             make_monitor_entry("tu", "ci-watch", false, crate::app::MonitorStatus::Stopped);
         entry.output_tail.push_back("stream ended".to_owned());
         let mut lines = Vec::new();
-        append_monitor_row(&mut lines, &entry, 40);
+        append_monitor_row(&mut lines, &entry, 60);
         // Stopped + not expanded → headline only.
         assert_eq!(lines.len(), 1);
     }
@@ -2545,5 +2636,94 @@ mod tests {
         // Style assertion: pull the glyph span and check its colour.
         let glyph_span = &lines[2].spans[1];
         assert_eq!(glyph_span.style.fg, Some(theme::DIM));
+    }
+
+    // ---------------------------------------------------------
+    // #275 Bug 4 / Task 5: architectural gutter-consistency
+    // contract. Every inspector row variant must produce a
+    // total rendered width <= inner_width. The 1-col right
+    // gutter is what makes the section read cleanly against
+    // the pane border; this test is the architectural backstop
+    // that prevents a future row variant from silently
+    // reintroducing the divergence Bug 4 exposed.
+    // ---------------------------------------------------------
+
+    fn rendered_width(line: &Line<'_>) -> usize {
+        // Sum the display-column width of every span on the line.
+        // Box-drawing + spinner chars are all 1-col; ASCII is 1-col;
+        // we use UnicodeWidthStr to stay correct for any future
+        // wider glyph that lands in chrome.
+        use unicode_width::UnicodeWidthStr;
+        line.spans.iter().map(|span| UnicodeWidthStr::width(span.content.as_ref())).sum()
+    }
+
+    #[test]
+    fn row_text_budget_subtracts_chrome() {
+        assert_eq!(row_text_budget(40, 4), 36);
+        assert_eq!(row_text_budget(40, 39), 1);
+        // Pathologically narrow: helper bounds at 1 so callers
+        // always get a usable budget for `truncate_with_ellipsis`.
+        assert_eq!(row_text_budget(2, 10), 1);
+        assert_eq!(row_text_budget(0, 0), 1);
+    }
+
+    #[test]
+    fn every_inspector_row_variant_fits_within_inner_width() {
+        // Force-construct one row per section variant at a fixed
+        // inner_width with content long enough to trigger
+        // truncation. Then assert: every rendered row's display
+        // width is <= inner_width (1-col right gutter preserved
+        // because the budget helper accounts for it).
+        let inner_width: usize = 60;
+        let mut all_rows: Vec<Line<'static>> = Vec::new();
+
+        // MONITORS header + tail rows (running, persistent, with output).
+        let mut monitor =
+            make_monitor_entry("tu", "A super long Monitor description that overflows the pane width by a lot", true, crate::app::MonitorStatus::Running);
+        monitor.output_tail.push_back(
+            "An equally long tail line that also overflows the pane width here too".to_owned(),
+        );
+        let mut mon_lines = Vec::new();
+        append_monitor_row(&mut mon_lines, &monitor, inner_width);
+        all_rows.extend(mon_lines);
+
+        // WORKFLOWS header + phase rows.
+        let mut workflow = make_workflow_entry(
+            "wf",
+            "minimal-ping-with-a-rather-long-name-for-overflow-coverage",
+            crate::app::WorkflowStatus::InProgress,
+        );
+        workflow.meta_description = Some(
+            "An overlong description that should be truncated cleanly against the inner_width budget"
+                .to_owned(),
+        );
+        workflow.phases = vec![crate::app::PhaseEntry {
+            index: 1,
+            title: "A phase with a long title that would otherwise overflow".to_owned(),
+            status: crate::app::PhaseStatus::InProgress,
+            logs: std::collections::VecDeque::from([
+                "an extra-long log line that should also stay within the gutter contract"
+                    .to_owned(),
+            ]),
+        }];
+        let mut wf_lines = Vec::new();
+        append_workflow_row(&mut wf_lines, &workflow, inner_width, 0);
+        all_rows.extend(wf_lines);
+
+        for (i, line) in all_rows.iter().enumerate() {
+            let w = rendered_width(line);
+            assert!(
+                w <= inner_width,
+                "row #{i} exceeded inner_width ({w} > {inner_width}): {}",
+                line_text(line),
+            );
+            // At least 1-col right gutter (matching TASKS' contract).
+            assert!(
+                w <= inner_width.saturating_sub(1) || w == 0,
+                "row #{i} consumed the right gutter ({w} > {} = inner_width - 1): {}",
+                inner_width - 1,
+                line_text(line),
+            );
+        }
     }
 }
