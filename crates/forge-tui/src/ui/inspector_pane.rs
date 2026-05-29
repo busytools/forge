@@ -1337,9 +1337,8 @@ fn append_monitor_row(
     if monitor.output_tail.is_empty() {
         return;
     }
-    let show_tail = monitor.is_running()
-        || monitor.expanded_in_inspector
-        || !monitor.output_tail.is_empty();
+    let show_tail =
+        monitor.is_running() || monitor.expanded_in_inspector || !monitor.output_tail.is_empty();
     if !show_tail {
         return;
     }
@@ -2523,8 +2522,7 @@ mod tests {
         // Empty `output_tail` short-circuits before the show_tail
         // predicate runs; ensure the no-output path still produces
         // just the headline (no vestigial empty-body row).
-        let entry =
-            make_monitor_entry("tu", "ci-watch", false, crate::app::MonitorStatus::Stopped);
+        let entry = make_monitor_entry("tu", "ci-watch", false, crate::app::MonitorStatus::Stopped);
         // No `output_tail` pushed.
         let mut lines = Vec::new();
         append_monitor_row(&mut lines, &entry, 60);
@@ -2833,16 +2831,8 @@ mod tests {
     #[test]
     fn workflows_section_inserts_blank_line_between_entries() {
         let entries = vec![
-            make_workflow_entry(
-                "wf_a",
-                "first-workflow",
-                crate::app::WorkflowStatus::InProgress,
-            ),
-            make_workflow_entry(
-                "wf_b",
-                "second-workflow",
-                crate::app::WorkflowStatus::InProgress,
-            ),
+            make_workflow_entry("wf_a", "first-workflow", crate::app::WorkflowStatus::InProgress),
+            make_workflow_entry("wf_b", "second-workflow", crate::app::WorkflowStatus::InProgress),
         ];
         let app = build_session_with_workflows(entries);
         let mut lines = Vec::new();

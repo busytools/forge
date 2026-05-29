@@ -4966,10 +4966,7 @@ mod tests {
         // Entry survives the status flip - waiting for
         // handle_task_notification to call the clear.
         assert_eq!(app.monitors().len(), 1);
-        assert_eq!(
-            app.monitors()[0].status,
-            crate::app::state::types::MonitorStatus::Completed,
-        );
+        assert_eq!(app.monitors()[0].status, crate::app::state::types::MonitorStatus::Completed,);
     }
 
     #[test]
@@ -4977,20 +4974,8 @@ mod tests {
         // The clear helper is now `pub` so `handle_task_notification`
         // can call it. Verify the predicate still drains correctly.
         let mut app = make_test_app();
-        app.upsert_monitor_from_tool_input(
-            "tu_a",
-            "a".to_owned(),
-            "true".to_owned(),
-            false,
-            0,
-        );
-        app.upsert_monitor_from_tool_input(
-            "tu_b",
-            "b".to_owned(),
-            "true".to_owned(),
-            false,
-            0,
-        );
+        app.upsert_monitor_from_tool_input("tu_a", "a".to_owned(), "true".to_owned(), false, 0);
+        app.upsert_monitor_from_tool_input("tu_b", "b".to_owned(), "true".to_owned(), false, 0);
         app.stamp_monitor_task_id("tu_a", "task_a".to_owned());
         app.stamp_monitor_task_id("tu_b", "task_b".to_owned());
         app.set_monitor_status_by_task_id(
