@@ -5030,13 +5030,14 @@ mod tests {
 
     #[test]
     fn replay_restored_monitor_accepts_terminal_completed_event() {
-        // The replay walker may emit one or more terminal
-        // `task_updated` events after the initial tool_use. Those
-        // route through `set_monitor_status_by_task_id` and re-flip
-        // the entry. This test simulates that sequence: replay
-        // inserts Stopped; a terminal Completed event arrives; the
-        // entry ends in Completed (status setter wins). Verifies
-        // strategy A interacts cleanly with downstream flips.
+        // Replay inserts the entry in Stopped. A subsequent terminal
+        // `task_updated` (routed via `set_monitor_status_by_task_id`)
+        // re-flips Stopped -> Completed. After #277 Bug 5a the
+        // setter no longer drains the section implicitly, so the
+        // entry persists post-flip and the invariant is checkable
+        // directly. The `expect` makes the test fail loudly if a
+        // future refactor restores the implicit clear and the
+        // entry goes missing.
         let mut app = make_test_app();
         app.replay_in_progress = true;
         app.upsert_monitor_from_tool_input(
@@ -5052,19 +5053,14 @@ mod tests {
             "task_x",
             crate::app::state::types::MonitorStatus::Completed,
         );
-        // `set_monitor_status_by_task_id` triggers the
-        // all-completed clear in this PR's pre-Bug-5 state. After
-        // Bug 5a defers that trigger, the entry persists. Either
-        // way the status MUST be Completed (never stuck Running).
-        if let Some(monitor) = app.monitors().first() {
-            assert_eq!(
-                monitor.status,
-                crate::app::state::types::MonitorStatus::Completed,
-                "terminal event must re-flip the replay-restored entry",
-            );
-        }
-        // (When the entry has been cleared, the assertion is
-        // vacuously satisfied - the bug we're guarding against is
-        // "stuck Running", which can't be true if the entry is gone.)
+        let monitor = app
+            .monitors()
+            .first()
+            .expect("replay-restored entry must persist post-Bug-5a setter call");
+        assert_eq!(
+            monitor.status,
+            crate::app::state::types::MonitorStatus::Completed,
+            "terminal event must re-flip the replay-restored entry",
+        );
     }
 }
