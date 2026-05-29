@@ -18,10 +18,11 @@
 //!   populate so the user sees "all the work this worker has done
 //!   versus main" at a glance. Sourced from
 //!   `UiSession.git_diff_snapshot`.
-//! - `TASKS` - rendered when the active session has todos or a
-//!   pending verification nudge. The live `TodoWrite` snapshot is
-//!   the sole surface for the todo list; the chat-stream
-//!   `TodoWrite` tool-call card is suppressed.
+//! - `TASKS` - rendered when the active session has at least one
+//!   non-completed item. The live `TaskCreate` / `TaskUpdate`
+//!   snapshot is the sole surface for the task list; the
+//!   chat-stream `Task*` tool-call cards (`TaskCreate`,
+//!   `TaskUpdate`, `TaskList`, `TaskGet`) are suppressed. #268.
 //! - `PROCESSES` - rendered when the active session has at least
 //!   one currently-in-flight long-running tool call. Three kinds
 //!   surface here: backgrounded `Bash` (via `run_in_background:
@@ -35,10 +36,7 @@
 //!   + colours per `ProcessKind`.
 //!
 //! Reads from per-session state on `UiSession.todos` and
-//! `UiSession.git_diff_snapshot`. The
-//! `TodoWriteOutputMetadata.verification_nudge_needed` flag surfaces
-//! as a dim-yellow notice above the `TASKS` header until the next
-//! `TodoWrite` clears it.
+//! `UiSession.git_diff_snapshot`.
 //!
 //! TASKS item rendering:
 //! - `✓` green glyph + DIM crossed-out text for `Completed`
@@ -356,11 +354,9 @@ fn append_body(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
 
     let todos = app.todos();
     // Section visibility gates on PENDING/IN-PROGRESS tasks
-    // (completed are hidden by the renderer anyway). The
-    // verification nudge alone is enough to surface the section
-    // even when there are no live items.
+    // (completed are hidden by the renderer anyway).
     let has_live_tasks = todos.iter().any(|t| t.status != TodoStatus::Completed);
-    if has_live_tasks || app.todo_verification_nudge() {
+    if has_live_tasks {
         lines.push(Line::default());
         push_section_rule(lines, width);
         lines.push(Line::default());
@@ -1065,19 +1061,6 @@ fn fit_path_head_truncated(s: &str, max_chars: usize) -> String {
 fn append_tasks_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
     let todos = app.todos();
     let spinner_frame = app.spinner_frame;
-
-    // Verification nudge row sits between the rule and the TASKS
-    // header when the flag is set. Dim-yellow one-liner.
-    if app.todo_verification_nudge() {
-        lines.push(Line::from(vec![
-            Span::raw(" "),
-            Span::styled(
-                "\u{26a0} verify before declaring complete".to_owned(),
-                Style::default().fg(theme::STATUS_WARNING),
-            ),
-        ]));
-        lines.push(Line::default());
-    }
 
     if todos.is_empty() {
         return;

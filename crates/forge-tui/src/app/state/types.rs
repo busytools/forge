@@ -24,9 +24,16 @@ pub enum PendingCommandAck {
     ConfigOption { option_id: String },
 }
 
-/// A single todo item from Claude's `TodoWrite` tool call.
+/// A single inspector task item from Claude's `TaskCreate`/`TaskUpdate`
+/// family (#268). CLI 2.1.156 deprecated the older `TodoWrite` tool;
+/// forge no longer renders TodoWrite output. The `id` is assigned by
+/// the CLI in `TaskCreate`'s result text (`"Task #N created
+/// successfully:"`) and referenced by `TaskUpdate.taskId`.
 #[derive(Debug, Clone)]
 pub struct TodoItem {
+    /// CLI-assigned task id (e.g. `"1"`). Used by `TaskUpdate` to
+    /// locate the item to mutate or remove.
+    pub id: String,
     pub content: String,
     pub status: TodoStatus,
     pub active_form: String,

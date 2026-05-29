@@ -80,7 +80,6 @@ fn reset_interaction_state_for_new_session(app: &mut App) {
     app.clear_tool_scope_tracking();
     app.active_tool_call_index_mut().clear();
     app.todos_mut().clear();
-    app.set_todo_verification_nudge(false);
     app.focus = super::super::FocusManager::default();
     app.available_commands_mut().clear();
     app.available_agents_mut().clear();

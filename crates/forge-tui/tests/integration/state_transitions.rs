@@ -80,60 +80,6 @@ async fn full_turn_lifecycle_with_tool_calls() {
     assert!(matches!(app.status, AppStatus::Ready));
 }
 
-// --- TodoWrite handling ---
-
-#[tokio::test]
-async fn todowrite_tool_call_updates_todo_list() {
-    let mut app = test_app();
-
-    let raw_input = serde_json::json!({
-        "todos": [
-            {"content": "Fix bug", "status": "in_progress", "activeForm": "Fixing bug"},
-            {"content": "Write tests", "status": "pending", "activeForm": "Writing tests"},
-        ]
-    });
-
-    send_msg(&mut app, assistant_message(vec![tool_use_block("todo-1", "TodoWrite", raw_input)]));
-
-    assert_eq!(app.todos().len(), 2);
-    assert_eq!(app.todos()[0].content, "Fix bug");
-    assert_eq!(app.todos()[1].content, "Write tests");
-    // Verification nudge stays off unless TodoWriteOutputMetadata flags it.
-    assert!(!app.todo_verification_nudge());
-}
-
-#[tokio::test]
-async fn todowrite_replaces_previous_items_and_clears_for_terminal_payloads() {
-    let mut app = test_app();
-
-    let first = serde_json::json!({"todos": [
-        {"content": "Task A", "status": "in_progress", "activeForm": "Doing A"},
-        {"content": "Task B", "status": "pending", "activeForm": "Doing B"},
-    ]});
-    send_msg(&mut app, assistant_message(vec![tool_use_block("todo-r1", "TodoWrite", first)]));
-    assert_eq!(app.todos().len(), 2);
-
-    let replacement = serde_json::json!({"todos": [
-        {"content": "Task C", "status": "pending", "activeForm": "Doing C"},
-    ]});
-    send_msg(
-        &mut app,
-        assistant_message(vec![tool_use_block("todo-r2", "TodoWrite", replacement)]),
-    );
-    assert_eq!(app.todos().len(), 1, "second TodoWrite replaces first");
-    assert_eq!(app.todos()[0].content, "Task C");
-
-    let completed = serde_json::json!({"todos": [
-        {"content": "Done task", "status": "completed", "activeForm": "Done"},
-    ]});
-    send_msg(
-        &mut app,
-        assistant_message(vec![tool_use_block("todo-done", "TodoWrite", completed)]),
-    );
-
-    assert!(app.todos().is_empty(), "all-completed clears the list");
-}
-
 // --- Error recovery ---
 
 #[tokio::test]

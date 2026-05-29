@@ -257,13 +257,6 @@ fn tool_output_badge_spans(tc: &ToolCallInfo) -> Vec<Span<'static>> {
         ));
     }
 
-    if tc.verification_nudge_needed() {
-        badges.push(Span::styled(
-            "  [verification needed]",
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-        ));
-    }
-
     badges
 }
 
@@ -679,19 +672,6 @@ mod tests {
             );
         assert_eq!(recomputed_height, first_height);
         assert!(recompute_lines > 0);
-    }
-
-    #[test]
-    fn todo_write_title_renders_verification_badge() {
-        let mut tc = test_tool_call("tc-todo", "TodoWrite", model::ToolCallStatus::Completed);
-        tc.output_metadata = Some(model::ToolOutputMetadata::new().todo_write(Some(
-            model::TodoWriteOutputMetadata::new().verification_nudge_needed(Some(true)),
-        )));
-
-        let rendered =
-            standard::render_tool_call_title(&tc, ToolCallRenderContext::default(), 80, 0);
-        let text: String = rendered.spans.iter().map(|span| span.content.as_ref()).collect();
-        assert!(text.contains("[verification needed]"));
     }
 
     #[test]

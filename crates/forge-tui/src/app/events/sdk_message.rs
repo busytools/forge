@@ -187,7 +187,6 @@ fn walk_assistant_content(
                 if id.is_empty() {
                     continue;
                 }
-                apply_plan_if_todo_write(app, name, input);
                 apply_tool_use_block(app, id, name, input, parent_tool_use_id);
             }
             ContentBlock::ToolResult { tool_use_id, content, is_error } => {
@@ -235,24 +234,6 @@ fn walk_assistant_content(
             _ => {}
         }
     }
-}
-
-/// When the assistant invokes the TodoWrite tool with a `todos`
-/// array, parse the wire JSON into `TodoItem`s and apply them.
-/// Uses the same parser as the `parse_todos_if_present` path so
-/// `activeForm` is preserved (previously dropped via a model::Plan
-/// detour that had no `active_form` field).
-fn apply_plan_if_todo_write(app: &mut App, name: &str, input: &Value) {
-    if name != "TodoWrite" {
-        return;
-    }
-    let Some(todos) = crate::app::todos::parse_todos_if_present(input) else {
-        return;
-    };
-    if todos.is_empty() {
-        return;
-    }
-    crate::app::todos::set_todos(app, todos);
 }
 
 fn handle_user(app: &mut App, msg: Message) {
