@@ -1738,14 +1738,10 @@ mod task_updated_section_routing_tests {
 
     #[test]
     fn two_monitors_completing_in_order_clears_section() {
-        // Bug 3b: clear_monitors_if_all_terminal re-evaluates only
-        // when the explicit driver runs. After both monitors have
-        // transitioned out of Running, an explicit
-        // `clear_monitors_if_all_terminal` call (driven by
-        // `handle_task_notification` in production) drains the
-        // section. Pre-Bug-5a, the task_updated handler ran the
-        // clear directly; post-fix, the call is explicit so this
-        // test invokes it the way `handle_task_notification` would.
+        // Contract: `clear_monitors_if_all_terminal` only drains the
+        // section once every entry has transitioned out of Running.
+        // The clear is driven by `handle_task_notification`; this
+        // test invokes the helper directly to model that call site.
         let mut app = App::test_default();
         push_monitor(&mut app, "task_a");
         push_monitor(&mut app, "task_b");
@@ -1768,10 +1764,9 @@ mod task_updated_section_routing_tests {
 
     #[test]
     fn double_completed_event_is_idempotent() {
-        // Duplicate task_updated events (e.g. retry) must not
-        // panic. After #277 Bug 5a the entry persists post-status-flip
-        // until an explicit clear runs; second arrival just re-stamps
-        // Completed on the same entry.
+        // Contract: duplicate task_updated events (e.g. retry) must
+        // re-stamp Completed without panicking or duplicating the
+        // entry.
         let mut app = App::test_default();
         push_monitor(&mut app, "task_dup");
         handle_task_updated(&mut app, task_updated("task_dup", "completed"));
