@@ -235,7 +235,7 @@ fn build_message_layout(
 ) -> MessageLayout {
     let mut layout = MessageLayout::new();
     if !render_context.options.suppress_group_header {
-        layout.push_wrapped_line(role_label_line(msg, spinner), render_context.width);
+        layout.push_wrapped_line(role_label_line(msg), render_context.width);
     }
 
     match msg.role {
@@ -1166,6 +1166,11 @@ fn build_message_render_signature(
     use std::hash::{Hash, Hasher};
     let mut hasher = DefaultHasher::new();
     msg.role.hash(&mut hasher);
+    // #275 Bug 2: the assistant banner chip reads
+    // `msg.turn_duration_ms`; without folding it into the cache key,
+    // stamping the field via `handle_turn_duration` is a no-op
+    // visually because the prior cache reuses the chip-less render.
+    msg.turn_duration_ms.hash(&mut hasher);
     spinner.show_empty_thinking.hash(&mut hasher);
     spinner.show_thinking.hash(&mut hasher);
     spinner.show_compacting.hash(&mut hasher);
@@ -1390,7 +1395,7 @@ fn should_skip_whole_block(
     false
 }
 
-fn role_label_line(msg: &ChatMessage, spinner: &SpinnerState) -> Line<'static> {
+fn role_label_line(msg: &ChatMessage) -> Line<'static> {
     match msg.role {
         MessageRole::Welcome => Line::from(Span::styled(
             "Overview",
@@ -1419,15 +1424,18 @@ fn role_label_line(msg: &ChatMessage, spinner: &SpinnerState) -> Line<'static> {
                 ))
             }
         }
-        // #273: only stamp the duration chip on the active turn's
-        // banner. Past turns persist their layout snapshot; surfacing
-        // the chip across all prior turns would require per-message
-        // duration storage which is out of scope for this PR.
-        MessageRole::Assistant => assistant_role_label_line(if spinner.is_active_turn_assistant {
-            spinner.last_turn_duration_ms
-        } else {
-            None
-        }),
+        // #273 + #275 Bug 2: the duration chip reads from the
+        // per-`ChatMessage` `turn_duration_ms` field stamped by
+        // `handle_turn_duration` on the most recent assistant
+        // message when the `Message::TurnDuration` event fires. The
+        // prior spinner-state lookup gated the chip on
+        // `is_active_turn_assistant`, but `TurnDuration` arrives at
+        // end-of-turn (after the active-turn marker has cleared),
+        // so the chip resolved to `None` for every turn that wasn't
+        // currently in flight - i.e. all of them after the fact.
+        // Per-message storage also gives every prior assistant turn
+        // its own chip in scrollback.
+        MessageRole::Assistant => assistant_role_label_line(msg.turn_duration_ms),
         MessageRole::System(_) => system_role_label_line(system_severity_from_role(&msg.role)),
     }
 }
@@ -3548,38 +3556,30 @@ mod tests {
     }
 
     #[test]
-    fn assistant_role_label_chip_only_shows_on_active_turn() {
-        // Two messages - both Assistant - but only the active turn's
-        // spinner carries `is_active_turn_assistant=true`. The chip
-        // must surface for the active one and be silent for the
-        // historical one even when the spinner carries a duration.
-        let active_msg = make_text_message(MessageRole::Assistant, "current response");
-        let old_msg = make_text_message(MessageRole::Assistant, "earlier response");
+    fn assistant_role_label_chip_reads_from_per_message_turn_duration() {
+        // #275 Bug 2: the chip is per-message, not per-spinner. A
+        // ChatMessage with `turn_duration_ms` set shows the chip; one
+        // without shows just the bare `Forge` label. The previous
+        // active-turn gate dropped the chip immediately on every
+        // turn that wasn't currently in flight - i.e. all of them
+        // after the fact. New behaviour: every completed assistant
+        // turn shows its own chip via the stamped field.
+        let mut with_duration = make_text_message(MessageRole::Assistant, "stamped turn");
+        with_duration.turn_duration_ms = Some(12_400);
+        let without_duration = make_text_message(MessageRole::Assistant, "no stamp yet");
 
-        let active_spinner = SpinnerState {
-            is_active_turn_assistant: true,
-            last_turn_duration_ms: Some(12_400),
-            ..idle_spinner()
-        };
-        let inactive_spinner = SpinnerState {
-            is_active_turn_assistant: false,
-            last_turn_duration_ms: Some(12_400),
-            ..idle_spinner()
-        };
-
-        let active_label = role_label_line(&active_msg, &active_spinner);
-        let active_rendered: String =
-            active_label.spans.iter().map(|s| s.content.as_ref()).collect();
+        let with_label = role_label_line(&with_duration);
+        let with_rendered: String = with_label.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(
-            active_rendered.contains("· 12.4s"),
-            "active turn must carry chip, got {active_rendered:?}",
+            with_rendered.contains("· 12.4s"),
+            "message with stamped turn_duration_ms must carry chip; got {with_rendered:?}",
         );
 
-        let old_label = role_label_line(&old_msg, &inactive_spinner);
-        let old_rendered: String = old_label.spans.iter().map(|s| s.content.as_ref()).collect();
+        let bare_label = role_label_line(&without_duration);
+        let bare_rendered: String = bare_label.spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(
-            old_rendered, "Forge",
-            "historical turn must omit chip even when spinner has duration",
+            bare_rendered, "Forge",
+            "message without turn_duration_ms shows the bare role label",
         );
     }
 
