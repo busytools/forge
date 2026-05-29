@@ -1575,19 +1575,6 @@ impl App {
         &mut self.active_bucket_mut().todos
     }
 
-    /// Active session's TodoWrite-verification-nudge flag.
-    pub fn todo_verification_nudge(&self) -> bool {
-        self.active_session().is_some_and(|s| s.todo_verification_nudge)
-    }
-
-    /// Set the active session's TodoWrite-verification-nudge flag.
-    /// Called by the TodoWrite tool-result handler to surface (or
-    /// clear) the dim-yellow notice above the Inspector pane's TASKS
-    /// section.
-    pub fn set_todo_verification_nudge(&mut self, value: bool) {
-        self.active_bucket_mut().todo_verification_nudge = value;
-    }
-
     // ---- Render cache + history retention accessors ----
 
     /// Borrow the active session's render-cache slot grid.

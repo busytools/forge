@@ -55,7 +55,13 @@ pub fn tool_name_label(sdk_tool_name: &str) -> (&'static str, &'static str) {
         "WebFetch" => ("\u{2295}", "WebFetch"),
         "WebSearch" => ("\u{2295}", "WebSearch"),
         "ExitPlanMode" => ("\u{2299}", "ExitPlanMode"),
-        "TodoWrite" => ("\u{25cc}", "TodoWrite"),
+        // CLI 2.1.156 task surface (#268). The per-row chrome stays
+        // chat-suppressed so the glyph only surfaces when a future
+        // Inspector view exposes the raw tool calls (today: never).
+        "TaskCreate" => ("\u{25cc}", "TaskCreate"),
+        "TaskUpdate" => ("\u{25cc}", "TaskUpdate"),
+        "TaskList" => ("\u{25cc}", "TaskList"),
+        "TaskGet" => ("\u{25cc}", "TaskGet"),
         "Config" => ("\u{2299}", "Config"),
         "EnterWorktree" => ("\u{21c4}", "EnterWorktree"),
         _ => ("\u{25cb}", "Tool"),

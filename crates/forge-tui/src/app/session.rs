@@ -261,15 +261,11 @@ pub struct UiSession {
     /// Active subagent autocomplete state (`&name`). Per-session.
     pub subagent: Option<crate::app::subagent::SubagentState>,
 
-    // ---- Todos ----
-    /// Current todo list from Claude's `TodoWrite` tool calls.
-    /// Rendered by the inspector pane on the right side of the chat view.
+    // ---- Tasks ----
+    /// Current task list from Claude's `TaskCreate` / `TaskUpdate`
+    /// tool calls (#268). Rendered by the inspector pane on the
+    /// right side of the chat view.
     pub todos: Vec<TodoItem>,
-    /// Whether the latest `TodoWrite` tool result carried
-    /// `TodoWriteOutputMetadata.verification_nudge_needed = Some(true)`.
-    /// Surfaces as a dim-yellow notice above the TASKS header in the
-    /// Inspector pane. Cleared on the next `TodoWrite`.
-    pub todo_verification_nudge: bool,
 
     // ---- Git diff snapshot (Inspector GIT section) ----
     /// Latest poll result. `None` until the first scan completes
@@ -443,7 +439,6 @@ impl Default for UiSession {
             slash: Option::default(),
             subagent: Option::default(),
             todos: Vec::default(),
-            todo_verification_nudge: bool::default(),
             git_diff_snapshot: None,
             git_diff_generation: 0,
             git_diff_scan_in_flight: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),

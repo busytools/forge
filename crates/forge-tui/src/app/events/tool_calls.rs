@@ -4,7 +4,6 @@ use super::super::{
 };
 use super::tool_updates::raw_output_to_terminal_text;
 use crate::agent::model;
-use crate::app::todos::{parse_todos_if_present, set_todos};
 
 pub(super) fn handle_tool_call(app: &mut App, tc: model::ToolCall) {
     let id_str = tc.tool_call_id.clone();
@@ -12,8 +11,6 @@ pub(super) fn handle_tool_call(app: &mut App, tc: model::ToolCall) {
     let parent_tool_use_id = parent_tool_use_id_from_meta(tc.meta.as_ref());
     let scope = register_tool_call_scope(app, &id_str, &sdk_tool_name, parent_tool_use_id);
     log_tool_call_received(app, &tc, &scope, &sdk_tool_name);
-    maybe_apply_todo_write_from_tool_call(app, &id_str, &sdk_tool_name, tc.raw_input.as_ref());
-    sync_todo_verification_nudge(app, &sdk_tool_name, tc.output_metadata.as_ref());
     update_subagent_scope_state(app, &scope, tc.status, &id_str);
 
     let tool_info = build_tool_info_from_tool_call(app, tc, sdk_tool_name, &scope);
@@ -75,75 +72,6 @@ pub(super) fn register_tool_call_scope(
     scope
 }
 
-fn maybe_apply_todo_write_from_tool_call(
-    app: &mut App,
-    id: &str,
-    sdk_tool_name: &str,
-    raw_input: Option<&serde_json::Value>,
-) {
-    if sdk_tool_name != "TodoWrite" {
-        return;
-    }
-    let session_id = current_session_id(app);
-    if let Some(raw_input) = raw_input {
-        if let Some(todos) = parse_todos_if_present(raw_input) {
-            tracing::info!(
-                target: crate::logging::targets::APP_TOOL,
-                event_name = "tool_plan_synchronized",
-                message = "todo plan synchronized from tool call",
-                outcome = "success",
-                session_id = %session_id,
-                tool_call_id = %id,
-                count = todos.len(),
-                size_bytes = json_value_size(Some(raw_input)).unwrap_or_default(),
-                tool_name = "TodoWrite",
-                todo_count = todos.len(),
-            );
-            set_todos(app, todos);
-        } else {
-            tracing::debug!(
-                target: crate::logging::targets::APP_TOOL,
-                event_name = "tool_plan_sync_skipped",
-                message = "todo plan sync skipped for tool call",
-                outcome = "skipped",
-                session_id = %session_id,
-                tool_call_id = %id,
-                size_bytes = json_value_size(Some(raw_input)).unwrap_or_default(),
-                tool_name = "TodoWrite",
-            );
-        }
-    } else {
-        tracing::warn!(
-            target: crate::logging::targets::APP_TOOL,
-            event_name = "tool_plan_sync_blocked",
-            message = "todo plan sync blocked by missing tool input",
-            outcome = "blocked",
-            session_id = %session_id,
-            tool_call_id = %id,
-            tool_name = "TodoWrite",
-        );
-    }
-}
-
-/// Update the per-session `todo_verification_nudge` flag from a
-/// `TodoWrite` tool call's output metadata. Called both for the
-/// initial tool call and on tool-update arrivals so the flag tracks
-/// the latest metadata payload. Non-`TodoWrite` calls are no-ops.
-pub(super) fn sync_todo_verification_nudge(
-    app: &mut App,
-    sdk_tool_name: &str,
-    output_metadata: Option<&model::ToolOutputMetadata>,
-) {
-    if sdk_tool_name != "TodoWrite" {
-        return;
-    }
-    let nudge_active = output_metadata
-        .and_then(|meta| meta.todo_write.as_ref())
-        .and_then(|tw| tw.verification_nudge_needed)
-        .unwrap_or(false);
-    app.set_todo_verification_nudge(nudge_active);
-}
-
 pub(super) fn update_subagent_scope_state(
     app: &mut App,
     scope: &ToolCallScope,
@@ -185,10 +113,14 @@ fn build_tool_info_from_tool_call(
         None
     };
 
-    // TodoWrite tool calls are silent in the chat scrollback — the
-    // Inspector pane is the sole surface for the todo list. Marking
-    // the tool call hidden suppresses its row in `ui::message`.
-    let is_todowrite = sdk_tool_name == "TodoWrite";
+    // CLI 2.1.156 Task* family (TaskCreate / TaskUpdate / TaskList /
+    // TaskGet) is silent in the chat scrollback - the Inspector pane
+    // is the sole surface for the task list (#268). TaskGet / TaskList
+    // carry no state mutation; they're suppressed purely for visual
+    // coherence (the chat row would surface noise the user already
+    // sees in the inspector).
+    let is_task_family =
+        matches!(sdk_tool_name.as_str(), "TaskCreate" | "TaskUpdate" | "TaskList" | "TaskGet",);
     let mut tool_info = ToolCallInfo {
         id: tc.tool_call_id,
         title: shorten_tool_title(&tc.title, &app.cwd_raw()),
@@ -199,7 +131,7 @@ fn build_tool_info_from_tool_call(
         task_metadata: tc.task_metadata,
         status: tc.status,
         content: tc.content,
-        hidden: is_todowrite || matches!(scope, ToolCallScope::SubagentChild { .. }),
+        hidden: is_task_family || matches!(scope, ToolCallScope::SubagentChild { .. }),
         terminal_id,
         terminal_command,
         terminal_output: None,

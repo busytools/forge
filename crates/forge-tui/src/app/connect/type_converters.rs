@@ -257,24 +257,15 @@ mod tests {
             status: Some(types::ToolCallStatus::Completed),
             output_metadata: Some(types::ToolOutputMetadata {
                 bash: Some(types::BashOutputMetadata { assistant_auto_backgrounded: Some(true) }),
-                todo_write: Some(types::TodoWriteOutputMetadata {
-                    verification_nudge_needed: Some(true),
-                }),
             }),
             ..types::ToolCallUpdateFields::default()
         });
 
         assert_eq!(
             fields.output_metadata,
-            Some(
-                model::ToolOutputMetadata::new()
-                    .bash(Some(
-                        model::BashOutputMetadata::new().assistant_auto_backgrounded(Some(true)),
-                    ))
-                    .todo_write(Some(
-                        model::TodoWriteOutputMetadata::new().verification_nudge_needed(Some(true)),
-                    )),
-            )
+            Some(model::ToolOutputMetadata::new().bash(Some(
+                model::BashOutputMetadata::new().assistant_auto_backgrounded(Some(true)),
+            )),)
         );
     }
 
