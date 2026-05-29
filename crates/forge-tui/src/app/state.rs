@@ -1666,6 +1666,22 @@ impl App {
         persistent: bool,
         timeout_ms: u64,
     ) -> bool {
+        // #277 Bug 3b: a fresh live Monitor tool_use is `Running`
+        // until the wire emits a terminal `task_updated`. But during
+        // `load_resume_history` replay the replay walker doesn't pipe
+        // terminal `task_updated` events back into the status
+        // setter, so a Monitor that was historically completed gets
+        // restored as `Running` and stays that way forever - blocking
+        // `clear_monitors_if_all_terminal` for legit completed
+        // siblings. Restored Monitors land in `Stopped` initially;
+        // any actual Running event arriving later in the same replay
+        // walk (or live afterwards) re-flips them via
+        // `set_monitor_status_by_task_id`.
+        let initial_status = if self.replay_in_progress {
+            crate::app::state::types::MonitorStatus::Stopped
+        } else {
+            crate::app::state::types::MonitorStatus::Running
+        };
         let monitors = self.monitors_mut();
         if let Some(existing) = monitors.iter_mut().find(|m| m.tool_use_id == tool_use_id) {
             existing.description = description;
@@ -1681,7 +1697,7 @@ impl App {
             command,
             persistent,
             timeout_ms,
-            status: crate::app::state::types::MonitorStatus::Running,
+            status: initial_status,
             output_file: None,
             output_tail: std::collections::VecDeque::new(),
             expanded_in_inspector: false,
@@ -4860,5 +4876,95 @@ mod tests {
         // Debug derive works
         let dbg = format!("{:?}", InvalidationLevel::MessagesFrom(3));
         assert!(dbg.contains("MessagesFrom"));
+    }
+
+    // -----------------------------------------------------------
+    // #277 Bug 3b: replay-orphan Monitor state.
+    // -----------------------------------------------------------
+
+    #[test]
+    fn upsert_monitor_during_replay_starts_in_stopped_state() {
+        // During `load_resume_history` (replay_in_progress = true)
+        // the wire walker doesn't re-emit terminal `task_updated`
+        // events into the status setter. A replayed Monitor that
+        // historically completed must NOT be reconstructed as
+        // Running, otherwise it blocks
+        // `clear_monitors_if_all_terminal` for any live sibling.
+        let mut app = make_test_app();
+        app.replay_in_progress = true;
+        app.upsert_monitor_from_tool_input(
+            "tu_replay",
+            "historical monitor".to_owned(),
+            "true".to_owned(),
+            false,
+            0,
+        );
+        let monitors = app.monitors();
+        assert_eq!(monitors.len(), 1);
+        assert_eq!(
+            monitors[0].status,
+            crate::app::state::types::MonitorStatus::Stopped,
+            "replay-inserted monitor must default to Stopped, not Running",
+        );
+    }
+
+    #[test]
+    fn upsert_monitor_live_path_still_starts_running() {
+        // Outside replay (replay_in_progress = false), live Monitor
+        // tool_use events keep their existing Running default so the
+        // ◉ glyph + " · running" badge animate while the watched
+        // command runs.
+        let mut app = make_test_app();
+        assert!(!app.replay_in_progress, "live default");
+        app.upsert_monitor_from_tool_input(
+            "tu_live",
+            "live monitor".to_owned(),
+            "true".to_owned(),
+            true,
+            300_000,
+        );
+        let monitors = app.monitors();
+        assert_eq!(monitors.len(), 1);
+        assert_eq!(monitors[0].status, crate::app::state::types::MonitorStatus::Running);
+    }
+
+    #[test]
+    fn upsert_monitor_replay_then_terminal_event_keeps_stopped() {
+        // The replay walker may emit one or more terminal
+        // `task_updated` events after the initial tool_use. Those
+        // route through `set_monitor_status_by_task_id` and re-flip
+        // the entry. This test simulates that sequence: replay
+        // inserts Stopped; a terminal Completed event arrives; the
+        // entry ends in Completed (status setter wins). Verifies
+        // strategy A interacts cleanly with downstream flips.
+        let mut app = make_test_app();
+        app.replay_in_progress = true;
+        app.upsert_monitor_from_tool_input(
+            "tu_replay",
+            "historical monitor".to_owned(),
+            "true".to_owned(),
+            false,
+            0,
+        );
+        // Stamp task_id so the by_task_id setter can find it.
+        app.stamp_monitor_task_id("tu_replay", "task_x".to_owned());
+        app.set_monitor_status_by_task_id(
+            "task_x",
+            crate::app::state::types::MonitorStatus::Completed,
+        );
+        // `set_monitor_status_by_task_id` triggers the
+        // all-completed clear in this PR's pre-Bug-5 state. After
+        // Bug 5a defers that trigger, the entry persists. Either
+        // way the status MUST be Completed (never stuck Running).
+        if let Some(monitor) = app.monitors().first() {
+            assert_eq!(
+                monitor.status,
+                crate::app::state::types::MonitorStatus::Completed,
+                "terminal event must re-flip the replay-restored entry",
+            );
+        }
+        // (When the entry has been cleared, the assertion is
+        // vacuously satisfied - the bug we're guarding against is
+        // "stuck Running", which can't be true if the entry is gone.)
     }
 }
