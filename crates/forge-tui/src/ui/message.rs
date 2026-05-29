@@ -1,7 +1,8 @@
 use crate::app::{
     BlockCache, CachedMessageSegment, ChatMessage, IncrementalMarkdown, MarkdownRenderKey,
     MessageBlock, MessageRenderCache, MessageRenderCacheKey, MessageRenderSignature, MessageRole,
-    SystemSeverity, TextBlock, WelcomeBlock, hash_text_block_content, hash_welcome_block_content,
+    StopHookEntry, SystemSeverity, TextBlock, WelcomeBlock, hash_text_block_content,
+    hash_welcome_block_content,
 };
 use crate::ui::peer_block;
 use crate::ui::theme;
@@ -137,6 +138,12 @@ pub(crate) struct MessageRenderContext<'a> {
     width: u16,
     layout_generation: u64,
     options: MessageRenderOptions,
+    /// #273: Hooks list for the active `Message::StopHookSummary` chip
+    /// bound to this message. Empty slice when no summary applies.
+    /// Lives on the context rather than `MessageRenderOptions` because
+    /// `MessageRenderOptions` must stay `Copy + Default` for the cache
+    /// key plumbing; the slice already inherits the `'a` lifetime here.
+    stop_hook_summary_hooks: &'a [StopHookEntry],
 }
 
 impl<'a> MessageRenderContext<'a> {
@@ -151,7 +158,18 @@ impl<'a> MessageRenderContext<'a> {
             width,
             layout_generation,
             options,
+            stop_hook_summary_hooks: &[],
         }
+    }
+
+    /// #273: Attach a hooks list for the stop_hook_summary chip
+    /// renderer. Caller is responsible for setting
+    /// `options.stop_hook_summary_actions > 0` to actually surface
+    /// the chip; an attached slice with `actions == 0` renders
+    /// nothing.
+    pub(crate) fn with_stop_hook_hooks(mut self, hooks: &'a [StopHookEntry]) -> Self {
+        self.stop_hook_summary_hooks = hooks;
+        self
     }
 }
 
@@ -231,6 +249,24 @@ fn build_message_layout(
         ),
         MessageRole::Assistant => {
             append_assistant_blocks(msg, spinner, render_context, &mut layout);
+            // #273: stop_hook_summary chip sits between the
+            // assistant body and the trailing separator so the
+            // visual order reads `body → hook summary chip →
+            // (separator)`. Hidden when `actions == 0`.
+            if render_context.options.stop_hook_summary_actions > 0 {
+                let (chip_y, chip_h) = append_stop_hook_summary(
+                    render_context.options.stop_hook_summary_actions,
+                    render_context.options.stop_hook_summary_expanded,
+                    render_context.stop_hook_summary_hooks,
+                    render_context.width,
+                    &mut layout,
+                );
+                msg.stop_hook_summary_y_in_msg = chip_y;
+                msg.stop_hook_summary_height = chip_h;
+            } else {
+                msg.stop_hook_summary_y_in_msg = 0;
+                msg.stop_hook_summary_height = 0;
+            }
         }
         MessageRole::System(_) => append_system_blocks(msg, render_context.width, &mut layout),
     }
@@ -240,6 +276,51 @@ fn build_message_layout(
     }
 
     layout
+}
+
+/// #273: Render a `Message::StopHookSummary` as a collapsed
+/// `↳ hook summary · N actions [▶ expand]` chip. When `expanded`,
+/// follow with one DIM indented `command · duration` row per hook.
+/// Caller already gated on `actions > 0` so this function assumes
+/// the chip is wanted. Returns `(chip_y_in_msg, chip_height)` — the
+/// wrapped-row offset and height of the clickable chip line(s),
+/// excluding the leading blank and any expanded hook rows. Caller
+/// stamps these on the `ChatMessage` so the mouse handler can route
+/// clicks back to the toggle.
+fn append_stop_hook_summary(
+    actions: u32,
+    expanded: bool,
+    hooks: &[StopHookEntry],
+    width: u16,
+    layout: &mut MessageLayout,
+) -> (usize, usize) {
+    layout.push_blank();
+    let chip_y = layout.height;
+    let toggle_label = if expanded { "[▼ collapse]" } else { "[▶ expand]" };
+    let action_word = if actions == 1 { "action" } else { "actions" };
+    let chip = Line::from(vec![
+        Span::styled(
+            format!("↳ hook summary · {actions} {action_word} "),
+            Style::default().fg(theme::DIM),
+        ),
+        Span::styled(toggle_label.to_owned(), Style::default().fg(theme::DIM)),
+    ]);
+    layout.push_wrapped_line(chip, width);
+    let chip_height = layout.height.saturating_sub(chip_y);
+    if expanded {
+        for hook in hooks {
+            let body = Line::from(Span::styled(
+                format!(
+                    "    {} · {}",
+                    hook.command,
+                    format_turn_duration(hook.duration_ms),
+                ),
+                Style::default().fg(theme::DIM),
+            ));
+            layout.push_wrapped_line(body, width);
+        }
+    }
+    (chip_y, chip_height)
 }
 
 fn append_welcome_blocks(msg: &mut ChatMessage, width: u16, layout: &mut MessageLayout) {
@@ -668,6 +749,8 @@ pub fn measure_message_height_cached_with_tools_collapsed_and_separator_and_mode
             include_trailing_separator,
             suppress_group_header: false,
             envelope_streak_position: None,
+            stop_hook_summary_actions: 0,
+            stop_hook_summary_expanded: false,
         },
     )
 }
@@ -687,6 +770,19 @@ pub fn measure_message_height_cached_with_options(
 ) -> (usize, usize) {
     let render_context =
         MessageRenderContext::new(current_mode_id, width, layout_generation, options);
+    measure_message_height_cached_with_context(msg, spinner, render_context)
+}
+
+/// #273: Context-taking measurement helper. Callers that need to
+/// thread state beyond `MessageRenderOptions` (today: the
+/// stop_hook_summary hooks slice) build a `MessageRenderContext`
+/// themselves and pass it in. Other callers use the simpler
+/// `_with_options` variant which forwards an empty stop-hook slice.
+pub(crate) fn measure_message_height_cached_with_context(
+    msg: &mut ChatMessage,
+    spinner: &SpinnerState,
+    render_context: MessageRenderContext<'_>,
+) -> (usize, usize) {
     let cache = get_or_build_message_render_cache(msg, spinner, render_context);
     (cache.height(), cache.wrapped_lines())
 }
@@ -737,6 +833,8 @@ pub(crate) fn render_message_from_offset_with_tools_collapsed(
             include_trailing_separator: true,
             suppress_group_header: false,
             envelope_streak_position: None,
+            stop_hook_summary_actions: 0,
+            stop_hook_summary_expanded: false,
         },
         skip_rows,
         out,
@@ -872,6 +970,18 @@ pub(crate) struct MessageRenderOptions {
     /// between full streak-starter chrome and compact follower
     /// shape (#163). `None` for non-envelope messages.
     pub envelope_streak_position: Option<EnvelopeStreakPosition>,
+    /// #273: Action count from the `Message::StopHookSummary` bound
+    /// to this message. `0` -> no chip rendered. Non-zero -> render
+    /// the collapsed `↳ hook summary · N actions [▶ expand]` line at
+    /// the end of the assistant turn. Folded into the cache key so a
+    /// fresh summary event reliably invalidates the prior render.
+    pub stop_hook_summary_actions: u32,
+    /// #273: Toggle for the stop-hook-summary expanded body. When
+    /// true and `stop_hook_summary_actions > 0`, the renderer also
+    /// emits a DIM indented list of `command · duration` rows below
+    /// the chip. Folded into the cache key so click-to-expand flips
+    /// re-render cleanly.
+    pub stop_hook_summary_expanded: bool,
 }
 
 fn get_or_build_message_render_cache<'a>(
@@ -909,10 +1019,13 @@ fn build_message_render_cache_key(
         include_trailing_separator: render_context.options.include_trailing_separator,
         suppress_group_header: render_context.options.suppress_group_header,
         envelope_streak_position_ord,
+        stop_hook_summary_actions: render_context.options.stop_hook_summary_actions,
+        stop_hook_summary_expanded: render_context.options.stop_hook_summary_expanded,
         render_signature: build_message_render_signature(
             msg,
             spinner,
             render_context.tool_render_context,
+            render_context.stop_hook_summary_hooks,
         ),
     }
 }
@@ -921,6 +1034,7 @@ fn build_message_render_signature(
     msg: &ChatMessage,
     spinner: &SpinnerState,
     tool_render_context: tool_call::ToolCallRenderContext<'_>,
+    stop_hook_summary_hooks: &[StopHookEntry],
 ) -> MessageRenderSignature {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
@@ -937,6 +1051,14 @@ fn build_message_render_signature(
     assistant_frame.hash(&mut hasher);
     for block in &msg.blocks {
         hash_message_block_into(&mut hasher, block, spinner, tool_render_context);
+    }
+    // #273: hook list contents drive the expanded body; fold them
+    // into the signature so a fresh `StopHookSummary` with new hook
+    // metadata invalidates the cached layout even when actions count
+    // is unchanged.
+    for hook in stop_hook_summary_hooks {
+        hook.command.hash(&mut hasher);
+        hook.duration_ms.hash(&mut hasher);
     }
     MessageRenderSignature(hasher.finish())
 }
@@ -2164,6 +2286,8 @@ mod tests {
             include_trailing_separator: true,
             suppress_group_header: false,
             envelope_streak_position: None,
+            stop_hook_summary_actions: 0,
+            stop_hook_summary_expanded: false,
         }
     }
 
@@ -2173,6 +2297,8 @@ mod tests {
             include_trailing_separator: false,
             suppress_group_header: false,
             envelope_streak_position: None,
+            stop_hook_summary_actions: 0,
+            stop_hook_summary_expanded: false,
         }
     }
 
@@ -2468,6 +2594,8 @@ mod tests {
                 include_trailing_separator: false,
                 suppress_group_header: false,
                 envelope_streak_position: None,
+                stop_hook_summary_actions: 0,
+                stop_hook_summary_expanded: false,
             },
             0,
             &mut out,
@@ -2500,6 +2628,8 @@ mod tests {
                 include_trailing_separator: false,
                 suppress_group_header: false,
                 envelope_streak_position: None,
+                stop_hook_summary_actions: 0,
+                stop_hook_summary_expanded: false,
             },
             0,
             &mut out,
@@ -2700,6 +2830,8 @@ mod tests {
                         include_trailing_separator: true,
                         suppress_group_header: false,
                         envelope_streak_position: None,
+                        stop_hook_summary_actions: 0,
+                        stop_hook_summary_expanded: false,
                     },
                 ),
                 &mut lines,
@@ -3139,6 +3271,8 @@ mod tests {
             include_trailing_separator: false,
             suppress_group_header: false,
             envelope_streak_position: None,
+            stop_hook_summary_actions: 0,
+            stop_hook_summary_expanded: false,
         };
         let mut lines_with = Vec::new();
         render_message(
@@ -3157,6 +3291,8 @@ mod tests {
             include_trailing_separator: false,
             suppress_group_header: true,
             envelope_streak_position: None,
+            stop_hook_summary_actions: 0,
+            stop_hook_summary_expanded: false,
         };
         let mut lines_without = Vec::new();
         render_message(
@@ -3318,6 +3454,167 @@ mod tests {
         assert_eq!(
             old_rendered, "Forge",
             "historical turn must omit chip even when spinner has duration",
+        );
+    }
+
+    // ----------------------------------------------------------------
+    // #273: stop_hook_summary collapsed chip + expanded body.
+    // ----------------------------------------------------------------
+
+    fn stop_hook_options(actions: u32, expanded: bool) -> MessageRenderOptions {
+        MessageRenderOptions {
+            stop_hook_summary_actions: actions,
+            stop_hook_summary_expanded: expanded,
+            ..options_without_separator()
+        }
+    }
+
+    fn render_assistant_with_stop_hook(
+        actions: u32,
+        expanded: bool,
+        hooks: &[StopHookEntry],
+    ) -> Vec<String> {
+        let spinner = idle_spinner();
+        let mut msg = make_text_message(MessageRole::Assistant, "done");
+        let mut lines = Vec::new();
+        let context =
+            MessageRenderContext::new(None, 80, 0, stop_hook_options(actions, expanded))
+                .with_stop_hook_hooks(hooks);
+        render_message(&mut msg, &spinner, context, &mut lines);
+        render_lines_to_strings(&lines)
+    }
+
+    #[test]
+    fn stop_hook_summary_renders_collapsed_chip_when_actions_positive() {
+        let rendered = render_assistant_with_stop_hook(3, false, &[]);
+        // Forge label + "done" body + chip line.
+        assert_eq!(rendered.first().map(String::as_str), Some("Forge"));
+        assert!(rendered.iter().any(|line| line == "done"), "expected body line; got {rendered:?}");
+        assert!(
+            rendered.iter().any(|line| line.contains("↳ hook summary · 3 actions [▶ expand]")),
+            "expected collapsed chip; got {rendered:?}",
+        );
+        // Body block must NOT render when collapsed.
+        assert!(
+            !rendered.iter().any(|line| line.contains("[▼ collapse]")),
+            "collapsed chip must not show expand-state label; got {rendered:?}",
+        );
+    }
+
+    #[test]
+    fn stop_hook_summary_renders_singular_action_word() {
+        let rendered = render_assistant_with_stop_hook(1, false, &[]);
+        assert!(
+            rendered.iter().any(|line| line.contains("↳ hook summary · 1 action [▶ expand]")),
+            "expected `1 action` (singular); got {rendered:?}",
+        );
+    }
+
+    #[test]
+    fn stop_hook_summary_renders_nothing_when_actions_zero() {
+        let rendered = render_assistant_with_stop_hook(0, false, &[]);
+        // Forge label + "done" only — no chip, no expand state.
+        assert!(
+            rendered.iter().all(|line| !line.contains("↳ hook summary")),
+            "actions==0 must produce no chip; got {rendered:?}",
+        );
+    }
+
+    #[test]
+    fn stop_hook_summary_expanded_renders_hook_rows() {
+        let hooks = vec![
+            StopHookEntry {
+                command: "bash ~/.claude/hooks/notify.sh".to_owned(),
+                duration_ms: 980,
+            },
+            StopHookEntry {
+                command: "bash ~/.claude/hooks/log.sh".to_owned(),
+                duration_ms: 1_500,
+            },
+        ];
+        let rendered = render_assistant_with_stop_hook(2, true, &hooks);
+        assert!(
+            rendered.iter().any(|line| line.contains("↳ hook summary · 2 actions [▼ collapse]")),
+            "expected expand-state label; got {rendered:?}",
+        );
+        assert!(
+            rendered.iter().any(|line| line.contains("bash ~/.claude/hooks/notify.sh")
+                && line.contains("0.9s")),
+            "expected first hook row; got {rendered:?}",
+        );
+        assert!(
+            rendered.iter().any(|line| line.contains("bash ~/.claude/hooks/log.sh")
+                && line.contains("1.5s")),
+            "expected second hook row; got {rendered:?}",
+        );
+    }
+
+    #[test]
+    fn stop_hook_summary_stamps_hit_test_fields_when_chip_rendered() {
+        // The renderer must stamp `stop_hook_summary_y_in_msg /
+        // stop_hook_summary_height` on the ChatMessage so the mouse
+        // handler can route clicks back to the toggle. Stamping
+        // happens during `build_message_layout` — invoked through
+        // any render or measure call.
+        let spinner = idle_spinner();
+        let mut msg = make_text_message(MessageRole::Assistant, "done");
+        let mut out = Vec::new();
+        let ctx = MessageRenderContext::new(None, 80, 0, stop_hook_options(2, false))
+            .with_stop_hook_hooks(&[]);
+        render_message(&mut msg, &spinner, ctx, &mut out);
+        assert!(
+            msg.stop_hook_summary_height > 0,
+            "renderer must stamp non-zero height when chip is rendered",
+        );
+        assert!(
+            msg.stop_hook_summary_y_in_msg > 0,
+            "y_in_msg should be > 0 (chip sits after the assistant body)",
+        );
+    }
+
+    #[test]
+    fn stop_hook_summary_stamps_zero_when_no_chip() {
+        // Inverse: when actions==0 the renderer resets the stamped
+        // fields to zero so a previously-rendered chip can't ghost
+        // a click target after the source data is gone.
+        let spinner = idle_spinner();
+        let mut msg = make_text_message(MessageRole::Assistant, "done");
+        msg.stop_hook_summary_y_in_msg = 999;
+        msg.stop_hook_summary_height = 999;
+        let mut out = Vec::new();
+        let ctx = MessageRenderContext::new(None, 80, 0, stop_hook_options(0, false));
+        render_message(&mut msg, &spinner, ctx, &mut out);
+        assert_eq!(msg.stop_hook_summary_height, 0);
+        assert_eq!(msg.stop_hook_summary_y_in_msg, 0);
+    }
+
+    #[test]
+    fn stop_hook_summary_cache_invalidates_when_expand_toggles() {
+        // Toggling `stop_hook_summary_expanded` must rebuild the
+        // cache; the expanded view is taller than the collapsed view
+        // because the hook rows lift below the chip.
+        let spinner = idle_spinner();
+        let mut msg = make_text_message(MessageRole::Assistant, "done");
+        let hooks = vec![StopHookEntry {
+            command: "bash hook.sh".to_owned(),
+            duration_ms: 500,
+        }];
+
+        let collapsed_ctx =
+            MessageRenderContext::new(None, 80, 0, stop_hook_options(1, false))
+                .with_stop_hook_hooks(hooks.as_slice());
+        let collapsed = get_or_build_message_render_cache(&mut msg, &spinner, collapsed_ctx);
+        let collapsed_height = collapsed.height();
+
+        let expanded_ctx =
+            MessageRenderContext::new(None, 80, 0, stop_hook_options(1, true))
+                .with_stop_hook_hooks(hooks.as_slice());
+        let expanded = get_or_build_message_render_cache(&mut msg, &spinner, expanded_ctx);
+        let expanded_height = expanded.height();
+
+        assert!(
+            expanded_height > collapsed_height,
+            "expanded ({expanded_height}) must be taller than collapsed ({collapsed_height})",
         );
     }
 }

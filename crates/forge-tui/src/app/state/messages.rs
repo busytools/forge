@@ -22,6 +22,14 @@ pub struct ChatMessage {
     /// message whose first text block starts with a recognised
     /// bracket prefix (`[Question id=…]` / `[Message id=…]` / etc.).
     pub is_peer_envelope: bool,
+    /// #273: stop_hook_summary chip hit-test — wrapped-row offset
+    /// inside this message of the clickable chip line(s). `0` when
+    /// no chip is rendered. Stamped by `append_stop_hook_summary`.
+    pub stop_hook_summary_y_in_msg: usize,
+    /// #273: stop_hook_summary chip hit-test — wrapped-row height of
+    /// the clickable chip line(s) (excludes the leading blank and
+    /// any expanded hook rows). `0` when no chip is rendered.
+    pub stop_hook_summary_height: usize,
 }
 
 impl ChatMessage {
@@ -32,6 +40,8 @@ impl ChatMessage {
             usage,
             render_cache: MessageRenderCache::default(),
             is_peer_envelope: false,
+            stop_hook_summary_y_in_msg: 0,
+            stop_hook_summary_height: 0,
         }
     }
 
@@ -51,6 +61,8 @@ impl ChatMessage {
             usage,
             render_cache: MessageRenderCache::default(),
             is_peer_envelope: true,
+            stop_hook_summary_y_in_msg: 0,
+            stop_hook_summary_height: 0,
         }
     }
 
@@ -87,6 +99,16 @@ pub struct MessageRenderCacheKey {
     /// `derive(PartialEq, Eq)`. `0` = None, `1` = Start, `2` =
     /// FollowerNewWorker, `3` = FollowerSameWorker.
     pub envelope_streak_position_ord: u8,
+    /// #273: Action count from the `Message::StopHookSummary` bound
+    /// to this message (`0` when no summary applies). Folded into the
+    /// cache key so a fresh summary event reliably invalidates the
+    /// prior render even when the underlying assistant blocks didn't
+    /// change.
+    pub stop_hook_summary_actions: u32,
+    /// #273: Toggle for the stop-hook-summary expanded body. Folded
+    /// into the cache key so click-to-expand flips re-render without
+    /// extra coordination.
+    pub stop_hook_summary_expanded: bool,
     pub render_signature: MessageRenderSignature,
 }
 

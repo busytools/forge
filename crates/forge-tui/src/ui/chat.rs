@@ -317,6 +317,11 @@ fn measure_message_height_at(
     let sp = msg_spinner(base, idx, active_turn_assistant, &app.messages()[idx]);
     let suppress_group_header = message::compute_suppress_group_header(app.messages(), idx);
     let envelope_streak_position = message::compute_envelope_streak_position(app.messages(), idx);
+    // #273: read the snapshot up-front so the immutable borrow of
+    // `app` releases before the `active_messages_mut()` mutable
+    // borrow further down. Owned clone of the hooks list keeps the
+    // lifetime story flat.
+    let stop_hook_snapshot = stop_hook_summary_for(app, idx);
     let (h, rendered_lines) = measure_message_height(
         &mut app.active_messages_mut()[idx],
         &sp,
@@ -328,7 +333,10 @@ fn measure_message_height_at(
             include_trailing_separator: !is_last_message,
             suppress_group_header,
             envelope_streak_position,
+            stop_hook_summary_actions: stop_hook_snapshot.actions,
+            stop_hook_summary_expanded: stop_hook_snapshot.expanded,
         },
+        stop_hook_snapshot.hooks.as_slice(),
     );
     app.sync_render_cache_message(idx);
     stats.measured_msgs += 1;
@@ -336,6 +344,32 @@ fn measure_message_height_at(
     let vp = app.active_viewport_mut();
     vp.set_message_height(idx, h);
     vp.mark_message_height_measured(idx);
+}
+
+/// #273: Snapshot of the per-message stop_hook_summary for the
+/// render passes. Owned so the borrow of `app` releases before
+/// downstream mutable borrows. `actions == 0` when no summary is
+/// attached to `idx`; the renderer is responsible for skipping the
+/// chip in that case.
+#[derive(Default, Clone)]
+struct StopHookSnapshot {
+    actions: u32,
+    expanded: bool,
+    hooks: Vec<crate::app::StopHookEntry>,
+}
+
+fn stop_hook_summary_for(app: &App, idx: usize) -> StopHookSnapshot {
+    let Some(summary) = app.last_stop_hook_summary() else {
+        return StopHookSnapshot::default();
+    };
+    if summary.message_idx != idx {
+        return StopHookSnapshot::default();
+    }
+    StopHookSnapshot {
+        actions: summary.actions,
+        expanded: app.stop_hook_summary_expanded(idx),
+        hooks: summary.hooks.clone(),
+    }
 }
 
 /// Measure message height using ground truth: render the message into a scratch
@@ -353,16 +387,18 @@ fn measure_message_height(
     width: u16,
     layout_generation: u64,
     options: message::MessageRenderOptions,
+    stop_hook_hooks: &[crate::app::StopHookEntry],
 ) -> (usize, usize) {
     let _t = crate::perf::start_with("chat::measure_msg", "blocks", msg.blocks.len());
-    let (h, wrapped_lines) = message::measure_message_height_cached_with_options(
-        msg,
-        spinner,
+    let render_context = message::MessageRenderContext::new(
         current_mode_id,
         width,
         layout_generation,
         options,
-    );
+    )
+    .with_stop_hook_hooks(stop_hook_hooks);
+    let (h, wrapped_lines) =
+        message::measure_message_height_cached_with_context(msg, spinner, render_context);
     crate::perf::mark_with("chat::measure_msg_wrapped_lines", "lines", wrapped_lines);
     (h, wrapped_lines)
 }
@@ -758,17 +794,22 @@ fn render_culled_messages(
         let message_height = app.viewport().message_height(i);
         let suppress_group_header = message::compute_suppress_group_header(app.messages(), i);
         let envelope_streak_position = message::compute_envelope_streak_position(app.messages(), i);
+        let stop_hook = stop_hook_summary_for(app, i);
         let options = message::MessageRenderOptions {
             tools_collapsed,
             include_trailing_separator: i + 1 != msg_count,
             suppress_group_header,
             envelope_streak_position,
+            stop_hook_summary_actions: stop_hook.actions,
+            stop_hook_summary_expanded: stop_hook.expanded,
         };
+        let ctx = message::MessageRenderContext::new(mode_id, width, layout_generation, options)
+            .with_stop_hook_hooks(stop_hook.hooks.as_slice());
         if structural_skip > 0 {
             let remaining_skip = message::render_message_from_offset_internal_with_mode(
                 &mut app.active_messages_mut()[i],
                 &sp,
-                message::MessageRenderContext::new(mode_id, width, layout_generation, options),
+                ctx,
                 structural_skip,
                 out,
             );
@@ -778,12 +819,7 @@ fn render_culled_messages(
             local_scroll = remaining_skip;
             structural_skip = 0;
         } else {
-            message::render_message(
-                &mut app.active_messages_mut()[i],
-                &sp,
-                message::MessageRenderContext::new(mode_id, width, layout_generation, options),
-                out,
-            );
+            message::render_message(&mut app.active_messages_mut()[i], &sp, ctx, out);
             rendered_rows = rendered_rows.saturating_add(message_height);
         }
         app.sync_render_cache_message(i);
@@ -1450,6 +1486,8 @@ mod tests {
                     include_trailing_separator: false,
                     suppress_group_header: false,
                     envelope_streak_position: None,
+                    stop_hook_summary_actions: 0,
+                    stop_hook_summary_expanded: false,
                 },
             ),
             &mut full_lines,
@@ -1511,6 +1549,8 @@ mod tests {
                     include_trailing_separator: false,
                     suppress_group_header: false,
                     envelope_streak_position: None,
+                    stop_hook_summary_actions: 0,
+                    stop_hook_summary_expanded: false,
                 },
             ),
             &mut full_lines,
