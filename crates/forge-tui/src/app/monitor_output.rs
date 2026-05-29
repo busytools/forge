@@ -4,7 +4,7 @@
 //!
 //! The CLI's local-bash Monitor flavour streams the command's stdout
 //! to a file on disk (path carried via `task_notification.output_file`
-//! — confirmed in
+//! - confirmed in
 //! `~/Projects/forge/.claude/skills/claude-cli-upgrade/reference-captures/monitor.jsonl`)
 //! rather than over the wire. Without reading that file, the tail
 //! only ever surfaces the "Monitor X stream ended" summary line.
@@ -145,7 +145,7 @@ mod tests {
     #[test]
     fn handles_trailing_partial_line_without_newline() {
         // File with unterminated trailing line: BufRead::lines yields
-        // it as a final Ok([whatever]) entry — included in the tail.
+        // it as a final Ok([whatever]) entry, included in the tail.
         let path = write_tmp("one\ntwo\npartial-without-newline");
         let lines = read_output_file_tail(&path, 12).expect("read ok");
         assert_eq!(
