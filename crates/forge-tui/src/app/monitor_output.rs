@@ -13,7 +13,7 @@
 
 use std::collections::VecDeque;
 use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::Path;
 
 use crate::ui::highlight;
@@ -39,6 +39,14 @@ fn sanitize_for_render(raw: &str) -> String {
         .collect()
 }
 
+/// Largest slice of the file read per refresh. Monitor output_files
+/// grow without bound (cargo build, npm install), and this runs inline
+/// on the TUI event loop per progress tick, so we seek to within this
+/// window of the end rather than re-reading the whole file each time.
+/// 64 KiB comfortably holds the last `OUTPUT_TAIL_MAX` lines for any
+/// realistic line length.
+const TAIL_WINDOW_BYTES: u64 = 64 * 1024;
+
 /// Read the last `max_lines` lines of `path` into a `Vec` ordered
 /// oldest-first. Returns `None` on any read error (file missing,
 /// permission denied, mid-write corruption) so the caller can
@@ -46,10 +54,12 @@ fn sanitize_for_render(raw: &str) -> String {
 /// "file is genuinely empty". The empty-file case returns
 /// `Some(vec![])`.
 ///
-/// Trailing partial lines (the file is still growing as the monitor
-/// runs) are tolerated: `BufRead::lines` yields `Some(Err(_))` for
-/// the unterminated chunk and we silently skip it. Standard for
-/// tail-style readers.
+/// Only the final [`TAIL_WINDOW_BYTES`] are read: for a larger file we
+/// seek to `len - TAIL_WINDOW_BYTES` and drop the first (probably
+/// partial) line after the seek. Files under the window are read whole.
+/// Trailing partial lines (the file is still growing) are tolerated:
+/// `BufRead::lines` yields `Some(Err(_))` for the unterminated chunk
+/// and we silently skip it.
 ///
 /// Errors emit `tracing::warn!` with the path + reason so operators
 /// see why the tail looks empty without forge panicking on a
@@ -59,7 +69,7 @@ pub fn read_output_file_tail(path: &Path, max_lines: usize) -> Option<Vec<String
     if max_lines == 0 {
         return Some(Vec::new());
     }
-    let file = match File::open(path) {
+    let mut file = match File::open(path) {
         Ok(f) => f,
         Err(err) => {
             tracing::warn!(
@@ -74,10 +84,19 @@ pub fn read_output_file_tail(path: &Path, max_lines: usize) -> Option<Vec<String
             return None;
         }
     };
+    // Seek to within TAIL_WINDOW_BYTES of the end so per-tick cost is
+    // bounded by the window, not the (growing) full file size. After a
+    // mid-file seek the first line is probably partial, so drop it.
+    let file_len = file.metadata().map_or(0, |m| m.len());
+    let drop_partial_first = file_len > TAIL_WINDOW_BYTES
+        && file.seek(SeekFrom::Start(file_len - TAIL_WINDOW_BYTES)).is_ok();
     let mut ring: VecDeque<String> = VecDeque::with_capacity(max_lines);
-    for line in BufReader::new(file).lines() {
+    for (idx, line) in BufReader::new(file).lines().enumerate() {
         match line {
             Ok(text) => {
+                if idx == 0 && drop_partial_first {
+                    continue;
+                }
                 if ring.len() == max_lines {
                     ring.pop_front();
                 }
@@ -202,6 +221,27 @@ line 4 with \x08\x08backspace\n";
             lines,
             vec!["one".to_owned(), "two".to_owned(), "partial-without-newline".to_owned()]
         );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn large_file_reads_only_the_tail_window() {
+        // A file well past TAIL_WINDOW_BYTES must still return the last
+        // max_lines complete lines (proves the seek path + partial-first
+        // drop keep the real tail).
+        let filler = "x".repeat(100);
+        let mut contents = String::new();
+        for i in 0..1200 {
+            contents.push_str(&format!("filler-{i}-{filler}\n"));
+        }
+        for tag in ["tail-a", "tail-b", "tail-c"] {
+            contents.push_str(tag);
+            contents.push('\n');
+        }
+        assert!(contents.len() as u64 > TAIL_WINDOW_BYTES, "fixture must exceed the window");
+        let path = write_tmp(&contents);
+        let lines = read_output_file_tail(&path, 3).expect("read ok");
+        assert_eq!(lines, vec!["tail-a".to_owned(), "tail-b".to_owned(), "tail-c".to_owned()]);
         let _ = std::fs::remove_file(&path);
     }
 }
