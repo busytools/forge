@@ -677,7 +677,7 @@ fn render_lifecycle_one_liner(tc: &crate::app::ToolCallInfo) -> Option<Vec<Line<
     }
 }
 
-/// extract the `name` field from a workflow `script`'s
+/// Extract the `name` field from a workflow `script`'s
 /// `export const meta = { name: '...' }` block. Falls back to the
 /// literal `"Workflow"` label when the block isn't present or
 /// doesn't carry a name. Conservative substring-based parser
@@ -686,7 +686,7 @@ pub(crate) fn workflow_meta_name(script: &str) -> String {
     extract_meta_field(script, "name").unwrap_or_else(|| "Workflow".to_owned())
 }
 
-/// extract both the `name` and `description` fields
+/// Extract both the `name` and `description` fields
 /// from a workflow `script`'s meta block. Returns
 /// `(name, description)` where `name` falls back to `"Workflow"`
 /// when missing; `description` is `None` when the meta block lacks

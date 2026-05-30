@@ -1773,7 +1773,7 @@ impl App {
         }
     }
 
-    /// read the matching Monitor's stored `output_file`
+    /// Read the matching Monitor's stored `output_file`
     /// and refresh its `output_tail` with the last
     /// `MonitorEntry::OUTPUT_TAIL_MAX` lines. Called on each
     /// `task_notification` / `task_progress` event for the monitor.

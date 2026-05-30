@@ -1244,7 +1244,7 @@ fn append_tasks_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
 /// per-parent cap so both surfaces feel consistent.
 const TASKS_MAX: usize = 5;
 
-/// append the MONITORS Inspector section. Renders one
+/// Append the MONITORS Inspector section. Renders one
 /// row per Monitor entry with the description headline, status
 /// badge, and (when expanded OR currently-running) the tail of
 /// captured `task_notification.summary` lines. Section is hidden
@@ -1362,7 +1362,7 @@ fn append_monitor_row(
     }
 }
 
-/// append the WORKFLOWS Inspector section. Header +
+/// Append the WORKFLOWS Inspector section. Header +
 /// one row per workflow entry with the meta name + status, then
 /// (when running or expanded) a per-phase tree showing status
 /// glyph + title + log tail. Section is hidden when
@@ -1518,7 +1518,7 @@ fn append_workflow_row(
     }
 }
 
-/// single source of truth for inspector-row
+/// Single source of truth for inspector-row
 /// width budgeting. Every row variant (TASKS / PROCESSES /
 /// MONITORS header / MONITORS tail / WORKFLOWS header / WORKFLOWS
 /// phase / WORKFLOWS log / final-result summary) feeds its actual

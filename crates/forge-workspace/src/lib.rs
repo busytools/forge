@@ -141,7 +141,7 @@ pub mod tooling {
 pub mod translate {
     pub use forge_agent::translate::*;
 }
-/// pass-through for the agent's typed
+/// Pass-through for the agent's typed
 /// tool-input parsers (`AskUserQuestion`, `Monitor`, `Workflow`).
 /// The TUI's tool-call event handlers consume these directly when
 /// surfacing the chat one-liner + Inspector entry for the new CLI

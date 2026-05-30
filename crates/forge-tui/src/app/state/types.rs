@@ -46,7 +46,7 @@ pub struct StopHookEntry {
     pub duration_ms: u64,
 }
 
-/// lifecycle status of a Monitor (`Monitor` tool_use).
+/// Lifecycle status of a Monitor (`Monitor` tool_use).
 /// A Monitor row stays surfaced until ALL session monitors transition
 /// to a terminal variant (`Stopped` / `Completed` / `TimedOut`); the
 /// MONITORS Inspector section auto-clears when no monitor is still
@@ -68,7 +68,7 @@ pub enum MonitorStatus {
     TimedOut,
 }
 
-/// a single Monitor entry surfaced in chat + the
+/// A single Monitor entry surfaced in chat + the
 /// Inspector MONITORS section. Populated on Monitor tool_use,
 /// updated on terminal lifecycle events (TaskStop, task_updated
 /// with `status: stopped|killed|failed`, Result origin marker for
@@ -98,7 +98,7 @@ pub struct MonitorEntry {
     /// chat one-liner (`◉ Monitor started · ...` vs `◉ Monitor
     /// stopped · ...`).
     pub status: MonitorStatus,
-    /// path to the local-bash task's `output_file`
+    /// Path to the local-bash task's `output_file`
     /// (CLI writes the watched command's stdout here). Stamped from
     /// `task_notification.output_file`. The Monitor section reads
     /// this on `task_notification` / `task_progress` events to
@@ -132,7 +132,7 @@ impl MonitorEntry {
     }
 }
 
-/// lifecycle status of a Workflow.
+/// Lifecycle status of a Workflow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkflowStatus {
     /// Workflow is in progress - phases / agents may still fire.
@@ -143,7 +143,7 @@ pub enum WorkflowStatus {
     Completed,
 }
 
-/// per-phase status (mirrors the wire `state` field's
+/// Per-phase status (mirrors the wire `state` field's
 /// canonical values).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PhaseStatus {
@@ -156,7 +156,7 @@ pub enum PhaseStatus {
     Completed,
 }
 
-/// one phase row inside a WorkflowEntry's per-phase
+/// One phase row inside a WorkflowEntry's per-phase
 /// tree. The renderer walks `phases` in `index` order; per-phase
 /// logs are the truncated lifecycle markers (last_tool_name +
 /// last_tool_summary + resultPreview) captured from
@@ -186,7 +186,7 @@ impl PhaseEntry {
     }
 }
 
-/// a single Workflow entry surfaced in chat + the
+/// A single Workflow entry surfaced in chat + the
 /// Inspector WORKFLOWS section. Populated on `Workflow` tool_use;
 /// `phases` / `final_result_summary` updated from each
 /// `Message::TaskProgress` carrying `workflow_progress` events.
