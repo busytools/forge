@@ -102,13 +102,13 @@ fn handle_stop_hook_summary(
 /// Idempotent - same state in re-applies as a no-op.
 ///
 /// Converts the wire-side `forge_primitives::FastModeState` to the
-/// App-side `model::FastModeState`. Both enums share the same
-/// variant set; the conversion is a 1:1 match.
+/// App-side `model::FastModeState`; an unrecognised wire state
+/// collapses to `Off` (no fast-mode badge).
 fn apply_fast_mode_state(app: &mut App, wire_state: forge_primitives::FastModeState) {
     use crate::agent::model::FastModeState as Model;
     use forge_primitives::FastModeState as Wire;
     let model_state = match wire_state {
-        Wire::Off => Model::Off,
+        Wire::Off | Wire::Unknown => Model::Off,
         Wire::Cooldown => Model::Cooldown,
         Wire::On => Model::On,
     };

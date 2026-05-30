@@ -257,6 +257,8 @@ pub enum FastModeState {
     Off,
     Cooldown,
     On,
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -340,6 +342,8 @@ pub enum TerminalReason {
     ToolDeferred,
     MaxTurns,
     Completed,
+    #[serde(other)]
+    Unknown,
 }
 
 impl TerminalReason {
@@ -357,6 +361,7 @@ impl TerminalReason {
             Self::ToolDeferred => "tool_deferred",
             Self::MaxTurns => "max_turns",
             Self::Completed => "completed",
+            Self::Unknown => "unknown",
         }
     }
 }

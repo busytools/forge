@@ -434,6 +434,7 @@ pub enum AssistantMessageError {
     /// Generic server-side error.
     ServerError,
     /// Fallback for error classes forge-sdk doesn't yet recognise.
+    #[serde(other)]
     Unknown,
 }
 
@@ -478,6 +479,9 @@ pub enum StopReason {
     StopSequence,
     /// Model is requesting a tool call; expect a `tool_use` block in content.
     ToolUse,
+    /// A stop reason forge-sdk doesn't yet recognise.
+    #[serde(other)]
+    Unknown,
 }
 
 /// Rate-limit window status. Wire literal:
@@ -507,6 +511,9 @@ pub enum RateLimitType {
     SevenDaySonnet,
     /// Pay-as-you-go overage window.
     Overage,
+    /// A rate-limit window forge-sdk doesn't yet recognise.
+    #[serde(other)]
+    Unknown,
 }
 
 /// Rate-limit snapshot emitted inside a [`Message::RateLimitEvent`].
@@ -597,6 +604,9 @@ pub enum TaskNotificationStatus {
     Failed,
     /// Task was cancelled before it could finish.
     Stopped,
+    /// A status forge-sdk doesn't yet recognise.
+    #[serde(other)]
+    Unknown,
 }
 
 /// Patch payload carried by [`Message::TaskUpdated`]. Fields are
