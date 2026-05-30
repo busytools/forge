@@ -162,7 +162,7 @@ impl SessionTask {
                 // and subsequent Connecteds (the /new / login /
                 // logout flow that enters via `connected_once`).
                 // Each Connected carries a fresh session_id and the
-                // worker's tag must travel to the new JSONL  -
+                // worker's tag must travel to the new JSONL -
                 // without re-tagging on /new, the resume scan
                 // (#157/#164) finds the orphaned pre-/new JSONL and
                 // resumes that instead of the active post-/new
@@ -385,7 +385,7 @@ impl SessionTask {
                         tool_call_id,
                     );
                 } else {
-                    // TUI channel closed between insert and send  -
+                    // TUI channel closed between insert and send -
                     // resolve the orphan with Cancelled so the SDK
                     // callback unblocks.
                     if let Some(slot) =

@@ -984,7 +984,7 @@ fn peer_badge_spans(
 // (cells 1-3 green, 4-6 yellow, 7-9 orange, 10-12 red) so the
 // rightmost filled cell tells you which zone the bar is in.
 //
-// Cwd + branch rows live in the Inspector pane's `GIT` section  -
+// Cwd + branch rows live in the Inspector pane's `GIT` section -
 // see `crate::ui::inspector_pane`.
 // ---------------------------------------------------------------
 

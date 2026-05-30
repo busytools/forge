@@ -129,7 +129,7 @@ fn handle_compact_submit(app: &mut App, args: &[&str]) -> bool {
     {
         return true;
     }
-    // The `/compact` text falls through as a normal user message  -
+    // The `/compact` text falls through as a normal user message -
     // the CLI emits `status:"compacting"` as its first response
     // frame, which `apply_session_status_update` translates into
     // `is_compacting = true` via the wire path. No optimistic-set

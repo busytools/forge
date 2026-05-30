@@ -529,7 +529,7 @@ mod tests {
 
     #[test]
     fn bash_renders_through_standard_path_no_box_borders() {
-        // Issue #39: Bash flows through the standard tool-call path  -
+        // Issue #39: Bash flows through the standard tool-call path -
         // no bordered card. Output should be a title row + body lines
         // prefixed with `  │  ` / `  └─ ` (DIM), like every other tool.
         let mut tc = test_tool_call("echo hi", "Bash", model::ToolCallStatus::Completed);

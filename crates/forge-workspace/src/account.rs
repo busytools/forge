@@ -152,7 +152,7 @@ pub(crate) struct AccountStateMap {
     /// Global round-robin cursor for `pick_for_project`. Each pick
     /// in the usable tier reads `cursor % usable_len`, then bumps
     /// the cursor. Shared across all projects so rotation spans the
-    /// whole spawn stream, not just per-project. In-memory only  -
+    /// whole spawn stream, not just per-project. In-memory only -
     /// resets to 0 on forge restart.
     rr_cursor: std::sync::atomic::AtomicUsize,
 }

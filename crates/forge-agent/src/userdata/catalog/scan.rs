@@ -59,7 +59,7 @@ fn try_read_dir(dir: &Path) -> Option<fs::ReadDir> {
 }
 
 /// Size of the head / tail byte buffer for lite metadata reads.
-/// the CLI constant - match exactly so
+/// The CLI constant - match exactly so
 /// the two implementations slice transcripts at the same boundary.
 const LITE_READ_BUF_SIZE: u64 = 65_536;
 
@@ -292,7 +292,7 @@ fn synthesize_queued_command_message(attachment: &Value) -> Value {
     })
 }
 
-/// Sanitise a path the same way the `claude` CLI does  -
+/// Sanitise a path the same way the `claude` CLI does -
 /// non-alphanumerics become hyphens, and overlong paths are
 /// truncated with a base-36 hash suffix (matching JS's
 /// `String.prototype.hashCode` trick).
@@ -1034,7 +1034,7 @@ mod tests {
 
     #[test]
     fn find_session_tag_ignores_tag_on_tool_use_lines() {
-        // A git-tag tool_use shouldn't be picked up as a session tag  -
+        // A git-tag tool_use shouldn't be picked up as a session tag -
         // the `"tag"` string appears but the line isn't `{"type":"tag"`.
         let content = r#"{"type":"user","message":{"content":"hi"}}
 {"type":"assistant","message":{"content":[{"type":"tool_use","input":{"command":"git tag","tag":"v1.0"}}]}}

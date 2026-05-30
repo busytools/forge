@@ -725,7 +725,7 @@ pub(super) fn apply_session_update_connected(
         }
     }
     set_bucket_lifecycle_state(app, key, crate::app::session::SessionLifecycleState::Idle);
-    // Clear any captured connection error on a successful reconnect  -
+    // Clear any captured connection error on a successful reconnect -
     // the launchpad picker stops surfacing the stale `✗` row tail.
     if let Some(session) = app.session_mut(key) {
         session.last_connection_error = None;

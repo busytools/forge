@@ -55,8 +55,8 @@ pub enum Message {
         /// (`extra_args={"replay-user-messages": None}`).
         uuid: Option<String>,
         /// Raw tool-result payload the CLI attaches when this user turn
-        /// reports a tool's output. the CLI `UserMessage.tool_use_result`
-        ///; forge-sdk passes it through as a
+        /// reports a tool's output. The CLI `UserMessage.tool_use_result`;
+        /// forge-sdk passes it through as a
         /// [`Value`] since the upstream type is `dict[str, Any]`.
         tool_use_result: Option<Value>,
     },

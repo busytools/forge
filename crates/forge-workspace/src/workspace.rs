@@ -5877,9 +5877,11 @@ mod async_worker_spawn_failure_tests {
         key
     }
 
-    /// The Connected catalog-mirror guard keys off worker_lookup_for_session
-    /// (by the pre-rekey synth key): a known worker must resolve so the
-    /// tag-less mirror is skipped, while a lead/regular session must not.
+    /// Pins the lookup predicate the Connected catalog-mirror guard (in
+    /// session_task) depends on: worker_lookup_for_session keyed by the
+    /// pre-rekey synth key resolves a seeded worker (so its tag-less
+    /// mirror is skipped) and not a lead/regular session. The guard's
+    /// end-to-end skip is exercised in production.
     #[test]
     fn worker_lookup_drives_catalog_mirror_skip() {
         let (workspace, _rx) = Workspace::testing_stub();
