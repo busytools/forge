@@ -59,59 +59,64 @@ pub(crate) fn spawn_reader_task(
     mut shutdown_rx: oneshot::Receiver<()>,
 ) -> JoinHandle<()> {
     let inflight: InflightDispatches = Arc::new(Mutex::new(HashMap::new()));
-    tokio::spawn(async move {
-        // Drain anything captured during init.
-        for msg in pre_init_messages {
-            dispatch.capture_session_id_from(&msg);
-            if events_tx.send(Ok(msg)).is_err() {
-                close_subprocess(&mut subprocess).await;
-                drain_pending(&pending_controls).await;
-                return;
+    use tracing::Instrument;
+    let span = tracing::info_span!("forge_sdk::control_reader");
+    tokio::spawn(
+        async move {
+            // Drain anything captured during init.
+            for msg in pre_init_messages {
+                dispatch.capture_session_id_from(&msg);
+                if events_tx.send(Ok(msg)).is_err() {
+                    close_subprocess(&mut subprocess).await;
+                    drain_pending(&pending_controls).await;
+                    return;
+                }
             }
-        }
 
-        let mut line_number: u64 = 0;
-        loop {
-            tokio::select! {
-                biased;
-                _ = &mut shutdown_rx => break,
-                line = subprocess.read_line() => {
-                    match line {
-                        Ok(Some(line)) => {
-                            line_number += 1;
-                            if !handle_line(
-                                &dispatch,
-                                &pending_controls,
-                                &inflight,
-                                &events_tx,
-                                line_number,
-                                &line,
-                            )
-                            .await
-                            {
+            let mut line_number: u64 = 0;
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = &mut shutdown_rx => break,
+                    line = subprocess.read_line() => {
+                        match line {
+                            Ok(Some(line)) => {
+                                line_number += 1;
+                                if !handle_line(
+                                    &dispatch,
+                                    &pending_controls,
+                                    &inflight,
+                                    &events_tx,
+                                    line_number,
+                                    &line,
+                                )
+                                .await
+                                {
+                                    break;
+                                }
+                            }
+                            Ok(None) => break,
+                            Err(e) => {
+                                let err_text = e.to_string();
+                                if events_tx.send(Err(e)).is_err() {
+                                    tracing::warn!(
+                                        target: crate::logging::targets::SDK_READER,
+                                        error = %err_text,
+                                        "events channel closed; transport error dropped",
+                                    );
+                                }
                                 break;
                             }
-                        }
-                        Ok(None) => break,
-                        Err(e) => {
-                            let err_text = e.to_string();
-                            if events_tx.send(Err(e)).is_err() {
-                                tracing::warn!(
-                                    target: crate::logging::targets::SDK_READER,
-                                    error = %err_text,
-                                    "events channel closed; transport error dropped",
-                                );
-                            }
-                            break;
                         }
                     }
                 }
             }
-        }
 
-        close_subprocess(&mut subprocess).await;
-        drain_pending(&pending_controls).await;
-    })
+            close_subprocess(&mut subprocess).await;
+            drain_pending(&pending_controls).await;
+        }
+        .instrument(span),
+    )
 }
 
 /// Process one decoded line. Returns `false` when the read loop should

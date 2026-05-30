@@ -61,8 +61,7 @@ pub fn query_cli_version(binary: &str) -> Result<String, Error> {
 }
 
 /// Check that the reported `claude` version is at least `min_version`.
-/// Compares all three semver components (major.minor.patch)
-/// lexicographically.
+/// Compares the parsed (major, minor, patch) components numerically.
 ///
 /// # Errors
 ///
@@ -555,34 +554,39 @@ fn spawn_writer_task(
     tee: Option<WireTee>,
     mut rx: mpsc::UnboundedReceiver<WriterCmd>,
 ) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        let mut stdin = Some(stdin);
-        while let Some(cmd) = rx.recv().await {
-            match cmd {
-                WriterCmd::Write(line, ack) => {
-                    if let Some(cb) = tee.as_ref() {
-                        cb(line.trim_end_matches('\n'));
-                    }
-                    let result = if let Some(s) = stdin.as_mut() {
-                        match s.write_all(line.as_bytes()).await {
-                            Ok(()) => s.flush().await.map_err(Error::Io),
-                            Err(e) => Err(Error::Io(e)),
+    use tracing::Instrument;
+    let span = tracing::info_span!("forge_sdk::stdin_writer");
+    tokio::spawn(
+        async move {
+            let mut stdin = Some(stdin);
+            while let Some(cmd) = rx.recv().await {
+                match cmd {
+                    WriterCmd::Write(line, ack) => {
+                        if let Some(cb) = tee.as_ref() {
+                            cb(line.trim_end_matches('\n'));
                         }
-                    } else {
-                        Err(Error::Io(std::io::Error::new(
-                            std::io::ErrorKind::BrokenPipe,
-                            "stdin already closed (end_input)",
-                        )))
-                    };
-                    let _ = ack.send(result);
-                }
-                WriterCmd::EndInput(ack) => {
-                    drop(stdin.take());
-                    let _ = ack.send(Ok(()));
+                        let result = if let Some(s) = stdin.as_mut() {
+                            match s.write_all(line.as_bytes()).await {
+                                Ok(()) => s.flush().await.map_err(Error::Io),
+                                Err(e) => Err(Error::Io(e)),
+                            }
+                        } else {
+                            Err(Error::Io(std::io::Error::new(
+                                std::io::ErrorKind::BrokenPipe,
+                                "stdin already closed (end_input)",
+                            )))
+                        };
+                        let _ = ack.send(result);
+                    }
+                    WriterCmd::EndInput(ack) => {
+                        drop(stdin.take());
+                        let _ = ack.send(Ok(()));
+                    }
                 }
             }
         }
-    })
+        .instrument(span),
+    )
 }
 
 /// Background drain for the subprocess stderr pipe. Reads lines as UTF-8
