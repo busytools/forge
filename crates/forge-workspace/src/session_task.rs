@@ -944,7 +944,7 @@ pub(crate) fn execute_command_via_handle(
                 warn_no_session(key, "SetMode");
                 return Ok(());
             };
-            handle.set_mode(sid.to_owned(), mode.as_wire().to_owned())
+            handle.set_mode(sid.to_owned(), mode)
         }
         Command::SetModel { key: _, model } => {
             let Some(sid) = session_id else {
@@ -1470,7 +1470,7 @@ mod tests {
         match cmd {
             forge_primitives::AgentCommand::SetMode { session_id, mode } => {
                 assert_eq!(session_id.as_str(), "sess-1");
-                assert_eq!(mode, "plan");
+                assert_eq!(mode, PermissionMode::Plan);
             }
             other => panic!("expected SetMode, got {other:?}"),
         }
