@@ -143,7 +143,7 @@ fn dispatch_prompt(app: &mut App, text: String) {
         tracing::debug!(
             target: crate::logging::targets::APP_INPUT,
             event_name = "prompt_dispatch_deferred_no_agent",
-            message = "no active agent yet — submit ignored",
+            message = "no active agent yet  -  submit ignored",
             outcome = "deferred",
         );
         return;

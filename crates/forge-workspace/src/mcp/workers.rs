@@ -167,7 +167,7 @@ fn format_spawn_error(err: &WorkerSpawnError) -> String {
         }
         WorkerSpawnError::EmptyLabel => "label must be non-empty after trim".to_owned(),
         WorkerSpawnError::ReservedLabel => format!(
-            "label '{LEAD_LABEL}' is reserved — workers__tell / workers__ask use it as \
+            "label '{LEAD_LABEL}' is reserved  -  workers__tell / workers__ask use it as \
              the addressing keyword for the caller's lead. Pick a different label."
         ),
         WorkerSpawnError::EmptyCharter => "charter must be non-empty after trim".to_owned(),
@@ -267,16 +267,16 @@ impl Tool for Tell {
     #[allow(clippy::unnecessary_literal_bound)]
     fn description(&self) -> &str {
         "Send a message to a worker in YOUR project by label. Two \
-         shapes: (1) UNSOLICITED — omit `in_reply_to` to send standalone \
+         shapes: (1) UNSOLICITED  -  omit `in_reply_to` to send standalone \
          prose; the message lands as a new user turn in the target's \
          chat, rendered as an incoming-from-<caller> block. (2) REPLY \
-         to an earlier `workers__ask` — set `in_reply_to` to the \
+         to an earlier `workers__ask`  -  set `in_reply_to` to the \
          correlation_id from that ask's wrapper, and the original asker \
          sees your message rendered as a Reply (the inflight ask closes; \
          the asker's outgoing counter + your incoming counter both \
          decrement). If multiple workers share the same label, \
          addressing picks the latest-spawned. The reserved label 'lead' \
-         targets the caller's lead (worker-only — a worker can use this \
+         targets the caller's lead (worker-only  -  a worker can use this \
          to send FYIs / replies back to whoever spawned it; project \
          leads have no lead and will get an error). Available to both \
          lead and worker callers (apart from the 'lead' case). Run \
@@ -577,7 +577,7 @@ impl Tool for Ask {
          Multiple asks can run in parallel - fire several workers__ask \
          calls in one turn and the replies arrive independently. The \
          reserved label 'lead' targets the caller's lead (worker-only \
-         — use it to ask the spawning lead for direction; project \
+          -  use it to ask the spawning lead for direction; project \
          leads have no lead and will get an error). Available to both \
          lead and worker callers (apart from the 'lead' case). If \
          multiple workers share the label, addressing picks the \
@@ -858,7 +858,7 @@ impl Tool for CreateRole {
         // Validate label format + reject reserved keyword.
         if label == crate::team::LEAD_LABEL {
             return tool_error(format!(
-                "label '{}' is reserved — it addresses the caller's lead via \
+                "label '{}' is reserved  -  it addresses the caller's lead via \
                  workers__tell / workers__ask and ships as a built-in default. \
                  Pick a different label.",
                 crate::team::LEAD_LABEL

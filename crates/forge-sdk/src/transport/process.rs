@@ -427,7 +427,7 @@ impl Subprocess {
                     }
                     Err(Error::Process {
                         exit_code: None,
-                        stderr: String::from("close timeout — child killed"),
+                        stderr: String::from("close timeout  -  child killed"),
                     })
                 }
             }

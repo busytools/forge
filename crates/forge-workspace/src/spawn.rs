@@ -82,7 +82,7 @@ fn try_emit(workspace: &Workspace, label: &'static str, update: SessionUpdate) {
             target: "forge_workspace::spawn",
             label,
             error = %err,
-            "SessionUpdate dropped — receiver is gone (likely TUI shutdown)"
+            "SessionUpdate dropped  -  receiver is gone (likely TUI shutdown)"
         );
     }
 }

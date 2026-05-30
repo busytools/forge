@@ -67,7 +67,7 @@ async fn wire_debug_trivial() {
                 break;
             }
             Err(_timeout) => {
-                log(&mut dump, "read_line timed out after 5s — inspecting");
+                log(&mut dump, "read_line timed out after 5s  -  inspecting");
             }
         }
     }

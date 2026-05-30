@@ -204,7 +204,7 @@ async fn handle_line(
                 tracing::warn!(
                     target: crate::logging::targets::SDK_READER,
                     %request_id,
-                    "unexpected control_response — dropping",
+                    "unexpected control_response  -  dropping",
                 );
             }
             true
@@ -215,7 +215,7 @@ async fn handle_line(
                 type = %type_str,
                 raw = %raw,
                 line = line_number,
-                "unknown top-level stream-json type — surfacing as Message::Unknown",
+                "unknown top-level stream-json type  -  surfacing as Message::Unknown",
             );
             events_tx.send(Ok(Message::Unknown { type_str, raw })).is_ok()
         }

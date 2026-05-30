@@ -340,7 +340,7 @@ where
                 //     reports as "NO Result frame".
                 eprintln!(
                     "{scenario}: 30s read_timeout fired with no Result \
-                     frame seen — `drive` may have drained it OR the \
+                     frame seen  -  `drive` may have drained it OR the \
                      CLI is hung. Proceeding to cleanup."
                 );
                 break;

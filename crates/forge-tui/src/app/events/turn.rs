@@ -60,7 +60,7 @@ pub(crate) fn dispatch_permission_outcome(
             event_name = "permission_dispatch_no_workspace",
             session_key = %session_key.as_str(),
             tool_id = %tool_id,
-            "permission outcome dropped: app.workspace is None — this should never happen in production",
+            "permission outcome dropped: app.workspace is None  -  this should never happen in production",
         );
         return;
     };
@@ -157,7 +157,7 @@ pub(crate) fn dispatch_question_outcome(
             event_name = "question_dispatch_no_workspace",
             session_key = %session_key.as_str(),
             tool_id = %tool_id,
-            "question outcome dropped: app.workspace is None — this should never happen in production",
+            "question outcome dropped: app.workspace is None  -  this should never happen in production",
         );
         return;
     };

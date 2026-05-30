@@ -63,7 +63,7 @@ fn parse_clamped_u64(message: &Map<String, Value>, keys: &[&str]) -> Option<u64>
             target: crate::logging::targets::BRIDGE_LIFECYCLE,
             raw = v,
             keys = ?keys,
-            "dropping numeric field — value outside u64 range",
+            "dropping numeric field  -  value outside u64 range",
         );
         return None;
     }
@@ -83,7 +83,7 @@ fn parse_clamped_u16_optional(message: &Map<String, Value>, keys: &[&str]) -> Op
             target: crate::logging::targets::BRIDGE_LIFECYCLE,
             raw = v,
             keys = ?keys,
-            "dropping status field — value outside u16 range",
+            "dropping status field  -  value outside u16 range",
         );
         return None;
     }

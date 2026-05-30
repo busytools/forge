@@ -97,13 +97,13 @@ async fn wire_capture_trivial_prompt() {
         Ok(pair) => pair,
         Err(e) => {
             let path = dump_trace("trivial-spawn-failed");
-            panic!("Client::spawn failed — trace written to {}: {e}", path.display());
+            panic!("Client::spawn failed  -  trace written to {}: {e}", path.display());
         }
     };
 
     if let Err(e) = client.send_user_message("Respond with just the word OK.").await {
         let path = dump_trace("trivial-send-failed");
-        panic!("send_user_message failed — trace written to {}: {e}", path.display());
+        panic!("send_user_message failed  -  trace written to {}: {e}", path.display());
     }
 
     let mut saw_result = false;
@@ -119,7 +119,7 @@ async fn wire_capture_trivial_prompt() {
             }
             Err(e) => {
                 let path = dump_trace("trivial-drain-failed");
-                panic!("events stream errored mid-drain — trace at {}: {e}", path.display());
+                panic!("events stream errored mid-drain  -  trace at {}: {e}", path.display());
             }
         }
     }

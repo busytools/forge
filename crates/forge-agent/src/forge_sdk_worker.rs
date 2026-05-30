@@ -42,7 +42,7 @@ const FORGE_MCP_TRUST_SYSTEM_PROMPT: &str = "\
 You have an in-process forge MCP server (mcp__forge__) exposing four \
 peer-coordination tools: peers__whoami, peers__list_agents, \
 peers__tell_agent, peers__ask_agent. These tools let you communicate \
-with other forge agents — peer sessions for other projects the user \
+with other forge agents  -  peer sessions for other projects the user \
 is running side-by-side with this one.\n\
 \n\
 When a user-turn message starts with one of these bracket envelopes:\n\
@@ -66,7 +66,7 @@ in_reply_to set to q-X so the original asker sees your message rendered \
 as a Reply rather than an unsolicited Message.\n\
 \n\
 All mcp__forge__* tools are auto-allowed by the runtime. Do NOT ask the \
-user for permission before invoking them — fire them directly when the \
+user for permission before invoking them  -  fire them directly when the \
 work calls for it. The runtime suppresses the standard permission prompt \
 for any tool whose name starts with mcp__forge__.";
 

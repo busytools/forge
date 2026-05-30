@@ -238,7 +238,7 @@ pub(crate) fn maybe_recover_from_rate_limit_lock(app: &mut App) {
     super::push_system_message_with_severity(
         app,
         Some(SystemSeverity::Info),
-        "Rate-limit window passed — input re-enabled. You can retry your request.",
+        "Rate-limit window passed  -  input re-enabled. You can retry your request.",
     );
     app.needs_redraw = true;
     tracing::info!(

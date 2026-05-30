@@ -305,7 +305,7 @@ impl Client {
                             type = %type_str,
                             raw = %raw,
                             line = line_number,
-                            "unknown top-level type during init — buffering as Message::Unknown"
+                            "unknown top-level type during init  -  buffering as Message::Unknown"
                         );
                         pre_init_messages.push_back(Message::Unknown { type_str, raw });
                     }

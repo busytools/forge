@@ -378,7 +378,7 @@ impl WorkspaceFacade for ProdWorkspaceFacade {
             tracing::warn!(
                 target: "forge_workspace::mcp::peers::facade",
                 correlation_id = %id,
-                "register_inflight_ask: collision on correlation id — prior ask overwritten",
+                "register_inflight_ask: collision on correlation id  -  prior ask overwritten",
             );
         }
     }
@@ -425,7 +425,7 @@ fn apply_delta(stats: &mut PeerInflightStats, delta: PeerStatsDelta) {
             tracing::warn!(
                 target: "forge_workspace::mcp::peers::facade",
                 counter = name,
-                "peer stats underflow — Minus1 without matching Plus1 (bookkeeping bug)",
+                "peer stats underflow  -  Minus1 without matching Plus1 (bookkeeping bug)",
             );
         } else {
             *field -= 1;

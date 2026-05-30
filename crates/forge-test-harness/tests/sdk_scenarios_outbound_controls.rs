@@ -42,7 +42,7 @@ async fn wire_capture_mcp_reconnect() {
         };
         let name = server.name.clone();
         if let Err(e) = client.mcp_reconnect(&name).await {
-            eprintln!("mcp_reconnect({name}): {e} — continuing");
+            eprintln!("mcp_reconnect({name}): {e}  -  continuing");
         }
         client.send_user_message("Reply with only OK.").await?;
         Ok((client, events))

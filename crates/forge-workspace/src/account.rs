@@ -894,7 +894,7 @@ mod tests {
         );
         map.set_usage(&AccountKey("Personal".to_owned()), snapshot(Some(50.0), Some(50.0)));
         let (picked, _) = map.pick_for_project(&["Granite".to_owned(), "Personal".to_owned()]);
-        assert_eq!(picked.0, "Granite", "transient network error doesn't demote — pin order wins");
+        assert_eq!(picked.0, "Granite", "transient network error doesn't demote  -  pin order wins");
     }
 
     #[test]

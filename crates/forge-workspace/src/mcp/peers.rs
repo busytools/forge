@@ -96,7 +96,7 @@ impl Tool for Whoami {
          counters). Useful when an inbound wrapper says 'from/to agent X' \
          and you want to confirm whether X is you, or when you need to \
          refer to yourself in a message to another agent. Identity is \
-         stable for the session — most callers will not need to call this \
+         stable for the session  -  most callers will not need to call this \
          more than once. Takes no arguments."
     }
 
@@ -166,21 +166,21 @@ impl Tool for ListAgents {
          incoming and outgoing). \
          \
          CROSS-PROJECT RULE (mutations only): whenever the user asks you \
-         to CHANGE state in a project other than your own — edit files, \
+         to CHANGE state in a project other than your own  -  edit files, \
          run a command, file an issue, push a branch, anything with side \
-         effects — call this tool FIRST. If the target project appears in \
+         effects  -  call this tool FIRST. If the target project appears in \
          the result, do NOT cd into it and mutate its files directly. \
          Hand the work off via peers__ask_agent (when you need an answer \
          or confirmation back) or peers__tell_agent (for a notification \
          or fire-and-forget hand-off). Each agent owns its own repo; \
          stay in your lane and let the peer execute the change. \
          \
-         Reading another project's files for context is fine — sometimes \
+         Reading another project's files for context is fine  -  sometimes \
          scanning the source yourself gives a sharper answer than waiting \
          on an ask. The constraint is only on writes / state changes. \
          \
          Call this before asking or telling so you use the right project \
-         name — a misspelled target returns an immediate error listing \
+         name  -  a misspelled target returns an immediate error listing \
          the valid set. Sleeping agents are still callable; they \
          auto-spawn on the first ask or tell. Takes no arguments."
     }
@@ -256,20 +256,20 @@ impl Tool for TellAgent {
     fn description(&self) -> &str {
         "Send a one-way message to another forge agent (project). Returns \
          immediately with a correlation_id; no reply is expected from the \
-         target. Two shapes: (1) REPLY to an inbound peers__ask_agent — \
+         target. Two shapes: (1) REPLY to an inbound peers__ask_agent  -  \
          set in_reply_to to the correlation_id from that ask's wrapper, \
          and the original asker sees your message rendered as a Reply; \
-         (2) UNSOLICITED — omit in_reply_to to send standalone prose \
+         (2) UNSOLICITED  -  omit in_reply_to to send standalone prose \
          (announcements, FYI, hand-offs). The target sees the message as \
          a new user turn in its chat and may respond by sending another \
          tell, asking you back via peers__ask_agent, or simply continuing \
          its own work. Auto-spawns the target if it's currently sleeping. \
-         Hop count is stamped by forge automatically — do not pass it as \
+         Hop count is stamped by forge automatically  -  do not pass it as \
          an argument. \
          \
          Use this (instead of mutating another project's files directly) \
          whenever the user asks you to notify or hand off work to another \
-         forge project — e.g. \"let granite-backend know the rewriter \
+         forge project  -  e.g. \"let granite-backend know the rewriter \
          cleanup landed\", \"tell forge to pick this up next session\". \
          The target's own agent will integrate the news inside its own \
          chat context. Reading the target's files for your own context is \
@@ -283,7 +283,7 @@ impl Tool for TellAgent {
             "properties": {
                 "target": {
                     "type": "string",
-                    "description": "Project name of the target agent. Must match an entry from peers__list_agents — case-sensitive. A misspelled name returns an error listing valid options.",
+                    "description": "Project name of the target agent. Must match an entry from peers__list_agents  -  case-sensitive. A misspelled name returns an error listing valid options.",
                 },
                 "message": {
                     "type": "string",
@@ -505,23 +505,23 @@ impl Tool for AskAgent {
          reply asynchronously. Returns IMMEDIATELY with a correlation_id \
          (e.g. q-7f3a92e0); this tool does NOT wait for the reply. The \
          target's LLM will see your prompt as a new user turn, do its \
-         work — possibly seconds, possibly minutes — and respond by \
+         work  -  possibly seconds, possibly minutes  -  and respond by \
          calling peers__tell_agent with in_reply_to set to your \
          correlation_id. That reply lands as a fresh user turn in YOUR \
          chat whenever it's ready, so finish your current turn naturally \
          and continue with other work; the reply will surface on its own. \
-         Multiple asks can run in parallel — fire several ask_agent calls \
+         Multiple asks can run in parallel  -  fire several ask_agent calls \
          in one turn and the replies arrive independently, each carrying \
          its own correlation_id you can thread back. Synchronous errors \
          (target not in forge.toml, hop limit exceeded) return \
          is_error: true; later-detected delivery failures arrive as a \
          '[Ask ... failed to deliver: ...]' envelope in your chat. \
          Auto-spawns sleeping targets (expect extra latency on the first \
-         ask). Hop count is stamped automatically — do not pass it. \
+         ask). Hop count is stamped automatically  -  do not pass it. \
          \
          Use this whenever you need another forge project to TAKE AN \
          ACTION or give you an authoritative answer that only its own \
-         agent should produce — running a build there, kicking off a \
+         agent should produce  -  running a build there, kicking off a \
          migration there, confirming whether a deploy landed, asking it \
          to review a design from its own context. Reading the target's \
          files for your own context is fine and often quicker than \
@@ -537,11 +537,11 @@ impl Tool for AskAgent {
             "properties": {
                 "target": {
                     "type": "string",
-                    "description": "Project name of the target agent. Must match an entry from peers__list_agents — case-sensitive. A misspelled name returns an error listing valid options.",
+                    "description": "Project name of the target agent. Must match an entry from peers__list_agents  -  case-sensitive. A misspelled name returns an error listing valid options.",
                 },
                 "prompt": {
                     "type": "string",
-                    "description": "The question body. Rendered as a new user-turn in the target's chat — write it as a direct request to the target. Include enough context that the target can answer without further round-trips.",
+                    "description": "The question body. Rendered as a new user-turn in the target's chat  -  write it as a direct request to the target. Include enough context that the target can answer without further round-trips.",
                 },
                 "in_reply_to": {
                     "type": "string",

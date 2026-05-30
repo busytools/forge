@@ -61,7 +61,7 @@ async fn spawn_does_not_stamp_entrypoint_by_default() {
     let env = spawn_and_capture_env(|b| b).await;
     assert!(
         !env.contains_key("CLAUDE_CODE_ENTRYPOINT"),
-        "CLAUDE_CODE_ENTRYPOINT must NOT be stamped by default — let the CLI self-classify so the rewriter has a uniform source. Stamped: {:?}",
+        "CLAUDE_CODE_ENTRYPOINT must NOT be stamped by default  -  let the CLI self-classify so the rewriter has a uniform source. Stamped: {:?}",
         env.get("CLAUDE_CODE_ENTRYPOINT")
     );
 }

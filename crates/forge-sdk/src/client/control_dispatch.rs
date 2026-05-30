@@ -119,7 +119,7 @@ impl ControlDispatchHandle {
                 %subtype,
                 raw = %raw,
                 request_id = %req.request_id,
-                "unknown control_request subtype — responding with error, session continues"
+                "unknown control_request subtype  -  responding with error, session continues"
             );
             return self.write_unsupported(&req).await;
         }

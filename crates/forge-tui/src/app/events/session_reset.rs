@@ -411,7 +411,7 @@ mod tests {
         assert_eq!(
             bucket.lifecycle_state,
             SessionLifecycleState::Idle,
-            "post-replay lifecycle must still be Idle — Running here is what \
+            "post-replay lifecycle must still be Idle  -  Running here is what \
              pinned the Projects pane spinner on after launchpad auto_start",
         );
         assert!(

@@ -20,7 +20,7 @@ fn all_baselines_decode_cleanly() {
     let dir = baseline_dir();
     if !dir.exists() {
         eprintln!(
-            "no baselines directory at {} — skipping (run a live capture first)",
+            "no baselines directory at {}  -  skipping (run a live capture first)",
             dir.display()
         );
         return;
@@ -38,7 +38,7 @@ fn all_baselines_decode_cleanly() {
 
     if scenarios.is_empty() {
         eprintln!(
-            "no baselines in {} — skipping. Capture some with FORGE_WIRE_CAPTURE=1.",
+            "no baselines in {}  -  skipping. Capture some with FORGE_WIRE_CAPTURE=1.",
             dir.display()
         );
         return;
@@ -77,7 +77,7 @@ fn all_baselines_decode_cleanly() {
             eprintln!("--- {scen} ---\n{rpt}\n");
         }
         panic!(
-            "decode completeness regressions detected — either forge-sdk's decoder drifted \
+            "decode completeness regressions detected  -  either forge-sdk's decoder drifted \
              or the CLI's wire shape changed and we need to recapture baselines."
         );
     }

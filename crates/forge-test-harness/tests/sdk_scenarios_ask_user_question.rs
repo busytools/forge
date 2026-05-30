@@ -35,7 +35,7 @@ async fn wire_capture_ask_user_question() {
     run_live_scenario("ask_user_question", opts, |client, events| async move {
         client
             .send_user_message(
-                "Use the AskUserQuestion tool right now to ask me whether I prefer the colour red, blue, or green. Single question, three options. Do NOT answer it for me — just call the tool and stop.",
+                "Use the AskUserQuestion tool right now to ask me whether I prefer the colour red, blue, or green. Single question, three options. Do NOT answer it for me  -  just call the tool and stop.",
             )
             .await?;
         Ok((client, events))

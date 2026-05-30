@@ -60,7 +60,7 @@ async fn wire_capture_exit_plan_mode() {
             );
             // Deny so the turn ends quickly; we just want the request
             // shape captured.
-            PermissionDecision::deny("forge unified-prompt harness — captured request shape")
+            PermissionDecision::deny("forge unified-prompt harness  -  captured request shape")
         })
         .build();
 
@@ -107,7 +107,7 @@ async fn wire_capture_permission_allow_with_input_bash() {
                 return PermissionDecision::allow_with_input(Value::Object(modified));
             }
             PermissionDecision::deny(
-                "forge unified-prompt harness — only Bash gets allow_with_input",
+                "forge unified-prompt harness  -  only Bash gets allow_with_input",
             )
         })
         .build();
@@ -141,7 +141,7 @@ async fn wire_capture_permission_suggestions_edit() {
                 ctx.suggestions.len(),
                 ctx.blocked_path
             );
-            PermissionDecision::deny("forge unified-prompt harness — captured suggestions only")
+            PermissionDecision::deny("forge unified-prompt harness  -  captured suggestions only")
         })
         .build();
 
@@ -149,7 +149,7 @@ async fn wire_capture_permission_suggestions_edit() {
         client
             .send_user_message(
                 "Use the Edit tool to change the file at \
-                     /tmp/forge-unified-prompt-edit.txt — replace any occurrence of \
+                     /tmp/forge-unified-prompt-edit.txt  -  replace any occurrence of \
                      `old` with `new`. The file doesn't need to exist; just attempt \
                      the Edit so I can see the permission prompt.",
             )
@@ -174,7 +174,7 @@ async fn wire_capture_permission_suggestions_read() {
                 ctx.suggestions.len(),
                 ctx.blocked_path
             );
-            PermissionDecision::deny("forge unified-prompt harness — captured suggestions only")
+            PermissionDecision::deny("forge unified-prompt harness  -  captured suggestions only")
         })
         .build();
 
@@ -203,7 +203,7 @@ async fn wire_capture_permission_suggestions_write() {
                 ctx.suggestions.len(),
                 ctx.blocked_path
             );
-            PermissionDecision::deny("forge unified-prompt harness — captured suggestions only")
+            PermissionDecision::deny("forge unified-prompt harness  -  captured suggestions only")
         })
         .build();
 
@@ -274,7 +274,7 @@ async fn wire_capture_question_notes_only_response() {
             .send_user_message(
                 "Use the AskUserQuestion tool right now to ask me whether I prefer \
                      the colour red, blue, or green. Single question, three options. \
-                     Do NOT answer it for me — just call the tool and stop.",
+                     Do NOT answer it for me  -  just call the tool and stop.",
             )
             .await?;
         Ok((client, events))
