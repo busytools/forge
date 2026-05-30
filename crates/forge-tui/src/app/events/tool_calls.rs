@@ -13,7 +13,7 @@ pub(super) fn handle_tool_call(app: &mut App, tc: model::ToolCall) {
     log_tool_call_received(app, &tc, &scope, &sdk_tool_name);
     update_subagent_scope_state(app, &scope, tc.status, &id_str);
 
-    // #273 Task 8: Monitor tool_use → push a UiSession.monitors entry
+    // Monitor tool_use → push a UiSession.monitors entry
     // (idempotent on tool_use_id). Parses the typed input via the
     // forge-agent parser so the description / command / persistent /
     // timeout_ms fields share one validation point. Malformed input
@@ -32,7 +32,7 @@ pub(super) fn handle_tool_call(app: &mut App, tc: model::ToolCall) {
         );
     }
 
-    // #273 Task 9: Workflow tool_use → push a UiSession.workflows
+    // Workflow tool_use → push a UiSession.workflows
     // entry. `meta_name` / `meta_description` are extracted from
     // the script's `export const meta = {...}` block via the
     // substring parser; malformed scripts still get an entry with

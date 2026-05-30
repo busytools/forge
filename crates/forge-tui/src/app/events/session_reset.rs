@@ -525,7 +525,7 @@ mod tests {
     }
 
     // ---------------------------------------------------------------
-    // #289 Task 4: resume-replay drains all-terminal MONITORS +
+    // resume-replay drains all-terminal MONITORS +
     // WORKFLOWS sections post-replay (mirrors the live wire path's
     // `clear_*_if_all_terminal` calls). Mixed-state sections stay
     // visible with the in-flight entries.

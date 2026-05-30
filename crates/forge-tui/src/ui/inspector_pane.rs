@@ -364,7 +364,7 @@ fn append_body(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
         append_tasks_section(lines, app, width);
     }
 
-    // #273 Task 9: WORKFLOWS section sits between TASKS and
+    // WORKFLOWS section sits between TASKS and
     // MONITORS. Auto-clears once every workflow has reached
     // `Completed`.
     if !app.workflows().is_empty() {
@@ -374,7 +374,7 @@ fn append_body(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
         append_workflows_section(lines, app, width);
     }
 
-    // #273 Task 8: MONITORS section sits between WORKFLOWS and
+    // MONITORS section sits between WORKFLOWS and
     // PROCESSES; auto-clears when no entry is live (matches the
     // TASKS section's all-completed shape).
     if !app.monitors().is_empty() {
@@ -1105,7 +1105,7 @@ fn append_tasks_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
     // Blank between header and first item.
     lines.push(Line::default());
 
-    // #275 Bug 4 / Task 5: chrome accounting routed through the
+    // chrome accounting routed through the
     // single `row_text_budget` helper so every inspector section
     // honours the same 1-col right gutter (TASKS' convention).
     // Item chrome: 1-col left indent + glyph (1) + space (1) +
@@ -1244,7 +1244,7 @@ fn append_tasks_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
 /// per-parent cap so both surfaces feel consistent.
 const TASKS_MAX: usize = 5;
 
-/// #273 Task 8: append the MONITORS Inspector section. Renders one
+/// append the MONITORS Inspector section. Renders one
 /// row per Monitor entry with the description headline, status
 /// badge, and (when expanded OR currently-running) the tail of
 /// captured `task_notification.summary` lines. Section is hidden
@@ -1267,7 +1267,7 @@ fn append_monitors_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16
     let last_idx = monitors.len().saturating_sub(1);
     for (idx, monitor) in monitors.iter().enumerate() {
         append_monitor_row(lines, monitor, inner_width);
-        // #277 Bug 6: blank between entries so multiple Monitor
+        // blank between entries so multiple Monitor
         // rows don't visually crowd together. Skip after the last
         // row to avoid leaving a trailing blank at the end of the
         // section (matches TASKS' inter-entry spacing).
@@ -1298,7 +1298,7 @@ fn append_monitor_row(
     let glyph_color = if monitor.is_running() { theme::RUST_ORANGE } else { theme::DIM };
     let persistent_suffix = if monitor.persistent { " \u{00B7} persistent" } else { "" };
 
-    // #275 Bug 4: chrome accumulator for the header row. The status
+    // chrome accumulator for the header row. The status
     // badge + persistent suffix are appended AFTER the truncated
     // headline, so the budget must count them up-front. Without this
     // accounting the badge overflows the pane and ratatui clips
@@ -1330,7 +1330,7 @@ fn append_monitor_row(
         Span::styled(persistent_suffix.to_owned(), Style::default().fg(theme::DIM)),
     ]));
 
-    // #277 Bug 5b: tail renders whenever the buffer is non-empty -
+    // tail renders whenever the buffer is non-empty -
     // running, completed, expanded, all the same. The earlier gate
     // hid tails for completed-and-collapsed entries, but the file
     // read from `task_notification.output_file` is the whole point
@@ -1362,7 +1362,7 @@ fn append_monitor_row(
     }
 }
 
-/// #273 Task 9: append the WORKFLOWS Inspector section. Header +
+/// append the WORKFLOWS Inspector section. Header +
 /// one row per workflow entry with the meta name + status, then
 /// (when running or expanded) a per-phase tree showing status
 /// glyph + title + log tail. Section is hidden when
@@ -1384,7 +1384,7 @@ fn append_workflows_section(lines: &mut Vec<Line<'static>>, app: &App, width: u1
     let last_idx = workflows.len().saturating_sub(1);
     for (idx, workflow) in workflows.iter().enumerate() {
         append_workflow_row(lines, workflow, inner_width, app.spinner_frame);
-        // #277 Bug 6: blank between entries (matches the MONITORS
+        // blank between entries (matches the MONITORS
         // section's inter-entry spacing).
         if idx < last_idx {
             lines.push(Line::default());
@@ -1411,7 +1411,7 @@ fn append_workflow_row(
         if workflow.is_in_progress() { spinner_frame_char(spinner_frame) } else { "\u{25c6}" };
     let glyph_color = if workflow.is_in_progress() { theme::RUST_ORANGE } else { Color::Green };
 
-    // #275 Bug 4: same shape as MONITORS header. Badge follows
+    // same shape as MONITORS header. Badge follows
     // truncated text; count it in chrome up-front.
     let header_chrome = usize::from(PANE_PAD)
         + 1   // glyph
@@ -1518,7 +1518,7 @@ fn append_workflow_row(
     }
 }
 
-/// #275 Bug 4 / Task 5: single source of truth for inspector-row
+/// single source of truth for inspector-row
 /// width budgeting. Every row variant (TASKS / PROCESSES /
 /// MONITORS header / MONITORS tail / WORKFLOWS header / WORKFLOWS
 /// phase / WORKFLOWS log / final-result summary) feeds its actual
@@ -1728,7 +1728,7 @@ fn append_process_row(
         }
     };
     let suffix_chars = suffix_text.as_ref().map_or(0, |s| 3 + s.chars().count()); // " · " + value
-    // #275 Bug 4 / Task 5: every inspector row routes its chrome
+    // every inspector row routes its chrome
     // budget through `row_text_budget` so PROCESSES + TASKS +
     // MONITORS + WORKFLOWS observe the same right-gutter contract.
     let chrome_chars = usize::from(PANE_PAD)
@@ -2427,7 +2427,7 @@ mod tests {
     }
 
     // ---------------------------------------------------------
-    // #273 Task 8: MONITORS Inspector section.
+    // MONITORS Inspector section.
     // ---------------------------------------------------------
 
     fn make_monitor_entry(
@@ -2459,7 +2459,7 @@ mod tests {
             crate::app::MonitorStatus::Running,
         );
         let mut lines = Vec::new();
-        // #275 Task 5: pass inner_width (full pane), not text_budget.
+        // pass inner_width (full pane), not text_budget.
         // The 1-col left indent matches TASKS / PROCESSES.
         append_monitor_row(&mut lines, &entry, 60);
         let row_text = line_text(&lines[0]);
@@ -2501,7 +2501,7 @@ mod tests {
 
     #[test]
     fn monitors_section_shows_tail_for_stopped_entry_with_populated_tail() {
-        // #277 Bug 5b: the prior gate hid the tail for any
+        // the prior gate hid the tail for any
         // non-running, non-expanded entry. After the relaxation,
         // a completed Monitor that has captured an output_tail
         // (from `task_notification.output_file`) renders its tail
@@ -2544,7 +2544,7 @@ mod tests {
     }
 
     // ---------------------------------------------------------
-    // #273 Task 9: WORKFLOWS Inspector section.
+    // WORKFLOWS Inspector section.
     // ---------------------------------------------------------
 
     fn make_workflow_entry(
@@ -2681,7 +2681,7 @@ mod tests {
     }
 
     // ---------------------------------------------------------
-    // #275 Bug 4 / Task 5: architectural gutter-consistency
+    // architectural gutter-consistency
     // contract. Every inspector row variant must produce a
     // total rendered width <= inner_width. The 1-col right
     // gutter is what makes the section read cleanly against
@@ -2857,7 +2857,7 @@ mod tests {
     }
 
     // ---------------------------------------------------------
-    // #277 Bug 6: blank-line spacing between MONITORS / WORKFLOWS
+    // blank-line spacing between MONITORS / WORKFLOWS
     // entries.
     // ---------------------------------------------------------
 

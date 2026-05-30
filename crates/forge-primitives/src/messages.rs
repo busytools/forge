@@ -129,7 +129,7 @@ pub enum Message {
         tool_use_id: Option<String>,
         /// Name of the last tool the sub-agent invoked, if any.
         last_tool_name: Option<String>,
-        /// #273 Task 9: Workflow tool's per-event snapshot of the
+        /// Workflow tool's per-event snapshot of the
         /// workflow's phase + agent state. Empty for non-Workflow
         /// task_progress events. Each event carries the FULL
         /// snapshot (not a delta), so the renderer can rebuild the
@@ -629,7 +629,7 @@ pub struct TaskUpdatePatch {
     pub end_time: Option<u64>,
 }
 
-/// #273 Task 9: Workflow's per-event snapshot of the workflow's
+/// Workflow's per-event snapshot of the workflow's
 /// phase + agent state, ridden via `Message::TaskProgress`'s
 /// `workflow_progress` field.
 ///
@@ -844,7 +844,7 @@ enum TypedSystemRepr {
         tool_use_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         last_tool_name: Option<String>,
-        /// #273 Task 9: Workflow tool's per-event snapshot of the
+        /// Workflow tool's per-event snapshot of the
         /// workflow's phase + agent state. Present only when the
         /// originating tool is `Workflow`; otherwise omitted. Each
         /// event is the FULL snapshot (not a delta) of every phase

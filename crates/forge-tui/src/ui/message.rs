@@ -526,7 +526,7 @@ fn append_assistant_tool_block(
     // `collapsed_override` wins, otherwise the global default.
     // Click-to-toggle on peer rows currently piggybacks on the
     // existing tool-call row hit-test in mouse.rs.
-    // #273 Task 8 / 9: collapse Monitor + Workflow tool cards to a
+    // collapse Monitor + Workflow tool cards to a
     // single DIM one-liner. These tool calls carry their detail in
     // the Inspector MONITORS / WORKFLOWS sections; the chat surface
     // only needs the start/stop signal. Falls through to the
@@ -677,7 +677,7 @@ fn render_lifecycle_one_liner(tc: &crate::app::ToolCallInfo) -> Option<Vec<Line<
     }
 }
 
-/// #273 Task 9: extract the `name` field from a workflow `script`'s
+/// extract the `name` field from a workflow `script`'s
 /// `export const meta = { name: '...' }` block. Falls back to the
 /// literal `"Workflow"` label when the block isn't present or
 /// doesn't carry a name. Conservative substring-based parser
@@ -686,7 +686,7 @@ pub(crate) fn workflow_meta_name(script: &str) -> String {
     extract_meta_field(script, "name").unwrap_or_else(|| "Workflow".to_owned())
 }
 
-/// #273 Task 9: extract both the `name` and `description` fields
+/// extract both the `name` and `description` fields
 /// from a workflow `script`'s meta block. Returns
 /// `(name, description)` where `name` falls back to `"Workflow"`
 /// when missing; `description` is `None` when the meta block lacks
@@ -3676,7 +3676,7 @@ mod tests {
     }
 
     // ----------------------------------------------------------------
-    // #273 Task 8 / 9: Monitor + Workflow lifecycle one-liner render.
+    // Monitor + Workflow lifecycle one-liner render.
     // ----------------------------------------------------------------
 
     #[test]
