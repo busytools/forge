@@ -8,7 +8,7 @@
 //! indicator.
 //!
 //! Mirrors the `file_index` / `git_diff` channel pattern but
-//! without a ticker — the version probes are stable enough that
+//! without a ticker - the version probes are stable enough that
 //! a single startup fetch is fine for v1. Bumping that to a
 //! periodic re-fetch (e.g. once an hour) is a localised change here.
 

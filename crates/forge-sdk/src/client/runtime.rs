@@ -1,4 +1,4 @@
-//! Background runtime for [`Client`](crate::Client) — owns the
+//! Background runtime for [`Client`](crate::Client) - owns the
 //! subprocess reader, decodes incoming frames, dispatches inbound
 //! `control_request`s on detached tasks, and routes outbound
 //! `control_response`s to the [`pending_controls`] map so [`send_control`]
@@ -31,7 +31,7 @@ use crate::transport::codec::{DecodedLine, decode_dispatch};
 use crate::transport::process::Subprocess;
 use forge_primitives::Message;
 
-/// Outcome of one outbound `control_request` — either the success
+/// Outcome of one outbound `control_request` - either the success
 /// payload (the inner `response` JSON) or a typed error.
 pub(crate) type ControlOutcome = Result<serde_json::Value, Error>;
 
@@ -204,7 +204,7 @@ async fn handle_line(
                 tracing::warn!(
                     target: crate::logging::targets::SDK_READER,
                     %request_id,
-                    "unexpected control_response — dropping",
+                    "unexpected control_response - dropping",
                 );
             }
             true
@@ -215,7 +215,7 @@ async fn handle_line(
                 type = %type_str,
                 raw = %raw,
                 line = line_number,
-                "unknown top-level stream-json type — surfacing as Message::Unknown",
+                "unknown top-level stream-json type - surfacing as Message::Unknown",
             );
             events_tx.send(Ok(Message::Unknown { type_str, raw })).is_ok()
         }
@@ -253,7 +253,7 @@ async fn drain_pending(pending_controls: &PendingControls) {
     }
 }
 
-/// Shared session-id container — held by [`Client`](crate::Client),
+/// Shared session-id container - held by [`Client`](crate::Client),
 /// [`ControlDispatchHandle`], and the reader task. Reader updates it
 /// as messages arrive; consumers read the current value.
 pub(crate) type SharedSessionId = Arc<RwLock<String>>;

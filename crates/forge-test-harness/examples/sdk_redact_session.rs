@@ -83,7 +83,7 @@ fn main() -> ExitCode {
     }
 
     // Emit one `{"dir":"in","line":"..."}` entry per frame, matching
-    // what `RecordingTransport` writes — the replay decoder consumes
+    // what `RecordingTransport` writes - the replay decoder consumes
     // the `in` direction.
     let mut body = String::new();
     for line in &lines {

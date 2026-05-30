@@ -84,7 +84,7 @@ fn renders_banner_and_project_row_under_org_header() {
 
     let lines = render_to_lines(&mut app, &projects, 26, 10);
 
-    // Row layout: banner, rule, org header ("Test" — set by
+    // Row layout: banner, rule, org header ("Test" - set by
     // `ProjectView::new_for_test`), `│` continuation, project row
     // under tree connector `└─`. The continuation visually links
     // the header down to the first project rather than floating

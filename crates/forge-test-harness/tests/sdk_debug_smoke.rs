@@ -1,4 +1,4 @@
-//! Minimal diagnostic harness — bypasses `Client::spawn` to observe the
+//! Minimal diagnostic harness - bypasses `Client::spawn` to observe the
 //! raw wire conversation between forge-sdk and a live `claude`. Dumps
 //! every line as it arrives (even if the test later hangs) so we can
 //! tell exactly where the stall happens.
@@ -33,7 +33,7 @@ async fn wire_debug_trivial() {
     let mut sub = Subprocess::spawn(&opts).await.expect("spawn");
     log(&mut dump, "subprocess spawned");
 
-    // Write initialize FIRST — the CLI gates system/init on receiving
+    // Write initialize FIRST - the CLI gates system/init on receiving
     // the initialize control_request.
     let init_req = "{\"type\":\"control_request\",\"request_id\":\"dbg-1\",\
          \"request\":{\"subtype\":\"initialize\",\"hooks\":null}}\n";
@@ -67,7 +67,7 @@ async fn wire_debug_trivial() {
                 break;
             }
             Err(_timeout) => {
-                log(&mut dump, "read_line timed out after 5s — inspecting");
+                log(&mut dump, "read_line timed out after 5s - inspecting");
             }
         }
     }

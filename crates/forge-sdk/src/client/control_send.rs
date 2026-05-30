@@ -1,4 +1,4 @@
-//! Outbound `control_request` typed wrappers — the user-facing
+//! Outbound `control_request` typed wrappers - the user-facing
 //! commands (`interrupt`, `set_permission_mode`, `set_model`,
 //! `rewind_files`, `mcp_reconnect`, `mcp_toggle`, `stop_task`,
 //! `mcp_status`, `get_context_usage`) plus the `_raw` escape hatches
@@ -7,7 +7,7 @@
 //! All methods take `&self` and route through
 //! [`Client::send_control`] (which lives in `client.rs`); the reader
 //! task routes the matching `control_response` back via the
-//! `pending_controls` map. Concurrent calls are safe — the writer
+//! `pending_controls` map. Concurrent calls are safe - the writer
 //! mpsc serialises onto stdin in arrival order, and each
 //! `request_id` gets its own oneshot waiter.
 

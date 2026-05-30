@@ -8,7 +8,7 @@
 //! counter for cwd / session swaps.
 //!
 //! The agent-side `scan` is synchronous (sysinfo refresh is a
-//! CPU-bound system call, not async I/O) and runs in ~50–100 ms,
+//! CPU-bound system call, not async I/O) and runs in ~50-100 ms,
 //! so the spawned task wraps the call in `tokio::task::spawn_blocking`
 //! to keep the runtime responsive between polls.
 
@@ -32,14 +32,14 @@ const TICKER_INTERVAL: Duration = Duration::from_secs(1);
 
 /// How fresh the snapshot must be before we skip a refresh. 1 s
 /// matches [`TICKER_INTERVAL`] so a refresh effectively fires on
-/// (nearly) every tick — the panel reads as live. The sysinfo scan
+/// (nearly) every tick - the panel reads as live. The sysinfo scan
 /// runs in ~50-100 ms on the blocking pool, so per-tick cost is
 /// negligible on multi-core machines and doesn't stall the UI loop.
 /// If the panel becomes a CPU hotspot on some machines, bumping
 /// this back to 2 s is a one-line revert.
 const SNAPSHOT_STALENESS: Duration = Duration::from_secs(1);
 
-/// Max events to apply per drain pump tick — same budget as
+/// Max events to apply per drain pump tick - same budget as
 /// `file_index` / `git_diff` so all three scanners share a single
 /// bound.
 const EVENT_DRAIN_BUDGET: usize = 64;
@@ -57,14 +57,14 @@ pub enum ProcessScanEvent {
     TimerTick,
 }
 
-/// Public ticker driver — call once at App construction. Spawns a
+/// Public ticker driver - call once at App construction. Spawns a
 /// task that fires [`ProcessScanEvent::TimerTick`] every
 /// [`TICKER_INTERVAL`] until the channel sender goes away.
 pub fn spawn_ticker(tx: std_mpsc::Sender<ProcessScanEvent>) {
     tokio::task::spawn_local(async move {
         let mut interval = tokio::time::interval(TICKER_INTERVAL);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        // First tick fires immediately — skip it so we don't double-poll
+        // First tick fires immediately - skip it so we don't double-poll
         // at startup (App construction itself triggers a refresh via
         // the cold-start `should_refresh` path on the first
         // `apply_timer_tick`).
@@ -72,7 +72,7 @@ pub fn spawn_ticker(tx: std_mpsc::Sender<ProcessScanEvent>) {
         loop {
             interval.tick().await;
             if tx.send(ProcessScanEvent::TimerTick).is_err() {
-                // Receiver dropped — main loop is gone, app
+                // Receiver dropped - main loop is gone, app
                 // shutting down. Stop the ticker.
                 return;
             }
@@ -131,9 +131,9 @@ pub fn request_refresh(
     let guard = ScanInFlightGuard(scan_in_flight);
     tokio::task::spawn_local(async move {
         let _guard = guard;
-        // `sysinfo` refresh is CPU-bound — offload to the blocking
+        // `sysinfo` refresh is CPU-bound - offload to the blocking
         // pool so the per-second ticker on this runtime doesn't
-        // stall behind the ~50–100 ms scan.
+        // stall behind the ~50-100 ms scan.
         let snapshot = match tokio::task::spawn_blocking(move || {
             forge_workspace::env::processes::scan(claude_pid)
         })

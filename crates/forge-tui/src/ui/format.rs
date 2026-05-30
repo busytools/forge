@@ -1,11 +1,11 @@
-//! Small format helpers shared across views. Kept tiny — promote to
+//! Small format helpers shared across views. Kept tiny - promote to
 //! a richer module only when a new helper genuinely belongs here.
 
 use std::time::SystemTime;
 
 /// Format the gap between `activity` and `now` as a short relative-
 /// time string: `now`, `Xm`, `Xh`, `Xd`, `Xw` (capped at `99w`).
-/// Returns the raw form, no padding — callers that need a stable
+/// Returns the raw form, no padding - callers that need a stable
 /// column width pad at the call site.
 pub fn relative_time(activity: SystemTime, now: SystemTime) -> String {
     let elapsed = now.duration_since(activity).unwrap_or_default();

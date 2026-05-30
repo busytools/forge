@@ -12,7 +12,7 @@ use forge_sdk::{OptionsBuilder, PermissionMode};
 use forge_test_harness::sdk_wire::run_live_scenario;
 
 /// 1×1 transparent PNG, base64-encoded. Smallest plausible image
-/// payload — keeps the captured baseline small and deterministic.
+/// payload - keeps the captured baseline small and deterministic.
 const TINY_PNG_BASE64: &str =
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
 

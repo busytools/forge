@@ -1,18 +1,18 @@
 //! Persistent on-disk cache for account usage snapshots.
 //!
 //! Solves the cold-boot problem: Anthropic's `/api/oauth/usage`
-//! endpoint rate-limits aggressively on per-IP burst probes — the
+//! endpoint rate-limits aggressively on per-IP burst probes - the
 //! first forge launch routinely waits 30 s+ before the warm probe
 //! gets through, during which the launchpad and bottom panel show
 //! empty bars and the picker ties at tier 0 (unknown-fresh). The
 //! cache breaks that loop: every successful poll writes the snapshot
 //! to disk, and the next boot reads it back into the in-memory
 //! `AccountStateMap` before any spawn fires. Stale snapshots are
-//! acceptable seed data — the 60 s background poller will refresh
+//! acceptable seed data - the 60 s background poller will refresh
 //! them in the background.
 //!
 //! Path: `<workspace_config_dir>/forge-state.toml`. Single TOML file
-//! that mirrors the `forge.toml` convention — config + state both
+//! that mirrors the `forge.toml` convention - config + state both
 //! live in the same directory under the same format. Schema versioned
 //! so future shape changes can invalidate cleanly.
 //!
@@ -83,7 +83,7 @@ pub(crate) fn load(config_dir: &Path) -> ForgeState {
     let contents = match std::fs::read_to_string(&path) {
         Ok(s) => s,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            // First boot on this config_dir — entirely expected.
+            // First boot on this config_dir - entirely expected.
             return ForgeState::empty();
         }
         Err(e) => {
@@ -233,7 +233,7 @@ mod tests {
         assert!(loaded.account_usage.is_empty());
     }
 
-    /// I3 — `store` uses tmp-file + atomic rename so a crash between
+    /// I3 - `store` uses tmp-file + atomic rename so a crash between
     /// write and rename leaves the previous on-disk state intact
     /// rather than a partial file. Verify the tmp suffix isn't left
     /// behind after a successful write.
@@ -251,7 +251,7 @@ mod tests {
         assert!(!tmp.exists(), "tmp suffix file cleaned up after atomic rename");
     }
 
-    /// I3 — repeated `store` calls overwrite the previous file cleanly
+    /// I3 - repeated `store` calls overwrite the previous file cleanly
     /// (atomic rename replaces in place; no append, no duplicate).
     #[test]
     fn store_overwrites_existing_file() {

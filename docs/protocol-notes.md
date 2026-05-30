@@ -1,4 +1,4 @@
-# Protocol notes — observed Python SDK behaviour
+# Protocol notes - observed Python SDK behaviour
 
 > Committed to the forge repo under `docs/`. **Not** the user-level planning docs.
 
@@ -38,12 +38,12 @@ but the `can_use_tool` callback path is purely control-message.
 ```
 
 Key fields:
-- `tool_use_id` (required, string) — correlates with the subsequent
+- `tool_use_id` (required, string) - correlates with the subsequent
   `ToolResult` in the stream.
-- `agent_id` (optional) — present when a Task-spawned sub-agent is
+- `agent_id` (optional) - present when a Task-spawned sub-agent is
   making the call.
-- `permission_suggestions` (array, may be empty) — hints from the CLI.
-- `blocked_path` (optional) — workspace sandbox block indicator.
+- `permission_suggestions` (array, may be empty) - hints from the CLI.
+- `blocked_path` (optional) - workspace sandbox block indicator.
 
 There is **no** `parent_tool_use_id` on the request (early planning
 assumption was wrong).
@@ -51,7 +51,7 @@ assumption was wrong).
 ### Response shape (SDK → binary)
 
 **Allow** (always echoes `updatedInput`, even when the callback had no
-override — the SDK writes the original `input` back):
+override - the SDK writes the original `input` back):
 
 ```json
 {
@@ -100,7 +100,7 @@ message; they are NOT re-raised into the main task.
 Python supports `PermissionResultAllow(updated_input=...)`. When the
 Rust API's `PermissionDecision::allow()` is used (no override), the
 SDK layer MUST thread the original `input` from the request through
-to the wire `updatedInput` — the field is never null on the allow
+to the wire `updatedInput` - the field is never null on the allow
 branch.
 
 ---
@@ -124,7 +124,7 @@ req_1_c3d4e5f6
 ### Mechanism
 
 MCP servers declared via `ClaudeAgentOptions.mcp_servers` with type
-`"sdk"` are **in-process** — no child subprocess, no UNIX socket, no
+`"sdk"` are **in-process** - no child subprocess, no UNIX socket, no
 bridge binary. The SDK owns the `mcp.server.Server` instance and
 dispatches JSON-RPC messages directly.
 
@@ -196,14 +196,14 @@ emitted.
 
 Python does NOT auto-inject `mcp__<server>__<tool>` into
 `--allowedTools`. The caller sets their own `allowed_tools` list.
-forge-sdk mirrors this — no auto-injection.
+forge-sdk mirrors this - no auto-injection.
 
 ---
 
 ## Initialize control_request
 
 First frame after connecting (SDK → CLI). Carries hook registry,
-skills, excludeDynamicSections, and agent definitions — these are
+skills, excludeDynamicSections, and agent definitions - these are
 NOT CLI flags despite earlier planning assumptions.
 
 ```json
@@ -290,7 +290,7 @@ Per-event `hookSpecificOutput` wrapper:
 
 ## SessionStore (transcript-mirror adapter)
 
-SessionStore is NOT a state-store backend — the CLI always writes to
+SessionStore is NOT a state-store backend - the CLI always writes to
 local disk. The SessionStore receives a secondary copy of each JSONL
 line via the `--session-mirror` CLI flag.
 
@@ -303,7 +303,7 @@ class SessionStore(Protocol):
     async def list_subkeys(self, key: SessionListSubkeysKey) -> list[str]: ...                # OPTIONAL
 ```
 
-`delete` on a main-transcript key (no subpath) cascades to subkeys —
+`delete` on a main-transcript key (no subpath) cascades to subkeys  - 
 no separate `delete_cascading`.
 
 At-most-once delivery; failed `append` batches surface as
@@ -322,7 +322,7 @@ When `options.skills` is non-empty, Python does THREE things:
 3. Send the `skills` field in the initialize control_request.
 
 Only the concrete-list case populates the `skills` field in
-initialize — `"all"` injects bare `"Skill"` in allowedTools only.
+initialize - `"all"` injects bare `"Skill"` in allowedTools only.
 
 ---
 

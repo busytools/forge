@@ -61,7 +61,7 @@ async fn oauth_usage_user_agent() -> Result<&'static str, OauthUsageError> {
     let ua = format!("claude-code/{version}");
     // get_or_init isn't `Result`-friendly. set/get pair: if another
     // caller raced us and set first, our `set` errors out and we
-    // read theirs via `get` below — value is identical (same probe
+    // read theirs via `get` below - value is identical (same probe
     // result for the same machine) so the race is benign.
     let _ = UA.set(ua);
     UA.get().map(String::as_str).ok_or_else(|| {
@@ -274,7 +274,7 @@ mod tests {
 
     #[test]
     fn retry_after_past_http_date_returns_none() {
-        // HTTP-date in the past — duration_since(now) returns Err → None.
+        // HTTP-date in the past - duration_since(now) returns Err → None.
         let past = std::time::SystemTime::now() - Duration::from_secs(3600);
         let formatted = httpdate::fmt_http_date(past);
         assert!(parse_retry_after(&formatted).is_none());

@@ -31,7 +31,7 @@ macro_rules! tool {
         call: |$input:ident : $input_ty:ty| async move $body:block,
         tool_type: $ty:ident $(,)?
     ) => {
-        // The `tool!` macro generates a unit struct named by the caller —
+        // The `tool!` macro generates a unit struct named by the caller  -
         // doc requirements and lifetime nits don't apply at the call site.
         #[derive(Clone, Copy, Debug, Default)]
         #[allow(missing_docs)]

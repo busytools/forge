@@ -13,7 +13,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Padding, Paragraph, Widget};
 use unicode_width::UnicodeWidthStr;
 
 /// Render the prompt into `area` (the chat-input box's rect). The
-/// orange thick chrome is drawn here too — the caller does NOT render
+/// orange thick chrome is drawn here too - the caller does NOT render
 /// its own block first.
 pub fn render(
     area: Rect,
@@ -613,11 +613,11 @@ mod tests {
     #[test]
     fn question_option_with_description_renders_dim_subtext() {
         let mut request = make_question_request(false);
-        request.prompt.options[0].description = Some("matches chat input — loud, urgent".into());
+        request.prompt.options[0].description = Some("matches chat input - loud, urgent".into());
         let prompt = PromptState::from_question("tc-q".into(), request);
         let out = render_to_string(&prompt, 1, 80, 18);
         assert!(
-            out.contains("matches chat input — loud, urgent"),
+            out.contains("matches chat input - loud, urgent"),
             "expected option description in output:\n{out}"
         );
     }
@@ -653,7 +653,7 @@ mod tests {
     fn long_question_body_wraps_with_aligned_continuation_indent() {
         // Single-line long body (no `\n`) must soft-wrap across multiple
         // visual rows whose leading non-blank column matches the first
-        // row's — i.e. Block::Padding::horizontal(2) keeps every wrapped
+        // row's - i.e. Block::Padding::horizontal(2) keeps every wrapped
         // continuation indented to the same left edge.
         let mut request = make_question_request(false);
         request.prompt.question =

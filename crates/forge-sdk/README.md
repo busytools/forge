@@ -37,26 +37,26 @@ trust, sessions catalog, project memory) live in
 
 Core types and functions exposed from the crate root:
 
-- **Entry point** — `Client::spawn(options) -> (Client, ClientEvents)`.
-- **Transport extension** — `pub trait Transport` for injecting
+- **Entry point** - `Client::spawn(options) -> (Client, ClientEvents)`.
+- **Transport extension** - `pub trait Transport` for injecting
   custom I/O (e.g. wire-recording in `forge-test-harness`).
   `Subprocess` is the shipped in-process implementation.
-- **Options + config** — `Options`, `OptionsBuilder`. The pure-data
+- **Options + config** - `Options`, `OptionsBuilder`. The pure-data
   enums (`PermissionMode`, `SystemPromptKind`, `SdkPluginConfig`) live
   in `forge-primitives`.
-- **Hooks** — `Hooks`, `HooksBuilder`, `HookCallback` trait,
+- **Hooks** - `Hooks`, `HooksBuilder`, `HookCallback` trait,
   `HookDecision`. Input + output structs live in
   `forge_primitives::hooks::{inputs, outputs}`.
-- **Permissions** — `CanUseToolCallback` trait. Decision +
+- **Permissions** - `CanUseToolCallback` trait. Decision +
   context types live in `forge_primitives::permissions`.
-- **MCP hosting** — `mcp::{McpServer, McpServerBuilder, Tool,
+- **MCP hosting** - `mcp::{McpServer, McpServerBuilder, Tool,
   ToolInput, ToolOutput}` + `tool!` declarative macro.
-- **Subagents** — `SubagentDefinition`, `SubagentMap` (populated
+- **Subagents** - `SubagentDefinition`, `SubagentMap` (populated
   by setting struct fields directly; the `::new` + `with_*` builder
   family was removed pending re-add when subagent registration
   becomes a runtime feature).
-- **Path resolution** — `claude_config_dir()`, `projects_dir()`.
-- **Errors** — `Error` enum (variants mirror Python's
+- **Path resolution** - `claude_config_dir()`, `projects_dir()`.
+- **Errors** - `Error` enum (variants mirror Python's
   `CLIConnectionError` / `CLINotFoundError` / `ProcessError` /
   `CLIJSONDecodeError` / `MessageParse` families).
 
@@ -80,10 +80,10 @@ async fn main() -> anyhow::Result<()> {
 
 See `examples/` for working demos:
 
-- `echo.rs` — minimal client lifecycle.
-- `hooks_logging.rs` — `UserPromptSubmit` hook capturing prompts.
-- `mcp_tool.rs` — in-process MCP server exposing a tool.
-- `permissions.rs` — `can_use_tool` callback gating tool invocations.
+- `echo.rs` - minimal client lifecycle.
+- `hooks_logging.rs` - `UserPromptSubmit` hook capturing prompts.
+- `mcp_tool.rs` - in-process MCP server exposing a tool.
+- `permissions.rs` - `can_use_tool` callback gating tool invocations.
 
 ## Development
 
@@ -94,7 +94,7 @@ just check
 ```
 
 The Monday upstream-watch ritual lives in
-[`../../CLAUDE.md`](../../CLAUDE.md) — scan Python `claude-agent-sdk`
+[`../../CLAUDE.md`](../../CLAUDE.md) - scan Python `claude-agent-sdk`
 for new ideas worth pulling in (forge-native, not 1:1 parity).
 
 ## Licence

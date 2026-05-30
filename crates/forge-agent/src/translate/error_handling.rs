@@ -33,14 +33,14 @@ pub fn summarize_internal_error(input: &str) -> String {
     // first-non-blank line) returned `""` when the wire shape used
     // any of the variants below.
     //
-    // - `assistant_error` — wire-shape from the agent SDK adapter for
+    // - `assistant_error` - wire-shape from the agent SDK adapter for
     //   errors that surface inside an assistant turn body.
-    // - `detail` / `description` — common JSON shapes for error
+    // - `detail` / `description` - common JSON shapes for error
     //   responses that don't follow the `"message"` convention
     //   (Anthropic's "rate_limit_error" body uses `message` so it
     //   hits the prior branch; other endpoints differ).
-    // - `error.message` / `error.type` — nested error objects.
-    // - `body` — the truncated HTTP body suffix oauth_usage and
+    // - `error.message` / `error.type` - nested error objects.
+    // - `body` - the truncated HTTP body suffix oauth_usage and
     //   similar loggers stuff verbatim onto wrapped error strings.
     //
     // Each extractor returns None when the field isn't present so
@@ -239,7 +239,7 @@ mod tests {
 
     /// Locks in the full needle list. A future dedup pass that
     /// drops any of these substrings would silently regress
-    /// auth-required classification — assert the matrix end-to-end.
+    /// auth-required classification - assert the matrix end-to-end.
     #[test]
     fn auth_required_covers_all_consolidated_needles() {
         for s in [

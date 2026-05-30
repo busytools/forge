@@ -2,7 +2,7 @@
 //!
 //! After the strict-config-dir refactor, forge-sdk no longer falls
 //! back to `~/.claude` on its own. Resolution lives in
-//! `forge-agent` / `forge-workspace` — those layers read
+//! `forge-agent` / `forge-workspace` - those layers read
 //! `$CLAUDE_CONFIG_DIR` (typically via [`claude_config_dir_from_env`])
 //! at orchestration boundaries and thread the resulting `PathBuf`
 //! into every accessor that needs it. forge-sdk only exposes a
@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 /// Read `$CLAUDE_CONFIG_DIR` from the process environment. Returns
 /// `None` when the variable is unset, empty, or contains only a
-/// trailing slash. Callers handle the `None` case explicitly — there
+/// trailing slash. Callers handle the `None` case explicitly - there
 /// is no silent fallback to `~/.claude` at this layer.
 ///
 /// Trailing slashes are stripped to match the `claude` CLI's own

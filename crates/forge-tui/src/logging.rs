@@ -196,7 +196,7 @@ fn default_diagnostics_dir() -> anyhow::Result<PathBuf> {
     if let Some(home) = dirs::home_dir() {
         return Ok(home.join(format!(".{DEFAULT_LOG_DIR}")).join("logs"));
     }
-    // No state / cache / home dir available — refuse to fall back
+    // No state / cache / home dir available - refuse to fall back
     // to `std::env::current_dir()`. Where the binary was launched
     // must not change the log location: a `forge` invocation from
     // `~/Projects/forge` and one from `/tmp` must write to the same
@@ -572,7 +572,7 @@ mod tests {
 
     #[test]
     fn resolve_log_path_returns_default_with_no_triggers_set() {
-        // Logs are on by default — no CLI flag, env var, or filter
+        // Logs are on by default - no CLI flag, env var, or filter
         // needed. Pins the policy so a future refactor can't
         // accidentally re-introduce the "opt-in" gate.
         let cli = Cli {

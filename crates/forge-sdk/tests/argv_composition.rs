@@ -29,7 +29,7 @@ fn find_flag<'a>(argv: &'a [String], flag: &str) -> Option<Option<&'a str>> {
 fn baseline_argv_leading_and_trailing_flags() {
     let argv = argv_of(OptionsBuilder::new());
     assert_eq!(&argv[0..3], &["--output-format", "stream-json", "--verbose"]);
-    // Empty system_prompt — the CLI's default would inject its own; the
+    // Empty system_prompt - the CLI's default would inject its own; the
     // explicit `--system-prompt ""` suppresses that.
     assert_eq!(find_flag(&argv, "--system-prompt"), Some(Some("")));
     let tail = &argv[argv.len() - 2..];

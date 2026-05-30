@@ -101,8 +101,8 @@ fn handle_resize(app: &mut App, width: u16, height: u16) {
     *app.selection_mut() = None;
     app.scrollbar_drag = None;
 
-    // The Narrow-tier Projects overlay is transient — its design
-    // contract is "each launch starts closed" — so resetting on
+    // The Narrow-tier Projects overlay is transient - its design
+    // contract is "each launch starts closed" - so resetting on
     // resize matches the documented model. Without this, an overlay
     // opened at Narrow tier persists across a resize to Wide; later
     // Esc keypresses get consumed by the overlay-close handler
@@ -150,7 +150,7 @@ fn dispatch_mouse_by_view(app: &mut App, mouse: crossterm::event::MouseEvent) {
         ActiveView::Diff => {
             super::diff_overlay::handle_mouse(app, mouse);
         }
-        // Plugins / MCP / Launchpad are keyboard-only — mouse
+        // Plugins / MCP / Launchpad are keyboard-only - mouse
         // events are intentionally dropped.
         ActiveView::Plugins | ActiveView::Mcp | ActiveView::Launchpad => {}
     }
@@ -265,7 +265,7 @@ pub fn apply_current_mode_update(app: &mut App, update: &model::CurrentModeUpdat
 pub(super) fn apply_session_status_update(app: &mut App, status: model::SessionStatus) {
     // The CLI emits `status:"compacting"` as the first inbound frame
     // after a `/compact` user message and `status:null` when
-    // compaction settles — verified against the sdk_compact wire
+    // compaction settles - verified against the sdk_compact wire
     // baseline. `is_compacting` is driven purely from this path; no
     // optimistic-set in `handle_compact_submit` is needed.
     let was_compacting = app.is_compacting();
@@ -393,7 +393,7 @@ mod tests {
     /// `App::test_default` always have one bucket keyed by
     /// `App::PRE_CONNECT_KEY`, and tests that swap session ids in
     /// (via `App::set_session_id`) migrate the bucket onto the new
-    /// key — but for tagging synthetic events both forms route
+    /// key - but for tagging synthetic events both forms route
     /// through the active-session matcher in
     /// [`super::handle_client_event`], so the pre-Connected key is
     /// what the multiplexer expects when no real
@@ -1083,7 +1083,7 @@ mod tests {
         assert!(removed.is_some());
         assert_eq!(app.tool_call_scope("tool-stale"), None);
 
-        // Send a tool_use re-emit for the removed tool — the wire path
+        // Send a tool_use re-emit for the removed tool - the wire path
         // attempts to reopen it as in_progress and the code must not
         // resurrect an entry in `active_task_ids` (the original test
         // exercised this via SessionUpdate::ToolCallUpdate).
@@ -1120,7 +1120,7 @@ mod tests {
         };
 
         // Re-send the same tool_use envelope. The wire path keeps the
-        // tool_call open with the same in_progress status — assert the
+        // tool_call open with the same in_progress status - assert the
         // re-emit doesn't bump any cache invalidation epochs.
         send_msg(
             &mut app,
@@ -1557,7 +1557,7 @@ mod tests {
             panic!("expected welcome block");
         };
         assert_eq!(welcome.session_id, "session-1");
-        // Reconcile must not touch the welcome — value stays at
+        // Reconcile must not touch the welcome - value stays at
         // whatever the test fixture wrote ("-").
         assert_eq!(welcome.subscription, "-");
     }
@@ -1889,7 +1889,7 @@ mod tests {
         assert_eq!(app.active_account_display_name().as_deref(), Some("Stargate"));
 
         // Welcome row shows the "Account: …" skeleton because the
-        // tier hasn't arrived yet — committing "Account: Stargate"
+        // tier hasn't arrived yet - committing "Account: Stargate"
         // now would flicker into "Account: Stargate · team" once
         // the status snapshot lands.
         let Some(MessageBlock::Welcome(welcome)) = app.messages()[0].blocks.first() else {
@@ -2200,7 +2200,7 @@ mod tests {
         let layout_generation_before = app.viewport().layout_generation;
 
         // Wire path: System("init") with permissionMode rebuilds the
-        // mode state and applies via apply_mode_state_update — same
+        // mode state and applies via apply_mode_state_update - same
         // downstream invalidate-layout effect as the original
         // SessionUpdate::ModeStateUpdate.
         send_msg(&mut app, system_message("init", serde_json::json!({"permissionMode": "plan"})));
@@ -3785,7 +3785,7 @@ mod tests {
             panic!("tool-call block missing post-click");
         };
         assert_eq!(tc.collapsed_override, Some(true));
-        // Selection should NOT have started — click was consumed.
+        // Selection should NOT have started - click was consumed.
         assert!(app.selection().is_none());
 
         // mark_tool_call_layout_dirty zeroed the cached measurement so a

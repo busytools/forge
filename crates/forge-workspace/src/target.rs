@@ -6,7 +6,7 @@
 // sites continue to import via `forge_workspace::SessionKey`.
 pub use forge_primitives::SessionKey;
 
-/// Project root path key — the canonicalised, sanitised string form
+/// Project root path key - the canonicalised, sanitised string form
 /// produced by
 /// [`forge_agent::userdata::catalog::scan::project_key_for_directory`].
 /// Equivalent to the directory names you see under

@@ -1,4 +1,4 @@
-# Cut — git-worktree support in `list_sessions`
+# Cut - git-worktree support in `list_sessions`
 
 **Cut on:** 2026-04-23
 **Commit:** *(this commit)*
@@ -19,14 +19,14 @@
 ## Why we cut it
 
 - **Niche feature.** Only relevant for users running `claude` across multiple git worktrees of the same repo. Most users don't use worktrees at all; most worktree users don't run `claude` from more than one.
-- **Shell-out cost + failure modes.** Every call paid a `git worktree list --porcelain` subprocess. Silently returned empty on any `git` failure (not on PATH, not a repo, etc.) — no error surfaces to the caller.
+- **Shell-out cost + failure modes.** Every call paid a `git worktree list --porcelain` subprocess. Silently returned empty on any `git` failure (not on PATH, not a repo, etc.) - no error surfaces to the caller.
 - **Non-core SDK primitive.** The core job of `list_sessions` is "walk one project's session directory." Worktree aggregation is a higher-level composition that a caller can rebuild trivially if they need it (two `list_sessions` calls + a merge-sort by `last_modified`).
 - **Core-SDK-hygiene.** Shelling out to `git` from a library function is a side-effect callers can't predict. Belongs in application code, not the SDK.
 - Post-parity, parity-for-its-own-sake isn't a keep-reason.
 
 ## What was removed
 
-- `git_worktree_paths(dir: &str) -> Vec<String>` helper in `crates/forge-sdk/src/session/scan.rs` (24 LoC — lines 284-307 of the pre-cut file).
+- `git_worktree_paths(dir: &str) -> Vec<String>` helper in `crates/forge-sdk/src/session/scan.rs` (24 LoC - lines 284-307 of the pre-cut file).
 - `include_worktrees: bool` parameter on `list_sessions`.
 - The worktree-walking branch inside `list_sessions` (vec expansion + sort + dedup).
 - Marker test `list_sessions_include_worktrees_disabled` in `tests/python_parity/sessions.rs`.
@@ -52,7 +52,7 @@ pub fn list_sessions(
 ) -> Vec<SDKSessionInfo>
 ```
 
-No internal callers needed updates — `list_sessions` wasn't called elsewhere in the tree.
+No internal callers needed updates - `list_sessions` wasn't called elsewhere in the tree.
 
 ## How to bring it back
 

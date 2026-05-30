@@ -17,7 +17,7 @@
 //!   `forge_sdk::transport::codec::decode_dispatch`, assert everything
 //!   decodes cleanly (including no `DecodedLine::Unknown` variants
 //!   unless explicitly expected). Runs on every `cargo check` /
-//!   `just check` — no API cost.
+//!   `just check` - no API cost.
 //!
 //! ## Baselines
 //!
@@ -110,7 +110,7 @@ pub fn baseline_dir() -> std::path::PathBuf {
 ///
 /// Looks up `baselines/<PINNED_CLI_VERSION>/<scenario>.jsonl` and returns
 /// the parsed `(direction, line)` pairs. Panics if the baseline is
-/// missing — scenarios are expected to ship their baseline on creation.
+/// missing - scenarios are expected to ship their baseline on creation.
 ///
 /// # Panics
 ///
@@ -159,14 +159,14 @@ pub struct DecodeReport {
     /// Count of `control_cancel_request` frames.
     pub control_cancels: usize,
     /// Count of `control_response` frames (replies from the CLI to our
-    /// outbound `control_requests` — initialize, `set_model`, interrupt, …).
+    /// outbound `control_requests` - initialize, `set_model`, interrupt, …).
     pub control_responses: usize,
     /// Unrecognised `type` values seen. Each entry is the `type` string
     /// the CLI sent.
     pub unknown_types: Vec<String>,
     /// Unrecognised `control_request.subtype` values seen.
     pub unknown_control_subtypes: Vec<String>,
-    /// Hard decode errors — line was recognised but inner shape was
+    /// Hard decode errors - line was recognised but inner shape was
     /// invalid, or JSON malformed.
     pub decode_errors: Vec<(usize, String)>,
 }
@@ -186,7 +186,7 @@ impl DecodeReport {
 ///
 /// Caller supplies:
 /// - `scenario`: a short slug (e.g. `"bash_tool"`) used in trace filenames.
-/// - `options`: fully-built [`forge_sdk::Options`] — set tools,
+/// - `options`: fully-built [`forge_sdk::Options`] - set tools,
 ///   `permission_mode`, hooks, MCP servers, etc. here.
 /// - `drive`: async closure that drives the scenario once the client is
 ///   ready. Typically calls `send_user_message(...)` and may register
@@ -195,13 +195,13 @@ impl DecodeReport {
 /// # Skip semantics
 ///
 /// When `FORGE_WIRE_CAPTURE` is unset, returns `Ok(None)` immediately
-/// without touching the network — scenarios compile and link in CI but
+/// without touching the network - scenarios compile and link in CI but
 /// only run when the developer opts in.
 ///
 /// # Errors
 ///
 /// Any [`forge_sdk::Error`] surfaced during spawn / drive / drain.
-/// Panics on trace-dump failure or decode-completeness failure — those
+/// Panics on trace-dump failure or decode-completeness failure - those
 /// are harness invariants, not recoverable errors.
 ///
 /// # Panics
@@ -266,7 +266,7 @@ where
         );
     })?;
 
-    // Hand off to the scenario driver — on failure dump a partial trace.
+    // Hand off to the scenario driver - on failure dump a partial trace.
     let (client, mut events) = match drive(client, events).await {
         Ok(pair) => pair,
         Err(e) => {
@@ -284,13 +284,13 @@ where
 
     // Drain until a `Result` frame, then close stdin and drain to EOF.
     //
-    // We can't close stdin BEFORE the drain — the CLI is still
+    // We can't close stdin BEFORE the drain - the CLI is still
     // emitting `hook_callback` / `mcp_message` control_requests during
     // the turn, and our handlers reply on stdin. Closing too early
     // breaks the pipe mid-handler. So the order is:
     //
     // 1. Read until `Result` (with a short per-read timeout in case
-    //    `drive` already drained everything inside its closure — in
+    //    `drive` already drained everything inside its closure - in
     //    that case the timeout fires, we assume drain is done, and
     //    fall through to end_input).
     // 2. Close stdin so the CLI exits cleanly.
@@ -328,7 +328,7 @@ where
             Err(_timeout) => {
                 // 30 s without a frame. Two legitimate causes:
                 // (a) `drive` already drained the `Result` inside its
-                //     closure — common for scenarios that issue
+                //     closure - common for scenarios that issue
                 //     follow-up control_requests after consuming the
                 //     turn (e.g. `context_usage`, `rewind_files`).
                 // (b) The CLI is genuinely hung. The harness can't
@@ -340,7 +340,7 @@ where
                 //     reports as "NO Result frame".
                 eprintln!(
                     "{scenario}: 30s read_timeout fired with no Result \
-                     frame seen — `drive` may have drained it OR the \
+                     frame seen - `drive` may have drained it OR the \
                      CLI is hung. Proceeding to cleanup."
                 );
                 break;
@@ -355,7 +355,7 @@ where
     // Drain any trailing frames that arrive between end_input and EOF
     // (some CLI paths emit a final `system:close` or trailing
     // `rate_limit_event`). Errors from writes during trailing
-    // handlers (`BrokenPipe`) are expected here — stdin is closed.
+    // handlers (`BrokenPipe`) are expected here - stdin is closed.
     // Other errors (decoder regressions, malformed JSON, mid-drain
     // shape drift) are NOT expected and would otherwise be hidden;
     // log them loudly so they surface in the captured trace's
@@ -379,7 +379,7 @@ where
         eprintln!("{scenario}: disconnect failed (non-fatal, trace already captured): {e}");
     }
 
-    // Successful (or at least drained) run — dump the trace, verify every
+    // Successful (or at least drained) run - dump the trace, verify every
     // inbound line decodes. Failure here is a hard panic.
     let log = log_arc.lock();
     let trace_path = dump(&log, scenario);
@@ -431,7 +431,7 @@ pub struct ScenarioCapture {
     /// Whether a `Result` frame was observed before the loop ended.
     pub saw_result: bool,
     /// `(num_turns, total_cost_usd, duration_ms)` from the final `Result`
-    /// frame — `None` when the scenario ended without one.
+    /// frame - `None` when the scenario ended without one.
     pub summary: Option<(u64, Option<f64>, u64)>,
 }
 

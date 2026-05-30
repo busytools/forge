@@ -100,7 +100,7 @@ pub struct McpError {
 /// A tool as described in the `tools/list` response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolDescription {
-    /// Tool name (e.g. `"greet"` — will be exposed to the model as
+    /// Tool name (e.g. `"greet"` - will be exposed to the model as
     /// `mcp__<server-name>__greet`).
     pub name: String,
     /// One-line human-readable description.

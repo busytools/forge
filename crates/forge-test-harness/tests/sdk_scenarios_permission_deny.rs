@@ -2,7 +2,7 @@
 //!
 //! Matches the canonical permission-deny example.
 //! (`examples/tool_permission_callback.py`): register a
-//! `can_use_tool` callback and run in `PermissionMode::Ask` — the CLI
+//! `can_use_tool` callback and run in `PermissionMode::Ask` - the CLI
 //! should emit a `can_use_tool` `control_request` per tool use, the
 //! SDK handler replies with `deny`, and the CLI reports denial in the
 //! turn.

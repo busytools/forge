@@ -12,7 +12,7 @@ pub struct ToolInput {
 /// Output a tool returns.
 #[derive(Debug, Clone)]
 pub struct ToolOutput {
-    /// Content blocks — matches MCP `tools/call` response shape.
+    /// Content blocks - matches MCP `tools/call` response shape.
     pub blocks: Vec<ToolOutputBlock>,
     /// Whether this represents a tool failure.
     pub is_error: bool,

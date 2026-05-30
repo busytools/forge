@@ -1,11 +1,11 @@
 //! Live-capture scenarios for the long-running tool lifecycle events
 //! the Inspector pane's PROCESSES section depends on.
 //!
-//! - `backgrounded_bash_lifecycle` — drives the model to invoke Bash
+//! - `backgrounded_bash_lifecycle` - drives the model to invoke Bash
 //!   with `run_in_background: true`, lets the spawned process exit,
 //!   and captures the `backgroundTaskId` round-trip plus any
 //!   `task_notification` the kill / completion path emits.
-//! - `monitor_persistent_stream` — drives the model to invoke the
+//! - `monitor_persistent_stream` - drives the model to invoke the
 //!   `Monitor` tool with a short script that emits a handful of
 //!   stdout lines, then captures every per-line notification + the
 //!   final stop notification.
@@ -14,7 +14,7 @@
 //! `TaskNotification` covers but the existing `subagent.jsonl`
 //! baseline doesn't exercise. Without these baselines, forge has no
 //! evidence of what the wire actually looks like for these tool
-//! kinds — synthesising baselines from binary strings is explicitly
+//! kinds - synthesising baselines from binary strings is explicitly
 //! banned (see TIL 2026-05-13).
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]

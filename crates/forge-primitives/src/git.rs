@@ -1,6 +1,6 @@
 //! Git introspection data shapes.
 //!
-//! Type-only — branch resolution + diff scanning live in
+//! Type-only - branch resolution + diff scanning live in
 //! `forge_agent::env::git_diff`. `GitBranch` is the wire shape
 //! re-used by both the agent-side snapshot and the TUI-side render.
 
@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum GitBranch {
-    /// Branch is named — `.git/HEAD` resolved to `refs/heads/<name>`.
+    /// Branch is named - `.git/HEAD` resolved to `refs/heads/<name>`.
     Named(String),
     /// `.git/HEAD` points at a commit hash directly (detached HEAD).
     Detached,

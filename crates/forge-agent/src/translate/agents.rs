@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use forge_primitives::AvailableAgent;
 
-/// Mirrors `mapAvailableAgentsFromNames(value)` — agents listed as
+/// Mirrors `mapAvailableAgentsFromNames(value)` - agents listed as
 /// plain strings (no descriptions). Used when the CLI emits a names-
 /// only list.
 pub fn map_available_agents_from_names(value: Option<&Value>) -> Vec<AvailableAgent> {

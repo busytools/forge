@@ -2,7 +2,7 @@
 
 Wire-conformance harness for forge:
 
-- **`sdk_wire`** — forge-sdk ↔ `claude` CLI stream-json
+- **`sdk_wire`** - forge-sdk ↔ `claude` CLI stream-json
 
 Ships scenarios + committed baselines + a replay test that runs on
 every `cargo nextest run`. Live capture is opt-in via
@@ -59,10 +59,10 @@ binary.
 ## Running
 
 ```bash
-# Replay mode — offline, always safe:
+# Replay mode - offline, always safe:
 cargo nextest run -p forge-test-harness
 
-# Live capture — burns tokens:
+# Live capture - burns tokens:
 FORGE_WIRE_CAPTURE=1 cargo nextest run -p forge-test-harness \
   --no-capture --run-ignored all
 
@@ -79,7 +79,7 @@ FORGE_WIRE_CAPTURE=1 cargo nextest run -p forge-test-harness \
    - Use `RecordingTransport::new(Subprocess::spawn(...)...)` +
      `Client::spawn_with_transport`.
    - Drive the scenario. Capture the trace to `target/wire-traces/`.
-2. Run it with `FORGE_WIRE_CAPTURE=1` — this produces the capture.
+2. Run it with `FORGE_WIRE_CAPTURE=1` - this produces the capture.
 3. Copy the capture into `baselines/<version>/<scenario>.jsonl`.
 4. The always-on `replay.rs::all_baselines_decode_cleanly` test picks up
    the new baseline automatically.
@@ -137,7 +137,7 @@ FORGE_REAL_SESSIONS=$HOME/.claude-stargate/projects \
   real_session_decode_probe
 ```
 
-Nothing is persisted — failures surface as stderr lines and a panic.
+Nothing is persisted - failures surface as stderr lines and a panic.
 This is how the `document` content-block gap that forced the
 `ContentBlock::Unknown` forward-compat variant was surfaced.
 
@@ -151,7 +151,7 @@ cargo run -p forge-test-harness --example redact_session -- \
 ```
 
 One sample lives at `baselines/2.1.117/real_session_sample.jsonl`
-— 352 messages covering real multi-turn tool-use flows, all
+ -  352 messages covering real multi-turn tool-use flows, all
 redaction-scrubbed.
 
 ## Coverage map (wire surfaces vs. scenarios)

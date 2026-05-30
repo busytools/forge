@@ -83,7 +83,7 @@ fn normalize_model_key(id: &str) -> NormalizedModelKey {
                     }
                     continue;
                 }
-                // 8-digit `20YYMMDD` release-build token — upstream
+                // 8-digit `20YYMMDD` release-build token - upstream
                 // tracks these in `build_parts` but never surfaces them
                 // in the user-visible humanizer, so drop.
                 if part.len() == 8
@@ -228,7 +228,7 @@ fn resolve_catalog_model<'a>(
 
 /// Mirrors upstream's `resolveCurrentModel`. Pure function on the
 /// session's resolved/runtime/requested model strings + the
-/// `available_models` catalogue. Primitive-arg form — callers pass
+/// `available_models` catalogue. Primitive-arg form - callers pass
 /// what they have; no session struct dependency.
 pub fn resolve_current_model_from_inputs(
     model_id: &str,
@@ -289,7 +289,7 @@ pub fn resolve_current_model_from_inputs(
     }
 }
 
-/// Mirrors `mapAvailableModels(models)` — initialize-response `models`
+/// Mirrors `mapAvailableModels(models)` - initialize-response `models`
 /// array → typed `AvailableModel`. Drops entries lacking a non-empty
 /// `value` or `displayName`.
 pub fn map_available_models(models: Option<&Value>) -> Vec<AvailableModel> {
@@ -424,7 +424,7 @@ mod tests {
     #[test]
     fn catalog_versioned_name_kept_as_is() {
         // When the catalog entry already has a version, keep it
-        // verbatim — don't second-guess the CLI.
+        // verbatim - don't second-guess the CLI.
         let catalog = vec![AvailableModel {
             id: "claude-opus-4-7-20251022".to_owned(),
             display_name: "Claude Opus 4.7".to_owned(),

@@ -110,7 +110,7 @@ async fn chunks_across_turns_open_a_new_assistant_message() {
     // Regression: previously, chunks arriving after `TurnComplete`
     // (no active turn bound, e.g. a Monitor / Task notification
     // firing on its own) merged into the prior turn's last assistant
-    // message — producing rendered output like
+    // message - producing rendered output like
     // "...gateway-backend/pull/107Monitor closed cleanly." with no
     // separator. Each unprompted assistant turn must now open its
     // own ChatMessage so the renderer can space them.
@@ -413,7 +413,7 @@ async fn files_accessed_accumulates_across_tool_calls_in_one_turn() {
 /// Regression: an `SdkMessageReceived` envelope arriving while
 /// `app.session_id` holds the empty placeholder (the value the bridge
 /// captures from `Client::session_id()` at spawn time, before
-/// `system/init` lands) used to be dropped silently — leaving the
+/// `system/init` lands) used to be dropped silently - leaving the
 /// chat unrendered and the spinner stuck on Thinking forever. The
 /// handler now adopts the wire id onto `app.session_id` and processes
 /// the message.
@@ -472,7 +472,7 @@ async fn sdk_message_with_empty_app_session_id_adopts_wire_id() {
 
 /// Once `app.session_id` is the real id, an `SdkMessageReceived` from
 /// a *different* session is treated as a stale-Client race envelope
-/// and dropped — neither the session id nor the chat moves.
+/// and dropped - neither the session id nor the chat moves.
 #[tokio::test]
 async fn sdk_message_with_mismatched_real_session_id_is_dropped() {
     let mut app = test_app();

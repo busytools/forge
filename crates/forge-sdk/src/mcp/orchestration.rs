@@ -45,7 +45,7 @@ impl McpHosts {
     /// Build the `--mcp-config` inline JSON argument. SDK servers emit
     /// `{"type":"sdk","name":<n>}`; external servers serialise via
     /// [`McpServerConfig`]'s own serde impl. Returns `"{"mcpServers":{}}"`
-    /// when empty — caller should skip adding the flag in that case.
+    /// when empty - caller should skip adding the flag in that case.
     pub(crate) fn config_argv(&self) -> String {
         let mut servers: serde_json::Map<String, serde_json::Value> = self
             .servers

@@ -16,7 +16,7 @@
 //! - `options.env` entries (caller-controlled).
 //!
 //! Filtering of `CLAUDECODE` (upstream #573) is not covered by a
-//! Rust-side unit test — `forbid(unsafe_code)` blocks the env mutation
+//! Rust-side unit test - `forbid(unsafe_code)` blocks the env mutation
 //! a faithful test would need. The call is visually asserted against
 //! `env_remove` in `transport/process.rs`.
 
@@ -61,7 +61,7 @@ async fn spawn_does_not_stamp_entrypoint_by_default() {
     let env = spawn_and_capture_env(|b| b).await;
     assert!(
         !env.contains_key("CLAUDE_CODE_ENTRYPOINT"),
-        "CLAUDE_CODE_ENTRYPOINT must NOT be stamped by default — let the CLI self-classify so the rewriter has a uniform source. Stamped: {:?}",
+        "CLAUDE_CODE_ENTRYPOINT must NOT be stamped by default - let the CLI self-classify so the rewriter has a uniform source. Stamped: {:?}",
         env.get("CLAUDE_CODE_ENTRYPOINT")
     );
 }
@@ -112,7 +112,7 @@ async fn options_env_can_set_entrypoint_and_is_preserved() {
 async fn spawn_does_not_set_proxy_env_when_proxy_absent() {
     // The SDK must not ADD or REWRITE proxy/CA env vars when
     // Options::proxy is None. The child inherits the parent's
-    // environment by default — if the parent shell already exports
+    // environment by default - if the parent shell already exports
     // HTTPS_PROXY (e.g. when this test runs inside a forge session
     // whose own subprocess has those vars stamped), the child sees
     // them too. Assert the SDK didn't add them above the parent
@@ -142,7 +142,7 @@ async fn spawn_does_not_set_proxy_env_when_proxy_absent() {
 #[tokio::test]
 async fn spawn_sets_https_proxy_and_ca_when_proxy_attached() {
     // Boot a real (but unused) rewriter proxy and pass its handle.
-    // The mock child doesn't actually make HTTPS calls — we just want
+    // The mock child doesn't actually make HTTPS calls - we just want
     // the env vars stamped on it.
     let handle = forge_sdk::transport::proxy::start().await.expect("start rewriter proxy");
     let env = spawn_and_capture_env({

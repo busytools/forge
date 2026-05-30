@@ -24,7 +24,7 @@ pub fn build_args(options: &Options) -> Result<Vec<String>, Error> {
     args.push("stream-json".into());
     args.push("--verbose".into());
 
-    // system_prompt — the CLI always emits one of four flag forms
+    // system_prompt - the CLI always emits one of four flag forms
     //, including an explicit
     // `--system-prompt ""` when the option is unset so the CLI
     // doesn't fall back to its builtin prompt. Match byte-for-byte.
@@ -116,7 +116,7 @@ pub fn build_args(options: &Options) -> Result<Vec<String>, Error> {
         }
     }
 
-    // extra_args — arbitrary CLI flags. `None` value = bare flag.
+    // extra_args - arbitrary CLI flags. `None` value = bare flag.
     for (flag, maybe_val) in &options.extra_args {
         args.push(format!("--{flag}"));
         if let Some(v) = maybe_val {
