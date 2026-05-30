@@ -613,11 +613,11 @@ mod tests {
     #[test]
     fn question_option_with_description_renders_dim_subtext() {
         let mut request = make_question_request(false);
-        request.prompt.options[0].description = Some("matches chat input — loud, urgent".into());
+        request.prompt.options[0].description = Some("matches chat input  -  loud, urgent".into());
         let prompt = PromptState::from_question("tc-q".into(), request);
         let out = render_to_string(&prompt, 1, 80, 18);
         assert!(
-            out.contains("matches chat input — loud, urgent"),
+            out.contains("matches chat input  -  loud, urgent"),
             "expected option description in output:\n{out}"
         );
     }

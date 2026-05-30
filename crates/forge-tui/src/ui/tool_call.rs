@@ -559,19 +559,19 @@ mod tests {
             out.iter().flat_map(|line| line.spans.iter().map(|s| s.content.as_ref())).collect();
         assert!(
             !body.contains('\u{256D}'),
-            "Bash row must not contain `╭` (top border) — got: {body:?}",
+            "Bash row must not contain `╭` (top border)  -  got: {body:?}",
         );
         assert!(
             !body.contains('\u{256E}'),
-            "Bash row must not contain `╮` (top border) — got: {body:?}",
+            "Bash row must not contain `╮` (top border)  -  got: {body:?}",
         );
         assert!(
             !body.contains('\u{2570}'),
-            "Bash row must not contain `╰` (bottom border) — got: {body:?}",
+            "Bash row must not contain `╰` (bottom border)  -  got: {body:?}",
         );
         assert!(
             !body.contains('\u{256F}'),
-            "Bash row must not contain `╯` (bottom border) — got: {body:?}",
+            "Bash row must not contain `╯` (bottom border)  -  got: {body:?}",
         );
         // Body lines should have the standard `  │  ` / `  └─ ` prefix.
         assert!(
