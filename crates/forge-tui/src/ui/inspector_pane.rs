@@ -1315,11 +1315,17 @@ fn append_monitor_row(
     let header_budget = row_text_budget(inner_width, header_chrome);
 
     let headline = truncate_or_pass(&monitor.description, header_budget);
+    // #281: right-justify the status badge. The chrome budget already
+    // reserved room for ` · status` (+ optional ` · persistent`), so any
+    // unused headline width turns into a pad-spacer between the headline
+    // and the ` · ` separator. Mirrors GIT's `diff_subtitle_line` pattern.
+    let pad = header_budget.saturating_sub(headline.chars().count());
     lines.push(Line::from(vec![
         Span::raw(" ".repeat(usize::from(PANE_PAD))),
         Span::styled(glyph.to_owned(), Style::default().fg(glyph_color)),
         Span::raw(" ".to_owned()),
         Span::styled(headline, Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw(" ".repeat(pad)),
         Span::styled(" \u{00B7} ".to_owned(), Style::default().fg(theme::DIM)),
         Span::styled(status_label.to_owned(), Style::default().fg(status_color)),
         Span::styled(persistent_suffix.to_owned(), Style::default().fg(theme::DIM)),
@@ -1416,11 +1422,14 @@ fn append_workflow_row(
         + usize::from(PANE_PAD);
     let header_budget = row_text_budget(inner_width, header_chrome);
     let header_text = truncate_or_pass(&workflow.meta_name, header_budget);
+    // #281: same pad-spacer shape as MONITORS — see comment there.
+    let pad = header_budget.saturating_sub(header_text.chars().count());
     lines.push(Line::from(vec![
         Span::raw(" ".repeat(usize::from(PANE_PAD))),
         Span::styled(glyph.to_owned(), Style::default().fg(glyph_color)),
         Span::raw(" ".to_owned()),
         Span::styled(header_text, Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw(" ".repeat(pad)),
         Span::styled(" \u{00B7} ".to_owned(), Style::default().fg(theme::DIM)),
         Span::styled(status_label.to_owned(), Style::default().fg(status_color)),
     ]));
@@ -2764,6 +2773,89 @@ mod tests {
                 line_text(line),
             );
         }
+    }
+
+    // ---------------------------------------------------------
+    // #281: MONITORS + WORKFLOWS status-badge right-justify.
+    // Trailing badge end column locks at `inner_width - PANE_PAD`
+    // regardless of headline length (short, long, persistent).
+    // Mirrors GIT's `diff_subtitle_line` pad-spacer pattern.
+    // ---------------------------------------------------------
+
+    #[test]
+    fn monitor_row_status_badge_right_justified_across_headline_lengths() {
+        let inner_width: usize = 38;
+        let short = make_monitor_entry("tu_a", "short", false, crate::app::MonitorStatus::Running);
+        let long = make_monitor_entry(
+            "tu_b",
+            "a much longer monitor description that approaches the truncation budget",
+            false,
+            crate::app::MonitorStatus::Running,
+        );
+
+        let mut short_lines = Vec::new();
+        append_monitor_row(&mut short_lines, &short, inner_width);
+        let mut long_lines = Vec::new();
+        append_monitor_row(&mut long_lines, &long, inner_width);
+
+        let short_w = rendered_width(&short_lines[0]);
+        let long_w = rendered_width(&long_lines[0]);
+        let target = inner_width.saturating_sub(usize::from(PANE_PAD));
+        assert_eq!(
+            short_w, target,
+            "short MONITORS row should pad out to inner_width - PANE_PAD; got {short_w}, want {target}",
+        );
+        assert_eq!(
+            long_w, target,
+            "long MONITORS row should also end at inner_width - PANE_PAD; got {long_w}, want {target}",
+        );
+    }
+
+    #[test]
+    fn monitor_row_status_badge_right_justified_with_persistent_suffix() {
+        let inner_width: usize = 50;
+        let entry = make_monitor_entry(
+            "tu",
+            "ci-watch",
+            true, // persistent
+            crate::app::MonitorStatus::Running,
+        );
+        let mut lines = Vec::new();
+        append_monitor_row(&mut lines, &entry, inner_width);
+        let w = rendered_width(&lines[0]);
+        let target = inner_width.saturating_sub(usize::from(PANE_PAD));
+        assert_eq!(
+            w, target,
+            "MONITORS row with ` · persistent` suffix should still end at inner_width - PANE_PAD; got {w}, want {target}",
+        );
+    }
+
+    #[test]
+    fn workflow_row_status_badge_right_justified_across_title_lengths() {
+        let inner_width: usize = 38;
+        let short = make_workflow_entry("wf_a", "ping", crate::app::WorkflowStatus::InProgress);
+        let long = make_workflow_entry(
+            "wf_b",
+            "a-rather-long-workflow-name-that-needs-truncation",
+            crate::app::WorkflowStatus::InProgress,
+        );
+
+        let mut short_lines = Vec::new();
+        append_workflow_row(&mut short_lines, &short, inner_width, 0);
+        let mut long_lines = Vec::new();
+        append_workflow_row(&mut long_lines, &long, inner_width, 0);
+
+        let short_w = rendered_width(&short_lines[0]);
+        let long_w = rendered_width(&long_lines[0]);
+        let target = inner_width.saturating_sub(usize::from(PANE_PAD));
+        assert_eq!(
+            short_w, target,
+            "short WORKFLOWS row should pad out to inner_width - PANE_PAD; got {short_w}, want {target}",
+        );
+        assert_eq!(
+            long_w, target,
+            "long WORKFLOWS row should also end at inner_width - PANE_PAD; got {long_w}, want {target}",
+        );
     }
 
     // ---------------------------------------------------------
