@@ -654,6 +654,10 @@ fn extract_last_json_string_field(text: &str, key: &str) -> Option<String> {
     let compact = format!("\"{key}\":\"");
     let spaced = format!("\"{key}\": \"");
     let mut last: Option<String> = None;
+    // Track the byte offset of the winning match: the compact and
+    // spaced patterns are scanned separately, so without comparing
+    // positions the spaced scan would clobber a later compact match.
+    let mut last_pos: Option<usize> = None;
     for pattern in [compact.as_bytes(), spaced.as_bytes()] {
         let mut search_from = 0usize;
         while search_from < bytes.len() {
@@ -670,8 +674,11 @@ fn extract_last_json_string_field(text: &str, key: &str) -> Option<String> {
                     continue;
                 }
                 if bytes[i] == b'"' {
-                    if let Ok(raw) = std::str::from_utf8(&bytes[value_start..i]) {
+                    if last_pos.is_none_or(|p| idx >= p)
+                        && let Ok(raw) = std::str::from_utf8(&bytes[value_start..i])
+                    {
                         last = Some(unescape_json_string(raw));
+                        last_pos = Some(idx);
                     }
                     break;
                 }
@@ -887,6 +894,19 @@ mod tests {
             sanitize_path("/Users/vedhavyas/projects/forge"),
             "-Users-vedhavyas-projects-forge"
         );
+    }
+
+    #[test]
+    fn extract_last_json_string_field_picks_globally_last_across_forms() {
+        // The compact form appears LATER than the spaced form; the
+        // globally-last value must win regardless of which pattern is
+        // scanned first (the bug was the spaced scan clobbering a later
+        // compact match).
+        let text = r#"{"tag": "early-spaced"} {"tag":"late-compact"}"#;
+        assert_eq!(extract_last_json_string_field(text, "tag"), Some("late-compact".to_owned()));
+        // Reverse: spaced later than compact.
+        let text2 = r#"{"tag":"early-compact"} {"tag": "late-spaced"}"#;
+        assert_eq!(extract_last_json_string_field(text2, "tag"), Some("late-spaced".to_owned()));
     }
 
     #[test]
