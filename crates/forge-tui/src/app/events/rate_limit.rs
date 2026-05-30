@@ -178,7 +178,8 @@ pub(super) fn handle_rate_limit_update(app: &mut App, update: &model::RateLimitU
     );
 
     match update.status {
-        model::RateLimitStatus::Allowed => {}
+        // Unknown renders neutral (no notice), like Allowed.
+        model::RateLimitStatus::Allowed | model::RateLimitStatus::Unknown => {}
         model::RateLimitStatus::AllowedWarning => {
             let summary = format_rate_limit_summary(update);
             super::notices::upsert_turn_notice(

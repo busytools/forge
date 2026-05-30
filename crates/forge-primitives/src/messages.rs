@@ -495,6 +495,9 @@ pub enum RateLimitStatus {
     AllowedWarning,
     /// Limit hit; requests are being refused.
     Rejected,
+    /// A status forge-sdk doesn't yet recognise.
+    #[serde(other)]
+    Unknown,
 }
 
 /// Which rate-limit window applies.

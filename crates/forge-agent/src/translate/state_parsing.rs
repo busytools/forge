@@ -207,7 +207,8 @@ mod tests {
             parse_rate_limit_status(Some(&json!("rejected"))),
             Some(RateLimitStatus::Rejected)
         );
-        assert_eq!(parse_rate_limit_status(Some(&json!("nope"))), None);
+        // Unknown wire string degrades to Unknown via serde(other).
+        assert_eq!(parse_rate_limit_status(Some(&json!("nope"))), Some(RateLimitStatus::Unknown));
     }
 
     #[test]
