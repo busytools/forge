@@ -169,8 +169,8 @@ impl<'a> MessageRenderContext<'a> {
     }
 }
 
-/// #273: Format a turn-duration milliseconds value for the banner
-/// chip. Buckets:
+/// Format a milliseconds duration for the expanded `stop_hook_summary`
+/// rows (`append_stop_hook_summary`). Buckets:
 ///   - `< 60_000` ms -> one-decimal seconds (`12.4s`).
 ///   - `60_000..3_600_000` -> integer `Xm Ys` (`1m 04s`).
 ///   - `>= 3_600_000` -> `Xh Ym Zs` (`1h 02m 04s`).
