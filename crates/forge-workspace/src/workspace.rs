@@ -1004,8 +1004,9 @@ impl Workspace {
     /// the boot-time loading tasks haven't all reached terminal
     /// yet; `Some` means the plan is live and the launchpad can
     /// un-dim project rows.
-    // Callers land in Sections 2.5 / 3 / 4 of #246. Temporary
-    // `dead_code` allow until those commits land within the same PR.
+    // Test-only accessor (prod reads the field directly): the launchpad
+    // click-gate that would call this isn't wired up yet (#246), so the
+    // allow stays until that gate lands or the unwired surface is cut.
     #[allow(dead_code)]
     pub(crate) fn assignment_plan(&self) -> &Mutex<Option<crate::assignment_plan::AssignmentPlan>> {
         &self.assignment_plan
