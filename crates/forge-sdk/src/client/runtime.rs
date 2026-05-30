@@ -58,8 +58,8 @@ pub(crate) fn spawn_reader_task(
     pre_init_messages: Vec<Message>,
     mut shutdown_rx: oneshot::Receiver<()>,
 ) -> JoinHandle<()> {
-    let inflight: InflightDispatches = Arc::new(Mutex::new(HashMap::new()));
     use tracing::Instrument;
+    let inflight: InflightDispatches = Arc::new(Mutex::new(HashMap::new()));
     let span = tracing::info_span!("forge_sdk::control_reader");
     tokio::spawn(
         async move {
