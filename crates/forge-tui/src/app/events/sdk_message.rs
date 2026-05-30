@@ -40,15 +40,24 @@ pub(super) fn handle_sdk_message(app: &mut App, msg: Message) {
         Message::TaskNotification { .. } => handle_task_notification(app, msg),
         Message::RateLimitEvent { .. } => handle_rate_limit_event(app, msg),
         Message::Result { .. } => handle_result(app, msg),
-        // Streaming partial-message events and the transport-layer
-        // `Error` / forward-compat `Unknown` frames are no-ops today.
-        // Re-add a handler if a downstream consumer needs to react.
-        Message::StreamEvent { .. } | Message::Error { .. } | Message::Unknown { .. } => {}
+        // No-op arms:
+        // - `StreamEvent` (partial-message streaming) + `Error` /
+        //   `Unknown` (transport / forward-compat) - re-add a handler
+        //   if a downstream consumer needs to react.
+        // - `TurnDuration` (#279): decoder variant retained for
+        //   wire-conformance (Hard Rule #9). CLI 2.1.156 never emits
+        //   the event in forge's flow (30+ scenario baselines + 14
+        //   fresh captures, all zero), so the prior banner chip +
+        //   per-message stamp + per-session cache were dead code and
+        //   got deleted.
+        Message::StreamEvent { .. }
+        | Message::Error { .. }
+        | Message::Unknown { .. }
+        | Message::TurnDuration { .. } => {}
         // #273: typed wrappers around the CLI 2.1.156 system events.
         Message::ThinkingTokens { estimated_tokens, .. } => {
             handle_thinking_tokens(app, estimated_tokens);
         }
-        Message::TurnDuration { ms, .. } => handle_turn_duration(app, ms),
         Message::StopHookSummary { actions, hook_infos, .. } => {
             handle_stop_hook_summary(app, actions, hook_infos);
         }
@@ -61,41 +70,6 @@ pub(super) fn handle_sdk_message(app: &mut App, msg: Message) {
 /// the field is cleared on turn end (in `handle_result`).
 fn handle_thinking_tokens(app: &mut App, estimated_tokens: u64) {
     app.set_latest_thinking_tokens(Some(estimated_tokens));
-}
-
-/// #273 + #275 Bug 2: Persist the just-completed turn's wall-clock
-/// duration. Two write paths:
-///
-/// 1. **Per-message stamp** (the renderer's source of truth):
-///    walks the session's chat history backwards to find the most
-///    recent Assistant `ChatMessage` and stamps its
-///    `turn_duration_ms` field. The role-label renderer surfaces
-///    the chip from this field, so every completed assistant turn
-///    in scrollback shows its own `Forge - N.Ns` banner chip.
-/// 2. **Spinner cache** (`set_last_turn_duration_ms`): kept for
-///    downstream consumers that read the per-session value (e.g.
-///    instrumentation, telemetry). The renderer no longer reads
-///    this for the chip - that path was the #275 Bug 2 regression
-///    (gated on `is_active_turn_assistant`, which is already false
-///    by the time `TurnDuration` arrives at end-of-turn).
-///
-/// Edge case: if no assistant message exists yet (turn finalised
-/// with only tool calls and no assistant text/notice block), the
-/// per-message stamp silently no-ops. The spinner-cache write
-/// still fires, preserving historical behaviour.
-fn handle_turn_duration(app: &mut App, ms: u64) {
-    app.set_last_turn_duration_ms(Some(ms));
-    stamp_turn_duration_on_latest_assistant(app, ms);
-}
-
-fn stamp_turn_duration_on_latest_assistant(app: &mut App, ms: u64) {
-    use crate::app::MessageRole;
-    let messages = app.active_messages_mut();
-    if let Some(msg) = messages.iter_mut().rev().find(|m| matches!(m.role, MessageRole::Assistant))
-    {
-        msg.turn_duration_ms = Some(ms);
-        msg.invalidate_render_cache();
-    }
 }
 
 /// #273: Capture the stop-hook summary for the active assistant
@@ -1334,8 +1308,8 @@ fn handle_result(app: &mut App, msg: Message) {
     // #273: Turn ended - clear per-turn thinking-token chip so the
     // next in-progress turn starts with a bare spinner (it'll
     // re-populate once `Message::ThinkingTokens` fires for the new
-    // turn). turn_duration + stop_hook_summary stay - they belong
-    // to the just-completed turn's banner / end-of-turn surfaces.
+    // turn). `stop_hook_summary` is left intact: it belongs to the
+    // just-completed turn's end-of-turn surface.
     app.set_latest_thinking_tokens(None);
     if let Some(state) = fast_mode_state {
         apply_fast_mode_state(app, state);
@@ -1794,78 +1768,6 @@ mod task_updated_section_routing_tests {
         handle_task_updated(&mut app, msg);
         assert_eq!(app.monitors().len(), 1);
         assert_eq!(app.monitors()[0].status, MonitorStatus::Running);
-    }
-}
-
-#[cfg(test)]
-mod turn_duration_stamp_tests {
-    //! #275 Bug 2: `handle_turn_duration` stamps `turn_duration_ms`
-    //! on the most recent assistant `ChatMessage` in the session.
-    //! The renderer reads from the per-message field; no longer
-    //! gated on the spinner's `is_active_turn_assistant` flag.
-    use super::handle_turn_duration;
-    use crate::app::{App, ChatMessage, MessageBlock, MessageRole, TextBlock};
-
-    fn push_assistant_message(app: &mut App, text: &str) {
-        app.active_messages_mut().push(ChatMessage::new(
-            MessageRole::Assistant,
-            vec![MessageBlock::Text(TextBlock::from_complete(text))],
-            None,
-        ));
-    }
-
-    fn push_user_message(app: &mut App, text: &str) {
-        app.active_messages_mut().push(ChatMessage::new(
-            MessageRole::User,
-            vec![MessageBlock::Text(TextBlock::from_complete(text))],
-            None,
-        ));
-    }
-
-    #[test]
-    fn stamps_most_recent_assistant_message() {
-        let mut app = App::test_default();
-        push_assistant_message(&mut app, "older turn");
-        push_user_message(&mut app, "next prompt");
-        push_assistant_message(&mut app, "latest turn");
-        handle_turn_duration(&mut app, 12_400);
-        let messages = app.messages();
-        // Older assistant turn untouched; only the most-recent
-        // assistant message gets the stamp.
-        assert_eq!(messages[0].turn_duration_ms, None);
-        assert_eq!(messages[2].turn_duration_ms, Some(12_400));
-    }
-
-    #[test]
-    fn no_op_when_no_assistant_message_exists() {
-        // Edge case: turn finalises before any assistant message
-        // landed (e.g. tool-only turn that errored). `handle_turn_duration`
-        // must not panic; the spinner-cache write still fires for
-        // downstream consumers.
-        let mut app = App::test_default();
-        push_user_message(&mut app, "lonely prompt");
-        handle_turn_duration(&mut app, 5_000);
-        let messages = app.messages();
-        assert_eq!(messages[0].turn_duration_ms, None);
-        // Spinner cache still receives the value.
-        assert_eq!(app.last_turn_duration_ms(), Some(5_000));
-    }
-
-    #[test]
-    fn second_turn_does_not_overwrite_earlier_assistant_stamp() {
-        // Multiple completed turns each carry their own duration in
-        // scrollback. `handle_turn_duration` only touches the latest
-        // assistant; the prior turn's stamp persists.
-        let mut app = App::test_default();
-        push_assistant_message(&mut app, "first turn");
-        handle_turn_duration(&mut app, 3_000);
-        assert_eq!(app.messages()[0].turn_duration_ms, Some(3_000));
-
-        push_user_message(&mut app, "next prompt");
-        push_assistant_message(&mut app, "second turn");
-        handle_turn_duration(&mut app, 7_500);
-        assert_eq!(app.messages()[0].turn_duration_ms, Some(3_000));
-        assert_eq!(app.messages()[2].turn_duration_ms, Some(7_500));
     }
 }
 
