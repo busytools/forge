@@ -262,6 +262,29 @@ pub trait WorkerFacade: Send + Sync {
 /// Tool -> facade -> Workspace path. Every method starts with
 /// `upgrade()` and short-circuits when the workspace has been
 /// dropped (only possible during shutdown).
+/// Validation chain shared by the production and mock `spawn_worker`
+/// impls so tests exercise the real rules rather than a hand-copied
+/// duplicate. `is_lead` is the resolved caller role.
+pub(super) fn validate_worker_spawn(
+    is_lead: bool,
+    label: &str,
+    charter: &str,
+) -> Result<(), WorkerSpawnError> {
+    if !is_lead {
+        return Err(WorkerSpawnError::NotLeadCaller);
+    }
+    if label.trim().is_empty() {
+        return Err(WorkerSpawnError::EmptyLabel);
+    }
+    if label.trim() == LEAD_LABEL {
+        return Err(WorkerSpawnError::ReservedLabel);
+    }
+    if charter.trim().is_empty() {
+        return Err(WorkerSpawnError::EmptyCharter);
+    }
+    Ok(())
+}
+
 pub struct ProdWorkerFacade {
     workspace: Weak<Workspace>,
 }
@@ -329,18 +352,7 @@ impl WorkerFacade for ProdWorkerFacade {
         charter: String,
     ) -> Result<WorkerSpawnReply, WorkerSpawnError> {
         let cp = self.caller_project(caller).ok_or(WorkerSpawnError::UnknownCallerProject)?;
-        if !cp.is_lead {
-            return Err(WorkerSpawnError::NotLeadCaller);
-        }
-        if label.trim().is_empty() {
-            return Err(WorkerSpawnError::EmptyLabel);
-        }
-        if label.trim() == LEAD_LABEL {
-            return Err(WorkerSpawnError::ReservedLabel);
-        }
-        if charter.trim().is_empty() {
-            return Err(WorkerSpawnError::EmptyCharter);
-        }
+        validate_worker_spawn(cp.is_lead, &label, &charter)?;
         let ws = self.workspace.upgrade().ok_or_else(|| WorkerSpawnError::DispatchFailed {
             message: "workspace dropped".into(),
         })?;
@@ -589,18 +601,7 @@ impl WorkerFacade for MockWorkerFacade {
         charter: String,
     ) -> Result<WorkerSpawnReply, WorkerSpawnError> {
         let cp = self.caller_project(caller).ok_or(WorkerSpawnError::UnknownCallerProject)?;
-        if !cp.is_lead {
-            return Err(WorkerSpawnError::NotLeadCaller);
-        }
-        if label.trim().is_empty() {
-            return Err(WorkerSpawnError::EmptyLabel);
-        }
-        if label.trim() == LEAD_LABEL {
-            return Err(WorkerSpawnError::ReservedLabel);
-        }
-        if charter.trim().is_empty() {
-            return Err(WorkerSpawnError::EmptyCharter);
-        }
+        validate_worker_spawn(cp.is_lead, &label, &charter)?;
         self.spawn_calls.lock().push((caller.clone(), label, charter));
         self.spawn_reply.lock().clone().unwrap_or(Err(WorkerSpawnError::DispatchFailed {
             message: "no preloaded reply".into(),
@@ -754,6 +755,29 @@ mod mock_tests {
             .unwrap();
         assert_eq!(res.session_id, "new-uuid");
         assert_eq!(mock.spawn_calls.lock().len(), 1);
+    }
+
+    #[test]
+    fn validate_worker_spawn_enforces_lead_and_nonempty_fields() {
+        // Prod + mock spawn_worker both route through this, so the rules
+        // are covered against the shipping code, not a copy.
+        assert!(matches!(
+            validate_worker_spawn(false, "reviewer", "charter"),
+            Err(WorkerSpawnError::NotLeadCaller)
+        ));
+        assert!(matches!(
+            validate_worker_spawn(true, "   ", "charter"),
+            Err(WorkerSpawnError::EmptyLabel)
+        ));
+        assert!(matches!(
+            validate_worker_spawn(true, LEAD_LABEL, "charter"),
+            Err(WorkerSpawnError::ReservedLabel)
+        ));
+        assert!(matches!(
+            validate_worker_spawn(true, "reviewer", "  "),
+            Err(WorkerSpawnError::EmptyCharter)
+        ));
+        assert!(validate_worker_spawn(true, "reviewer", "charter").is_ok());
     }
 
     #[test]
