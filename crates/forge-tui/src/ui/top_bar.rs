@@ -89,8 +89,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
 /// either piece when it can't be resolved (e.g. pre-Connect, no
 /// workspace, sleeping project). Truncated to fit `max_chars`.
 fn build_active_context(app: &App, max_chars: usize) -> String {
-    let project = active_project_label(app).unwrap_or_else(|| "—".to_owned());
-    let session = active_session_label(app).unwrap_or_else(|| "—".to_owned());
+    let project = active_project_label(app).unwrap_or_else(|| "\u{2014}".to_owned());
+    let session = active_session_label(app).unwrap_or_else(|| "\u{2014}".to_owned());
     let raw = format!("{project}·{session}");
     projects_pane::truncate_with_ellipsis(&raw, max_chars)
 }
