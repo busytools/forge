@@ -1165,7 +1165,7 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let value_budget = usize::from(width).saturating_sub(1 + ACCOUNT_PANEL_ID_LABEL_WIDTH + 2);
 
     // Profile.
-    let profile_value = app.active_account_display_name().unwrap_or_else(|| "—".to_owned());
+    let profile_value = app.active_account_display_name().unwrap_or_else(|| "\u{2014}".to_owned());
     let profile_fitted = truncate_with_ellipsis(&profile_value, value_budget);
     lines.push(Line::from(vec![
         Span::raw(" "),
@@ -1179,7 +1179,7 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let org_value = app
         .account_info()
         .and_then(|account| account.organization.clone())
-        .unwrap_or_else(|| "—".to_owned());
+        .unwrap_or_else(|| "\u{2014}".to_owned());
     let org_fitted = truncate_with_ellipsis(&org_value, value_budget);
     lines.push(Line::from(vec![
         Span::raw(" "),
@@ -1195,9 +1195,10 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     // clipboard. Button sits flush at the right gutter regardless of
     // value length so its hit column doesn't shift with pane width.
     // Click target stamped in `stamp_session_copy_hit_target`.
-    let session_value = app
-        .session_id()
-        .map_or_else(|| "—".to_owned(), |sid| sid.to_string().chars().take(8).collect::<String>());
+    let session_value = app.session_id().map_or_else(
+        || "\u{2014}".to_owned(),
+        |sid| sid.to_string().chars().take(8).collect::<String>(),
+    );
     // Reserve 5 cells at the right end of the value area: 4 for the
     // button + 1 for the right gutter.
     let session_value_budget = value_budget.saturating_sub(5);
@@ -1233,7 +1234,7 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
 
     // Model. Display name only - effort lives on its own row below so
     // a long model name can't push it off-screen.
-    let model_value = build_model_label(app).unwrap_or_else(|| "—".to_owned());
+    let model_value = build_model_label(app).unwrap_or_else(|| "\u{2014}".to_owned());
     let model_fitted = truncate_with_ellipsis(&model_value, value_budget);
     lines.push(Line::from(vec![
         Span::raw(" "),
@@ -1271,8 +1272,10 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     ctx_line.push(Span::raw(ctx_pct_str));
     lines.push(Line::from(ctx_line));
 
-    let ctx_size_text =
-        app.session_usage().context_max_tokens.map_or_else(|| "—".to_owned(), format_token_count);
+    let ctx_size_text = app
+        .session_usage()
+        .context_max_tokens
+        .map_or_else(|| "\u{2014}".to_owned(), format_token_count);
     let ctx_size_chars = ctx_size_text.chars().count();
     let ctx_size_budget = usize::from(width).saturating_sub(PANEL_RIGHT_GUTTER);
     let ctx_size_fill = ctx_size_budget.saturating_sub(ctx_size_chars);
@@ -1358,7 +1361,7 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let cli_info = app.cli_version_info.as_ref();
     let installed = cli_info
         .and_then(|i| i.installed.as_deref())
-        .map_or_else(|| "—".to_owned(), |v| format!("v{v}"));
+        .map_or_else(|| "\u{2014}".to_owned(), |v| format!("v{v}"));
     // Build the claude row with a width-aware right gutter so the
     // optional update indicator never overflows past `pane_width -
     // PANEL_RIGHT_GUTTER`. Pre-compute the row's printed width as we
@@ -1426,8 +1429,10 @@ fn push_usage_window_lines(
     let bar_cells = bar_cells_for(width);
     let pct_value = window.map_or(0.0, |w| w.utilization);
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let pct_text = window
-        .map_or_else(|| "  —%".to_owned(), |w| format!("{:>3}%", w.utilization.round() as i64));
+    let pct_text = window.map_or_else(
+        || "  \u{2014}%".to_owned(),
+        |w| format!("{:>3}%", w.utilization.round() as i64),
+    );
     let mut row = vec![Span::raw(" "), label_span(label, 3), Span::raw("  ")];
     row.extend(bar_spans(pct_value, bar_cells));
     row.push(Span::raw("  "));
@@ -1458,7 +1463,7 @@ fn push_usage_window_lines(
                 }
             });
             let text = usage_error
-                .map_or_else(|| "—".to_owned(), |s| usage_error_label(s, seven_day_at_cap));
+                .map_or_else(|| "\u{2014}".to_owned(), |s| usage_error_label(s, seven_day_at_cap));
             (text, style)
         },
         |duration| (duration, Style::default().fg(theme::DIM)),
@@ -1510,7 +1515,7 @@ fn usage_error_label(status: forge_workspace::UsageFetchStatus, seven_day_at_cap
                 "rate-limited".to_owned()
             }
         }
-        UsageFetchStatus::NetworkFailed | UsageFetchStatus::Other => "—".to_owned(),
+        UsageFetchStatus::NetworkFailed | UsageFetchStatus::Other => "\u{2014}".to_owned(),
     }
 }
 
@@ -1533,7 +1538,7 @@ fn mode_label_and_color(app: &App) -> (String, Color) {
         .map(|m| (m.as_wire().to_owned(), m.display_name().to_owned()))
         .or_else(|| app.mode().map(|m| (m.current_mode_id.clone(), m.current_mode_name.clone())));
     let Some((id, name)) = effective else {
-        return ("—".to_owned(), theme::DIM);
+        return ("\u{2014}".to_owned(), theme::DIM);
     };
     let color = match id.as_str() {
         "default" => theme::DIM,
@@ -2369,7 +2374,10 @@ mod tests {
 
     #[test]
     fn usage_error_label_network_and_other_collapse_to_em_dash() {
-        assert_eq!(usage_error_label(forge_workspace::UsageFetchStatus::NetworkFailed, false), "—",);
-        assert_eq!(usage_error_label(forge_workspace::UsageFetchStatus::Other, false), "—");
+        assert_eq!(
+            usage_error_label(forge_workspace::UsageFetchStatus::NetworkFailed, false),
+            "\u{2014}",
+        );
+        assert_eq!(usage_error_label(forge_workspace::UsageFetchStatus::Other, false), "\u{2014}");
     }
 }

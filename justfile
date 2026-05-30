@@ -9,6 +9,14 @@ default:
 fmt-check:
     cargo fmt --check
 
+# Forbid em-dash / en-dash / horizontal-bar / curly quotes in
+# forge-authored source. Ellipsis U+2026 is allowed. Test baselines
+# + reference-captures are excluded. See the script for the full
+# rationale + the `\u{2014}` escape recipe when a codepoint is
+# functionally required (render glyph).
+unicode-punct-check:
+    ./scripts/check_no_unicode_punctuation.sh
+
 # Rewrite files to match rustfmt.
 fmt:
     cargo fmt
@@ -60,7 +68,7 @@ doc:
     RUSTDOCFLAGS="-D warnings" RUSTFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
 
 # Full pre-commit / pre-PR verification loop.
-check: fmt-check clippy test-all doc
+check: fmt-check unicode-punct-check clippy test-all doc
 
 # Build forge-tui from the current checkout and install the `forge`
 # binary into ~/.cargo/bin/forge. Defaults to release+perf. Wraps up

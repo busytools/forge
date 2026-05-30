@@ -25,6 +25,13 @@ jobs:
           components: rustfmt
       - run: cargo fmt --check
 
+  unicode-punct:
+    name: unicode punctuation gate
+    runs-on: self-hosted-linux
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./scripts/check_no_unicode_punctuation.sh
+
   clippy:
     name: cargo clippy
     runs-on: self-hosted-linux
