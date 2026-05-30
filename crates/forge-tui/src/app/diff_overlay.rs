@@ -184,7 +184,7 @@ pub enum DefaultTarget {
     /// the user IS in a repo; git just couldn't run. The snapshot's
     /// `repo_gate` is `RepoGate::ScannerFailed`.
     ScannerFailed,
-    /// Snapshot has `branch_ahead` Populated (so the scanner sees
+    /// Snapshot has `branch_ahead` populated (so the scanner sees
     /// committed work) but the default branch itself couldn't be
     /// resolved - no `origin/HEAD`, no local `main`, no local
     /// `master`. Distinct from `Clean` because there ARE changes;
