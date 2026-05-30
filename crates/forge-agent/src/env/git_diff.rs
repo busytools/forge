@@ -32,7 +32,7 @@ use std::time::Duration;
 
 use forge_primitives::git::{GitBranch, GitIssueRef, GitPrInfo};
 use forge_primitives::git_diff::{
-    GitBranchAhead, GitDiffFile, GitDiffSnapshot, GitDiffStats, LayerState,
+    GitBranchAhead, GitDiffFile, GitDiffSnapshot, GitDiffStats, LayerState, RepoGate,
 };
 use serde::Deserialize;
 use tokio::process::Command;
@@ -87,12 +87,11 @@ pub async fn scan(cwd: &Path, prev: Option<&GitDiffSnapshot>) -> GitDiffSnapshot
             return GitDiffSnapshot {
                 branch: GitBranch::NoRepo,
                 default_branch: None,
-                in_repo: false,
+                repo_gate: RepoGate::NotARepo,
                 worktree: LayerState::Clean,
                 branch_ahead: LayerState::Clean,
                 pr: None,
                 closes: Vec::new(),
-                scanner_ok: true,
             };
         }
         GitOutput::Failed | GitOutput::Oversize => {
@@ -106,12 +105,11 @@ pub async fn scan(cwd: &Path, prev: Option<&GitDiffSnapshot>) -> GitDiffSnapshot
             return GitDiffSnapshot {
                 branch: GitBranch::NoRepo,
                 default_branch: None,
-                in_repo: false,
+                repo_gate: RepoGate::ScannerFailed,
                 worktree: LayerState::Clean,
                 branch_ahead: LayerState::Clean,
                 pr: None,
                 closes: Vec::new(),
-                scanner_ok: false,
             };
         }
     };
@@ -199,12 +197,11 @@ pub async fn scan(cwd: &Path, prev: Option<&GitDiffSnapshot>) -> GitDiffSnapshot
     GitDiffSnapshot {
         branch,
         default_branch,
-        in_repo: true,
+        repo_gate: RepoGate::InRepo,
         worktree,
         branch_ahead,
         pr,
         closes,
-        scanner_ok: true,
     }
 }
 
@@ -736,17 +733,16 @@ mod tests {
     }
 
     /// `tempfile::tempdir()` produces a dir with no `.git/`, so
-    /// `git rev-parse` returns non-zero exit. The scan reports
-    /// `in_repo = false` either way; `scanner_ok` reflects git's
-    /// exit status, which is non-zero here (the "not a git
-    /// repository" fatal line). The distinction matters for the
-    /// renderer: a healthy non-repo gets a clean hidden GIT
-    /// section, while a sick scanner surfaces the unhealthy banner.
+    /// `git rev-parse` reports the cwd isn't a repo. `repo_gate` is
+    /// then NotARepo (or ScannerFailed if git itself errored); either
+    /// way it isn't InRepo. The distinction matters for the renderer:
+    /// a healthy non-repo gets a clean hidden GIT section, while a sick
+    /// scanner surfaces the unhealthy banner.
     #[tokio::test(flavor = "current_thread")]
     async fn scan_no_repo_collapses_to_not_in_repo() {
         let dir = tempfile::tempdir().expect("tempdir");
         let snap = scan(dir.path(), None).await;
-        assert!(!snap.in_repo);
+        assert_ne!(snap.repo_gate, RepoGate::InRepo);
         assert!(matches!(snap.worktree, LayerState::Clean));
         assert!(matches!(snap.branch_ahead, LayerState::Clean));
         assert!(snap.default_branch.is_none());
@@ -759,7 +755,7 @@ mod tests {
         write_file(&dir, "README.md", "hello\n");
         commit_all(&dir, "init");
         let snap = scan(dir.path(), None).await;
-        assert!(snap.in_repo);
+        assert_eq!(snap.repo_gate, RepoGate::InRepo);
         assert!(matches!(snap.worktree, LayerState::Clean), "clean tree → no layer 1");
         assert!(matches!(snap.branch_ahead, LayerState::Clean), "on default → no layer 2");
         assert_eq!(snap.default_branch.as_deref(), Some("main"));
@@ -877,7 +873,7 @@ mod tests {
         };
         run(&["checkout", "-q", "HEAD~1"]);
         let snap = scan(dir.path(), None).await;
-        assert!(snap.in_repo);
+        assert_eq!(snap.repo_gate, RepoGate::InRepo);
         assert!(matches!(snap.worktree, LayerState::Clean));
         assert!(matches!(snap.branch_ahead, LayerState::Clean));
     }
@@ -949,12 +945,11 @@ mod tests {
         let prev = GitDiffSnapshot {
             branch: GitBranch::Named("feat/x".into()),
             default_branch: Some("main".into()),
-            in_repo: true,
+            repo_gate: RepoGate::InRepo,
             worktree: LayerState::Clean,
             branch_ahead: LayerState::Clean,
             pr: Some(pr.clone()),
             closes: closes.clone(),
-            scanner_ok: true,
         };
 
         let (got_pr, got_closes) = pr_for_branch(dir.path(), "feat/x", Some(&prev)).await;
@@ -972,12 +967,11 @@ mod tests {
         let prev = GitDiffSnapshot {
             branch: GitBranch::Named("feat/x".into()),
             default_branch: Some("main".into()),
-            in_repo: true,
+            repo_gate: RepoGate::InRepo,
             worktree: LayerState::Clean,
             branch_ahead: LayerState::Clean,
             pr: Some(GitPrInfo { number: 42, url: "https://example/pull/42".into() }),
             closes: Vec::new(),
-            scanner_ok: true,
         };
 
         let (got_pr, got_closes) = pr_for_branch(dir.path(), "feat/y", Some(&prev)).await;
@@ -995,12 +989,11 @@ mod tests {
         let prev = GitDiffSnapshot {
             branch: GitBranch::Detached,
             default_branch: Some("main".into()),
-            in_repo: true,
+            repo_gate: RepoGate::InRepo,
             worktree: LayerState::Clean,
             branch_ahead: LayerState::Clean,
             pr: Some(GitPrInfo { number: 42, url: "url".into() }),
             closes: Vec::new(),
-            scanner_ok: true,
         };
 
         let (got_pr, _got_closes) = pr_for_branch(dir.path(), "feat/x", Some(&prev)).await;
@@ -1032,12 +1025,11 @@ mod tests {
         let prev = GitDiffSnapshot {
             branch: GitBranch::Named("feat/cache".into()),
             default_branch: Some("main".into()),
-            in_repo: true,
+            repo_gate: RepoGate::InRepo,
             worktree: LayerState::Clean,
             branch_ahead: LayerState::Clean,
             pr: Some(synthetic_pr.clone()),
             closes: synthetic_closes.clone(),
-            scanner_ok: true,
         };
 
         let snap = scan(dir.path(), Some(&prev)).await;
@@ -1059,12 +1051,11 @@ mod tests {
         let prev = GitDiffSnapshot {
             branch: GitBranch::Named("main".into()),
             default_branch: Some("main".into()),
-            in_repo: true,
+            repo_gate: RepoGate::InRepo,
             worktree: LayerState::Clean,
             branch_ahead: LayerState::Clean,
             pr: Some(GitPrInfo { number: 1, url: "url".into() }),
             closes: Vec::new(),
-            scanner_ok: true,
         };
         // Even with a cache-hit-shaped prev, the default-branch gate
         // wins and the PR field clears.

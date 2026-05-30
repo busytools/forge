@@ -47,7 +47,7 @@
 
 use forge_primitives::git::{GitBranch, GitIssueRef, GitPrInfo};
 use forge_primitives::git_diff::{
-    GitBranchAhead, GitDiffFile, GitDiffSnapshot, GitDiffStats, LayerState,
+    GitBranchAhead, GitDiffFile, GitDiffSnapshot, GitDiffStats, LayerState, RepoGate,
 };
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -424,8 +424,7 @@ fn append_git_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
     // Pre-scan (`snapshot.is_none()`) keep rendering the header so
     // the row animates in once the scanner answers.
     if let Some(snapshot) = app.active_session().and_then(|s| s.git_diff_snapshot.as_ref())
-        && snapshot.scanner_ok
-        && !snapshot.in_repo
+        && matches!(snapshot.repo_gate, RepoGate::NotARepo)
     {
         return;
     }
@@ -466,9 +465,9 @@ fn append_git_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
         // Pre-first-scan window: only the path is known.
         return;
     };
-    if !snapshot.scanner_ok {
+    if matches!(snapshot.repo_gate, RepoGate::ScannerFailed) {
         // Scanner crashed (rev-parse Failed / Oversize) and the
-        // snapshot collapsed to in_repo=false as a failsafe. Without
+        // snapshot is in the ScannerFailed gate. Without
         // this row the section renders identically to a real non-
         // repo directory - the user has no visual cue that git
         // itself is unhealthy. The `🦉` glyph still routes through
@@ -579,7 +578,7 @@ fn snapshot_has_diff(app: &App) -> bool {
     let Some(snapshot) = app.active_session().and_then(|s| s.git_diff_snapshot.as_ref()) else {
         return false;
     };
-    if !snapshot.scanner_ok {
+    if matches!(snapshot.repo_gate, RepoGate::ScannerFailed) {
         return true;
     }
     !matches!(snapshot.worktree, LayerState::Clean)
@@ -1978,12 +1977,11 @@ mod tests {
         GitDiffSnapshot {
             branch,
             default_branch: default.map(str::to_owned),
-            in_repo,
+            repo_gate: if in_repo { RepoGate::InRepo } else { RepoGate::NotARepo },
             worktree: LayerState::Clean,
             branch_ahead: LayerState::Clean,
             pr: None,
             closes: Vec::new(),
-            scanner_ok: true,
         }
     }
 

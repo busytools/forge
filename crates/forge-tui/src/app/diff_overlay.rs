@@ -22,6 +22,7 @@ use std::path::PathBuf;
 use std::sync::mpsc as std_mpsc;
 
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
+use forge_primitives::git_diff::RepoGate;
 use forge_workspace::env::git_diff::hunks::ScanOutcome;
 use forge_workspace::env::git_diff::hunks::{DiffLine, DiffLineKind, FileHunks};
 use tui_textarea::TextArea;
@@ -220,14 +221,12 @@ pub fn resolve_default_target(app: &App) -> DefaultTarget {
     let Some(snapshot) = app.active_session().and_then(|s| s.git_diff_snapshot.as_ref()) else {
         return DefaultTarget::NoSnapshot;
     };
-    // Inspector scanner crashed; distinct from "not a repo". Check
-    // before any layer match so the in_repo=false failsafe doesn't
-    // mask a real subprocess failure.
-    if !snapshot.scanner_ok {
-        return DefaultTarget::ScannerFailed;
-    }
-    if !snapshot.in_repo {
-        return DefaultTarget::NotARepo;
+    // Scanner crash and not-a-repo are distinct surfaces; map the gate
+    // before any layer check.
+    match snapshot.repo_gate {
+        RepoGate::ScannerFailed => return DefaultTarget::ScannerFailed,
+        RepoGate::NotARepo => return DefaultTarget::NotARepo,
+        RepoGate::InRepo => {}
     }
     // Layer 1 wins when both layers are populated: a dirty tree is
     // what the user clicks `🦉` to inspect, and `HEAD` covers the
