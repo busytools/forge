@@ -2661,6 +2661,38 @@ impl App {
         self.set_active_turn_assistant_message_idx(next);
     }
 
+    pub(crate) fn shift_stop_hook_summary_for_remove(&mut self, idx: usize) {
+        let Some(owner_idx) = self.last_stop_hook_summary().map(|s| s.message_idx) else {
+            return;
+        };
+        match idx.cmp(&owner_idx) {
+            std::cmp::Ordering::Less => {
+                if let Some(summary) = self.active_bucket_mut().last_stop_hook_summary.as_mut() {
+                    summary.message_idx = owner_idx.saturating_sub(1);
+                }
+            }
+            std::cmp::Ordering::Equal => self.set_last_stop_hook_summary(None),
+            std::cmp::Ordering::Greater => {}
+        }
+    }
+
+    pub(crate) fn remap_stop_hook_summary_after_message_drop(
+        &mut self,
+        old_to_new: &[Option<usize>],
+    ) {
+        let Some(old_idx) = self.last_stop_hook_summary().map(|s| s.message_idx) else {
+            return;
+        };
+        match old_to_new.get(old_idx).copied().flatten() {
+            Some(new_idx) => {
+                if let Some(summary) = self.active_bucket_mut().last_stop_hook_summary.as_mut() {
+                    summary.message_idx = new_idx;
+                }
+            }
+            None => self.set_last_stop_hook_summary(None),
+        }
+    }
+
     pub fn active_autocomplete_kind(&self) -> Option<AutocompleteKind> {
         if self.mention().is_some() {
             Some(AutocompleteKind::Mention)
@@ -2808,6 +2840,35 @@ mod tests {
         // chip's anchor index must follow it down.
         app.insert_message_tracked(bound_idx, msg("peer"));
         assert_eq!(app.last_stop_hook_summary().map(|s| s.message_idx), Some(bound_idx + 1));
+    }
+
+    #[test]
+    fn remove_shifts_then_clears_stop_hook_summary_index() {
+        use crate::app::state::types::StopHookSummaryState;
+        use crate::app::{ChatMessage, MessageBlock, MessageRole, TextBlock};
+        let mut app = App::test_default();
+        let msg = |t: &str| {
+            ChatMessage::new(
+                MessageRole::User,
+                vec![MessageBlock::Text(TextBlock::from_complete(t))],
+                None,
+            )
+        };
+        let base = app.messages().len();
+        app.push_message_tracked(msg("before"));
+        app.push_message_tracked(msg("bound"));
+        let bound_idx = base + 1;
+        app.set_last_stop_hook_summary(Some(StopHookSummaryState {
+            message_idx: bound_idx,
+            actions: 1,
+            hooks: Vec::new(),
+        }));
+        // Removing a message before the anchor decrements its index.
+        app.remove_message_tracked(base);
+        assert_eq!(app.last_stop_hook_summary().map(|s| s.message_idx), Some(bound_idx - 1));
+        // Removing the anchor itself clears the summary.
+        app.remove_message_tracked(bound_idx - 1);
+        assert!(app.last_stop_hook_summary().is_none());
     }
 
     /// Clicking a launchpad-auto_started project triggers the

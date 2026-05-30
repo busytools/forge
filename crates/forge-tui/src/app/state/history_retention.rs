@@ -274,6 +274,7 @@ impl super::App {
         let removed_tail = idx + 1 == old_len;
         self.shift_active_turn_assistant_for_remove(idx);
         self.shift_turn_notice_refs_for_remove(idx);
+        self.shift_stop_hook_summary_for_remove(idx);
         let removed = self.active_messages_mut().remove(idx);
         let removed_bytes = self.message_retained_bytes_mut().remove(idx);
         let updated = self.retained_history_bytes().saturating_sub(removed_bytes);
@@ -297,6 +298,7 @@ impl super::App {
         *self.retained_history_bytes_mut() = 0;
         self.clear_active_turn_assistant();
         self.clear_turn_notice_refs();
+        self.set_last_stop_hook_summary(None);
         self.rebuild_render_cache_accounting();
         self.rebuild_tool_indices_and_terminal_refs();
         self.active_viewport_mut().sync_message_count(0);
@@ -582,6 +584,7 @@ impl super::App {
         *self.retained_history_bytes_mut() = total_bytes;
         self.set_active_turn_assistant_message_idx(remapped_active_turn_owner);
         self.remap_turn_notice_refs_after_message_drop(&old_to_new);
+        self.remap_stop_hook_summary_after_message_drop(&old_to_new);
 
         let (anchor_idx, anchor_offset) = preserved_anchor?;
         if let Some(new_idx) = old_to_new.get(anchor_idx).copied().flatten() {
