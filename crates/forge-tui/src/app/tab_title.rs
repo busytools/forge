@@ -27,7 +27,7 @@ const PULSE_FRAME_DIVISOR: usize = 10;
 
 /// Extract the last path component from a cwd string for use as the tab label.
 fn folder_name(cwd: &str) -> &str {
-    cwd.rsplit(['/', '\\']).find(|segment| !segment.is_empty()).unwrap_or("claude_rust")
+    cwd.rsplit(['/', '\\']).find(|segment| !segment.is_empty()).unwrap_or("forge")
 }
 
 /// Write an OSC 2 (set window title) escape sequence to stdout.
@@ -89,15 +89,15 @@ mod tests {
 
     #[test]
     fn folder_name_extracts_last_component() {
-        assert_eq!(folder_name("/home/user/projects/claude_rust"), "claude_rust");
-        assert_eq!(folder_name("C:\\Users\\user\\Desktop\\claude_rust"), "claude_rust");
-        assert_eq!(folder_name("claude_rust"), "claude_rust");
+        assert_eq!(folder_name("/home/user/projects/forge"), "forge");
+        assert_eq!(folder_name("C:\\Users\\user\\Desktop\\forge"), "forge");
+        assert_eq!(folder_name("forge"), "forge");
     }
 
     #[test]
     fn folder_name_falls_back_for_empty_or_root() {
         // Path::file_name returns None for root paths or empty strings
-        assert_eq!(folder_name(""), "claude_rust");
+        assert_eq!(folder_name(""), "forge");
     }
 
     #[test]

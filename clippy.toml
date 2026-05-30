@@ -19,7 +19,7 @@ allow-print-in-tests = true
 allow-dbg-in-tests = true
 allow-indexing-slicing-in-tests = true
 
-# CLI tools deal with deep path nesting (e.g., ~/.config/claude_rust/...).
+# CLI tools deal with deep path nesting (e.g., ~/.config/forge/...).
 absolute-paths-max-segments = 3
 
 # Bumped from default 7 to cover render/recursion fns with layout state
