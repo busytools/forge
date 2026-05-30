@@ -1422,7 +1422,7 @@ fn append_workflow_row(
         + usize::from(PANE_PAD);
     let header_budget = row_text_budget(inner_width, header_chrome);
     let header_text = truncate_or_pass(&workflow.meta_name, header_budget);
-    // #281: same pad-spacer shape as MONITORS — see comment there.
+    // #281: same pad-spacer shape as MONITORS - see comment there.
     let pad = header_budget.saturating_sub(header_text.chars().count());
     lines.push(Line::from(vec![
         Span::raw(" ".repeat(usize::from(PANE_PAD))),
