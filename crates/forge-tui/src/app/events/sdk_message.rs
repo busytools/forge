@@ -1194,8 +1194,7 @@ fn handle_task_notification(app: &mut App, msg: Message) {
     // and the subsequent task_notification would find no entry to
     // stamp the tail into. Auto-clear runs HERE so the tail has
     // already populated by the time the section drops out (or
-    // persists, for completed-with-tail Monitors per Bug 5b's
-    // render-gate relaxation).
+    // persists, for completed Monitors with a non-empty tail).
     app.clear_monitors_if_all_terminal();
 }
 

@@ -2,7 +2,7 @@
 //! consume. Trait + mock for unit-testing the Tool impls without
 //! spinning up a real Workspace. Mirrors `crate::mcp::peers::facade`.
 //!
-//! The production impl (`ProdWorkerFacade`) lands in Task 7.
+//! The production impl is `ProdWorkerFacade` (below).
 
 use std::sync::{Arc, Weak};
 
