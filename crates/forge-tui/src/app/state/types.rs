@@ -130,15 +130,6 @@ impl MonitorEntry {
     pub fn is_running(&self) -> bool {
         self.status == MonitorStatus::Running
     }
-
-    /// Push an output line into the tail ring, evicting the oldest
-    /// when capacity is reached. Caller passes the raw line text.
-    pub fn push_output(&mut self, line: String) {
-        if self.output_tail.len() == Self::OUTPUT_TAIL_MAX {
-            self.output_tail.pop_front();
-        }
-        self.output_tail.push_back(line);
-    }
 }
 
 /// #273 Task 9: lifecycle status of a Workflow.
@@ -517,33 +508,6 @@ pub struct PasteSessionState {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn monitor_entry_push_output_evicts_oldest_at_capacity() {
-        let mut entry = MonitorEntry {
-            tool_use_id: "tu".to_owned(),
-            task_id: None,
-            description: "watch".to_owned(),
-            command: "tail".to_owned(),
-            persistent: true,
-            timeout_ms: 0,
-            status: MonitorStatus::Running,
-            output_file: None,
-            output_tail: std::collections::VecDeque::new(),
-            expanded_in_inspector: false,
-        };
-        for i in 0..MonitorEntry::OUTPUT_TAIL_MAX + 5 {
-            entry.push_output(format!("line {i}"));
-        }
-        assert_eq!(entry.output_tail.len(), MonitorEntry::OUTPUT_TAIL_MAX);
-        // Oldest 5 were evicted; tail starts at "line 5".
-        assert_eq!(entry.output_tail.front().map(String::as_str), Some("line 5"));
-        assert_eq!(
-            entry.output_tail.back().map(String::as_str),
-            Some("line 16"),
-            "newest line stays at the back of the ring",
-        );
-    }
 
     #[test]
     fn workflow_entry_applies_progress_snapshot_to_build_phase_tree() {
