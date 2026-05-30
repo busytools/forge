@@ -299,12 +299,21 @@ pub fn resolve_lead_session(sessions: &[SDKSessionInfo]) -> Option<&SDKSessionIn
 /// Workers from OTHER projects have cwds outside `project_dir` and
 /// are filtered out. Untagged or `forge:lead`-tagged sessions are
 /// filtered out by the tag-prefix check.
+///
+/// Scans every account's `config_dir`: team workers pick their account
+/// from the assignment-plan rotation, so a prior worker session can
+/// live under any account, not just the workspace's canonical dir.
 async fn scan_worker_resume_map(
-    config_dir: &std::path::Path,
+    config_dirs: &[PathBuf],
     project_dir: &std::path::Path,
 ) -> HashMap<String, String> {
-    let sessions =
-        forge_agent::userdata::catalog::scan::list_sessions(config_dir, None, None, 0, true).await;
+    let mut sessions: Vec<SDKSessionInfo> = Vec::new();
+    for config_dir in config_dirs {
+        sessions.extend(
+            forge_agent::userdata::catalog::scan::list_sessions(config_dir, None, None, 0, true)
+                .await,
+        );
+    }
     build_resume_map_from_sessions(&sessions, project_dir)
 }
 
@@ -323,8 +332,13 @@ fn build_resume_map_from_sessions(
     sessions: &[SDKSessionInfo],
     project_dir: &std::path::Path,
 ) -> HashMap<String, String> {
+    // Most-recently-modified session per label wins, including across
+    // sessions merged from multiple account config_dirs (list_sessions
+    // sorts within one account, not across the merge).
+    let mut ordered: Vec<&SDKSessionInfo> = sessions.iter().collect();
+    ordered.sort_by(|a, b| b.last_modified.cmp(&a.last_modified));
     let mut resume_map: HashMap<String, String> = HashMap::new();
-    for info in sessions {
+    for info in ordered {
         let Some(cwd) = info.cwd.as_deref().map(std::path::Path::new) else {
             continue;
         };
@@ -2087,9 +2101,15 @@ impl Workspace {
             return;
         };
         let workspace = Arc::clone(self);
-        let config_dir = self.config_dir.clone();
+        let config_dirs = {
+            let mut dirs = self.accounts.lock().config_dirs();
+            if !dirs.contains(&self.config_dir) {
+                dirs.push(self.config_dir.clone());
+            }
+            dirs
+        };
         handle.spawn(async move {
-            let resume_map = scan_worker_resume_map(&config_dir, &project_dir).await;
+            let resume_map = scan_worker_resume_map(&config_dirs, &project_dir).await;
             let loaded = Self::load_team_roles(&team, &project_key);
             tracing::info!(
                 target: "forge_workspace::team",
@@ -5670,6 +5690,21 @@ mod build_resume_map_tests {
         let map = build_resume_map_from_sessions(&sessions, project_dir);
         assert_eq!(map.len(), 1, "only the matching-project worker should resume");
         assert_eq!(map.get("planner"), Some(&"ours".to_owned()));
+    }
+
+    /// Across sessions merged from multiple account config_dirs the
+    /// newest session per label wins, regardless of concat order.
+    #[test]
+    fn build_resume_map_keeps_newest_session_per_label() {
+        let project_dir = std::path::Path::new("/Users/me/Projects/forge");
+        let worktree = "/Users/me/Projects/forge/.claude/worktrees/planner";
+        let mut older = mk_info("old-uuid", Some(worktree), Some("forge:worker:planner"));
+        older.last_modified = 100;
+        let mut newer = mk_info("new-uuid", Some(worktree), Some("forge:worker:planner"));
+        newer.last_modified = 200;
+        // Older listed first, as a cross-account concat can produce.
+        let map = build_resume_map_from_sessions(&[older, newer], project_dir);
+        assert_eq!(map.get("planner"), Some(&"new-uuid".to_owned()));
     }
 
     /// Lead-tagged sessions and untagged sessions are filtered out -

@@ -235,6 +235,20 @@ impl AccountStateMap {
         self.by_key.get(key).map(|s| &s.config_dir)
     }
 
+    /// Distinct on-disk config_dirs across every known account. Used by
+    /// the team-resume scan, which must look under every account a
+    /// worker could have been spawned under (the assignment-plan
+    /// rotation distributes workers across accounts).
+    pub fn config_dirs(&self) -> Vec<PathBuf> {
+        let mut dirs: Vec<PathBuf> = Vec::new();
+        for state in self.by_key.values() {
+            if !dirs.contains(&state.config_dir) {
+                dirs.push(state.config_dir.clone());
+            }
+        }
+        dirs
+    }
+
     /// Whether sessions for `key` should spawn with the rewriter
     /// proxy attached. Returns `false` for unknown keys (defensive;
     /// the spawn path's normal-case key always resolves).
