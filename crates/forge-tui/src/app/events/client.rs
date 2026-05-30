@@ -988,7 +988,7 @@ fn rekey_pending_bucket_to(app: &mut App, real_key: &SessionKey) -> bool {
     true
 }
 
-/// migrate the bucket at `from` over to `to` when the
+/// Migrate the bucket at `from` over to `to` when the
 /// workspace renames a synthetic spawn key onto the real claude
 /// session UUID. Updates `active_session_key` only when it
 /// currently points at `from` (background-spawn case must NOT
