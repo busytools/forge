@@ -39,7 +39,7 @@ fn dispatch_if_cwd_matches(
 /// Compact discriminant name for a wire `Message`. Used by the
 /// `sdk_message_dropped` error log so a triage grep can see whether
 /// the dropped envelope was a Result (TurnComplete carrier),
-/// Assistant content, etc.  -  without dumping the full payload.
+/// Assistant content, etc. - without dumping the full payload.
 fn msg_variant_name(msg: &forge_primitives::Message) -> &'static str {
     match msg {
         forge_primitives::Message::Assistant { .. } => "Assistant",
@@ -65,7 +65,7 @@ fn msg_variant_name(msg: &forge_primitives::Message) -> &'static str {
 /// envelope's [`SessionUpdate::session_key`] accessor.
 ///
 /// `needs_redraw` is flipped only when the routed event targets the
-/// active session  -  background-session events update their bucket
+/// active session - background-session events update their bucket
 /// silently. App-global events (no `session_key`) flip the redraw
 /// flag unconditionally because they affect the rendered view.
 #[allow(clippy::if_not_else)]
@@ -303,7 +303,7 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         }
         SessionUpdate::PeerEnvelopeAppended { session_id, wrapped } => {
             // Workspace no longer forges an SDK `Message::User`
-            // carrying peer prose  -  it emits the typed envelope
+            // carrying peer prose - it emits the typed envelope
             // here and the TUI builds the synthetic chat-side
             // user-turn from real fields. The prose is the same
             // string the recipient's LLM sees via Command::Prompt,
@@ -335,14 +335,14 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
 /// switch active focus.
 ///
 /// **Focus rule:** auto-focus the new spawn ONLY when there's no
-/// real focused session yet  -  i.e. `active_session_key` is `None`
+/// real focused session yet - i.e. `active_session_key` is `None`
 /// or still pointing at the pre-Connect placeholder. Once a real
 /// session is focused (the StartDefault target after `forge.toml`'s
 /// `focus = true` project's Connected fires), subsequent
 /// auto_start projects' `Spawning` events must NOT steal focus.
 ///
 /// Existing buckets (user clicked a stale row to re-wake) still
-/// switch focus  -  that's an explicit user action, not a passive
+/// switch focus - that's an explicit user action, not a passive
 /// background spawn.
 fn apply_session_update_spawning(
     app: &mut App,
@@ -376,13 +376,13 @@ fn apply_session_update_spawning(
 
     // **Focus stays where it is.** Auto-focus over the pre-Connect
     // placeholder would let whichever auto_start project's Spawning
-    // event arrives first steal the focused tab  -  but pre-Connect
+    // event arrives first steal the focused tab - but pre-Connect
     // is reserved for the `focus = true` project's StartDefault
     // migration (which doesn't go through this reducer at all; it
     // uses KeyRenamed to swap the pre-Connect bucket onto the real
     // key in-place). So a Spawning event for a non-focused
     // auto_start project must just register the bucket and trigger
-    // a redraw  -  never move focus.
+    // a redraw - never move focus.
     //
     // The only case we'd switch focus from here is `active_session_key
     // == None`, which doesn't happen in practice (the App constructs
@@ -590,7 +590,7 @@ fn apply_context_usage_snapshot_presentation(
         session.session_usage.context_usage_percent = percentage;
         session.session_usage.context_max_tokens = max_tokens;
         session.session_usage.context_usage_in_flight = false;
-        // Drop the refresh-pending flag too  -  once a fresh value
+        // Drop the refresh-pending flag too - once a fresh value
         // landed, queueing another refresh is wasteful for a
         // background bucket.
         session.session_usage.context_usage_refresh_pending = false;
@@ -610,7 +610,7 @@ fn apply_context_usage_snapshot_presentation(
 /// bucket addressed by `session_id`. Active-session targeting also
 /// reconciles the App-global MCP auth-redirect overlay and selection
 /// index. Background-session targeting only writes the per-session
-/// MCP state into the bucket  -  the overlay reconciliation is
+/// MCP state into the bucket - the overlay reconciliation is
 /// inherently active-session UI.
 pub(super) fn apply_session_update_mcp_snapshot(
     app: &mut App,
@@ -695,7 +695,7 @@ fn apply_sdk_message_presentation(app: &mut App, session_id: &str, msg: forge_pr
     let active_session_id_string = app.session_id().map(|s| s.to_string());
     let active_session_id_str = active_session_id_string.as_deref().unwrap_or("");
     if active_session_id_str.is_empty() && !session_id.is_empty() {
-        // The active bucket exists but has no id yet  -  adopt the
+        // The active bucket exists but has no id yet - adopt the
         // canonical id so subsequent dispatch resolves correctly.
         app.set_session_id(Some(crate::agent::model::SessionId::new(session_id.to_owned())));
     } else if !active_session_id_str.is_empty() && active_session_id_str != session_id {
@@ -711,7 +711,7 @@ fn apply_sdk_message_presentation(app: &mut App, session_id: &str, msg: forge_pr
         // looking at. Without this routing, background turns produce
         // events that update lifecycle state (via routed handlers in
         // `events/turn.rs`) but never land their `Message::Assistant`
-        // payloads in the bucket  -  the user switches back to a
+        // payloads in the bucket - the user switches back to a
         // bucket whose pane glyph says Attention but whose chat
         // buffer still only shows what was on screen at switch-out.
         let session_key = SessionKey::from_session_id(session_id.to_owned());
@@ -742,7 +742,7 @@ fn apply_sdk_message_presentation(app: &mut App, session_id: &str, msg: forge_pr
                 // Promoted to `error` so always-on debug logs make this
                 // very visible. The wire `session_id` doesn't match any
                 // known UiSession bucket and no `__pending_*` candidate
-                // is uniquely identifiable  -  typically a key-drift
+                // is uniquely identifiable - typically a key-drift
                 // race (in-flight wire frame whose session_id was
                 // rekey'd / dropped between the SessionTask emit and
                 // this reducer). If the dropped msg is `Result`,
@@ -879,7 +879,7 @@ fn apply_hook_observation_presentation(
 
 /// `SessionUpdate::RuntimeReloadCompleted` reducer for the
 /// session bucket addressed by `session_id`. The plugins config tab
-/// is App-global UI scoped to the active session  -  a background
+/// is App-global UI scoped to the active session - a background
 /// reload that completes silently is a no-op on the UI but logged
 /// so the operator can confirm the bridge dispatched it. Unknown-
 /// session events log a warn-level breadcrumb.
@@ -956,7 +956,7 @@ fn apply_runtime_reload_failed_presentation(app: &mut App, session_id: &str, mes
 /// it to the wire session_id and return true so the caller can
 /// route the frame to the freshly-rekeyed bucket. Returns false
 /// when no candidate exists or when multiple candidates make the
-/// match ambiguous (concurrent spawn case  -  cwd-based
+/// match ambiguous (concurrent spawn case - cwd-based
 /// disambiguation is a v2 follow-up).
 fn rekey_pending_bucket_to(app: &mut App, real_key: &SessionKey) -> bool {
     let pending_keys: Vec<SessionKey> =
@@ -995,7 +995,7 @@ fn rekey_pending_bucket_to(app: &mut App, real_key: &SessionKey) -> bool {
 /// hijack the user's deliberate session pick).
 ///
 /// When `to` is the empty SessionKey (the bridge emitted Connected
-/// with an empty session_id  -  typical for a fresh session before
+/// with an empty session_id - typical for a fresh session before
 /// claude's `system/init` lands), substitute a disambiguated
 /// `__pending_<from>__` synth so the bucket stays uniquely
 /// findable. `apply_sdk_message_presentation`'s pending-bucket
@@ -1596,7 +1596,7 @@ mod tests {
 
     /// `SessionUpdate::Spawning` should be idempotent: a second
     /// Spawning for the same key (rapid double-click) must NOT
-    /// reset the bucket  -  just switch active. Without this, a
+    /// reset the bucket - just switch active. Without this, a
     /// duplicate Spawning event would erase any state already
     /// accumulated under the synthetic key.
     #[test]
@@ -1638,7 +1638,7 @@ mod tests {
                 display_name: "proj".to_owned(),
             },
         );
-        // Bucket state preserved (idempotent  -  no re-seed).
+        // Bucket state preserved (idempotent - no re-seed).
         assert_eq!(
             app.sessions.get(&key).expect("bucket").messages.len(),
             messages_after_second_state,
@@ -1723,7 +1723,7 @@ mod tests {
     /// Build a minimal `forge_primitives::CurrentModel` for tests
     /// that need to fire a `SessionUpdate::Connected` /
     /// `SessionUpdate::SessionReplaced` envelope. Field values are
-    /// deliberately uninteresting  -  the assertion target is the
+    /// deliberately uninteresting - the assertion target is the
     /// file_index side effect, not the model state.
     fn test_current_model() -> forge_primitives::CurrentModel {
         forge_primitives::CurrentModel {
@@ -1747,7 +1747,7 @@ mod tests {
     /// match the new cwd, the generation must have advanced, and the
     /// stale `entries` map must have been cleared so the next scan
     /// starts from a clean slate. The asynchronous scan completion
-    /// itself isn't asserted  -  only that the synchronous restart side
+    /// itself isn't asserted - only that the synchronous restart side
     /// effects fired against the production reducer path.
     #[test]
     fn connected_refreshes_file_index_candidates_for_new_cwd() {
@@ -1802,7 +1802,7 @@ mod tests {
     /// `SessionUpdate::SessionReplaced` shares the
     /// `handle_session_replaced_event` path which restarts the
     /// `file_index` against the replaced cwd. Same assertion shape as
-    /// the `Connected` test  -  production code path runs through
+    /// the `Connected` test - production code path runs through
     /// `apply_session_update_session_replaced` →
     /// `handle_session_replaced_event` → `file_index::restart`.
     #[test]
@@ -2126,7 +2126,7 @@ mod tests {
     }
 
     /// Two empty-session_id Connecteds in a row (concurrent spawn
-    /// scenario) MUST land in DISTINCT pending buckets  -  the prior
+    /// scenario) MUST land in DISTINCT pending buckets - the prior
     /// code's `already_under_to` branch dropped the second synth
     /// silently. Verifies the secondary failure mode is closed.
     #[test]

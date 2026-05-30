@@ -149,7 +149,7 @@ pub(super) fn handle_sessions_listed_event(
         })
         .collect();
     let Some(slot) = app.recent_sessions_mut_for(key) else {
-        // Bucket no longer exists  -  session was closed before the
+        // Bucket no longer exists - session was closed before the
         // listing landed. Drop silently.
         tracing::debug!(
             target: crate::logging::targets::APP_SESSION,
@@ -244,7 +244,7 @@ pub(super) fn handle_auth_required_event(
     app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
     app.clear_active_turn_assistant();
     super::notices::clear_turn_notice_tracking(app);
-    // Flip the active bucket's lifecycle state too  -  if the user
+    // Flip the active bucket's lifecycle state too - if the user
     // switches away from this session while it's auth-blocked, the
     // Projects pane glyph picks up the AuthRequired marker without
     // waiting for a subsequent event.
@@ -268,7 +268,7 @@ pub(super) fn handle_connection_failed_event(app: &mut App, session_key: &Sessio
     let is_rate_limited = is_rate_limited_failure(msg);
     if app.active_session_key.as_ref() != Some(session_key) {
         // Bump workspace's epoch BEFORE acquiring the session's mut
-        // borrow  -  the bump needs `&app.workspace` and the mut borrow
+        // borrow - the bump needs `&app.workspace` and the mut borrow
         // would conflict.
         bump_bucket_session_scope_epoch(app, session_key);
         let Some(session) = app.session_mut(session_key) else {
@@ -308,7 +308,7 @@ pub(super) fn handle_connection_failed_event(app: &mut App, session_key: &Sessio
         };
         // Rate-limit fallback message in the bucket's own chat
         // buffer so a future switch shows the explainer. Other
-        // failures stay quiet on a background bucket  -  the user
+        // failures stay quiet on a background bucket - the user
         // didn't choose to look at this session and we don't want
         // to clutter its history with unrelated errors.
         if is_rate_limited {
@@ -322,7 +322,7 @@ pub(super) fn handle_connection_failed_event(app: &mut App, session_key: &Sessio
         // Capture the failure reason on the bucket for the launchpad
         // picker to surface beneath a failed project row. Cleared on
         // a successful reconnect via `clear_connection_error`. Skip
-        // for rate-limit failures  -  those use the `Attention` glyph
+        // for rate-limit failures - those use the `Attention` glyph
         // and the inline RATE_LIMIT_FALLBACK_MESSAGE explainer
         // rather than the per-row error tail.
         if !is_rate_limited {
@@ -411,7 +411,7 @@ const RATE_LIMIT_FALLBACK_MESSAGE: &str =
 /// "all accounts are rate-limited". Workspace doesn't surface a
 /// typed error variant for this yet, so we fall back to substring
 /// matching on the rendered message. False positives are
-/// preferable to false negatives  -  if the heuristic misfires the
+/// preferable to false negatives - if the heuristic misfires the
 /// user sees the rate-limit explainer instead of the raw error,
 /// which is still recoverable (click another project, wait).
 fn is_rate_limited_failure(msg: &str) -> bool {
@@ -487,7 +487,7 @@ pub(super) fn handle_session_replaced_event(
     app.set_pending_cancel(false);
 
     // Capture the outgoing bucket's key BEFORE `reset_for_new_session`
-    // runs  -  that call goes through `set_session_id`, which inserts a
+    // runs - that call goes through `set_session_id`, which inserts a
     // fresh bucket under the new session_id and flips
     // `active_session_key` to it. The outgoing bucket is then orphaned
     // in `app.sessions` and needs to be removed; without the capture
@@ -498,7 +498,7 @@ pub(super) fn handle_session_replaced_event(
     reset_for_new_session(app, session_id, current_model, mode, false);
 
     // The AgentHandle binding lives on the workspace's `DomainSession`
-    // (post-strict-wiring)  -  TUI no longer caches it on the bucket.
+    // (post-strict-wiring) - TUI no longer caches it on the bucket.
     // `SessionTask` re-binds the handle for the replacement session
     // ahead of emitting `SessionReplaced`, so nothing for TUI to do
     // here.
@@ -529,7 +529,7 @@ pub(super) fn handle_session_replaced_event(
         app.sessions.remove(&prev);
     }
 
-    // Reset lifecycle_state to Idle  -  the replacement session
+    // Reset lifecycle_state to Idle - the replacement session
     // reuses the same DomainSession, so a previously-set Attention
     // from a pending permission on the outgoing session would
     // otherwise carry forward and leave the Projects pane glyph
@@ -618,7 +618,7 @@ fn sync_welcome_cwd(app: &mut App) {
 
 pub(super) fn apply_session_cwd(app: &mut App, cwd_raw: String) {
     // `resume_session` paths (startup + Projects-pane lead-resume +
-    // in-session `/resume`) emit `Connected` with an empty cwd  -  the
+    // in-session `/resume`) emit `Connected` with an empty cwd - the
     // resumed session's cwd isn't re-derived by `forge-sdk-worker`.
     // The spawn-side path always pre-seeds the bucket's `cwd_raw`
     // before Connected can fire, so when Connected delivers an empty
@@ -643,7 +643,7 @@ pub(super) fn apply_session_cwd(app: &mut App, cwd_raw: String) {
     // immediately instead of waiting for the abandoned scan to time
     // out (worst case ~50s on a hung remote mount). The abandoned
     // scan's eventual `store(false)` on its `Arc<AtomicBool>` is
-    // harmless  -  it stores onto the same atomic, which is already
+    // harmless - it stores onto the same atomic, which is already
     // `false`. Skips a no-op when the cwd didn't actually change
     // (idempotent Connected re-applies).
     if cwd_changed

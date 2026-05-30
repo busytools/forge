@@ -53,7 +53,7 @@ pub(crate) fn session_launch_settings_for_resume(
 
 /// Create the `App` struct in `Connecting` state and load shared
 /// settings state. `cwd_raw` is sourced from `forge.toml` (per
-/// Hard Rule #15)  -  chat-direct mode picks up `project.path`,
+/// Hard Rule #15) - chat-direct mode picks up `project.path`,
 /// launchpad mode leaves it empty.
 pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App {
     // Resolve the pre-Connect seed cwd from `forge.toml`:
@@ -160,14 +160,14 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
     // elsewhere. Both panes use the same threshold (Wide tier) so
     // narrow / medium terminals start with a chat-only layout the
     // user can grow via Ctrl+B / Ctrl+E if they want the chrome
-    // back. Nothing is persisted  -  each forge launch re-derives
+    // back. Nothing is persisted - each forge launch re-derives
     // from the current terminal width.
     let (initial_term_width, _) = crossterm::terminal::size().unwrap_or((0, 0));
     let panes_visible_by_default = initial_term_width >= crate::ui::layout::WIDE_TIER_MIN_WIDTH;
     let projects_pane_visible = panes_visible_by_default;
     let inspector_pane_visible = panes_visible_by_default;
     // Boot view: `forge` (no argv) → launchpad picker; `forge <project>`
-    // → chat directly. Argv selection is final  -  no remembered-last-
+    // → chat directly. Argv selection is final - no remembered-last-
     // pick. Snapshot launchpad state from `[ui]` settings up-front so
     // the picker doesn't shift if the user edits forge.toml mid-
     // session.
@@ -297,7 +297,7 @@ pub fn start_connection(app: &mut App) {
     // no project is focused. Every `auto_start = true` project spawns
     // immediately. The account picker consults whatever usage data
     // is currently in memory (loaded from the on-disk cache at boot,
-    // refreshed by the 60s background poller). No warm-gate  -  when
+    // refreshed by the 60s background poller). No warm-gate - when
     // the cache is empty (cold install) the picker falls through to
     // forge.toml definition order; once data lands, subsequent spawns
     // see the right tier.
@@ -340,7 +340,7 @@ pub fn start_connection(app: &mut App) {
         // Only the first project gets `StartDefault` semantics
         // (which sets it as the focused tab); the rest go via
         // `SpawnProject` and land in the Projects pane silently.
-        // No warm-up gating  -  see launchpad branch above.
+        // No warm-up gating - see launchpad branch above.
         let cmd = if i == 0 {
             forge_workspace::Command::StartDefault {
                 project_name: project_name.clone(),

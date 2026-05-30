@@ -26,7 +26,7 @@ const HELP_TAB_NEXT_KEY: KeyCode = KeyCode::Right;
 // REPORT_ALTERNATE_KEYS at startup so this is the case in our stack.
 //
 // Cmd-prefixed shortcut detection on macOS accepts BOTH SUPER and
-// CONTROL  -  Termux/SSH sessions to the Mac Studio cannot send SUPER
+// CONTROL - Termux/SSH sessions to the Mac Studio cannot send SUPER
 // (Android sends Ctrl), so requiring SUPER would lock SSH'd users
 // out of Cmd+C / Cmd+V / Cmd+Z. Treating Ctrl as an equivalent Cmd
 // for these app shortcuts costs nothing local (Cmd still works) and
@@ -36,7 +36,7 @@ pub(crate) const CMD_MOD: KeyModifiers = KeyModifiers::SUPER;
 #[cfg(not(target_os = "macos"))]
 pub(crate) const CMD_MOD: KeyModifiers = KeyModifiers::CONTROL;
 
-// Word navigation modifier  -  `Alt` on every platform now. macOS has
+// Word navigation modifier - `Alt` on every platform now. macOS has
 // always used Alt (Option+Arrow); Linux/Windows used to use Ctrl+Arrow
 // but that conflicts with the side-pane toggle bindings below (Ctrl+
 // Left = Projects pane, Ctrl+Right = Inspector pane on non-macOS,
@@ -47,7 +47,7 @@ pub(crate) const CMD_MOD: KeyModifiers = KeyModifiers::CONTROL;
 pub(crate) const WORD_NAV_MOD: KeyModifiers = KeyModifiers::ALT;
 
 // Modifier that must NOT be set alongside WORD_NAV_MOD. Empty
-// universally now  -  any modifier mix containing ALT counts as word
+// universally now - any modifier mix containing ALT counts as word
 // nav. Previously Linux/Windows excluded ALT (because CTRL+ALT was
 // the host's compose path); the modifier swap above moots that
 // concern since the active path is Alt-only.
@@ -317,14 +317,14 @@ fn handle_blocked_input_shortcuts(app: &mut App, key: KeyEvent) -> bool {
 /// Handle shortcuts that should work regardless of current focus owner.
 fn handle_global_shortcuts(app: &mut App, key: KeyEvent) -> bool {
     match (key.code, key.modifiers) {
-        // Toggle all tool calls  -  Cmd+X on macOS, Ctrl+X elsewhere
+        // Toggle all tool calls - Cmd+X on macOS, Ctrl+X elsewhere
         // via CMD_MOD. Same platform-modifier convention as the
         // pane-toggle arrows above.
         (KeyCode::Char('x'), m) if is_cmd_shortcut(m) => {
             toggle_all_tool_calls(app);
             true
         }
-        // Pane toggles  -  Cmd+Left / Cmd+Right on macOS, Ctrl+Left /
+        // Pane toggles - Cmd+Left / Cmd+Right on macOS, Ctrl+Left /
         // Ctrl+Right elsewhere. One binding per pane, no Ctrl+B /
         // Ctrl+E alias. Cmd+B is the platform's "bold" muscle memory
         // and Ctrl+B is tmux's default prefix on Linux, so the
@@ -460,7 +460,7 @@ fn handle_turn_control_key(app: &mut App, key: KeyEvent) -> bool {
         return false;
     }
     // Narrow-tier Projects overlay is the most foreground UI when
-    // open  -  Esc closes it before any other Esc semantics fire.
+    // open - Esc closes it before any other Esc semantics fire.
     if app.projects_pane_overlay_open {
         app.projects_pane_overlay_open = false;
         app.invalidate_layout(InvalidationLevel::Global);
@@ -531,7 +531,7 @@ fn handle_submit_key(app: &mut App, key: KeyEvent) -> bool {
 fn handle_history_key(app: &mut App, key: KeyEvent) -> bool {
     match (key.code, key.modifiers) {
         // macOS: Cmd+Shift+Z (or Ctrl+Shift+Z) redo. Match Shift-bearing
-        // forms BEFORE the plain undo arm  -  kitty enhanced keyboard
+        // forms BEFORE the plain undo arm - kitty enhanced keyboard
         // sends lowercase 'z' with SUPER | SHIFT; some terminals send
         // uppercase 'Z' with SUPER. Either way, the plain `is_cmd_shortcut`
         // predicate is permissive about extra modifier bits, so the
@@ -681,7 +681,7 @@ fn handle_mode_cycle_key(app: &mut App, key: KeyEvent) -> bool {
     }));
     app.invalidate_layout(InvalidationLevel::Global);
     // `set_mode` + layout invalidation don't trigger a redraw on their
-    // own  -  without this the chat history doesn't re-render until the
+    // own - without this the chat history doesn't re-render until the
     // next async update, so the mode chip (and any UI surface that
     // reads `app.mode()`) lags behind the keypress.
     app.needs_redraw = true;
@@ -1111,7 +1111,7 @@ pub(super) fn toggle_projects_pane(app: &mut App) {
     let area_width = app.cached_frame_area.width;
     if area_width < crate::ui::layout::MEDIUM_TIER_MIN_WIDTH {
         // Opening the Projects overlay closes the Inspector overlay
-        // (mutually exclusive  -  both are full-screen).
+        // (mutually exclusive - both are full-screen).
         if !app.projects_pane_overlay_open {
             app.inspector_pane_overlay_open = false;
         }
@@ -1123,7 +1123,7 @@ pub(super) fn toggle_projects_pane(app: &mut App) {
     app.needs_redraw = true;
 }
 
-/// Tier-aware Ctrl+E handler  -  mirror of [`toggle_projects_pane`]
+/// Tier-aware Ctrl+E handler - mirror of [`toggle_projects_pane`]
 /// for the right Inspector pane. At Wide / Medium tiers flips the
 /// in-memory `inspector_pane_visible` flag. At Narrow tier flips
 /// the transient `inspector_pane_overlay_open` flag and closes any
@@ -1202,7 +1202,7 @@ mod tests {
 
     #[test]
     fn ctrl_shift_z_routes_to_redo_on_macos() {
-        // Same as above but with Ctrl modifier  -  exercises the
+        // Same as above but with Ctrl modifier - exercises the
         // Ctrl-as-Cmd alias on macOS (SSH/Termux clients).
         let mut app = App::test_default();
         app.input_mut().set_text("a");
@@ -1214,7 +1214,7 @@ mod tests {
             KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL | KeyModifiers::SHIFT);
         let consumed = handle_history_key(&mut app, ctrl_shift_z);
         // Off macOS, Ctrl+Shift+Z isn't bound (Linux/Windows use
-        // Ctrl+Y for redo)  -  only assert redo behaviour on macOS.
+        // Ctrl+Y for redo) - only assert redo behaviour on macOS.
         #[cfg(target_os = "macos")]
         {
             assert!(consumed, "Ctrl+Shift+Z must be consumed by history handler on macOS");
@@ -1354,7 +1354,7 @@ mod tests {
             "Narrow tier must not flip the inline visibility flag",
         );
 
-        // Second invocation closes it back up  -  confirms the toggle isn't sticky.
+        // Second invocation closes it back up - confirms the toggle isn't sticky.
         toggle_projects_pane(&mut app);
         assert!(!app.projects_pane_overlay_open, "second Narrow toggle closes the overlay");
         assert_eq!(

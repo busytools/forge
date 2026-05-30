@@ -112,13 +112,13 @@ fn spawning_lifecycle_round_trips_through_session_state() {
     register_bucket(&mut app, &key, SessionLifecycleState::Spawning);
     let bucket = app.sessions.get(&key).expect("bucket inserted");
     assert_eq!(bucket.lifecycle_state, SessionLifecycleState::Spawning);
-    // No error stamped  -  the spinner alone signals the in-flight spawn.
+    // No error stamped - the spinner alone signals the in-flight spawn.
     assert!(bucket.last_connection_error.is_none());
 }
 
 #[test]
 fn picker_renders_when_terminal_is_narrow() {
-    // 80x24 is a common tiny terminal size  -  the picker must still
+    // 80x24 is a common tiny terminal size - the picker must still
     // render legibly. The picker frame width clamps to
     // `terminal_width - 8` per the renderer.
     let mut app = App::test_default();

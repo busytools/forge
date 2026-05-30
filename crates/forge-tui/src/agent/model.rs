@@ -75,7 +75,7 @@ impl ContentChunk {
 }
 
 /// Alias retained for the `ToolCallContent::Content(...)` variant
-/// payload  -  same shape as `ContentChunk`.
+/// payload - same shape as `ContentChunk`.
 pub type Content = ContentChunk;
 
 pub use forge_primitives::{ToolCallLocation, ToolCallStatus, ToolKind};

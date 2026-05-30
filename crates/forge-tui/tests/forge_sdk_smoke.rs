@@ -9,11 +9,11 @@
 //! ```
 //!
 //! Coverage today:
-//! - `forge_sdk_e2e_round_trip`  -  single prompt → one assistant chunk
+//! - `forge_sdk_e2e_round_trip` - single prompt → one assistant chunk
 //!   → `TurnComplete`. Validates the basic happy path.
-//! - `forge_sdk_e2e_multi_turn`  -  two sequential prompts on the same
+//! - `forge_sdk_e2e_multi_turn` - two sequential prompts on the same
 //!   session, validates session state survives between turns.
-//! - `forge_sdk_e2e_tool_call_emits_event`  -  asks for a tool that is
+//! - `forge_sdk_e2e_tool_call_emits_event` - asks for a tool that is
 //!   typically allow-listed in the developer's profile (Bash) so the
 //!   `ToolCall` `SessionUpdate` fans out without a permission round-trip.
 //!   Validates the `assistant->tool_use` translation path.
@@ -39,7 +39,7 @@ use tokio::sync::mpsc;
 
 /// Resolve the smoke-test `config_dir`. Honours `$CLAUDE_CONFIG_DIR`
 /// (the same scheme the developer's profile uses) and falls back to
-/// `$HOME/.claude` when unset  -  these tests are run manually against
+/// `$HOME/.claude` when unset - these tests are run manually against
 /// the developer's real CLI install, so the natural fallback is the
 /// developer's default profile.
 fn smoke_config_dir() -> PathBuf {
@@ -114,7 +114,7 @@ async fn forge_sdk_e2e_multi_turn() {
     eprintln!("e2e multi_turn: turn 1 complete (text seen)");
 
     // Turn 2: probe whether the session retained turn 1's context. We
-    // don't assert on the model's content (it might paraphrase)  -  we
+    // don't assert on the model's content (it might paraphrase) - we
     // only assert that another full turn round-trips without errors,
     // which proves the worker doesn't re-spawn the CLI between turns.
     agent
@@ -147,7 +147,7 @@ async fn forge_sdk_e2e_tool_call_emits_event() {
     // Bash is typically allow-listed in the developer's settings, so
     // the auto-mode classifier short-circuits the can_use_tool callback.
     // We only need to see a `ToolCall` SessionUpdate fan out from the
-    // assistant message  -  the actual permission round-trip is covered
+    // assistant message - the actual permission round-trip is covered
     // by `sdk_scenarios_permission_deny` in forge-test-harness.
     agent
         .prompt_text(
@@ -184,7 +184,7 @@ async fn forge_sdk_e2e_cancel_mid_turn() {
     eprintln!("e2e cancel: connected to {session_id}");
 
     // Kick off a turn likely to take a few seconds (writing a long
-    // poem). We cancel before letting it finish  -  the worker should
+    // poem). We cancel before letting it finish - the worker should
     // route the interrupt to the CLI and emit either TurnComplete or
     // TurnError shortly after.
     agent
@@ -195,10 +195,10 @@ async fn forge_sdk_e2e_cancel_mid_turn() {
         .expect("prompt queued");
 
     // Wait for the first non-init event from the CLI before sending
-    // cancel  -  a 2s fixed sleep races on loaded CI runners where the
+    // cancel - a 2s fixed sleep races on loaded CI runners where the
     // turn hasn't started yet. We don't strictly require a chunk
     // (long tasks may emit only thinking chunks the translator
-    // drops, or no chunk before the interrupt lands)  -  receiving
+    // drops, or no chunk before the interrupt lands) - receiving
     // ANY event from the CLI after prompt is sufficient evidence
     // the turn is in flight. Bounded by 5s so a hung CLI still
     // fails cleanly rather than hanging the test.
@@ -322,7 +322,7 @@ async fn forge_sdk_e2e_mcp_snapshot() {
             break;
         };
         if let AgentEvent::McpSnapshot { servers, error, .. } = event {
-            // The list may be empty (no MCP servers configured)  -  we
+            // The list may be empty (no MCP servers configured) - we
             // only care that the round-trip works without error.
             assert!(error.is_none(), "MCP snapshot error: {error:?}");
             eprintln!("e2e mcp: snapshot returned {} server(s)", servers.len());

@@ -2,7 +2,7 @@
 //!
 //! Exercises the non-initialize outbound `control_request` path. After
 //! spawn completes (initialize handshake done), the scenario issues
-//! `mcp_status`  -  the CLI responds with its server-connection
+//! `mcp_status` - the CLI responds with its server-connection
 //! snapshot. This is the simplest non-initialize `control_request` we can
 //! probe cheaply.
 

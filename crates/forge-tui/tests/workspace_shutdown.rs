@@ -4,7 +4,7 @@
 //! a clone to `App` via `create_app`, and after the event loop
 //! returns drops the App + reclaims ownership via `Rc::try_unwrap`
 //! before calling `Workspace::shutdown().await`. This test pins down
-//! that ownership-reclaim sequence  -  the actual `claude` subprocess
+//! that ownership-reclaim sequence - the actual `claude` subprocess
 //! is never spawned because no Agent is acquired from the pool.
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
@@ -46,8 +46,8 @@ config_dir = "~/.claude-subspace"
     let app_clone = Arc::clone(&workspace);
     drop(app_clone);
 
-    // `Workspace::shutdown` takes `&self` and is synchronous  -  it
-    // just drains internal mutexes  -  so we don't need to unwrap
+    // `Workspace::shutdown` takes `&self` and is synchronous - it
+    // just drains internal mutexes - so we don't need to unwrap
     // the Arc or await.
     workspace.shutdown();
 }

@@ -39,7 +39,7 @@ use crate::workspace::Workspace;
 /// Snapshot the caller's current [`SessionKey`] on demand.
 ///
 /// Each session's peer-MCP tools hold a `CallerKeyResolver` instead of
-/// a bare `SessionKey` because the session's key isn't stable  -  it
+/// a bare `SessionKey` because the session's key isn't stable - it
 /// rekeys from a synthetic placeholder (e.g. `__spawn_forge__`) to the
 /// real claude-issued UUID once `Connected` fires
 /// ([`Workspace::migrate_session_task`]). Tools that baked the
@@ -126,7 +126,7 @@ impl CallerKeyResolver {
     }
 }
 
-/// What `deliver_peer_prompt` returns on success  -  whether the target
+/// What `deliver_peer_prompt` returns on success - whether the target
 /// session was already running (prompt sent immediately) or asleep
 /// (workspace dispatched a SpawnProject and buffered the prompt for
 /// delivery once Connected fires).
@@ -145,13 +145,13 @@ pub enum TargetStatus {
 ///
 /// Async delivery failures (target session crashes mid-flight) flow
 /// through `Workspace::expire_target_inflight` and surface to the
-/// caller via a synthetic `DeliveryFailureNotice` wrapper  -  not
+/// caller via a synthetic `DeliveryFailureNotice` wrapper - not
 /// through this enum.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DeliverError {
     /// No project named `name` in forge.toml.
     UnknownTarget { name: String },
-    /// Outgoing hop exceeds the limit (default 10  -  see #114 v1
+    /// Outgoing hop exceeds the limit (default 10 - see #114 v1
     /// brainstorm). The chain stops here; tool returns `is_error`.
     HopLimitExceeded { hop: u8, limit: u8 },
 }
@@ -177,7 +177,7 @@ pub trait WorkspaceFacade: Send + Sync {
     fn list_peers(&self) -> Vec<PeerStatus>;
 
     /// Identity of the calling session. Returns `None` when `caller`
-    /// doesn't resolve to any known project (defensive  -  the tools
+    /// doesn't resolve to any known project (defensive - the tools
     /// closure-bind a real key at spawn time, so this should be
     /// `Some` in practice).
     fn whoami(&self, caller: &SessionKey) -> Option<PeerStatus>;
@@ -185,15 +185,15 @@ pub trait WorkspaceFacade: Send + Sync {
     /// Deliver a wrapped peer prompt to `target_project`.
     ///
     /// Synchronous return is the immediate decision:
-    /// - `Ok(Delivered)`  -  target is running; `Command::DeliverPeerPrompt`
+    /// - `Ok(Delivered)` - target is running; `Command::DeliverPeerPrompt`
     ///   has been dispatched and will land as a `Command::Prompt` on
     ///   target's SessionTask in the next dispatch cycle.
-    /// - `Ok(QueuedForSpawn)`  -  target is sleeping; a
+    /// - `Ok(QueuedForSpawn)` - target is sleeping; a
     ///   `Command::SpawnProject` is in flight and the wrapped prompt
     ///   is buffered in target's `pending_peer_prompts` for delivery
     ///   on `AgentEvent::Connected`.
-    /// - `Err(UnknownTarget)`  -  target not in forge.toml.
-    /// - `Err(HopLimitExceeded)`  -  `wrapped.hop > wrapped.hop_limit`.
+    /// - `Err(UnknownTarget)` - target not in forge.toml.
+    /// - `Err(HopLimitExceeded)` - `wrapped.hop > wrapped.hop_limit`.
     ///
     /// The actual buffer + dispatch logic lives in `spawn.rs`'s
     /// `Command::DeliverPeerPrompt` handler (lands in C11).
@@ -210,7 +210,7 @@ pub trait WorkspaceFacade: Send + Sync {
 
     /// Look up an `InflightAsk` by correlation_id. Used by `tell_agent`
     /// to classify replies (Pending → Reply, TimedOut → LateReply,
-    /// not-found → Message). Read-only  -  does NOT remove the ask
+    /// not-found → Message). Read-only - does NOT remove the ask
     /// from the inflight map.
     fn resolve_correlation(&self, id: &CorrelationId) -> Option<InflightAsk>;
 
@@ -220,7 +220,7 @@ pub trait WorkspaceFacade: Send + Sync {
     /// fire a stale timeout notification minutes after the reply
     /// landed. Returns the removed ask so the caller can inspect
     /// status / caller / etc., or `None` when the entry was already
-    /// gone (timer beat the reply by milliseconds  -  rare).
+    /// gone (timer beat the reply by milliseconds - rare).
     fn complete_inflight_ask(&self, id: &CorrelationId) -> Option<InflightAsk>;
 
     /// Read the caller's ambient `current_inbound_hop` from its
@@ -247,7 +247,7 @@ pub trait WorkspaceFacade: Send + Sync {
 /// Every trait method starts with `upgrade()`. When the workspace
 /// has been dropped (only possible if `Workspace::shutdown` has run
 /// and tools are firing during teardown), each method short-circuits
-/// to a sensible "workspace gone" fallback  -  typically returning a
+/// to a sensible "workspace gone" fallback - typically returning a
 /// default, an error variant, or a no-op. The recipient session is
 /// dying anyway; the LLM call won't have anywhere to land.
 pub struct ProdWorkspaceFacade(pub Weak<Workspace>);
@@ -351,7 +351,7 @@ impl WorkspaceFacade for ProdWorkspaceFacade {
             .find(|v| v.name == target_project)
             .ok_or_else(|| DeliverError::UnknownTarget { name: target_project.to_owned() })?;
         // Skip worker sessions when probing the target project's
-        // lead  -  workers can shadow `sessions[0]` once they connect.
+        // lead - workers can shadow `sessions[0]` once they connect.
         // `lead_session_view` mirrors the workers MCP gate.
         let target_status = lead_session_view(&ws, &project)
             .filter(|s| s.is_open)
@@ -378,7 +378,7 @@ impl WorkspaceFacade for ProdWorkspaceFacade {
             tracing::warn!(
                 target: "forge_workspace::mcp::peers::facade",
                 correlation_id = %id,
-                "register_inflight_ask: collision on correlation id  -  prior ask overwritten",
+                "register_inflight_ask: collision on correlation id - prior ask overwritten",
             );
         }
     }
@@ -418,14 +418,14 @@ impl WorkspaceFacade for ProdWorkspaceFacade {
 
 fn apply_delta(stats: &mut PeerInflightStats, delta: PeerStatsDelta) {
     // `saturating_sub` floors at 0, but reaching 0 from a Minus1 path
-    // means our bookkeeping ran a Minus without a matching Plus  -  a
+    // means our bookkeeping ran a Minus without a matching Plus - a
     // logic bug worth surfacing instead of swallowing.
     fn sub(name: &str, field: &mut usize) {
         if *field == 0 {
             tracing::warn!(
                 target: "forge_workspace::mcp::peers::facade",
                 counter = name,
-                "peer stats underflow  -  Minus1 without matching Plus1 (bookkeeping bug)",
+                "peer stats underflow - Minus1 without matching Plus1 (bookkeeping bug)",
             );
         } else {
             *field -= 1;
@@ -558,7 +558,7 @@ mod tests {
 
     fn fake_key(s: &str) -> SessionKey {
         // Tests use the production constructor (no test-helpers feature
-        // here)  -  SessionKey is just a String newtype, so this aligns
+        // here) - SessionKey is just a String newtype, so this aligns
         // with how the workspace itself constructs keys at runtime.
         SessionKey::from_session_id(s)
     }

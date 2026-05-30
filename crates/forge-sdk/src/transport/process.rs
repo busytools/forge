@@ -131,11 +131,11 @@ pub struct Subprocess {
     reader_rx: mpsc::UnboundedReceiver<Result<Option<String>, Error>>,
     /// Writer task handle. [`close`](Self::close) aborts this so the
     /// child sees stdin EOF promptly even when external writer clones
-    /// still hold `writer_tx` clones  -  without the abort the writer
+    /// still hold `writer_tx` clones - without the abort the writer
     /// task would wait for every clone to drop and the child wouldn't
     /// see EOF on stdin until then.
     writer_task: Option<JoinHandle<()>>,
-    /// Stderr drain task  -  best-effort logged or forwarded to the
+    /// Stderr drain task - best-effort logged or forwarded to the
     /// caller's callback. Joined during [`close`](Self::close).
     stderr_task: Option<JoinHandle<()>>,
     /// The child handle. [`close`](Self::close) waits on it (with
@@ -164,7 +164,7 @@ impl Subprocess {
     /// - [`Error::Io`] for other spawn failures.
     pub async fn spawn(options: &Options) -> Result<Self, Error> {
         // Optional CLI-version guard. Runs `<binary> --version` once.
-        // The caller asked for a floor  -  if the probe fails, surface it
+        // The caller asked for a floor - if the probe fails, surface it
         // rather than silently skipping (they won't know the check was
         // bypassed otherwise).
         if let Some(min) = &options.minimum_cli_version {
@@ -199,15 +199,15 @@ impl Subprocess {
         //    Claude Code session that itself set `sdk-rs`) would
         //    confuse the rewriter's source-string assumption. Callers
         //    that genuinely want to preset the entrypoint can still do
-        //    so via `options.env`  -  those writes happen after this
+        //    so via `options.env` - those writes happen after this
         //    removal.
         // 3. When a wire-classification rewriter proxy is attached,
         //    inject `HTTPS_PROXY` + `HTTP_PROXY` + `NODE_EXTRA_CA_CERTS`
         //    so the child's HTTPS traffic flows through our MITM. The
-        //    proxy rewrites the 6 sdk-cli signals to cli shape  -  see
+        //    proxy rewrites the 6 sdk-cli signals to cli shape - see
         //    `transport::proxy` for details.
         // 4. Let `options.env` override anything above, EXCEPT
-        //    `CLAUDE_AGENT_SDK_VERSION`  -  that one we always stamp last.
+        //    `CLAUDE_AGENT_SDK_VERSION` - that one we always stamp last.
         // 5. Stamp `CLAUDE_AGENT_SDK_VERSION` as the final write.
         // 6. Set `PWD` to the chosen cwd when present.
         cmd.env_remove("CLAUDECODE");
@@ -226,7 +226,7 @@ impl Subprocess {
             cmd.env("PWD", cwd);
         }
 
-        // `options.user` must setuid the child  -  `tokio::process::Command`
+        // `options.user` must setuid the child - `tokio::process::Command`
         // exposes `uid()` on Unix; no-op on other targets, so the
         // option stays a Unix-only knob.
         #[cfg(unix)]
@@ -294,7 +294,7 @@ impl Subprocess {
     ///
     /// Used by the Inspector pane's PROCESSES section to anchor an
     /// OS-level walk of the descendant tree (the `forge-agent`
-    /// crate's `env::processes` scanner  -  not linked here because the
+    /// crate's `env::processes` scanner - not linked here because the
     /// dependency direction forbids forge-sdk from naming forge-agent
     /// types). The PID is stable for the lifetime of the subprocess
     /// so the scanner can cache its snapshot across polls keyed off
@@ -310,13 +310,13 @@ impl Subprocess {
     /// [`Error::Io`] on read failure.
     pub async fn read_line(&mut self) -> Result<Option<String>, Error> {
         // Reader task signals EOF by either sending `Ok(None)` or by
-        // closing the channel  -  both collapse to `Ok(None)` here.
+        // closing the channel - both collapse to `Ok(None)` here.
         self.reader_rx.recv().await.unwrap_or(Ok(None))
     }
 
     /// Write one line of stream-json to the subprocess stdin.
     ///
-    /// The caller is responsible for including the trailing `\n`  -  this
+    /// The caller is responsible for including the trailing `\n` - this
     /// matches the contract of
     /// [`codec::encode_user_prompt`](super::codec::encode_user_prompt).
     ///
@@ -371,7 +371,7 @@ impl Subprocess {
 
     /// Graceful shutdown: close stdin, wait for the subprocess to
     /// exit (5s timeout, SIGKILL fallback), drain the stderr task.
-    /// Idempotent  -  subsequent calls are no-ops.
+    /// Idempotent - subsequent calls are no-ops.
     ///
     /// # Errors
     ///
@@ -386,7 +386,7 @@ impl Subprocess {
         // Drop our held writer_tx and abort the writer task. The abort
         // forces stdin closure even if external `SharedWriter` clones
         // (handed out via `clone_writer`) still hold writer_tx
-        // clones  -  without the abort the writer task would wait for
+        // clones - without the abort the writer task would wait for
         // every clone to drop. In-flight write_line acks on cloned
         // writers will resolve with the ack-channel-dropped error,
         // which is correct semantics for a closed transport.
@@ -400,7 +400,7 @@ impl Subprocess {
         if let Some(handle) = self.writer_task.take() {
             handle.abort();
             // Symmetric drain with the stderr task below. abort() then
-            // await  -  the future returns JoinError::Cancelled which is
+            // await - the future returns JoinError::Cancelled which is
             // expected; surface panic JoinErrors at debug so the
             // tokio default panic handler isn't the only path that
             // notices.
@@ -427,7 +427,7 @@ impl Subprocess {
                     }
                     Err(Error::Process {
                         exit_code: None,
-                        stderr: String::from("close timeout  -  child killed"),
+                        stderr: String::from("close timeout - child killed"),
                     })
                 }
             }
@@ -436,7 +436,7 @@ impl Subprocess {
         };
 
         // Best-effort drain of the stderr task. We don't surface its
-        // status  -  it's a logging sink.
+        // status - it's a logging sink.
         if let Some(task) = self.stderr_task.take()
             && let Err(e) = task.await
         {
@@ -447,7 +447,7 @@ impl Subprocess {
     }
 }
 
-/// Cloneable writer half of [`Subprocess`]  -  pushes onto the writer
+/// Cloneable writer half of [`Subprocess`] - pushes onto the writer
 /// task's mpsc. Multiple clones can write concurrently; the writer
 /// task serialises onto the child's stdin in arrival order.
 ///
@@ -517,7 +517,7 @@ fn spawn_reader_task(
                 buf.clear();
                 match reader.read_line(&mut buf).await {
                     Ok(0) => {
-                        // EOF  -  signal end-of-stream and exit.
+                        // EOF - signal end-of-stream and exit.
                         let _ = tx.send(Ok(None));
                         break;
                     }
@@ -530,7 +530,7 @@ fn spawn_reader_task(
                             cb(&line);
                         }
                         if tx.send(Ok(Some(line))).is_err() {
-                            // Receiver gone  -  caller dropped the transport.
+                            // Receiver gone - caller dropped the transport.
                             break;
                         }
                     }
@@ -624,7 +624,7 @@ mod tests {
     use std::time::Duration;
 
     /// Build a [`Subprocess`] wrapping a long-running mock that ignores
-    /// stdin (`/bin/sleep 30`). Bypasses [`build_args`]  -  only relevant
+    /// stdin (`/bin/sleep 30`). Bypasses [`build_args`] - only relevant
     /// to tests that exercise the close-timeout path.
     fn spawn_sleep_subprocess(secs: u64) -> Subprocess {
         let mut cmd = Command::new("/bin/sleep");
@@ -664,7 +664,7 @@ mod tests {
         let elapsed = start.elapsed();
 
         // The documented bound is 5s; widen the assert to 30s for
-        // CI-load tolerance  -  flagging a one-time-blip scheduler
+        // CI-load tolerance - flagging a one-time-blip scheduler
         // delay as a regression would be noise.
         assert!(elapsed <= Duration::from_secs(30), "close() took {elapsed:?}, expected <= 30s");
         assert!(

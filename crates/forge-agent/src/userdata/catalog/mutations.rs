@@ -1,7 +1,7 @@
 //! Filesystem-backed session mutations:
 //!
-//! - [`tag_session`]  -  appends a `tag` JSONL entry (pass `None` to clear).
-//! - [`delete_session`]  -  removes the `<session_id>.jsonl` file and any
+//! - [`tag_session`] - appends a `tag` JSONL entry (pass `None` to clear).
+//! - [`delete_session`] - removes the `<session_id>.jsonl` file and any
 //!   sibling `<session_id>/` subagent-transcript directory.
 
 use std::fs;
@@ -48,7 +48,7 @@ pub fn tag_session(
     append_to_session(config_dir, session_id, directory, &payload)
 }
 
-/// Delete a session  -  removes the `<session_id>.jsonl` file and any
+/// Delete a session - removes the `<session_id>.jsonl` file and any
 /// sibling `<session_id>/` subdirectory that holds subagent transcripts.
 ///
 /// # Errors
@@ -68,7 +68,7 @@ pub fn delete_session(
         ))
     })?;
     fs::remove_file(&path)?;
-    // Sibling subagents directory  -  best-effort cleanup. NotFound is
+    // Sibling subagents directory - best-effort cleanup. NotFound is
     // fine (no subagents ran); other errors leave orphaned transcripts
     // on disk and warrant a visible log so the user knows why
     // `list_subagents` will keep returning phantom entries.

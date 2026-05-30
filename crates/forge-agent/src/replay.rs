@@ -13,10 +13,10 @@ use forge_primitives::{AssistantEnvelope, ContentBlock, Message, UserEnvelope};
 /// unifying replay + live code paths.
 ///
 /// Replay-specific transforms applied here:
-/// - Thinking blocks are filtered out  -  ephemeral mid-stream signals,
+/// - Thinking blocks are filtered out - ephemeral mid-stream signals,
 ///   never re-rendered on resume.
 /// - Image content blocks are replaced with a `[image]` text placeholder
-///    -  the binary payload isn't preserved on disk.
+///   - the binary payload isn't preserved on disk.
 ///
 /// The `session_id` field on each Message is left empty; the caller
 /// (`forge_sdk_worker::spawn_session`) is responsible for stamping the
@@ -201,9 +201,9 @@ mod tests {
     #[test]
     fn synthesize_malformed_entry_is_skipped() {
         let messages = vec![
-            // Missing required AssistantEnvelope fields (id/model)  -  must skip.
+            // Missing required AssistantEnvelope fields (id/model) - must skip.
             json!({ "type": "assistant", "message": { "role": "assistant" } }),
-            // Valid user message  -  must pass through.
+            // Valid user message - must pass through.
             json!({
                 "type": "user",
                 "message": { "role": "user", "content": [{"type":"text","text":"valid"}] }

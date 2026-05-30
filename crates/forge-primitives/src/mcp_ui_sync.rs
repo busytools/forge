@@ -1,4 +1,4 @@
-//! MCP-side UI events  -  operation-error envelopes that surface
+//! MCP-side UI events - operation-error envelopes that surface
 //! failures from the MCP orchestrator.
 
 use serde::{Deserialize, Serialize};

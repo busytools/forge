@@ -3,9 +3,9 @@
 //! mirroring `forge_workspace::*` paths; those have been deleted and
 //! callers now import from `forge_workspace::*` directly.
 //!
-//! - [`events`]  -  terminal-process tracking (`TerminalMap`,
+//! - [`events`] - terminal-process tracking (`TerminalMap`,
 //!   `TerminalProcess`) for spawned shell commands.
-//! - [`model`]  -  UI-typed model describing agent state for the view
+//! - [`model`] - UI-typed model describing agent state for the view
 //!   layer to render.
 
 pub mod events;

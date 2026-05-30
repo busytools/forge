@@ -12,7 +12,7 @@
 //! ## Design
 //!
 //! The SDK is a thin wrapper around the `claude` binary. All agentic
-//! work  -  tool dispatch, conversation history, session persistence  -
+//! work - tool dispatch, conversation history, session persistence  -
 //! happens inside the CLI itself. This crate is responsible for:
 //!
 //! - Spawning the subprocess with the right flags.

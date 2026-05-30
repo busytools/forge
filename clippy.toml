@@ -1,6 +1,6 @@
 # Workspace-wide clippy configuration.
 
-# Personal-use binary workspace  -  public-API breakage is irrelevant.
+# Personal-use binary workspace - public-API breakage is irrelevant.
 avoid-breaking-exported-api = false
 
 # Toolchain pin (matches workspace.package.rust-version).

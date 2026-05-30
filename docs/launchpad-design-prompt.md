@@ -1,7 +1,7 @@
-# Launchpad view  -  Claude Design prompt
+# Launchpad view - Claude Design prompt
 
 > **For:** an LLM-driven design pass (Claude Design, claude.ai chat,
-> or any frontier-model UI design tool). Self-contained  -  you don't
+> or any frontier-model UI design tool). Self-contained - you don't
 > need other context to act on this. Output: HTML/CSS mockup matching
 > the style of `docs/forge-map.html` (sibling file, attach it as a
 > reference if the tool supports attachments).
@@ -56,7 +56,7 @@ TASKS in-progress rows. It cycles at one frame per render tick.
 
 ## Why we need a launchpad
 
-Today, forge boots into the chat view immediately  -  even before any
+Today, forge boots into the chat view immediately - even before any
 session has connected. The chat-area welcome message renders
 against a still-spawning session and the bottom panel shows
 placeholder dashes until OAuth/usage data lands. There's a real
@@ -80,7 +80,7 @@ holds:
 
 ### 1. Identity block (centered, top)
 
-- **forge logo**  -  large ASCII-art or unicode art. Existing welcome
+- **forge logo** - large ASCII-art or unicode art. Existing welcome
   uses a small forge logo; the launchpad version should be 3-5x
   bigger and the visual anchor of the page. ASCII art preferred
   (renders identically across terminals) but unicode block-art is
@@ -100,7 +100,7 @@ formatted as the primary picker. Each project row:
   spinner (see "Loader options" below), connected/running =
   filled `●` colored by lifecycle, failed = `✗` red.
 - Project name (middle).
-- Account hint (right, dim): "(Personal)" or "(Granite)"  -  which
+- Account hint (right, dim): "(Personal)" or "(Granite)" - which
   account this project's session will spawn against.
 - Last activity time (far right, dim): "1w", "2d", "now".
 
@@ -138,7 +138,7 @@ The launchpad should render usefully in these states:
   show `✗` glyph + dim error text under the row, picker still
   usable for the other projects.
 
-## Loader options  -  make them configurable
+## Loader options - make them configurable
 
 Currently forge uses a single braille spinner everywhere. For the
 launchpad we want a distinct loader (separate from the chat-area
@@ -152,11 +152,11 @@ spinner ≠ in-conversation spinner.
 [ui]
 # Spinner style for the launchpad's "loading projects" indicator
 # and per-project loading glyph. Doesn't affect the in-chat
-# spinners  -  those stay braille for consistency.
+# spinners - those stay braille for consistency.
 launchpad_spinner = "phase_of_moon"  # or "quadrant" / "arc" / ...
 ```
 
-Candidate spinners I'm seeding the design with  -  feel free to add
+Candidate spinners I'm seeding the design with - feel free to add
 your own, drop any of these, or propose new ones:
 
 | Key | Frames | Vibe |
@@ -167,9 +167,9 @@ your own, drop any of these, or propose new ones:
 | `quarter_arc` | `◜◝◞◟` | Minimal, hand-drawn feel |
 | `pulse` | `○◔◑◕●◕◑◔○` | Breathing fill, "alive" |
 | `bouncing_dot` | `⠁⠂⠄⠂` | Quiet, single-cell braille |
-| `forge_dot` | `●` (alpha tween) | Branded  -  solid rust-orange dot fading in/out via terminal color intensity |
+| `forge_dot` | `●` (alpha tween) | Branded - solid rust-orange dot fading in/out via terminal color intensity |
 | `classic_ascii` | `\|/-\` | Old-school, pure ASCII (renders even in dumb terminals) |
-| `dots_wave` | `⠁⠃⠇⡇⡏⡟⡿⠿` | Braille fill  -  directional |
+| `dots_wave` | `⠁⠃⠇⡇⡏⡟⡿⠿` | Braille fill - directional |
 
 For each candidate, the mockup should show:
 - One frame inline in the launchpad's "Loading projects..." row.
@@ -199,7 +199,7 @@ visual conventions:
 
 ## Reference materials
 
-- `docs/forge-map.html`  -  visual truth for all CURRENT forge-tui
+- `docs/forge-map.html` - visual truth for all CURRENT forge-tui
   surfaces. Read it FIRST. The launchpad will become a sibling
   section in this file once the design is approved.
 - The "Why this is a separate session" + open design questions in
@@ -213,15 +213,15 @@ visual conventions:
 
 ## Open design questions to answer in the mockup
 
-1. **Inspector pane during launchpad**  -  auto-close (free up the
+1. **Inspector pane during launchpad** - auto-close (free up the
    chat width for a bigger logo), or stay open showing "GIT" /
    "TASKS" / "PROCESSES" placeholders? Pick one and justify.
-2. **Slash command to re-show**  -  `/launchpad`? `/home`?
+2. **Slash command to re-show** - `/launchpad`? `/home`?
    `/welcome`? Pick one.
 3. **What happens to background `auto_start` projects while the
    launchpad is up?** Should they still spawn (so picking one is
    instant), or wait until the user picks?
-4. **Persisted last-picked project**  -  should forge remember the
+4. **Persisted last-picked project** - should forge remember the
    last project the user picked from the launchpad and reopen
    directly into that session next launch (bypassing the
    launchpad)? Or always show the launchpad until the user
@@ -234,4 +234,4 @@ of the HTML output.
 
 That's the brief. Read `forge-map.html` for style; output a single
 HTML file matching its conventions. Skip explanations in the
-output  -  show the design.
+output - show the design.

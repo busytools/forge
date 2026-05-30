@@ -1,20 +1,20 @@
 //! Wire-shape types for the peer-coordination MCP feature.
 //!
-//! These types are workspace-internal  -  only `forge-workspace`
+//! These types are workspace-internal - only `forge-workspace`
 //! (the tool impls, the workspace's inflight tracking, the spawn-
 //! routing handlers) references them. Per the audit's I7 finding,
 //! they used to live in `forge-primitives::peers` but never actually
 //! crossed crate boundaries; relocating here honours the
 //! "primitives = cross-crate wire types only" placement rule.
 //!
-//! The one truly cross-crate peer type  -  `PeerInflightStats`  -
+//! The one truly cross-crate peer type - `PeerInflightStats`  -
 //! stays in `forge-primitives` because the TUI reads it through
 //! `SessionUpdate::PeerInflightStatsChanged`.
 //!
 //! ## Identity model
 //!
 //! A "peer agent" is one project session (as loaded from forge.toml).
-//! v1 supports one session per project  -  the project name is the
+//! v1 supports one session per project - the project name is the
 //! stable identity that peers address each other by. All messages
 //! between peers go through forge's in-process MCP server (named
 //! `forge`) with the four `peers__*` tools.
@@ -63,7 +63,7 @@ impl CorrelationId {
 
     /// Validate an LLM-supplied correlation id at the tool boundary.
     /// Format: `q-` or `t-` prefix + 8 lowercase hex characters.
-    /// Returns None on any deviation  -  tools reject the call with
+    /// Returns None on any deviation - tools reject the call with
     /// is_error instead of letting a malformed id miss the inflight
     /// map silently (which would degrade a Reply to a Message and
     /// hide the actual problem).
@@ -143,7 +143,7 @@ pub enum WrappedKind {
 
 /// One in-flight peer ask tracked at the workspace level. Lives in
 /// `Workspace.inflight_asks` keyed by `correlation_id`; presence in
-/// the map is the lifecycle signal  -  the entry is removed on reply
+/// the map is the lifecycle signal - the entry is removed on reply
 /// (`complete_inflight_ask`) or target-failure
 /// (`expire_inflight_ask_failed`).
 #[derive(Clone, Debug)]
@@ -219,7 +219,7 @@ pub struct PeerStatus {
     pub org: String,
     /// Filesystem path to the project root.
     pub path: PathBuf,
-    /// Current liveness  -  `Running` / `Sleeping`.
+    /// Current liveness - `Running` / `Sleeping`.
     pub status: PeerLiveness,
     /// Count of asks this session has received from peers that
     /// haven't been replied to yet.

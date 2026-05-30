@@ -18,7 +18,7 @@
 //! 5. **Nothing about the buffered prompt is echoed back on
 //!    stream-json stdout to forge.** The wire only shows: forge's
 //!    tool_result reply (user envelope) and claude's final
-//!    `assistant: text` response  -  which incorporates BOTH prompts
+//!    `assistant: text` response - which incorporates BOTH prompts
 //!    in its content (single merged turn).
 //!
 //! Implication for forge-tui: there is NO live wire signal that
@@ -70,7 +70,7 @@ async fn wire_capture_queued_command() {
         // Submit a second user message WHILE the first turn is
         // still in flight. Claude buffers this internally. The
         // captured trace must show no `queued_command` /
-        // `attachment` envelopes on stdout  -  that absence is the
+        // `attachment` envelopes on stdout - that absence is the
         // artifact this scenario locks in.
         client.send_user_message("Also, briefly summarise the output in one sentence.").await?;
 

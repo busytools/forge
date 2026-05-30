@@ -1,10 +1,10 @@
-//! Public [`Client`]  -  the entry point consumers hold.
+//! Public [`Client`] - the entry point consumers hold.
 //!
 //! `Client` is a cheap-clone handle (`Arc`-backed) over a background
 //! reader task that owns the `claude` subprocess. All methods take
 //! `&self`, so the same `Client` can be passed by reference into
 //! multiple tasks. The events stream is returned alongside the Client
-//! at spawn time as a [`ClientEvents`] receiver  -  single-consumer,
+//! at spawn time as a [`ClientEvents`] receiver - single-consumer,
 //! independent of the writer-side handle.
 //!
 //! Internally:
@@ -117,7 +117,7 @@ impl Client {
     ///
     /// Wire-recording for conformance baselines is configured via
     /// [`Options::tee_inbound`](crate::Options) /
-    /// [`Options::tee_outbound`](crate::Options) callbacks  -  the
+    /// [`Options::tee_outbound`](crate::Options) callbacks - the
     /// `forge-test-harness` crate drives this.
     ///
     /// # Errors
@@ -195,7 +195,7 @@ impl Client {
         // mode is driven entirely by stdin: it will not emit `system/init`
         // until BOTH (a) an `initialize` control_request is received AND
         // (b) a user message arrives. It DOES emit a `control_response` to
-        // the initialize right after hooks complete  -  that gives us the
+        // the initialize right after hooks complete - that gives us the
         // server-info payload (commands, agents, models, account, pid)
         // without needing to drive a conversation yet.
         sub.write_line(&init_line).await?;
@@ -305,7 +305,7 @@ impl Client {
                             type = %type_str,
                             raw = %raw,
                             line = line_number,
-                            "unknown top-level type during init  -  buffering as Message::Unknown"
+                            "unknown top-level type during init - buffering as Message::Unknown"
                         );
                         pre_init_messages.push_back(Message::Unknown { type_str, raw });
                     }
@@ -348,7 +348,7 @@ impl Client {
         Ok((Self { inner }, events_rx))
     }
 
-    /// Cached response from the `initialize` `control_request`  -  holds
+    /// Cached response from the `initialize` `control_request` - holds
     /// the CLI's server capabilities, available commands, and output
     /// styles. Returns `None` when the CLI didn't attach a body to its
     /// initialize response.
@@ -363,14 +363,14 @@ impl Client {
     /// PROCESSES section.
     ///
     /// Returns `None` only when the transport couldn't report a PID
-    /// at spawn  -  never happens for a real subprocess on supported
+    /// at spawn - never happens for a real subprocess on supported
     /// platforms, but the `Option` keeps the test-stub path
     /// expressible.
     pub fn claude_pid(&self) -> Option<u32> {
         self.inner.claude_pid
     }
 
-    /// Captured `system/init` payload  -  the CLI's first session-scoped
+    /// Captured `system/init` payload - the CLI's first session-scoped
     /// frame, carrying `model`, `tools`, `mcp_servers`, `slash_commands`,
     /// `agents`, `skills`, etc. Stripped from the user-visible `Message`
     /// stream during init; cached here for callers that need the
@@ -388,14 +388,14 @@ impl Client {
 
     /// Read the bare `apiKeySource` field from the cached
     /// `system/init` payload, returning a partial
-    /// [`forge_primitives::AccountInfo`] (auth source only  -  no
+    /// [`forge_primitives::AccountInfo`] (auth source only - no
     /// email/org/subscription). Returns `None` when the payload is
     /// absent (init not yet arrived), the field is missing, or the
     /// value is empty / `"none"`.
     ///
     /// Callers that need the full profile (email, organization,
     /// subscription tier) shell out to `claude auth status`
-    /// separately  -  that path is agent-side
+    /// separately - that path is agent-side
     /// (`forge_agent::cloud::auth_status`), not SDK-side, because it
     /// spawns a fresh subprocess outside the long-lived stream-json
     /// session.
@@ -430,7 +430,7 @@ impl Client {
     /// [`send_user_message`](Self::send_user_message).
     ///
     /// `content` is forwarded verbatim as the message body's
-    /// `content` field  -  callers must build CLI-compatible block
+    /// `content` field - callers must build CLI-compatible block
     /// objects (e.g. `{"type":"text","text":"..."}`,
     /// `{"type":"image","source":{"type":"base64","media_type":"image/png","data":"..."}}`).
     ///
@@ -461,7 +461,7 @@ impl Client {
     }
 
     /// Graceful shutdown. Signals the reader task to stop, waits for
-    /// it to drain and close the subprocess. Idempotent  -  subsequent
+    /// it to drain and close the subprocess. Idempotent - subsequent
     /// calls (on this clone or any other) are no-ops.
     ///
     /// # Errors

@@ -1,4 +1,4 @@
-//! `forge-primitives`  -  types-only crate shared across forge crates.
+//! `forge-primitives` - types-only crate shared across forge crates.
 //!
 //! The workspace base crate. Holds every wire-shape type that
 //! crosses any forge-* crate boundary, with **no** logic, I/O, or
@@ -7,38 +7,38 @@
 //!
 //! Module map:
 //!
-//! - [`command`]  -  `Command` enum (UI → agent channel envelope) + IDs.
-//! - [`ids`]  -  `SessionId`, `ToolUseId`, `MessageId`.
-//! - [`image`]  -  `ImageAttachment` + clipboard validation helpers.
-//! - [`messages`]  -  top-level stream-json shapes (`Message`,
+//! - [`command`] - `Command` enum (UI → agent channel envelope) + IDs.
+//! - [`ids`] - `SessionId`, `ToolUseId`, `MessageId`.
+//! - [`image`] - `ImageAttachment` + clipboard validation helpers.
+//! - [`messages`] - top-level stream-json shapes (`Message`,
 //!   `AssistantEnvelope`, `Usage`, `RateLimit*`, `StopReason`,
 //!   task-lifecycle variants).
-//! - [`content`]  -  wire-side `ContentBlock` (Text, Thinking, ToolUse,
+//! - [`content`] - wire-side `ContentBlock` (Text, Thinking, ToolUse,
 //!   ToolResult, server-tool, Image).
-//! - [`public_types`]  -  public wire types: `AccountInfo`,
+//! - [`public_types`] - public wire types: `AccountInfo`,
 //!   `McpServer*`, `McpStatusResponse`, `ContextUsage*`,
 //!   `SDKSessionInfo`, `SessionMessage*`, `Sandbox*`, `SettingSource`,
 //!   `StreamEvent`.
-//! - [`hooks`]  -  hook event data (`HookKind`, `HookContext`, all 12
+//! - [`hooks`] - hook event data (`HookKind`, `HookContext`, all 12
 //!   `*Input` structs, all 9 `*HookSpecificOutput` types).
-//! - [`permissions`]  -  permission decision data (`PermissionDecision`,
+//! - [`permissions`] - permission decision data (`PermissionDecision`,
 //!   `ToolPermissionContext`, `PermissionUpdate*`, `Permission*`).
-//! - [`options`]  -  option-config enums shared between the SDK's
+//! - [`options`] - option-config enums shared between the SDK's
 //!   `Options` builder and consumers (`PermissionMode`,
 //!   `SystemPromptKind`, `SdkPluginConfig`).
-//! - [`subagents`]  -  `SubagentDefinition` + nested types.
-//! - [`runtime`]  -  live runtime state: mode/model state, available
+//! - [`subagents`] - `SubagentDefinition` + nested types.
+//! - [`runtime`] - live runtime state: mode/model state, available
 //!   commands/agents/models, rate-limit views, retry classification,
 //!   terminal reasons.
-//! - [`session_update`]  -  wire-side support types for streaming session events
+//! - [`session_update`] - wire-side support types for streaming session events
 //!   (chunks, tool calls, tool-call updates, plan entries, output
 //!   metadata).
-//! - [`permission_ui`]  -  UI-side permission-prompt request/response
+//! - [`permission_ui`] - UI-side permission-prompt request/response
 //!   shapes (distinct from the wire-side decisions in
 //!   [`permissions`]).
-//! - [`question`]  -  `AskUserQuestion` request/response shapes.
-//! - [`mcp_ui_sync`]  -  MCP UI events (`McpOperationError`).
-//! - [`session_meta`]  -  `SessionListEntry`, `PromptChunk`.
+//! - [`question`] - `AskUserQuestion` request/response shapes.
+//! - [`mcp_ui_sync`] - MCP UI events (`McpOperationError`).
+//! - [`session_meta`] - `SessionListEntry`, `PromptChunk`.
 //!
 //! Add a type here when 2+ forge crates need it. Never reach for
 //! cross-crate `pub use` chains as a substitute.

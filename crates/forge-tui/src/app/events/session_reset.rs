@@ -188,7 +188,7 @@ fn is_queued_only_user_envelope(msg: &forge_primitives::Message) -> bool {
 /// header (`Queued during the previous turn · N messages`), followed
 /// by one `▸ <prompt>` text block per message. All blocks live
 /// inside one [`MessageRole::User`] [`ChatMessage`] so the existing
-/// `USER_MSG_BG` background stretches over the whole group  -  visually
+/// `USER_MSG_BG` background stretches over the whole group - visually
 /// a single bordered area, which is what option B's mockup showed.
 fn push_queued_group(app: &mut App, prompts: &[String]) {
     app.clear_active_turn_assistant();
@@ -233,13 +233,13 @@ pub(super) fn load_resume_history(app: &mut App, history_messages: &[forge_primi
         // get persisted to JSONL as `type:attachment,
         // attachment.type:queued_command` rows, one per submission.
         // The catalog scanner hoists each row into a synthetic
-        // `{role:user, content:[{queued_command}]}` envelope  -  see
+        // `{role:user, content:[{queued_command}]}` envelope - see
         // `userdata::catalog::scan::synthesize_queued_command_message`.
         //
         // Live forge already renders each submission at the time
         // the user typed it (via the input_submit path). Resume can
         // only place them at their JSONL position, which is the
-        // flush time  -  every queued submission in a batch shares
+        // flush time - every queued submission in a batch shares
         // the same millisecond timestamp. Rendered as individual
         // user bubbles, they cluster at the flush point and read
         // like a wall of unrelated messages.
@@ -274,7 +274,7 @@ pub(super) fn load_resume_history(app: &mut App, history_messages: &[forge_primi
 
         let msg = &history_messages[i];
         // The raw walker (`handle_sdk_message`) processes user
-        // messages by walking tool_results only  -  live wire user
+        // messages by walking tool_results only - live wire user
         // text content blocks are echoes of the user's input that
         // the input handler already rendered, so the walker
         // correctly drops them. Replay has no input handler
@@ -285,7 +285,7 @@ pub(super) fn load_resume_history(app: &mut App, history_messages: &[forge_primi
             // walker drops user text (those are echoes of input the input
             // handler already rendered); replay has no input handler
             // contribution, so render here. Only clear the active-turn
-            // assistant pointer when we're about to actually render  -  an
+            // assistant pointer when we're about to actually render - an
             // empty Text block isn't a render and shouldn't move the
             // pointer.
             let mut rendered_user_text = false;
@@ -390,13 +390,13 @@ mod tests {
     #[test]
     fn replay_walk_does_not_leave_lifecycle_on_running() {
         let mut app = App::test_default();
-        // Model an Idle, freshly-Connected bucket  -  what
+        // Model an Idle, freshly-Connected bucket - what
         // `apply_session_update_connected`'s background path produces
         // before kicking off `load_resume_history`.
         let key = app.active_session_key.clone().expect("active key");
         app.sessions.get_mut(&key).expect("bucket").lifecycle_state = SessionLifecycleState::Idle;
 
-        // A modest replay tail  -  multiple assistant messages, as a
+        // A modest replay tail - multiple assistant messages, as a
         // long-lived session would have. Replay must leave the bucket
         // at Idle, not stuck at Running, regardless of how many
         // assistant messages the history carried.
@@ -411,7 +411,7 @@ mod tests {
         assert_eq!(
             bucket.lifecycle_state,
             SessionLifecycleState::Idle,
-            "post-replay lifecycle must still be Idle  -  Running here is what \
+            "post-replay lifecycle must still be Idle - Running here is what \
              pinned the Projects pane spinner on after launchpad auto_start",
         );
         assert!(
@@ -421,7 +421,7 @@ mod tests {
     }
 
     /// Three consecutive queued_command attachments (the classic
-    /// mid-turn submit batch  -  claude CLI buffers them locally and
+    /// mid-turn submit batch - claude CLI buffers them locally and
     /// flushes at the next user→model boundary so the JSONL stamps
     /// them with one millisecond timestamp) collapse into a single
     /// user bubble whose blocks are `[header, ▸p1, ▸p2, ▸p3]`. The
@@ -438,7 +438,7 @@ mod tests {
         ];
         load_resume_history(&mut app, &history);
 
-        // Find the queued group  -  the only User message in the
+        // Find the queued group - the only User message in the
         // resulting chat that has 4 blocks (header + 3 items). The
         // welcome message lives above it as a Welcome-role entry.
         let group = app

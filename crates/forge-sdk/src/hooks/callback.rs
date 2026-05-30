@@ -30,9 +30,9 @@ enum HookDecisionKind {
     Deny {
         reason: String,
     },
-    /// No-op  -  purely observational; continue unchanged.
+    /// No-op - purely observational; continue unchanged.
     Passthrough,
-    /// Deferred-execution ACK  -  ships the CLI's `AsyncHookJSONOutput`
+    /// Deferred-execution ACK - ships the CLI's `AsyncHookJSONOutput`
     /// shape (`{"async": true, "asyncTimeout": <ms>}`) so the CLI
     /// knows not to wait on the hook's in-line response. The caller
     /// is expected to deliver the real result out-of-band. Wiring
@@ -70,7 +70,7 @@ impl HookDecision {
         Self::with_inner(HookDecisionKind::Deny { reason: reason.into() })
     }
 
-    /// Observational only  -  continue unchanged (typical `PostToolUse` /
+    /// Observational only - continue unchanged (typical `PostToolUse` /
     /// `Stop`).
     pub fn passthrough() -> Self {
         Self::with_inner(HookDecisionKind::Passthrough)
@@ -81,7 +81,7 @@ impl HookDecision {
     /// <ms>?}`. Pass `None` for no explicit timeout. The CLI will
     /// proceed without waiting for the hook's final verdict; the
     /// caller is expected to deliver the real decision out-of-band
-    /// (wiring that channel is follow-up work  -  forge-sdk currently
+    /// (wiring that channel is follow-up work - forge-sdk currently
     /// emits only the ACK shape).
     pub fn defer(timeout_ms: Option<u64>) -> Self {
         Self::with_inner(HookDecisionKind::Defer { timeout_ms })
@@ -103,7 +103,7 @@ impl HookDecision {
 
     /// Attach the `continue_` control field (CLI wire name:
     /// `continue`). Pass `false` to signal that Claude should not proceed
-    /// after the hook  -  typically combined with
+    /// after the hook - typically combined with
     /// [`with_stop_reason`](Self::with_stop_reason).
     pub fn with_continue(mut self, should_continue: bool) -> Self {
         self.continue_execution = Some(should_continue);
@@ -117,14 +117,14 @@ impl HookDecision {
         self
     }
 
-    /// Attach the `stopReason` control field  -  the message
+    /// Attach the `stopReason` control field - the message
     /// the CLI shows when `continue` is set to `false`.
     pub fn with_stop_reason(mut self, reason: impl Into<String>) -> Self {
         self.stop_reason = Some(reason.into());
         self
     }
 
-    /// Attach the `systemMessage` control field  -  a warning
+    /// Attach the `systemMessage` control field - a warning
     /// displayed to the user alongside the hook's decision.
     pub fn with_system_message(mut self, msg: impl Into<String>) -> Self {
         self.system_message = Some(msg.into());

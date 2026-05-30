@@ -47,7 +47,7 @@ pub(super) fn submit_input(app: &mut App) {
 /// path (and banner ✕ click) to deliver pending comments to claude
 /// in one shot.
 ///
-/// This is a thin wrapper around `dispatch_prompt`  -  the bundle is
+/// This is a thin wrapper around `dispatch_prompt` - the bundle is
 /// already formatted markdown, so we skip the slash-command try
 /// path and go straight to the agent dispatch. A real chat-input
 /// path would have to handle slash commands; here we know the text
@@ -78,7 +78,7 @@ pub(super) fn request_cancel(app: &mut App) -> Result<(), String> {
         return Ok(());
     }
     if app.pending_cancel() {
-        // Already cancelling  -  second Escape is a no-op.
+        // Already cancelling - second Escape is a no-op.
         return Ok(());
     }
 
@@ -107,12 +107,12 @@ pub(super) fn request_cancel(app: &mut App) -> Result<(), String> {
 }
 
 /// Push a fresh user bubble + an empty assistant placeholder and
-/// dispatch `Command::Prompt`. Always pushes both  -  idle or mid-turn.
+/// dispatch `Command::Prompt`. Always pushes both - idle or mid-turn.
 ///
 /// Mid-turn shape: every submit reparents
 /// `active_turn_assistant_idx` onto a fresh assistant placeholder
 /// at the tail. Claude's continuing wire tokens then land in that
-/// new placeholder, below the user's new bubble  -  append-only
+/// new placeholder, below the user's new bubble - append-only
 /// geometry regardless of whether a turn is already in flight. The
 /// CLI queues the mid-turn prompt and folds it into the next
 /// user→model envelope (typically the tool_result cycle), so the
@@ -124,7 +124,7 @@ pub(super) fn request_cancel(app: &mut App) -> Result<(), String> {
 /// in the new placeholder rather than the prior asst bubble. If
 /// claude emits zero tokens between submit and `result` the
 /// placeholder stays empty and `remove_empty_tail_assistant` strips
-/// it on TurnComplete. Otherwise the stub remains visible  -  a known
+/// it on TurnComplete. Otherwise the stub remains visible - a known
 /// cost of the always-reparent design.
 fn dispatch_prompt(app: &mut App, text: String) {
     let busy = is_turn_busy(app);
@@ -143,7 +143,7 @@ fn dispatch_prompt(app: &mut App, text: String) {
         tracing::debug!(
             target: crate::logging::targets::APP_INPUT,
             event_name = "prompt_dispatch_deferred_no_agent",
-            message = "no active agent yet  -  submit ignored",
+            message = "no active agent yet - submit ignored",
             outcome = "deferred",
         );
         return;
@@ -169,7 +169,7 @@ fn dispatch_prompt(app: &mut App, text: String) {
         }
     }
 
-    // A submit overrides any in-flight cancel intent  -  the new prompt
+    // A submit overrides any in-flight cancel intent - the new prompt
     // IS the user's next move, so the "Cancelling current turn..."
     // hint should clear immediately. Without this, a cancel followed
     // by a fast submit leaves the hint pinned on screen forever
@@ -186,7 +186,7 @@ fn dispatch_prompt(app: &mut App, text: String) {
 
     // Always push an empty assistant placeholder + reparent the
     // active turn assistant onto it. Mid-turn submits get this
-    // treatment too  -  that's the entire point of the new shape, so
+    // treatment too - that's the entire point of the new shape, so
     // claude's continuing tokens land below the new user bubble
     // instead of above it.
     app.push_message_tracked(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
@@ -213,7 +213,7 @@ fn dispatch_prompt(app: &mut App, text: String) {
         Ok(()) => {
             if !busy {
                 // Mid-turn submits ride the in-flight turn's context
-                // updates  -  only refresh on the idle → new-turn path.
+                // updates - only refresh on the idle → new-turn path.
                 crate::app::session_runtime::request_context_usage_refresh(app);
             }
             tracing::info!(
@@ -279,7 +279,7 @@ mod tests {
         // reparented onto the new placeholder. Status flips back to
         // Thinking so the spinner attaches to the new placeholder
         // while claude's continuing tokens stream into it. The prompt
-        // still dispatches immediately  -  claude's internal queue folds
+        // still dispatches immediately - claude's internal queue folds
         // it into the next user→model envelope.
         let (mut app, mut rx) = app_with_connection();
         app.status = AppStatus::Running;
@@ -326,7 +326,7 @@ mod tests {
         app.input_mut().set_text("second");
         submit_input(&mut app);
 
-        // [user-first, user-second, asst empty]  -  the empty
+        // [user-first, user-second, asst empty] - the empty
         // placeholder from the first submit got dropped.
         assert_eq!(app.messages().len(), 3, "stripped the in-between empty placeholder");
         assert!(matches!(app.messages()[0].role, MessageRole::User));
@@ -360,7 +360,7 @@ mod tests {
     fn mid_turn_submit_keeps_non_empty_prior_placeholder() {
         // Defensive: if the tail placeholder has SOME content (claude
         // streamed a few tokens between submits), it must NOT be
-        // dropped  -  that would lose claude's content. The new submit
+        // dropped - that would lose claude's content. The new submit
         // appends below it normally.
         let (mut app, _rx) = app_with_connection();
         app.status = AppStatus::Running;

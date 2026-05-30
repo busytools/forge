@@ -72,7 +72,7 @@ fn is_org_level_disabled_extra_usage_case(update: &model::RateLimitUpdate) -> bo
 /// True when the wire reports the user has crossed an overage
 /// threshold but Anthropic is not yet billing overage. In this state
 /// the warning chip's loud "Approaching rate limit, you've used 102%"
-/// over-states things  -  the user is at the threshold, not actually
+/// over-states things - the user is at the threshold, not actually
 /// burning overage credit. Detected by `surpassed_threshold > 0`
 /// (Anthropic's signal that some threshold was crossed) plus
 /// `is_using_overage == Some(false)` (no actual overage consumption).
@@ -89,7 +89,7 @@ pub(super) fn format_rate_limit_summary(update: &model::RateLimitUpdate) -> Stri
 
     if is_near_threshold_without_overage(update) {
         // Drop the percentage and the "you can continue using overage"
-        // tail  -  the user isn't actually consuming overage credit, so
+        // tail - the user isn't actually consuming overage credit, so
         // the loud wording isn't warranted. Keep the reset time, which
         // is the only actionable bit.
         let mut message = "Near rate-limit threshold.".to_owned();
@@ -230,7 +230,7 @@ pub(crate) fn maybe_recover_from_rate_limit_lock(app: &mut App) {
     if SystemTime::now() < reset_target {
         return;
     }
-    // Window has passed  -  recover.
+    // Window has passed - recover.
     app.set_last_rate_limit_update(None);
     app.status = AppStatus::Ready;
     app.exit_error = None;
@@ -238,7 +238,7 @@ pub(crate) fn maybe_recover_from_rate_limit_lock(app: &mut App) {
     super::push_system_message_with_severity(
         app,
         Some(SystemSeverity::Info),
-        "Rate-limit window passed  -  input re-enabled. You can retry your request.",
+        "Rate-limit window passed - input re-enabled. You can retry your request.",
     );
     app.needs_redraw = true;
     tracing::info!(
@@ -274,7 +274,7 @@ mod tests {
 
     #[test]
     fn format_resets_at_returns_now_for_negative_nan_infinite_epoch() {
-        // `Duration::from_secs_f64` panics on these  -  the guard
+        // `Duration::from_secs_f64` panics on these - the guard
         // returns the literal "now" instead of crashing the TUI.
         assert_eq!(format_resets_at(-1.0), "now");
         assert_eq!(format_resets_at(-1e9), "now");
@@ -327,7 +327,7 @@ mod tests {
     fn near_threshold_without_overage_uses_softer_wording() {
         // AllowedWarning + surpassedThreshold > 0 + isUsingOverage =
         // false: user is past the threshold but not actually consuming
-        // overage  -  the loud "you've used 102%" wording over-states.
+        // overage - the loud "you've used 102%" wording over-states.
         let update = RateLimitUpdate {
             status: RateLimitStatus::AllowedWarning,
             resets_at: Some(1_741_280_000.0),
@@ -343,16 +343,16 @@ mod tests {
         let summary = format_rate_limit_summary(&update);
         assert!(summary.starts_with("Near rate-limit threshold"));
         assert!(summary.contains("Resets in"));
-        // No percentage  -  that's the whole point of softening.
+        // No percentage - that's the whole point of softening.
         assert!(!summary.contains('%'));
-        // No "you can continue" overage hint  -  user isn't consuming
+        // No "you can continue" overage hint - user isn't consuming
         // overage, so the hint is misleading.
         assert!(!summary.contains("overage allowance"));
     }
 
     #[test]
     fn near_threshold_when_overage_in_use_keeps_loud_wording() {
-        // Same surpassed_threshold but actually using overage  -  keep
+        // Same surpassed_threshold but actually using overage - keep
         // the loud "Approaching rate limit, X%" message because the
         // user genuinely wants to know.
         let update = RateLimitUpdate {

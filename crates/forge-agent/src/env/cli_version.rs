@@ -60,7 +60,7 @@ impl CliVersionInfo {
 }
 
 /// Run both probes in parallel and return the merged snapshot.
-/// Always succeeds  -  failures collapse to `None` on the affected
+/// Always succeeds - failures collapse to `None` on the affected
 /// field with a WARN log; the workspace caller never has to handle
 /// a `Result`.
 pub async fn fetch_info() -> CliVersionInfo {
@@ -174,7 +174,7 @@ async fn probe_latest() -> Option<String> {
 }
 
 /// Extract the first whitespace-separated token that starts with a
-/// digit  -  handles `2.1.116 (anthropic)`, `claude 2.1.116`, and
+/// digit - handles `2.1.116 (anthropic)`, `claude 2.1.116`, and
 /// bare `2.1.116` shapes the CLI / npm produce.
 fn extract_semver_token(reported: &str) -> Option<&str> {
     reported.split_whitespace().find(|t| t.chars().next().is_some_and(|c| c.is_ascii_digit()))

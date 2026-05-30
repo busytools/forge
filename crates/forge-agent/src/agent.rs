@@ -1,4 +1,4 @@
-//! Channel-based [`Agent`] handle  -  the public consumer surface.
+//! Channel-based [`Agent`] handle - the public consumer surface.
 //!
 //! `Agent::spawn` constructs a `ForgeSdkBridge` under the hood and
 //! spawns one background task: the **command dispatcher**, which
@@ -28,7 +28,7 @@ pub struct AgentHandle {
     /// are needed.
     pub commands: mpsc::UnboundedSender<AgentCommand>,
     /// Bridge's raw `AgentEvent` receiver. Single-take via
-    /// [`AgentHandle::take_events`]  -  forge-tui's translator consumes
+    /// [`AgentHandle::take_events`] - forge-tui's translator consumes
     /// this and converts to its `ClientEvent` shape.
     agent_events: Mutex<Option<mpsc::UnboundedReceiver<crate::client::AgentEvent>>>,
     /// Bridge handle used for direct-return accessors (config_dir,
@@ -44,7 +44,7 @@ impl AgentHandle {
     }
 
     // Direct-accessor passthroughs to the bridge. Each method
-    // simply forwards arguments  -  no transform.
+    // simply forwards arguments - no transform.
 
     pub fn config_dir(&self) -> PathBuf {
         self.bridge.config_dir()
@@ -83,7 +83,7 @@ impl AgentHandle {
     /// Returns a clone of the bridge's bound forge-account
     /// `display_name` (when forge-workspace picked one). Used by
     /// the connect-flow to emit a `ForgeAccountIdentityReady`
-    /// event right after spawn  -  eliminates the welcome-message
+    /// event right after spawn - eliminates the welcome-message
     /// flicker that would otherwise wait for the slow status
     /// snapshot to arrive from the CLI.
     pub fn display_name(&self) -> Option<String> {
@@ -242,7 +242,7 @@ impl AgentHandle {
 
 /// Errors surfaced from `AgentHandle`'s fire-and-forget command
 /// methods. The underlying `claude` subprocess work flows back
-/// asynchronously via the events stream  -  these are dispatch-time
+/// asynchronously via the events stream - these are dispatch-time
 /// failures only.
 #[derive(Debug, thiserror::Error)]
 pub enum AgentError {
@@ -256,7 +256,7 @@ pub enum AgentError {
     EncodeFailed(#[from] serde_json::Error),
 }
 
-/// Agent factory  -  wraps a private `ForgeSdkBridge` behind a channel API.
+/// Agent factory - wraps a private `ForgeSdkBridge` behind a channel API.
 pub struct Agent;
 
 impl Agent {
@@ -265,7 +265,7 @@ impl Agent {
     /// call). Returns the handle plus a `Receiver<AgentCommand>` that
     /// drains every command the test exercises.
     ///
-    /// Safe to call outside a Tokio runtime  -  no tasks are spawned.
+    /// Safe to call outside a Tokio runtime - no tasks are spawned.
     /// The bridge's events stream is dropped on the floor; tests that
     /// don't drive sessions never see events anyway. The bridge is
     /// bound to a synthetic `/tmp/forge-testing-stub` config_dir;
@@ -273,7 +273,7 @@ impl Agent {
     #[cfg(any(test, feature = "testing"))]
     pub fn testing_stub() -> (AgentHandle, mpsc::UnboundedReceiver<AgentCommand>) {
         let bridge = ForgeSdkBridge::default();
-        // Drop the bridge's events receiver immediately  -  tests don't
+        // Drop the bridge's events receiver immediately - tests don't
         // run a real session so nothing is producing.
         let _ = bridge.take_events();
 
@@ -350,7 +350,7 @@ async fn dispatch_commands(
 }
 
 /// Dispatch one `AgentCommand` to the matching `ForgeSdkBridge` method.
-/// Internal  -  kept on `anyhow` because the bridge surface itself
+/// Internal - kept on `anyhow` because the bridge surface itself
 /// returns `anyhow::Result` and the dispatcher task only logs the
 /// error before continuing. The public AgentHandle surface above
 /// uses the typed `AgentError`.
@@ -363,9 +363,9 @@ fn dispatch(cmd: AgentCommand, bridge: &ForgeSdkBridge) -> anyhow::Result<()> {
             // `AgentHandle::new_session`. Round-trip is safe in
             // practice when `Serialize`/`Deserialize` are mutually
             // consistent (the standard derive pair), but a
-            // forward-compat break in SessionLaunchSettings  -  e.g.
+            // forward-compat break in SessionLaunchSettings - e.g.
             // adding `#[serde(deny_unknown_fields)]` or splitting a
-            // field  -  would silently strip user config here without
+            // field - would silently strip user config here without
             // this log.
             let launch = serde_json::from_value(launch_settings).unwrap_or_else(|e| {
                 tracing::error!(

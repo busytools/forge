@@ -1,4 +1,4 @@
-//! Hook registry  -  stores callbacks, mints opaque `callback_id`s, and
+//! Hook registry - stores callbacks, mints opaque `callback_id`s, and
 //! renders the `hooks` field of the `initialize` `control_request` payload.
 
 use std::marker::PhantomData;
@@ -27,7 +27,7 @@ pub struct Hooks {
     pub(crate) notification: Vec<Arc<dyn ErasedHookCallback>>,
     pub(crate) permission_request: Vec<(String, Arc<dyn ErasedHookCallback>)>,
     /// Timeout (seconds) the CLI should apply to every hook callback.
-    /// `None` means "use the default forge-sdk emits" (30  -  matches
+    /// `None` means "use the default forge-sdk emits" (30 - matches
     /// the CLI's per-matcher default). Overridable via
     /// [`HooksBuilder::default_timeout_secs`] for scenarios that need
     /// to provoke `control_cancel_request` on slow callbacks.

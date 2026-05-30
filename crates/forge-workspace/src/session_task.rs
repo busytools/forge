@@ -135,7 +135,7 @@ impl SessionTask {
                 // (`pool`, `command_senders`, `domain_handles`) onto
                 // the real session UUID. `get_agent_handle` registered
                 // them under the pool key returned by
-                // `resolve_target`  -  usually the lead session id, but
+                // `resolve_target` - usually the lead session id, but
                 // a placeholder (`__fresh__:<project_key>`) for a
                 // project with no on-disk sessions, or the previous
                 // session's id on a `/new` flow. Without this, the
@@ -191,7 +191,7 @@ impl SessionTask {
                     // any q-id that was pending against the previous
                     // identity, so no reply will ever arrive. Mirrors
                     // the drop-hook behavior in `impl Drop for
-                    // SessionTask` below  -  same `TargetConnectionFailed`
+                    // SessionTask` below - same `TargetConnectionFailed`
                     // reason because semantically the original target
                     // is unreachable. Fired BEFORE `rekey_to` so the
                     // project lookup inside `expire_target_inflight`
@@ -220,7 +220,7 @@ impl SessionTask {
                     // names a project that carries a team config and
                     // no workers are live yet, programmatically
                     // dispatch one SpawnWorker per role. Idempotent
-                    // via the live_workers gate  -  a reconnect after
+                    // via the live_workers gate - a reconnect after
                     // a transient failure skips re-spawn. See
                     // `crate::team` and `Workspace::spawn_team_for_lead`.
                     if let Some(spawn_key) = self.spawn_key.as_ref()
@@ -409,7 +409,7 @@ impl SessionTask {
             }
             AgentEvent::SessionsListed { sessions } => {
                 // Route via `spawn_key` while the pre-Connect bucket
-                // is still in place  -  same pattern as `AuthRequired`
+                // is still in place - same pattern as `AuthRequired`
                 // and `ForgeAccountIdentity`. After the first Connected
                 // the synth_key migrates to the real session UUID
                 // (via `KeyRenamed`); subsequent SessionsListed events
@@ -507,7 +507,7 @@ impl SessionTask {
                 }
             }
             Command::RespondQuestion { key: _, tool_id, outcome } => {
-                // Peek-before-remove  -  mirror of RespondPermission.
+                // Peek-before-remove - mirror of RespondPermission.
                 let mut guard = self.domain.lock();
                 let kind_matches = matches!(
                     guard.pending_interactions.get(&tool_id),
@@ -598,7 +598,7 @@ impl SessionTask {
             // upgrade). Keep `self.key` at the old slot so events
             // continue flowing through this task's existing channel.
             // Command dispatch against `real_key` will miss until the
-            // TUI reconnects  -  single-user scope makes the collision
+            // TUI reconnects - single-user scope makes the collision
             // effectively impossible.
             return;
         }
@@ -616,7 +616,7 @@ impl SessionTask {
     /// re-dispatched as a normal `Command::Prompt` against
     /// `self.key` (now the real claude session UUID after rekey).
     /// The existing prompt-delivery path handles it identically to a
-    /// user-typed prompt  -  the only difference is the prose body
+    /// user-typed prompt - the only difference is the prose body
     /// carries the `[Question id=q-…]` / `[Message id=t-…]` wrapper
     /// that the chat renderer pattern-matches into a styled peer
     /// block (lands in C16).
@@ -637,7 +637,7 @@ impl SessionTask {
         // reflects the just-arrived ask. The wrappers we drain here
         // were buffered when the target was sleeping, so the bump
         // was deferred until now. Tells / Replies / notices don't
-        // bump  -  same rule as the running-target path.
+        // bump - same rule as the running-target path.
         let facade = crate::mcp::peers::facade::ProdWorkspaceFacade::from_arc(&workspace);
         for wrapped in pending {
             if matches!(wrapped.kind, crate::mcp::peers::types::WrappedKind::Question) {
@@ -667,7 +667,7 @@ impl SessionTask {
     }
 }
 
-/// Drop hook: on SessionTask exit (any reason  -  graceful close,
+/// Drop hook: on SessionTask exit (any reason - graceful close,
 /// crash, panic), expire every in-flight peer ask targeting this
 /// session. The expiration fires PeerAskFailed + a synthetic
 /// DeliveryFailureNotice prompt to each caller so they aren't left
@@ -709,7 +709,7 @@ fn parse_project_lead_synth_key(key: &SessionKey) -> Option<String> {
 /// no live workers exist for it yet, dispatch one `SpawnWorker`
 /// per configured role. Called from `SessionTask::translate_event`
 /// (production) and `on_connected_for_test` (tests). Idempotent;
-/// safe to call multiple times for the same session  -  the
+/// safe to call multiple times for the same session - the
 /// `live_workers.is_empty()` gate guards against double-spawn on
 /// `/new` reconnects or transient retries.
 fn maybe_spawn_team_on_connected(
@@ -792,7 +792,7 @@ fn is_resume_worker_synth_key(key: &SessionKey) -> bool {
 ///
 /// Workers spawned with non-role labels (e.g. LLM-driven
 /// `workers__spawn("scratchpad", ...)` outside the engineering-team
-/// flow) get no kick  -  they're caller-driven by design.
+/// flow) get no kick - they're caller-driven by design.
 ///
 /// Called from `SessionTask::translate_event` (production) and
 /// `on_connected_for_test` (tests). The dispatch goes through the
@@ -814,7 +814,7 @@ fn maybe_kick_worker_on_connected(
     // expected for most roles); when present, it represents the
     // explicit "you're picking up, re-orient" framing. Override the
     // past-progress guard so a re-orient lands even for workers that
-    // had progressed past their initial kick  -  the whole point of a
+    // had progressed past their initial kick - the whole point of a
     // resume-kick is to wake the worker up post-restart.
     let kick_text = if is_resume {
         match crate::team::load_resume_kick(&label) {
@@ -869,7 +869,7 @@ fn maybe_kick_worker_on_connected(
     // Threshold is 2: a JSONL with exactly 1 user turn means the
     // worker received the kick but crashed / didn't progress before
     // forge restarted, so we re-fire to actually start the work. 2+
-    // means the worker has moved past the kick  -  leave it alone,
+    // means the worker has moved past the kick - leave it alone,
     // since a re-kick would override its in-flight state. Fresh-
     // spawn path skips this check (no JSONL exists yet;
     // user_turn_count would be 0 anyway).
@@ -892,7 +892,7 @@ fn maybe_kick_worker_on_connected(
 /// Test-only entry point for the Connected team hooks.
 /// Drives both `maybe_spawn_team_on_connected` (lead path) and
 /// `maybe_kick_worker_on_connected` (worker path) directly without
-/// constructing a `SessionTask` or pumping through the actor  -  the
+/// constructing a `SessionTask` or pumping through the actor - the
 /// `team_hook_tests` module uses this to assert the trigger logic.
 /// Only one hook fires per call: the spawn_key's shape selects.
 #[cfg(any(test, feature = "testing"))]
@@ -905,7 +905,7 @@ pub fn on_connected_for_test(
     maybe_kick_worker_on_connected(workspace, synth_key, real_session_id);
 }
 
-/// Forward a `Command` straight to `handle`. Pure transport  -  no
+/// Forward a `Command` straight to `handle`. Pure transport - no
 /// pending-interaction bookkeeping; the only commands that consult
 /// `PendingInteractionSlot` (RespondPermission / RespondQuestion)
 /// must be handled by the caller before delegation here.
@@ -1017,7 +1017,7 @@ fn warn_no_session(key: &SessionKey, command: &'static str) {
 /// [`SessionTask::translate_event`] under the domain's lock.
 ///
 /// Workspace only owns the `session_id` mirror used for `AgentHandle`
-/// dispatch  -  operational state (lifecycle, cwd, turn state,
+/// dispatch - operational state (lifecycle, cwd, turn state,
 /// account info) lives on the TUI's `UiSession`, populated via the
 /// `SessionUpdate` envelopes the task emits.
 pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEvent) {
@@ -1606,7 +1606,7 @@ mod team_hook_tests {
     }
 
     /// A lead Connected for a project with NO team configuration is
-    /// a no-op  -  nothing dispatched.
+    /// a no-op - nothing dispatched.
     #[test]
     fn lead_connected_without_team_does_nothing() {
         let (workspace, _update_rx) = Workspace::testing_stub();
@@ -1728,7 +1728,7 @@ mod team_hook_tests {
 
     /// Worker Connected with a label NOT matching a built-in role
     /// (e.g. an LLM-driven `workers__spawn("scratchpad", ...)` for
-    /// ad-hoc work) does not get a kick  -  only engineering-team
+    /// ad-hoc work) does not get a kick - only engineering-team
     /// roles do.
     #[test]
     fn worker_connected_for_non_role_label_does_not_kick() {
@@ -1745,7 +1745,7 @@ mod team_hook_tests {
         );
     }
 
-    /// Lead Connected does not dispatch any kick prompt  -  kicks are
+    /// Lead Connected does not dispatch any kick prompt - kicks are
     /// for workers only.
     #[test]
     fn lead_connected_does_not_dispatch_kick_prompt() {
@@ -1792,7 +1792,7 @@ mod team_hook_tests {
 
     /// #157: the resume-shaped worker synth key
     /// (`__resume_worker_<project>_<label>_<uuid>__`) parses to the
-    /// same label as the fresh-shape  -  the parser accepts both.
+    /// same label as the fresh-shape - the parser accepts both.
     #[test]
     fn parse_worker_label_from_synth_key_extracts_label_for_resume_shape() {
         let key = SessionKey::from_session_id("__resume_worker_forge_planner_abc123__");

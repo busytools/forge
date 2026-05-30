@@ -48,7 +48,7 @@ pub(crate) fn dispatch_permission_outcome(
 ) {
     // Tests assert via this capture; the workspace path below also
     // fires but produces no observable side-effect (the stub has no
-    // session task for the test key  -  UnknownSession is silenced
+    // session task for the test key - UnknownSession is silenced
     // below).
     #[cfg(feature = "testing")]
     app.test_dispatched_permission_outcomes
@@ -60,7 +60,7 @@ pub(crate) fn dispatch_permission_outcome(
             event_name = "permission_dispatch_no_workspace",
             session_key = %session_key.as_str(),
             tool_id = %tool_id,
-            "permission outcome dropped: app.workspace is None  -  this should never happen in production",
+            "permission outcome dropped: app.workspace is None - this should never happen in production",
         );
         return;
     };
@@ -71,7 +71,7 @@ pub(crate) fn dispatch_permission_outcome(
     };
     if let Err(err) = workspace.dispatch(cmd) {
         // Under `testing`, the workspace stub has no `SessionTask`
-        // registered for the test key  -  `UnknownSession` is the
+        // registered for the test key - `UnknownSession` is the
         // expected outcome and the test-capture above already
         // observed the dispatch intent. Downgrade to debug.
         #[cfg(feature = "testing")]
@@ -141,14 +141,14 @@ pub(crate) mod test_capture {
 /// Dispatch a [`forge_primitives::QuestionOutcome`] for `tool_id`
 /// via the workspace. Used by `app::questions` when the user picks
 /// an option. Under the `testing` Cargo feature, see
-/// [`dispatch_permission_outcome`]  -  same test-capture rule applies.
+/// [`dispatch_permission_outcome`] - same test-capture rule applies.
 pub(crate) fn dispatch_question_outcome(
     app: &App,
     session_key: &SessionKey,
     tool_id: &str,
     outcome: forge_primitives::QuestionOutcome,
 ) {
-    // Mirror of [`dispatch_permission_outcome`]  -  see its docs.
+    // Mirror of [`dispatch_permission_outcome`] - see its docs.
     #[cfg(feature = "testing")]
     app.test_dispatched_question_outcomes.borrow_mut().push((tool_id.to_owned(), outcome.clone()));
     let Some(workspace) = app.workspace.as_ref() else {
@@ -157,7 +157,7 @@ pub(crate) fn dispatch_question_outcome(
             event_name = "question_dispatch_no_workspace",
             session_key = %session_key.as_str(),
             tool_id = %tool_id,
-            "question outcome dropped: app.workspace is None  -  this should never happen in production",
+            "question outcome dropped: app.workspace is None - this should never happen in production",
         );
         return;
     };
@@ -205,9 +205,9 @@ fn apply_turn_cancelled_presentation(app: &mut App, session_key: &SessionKey) {
         }
         app.set_cancelled_turn_pending_hint(app.pending_cancel());
         let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
-        // Lifecycle: cancellation accepted  -  return active session
+        // Lifecycle: cancellation accepted - return active session
         // to Idle. (Steady-state TurnComplete fires shortly after,
-        // also setting Idle  -  this is a defensive idempotent set.)
+        // also setting Idle - this is a defensive idempotent set.)
         super::set_bucket_lifecycle_state(
             app,
             session_key,
@@ -233,7 +233,7 @@ fn apply_turn_cancelled_presentation(app: &mut App, session_key: &SessionKey) {
     finalize_background_tool_calls(session, model::ToolCallStatus::Failed);
     // Drop the `session` mut borrow before reaching for the workspace.
     let _ = session;
-    // Lifecycle: background cancel accepted  -  same Idle target.
+    // Lifecycle: background cancel accepted - same Idle target.
     super::set_bucket_lifecycle_state(
         app,
         session_key,
@@ -244,7 +244,7 @@ fn apply_turn_cancelled_presentation(app: &mut App, session_key: &SessionKey) {
 /// Background-session version of [`App::finalize_in_progress_tool_calls`].
 /// Walks the bucket's `messages` directly and flips InProgress /
 /// Pending tool calls to `new_status`, dropping pending interactions.
-/// No layout invalidation, no terminal detach handling  -  the bucket
+/// No layout invalidation, no terminal detach handling - the bucket
 /// will rebuild its layout state when it next becomes active.
 pub(super) fn finalize_background_tool_calls(
     session: &mut crate::app::session::UiSession,
@@ -362,7 +362,7 @@ fn apply_turn_complete_presentation(
         session.active_turn_assistant_message_idx = None;
         session.turn_notice_refs.clear();
         let _ = session;
-        // Lifecycle: background bucket's turn has wrapped  -  return
+        // Lifecycle: background bucket's turn has wrapped - return
         // it to Idle so the Projects pane drops the spinner glyph,
         // and reset the per-turn SDK state.
         if let Some(bucket) = app.sessions.get_mut(session_key) {
@@ -425,13 +425,13 @@ fn apply_turn_complete_presentation(
     }
     // Mid-turn submits leave user bubbles after the active assistant.
     // When this turn wraps, claude immediately starts another turn to
-    // consume those buffered prompts  -  but its first content chunk
+    // consume those buffered prompts - but its first content chunk
     // can take 1-2s to arrive, leaving a gap where the chat looks
     // idle. Anticipate that next turn: push an empty assistant
     // placeholder + flip back to Thinking so the spinner shows
     // continuously through the handoff.
     anticipate_buffered_next_turn(app, tail_assistant_idx_before);
-    // No git-diff refresh trigger here  -  the `git_diff` module's
+    // No git-diff refresh trigger here - the `git_diff` module's
     // periodic ticker (1s poke + 10s staleness rule) catches any
     // post-turn file changes within the next ticker pass.
 }
@@ -449,7 +449,7 @@ fn apply_turn_complete_presentation(
 /// `tail_assistant_idx_before` is unambiguously a mid-turn submit.
 /// A tail-User at or before that index means the prior assistant
 /// placeholder was empty + got removed (degenerate turn) and there
-/// were no mid-turn submits  -  don't anticipate.
+/// were no mid-turn submits - don't anticipate.
 fn anticipate_buffered_next_turn(app: &mut App, tail_assistant_idx_before: Option<usize>) {
     let Some(last_idx) = app.messages().len().checked_sub(1) else {
         return;
@@ -558,7 +558,7 @@ fn apply_turn_error_presentation(
         session.active_turn_assistant_message_idx = None;
         session.turn_notice_refs.clear();
         let _ = session;
-        // Lifecycle: turn ended (with error)  -  return the background
+        // Lifecycle: turn ended (with error) - return the background
         // bucket to Idle so the Projects pane drops the spinner glyph,
         // and reset the per-turn SDK state.
         if let Some(bucket) = app.sessions.get_mut(session_key) {
@@ -609,7 +609,7 @@ fn apply_turn_error_presentation(
         );
         *app.pending_submit_mut() = None;
         finish_ready_turn_exit(app, exit, model::ToolCallStatus::Failed);
-        // Lifecycle: cancelled turn  -  back to Idle, reset turn_state.
+        // Lifecycle: cancelled turn - back to Idle, reset turn_state.
         if let Some(key) = app.active_session_key.clone() {
             if let Some(bucket) = app.sessions.get_mut(&key) {
                 bucket.turn_state = forge_primitives::runtime::SessionTurnState::default();
@@ -657,7 +657,7 @@ fn apply_turn_error_presentation(
             );
             // Surface the auth-required error in-session via the same
             // banner / chat-error pipeline `PlanLimit` uses. Do NOT
-            // force-quit the entire TUI  -  other sessions in this forge
+            // force-quit the entire TUI - other sessions in this forge
             // may still be healthy, and the user can refresh auth from
             // another terminal then re-prompt this session. The
             // classifier also fires spuriously on a 401 from a stale
@@ -695,7 +695,7 @@ fn apply_turn_error_presentation(
     }
     app.clear_active_turn_assistant();
     super::notices::clear_turn_notice_tracking(app);
-    // Lifecycle: errored turn  -  back to Idle, reset turn_state. The
+    // Lifecycle: errored turn - back to Idle, reset turn_state. The
     // active session status itself is already AppStatus::Error (set
     // above) so the input remains locked; lifecycle is the per-session
     // pane glyph, independent of the App-global input lock.
@@ -792,7 +792,7 @@ fn push_turn_error_message(
         }
         TurnErrorClass::Internal | TurnErrorClass::Other => {
             // Empty `error` means the source side had no useful detail
-            // beyond the SDK's bookkeeping subtype  -  render the bare
+            // beyond the SDK's bookkeeping subtype - render the bare
             // "Turn failed." rather than a stranded ":" with nothing
             // after it.
             let message = if error.trim().is_empty() {
@@ -890,7 +890,7 @@ mod tests {
 
         // Active session messages untouched.
         assert_eq!(app.messages().len(), active_messages_before);
-        // Active app status unchanged (still Thinking)  -  background
+        // Active app status unchanged (still Thinking) - background
         // turn-complete must not flip the active session to Ready.
         assert!(matches!(app.status, AppStatus::Thinking));
         // Background bucket's active_turn_assistant_message_idx cleared.

@@ -27,7 +27,7 @@ fn number_field(record: &Map<String, Value>, keys: &[&str]) -> Option<f64> {
 
 /// Deserialize a wire-string enum variant from an optional JSON
 /// value. Returns `None` for missing field, wrong JSON type, or
-/// unrecognised variant  -  the three failure modes share a single
+/// unrecognised variant - the three failure modes share a single
 /// drop path. Each enum carries `#[serde(rename_all = "snake_case")]`
 /// so this is just the typed wrapper.
 fn parse_enum<T: serde::de::DeserializeOwned>(value: Option<&Value>) -> Option<T> {
@@ -48,7 +48,7 @@ pub fn parse_runtime_session_state(value: Option<&Value>) -> Option<RuntimeSessi
 
 /// Reads a numeric field as `u64`, returning `None` when the field
 /// is missing or its value is outside `[0, u64::MAX)` (note the open
-/// upper bound  -  see the body comment). Out-of-range drops emit a
+/// upper bound - see the body comment). Out-of-range drops emit a
 /// debug breadcrumb so a misbehaving CLI is observable.
 ///
 /// `as u64` saturates rather than fails on out-of-range floats, so
@@ -63,7 +63,7 @@ fn parse_clamped_u64(message: &Map<String, Value>, keys: &[&str]) -> Option<u64>
             target: crate::logging::targets::BRIDGE_LIFECYCLE,
             raw = v,
             keys = ?keys,
-            "dropping numeric field  -  value outside u64 range",
+            "dropping numeric field - value outside u64 range",
         );
         return None;
     }
@@ -83,7 +83,7 @@ fn parse_clamped_u16_optional(message: &Map<String, Value>, keys: &[&str]) -> Op
             target: crate::logging::targets::BRIDGE_LIFECYCLE,
             raw = v,
             keys = ?keys,
-            "dropping status field  -  value outside u16 range",
+            "dropping status field - value outside u16 range",
         );
         return None;
     }
@@ -253,7 +253,7 @@ mod tests {
 
     #[test]
     fn api_retry_update_drops_out_of_range_status_and_huge_counts() {
-        // u16 status above max  -  drop to None.
+        // u16 status above max - drop to None.
         let map: Map<String, Value> = serde_json::from_value(json!({
             "attempt": 1.0,
             "max_retries": 5.0,
@@ -264,7 +264,7 @@ mod tests {
         let u = build_api_retry_update(&map).expect("update built");
         assert_eq!(u.error_status, None);
 
-        // Negative status  -  drop to None.
+        // Negative status - drop to None.
         let map: Map<String, Value> = serde_json::from_value(json!({
             "attempt": 1.0,
             "max_retries": 5.0,
@@ -275,7 +275,7 @@ mod tests {
         let u = build_api_retry_update(&map).expect("update built");
         assert_eq!(u.error_status, None);
 
-        // u64 count above max  -  required field, whole update drops.
+        // u64 count above max - required field, whole update drops.
         let map: Map<String, Value> = serde_json::from_value(json!({
             "attempt": 1e30,
             "max_retries": 5.0,
@@ -284,7 +284,7 @@ mod tests {
         .unwrap();
         assert!(build_api_retry_update(&map).is_none());
 
-        // Negative required count  -  whole update drops.
+        // Negative required count - whole update drops.
         let map: Map<String, Value> = serde_json::from_value(json!({
             "attempt": -1.0,
             "max_retries": 5.0,

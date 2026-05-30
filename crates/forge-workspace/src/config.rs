@@ -28,7 +28,7 @@ struct ForgeToml {
     orgs: Vec<OrgEntry>,
     #[serde(default)]
     accounts: Vec<AccountEntry>,
-    /// Optional `[ui]` section  -  visual knobs that don't fit on
+    /// Optional `[ui]` section - visual knobs that don't fit on
     /// `[[orgs]]` / `[[accounts]]`. Currently carries the launchpad
     /// spinner style; will grow as the launchpad UI lands. Absent
     /// section → all defaults.
@@ -160,7 +160,7 @@ impl LoadedConfig {
     /// Empty `LoadedConfig` for the `testing` feature's
     /// `Workspace::testing_stub`. Production code paths that need a
     /// project (e.g. `default_project`) will panic when called on
-    /// this value  -  tests that only need `domain_handles` access
+    /// this value - tests that only need `domain_handles` access
     /// never reach those paths.
     #[cfg(any(test, feature = "testing"))]
     pub(crate) fn empty_for_test() -> Self {
@@ -199,7 +199,7 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
         return Err(WorkspaceError::NoAccountsConfigured { path });
     }
 
-    // Validate accounts first  -  orgs cross-reference them.
+    // Validate accounts first - orgs cross-reference them.
     let mut seen_account_names: std::collections::HashSet<String> =
         std::collections::HashSet::new();
     let mut accounts: Vec<LoadedAccount> = Vec::with_capacity(parsed.accounts.len());
@@ -285,7 +285,7 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
     }
 
     // Default project resolution (used by `forge` without argv when
-    // the launchpad picker isn't available  -  fixture tests, smoke
+    // the launchpad picker isn't available - fixture tests, smoke
     // tests, etc.; the production path lands on the launchpad
     // picker first):
     // 1. Alphabetically-first `auto_start = true` project.

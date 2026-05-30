@@ -1,4 +1,4 @@
-//! Hook callback wire-data  -  input payloads, output decisions, and
+//! Hook callback wire-data - input payloads, output decisions, and
 //! the lifecycle plumbing.
 //!
 //! Workspace-shared shapes: `HookKind`, `HookContext`,
@@ -8,9 +8,9 @@
 //! because it owns `Arc<dyn …>` pointers.
 //!
 //! Submodule split:
-//! - [`inputs`]  -  `BaseHookInput`, `SubagentContext`, the ten `*Input`
+//! - [`inputs`] - `BaseHookInput`, `SubagentContext`, the ten `*Input`
 //!   payload structs.
-//! - [`outputs`]  -  per-event `*HookSpecificOutput` wrappers, the
+//! - [`outputs`] - per-event `*HookSpecificOutput` wrappers, the
 //!   `hookEventName` tag ZSTs, and the [`HookSpecificOutput`] union.
 
 pub mod inputs;
@@ -94,7 +94,7 @@ impl HookKind {
     }
 
     /// Parse a wire-name back into the enum. Unknown strings fall through
-    /// to `HookKind::Unknown`  -  forge-sdk is forward-compatible with new
+    /// to `HookKind::Unknown` - forge-sdk is forward-compatible with new
     /// hook types Anthropic introduces between our parity checks.
     pub fn from_wire(s: &str) -> Self {
         match s {

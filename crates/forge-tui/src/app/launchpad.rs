@@ -71,16 +71,16 @@ pub(crate) fn open(app: &mut App) {
 /// not fall through to other dispatch paths).
 ///
 /// Bindings:
-/// - `↑` / `k`  -  move selection up
-/// - `↓` / `j`  -  move selection down
-/// - `Enter`  -  open the highlighted project (transition to Chat)
-/// - `r`  -  retry spawn when the highlighted row is Failed
-/// - `?`  -  toggle the help overlay
-/// - `Esc`  -  no-op (the launchpad is the floor)
-/// - everything else  -  consumed silently
+/// - `↑` / `k` - move selection up
+/// - `↓` / `j` - move selection down
+/// - `Enter` - open the highlighted project (transition to Chat)
+/// - `r` - retry spawn when the highlighted row is Failed
+/// - `?` - toggle the help overlay
+/// - `Esc` - no-op (the launchpad is the floor)
+/// - everything else - consumed silently
 ///
 /// Slash autocomplete via `/` is intentionally omitted on the
-/// launchpad  -  the picker has no input area to render the dropdown
+/// launchpad - the picker has no input area to render the dropdown
 /// above. The four launchpad-relevant commands are reachable
 /// directly: `/help` ≡ `?`, `/quit` ≡ `Ctrl+Q`, `/config` and
 /// `/plugins` are reachable after picking a project (or by
@@ -116,7 +116,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         return true;
     }
     // Esc and every other key are intentional no-ops on the
-    // launchpad  -  the picker is the floor of the UI, so Esc has
+    // launchpad - the picker is the floor of the UI, so Esc has
     // nothing to dismiss to, and stray printable input must not
     // leak into a chat input that isn't visible.
     true

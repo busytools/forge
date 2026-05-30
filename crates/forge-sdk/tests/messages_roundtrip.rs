@@ -104,7 +104,7 @@ fn unknown_message_serializes_raw_verbatim() {
     let re = serde_json::to_value(&msg).expect("serialize");
     assert_eq!(
         raw, re,
-        "Message::Unknown must emit the original `raw` bytes verbatim  -  \
+        "Message::Unknown must emit the original `raw` bytes verbatim - \
          this is the forward-compat round-trip contract"
     );
     assert!(msg.session_id().is_none(), "Unknown carries no session id");

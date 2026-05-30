@@ -30,7 +30,7 @@ pub enum ControlRequestType {
 
 /// Enumerates the kinds of control requests we handle.
 ///
-/// `Unknown` is the forward-compat catch-all  -  any `subtype` the CLI
+/// `Unknown` is the forward-compat catch-all - any `subtype` the CLI
 /// ships that forge-sdk doesn't yet model lands here with the full
 /// payload captured. The dispatcher in `client/control_dispatch.rs`
 /// responds with a `control_response` error (since we have no handler)
@@ -463,7 +463,7 @@ mod tests_control_types {
     fn deserialize_missing_subtype_lands_in_unknown_with_missing_sentinel() {
         // A `control_request` without `subtype` is wire corruption.
         // The Deserialize impl distinguishes this from forward-compat
-        // drift by using the `<missing>` sentinel  -  pinned here so a
+        // drift by using the `<missing>` sentinel - pinned here so a
         // future refactor can't silently flip back to `unwrap_or("")`
         // without breaking a test.
         let raw = json!({

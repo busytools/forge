@@ -3,7 +3,7 @@
 //! Uses OSC 2 escape sequences to update the terminal tab title with a simple
 //! busy toggle during active agent turns and a static idle icon otherwise.
 //!
-//! Emits an OSC 2 only when the computed title actually changes  -  the render
+//! Emits an OSC 2 only when the computed title actually changes - the render
 //! loop calls `update_tab_title` every frame (~120 Hz during animation), and
 //! sending an identical sequence that often causes Ghostty (and likely other
 //! terminals) to coalesce or throttle title updates after a while, leaving the

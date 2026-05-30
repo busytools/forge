@@ -3,7 +3,7 @@
 //!
 //! The single MCP server is named `forge` and grouped by submodule:
 //!
-//! - `peers` (#114 v1)  -  cross-agent ask / tell / list / whoami.
+//! - `peers` (#114 v1) - cross-agent ask / tell / list / whoami.
 //!   Tools are named `peers__ask_agent`, `peers__tell_agent`,
 //!   `peers__list_agents`, `peers__whoami`. From the LLM's view they
 //!   render as `mcp__forge__peers__ask_agent` and similar.
@@ -42,10 +42,10 @@ pub mod workers;
 /// for. Drives the tool-surface filter in [`build_forge_server`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionKind {
-    /// Project lead  -  the session representing a project in cross-
+    /// Project lead - the session representing a project in cross-
     /// project coordination. Sees both `peers__*` and `workers__*`.
     Lead,
-    /// Worker  -  a project-internal child agent spawned by the lead.
+    /// Worker - a project-internal child agent spawned by the lead.
     /// Sees only `workers__*` (no cross-project peer tools).
     Worker,
 }
@@ -137,7 +137,7 @@ mod tests {
                 "worker build_forge_server must include {expected}; debug: {debug}",
             );
         }
-        // Workers MUST NOT see peers__*  -  cross-project coordination
+        // Workers MUST NOT see peers__* - cross-project coordination
         // is a lead-only role; advertising those tools to a worker
         // dumps a non-functional surface on the worker LLM that errors
         // out at call time (the CallerKeyResolver can't map a worker

@@ -155,7 +155,7 @@ async fn streaming_splits_at_hard_limit() {
     let mut app = test_app();
 
     // Build text that exceeds hard limit (4096 bytes) with sentence boundaries
-    // but NO newlines  -  so the soft-limit paragraph split cannot fire.
+    // but NO newlines - so the soft-limit paragraph split cannot fire.
     // Sentence boundaries (". ") give the hard-limit fallback something to pick.
     let mut text = String::new();
     for i in 0..250 {

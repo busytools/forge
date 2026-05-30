@@ -272,7 +272,7 @@ fn resolve_paths(
     let project_root = project_root.to_path_buf();
 
     // User settings live under <config_dir>, which honours
-    // $CLAUDE_CONFIG_DIR  -  delegate to the workspace facade so the
+    // $CLAUDE_CONFIG_DIR - delegate to the workspace facade so the
     // env var is resolved in exactly one place. The home_override
     // case (used by tests) and the no-bridge case (early init /
     // disconnected) both bypass the workspace.

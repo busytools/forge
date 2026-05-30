@@ -2,7 +2,7 @@
 //!
 //! Submodules handle specific rendering concerns:
 //! - [`standard`] -- one render path for every tool (Read, Write, Bash,
-//!   Glob, etc.)  -  title row plus optional indented body.
+//!   Glob, etc.) - title row plus optional indented body.
 //! - [`errors`] -- error rendering and tool-use error extraction
 
 mod errors;
@@ -32,7 +32,7 @@ use standard::{cap_write_diff_lines, content_summary};
 /// field. Used by the `tc::render_body` instrumentation (#125
 /// variant 2) so a slow-frame capture can correlate tool names + ids
 /// across logs without leaking raw strings into the diagnostic
-/// stream. The hash is `DefaultHasher`-based  -  stable per process,
+/// stream. The hash is `DefaultHasher`-based - stable per process,
 /// not across forge versions; sufficient for in-session triage.
 fn stable_hash_usize(s: &str) -> usize {
     use std::collections::hash_map::DefaultHasher;
@@ -75,7 +75,7 @@ pub fn status_icon(status: model::ToolCallStatus, spinner_frame: usize) -> (&'st
 
 /// Render a tool call with caching. Only re-renders when cache is stale.
 ///
-/// All tool kinds  -  Read, Write, Edit, Bash, Grep, etc.  -  share the same
+/// All tool kinds - Read, Write, Edit, Bash, Grep, etc. - share the same
 /// shape: a single title row at column 2 (status icon + kind icon +
 /// display title), followed when there's body content by lines prefixed
 /// with `  │  ` (DIM). Body content varies by kind (terminal output for
@@ -559,19 +559,19 @@ mod tests {
             out.iter().flat_map(|line| line.spans.iter().map(|s| s.content.as_ref())).collect();
         assert!(
             !body.contains('\u{256D}'),
-            "Bash row must not contain `╭` (top border)  -  got: {body:?}",
+            "Bash row must not contain `╭` (top border) - got: {body:?}",
         );
         assert!(
             !body.contains('\u{256E}'),
-            "Bash row must not contain `╮` (top border)  -  got: {body:?}",
+            "Bash row must not contain `╮` (top border) - got: {body:?}",
         );
         assert!(
             !body.contains('\u{2570}'),
-            "Bash row must not contain `╰` (bottom border)  -  got: {body:?}",
+            "Bash row must not contain `╰` (bottom border) - got: {body:?}",
         );
         assert!(
             !body.contains('\u{256F}'),
-            "Bash row must not contain `╯` (bottom border)  -  got: {body:?}",
+            "Bash row must not contain `╯` (bottom border) - got: {body:?}",
         );
         // Body lines should have the standard `  │  ` / `  └─ ` prefix.
         assert!(

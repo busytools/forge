@@ -2,7 +2,7 @@
 
 A Rust workspace for personal-use agentic tooling around Anthropic's
 `claude` CLI. forge is a **peer reference implementation** of clients
-to that binary  -  it shares the stream-json wire contract with the CLI,
+to that binary - it shares the stream-json wire contract with the CLI,
 but otherwise gets to be its own thing (idiomatic Rust, channels-based
 concurrency, no Python-parity contract).
 
@@ -24,7 +24,7 @@ forge-tui        ──→ primitives + workspace      (no direct agent dep)
 
 | Crate | Description |
 |---|---|
-| [`forge-primitives`](crates/forge-primitives) | Workspace-shared wire-shape types  -  message envelopes, content blocks, hook/permission/option/subagent data, channel commands, IDs, render-side views. Pure data, no I/O. |
+| [`forge-primitives`](crates/forge-primitives) | Workspace-shared wire-shape types - message envelopes, content blocks, hook/permission/option/subagent data, channel commands, IDs, render-side views. Pure data, no I/O. |
 | [`forge-sdk`](crates/forge-sdk) | Wraps the `claude` CLI subprocess. Owns the stream-json codec, transport, control dispatch, in-process MCP host, and the callback registries (Hooks/HooksBuilder, CanUseToolCallback). |
 | [`forge-agent`](crates/forge-agent) | Drives one `forge-sdk` Client behind a channel-based `Agent`/`AgentHandle` API. Owns userdata (settings, trust, sessions catalog, memory, plugins), cloud (oauth, usage, account, service status), env (git context), translate (event ↔ message conversions), and tooling. |
 | [`forge-workspace`](crates/forge-workspace) | Multi-session orchestrator and TUI-facing facade. Per-session `DomainSession` holds the authoritative operational state; per-session `SessionTask` actors pump `AgentHandle::take_events()` into `SessionUpdate`s and route `Command`s back. TUI's single point of contact with the agent layer. |

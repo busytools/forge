@@ -28,7 +28,7 @@ fn preview_kilobyte_label() -> String {
         format!("{whole_kb}KB")
     } else {
         // Render as e.g. 1.5KB without going through f64. Only one
-        // decimal place  -  match the previous Display behaviour.
+        // decimal place - match the previous Display behaviour.
         let tenths = (remainder * 10) / 1024;
         format!("{whole_kb}.{tenths}KB")
     }
@@ -118,7 +118,7 @@ fn tool_title(name: &str, input: &Value) -> String {
     }
 }
 
-/// Mirrors `editDiffContent(name, input)`  -  initial diff content for
+/// Mirrors `editDiffContent(name, input)` - initial diff content for
 /// Edit / Write tool cards (before the result lands). Empty Vec for
 /// other tools.
 fn edit_diff_content(name: &str, input: &Value) -> Vec<ToolCallContent> {
@@ -194,7 +194,7 @@ pub fn create_tool_call(
 
 // ----- text extraction + persisted-output preview -----
 
-/// Mirrors `extractText(value)`  -  flattens a `tool_result` content
+/// Mirrors `extractText(value)` - flattens a `tool_result` content
 /// payload into a single `String`. Accepts string, array of
 /// `{ type: "text", text }` blocks, or a single object carrying prose
 /// under one of `plan` / `description` / `summary` / `message` /

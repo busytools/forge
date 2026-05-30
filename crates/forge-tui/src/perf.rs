@@ -43,7 +43,7 @@ mod enabled {
     /// Frame duration (ms) at or above which the per-frame buffer
     /// flushes to disk. 50 ms = below 20 FPS, well into the visible
     /// stutter range. Frames faster than this discard their buffered
-    /// samples  -  the log only carries entries from frames worth
+    /// samples - the log only carries entries from frames worth
     /// investigating, keeping the file small enough that even
     /// week-long sessions stay manageable.
     const SLOW_FRAME_THRESHOLD_MS: f64 = 50.0;
@@ -156,7 +156,7 @@ mod enabled {
 
         // Append to the per-frame buffer. When `name == "frame_total"`
         // (the Timer covering the whole frame), the duration is
-        // available  -  decide whether to flush the buffer (slow
+        // available - decide whether to flush the buffer (slow
         // frame, useful for diagnosis) or clear it (healthy frame,
         // nothing worth recording). Other entries just accumulate
         // until that decision fires.
@@ -187,7 +187,7 @@ mod enabled {
 
         let Some(samples) = to_flush else { return };
 
-        // Slow frame  -  drain the buffer to disk. ts_ms + frame are
+        // Slow frame - drain the buffer to disk. ts_ms + frame are
         // captured once at flush time; every sample in the batch
         // shares those values because they all belong to the same
         // frame and the per-sample wall-clock distinction isn't
@@ -269,7 +269,7 @@ mod enabled {
                 *value += 1;
                 *value
             });
-            // Safety net  -  clear any leftover buffer from a tick
+            // Safety net - clear any leftover buffer from a tick
             // that didn't fire `frame_total` (e.g. `needs_redraw`
             // skipped the draw block). Without this, marks from
             // earlier ticks could leak into the next slow-frame
@@ -477,7 +477,7 @@ mod disabled {
     pub struct PerfLogger;
     pub struct Timer;
 
-    // Stub impl for the `!perf` feature path  -  methods are no-ops.
+    // Stub impl for the `!perf` feature path - methods are no-ops.
     // The receiver shape matches the `feature = "perf"` impl so call
     // sites compile under both feature flags without an `if` ladder.
     #[allow(clippy::unused_self)]

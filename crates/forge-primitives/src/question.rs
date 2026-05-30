@@ -1,4 +1,4 @@
-//! UI-side `AskUserQuestion` request/response shapes  -  what the
+//! UI-side `AskUserQuestion` request/response shapes - what the
 //! agent surfaces to the UI when a tool wants structured user input,
 //! and what the user picks.
 

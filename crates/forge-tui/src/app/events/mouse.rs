@@ -68,7 +68,7 @@ pub(super) fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
     match mouse.kind {
         MouseEventKind::ScrollUp => {
             // Inspector body claims the wheel when the cursor is
-            // over it  -  both the inline pane (Wide/Medium) and the
+            // over it - both the inline pane (Wide/Medium) and the
             // Narrow-tier overlay use the same body rect.
             if mouse_in_inspector_body(app, mouse) {
                 scroll_inspector(app, MOUSE_SCROLL_LINES, true);
@@ -159,7 +159,7 @@ fn mouse_in_inspector_body(app: &App, mouse: MouseEvent) -> bool {
 
 /// Adjust the active session's `inspector_scroll_offset` by `lines`
 /// rows in the requested direction. Up = decrement (towards 0); down
-/// = increment (clamped at u16::MAX  -  the actual upper bound is
+/// = increment (clamped at u16::MAX - the actual upper bound is
 /// re-clamped against the body's total line count on the next render).
 fn scroll_inspector(app: &mut App, lines: usize, up: bool) {
     let Some(session) = app.try_active_bucket_mut() else { return };
@@ -384,7 +384,7 @@ fn try_toggle_tool_call_at_click(app: &mut App, mouse: MouseEvent) -> bool {
 ///
 /// Each tool call records its own `last_measured_y_in_msg` during the
 /// assistant render pass, so this hit-test reads only data the renderer
-/// just committed  -  no fragile peer-block height walks.
+/// just committed - no fragile peer-block height walks.
 fn locate_tool_call_block_at_click(app: &App, mouse: MouseEvent) -> Option<(usize, usize)> {
     let chat_area = app.rendered_chat_area;
     if chat_area.width == 0 || chat_area.height == 0 {
@@ -548,7 +548,7 @@ fn locate_stop_hook_summary_at_click(app: &App, mouse: MouseEvent) -> Option<usi
 
 /// Map the chat-area click to a `(msg_idx, block_idx)` pair for an
 /// inbound peer TextBlock. Same shape as
-/// [`locate_tool_call_block_at_click`]  -  walks `app.messages()[msg_idx].blocks`
+/// [`locate_tool_call_block_at_click`] - walks `app.messages()[msg_idx].blocks`
 /// looking for `MessageBlock::Text` whose `peer_last_measured_height >
 /// 0` and whose recorded y-range contains the click.
 fn locate_peer_user_block_at_click(app: &App, mouse: MouseEvent) -> Option<(usize, usize)> {
@@ -595,12 +595,12 @@ fn locate_peer_user_block_at_click(app: &App, mouse: MouseEvent) -> Option<(usiz
 /// Route a left-button click that may land on the Projects surface.
 ///
 /// Three shapes share this entry point:
-/// 1. Narrow-tier top bar  -  `▤` icon toggles the overlay; clicks
+/// 1. Narrow-tier top bar - `▤` icon toggles the overlay; clicks
 ///    elsewhere on the bar are not interactive.
-/// 2. Narrow-tier overlay  -  `✕` glyph dismisses without switching;
+/// 2. Narrow-tier overlay - `✕` glyph dismisses without switching;
 ///    project header / session row clicks switch active session AND
 ///    close the overlay in one action.
-/// 3. Wide / Medium inline pane  -  header / row clicks switch active
+/// 3. Wide / Medium inline pane - header / row clicks switch active
 ///    session; the overlay flag is irrelevant here.
 ///
 /// Returns `true` when the click was consumed so the chat hit-test
@@ -608,7 +608,7 @@ fn locate_peer_user_block_at_click(app: &App, mouse: MouseEvent) -> Option<(usiz
 fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
     // X+Y-bounded targets (top-bar icon, overlay ✕). These overlap
     // the chat body or share a one-row band with non-interactive
-    // text, so we must constrain on column too  -  `contains_y`
+    // text, so we must constrain on column too - `contains_y`
     // alone would catch unrelated clicks on the same row.
     let xy_target = app
         .pane_hit_targets
@@ -629,7 +629,7 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
     if let Some(target) = xy_target {
         match target {
             PaneHitTarget::TopBarIcon { .. } => {
-                // Mutually exclusive overlays  -  opening Projects
+                // Mutually exclusive overlays - opening Projects
                 // closes Inspector.
                 if !app.projects_pane_overlay_open {
                     app.inspector_pane_overlay_open = false;
@@ -710,7 +710,7 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
             // x+y-bounded glyphs handled above; reaching them here
             // means the y-only fallback matched a row stamped on
             // the same band as the glyph but the click missed the
-            // glyph's x range  -  treat as "in-overlay no-op" so we
+            // glyph's x range - treat as "in-overlay no-op" so we
             // still consume.
             PaneHitTarget::TopBarIcon { .. }
             | PaneHitTarget::InspectorTopBarIcon { .. }
@@ -766,11 +766,11 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
 /// release its pool entry on the workspace so the underlying
 /// `claude` subprocess exits when the last `Arc<AgentHandle>` is
 /// dropped. The project moves back to the INACTIVE list on the next
-/// render (no real catalog entry change is needed  -  `list_projects`
+/// render (no real catalog entry change is needed - `list_projects`
 /// re-partitions based on whether any of the project's sessions are
 /// in `app.sessions`).
 /// Write the active session's id to the OS clipboard via `arboard`.
-/// No on-screen feedback  -  the click target's `⎘` glyph is its own
+/// No on-screen feedback - the click target's `⎘` glyph is its own
 /// affordance. Logs success / failure to the tracing stream.
 fn copy_session_id_to_clipboard(session_id: &str) {
     match arboard::Clipboard::new().and_then(|mut cb| cb.set_text(session_id.to_owned())) {
@@ -863,7 +863,7 @@ fn switch_to_worker(app: &mut App, session_key: forge_workspace::SessionKey) {
 /// The lead-session row click still lands here too, but
 /// `switch_active_session` returns immediately when the key matches,
 /// and the spawn helper short-circuits when the key is already
-/// present  -  so the lead-click path keeps its existing
+/// present - so the lead-click path keeps its existing
 /// switch-only semantics.
 fn switch_to_session_or_spawn(app: &mut App, session_key: forge_workspace::SessionKey) {
     if app.sessions.contains_key(&session_key) {
@@ -914,7 +914,7 @@ fn switch_to_project_lead(app: &mut App, project_name: &str) {
         forge_workspace::SessionKey::from_session_id(format!("__spawn_{resolved_name}__"));
 
     // Idempotency: if the active session is already the synthetic
-    // spawn bucket for this project, the user is mid-wake  -  a second
+    // spawn bucket for this project, the user is mid-wake - a second
     // click would queue a duplicate background connection task that
     // races `CONN_SLOT` and scrambles bucket state. Return early.
     if app.active_session_key.as_ref() == Some(&spawn_synthetic)
@@ -961,7 +961,7 @@ fn switch_to_project_lead(app: &mut App, project_name: &str) {
     // (post-KeyRenamed migration). If the on-disk catalog hasn't
     // yet picked up that UUID, `list_projects` won't include it in
     // catalog_sessions and the disk-catalog lookup below would miss
-    //  -  so we walk app.sessions looking for one whose `cwd_raw`
+    // - so we walk app.sessions looking for one whose `cwd_raw`
     // matches the project's path. Cheap (typically <10 buckets) and
     // robust to the disk-catalog refresh delay that caused
     // "first-click spawns a duplicate" before this guard landed.
@@ -1043,7 +1043,7 @@ mod tests {
 
     /// Sanity: a non-Spawning spawn-synthetic bucket (already
     /// reached `Idle` post-Connected but pre-KeyRenamed) IS
-    /// switchable  -  the gate is lifecycle-specific, not a blanket
+    /// switchable - the gate is lifecycle-specific, not a blanket
     /// "synthetic key is untouchable" rule. Without this, the
     /// mid-Connected-mid-KeyRenamed window would leave the user
     /// unable to click into their session.

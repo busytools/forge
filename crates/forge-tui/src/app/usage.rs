@@ -6,7 +6,7 @@ use crate::app::{App, UsageSnapshot, UsageWindow};
 /// account out of the workspace's account-usage pool, populating
 /// `UsageState` on the active session. The pool is refreshed every
 /// 30 s by the workspace's background poller; this function is
-/// purely a sync read-and-copy  -  no fetch task, no TTL logic.
+/// purely a sync read-and-copy - no fetch task, no TTL logic.
 pub(crate) fn request_refresh_if_needed(app: &mut App) {
     let Some(workspace) = app.workspace.as_ref() else { return };
     let Some(name) = app.active_account_display_name() else { return };

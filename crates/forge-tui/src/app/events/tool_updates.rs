@@ -260,7 +260,7 @@ fn apply_tool_call_content_update(
     // for Edit, content for Write) at tool-call creation time; a
     // decline or error result arrives as a plain Text content block,
     // and the naive `tc.content = content.to_vec()` below would
-    // overwrite the diff with the error text  -  losing the green/red
+    // overwrite the diff with the error text - losing the green/red
     // diff coloring the user expects to still see after declining.
     let preserve_diff = matches!(tc.sdk_tool_name.as_str(), "Edit" | "Write")
         && !content.iter().any(|c| matches!(c, model::ToolCallContent::Diff(_)))

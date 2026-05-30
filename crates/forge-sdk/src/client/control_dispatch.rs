@@ -10,7 +10,7 @@
 //! loop, and cancellation of the actor's `select!` cannot drop a
 //! `control_response` write mid-flight.
 //!
-//! Used the same way during the synchronous init handshake  -  the
+//! Used the same way during the synchronous init handshake - the
 //! init loop calls [`ControlDispatchHandle::dispatch`] directly for
 //! interleaved `control_request`s, since no concurrent reader exists
 //! yet.
@@ -33,7 +33,7 @@ use forge_primitives::hooks::outputs::encode_updated_input_wrapper;
 use forge_primitives::{PermissionDecision, ToolPermissionContext};
 
 // =============================================================================
-// Detached dispatch  -  inbound `control_request`s go through
+// Detached dispatch - inbound `control_request`s go through
 // `dispatch`, which writes the matching `control_response` via a
 // clonable [`SharedWriter`]. The reader task in
 // [`crate::client::runtime`] `tokio::spawn`s a fresh task per
@@ -43,7 +43,7 @@ use forge_primitives::{PermissionDecision, ToolPermissionContext};
 // =============================================================================
 
 /// Clonable bundle of state + writer that dispatches a single
-/// `control_request`. Internal  -  built once during
+/// `control_request`. Internal - built once during
 /// [`Client::spawn`](crate::Client::spawn) and cloned by the reader
 /// task per inbound request.
 ///
@@ -119,7 +119,7 @@ impl ControlDispatchHandle {
                 %subtype,
                 raw = %raw,
                 request_id = %req.request_id,
-                "unknown control_request subtype  -  responding with error, session continues"
+                "unknown control_request subtype - responding with error, session continues"
             );
             return self.write_unsupported(&req).await;
         }

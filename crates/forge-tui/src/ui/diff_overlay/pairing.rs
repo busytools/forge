@@ -3,7 +3,7 @@
 //! A unified-diff hunk lists lines in source order: context lines
 //! interleaved with consecutive runs of removed (`-`) and added (`+`)
 //! lines. The split renderer wants rows where the left and right
-//! columns line up  -  same context lines in both, paired modifications
+//! columns line up - same context lines in both, paired modifications
 //! side-by-side, standalone removals or additions filling one column
 //! with a blank in the other.
 //!

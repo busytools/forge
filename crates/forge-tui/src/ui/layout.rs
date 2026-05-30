@@ -40,7 +40,7 @@ const CHAT_PADDING: u16 = 1;
 pub struct AppLayout {
     /// Single-line top bar rect, allocated only at Narrow tier
     /// (`area.width < MEDIUM_TIER_MIN_WIDTH`). `None` at Wide /
-    /// Medium tiers  -  those use the inline left + right panes
+    /// Medium tiers - those use the inline left + right panes
     /// instead. Hosts the `▤` Projects icon on the left and the
     /// `▦` Inspector icon on the right.
     pub top_bar: Option<Rect>,
@@ -76,7 +76,7 @@ pub struct AppLayout {
 /// `pane_right_visible` toggles the right Inspector pane (same
 /// persistence model, mirror state). Either / both may be true; the
 /// resulting chat column shrinks accordingly. Both vanish at Narrow
-/// tier  -  the top bar hosts the icon affordances there instead.
+/// tier - the top bar hosts the icon affordances there instead.
 pub fn compute(
     area: Rect,
     input_lines: u16,
@@ -144,7 +144,7 @@ pub fn compute(
     // At Narrow tier (<120), no inline panes: peel a single row off
     // the top of the body for the top bar. Only allocate when the
     // body has at least 3 rows so peeling leaves the body with at
-    // least 2 rows of chat behind the top bar  -  anything less and
+    // least 2 rows of chat behind the top bar - anything less and
     // the chat surface becomes unusable.
     if area.width < MEDIUM_TIER_MIN_WIDTH && layout.body.height >= 3 {
         let [top, rest] =
@@ -187,7 +187,7 @@ fn compute_horizontal_split(
     };
 
     // Build the horizontal constraint vector based on which panes
-    // are visible. Layout is symmetric  -  both sides get a `│`
+    // are visible. Layout is symmetric - both sides get a `│`
     // separator + 1-col padding between the pane and the chat
     // column. The chat scrollbar no longer renders its rail (only
     // the thumb), so the two adjacent-vertical-lines issue the
@@ -459,7 +459,7 @@ mod tests {
     #[test]
     fn narrow_tier_top_bar_independent_of_pane_visible() {
         // Top bar is the Narrow tier's permanent stand-in for the
-        // inline panes  -  pane_visible=false (the user toggled the
+        // inline panes - pane_visible=false (the user toggled the
         // pane off at Wide/Medium and is now resized to Narrow) must
         // still produce a top bar.
         let layout = compute(area(100, 40), 1, 1, false, false);
@@ -479,7 +479,7 @@ mod tests {
         // Compact-mode area (height < 8). input + help chew 1+1=2 of
         // the 4 rows; the `Min(1)` body soaks up the leftover row,
         // so body=2 before any peel. The skip-guard refuses to peel
-        // another row off  -  that would leave body=1, an unusable
+        // another row off - that would leave body=1, an unusable
         // single chat row behind a top bar.
         let layout = compute(area(100, 4), 1, 1, true, true);
         assert_eq!(layout.body.height, 2, "fixture must produce a 2-row body");
@@ -502,7 +502,7 @@ mod tests {
             PANE_WIDTH_MEDIUM,
         );
         // Medium tier kicks in inclusive at MEDIUM_TIER_MIN_WIDTH (120);
-        // exactly one column shy is Narrow  -  no inline pane, top bar
+        // exactly one column shy is Narrow - no inline pane, top bar
         // takes over.
         assert_eq!(
             compute(area(MEDIUM_TIER_MIN_WIDTH, 40), 1, 1, true, false).pane.unwrap().width,

@@ -1,4 +1,4 @@
-//! Runtime status  -  mode/model state, available models/commands/agents,
+//! Runtime status - mode/model state, available models/commands/agents,
 //! rate-limit views, retry classification, session status, terminal
 //! reason. Wire-shape state the agent ↔ UI channel passes around to
 //! describe "what's the live session doing right now".
@@ -323,7 +323,7 @@ pub enum CompactionTrigger {
     Auto,
 }
 
-/// Why a turn ended  -  surfaced by `AgentEvent::TurnComplete` /
+/// Why a turn ended - surfaced by `AgentEvent::TurnComplete` /
 /// `TurnError` to the UI for status-line classification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -370,7 +370,7 @@ pub enum SessionLifecycleState {
     /// been spawned (or has been freed).
     #[default]
     Sleeping,
-    /// Subprocess spawn in flight  -  between user click and first
+    /// Subprocess spawn in flight - between user click and first
     /// `Connected` event from the bridge.
     Spawning,
     /// Subprocess is alive and idle (no turn in progress).
@@ -383,7 +383,7 @@ pub enum SessionLifecycleState {
     /// Bridge is waiting on `/login` to complete before the session
     /// can be spawned.
     AuthRequired,
-    /// Setup (or running) hit a fatal error  -  `ConnectionFailed`
+    /// Setup (or running) hit a fatal error - `ConnectionFailed`
     /// drove this. Bucket is dead but kept in `app.sessions` so the
     /// user can see the error banner.
     Failed,
@@ -392,7 +392,7 @@ pub enum SessionLifecycleState {
     LoggedOut,
 }
 
-/// Per-session SDK turn state  -  model-resolution cache, mode
+/// Per-session SDK turn state - model-resolution cache, mode
 /// capability state, MCP per-server cooldowns, and the auth/error
 /// flags that survive across messages. Held authoritatively by
 /// `forge-workspace`; `forge-tui` projects from there.
@@ -411,7 +411,7 @@ pub struct SessionTurnState {
     /// Decoupled from the per-`ToolCall` status field because
     /// backgrounded Bash tool_results arrive immediately (flipping
     /// the tool call to `Completed`) while the underlying process
-    /// continues running  -  only the task-lifecycle wire events
+    /// continues running - only the task-lifecycle wire events
     /// describe true liveness. Inspector's PROCESSES section
     /// renders based on this set.
     pub alive_task_ids: std::collections::HashSet<String>,
@@ -445,7 +445,7 @@ pub struct SessionTurnState {
     /// session; suppresses re-emits on subsequent stream events.
     pub auth_hint_sent: bool,
 
-    /// Last assistant error subtype seen on the wire  -  survives
+    /// Last assistant error subtype seen on the wire - survives
     /// across messages so a subsequent `Result` can classify the
     /// turn correctly.
     pub last_assistant_error: Option<String>,

@@ -2,7 +2,7 @@
 // TESTS: 2
 // =====
 //
-// Issue #85  -  replay-path coverage for the `queued_command` content
+// Issue #85 - replay-path coverage for the `queued_command` content
 // walker.
 //
 // IMPORTANT (verified by live capture 2026-05-13): claude does NOT
@@ -49,7 +49,7 @@ async fn replay_synthesised_user_envelope_pushes_un_dimmed_bubble() {
     assert_eq!(app.messages().len(), before + 1, "replay bubble pushed");
     let new_msg = app.messages().last().expect("bubble");
     assert!(matches!(new_msg.role, MessageRole::User));
-    // Replayed bubbles are plain user bubbles  -  no dim/queued state.
+    // Replayed bubbles are plain user bubbles - no dim/queued state.
 }
 
 #[tokio::test]

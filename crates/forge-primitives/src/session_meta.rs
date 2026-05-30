@@ -1,4 +1,4 @@
-//! Session-level metadata  -  session-list entries + prompt-chunk
+//! Session-level metadata - session-list entries + prompt-chunk
 //! envelope.
 
 use serde::{Deserialize, Serialize};

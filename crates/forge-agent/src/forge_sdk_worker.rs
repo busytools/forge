@@ -26,7 +26,7 @@ use crate::{
 
 /// Append-text the spawned session's system prompt receives when the
 /// `forge` in-process MCP server is attached. Tells the recipient
-/// LLM (a) the peer tools are auto-allowed by the runtime  -  no
+/// LLM (a) the peer tools are auto-allowed by the runtime - no
 /// permission prompt needed; (b) wrapped peer envelopes (`[Question
 /// id=q-...]` / `[Message id=t-...]` / `[Reply id=...]` / `[Ask id=...
 /// timed out / has expired / failed to deliver ...]`) are
@@ -42,7 +42,7 @@ const FORGE_MCP_TRUST_SYSTEM_PROMPT: &str = "\
 You have an in-process forge MCP server (mcp__forge__) exposing four \
 peer-coordination tools: peers__whoami, peers__list_agents, \
 peers__tell_agent, peers__ask_agent. These tools let you communicate \
-with other forge agents  -  peer sessions for other projects the user \
+with other forge agents - peer sessions for other projects the user \
 is running side-by-side with this one.\n\
 \n\
 When a user-turn message starts with one of these bracket envelopes:\n\
@@ -66,7 +66,7 @@ in_reply_to set to q-X so the original asker sees your message rendered \
 as a Reply rather than an unsolicited Message.\n\
 \n\
 All mcp__forge__* tools are auto-allowed by the runtime. Do NOT ask the \
-user for permission before invoking them  -  fire them directly when the \
+user for permission before invoking them - fire them directly when the \
 work calls for it. The runtime suppresses the standard permission prompt \
 for any tool whose name starts with mcp__forge__.";
 
@@ -88,7 +88,7 @@ pub(crate) async fn spawn_session(
 ) -> anyhow::Result<()> {
     // If we already have a client, drop it so the existing subprocess
     // shuts down cleanly before the replacement spawns. Disconnect
-    // failures are best-effort  -  log a breadcrumb so a stuck zombie
+    // failures are best-effort - log a breadcrumb so a stuck zombie
     // subprocess is observable in postmortems.
     if let Some(prev) = bridge.clear_client()
         && let Err(err) = prev.disconnect().await
@@ -130,7 +130,7 @@ pub(crate) async fn spawn_session(
     };
     bridge.session_id_slot_arc().lock().clone_from(&session_id);
 
-    // The caller owns the session's cwd source  -  workspace flow
+    // The caller owns the session's cwd source - workspace flow
     // passes the forge.toml-derived project path; in-session
     // /resume sources the cwd from the session's transcript. An
     // empty cwd is a caller-side bug; log it and pass through. No
@@ -147,13 +147,13 @@ pub(crate) async fn spawn_session(
     // The TUI's Connected handler immediately fires command-channel
     // requests (status snapshot, oauth credentials, context usage, mcp
     // snapshot) which the dispatcher routes through `bridge.dispatch`.
-    // Dispatch reads `bridge.client()`  -  which must already be Some,
+    // Dispatch reads `bridge.client()` - which must already be Some,
     // otherwise the dispatch returns an error and the request is
     // dropped (chip stays empty / snapshot never lands).
     bridge.set_client(client.clone());
 
     // Emit Connected BEFORE spawning the reader subtask so the App
-    // sees Connected first on its mpsc  -  otherwise the reader can
+    // sees Connected first on its mpsc - otherwise the reader can
     // race and push an SdkMessage before Connected, leaving
     // `app.session_id` = None when the SdkMessage arrives.
     emit_connected(
@@ -168,7 +168,7 @@ pub(crate) async fn spawn_session(
     )
     .await;
 
-    // Reader subtask  -  owns the events receiver. Client is the writer-side
+    // Reader subtask - owns the events receiver. Client is the writer-side
     // handle (Arc-backed, Clone) and stays on the bridge.
     let reader_event_tx = bridge.event_tx().clone();
     let reader_session_id = session_id.clone();
@@ -272,7 +272,7 @@ async fn emit_connected(
     }
 
     // account_info_from_shell shells out to `claude auth status` (~50ms
-    // blocking per the docstring)  -  wrap in spawn_blocking so the
+    // blocking per the docstring) - wrap in spawn_blocking so the
     // async worker doesn't park a tokio worker thread for the
     // duration. account_info_from_init is in-memory, no I/O.
     let account = if let Some(account) = client.account_info_from_init() {
@@ -350,7 +350,7 @@ fn load_history_messages(
         })
         .collect();
     let mut synthesized = crate::replay::synthesize_replay_messages(&raw);
-    // Stamp the resumed session_id on every synthesised Message  -  the
+    // Stamp the resumed session_id on every synthesised Message - the
     // synthesizer leaves it empty so the caller picks the right value.
     for msg in &mut synthesized {
         match msg {
@@ -477,7 +477,7 @@ fn build_options_with_callback(
     // Passthrough hooks emit `AgentEvent::HookObservation` for every
     // PreToolUse / UserPromptSubmit input without altering the dispatch
     // outcome. PreToolUse carries subagent attribution (`agent_id` +
-    // `agent_type`)  -  see #84.
+    // `agent_type`) - see #84.
     let pre_tool_observe_tx = event_tx.clone();
     let pre_tool_observe_sid = Arc::clone(&session_id_slot);
     let user_prompt_observe_tx = event_tx.clone();
@@ -541,7 +541,7 @@ fn build_options_with_callback(
     // as `mcp__<server_name>__<tool_name>`.
     //
     // Derive the auto-approve predicate from the live server names
-    //  -  anything matching a registered server prefix is opted-in
+    // - anything matching a registered server prefix is opted-in
     // by definition (the user already configured the server in
     // forge.toml). forge-sdk's control_dispatch consults the
     // predicate before invoking can_use_tool, so no permission
@@ -624,7 +624,7 @@ fn build_options_with_callback(
 
     // Effort resolution order:
     //   1. settings.json `effortLevel` (handled above).
-    //   2. `CLAUDE_CODE_EFFORT_LEVEL` env var  -  leave it to env
+    //   2. `CLAUDE_CODE_EFFORT_LEVEL` env var - leave it to env
     //      inheritance so a user override isn't shadowed by `--effort`.
     //   3. Default to `--effort max`.
     let effort_source: &'static str = if applied_effort.is_some() {
@@ -654,7 +654,7 @@ fn build_options_with_callback(
         b = b.extra_arg(flag.clone(), value.clone());
     }
 
-    // Per-spawn `CLAUDE_CONFIG_DIR`  -  workspace-driven so each
+    // Per-spawn `CLAUDE_CONFIG_DIR` - workspace-driven so each
     // `claude` subprocess reads/writes the bound account's
     // user-data tree (oauth tokens, projects history, settings).
     // Threaded through as a typed `Path` from the bridge; no
@@ -1035,7 +1035,7 @@ fn build_permission_options(
             }
             PermissionUpdate::SetMode { mode, destination } => {
                 // Forge promotes claude's `acceptEdits` suggestion to
-                // `auto` (bypassPermissions)  -  the user has a global
+                // `auto` (bypassPermissions) - the user has a global
                 // Auto/Ask toggle, so the partial-auto stepping stone
                 // is confusing. Other SetMode targets pass through.
                 let target_mode =
@@ -1530,7 +1530,7 @@ mod tests_permission_options {
             destination: Some(PermissionUpdateDestination::Session),
         };
         let opts = build_permission_options(&mk_ctx("Read", vec![suggestion_a, suggestion_b]));
-        // ONE "Allow always" option whose action carries BOTH rules  -  not
+        // ONE "Allow always" option whose action carries BOTH rules - not
         // two separate "Allow always" entries.
         let allow_always_count =
             opts.iter().filter(|o| o.option_id.starts_with("allow_always_")).count();
@@ -1545,7 +1545,7 @@ mod tests_permission_options {
         let PermissionAction::AllowWithUpdates { updates } = &merged.action else {
             panic!("expected AllowWithUpdates");
         };
-        // Both rules should be present in the merged update  -  count rule
+        // Both rules should be present in the merged update - count rule
         // entries across all updates.
         let total_rules: usize = updates
             .iter()
@@ -1600,7 +1600,7 @@ mod tests_permission_options {
     #[test]
     fn set_mode_suggestion_keeps_non_accept_edits_modes() {
         // Plan / Ask / Auto / BypassPermissions targets pass through
-        // unchanged  -  only acceptEdits is promoted.
+        // unchanged - only acceptEdits is promoted.
         let suggestion =
             PermissionUpdate::SetMode { mode: PermissionMode::Plan, destination: None };
         let opts = build_permission_options(&mk_ctx("Write", vec![suggestion]));

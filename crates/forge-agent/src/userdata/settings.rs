@@ -1,4 +1,4 @@
-//! Settings document accessors  -  read **and write** the three Claude
+//! Settings document accessors - read **and write** the three Claude
 //! Code configuration files. Reads return raw `serde_json::Value`
 //! documents (consumers own the merge / precedence semantics);
 //! writes take a complete document for a given scope and persist it
@@ -8,13 +8,13 @@
 //! Resolution rules match the `claude` CLI as of 2.1.117:
 //!
 //! - **User settings** at `<config_dir>/settings.json`. `<config_dir>`
-//!   is the path the caller passes  -  typically the per-spawn account
+//!   is the path the caller passes - typically the per-spawn account
 //!   binding stored on the `ForgeSdkBridge`.
 //! - **Project-local settings** at
 //!   `<cwd>/.claude/settings.local.json`. Tied to the project's
 //!   working directory; `<config_dir>` does not affect this path.
 //! - **User preferences** at `$HOME/.claude.json` (note the leading
-//!   dot  -  this is a *file* at the home root, not a directory under
+//!   dot - this is a *file* at the home root, not a directory under
 //!   it). Per-user preferences (notification channel, gitignore
 //!   respect, terminal-progress-bar, etc.); `<config_dir>` does not
 //!   affect this either.
@@ -34,16 +34,16 @@ use forge_sdk::Error;
 /// should re-read directly.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct SettingsDocuments {
-    /// `<config_dir>/settings.json`  -  user-scope settings.
+    /// `<config_dir>/settings.json` - user-scope settings.
     pub user: Option<Value>,
-    /// `<cwd>/.claude/settings.local.json`  -  project-local overrides.
+    /// `<cwd>/.claude/settings.local.json` - project-local overrides.
     pub project_local: Option<Value>,
-    /// `$HOME/.claude.json`  -  per-user preferences.
+    /// `$HOME/.claude.json` - per-user preferences.
     pub preferences: Option<Value>,
 }
 
 /// Which settings document a write should target. Mirrors the
-/// read-side resolution in [`settings_documents`]  -  `User` honours
+/// read-side resolution in [`settings_documents`] - `User` honours
 /// the `config_dir` argument, `ProjectLocal` is project-relative,
 /// and `Preferences` is `$HOME`-pinned.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,7 +64,7 @@ pub enum SettingsTarget {
 /// `config_dir` is the user-scope config directory the caller has
 /// bound this read to (typically the per-spawn account binding).
 /// `cwd` is the project root used to locate
-/// `<cwd>/.claude/settings.local.json`  -  sourced from `forge.toml` or
+/// `<cwd>/.claude/settings.local.json` - sourced from `forge.toml` or
 /// the agent's reported cwd, never `std::env::current_dir()`.
 pub fn settings_documents(config_dir: &Path, cwd: &Path) -> SettingsDocuments {
     SettingsDocuments {
@@ -78,7 +78,7 @@ pub fn settings_documents(config_dir: &Path, cwd: &Path) -> SettingsDocuments {
 /// resolves to. Mirrors the existing TUI `store::save` semantics:
 ///
 /// - Creates parent directories when missing.
-/// - Normalises the document  -  non-object inputs are written as `{}`
+/// - Normalises the document - non-object inputs are written as `{}`
 ///   so consumers parsing the file always see a JSON object.
 /// - Writes to a unique temp file in the same directory, calls
 ///   `flush + sync_all`, then `rename` into place. The temp filename
@@ -92,7 +92,7 @@ pub fn settings_documents(config_dir: &Path, cwd: &Path) -> SettingsDocuments {
 ///
 /// # Errors
 ///
-/// [`Error::Io`] for any underlying filesystem failure  -  open,
+/// [`Error::Io`] for any underlying filesystem failure - open,
 /// write, fsync, rename, or `create_dir_all`. JSON serialisation
 /// failures are wrapped as `Io` with a descriptive message.
 pub fn write_settings_document(
@@ -192,7 +192,7 @@ fn resolve_symlink(path: &Path) -> io::Result<PathBuf> {
             })
         }
         // Path is a regular file, doesn't exist yet, or some other
-        // non-symlink kind  -  write directly to it.
+        // non-symlink kind - write directly to it.
         _ => Ok(path.to_path_buf()),
     }
 }
@@ -299,7 +299,7 @@ mod tests {
 
     #[test]
     fn settings_documents_has_default() {
-        // Smoke-check the Default impl works  -  useful when callers
+        // Smoke-check the Default impl works - useful when callers
         // want a "no settings yet" placeholder.
         let docs = SettingsDocuments::default();
         assert!(docs.user.is_none());
@@ -336,7 +336,7 @@ mod tests {
         let path = target_path(&config_dir, &SettingsTarget::Preferences).expect("path");
         assert!(path.ends_with(".claude.json"));
         // The leading dot makes it a hidden file at $HOME, not a
-        // file under $HOME/.claude  -  sanity-check we didn't drift.
+        // file under $HOME/.claude - sanity-check we didn't drift.
         assert_ne!(path.file_name().and_then(|n| n.to_str()), Some("settings.json"));
     }
 
@@ -380,7 +380,7 @@ mod tests {
     fn write_json_atomic_normalises_non_object_to_empty_object() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("settings.json");
-        // Caller passes an array  -  pathologically wrong but shouldn't
+        // Caller passes an array - pathologically wrong but shouldn't
         // produce a non-object on disk.
         write_json_atomic(&path, &serde_json::json!([1, 2, 3])).expect("write");
         let parsed = read_json_file(&path).expect("read");
