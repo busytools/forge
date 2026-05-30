@@ -1,0 +1,15 @@
+---
+source: crates/forge-tui/src/app/replay.rs
+expression: snapshot
+---
+ INSPECTOR
+ ──────────────────────────────────────
+ GIT
+
+ /test
+
+ ──────────────────────────────────────
+
+ MONITORS
+
+ ◍ forge-moni… · completed · persistent

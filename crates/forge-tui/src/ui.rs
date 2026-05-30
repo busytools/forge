@@ -1,5 +1,5 @@
 mod autocomplete;
-mod chat;
+pub(crate) mod chat;
 mod chat_view;
 mod config;
 mod diff;

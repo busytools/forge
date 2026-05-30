@@ -22,6 +22,8 @@ pub(crate) mod plugins;
 pub(crate) mod process_scanner;
 pub(crate) mod processes;
 pub(crate) mod prompt;
+#[cfg(test)]
+pub(crate) mod replay;
 mod selection;
 mod service_status_check;
 pub mod session;

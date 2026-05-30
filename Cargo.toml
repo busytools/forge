@@ -88,6 +88,9 @@ forge-workspace = { path = "crates/forge-workspace", version = "=0.16.0" }
 # Dev-only
 pretty_assertions = "1"
 tempfile = "3"
+# Snapshot testing for the replay-driven render-test harness (#280).
+# `.snap` files committed to git; updates via `cargo insta review`.
+insta = "1"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
