@@ -59,7 +59,7 @@ pub struct CallerKeyResolver(Arc<dyn Fn() -> Result<SessionKey, ResolverDetached
 /// Returned by [`CallerKeyResolver::current`] when the underlying
 /// `DomainSession` has been dropped (typically: workspace shutdown
 /// happening concurrently with a peer/worker tool invocation). The
-/// Tool impl should surface this as an `is_error` tool response  - 
+/// Tool impl should surface this as an `is_error` tool response  -
 /// the recipient session is dying, the LLM call won't have anywhere
 /// to land anyway. Replaces the prior `__detached__` SessionKey
 /// sentinel which forced every consumer to compare against a magic

@@ -15,7 +15,7 @@
 // single `queued_command` content block.
 //
 // These tests cover that replay path. The live mid-turn un-dim is
-// driven by `SessionUpdate::TurnComplete` (no wire echo exists)  - 
+// driven by `SessionUpdate::TurnComplete` (no wire echo exists)  -
 // see the `un_dim_pending_on_turn_complete_*` unit tests in
 // `crates/forge-tui/src/app/input_submit.rs`.
 

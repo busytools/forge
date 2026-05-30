@@ -7,7 +7,7 @@
 //! crossed crate boundaries; relocating here honours the
 //! "primitives = cross-crate wire types only" placement rule.
 //!
-//! The one truly cross-crate peer type  -  `PeerInflightStats`  - 
+//! The one truly cross-crate peer type  -  `PeerInflightStats`  -
 //! stays in `forge-primitives` because the TUI reads it through
 //! `SessionUpdate::PeerInflightStatsChanged`.
 //!

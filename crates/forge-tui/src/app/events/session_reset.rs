@@ -294,7 +294,7 @@ pub(super) fn load_resume_history(app: &mut App, history_messages: &[forge_primi
                     if text.is_empty() {
                         continue;
                     }
-                    // Drop Claude Code's local-command scaffolding  - 
+                    // Drop Claude Code's local-command scaffolding  -
                     // `<local-command-caveat>…</local-command-caveat>`,
                     // `<command-name>/x</command-name>…`, and the
                     // matching `<local-command-stdout>` wrappers. These

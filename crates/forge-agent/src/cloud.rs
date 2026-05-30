@@ -1,4 +1,4 @@
-//! Network-side state. OAuth flow, account info, usage polling  - 
+//! Network-side state. OAuth flow, account info, usage polling  -
 //! anything that talks to api.anthropic.com directly (NOT through the
 //! claude CLI subprocess).
 

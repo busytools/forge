@@ -19,7 +19,7 @@ async fn wire_capture_mcp_status() {
 
     run_live_scenario("mcp_status", opts, |client, events| async move {
         // Call mcp_status BEFORE sending a user message so the CLI's
-        // control_response arrives before any conversation frames  - 
+        // control_response arrives before any conversation frames  -
         // keeps the trace focused on the control round trip.
         let status = client.mcp_status().await?;
         eprintln!("mcp_status captured {} servers", status.mcp_servers.len());

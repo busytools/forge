@@ -21,7 +21,7 @@ fn format_rate_limit_type(raw: &str) -> &str {
 fn format_resets_at(epoch_secs: f64) -> String {
     use std::time::{Duration, UNIX_EPOCH};
 
-    // `Duration::from_secs_f64` panics on negative, NaN, or infinite  - 
+    // `Duration::from_secs_f64` panics on negative, NaN, or infinite  -
     // sibling fns in this file (`reset_bucket_from_epoch_secs`,
     // `maybe_recover_from_rate_limit_lock`) guard the same shape;
     // wire `RateLimitInfo.resetsAt` only filters `is_finite()`,

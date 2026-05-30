@@ -99,7 +99,7 @@ pub(crate) struct LoadedAccount {
 pub(crate) struct LoadedConfig {
     pub orgs: Vec<LoadedOrg>,
     pub projects: Vec<LoadedProject>,
-    /// Index into `projects` for the default startup target  - 
+    /// Index into `projects` for the default startup target  -
     /// alphabetically-first project that carries `auto_start = true`,
     /// falling back to the alphabetically-first project overall
     /// when no project opts in. Used by the `forge` (no argv) fixture
@@ -138,7 +138,7 @@ pub(crate) struct LoadedProject {
     /// `true` when the project should spawn automatically at forge
     /// launch.
     pub auto_start: bool,
-    /// Validated team labels for this project (format only  - 
+    /// Validated team labels for this project (format only  -
     /// existence of the per-label charter files at
     /// `~/.claude/forge-team/<label>/{charter,kick}.md` is checked
     /// lazily at spawn time, not here). Empty means no team. See

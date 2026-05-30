@@ -146,7 +146,7 @@ pub fn is_ask_question_tool_name(tool_name: &str) -> bool {
     tool_name.eq_ignore_ascii_case("askuserquestion")
 }
 
-/// True when `tool_name` matches the long-running `Monitor` tool  - 
+/// True when `tool_name` matches the long-running `Monitor` tool  -
 /// claude's streaming-process watcher (`persistent` or `timeout_ms`-
 /// bounded). Used by the Inspector PROCESSES section to identify
 /// in-flight monitors regardless of how the CLI happens to capitalise

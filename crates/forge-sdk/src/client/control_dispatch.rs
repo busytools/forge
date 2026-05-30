@@ -103,7 +103,7 @@ impl ControlDispatchHandle {
     /// Dispatch one inbound `control_request`. Routes the request
     /// to the right handler (MCP, hook callback, `can_use_tool`) and
     /// writes the matching `control_response` via the cloned
-    /// [`SharedWriter`]. Safe to call from a `tokio::spawn`'d task  - 
+    /// [`SharedWriter`]. Safe to call from a `tokio::spawn`'d task  -
     /// runs to completion regardless of caller cancellation.
     ///
     /// # Errors

@@ -687,7 +687,7 @@ fn apply_sdk_message_presentation(app: &mut App, session_id: &str, msg: forge_pr
     // `Client::session_id()` is empty at spawn time and that empty
     // value rides through `Connected` onto `app.session_id`. The
     // first wire message that DOES carry a real id (Assistant /
-    // User / Result / System(init)) is the canonical source  - 
+    // User / Result / System(init)) is the canonical source  -
     // adopt it onto the active bucket. For resume the bridge
     // already used the resume_id for Connected, so adoption is a
     // no-op and the strict mismatch check covers stale-Client
@@ -1094,7 +1094,7 @@ mod tests {
 
     /// Multiplexer-isolation test: a `StatusSnapshotReceived` event
     /// tagged for session B updates B's bucket without touching
-    /// session A's bucket and without flipping `needs_redraw`  - 
+    /// session A's bucket and without flipping `needs_redraw`  -
     /// `needs_redraw` flips only for events that target the active
     /// session (A in this fixture). Proves the per-session
     /// multiplexer correctly routes background-session events.

@@ -117,7 +117,7 @@ pub(crate) async fn spawn_session(
         extra_mcp_servers,
     );
     let (client, events) = Client::spawn(options).await?;
-    // For resume sessions the CLI flag carried the real session id  - 
+    // For resume sessions the CLI flag carried the real session id  -
     // prefer that over `Client::session_id()`, which is empty until
     // `system/init` lands on the wire (per `Client::spawn` docs, after
     // both the initialize control_response AND a user message). For

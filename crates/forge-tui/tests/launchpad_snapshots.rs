@@ -54,7 +54,7 @@ fn cold_boot_renders_all_pending_rows() {
     let mut app = App::test_default();
     app.active_view = ActiveView::Launchpad;
 
-    // The launchpad reads projects via `workspace.list_projects()`  - 
+    // The launchpad reads projects via `workspace.list_projects()`  -
     // for the test-only path we use a stub workspace whose
     // `list_projects()` returns an empty Vec, so the picker chrome
     // (wordmark + footer) renders without project rows.

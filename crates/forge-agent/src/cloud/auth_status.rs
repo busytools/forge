@@ -4,7 +4,7 @@
 //!
 //! In claude 2.1.117 the `system/init` stream-json frame does **not**
 //! include an `account` block. The frame carries `apiKeySource` at the
-//! top level (e.g. `"none"`, `"oauth"`, `"user"`, …) and that's it  - 
+//! top level (e.g. `"none"`, `"oauth"`, `"user"`, …) and that's it  -
 //! everything else (email, organization, subscription) lives behind
 //! the `claude auth status` subcommand. The JS-side SDK fetches the
 //! same data via its own `query.accountInfo()` RPC; for forge the

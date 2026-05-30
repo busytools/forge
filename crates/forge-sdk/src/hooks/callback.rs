@@ -10,7 +10,7 @@ use forge_primitives::HookContext;
 ///
 /// The primary shape (allow / deny / replace-input / passthrough) mirrors
 /// the CLI's `SyncHookJSONOutput.decision` field; the `with_*` builders
-/// attach the optional control fields the CLI documents alongside it  - 
+/// attach the optional control fields the CLI documents alongside it  -
 /// `continue_` / `suppressOutput` / `stopReason` / `systemMessage`. See
 /// + for the full contract.
 #[derive(Debug, Clone)]

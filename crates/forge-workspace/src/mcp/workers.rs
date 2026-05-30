@@ -356,7 +356,7 @@ impl Tool for Tell {
 
         // Reserved keyword: `label="lead"` routes back to the caller's
         // lead session (resolved from the worker's
-        // `spawned_by_session_id`). Lead callers get a clear error  - 
+        // `spawned_by_session_id`). Lead callers get a clear error  -
         // leads don't have a lead. See `LEAD_LABEL` in
         // `mcp::workers::facade`.
         let delivery_ok = if args.label == LEAD_LABEL {
