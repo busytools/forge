@@ -215,7 +215,7 @@ fn format_activity(
         SessionLifecycleState::Failed => "failed".to_owned(),
         _ => match project.sessions.first().and_then(|s| s.last_activity) {
             Some(activity) => format_relative_time(activity, now),
-            None => "—".to_owned(),
+            None => "\u{2014}".to_owned(),
         },
     }
 }
