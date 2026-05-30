@@ -117,7 +117,16 @@ impl SessionTask {
             && !cwd.is_empty()
             && let Some(workspace) = self.workspace.upgrade()
         {
-            workspace.record_connected_session(cwd, session_id, None);
+            // Skip the catalog mirror for workers: they're tracked via
+            // live_workers and their JSONL carries the forge:worker tag,
+            // but a tag-less mirror here lets a just-connected worker win
+            // resolve_lead_session's untagged-latest fallback during the
+            // boot window before that tag lands. The WorkerEntry is keyed
+            // by the synth/spawn key at this point (pre-rekey).
+            let lookup_key = self.spawn_key.clone().unwrap_or_else(|| self.key.clone());
+            if workspace.worker_lookup_for_session(&lookup_key).is_none() {
+                workspace.record_connected_session(cwd, session_id, None);
+            }
         }
 
         match event {

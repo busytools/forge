@@ -5866,6 +5866,26 @@ mod async_worker_spawn_failure_tests {
         key
     }
 
+    /// The Connected catalog-mirror guard keys off worker_lookup_for_session
+    /// (by the pre-rekey synth key): a known worker must resolve so the
+    /// tag-less mirror is skipped, while a lead/regular session must not.
+    #[test]
+    fn worker_lookup_drives_catalog_mirror_skip() {
+        let (workspace, _rx) = Workspace::testing_stub();
+        let project_key = ProjectKey::new("proj-x");
+        let synth_key = "__spawn_worker_proj-x_reviewer_abc__";
+        workspace
+            .insert_live_worker(&project_key, fake_worker("reviewer", synth_key, "lead-uuid", false));
+        assert!(
+            workspace.worker_lookup_for_session(&SessionKey::from_session_id(synth_key)).is_some(),
+            "seeded worker must be detected so its tag-less catalog mirror is skipped"
+        );
+        assert!(
+            workspace.worker_lookup_for_session(&SessionKey::from_session_id("lead-uuid")).is_none(),
+            "the lead is not a live worker, so it is still mirrored into the catalog"
+        );
+    }
+
     /// #146: async worktree-creation failure → notice envelope
     /// dispatched to the lead's chat AND the WorkerEntry rolled
     /// back. Verifies both effects in one go.
