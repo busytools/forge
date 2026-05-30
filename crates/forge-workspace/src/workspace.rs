@@ -2145,8 +2145,11 @@ impl Workspace {
     /// always false anyway).
     #[must_use]
     pub(crate) fn worker_has_progress_past_kick(&self, session_id: &str) -> bool {
+        let session_key = SessionKey::from_session_id(session_id.to_owned());
+        let config_dir =
+            self.config_dir_for(&session_key).unwrap_or_else(|| self.config_dir.clone());
         let messages = forge_agent::userdata::catalog::scan::get_session_messages(
-            &self.config_dir,
+            &config_dir,
             session_id,
             None,
         );
