@@ -1532,14 +1532,37 @@ mod tests_message_extras {
     }
 
     #[test]
-    fn unknown_assistant_error_surfaces_as_unknown() {
-        // If upstream adds a new error class between parity checks, the
-        // fallback `Unknown` variant absorbs it - callers still see an
-        // error string that doesn't match any known literal, just
-        // remapped.
-        let decoded: AssistantMessageError =
-            serde_json::from_value(json!("unknown")).expect("deserialize");
-        assert_eq!(decoded, AssistantMessageError::Unknown);
+    fn unknown_wire_values_decode_to_the_catch_all_variant() {
+        // serde(other) on these wire enums must absorb a value the CLI
+        // adds later so a new literal degrades to Unknown instead of
+        // failing the whole frame decode. Feed a genuinely-foreign
+        // string: a tautological `"unknown"` would round-trip by name
+        // even without the catch-all, so it wouldn't guard the attribute.
+        let foreign = || json!("some_future_value_forge_does_not_know");
+        assert_eq!(
+            serde_json::from_value::<AssistantMessageError>(foreign()).expect("decode"),
+            AssistantMessageError::Unknown
+        );
+        assert_eq!(
+            serde_json::from_value::<StopReason>(foreign()).expect("decode"),
+            StopReason::Unknown
+        );
+        assert_eq!(
+            serde_json::from_value::<RateLimitStatus>(foreign()).expect("decode"),
+            RateLimitStatus::Unknown
+        );
+        assert_eq!(
+            serde_json::from_value::<RateLimitType>(foreign()).expect("decode"),
+            RateLimitType::Unknown
+        );
+        assert_eq!(
+            serde_json::from_value::<TaskNotificationStatus>(foreign()).expect("decode"),
+            TaskNotificationStatus::Unknown
+        );
+        assert_eq!(
+            serde_json::from_value::<crate::runtime::TerminalReason>(foreign()).expect("decode"),
+            crate::runtime::TerminalReason::Unknown
+        );
     }
 
     // ----------------------------------------------------------------
