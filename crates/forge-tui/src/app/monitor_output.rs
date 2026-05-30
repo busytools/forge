@@ -16,6 +16,29 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
+use crate::ui::highlight;
+
+/// #289: real-world Monitor commands (cargo build, npm install,
+/// progress-bar tools) emit ANSI colour codes + carriage returns +
+/// the occasional BEL/backspace. Storing the raw bytes in
+/// `MonitorEntry.output_tail` leaks them into ratatui's render path,
+/// which interprets them as terminal control sequences and corrupts
+/// the screen. Sanitise at read-time so the per-frame render path
+/// stays cheap and the stored tail is plain text.
+///
+/// Two-stage: `strip_ansi` covers CSI + OSC sequences (same helper +
+/// semantics as the Bash tool output path at
+/// `crate::ui::tool_call::standard`). The trailing `filter` drops
+/// control bytes that aren't escape sequences (`\r` `\b` BEL `\u{0C}`)
+/// plus any lingering `\u{1b}` that slipped past `strip_ansi` (a
+/// non-CSI/OSC ESC variant). Tabs and printable Unicode pass through.
+fn sanitize_for_render(raw: &str) -> String {
+    highlight::strip_ansi(raw)
+        .chars()
+        .filter(|c| !matches!(c, '\r' | '\u{08}' | '\u{07}' | '\u{0C}' | '\u{1B}'))
+        .collect()
+}
+
 /// Read the last `max_lines` lines of `path` into a `Vec` ordered
 /// oldest-first. Returns `None` on any read error (file missing,
 /// permission denied, mid-write corruption) so the caller can
@@ -58,7 +81,7 @@ pub fn read_output_file_tail(path: &Path, max_lines: usize) -> Option<Vec<String
                 if ring.len() == max_lines {
                     ring.pop_front();
                 }
-                ring.push_back(text);
+                ring.push_back(sanitize_for_render(&text));
             }
             Err(err) => {
                 // Mid-write partial line or transient IO error; skip
@@ -140,6 +163,33 @@ mod tests {
         let path = std::path::PathBuf::from("/nonexistent/zero_lines.log");
         let result = read_output_file_tail(&path, 0).expect("zero max yields Ok(empty)");
         assert!(result.is_empty());
+    }
+
+    #[test]
+    fn read_output_file_tail_strips_ansi_and_control_chars() {
+        // #289: real-world Monitor commands (cargo build, npm install, anything
+        // with progress bars) emit ANSI colour codes + carriage returns for
+        // in-place line updates + the occasional BEL/backspace. Raw bytes
+        // would corrupt ratatui's render; the tail reader sanitises at read
+        // time so the per-frame render path stays cheap.
+        let raw = "\
+\x1b[32mline 1 green\x1b[0m\n\
+line 2 with \rcarriage return\n\
+\x1b[1;31mline 3 bold red\x1b[0m\x07\n\
+line 4 with \x08\x08backspace\n";
+        let path = write_tmp(raw);
+        let tail = read_output_file_tail(&path, 12).expect("read ok");
+
+        for line in &tail {
+            assert!(!line.contains('\x1b'), "ANSI escape leaked through: {line:?}");
+            assert!(!line.contains('\r'), "carriage return leaked through: {line:?}");
+            assert!(!line.contains('\x08'), "backspace leaked through: {line:?}");
+            assert!(!line.contains('\x07'), "BEL leaked through: {line:?}");
+            assert!(!line.contains('\x0C'), "form-feed leaked through: {line:?}");
+        }
+        assert!(tail.iter().any(|l| l.contains("line 1 green")));
+        assert!(tail.iter().any(|l| l.contains("line 3 bold red")));
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

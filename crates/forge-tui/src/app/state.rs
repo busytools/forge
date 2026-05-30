@@ -1748,16 +1748,6 @@ impl App {
         }
     }
 
-    /// #273 Task 8: Push a single output line into the matching
-    /// monitor's `output_tail`. No-op if no entry matches.
-    pub fn push_monitor_output_by_task_id(&mut self, task_id: &str, line: String) {
-        if let Some(entry) =
-            self.monitors_mut().iter_mut().find(|m| m.task_id.as_deref() == Some(task_id))
-        {
-            entry.push_output(line);
-        }
-    }
-
     /// #275 Task 4: Stamp the `output_file` path on the matching
     /// Monitor entry. The CLI carries this via
     /// `task_notification.output_file`. Idempotent: same path
@@ -1912,7 +1902,7 @@ impl App {
 
     /// Drain the WORKFLOWS list once every entry has finished -
     /// matches the MONITORS / TODOs all-completed clear shape.
-    fn clear_workflows_if_all_terminal(&mut self) {
+    pub fn clear_workflows_if_all_terminal(&mut self) {
         let workflows = self.workflows_mut();
         if !workflows.is_empty() && workflows.iter().all(|w| !w.is_in_progress()) {
             workflows.clear();

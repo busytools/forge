@@ -7,7 +7,7 @@ mod diff_overlay;
 mod document_table;
 pub(crate) mod format;
 pub(crate) mod help;
-mod highlight;
+pub(crate) mod highlight;
 mod input;
 pub(crate) mod inspector_pane;
 pub mod launchpad;
