@@ -321,8 +321,11 @@ existing conventions):
   for LLM-driven spawns.
 
 **Crate placement for these features**:
-- MCP tool impls (Tool trait): `forge-agent::mcp_agenting` (new
-  module).
+- MCP tool impls (Tool trait): `forge-workspace::mcp::*` (peers,
+  workers, future worktree/memory). The Tool impls need workspace
+  orchestration state (facades, `live_workers`, domain sessions), so
+  they live alongside the workspace, matching the worked-example
+  table above rather than forge-agent.
 - Worktree env helpers: `forge-agent::env::worktree` (sibling to
   `env::git_diff`).
 - Wire types (`WorktreeInfo`, `FinishState`, etc.): `forge-primitives`.
