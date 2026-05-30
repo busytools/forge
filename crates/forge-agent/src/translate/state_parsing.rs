@@ -191,7 +191,9 @@ mod tests {
         assert_eq!(parse_fast_mode_state(Some(&json!("on"))), Some(FastModeState::On));
         assert_eq!(parse_fast_mode_state(Some(&json!("off"))), Some(FastModeState::Off));
         assert_eq!(parse_fast_mode_state(Some(&json!("cooldown"))), Some(FastModeState::Cooldown));
-        assert_eq!(parse_fast_mode_state(Some(&json!("nope"))), None);
+        // Unknown wire string degrades to Unknown via serde(other); only
+        // an absent value yields None.
+        assert_eq!(parse_fast_mode_state(Some(&json!("nope"))), Some(FastModeState::Unknown));
         assert_eq!(parse_fast_mode_state(None), None);
     }
 
