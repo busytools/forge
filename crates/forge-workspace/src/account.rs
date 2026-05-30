@@ -395,10 +395,6 @@ impl AccountStateMap {
     /// the assignment-plan compute step also fires off this signal.
     /// Empty maps return `true` (vacuous; no accounts means no work
     /// to wait on - relevant in the testing-stub path).
-    // Caller lands in Section 2.4 (workspace.rs::recompute_plan_if_ready)
-    // of #246. Temporary `dead_code` allow until that commit lands within
-    // the same PR.
-    #[allow(dead_code)]
     pub fn all_loaded(&self) -> bool {
         self.by_key
             .values()
@@ -410,10 +406,6 @@ impl AccountStateMap {
     /// (defensive - the launchpad's render path may briefly hold an
     /// account key that hasn't yet been registered in the map during
     /// reload).
-    // Caller lands in Section 1.4 (account_loader.rs) + 3.1 (launchpad)
-    // of #246. Temporary `dead_code` allow until those commits land
-    // within the same PR.
-    #[allow(dead_code)]
     pub fn loading_state(&self, key: &AccountKey) -> LoadingState {
         self.by_key.get(key).map_or(LoadingState::Loading, |s| s.loading)
     }
