@@ -71,11 +71,6 @@ pub enum UsageFetchStatus {
 /// computation, while `Loading` and `Refreshing` keep the launchpad
 /// dim. A bailed account's `usage` is `None` by construction (the
 /// loader clears it on the transition).
-///
-/// Replaces the PR #238 `consecutive_unauthorized` counter: any
-/// auth-recovery 401 series that previously incremented the counter
-/// now drives the loading task into `Bailed` directly, with the
-/// same cache-clear side-effect.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoadingState {
     /// First-pass keychain fetch + probe in progress. The launchpad

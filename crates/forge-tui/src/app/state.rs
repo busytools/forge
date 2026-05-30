@@ -276,9 +276,8 @@ pub struct App {
     pub help_visible_count: usize,
     /// Receiver for `SessionUpdate`s emitted by the workspace. The
     /// main event loop reads from here and dispatches via
-    /// `events::apply_session_update`. Replaces the legacy
-    /// `event_tx`/`event_rx` `ClientEvent` channel - user actions
-    /// flow out via `workspace.dispatch(Command::...)`.
+    /// `events::apply_session_update`. User actions flow out via
+    /// `workspace.dispatch(Command::...)`.
     pub update_rx: mpsc::UnboundedReceiver<forge_workspace::SessionUpdate>,
     /// Sender shared with TUI-internal async tasks (plugin inventory,
     /// usage refresh, slash command executors) that need to emit

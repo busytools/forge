@@ -1017,9 +1017,7 @@ fn apply_session_update_key_renamed(app: &mut App, from: &SessionKey, to: Sessio
         if already_under_to {
             // `to` already exists (e.g. a Connected for the same
             // session UUID raced ahead and seeded the bucket); the
-            // synthetic at `from` is now redundant. Drop it to match
-            // the legacy `handle_connected_client_event` migration
-            // semantics.
+            // synthetic at `from` is now redundant, so drop it.
             tracing::warn!(
                 target: crate::logging::targets::APP_SESSION,
                 event_name = "key_renamed_synthetic_dropped",
@@ -1482,8 +1480,7 @@ mod tests {
     }
 
     /// `SessionUpdate::Spawning` writes `cwd_raw` directly onto the
-    /// bucket. Previously this was mirrored onto a workspace
-    /// `DomainSession`; now the bucket is the only owner.
+    /// bucket, which is the sole owner.
     #[test]
     fn spawning_reducer_writes_cwd_raw_onto_bucket() {
         let mut app = App::test_default();

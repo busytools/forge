@@ -1852,8 +1852,7 @@ mod monitor_output_file_wiring_tests {
     #[test]
     fn empty_output_file_path_falls_back_to_summary_only_behaviour() {
         // Wire field absent (empty string): no file read, no panic,
-        // no path stamp. The pre-#275-Task-4 behaviour where the
-        // summary line is the only tail signal is preserved.
+        // no path stamp - the summary line is the only tail signal.
         let mut app = App::test_default();
         push_monitor(&mut app, "task_no_file");
         handle_task_notification(&mut app, notification("task_no_file", "", "Monitor X"));

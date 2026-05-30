@@ -467,7 +467,7 @@ impl Default for UiSession {
             pending_paste_text: String::default(),
             pending_paste_session: Option::default(),
             active_paste_session: Option::default(),
-            next_paste_session_id: 1, // Match the legacy App-level seed.
+            next_paste_session_id: 1,
             pending_images: Vec::default(),
             mention: Option::default(),
             slash: Option::default(),

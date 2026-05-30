@@ -30,9 +30,7 @@ pub enum PermissionAction {
 }
 
 /// Display style for a permission option - drives icon + color in the
-/// prompt widget. 4 variants total; the legacy 8-variant TUI-side
-/// `PermissionOptionKind` is being replaced by this in the unified
-/// prompt redesign (Task 23 in the plan deletes the legacy version).
+/// prompt widget.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PermissionOptionKind {

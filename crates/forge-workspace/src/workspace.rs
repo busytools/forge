@@ -5868,11 +5868,10 @@ mod async_worker_spawn_failure_tests {
     }
 
     /// #146 + #245 Layer C: async failure with a non-worktree-classified
-    /// message must NOT dispatch a lead-notice. Behaviour was changed
-    /// in #245: previously the entry was rolled back (removed); now it
-    /// transitions to `WorkerLiveness::Failed` with the message as
-    /// diagnostic, so the user sees the failure surfaced on the row
-    /// rather than the worker silently vanishing.
+    /// message must NOT dispatch a lead-notice; the entry transitions to
+    /// `WorkerLiveness::Failed` with the message as diagnostic, so the
+    /// user sees the failure surfaced on the row rather than the worker
+    /// silently vanishing.
     #[tokio::test]
     async fn async_failure_without_worktree_classification_transitions_to_failed() {
         let (workspace, _update_rx) = Workspace::testing_stub();
