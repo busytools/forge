@@ -1144,11 +1144,21 @@ impl Workspace {
             if !accounts.all_loaded() {
                 return;
             }
+            // Iterate in forge.toml definition order, not HashMap order:
+            // compute_plan is documented pure, and for a project with an
+            // empty `accounts` list the pool IS this slice, so HashMap
+            // randomness would assign the lead to a different account
+            // across restarts.
             accounts
-                .by_key
+                .ordered_keys
                 .iter()
-                .filter(|(_, s)| matches!(s.loading, LoadingState::Ready))
-                .map(|(k, _)| k.clone())
+                .filter(|k| {
+                    accounts
+                        .by_key
+                        .get(*k)
+                        .is_some_and(|s| matches!(s.loading, LoadingState::Ready))
+                })
+                .cloned()
                 .collect()
         };
 
