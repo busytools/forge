@@ -1912,7 +1912,7 @@ impl App {
 
     /// Drain the WORKFLOWS list once every entry has finished -
     /// matches the MONITORS / TODOs all-completed clear shape.
-    fn clear_workflows_if_all_terminal(&mut self) {
+    pub fn clear_workflows_if_all_terminal(&mut self) {
         let workflows = self.workflows_mut();
         if !workflows.is_empty() && workflows.iter().all(|w| !w.is_in_progress()) {
             workflows.clear();

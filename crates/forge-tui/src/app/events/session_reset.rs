@@ -332,6 +332,15 @@ pub(super) fn load_resume_history(app: &mut App, history_messages: &[forge_primi
         i += 1;
     }
     app.replay_in_progress = false;
+    // #289: replay's orphan-marking path (#277 Bug 3b) leaves the
+    // section populated with all-terminal entries. The live wire
+    // path drains via `clear_*_if_all_terminal` at each status
+    // flip; replay never makes that call. Mirror it here so the
+    // post-resume Inspector matches the live behaviour: all-terminal
+    // -> section disappears; mixed -> stays visible with the in-flight
+    // entries.
+    app.clear_monitors_if_all_terminal();
+    app.clear_workflows_if_all_terminal();
     app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
     app.clear_active_turn_assistant();
     app.enforce_history_retention_tracked();
@@ -513,5 +522,107 @@ mod tests {
             panic!("should be a Text block");
         };
         assert_eq!(text_block.text, "real user prompt");
+    }
+
+    // ---------------------------------------------------------------
+    // #289 Task 4: resume-replay drains all-terminal MONITORS +
+    // WORKFLOWS sections post-replay (mirrors the live wire path's
+    // `clear_*_if_all_terminal` calls). Mixed-state sections stay
+    // visible with the in-flight entries.
+    // ---------------------------------------------------------------
+
+    use crate::app::state::types::{MonitorEntry, MonitorStatus, WorkflowEntry, WorkflowStatus};
+
+    fn stub_monitor(id: &str, status: MonitorStatus) -> MonitorEntry {
+        MonitorEntry {
+            tool_use_id: id.to_owned(),
+            task_id: Some(format!("task_{id}")),
+            description: format!("desc_{id}"),
+            command: "tail -F app.log".to_owned(),
+            persistent: false,
+            timeout_ms: 0,
+            status,
+            output_file: None,
+            output_tail: std::collections::VecDeque::new(),
+            expanded_in_inspector: false,
+        }
+    }
+
+    fn stub_workflow(id: &str, status: WorkflowStatus) -> WorkflowEntry {
+        WorkflowEntry {
+            tool_use_id: id.to_owned(),
+            task_id: Some(format!("task_{id}")),
+            meta_name: format!("wf_{id}"),
+            meta_description: None,
+            phases: Vec::new(),
+            status,
+            final_result_summary: None,
+            expanded_in_inspector: false,
+        }
+    }
+
+    #[test]
+    fn resume_replay_clears_all_terminal_monitors() {
+        let mut app = App::test_default();
+        // Seed the active bucket with replay-orphan monitors (the
+        // shape #277 Bug 3b's resume-marking loop produces).
+        *app.monitors_mut() = vec![
+            stub_monitor("a", MonitorStatus::Stopped),
+            stub_monitor("b", MonitorStatus::Completed),
+        ];
+        assert_eq!(app.monitors().len(), 2);
+
+        load_resume_history(&mut app, &[]);
+
+        assert!(
+            app.monitors().is_empty(),
+            "all-terminal MONITORS must drain post-replay (mirrors the live wire \
+             clear_monitors_if_all_terminal path)",
+        );
+    }
+
+    #[test]
+    fn resume_replay_clears_all_terminal_workflows() {
+        let mut app = App::test_default();
+        *app.workflows_mut() = vec![
+            stub_workflow("a", WorkflowStatus::Completed),
+            stub_workflow("b", WorkflowStatus::Completed),
+        ];
+        assert_eq!(app.workflows().len(), 2);
+
+        load_resume_history(&mut app, &[]);
+
+        assert!(app.workflows().is_empty(), "all-terminal WORKFLOWS must drain post-replay");
+    }
+
+    #[test]
+    fn resume_replay_keeps_monitors_section_when_some_still_running() {
+        let mut app = App::test_default();
+        *app.monitors_mut() = vec![
+            stub_monitor("running", MonitorStatus::Running),
+            stub_monitor("stopped", MonitorStatus::Stopped),
+        ];
+
+        load_resume_history(&mut app, &[]);
+
+        assert_eq!(
+            app.monitors().len(),
+            2,
+            "mixed-state MONITORS must survive: clear_if_all_terminal only fires when \
+             every entry is terminal",
+        );
+    }
+
+    #[test]
+    fn resume_replay_keeps_workflows_section_when_some_still_in_progress() {
+        let mut app = App::test_default();
+        *app.workflows_mut() = vec![
+            stub_workflow("in_progress", WorkflowStatus::InProgress),
+            stub_workflow("done", WorkflowStatus::Completed),
+        ];
+
+        load_resume_history(&mut app, &[]);
+
+        assert_eq!(app.workflows().len(), 2, "mixed-state WORKFLOWS must survive");
     }
 }
