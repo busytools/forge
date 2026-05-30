@@ -70,6 +70,7 @@ perf = []
 testing = ["forge-workspace/testing"]
 
 [dev-dependencies]
+forge-sdk = { workspace = true }
 forge-tui = { path = ".", features = ["testing"] }
 forge-workspace = { workspace = true, features = ["test-helpers", "testing"] }
 insta = { workspace = true }
