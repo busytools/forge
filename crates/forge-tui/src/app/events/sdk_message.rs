@@ -1637,7 +1637,7 @@ mod queued_command_tests {
 
 #[cfg(test)]
 mod task_updated_section_routing_tests {
-    //! #275 Bug 3: Monitor + Workflow status transitions in
+    //! Monitor + Workflow status transitions in
     //! `handle_task_updated` run BEFORE the `task_tool_use_ids`
     //! lookup so they survive the turn-finalisation reset that
     //! drops the mapping. Without this, Monitor's terminal
@@ -1772,7 +1772,7 @@ mod task_updated_section_routing_tests {
 
 #[cfg(test)]
 mod monitor_output_file_wiring_tests {
-    //! #275 Task 4: `handle_task_notification` reads the
+    //! `handle_task_notification` reads the
     //! `output_file` from disk and replaces the MonitorEntry's
     //! `output_tail` with the last 12 lines. `handle_task_progress`
     //! re-reads on each event so the tail grows with the running
@@ -2016,7 +2016,7 @@ mod monitor_output_file_wiring_tests {
 
 #[cfg(test)]
 mod thinking_tokens_clear_on_user_tests {
-    //! #275 Bug 1: a new genuine user turn must clear the
+    //! A new genuine user turn must clear the
     //! `latest_thinking_tokens` carry-over from the prior turn so the
     //! chip never reads stale 150 when the new turn opens with its
     //! reset cumulative 50.

@@ -1,4 +1,4 @@
-//! #275 Task 4: read the watched-command stdout from the Monitor
+//! Read the watched-command stdout from the Monitor
 //! task's `output_file` and return the last N lines for the
 //! Inspector's MONITORS tail.
 //!

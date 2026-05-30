@@ -1801,15 +1801,13 @@ impl App {
         }
     }
 
-    /// Drain the MONITORS list once every entry has
-    /// transitioned out of `Running`. Matches the TODOs all-completed
-    /// auto-clear shape so the Inspector section drops out entirely.
-    /// now called explicitly from
+    /// Drain the MONITORS list once every entry has transitioned out of
+    /// `Running`. Matches the TODOs all-completed auto-clear shape so
+    /// the Inspector section drops out entirely. Called explicitly from
     /// `handle_task_notification` rather than implicitly from
     /// `set_monitor_status_by_task_id`, so the
     /// `task_updated terminal -> task_notification with output_file`
-    /// wire ordering can stamp the tail before the entry gets
-    /// drained.
+    /// wire ordering can stamp the tail before the entry gets drained.
     pub fn clear_monitors_if_all_terminal(&mut self) {
         let monitors = self.monitors_mut();
         if !monitors.is_empty() && monitors.iter().all(|m| !m.is_running()) {
