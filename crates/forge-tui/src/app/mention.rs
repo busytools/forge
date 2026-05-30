@@ -3,7 +3,7 @@ use super::{App, FocusTarget, dialog::DialogState, file_index};
 /// Maximum candidates shown in the dropdown. Picked tall enough
 /// that the full forge group (~10 entries) + the `── claude ──`
 /// divider + most of the claude advertised set (~20) is visible
-/// at a glance when the user presses `/` — no scrolling required
+/// at a glance when the user presses `/`  -  no scrolling required
 /// for typical pane heights. `choose_dropdown_y` will silently
 /// clip if the terminal is too short; the standard
 /// `DialogState::move_*` slide handles scrolling past the clip.
@@ -91,7 +91,7 @@ pub fn detect_mention_at_cursor(
     let line = lines.get(cursor_row)?;
     let chars: Vec<char> = line.chars().collect();
 
-    // Defensive clamp — tui_textarea normally keeps cursor_col within
+    // Defensive clamp  -  tui_textarea normally keeps cursor_col within
     // chars.len(), but the slice below would panic if a future change
     // allowed cursor_col > chars.len() to reach this function.
     let cursor_col = cursor_col.min(chars.len());
@@ -157,7 +157,7 @@ pub fn update_query(app: &mut App) {
 
 pub fn refresh_from_file_index(app: &mut App) {
     // Snapshot what we need from the active bucket's file_index
-    // before borrowing `app.mention()` mutably — `app.mention_mut().as_mut()`
+    // before borrowing `app.mention()` mutably  -  `app.mention_mut().as_mut()`
     // disjoint-borrows the `mention` field, but the borrow checker
     // doesn't split through method calls, so we can't read
     // `app.file_index()` while `mention: &mut` is live.
@@ -362,7 +362,7 @@ mod tests {
                 return;
             }
         }
-        // Bound exhausted — surface a clear timeout failure instead
+        // Bound exhausted  -  surface a clear timeout failure instead
         // of letting downstream assertions fail against a still-
         // Searching mention state.
         panic!("mention search did not settle within 1s (200 × 5ms)");

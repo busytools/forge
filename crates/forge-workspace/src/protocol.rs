@@ -143,7 +143,7 @@ pub enum Command {
         server_name: String,
         enabled: bool,
     },
-    /// User clicked an inactive project to wake it. No `key` — the
+    /// User clicked an inactive project to wake it. No `key`  -  the
     /// session doesn't exist yet; workspace synthesizes a key and
     /// emits `SessionUpdate::Spawning` then `::Connected` with the
     /// real key. This is an App-level Command, not per-session.
@@ -377,7 +377,7 @@ impl std::fmt::Debug for Command {
 
 /// Update envelope: forge-workspace -> forge-tui.
 ///
-/// Permission/Question variants do NOT carry response oneshots —
+/// Permission/Question variants do NOT carry response oneshots  - 
 /// responses flow back via `Command::Respond*`. The workspace stores
 /// the oneshot in `DomainSession.pending_interactions` when emitting
 /// these variants.
@@ -448,7 +448,7 @@ pub enum SessionUpdate {
         session_id: String,
         message: String,
     },
-    /// Permission prompt. No response_tx — TUI replies via
+    /// Permission prompt. No response_tx  -  TUI replies via
     /// `Command::RespondPermission { tool_id, outcome }`.
     PermissionRequest {
         key: SessionKey,
@@ -519,7 +519,7 @@ pub enum SessionUpdate {
     SessionsListed {
         /// Bucket this session list belongs to. The catalog scan that
         /// produces `sessions` runs against the spawning session's
-        /// `cwd`, so the listing is project-scoped — routing onto
+        /// `cwd`, so the listing is project-scoped  -  routing onto
         /// the requesting bucket prevents another session's `/resume`
         /// autocomplete from inheriting a stale project's list.
         key: SessionKey,
@@ -575,7 +575,7 @@ pub enum SessionUpdate {
     /// the chat-side echo from real fields instead of having the
     /// workspace forge a `Message::User` carrying prose for the TUI to
     /// re-parse (audit I11). The recipient's LLM still receives the
-    /// prose via a separate `Command::Prompt` dispatch — that's the
+    /// prose via a separate `Command::Prompt` dispatch  -  that's the
     /// CLI's input channel and stays text-shaped.
     PeerEnvelopeAppended {
         session_id: String,
@@ -631,7 +631,7 @@ impl SessionUpdate {
 
 impl std::fmt::Debug for SessionUpdate {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // Custom Debug — discriminant + key/session_id only.
+        // Custom Debug  -  discriminant + key/session_id only.
         // Payloads can be large or non-Debug-friendly; the
         // discriminant + routing key is sufficient for trace logs.
         match self {

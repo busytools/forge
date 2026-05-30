@@ -1,4 +1,4 @@
-//! `Command` — the UI → agent channel envelope.
+//! `Command`  -  the UI → agent channel envelope.
 //!
 //! One variant per fire-and-forget action the UI can ask the agent
 //! to perform. Direct-return accessors (config_dir, settings_documents,
@@ -13,7 +13,7 @@ use crate::{PermissionOutcome, QuestionOutcome};
 /// UI → agent channel envelope. Each variant maps to one inherent
 /// method on `forge_agent::ForgeSdkBridge`. Named `AgentCommand`
 /// to disambiguate from the higher-level
-/// `forge_workspace::protocol::Command` (UI → workspace) — the two
+/// `forge_workspace::protocol::Command` (UI → workspace)  -  the two
 /// envelopes are deliberately different shapes with overlapping
 /// names, and disambiguating the agent-side enum makes which one
 /// is meant obvious at every call site.

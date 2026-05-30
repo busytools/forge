@@ -737,7 +737,7 @@ mod tests {
         ));
 
         // Switch render below from `render_plugins` to `render_mcp`
-        // — this test exercises the MCP detail overlay.
+        //  -  this test exercises the MCP detail overlay.
         app.mcp_mut().servers = vec![forge_primitives::McpServerStatus {
             name: "filesystem".to_owned(),
             status: forge_primitives::McpServerConnectionStatus::Connected,

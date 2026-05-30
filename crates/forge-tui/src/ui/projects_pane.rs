@@ -66,7 +66,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, projects: &[ProjectV
 }
 
 /// Paint the pinned `PROJECTS` banner + DIM rule on the top 2 rows
-/// of the pane. Shared by the inline and overlay renderers — the
+/// of the pane. Shared by the inline and overlay renderers  -  the
 /// overlay variant overrides the banner via its caller; only the
 /// rule is the same.
 fn render_pane_head(frame: &mut Frame, area: Rect) {
@@ -119,7 +119,7 @@ fn render_pane_body(frame: &mut Frame, area: Rect, app: &mut App, projects: &[Pr
     // higher. Subtracting `offset` re-aligns hit-tests with the
     // painted rows. Targets that would land above `body_area.y`
     // (scrolled off the top) get their `height` zeroed so the
-    // `contains_y` test refuses them — the click would otherwise
+    // `contains_y` test refuses them  -  the click would otherwise
     // register on whatever sits above the body (the static banner /
     // rule), wrongly switching projects.
     if offset > 0 {
@@ -212,11 +212,11 @@ fn render_projects_scroll_thumb(
 ///
 /// Picking a project / session row inside the overlay calls the
 /// same `switch_*` paths the inline pane uses, plus the click
-/// handler closes the overlay. Mouse-only — no keyboard navigation.
+/// handler closes the overlay. Mouse-only  -  no keyboard navigation.
 pub fn render_overlay(frame: &mut Frame, area: Rect, app: &mut App, projects: &[ProjectView]) {
     app.pane_hit_targets.clear();
 
-    // Same two-region split as the inline pane — account panel docked
+    // Same two-region split as the inline pane  -  account panel docked
     // at the bottom of the overlay, project list takes the rest.
     let panel_reserved = render_account_status_footer(frame, area, app);
     let list_area = Rect {
@@ -242,7 +242,7 @@ pub fn render_overlay(frame: &mut Frame, area: Rect, app: &mut App, projects: &[
         Span::raw(" ".repeat(pad)),
         Span::styled(close_glyph.to_owned(), Style::default().fg(theme::DIM)),
     ]));
-    // Stamp ✕ hit-target — last char on the banner row.
+    // Stamp ✕ hit-target  -  last char on the banner row.
     let close_x_start = list_area
         .x
         .saturating_add(list_area.width)
@@ -268,7 +268,7 @@ pub fn render_overlay(frame: &mut Frame, area: Rect, app: &mut App, projects: &[
 /// Org-grouped project list. Projects render as tree-leaf rows
 /// under their org's header (DIM bold). Within each org, projects
 /// sort alphabetically; orgs themselves sort alphabetically. The
-/// per-row glyph distinguishes live sessions (spinner — RUST_ORANGE
+/// per-row glyph distinguishes live sessions (spinner  -  RUST_ORANGE
 /// when focused, terminal-default otherwise) from idle catalog
 /// entries (`○` DIM). Live rows carry a `⏻` close affordance at
 /// the right edge; idle rows show last-activity timestamp instead.
@@ -401,7 +401,7 @@ fn append_project_rows(
     let now = SystemTime::now();
     let org_count = by_org.len();
     for (org_idx, (org_name, rows)) in by_org.iter().enumerate() {
-        // Org header row — DIM bold, no tree chrome.
+        // Org header row  -  DIM bold, no tree chrome.
         lines.push(Line::from(vec![
             Span::raw(" "),
             Span::styled(
@@ -432,10 +432,10 @@ fn append_project_rows(
             );
             append_worker_tree_children(lines, area, app, project, spinner_frame);
             // Deadzone gap row between adjacent projects in the
-            // same org — emits the `│  ` tree continuation so the
+            // same org  -  emits the `│  ` tree continuation so the
             // connector lines visually link across the breathing
             // gap rather than breaking into floating fragments.
-            // Skipped after the last project in the org — the
+            // Skipped after the last project in the org  -  the
             // org-separator blanks take its place.
             if !is_last {
                 lines.push(Line::from(vec![
@@ -512,7 +512,7 @@ fn append_org_project_row(
         // timed-out, ·N✕ delivery-failed). Failure badges fade after
         // 60 s so the sidebar doesn't stay red after a single hiccup.
         spans.extend(badge_spans);
-        // 1-col separator before the button — matches the 1-col
+        // 1-col separator before the button  -  matches the 1-col
         // separator before the `time` column on idle rows.
         spans.push(Span::raw(" "));
         // Close affordance: ` x ` 3-cell button on `USER_MSG_BG`
@@ -526,7 +526,7 @@ fn append_org_project_row(
             " x ".to_owned(),
             Style::default().fg(Color::Gray).bg(theme::USER_MSG_BG).add_modifier(Modifier::BOLD),
         ));
-        // 1-col right gutter — matches the inspector pane's GIT
+        // 1-col right gutter  -  matches the inspector pane's GIT
         // section right edge AND the idle row's 1-col gutter.
         spans.push(Span::raw(" "));
         lines.push(Line::from(spans));
@@ -552,7 +552,7 @@ fn append_org_project_row(
             x_end: close_x_end,
         });
     } else {
-        // Idle (no live session) — `○` DIM glyph, name in DIM, last
+        // Idle (no live session)  -  `○` DIM glyph, name in DIM, last
         // activity time at the right edge in DIM. No close
         // affordance since there's nothing to close. Adds a 1-col
         // pad after `time` so the date column aligns with the
@@ -560,7 +560,7 @@ fn append_org_project_row(
         // chars; the 1-col pad here equalises them in the same x
         // position). Plus the standard 1-col right gutter.
         //
-        // No badge column on idle rows — peer in-flight state lives
+        // No badge column on idle rows  -  peer in-flight state lives
         // on the live `UiSession` bucket, and a sleeping project has
         // no bucket to read from. Full width goes to the name.
         let label = truncate_with_ellipsis(project.name.as_str(), total_name_budget);
@@ -625,7 +625,7 @@ fn append_worker_tree_children(
         // continuation, mirrors what worker rows emit), and one at
         // col 4 (the worker-subtree continuation, drops down to the
         // first worker's `├─`). Without the col-4 `│`, probe-a's
-        // tree connector appears to start mid-air — the vertical
+        // tree connector appears to start mid-air  -  the vertical
         // line of its branch has no parent above it.
         if idx == 0 {
             lines.push(Line::from(vec![
@@ -763,7 +763,7 @@ fn append_worker_tree_children(
         // Inter-row breathing gap: two `│` glyphs to keep both the
         // org-continuation (col 1) and the worker-subtree
         // continuation (col 4) painting through the blank band.
-        // Skipped after the last worker — the project-to-project
+        // Skipped after the last worker  -  the project-to-project
         // deadzone (or the org break) takes its place; from there on
         // only the org `│` matters because the worker subtree has
         // ended.
@@ -798,18 +798,18 @@ fn format_relative_time(activity: Option<SystemTime>, now: SystemTime) -> String
 
 /// Saturating cast of `lines.len()` to `u16`. The pane area's height
 /// is `u16` and projects tall enough to overflow `u16::MAX` rows
-/// would already be wrong long before they overflow this cast — but
+/// would already be wrong long before they overflow this cast  -  but
 /// we saturate rather than panic so a runaway list at least caps
 /// rather than aborting the renderer.
 fn line_count_as_u16(lines: &[Line<'_>]) -> u16 {
     u16::try_from(lines.len()).unwrap_or(u16::MAX)
 }
 
-/// Find the `ProjectView` that owns `active_key` — handling the three
+/// Find the `ProjectView` that owns `active_key`  -  handling the three
 /// synthetic-key sentinels (`__conn_pending__`, `__spawn_<name>__`,
 /// `__resume_<id>__`) in addition to real claude UUIDs. Without this,
 /// every pane reader that does `sessions.iter().any(|s| &s.session
-/// == key)` returns `None` during the Spawning window — leaving the
+/// == key)` returns `None` during the Spawning window  -  leaving the
 /// pane and top bar with no project highlighted while the user
 /// stares at a "Waking …" placeholder.
 ///
@@ -837,7 +837,7 @@ pub(crate) fn resolve_active_project_view<'p>(
     projects.iter().copied().find(|p| p.sessions.iter().any(|sess| &sess.session == active_key))
 }
 
-/// Braille spinner frames — same sequence used by `ui::input` and
+/// Braille spinner frames  -  same sequence used by `ui::input` and
 /// `ui::message`, kept in sync so every running indicator in the TUI
 /// turns at the same pace. `app.spinner_frame` advances every
 /// `SPINNER_FRAME_INTERVAL_NORMAL` per the render tick in `app.rs`.
@@ -877,7 +877,7 @@ fn glyph_for_lifecycle(
         // Sleeping so the user can tell at a glance which sessions
         // need `claude auth login` vs which are simply idle. ⚠ in
         // STATUS_WARNING mirrors the 5h/7d ETA column's "⚠ expired
-        // — /login" treatment from #169.
+        //  -  /login" treatment from #169.
         SessionLifecycleState::AuthRequired => ("\u{26a0}".to_owned(), theme::STATUS_WARNING),
         SessionLifecycleState::Sleeping
         | SessionLifecycleState::Failed
@@ -889,13 +889,13 @@ fn glyph_for_lifecycle(
 /// fade off the row. Counted from `peer_badges_last_failure_at`,
 /// which is stamped each time the workspace reports a fresh
 /// `timed_out` or `delivery_failed` increment. Cumulative
-/// outgoing/incoming counts have no fade — they reflect live state
+/// outgoing/incoming counts have no fade  -  they reflect live state
 /// while the in-flight asks are pending.
 const PEER_FAILURE_FADE: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Build the peer-activity badge cluster spans for a row. Returns the
 /// spans plus the printed width so the caller can shrink `name_budget`
-/// before truncating the project label — without this, badges on a
+/// before truncating the project label  -  without this, badges on a
 /// narrow pane would either push the close button off-screen or land
 /// on top of the label.
 ///
@@ -956,7 +956,7 @@ fn peer_badge_spans(
 }
 
 // ---------------------------------------------------------------
-// Account / status panel — pane footer.
+// Account / status panel  -  pane footer.
 //
 // Hard-docked at the bottom of the Projects pane. Reads existing
 // `App` accessors (no new wire data, no new reducers). Renders a
@@ -983,15 +983,15 @@ fn peer_badge_spans(
 // `ACCOUNT_PANEL_HEIGHT` is constant. The panel's render swallows the
 // fixed N rows from the bottom of the pane; the project list takes
 // everything above. Bar fill colour is a per-cell position gradient
-// (cells 1–3 green, 4–6 yellow, 7–9 orange, 10–12 red) so the
+// (cells 1-3 green, 4-6 yellow, 7-9 orange, 10-12 red) so the
 // rightmost filled cell tells you which zone the bar is in.
 //
-// Cwd + branch rows live in the Inspector pane's `GIT` section —
+// Cwd + branch rows live in the Inspector pane's `GIT` section  - 
 // see `crate::ui::inspector_pane`.
 // ---------------------------------------------------------------
 
 /// Rows the account panel reserves from the bottom of the pane.
-/// Constant by design — values flip but shape stays put (see the
+/// Constant by design  -  values flip but shape stays put (see the
 /// "account chrome, not status row" intent in the design brief).
 ///
 /// 19 rows: rule + 6 identity (Profile/Org/Session/Mode/Model/Effort) +
@@ -1013,7 +1013,7 @@ const BAR_ROW_FIXED_CHROME: usize = 1 + 3 + 2 + 2 + 4;
 
 /// Below this pane height we skip the panel entirely (would crowd the
 /// project list too aggressively). The chat footer is gone in this
-/// flow, so the account info is only available via this panel — when
+/// flow, so the account info is only available via this panel  -  when
 /// it's skipped, the user loses visibility on Mode / Model / Ctx /
 /// usage. Acceptable for the ultra-compact-pane edge case; the docked
 /// alternative would push the project list out of meaningful range.
@@ -1132,7 +1132,7 @@ fn bar_spans(pct: f64, cells: usize) -> Vec<Span<'static>> {
     spans
 }
 
-/// Padded label cell — `"<text>"` right-padded with spaces so the
+/// Padded label cell  -  `"<text>"` right-padded with spaces so the
 /// next column aligns regardless of label length. Matches the dim
 /// styling of the legacy footer's `Loc:` prefix.
 fn label_span(text: &'static str, width: usize) -> Span<'static> {
@@ -1150,7 +1150,7 @@ fn label_span(text: &'static str, width: usize) -> Span<'static> {
 fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(ACCOUNT_PANEL_HEIGHT as usize);
 
-    // Row 0: dim rule. No blank after — the identity block sits flush
+    // Row 0: dim rule. No blank after  -  the identity block sits flush
     // against the rule, treating the rule as the panel's top edge
     // rather than a section separator.
     let rule_width = usize::from(width.saturating_sub(2));
@@ -1191,7 +1191,7 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     // ID. First 8 chars of the active session's UUID when known
     // (labelled `ID` rather than `Session` so the short hex string
     // reads as an identifier, not a name). Trailing 4-cell button
-    // with slate background — copies the FULL session id to the OS
+    // with slate background  -  copies the FULL session id to the OS
     // clipboard. Button sits flush at the right gutter regardless of
     // value length so its hit column doesn't shift with pane width.
     // Click target stamped in `stamp_session_copy_hit_target`.
@@ -1231,7 +1231,7 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         Span::styled(mode_label_fitted, Style::default().fg(mode_color)),
     ]));
 
-    // Model. Display name only — effort lives on its own row below so
+    // Model. Display name only  -  effort lives on its own row below so
     // a long model name can't push it off-screen.
     let model_value = build_model_label(app).unwrap_or_else(|| "—".to_owned());
     let model_fitted = truncate_with_ellipsis(&model_value, value_budget);
@@ -1242,7 +1242,7 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         Span::raw(model_fitted),
     ]));
 
-    // Effort. Always shown — the underlying `EffortLevel` always has
+    // Effort. Always shown  -  the underlying `EffortLevel` always has
     // a value (config carries a default). Keeping the row unconditional
     // means it doesn't appear / disappear as the user switches models.
     let effort = app.observed_effort().unwrap_or_else(|| app.config.thinking_effort_effective());
@@ -1257,10 +1257,10 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     lines.push(Line::default());
 
     // Rows 7-8: Ctx bar + size row. Size mirrors the 5h/7d ETA
-    // pattern — DIM, right-justified to the panel's content right
-    // edge — but reads the model's raw context-window size
+    // pattern  -  DIM, right-justified to the panel's content right
+    // edge  -  but reads the model's raw context-window size
     // (`SessionUsageState.context_max_tokens`) instead of a reset
-    // duration. `—` when the upstream probe hasn't reported a size
+    // duration. ` - ` when the upstream probe hasn't reported a size
     // yet so the panel's row count stays constant.
     let bar_cells = bar_cells_for(width);
     let ctx_pct = app.session_usage().context_usage_percent.map_or(0.0, f64::from);
@@ -1327,7 +1327,7 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     // Rows 12..=13: 7d bar + ETA row. The "7d cap" label only
     // applies to the 5h indicator (it tells the user the 5h-side
     // 429 is downstream of the 7d cap, not its own thing). The 7d
-    // row itself doesn't need that hint — its 100% bar already
+    // row itself doesn't need that hint  -  its 100% bar already
     // tells the user the cap is hit. Pass false here so 7d's label
     // (if any) reads its own error class.
     push_usage_window_lines(
@@ -1345,7 +1345,7 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     // Rows 15..=16: forge + claude versions. The claude row shows
     // a yellow `↑ vX.Y.Z` indicator when the npm registry probe
     // reports a strictly-newer published version. Both rows render
-    // a DIM `—` placeholder when the corresponding probe failed so
+    // a DIM ` - ` placeholder when the corresponding probe failed so
     // the panel's row count stays constant.
     let forge_version = format!("v{}", crate::FORGE_VERSION_SHORT);
     lines.push(Line::from(vec![
@@ -1383,7 +1383,7 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         if claude_prefix_width + 1 + indicator_chars <= budget {
             // Right-justify the indicator into the panel's right gutter
             // so the row terminates at exactly `pane_width -
-            // PANEL_RIGHT_GUTTER` cols — same as the bar rows / ETA
+            // PANEL_RIGHT_GUTTER` cols  -  same as the bar rows / ETA
             // rows above it. Otherwise the row's right edge slides
             // around depending on indicator length and the panel
             // looks ragged.
@@ -1405,7 +1405,7 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
 /// Append a 12-cell-bar row + a DIM right-justified ETA row for one
 /// usage window. When the window is missing (no snapshot yet, account
 /// has no Anthropic plan, etc.) the bar renders at 0% and the ETA
-/// row shows `—` right-justified — so the panel's total row count
+/// row shows ` - ` right-justified  -  so the panel's total row count
 /// stays at `ACCOUNT_PANEL_HEIGHT`.
 ///
 /// `width` is the full pane width so the ETA can be right-justified
@@ -1434,17 +1434,17 @@ fn push_usage_window_lines(
     row.push(Span::raw(pct_text));
     lines.push(Line::from(row));
 
-    // ETA — when a real reset window exists, show the duration only
+    // ETA  -  when a real reset window exists, show the duration only
     // (no "resets in " prose). When the window is missing, fall
     // back to the last poll-attempt failure label (`⚠ expired`,
     // `rate-limited`, …) so the user can tell an empty bar from an
     // upstream HTTP 429 / expired creds situation. With neither,
-    // collapse to `—` to keep the row count constant.
+    // collapse to ` - ` to keep the row count constant.
     //
     // Color tier: success-path durations stay DIM. Probe-rate-limit
     // / network / fetch-failed labels stay DIM (transient). The two
     // statuses that need the user's attention to recover (Expired,
-    // Unauthorized — the account literally can't serve a request
+    // Unauthorized  -  the account literally can't serve a request
     // without /login) bump to STATUS_WARNING so the bottom-panel
     // bar carries an obvious yellow `⚠` mark instead of blending
     // into the rest of the DIM chrome.
@@ -1497,7 +1497,7 @@ fn needs_user_recovery(status: forge_workspace::UsageFetchStatus) -> bool {
 ///   upstream throttle.
 ///
 /// Network failures and the catch-all Other class collapse to
-/// "—" because they're transient and rarely require user action.
+/// " - " because they're transient and rarely require user action.
 fn usage_error_label(status: forge_workspace::UsageFetchStatus, seven_day_at_cap: bool) -> String {
     use forge_workspace::UsageFetchStatus;
     match status {
@@ -1545,7 +1545,7 @@ fn mode_label_and_color(app: &App) -> (String, Color) {
     (name, color)
 }
 
-/// Model label for the panel — `display_name_short` with the
+/// Model label for the panel  -  `display_name_short` with the
 /// `(… context)` wrapper stripped so a name like
 /// `Opus (1M context)` renders as `Opus 1M` and fits the narrow
 /// value column without truncation. Other callers of
@@ -1567,7 +1567,7 @@ fn build_model_label(app: &App) -> Option<String> {
 /// - `"Opus (1M context)"`   → `"Opus 1M"`
 /// - `"Sonnet (200K context)"` → `"Sonnet 200K"`
 /// - `"Foo (Bar)"`            → `"Foo Bar"` (no "context" word)
-/// - `"Sonnet 4.5"`           → `"Sonnet 4.5"` (no parens — unchanged)
+/// - `"Sonnet 4.5"`           → `"Sonnet 4.5"` (no parens  -  unchanged)
 ///
 /// The inverse of "elegant" but predictable. Single-pass over chars
 /// because the input is always short (< 32 chars in practice).
@@ -1608,7 +1608,7 @@ const fn effort_short_label(effort: crate::agent::model::EffortLevel) -> &'stati
 /// Head-truncate `s` to at most `max_chars` characters with a
 /// trailing `…` ellipsis. Returns the original string if it
 /// already fits. When `max_chars` is `0` or `1` the result is just
-/// `…` — there's no room for content + ellipsis at those budgets.
+/// `…`  -  there's no room for content + ellipsis at those budgets.
 ///
 /// Counts Unicode chars, not bytes, so multibyte labels truncate at
 /// a sane visual position. CJK / wide-emoji chars (display width > 1)
@@ -1771,7 +1771,7 @@ mod tests {
         assert!(text.contains("\u{2193}"), "incoming arrow present: {text}");
         assert!(text.contains('2'), "outgoing count present: {text}");
         assert!(text.contains('1'), "incoming count present: {text}");
-        // ·2↑·1↓ — 6 chars (· and arrow each count as 1 char).
+        // ·2↑·1↓  -  6 chars (· and arrow each count as 1 char).
         assert_eq!(width, 6);
     }
 

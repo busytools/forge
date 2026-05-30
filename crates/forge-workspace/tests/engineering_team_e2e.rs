@@ -69,7 +69,7 @@ async fn config_load_through_team_dispatch() {
     let prior = set_forge_team_root_for_test(Some(team_root.clone()));
 
     let result = {
-        // Boot a real Workspace from the on-disk forge.toml — this
+        // Boot a real Workspace from the on-disk forge.toml  -  this
         // drives the full parse path through `LoadedProject::team`.
         let workspace =
             Arc::new(Workspace::new(tmp.path().to_owned()).await.expect("workspace boot"));

@@ -6,7 +6,7 @@ use forge_sdk::Options;
 use forge_sdk::transport::process::Subprocess;
 
 fn mock_binary_path() -> String {
-    // Use the raw mock that doesn't expect an initialize handshake —
+    // Use the raw mock that doesn't expect an initialize handshake  - 
     // transport_process tests exercise Subprocess directly, below
     // Client's initialize round-trip.
     concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/mock_claude_raw.sh").into()

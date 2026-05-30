@@ -5,7 +5,7 @@
 //! Forge makes outbound HTTPS from several non-rewriter call sites
 //! (oauth usage probe, service-status check, CLI-version probe).
 //! These use reqwest, which by default trusts webpki-roots + system
-//! roots only — neither covers a mitmproxy / Zscaler / Palo Alto /
+//! roots only  -  neither covers a mitmproxy / Zscaler / Palo Alto /
 //! corporate CA setup that the user has wired up via
 //! `NODE_EXTRA_CA_CERTS`. The native `claude` binary (Node) honours
 //! that env var unconditionally; forge needs the same behaviour for
@@ -23,7 +23,7 @@ use std::fs;
 /// Unset, empty, unreadable, or unparseable paths are logged as
 /// `warn` and the builder is returned unchanged. This mirrors how
 /// Node's TLS layer treats `NODE_EXTRA_CA_CERTS` as a best-effort
-/// extension — a malformed bundle doesn't kill the program.
+/// extension  -  a malformed bundle doesn't kill the program.
 pub fn with_extra_roots(mut b: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
     for var in ["NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE"] {
         let Ok(path) = std::env::var(var) else { continue };

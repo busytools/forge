@@ -21,7 +21,7 @@ pub(super) fn handle_agent_message_chunk(app: &mut App, chunk: model::ContentChu
         return;
     }
 
-    // No active turn bound — this chunk belongs to a NEW assistant
+    // No active turn bound  -  this chunk belongs to a NEW assistant
     // turn (e.g. a Monitor / Task notification firing after the
     // previous turn finalised). Push a fresh assistant message rather
     // than appending to whatever assistant message happens to be

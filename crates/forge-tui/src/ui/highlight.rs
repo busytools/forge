@@ -78,7 +78,7 @@ pub(crate) fn highlight_code(text: &str, language: Option<&str>) -> Vec<Line<'st
     highlight_with_syntax(text, syntax)
 }
 
-/// Stateful per-side syntax highlighter — used by the split-view diff
+/// Stateful per-side syntax highlighter  -  used by the split-view diff
 /// renderer to highlight one column's worth of lines while preserving
 /// multi-line construct state (strings spanning lines, block comments,
 /// etc.) across calls. One instance per (file, side).

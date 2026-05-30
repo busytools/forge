@@ -75,7 +75,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         x_start: area.x,
         x_end: area.x.saturating_add(1),
     });
-    // Stamp the right ▦ hit-target — last column of the area.
+    // Stamp the right ▦ hit-target  -  last column of the area.
     let right_end = area.x.saturating_add(area.width);
     app.pane_hit_targets.push(PaneHitTarget::InspectorTopBarIcon {
         y: area.y,
@@ -85,7 +85,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     });
 }
 
-/// Build the `<project>·<session>` label, falling back to `—` for
+/// Build the `<project>·<session>` label, falling back to ` - ` for
 /// either piece when it can't be resolved (e.g. pre-Connect, no
 /// workspace, sleeping project). Truncated to fit `max_chars`.
 fn build_active_context(app: &App, max_chars: usize) -> String {
@@ -98,7 +98,7 @@ fn build_active_context(app: &App, max_chars: usize) -> String {
 /// Active project's user-facing `name` (from `forge.toml`). Handles
 /// the synthetic-key sentinels (`__spawn_<name>__`, `__resume_<id>__`,
 /// `__conn_pending__`) so the top bar reflects the project the user
-/// just clicked even during the Spawning window — before `Connected`
+/// just clicked even during the Spawning window  -  before `Connected`
 /// arrives and the bucket migrates to its real session id.
 fn active_project_label(app: &App) -> Option<String> {
     let workspace = app.workspace.as_ref()?;

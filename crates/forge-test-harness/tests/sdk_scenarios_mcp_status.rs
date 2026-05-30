@@ -2,7 +2,7 @@
 //!
 //! Exercises the non-initialize outbound `control_request` path. After
 //! spawn completes (initialize handshake done), the scenario issues
-//! `mcp_status` — the CLI responds with its server-connection
+//! `mcp_status`  -  the CLI responds with its server-connection
 //! snapshot. This is the simplest non-initialize `control_request` we can
 //! probe cheaply.
 
@@ -19,7 +19,7 @@ async fn wire_capture_mcp_status() {
 
     run_live_scenario("mcp_status", opts, |client, events| async move {
         // Call mcp_status BEFORE sending a user message so the CLI's
-        // control_response arrives before any conversation frames —
+        // control_response arrives before any conversation frames  - 
         // keeps the trace focused on the control round trip.
         let status = client.mcp_status().await?;
         eprintln!("mcp_status captured {} servers", status.mcp_servers.len());

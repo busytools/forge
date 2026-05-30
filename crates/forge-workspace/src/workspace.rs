@@ -2019,7 +2019,7 @@ impl Workspace {
     /// the post-scan case; this guard covers the during-scan window.
     /// Load every label's charter + initial kick (file-driven loader)
     /// before spawning. Returns the loaded set, skipping (with a warn
-    /// log) any label whose files are missing — so a single bad label
+    /// log) any label whose files are missing  -  so a single bad label
     /// in `team = [...]` doesn't block the rest of the team.
     fn load_team_roles(
         team: &[String],

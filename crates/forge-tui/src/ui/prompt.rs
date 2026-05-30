@@ -13,7 +13,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Padding, Paragraph, Widget};
 use unicode_width::UnicodeWidthStr;
 
 /// Render the prompt into `area` (the chat-input box's rect). The
-/// orange thick chrome is drawn here too — the caller does NOT render
+/// orange thick chrome is drawn here too  -  the caller does NOT render
 /// its own block first.
 pub fn render(
     area: Rect,
@@ -653,7 +653,7 @@ mod tests {
     fn long_question_body_wraps_with_aligned_continuation_indent() {
         // Single-line long body (no `\n`) must soft-wrap across multiple
         // visual rows whose leading non-blank column matches the first
-        // row's — i.e. Block::Padding::horizontal(2) keeps every wrapped
+        // row's  -  i.e. Block::Padding::horizontal(2) keeps every wrapped
         // continuation indented to the same left edge.
         let mut request = make_question_request(false);
         request.prompt.question =

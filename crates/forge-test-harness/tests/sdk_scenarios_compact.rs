@@ -1,4 +1,4 @@
-//! Live-capture scenarios: compaction — `pre_compact` hook +
+//! Live-capture scenarios: compaction  -  `pre_compact` hook +
 //! compaction lifecycle frames.
 //!
 //! Drives the `/compact` slash command as a user message. When
@@ -39,7 +39,7 @@ async fn wire_capture_compact() {
             }
         }
 
-        // Issue `/compact` — the CLI treats slash commands as normal
+        // Issue `/compact`  -  the CLI treats slash commands as normal
         // stream-json user messages whose content starts with `/`.
         client.send_user_message("/compact").await?;
         Ok((client, events))

@@ -3,15 +3,15 @@
 //! Four tools the LLM in any session can call to communicate with
 //! other forge agents (= projects from forge.toml):
 //!
-//! - `peers__ask_agent` — async question to another agent. Returns a
+//! - `peers__ask_agent`  -  async question to another agent. Returns a
 //!   correlation_id; reply lands as a new user-turn injection in the
 //!   caller's chat once the recipient's `tell_agent { in_reply_to }`
 //!   fires.
-//! - `peers__tell_agent` — fire-and-forget message OR reply (when
+//! - `peers__tell_agent`  -  fire-and-forget message OR reply (when
 //!   `in_reply_to` is set).
-//! - `peers__list_agents` — snapshot of every configured project's
+//! - `peers__list_agents`  -  snapshot of every configured project's
 //!   peer status (running / sleeping / failed + in-flight counters).
-//! - `peers__whoami` — caller's own identity (project name, org,
+//! - `peers__whoami`  -  caller's own identity (project name, org,
 //!   path, model, permission mode).
 //!
 //! All four tools take a closure-bound [`SessionKey`] identifying the
@@ -65,7 +65,7 @@ pub(crate) fn add_tools(
 /// `WorkspaceFacade::deliver_peer_prompt`.
 const HOP_LIMIT: u8 = 10;
 
-/// `peers__whoami` — caller's own identity. No args. Returns a
+/// `peers__whoami`  -  caller's own identity. No args. Returns a
 /// JSON blob containing name, org, path, current liveness, model
 /// (when known), and the current in-flight peer-message counters.
 ///
@@ -137,7 +137,7 @@ impl Tool for Whoami {
     }
 }
 
-/// `peers__list_agents` — snapshot of every forge.toml project's
+/// `peers__list_agents`  -  snapshot of every forge.toml project's
 /// peer status. No args. Returns a JSON array.
 ///
 /// Used by the LLM BEFORE calling `peers__ask_agent` or
@@ -207,13 +207,13 @@ impl Tool for ListAgents {
     }
 }
 
-/// `peers__tell_agent` — fire-and-forget message to another agent,
+/// `peers__tell_agent`  -  fire-and-forget message to another agent,
 /// OR a reply to an earlier ask (when `in_reply_to` is set).
 ///
 /// Arguments:
-/// - `target` (string, required) — project name to deliver to
-/// - `message` (string, required) — the message body
-/// - `in_reply_to` (string, optional) — the correlation_id of an
+/// - `target` (string, required)  -  project name to deliver to
+/// - `message` (string, required)  -  the message body
+/// - `in_reply_to` (string, optional)  -  the correlation_id of an
 ///   earlier ask this message replies to
 ///
 /// Returns a JSON object with `correlation_id`, `queued_at`,
@@ -228,7 +228,7 @@ impl Tool for ListAgents {
 /// - Not found → wrapper kind = Message (log warn; LLM hallucinated
 ///   the correlation id)
 ///
-/// Hop count is stamped automatically — caller doesn't pass it. The
+/// Hop count is stamped automatically  -  caller doesn't pass it. The
 /// outgoing hop is `peek_current_inbound_hop(caller).unwrap_or(0) + 1`.
 /// Outgoing chains exceeding `HOP_LIMIT` (default 10) are refused by
 /// the facade with `is_error: true`.
@@ -421,7 +421,7 @@ fn classify_tell(
         );
         return (WrappedKind::Message, None);
     }
-    // Presence in inflight_asks is the lifecycle signal — entry
+    // Presence in inflight_asks is the lifecycle signal  -  entry
     // exists ⇒ ask is open. Timeout / target-failure paths remove
     // the entry; late replies after that lookup-miss fall through
     // to the WrappedKind::Message degraded path at the call site.
@@ -457,15 +457,15 @@ fn chrono_rfc3339_now() -> String {
     })
 }
 
-/// `peers__ask_agent` — async question to another agent. Returns
+/// `peers__ask_agent`  -  async question to another agent. Returns
 /// immediately with a correlation_id; the reply lands later as a
 /// new user-turn injection in YOUR chat when the recipient calls
 /// `peers__tell_agent { in_reply_to: <this correlation_id> }`.
 ///
 /// Arguments:
-/// - `target` (string, required) — project name to ask
-/// - `prompt` (string, required) — the question body
-/// - `in_reply_to` (string, optional) — pass-through threading id
+/// - `target` (string, required)  -  project name to ask
+/// - `prompt` (string, required)  -  the question body
+/// - `in_reply_to` (string, optional)  -  pass-through threading id
 ///   if this ask itself is a follow-up to an earlier message
 ///
 /// Returns a JSON object with `correlation_id` (starts with `q-`),
@@ -473,7 +473,7 @@ fn chrono_rfc3339_now() -> String {
 ///
 /// Auto-spawns the target if it's currently sleeping; the reply
 /// will take longer in that case (one full spawn cycle). Multiple
-/// asks can run in parallel — fire several ask_agent calls in one
+/// asks can run in parallel  -  fire several ask_agent calls in one
 /// turn, replies arrive independently and can be threaded back via
 /// their distinct correlation_ids.
 ///
@@ -672,7 +672,7 @@ mod tests {
     #[tokio::test]
     async fn whoami_errors_when_caller_unresolved() {
         let mock = MockWorkspaceFacade::new();
-        // No peers pre-loaded — whoami can't find one matching the
+        // No peers pre-loaded  -  whoami can't find one matching the
         // caller's name.
         let facade = mock.into_arc();
         let tool = Whoami { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("ghost")) };
@@ -694,7 +694,7 @@ mod tests {
         assert!(tool.description().to_lowercase().contains("identity"));
         let schema = tool.input_schema();
         assert_eq!(schema["type"], "object");
-        // Schema describes no arguments — empty properties.
+        // Schema describes no arguments  -  empty properties.
         let props = schema["properties"].as_object().expect("properties is object");
         assert!(props.is_empty(), "whoami takes no arguments");
     }
@@ -891,7 +891,7 @@ mod tests {
         let facade = mock.into_arc();
         let tool =
             TellAgent { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("forge")) };
-        // Valid-shape but never-registered id — exercises the
+        // Valid-shape but never-registered id  -  exercises the
         // "lookup miss → degrade to Message" path. Malformed-id
         // input (wrong case, wrong length) takes the
         // CorrelationId::from_external rejection path instead and
@@ -912,7 +912,7 @@ mod tests {
     async fn tell_agent_in_reply_to_malformed_is_error() {
         // Uppercase hex isn't well-formed (`from_external` rejects).
         // Without this guard the lookup misses silently and the
-        // reply degrades to a Message — hiding the LLM's bug.
+        // reply degrades to a Message  -  hiding the LLM's bug.
         let mock = MockWorkspaceFacade::new();
         mock.peers.lock().push(fake_peer("forge"));
         mock.peers.lock().push(fake_peer("granite-backend"));

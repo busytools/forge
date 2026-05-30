@@ -2,7 +2,7 @@
 //!
 //! Registers an SDK-hosted MCP server with a single `greet` tool, then
 //! asks the model to call it. The captured trace includes the
-//! `mcp_message` `control_request` round trip — CLI → SDK sending
+//! `mcp_message` `control_request` round trip  -  CLI → SDK sending
 //! `initialize` / `tools/list` / `tools/call` JSON-RPC, SDK replying
 //! with the same `request_id`'s `control_response`.
 //!

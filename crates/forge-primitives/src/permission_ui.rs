@@ -1,4 +1,4 @@
-//! UI-side permission-prompt shapes — `PermissionRequest` (what the
+//! UI-side permission-prompt shapes  -  `PermissionRequest` (what the
 //! agent surfaces when the CLI asks for tool approval) and
 //! `PermissionOutcome` (what the user picks). Distinct from the
 //! wire-side decision types in [`crate::permissions`] which talk to
@@ -20,7 +20,7 @@ pub enum PermissionAction {
     Allow,
     /// `PermissionDecision::allow().with_updated_permissions(updates)`.
     AllowWithUpdates { updates: Vec<PermissionUpdate> },
-    /// Marker — the actual edited input value lives on
+    /// Marker  -  the actual edited input value lives on
     /// `PromptState.edited_input` (TUI-side). Dispatcher sends
     /// `PermissionDecision::allow_with_input(edited_value)`.
     AllowWithInput,
@@ -29,7 +29,7 @@ pub enum PermissionAction {
     Deny,
 }
 
-/// Display style for a permission option — drives icon + color in the
+/// Display style for a permission option  -  drives icon + color in the
 /// prompt widget. 4 variants total; the legacy 8-variant TUI-side
 /// `PermissionOptionKind` is being replaced by this in the unified
 /// prompt redesign (Task 23 in the plan deletes the legacy version).
@@ -95,7 +95,7 @@ pub enum PermissionOutcome {
         option_id: String,
         /// The dispatch routing for this option, as set by the agent
         /// when constructing the wire `PermissionOption`. The agent's
-        /// response handler reads this directly — no option_id lookup
+        /// response handler reads this directly  -  no option_id lookup
         /// or string-prefix matching needed.
         action: PermissionAction,
         /// User's "tell Claude" feedback string (when the notes-option

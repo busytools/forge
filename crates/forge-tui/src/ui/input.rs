@@ -27,7 +27,7 @@ const INPUT_RIGHT_PAD: u16 = 1;
 const PROMPT_WIDTH: u16 = 2;
 
 /// Rows reserved for the input box's chrome: top border + bottom
-/// border. No internal vertical padding — the slim chat-input box
+/// border. No internal vertical padding  -  the slim chat-input box
 /// starts as a single-row interior and grows up to MAX_INPUT_HEIGHT
 /// rows of interior content. The wider prompt-mode dock keeps its
 /// own internal padding via Line::default() entries in build_lines.
@@ -35,11 +35,11 @@ const INPUT_BORDER_LINES: u16 = 2;
 
 /// Minimum text-area height inside the bordered box. Single row so
 /// the box is just tall enough for one typed line plus the orange
-/// chrome — grows as the draft wraps.
+/// chrome  -  grows as the draft wraps.
 const MIN_INPUT_INTERIOR_LINES: u16 = 1;
 
 /// Maximum input area height (rows of interior content). The box
-/// grows row by row as the user types — typed drafts almost never
+/// grows row by row as the user types  -  typed drafts almost never
 /// exceed a few lines, so the cap exists only to prevent the box
 /// from consuming the entire terminal in pathological cases.
 /// Large pastes don't hit this cap because the paste handler
@@ -103,7 +103,7 @@ pub(crate) fn compute_render_geometry(area: Rect, hint_lines: u16) -> InputRende
         height: hint.height,
     });
 
-    // Bordered box spans the full chat column width — the box's L/R
+    // Bordered box spans the full chat column width  -  the box's L/R
     // borders themselves are the visual margin, so the box sits flush
     // against the pane separators (or screen edges in narrow tier).
     // `box_area` is the full Rect the Block widget draws into
@@ -147,7 +147,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         return;
     }
 
-    // Bordered frame around the input area — the chat input is THE
+    // Bordered frame around the input area  -  the chat input is THE
     // primary action surface, so the box renders with thick line
     // chrome in RUST_ORANGE + BOLD to grab the eye on first glance.
     let block = Block::default()
@@ -247,7 +247,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     }
 
     // Padded interior fits exactly the content lines (1 to
-    // MAX_INPUT_HEIGHT). No vertical slack to center against — the
+    // MAX_INPUT_HEIGHT). No vertical slack to center against  -  the
     // box height tracks the textarea row count directly.
     let prompt_rect = geometry.prompt;
     let text_rect = geometry.text;
@@ -429,7 +429,7 @@ fn render_lines_from_textarea(textarea: &TextArea<'_>, area: Rect) -> Vec<String
 ///
 /// When the active session has a prompt at the head of its queue,
 /// the height is dictated by the prompt widget's required lines
-/// instead of the chat-input editor — otherwise the morphed dock
+/// instead of the chat-input editor  -  otherwise the morphed dock
 /// would clip the option list to the editor's tiny default height.
 /// The text-area portion never collapses below `MIN_INPUT_INTERIOR_LINES`.
 pub fn visual_line_count(app: &mut App, area_width: u16) -> u16 {

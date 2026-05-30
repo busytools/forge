@@ -1,4 +1,4 @@
-//! Launchpad view — project picker shown as the floor of the UI when
+//! Launchpad view  -  project picker shown as the floor of the UI when
 //! forge is invoked without a project argv.
 //!
 //! Three vertical zones: identity block (wordmark + version lines +
@@ -25,7 +25,7 @@ use crate::app::App;
 use crate::app::view::{ActiveView, set_active_view};
 
 /// ANSI Shadow figlet for "forge". 6 rows × 43 cols. Locked by the
-/// design spec — do not tweak.
+/// design spec  -  do not tweak.
 const FORGE_WORDMARK: [&str; 6] = [
     "███████╗ ██████╗ ██████╗  ██████╗ ███████╗",
     "██╔════╝██╔═══██╗██╔══██╗██╔════╝ ██╔════╝",
@@ -53,15 +53,15 @@ const SELECTION_PREFIX_WIDTH: usize = 2;
 /// matches the row's current state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ClickIntent {
-    /// Row is ready to receive input — switch the chat view to it.
+    /// Row is ready to receive input  -  switch the chat view to it.
     EnterChat,
-    /// Cold row — dispatch `SpawnProject` and stay on the launchpad
+    /// Cold row  -  dispatch `SpawnProject` and stay on the launchpad
     /// so the user sees the row transition through `Spawning` rather
     /// than landing on the chat-view connecting stub.
     SpawnAndWait,
-    /// Mid-spawn — block the click entirely. Footer explains why.
+    /// Mid-spawn  -  block the click entirely. Footer explains why.
     Block,
-    /// Failed — the `r` key is the explicit retry path. Enter is a
+    /// Failed  -  the `r` key is the explicit retry path. Enter is a
     /// no-op so a stray Enter doesn't dispatch a half-cleaned retry
     /// that races the failed bucket still sitting in `app.sessions`.
     Retry,
@@ -109,7 +109,7 @@ fn effective_click_intent(
     click_intent(lifecycle)
 }
 
-/// One selectable row in the picker — the data the renderer needs
+/// One selectable row in the picker  -  the data the renderer needs
 /// to draw the row plus the metadata the keyboard handler needs to
 /// resolve a pick into a project + lifecycle.
 #[derive(Debug, Clone)]
@@ -175,9 +175,9 @@ fn build_picker_rows(app: &App) -> Vec<PickerRow> {
 /// Find the live `UiSession` bucket for `project`, if any. Three-step
 /// resolution mirrors the projects-pane lookup:
 ///
-/// 1. `__spawn_<name>__` synthetic — the pre-Connected placeholder.
-/// 2. Catalog session UUIDs — the lead recorded on disk, if pooled.
-/// 3. `cwd_raw` match — covers the post-KeyRenamed window when the
+/// 1. `__spawn_<name>__` synthetic  -  the pre-Connected placeholder.
+/// 2. Catalog session UUIDs  -  the lead recorded on disk, if pooled.
+/// 3. `cwd_raw` match  -  covers the post-KeyRenamed window when the
 ///    synthetic has migrated to the real session UUID but the
 ///    catalog scan hasn't refreshed yet.
 fn find_live_bucket<'app>(
@@ -474,7 +474,7 @@ fn push_project_row(
     let (glyph, glyph_color) =
         glyph_for_row(row.lifecycle, app.launchpad.spinner_style, app.launchpad.opened_at);
     let intent = effective_click_intent(app, &row.project_name, row.lifecycle);
-    // Base name style — BOLD when the row is interactive (Idle /
+    // Base name style  -  BOLD when the row is interactive (Idle /
     // Running / Sleeping / Failed), DIM when not (Spawning waits for
     // its subprocess). Selection on a clickable row layers on its
     // own emphasis (the arrow + the row staying BOLD); selection on
@@ -550,7 +550,7 @@ const PROJECT_NAME_WIDTH: usize = 14;
 /// narrower to keep the trailing chip column aligned with project rows.
 const WORKER_NAME_WIDTH: usize = 11;
 
-/// Chip column width — the leading-space + `(<account>)` chip pads to
+/// Chip column width  -  the leading-space + `(<account>)` chip pads to
 /// this width so the time column (project rows) lands at a fixed x.
 /// 13 = 1 space + 12 (CHIP_MAX_WIDTH in `account_chip_spans`).
 const CHIP_COLUMN_WIDTH: usize = 13;
@@ -560,7 +560,7 @@ const CHIP_COLUMN_WIDTH: usize = 13;
 /// row. Each row shows the worker label + its assigned-account chip
 /// from the AssignmentPlan, so the user can see the per-session
 /// account mapping before clicking the project. Workers are
-/// info-only on the launchpad — clicks land on the project lead
+/// info-only on the launchpad  -  clicks land on the project lead
 /// row; the worker rows are not selectable.
 fn push_worker_rows(lines: &mut Vec<Line<'static>>, project: &ProjectView, app: &App) {
     if project.team.is_empty() {
@@ -583,7 +583,7 @@ fn push_worker_rows(lines: &mut Vec<Line<'static>>, project: &ProjectView, app: 
         // + 1 (sp) = 10 cells. Plus name column (WORKER_NAME_WIDTH),
         // chip rendered after. Project-row chrome is only 7 cells +
         // PROJECT_NAME_WIDTH (14) = 21 cells. So worker chrome+name
-        // = 10 + 11 = 21 — same trailing column for the chip.
+        // = 10 + 11 = 21  -  same trailing column for the chip.
         let mut spans: Vec<Span<'static>> = vec![
             Span::raw(" ".repeat(SELECTION_PREFIX_WIDTH)),
             Span::styled("│ ".to_owned(), dim),
@@ -662,14 +662,14 @@ fn glyph_for_row(
 ) -> (String, Color) {
     match lifecycle {
         // Idle = "alive, no turn in flight". `●` filled bullet in
-        // `RUST_ORANGE` — same accent as the Projects pane uses for
+        // `RUST_ORANGE`  -  same accent as the Projects pane uses for
         // its active-Idle glyph (see `glyph_for_lifecycle` over there).
         // Sharing the colour keeps the two surfaces visually coherent.
         SessionLifecycleState::Idle => ("●".to_owned(), theme::RUST_ORANGE),
         // Spawning + Running both animate the spinner. Spawning is
         // "subprocess starting up"; Running is "claude is mid-turn".
         // Both are transient busy states the picker should signal to
-        // the user — picking a Running row should feel like jumping
+        // the user  -  picking a Running row should feel like jumping
         // into a session that's actively thinking, not one that's
         // already idle. Same `RUST_ORANGE` colour as the Projects
         // pane uses for its spinner glyph.
@@ -687,7 +687,7 @@ fn glyph_for_row(
 
 /// Pick the current frame glyph for `style` based on
 /// `elapsed_since_open / cadence_ms`. `forge_dot` is a single-glyph
-/// style — the opacity tween is handled separately at the colour
+/// style  -  the opacity tween is handled separately at the colour
 /// layer (currently rendered as a flat `●`; a follow-up can wire
 /// the alpha walk in once a colour-blend helper exists in theme.rs).
 fn spinner_glyph(style: SpinnerStyle, opened_at: std::time::Instant) -> char {
@@ -740,7 +740,7 @@ pub fn selectable_row_count(app: &App) -> usize {
 
 /// Index of the project row whose lead session was most recently
 /// active. `None` when no row carries a `last_activity_label` parseable
-/// as a real timestamp (e.g. all rows show `—`). Used to pick a sane
+/// as a real timestamp (e.g. all rows show ` - `). Used to pick a sane
 /// default selection on first render.
 fn most_recently_active_index(rows: &[PickerRow]) -> Option<usize> {
     rows.iter().enumerate().find_map(|(idx, row)| match row.lifecycle {
@@ -803,7 +803,7 @@ fn spawn_project_in_background(app: &mut App, project_name: &str) {
     }
 }
 
-/// Handle `r` on a Failed row — drop the failed bucket and dispatch
+/// Handle `r` on a Failed row  -  drop the failed bucket and dispatch
 /// a fresh spawn. Stays on the launchpad so the picker can visualise
 /// the spawning row.
 pub fn retry_selected_project(app: &mut App) {
@@ -849,7 +849,7 @@ fn switch_to_project_and_focus(app: &mut App, project_name: &str) {
         return;
     }
 
-    // Running bucket match by cwd — matches an auto_start project
+    // Running bucket match by cwd  -  matches an auto_start project
     // whose session UUID has already arrived via KeyRenamed.
     let path_str = project_path.to_string_lossy();
     if let Some(key) = app.find_running_bucket_for_path(path_str.as_ref()) {
@@ -858,7 +858,7 @@ fn switch_to_project_and_focus(app: &mut App, project_name: &str) {
         return;
     }
 
-    // Catalog lead — switch if pooled, else dispatch SpawnProject.
+    // Catalog lead  -  switch if pooled, else dispatch SpawnProject.
     let lead_key = catalog_sessions.into_iter().next().map(|s| s.session);
     if let Some(key) = lead_key
         && app.sessions.contains_key(&key)
@@ -868,7 +868,7 @@ fn switch_to_project_and_focus(app: &mut App, project_name: &str) {
         return;
     }
 
-    // Cold spawn — dispatch and transition. The synthetic bucket
+    // Cold spawn  -  dispatch and transition. The synthetic bucket
     // will appear in `app.sessions` on the next event tick (via the
     // workspace's SessionTask emitting SessionUpdate::Connected /
     // KeyRenamed) and the chat view will pick it up automatically.

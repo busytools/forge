@@ -1,5 +1,5 @@
 //! Permission callback trait + tests. Wire-data lives in
-//! forge-primitives — consumers import from there directly.
+//! forge-primitives  -  consumers import from there directly.
 
 use forge_primitives::{PermissionDecision, ToolPermissionContext};
 
@@ -18,7 +18,7 @@ use forge_primitives::{PermissionDecision, ToolPermissionContext};
 ///
 /// Callbacks cannot signal I/O or other errors. If your callback performs
 /// fallible work (e.g., consulting a policy server), handle the failure
-/// internally and translate to `allow` or `deny(reason)` — the SDK does not
+/// internally and translate to `allow` or `deny(reason)`  -  the SDK does not
 /// surface callback errors to the `claude` binary separately from a deny
 /// response.
 pub trait CanUseToolCallback: Send + Sync {

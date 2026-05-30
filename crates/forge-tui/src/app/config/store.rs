@@ -47,7 +47,7 @@ pub fn load(
 
     // Production path delegates to the workspace facade so the same
     // `$CLAUDE_CONFIG_DIR`-respecting reader is used everywhere.
-    // Test fixtures pass `home_override` and bypass the workspace —
+    // Test fixtures pass `home_override` and bypass the workspace  - 
     // env vars are process-global and would race across parallel
     // test runs.
     let (settings_document, local_settings_document, preferences_document) = match bridge {
@@ -272,7 +272,7 @@ fn resolve_paths(
     let project_root = project_root.to_path_buf();
 
     // User settings live under <config_dir>, which honours
-    // $CLAUDE_CONFIG_DIR — delegate to the workspace facade so the
+    // $CLAUDE_CONFIG_DIR  -  delegate to the workspace facade so the
     // env var is resolved in exactly one place. The home_override
     // case (used by tests) and the no-bridge case (early init /
     // disconnected) both bypass the workspace.
@@ -296,7 +296,7 @@ fn empty_object() -> Value {
 }
 
 fn read_json_or_empty(path: &Path) -> Value {
-    // NotFound is the normal case for fresh user/project settings —
+    // NotFound is the normal case for fresh user/project settings  - 
     // return empty silently. Other I/O errors (perm denied, broken
     // FS) and JSON parse errors are surfaced as warn so the user
     // gets a triage signal instead of an empty-config mystery.

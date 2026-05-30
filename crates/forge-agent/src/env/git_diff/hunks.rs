@@ -4,21 +4,21 @@
 //! content needed to render the GitHub-style diff viewer. Runs up to
 //! three subprocess calls per scan:
 //!
-//! 1. `git diff <target> --name-status` — file list with M/A/D/R
+//! 1. `git diff <target> --name-status`  -  file list with M/A/D/R
 //!    classification.
-//! 2. `git diff <target> --no-ext-diff` — full unified-diff body.
+//! 2. `git diff <target> --no-ext-diff`  -  full unified-diff body.
 //!    The flag defeats user-configured difftastic / delta so the
 //!    parser sees standard unified-diff format.
-//! 3. `git ls-files --others --exclude-standard` — untracked files
+//! 3. `git ls-files --others --exclude-standard`  -  untracked files
 //!    (only when `target == "HEAD"`, capped at `MAX_UNTRACKED_FILES`
 //!    entries, each read up to `MAX_UNTRACKED_FILE_SIZE` bytes).
 //!
-//! Single-shot — never polled. The `/diff` overlay calls [`scan`] on
+//! Single-shot  -  never polled. The `/diff` overlay calls [`scan`] on
 //! open and renders the resulting `Vec<FileHunks>` for the duration
 //! of the view; refreshing mid-review would invalidate pending
 //! comments anchored to specific lines.
 //!
-//! Always returns a [`ScanOutcome`] — `files` may be empty on a
+//! Always returns a [`ScanOutcome`]  -  `files` may be empty on a
 //! genuinely clean tree OR when one of the subprocess calls hit
 //! Failed / Oversize. The `scanner_ok` flag distinguishes the two
 //! so a downstream renderer can show "scan failed" rather than
@@ -36,7 +36,7 @@ use super::{GitOutput, run_git};
 /// rows render in the rail when the cap is exceeded).
 ///
 /// Public so the TUI rail renderer can surface the cap in the
-/// "+N untracked suppressed (cap M)" notice — the number lives
+/// "+N untracked suppressed (cap M)" notice  -  the number lives
 /// here as the source of truth.
 pub const MAX_UNTRACKED_FILES: usize = 4;
 
@@ -57,7 +57,7 @@ pub struct FileHunks {
 /// files surfaced from `git ls-files --others`.
 ///
 /// Covers every status code git emits: M/A/D/R/C/T/U. Unknown
-/// codes (`X` — internal error indicator, `B` — broken pairing)
+/// codes (`X`  -  internal error indicator, `B`  -  broken pairing)
 /// fire a WARN log and skip the entry rather than collapsing to
 /// `Modified`; legitimate user-visible types stay distinct.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,7 +69,7 @@ pub enum FileStatus {
     Copied,
     /// File mode changed (regular ↔ symlink, file ↔ submodule).
     Typechange,
-    /// Unmerged — caught mid-merge-conflict. Common when the user
+    /// Unmerged  -  caught mid-merge-conflict. Common when the user
     /// runs `/diff` while resolving a merge.
     Unmerged,
     Untracked,
@@ -77,7 +77,7 @@ pub enum FileStatus {
 
 /// A single `@@`-delimited hunk inside one file's diff. `lines`
 /// preserves the original unified-diff ordering with each line
-/// tagged as context, added, or removed — the renderer iterates
+/// tagged as context, added, or removed  -  the renderer iterates
 /// them directly to draw the `+ / - / ` markers and per-side line
 /// numbers without re-classifying anything.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -118,12 +118,12 @@ impl FileHunks {
 /// Per-line classification inside a hunk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiffLineKind {
-    /// Line appears in both old and new — printed without a marker
+    /// Line appears in both old and new  -  printed without a marker
     /// (or with a leading space, depending on the renderer).
     Context,
-    /// Line is in the new file only — rendered with `+` marker.
+    /// Line is in the new file only  -  rendered with `+` marker.
     Added,
-    /// Line is in the old file only — rendered with `-` marker.
+    /// Line is in the old file only  -  rendered with `-` marker.
     Removed,
 }
 
@@ -142,7 +142,7 @@ pub struct DiffLine {
 
 /// Outcome of a single scan invocation. `files` carries whatever
 /// was parsed; `scanner_ok` is `false` when at least one of the
-/// underlying subprocess calls hit `Failed` or `Oversize` — the
+/// underlying subprocess calls hit `Failed` or `Oversize`  -  the
 /// file list may be partial or empty, and a downstream renderer
 /// should distinguish that case from a genuine clean tree so the
 /// user knows whether to retry vs. accept "no changes."
@@ -169,7 +169,7 @@ pub struct ScanOutcome {
 const MAX_INFLIGHT_FETCHES: usize = 16;
 
 /// Top-level scanner entry. `target` is a plain ref / SHA / `"HEAD"`
-/// (not a `..`/`...` range — the helper `diff_ref_spec` picks the
+/// (not a `..`/`...` range  -  the helper `diff_ref_spec` picks the
 /// shape for us). `"HEAD"` runs a two-dot working-tree diff
 /// (uncommitted only); any other ref runs `git diff <target>...HEAD`,
 /// the three-dot form that surfaces what THIS branch contributed
@@ -179,7 +179,7 @@ const MAX_INFLIGHT_FETCHES: usize = 16;
 /// and overlay agree on what's diffable even after a squash-merge
 /// where two-dot `git diff main HEAD` would be empty.
 ///
-/// Returns a [`ScanOutcome`] — `files` carries one [`FileHunks`]
+/// Returns a [`ScanOutcome`]  -  `files` carries one [`FileHunks`]
 /// per changed file in the order `git diff --name-status` reports
 /// them (untracked files when `target == "HEAD"` come at the end
 /// as [`FileStatus::Untracked`]), `scanner_ok` is `false` when any
@@ -215,7 +215,7 @@ pub async fn scan(cwd: &Path, target: &str) -> ScanOutcome {
         // `files` by index, captured as the future's first item.
         use futures::StreamExt;
         // Clone the path list off `files` so the immutable borrow
-        // drops before the stream runs — we mutate `files[idx]`
+        // drops before the stream runs  -  we mutate `files[idx]`
         // inside the consume loop.
         let paths: Vec<String> = files.iter().map(|f| f.path.clone()).collect();
         let ref_spec_for_fetch = ref_spec.clone();
@@ -281,8 +281,8 @@ fn diff_ref_spec(target: &str) -> String {
 /// `git diff <ref_spec> --no-ext-diff -- <path>`. The `--` separator
 /// ensures the path isn't reinterpreted as a flag for files like
 /// `--foo`. Binary files and submodule entries return `Ok(vec![])`
-/// — that's the legitimate "no @@ hunks" case and matches the
-/// rendering convention for those file kinds.
+/// (that's the legitimate "no @@ hunks" case and matches the
+/// rendering convention for those file kinds).
 ///
 /// `ref_spec` is the already-resolved diff range from
 /// [`diff_ref_spec`] (e.g. `HEAD` for working-tree diffs, or
@@ -317,8 +317,8 @@ async fn fetch_file_hunks(cwd: &Path, ref_spec: &str, path: &str) -> FileScanOut
 /// stubs. Hunks are filled in by a subsequent `merge_hunks` pass.
 ///
 /// Status codes covered: M (modified), A (added), D (deleted),
-/// R (renamed), C (copied), T (typechange — symlink/submodule),
-/// U (unmerged — mid-merge-conflict). Unknown codes (X, B, or
+/// R (renamed), C (copied), T (typechange  -  symlink/submodule),
+/// U (unmerged  -  mid-merge-conflict). Unknown codes (X, B, or
 /// anything else git might emit in future) fire a WARN log and
 /// drop the entry so an operator can spot the gap.
 fn parse_name_status(raw: &str) -> Vec<FileHunks> {
@@ -326,9 +326,9 @@ fn parse_name_status(raw: &str) -> Vec<FileHunks> {
         .filter_map(|line| {
             let mut parts = line.split('\t');
             let status_code = parts.next()?;
-            // For R/C the line is "R100\told\tnew" — the new path is
+            // For R/C the line is "R100\told\tnew"  -  the new path is
             // the last tab-separated field. For plain M/A/D it's
-            // "M\tpath" — also last. `next_back` is the
+            // "M\tpath"  -  also last. `next_back` is the
             // DoubleEndedIterator-aware way to grab the tail without
             // walking the whole split.
             let path = parts.next_back()?;
@@ -358,7 +358,7 @@ fn parse_name_status(raw: &str) -> Vec<FileHunks> {
         .collect()
 }
 
-/// True when `section` contains at least one `@@` line — used by
+/// True when `section` contains at least one `@@` line  -  used by
 /// the per-file fetch path to distinguish "no body to parse"
 /// (binary / submodule, no log) from "parser couldn't extract
 /// hunks despite headers being present" (WARN-worthy).
@@ -384,7 +384,7 @@ fn parse_hunks(section: &str) -> Vec<Hunk> {
         let header_line = lines[start];
         let Some((old_start, old_count, new_start, new_count)) = parse_hunk_header(header_line)
         else {
-            // Malformed @@ header — never expected on healthy git
+            // Malformed @@ header  -  never expected on healthy git
             // output, but if it does fire (corrupt diff, custom
             // pretty-format leaking through) the operator needs to
             // see which line broke the parse.
@@ -428,7 +428,7 @@ fn parse_hunks(section: &str) -> Vec<Hunk> {
                 old_cursor = old_cursor.saturating_add(1);
                 new_cursor = new_cursor.saturating_add(1);
             } else if line.starts_with('\\') {
-                // `\ No newline at end of file` — legitimate diff
+                // `\ No newline at end of file`  -  legitimate diff
                 // marker, intentionally dropped.
             } else if !line.is_empty() {
                 // Hunk-body line with an unexpected leading byte.
@@ -444,7 +444,7 @@ fn parse_hunks(section: &str) -> Vec<Hunk> {
                     line = %truncated,
                 );
             }
-            // Truly empty lines fall through silently — they
+            // Truly empty lines fall through silently  -  they
             // bracket the final hunk in some `git diff` outputs.
         }
         hunks.push(Hunk { old_start, old_count, new_start, new_count, lines: diff_lines });
@@ -477,7 +477,7 @@ fn parse_pair(s: &str) -> Option<(u32, u32)> {
 /// Read untracked files from `git ls-files --others
 /// --exclude-standard` and synthesise a [`FileHunks`] for each one
 /// (status [`Untracked`](FileStatus::Untracked), single all-added
-/// hunk). Caps total count at `MAX_UNTRACKED_FILES` — when the
+/// hunk). Caps total count at `MAX_UNTRACKED_FILES`  -  when the
 /// working tree has more untracked entries than that, returns an
 /// empty `Vec` so a fresh-repo state doesn't dump hundreds of files
 /// into the overlay.
@@ -553,7 +553,7 @@ async fn scan_untracked(cwd: &Path) -> (Vec<FileHunks>, bool, usize) {
                 // only, but submodules / sockets / fifos can sneak
                 // in on exotic setups. Log so an operator hunting
                 // "why is this file showing as untracked-empty"
-                // has a breadcrumb — the rail row stays but its
+                // has a breadcrumb  -  the rail row stays but its
                 // body is unviewable.
                 tracing::warn!(
                     target: crate::logging::targets::ENV_GIT,
@@ -665,7 +665,7 @@ U\tconflicted.rs";
         line.kind == DiffLineKind::Context && line.text == expected
     }
 
-    // Raw strings throughout — unified-diff context lines are
+    // Raw strings throughout  -  unified-diff context lines are
     // single-space-prefixed, and Rust's `\<newline>` continuation
     // strips that space when it eats the next line's leading
     // whitespace. Raw strings preserve all whitespace verbatim.
@@ -862,7 +862,7 @@ diff --git a/x.rs b/x.rs
     #[test]
     fn diff_ref_spec_treats_sha_like_a_branch() {
         // Commit SHAs benefit from three-dot the same way branches
-        // do — diff vs merge-base, not vs the tip directly.
+        // do  -  diff vs merge-base, not vs the tip directly.
         assert_eq!(diff_ref_spec("abc1234"), "abc1234...HEAD");
     }
 }

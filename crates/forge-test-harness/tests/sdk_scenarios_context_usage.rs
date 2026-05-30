@@ -36,7 +36,7 @@ async fn wire_capture_context_usage() {
             usage.total_tokens, usage.max_tokens, usage.percentage,
         );
 
-        // The conversation already Result'd above — sending another
+        // The conversation already Result'd above  -  sending another
         // user message would kick off a second turn. Instead, hand the
         // client back to the harness which will close stdin and drain
         // to EOF. Without this the harness would hang waiting for

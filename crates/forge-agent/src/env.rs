@@ -1,4 +1,4 @@
-//! Live environment — git context, cwd insights, OS-side
+//! Live environment  -  git context, cwd insights, OS-side
 //! observations the agent needs but the SDK doesn't.
 //!
 //! Distinct from `userdata` (on-disk Claude state) and `cloud`

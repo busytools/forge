@@ -1,6 +1,6 @@
 //! Anthropic OAuth usage API response shapes.
 //!
-//! Type-only — the HTTP fetcher lives in
+//! Type-only  -  the HTTP fetcher lives in
 //! `forge_agent::cloud::oauth_usage`. These are the JSON wire
 //! shapes; the fetcher deserializes into them.
 
@@ -28,11 +28,11 @@ pub struct OauthUsage {
 /// epoch). Consumers parse it themselves.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct OauthUsageWindow {
-    /// Percentage of the window consumed (0.0–100.0). `None` when the
+    /// Percentage of the window consumed (0.0-100.0). `None` when the
     /// API omits the field for this window.
     pub utilization: Option<f64>,
     /// When the window resets. Either an ISO-8601 string or a numeric
-    /// epoch — kept as raw `serde_json::Value` so callers can parse
+    /// epoch  -  kept as raw `serde_json::Value` so callers can parse
     /// whichever form they prefer.
     pub resets_at: Option<serde_json::Value>,
 }
@@ -40,7 +40,7 @@ pub struct OauthUsageWindow {
 /// "Extra usage" pay-as-you-go credit balance.
 ///
 /// Money fields are in **minor units** (cents for USD) as the API
-/// returns them — consumers convert to major units (`/ 100.0`) for
+/// returns them  -  consumers convert to major units (`/ 100.0`) for
 /// display.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct OauthExtraUsage {
@@ -50,7 +50,7 @@ pub struct OauthExtraUsage {
     pub monthly_limit: Option<f64>,
     /// Credits consumed in the current period in minor units.
     pub used_credits: Option<f64>,
-    /// Percentage of `monthly_limit` consumed (0.0–100.0).
+    /// Percentage of `monthly_limit` consumed (0.0-100.0).
     pub utilization: Option<f64>,
     /// Currency code (e.g. `"USD"`) for the money fields.
     pub currency: Option<String>,
@@ -74,7 +74,7 @@ pub enum OauthUsageError {
     #[error("Claude OAuth usage request was rejected (HTTP {0})")]
     Unauthorized(u16),
     /// API returned 429. `retry_after` is the parsed `Retry-After`
-    /// header value (in seconds) when present — Anthropic returns
+    /// header value (in seconds) when present  -  Anthropic returns
     /// per-account hold-down durations that the caller should honour
     /// to avoid hammering the endpoint and keeping the limit hot.
     #[error("Claude OAuth usage request was rate-limited (retry_after={retry_after:?})")]
@@ -95,7 +95,7 @@ impl OauthUsageError {
     /// True for transient/auth-related failures where falling back to
     /// a different usage source (e.g. the CLI fetcher) makes sense.
     /// `Network` and `HttpStatus` are excluded because they typically
-    /// indicate the API is unreachable / broken — falling back to a
+    /// indicate the API is unreachable / broken  -  falling back to a
     /// different source for the same backend won't help.
     pub fn should_fallback(&self) -> bool {
         matches!(self, Self::NoCredentials | Self::Expired | Self::Unauthorized(_))

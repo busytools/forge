@@ -105,7 +105,7 @@ pub fn update_query(app: &mut App) {
         slash.dialog = dialog;
         slash.dialog.clamp(slash.candidates.len(), MAX_VISIBLE);
         // After a context reset the new candidate list might lead
-        // with a divider — snap the highlight to the first real row.
+        // with a divider  -  snap the highlight to the first real row.
         advance_past_leading_divider(slash);
     } else {
         let mut state = next_state;

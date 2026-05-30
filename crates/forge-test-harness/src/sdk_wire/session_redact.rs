@@ -65,7 +65,7 @@ fn scrub_paths_recursive(v: &mut Value) {
             for val in o.values_mut() {
                 scrub_paths_recursive(val);
             }
-            // Then scrub object KEYS too — fixture readers should see
+            // Then scrub object KEYS too  -  fixture readers should see
             // no leaks even when a path appears as a map key (env-var
             // dumps, file-history snapshots, future Anthropic API
             // shapes that key by absolute path). Build a replacement
@@ -85,7 +85,7 @@ fn scrub_paths_recursive(v: &mut Value) {
                         // Two distinct source paths redacted to the
                         // same opaque key; the second insert silently
                         // overwrites. This is intentional (privacy
-                        // collapse — the redactor should not preserve
+                        // collapse  -  the redactor should not preserve
                         // distinguishing path info), but log so a
                         // fixture-regen review can spot unexpected
                         // shape changes.
@@ -179,7 +179,7 @@ pub fn transform_persistence_line(
     // Drop persistence-only fields the wire decoder doesn't expect.
     // `toolUseResult` / `lastPrompt` / `content` (snapshot body) carry
     // raw tool output / prompt text with embedded paths + project
-    // content — must be removed entirely, not just scrubbed.
+    // content  -  must be removed entirely, not just scrubbed.
     for field in [
         "attachment",
         "content",
@@ -250,7 +250,7 @@ fn redact_content_block(block: &mut Value, state: &mut RedactState) {
                     Value::String(format!("<redacted-thinking {bytes}b>")),
                 );
             }
-            // `signature` is a signed opaque token — redact fully.
+            // `signature` is a signed opaque token  -  redact fully.
             if obj.contains_key("signature") {
                 obj.insert("signature".into(), Value::String("<redacted-signature>".into()));
             }
@@ -275,7 +275,7 @@ fn redact_content_block(block: &mut Value, state: &mut RedactState) {
                     Value::String(format!("<redacted-tool-result {bytes}b>")),
                 );
             } else if let Some(Value::Array(arr)) = obj.get_mut("content") {
-                // Structured tool_result content — redact each sub-block.
+                // Structured tool_result content  -  redact each sub-block.
                 for sub in arr.iter_mut() {
                     redact_content_block(sub, state);
                 }
@@ -285,7 +285,7 @@ fn redact_content_block(block: &mut Value, state: &mut RedactState) {
             // Anthropic API document/image block. Shape:
             // `{"type":"<kind>","source":{"type":"base64",
             //   "media_type":"<mime>","data":"<base64 bytes>"}}`.
-            // The `data` field can be megabytes — replace with a
+            // The `data` field can be megabytes  -  replace with a
             // size-tagged stub (`<redacted-<kind>-data Nb>`) so the
             // fixture records the shape but not the content. Keep
             // `media_type` so fixtures document what kind of
@@ -304,7 +304,7 @@ fn redact_content_block(block: &mut Value, state: &mut RedactState) {
             }
         }
         _ => {
-            // Unknown block type — keep shape, scrub any obvious
+            // Unknown block type  -  keep shape, scrub any obvious
             // text-carrying fields to be safe.
             for (k, val) in obj.iter_mut() {
                 if let Value::String(s) = val
@@ -385,7 +385,7 @@ mod tests {
     #[test]
     fn scrub_paths_recursive_collisions_collapse_last_wins() {
         // Two distinct source paths redact to the same opaque key.
-        // Privacy-preserving by design — the redactor must not
+        // Privacy-preserving by design  -  the redactor must not
         // expose distinguishing path info via key uniqueness.
         let mut v = json!({
             "/Users/alice/foo": "a",

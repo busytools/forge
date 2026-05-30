@@ -1,7 +1,7 @@
 //! Pure-data option enums lifted from forge-sdk's `options.rs`.
 //!
 //! `Options` itself stays in forge-sdk because it carries callback
-//! `Arc<dyn …>` fields — but every wire-shape enum it embeds is data
+//! `Arc<dyn …>` fields  -  but every wire-shape enum it embeds is data
 //! that the agent + UI also need to reason about.
 
 use serde::{Deserialize, Serialize};
@@ -12,7 +12,7 @@ pub use crate::permission::PermissionMode;
 /// `str | SystemPromptPreset | SystemPromptFile`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SystemPromptKind {
-    /// Plain string override — `--system-prompt <text>`.
+    /// Plain string override  -  `--system-prompt <text>`.
     Inline(String),
     /// Preset (currently only `claude_code`) with optional append + the
     /// `exclude_dynamic_sections` signal that rides along inside the
@@ -26,7 +26,7 @@ pub enum SystemPromptKind {
         /// the CLI's conditional.
         exclude_dynamic_sections: Option<bool>,
     },
-    /// File-backed prompt — `--system-prompt-file <path>`.
+    /// File-backed prompt  -  `--system-prompt-file <path>`.
     File(std::path::PathBuf),
 }
 
@@ -44,7 +44,7 @@ impl SystemPromptKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum SdkPluginConfig {
-    /// Local filesystem plugin — emits `--plugin-dir <path>`.
+    /// Local filesystem plugin  -  emits `--plugin-dir <path>`.
     Local {
         /// Plugin directory path.
         path: std::path::PathBuf,

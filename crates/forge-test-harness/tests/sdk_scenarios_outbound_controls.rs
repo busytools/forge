@@ -27,7 +27,7 @@ async fn wire_capture_set_model() {
 #[tokio::test]
 #[ignore = "burns real Anthropic API tokens; opt-in via FORGE_WIRE_CAPTURE=1"]
 async fn wire_capture_mcp_reconnect() {
-    // Need at least one MCP server in the init set — use whatever the
+    // Need at least one MCP server in the init set  -  use whatever the
     // user's profile reports from `mcp_status`. If none, the scenario
     // skips inside drive.
     let opts =
@@ -65,7 +65,7 @@ async fn wire_capture_mcp_toggle() {
             return Ok((client, events));
         };
         let name = server.name.clone();
-        // Toggle off then back on — exercises both payloads.
+        // Toggle off then back on  -  exercises both payloads.
         if let Err(e) = client.mcp_toggle(&name, false).await {
             eprintln!("mcp_toggle({name}, false): {e}");
         }

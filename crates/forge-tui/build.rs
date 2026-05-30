@@ -1,6 +1,6 @@
 //! Stamp the build with the current git commit + branch.
 //!
-//! Emitted unconditionally — every binary surfaces its short SHA so a
+//! Emitted unconditionally  -  every binary surfaces its short SHA so a
 //! screenshot is enough to identify the running commit. Short form
 //! (Projects pane bottom row, launchpad version line) is
 //! `0.15.1+<sha>`; full form (welcome banner, status panel) is
@@ -8,7 +8,7 @@
 //! `main`. Detached HEAD elides the branch parenthetical.
 //!
 //! Tolerant of missing `.git` (e.g. `cargo install` from crates.io)
-//! and any other git failure — emits empty suffixes in that case.
+//! and any other git failure  -  emits empty suffixes in that case.
 
 use std::process::Command;
 
@@ -19,13 +19,13 @@ fn main() {
     // switch (its content is `ref: refs/heads/<branch>`, which
     // doesn't change when you commit on the same branch). To pick
     // up the commit-on-same-branch case we additionally watch the
-    // refs + logs directories — both get content writes on
+    // refs + logs directories  -  both get content writes on
     // `git commit` / `checkout` / `reset` / etc., and cargo's
     // rerun-if-changed on a directory walks the tree.
     //
     // Without this, building forge-tui after `git commit` on a
     // feature branch keeps re-using the previous build's
-    // FORGE_BUILD_SUFFIX_SHORT — the embedded version stamp goes
+    // FORGE_BUILD_SUFFIX_SHORT  -  the embedded version stamp goes
     // stale and the binary reports an older commit hash than it
     // was built from.
     if std::path::Path::new("../../.git/HEAD").exists() {
@@ -55,7 +55,7 @@ fn compute_suffixes() -> (String, String) {
         // On `main` (release-style) the branch parenthetical is
         // redundant; the bare sha is enough to identify the build.
         // Detached HEAD (e.g. tag checkout) reports the literal
-        // sentinel `"HEAD"` here — same treatment.
+        // sentinel `"HEAD"` here  -  same treatment.
         "main" | "HEAD" => format!(" · {sha}"),
         _ => format!(" · {sha} ({branch})"),
     };

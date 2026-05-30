@@ -40,10 +40,10 @@ pub enum WorkerDeliverError {
 /// addressing keyword.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WorkerLeadDeliverError {
-    /// Caller resolves to no known session (defensive — should not
+    /// Caller resolves to no known session (defensive  -  should not
     /// happen with a valid CallerKeyResolver).
     UnknownCaller,
-    /// Caller is a project lead — leads have no lead to talk back
+    /// Caller is a project lead  -  leads have no lead to talk back
     /// to. The `"lead"` keyword is worker-only.
     LeadCallerHasNoLead,
     /// Worker's recorded `spawned_by_session_id` no longer resolves
@@ -77,7 +77,7 @@ pub enum WorkerSpawnError {
     EmptyLabel,
     /// `label` collides with the reserved `"lead"` keyword
     /// (workers MCP uses it as an addressing target for the worker's
-    /// own lead — see [`LEAD_LABEL`]).
+    /// own lead  -  see [`LEAD_LABEL`]).
     ReservedLabel,
     /// `charter` is empty after trim.
     EmptyCharter,
@@ -363,7 +363,7 @@ impl WorkerFacade for ProdWorkerFacade {
             label,
             charter,
             spawned_by_session_id: caller.as_str().to_owned(),
-            // MCP-driven spawn is always a fresh session — the LLM
+            // MCP-driven spawn is always a fresh session  -  the LLM
             // explicitly requested a NEW worker. Resume is for the
             // engineering-team Connected hook only.
             resume_existing: None,

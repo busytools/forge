@@ -55,7 +55,7 @@ fn build_worker_extra_args(is_git_repo: bool, label: &str) -> Vec<(String, Optio
 /// spawned lead session knows it has a team. No-op when the team is
 /// empty or a charter was already set (worker spawns set the worker's
 /// own charter; we never overwrite that). Returns an error when the
-/// lead charter file is missing — caller surfaces this to the user so
+/// lead charter file is missing  -  caller surfaces this to the user so
 /// they know to populate `~/.claude/forge-team/lead/charter.md`.
 fn apply_lead_charter_if_team(
     team: &[String],
@@ -73,7 +73,7 @@ fn apply_lead_charter_if_team(
 
 /// Emit a `SessionUpdate` and log at debug when the receiver is gone
 /// (TUI is shutting down or has crashed). The send is logically
-/// best-effort — no caller can act on the failure — but visibility
+/// best-effort  -  no caller can act on the failure  -  but visibility
 /// in the log distinguishes "TUI dropped the channel" from "the
 /// emit never happened" during diagnosis.
 fn try_emit(workspace: &Workspace, label: &'static str, update: SessionUpdate) {
@@ -177,7 +177,7 @@ pub(crate) fn handle_deliver_peer_prompt(
     // Find the target project's running lead session (if any). The
     // `list_projects()` snapshot has `sessions: Vec<SessionView>` per
     // project; `is_open == true` on a session means an Agent is in
-    // the workspace pool — that's "running." MUST skip worker
+    // the workspace pool  -  that's "running." MUST skip worker
     // sessions: once a worker connects it lands in `view.sessions`
     // too, and a worker can sit at position 0 / be the first
     // is_open session. Returning a worker key here dispatches the
@@ -200,7 +200,7 @@ pub(crate) fn handle_deliver_peer_prompt(
         // dispatch so any tools the target's LLM fires on the resulting
         // turn read the correct ambient hop via peek_current_inbound_hop.
         stamp_inbound_hop(workspace, &target_key, wrapped.hop);
-        // Bump target's incoming counter (sidebar badge) — only for
+        // Bump target's incoming counter (sidebar badge)  -  only for
         // `Question` wrappers (an ask expecting a reply). Tells /
         // Replies / Late-replies / Caller-timeout / Recipient-expired
         // / Delivery-failure all flow through this dispatch path too,
@@ -217,7 +217,7 @@ pub(crate) fn handle_deliver_peer_prompt(
         // first. The CLI doesn't echo stdin-injected prompts back
         // on stream-json output (only tool_result-bearing user
         // envelopes come back), so the TUI gets no inbound user-turn
-        // signal from the SDK side — `PeerEnvelopeAppended` is how
+        // signal from the SDK side  -  `PeerEnvelopeAppended` is how
         // the TUI knows to render the peer block.
         push_peer_user_turn_into_chat(workspace, &target_key, &wrapped);
         let text = wrapped.to_prose();
@@ -236,7 +236,7 @@ pub(crate) fn handle_deliver_peer_prompt(
         return;
     }
 
-    // Target is sleeping (or unknown — defensive). If the project
+    // Target is sleeping (or unknown  -  defensive). If the project
     // exists in forge.toml, ensure a DomainSession exists at the
     // synthetic spawn key, buffer the wrapped prompt for delivery on
     // Connected, then dispatch SpawnProject.
@@ -304,12 +304,12 @@ fn stamp_inbound_hop(workspace: &Workspace, target_key: &SessionKey, hop: u8) {
 /// Emit a typed `PeerEnvelopeAppended` so the target session's TUI
 /// chat buffer shows the inbound peer user-turn. The TUI reducer
 /// builds the chat-side echo directly from the `WrappedPrompt`'s
-/// typed fields — workspace no longer forges an SDK `Message::User`
+/// typed fields  -  workspace no longer forges an SDK `Message::User`
 /// frame (audit I11).
 ///
 /// Note: this only affects the TUI's visible chat echo. The
 /// recipient's `claude` subprocess still receives the prose via a
-/// separate `Command::Prompt` dispatch — the CLI's input channel
+/// separate `Command::Prompt` dispatch  -  the CLI's input channel
 /// is text-shaped and stays that way.
 pub(crate) fn push_peer_user_turn_into_chat(
     workspace: &Workspace,
@@ -502,7 +502,7 @@ pub(crate) fn handle_spawn_worker(
     // Connected handler can find the entry via worker_lookup_for_session
     // when it fires (worker_lookup_for_session reads live_workers).
     //
-    // On the resume path `needs_tag` is false — the tag is already on
+    // On the resume path `needs_tag` is false  -  the tag is already on
     // disk in the JSONL (the team Connected hook only resumes sessions
     // whose tag matches `forge:worker:<label>` so this invariant is
     // guaranteed by the caller).
@@ -769,8 +769,8 @@ pub(crate) fn handle_deliver_worker_prompt(
 /// peer-style prompt from a worker back to its lead, addressed by
 /// the lead's `SessionKey` (resolved at Tool dispatch from the
 /// worker's `spawned_by_session_id`). Same wire shape as
-/// `DeliverWorkerPrompt` — PeerEnvelopeAppended echo + Command::Prompt
-/// dispatch — so the lead's TUI renders the message identically to
+/// `DeliverWorkerPrompt`  -  PeerEnvelopeAppended echo + Command::Prompt
+/// dispatch  -  so the lead's TUI renders the message identically to
 /// a sibling-worker delivery.
 ///
 /// Drops with a warn log when the target lead session is no longer
@@ -786,7 +786,7 @@ pub(crate) fn handle_deliver_worker_prompt_to_lead(
 ) {
     // Defensive: confirm the lead session is still in the pool. If it
     // closed since the worker captured its `spawned_by_session_id`,
-    // drop the prompt with a warn — same shape as `DeliverWorkerPrompt`
+    // drop the prompt with a warn  -  same shape as `DeliverWorkerPrompt`
     // does for a worker that vanished between dispatch and handler.
     if !workspace.pool.lock().contains_key(target_lead_key) {
         tracing::warn!(
@@ -852,7 +852,7 @@ config_dir = "~/.claude-subspace"
 
     /// `handle_spawn_project` for an unknown project name must not
     /// panic, must not emit a `SessionUpdate::Spawning`, and must
-    /// log a warning. Important for the user-input boundary — a
+    /// log a warning. Important for the user-input boundary  -  a
     /// click on a stale row shouldn't crash forge-tui.
     #[tokio::test]
     async fn spawn_project_unknown_project_emits_no_update() {
@@ -929,13 +929,13 @@ config_dir = "~/.claude-subspace"
     }
 
     /// `handle_spawn_session` failure path emits
-    /// `ConnectionFailed { fatal: false }` — a sleeping-session
+    /// `ConnectionFailed { fatal: false }`  -  a sleeping-session
     /// spawn failure must NOT kill the app. Distinguished from
     /// `handle_start_default`'s fatal contract by route.
     ///
     /// Drives the failure by passing a session id that doesn't
     /// appear in any project catalog. `find_project_for_session`
-    /// returns None and the handler exits without an emit — this
+    /// returns None and the handler exits without an emit  -  this
     /// regression test confirms it does NOT emit a fatal envelope.
     #[tokio::test]
     async fn spawn_session_unknown_session_emits_no_fatal() {
@@ -972,7 +972,7 @@ config_dir = "~/.claude-subspace"
         }
     }
 
-    /// I3 — `handle_deliver_peer_prompt` for an unknown target must
+    /// I3  -  `handle_deliver_peer_prompt` for an unknown target must
     /// not panic and must not emit a fatal envelope. The tool itself
     /// rejects unknown targets synchronously via `DeliverError::UnknownTarget`;
     /// the spawn path's defensive branch is the second line of defence
@@ -1000,7 +1000,7 @@ config_dir = "~/.claude-subspace"
         }
     }
 
-    /// I3 — `handle_deliver_peer_prompt` against a sleeping known
+    /// I3  -  `handle_deliver_peer_prompt` against a sleeping known
     /// project buffers the prompt in the target's pending list and
     /// triggers a SpawnProject. The pending list grows by one.
     #[tokio::test]
@@ -1040,7 +1040,7 @@ config_dir = "~/.claude-subspace"
         // SpawnProject which (synchronously inside dispatch)
         // migrates the buffered state onto the real resolved
         // session key. Either way, EXACTLY ONE DomainSession in
-        // the workspace must carry our wrapped prompt — assert
+        // the workspace must carry our wrapped prompt  -  assert
         // on the typed correlation id rather than the key path.
         let handles = workspace.domain_handles.lock();
         let total: usize = handles

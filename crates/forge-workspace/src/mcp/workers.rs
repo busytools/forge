@@ -319,7 +319,7 @@ impl Tool for Tell {
 
         // Validate `in_reply_to` shape at the tool boundary. A
         // malformed id would silently miss the inflight-map lookup
-        // and degrade to Message, hiding the actual problem — reject
+        // and degrade to Message, hiding the actual problem  -  reject
         // explicitly so the LLM sees + fixes.
         let in_reply_to_id = match args.in_reply_to.as_deref() {
             None => None,
@@ -336,7 +336,7 @@ impl Tool for Tell {
 
         // Classify the tell. If `in_reply_to` resolves to an
         // InflightAsk whose `caller` matches the resolved target
-        // session, this is a clean reply — kind=Reply, and we'll
+        // session, this is a clean reply  -  kind=Reply, and we'll
         // close the ask + decrement stats post-dispatch. Otherwise
         // it degrades to Message (or stays Message for unsolicited).
         let (kind, reply_target_session) =
@@ -356,7 +356,7 @@ impl Tool for Tell {
 
         // Reserved keyword: `label="lead"` routes back to the caller's
         // lead session (resolved from the worker's
-        // `spawned_by_session_id`). Lead callers get a clear error —
+        // `spawned_by_session_id`). Lead callers get a clear error  - 
         // leads don't have a lead. See `LEAD_LABEL` in
         // `mcp::workers::facade`.
         let delivery_ok = if args.label == LEAD_LABEL {
@@ -393,10 +393,10 @@ impl Tool for Tell {
 
 /// Classify a `workers__tell` based on the optional `in_reply_to`.
 ///
-/// - No `in_reply_to` → `(Message, None)` — unsolicited.
+/// - No `in_reply_to` → `(Message, None)`  -  unsolicited.
 /// - `in_reply_to` resolves to an InflightAsk AND the resolved
 ///   target session of this tell == the original ask's caller →
-///   `(Reply, Some(asker_session))` — clean reply.
+///   `(Reply, Some(asker_session))`  -  clean reply.
 /// - `in_reply_to` provided but resolves to nothing, or resolves to
 ///   an ask whose caller doesn't match this tell's target →
 ///   `(Message, None)` with a warn log (degraded reply). Same
@@ -1285,7 +1285,7 @@ mod tests {
         let schema = tool.input_schema();
         let required = schema["required"].as_array().expect("required field present");
         assert!(required.iter().any(|v| v == "label"));
-        // `in_reply_to` is an OPTIONAL property — present in the schema
+        // `in_reply_to` is an OPTIONAL property  -  present in the schema
         // but not in `required`, mirroring peers__tell_agent.
         assert!(schema["properties"].as_object().unwrap().contains_key("in_reply_to"));
         assert!(required.iter().all(|v| v != "in_reply_to"));
@@ -1425,7 +1425,7 @@ mod tests {
     }
 
     // ---------------------------------------------------------------
-    // Reserved `"lead"` addressing — workers__spawn rejects the label,
+    // Reserved `"lead"` addressing  -  workers__spawn rejects the label,
     // workers__tell / workers__ask route to the caller's spawning
     // lead when the label matches.
     // ---------------------------------------------------------------
@@ -1454,7 +1454,7 @@ mod tests {
     async fn spawn_reserved_lead_label_is_error() {
         // workers__spawn must reject label='lead' because workers__tell
         // / workers__ask reserve that label for addressing the caller's
-        // lead — letting it through would let a worker shadow the
+        // lead  -  letting it through would let a worker shadow the
         // reserved keyword.
         let mock = MockWorkerFacade::new();
         mock.callers.lock().insert(fake_key("lead-key"), lead_caller("forge"));
@@ -1528,7 +1528,7 @@ mod tests {
 
     #[tokio::test]
     async fn tell_label_lead_from_lead_is_error() {
-        // Lead caller using label='lead' — error. Leads have no lead.
+        // Lead caller using label='lead'  -  error. Leads have no lead.
         let mock = Arc::new(MockWorkerFacade::new());
         let lead_key = fake_key("lead-key");
         mock.callers.lock().insert(lead_key.clone(), lead_caller("forge"));
@@ -1576,7 +1576,7 @@ mod tests {
         assert!(!output.is_error, "worker→lead ask should succeed: {:?}", output.blocks);
         assert_eq!(mock.deliver_calls.lock().len(), 1);
         assert_eq!(mock.deliver_calls.lock()[0].1, "<lead>");
-        // Inflight registration survives a successful delivery — only
+        // Inflight registration survives a successful delivery  -  only
         // dispatch failures roll back. One ask = one entry.
         assert_eq!(mock.inflight.lock().len(), 1, "inflight registered + retained on success");
     }
@@ -1606,14 +1606,14 @@ mod tests {
 
     #[tokio::test]
     async fn tell_label_lead_when_worker_entry_missing_errors() {
-        // Worker caller exists, but no WorkerEntry is preloaded — the
+        // Worker caller exists, but no WorkerEntry is preloaded  -  the
         // mock can't resolve the lead and surfaces UnknownCaller. The
         // production path hits this branch when the worker was just
         // closed between Tool invocation and facade dispatch.
         let mock = Arc::new(MockWorkerFacade::new());
         let worker_key = fake_key("orphan-worker");
         mock.callers.lock().insert(worker_key.clone(), worker_caller("forge"));
-        // workers map empty — no entry for this session_id
+        // workers map empty  -  no entry for this session_id
         let facade: Arc<dyn WorkerFacade> = mock.clone();
         let tool = Tell { facade, caller_key: CallerKeyResolver::from_fixed(worker_key) };
         let output = tool
@@ -1735,7 +1735,7 @@ mod tests {
     async fn tell_with_unknown_in_reply_to_degrades_to_message() {
         // in_reply_to set but the correlation_id is not in the
         // inflight map (already completed, never registered, …):
-        // degrade to Message — delivery still succeeds, but no
+        // degrade to Message  -  delivery still succeeds, but no
         // decrement fires.
         let mock = Arc::new(MockWorkerFacade::new());
         let lead_key = fake_key("lead-uuid");

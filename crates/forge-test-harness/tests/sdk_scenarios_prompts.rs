@@ -2,16 +2,16 @@
 //!
 //! These scenarios capture the wire shapes the CLI emits for the
 //! flows the unified prompt widget needs to render:
-//!  - `ExitPlanMode` while in `--permission-mode plan` — does the
+//!  - `ExitPlanMode` while in `--permission-mode plan`  -  does the
 //!    CLI populate `permission_suggestions` with `setMode` entries,
 //!    and which modes?
-//!  - `Bash` against a non-allowed working directory — does the SDK
+//!  - `Bash` against a non-allowed working directory  -  does the SDK
 //!    accept `allow_with_input` with a modified `{command: "..."}`?
 //!  - `Edit` / `Read` / `Write` against `/tmp/**` (outside the
-//!    workspace) — what does the CLI emit in `permission_suggestions`
+//!    workspace)  -  what does the CLI emit in `permission_suggestions`
 //!    for each tool kind?
 //!  - `AskUserQuestion` answered with empty `selected_option_ids`
-//!    and a `notes` annotation only — does the CLI accept it as an
+//!    and a `notes` annotation only  -  does the CLI accept it as an
 //!    `Answered` response, or does it require `Cancelled` instead?
 //!
 //! All scenarios are gated by `FORGE_WIRE_CAPTURE=1`; replay-mode
@@ -128,7 +128,7 @@ async fn wire_capture_permission_allow_with_input_bash() {
 #[tokio::test]
 #[ignore = "burns real Anthropic API tokens; opt-in via FORGE_WIRE_CAPTURE=1"]
 async fn wire_capture_permission_suggestions_edit() {
-    // Edit a file outside the workspace (`/tmp/**`) — typically the
+    // Edit a file outside the workspace (`/tmp/**`)  -  typically the
     // CLI flags this as out-of-bounds and populates
     // `permission_suggestions` with `addRules` entries scoped to
     // `/tmp/**` (or `/private/tmp/**` on macOS). Captures the

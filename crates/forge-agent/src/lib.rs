@@ -1,4 +1,4 @@
-//! `forge-agent` — drives one [`forge_sdk::Client`] and exposes a
+//! `forge-agent`  -  drives one [`forge_sdk::Client`] and exposes a
 //! channel-based [`Agent`] / [`AgentHandle`] surface to UI consumers.
 //!
 //! Public API: [`Agent::spawn`] returns an [`AgentHandle`] holding
@@ -6,19 +6,19 @@
 //! stream, and direct-accessor passthroughs (config_dir,
 //! settings_documents, oauth_*).
 //!
-//! `ForgeSdkBridge` is a `pub(crate)` implementation detail — Agent's
+//! `ForgeSdkBridge` is a `pub(crate)` implementation detail  -  Agent's
 //! dispatcher task is the only caller.
 //!
 //! # Module layout
 //!
-//! - [`agent`] — `Agent::spawn` + `AgentHandle` (the public API).
-//! - [`client`] — `AgentEvent` enum + supporting types.
-//! - [`cloud`] — network-side state: oauth + cli usage fetchers.
-//! - [`userdata`] — disk-side state: settings, sessions catalog, memory, plugins.
-//! - [`commands`] / [`session_lifecycle`] — bridge helpers reused by
+//! - [`agent`]  -  `Agent::spawn` + `AgentHandle` (the public API).
+//! - [`client`]  -  `AgentEvent` enum + supporting types.
+//! - [`cloud`]  -  network-side state: oauth + cli usage fetchers.
+//! - [`userdata`]  -  disk-side state: settings, sessions catalog, memory, plugins.
+//! - [`commands`] / [`session_lifecycle`]  -  bridge helpers reused by
 //!   forge-tui via re-exports.
 //! - `forge_sdk_worker` (crate-private) / [`replay`] / [`tooling`] /
-//!   [`user_interaction`] — internal implementation modules consumed by
+//!   [`user_interaction`]  -  internal implementation modules consumed by
 //!   `agent`'s dispatcher and translator paths.
 
 pub mod agent;

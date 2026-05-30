@@ -2,12 +2,12 @@
 //!
 //! Two layers:
 //!
-//! - [`codec`] — pure JSON-line encode/decode. Testable without a subprocess.
-//! - [`process`] — tokio subprocess lifecycle wrapping the codec.
+//! - [`codec`]  -  pure JSON-line encode/decode. Testable without a subprocess.
+//! - [`process`]  -  tokio subprocess lifecycle wrapping the codec.
 //!
 //! [`process::Subprocess`] is the only transport. Wire-recording for
 //! conformance baselines lives at the [`Options`](crate::Options)
-//! level via the `tee_inbound` / `tee_outbound` callbacks — there is
+//! level via the `tee_inbound` / `tee_outbound` callbacks  -  there is
 //! no public `Transport` trait or `spawn_with_transport` injection
 //! seam.
 

@@ -1,17 +1,17 @@
-//! Account selection — internal to forge-workspace.
+//! Account selection  -  internal to forge-workspace.
 //!
 //! `Workspace::get_agent_handle` consults `pick_for_project` on
 //! every spawn; the chosen `AccountKey` becomes the spawned Agent's
 //! `CLAUDE_CONFIG_DIR` override.
 //!
-//! **Policy — two-tier filter + global round-robin:**
+//! **Policy  -  two-tier filter + global round-robin:**
 //!
-//! 1. **Usable** — usage is unknown, OR usage shows under 100% on
+//! 1. **Usable**  -  usage is unknown, OR usage shows under 100% on
 //!    both windows, OR last probe failed transiently (network /
 //!    other HTTP). The picker can try this account; the spawned
 //!    `claude` either succeeds or surfaces its own rate-limit error
 //!    we can react to.
-//! 2. **Unusable** — usage shows 100% on at least one window, OR
+//! 2. **Unusable**  -  usage shows 100% on at least one window, OR
 //!    `/api/oauth/usage` returned 429, OR credentials are expired /
 //!    unauthorized. Known to be either at the cap or unable to
 //!    authenticate.
@@ -19,13 +19,13 @@
 //! Within the usable tier, a single global round-robin counter
 //! rotates picks across every healthy account in the project's
 //! `accounts` allow-list. The counter is shared across all projects
-//! — one increment per pick — so concurrent spawns from different
+//! (one increment per pick) so concurrent spawns from different
 //! projects continue rotating instead of all hammering whichever
 //! account happens to be first in their respective lists. Counter
 //! is in-memory only; resets to 0 on forge restart (no persistence).
 //!
 //! If every account in the allow-list is Unusable, the picker falls
-//! back to the first entry so the spawn doesn't fail outright — the
+//! back to the first entry so the spawn doesn't fail outright  -  the
 //! user gets visible feedback from the spawned subprocess's own
 //! 401/429 rather than from forge silently refusing.
 //!
@@ -48,14 +48,14 @@ pub(crate) struct AccountKey(pub String);
 /// distinguish "still warming the cache" from a real failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UsageFetchStatus {
-    /// Anthropic returned HTTP 429 — too many concurrent polls
+    /// Anthropic returned HTTP 429  -  too many concurrent polls
     /// against the OAuth `/api/oauth/usage` endpoint (typical when
     /// multiple forge instances poll from the same machine).
     RateLimited,
-    /// OAuth credentials on disk are past their expires_at — needs
+    /// OAuth credentials on disk are past their expires_at  -  needs
     /// `/login` to refresh.
     Expired,
-    /// API returned 401/403 — token rejected (may be revoked).
+    /// API returned 401/403  -  token rejected (may be revoked).
     Unauthorized,
     /// Network failure reaching the API (DNS, TLS, timeout, …).
     NetworkFailed,
@@ -122,8 +122,8 @@ pub(crate) struct AccountState {
     /// again. The poller skips accounts whose `next_probe_at` is in
     /// the future. Used for per-account exponential backoff when
     /// Anthropic's `/api/oauth/usage` endpoint keeps returning 429
-    /// — without backoff every poll cycle re-trips the per-IP rate
-    /// limit and we never accumulate usage data. `None` means
+    /// (without backoff every poll cycle re-trips the per-IP rate
+    /// limit and we never accumulate usage data). `None` means
     /// "probe on the next tick" (default).
     pub next_probe_at: Option<std::time::Instant>,
     /// Consecutive probe failures since the last success. Drives
@@ -157,7 +157,7 @@ pub(crate) struct AccountStateMap {
     /// Global round-robin cursor for `pick_for_project`. Each pick
     /// in the usable tier reads `cursor % usable_len`, then bumps
     /// the cursor. Shared across all projects so rotation spans the
-    /// whole spawn stream, not just per-project. In-memory only —
+    /// whole spawn stream, not just per-project. In-memory only  - 
     /// resets to 0 on forge restart.
     rr_cursor: std::sync::atomic::AtomicUsize,
 }
@@ -202,7 +202,7 @@ impl AccountStateMap {
     /// Each known account that appears in `cached` gets its `usage`
     /// populated; unknown cache entries (account removed from
     /// forge.toml) are ignored. Does NOT clear `last_error` or
-    /// `next_probe_at` — the cache is purely seed data; the live
+    /// `next_probe_at`  -  the cache is purely seed data; the live
     /// poller still drives backoff. Used by `Workspace::new` to make
     /// the launchpad picker non-empty on cold boot.
     pub fn seed_from_cache(
@@ -303,7 +303,7 @@ impl AccountStateMap {
     /// the next probe.
     ///
     /// `retry_after` (when `Some`) is the server-provided hold-down
-    /// duration — typically Anthropic's `Retry-After` header on 429.
+    /// duration  -  typically Anthropic's `Retry-After` header on 429.
     /// We honour it verbatim because the server knows when its
     /// per-account bucket will reset; guessing with our own backoff
     /// either over- or under-shoots and keeps the limit hot. When
@@ -359,7 +359,7 @@ impl AccountStateMap {
             // 429 path, which is "no specific hint" rather than "you can
             // retry now". Trusting it literally schedules next_probe_at
             // at the same instant and the next round re-trips the same
-            // rate limit — that's the burst-probe behaviour the warm
+            // rate limit  -  that's the burst-probe behaviour the warm
             // loop kept hitting. Treat any sub-second hint as missing
             // and fall through to the exponential default
             // (starts at 30 s), so the leaky-bucket actually gets
@@ -525,7 +525,7 @@ impl AccountStateMap {
         let picked = if usable.is_empty() {
             // Every allow-list entry is Unusable. Spawn must still
             // proceed so the user sees the spawned subprocess's
-            // 401/429 rather than forge silently refusing — fall
+            // 401/429 rather than forge silently refusing  -  fall
             // back to the first allow-list entry that exists.
             candidates.first().map_or_else(
                 || {
@@ -546,7 +546,7 @@ impl AccountStateMap {
                 self.rr_cursor.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % usable.len();
             usable[idx].clone()
         };
-        // Diagnostic log — one line per pick decision listing the
+        // Diagnostic log  -  one line per pick decision listing the
         // tier and probe state of every candidate so a future
         // "why was account X picked?" triage can correlate from
         // logs without re-running with extra instrumentation.
@@ -582,7 +582,7 @@ impl AccountStateMap {
 ///
 /// - **0** Usable: usage unknown (no probe yet), OR usage known
 ///   under 100% on both windows, OR last probe failed transiently
-///   (network / unknown HTTP — we just don't know yet). The picker
+///   (network / unknown HTTP  -  we just don't know yet). The picker
 ///   can try this account.
 /// - **1** Unusable: usage shows 100% on at least one window, OR
 ///   `/api/oauth/usage` returned 429, OR credentials are expired /
@@ -725,7 +725,7 @@ mod tests {
 
     #[test]
     fn priority_order_respects_pin_order_when_first_pin_has_higher_seven_day() {
-        // Subspace: 5h=10%, 7d=90% — high 7d but still under 100%
+        // Subspace: 5h=10%, 7d=90%  -  high 7d but still under 100%
         // Granite:  5h=50%, 7d=50%
         // Both tier 2. Priority-order: first in pin wins.
         let mut map = AccountStateMap::new(&[make_account("Subspace"), make_account("Granite")]);
@@ -737,8 +737,8 @@ mod tests {
 
     #[test]
     fn rate_limited_account_excluded_in_favour_of_available_one() {
-        // Granite: 5h=0%, 7d=100% — RATE LIMITED on 7d.
-        // Subspace: 5h=80%, 7d=80% — heavily used but neither at 100%.
+        // Granite: 5h=0%, 7d=100%  -  RATE LIMITED on 7d.
+        // Subspace: 5h=80%, 7d=80%  -  heavily used but neither at 100%.
         // Picker must exclude Granite even though its 5h is lower.
         let mut map = AccountStateMap::new(&[make_account("Granite"), make_account("Subspace")]);
         map.set_usage(&AccountKey("Granite".to_owned()), snapshot(Some(0.0), Some(100.0)));
@@ -749,8 +749,8 @@ mod tests {
 
     #[test]
     fn rate_limited_account_excluded_on_five_hour_too() {
-        // Granite: 5h=100%, 7d=0% — rate limited on 5h.
-        // Subspace: 5h=80%, 7d=80% — available.
+        // Granite: 5h=100%, 7d=0%  -  rate limited on 5h.
+        // Subspace: 5h=80%, 7d=80%  -  available.
         // Must pick Subspace.
         let mut map = AccountStateMap::new(&[make_account("Granite"), make_account("Subspace")]);
         map.set_usage(&AccountKey("Granite".to_owned()), snapshot(Some(100.0), Some(0.0)));
@@ -781,7 +781,7 @@ mod tests {
     #[test]
     fn all_rate_limited_falls_back_to_definition_order() {
         // Every pinned account hit at least one limit. Picker still
-        // returns something (the spawn must not fail) — definition
+        // returns something (the spawn must not fail)  -  definition
         // order picks the first one.
         let mut map = AccountStateMap::new(&[make_account("Granite"), make_account("Subspace")]);
         map.set_usage(&AccountKey("Granite".to_owned()), snapshot(Some(100.0), Some(100.0)));
@@ -804,7 +804,7 @@ mod tests {
     #[test]
     fn pin_restricts_pool_to_subset() {
         // Three accounts globally; pin only two. Personal has the
-        // most remaining (100%) but it's NOT in the pin — must be
+        // most remaining (100%) but it's NOT in the pin  -  must be
         // excluded.
         let mut map = AccountStateMap::new(&[
             make_account("Subspace"),
@@ -823,7 +823,7 @@ mod tests {
     fn priority_order_ignores_seven_day_difference_when_both_available() {
         // Both at 5h=50, different 7d. Old policy used 7d as a
         // tiebreaker; the priority-order policy respects pin order
-        // — Subspace first → Subspace wins even with worse 7d.
+        //  -  Subspace first → Subspace wins even with worse 7d.
         let mut map = AccountStateMap::new(&[make_account("Subspace"), make_account("Granite")]);
         map.set_usage(&AccountKey("Subspace".to_owned()), snapshot(Some(50.0), Some(70.0)));
         map.set_usage(&AccountKey("Granite".to_owned()), snapshot(Some(50.0), Some(30.0)));
@@ -860,7 +860,7 @@ mod tests {
         // Both accounts are unusable in different ways: Granite1's
         // OAuth has expired, Personal is fully rate-limited. Under
         // the two-tier model both fall into tier 1 (Unusable) so
-        // pin order decides — Granite1 wins as first in pin.
+        // pin order decides  -  Granite1 wins as first in pin.
         let mut map = AccountStateMap::new(&[make_account("Granite1"), make_account("Personal")]);
         map.set_last_error(&AccountKey("Granite1".to_owned()), UsageFetchStatus::Expired, None);
         map.set_usage(&AccountKey("Personal".to_owned()), snapshot(Some(100.0), Some(100.0)));
@@ -871,7 +871,7 @@ mod tests {
     #[test]
     fn unknown_and_available_both_usable_pin_order_decides() {
         // Both accounts are in tier 0 (Usable) under the two-tier
-        // model — Granite is unprobed (unknown), Personal has known
+        // model  -  Granite is unprobed (unknown), Personal has known
         // healthy usage. Pin order decides → Granite wins.
         let mut map = AccountStateMap::new(&[make_account("Granite"), make_account("Personal")]);
         map.set_usage(&AccountKey("Personal".to_owned()), snapshot(Some(30.0), Some(30.0)));
@@ -881,7 +881,7 @@ mod tests {
 
     #[test]
     fn network_failure_treated_as_usable_pin_order_decides() {
-        // Granite's probe failed transiently (network error) — we
+        // Granite's probe failed transiently (network error)  -  we
         // don't actually know it's saturated, so the two-tier model
         // keeps it in tier 0 (Usable). Personal has a healthy probe
         // also in tier 0. Both usable → pin order wins → Granite
@@ -983,7 +983,7 @@ mod tests {
     #[test]
     fn round_robin_with_single_usable_account_always_picks_it() {
         // Only Granite is usable; the other two are saturated. Every
-        // pick lands on Granite — `cursor % 1 == 0` collapses the
+        // pick lands on Granite  -  `cursor % 1 == 0` collapses the
         // rotation to a single account.
         let mut map = AccountStateMap::new(&[
             make_account("Granite"),
@@ -1030,7 +1030,7 @@ mod tests {
     fn retry_after_overrides_exponential_backoff() {
         // Anthropic returns Retry-After: 3048 (seconds) for a deeply
         // rate-limited account. Our local exponential schedule would
-        // pick 30 s for the first failure — vastly under-shoot the
+        // pick 30 s for the first failure  -  vastly under-shoot the
         // actual reset and re-trip the limit. The server-provided
         // retry_after must win.
         use std::time::Duration;

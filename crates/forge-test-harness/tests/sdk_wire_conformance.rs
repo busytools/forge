@@ -1,4 +1,4 @@
-//! Wire conformance harness — verify forge-sdk's decoder handles every
+//! Wire conformance harness  -  verify forge-sdk's decoder handles every
 //! stream-json frame the live `claude` binary emits in realistic
 //! scenarios.
 //!
@@ -21,7 +21,7 @@
 //! FORGE_WIRE_CAPTURE=1 cargo nextest run -p forge-test-harness --no-capture
 //! ```
 //!
-//! Opt-in because this burns real API tokens (small — a trivial
+//! Opt-in because this burns real API tokens (small  -  a trivial
 //! prompt). Skipped silently when the env var is unset.
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
@@ -68,7 +68,7 @@ async fn wire_capture_trivial_prompt() {
 
     // Inherit the parent env's `CLAUDE_CONFIG_DIR` so the spawned CLI uses
     // whatever profile the developer's shell is authenticated against. An
-    // earlier attempt pointed at a fresh tempdir for "clean" traces — but
+    // earlier attempt pointed at a fresh tempdir for "clean" traces  -  but
     // a fresh config dir has no credentials, so the CLI bails with an
     // auth-error result frame WITHOUT ever emitting a `control_response`
     // to our `initialize` request, which then hangs `send_control` forever.
@@ -80,7 +80,7 @@ async fn wire_capture_trivial_prompt() {
     let opts = builder.build();
 
     // Scope guard: always dump whatever we captured, even on a panic partway
-    // through — so failing spawns still give us a trace for post-mortem.
+    // through  -  so failing spawns still give us a trace for post-mortem.
     let dump_trace = |tag: &str| -> std::path::PathBuf {
         let log = log_arc.lock();
         let path = write_trace(tag, &log);

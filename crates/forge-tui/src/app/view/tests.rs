@@ -104,7 +104,7 @@ fn set_active_view_keeps_permission_unfocused_when_returning_to_chat_with_draft(
     // The test's invariant is "Permission isn't auto-claimed on
     // view-return"; previously the focus dropped to TodoList. With
     // the TodoList target retired (moved into the Inspector pane,
-    // mouse-only), the fallback is Input — the surviving claim is
+    // mouse-only), the fallback is Input  -  the surviving claim is
     // released across the view transition.
     assert_eq!(app.focus_owner(), crate::app::FocusOwner::Input);
 }

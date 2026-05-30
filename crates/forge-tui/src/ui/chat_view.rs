@@ -24,7 +24,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let input_visual_lines = {
         let _t = app.perf.as_ref().map(|p| p.start("ui::input_visual_lines"));
         // The input box renders inside the chat column, not the full
-        // frame — when side panes are visible the chat column is
+        // frame  -  when side panes are visible the chat column is
         // narrower. Pass the chat column width so prompt wrapping math
         // matches the actual render width.
         let chat_w = layout::chat_column_width(
@@ -131,7 +131,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 }
 
 /// Render the full-height `│` column between a side pane and the
-/// chat column in DIM (DarkGray) — matches the rest of the pane's
+/// chat column in DIM (DarkGray)  -  matches the rest of the pane's
 /// structural chrome (the underline rule + section headers).
 fn render_pane_separator(frame: &mut Frame, area: Rect) {
     if area.width == 0 || area.height == 0 {
@@ -144,7 +144,7 @@ fn render_pane_separator(frame: &mut Frame, area: Rect) {
 }
 
 /// Render the live FPS indicator at the top-right of `frame_area`.
-/// Always on — the FPS counter is computed unconditionally
+/// Always on  -  the FPS counter is computed unconditionally
 /// (`App::mark_frame_presented` / `App::frame_fps`) and the overlay
 /// is cheap (one styled `Line`, one rect).
 fn render_perf_fps_overlay(frame: &mut Frame, frame_area: Rect, y: u16, app: &App) {
@@ -167,7 +167,7 @@ fn render_perf_fps_overlay(frame: &mut Frame, frame_area: Rect, y: u16, app: &Ap
     // Leave a 1-col right gutter to match the rest of the UI's
     // padding (chat box / panes / inspector all sit 1 col off their
     // surrounding edge). Drop the gutter if the frame is too narrow
-    // to fit the FPS text + gutter — better to show the FPS hugging
+    // to fit the FPS text + gutter  -  better to show the FPS hugging
     // the edge than to clip it entirely.
     let right_gutter: u16 = u16::from(frame_area.width > width);
     let x = frame_area.x + frame_area.width.saturating_sub(width + right_gutter);

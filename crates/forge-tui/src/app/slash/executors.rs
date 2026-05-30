@@ -20,7 +20,7 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
     // On the launchpad view, `/help` and `/quit` are local affordances
     // (the launchpad has no active session for SDK commands to forward
     // to). In the chat view these names may be SDK-advertised commands
-    // that should forward to the model — the chat handler skips them
+    // that should forward to the model  -  the chat handler skips them
     // here so the unknown-submit fallback resolves the advertised
     // command. `/launchpad` is global (works from chat) and never
     // forwards.
@@ -46,7 +46,7 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
     }
 }
 
-/// `/diff [target]` — open the full-screen diff overlay.
+/// `/diff [target]`  -  open the full-screen diff overlay.
 ///
 /// No arg → delegate to `diff_overlay::open_default`, which mirrors
 /// the Inspector GIT section's auto-detect: layer 1 populated
@@ -78,7 +78,7 @@ fn handle_diff_submit(app: &mut App, args: &[&str]) -> bool {
     true
 }
 
-/// `/launchpad` — return to the project picker. Available from chat;
+/// `/launchpad`  -  return to the project picker. Available from chat;
 /// the launchpad's own slash autocomplete filters it out (you can't
 /// open the surface you're already on).
 fn handle_launchpad_submit(app: &mut App, args: &[&str]) -> bool {
@@ -90,7 +90,7 @@ fn handle_launchpad_submit(app: &mut App, args: &[&str]) -> bool {
     true
 }
 
-/// `/help` — toggle the help overlay. Parallel to the `?` binding;
+/// `/help`  -  toggle the help overlay. Parallel to the `?` binding;
 /// surfaced as a slash command for discoverability from the launchpad
 /// (where `?` and `/help` both produce the same overlay).
 fn handle_help_submit(app: &mut App, args: &[&str]) -> bool {
@@ -103,7 +103,7 @@ fn handle_help_submit(app: &mut App, args: &[&str]) -> bool {
     true
 }
 
-/// `/quit` — exit forge. Parallel to the `Ctrl+Q` binding; surfaced
+/// `/quit`  -  exit forge. Parallel to the `Ctrl+Q` binding; surfaced
 /// as a slash command so the launchpad's keyboard-only floor has
 /// every essential affordance accessible via the slash autocomplete.
 fn handle_quit_submit(app: &mut App, args: &[&str]) -> bool {
@@ -129,7 +129,7 @@ fn handle_compact_submit(app: &mut App, args: &[&str]) -> bool {
     {
         return true;
     }
-    // The `/compact` text falls through as a normal user message —
+    // The `/compact` text falls through as a normal user message  - 
     // the CLI emits `status:"compacting"` as its first response
     // frame, which `apply_session_status_update` translates into
     // `is_compacting = true` via the wire path. No optimistic-set
@@ -209,7 +209,7 @@ fn handle_mode_submit(app: &mut App, args: &[&str]) -> bool {
     // Apply CurrentModeUpdate + ModeStateUpdate App-side immediately
     // so the footer chip refreshes without waiting for the worker
     // round-trip. The apply is synchronous, so no `CommandPending`
-    // state is needed — the UI never sees a stale pending phase.
+    // state is needed  -  the UI never sees a stale pending phase.
     apply_optimistic_mode_change(app, requested_mode);
 
     let session_key = forge_workspace::SessionKey::from_session_id(sid.to_string());

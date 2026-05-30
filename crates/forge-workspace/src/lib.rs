@@ -1,4 +1,4 @@
-//! `forge-workspace` — multi-session orchestrator and TUI-facing
+//! `forge-workspace`  -  multi-session orchestrator and TUI-facing
 //! facade.
 //!
 //! Pools [`forge_agent::Agent`] instances behind a single
@@ -41,7 +41,7 @@
 //! [`Workspace::update_sender`] and emit their own `SessionUpdate`s
 //! rather than dispatching a `Command` and waiting for a round-trip.
 //! They only mutate presentation-side state in TUI's `UiSession`
-//! buckets — workspace itself never reads those updates.
+//! buckets  -  workspace itself never reads those updates.
 //! See <https://github.com/busytools/forge/issues/105> for the
 //! tracking issue.
 //!
@@ -54,7 +54,7 @@
 //! pass-through `pub use` (see `cloud`, `commands`, `env::git_diff`,
 //! `session_lifecycle`, `tooling`, `translate`, `userdata` below).
 //! Types like `forge_workspace::cloud::oauth::Token` are *defined* in
-//! forge-agent — the workspace just exposes them under the workspace
+//! forge-agent  -  the workspace just exposes them under the workspace
 //! name so TUI can keep its dep graph clean.
 
 mod account;
@@ -160,7 +160,7 @@ pub use forge_primitives::permission::PermissionMode;
 // end-to-end; production code uses `Workspace`'s facade and consumes
 // `SessionUpdate`s, never these raw types. Gating these symbols
 // behind the `testing` feature keeps the production build's surface
-// minimal — `cargo check --no-default-features -p forge-workspace`
+// minimal  -  `cargo check --no-default-features -p forge-workspace`
 // won't carry `forge_workspace::Agent` or `forge_workspace::AgentEvent`.
 #[cfg(feature = "testing")]
 pub use forge_agent::Agent;

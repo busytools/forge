@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 /// `forge_agent::cloud::oauth_credentials` normalises both shapes
 /// during deserialisation; serialisation emits a `SystemTime`
 /// directly, which is fine for in-memory use but is NOT a stable wire
-/// shape — don't round-trip these through anything but the live
+/// shape  -  don't round-trip these through anything but the live
 /// in-memory reader.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OauthCredentials {

@@ -9,7 +9,7 @@ use serde_json::Value;
 /// Which settings scope to load. Wire shape:
 /// `Literal["user", "project", "local"]`.
 ///
-/// Combinations are expressed by passing multiple variants — see
+/// Combinations are expressed by passing multiple variants  -  see
 /// `forge_sdk::OptionsBuilder::setting_sources`.
 /// The CLI resolves the actual on-disk paths from whichever
 /// `CLAUDE_CONFIG_DIR` is active (env var wins, else `$HOME/.claude`);
@@ -68,7 +68,7 @@ pub struct AccountInfo {
     pub api_provider: Option<String>,
 }
 
-/// Forge's view of the active account — the picker-side identity
+/// Forge's view of the active account  -  the picker-side identity
 /// from `forge.toml`'s `[[accounts]]`, peer to the CLI-side
 /// [`AccountInfo`].
 ///
@@ -232,13 +232,13 @@ pub struct McpServerStatus {
     pub name: String,
     /// Current connection status.
     pub status: McpServerConnectionStatus,
-    /// Handshake info — present when `status == Connected`.
+    /// Handshake info  -  present when `status == Connected`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub server_info: Option<McpServerInfo>,
     /// Error message when `status == Failed`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
-    /// Opaque config blob — one of the CLI's `McpServerStatusConfig`
+    /// Opaque config blob  -  one of the CLI's `McpServerStatusConfig`
     /// variants. Typed as Value here since the CLI accepts claudeai-proxy
     /// which isn't a first-class forge-sdk input type.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -247,7 +247,7 @@ pub struct McpServerStatus {
     /// | "managed"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
-    /// Tools — present when connected.
+    /// Tools  -  present when connected.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<McpToolInfo>>,
     /// Whether the server has been wired with a model-sampling
@@ -303,7 +303,7 @@ pub struct ContextUsageResponse {
     pub max_tokens: u64,
     /// Raw model context-window size.
     pub raw_max_tokens: u64,
-    /// Percentage of context window used (0–100).
+    /// Percentage of context window used (0-100).
     pub percentage: f64,
     /// Model the usage is calculated for.
     pub model: String,
@@ -337,11 +337,11 @@ pub struct ContextUsageResponse {
 /// External MCP server wire-config (non-SDK variants). Wire shape:
 /// `McpStdioServerConfig / McpSSEServerConfig / McpHttpServerConfig`.
 /// The in-process SDK variant lives on the `McpServer` handle
-/// directly — use `forge_sdk::OptionsBuilder::mcp_server` for that.
+/// directly  -  use `forge_sdk::OptionsBuilder::mcp_server` for that.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum McpServerConfig {
-    /// stdio transport — spawned subprocess.
+    /// stdio transport  -  spawned subprocess.
     Stdio {
         /// Command to spawn.
         command: String,
@@ -370,7 +370,7 @@ pub enum McpServerConfig {
     },
 }
 
-/// Bash sandbox configuration — the CLI's `SandboxSettings`.
+/// Bash sandbox configuration  -  the CLI's `SandboxSettings`.
 /// Merged into `--settings` alongside any explicit `settings`
 /// value via the CLI's `_build_settings_value`. Fields are
 /// camelCase on the wire.

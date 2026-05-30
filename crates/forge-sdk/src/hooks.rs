@@ -1,4 +1,4 @@
-//! Hook callbacks — 10 hook kinds dispatched by opaque `callback_id`.
+//! Hook callbacks  -  10 hook kinds dispatched by opaque `callback_id`.
 //!
 //! SDK's `HookMatcher` / `HookContext` machinery. Callbacks
 //! are registered at initialize time; the CLI emits `hook_callback`
@@ -54,7 +54,7 @@ mod tests_hooks_types {
         assert_eq!(base.permission_mode.as_deref(), Some("default"));
     }
 
-    /// `permission_mode` is `NotRequired` upstream — must accept frames that omit it.
+    /// `permission_mode` is `NotRequired` upstream  -  must accept frames that omit it.
     #[test]
     fn base_hook_input_permission_mode_optional() {
         let raw = json!({
@@ -209,7 +209,7 @@ mod tests_hooks_types {
 
     #[test]
     fn post_tool_use_failure_input_is_interrupt_optional() {
-        // `is_interrupt` is NotRequired upstream — absent frame must parse.
+        // `is_interrupt` is NotRequired upstream  -  absent frame must parse.
         let raw = json!({
             "hook_event_name": "PostToolUseFailure",
             "session_id": "s",
@@ -350,7 +350,7 @@ mod tests_hooks_types {
     }
 
     // ---------------------------------------------------------------------------
-    // SyncHookJSONOutput control fields — with_continue / with_suppress_output /
+    // SyncHookJSONOutput control fields  -  with_continue / with_suppress_output /
     // with_stop_reason / with_system_message. Wraps the CLI's SyncHookJSONOutput
     //. The accessors need to expose what the callback set so
     // handle_hook_callback can emit them on the wire.
@@ -376,7 +376,7 @@ mod tests_hooks_types {
         assert_eq!(d.suppress_output(), Some(true));
         assert_eq!(d.stop_reason(), Some("halt because policy"));
         assert_eq!(d.system_message(), Some("warning: sensitive op"));
-        // Still an allow — control fields and decision are independent.
+        // Still an allow  -  control fields and decision are independent.
         assert!(d.is_allow());
     }
 
@@ -396,7 +396,7 @@ mod tests_hooks_types {
         let d = HookDecision::defer(Some(5000));
         assert!(d.is_deferred());
         assert_eq!(d.defer_timeout_ms(), Some(5000));
-        // Allow / deny predicates don't apply to deferred hooks — is_allow
+        // Allow / deny predicates don't apply to deferred hooks  -  is_allow
         // is still true (no `decision: block` is emitted), but no updated
         // input should surface.
         assert!(d.is_allow());

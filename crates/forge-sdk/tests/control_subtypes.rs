@@ -96,7 +96,7 @@ async fn get_server_info_returns_cached_initialize_payload() {
     // `{"commands": [...], "outputStyle": "default"}` body. Client::spawn
     // stores it so get_server_info() surfaces the payload later
     // without re-issuing the handshake (mirrors Python
-    // ClaudeSDKClient.get_server_info — client.py:541-564).
+    // ClaudeSDKClient.get_server_info  -  client.py:541-564).
     let client = spawn_client().await;
     let info = client.get_server_info().expect("initialize payload cached");
     assert_eq!(info["outputStyle"], "default");

@@ -10,11 +10,11 @@ use std::rc::Rc;
 pub type TerminalMap = Rc<RefCell<HashMap<String, TerminalProcess>>>;
 
 /// Minimal terminal process state used by UI snapshot rendering.
-/// Single-threaded by construction — the whole `TerminalMap` is
+/// Single-threaded by construction  -  the whole `TerminalMap` is
 /// `Rc<RefCell<…>>`, so the inner buffer doesn't need cross-thread
 /// synchronisation either.
 pub struct TerminalProcess {
-    /// Accumulated stdout+stderr — append-only, never cleared.
+    /// Accumulated stdout+stderr  -  append-only, never cleared.
     pub output_buffer: Rc<RefCell<Vec<u8>>>,
     /// The shell command that was executed.
     pub command: String,

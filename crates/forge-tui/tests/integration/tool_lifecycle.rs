@@ -202,7 +202,7 @@ async fn subagent_child_tools_use_explicit_parent_linkage_only() {
         )]),
     );
 
-    // Child Bash tool — parent_tool_use_id carried at the assistant
+    // Child Bash tool  -  parent_tool_use_id carried at the assistant
     // envelope level (the wire shape for sub-agent child tools).
     send_msg(
         &mut app,

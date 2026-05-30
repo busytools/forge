@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PromptState {
-    /// What kind of prompt — drives layout decisions in the renderer.
+    /// What kind of prompt  -  drives layout decisions in the renderer.
     pub source: PromptSource,
     /// The tool_id this prompt is responding to (echoed back on submit).
     pub tool_id: String,
@@ -46,13 +46,13 @@ pub enum PromptSource {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromptMode {
-    /// Default — arrow keys move option focus, Enter submits. The
+    /// Default  -  arrow keys move option focus, Enter submits. The
     /// "notes editor" surface is implicit-on-focus: when the focused
     /// option's kind is `Notes`, keystrokes route to the canonical
     /// `App.input` editor (rendered inline below the option) instead
     /// of being swallowed.
     OptionPicker,
-    /// User selected allow-with-edits — typing edits `edited_input`.
+    /// User selected allow-with-edits  -  typing edits `edited_input`.
     /// Stub; full inline tool-args editor is a follow-on.
     EditingInput,
 }
@@ -61,7 +61,7 @@ impl PromptState {
     /// Construct from a wire `PermissionRequest`. Appends a
     /// forge-synthesized "Tell Claude something else" escape hatch as
     /// the last option, but only when the wire didn't already include
-    /// a Notes-kind option — claude CLI's permission UI ships its own
+    /// a Notes-kind option  -  claude CLI's permission UI ships its own
     /// "Tell Claude something else" entry for some tools.
     pub fn from_permission(tool_id: String, request: PermissionRequest) -> Self {
         let mut options = request.options;
@@ -189,9 +189,9 @@ fn summarize_tool_args(tool_call: &forge_primitives::session_update::ToolCall) -
 pub enum PromptKeyOutcome {
     /// Key consumed by the prompt; no further routing.
     Consumed,
-    /// User pressed Enter on a non-modal option — caller should submit.
+    /// User pressed Enter on a non-modal option  -  caller should submit.
     Submit,
-    /// User pressed Esc — caller should cancel.
+    /// User pressed Esc  -  caller should cancel.
     Cancel,
     /// Key not handled by the prompt; caller may pass it elsewhere.
     Unhandled,
@@ -237,7 +237,7 @@ pub fn handle_key_option_picker(prompt: &mut PromptState, key: KeyEvent) -> Prom
             PromptKeyOutcome::Consumed
         }
         KeyCode::Enter => {
-            // Notes-kind never reaches this branch — dispatch_key
+            // Notes-kind never reaches this branch  -  dispatch_key
             // routes those keystrokes to App.input directly without
             // calling handle_key_option_picker. Edit-kind transitions
             // into the EditingInput stub; everything else submits.
@@ -450,7 +450,7 @@ pub fn cancel_prompt(app: &mut crate::app::App) {
         return;
     };
 
-    // Clear the canonical input editor — any user-typed notes shouldn't
+    // Clear the canonical input editor  -  any user-typed notes shouldn't
     // leak across the cancel boundary into the next prompt or chat draft.
     app.input_mut().clear();
 
@@ -477,11 +477,11 @@ pub fn cancel_prompt(app: &mut crate::app::App) {
 }
 
 /// Snapshot the chat-input draft if it hasn't been snapshotted yet.
-/// Idempotent — when multiple prompts arrive in a burst the first
+/// Idempotent  -  when multiple prompts arrive in a burst the first
 /// snapshot wins, so subsequent prompts don't clobber the original
 /// draft. Called from the inbound event handler right after
 /// [`enqueue_prompt`]. ALWAYS clears the editor so it's a fresh slate
-/// for the morphed dock — when the focused option is `Notes`-kind the
+/// for the morphed dock  -  when the focused option is `Notes`-kind the
 /// editor is reused as the notes input, and any leftover draft would
 /// otherwise pre-populate that input incorrectly. The snapshot itself
 /// is only stored when there's text worth restoring.
@@ -760,12 +760,12 @@ pub(crate) mod tests {
     // Notes-kind Enter is routed by `dispatch_key` directly to
     // `submit_prompt` (because the canonical `App.input` editor owns
     // notes text now). The option-picker handler is never reached for
-    // Notes-kind keystrokes — see the `dispatch_key_*` tests below.
+    // Notes-kind keystrokes  -  see the `dispatch_key_*` tests below.
 
     #[test]
     fn enter_on_allow_option_emits_submit() {
         let mut prompt = PromptState::from_permission("tc-1".into(), make_permission_request());
-        // focused_option_index is 0 by default — should be an Allow option.
+        // focused_option_index is 0 by default  -  should be an Allow option.
         let outcome = handle_key_option_picker(
             &mut prompt,
             KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
@@ -994,7 +994,7 @@ pub(crate) mod tests {
         match outcome {
             forge_primitives::QuestionOutcome::Answered { selected_option_ids, annotation } => {
                 // The notes-option is forge-synthesized; it must NOT
-                // appear in selected_option_ids — its content rides in
+                // appear in selected_option_ids  -  its content rides in
                 // annotation.notes instead.
                 assert!(
                     !selected_option_ids.iter().any(|id| id == "tell_claude"),
@@ -1042,7 +1042,7 @@ pub(crate) mod tests {
     #[test]
     fn submit_question_with_only_notes_focus_and_empty_text_is_cancelled() {
         // User focused notes-option, did NOT enter text, hit Enter
-        // through the editor — empty selected_ids + empty annotation
+        // through the editor  -  empty selected_ids + empty annotation
         // becomes Cancelled rather than Answered with no payload.
         let mut app = crate::app::App::test_default();
         let key = app.active_session_key.clone().expect("session");
@@ -1142,7 +1142,7 @@ pub(crate) mod tests {
             );
         }
         snapshot_draft_if_needed(&mut app);
-        // A second prompt arrives — must NOT overwrite the snapshot.
+        // A second prompt arrives  -  must NOT overwrite the snapshot.
         if let Some(session) = app.session_mut(&key) {
             enqueue_prompt(
                 session,
@@ -1150,10 +1150,10 @@ pub(crate) mod tests {
             );
         }
         snapshot_draft_if_needed(&mut app);
-        // Resolve first prompt — queue still has tc-2, draft NOT restored.
+        // Resolve first prompt  -  queue still has tc-2, draft NOT restored.
         submit_prompt(&mut app);
         assert_eq!(app.input().text(), "", "queue non-empty, draft not yet restored");
-        // Resolve second prompt — queue empty, draft restored.
+        // Resolve second prompt  -  queue empty, draft restored.
         submit_prompt(&mut app);
         assert_eq!(app.input().text(), "first draft");
     }

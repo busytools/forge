@@ -200,7 +200,7 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
 
         // The Projects pane's account/status panel renders 5h + 7d
         // usage bars on every frame. Keep the snapshot live by
-        // calling `request_refresh_if_needed` each tick — it's
+        // calling `request_refresh_if_needed` each tick  -  it's
         // idempotent (no-ops while the existing snapshot is younger
         // than `USAGE_REFRESH_TTL` and while a request is in flight),
         // so the actual fetch only fires once per TTL window.
@@ -269,7 +269,7 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
         if !is_animating && app.needs_redraw {
             tab_title::update_tab_title(&app.status, app.spinner_frame, app.cwd());
         }
-        // Smooth scroll still settling — viewport row index (usize)
+        // Smooth scroll still settling  -  viewport row index (usize)
         // converts to f32 for sub-pixel scroll comparison; loss is bounded
         // by terminal height so precision is irrelevant here.
         #[allow(clippy::cast_precision_loss)]

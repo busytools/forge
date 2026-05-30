@@ -4,7 +4,7 @@
 //! `ToolResultBlock`. Wire shape is `{"type": "...", ...}`. Unknown
 //! block types land in [`ContentBlock::Unknown`] so the decoder is
 //! forward-compatible with new Anthropic API blocks (`document`,
-//! future types) without an SDK bump — mirrors the top-level
+//! future types) without an SDK bump  -  mirrors the top-level
 //! the SDK's `DecodedLine::Unknown`
 //! fallback.
 
@@ -52,7 +52,7 @@ pub enum ContentBlock {
 
     /// Server-side tool invocation the API executed on the model's behalf
     /// (e.g. `advisor`, `web_search`, `web_fetch`). Surfaces alongside
-    /// regular `ToolUse` blocks but the caller never returns a result —
+    /// regular `ToolUse` blocks but the caller never returns a result  - 
     /// the server supplies one in a matching [`ContentBlock::ServerToolResult`].
     /// `ServerToolUseBlock`.
     ///
@@ -73,19 +73,19 @@ pub enum ContentBlock {
 
     /// Result block for a server-side tool call (wire type
     /// `advisor_tool_result`). Same wire shape as `ToolResult` but
-    /// the `content` dict is opaque — branch on `content["type"]`
+    /// the `content` dict is opaque  -  branch on `content["type"]`
     /// to tell which concrete server-tool result schema applies (e.g.
     /// `advisor_result` vs. `advisor_redacted_result`).
     ServerToolResult {
         /// The `id` from the corresponding [`ContentBlock::ServerToolUse`] block.
         tool_use_id: String,
         /// Raw server-tool result payload. Schema depends on the server
-        /// tool — inspect `content["type"]` for the concrete shape.
+        /// tool  -  inspect `content["type"]` for the concrete shape.
         content: Value,
     },
 
     /// Document attachment (PDF, etc.) inlined into a user turn. The
-    /// Anthropic API supports these directly — when the user attaches
+    /// Anthropic API supports these directly  -  when the user attaches
     /// a file to a Claude Code conversation, the CLI emits
     /// `{"type":"document","source":{"type":"base64",
     /// "media_type":"<mime>","data":"<base64>"}}` (or `"type":"url"` /
@@ -94,10 +94,10 @@ pub enum ContentBlock {
     /// `source` stays a [`Value`] rather than a typed struct because
     /// Anthropic's source schema branches on `source.type`
     /// (`base64` / `url` / `text` / `content`) and each variant
-    /// carries different fields — keeping it as a JSON object lets
+    /// carries different fields  -  keeping it as a JSON object lets
     /// new source types decode without an SDK bump.
     Document {
-        /// Source of the document — JSON object whose `type` field
+        /// Source of the document  -  JSON object whose `type` field
         /// discriminates between `base64`, `url`, `text`, `content`.
         source: Value,
     },
@@ -107,7 +107,7 @@ pub enum ContentBlock {
     /// `"type":"image"` on the wire. Surfaced when a user pastes or
     /// attaches an image in a Claude Code conversation.
     Image {
-        /// Source of the image — JSON object whose `type` field
+        /// Source of the image  -  JSON object whose `type` field
         /// discriminates between `base64`, `url`, etc.
         source: Value,
     },
@@ -132,7 +132,7 @@ pub enum ContentBlock {
     /// that had mid-turn queued inputs would replay missing those
     /// user messages.
     QueuedCommand {
-        /// The queued user text (or content-block array — kept as
+        /// The queued user text (or content-block array  -  kept as
         /// `Value` so list-of-blocks variants pass through cleanly).
         prompt: Value,
         /// Mode the input was submitted in. Typically `"prompt"`;
@@ -146,7 +146,7 @@ pub enum ContentBlock {
 
     /// Forward-compat fallback for content block types forge-sdk
     /// doesn't model explicitly. Callers can branch on `type_str` +
-    /// inspect `raw` — the decoder never errors on an unrecognised
+    /// inspect `raw`  -  the decoder never errors on an unrecognised
     /// block. Mirrors the top-level
     /// the SDK's `DecodedLine::Unknown`
     /// fallback pattern.
@@ -290,7 +290,7 @@ impl<'de> Deserialize<'de> for ContentBlock {
             "document" | "image" => {
                 let source = raw.get("source").cloned().unwrap_or(Value::Null);
                 if source.is_null() {
-                    // Required field per Anthropic API spec — log so a
+                    // Required field per Anthropic API spec  -  log so a
                     // CLI bug emitting a partial block surfaces in
                     // logs instead of decoding silently to a
                     // semantically-broken `Document { source: Null }`.
@@ -378,7 +378,7 @@ mod tests_content_roundtrip {
     fn unknown_block_type_falls_back_to_unknown_variant() {
         // Forward-compat: unrecognised content block types (e.g. Anthropic
         // API's `document` block for PDF inputs, or any future block) must
-        // land in ContentBlock::Unknown instead of erroring — real-session
+        // land in ContentBlock::Unknown instead of erroring  -  real-session
         // probe uncovered this when a `document` block crashed the parser.
         let raw = json!({"type": "unknown_kind", "data": "..."});
         let block: ContentBlock = serde_json::from_value(raw.clone()).expect("parse");

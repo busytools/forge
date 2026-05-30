@@ -2,7 +2,7 @@
 //!
 //! Exercises the wire shape for a single Bash invocation. The CLI must
 //! emit a `tool_use` block inside an assistant turn plus a `tool_result`
-//! user turn — the scenarios covered here verify forge-sdk's decoder
+//! user turn  -  the scenarios covered here verify forge-sdk's decoder
 //! handles those frame shapes cleanly.
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
