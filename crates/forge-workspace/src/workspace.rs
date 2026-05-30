@@ -336,7 +336,7 @@ fn build_resume_map_from_sessions(
     // sessions merged from multiple account config_dirs (list_sessions
     // sorts within one account, not across the merge).
     let mut ordered: Vec<&SDKSessionInfo> = sessions.iter().collect();
-    ordered.sort_by(|a, b| b.last_modified.cmp(&a.last_modified));
+    ordered.sort_by_key(|s| std::cmp::Reverse(s.last_modified));
     let mut resume_map: HashMap<String, String> = HashMap::new();
     for info in ordered {
         let Some(cwd) = info.cwd.as_deref().map(std::path::Path::new) else {

@@ -229,10 +229,11 @@ line 4 with \x08\x08backspace\n";
         // A file well past TAIL_WINDOW_BYTES must still return the last
         // max_lines complete lines (proves the seek path + partial-first
         // drop keep the real tail).
+        use std::fmt::Write as _;
         let filler = "x".repeat(100);
         let mut contents = String::new();
         for i in 0..1200 {
-            contents.push_str(&format!("filler-{i}-{filler}\n"));
+            let _ = writeln!(contents, "filler-{i}-{filler}");
         }
         for tag in ["tail-a", "tail-b", "tail-c"] {
             contents.push_str(tag);
