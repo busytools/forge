@@ -1,4 +1,4 @@
-//! `SessionKey` — opaque routing key the TUI ↔ workspace boundary
+//! `SessionKey` - opaque routing key the TUI ↔ workspace boundary
 //! uses to address one session task. Newtype around a string so the
 //! call site can't confuse it with `session_id` or a project name.
 //!

@@ -23,7 +23,7 @@
 //!   real_session_decode_probe
 //! ```
 //!
-//! No output is persisted — failures surface as stderr lines plus a
+//! No output is persisted - failures surface as stderr lines plus a
 //! panic summarising the count. To produce a committed redacted
 //! baseline from a specific session, run the `redact-session` example
 //! instead.

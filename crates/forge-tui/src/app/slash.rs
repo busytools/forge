@@ -19,7 +19,7 @@ use crate::agent::model;
 /// the dropdown to two-thirds of the screen height; scrolling via
 /// the dialog handles the overflow. The renderer additionally
 /// clamps to whatever rows the terminal actually has above the
-/// input cursor — the navigation math uses this same cap so the
+/// input cursor - the navigation math uses this same cap so the
 /// rendered window and the dialog's scroll_offset agree.
 pub const MAX_VISIBLE: usize = 20;
 use super::MAX_CANDIDATES;
@@ -97,7 +97,7 @@ pub(super) fn push_system_message(app: &mut App, text: impl Into<String>) {
     app.active_viewport_mut().engage_auto_scroll();
 }
 
-/// Push an info-severity system message — the success / status
+/// Push an info-severity system message - the success / status
 /// variant. `push_system_message` (severity `None`) renders as
 /// red Error per `system_severity_from_role`; use this for non-
 /// error feedback like `/mode` / `/model` / `/effort` no-arg

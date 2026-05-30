@@ -126,7 +126,7 @@ mod tests {
     #[test]
     fn cli_help_does_not_surface_generate_completion() {
         // Render --help and confirm the hidden flag isn't there.
-        // (Smoke test — clap's `hide = true` is the source of truth.)
+        // (Smoke test - clap's `hide = true` is the source of truth.)
         let mut cmd = Cli::command();
         let mut out = Vec::new();
         cmd.write_help(&mut out).expect("write_help");

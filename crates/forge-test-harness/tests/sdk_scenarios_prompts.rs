@@ -2,16 +2,16 @@
 //!
 //! These scenarios capture the wire shapes the CLI emits for the
 //! flows the unified prompt widget needs to render:
-//!  - `ExitPlanMode` while in `--permission-mode plan` — does the
+//!  - `ExitPlanMode` while in `--permission-mode plan` - does the
 //!    CLI populate `permission_suggestions` with `setMode` entries,
 //!    and which modes?
-//!  - `Bash` against a non-allowed working directory — does the SDK
+//!  - `Bash` against a non-allowed working directory - does the SDK
 //!    accept `allow_with_input` with a modified `{command: "..."}`?
 //!  - `Edit` / `Read` / `Write` against `/tmp/**` (outside the
-//!    workspace) — what does the CLI emit in `permission_suggestions`
+//!    workspace) - what does the CLI emit in `permission_suggestions`
 //!    for each tool kind?
 //!  - `AskUserQuestion` answered with empty `selected_option_ids`
-//!    and a `notes` annotation only — does the CLI accept it as an
+//!    and a `notes` annotation only - does the CLI accept it as an
 //!    `Answered` response, or does it require `Cancelled` instead?
 //!
 //! All scenarios are gated by `FORGE_WIRE_CAPTURE=1`; replay-mode
@@ -60,7 +60,7 @@ async fn wire_capture_exit_plan_mode() {
             );
             // Deny so the turn ends quickly; we just want the request
             // shape captured.
-            PermissionDecision::deny("forge unified-prompt harness — captured request shape")
+            PermissionDecision::deny("forge unified-prompt harness - captured request shape")
         })
         .build();
 
@@ -107,7 +107,7 @@ async fn wire_capture_permission_allow_with_input_bash() {
                 return PermissionDecision::allow_with_input(Value::Object(modified));
             }
             PermissionDecision::deny(
-                "forge unified-prompt harness — only Bash gets allow_with_input",
+                "forge unified-prompt harness - only Bash gets allow_with_input",
             )
         })
         .build();
@@ -128,7 +128,7 @@ async fn wire_capture_permission_allow_with_input_bash() {
 #[tokio::test]
 #[ignore = "burns real Anthropic API tokens; opt-in via FORGE_WIRE_CAPTURE=1"]
 async fn wire_capture_permission_suggestions_edit() {
-    // Edit a file outside the workspace (`/tmp/**`) — typically the
+    // Edit a file outside the workspace (`/tmp/**`) - typically the
     // CLI flags this as out-of-bounds and populates
     // `permission_suggestions` with `addRules` entries scoped to
     // `/tmp/**` (or `/private/tmp/**` on macOS). Captures the
@@ -141,7 +141,7 @@ async fn wire_capture_permission_suggestions_edit() {
                 ctx.suggestions.len(),
                 ctx.blocked_path
             );
-            PermissionDecision::deny("forge unified-prompt harness — captured suggestions only")
+            PermissionDecision::deny("forge unified-prompt harness - captured suggestions only")
         })
         .build();
 
@@ -149,7 +149,7 @@ async fn wire_capture_permission_suggestions_edit() {
         client
             .send_user_message(
                 "Use the Edit tool to change the file at \
-                     /tmp/forge-unified-prompt-edit.txt — replace any occurrence of \
+                     /tmp/forge-unified-prompt-edit.txt - replace any occurrence of \
                      `old` with `new`. The file doesn't need to exist; just attempt \
                      the Edit so I can see the permission prompt.",
             )
@@ -174,7 +174,7 @@ async fn wire_capture_permission_suggestions_read() {
                 ctx.suggestions.len(),
                 ctx.blocked_path
             );
-            PermissionDecision::deny("forge unified-prompt harness — captured suggestions only")
+            PermissionDecision::deny("forge unified-prompt harness - captured suggestions only")
         })
         .build();
 
@@ -203,7 +203,7 @@ async fn wire_capture_permission_suggestions_write() {
                 ctx.suggestions.len(),
                 ctx.blocked_path
             );
-            PermissionDecision::deny("forge unified-prompt harness — captured suggestions only")
+            PermissionDecision::deny("forge unified-prompt harness - captured suggestions only")
         })
         .build();
 
@@ -274,7 +274,7 @@ async fn wire_capture_question_notes_only_response() {
             .send_user_message(
                 "Use the AskUserQuestion tool right now to ask me whether I prefer \
                      the colour red, blue, or green. Single question, three options. \
-                     Do NOT answer it for me — just call the tool and stop.",
+                     Do NOT answer it for me - just call the tool and stop.",
             )
             .await?;
         Ok((client, events))

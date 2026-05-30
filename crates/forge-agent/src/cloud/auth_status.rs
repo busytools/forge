@@ -1,10 +1,10 @@
-//! `claude auth status` shell-out — the CLI's only source of truth
+//! `claude auth status` shell-out - the CLI's only source of truth
 //! for the user's full account profile (email, org, subscription
 //! tier).
 //!
 //! In claude 2.1.117 the `system/init` stream-json frame does **not**
 //! include an `account` block. The frame carries `apiKeySource` at the
-//! top level (e.g. `"none"`, `"oauth"`, `"user"`, …) and that's it —
+//! top level (e.g. `"none"`, `"oauth"`, `"user"`, …) and that's it  -
 //! everything else (email, organization, subscription) lives behind
 //! the `claude auth status` subcommand. The JS-side SDK fetches the
 //! same data via its own `query.accountInfo()` RPC; for forge the
@@ -45,7 +45,7 @@ struct ClaudeAuthStatus {
 /// Map `auth_method` values from `claude auth status` to the legacy
 /// `api_key_source` enum the TUI's status page renders. The TUI's
 /// `login_method_label` distinguishes between `oauth`, `user`,
-/// `project`, `org`, `temporary` — anything else falls through to
+/// `project`, `org`, `temporary` - anything else falls through to
 /// the raw string.
 fn map_auth_method_to_api_key_source(auth_method: &str) -> &str {
     match auth_method {

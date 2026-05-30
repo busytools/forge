@@ -46,7 +46,7 @@ impl Role {
     }
 }
 
-/// Reserved label addressing the caller's own lead — see the workers
+/// Reserved label addressing the caller's own lead - see the workers
 /// MCP server. Kept here so charter validation in
 /// `forge-workspace::config` can sanity-check `team = [...]` entries
 /// against it without pulling in `mcp::workers`.
@@ -58,7 +58,7 @@ pub enum CharterError {
     /// Label is empty, starts with `/`, or contains a path segment
     /// equal to `..`, `.`, or empty (consecutive slashes).
     InvalidLabel(String),
-    /// `dirs::home_dir()` returned None — typically only in restricted
+    /// `dirs::home_dir()` returned None - typically only in restricted
     /// CI environments without a HOME.
     NoHomeDir,
     /// Charter file (`<label>/charter.md`) doesn't exist at the
@@ -211,13 +211,13 @@ pub fn load_initial_kick(label: &str) -> Result<String, CharterError> {
 
 /// Optional resume-specific kick. When a worker session is resumed
 /// rather than freshly spawned, the kick-on-Connected hook uses this
-/// content (if present) to re-orient the worker — explicit "you're
+/// content (if present) to re-orient the worker - explicit "you're
 /// picking up where you left off" framing instead of the
 /// fresh-start framing in `kick.md`.
 ///
 /// Returns:
 /// - `Ok(Some(text))` when `<label>/resume-kick.md` exists.
-/// - `Ok(None)` when the file is absent — caller falls back to the
+/// - `Ok(None)` when the file is absent - caller falls back to the
 ///   default kick (or skips entirely per the
 ///   `worker_has_progress_past_kick` gate). Absent is the common case
 ///   for roles whose default behaviour is fine post-resume.
@@ -229,7 +229,7 @@ pub fn load_initial_kick(label: &str) -> Result<String, CharterError> {
 /// # Errors
 ///
 /// See [`CharterError`]; NotFound on the file specifically is NOT an
-/// error — it returns `Ok(None)`.
+/// error - it returns `Ok(None)`.
 pub fn load_resume_kick(label: &str) -> Result<Option<String>, CharterError> {
     let path = role_dir(label)?.join("resume-kick.md");
     match std::fs::read_to_string(&path) {

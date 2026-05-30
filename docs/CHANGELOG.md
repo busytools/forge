@@ -9,7 +9,7 @@ Version numbers mirror the Python SDK release they target parity with
 
 ## [Unreleased]
 
-### Added — parity-gap closures (seventh pass, 2026-04-22)
+### Added - parity-gap closures (seventh pass, 2026-04-22)
 
 - **`query_stream()`** returning `impl Stream<Item = Result<Message>>`
   alongside the Vec-collecting `query()`. Mirrors Python's
@@ -17,26 +17,26 @@ Version numbers mirror the Python SDK release they target parity with
   spawned task + mpsc channel; consumer-drop tears down cleanly.
   Adds `tokio-stream = "0.1"` to workspace deps.
 - **`SessionSummaryEntry`** + **`fold_session_summary()`** +
-  **`summary_entry_to_sdk_info()`** — pure-fn port of Python's
+  **`summary_entry_to_sdk_info()`** - pure-fn port of Python's
   `_internal/session_summary.py`. Stores call `fold_session_summary`
   from inside `append()` to maintain per-session summary sidecars
   without re-reading the transcript. Lives in `src/session/summary.rs`.
-- **`SessionStore::list_session_summaries()`** — optional trait
+- **`SessionStore::list_session_summaries()`** - optional trait
   method (default `NotImplemented`). Stores that maintain sidecars
   override to expose the `list_sessions_from_store()` fast path.
-- **`pub trait Transport`** + **`Client::spawn_with_transport()`** —
+- **`pub trait Transport`** + **`Client::spawn_with_transport()`**  - 
   carves an extensibility seam out of the concrete `Subprocess`.
   Callers can now inject in-memory mocks, remote-SSH transports,
   containerised spawn, etc. Mirrors Python's abstract `Transport`
   base.
-- **`forge_sdk::testing::run_session_store_conformance()`** — 327-line
+- **`forge_sdk::testing::run_session_store_conformance()`** - 327-line
   testing harness ported from Python's
   `claude_agent_sdk.testing.session_store_conformance`. Third-party
   `SessionStore` adapters call this to certify the 14 behavioural
   contracts. Auto-probes optional methods via `NotImplemented`
   detection; caller can also name methods to skip explicitly.
 
-### Changed — breaking (pre-release)
+### Changed - breaking (pre-release)
 
 - **`Client::sub`** internal field type changed from concrete
   `Subprocess` to `Box<dyn Transport>`. Public API callers
@@ -46,11 +46,11 @@ Version numbers mirror the Python SDK release they target parity with
   consuming form stays for backward compatibility.
 - **`MemorySessionStore::list_subkeys`** no longer applies
   `sanitise()` to subpath strings. The conformance contract requires
-  verbatim round-trip — the prior sanitisation swapped `/` for `-`
+  verbatim round-trip - the prior sanitisation swapped `/` for `-`
   in returned subpaths. Filesystem-backed stores (`FsSessionStore`)
   still sanitise for on-disk layout as expected.
 
-### Added — Tier 6 test-mirror completion (sixth pass, 2026-04-22)
+### Added - Tier 6 test-mirror completion (sixth pass, 2026-04-22)
 
 Every in-scope Python test file (14/14) now has a named Rust
 counterpart in `tests/python_parity/`:
@@ -69,12 +69,12 @@ counterpart in `tests/python_parity/`:
 Out of scope (Python ecosystem-specific example stores):
 `test_example_redis_*`, `test_example_s3_*`, `test_example_postgres_*`.
 
-### Added — earlier 2026-04-22 rounds
+### Added - earlier 2026-04-22 rounds
 
 - Third pass: `ServerToolUse` + `ServerToolResult` content blocks
   (advisor / web_search / web_fetch / code_execution family).
   `test_message_parser.py` completed at 45/45 (tier 6).
-- Fourth pass: `project_key_for_directory` gap closures — NFC
+- Fourth pass: `project_key_for_directory` gap closures - NFC
   normalisation on the canonicalised path + `Option<&str>` accepting
   `None` to default to cwd. Adds `unicode-normalization` dep.
   Breaking: signature changed from `&str` to `Option<&str>`.
@@ -83,18 +83,18 @@ Out of scope (Python ecosystem-specific example stores):
   through it; the 6 Python `TestSessionStoreOptionsValidation` cases
   are ported.
 
-## [0.1.64] — 2026-04-21
+## [0.1.64] - 2026-04-21
 
 Deep-dive parity pass against Python `claude-agent-sdk` v0.1.64.
 Version number jumps from 0.1.3 to 0.1.64 so forge-sdk releases
 mirror the Python SDK version they target parity with (per the
 convention documented in `PARITY.md`).
 
-### Fixed — wire-level divergences from Python SDK
+### Fixed - wire-level divergences from Python SDK
 
 - **`stop_task` payload.** Python `types.py:1519` requires
   `{"subtype":"stop_task","task_id":"..."}`. forge-sdk was sending
-  `tool_use_id` — wrong field name AND wrong semantic (Python's
+  `tool_use_id` - wrong field name AND wrong semantic (Python's
   `task_id` is a sub-agent task id, not a tool-use id). Signature
   changed: `Client::stop_task(task_id: &str)`.
 - **`rewind_files` payload.** Python `types.py:1497` requires
@@ -104,7 +104,7 @@ convention documented in `PARITY.md`).
 - **`mcp_reconnect` / `mcp_toggle` field name.** Python
   `types.py:1505, 1513` uses camelCase `serverName`. forge-sdk was
   sending snake_case `server_name`. Wire now matches; public
-  `Client` method argument name is unchanged (`server_name`) — only
+  `Client` method argument name is unchanged (`server_name`) - only
   the JSON field key differs.
 - **CLI argv: `--input-format`.** Python
   `subprocess_cli.py:207` does not emit this flag. forge-sdk was
@@ -148,7 +148,7 @@ priority order. Highlights:
   `TaskNotificationMessage`, `TaskUsage`, `TaskBudget`).
 - Offline session helpers (`list_sessions`, etc.) and
   `*_via_store` / `*_from_store` async variants.
-- `McpServerConfig` variants (stdio/sse/http) — forge-sdk only models
+- `McpServerConfig` variants (stdio/sse/http) - forge-sdk only models
   in-process.
 - `PermissionUpdate` on `PermissionDecision::allow_with_input`.
 - Options: `tools`, `disallowed_tools`, `system_prompt`,
@@ -159,7 +159,7 @@ priority order. Highlights:
   `enable_file_checkpointing`, `task_budget`, `sandbox`,
   `max_buffer_size`, `stderr`-callback, `user`.
 
-## [0.1.3] — 2026-04-21
+## [0.1.3] - 2026-04-21
 
 First weekly parity run (pulled ahead of 2026-04-27 cadence). Corrects
 divergences from the actual Python SDK v0.1.64 wire protocol that were
@@ -176,7 +176,7 @@ shipped as "best-guess" in v0.1.2.
   the real shape into a new `DecodedLine::TranscriptMirror {file_path,
   entries}` variant; Client derives the `SessionKey` via
   `session_store::file_path_to_session_key()`.
-- **`SessionStoreListEntry.mtime`** field name — Python wire key is
+- **`SessionStoreListEntry.mtime`** field name - Python wire key is
   `mtime` (not `mtime_ms`) per `types.py:1153-1159`. Public breaking
   change on the list-sessions return type; callers reading the field
   need a rename.
@@ -188,10 +188,10 @@ shipped as "best-guess" in v0.1.2.
 
 ### Added
 
-- `session_store::file_path_to_session_key(file_path, projects_dir)` —
+- `session_store::file_path_to_session_key(file_path, projects_dir)`  - 
   derives a `SessionKey` from the `filePath` in a mirror frame.
   Mirrors Python `_internal/session_store.py:108-153`.
-- `Options.projects_dir` + `OptionsBuilder::projects_dir()` — override
+- `Options.projects_dir` + `OptionsBuilder::projects_dir()` - override
   the projects directory used to resolve mirror frame paths. Defaults
   to `$CLAUDE_CONFIG_DIR/projects` or `~/.claude/projects`.
 
@@ -215,14 +215,14 @@ shipped as "best-guess" in v0.1.2.
 - `control_cancel_request` inbound handling.
 - Start `tests/python_parity/` Rust mirror of upstream tests.
 
-## [0.1.2] — 2026-04-21
+## [0.1.2] - 2026-04-21
 
 Closes the two remaining gaps called out under the v0.1.1 "Known gaps
 still outstanding" section.
 
 ### Added
 
-- **Integration tests for the 9 outbound control subtypes** —
+- **Integration tests for the 9 outbound control subtypes**  - 
   `interrupt`, `set_permission_mode`, `rewind_files`, `mcp_reconnect`,
   `mcp_toggle`, `stop_task`, `mcp_status`, `get_context_usage`,
   `fork_session`. New `mock_claude_control.sh` fixture handles the
@@ -231,16 +231,16 @@ still outstanding" section.
   canned payload per subtype. Tests assert the round-trip returns the
   decoded payload for `mcp_status` / `get_context_usage` /
   `fork_session`.
-- **`transcript_mirror` frame ingestion** — `Client::next_event` now
+- **`transcript_mirror` frame ingestion** - `Client::next_event` now
   intercepts `system/transcript_mirror` frames emitted by the CLI under
   `--session-mirror`, parses the `SessionKey` + `entries` payload, and
   calls `session_store.append(&key, &entries).await`. Frames are
   swallowed (never surface via `next_event`); parse failures and
   append errors are logged at `warn!` and continue the event loop (mirror
-  is at-most-once per Python SDK contract). No batching yet — each
+  is at-most-once per Python SDK contract). No batching yet - each
   frame appends on arrival; Python SDK's 100 ms batch cadence is still
   outstanding and tracked for the weekly parity check.
-- **`OptionsBuilder::session_store_arc`** — alternate one-arg entry
+- **`OptionsBuilder::session_store_arc`** - alternate one-arg entry
   point that accepts `Arc<dyn SessionStore>` directly, so callers that
   want to keep a handle on the store (e.g. to inspect it after a
   client exits) don't need to double-wrap.
@@ -254,7 +254,7 @@ still outstanding" section.
 ### Known
 
 - Exact wire shape of `transcript_mirror` is a **best-guess** pending
-  the 2026-04-27 weekly parity check — Python SDK source was not
+  the 2026-04-27 weekly parity check - Python SDK source was not
   available in this session. Assumed shape (single frame per entry
   batch, key inlined on the frame):
   `{"type":"system","subtype":"transcript_mirror","session_id":"...","project_key":"...","subpath":null,"entries":[...]}`.
@@ -262,9 +262,9 @@ still outstanding" section.
   not crash. Source comment on `Client::handle_transcript_mirror`
   flags this for verification.
 
-## [0.1.1] — 2026-04-21
+## [0.1.1] - 2026-04-21
 
-Deferred-item follow-up after v0.1.0 — closes the gaps listed in the
+Deferred-item follow-up after v0.1.0 - closes the gaps listed in the
 v0.1.0 "Known gaps" section.
 
 ### Added
@@ -278,21 +278,21 @@ v0.1.0 "Known gaps" section.
   matches Python SDK v0.1.64 `_internal/query.py`.
 - **Request-id generator** matching Python's `req_<counter>_<hex4>`
   shape (`request_id::next()`).
-- **`permission_prompt_tool_name` option** — orthogonal permission
+- **`permission_prompt_tool_name` option** - orthogonal permission
   path via CLI flag `--permission-prompt-tool <name>`.
-- **`session_store` option + `--session-mirror` CLI flag** — when a
+- **`session_store` option + `--session-mirror` CLI flag** - when a
   `SessionStore` is attached, forge-sdk passes `--session-mirror` so
   the CLI emits `transcript_mirror` frames. (Frame ingestion into
-  `store.append(...)` still to follow in a later patch — the wire
+  `store.append(...)` still to follow in a later patch - the wire
   plumbing is in place.)
-- **CLI-version guard on spawn** — runs `<binary> --version` once and
+- **CLI-version guard on spawn** - runs `<binary> --version` once and
   checks the reported major version meets `minimum_cli_version`
   (default `"2.0.0"`, matching Python SDK's pin at
   `subprocess_cli.py:29`). Pass `None` to disable.
 - **8 outbound control subtypes** on `Client`:
   `interrupt`, `set_permission_mode`, `rewind_files`, `mcp_reconnect`,
   `mcp_toggle`, `stop_task`, `mcp_status`, `get_context_usage`.
-- **`fork_session`** on `Client` — sends the `fork_session`
+- **`fork_session`** on `Client` - sends the `fork_session`
   control_request with an optional `tool_use_id` split-point and
   returns the new `session_id` the CLI assigned.
 - **Mock fixtures:** `mock_claude_raw.sh` for transport-level tests
@@ -307,13 +307,13 @@ v0.1.0 "Known gaps" section.
 ### Known gaps still outstanding
 
 - Transcript-mirror frame ingestion (`transcript_mirror` →
-  `session_store.append`) — flag is passed but we don't yet parse the
+  `session_store.append`) - flag is passed but we don't yet parse the
   frames on the stdio stream.
 - No integration tests for the 8 new control subtypes or
   `fork_session`; real-claude smoke coverage would need the live
   binary.
 
-## [0.1.0] — 2026-04-21
+## [0.1.0] - 2026-04-21
 
 First parity release against `claude-agent-sdk` v0.1.64.
 
@@ -349,7 +349,7 @@ First parity release against `claude-agent-sdk` v0.1.64.
   `SessionStoreListEntry` types matching Python wire shape;
   `MemorySessionStore` + `FsSessionStore` impls with cascading delete
   and subkey enumeration.
-- **M6 recent additions:** `skills` option (three-channel delivery —
+- **M6 recent additions:** `skills` option (three-channel delivery  - 
   `--allowedTools` Skill injection + `--setting-sources=user,project`
   default + `initialize` payload [deferred]), `allowed_tools` explicit
   option, `setting_sources` override, `exclude_dynamic_sections` toggle
@@ -371,13 +371,13 @@ First parity release against `claude-agent-sdk` v0.1.64.
   `mcp_status`, `get_context_usage`) not implemented. Parity tracked
   per upcoming weekly runs.
 - `fork_session`, `permission_prompt_tool_name`, `--session-mirror`
-  CLI wiring, CLI-version guard at spawn — deferred to v0.1.x
+  CLI wiring, CLI-version guard at spawn - deferred to v0.1.x
   follow-ups.
 
-## [0.0.2] — 2026-04-21
+## [0.0.2] - 2026-04-21
 
 - M2 permissions + M3 in-process MCP (see 0.1.0 entry for full details).
 
-## [0.0.1] — 2026-04-21
+## [0.0.1] - 2026-04-21
 
 - M0 scaffolding + M1 core transport (see 0.1.0 entry for full details).

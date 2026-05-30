@@ -57,11 +57,11 @@ pub struct UiSession {
     /// indexing, project-key derivation, and `claude --resume` re-spawn
     /// reconstruction.
     pub cwd_raw: String,
-    /// Monotonic session authority epoch — bumped on each session
+    /// Monotonic session authority epoch - bumped on each session
     /// reset (`/new`, login, logout) so stale async view data can be
     /// ignored.
     pub session_scope_epoch: u64,
-    /// SDK turn state — model-resolution cache, mode capability,
+    /// SDK turn state - model-resolution cache, mode capability,
     /// MCP cooldowns, auth/error flags.
     pub turn_state: SessionTurnState,
     /// Account snapshot from the bridge's status event.
@@ -179,7 +179,7 @@ pub struct UiSession {
     pub session_usage: SessionUsageState,
 
     // ---- Account / auth ----
-    /// OAuth credentials snapshot from the bridge — populated at
+    /// OAuth credentials snapshot from the bridge - populated at
     /// session connect, refreshed after `/login` and `/logout` so
     /// callers can ask "is the user authenticated?" without doing
     /// their own filesystem walk to `<config_dir>/.credentials.json`.
@@ -212,7 +212,7 @@ pub struct UiSession {
     /// File index for `@`-mention autocomplete. Scans the bucket's
     /// `cwd` and updates incrementally via the workspace-wide
     /// `FileIndexEvent` channel (`App::file_index_event_tx`).
-    /// Per-session because the index is project-scoped — switching
+    /// Per-session because the index is project-scoped - switching
     /// active session via the Projects pane must show the new
     /// project's files, not the previous project's.
     pub file_index: FileIndexState,
@@ -304,7 +304,7 @@ pub struct UiSession {
     // ---- Git diff snapshot (Inspector GIT section) ----
     /// Latest poll result. `None` until the first scan completes
     /// (post-Connect). Replaces the retired `GitContextWatcher`
-    /// branch push — the snapshot carries branch info too.
+    /// branch push - the snapshot carries branch info too.
     pub git_diff_snapshot: Option<forge_primitives::git_diff::GitDiffSnapshot>,
     /// Generation epoch. Bumped on cwd change (Connected,
     /// SessionReplaced). Spawned scanner echoes it into its event
@@ -338,7 +338,7 @@ pub struct UiSession {
 
     // ---- Inspector pane scroll state ----
     /// Vertical scroll offset (lines from top) for the Inspector
-    /// pane's scrollable body — everything from the `GIT` section
+    /// pane's scrollable body - everything from the `GIT` section
     /// downward. The banner + rule above it stay pinned. Lives
     /// per-session so switching sessions and coming back preserves
     /// where the user was looking, same shape as chat scrollback.

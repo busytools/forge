@@ -1,4 +1,4 @@
-//! `Workspace::get_agent_handle` integration tests — verify the
+//! `Workspace::get_agent_handle` integration tests - verify the
 //! cross-crate plumbing from `forge.toml` through the account picker
 //! into the spawned `AgentHandle`'s bound `config_dir`. No real
 //! `claude` subprocesses are spawned; the test asserts up to the
@@ -18,7 +18,7 @@ use tempfile::tempdir;
 
 #[tokio::test]
 async fn cold_cache_dual_spawns_rotate_across_allow_list() {
-    // Round-robin cursor advances per pick — under a cold usage
+    // Round-robin cursor advances per pick - under a cold usage
     // cache (both accounts in tier 0 / Usable), the first spawn
     // picks Subspace (cursor=0 → first allow-list entry) and the
     // second rotates to Granite (cursor=1). Spreads load across
@@ -58,7 +58,7 @@ config_dir = "/tmp/forge-test-granite"
         "first spawn (cursor=0) binds to Subspace's config_dir (first usable in allow-list)",
     );
 
-    // Second spawn under a distinct SessionTarget — same allow-list,
+    // Second spawn under a distinct SessionTarget - same allow-list,
     // cursor advances to 1, rotates to Granite.
     let other = SessionKey::from_str_for_test("dual-account-other");
     let h2 = workspace

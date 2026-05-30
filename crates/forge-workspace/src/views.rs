@@ -22,14 +22,14 @@ pub struct ProjectView {
     /// in the Projects pane tree render.
     pub org: String,
     /// Filesystem-resolved project root (`~` expanded). This is the
-    /// path callers should hand to filesystem APIs — `cwd_raw` for
+    /// path callers should hand to filesystem APIs - `cwd_raw` for
     /// the spawning bucket, `file_index::restart`, the git-context
     /// watcher, etc. Use [`Self::display_path`] for human-readable
     /// rendering instead.
     pub path: PathBuf,
     /// Human-readable rendering of the project's root path (e.g.
     /// `~/Projects/forge`, with `~` left in place rather than
-    /// expanded). Display-only — not a path you can `open()`.
+    /// expanded). Display-only - not a path you can `open()`.
     pub display_path: String,
     /// Account `display_name`s this project may spawn under, inherited
     /// from the project's `[[orgs]]` entry. Non-empty (the config
@@ -48,7 +48,7 @@ pub struct ProjectView {
 }
 
 impl ProjectView {
-    /// Lowercased first allowed account — the "account hint" rendered
+    /// Lowercased first allowed account - the "account hint" rendered
     /// as a dim column in the launchpad picker (e.g. `(personal)`,
     /// `(granite)`). The actual spawn picker resolves which account
     /// the session lands under at the moment of spawn; this is just a
@@ -86,7 +86,7 @@ impl ProjectView {
     }
 
     /// Variant of [`Self::new_for_test`] that lets the fixture
-    /// supply an org + accounts list — needed for launchpad picker
+    /// supply an org + accounts list - needed for launchpad picker
     /// snapshot tests where the account hint column reads from
     /// `accounts[0]`.
     pub fn new_for_test_with_org(
@@ -115,7 +115,7 @@ impl ProjectView {
 #[derive(Clone, Debug)]
 pub struct SessionView {
     pub session: SessionKey,
-    /// Display label for the session — the title set via the
+    /// Display label for the session - the title set via the
     /// session-rename flow if any, otherwise a derivation from the
     /// session id or first message. Rendered in the Projects pane.
     pub label: String,

@@ -99,7 +99,7 @@ fn dispatch_routes_control_response_missing_request_id_to_unknown() {
     use forge_sdk::transport::codec::{DecodedLine, decode_dispatch};
 
     // A `control_response` lacking `/response/request_id` is wire
-    // corruption — it must NOT decode as a "valid" `ControlResponse`
+    // corruption - it must NOT decode as a "valid" `ControlResponse`
     // with empty id (which would let the conformance harness count it
     // toward `control_responses` instead of flagging the drift).
     let line = r#"{"type":"control_response","response":{"subtype":"success","response":{}}}"#;

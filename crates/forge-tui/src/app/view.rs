@@ -6,7 +6,7 @@ pub enum ActiveView {
     Chat,
     /// Project picker shown when forge is invoked without an argv
     /// project, or when the user runs `/launchpad` mid-session. The
-    /// launchpad is the floor of the UI — `Esc` is a no-op while
+    /// launchpad is the floor of the UI - `Esc` is a no-op while
     /// it's up; the user picks a project (transitioning to `Chat`)
     /// or quits with `Ctrl+Q`.
     Launchpad,

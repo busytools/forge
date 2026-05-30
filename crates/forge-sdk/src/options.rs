@@ -50,7 +50,7 @@ pub struct Options {
     /// Caller (forge-workspace via forge-agent) typically supplies a
     /// closure that auto-approves any tool whose name starts with the
     /// `mcp__<server>__` prefix of one of its in-process MCP servers
-    /// (e.g. `mcp__forge__peers__ask_agent`) — those servers are
+    /// (e.g. `mcp__forge__peers__ask_agent`) - those servers are
     /// already opted into by the user's forge.toml so a permission
     /// prompt would just be noise.
     pub auto_approve_tool: Option<AutoApproveToolPredicate>,
@@ -58,7 +58,7 @@ pub struct Options {
     /// `mcp__<server>__<tool>` prefix the model sees) to a built
     /// [`McpServer`].
     pub mcp_servers: Vec<(String, McpServer)>,
-    /// External MCP servers — stdio / SSE / HTTP. Mirrors the non-SDK
+    /// External MCP servers - stdio / SSE / HTTP. Mirrors the non-SDK
     /// variants of the CLI's `ClaudeAgentOptions.mcp_servers`
     ///. Registered alongside in-process servers in
     /// the `--mcp-config` JSON.
@@ -102,10 +102,10 @@ pub struct Options {
     pub env: HashMap<String, String>,
     /// Override `$USER` in the subprocess env.
     pub user: Option<String>,
-    /// Arbitrary forward flags — `{"flag": Some("v")}` emits
+    /// Arbitrary forward flags - `{"flag": Some("v")}` emits
     /// `--flag v`, `{"flag": None}` emits a bare `--flag`.
     pub extra_args: HashMap<String, Option<String>>,
-    /// Reasoning-effort hint. `--effort <level>` — the CLI's `effort`
+    /// Reasoning-effort hint. `--effort <level>` - the CLI's `effort`
     /// is a literal-or-integer carried via [`SubagentEffort`] (named
     /// for its origin on the subagent declaration shape, but the
     /// session-level effort uses the same wire enum).
@@ -135,7 +135,7 @@ pub struct Options {
     /// the JSON (or reads the file) and merges
     /// `{"sandbox": <sandbox>}` in.
     pub settings: Option<String>,
-    /// Sandbox configuration — merged into
+    /// Sandbox configuration - merged into
     /// [`settings`](Self::settings) JSON when emitted via
     /// `--settings`.
     pub sandbox: Option<forge_primitives::SandboxSettings>,
@@ -147,7 +147,7 @@ pub struct Options {
     ///
     /// forge-workspace boots one proxy per process at startup and
     /// stamps the handle onto every Options it constructs. forge-sdk
-    /// itself stays proxy-agnostic — leaving this None spawns
+    /// itself stays proxy-agnostic - leaving this None spawns
     /// without rewriting (useful for unit/integration tests).
     pub proxy: Option<crate::transport::proxy::ProxyHandle>,
 }
@@ -321,7 +321,7 @@ impl std::fmt::Debug for Options {
 }
 
 /// Builder for [`Options`]. `#[must_use]` catches "constructed a
-/// builder, dropped it without `.build()`" — every setter returns
+/// builder, dropped it without `.build()`" - every setter returns
 /// `Self` and inherits the marker.
 #[derive(Clone, Default)]
 #[must_use]
@@ -372,7 +372,7 @@ impl OptionsBuilder {
     }
 
     /// Register a permission callback. Any type implementing
-    /// [`CanUseToolCallback`] works — including plain async functions
+    /// [`CanUseToolCallback`] works - including plain async functions
     /// via the blanket impl.
     pub fn can_use_tool<C>(mut self, callback: C) -> Self
     where
@@ -419,7 +419,7 @@ impl OptionsBuilder {
     }
 
     /// Set an orthogonal permission-prompt tool name (CLI flag
-    /// `--permission-prompt-tool`). Alternative to `can_use_tool` — the
+    /// `--permission-prompt-tool`). Alternative to `can_use_tool` - the
     /// CLI invokes the named tool (typically via MCP) instead of routing
     /// permission requests to the SDK callback.
     pub fn permission_prompt_tool_name(mut self, name: impl Into<String>) -> Self {
@@ -512,7 +512,7 @@ impl OptionsBuilder {
         self
     }
 
-    /// Set `--settings` value — either a file path or an inline JSON
+    /// Set `--settings` value - either a file path or an inline JSON
     /// string. Combined with [`sandbox`](Self::sandbox) if both are set.
     pub fn settings(mut self, s: impl Into<String>) -> Self {
         self.inner.settings = Some(s.into());

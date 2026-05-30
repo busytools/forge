@@ -72,7 +72,7 @@ pub enum Error {
     /// envelope, `control_request` body, hook response, session
     /// mutation entry, etc.). Distinct from
     /// [`Error::MessageParse`], which is for parse failures on
-    /// data the CLI sent us — `Encode` is when *we* couldn't
+    /// data the CLI sent us - `Encode` is when *we* couldn't
     /// serialise something locally and the bug is on the SDK or
     /// caller side, not the CLI's. `context` names what we were
     /// trying to encode (e.g. "agents map", "initialize body",

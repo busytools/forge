@@ -2,7 +2,7 @@
 //!
 //! The `Message`, `RateLimitInfo`, etc. types live in
 //! `forge-primitives` (lifted 2026-05-05). These tests exercise them
-//! against `forge-sdk`'s `transport::codec` decoders — i.e. the path
+//! against `forge-sdk`'s `transport::codec` decoders - i.e. the path
 //! the live `claude` subprocess actually takes. They moved here from
 //! the messages.rs file in primitives because primitives has no
 //! transport module.

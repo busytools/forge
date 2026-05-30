@@ -3,15 +3,15 @@
 //! Four tools the LLM in any session can call to communicate with
 //! other forge agents (= projects from forge.toml):
 //!
-//! - `peers__ask_agent` — async question to another agent. Returns a
+//! - `peers__ask_agent` - async question to another agent. Returns a
 //!   correlation_id; reply lands as a new user-turn injection in the
 //!   caller's chat once the recipient's `tell_agent { in_reply_to }`
 //!   fires.
-//! - `peers__tell_agent` — fire-and-forget message OR reply (when
+//! - `peers__tell_agent` - fire-and-forget message OR reply (when
 //!   `in_reply_to` is set).
-//! - `peers__list_agents` — snapshot of every configured project's
+//! - `peers__list_agents` - snapshot of every configured project's
 //!   peer status (running / sleeping / failed + in-flight counters).
-//! - `peers__whoami` — caller's own identity (project name, org,
+//! - `peers__whoami` - caller's own identity (project name, org,
 //!   path, model, permission mode).
 //!
 //! All four tools take a closure-bound [`SessionKey`] identifying the
@@ -65,7 +65,7 @@ pub(crate) fn add_tools(
 /// `WorkspaceFacade::deliver_peer_prompt`.
 const HOP_LIMIT: u8 = 10;
 
-/// `peers__whoami` — caller's own identity. No args. Returns a
+/// `peers__whoami` - caller's own identity. No args. Returns a
 /// JSON blob containing name, org, path, current liveness, model
 /// (when known), and the current in-flight peer-message counters.
 ///
@@ -96,7 +96,7 @@ impl Tool for Whoami {
          counters). Useful when an inbound wrapper says 'from/to agent X' \
          and you want to confirm whether X is you, or when you need to \
          refer to yourself in a message to another agent. Identity is \
-         stable for the session — most callers will not need to call this \
+         stable for the session - most callers will not need to call this \
          more than once. Takes no arguments."
     }
 
@@ -137,7 +137,7 @@ impl Tool for Whoami {
     }
 }
 
-/// `peers__list_agents` — snapshot of every forge.toml project's
+/// `peers__list_agents` - snapshot of every forge.toml project's
 /// peer status. No args. Returns a JSON array.
 ///
 /// Used by the LLM BEFORE calling `peers__ask_agent` or
@@ -166,21 +166,21 @@ impl Tool for ListAgents {
          incoming and outgoing). \
          \
          CROSS-PROJECT RULE (mutations only): whenever the user asks you \
-         to CHANGE state in a project other than your own — edit files, \
+         to CHANGE state in a project other than your own - edit files, \
          run a command, file an issue, push a branch, anything with side \
-         effects — call this tool FIRST. If the target project appears in \
+         effects - call this tool FIRST. If the target project appears in \
          the result, do NOT cd into it and mutate its files directly. \
          Hand the work off via peers__ask_agent (when you need an answer \
          or confirmation back) or peers__tell_agent (for a notification \
          or fire-and-forget hand-off). Each agent owns its own repo; \
          stay in your lane and let the peer execute the change. \
          \
-         Reading another project's files for context is fine — sometimes \
+         Reading another project's files for context is fine - sometimes \
          scanning the source yourself gives a sharper answer than waiting \
          on an ask. The constraint is only on writes / state changes. \
          \
          Call this before asking or telling so you use the right project \
-         name — a misspelled target returns an immediate error listing \
+         name - a misspelled target returns an immediate error listing \
          the valid set. Sleeping agents are still callable; they \
          auto-spawn on the first ask or tell. Takes no arguments."
     }
@@ -207,13 +207,13 @@ impl Tool for ListAgents {
     }
 }
 
-/// `peers__tell_agent` — fire-and-forget message to another agent,
+/// `peers__tell_agent` - fire-and-forget message to another agent,
 /// OR a reply to an earlier ask (when `in_reply_to` is set).
 ///
 /// Arguments:
-/// - `target` (string, required) — project name to deliver to
-/// - `message` (string, required) — the message body
-/// - `in_reply_to` (string, optional) — the correlation_id of an
+/// - `target` (string, required) - project name to deliver to
+/// - `message` (string, required) - the message body
+/// - `in_reply_to` (string, optional) - the correlation_id of an
 ///   earlier ask this message replies to
 ///
 /// Returns a JSON object with `correlation_id`, `queued_at`,
@@ -228,7 +228,7 @@ impl Tool for ListAgents {
 /// - Not found → wrapper kind = Message (log warn; LLM hallucinated
 ///   the correlation id)
 ///
-/// Hop count is stamped automatically — caller doesn't pass it. The
+/// Hop count is stamped automatically - caller doesn't pass it. The
 /// outgoing hop is `peek_current_inbound_hop(caller).unwrap_or(0) + 1`.
 /// Outgoing chains exceeding `HOP_LIMIT` (default 10) are refused by
 /// the facade with `is_error: true`.
@@ -256,20 +256,20 @@ impl Tool for TellAgent {
     fn description(&self) -> &str {
         "Send a one-way message to another forge agent (project). Returns \
          immediately with a correlation_id; no reply is expected from the \
-         target. Two shapes: (1) REPLY to an inbound peers__ask_agent — \
+         target. Two shapes: (1) REPLY to an inbound peers__ask_agent - \
          set in_reply_to to the correlation_id from that ask's wrapper, \
          and the original asker sees your message rendered as a Reply; \
-         (2) UNSOLICITED — omit in_reply_to to send standalone prose \
+         (2) UNSOLICITED - omit in_reply_to to send standalone prose \
          (announcements, FYI, hand-offs). The target sees the message as \
          a new user turn in its chat and may respond by sending another \
          tell, asking you back via peers__ask_agent, or simply continuing \
          its own work. Auto-spawns the target if it's currently sleeping. \
-         Hop count is stamped by forge automatically — do not pass it as \
+         Hop count is stamped by forge automatically - do not pass it as \
          an argument. \
          \
          Use this (instead of mutating another project's files directly) \
          whenever the user asks you to notify or hand off work to another \
-         forge project — e.g. \"let granite-backend know the rewriter \
+         forge project - e.g. \"let granite-backend know the rewriter \
          cleanup landed\", \"tell forge to pick this up next session\". \
          The target's own agent will integrate the news inside its own \
          chat context. Reading the target's files for your own context is \
@@ -283,7 +283,7 @@ impl Tool for TellAgent {
             "properties": {
                 "target": {
                     "type": "string",
-                    "description": "Project name of the target agent. Must match an entry from peers__list_agents — case-sensitive. A misspelled name returns an error listing valid options.",
+                    "description": "Project name of the target agent. Must match an entry from peers__list_agents - case-sensitive. A misspelled name returns an error listing valid options.",
                 },
                 "message": {
                     "type": "string",
@@ -421,7 +421,7 @@ fn classify_tell(
         );
         return (WrappedKind::Message, None);
     }
-    // Presence in inflight_asks is the lifecycle signal — entry
+    // Presence in inflight_asks is the lifecycle signal - entry
     // exists ⇒ ask is open. Timeout / target-failure paths remove
     // the entry; late replies after that lookup-miss fall through
     // to the WrappedKind::Message degraded path at the call site.
@@ -457,15 +457,15 @@ fn chrono_rfc3339_now() -> String {
     })
 }
 
-/// `peers__ask_agent` — async question to another agent. Returns
+/// `peers__ask_agent` - async question to another agent. Returns
 /// immediately with a correlation_id; the reply lands later as a
 /// new user-turn injection in YOUR chat when the recipient calls
 /// `peers__tell_agent { in_reply_to: <this correlation_id> }`.
 ///
 /// Arguments:
-/// - `target` (string, required) — project name to ask
-/// - `prompt` (string, required) — the question body
-/// - `in_reply_to` (string, optional) — pass-through threading id
+/// - `target` (string, required) - project name to ask
+/// - `prompt` (string, required) - the question body
+/// - `in_reply_to` (string, optional) - pass-through threading id
 ///   if this ask itself is a follow-up to an earlier message
 ///
 /// Returns a JSON object with `correlation_id` (starts with `q-`),
@@ -473,7 +473,7 @@ fn chrono_rfc3339_now() -> String {
 ///
 /// Auto-spawns the target if it's currently sleeping; the reply
 /// will take longer in that case (one full spawn cycle). Multiple
-/// asks can run in parallel — fire several ask_agent calls in one
+/// asks can run in parallel - fire several ask_agent calls in one
 /// turn, replies arrive independently and can be threaded back via
 /// their distinct correlation_ids.
 ///
@@ -505,23 +505,23 @@ impl Tool for AskAgent {
          reply asynchronously. Returns IMMEDIATELY with a correlation_id \
          (e.g. q-7f3a92e0); this tool does NOT wait for the reply. The \
          target's LLM will see your prompt as a new user turn, do its \
-         work — possibly seconds, possibly minutes — and respond by \
+         work - possibly seconds, possibly minutes - and respond by \
          calling peers__tell_agent with in_reply_to set to your \
          correlation_id. That reply lands as a fresh user turn in YOUR \
          chat whenever it's ready, so finish your current turn naturally \
          and continue with other work; the reply will surface on its own. \
-         Multiple asks can run in parallel — fire several ask_agent calls \
+         Multiple asks can run in parallel - fire several ask_agent calls \
          in one turn and the replies arrive independently, each carrying \
          its own correlation_id you can thread back. Synchronous errors \
          (target not in forge.toml, hop limit exceeded) return \
          is_error: true; later-detected delivery failures arrive as a \
          '[Ask ... failed to deliver: ...]' envelope in your chat. \
          Auto-spawns sleeping targets (expect extra latency on the first \
-         ask). Hop count is stamped automatically — do not pass it. \
+         ask). Hop count is stamped automatically - do not pass it. \
          \
          Use this whenever you need another forge project to TAKE AN \
          ACTION or give you an authoritative answer that only its own \
-         agent should produce — running a build there, kicking off a \
+         agent should produce - running a build there, kicking off a \
          migration there, confirming whether a deploy landed, asking it \
          to review a design from its own context. Reading the target's \
          files for your own context is fine and often quicker than \
@@ -537,11 +537,11 @@ impl Tool for AskAgent {
             "properties": {
                 "target": {
                     "type": "string",
-                    "description": "Project name of the target agent. Must match an entry from peers__list_agents — case-sensitive. A misspelled name returns an error listing valid options.",
+                    "description": "Project name of the target agent. Must match an entry from peers__list_agents - case-sensitive. A misspelled name returns an error listing valid options.",
                 },
                 "prompt": {
                     "type": "string",
-                    "description": "The question body. Rendered as a new user-turn in the target's chat — write it as a direct request to the target. Include enough context that the target can answer without further round-trips.",
+                    "description": "The question body. Rendered as a new user-turn in the target's chat - write it as a direct request to the target. Include enough context that the target can answer without further round-trips.",
                 },
                 "in_reply_to": {
                     "type": "string",
@@ -672,7 +672,7 @@ mod tests {
     #[tokio::test]
     async fn whoami_errors_when_caller_unresolved() {
         let mock = MockWorkspaceFacade::new();
-        // No peers pre-loaded — whoami can't find one matching the
+        // No peers pre-loaded - whoami can't find one matching the
         // caller's name.
         let facade = mock.into_arc();
         let tool = Whoami { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("ghost")) };
@@ -694,7 +694,7 @@ mod tests {
         assert!(tool.description().to_lowercase().contains("identity"));
         let schema = tool.input_schema();
         assert_eq!(schema["type"], "object");
-        // Schema describes no arguments — empty properties.
+        // Schema describes no arguments - empty properties.
         let props = schema["properties"].as_object().expect("properties is object");
         assert!(props.is_empty(), "whoami takes no arguments");
     }
@@ -891,7 +891,7 @@ mod tests {
         let facade = mock.into_arc();
         let tool =
             TellAgent { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("forge")) };
-        // Valid-shape but never-registered id — exercises the
+        // Valid-shape but never-registered id - exercises the
         // "lookup miss → degrade to Message" path. Malformed-id
         // input (wrong case, wrong length) takes the
         // CorrelationId::from_external rejection path instead and
@@ -912,7 +912,7 @@ mod tests {
     async fn tell_agent_in_reply_to_malformed_is_error() {
         // Uppercase hex isn't well-formed (`from_external` rejects).
         // Without this guard the lookup misses silently and the
-        // reply degrades to a Message — hiding the LLM's bug.
+        // reply degrades to a Message - hiding the LLM's bug.
         let mock = MockWorkspaceFacade::new();
         mock.peers.lock().push(fake_peer("forge"));
         mock.peers.lock().push(fake_peer("granite-backend"));

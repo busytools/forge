@@ -4,7 +4,7 @@
 //! Walks the descendant tree of the spawned `claude` binary at the
 //! operating-system level via the `sysinfo` crate, returning a
 //! sorted snapshot of "interesting" descendants: shells, compilers,
-//! task runners, monitors — anything claude's tool flow spawned
+//! task runners, monitors - anything claude's tool flow spawned
 //! that's still alive at scan time.
 //!
 //! Why not key off the wire alone? The wire's `task_started` /
@@ -36,12 +36,12 @@ use std::time::SystemTime;
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 
 /// Snapshot of `claude`'s descendant processes at one point in time.
-/// Always succeeds — failures (sysinfo errors, process gone) collapse
+/// Always succeeds - failures (sysinfo errors, process gone) collapse
 /// to an empty `processes` vec.
 #[derive(Debug, Clone)]
 pub struct ProcessSnapshot {
     /// Sorted descendants of the supplied `claude_pid`. Sort order:
-    /// memory descending — most resource-hungry processes first so
+    /// memory descending - most resource-hungry processes first so
     /// a top-N display surfaces the interesting ones.
     pub processes: Vec<ProcessEntry>,
     /// When the scan ran. The TUI compares against this to decide
@@ -64,7 +64,7 @@ impl Default for ProcessSnapshot {
 pub struct ProcessEntry {
     /// OS process identifier.
     pub pid: u32,
-    /// Parent process identifier — `claude_pid` for direct children,
+    /// Parent process identifier - `claude_pid` for direct children,
     /// some other descendant for grandchildren.
     pub parent_pid: u32,
     /// Process name as the OS reports it (e.g. `"zsh"`, `"cargo"`,
@@ -87,7 +87,7 @@ pub struct ProcessEntry {
 }
 
 /// Walk the descendants of `claude_pid` and build a sorted snapshot.
-/// Always returns successfully — sysinfo failures, missing processes,
+/// Always returns successfully - sysinfo failures, missing processes,
 /// or empty descendant trees all collapse to an empty snapshot with
 /// a fresh `scanned_at`.
 ///
@@ -133,7 +133,7 @@ fn collect_descendants(
 ) {
     use std::collections::HashSet;
 
-    // sysinfo doesn't expose a "give me children of X" query — we
+    // sysinfo doesn't expose a "give me children of X" query - we
     // index parent_pid → children once, then walk from root.
     let mut children_of: std::collections::HashMap<Pid, Vec<Pid>> =
         std::collections::HashMap::new();
@@ -153,7 +153,7 @@ fn collect_descendants(
             }
             stack.push(child_pid);
 
-            // Skip the scanner's own process — would appear when
+            // Skip the scanner's own process - would appear when
             // forge itself runs as a descendant of claude (it
             // shouldn't, but defensively).
             if self_pid == Some(child_pid) {
@@ -162,7 +162,7 @@ fn collect_descendants(
 
             let Some(proc) = system.process(child_pid) else { continue };
 
-            // Skip zombies / dead — they're in the table but
+            // Skip zombies / dead - they're in the table but
             // represent no live work.
             if matches!(
                 proc.status(),
@@ -210,7 +210,7 @@ fn collect_descendants(
 /// Match strategy: substring containment. Shell wrappers add
 /// `/bin/zsh -c -l "source ... && eval '<command>' < /dev/null"`
 /// around the user-typed command, so exact equality almost never
-/// holds — but the user's command appears verbatim somewhere in
+/// holds - but the user's command appears verbatim somewhere in
 /// the wrapped cmdline. Returns `true` when `tool_command` is a
 /// non-empty substring of `process_cmd`.
 ///
@@ -263,7 +263,7 @@ mod tests {
     #[test]
     fn partial_word_does_not_match_false_positive() {
         // Defensive: "cargo" alone shouldn't match a row that just
-        // happens to contain "cargo" — but our substring rule says
+        // happens to contain "cargo" - but our substring rule says
         // it does. Documented here as a known limitation; the
         // alternative (token-level match) is more code for a
         // marginal win on personal-use scope.
@@ -273,10 +273,10 @@ mod tests {
     #[test]
     fn scan_returns_empty_snapshot_for_missing_pid() {
         // PID 0 is the kernel scheduler on Linux / never has children
-        // on macOS — walk should yield zero descendants. Confirms
+        // on macOS - walk should yield zero descendants. Confirms
         // `scan` is total even for nonsense input.
         let snapshot = scan(0);
-        // Don't assert empty — PID 0 has children on Linux (kthreadd).
+        // Don't assert empty - PID 0 has children on Linux (kthreadd).
         // What we DO assert: scanned_at is recent + no panic.
         let age = SystemTime::now().duration_since(snapshot.scanned_at).map_or(0, |d| d.as_secs());
         assert!(age <= 5, "scanned_at must be recent");

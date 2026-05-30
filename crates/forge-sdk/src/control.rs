@@ -30,7 +30,7 @@ pub enum ControlRequestType {
 
 /// Enumerates the kinds of control requests we handle.
 ///
-/// `Unknown` is the forward-compat catch-all — any `subtype` the CLI
+/// `Unknown` is the forward-compat catch-all - any `subtype` the CLI
 /// ships that forge-sdk doesn't yet model lands here with the full
 /// payload captured. The dispatcher in `client/control_dispatch.rs`
 /// responds with a `control_response` error (since we have no handler)
@@ -250,7 +250,7 @@ impl<'de> Deserialize<'de> for ControlRequestKind {
                 Ok(Self::HookCallback { callback_id, input, tool_use_id })
             }
             // Forward-compat catch-all. NOTE: when adding a new known
-            // `ControlRequestKind` variant, add a matching arm above —
+            // `ControlRequestKind` variant, add a matching arm above  -
             // a new variant without an arm here will silently land in
             // `Unknown` instead of being recognised.
             other => Ok(Self::Unknown { subtype: other.to_string(), raw }),
@@ -304,12 +304,12 @@ pub enum ControlResponseKind {
 /// `can_use_tool` response.
 ///
 /// Wraps the CLI's `PermissionResultAllow` / `PermissionResultDeny`.
-/// NOTE: wire keys are camelCase (`updatedInput`, `updatedPermissions`) —
+/// NOTE: wire keys are camelCase (`updatedInput`, `updatedPermissions`)  -
 /// do not rename to `snake_case`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "behavior", rename_all = "snake_case")]
 pub enum AllowBehavior {
-    /// Allow the call. `updated_input` is ALWAYS populated on the wire —
+    /// Allow the call. `updated_input` is ALWAYS populated on the wire  -
     /// when the callback had no override, caller must echo the original
     /// `input` into this field (the CLI always does).
     Allow {
@@ -463,7 +463,7 @@ mod tests_control_types {
     fn deserialize_missing_subtype_lands_in_unknown_with_missing_sentinel() {
         // A `control_request` without `subtype` is wire corruption.
         // The Deserialize impl distinguishes this from forward-compat
-        // drift by using the `<missing>` sentinel — pinned here so a
+        // drift by using the `<missing>` sentinel - pinned here so a
         // future refactor can't silently flip back to `unwrap_or("")`
         // without breaking a test.
         let raw = json!({

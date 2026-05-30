@@ -1,5 +1,5 @@
 //! Subagent declarations forwarded to the `claude` CLI via the
-//! `initialize` `control_request`'s `agents` field. Pure data — no
+//! `initialize` `control_request`'s `agents` field. Pure data - no
 //! callbacks.
 
 use std::collections::HashMap;
@@ -84,9 +84,9 @@ pub enum SubagentMcpServerRef {
     /// Inline declaration. On the wire, emitted as `{<name>: <config>}`.
     #[serde(with = "inline_mcp_server")]
     Inline {
-        /// Server name — becomes the single key of the emitted object.
+        /// Server name - becomes the single key of the emitted object.
         name: String,
-        /// Server config — becomes the value.
+        /// Server config - becomes the value.
         config: Value,
     },
 }
@@ -166,7 +166,7 @@ impl SubagentEffort {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum EffortPreset {
-    /// Lowest effort — fast, shallow reasoning.
+    /// Lowest effort - fast, shallow reasoning.
     Low,
     /// Balanced default.
     Medium,

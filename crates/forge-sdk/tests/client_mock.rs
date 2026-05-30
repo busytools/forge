@@ -46,7 +46,7 @@ async fn disconnect_after_send_does_not_hang() {
     let _ = events.recv().await;
     let _ = events.recv().await;
 
-    // Must complete within a reasonable window — regression guard for the
+    // Must complete within a reasonable window - regression guard for the
     // anyio-style cancel-scope spin bug Python architect hit.
     tokio::time::timeout(std::time::Duration::from_secs(2), client.disconnect())
         .await

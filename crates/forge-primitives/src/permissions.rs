@@ -1,4 +1,4 @@
-//! Permission decision wire-data — `ToolPermissionContext`,
+//! Permission decision wire-data - `ToolPermissionContext`,
 //! `PermissionDecision`, `PermissionUpdate`,
 //! `PermissionUpdateDestination`, `PermissionBehavior`,
 //! `PermissionRuleValue`. The matching `CanUseToolCallback` trait
@@ -15,7 +15,7 @@ pub struct ToolPermissionContext {
     pub tool_name: String,
     /// The JSON input the model generated for the call.
     pub tool_input: Value,
-    /// Identifier of THIS tool call (always present — used to correlate
+    /// Identifier of THIS tool call (always present - used to correlate
     /// with the subsequent `ToolResult` in the stream). Matches the wire
     /// `tool_use_id` field.
     pub tool_use_id: String,
@@ -25,7 +25,7 @@ pub struct ToolPermissionContext {
     /// Permission-rule suggestions the CLI attached to this request.
     /// Typically populated when the user has in-flight workspace
     /// permission prompts. Wire shape:
-    /// `ToolPermissionContext.suggestions` — populated
+    /// `ToolPermissionContext.suggestions` - populated
     /// from the `control_request`'s `permission_suggestions` list, with
     /// unrecognised entries dropped.
     pub suggestions: Vec<PermissionUpdate>,
@@ -141,7 +141,7 @@ impl PermissionDecision {
     /// Attach a list of [`PermissionUpdate`]s to an allow decision. These
     /// are forwarded to the `claude` binary as `updatedPermissions` on the
     /// wire and applied to the session's permission state. No-op on a
-    /// deny decision — the CLI's `PermissionResultDeny` has no equivalent
+    /// deny decision - the CLI's `PermissionResultDeny` has no equivalent
     /// channel.
     pub fn with_updated_permissions(mut self, updates: Vec<PermissionUpdate>) -> Self {
         if let DecisionKind::Allow { updated_permissions, .. } = &mut self.inner {
@@ -192,7 +192,7 @@ pub enum PermissionUpdateDestination {
     ProjectSettings,
     /// Project-local `.claude/settings.local.json`.
     LocalSettings,
-    /// Session-scoped (in-memory, per-client) — discarded on disconnect.
+    /// Session-scoped (in-memory, per-client) - discarded on disconnect.
     Session,
 }
 

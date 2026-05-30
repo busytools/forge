@@ -1,9 +1,9 @@
-//! Offline session scanners — stateless filesystem helpers that read
+//! Offline session scanners - stateless filesystem helpers that read
 //! transcripts from `<config_dir>/projects/<project_key>/*.jsonl`.
 //!
-//! - [`list_sessions`] — lists sessions, either for one project or all.
-//! - [`get_session_info`] — reads metadata for one session by ID.
-//! - [`get_session_messages`] — reads the full transcript for one session.
+//! - [`list_sessions`] - lists sessions, either for one project or all.
+//! - [`get_session_info`] - reads metadata for one session by ID.
+//! - [`get_session_messages`] - reads the full transcript for one session.
 //!
 //! Session metadata ([`list_sessions`], [`get_session_info`]) is
 //! extracted via an internal head + tail lite read so a 100 MiB
@@ -29,7 +29,7 @@ use forge_sdk::projects_dir_for;
 
 /// True if `s` is a canonical 8-4-4-4-12 hyphenated UUID. The length
 /// guard rejects the hyphenless / braced / URN forms that
-/// `Uuid::try_parse` otherwise accepts — session ids on disk are always
+/// `Uuid::try_parse` otherwise accepts - session ids on disk are always
 /// the hyphenated form the CLI emits.
 pub(crate) fn is_valid_uuid(s: &str) -> bool {
     s.len() == 36 && Uuid::try_parse(s).is_ok()
@@ -59,11 +59,11 @@ fn try_read_dir(dir: &Path) -> Option<fs::ReadDir> {
 }
 
 /// Size of the head / tail byte buffer for lite metadata reads.
-/// the CLI constant — match exactly so
+/// the CLI constant - match exactly so
 /// the two implementations slice transcripts at the same boundary.
 const LITE_READ_BUF_SIZE: u64 = 65_536;
 
-/// Crate-internal re-export of the path sanitiser — other modules need
+/// Crate-internal re-export of the path sanitiser - other modules need
 /// it to derive the same on-disk project-key layout the CLI uses. Not
 /// part of the public API; downstream consumers should call
 /// [`project_key_for_directory`] instead.
@@ -80,11 +80,11 @@ pub fn project_key_for_directory(path: Option<&str>) -> String {
 }
 
 /// Resolve a directory to its realpath and apply NFC normalisation.
-/// Wraps the CLI's `_canonicalize_path`
-/// — falls back to the input (NFC-normalised) when the path can't be
-/// canonicalised (most commonly because it doesn't exist). NFC is
-/// essential on filesystems that don't auto-normalise (Linux ext4,
-/// Windows NTFS) so decomposed inputs still hash to the CLI's on-disk
+/// Wraps the CLI's `_canonicalize_path` (falls back to the input,
+/// NFC-normalised, when the path can't be canonicalised: most
+/// commonly because it doesn't exist). NFC is essential on
+/// filesystems that don't auto-normalise (Linux ext4, Windows NTFS)
+/// so decomposed inputs still hash to the CLI's on-disk
 /// project-key layout.
 fn canonicalize_path(path: &str) -> String {
     let resolved = match fs::canonicalize(path) {
@@ -97,7 +97,7 @@ fn canonicalize_path(path: &str) -> String {
 /// List subagent IDs for a session. Subagent transcripts live at
 /// `<projects_dir>/<project_key>/<session_id>/subagents/agent-<agent_id>.jsonl`
 /// and may be nested in further subdirectories (e.g.
-/// `subagents/workflows/<run_id>/agent-<agent_id>.jsonl`) — this
+/// `subagents/workflows/<run_id>/agent-<agent_id>.jsonl`) - this
 /// function recursively walks the tree.
 ///
 /// Returns an empty Vec when `session_id` is not a valid UUID, the
@@ -136,7 +136,7 @@ pub fn get_subagent_messages(
     let Some(subagents_dir) = resolve_subagents_dir(config_dir, session_id, directory) else {
         return Vec::new();
     };
-    // Walk the tree — the file may live directly under subagents/ or
+    // Walk the tree - the file may live directly under subagents/ or
     // in a nested subdirectory (e.g. `workflows/<run_id>/`).
     let Some((_, path)) =
         collect_agent_files(&subagents_dir).into_iter().find(|(found, _)| found == agent_id)
@@ -240,7 +240,7 @@ fn parse_session_messages<R: std::io::Read>(reader: R) -> Vec<SessionMessage> {
             Some("user") => (SessionMessageKind::User, value.get("message").cloned()),
             Some("assistant") => (SessionMessageKind::Assistant, value.get("message").cloned()),
             // Attachment rows hold claude's persisted record of mid-turn
-            // queued inputs — `{"type":"attachment", "attachment":{"type":
+            // queued inputs - `{"type":"attachment", "attachment":{"type":
             // "queued_command", "prompt":"...", "commandMode":"prompt"}}`.
             // On replay we hoist them into a synthetic user envelope
             // whose single content block is the `queued_command`, so the
@@ -292,7 +292,7 @@ fn synthesize_queued_command_message(attachment: &Value) -> Value {
     })
 }
 
-/// Sanitise a path the same way the `claude` CLI does —
+/// Sanitise a path the same way the `claude` CLI does  -
 /// non-alphanumerics become hyphens, and overlong paths are
 /// truncated with a base-36 hash suffix (matching JS's
 /// `String.prototype.hashCode` trick).
@@ -354,7 +354,7 @@ const LIST_SESSIONS_MAX_CONCURRENT: usize = 16;
 ///
 /// # Panics
 ///
-/// Never — filesystem errors fall through and produce an empty Vec.
+/// Never - filesystem errors fall through and produce an empty Vec.
 /// True when `info` represents a worker session that should be
 /// hidden from default `list_sessions` / session-picker / resolver
 /// output. Callers opt in via `include_workers = true` to see them.
@@ -383,7 +383,7 @@ pub async fn list_sessions(
             .unwrap_or_default()
     };
 
-    // Cheap directory walks first — collect every candidate path
+    // Cheap directory walks first - collect every candidate path
     // synchronously. The expensive part is the per-file lite read,
     // which we hand off to spawn_blocking below.
     let mut candidates: Vec<PathBuf> = Vec::new();
@@ -486,10 +486,10 @@ pub fn get_session_messages(
 }
 
 // ---------------------------------------------------------------------------
-// Lite read — head + tail metadata extraction without full-file scan.
+// Lite read - head + tail metadata extraction without full-file scan.
 // ---------------------------------------------------------------------------
 
-/// Head / tail snapshot of a session file — enough to recover all
+/// Head / tail snapshot of a session file - enough to recover all
 /// [`SDKSessionInfo`] fields without a full scan. The `tag` field is
 /// populated by a separate streaming line-scan because tag rows can
 /// appear anywhere in the file (start-of-file at spawn, mid-file via
@@ -509,7 +509,7 @@ struct LiteSessionFile {
 /// any I/O error or for empty files.
 ///
 /// Each `.ok()?` early return logs at debug level naming the step
-/// that failed — without these, the session picker silently drops
+/// that failed - without these, the session picker silently drops
 /// sessions whose files have permission errors / are mid-truncation
 /// / have a bad fd, which presents to the user as missing sessions
 /// with no triage signal.
@@ -1014,7 +1014,7 @@ mod tests {
 
     #[test]
     fn find_session_tag_ignores_tag_on_tool_use_lines() {
-        // A git-tag tool_use shouldn't be picked up as a session tag —
+        // A git-tag tool_use shouldn't be picked up as a session tag  -
         // the `"tag"` string appears but the line isn't `{"type":"tag"`.
         let content = r#"{"type":"user","message":{"content":"hi"}}
 {"type":"assistant","message":{"content":[{"type":"tool_use","input":{"command":"git tag","tag":"v1.0"}}]}}
@@ -1041,7 +1041,7 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------
-    // Subagent-listing helpers — the recursive walk + filename filter
+    // Subagent-listing helpers - the recursive walk + filename filter
     //
     //.
     // ---------------------------------------------------------------------
@@ -1119,7 +1119,7 @@ mod tests {
     #[test]
     fn parse_session_messages_skips_attachment_without_queued_command() {
         // Other attachment subtypes (image, document, etc.) are not
-        // user-bubble-worthy — keep skipping them.
+        // user-bubble-worthy - keep skipping them.
         let jsonl = r#"{"type":"attachment","attachment":{"type":"image","source":{}},"uuid":"a1","session_id":"s1"}
 {"type":"assistant","message":{"role":"assistant","content":[]},"uuid":"as1","session_id":"s1"}
 "#;

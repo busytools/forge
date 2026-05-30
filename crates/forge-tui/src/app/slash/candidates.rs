@@ -216,7 +216,7 @@ pub(super) fn supported_command_candidates(app: &App) -> Vec<SlashCandidate> {
     forge.insert("/plugins".into(), "Open plugins".into());
 
     // Claude group: commands advertised by the upstream claude CLI that
-    // forge doesn't have its own handler for — forwarded as-is.
+    // forge doesn't have its own handler for - forwarded as-is.
     let mut claude: BTreeMap<String, String> = BTreeMap::new();
     for cmd in app.available_commands() {
         let name = normalize_slash_name(&cmd.name);
@@ -227,7 +227,7 @@ pub(super) fn supported_command_candidates(app: &App) -> Vec<SlashCandidate> {
     }
 
     let mut out: Vec<SlashCandidate> = Vec::with_capacity(1 + forge.len() + 1 + claude.len());
-    // Empty `insert_value` flags a non-selectable group divider —
+    // Empty `insert_value` flags a non-selectable group divider  -
     // the dropdown renders these as a DIM rule + label and
     // navigation skips them.
     if !forge.is_empty() {
@@ -274,7 +274,7 @@ pub(super) fn filter_command_candidates(
     }
 
     // When the user starts typing, drop group dividers from the
-    // result — a filtered list that collapses to one group looks
+    // result - a filtered list that collapses to one group looks
     // confusing if it still carries a header.
     let query_lower = query.to_lowercase();
     candidates

@@ -6,7 +6,7 @@ use crate::Error;
 use crate::control::ControlRequest;
 use forge_primitives::Message;
 
-/// A single stream-json line from the subprocess — either a regular message
+/// A single stream-json line from the subprocess - either a regular message
 /// or a control request.
 #[derive(Debug, Clone)]
 pub enum DecodedLine {
@@ -14,7 +14,7 @@ pub enum DecodedLine {
     Message(Message),
     /// A control request (e.g. permission check, MCP message, hook callback).
     Control(ControlRequest),
-    /// The CLI has withdrawn a previously-issued `control_request` — the
+    /// The CLI has withdrawn a previously-issued `control_request` - the
     /// handler matching `request_id` should be cancelled if still in flight.
     /// Wire shape `{"type":"control_cancel_request","request_id":"..."}`
     ///.
@@ -25,7 +25,7 @@ pub enum DecodedLine {
     /// The CLI is responding to an outbound `control_request` we sent
     /// (initialize, interrupt, `set_permission_mode`, …). These arrive on
     /// stdout and are normally consumed synchronously by the client's
-    /// outbound-control wait loop — the read-dispatch loop in
+    /// outbound-control wait loop - the read-dispatch loop in
     /// the events stream returned by [`Client::spawn`](crate::Client::spawn) never sees them.
     /// Represented here so downstream tools (the wire-conformance replay
     /// harness, debug captures) can recognise and categorise the frame
@@ -33,18 +33,18 @@ pub enum DecodedLine {
     ControlResponse {
         /// `request_id` of the outbound `control_request` this responds to.
         request_id: String,
-        /// Full JSON payload — useful for inspection and replay.
+        /// Full JSON payload - useful for inspection and replay.
         raw: Value,
     },
     /// Forward-compat fallback: the CLI emitted a frame with an unrecognised
-    /// top-level `type` field. Forge-sdk doesn't crash on these — it logs
+    /// top-level `type` field. Forge-sdk doesn't crash on these - it logs
     /// a warning via `tracing::warn!` in the dispatch path and lets the
     /// reader continue. Callers (like the wire-conformance harness) can
     /// detect and report these explicitly by matching this variant.
     ///
     /// `type_str` is the raw `type` field value the CLI sent; `raw` is the
     /// full JSON object for inspection / logging / replay. Neither is
-    /// typed — by definition, we don't know what this frame is.
+    /// typed - by definition, we don't know what this frame is.
     Unknown {
         /// The unrecognised `type` field value.
         type_str: String,
@@ -75,7 +75,7 @@ pub fn decode_line(line: &str, line_number: u64) -> Result<Message, Error> {
 /// Returns one of [`DecodedLine`]'s variants. For forward-compat with
 /// future `claude` CLI releases, any top-level `type` value forge-sdk
 /// doesn't recognise lands in [`DecodedLine::Unknown`] rather than
-/// erroring — callers (notably the wire-conformance harness) can
+/// erroring - callers (notably the wire-conformance harness) can
 /// detect these by matching the variant. The read loop in
 /// the events stream returned by [`Client::spawn`](crate::Client::spawn) logs a
 /// `tracing::warn!` on Unknown and continues reading.
@@ -113,7 +113,7 @@ pub fn decode_dispatch(line: &str, line_number: u64) -> Result<DecodedLine, Erro
         "control_response" => {
             // `response.request_id` is where the CLI echoes the
             // request_id we originally sent. A `control_response` with
-            // no `request_id` is wire corruption — route it through
+            // no `request_id` is wire corruption - route it through
             // `DecodedLine::Unknown` so the conformance harness counts
             // it under `unknown_types` rather than as a "valid"
             // ControlResponse. The runtime path (`send_control` /
@@ -168,7 +168,7 @@ pub fn encode_user_prompt(prompt: &str, session_id: &str) -> Result<String, Erro
 /// [`encode_user_prompt`] which emits the simpler bare-string form.
 ///
 /// `content` is forwarded verbatim as the message body's `content`
-/// field — callers must build CLI-compatible block objects (e.g.
+/// field - callers must build CLI-compatible block objects (e.g.
 /// `{"type":"text","text":"..."}`,
 /// `{"type":"image","source":{...}}`).
 ///

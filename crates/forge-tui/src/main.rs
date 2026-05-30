@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::info_span;
 
-// Binary entry — `process::exit` is the only way to set a non-zero
+// Binary entry - `process::exit` is the only way to set a non-zero
 // exit code without unwinding, which matters for clean tty restoration.
 #[allow(clippy::exit)]
 fn main() {
@@ -117,7 +117,7 @@ fn run() -> anyhow::Result<()> {
         // Drop the App so its `Arc<Workspace>` clone releases, then
         // drain the agent pool. Background tasks holding Arc clones
         // observe their command channel closing and exit on their
-        // own — `shutdown` is synchronous.
+        // own - `shutdown` is synchronous.
         drop(app);
         workspace.shutdown();
 
@@ -138,7 +138,7 @@ fn run() -> anyhow::Result<()> {
 /// for the env-only branch; the host-default fallback lives here so
 /// the SDK stays opinion-free about "what to do when env is unset".
 ///
-/// Per hard rule #15 — no cwd-derived fallbacks. When `$CLAUDE_CONFIG_DIR`
+/// Per hard rule #15 - no cwd-derived fallbacks. When `$CLAUDE_CONFIG_DIR`
 /// is unset/empty AND `dirs::home_dir()` returns None, refuse to launch
 /// rather than substituting `./.claude`.
 fn resolve_config_dir() -> anyhow::Result<PathBuf> {

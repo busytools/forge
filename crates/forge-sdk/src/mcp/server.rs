@@ -1,7 +1,7 @@
 //! The in-process MCP server.
 //!
 //! Holds a registry of [`Tool`] implementations and dispatches JSON-RPC
-//! requests to them. Transport is OUT of scope here — this type is a pure
+//! requests to them. Transport is OUT of scope here - this type is a pure
 //! request/response router. The `mcp::orchestration` module wires `dispatch`
 //! calls to the `mcp_message` control-request arm of `Client::handle_control`.
 
@@ -36,7 +36,7 @@ impl std::fmt::Debug for McpServer {
 impl McpServer {
     /// Dispatch one JSON-RPC request to the appropriate handler.
     ///
-    /// Returns `None` for JSON-RPC notifications (no `id`) — notifications
+    /// Returns `None` for JSON-RPC notifications (no `id`) - notifications
     /// must not elicit a response per the spec. Returns `Some(response)` for
     /// every id-bearing request, success or error.
     ///

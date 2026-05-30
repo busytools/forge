@@ -1,4 +1,4 @@
-//! Shared timestamp parsers for the cloud module — OAuth `expiresAt`
+//! Shared timestamp parsers for the cloud module - OAuth `expiresAt`
 //! and usage windows accept either an ISO-8601 string, an integer
 //! string, or a JSON number (interpreted as either seconds or
 //! milliseconds since the UNIX epoch).

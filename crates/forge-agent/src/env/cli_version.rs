@@ -2,7 +2,7 @@
 //! the latest published version on npm.
 //!
 //! The local probe shells out via [`forge_sdk::transport::process::query_cli_version`]
-//! and normalises the result to a bare `MAJOR.MINOR.PATCH` token —
+//! and normalises the result to a bare `MAJOR.MINOR.PATCH` token  -
 //! `claude --version` prints lines like `2.1.116 (anthropic)` or
 //! `claude 2.1.116` depending on the build channel, so callers want
 //! the version token alone for display.
@@ -11,7 +11,7 @@
 //! workspace mediator; both `installed` and `latest` are `Option`
 //! because either probe can fail independently (`claude` not on
 //! PATH, no network, npm rate-limited). The renderer treats `None`
-//! as a `—` placeholder so the panel's row count stays constant.
+//! as a ` - ` placeholder so the panel's row count stays constant.
 
 use std::time::Duration;
 
@@ -32,7 +32,7 @@ const NPM_LATEST_URL: &str = "https://registry.npmjs.org/@anthropic-ai/claude-co
 
 /// Snapshot of the installed-vs-latest claude CLI versions. Either
 /// side can be `None` independently; the renderer falls back to a
-/// dim `—` placeholder for the missing side.
+/// dim ` - ` placeholder for the missing side.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CliVersionInfo {
     /// Version reported by `claude --version` on the local machine,
@@ -60,7 +60,7 @@ impl CliVersionInfo {
 }
 
 /// Run both probes in parallel and return the merged snapshot.
-/// Always succeeds — failures collapse to `None` on the affected
+/// Always succeeds - failures collapse to `None` on the affected
 /// field with a WARN log; the workspace caller never has to handle
 /// a `Result`.
 pub async fn fetch_info() -> CliVersionInfo {
@@ -174,7 +174,7 @@ async fn probe_latest() -> Option<String> {
 }
 
 /// Extract the first whitespace-separated token that starts with a
-/// digit — handles `2.1.116 (anthropic)`, `claude 2.1.116`, and
+/// digit - handles `2.1.116 (anthropic)`, `claude 2.1.116`, and
 /// bare `2.1.116` shapes the CLI / npm produce.
 fn extract_semver_token(reported: &str) -> Option<&str> {
     reported.split_whitespace().find(|t| t.chars().next().is_some_and(|c| c.is_ascii_digit()))
@@ -196,7 +196,7 @@ fn parse_semver_triple(s: &str) -> Option<(u32, u32, u32)> {
     let mut parts = s.split('.');
     let major: u32 = parts.next()?.parse().ok()?;
     let minor: u32 = parts.next()?.parse().ok()?;
-    // The patch component may carry a `-pre.1` / `+build` suffix —
+    // The patch component may carry a `-pre.1` / `+build` suffix  -
     // strip everything from the first non-digit char.
     let patch_token = parts.next()?;
     let digits: String = patch_token.chars().take_while(char::is_ascii_digit).collect();

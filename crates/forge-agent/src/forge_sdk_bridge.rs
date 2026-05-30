@@ -1,6 +1,6 @@
-//! `ForgeSdkBridge` — in-process driver around a [`forge_sdk::Client`].
+//! `ForgeSdkBridge` - in-process driver around a [`forge_sdk::Client`].
 //!
-//! Drives a [`forge_sdk::Client`] directly — no Node.js subprocess,
+//! Drives a [`forge_sdk::Client`] directly - no Node.js subprocess,
 //! no NDJSON, no command queue. The bridge holds the spawned
 //! `Arc<Client>` and dispatches each method as a direct call
 //! (or a `tokio::spawn`'d async task when the method is
@@ -81,7 +81,7 @@ pub(crate) struct BridgeInner {
     /// permission/question events carry the right `session_id`.
     pub(crate) session_id_slot: Arc<Mutex<String>>,
     /// `<config_dir>` this bridge was bound to at construction time
-    /// (workspace-driven — typically the picked account's
+    /// (workspace-driven - typically the picked account's
     /// `config_dir`). Threaded into the spawned `claude`
     /// subprocess as `CLAUDE_CONFIG_DIR` and consulted by every
     /// in-process accessor (oauth, settings, catalog) so they
@@ -105,7 +105,7 @@ pub(crate) struct BridgeInner {
     /// every `spawn_session` call. Today this is the per-session
     /// `forge` MCP server with the four peer-coordination tools;
     /// future modules (worktree, memory, …) slot in alongside under
-    /// the same `forge` server name. Cheap to clone — each entry
+    /// the same `forge` server name. Cheap to clone - each entry
     /// is just a name + a few `Arc<dyn Tool>`s.
     extra_mcp_servers: Vec<(String, forge_sdk::mcp::McpServer)>,
 }
@@ -149,7 +149,7 @@ impl ForgeSdkBridge {
 
     /// Forge-workspace-supplied in-process MCP servers to attach to
     /// every spawned `claude` subprocess (e.g. the `forge` server
-    /// carrying the peer-coordination tools — #114 v1). Cheap-clone
+    /// carrying the peer-coordination tools - #114 v1). Cheap-clone
     /// via the `McpServer`'s `Arc<dyn Tool>` internals; called once
     /// per `spawn_session` invocation.
     pub(crate) fn extra_mcp_servers(&self) -> Vec<(String, forge_sdk::mcp::McpServer)> {
@@ -199,11 +199,11 @@ impl ForgeSdkBridge {
 
     /// Send an `AgentEvent::McpOperationError` to the App; log a
     /// `BRIDGE_LIFECYCLE` warn if the channel is closed (terminal
-    /// event for a user-visible MCP failure — silent-drop on
+    /// event for a user-visible MCP failure - silent-drop on
     /// teardown race would lose the only path to surface).
     /// On send failure we destructure the unsent event back out of
     /// the `SendError` so the warn log carries `session_id`,
-    /// `server_name`, and the underlying error text — the most
+    /// `server_name`, and the underlying error text - the most
     /// actionable triage signals.
     fn emit_mcp_error_or_log(
         event_tx: &mpsc::UnboundedSender<AgentEvent>,
@@ -290,7 +290,7 @@ impl ForgeSdkBridge {
         text: String,
         images: Vec<forge_primitives::ImageAttachment>,
     ) -> anyhow::Result<()> {
-        // No `check_session_id` here — the TUI commits to
+        // No `check_session_id` here - the TUI commits to
         // `AppStatus::Thinking` BEFORE this call, and a silent
         // stale-session drop (returning Ok with no event) would
         // leave the user's spinner running forever with no
@@ -364,7 +364,7 @@ impl ForgeSdkBridge {
     /// drop the dispatch with a no-op `Ok(())`.
     ///
     /// Other user-action methods (`prompt_with_images`) intentionally
-    /// opt out — see the inline rationale at each call site.
+    /// opt out - see the inline rationale at each call site.
     fn check_session_id(&self, session_id: &str, label: &'static str) -> bool {
         let current = self.inner.session_id_slot.lock().clone();
         if current.is_empty() || current == session_id {
@@ -732,7 +732,7 @@ impl ForgeSdkBridge {
     }
 
     // The two response handlers below are intentionally exempt from
-    // `check_session_id` — staleness is detected via the pending map
+    // `check_session_id` - staleness is detected via the pending map
     // (an unknown `tool_call_id` already logs warn in
     // `deliver_*_response`). A late response arriving after a session
     // swap should still be honoured if its tool_call_id is in the

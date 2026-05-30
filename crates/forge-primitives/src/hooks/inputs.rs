@@ -171,7 +171,7 @@ pub struct PreCompactInput {
     /// Shared hook context.
     #[serde(flatten)]
     pub base: BaseHookInput,
-    /// Trigger that prompted the compaction — `"manual"` or `"auto"`.
+    /// Trigger that prompted the compaction - `"manual"` or `"auto"`.
     pub trigger: String,
     /// Caller-supplied compaction guidance. `None` when the CLI did not
     /// pass custom instructions.
@@ -209,7 +209,7 @@ pub struct SubagentStartInput {
 /// Input payload for `PermissionRequest`.
 ///
 /// Observed when the CLI asks the SDK to confirm a tool invocation. This is
-/// distinct from the `can_use_tool` `control_request` path — `PermissionRequest`
+/// distinct from the `can_use_tool` `control_request` path - `PermissionRequest`
 /// hooks are observational; actual allow/deny decisions still flow through
 /// `can_use_tool`.
 #[derive(Debug, Clone, Serialize, Deserialize)]

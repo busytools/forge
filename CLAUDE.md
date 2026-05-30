@@ -1,4 +1,4 @@
-# forge — project guide
+# forge - project guide
 
 A Rust workspace for personal-use agentic tooling around Anthropic's
 `claude` CLI. Six components, layered acyclically:
@@ -11,35 +11,35 @@ forge-workspace  ──→ primitives + agent           (the MVVM orchestrator)
 forge-tui        ──→ primitives + workspace       (no direct agent dep)
 ```
 
-- **`forge-primitives`** — workspace-shared wire-shape types. Message
+- **`forge-primitives`** - workspace-shared wire-shape types. Message
   envelopes, content blocks, hook/permission/option/subagent data,
   render-side views, channel commands, IDs. No logic, no I/O, no
   async. Every type that crosses any forge-* crate boundary lives
   here.
-- **`forge-sdk`** — wraps the `claude` CLI subprocess. Owns the
+- **`forge-sdk`** - wraps the `claude` CLI subprocess. Owns the
   stream-json codec, transport, control dispatch, in-process MCP
   host, callback registries (Hooks/HooksBuilder + CanUseToolCallback)
   and Options/OptionsBuilder. Single responsibility: speak
   stream-json with the long-lived subprocess and dispatch its
   callbacks.
-- **`forge-agent`** — drives one `forge-sdk` Client behind a
+- **`forge-agent`** - drives one `forge-sdk` Client behind a
   channel-based `Agent`/`AgentHandle` API. Owns userdata (settings,
   trust, sessions catalog, memory, plugins), cloud (oauth/usage/
   account/service-status), env (git context), translate (event ↔
   message conversions), and tooling (tool-result helpers). The brain
   between SDK and workspace.
-- **`forge-workspace`** — multi-session orchestrator. Owns
+- **`forge-workspace`** - multi-session orchestrator. Owns
   `DomainSession` per active session (authoritative operational
   state: lifecycle, cwd, turn_state, account_info, runtime liveness,
   pending interactions). Drives per-session `SessionTask` actors that
   pump events from `AgentHandle::take_events()` and route Commands
   back. Single TUI-facing facade.
-- **`forge-tui`** — native terminal interface. Pure view layer; no
+- **`forge-tui`** - native terminal interface. Pure view layer; no
   multi-session logic, no agent internals, no operational state.
   Holds per-session presentation buckets (`UiSession`: messages list,
   viewport, input editor, hover hints). Has no direct `forge-agent`
   dependency.
-- **`forge-test-harness`** — wire-conformance harness. `sdk_wire` scope
+- **`forge-test-harness`** - wire-conformance harness. `sdk_wire` scope
   (forge-sdk ↔ claude CLI). Replay-based offline tests + opt-in live
   capture.
 
@@ -55,7 +55,7 @@ First match wins.
 1. **Is it a type that crosses a crate boundary?** (a message envelope,
    a snapshot struct, a hook payload, anything serialised over a
    channel or stored in a field that more than one crate touches)
-   → `forge-primitives`. No logic, no I/O, no async — pure data
+   → `forge-primitives`. No logic, no I/O, no async - pure data
    shapes only. New trait-impls on these types go elsewhere; the type
    definition itself lives here.
 
@@ -83,7 +83,7 @@ First match wins.
 
 5. **Is it a TUI widget, screen, key binding, mouse handler, or
    per-session presentation state?**
-   → `forge-tui`. Consumes `forge-workspace` only — no direct
+   → `forge-tui`. Consumes `forge-workspace` only - no direct
    `forge-agent` dependency. Render code in `ui/`, dispatch + state
    in `app/`. Per-session presentation lives on `UiSession`.
 
@@ -95,8 +95,8 @@ First match wins.
 
 | Feature | Where it lives | Why |
 |---|---|---|
-| Git snapshot (branch + dirty check + file stats) | `forge-agent::env::git_diff` + `forge-workspace::scan_git_diff` wrapper + `forge-tui::app::git_diff` consumer + `forge-tui::ui::inspector_pane` GIT section | Subprocess + parsing = environment state → agent. Workspace mediates the async call. TUI owns the refresh cadence (1 s ticker, `snapshot.is_none() OR age ≥ 10 s → fetch`) and the render. Replaced the earlier `forge-agent::env::git` `notify::Watcher` + `forge-tui::app::git_context` cache — branch info folds into the same polled snapshot so a single subprocess invocation covers what the renderer needs. |
-| Claude CLI version + npm "update available" probe | `forge-agent::env::cli_version::{fetch_info, CliVersionInfo}` (local `claude --version` + npm `/latest` registry GET in parallel) + `forge-workspace::fetch_cli_version_info` wrapper + `forge-tui::app::cli_version` consumer + `forge-tui::ui::projects_pane` bottom-panel `forge` / `claude` rows. | Two probes live in `env`: the local one shells out via `forge_sdk::transport::process::query_cli_version`, the network one hits the npm registry. Bundling both into a single `Workspace::fetch_cli_version_info` keeps the TUI's startup spawn-and-forget pattern simple. The TUI consumer is a one-shot mpsc channel (mirrors `git_diff` minus the ticker) — single fetch at startup, snapshot stored on `App.cli_version_info`, rendered as the bottom-left panel's trailing two rows with a yellow `↑ vX.Y.Z` indicator when published > installed. |
+| Git snapshot (branch + dirty check + file stats) | `forge-agent::env::git_diff` + `forge-workspace::scan_git_diff` wrapper + `forge-tui::app::git_diff` consumer + `forge-tui::ui::inspector_pane` GIT section | Subprocess + parsing = environment state → agent. Workspace mediates the async call. TUI owns the refresh cadence (1 s ticker, `snapshot.is_none() OR age ≥ 10 s → fetch`) and the render. Replaced the earlier `forge-agent::env::git` `notify::Watcher` + `forge-tui::app::git_context` cache - branch info folds into the same polled snapshot so a single subprocess invocation covers what the renderer needs. |
+| Claude CLI version + npm "update available" probe | `forge-agent::env::cli_version::{fetch_info, CliVersionInfo}` (local `claude --version` + npm `/latest` registry GET in parallel) + `forge-workspace::fetch_cli_version_info` wrapper + `forge-tui::app::cli_version` consumer + `forge-tui::ui::projects_pane` bottom-panel `forge` / `claude` rows. | Two probes live in `env`: the local one shells out via `forge_sdk::transport::process::query_cli_version`, the network one hits the npm registry. Bundling both into a single `Workspace::fetch_cli_version_info` keeps the TUI's startup spawn-and-forget pattern simple. The TUI consumer is a one-shot mpsc channel (mirrors `git_diff` minus the ticker) - single fetch at startup, snapshot stored on `App.cli_version_info`, rendered as the bottom-left panel's trailing two rows with a yellow `↑ vX.Y.Z` indicator when published > installed. |
 | Account LRU picker | `forge-agent::userdata::accounts` | Tracks per-account state from `~/.claude*` dirs. |
 | `/resume` session list | `forge-agent::userdata::catalog::scan` for the disk read; `forge-tui::ui::session_picker` for the picker UI | Scan logic is environment-level; picker is pure UI. |
 | TodoWrite chat rendering (suppressed) | `forge-tui::ui::tool_call::*` | UI decision about what to show; no logic change to the wire. |
@@ -141,13 +141,13 @@ diff example above touches three). Use this rule of thumb:
 - Anything the user sees → TUI.
 
 If unsure, ask the user. The default failure mode in this codebase
-is "too much in forge-tui" — bias placement decisions toward the
+is "too much in forge-tui" - bias placement decisions toward the
 deeper-down crate when in doubt.
 
 ## Communication contract (MVVM after #102)
 
 After the MVVM refactor (PR #104) the TUI ↔ workspace contract is
-**one channel pair** — single producer/consumer in each direction:
+**one channel pair** - single producer/consumer in each direction:
 
 - **TUI → workspace:** `Workspace::dispatch(Command)`. One enum
   (`forge_workspace::protocol::Command`), one entry point. Every
@@ -163,7 +163,7 @@ two enum streams.
 
 **Strict wiring (post Phase 6).** TUI no longer holds an
 `Arc<AgentHandle>`. Every outbound agent call flows through
-`Workspace::dispatch(Command)` — that's `Prompt`, `Cancel`,
+`Workspace::dispatch(Command)` - that's `Prompt`, `Cancel`,
 `SetMode`/`SetModel`, `NewSession`/`ResumeSession`/`ResumeOrNew`,
 `GenerateSessionTitle`/`RenameSession`, the full MCP suite
 (`ReconnectMcpServer`, `ToggleMcpServer`, `AuthenticateMcpServer`,
@@ -176,20 +176,20 @@ Direct-accessor facades (`settings_documents`, `write_settings_document`,
 `project_memory_path`, `config_dir_for`, `oauth_usage`) also live as
 inherent `Workspace` methods. `SessionUpdate::Connected` /
 `SessionReplaced` / `AuthCompleted` no longer carry an
-`Arc<AgentHandle>` payload — the handle is stamped onto the
+`Arc<AgentHandle>` payload - the handle is stamped onto the
 workspace's `DomainSession`, never reaches TUI.
 
 **Workspace-as-proxy realignment (final landing).** `DomainSession`
 carries only workspace-internal routing metadata: `key`, `conn`,
 `session_id` (mirror for `AgentHandle` dispatch), and
 `pending_interactions` (oneshot mailbox for `Respond*` Commands).
-All operational state TUI renders — `lifecycle_state`, `cwd_raw`,
+All operational state TUI renders - `lifecycle_state`, `cwd_raw`,
 `turn_state`, `session_scope_epoch`, `account_info`,
-`active_account_display_name`, `runtime_session_state` — lives on
+`active_account_display_name`, `runtime_session_state` - lives on
 `UiSession`. TUI reducers update those fields directly from
 `SessionUpdate` data; render reads `app.sessions[key].<field>`
 straight (no workspace lookup, no per-frame lock). Workspace's
-`apply_event_to_domain` only writes `session_id` — the field
+`apply_event_to_domain` only writes `session_id` - the field
 workspace itself needs internally to call `AgentHandle` methods.
 
 ### Single-channel event bus (nuance worth knowing)
@@ -200,15 +200,15 @@ grab a sender via `Workspace::update_sender()` and emit their own
 `SessionUpdate`s rather than dispatching a `Command` and waiting for
 a round-trip:
 
-- `forge-tui/src/app/plugins.rs` — local plugin install/uninstall
+- `forge-tui/src/app/plugins.rs` - local plugin install/uninstall
   side-effects.
-- `forge-tui/src/app/slash/executors.rs` — `/help`, `/clear`, and
+- `forge-tui/src/app/slash/executors.rs` - `/help`, `/clear`, and
   other slash commands that run entirely TUI-side.
-- `forge-tui/src/app/service_status_check.rs` — periodic Anthropic
+- `forge-tui/src/app/service_status_check.rs` - periodic Anthropic
   service-status polling.
-- `forge-tui/src/app/input_submit.rs` — input-submit UI bookkeeping.
+- `forge-tui/src/app/input_submit.rs` - input-submit UI bookkeeping.
 
-These don't violate the "workspace owns the domain" rule — they're
+These don't violate the "workspace owns the domain" rule - they're
 TUI-originated presentation events that reuse the existing channel
 as a single event bus rather than spinning up a second one. The
 alternative (separate TUI-internal channel) was rejected because it
@@ -220,7 +220,7 @@ for something else," the only contract a replacement should need to
 honor is the two-enum-stream boundary. The leaky-emitter pattern
 above is an *implicit* second contract that a replacement would
 either have to replicate or have migrated away first. Tracking issue
-at [busytools/forge#105](https://github.com/busytools/forge/issues/105) —
+at [busytools/forge#105](https://github.com/busytools/forge/issues/105)  - 
 not high priority.
 
 ### `forge-workspace` is a thin facade, not strong isolation
@@ -244,7 +244,7 @@ pub mod userdata   { pub use forge_agent::userdata::*; }
 So `forge-tui` imports `forge_workspace::cloud::oauth::Token` (say),
 but the type is *defined* in `forge_agent::cloud::oauth`. The
 workspace exposes forge-agent's surface verbatim. The boundary is
-"TUI can only reach forge-agent via the forge-workspace name" — not
+"TUI can only reach forge-agent via the forge-workspace name" - not
 "TUI sees a smaller, curated API."
 
 This is the pragmatic shortcut. Tightening it (specific
@@ -257,7 +257,7 @@ current shape ever shows up.
 **Personal use only.** Single user across multiple Macs (WireGuard
 mesh between them). No public release planned. No multi-tenant
 threat model. See `project_trust_model.md` in auto-memory before
-running any audit or considering security hardening — findings whose
+running any audit or considering security hardening - findings whose
 severity depends on adversarial assumptions get demoted or dropped.
 
 ### Architectural direction (in-flight, ratified 2026-05-13)
@@ -266,7 +266,7 @@ forge is converging on a **multi-agent peer-coordination model**
 that goes beyond a single-session terminal wrapper. The two epics
 tracking this direction:
 
-- **#114 — Multi-agent coordination via in-process MCP server.**
+- **#114 - Multi-agent coordination via in-process MCP server.**
   Every "subagent" is a full forge peer session (own `claude`
   subprocess, own chat view, own permissions). Peers communicate
   via an in-process MCP server exposing `mcp__forge__spawn_session`,
@@ -275,7 +275,7 @@ tracking this direction:
   `vedhavyas/architect`; forge improves on it with typed
   correlation IDs, hop-count cycle prevention, actor-pattern
   serialization, no global DI bridge.
-- **#115 — Git worktrees as first-class primitive.** `spawn_worktree_session`
+- **#115 - Git worktrees as first-class primitive.** `spawn_worktree_session`
   MCP tool (composes with #114) creates a peer in an isolated
   git worktree. `finish_worktree` is a multi-phase state machine
   (RESOLUTION → CLEANUP) driven by the LLM through repeated MCP
@@ -289,10 +289,10 @@ is a fundamentally different daily-driver shape from anything
 Claude Code or its competitors ship today.
 
 **Reference impls** (read these before designing either feature):
-- `~/Projects/architect/architect/mcp.py` (519 lines) — the peer
+- `~/Projects/architect/architect/mcp.py` (519 lines) - the peer
   MCP server pattern.
 - `~/Projects/architect/architect/features/worktree/git.py` (756
-  lines, 99% identical to `mrocklin/claudechic` upstream) — the
+  lines, 99% identical to `mrocklin/claudechic` upstream) - the
   worktree primitives.
 
 **Critical Claude Code interop facts** (so forge doesn't reinvent
@@ -306,7 +306,7 @@ existing conventions):
   for Task subagents. Forge's MCP worktree path is separate (peer
   vs child).
 - Wire-envelope carries `worktree: {name, path, branch, original_cwd,
-  original_branch}` when in a worktree session — forge-sdk decoder
+  original_branch}` when in a worktree session - forge-sdk decoder
   surfaces this as `SessionUpdate::WorktreeContextChanged`.
 - Hook events `WorktreeCreate` / `WorktreeRemove` are first-class in
   Claude Code; forge emits `SessionUpdate` variants with matching
@@ -330,12 +330,12 @@ existing conventions):
 - UI surfaces: `forge-tui` Inspector pane WORKTREES sub-section,
   Projects pane parent-of indent.
 
-## Vision: simple, efficient, capable — Rust-native
+## Vision: simple, efficient, capable - Rust-native
 
 forge **is no longer a feature-parity port of Python's
 `claude-agent-sdk`.** Both projects are reference implementations
 that wrap the same `claude` CLI; they happen to share a wire
-contract with that binary. forge gets to be its own thing — better,
+contract with that binary. forge gets to be its own thing - better,
 simpler, and more efficient than the Python SDK where the language
 permits.
 
@@ -354,7 +354,7 @@ Concretely:
 - **The `claude` CLI is still source of truth.** We spawn it as a
   subprocess and speak stream-json with it. We don't re-implement
   the agentic loop or hit the Anthropic API directly. That part of
-  the parity story stays — it's how `claude` works.
+  the parity story stays - it's how `claude` works.
 - **Stream-json wire compatibility with the CLI is mandatory.** If
   forge-sdk's stdin/stdout to `claude` differs from what `claude`
   expects, that's a bug. The wire-conformance harness enforces this
@@ -393,27 +393,27 @@ Concretely:
     `~/.claude-subspace/plans/`.
 11. **`docs/forge-map.html` is visual truth.** This file is the
     source of truth for every UI surface forge-tui can currently
-    render. Scope is **current state only** — no future ideas, no
+    render. Scope is **current state only** - no future ideas, no
     aspirational sketches, no "v3+" sections. Anything new arrives
     in the same PR that lands the code.
 
     **The workflow when the user asks for a UI change** (start every
-    such session with this — it's the recommended path):
+    such session with this - it's the recommended path):
 
     1. Read `docs/forge-map.html` first to confirm what's currently
        implemented and where it lives.
-    2. Sketch the change in HTML — update the relevant section's
+    2. Sketch the change in HTML - update the relevant section's
        mockup, prose, and any glyph/colour table entries.
     3. Apply the same change in the ratatui code.
     4. Verify the rendered HTML still matches the code (open the
        file in a browser, eyeball it).
-    5. Push both files together — code + HTML in one PR.
+    5. Push both files together - code + HTML in one PR.
 
     The HTML-first step matters because it forces a clear visual
     target before code edits begin, and it keeps the doc honest
     (the doc never describes something the code doesn't ship).
     When in doubt about whether the doc reflects reality, re-read
-    the implementation and reconcile — never let prose drift from
+    the implementation and reconcile - never let prose drift from
     code.
 12. **Gated actions still gated.** `cargo publish`, `git push
     --force` to `main`, `git tag` + push need explicit approval.
@@ -427,7 +427,7 @@ Concretely:
     JSONL session captures, tracing log, etc.), reads them, and
     produces a root cause. Never hand the user a flag invocation,
     `jq` filter, or "rerun with X" recipe. Telemetry that requires
-    user opt-in is a forge bug — fix the always-on instrumentation
+    user opt-in is a forge bug - fix the always-on instrumentation
     instead of asking the user to enable it.
 14. **Diagnostic-improvement TODOs go to GitHub issues, not inline.**
     When a diagnostic feature ships but follow-on improvements are
@@ -441,15 +441,15 @@ Concretely:
 15. **`forge.toml` is the source of truth. Never read project state
     or any other behaviour-shaping value from the launch directory.**
     Project paths, names, accounts, auto_start pins, log paths,
-    settings paths, trust keys, file-index roots — everything that
+    settings paths, trust keys, file-index roots - everything that
     influences forge's behaviour must come from `forge.toml`, the
     active session's `cwd_raw`, or other fixed values. The binary's
     launch directory (`std::env::current_dir()`) MUST NOT influence
     anything. Strict binary trigger: **"does forge behave identically
     when launched from `~/Projects/forge` and from `/tmp`?"** If
-    there is ANY observable difference — different project loaded,
+    there is ANY observable difference - different project loaded,
     different settings file, different trust prompt, different log
-    directory, different welcome banner cwd, anything — that's a
+    directory, different welcome banner cwd, anything - that's a
     bug, fix it. Cosmetic differences count too: if logs land in
     `~/Projects/forge/.forge-tui/logs` from one invocation and
     `/Library/.../forge-tui/logs` from another, that's broken. The
@@ -461,7 +461,7 @@ Concretely:
     the project via `Workspace::list_projects()` /
     `find_project_view_by_name`. When you spot an env-derived
     project-state read while doing other work, fix it on the spot
-    and audit the codebase for the same pattern — they cluster
+    and audit the codebase for the same pattern - they cluster
     (audit on 2026-05-15 found `config/store.rs:65`, `:380`,
     `trust.rs:97`, `sdk_message.rs:1159`, `logging.rs:220` all
     sharing the same sin). The ONLY env reads still allowed are
@@ -475,7 +475,7 @@ Concretely:
     those values change when the user `cd`s.
 16. **Wire classification matches reality. Forge sessions appear as
     `cli` (interactive subscription) on every Anthropic and Datadog
-    signal channel — byte-equivalent to a real interactive `claude`
+    signal channel - byte-equivalent to a real interactive `claude`
     session.** The wire-classification rewriter
     (`forge-sdk::transport::proxy`) is the enforcement mechanism: it
     intercepts every spawned `claude` child's HTTPS traffic via
@@ -499,7 +499,7 @@ Concretely:
       (`normalize_classification_fields`) is the source of truth for
       what gets rewritten. Per-channel functions
       (`rewrite_event_logging`, `rewrite_statsig_features`,
-      `rewrite_datadog_logs`) are thin wrappers — if you reach for a
+      `rewrite_datadog_logs`) are thin wrappers - if you reach for a
       hard-coded JSON path instead, the recursive walker is doing the
       work; keep that path.
     - When `HTTPS_PROXY` is set in the parent env at forge launch, the
@@ -508,7 +508,7 @@ Concretely:
       This keeps the mitmproxy capture recipe symmetric: the same
       `HTTPS_PROXY=…` + `NODE_EXTRA_CA_CERTS=…` env vars that capture
       from a bare `claude` invocation also capture from forge. A
-      future change that breaks this symmetry is a regression — the
+      future change that breaks this symmetry is a regression - the
       stated goal is "indistinguishable from real `claude` on the
       wire" and that requires identical capture ergonomics for any
       third-party observer.
@@ -538,7 +538,7 @@ The scan flow:
    `~/.claude-subspace/plans/upstream-watch-<date>.md`).
 2. For each new public API, hook event, control_request subtype, or
    stream-json variant: ask "does this make forge more capable for
-   our use case?" If yes, propose a port — but **port it the
+   our use case?" If yes, propose a port - but **port it the
    forge-native way**, not by mirroring Python's API shape.
 3. New stream-json shapes the CLI emits MUST be supported in the
    decoder (those are wire facts, not parity choices). Surface the
@@ -565,7 +565,7 @@ behaviour we care about.
 - **Attributes are rare; default to none.** `#[non_exhaustive]`,
   `#[must_use]`, `#[allow(...)]`, `#[deprecated]`, `#[doc(hidden)]`
   shouldn't appear unless there's a specific, documentable reason.
-  Forge is workspace-internal — compile breaks on enum/struct
+  Forge is workspace-internal - compile breaks on enum/struct
   evolution are the point, not something `#[non_exhaustive]` should
   paper over. `#[must_use]` is for futures / locks / builders at
   the type level (one marker, not one per setter). `#[allow(...)]`
@@ -582,8 +582,8 @@ behaviour we care about.
 
 ## Quick-start for a new session
 
-1. `git log main --oneline -10` — recent landings.
-2. `just check` — full gate (fmt + clippy + nextest + docs).
+1. `git log main --oneline -10` - recent landings.
+2. `just check` - full gate (fmt + clippy + nextest + docs).
 3. Read the latest `handoff_*` in
    `~/.claude-granite/projects/-Users-vedhavyas-Projects-forge/memory/`
    for round-specific context.
@@ -594,7 +594,7 @@ behaviour we care about.
 ## Wire-conformance cheatsheet
 
 - `crates/forge-test-harness/` holds the harness. Replay mode runs
-  on every `cargo nextest run` — offline, no API cost.
+  on every `cargo nextest run` - offline, no API cost.
 - Live capture: `FORGE_WIRE_CAPTURE=1 cargo nextest run -p
   forge-test-harness --no-capture --run-ignored only sdk_<test>`.
 - Baselines live under

@@ -1,10 +1,10 @@
-//! `hookSpecificOutput` typed wrappers — one per event kind.
+//! `hookSpecificOutput` typed wrappers - one per event kind.
 //!
 //! Mirrors  Each event kind
 //! has its own `*HookSpecificOutput` `TypedDict` upstream with a fixed
 //! `hookEventName` discriminator plus event-specific optional fields. The
 //! Rust structs carry a zero-sized `event_name` field that serde always
-//! emits as the correct string — guaranteeing the discriminator is present
+//! emits as the correct string - guaranteeing the discriminator is present
 //! whether the wrapper is serialised standalone or via [`HookSpecificOutput`].
 
 use serde::{Deserialize, Serialize};
@@ -154,21 +154,21 @@ pub struct PermissionRequestHookSpecificOutput {
     /// Fixed `"PermissionRequest"` discriminator.
     #[serde(rename = "hookEventName", default)]
     pub event_name: PermissionRequestTag,
-    /// Raw decision payload surfaced upstream — the CLI treats this as a
+    /// Raw decision payload surfaced upstream - the CLI treats this as a
     /// callback-scoped object of rules/behaviors. `Value::Null` when unset.
     #[serde(default)]
     pub decision: Value,
 }
 
 /// Tagged union over every typed `hookSpecificOutput` shape. Uses serde's
-/// untagged representation — each variant's inner struct already carries
+/// untagged representation - each variant's inner struct already carries
 /// its own `hookEventName` discriminator, so probing by `hookEventName` is
 /// the right way to decide the variant on the wire.
 ///
 /// **Note.** forge-sdk's internal write path constructs the concrete
 /// wrapper structs (`PreToolUseHookSpecificOutput` /
 /// `UserPromptSubmitHookSpecificOutput`) directly rather than pattern-
-/// matching on this enum — the dispatch lives in the callback handler.
+/// matching on this enum - the dispatch lives in the callback handler.
 /// `HookSpecificOutput` is carried here purely for caller ergonomics:
 /// consumers that want to construct or inspect a response by event name
 /// have a typed union they can match on without reinventing the
@@ -225,7 +225,7 @@ pub fn encode_updated_input_wrapper(kind: HookKind, updated: &Value) -> Option<V
             // Upstream `UserPromptSubmitHookSpecificOutput` only carries
             // `additionalContext: str`. If the caller hands us a JSON
             // string, forward it there; otherwise drop the payload and
-            // warn — there is no wire field to land a structured
+            // warn - there is no wire field to land a structured
             // replacement.
             updated.as_str().map_or_else(
                 || {

@@ -3,7 +3,7 @@
 //! Forces Claude to invoke the built-in `AskUserQuestion` tool and
 //! captures every `control_request` the CLI emits during the
 //! exchange. The `can_use_tool` callback allows the call to proceed
-//! so we can observe the full handshake — request shape from the CLI,
+//! so we can observe the full handshake - request shape from the CLI,
 //! and what the SDK is expected to send back.
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
@@ -35,7 +35,7 @@ async fn wire_capture_ask_user_question() {
     run_live_scenario("ask_user_question", opts, |client, events| async move {
         client
             .send_user_message(
-                "Use the AskUserQuestion tool right now to ask me whether I prefer the colour red, blue, or green. Single question, three options. Do NOT answer it for me — just call the tool and stop.",
+                "Use the AskUserQuestion tool right now to ask me whether I prefer the colour red, blue, or green. Single question, three options. Do NOT answer it for me - just call the tool and stop.",
             )
             .await?;
         Ok((client, events))

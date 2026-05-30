@@ -1,8 +1,8 @@
-//! UI configuration knobs — the `[ui]` section in `forge.toml`.
+//! UI configuration knobs - the `[ui]` section in `forge.toml`.
 //!
 //! Currently carries the launchpad spinner style.
 //! Distinct from per-session UI state (input editor, viewport, etc.)
-//! which lives on `UiSession` in forge-tui — this is workspace-level
+//! which lives on `UiSession` in forge-tui - this is workspace-level
 //! configuration that survives across sessions and processes.
 
 use serde::Deserialize;
@@ -16,7 +16,7 @@ pub struct UiSettings {
     /// indicator and per-project loading glyph. Distinct from the
     /// in-chat braille spinner so the visual language separates
     /// launchpad context from in-conversation context. Default is
-    /// `Braille` — same glyph as everywhere else, ensuring no
+    /// `Braille` - same glyph as everywhere else, ensuring no
     /// surprise for users who don't touch the config.
     #[serde(default)]
     pub launchpad_spinner: SpinnerStyle,
@@ -27,29 +27,29 @@ pub struct UiSettings {
 /// and a `cadence_ms()` accessor returning the per-style frame
 /// duration.
 ///
-/// Glyph choice is intentionally varied — different launchpad
+/// Glyph choice is intentionally varied - different launchpad
 /// personalities should pick visually distinct alternatives so the
 /// terminal mode "feels different" from the in-chat braille spinner.
 #[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SpinnerStyle {
-    /// `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏` — the default braille spinner used everywhere
+    /// `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏` - the default braille spinner used everywhere
     /// else in forge. Familiar; the launchpad reads as continuous
     /// with the rest of the chrome.
     #[default]
     Braille,
-    /// `◐◓◑◒` — phase-of-moon rotation. Calm, smooth, distinct
+    /// `◐◓◑◒` - phase-of-moon rotation. Calm, smooth, distinct
     /// from braille so the launchpad reads as its own surface.
     PhaseOfMoon,
-    /// `○◔◑◕●◕◑◔` — pulse fill. Breathing in and out, "alive."
+    /// `○◔◑◕●◕◑◔` - pulse fill. Breathing in and out, "alive."
     Pulse,
-    /// `●` — solid bullet. Intended for a forge-orange intensity
+    /// `●` - solid bullet. Intended for a forge-orange intensity
     /// tween at the render layer; the frame is single-glyph so the
     /// animation is driven by colour modulation rather than glyph
     /// changes. See `forge_dot_alpha_step` in the launchpad
     /// renderer for the opacity ramp.
     ForgeDot,
-    /// `· ✦ ✧ ✦` — ember sparkles. Branded but works on any unicode
+    /// `· ✦ ✧ ✦` - ember sparkles. Branded but works on any unicode
     /// terminal (no truecolor required). 180ms cadence reads as
     /// "sparks flying off hot metal" rather than anxious blinking.
     Ember,
@@ -57,7 +57,7 @@ pub enum SpinnerStyle {
 
 impl SpinnerStyle {
     /// Frame cycle for this style. Returned slice has fixed-known
-    /// length per variant — callers index modulo `len()` per render
+    /// length per variant - callers index modulo `len()` per render
     /// tick.
     pub fn frames(self) -> &'static [char] {
         match self {
@@ -93,7 +93,7 @@ impl SpinnerStyle {
     /// driver derives the current frame index from
     /// `elapsed_since_open.as_millis() / cadence_ms`.
     ///
-    /// `forge_dot` is the special one — its frame table is single-
+    /// `forge_dot` is the special one - its frame table is single-
     /// glyph and the cadence here drives a full opacity tween cycle
     /// (so it's intentionally much slower than the others, ~1.4s
     /// per cycle).
@@ -162,7 +162,7 @@ mod tests {
 
     #[test]
     fn cadence_ms_is_per_style() {
-        // Each style has its own cadence — drift means the launchpad
+        // Each style has its own cadence - drift means the launchpad
         // animation no longer ticks at the design-spec frequency.
         assert_eq!(SpinnerStyle::Braille.cadence_ms(), 80);
         assert_eq!(SpinnerStyle::PhaseOfMoon.cadence_ms(), 120);
