@@ -958,10 +958,10 @@ chat continues here...
     <div class="when">visible: every assistant turn</div>
   </div>
   <div class="surface-body">
-    <p>Role banner is the literal text "<strong>Claude</strong>" in <code>theme::ROLE_ASSISTANT</code> (RUST_ORANGE) bold, followed by a DIM duration chip <code> · 12.4s</code> on completed turns (sourced from <code>system/turn_duration</code>, CLI 2.1.156+). Body is full markdown via <code>tui-markdown</code> (which uses <code>pulldown-cmark</code>) with <code>syntect</code> for fenced code blocks.</p>
+    <p>Role banner is the literal text "<strong>Forge</strong>" in <code>theme::ROLE_ASSISTANT</code> (RUST_ORANGE) bold. Body is full markdown via <code>tui-markdown</code> (which uses <code>pulldown-cmark</code>) with <code>syntect</code> for fenced code blocks.</p>
     <div class="term">
       <pre class="indent">
-  <span class="accent-bold">Claude</span><span class="dim"> · 12.4s</span>
+  <span class="accent-bold">Forge</span>
   Looking at <span class="dim">crates/forge-tui/src/app/events/rate_limit.rs</span> - the warning chip
   has only one wording today. I'll add a quieter branch for the
   near-threshold-no-overage case.
@@ -979,9 +979,8 @@ chat continues here...
   Tests pass. Want me to push?</pre>
     </div>
     <dl>
-      <dt>code</dt><dd><code>crates/forge-tui/src/ui/message.rs::assistant_role_label_line</code> · markdown via <code>crates/forge-tui/src/ui/markdown.rs</code></dd>
-      <dt>color</dt><dd>banner: RUST_ORANGE bold  ·  duration chip: <code>theme::DIM</code>  ·  body: terminal default fg with markdown styles  ·  inline code: <code>theme::DIM</code> tint</dd>
-      <dt>duration formatting</dt><dd>&lt; 60s → <code>12.4s</code> (one decimal) · ≥ 60s → <code>1m 04s</code> · ≥ 1h → <code>1h 02m 04s</code></dd>
+      <dt>code</dt><dd><code>crates/forge-tui/src/ui/message.rs::role_label_line</code> · markdown via <code>crates/forge-tui/src/ui/markdown.rs</code></dd>
+      <dt>color</dt><dd>banner: RUST_ORANGE bold  ·  body: terminal default fg with markdown styles  ·  inline code: <code>theme::DIM</code> tint</dd>
     </dl>
   </div>
 </div>

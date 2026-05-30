@@ -1593,20 +1593,6 @@ impl App {
         self.active_bucket_mut().latest_thinking_tokens = value;
     }
 
-    /// Active session's most recent `Message::TurnDuration` ms
-    /// (#273). Persists across turns; rendered as the banner chip
-    /// `Claude · N.Ns`.
-    pub fn last_turn_duration_ms(&self) -> Option<u64> {
-        self.active_session().and_then(|s| s.last_turn_duration_ms)
-    }
-
-    /// Set the active session's last turn duration. Each turn
-    /// overwrites with its own value when `Message::TurnDuration`
-    /// lands.
-    pub fn set_last_turn_duration_ms(&mut self, value: Option<u64>) {
-        self.active_bucket_mut().last_turn_duration_ms = value;
-    }
-
     /// Active session's most recent `Message::StopHookSummary`
     /// (#273). Rendered as the collapsed `↳ hook summary · N actions`
     /// surface when `actions > 0`.
@@ -3606,7 +3592,6 @@ mod tests {
             show_thinking: false,
             show_compacting: false,
             thinking_tokens: None,
-            last_turn_duration_ms: None,
         };
 
         let _ = crate::ui::measure_message_height_cached(
