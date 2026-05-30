@@ -2643,6 +2643,14 @@ impl App {
         }
     }
 
+    pub(crate) fn shift_stop_hook_summary_for_insert(&mut self, idx: usize) {
+        if let Some(summary) = self.active_bucket_mut().last_stop_hook_summary.as_mut()
+            && idx <= summary.message_idx
+        {
+            summary.message_idx = summary.message_idx.saturating_add(1);
+        }
+    }
+
     pub(crate) fn shift_active_turn_assistant_for_remove(&mut self, idx: usize) {
         let Some(owner_idx) = self.active_turn_assistant_message_idx() else {
             return;
@@ -2744,7 +2752,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     // =====
-    // TESTS: 28
+    // TESTS: 29
     // =====
 
     use super::*;
@@ -2781,6 +2789,31 @@ mod tests {
         assert_eq!(app.active_session().and_then(|s| s.key.as_ref()), Some(&key));
         assert!(app.try_active_bucket_mut().is_some());
         assert!(app.session_mut(&key).is_some());
+    }
+
+    #[test]
+    fn peer_envelope_insert_shifts_stop_hook_summary_index() {
+        use crate::app::state::types::StopHookSummaryState;
+        use crate::app::{ChatMessage, MessageBlock, MessageRole, TextBlock};
+        let mut app = App::test_default();
+        let msg = |t: &str| {
+            ChatMessage::new(
+                MessageRole::User,
+                vec![MessageBlock::Text(TextBlock::from_complete(t))],
+                None,
+            )
+        };
+        let bound_idx = app.messages().len();
+        app.push_message_tracked(msg("bound"));
+        app.set_last_stop_hook_summary(Some(StopHookSummaryState {
+            message_idx: bound_idx,
+            actions: 1,
+            hooks: Vec::new(),
+        }));
+        // A peer envelope inserts before the summary's bound message; the
+        // chip's anchor index must follow it down.
+        app.insert_message_tracked(bound_idx, msg("peer"));
+        assert_eq!(app.last_stop_hook_summary().map(|s| s.message_idx), Some(bound_idx + 1));
     }
 
     /// Clicking a launchpad-auto_started project triggers the

@@ -245,6 +245,7 @@ impl super::App {
         if !appended_at_tail {
             self.shift_active_turn_assistant_for_insert(insert_idx);
             self.shift_turn_notice_refs_for_insert(insert_idx);
+            self.shift_stop_hook_summary_for_insert(insert_idx);
         }
         let bytes = Self::measure_message_bytes(&msg);
         self.active_messages_mut().insert(insert_idx, msg);

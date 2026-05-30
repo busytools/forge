@@ -371,7 +371,7 @@ fn push_peer_envelope_user_turn_if_present(
         // [assistant placeholder that will fill in].
         let placeholder_idx = app.active_turn_assistant_message_idx();
         match placeholder_idx {
-            Some(idx) if idx <= app.messages().len() => {
+            Some(idx) if idx < app.messages().len() => {
                 app.insert_message_tracked(idx, msg);
                 // Re-bind the active turn pointer: the placeholder is
                 // now one slot further down because we inserted before
