@@ -181,11 +181,10 @@ pub enum DefaultTarget {
     NotARepo,
     /// The Inspector scanner itself failed (subprocess crash,
     /// timeout, oversize output). Distinct from `NotARepo` because
-    /// the user IS in a repo; git just couldn't run. The snapshot
-    /// collapses to `in_repo = false` as a render failsafe but
-    /// `scanner_ok = false` signals the real story.
+    /// the user IS in a repo; git just couldn't run. The snapshot's
+    /// `repo_gate` is `RepoGate::ScannerFailed`.
     ScannerFailed,
-    /// Snapshot has `branch_ahead = Some(_)` (so the scanner sees
+    /// Snapshot has `branch_ahead` Populated (so the scanner sees
     /// committed work) but the default branch itself couldn't be
     /// resolved - no `origin/HEAD`, no local `main`, no local
     /// `master`. Distinct from `Clean` because there ARE changes;

@@ -22,10 +22,10 @@
 //!   per-layer subprocess-error signal.
 //!
 //! `scan` always returns a value. Subprocess failures, missing
-//! repos, oversize output, and timeouts all collapse to a snapshot
-//! with `in_repo = false`; the failure surfaces in the trace log at
-//! WARN level so a real issue can be diagnosed without breaking the
-//! rendering path.
+//! repos, oversize output, and timeouts all collapse to a non-InRepo
+//! `repo_gate` (`NotARepo` / `ScannerFailed`); the failure surfaces in
+//! the trace log at WARN level so a real issue can be diagnosed
+//! without breaking the rendering path.
 
 use std::path::Path;
 use std::time::Duration;
@@ -65,10 +65,10 @@ const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 const TOP_FILE_COUNT: usize = 7;
 
 /// Run the full scan sequence against `cwd` and return a snapshot.
-/// Always succeeds - every failure path collapses to a snapshot
-/// with `in_repo = false` and a WARN log naming the step that
-/// failed. Callers should treat the snapshot as authoritative for
-/// rendering regardless of which variant came back.
+/// Always succeeds - every failure path collapses to a non-InRepo
+/// `repo_gate` and a WARN log naming the step that failed. Callers
+/// should treat the snapshot as authoritative for rendering
+/// regardless of which variant came back.
 ///
 /// `prev` is the most recent snapshot for this `cwd` (if any). It's
 /// used to reuse cached PR info: when `prev.branch` matches the
@@ -79,11 +79,10 @@ pub async fn scan(cwd: &Path, prev: Option<&GitDiffSnapshot>) -> GitDiffSnapshot
     let raw_branch = match run_git(cwd, &["rev-parse", "--abbrev-ref", "HEAD"]).await {
         GitOutput::Ok(s) => s.trim().to_owned(),
         GitOutput::Empty => {
-            // Empty output from rev-parse means "cwd genuinely
-            // isn't a git repo" - scanner_ok=true since git itself
-            // ran fine and reported the state correctly. Layer
-            // states stay Clean: there's nothing to scan, so there's
-            // nothing that could have failed.
+            // Empty output from rev-parse means "cwd genuinely isn't
+            // a git repo" (NotARepo, distinct from ScannerFailed - git
+            // ran fine and reported the state correctly). Layer states
+            // stay Clean: there's nothing to scan.
             return GitDiffSnapshot {
                 branch: GitBranch::NoRepo,
                 default_branch: None,
@@ -95,13 +94,11 @@ pub async fn scan(cwd: &Path, prev: Option<&GitDiffSnapshot>) -> GitDiffSnapshot
             };
         }
         GitOutput::Failed | GitOutput::Oversize => {
-            // Subprocess crash, timeout, or unreadable output.
-            // in_repo=false as the failsafe so existing render paths
-            // don't crash; scanner_ok=false tells consumers to
-            // surface "scan failed" rather than "not a git
-            // repository." Layer states stay Clean: the overall
-            // scanner_ok=false banner subsumes the per-layer signal
-            // in this collapsed state.
+            // Subprocess crash, timeout, or unreadable output ->
+            // ScannerFailed so the renderer surfaces "scan failed"
+            // rather than "not a git repository." Layer states stay
+            // Clean: the ScannerFailed banner subsumes the per-layer
+            // signal in this collapsed state.
             return GitDiffSnapshot {
                 branch: GitBranch::NoRepo,
                 default_branch: None,
@@ -187,12 +184,12 @@ pub async fn scan(cwd: &Path, prev: Option<&GitDiffSnapshot>) -> GitDiffSnapshot
         _ => (None, Vec::new()),
     };
 
-    // scanner_ok=true here - we've passed the rev-parse gate and
+    // repo_gate=InRepo here - we've passed the rev-parse gate and
     // every downstream subprocess (default-branch resolution,
     // numstat, gh pr) is best-effort; failures collapse to safe
     // defaults plus per-layer `LayerState::ScanFailed` so the
     // renderer can surface them at the layer level rather than
-    // poisoning the overall snapshot. The scanner_ok=false case is
+    // poisoning the overall snapshot. The ScannerFailed gate is
     // only the rev-parse-failed return at the top of this function.
     GitDiffSnapshot {
         branch,

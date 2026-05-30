@@ -2751,10 +2751,6 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    // =====
-    // TESTS: 29
-    // =====
-
     use super::*;
     use crate::app::dialog;
     use crate::app::slash::{SlashCandidate, SlashContext, SlashState};

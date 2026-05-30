@@ -411,8 +411,8 @@ fn push_section_rule(lines: &mut Vec<Line<'static>>, width: u16) {
 }
 
 /// Append the GIT section to `lines`. Hidden entirely when the
-/// active session's cwd is not inside a git repository (`in_repo =
-/// false` + `scanner_ok = true`). For real repos the section
+/// active session's cwd is not inside a git repository
+/// (`repo_gate == RepoGate::NotARepo`). For real repos the section
 /// renders header + path + branch + diff + file tree as usual; for
 /// scanner failures inside a real repo the unhealthy banner still
 /// surfaces so the operator gets a triage signal.
@@ -569,8 +569,8 @@ fn diff_layer_failed_line(width: u16, label: &str) -> Line<'static> {
 /// glyph in the GIT header. Two cases qualify:
 /// - At least one diff layer (`worktree` / `branch_ahead`) is
 ///   populated - the normal "there's a diff to review" path.
-/// - `scanner_ok == false` - the Inspector scanner crashed and the
-///   snapshot collapsed to in_repo=false as a failsafe. The user
+/// - `repo_gate == RepoGate::ScannerFailed` - the Inspector scanner
+///   crashed (distinct from a non-repo). The user
 ///   needs a way to escalate; clicking the glyph routes through
 ///   `open_default → DefaultTarget::ScannerFailed`, surfacing the
 ///   trace-target hint they need to triage.

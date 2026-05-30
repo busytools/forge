@@ -257,11 +257,6 @@ pub trait WorkerFacade: Send + Sync {
     fn bump_inflight_stats(&self, key: &SessionKey, delta: PeerStatsDelta);
 }
 
-/// Production impl. Holds a `Weak<Workspace>` so construction doesn't
-/// close a strong cycle through the Workspace -> bridge -> MCP ->
-/// Tool -> facade -> Workspace path. Every method starts with
-/// `upgrade()` and short-circuits when the workspace has been
-/// dropped (only possible during shutdown).
 /// Validation chain shared by the production and mock `spawn_worker`
 /// impls so tests exercise the real rules rather than a hand-copied
 /// duplicate. `is_lead` is the resolved caller role.
@@ -285,6 +280,11 @@ pub(super) fn validate_worker_spawn(
     Ok(())
 }
 
+/// Production impl. Holds a `Weak<Workspace>` so construction doesn't
+/// close a strong cycle through the Workspace -> bridge -> MCP ->
+/// Tool -> facade -> Workspace path. Every method starts with
+/// `upgrade()` and short-circuits when the workspace has been
+/// dropped (only possible during shutdown).
 pub struct ProdWorkerFacade {
     workspace: Weak<Workspace>,
 }
