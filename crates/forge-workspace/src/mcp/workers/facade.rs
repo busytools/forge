@@ -280,6 +280,31 @@ pub(super) fn validate_worker_spawn(
     Ok(())
 }
 
+/// Identity classification shared by the production and mock
+/// `caller_identity` impls so the lead / labeled-worker / detached
+/// mapping is exercised against the real rules. The caller resolves
+/// `matched_label` from its own source (prod: live workers; mock: its
+/// preloaded map); the mapping lives here once.
+fn classify_worker_identity(
+    is_lead: bool,
+    project_key: &crate::ProjectKey,
+    matched_label: Option<String>,
+    caller: &SessionKey,
+) -> WorkerIdentity {
+    if is_lead {
+        return WorkerIdentity { name: LEAD_LABEL.to_owned(), org: PERSONAL_ORG.to_owned() };
+    }
+    match matched_label {
+        Some(label) => {
+            WorkerIdentity { name: label, org: format!("worker in {}", project_key.as_str()) }
+        }
+        None => WorkerIdentity {
+            name: caller.as_str().to_owned(),
+            org: format!("worker in {} (detached)", project_key.as_str()),
+        },
+    }
+}
+
 /// Production impl. Holds a `Weak<Workspace>` so construction doesn't
 /// close a strong cycle through the Workspace -> bridge -> MCP ->
 /// Tool -> facade -> Workspace path. Every method starts with
@@ -325,24 +350,15 @@ impl WorkerFacade for ProdWorkerFacade {
         let Some(cp) = self.caller_project(caller) else {
             return WorkerIdentity { name: caller.as_str().to_owned(), org: String::new() };
         };
-        if cp.is_lead {
-            return WorkerIdentity { name: LEAD_LABEL.to_owned(), org: PERSONAL_ORG.to_owned() };
-        }
-        let label = ws
-            .list_live_workers(&cp.project_key)
-            .into_iter()
-            .find(|w| w.session_key == *caller)
-            .map(|w| w.label);
-        match label {
-            Some(label) => WorkerIdentity {
-                name: label,
-                org: format!("worker in {}", cp.project_key.as_str()),
-            },
-            None => WorkerIdentity {
-                name: caller.as_str().to_owned(),
-                org: format!("worker in {} (detached)", cp.project_key.as_str()),
-            },
-        }
+        let label = if cp.is_lead {
+            None
+        } else {
+            ws.list_live_workers(&cp.project_key)
+                .into_iter()
+                .find(|w| w.session_key == *caller)
+                .map(|w| w.label)
+        };
+        classify_worker_identity(cp.is_lead, &cp.project_key, label, caller)
     }
 
     async fn spawn_worker(
@@ -576,22 +592,14 @@ impl WorkerFacade for MockWorkerFacade {
         let Some(cp) = self.caller_project(caller) else {
             return WorkerIdentity { name: caller.as_str().to_owned(), org: String::new() };
         };
-        if cp.is_lead {
-            return WorkerIdentity { name: LEAD_LABEL.to_owned(), org: PERSONAL_ORG.to_owned() };
-        }
-        let label = self.workers.lock().get(cp.project_key.as_str()).and_then(|ws| {
-            ws.iter().find(|w| w.session_id == caller.as_str()).map(|w| w.label.clone())
-        });
-        match label {
-            Some(label) => WorkerIdentity {
-                name: label,
-                org: format!("worker in {}", cp.project_key.as_str()),
-            },
-            None => WorkerIdentity {
-                name: caller.as_str().to_owned(),
-                org: format!("worker in {} (detached)", cp.project_key.as_str()),
-            },
-        }
+        let label = if cp.is_lead {
+            None
+        } else {
+            self.workers.lock().get(cp.project_key.as_str()).and_then(|ws| {
+                ws.iter().find(|w| w.session_id == caller.as_str()).map(|w| w.label.clone())
+            })
+        };
+        classify_worker_identity(cp.is_lead, &cp.project_key, label, caller)
     }
 
     async fn spawn_worker(
