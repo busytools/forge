@@ -127,8 +127,7 @@ pub(crate) fn convert_tool_call_update(update: types::ToolCallUpdate) -> model::
     // silently drift.
     let types::ToolCallUpdate { tool_call_id, fields } = update;
     let update_meta = fields.meta.clone();
-    let mut out =
-        model::ToolCallUpdate::new(tool_call_id, convert_tool_call_update_fields(fields));
+    let mut out = model::ToolCallUpdate::new(tool_call_id, convert_tool_call_update_fields(fields));
     if let Some(meta) = update_meta {
         out = out.meta(meta);
     }

@@ -5874,14 +5874,18 @@ mod async_worker_spawn_failure_tests {
         let (workspace, _rx) = Workspace::testing_stub();
         let project_key = ProjectKey::new("proj-x");
         let synth_key = "__spawn_worker_proj-x_reviewer_abc__";
-        workspace
-            .insert_live_worker(&project_key, fake_worker("reviewer", synth_key, "lead-uuid", false));
+        workspace.insert_live_worker(
+            &project_key,
+            fake_worker("reviewer", synth_key, "lead-uuid", false),
+        );
         assert!(
             workspace.worker_lookup_for_session(&SessionKey::from_session_id(synth_key)).is_some(),
             "seeded worker must be detected so its tag-less catalog mirror is skipped"
         );
         assert!(
-            workspace.worker_lookup_for_session(&SessionKey::from_session_id("lead-uuid")).is_none(),
+            workspace
+                .worker_lookup_for_session(&SessionKey::from_session_id("lead-uuid"))
+                .is_none(),
             "the lead is not a live worker, so it is still mirrored into the catalog"
         );
     }
