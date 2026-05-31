@@ -737,3 +737,129 @@ mod tests {
         ));
     }
 }
+
+/// Worker-shadow resolution for `lead_session_view` - the shared gate
+/// `list_peers` / `whoami` / `deliver_peer_prompt` all route through.
+/// Behind `test-helpers` because the fixtures use the cross-crate
+/// `ProjectView` / `SessionView` constructors.
+#[cfg(all(test, feature = "test-helpers"))]
+mod lead_resolution_tests {
+    use super::{DeliverError, ProdWorkspaceFacade, lead_session_view};
+    use crate::mcp::peers::types::WrappedKind;
+    use crate::target::ProjectKey;
+    use crate::views::{ProjectView, SessionView};
+    use crate::workspace::Workspace;
+    use crate::{CorrelationId, SessionKey, WorkerEntry, WrappedPrompt};
+    use forge_primitives::WorkerLiveness;
+    use std::time::SystemTime;
+
+    fn session(id: &str) -> SessionView {
+        SessionView::new_for_test(SessionKey::from_session_id(id), id, true, None)
+    }
+
+    fn worker_entry(session_key: SessionKey) -> WorkerEntry {
+        WorkerEntry {
+            label: "reviewer".into(),
+            charter: "review the diff".into(),
+            session_key,
+            status: WorkerLiveness::Running,
+            spawned_at: SystemTime::UNIX_EPOCH,
+            spawned_by_session_id: "lead-uuid".into(),
+            needs_tag: false,
+            is_git_repo_at_spawn: false,
+            diagnostic: None,
+        }
+    }
+
+    #[test]
+    fn live_worker_at_index_zero_does_not_shadow_lead() {
+        // A just-connected worker can land at sessions[0]; the lead
+        // must still resolve to the non-worker session.
+        let (ws, _rx) = Workspace::testing_stub();
+        let key = ProjectKey::new("p".to_owned());
+        let worker = session("worker-uuid");
+        let lead = session("lead-uuid");
+        let view = ProjectView::new_for_test(
+            key.clone(),
+            "forge",
+            "/tmp/forge",
+            vec![worker.clone(), lead.clone()],
+        );
+        ws.insert_live_worker(&key, worker_entry(worker.session.clone()));
+        let resolved = lead_session_view(&ws, &view).expect("a lead resolves");
+        assert_eq!(
+            resolved.session, lead.session,
+            "the live worker at index 0 must not shadow the lead",
+        );
+    }
+
+    #[test]
+    fn returns_first_session_when_no_live_workers() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let key = ProjectKey::new("p".to_owned());
+        let lead = session("lead-uuid");
+        let view = ProjectView::new_for_test(key, "forge", "/tmp/forge", vec![lead.clone()]);
+        let resolved = lead_session_view(&ws, &view).expect("a lead resolves");
+        assert_eq!(resolved.session, lead.session);
+    }
+
+    #[test]
+    fn returns_none_when_every_session_is_a_live_worker() {
+        // LeadGone: the lead disconnected and only workers remain in
+        // the catalog. No non-worker session means no lead.
+        let (ws, _rx) = Workspace::testing_stub();
+        let key = ProjectKey::new("p".to_owned());
+        let worker = session("worker-uuid");
+        let view =
+            ProjectView::new_for_test(key.clone(), "forge", "/tmp/forge", vec![worker.clone()]);
+        ws.insert_live_worker(&key, worker_entry(worker.session.clone()));
+        assert!(lead_session_view(&ws, &view).is_none(), "an all-worker project has no lead");
+    }
+
+    fn wrapped(hop: u8, hop_limit: u8) -> WrappedPrompt {
+        WrappedPrompt {
+            correlation_id: CorrelationId::new_ask(),
+            kind: WrappedKind::Question,
+            sender_name: "forge".to_owned(),
+            sender_org: "Personal".to_owned(),
+            hop,
+            hop_limit,
+            body: "hi".to_owned(),
+        }
+    }
+
+    #[test]
+    fn deliver_rejects_when_hop_exceeds_limit() {
+        // The hop guard fires before any project lookup, so an empty
+        // stub workspace exercises it.
+        let (ws, _rx) = Workspace::testing_stub();
+        let facade = ProdWorkspaceFacade::from_arc(&ws);
+        let result = facade.deliver_peer_prompt(
+            &SessionKey::from_session_id("caller"),
+            "anywhere",
+            wrapped(5, 3),
+        );
+        assert!(matches!(result, Err(DeliverError::HopLimitExceeded { hop: 5, limit: 3 })));
+    }
+
+    #[test]
+    fn deliver_to_unknown_project_errors() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let facade = ProdWorkspaceFacade::from_arc(&ws);
+        let result = facade.deliver_peer_prompt(
+            &SessionKey::from_session_id("caller"),
+            "no-such-project",
+            wrapped(1, 10),
+        );
+        assert!(
+            matches!(result, Err(DeliverError::UnknownTarget { ref name }) if name == "no-such-project")
+        );
+    }
+
+    #[test]
+    fn whoami_none_when_caller_leads_no_project() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let facade = ProdWorkspaceFacade::from_arc(&ws);
+        assert!(facade.whoami(&SessionKey::from_session_id("nobody")).is_none());
+    }
+}
