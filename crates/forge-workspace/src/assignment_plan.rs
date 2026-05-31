@@ -26,12 +26,6 @@
 //! recovered account; sessions already running keep their boot-time
 //! account so their wire identity doesn't shift mid-run.
 
-// `is_empty` is a public accessor for the launchpad click-gate that
-// isn't wired into the launchpad yet (prod-dead, exercised by tests).
-// Kept until the gate lands rather than silent-deleting a half-built
-// feature; the rest of the module's surface has live callers.
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 
 use crate::account::AccountKey;
@@ -138,13 +132,6 @@ impl AssignmentPlan {
     #[must_use]
     pub fn project_has_no_assignments(&self, project: &ProjectKey) -> bool {
         !self.assignments.keys().any(|(p, _)| p == project)
-    }
-
-    /// True when the plan has no (project, label) assignments. For the
-    /// launchpad click-gate (pending wiring; see the module note).
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.assignments.is_empty()
     }
 
     /// Assign an account to a worker spawned mid-session via

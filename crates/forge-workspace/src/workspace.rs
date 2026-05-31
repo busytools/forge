@@ -997,21 +997,6 @@ impl Workspace {
         Some(SessionChipInfo { account_name: account_key.0, state })
     }
 
-    /// Crate-internal accessor for the assignment plan. Returns the
-    /// `Mutex<Option<...>>` so callers (the launchpad render path
-    /// and the spawn-path integration in §2.5) can take the lock
-    /// briefly without paying for an Option clone. `None` means
-    /// the boot-time loading tasks haven't all reached terminal
-    /// yet; `Some` means the plan is live and the launchpad can
-    /// un-dim project rows.
-    // Test-only accessor (prod reads the field directly): the launchpad
-    // click-gate that would call this isn't wired up yet (#246), so the
-    // allow stays until that gate lands or the unwired surface is cut.
-    #[allow(dead_code)]
-    pub(crate) fn assignment_plan(&self) -> &Mutex<Option<crate::assignment_plan::AssignmentPlan>> {
-        &self.assignment_plan
-    }
-
     /// Look up the deterministic account assignment for a spawn
     /// target. Returns `(AccountKey, config_dir)` when:
     /// - the assignment plan is populated (`Some`), AND
@@ -6453,7 +6438,7 @@ config_dir = "~/.claude-subspace"
         // Fresh workspace: account starts in `Loading`. all_loaded
         // returns false; recompute must not populate the plan.
         workspace.recompute_plan_if_ready();
-        let plan = workspace.assignment_plan().lock();
+        let plan = workspace.assignment_plan.lock();
         assert!(plan.is_none(), "plan stays None while accounts are still Loading");
     }
 
@@ -6477,17 +6462,16 @@ config_dir = "~/.claude-subspace"
         }
 
         workspace.recompute_plan_if_ready();
-        let plan = workspace.assignment_plan().lock();
+        let plan = workspace.assignment_plan.lock();
         let plan = plan.as_ref().expect("plan populates once all_loaded fires");
         let project_key =
             ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
-                &dir.path().join("..").join("Projects").join("forge").to_string_lossy(),
+                workspace.config.projects[0].path.to_string_lossy().as_ref(),
             )));
-        // Don't assert the exact project_key (path expansion is
-        // env-dependent); just assert SOMETHING got assigned to
-        // the lone project.
-        let _ = project_key;
-        assert!(!plan.is_empty(), "plan must have at least one assignment for the lone project");
+        assert!(
+            !plan.project_has_no_assignments(&project_key),
+            "plan must have at least one assignment for the lone project",
+        );
     }
 
     #[tokio::test]
@@ -6509,12 +6493,12 @@ config_dir = "~/.claude-subspace"
         }
 
         workspace.recompute_plan_if_ready();
-        let first_plan = workspace.assignment_plan().lock().clone();
+        let first_plan = workspace.assignment_plan.lock().clone();
 
         // Recompute should be idempotent on the same ready set
         // (frozen overlay merges; existing assignments preserved).
         workspace.recompute_plan_if_ready();
-        let second_plan = workspace.assignment_plan().lock().clone();
+        let second_plan = workspace.assignment_plan.lock().clone();
         assert!(first_plan.is_some());
         assert!(second_plan.is_some());
         // Same plan contents (the frozen overlay preserves entries).
@@ -6548,7 +6532,7 @@ config_dir = "~/.claude-subspace"
                 workspace.config.projects[0].path.to_string_lossy().as_ref(),
             )));
         workspace.extend_plan_for_adhoc_worker(&project_key, "reviewer");
-        assert!(workspace.assignment_plan().lock().is_none(), "plan still unpopulated");
+        assert!(workspace.assignment_plan.lock().is_none(), "plan still unpopulated");
     }
 
     #[tokio::test]
@@ -6574,7 +6558,7 @@ config_dir = "~/.claude-subspace"
                 workspace.config.projects[0].path.to_string_lossy().as_ref(),
             )));
         workspace.extend_plan_for_adhoc_worker(&project_key, "reviewer");
-        let plan = workspace.assignment_plan().lock();
+        let plan = workspace.assignment_plan.lock();
         let plan = plan.as_ref().expect("populated");
         assert!(
             plan.lookup(&project_key, &"reviewer".to_owned()).is_some(),
