@@ -372,4 +372,77 @@ mod tests {
         assert!(summary.contains("Approaching rate limit"));
         assert!(summary.contains("105%") || summary.contains("100%"));
     }
+
+    // ---- handle_rate_limit_update: status -> notice routing ----
+
+    use super::handle_rate_limit_update;
+    use crate::app::{App, MessageRole, SystemSeverity};
+
+    fn update_with_status(status: RateLimitStatus) -> RateLimitUpdate {
+        RateLimitUpdate {
+            status,
+            resets_at: Some(1_741_280_000.0),
+            utilization: Some(0.9),
+            rate_limit_type: Some("five_hour".to_owned()),
+            overage_status: None,
+            overage_resets_at: None,
+            overage_disabled_reason: None,
+            is_using_overage: None,
+            surpassed_threshold: None,
+        }
+    }
+
+    /// Severities of every System-role message in the app, in order.
+    /// A routed rate-limit notice with no active turn lands as a
+    /// standalone `System(Some(severity))` message.
+    fn system_severities(app: &App) -> Vec<SystemSeverity> {
+        app.messages()
+            .iter()
+            .filter_map(|m| match m.role {
+                MessageRole::System(sev) => sev,
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn dispatch_allowed_posts_no_notice() {
+        let mut app = App::test_default();
+        let before = system_severities(&app);
+        handle_rate_limit_update(&mut app, &update_with_status(RateLimitStatus::Allowed));
+        assert_eq!(system_severities(&app), before, "Allowed renders neutral");
+        // The update is recorded unconditionally for the recovery tick.
+        assert!(app.last_rate_limit_update().is_some());
+    }
+
+    #[test]
+    fn dispatch_unknown_status_renders_neutral() {
+        // serde(other) Unknown must route like Allowed: a future CLI
+        // status the decoder degrades to Unknown must not surface a
+        // spurious warning/error banner.
+        let mut app = App::test_default();
+        let before = system_severities(&app);
+        handle_rate_limit_update(&mut app, &update_with_status(RateLimitStatus::Unknown));
+        assert_eq!(system_severities(&app), before, "Unknown must not post a notice");
+    }
+
+    #[test]
+    fn dispatch_allowed_warning_posts_warning_notice() {
+        let mut app = App::test_default();
+        let before = system_severities(&app).len();
+        handle_rate_limit_update(&mut app, &update_with_status(RateLimitStatus::AllowedWarning));
+        let after = system_severities(&app);
+        assert_eq!(after.len(), before + 1);
+        assert_eq!(after.last(), Some(&SystemSeverity::Warning));
+    }
+
+    #[test]
+    fn dispatch_rejected_posts_error_notice() {
+        let mut app = App::test_default();
+        let before = system_severities(&app).len();
+        handle_rate_limit_update(&mut app, &update_with_status(RateLimitStatus::Rejected));
+        let after = system_severities(&app);
+        assert_eq!(after.len(), before + 1);
+        assert_eq!(after.last(), Some(&SystemSeverity::Error));
+    }
 }
