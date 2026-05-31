@@ -386,12 +386,16 @@ impl HttpHandler for Rewriter {
         }
     }
 
-    async fn handle_response(&mut self, _ctx: &HttpContext, res: Response<Body>) -> Response<Body> {
+    fn handle_response(
+        &mut self,
+        _ctx: &HttpContext,
+        res: Response<Body>,
+    ) -> impl std::future::Future<Output = Response<Body>> {
         // CRITICAL: do NOT buffer. /v1/messages is text/event-stream
         // (SSE); buffering hangs the turn loop because the CLI is
         // streaming-aware. Classification is request-only anyway, so
         // there is nothing to rewrite on the way back.
-        res
+        std::future::ready(res)
     }
 }
 
