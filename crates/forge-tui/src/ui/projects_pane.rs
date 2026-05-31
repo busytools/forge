@@ -372,9 +372,7 @@ fn append_project_rows(
         // root, and their JSONL is tagged under a per-worker project
         // key in the catalog rather than the parent. Fresh-spawned
         // workers accidentally pass `cwd_match` because their
-        // pre-Connect bucket still has `cwd_raw == project.path`,
-        // which is why the bug only surfaced after #225 fixed the
-        // resume session_key seed. Same family as #232.
+        // pre-Connect bucket still has `cwd_raw == project.path`.
         let is_active_project = active_session_key.as_ref().is_some_and(|k| {
             let cwd_match = app
                 .sessions
@@ -986,7 +984,7 @@ fn peer_badge_spans(
 // (cells 1-3 green, 4-6 yellow, 7-9 orange, 10-12 red) so the
 // rightmost filled cell tells you which zone the bar is in.
 //
-// Cwd + branch rows live in the Inspector pane's `GIT` section  -
+// Cwd + branch rows live in the Inspector pane's `GIT` section -
 // see `crate::ui::inspector_pane`.
 // ---------------------------------------------------------------
 

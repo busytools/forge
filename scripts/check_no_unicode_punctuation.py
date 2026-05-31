@@ -4,7 +4,10 @@ Forbid em-dash / en-dash / horizontal-bar / curly quotes in forge-authored
 source. Ellipsis U+2026 is ALLOWED (legitimate truncation glyph in TUI
 render). Captured-data dirs (test baselines, reference captures) are
 excluded - those mirror upstream wire payloads byte-for-byte and may
-legitimately contain Unicode prose from the CLI's own logs.
+legitimately contain Unicode prose from the CLI's own logs. Files git
+ignores (.gitignore / .git/info/exclude, e.g. local audit scratch) are
+skipped too: the gate polices committable forge source, not whatever
+scratch happens to sit in the working tree.
 
 When a banned codepoint is functionally required (render glyph,
 ASCII-art element, legitimate punctuation in test fixtures), use the
@@ -33,6 +36,7 @@ tree, 1 with file:line:content output on a hit.
 from __future__ import annotations
 
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -103,10 +107,40 @@ def scan_file(path: Path):
         return
 
 
+def candidate_files(root: Path):
+    """Files git would consider part of the repo (tracked + untracked),
+    minus anything .gitignore / .git/info/exclude ignores, filtered to
+    the scanned suffixes. Falls back to a plain directory walk when git
+    is unavailable or `root` sits outside a work tree."""
+    try:
+        out = subprocess.run(
+            ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", str(root)],
+            capture_output=True,
+            check=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        yield from walk(root)
+        return
+    for rel in out.stdout.decode("utf-8", errors="strict").split("\0"):
+        if not rel:
+            continue
+        path = Path(rel)
+        if path.suffix not in INCLUDE_SUFFIXES:
+            continue
+        if should_skip_file(path):
+            continue
+        try:
+            if path.is_symlink() or not path.is_file():
+                continue
+        except OSError:
+            continue
+        yield path
+
+
 def main(argv):
     root = Path(argv[1]) if len(argv) > 1 else Path(".")
     hits = []
-    for path in walk(root):
+    for path in candidate_files(root):
         for (line_no, text) in scan_file(path):
             hits.append((path, line_no, text))
 

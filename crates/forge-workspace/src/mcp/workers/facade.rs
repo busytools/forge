@@ -2,7 +2,7 @@
 //! consume. Trait + mock for unit-testing the Tool impls without
 //! spinning up a real Workspace. Mirrors `crate::mcp::peers::facade`.
 //!
-//! The production impl (`ProdWorkerFacade`) lands in Task 7.
+//! The production impl is `ProdWorkerFacade` (below).
 
 use std::sync::{Arc, Weak};
 
@@ -257,6 +257,54 @@ pub trait WorkerFacade: Send + Sync {
     fn bump_inflight_stats(&self, key: &SessionKey, delta: PeerStatsDelta);
 }
 
+/// Validation chain shared by the production and mock `spawn_worker`
+/// impls so tests exercise the real rules rather than a hand-copied
+/// duplicate. `is_lead` is the resolved caller role.
+pub(super) fn validate_worker_spawn(
+    is_lead: bool,
+    label: &str,
+    charter: &str,
+) -> Result<(), WorkerSpawnError> {
+    if !is_lead {
+        return Err(WorkerSpawnError::NotLeadCaller);
+    }
+    if label.trim().is_empty() {
+        return Err(WorkerSpawnError::EmptyLabel);
+    }
+    if label.trim() == LEAD_LABEL {
+        return Err(WorkerSpawnError::ReservedLabel);
+    }
+    if charter.trim().is_empty() {
+        return Err(WorkerSpawnError::EmptyCharter);
+    }
+    Ok(())
+}
+
+/// Identity classification shared by the production and mock
+/// `caller_identity` impls so the lead / labeled-worker / detached
+/// mapping is exercised against the real rules. The caller resolves
+/// `matched_label` from its own source (prod: live workers; mock: its
+/// preloaded map); the mapping lives here once.
+fn classify_worker_identity(
+    is_lead: bool,
+    project_key: &crate::ProjectKey,
+    matched_label: Option<String>,
+    caller: &SessionKey,
+) -> WorkerIdentity {
+    if is_lead {
+        return WorkerIdentity { name: LEAD_LABEL.to_owned(), org: PERSONAL_ORG.to_owned() };
+    }
+    match matched_label {
+        Some(label) => {
+            WorkerIdentity { name: label, org: format!("worker in {}", project_key.as_str()) }
+        }
+        None => WorkerIdentity {
+            name: caller.as_str().to_owned(),
+            org: format!("worker in {} (detached)", project_key.as_str()),
+        },
+    }
+}
+
 /// Production impl. Holds a `Weak<Workspace>` so construction doesn't
 /// close a strong cycle through the Workspace -> bridge -> MCP ->
 /// Tool -> facade -> Workspace path. Every method starts with
@@ -302,24 +350,15 @@ impl WorkerFacade for ProdWorkerFacade {
         let Some(cp) = self.caller_project(caller) else {
             return WorkerIdentity { name: caller.as_str().to_owned(), org: String::new() };
         };
-        if cp.is_lead {
-            return WorkerIdentity { name: LEAD_LABEL.to_owned(), org: PERSONAL_ORG.to_owned() };
-        }
-        let label = ws
-            .list_live_workers(&cp.project_key)
-            .into_iter()
-            .find(|w| w.session_key == *caller)
-            .map(|w| w.label);
-        match label {
-            Some(label) => WorkerIdentity {
-                name: label,
-                org: format!("worker in {}", cp.project_key.as_str()),
-            },
-            None => WorkerIdentity {
-                name: caller.as_str().to_owned(),
-                org: format!("worker in {} (detached)", cp.project_key.as_str()),
-            },
-        }
+        let label = if cp.is_lead {
+            None
+        } else {
+            ws.list_live_workers(&cp.project_key)
+                .into_iter()
+                .find(|w| w.session_key == *caller)
+                .map(|w| w.label)
+        };
+        classify_worker_identity(cp.is_lead, &cp.project_key, label, caller)
     }
 
     async fn spawn_worker(
@@ -329,18 +368,7 @@ impl WorkerFacade for ProdWorkerFacade {
         charter: String,
     ) -> Result<WorkerSpawnReply, WorkerSpawnError> {
         let cp = self.caller_project(caller).ok_or(WorkerSpawnError::UnknownCallerProject)?;
-        if !cp.is_lead {
-            return Err(WorkerSpawnError::NotLeadCaller);
-        }
-        if label.trim().is_empty() {
-            return Err(WorkerSpawnError::EmptyLabel);
-        }
-        if label.trim() == LEAD_LABEL {
-            return Err(WorkerSpawnError::ReservedLabel);
-        }
-        if charter.trim().is_empty() {
-            return Err(WorkerSpawnError::EmptyCharter);
-        }
+        validate_worker_spawn(cp.is_lead, &label, &charter)?;
         let ws = self.workspace.upgrade().ok_or_else(|| WorkerSpawnError::DispatchFailed {
             message: "workspace dropped".into(),
         })?;
@@ -564,22 +592,14 @@ impl WorkerFacade for MockWorkerFacade {
         let Some(cp) = self.caller_project(caller) else {
             return WorkerIdentity { name: caller.as_str().to_owned(), org: String::new() };
         };
-        if cp.is_lead {
-            return WorkerIdentity { name: LEAD_LABEL.to_owned(), org: PERSONAL_ORG.to_owned() };
-        }
-        let label = self.workers.lock().get(cp.project_key.as_str()).and_then(|ws| {
-            ws.iter().find(|w| w.session_id == caller.as_str()).map(|w| w.label.clone())
-        });
-        match label {
-            Some(label) => WorkerIdentity {
-                name: label,
-                org: format!("worker in {}", cp.project_key.as_str()),
-            },
-            None => WorkerIdentity {
-                name: caller.as_str().to_owned(),
-                org: format!("worker in {} (detached)", cp.project_key.as_str()),
-            },
-        }
+        let label = if cp.is_lead {
+            None
+        } else {
+            self.workers.lock().get(cp.project_key.as_str()).and_then(|ws| {
+                ws.iter().find(|w| w.session_id == caller.as_str()).map(|w| w.label.clone())
+            })
+        };
+        classify_worker_identity(cp.is_lead, &cp.project_key, label, caller)
     }
 
     async fn spawn_worker(
@@ -589,18 +609,7 @@ impl WorkerFacade for MockWorkerFacade {
         charter: String,
     ) -> Result<WorkerSpawnReply, WorkerSpawnError> {
         let cp = self.caller_project(caller).ok_or(WorkerSpawnError::UnknownCallerProject)?;
-        if !cp.is_lead {
-            return Err(WorkerSpawnError::NotLeadCaller);
-        }
-        if label.trim().is_empty() {
-            return Err(WorkerSpawnError::EmptyLabel);
-        }
-        if label.trim() == LEAD_LABEL {
-            return Err(WorkerSpawnError::ReservedLabel);
-        }
-        if charter.trim().is_empty() {
-            return Err(WorkerSpawnError::EmptyCharter);
-        }
+        validate_worker_spawn(cp.is_lead, &label, &charter)?;
         self.spawn_calls.lock().push((caller.clone(), label, charter));
         self.spawn_reply.lock().clone().unwrap_or(Err(WorkerSpawnError::DispatchFailed {
             message: "no preloaded reply".into(),
@@ -754,6 +763,29 @@ mod mock_tests {
             .unwrap();
         assert_eq!(res.session_id, "new-uuid");
         assert_eq!(mock.spawn_calls.lock().len(), 1);
+    }
+
+    #[test]
+    fn validate_worker_spawn_enforces_lead_and_nonempty_fields() {
+        // Prod + mock spawn_worker both route through this, so the rules
+        // are covered against the shipping code, not a copy.
+        assert!(matches!(
+            validate_worker_spawn(false, "reviewer", "charter"),
+            Err(WorkerSpawnError::NotLeadCaller)
+        ));
+        assert!(matches!(
+            validate_worker_spawn(true, "   ", "charter"),
+            Err(WorkerSpawnError::EmptyLabel)
+        ));
+        assert!(matches!(
+            validate_worker_spawn(true, LEAD_LABEL, "charter"),
+            Err(WorkerSpawnError::ReservedLabel)
+        ));
+        assert!(matches!(
+            validate_worker_spawn(true, "reviewer", "  "),
+            Err(WorkerSpawnError::EmptyCharter)
+        ));
+        assert!(validate_worker_spawn(true, "reviewer", "charter").is_ok());
     }
 
     #[test]

@@ -687,7 +687,7 @@ fn apply_sdk_message_presentation(app: &mut App, session_id: &str, msg: forge_pr
     // `Client::session_id()` is empty at spawn time and that empty
     // value rides through `Connected` onto `app.session_id`. The
     // first wire message that DOES carry a real id (Assistant /
-    // User / Result / System(init)) is the canonical source  -
+    // User / Result / System(init)) is the canonical source -
     // adopt it onto the active bucket. For resume the bridge
     // already used the resume_id for Connected, so adoption is a
     // no-op and the strict mismatch check covers stale-Client
@@ -988,7 +988,7 @@ fn rekey_pending_bucket_to(app: &mut App, real_key: &SessionKey) -> bool {
     true
 }
 
-/// migrate the bucket at `from` over to `to` when the
+/// Migrate the bucket at `from` over to `to` when the
 /// workspace renames a synthetic spawn key onto the real claude
 /// session UUID. Updates `active_session_key` only when it
 /// currently points at `from` (background-spawn case must NOT
@@ -1017,9 +1017,7 @@ fn apply_session_update_key_renamed(app: &mut App, from: &SessionKey, to: Sessio
         if already_under_to {
             // `to` already exists (e.g. a Connected for the same
             // session UUID raced ahead and seeded the bucket); the
-            // synthetic at `from` is now redundant. Drop it to match
-            // the legacy `handle_connected_client_event` migration
-            // semantics.
+            // synthetic at `from` is now redundant, so drop it.
             tracing::warn!(
                 target: crate::logging::targets::APP_SESSION,
                 event_name = "key_renamed_synthetic_dropped",
@@ -1094,7 +1092,7 @@ mod tests {
 
     /// Multiplexer-isolation test: a `StatusSnapshotReceived` event
     /// tagged for session B updates B's bucket without touching
-    /// session A's bucket and without flipping `needs_redraw`  -
+    /// session A's bucket and without flipping `needs_redraw` -
     /// `needs_redraw` flips only for events that target the active
     /// session (A in this fixture). Proves the per-session
     /// multiplexer correctly routes background-session events.
@@ -1482,8 +1480,7 @@ mod tests {
     }
 
     /// `SessionUpdate::Spawning` writes `cwd_raw` directly onto the
-    /// bucket. Previously this was mirrored onto a workspace
-    /// `DomainSession`; now the bucket is the only owner.
+    /// bucket, which is the sole owner.
     #[test]
     fn spawning_reducer_writes_cwd_raw_onto_bucket() {
         let mut app = App::test_default();

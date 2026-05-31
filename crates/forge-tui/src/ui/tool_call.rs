@@ -118,18 +118,9 @@ pub fn render_tool_call_cached_with_tools_collapsed(
         out.extend_from_slice(cached_body);
     } else {
         crate::perf::mark("tc::cache_miss_body");
-        // #125 variant 2 instrumentation: enrich the render_body
-        // mark so a slow-frame perf-log capture can answer "which
-        // tool's body is taking the time?" without re-running. The
-        // timer carries input_bytes as a cost proxy (pre-render, no
-        // re-walk of the laid-out body needed); sibling marks
-        // record a stable hash of sdk_tool_name + the tool-call id
-        // so a triage can correlate sessions / cross-reference
-        // logs without leaking raw command strings into the
-        // diagnostic capture. The string-hash approach is a
-        // workaround for the existing perf API only carrying
-        // `usize` extras; properly threading raw strings is a
-        // future API extension.
+        // Hash sdk_tool_name + tool-call id (perf extras are usize-only)
+        // so a slow-frame capture can attribute body-render time to a
+        // tool without leaking raw command strings.
         let _t = crate::perf::start_with("tc::render_body", "input_bytes", tc.raw_input_bytes);
         crate::perf::mark_with(
             "tc::render_body_tool",
@@ -538,7 +529,7 @@ mod tests {
 
     #[test]
     fn bash_renders_through_standard_path_no_box_borders() {
-        // Issue #39: Bash flows through the standard tool-call path  -
+        // Issue #39: Bash flows through the standard tool-call path -
         // no bordered card. Output should be a title row + body lines
         // prefixed with `  │  ` / `  └─ ` (DIM), like every other tool.
         let mut tc = test_tool_call("echo hi", "Bash", model::ToolCallStatus::Completed);

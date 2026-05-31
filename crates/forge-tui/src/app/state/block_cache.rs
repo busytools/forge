@@ -9,8 +9,7 @@ pub(crate) fn next_cache_access_tick() -> u64 {
 }
 
 /// How many previously-rendered widths to keep around alongside the
-/// live slot. With N=2, a block can cache 3 widths total. The bug
-/// this fixes (#125) is "resize forces a mass re-render"; on
+/// live slot. With N=2, a block can cache 3 widths total. On
 /// resize-back to a width still in the LRU, `get_for_width` hits and
 /// the caller skips the expensive `tc::render_body` work. Memory cost
 /// is bounded per block; the workspace render budget continues to

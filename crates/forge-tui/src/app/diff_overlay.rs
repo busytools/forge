@@ -22,6 +22,7 @@ use std::path::PathBuf;
 use std::sync::mpsc as std_mpsc;
 
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
+use forge_primitives::git_diff::RepoGate;
 use forge_workspace::env::git_diff::hunks::ScanOutcome;
 use forge_workspace::env::git_diff::hunks::{DiffLine, DiffLineKind, FileHunks};
 use tui_textarea::TextArea;
@@ -180,11 +181,10 @@ pub enum DefaultTarget {
     NotARepo,
     /// The Inspector scanner itself failed (subprocess crash,
     /// timeout, oversize output). Distinct from `NotARepo` because
-    /// the user IS in a repo; git just couldn't run. The snapshot
-    /// collapses to `in_repo = false` as a render failsafe but
-    /// `scanner_ok = false` signals the real story.
+    /// the user IS in a repo; git just couldn't run. The snapshot's
+    /// `repo_gate` is `RepoGate::ScannerFailed`.
     ScannerFailed,
-    /// Snapshot has `branch_ahead = Some(_)` (so the scanner sees
+    /// Snapshot has `branch_ahead` populated (so the scanner sees
     /// committed work) but the default branch itself couldn't be
     /// resolved - no `origin/HEAD`, no local `main`, no local
     /// `master`. Distinct from `Clean` because there ARE changes;
@@ -220,14 +220,12 @@ pub fn resolve_default_target(app: &App) -> DefaultTarget {
     let Some(snapshot) = app.active_session().and_then(|s| s.git_diff_snapshot.as_ref()) else {
         return DefaultTarget::NoSnapshot;
     };
-    // Inspector scanner crashed; distinct from "not a repo". Check
-    // before any layer match so the in_repo=false failsafe doesn't
-    // mask a real subprocess failure.
-    if !snapshot.scanner_ok {
-        return DefaultTarget::ScannerFailed;
-    }
-    if !snapshot.in_repo {
-        return DefaultTarget::NotARepo;
+    // Scanner crash and not-a-repo are distinct surfaces; map the gate
+    // before any layer check.
+    match snapshot.repo_gate {
+        RepoGate::ScannerFailed => return DefaultTarget::ScannerFailed,
+        RepoGate::NotARepo => return DefaultTarget::NotARepo,
+        RepoGate::InRepo => {}
     }
     // Layer 1 wins when both layers are populated: a dirty tree is
     // what the user clicks `🦉` to inspect, and `HEAD` covers the
@@ -2043,5 +2041,130 @@ mod tests {
 
         let resolved = resolve_active_diff_cwd(&app, "/tmp/project");
         assert_eq!(resolved, PathBuf::from("/tmp/project"));
+    }
+
+    // ---- resolve_default_target: one test per DefaultTarget arm ----
+
+    fn target_snapshot(
+        repo_gate: RepoGate,
+        worktree_populated: bool,
+        branch_ahead_populated: bool,
+        default_branch: Option<&str>,
+    ) -> forge_primitives::git_diff::GitDiffSnapshot {
+        use forge_primitives::git_diff::{GitBranchAhead, GitDiffStats, LayerState};
+        let worktree = if worktree_populated {
+            LayerState::Populated(GitDiffStats::default())
+        } else {
+            LayerState::Clean
+        };
+        let branch_ahead = if branch_ahead_populated {
+            LayerState::Populated(GitBranchAhead {
+                commit_count: 1,
+                stats: GitDiffStats::default(),
+            })
+        } else {
+            LayerState::Clean
+        };
+        forge_primitives::git_diff::GitDiffSnapshot {
+            branch: forge_primitives::git::GitBranch::default(),
+            default_branch: default_branch.map(str::to_owned),
+            repo_gate,
+            worktree,
+            branch_ahead,
+            pr: None,
+            closes: vec![],
+        }
+    }
+
+    fn app_with_target_snapshot(
+        snapshot: Option<forge_primitives::git_diff::GitDiffSnapshot>,
+    ) -> App {
+        let mut app = App::test_default();
+        let key = forge_workspace::SessionKey::from_session_id("diff-target-test");
+        let mut session = crate::app::session::UiSession::new(key.clone());
+        session.git_diff_snapshot = snapshot;
+        app.sessions.insert(key.clone(), session);
+        app.active_session_key = Some(key);
+        app
+    }
+
+    #[test]
+    fn resolve_default_target_no_snapshot_when_unscanned() {
+        let app = app_with_target_snapshot(None);
+        assert_eq!(resolve_default_target(&app), DefaultTarget::NoSnapshot);
+    }
+
+    #[test]
+    fn resolve_default_target_not_a_repo() {
+        let app =
+            app_with_target_snapshot(Some(target_snapshot(RepoGate::NotARepo, false, false, None)));
+        assert_eq!(resolve_default_target(&app), DefaultTarget::NotARepo);
+    }
+
+    #[test]
+    fn resolve_default_target_scanner_failed() {
+        let app = app_with_target_snapshot(Some(target_snapshot(
+            RepoGate::ScannerFailed,
+            false,
+            false,
+            None,
+        )));
+        assert_eq!(resolve_default_target(&app), DefaultTarget::ScannerFailed);
+    }
+
+    #[test]
+    fn resolve_default_target_dirty_worktree_diffs_head() {
+        let app = app_with_target_snapshot(Some(target_snapshot(
+            RepoGate::InRepo,
+            true,
+            false,
+            Some("main"),
+        )));
+        assert_eq!(resolve_default_target(&app), DefaultTarget::Ref("HEAD".to_owned()));
+    }
+
+    #[test]
+    fn resolve_default_target_worktree_wins_over_branch_ahead() {
+        // Layer 1 precedence: a dirty tree resolves to HEAD even when
+        // the branch is also ahead of its default.
+        let app = app_with_target_snapshot(Some(target_snapshot(
+            RepoGate::InRepo,
+            true,
+            true,
+            Some("main"),
+        )));
+        assert_eq!(resolve_default_target(&app), DefaultTarget::Ref("HEAD".to_owned()));
+    }
+
+    #[test]
+    fn resolve_default_target_branch_ahead_diffs_default() {
+        let app = app_with_target_snapshot(Some(target_snapshot(
+            RepoGate::InRepo,
+            false,
+            true,
+            Some("main"),
+        )));
+        assert_eq!(resolve_default_target(&app), DefaultTarget::Ref("main".to_owned()));
+    }
+
+    #[test]
+    fn resolve_default_target_branch_ahead_without_default_is_nodefault() {
+        let app =
+            app_with_target_snapshot(Some(target_snapshot(RepoGate::InRepo, false, true, None)));
+        assert_eq!(resolve_default_target(&app), DefaultTarget::NoDefault);
+    }
+
+    #[test]
+    fn resolve_default_target_clean_tree_surfaces_default_branch() {
+        let app = app_with_target_snapshot(Some(target_snapshot(
+            RepoGate::InRepo,
+            false,
+            false,
+            Some("main"),
+        )));
+        assert_eq!(
+            resolve_default_target(&app),
+            DefaultTarget::Clean { default_branch: Some("main".to_owned()) }
+        );
     }
 }

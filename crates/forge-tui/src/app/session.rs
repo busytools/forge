@@ -283,7 +283,7 @@ pub struct UiSession {
     /// surface (#273). Click `[▶ expand]` toggles the entry.
     pub stop_hook_summary_expanded: std::collections::HashMap<usize, bool>,
 
-    /// #273 Task 8: in-flight Monitor entries surfaced as the
+    /// In-flight Monitor entries surfaced as the
     /// Inspector MONITORS section + the chat one-liner notices.
     /// Populated when a `Monitor` tool_use enters the assistant
     /// stream; mutated on terminal lifecycle events. The MONITORS
@@ -293,7 +293,7 @@ pub struct UiSession {
     /// `MonitorEntry::OUTPUT_TAIL_MAX` per entry.
     pub monitors: Vec<MonitorEntry>,
 
-    /// #273 Task 9: in-flight Workflow entries surfaced as the
+    /// In-flight Workflow entries surfaced as the
     /// Inspector WORKFLOWS section + the chat one-liner notice.
     /// Populated when a `Workflow` tool_use enters the assistant
     /// stream; per-phase state mutated from each `task_progress`
@@ -467,7 +467,7 @@ impl Default for UiSession {
             pending_paste_text: String::default(),
             pending_paste_session: Option::default(),
             active_paste_session: Option::default(),
-            next_paste_session_id: 1, // Match the legacy App-level seed.
+            next_paste_session_id: 1,
             pending_images: Vec::default(),
             mention: Option::default(),
             slash: Option::default(),

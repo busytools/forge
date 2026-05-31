@@ -2,7 +2,7 @@
 //! the latest published version on npm.
 //!
 //! The local probe shells out via [`forge_sdk::transport::process::query_cli_version`]
-//! and normalises the result to a bare `MAJOR.MINOR.PATCH` token  -
+//! and normalises the result to a bare `MAJOR.MINOR.PATCH` token -
 //! `claude --version` prints lines like `2.1.116 (anthropic)` or
 //! `claude 2.1.116` depending on the build channel, so callers want
 //! the version token alone for display.
@@ -196,7 +196,7 @@ fn parse_semver_triple(s: &str) -> Option<(u32, u32, u32)> {
     let mut parts = s.split('.');
     let major: u32 = parts.next()?.parse().ok()?;
     let minor: u32 = parts.next()?.parse().ok()?;
-    // The patch component may carry a `-pre.1` / `+build` suffix  -
+    // The patch component may carry a `-pre.1` / `+build` suffix -
     // strip everything from the first non-digit char.
     let patch_token = parts.next()?;
     let digits: String = patch_token.chars().take_while(char::is_ascii_digit).collect();

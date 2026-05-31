@@ -102,13 +102,13 @@ fn handle_stop_hook_summary(
 /// Idempotent - same state in re-applies as a no-op.
 ///
 /// Converts the wire-side `forge_primitives::FastModeState` to the
-/// App-side `model::FastModeState`. Both enums share the same
-/// variant set; the conversion is a 1:1 match.
+/// App-side `model::FastModeState`; an unrecognised wire state
+/// collapses to `Off` (no fast-mode badge).
 fn apply_fast_mode_state(app: &mut App, wire_state: forge_primitives::FastModeState) {
     use crate::agent::model::FastModeState as Model;
     use forge_primitives::FastModeState as Wire;
     let model_state = match wire_state {
-        Wire::Off => Model::Off,
+        Wire::Off | Wire::Unknown => Model::Off,
         Wire::Cooldown => Model::Cooldown,
         Wire::On => Model::On,
     };
@@ -291,7 +291,7 @@ fn handle_user(app: &mut App, msg: Message) {
     let Message::User { message, parent_tool_use_id, tool_use_result, .. } = msg else {
         return;
     };
-    // #275 Bug 1: a genuine new user turn invalidates the previous
+    // a genuine new user turn invalidates the previous
     // turn's thinking-token tally. Without this clear, a multi-tool-call
     // turn that ends without a `Result` (in-flight when the next user
     // turn lands) leaves `latest_thinking_tokens` holding the prior
@@ -371,7 +371,7 @@ fn push_peer_envelope_user_turn_if_present(
         // [assistant placeholder that will fill in].
         let placeholder_idx = app.active_turn_assistant_message_idx();
         match placeholder_idx {
-            Some(idx) if idx <= app.messages().len() => {
+            Some(idx) if idx < app.messages().len() => {
                 app.insert_message_tracked(idx, msg);
                 // Re-bind the active turn pointer: the placeholder is
                 // now one slot further down because we inserted before
@@ -1025,11 +1025,11 @@ fn handle_task_started(app: &mut App, msg: Message) {
             // patch lands.
             ts.alive_task_ids.insert(task_id_owned);
         });
-        // #273 Task 8: stamp the wire-level task_id on the matching
+        // stamp the wire-level task_id on the matching
         // MonitorEntry so subsequent `task_notification` / `task_updated`
         // events (keyed by task_id) can route to the right row.
         app.stamp_monitor_task_id(id, task_id.clone());
-        // #273 Task 9: same shape for WorkflowEntry - both surfaces
+        // same shape for WorkflowEntry - both surfaces
         // share the task_id↔tool_use_id routing key.
         app.stamp_workflow_task_id(id, task_id);
     }
@@ -1043,7 +1043,7 @@ fn handle_task_progress(app: &mut App, msg: Message) {
     if !id.is_empty() {
         apply_tool_progress_update(app, id, "Task");
     }
-    // #273 Task 9: Workflow's per-event state arrives ridden in
+    // Workflow's per-event state arrives ridden in
     // `workflow_progress` on the same system/task_progress envelope.
     // Drop into the matching WorkflowEntry's per-phase tree; the
     // all-completed clear fires when the final `state: done`
@@ -1051,7 +1051,7 @@ fn handle_task_progress(app: &mut App, msg: Message) {
     if !workflow_progress.is_empty() && !task_id.is_empty() {
         app.apply_workflow_progress_by_task_id(&task_id, &workflow_progress);
     }
-    // #275 Task 4: refresh the matching Monitor's output_tail from
+    // refresh the matching Monitor's output_tail from
     // disk on each progress event so the file's growth is reflected
     // in the Inspector without waiting for the next task_notification.
     // No-op when the task isn't a Monitor or its output_file isn't
@@ -1089,7 +1089,7 @@ fn handle_task_updated(app: &mut App, msg: Message) {
     };
     let is_terminal = matches!(wire_status, "completed" | "failed" | "killed" | "stopped");
 
-    // #275 Bug 3: Monitor + Workflow status transitions are keyed
+    // Monitor + Workflow status transitions are keyed
     // by `task_id` directly (not `tool_use_id`), so they run
     // BEFORE the `task_tool_use_ids` lookup. The lookup is gated
     // on TurnState, which `default()`-resets at every turn
@@ -1114,7 +1114,7 @@ fn handle_task_updated(app: &mut App, msg: Message) {
         if let Some(status) = monitor_status {
             app.set_monitor_status_by_task_id(&task_id, status);
         }
-        // #273 Task 9: same shape for WorkflowEntry - any terminal
+        // same shape for WorkflowEntry - any terminal
         // status (completed | failed | killed | stopped) collapses
         // the workflow row to its summarised one-liner. Idempotent
         // when the entry is already Completed.
@@ -1174,7 +1174,7 @@ fn handle_task_notification(app: &mut App, msg: Message) {
     if !id.is_empty() {
         apply_tool_summary_update(app, id, &summary);
     }
-    // #275 Task 4: stamp the `output_file` path on the matching
+    // stamp the `output_file` path on the matching
     // MonitorEntry (idempotent) and refresh the tail from disk.
     // The wire carries `output_file` because the CLI's local-bash
     // Monitor flavour streams the watched command's stdout to
@@ -1186,7 +1186,7 @@ fn handle_task_notification(app: &mut App, msg: Message) {
         app.set_monitor_output_file_by_task_id(&task_id, std::path::PathBuf::from(&output_file));
         app.refresh_monitor_output_tail_from_file(&task_id);
     }
-    // #277 Bug 5a: wire ordering is
+    // The wire ordering is
     // `task_updated terminal -> task_notification with output_file`.
     // The status flip lands first (transitioning the MonitorEntry
     // out of Running); without deferring the auto-clear, the
@@ -1194,8 +1194,7 @@ fn handle_task_notification(app: &mut App, msg: Message) {
     // and the subsequent task_notification would find no entry to
     // stamp the tail into. Auto-clear runs HERE so the tail has
     // already populated by the time the section drops out (or
-    // persists, for completed-with-tail Monitors per Bug 5b's
-    // render-gate relaxation).
+    // persists, for completed Monitors with a non-empty tail).
     app.clear_monitors_if_all_terminal();
 }
 
@@ -1638,7 +1637,7 @@ mod queued_command_tests {
 
 #[cfg(test)]
 mod task_updated_section_routing_tests {
-    //! #275 Bug 3: Monitor + Workflow status transitions in
+    //! Monitor + Workflow status transitions in
     //! `handle_task_updated` run BEFORE the `task_tool_use_ids`
     //! lookup so they survive the turn-finalisation reset that
     //! drops the mapping. Without this, Monitor's terminal
@@ -1683,7 +1682,7 @@ mod task_updated_section_routing_tests {
         // `task_tool_use_ids` lookup dropped the transition. After
         // the fix the section row flips to Completed.
         //
-        // #277 Bug 5a contract: the entry STAYS in the list after
+        // the entry STAYS in the list after
         // task_updated; auto-clear is deferred to
         // `handle_task_notification` so the tail can populate first.
         let mut app = App::test_default();
@@ -1700,7 +1699,7 @@ mod task_updated_section_routing_tests {
 
     #[test]
     fn monitor_killed_status_maps_to_stopped() {
-        // #277 Bug 5a: status transitions but auto-clear waits for
+        // status transitions but auto-clear waits for
         // task_notification. Status check pins the mapping
         // (killed/stopped wire string -> Stopped MonitorStatus).
         let mut app = App::test_default();
@@ -1773,7 +1772,7 @@ mod task_updated_section_routing_tests {
 
 #[cfg(test)]
 mod monitor_output_file_wiring_tests {
-    //! #275 Task 4: `handle_task_notification` reads the
+    //! `handle_task_notification` reads the
     //! `output_file` from disk and replaces the MonitorEntry's
     //! `output_tail` with the last 12 lines. `handle_task_progress`
     //! re-reads on each event so the tail grows with the running
@@ -1852,8 +1851,7 @@ mod monitor_output_file_wiring_tests {
     #[test]
     fn empty_output_file_path_falls_back_to_summary_only_behaviour() {
         // Wire field absent (empty string): no file read, no panic,
-        // no path stamp. The pre-#275-Task-4 behaviour where the
-        // summary line is the only tail signal is preserved.
+        // no path stamp - the summary line is the only tail signal.
         let mut app = App::test_default();
         push_monitor(&mut app, "task_no_file");
         handle_task_notification(&mut app, notification("task_no_file", "", "Monitor X"));
@@ -1927,7 +1925,7 @@ mod monitor_output_file_wiring_tests {
 
     #[test]
     fn bug_5a_wire_sequence_populates_tail_before_section_drains() {
-        // #277 Bug 5a: full end-to-end wire sequence. The actual
+        // full end-to-end wire sequence. The actual
         // wire ordering is `task_updated terminal -> task_notification
         // with output_file`. Without Bug 5a, the status setter
         // would drain the monitors Vec at task_updated, leaving
@@ -2018,7 +2016,7 @@ mod monitor_output_file_wiring_tests {
 
 #[cfg(test)]
 mod thinking_tokens_clear_on_user_tests {
-    //! #275 Bug 1: a new genuine user turn must clear the
+    //! A new genuine user turn must clear the
     //! `latest_thinking_tokens` carry-over from the prior turn so the
     //! chip never reads stale 150 when the new turn opens with its
     //! reset cumulative 50.

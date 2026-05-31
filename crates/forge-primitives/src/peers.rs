@@ -10,7 +10,7 @@
 //!
 //! The rest of the peer wire-shape types (CorrelationId, InflightAsk,
 //! WrappedPrompt, PeerStatus, PeerLiveness, PeerFailureReason,
-//! WrappedKind) live in `forge-workspace::mcp::peers::types`  -
+//! WrappedKind) live in `forge-workspace::mcp::peers::types` -
 //! they're workspace-internal and don't need to be in primitives.
 
 use serde::{Deserialize, Serialize};

@@ -276,9 +276,8 @@ pub struct App {
     pub help_visible_count: usize,
     /// Receiver for `SessionUpdate`s emitted by the workspace. The
     /// main event loop reads from here and dispatches via
-    /// `events::apply_session_update`. Replaces the legacy
-    /// `event_tx`/`event_rx` `ClientEvent` channel - user actions
-    /// flow out via `workspace.dispatch(Command::...)`.
+    /// `events::apply_session_update`. User actions flow out via
+    /// `workspace.dispatch(Command::...)`.
     pub update_rx: mpsc::UnboundedReceiver<forge_workspace::SessionUpdate>,
     /// Sender shared with TUI-internal async tasks (plugin inventory,
     /// usage refresh, slash command executors) that need to emit
@@ -1627,19 +1626,19 @@ impl App {
             .unwrap_or(false)
     }
 
-    /// #273 Task 8: Active session's MONITOR entries (chat notice +
+    /// Active session's MONITOR entries (chat notice +
     /// Inspector MONITORS section both read this).
     pub fn monitors(&self) -> &[crate::app::state::types::MonitorEntry] {
         self.active_session().map_or(&[], |s| s.monitors.as_slice())
     }
 
-    /// #273 Task 8: Mutable accessor for the active session's
+    /// Mutable accessor for the active session's
     /// MONITORS list. Auto-creates the pre-Connect bucket if missing.
     pub(crate) fn monitors_mut(&mut self) -> &mut Vec<crate::app::state::types::MonitorEntry> {
         &mut self.active_bucket_mut().monitors
     }
 
-    /// #273 Task 8: Insert / update a `MonitorEntry` based on a fresh
+    /// Insert / update a `MonitorEntry` based on a fresh
     /// `Monitor` tool_use. Idempotent: a matching `tool_use_id`
     /// refreshes the existing entry's input fields without touching
     /// `status` or `output_tail`. Returns true when a new entry was
@@ -1652,7 +1651,7 @@ impl App {
         persistent: bool,
         timeout_ms: u64,
     ) -> bool {
-        // #277 Bug 3b: a fresh live Monitor tool_use is `Running`
+        // a fresh live Monitor tool_use is `Running`
         // until the wire emits a terminal `task_updated`. But during
         // `load_resume_history` replay the replay walker doesn't pipe
         // terminal `task_updated` events back into the status
@@ -1700,7 +1699,7 @@ impl App {
         true
     }
 
-    /// #273 Task 8: Stamp the `task_id` discovered from the Monitor's
+    /// Stamp the `task_id` discovered from the Monitor's
     /// `tool_use_result` (or from `TaskStarted` mapping). No-op when
     /// no matching entry exists or the entry already has a task_id.
     pub fn stamp_monitor_task_id(&mut self, tool_use_id: &str, task_id: String) {
@@ -1711,7 +1710,7 @@ impl App {
         }
     }
 
-    /// #273 Task 8: Transition the matching Monitor entry to a
+    /// Transition the matching Monitor entry to a
     /// terminal status. The all-completed predicate is no longer
     /// run here; #277 Bug 5a deferred that trigger to
     /// `handle_task_notification` so the
@@ -1732,7 +1731,7 @@ impl App {
         }
     }
 
-    /// #273 Task 8: Same as `set_monitor_status_by_tool_use_id` but
+    /// Same as `set_monitor_status_by_tool_use_id` but
     /// keyed by the wire `task_id`. Used by lifecycle event handlers
     /// that only carry the task_id (e.g. wire `TaskUpdated`). #277
     /// Bug 5a: auto-clear deferred (see the sibling helper above).
@@ -1748,7 +1747,7 @@ impl App {
         }
     }
 
-    /// #275 Task 4: Stamp the `output_file` path on the matching
+    /// Stamp the `output_file` path on the matching
     /// Monitor entry. The CLI carries this via
     /// `task_notification.output_file`. Idempotent: same path
     /// overwrites cleanly so repeated `task_notification` events
@@ -1761,7 +1760,7 @@ impl App {
         }
     }
 
-    /// #275 Task 4: REPLACE the matching Monitor's `output_tail`
+    /// REPLACE the matching Monitor's `output_tail`
     /// with the supplied lines (typically the most-recent N lines
     /// of its `output_file`). The file is authoritative - the
     /// renderer's tail must match the file, not accumulate stale
@@ -1774,7 +1773,7 @@ impl App {
         }
     }
 
-    /// #275 Task 4: read the matching Monitor's stored `output_file`
+    /// Read the matching Monitor's stored `output_file`
     /// and refresh its `output_tail` with the last
     /// `MonitorEntry::OUTPUT_TAIL_MAX` lines. Called on each
     /// `task_notification` / `task_progress` event for the monitor.
@@ -1802,15 +1801,13 @@ impl App {
         }
     }
 
-    /// #273 Task 8: Drain the MONITORS list once every entry has
-    /// transitioned out of `Running`. Matches the TODOs all-completed
-    /// auto-clear shape so the Inspector section drops out entirely.
-    /// #277 Bug 5a: now called explicitly from
+    /// Drain the MONITORS list once every entry has transitioned out of
+    /// `Running`. Matches the TODOs all-completed auto-clear shape so
+    /// the Inspector section drops out entirely. Called explicitly from
     /// `handle_task_notification` rather than implicitly from
     /// `set_monitor_status_by_task_id`, so the
     /// `task_updated terminal -> task_notification with output_file`
-    /// wire ordering can stamp the tail before the entry gets
-    /// drained.
+    /// wire ordering can stamp the tail before the entry gets drained.
     pub fn clear_monitors_if_all_terminal(&mut self) {
         let monitors = self.monitors_mut();
         if !monitors.is_empty() && monitors.iter().all(|m| !m.is_running()) {
@@ -1818,19 +1815,19 @@ impl App {
         }
     }
 
-    /// #273 Task 9: Active session's WORKFLOW entries.
+    /// Active session's WORKFLOW entries.
     pub fn workflows(&self) -> &[crate::app::state::types::WorkflowEntry] {
         self.active_session().map_or(&[], |s| s.workflows.as_slice())
     }
 
-    /// #273 Task 9: Mutable accessor for the active session's
+    /// Mutable accessor for the active session's
     /// WORKFLOWS list. Auto-creates the pre-Connect bucket if
     /// missing.
     pub(crate) fn workflows_mut(&mut self) -> &mut Vec<crate::app::state::types::WorkflowEntry> {
         &mut self.active_bucket_mut().workflows
     }
 
-    /// #273 Task 9: Insert / refresh a `WorkflowEntry` from a
+    /// Insert / refresh a `WorkflowEntry` from a
     /// `Workflow` tool_use's parsed input. Idempotent: a matching
     /// `tool_use_id` refreshes `meta_name` / `meta_description`
     /// without touching `phases` / `status`. Returns true on new
@@ -1860,7 +1857,7 @@ impl App {
         true
     }
 
-    /// #273 Task 9: Stamp `task_id` on a workflow entry (from
+    /// Stamp `task_id` on a workflow entry (from
     /// `TaskStarted`'s task_id ↔ tool_use_id mapping). No-op when
     /// no entry matches or the entry already has a task_id.
     pub fn stamp_workflow_task_id(&mut self, tool_use_id: &str, task_id: String) {
@@ -1871,7 +1868,7 @@ impl App {
         }
     }
 
-    /// #273 Task 9: Apply a `workflow_progress` snapshot to the
+    /// Apply a `workflow_progress` snapshot to the
     /// matching workflow (keyed by `task_id`). The wire snapshot is
     /// monotonic (start → progress → done), so the latest event
     /// authoritatively determines each phase's status.
@@ -1888,7 +1885,7 @@ impl App {
         self.clear_workflows_if_all_terminal();
     }
 
-    /// #273 Task 9: Transition a workflow into the terminal
+    /// Transition a workflow into the terminal
     /// `Completed` status (called from `TaskUpdated` terminal
     /// patch). Triggers the all-completed clear.
     pub fn set_workflow_completed_by_task_id(&mut self, task_id: &str) {
@@ -2644,6 +2641,14 @@ impl App {
         }
     }
 
+    pub(crate) fn shift_stop_hook_summary_for_insert(&mut self, idx: usize) {
+        if let Some(summary) = self.active_bucket_mut().last_stop_hook_summary.as_mut()
+            && idx <= summary.message_idx
+        {
+            summary.message_idx = summary.message_idx.saturating_add(1);
+        }
+    }
+
     pub(crate) fn shift_active_turn_assistant_for_remove(&mut self, idx: usize) {
         let Some(owner_idx) = self.active_turn_assistant_message_idx() else {
             return;
@@ -2654,6 +2659,38 @@ impl App {
             std::cmp::Ordering::Greater => Some(owner_idx),
         };
         self.set_active_turn_assistant_message_idx(next);
+    }
+
+    pub(crate) fn shift_stop_hook_summary_for_remove(&mut self, idx: usize) {
+        let Some(owner_idx) = self.last_stop_hook_summary().map(|s| s.message_idx) else {
+            return;
+        };
+        match idx.cmp(&owner_idx) {
+            std::cmp::Ordering::Less => {
+                if let Some(summary) = self.active_bucket_mut().last_stop_hook_summary.as_mut() {
+                    summary.message_idx = owner_idx.saturating_sub(1);
+                }
+            }
+            std::cmp::Ordering::Equal => self.set_last_stop_hook_summary(None),
+            std::cmp::Ordering::Greater => {}
+        }
+    }
+
+    pub(crate) fn remap_stop_hook_summary_after_message_drop(
+        &mut self,
+        old_to_new: &[Option<usize>],
+    ) {
+        let Some(old_idx) = self.last_stop_hook_summary().map(|s| s.message_idx) else {
+            return;
+        };
+        match old_to_new.get(old_idx).copied().flatten() {
+            Some(new_idx) => {
+                if let Some(summary) = self.active_bucket_mut().last_stop_hook_summary.as_mut() {
+                    summary.message_idx = new_idx;
+                }
+            }
+            None => self.set_last_stop_hook_summary(None),
+        }
     }
 
     pub fn active_autocomplete_kind(&self) -> Option<AutocompleteKind> {
@@ -2744,10 +2781,6 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    // =====
-    // TESTS: 28
-    // =====
-
     use super::*;
     use crate::app::dialog;
     use crate::app::slash::{SlashCandidate, SlashContext, SlashState};
@@ -2782,6 +2815,60 @@ mod tests {
         assert_eq!(app.active_session().and_then(|s| s.key.as_ref()), Some(&key));
         assert!(app.try_active_bucket_mut().is_some());
         assert!(app.session_mut(&key).is_some());
+    }
+
+    #[test]
+    fn peer_envelope_insert_shifts_stop_hook_summary_index() {
+        use crate::app::state::types::StopHookSummaryState;
+        use crate::app::{ChatMessage, MessageBlock, MessageRole, TextBlock};
+        let mut app = App::test_default();
+        let msg = |t: &str| {
+            ChatMessage::new(
+                MessageRole::User,
+                vec![MessageBlock::Text(TextBlock::from_complete(t))],
+                None,
+            )
+        };
+        let bound_idx = app.messages().len();
+        app.push_message_tracked(msg("bound"));
+        app.set_last_stop_hook_summary(Some(StopHookSummaryState {
+            message_idx: bound_idx,
+            actions: 1,
+            hooks: Vec::new(),
+        }));
+        // A peer envelope inserts before the summary's bound message; the
+        // chip's anchor index must follow it down.
+        app.insert_message_tracked(bound_idx, msg("peer"));
+        assert_eq!(app.last_stop_hook_summary().map(|s| s.message_idx), Some(bound_idx + 1));
+    }
+
+    #[test]
+    fn remove_shifts_then_clears_stop_hook_summary_index() {
+        use crate::app::state::types::StopHookSummaryState;
+        use crate::app::{ChatMessage, MessageBlock, MessageRole, TextBlock};
+        let mut app = App::test_default();
+        let msg = |t: &str| {
+            ChatMessage::new(
+                MessageRole::User,
+                vec![MessageBlock::Text(TextBlock::from_complete(t))],
+                None,
+            )
+        };
+        let base = app.messages().len();
+        app.push_message_tracked(msg("before"));
+        app.push_message_tracked(msg("bound"));
+        let bound_idx = base + 1;
+        app.set_last_stop_hook_summary(Some(StopHookSummaryState {
+            message_idx: bound_idx,
+            actions: 1,
+            hooks: Vec::new(),
+        }));
+        // Removing a message before the anchor decrements its index.
+        app.remove_message_tracked(base);
+        assert_eq!(app.last_stop_hook_summary().map(|s| s.message_idx), Some(bound_idx - 1));
+        // Removing the anchor itself clears the summary.
+        app.remove_message_tracked(bound_idx - 1);
+        assert!(app.last_stop_hook_summary().is_none());
     }
 
     /// Clicking a launchpad-auto_started project triggers the
@@ -4873,7 +4960,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------
-    // #277 Bug 3b: replay-orphan Monitor state.
+    // replay-orphan Monitor state.
     // -----------------------------------------------------------
 
     #[test]
@@ -4923,7 +5010,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------
-    // #277 Bug 5a: auto-clear race against task_notification.
+    // auto-clear race against task_notification.
     // -----------------------------------------------------------
 
     #[test]

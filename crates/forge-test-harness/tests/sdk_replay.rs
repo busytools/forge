@@ -1,5 +1,5 @@
 //! Replay every committed baseline through `decode_dispatch` and assert
-//! zero decode failures. Runs on every `cargo test` / `just check`  -
+//! zero decode failures. Runs on every `cargo test` / `just check` -
 //! no API cost.
 //!
 //! This is the "always-on" half of the conformance story:

@@ -122,11 +122,12 @@ pub(crate) fn convert_tool_call(tool_call: types::ToolCall) -> model::ToolCall {
 }
 
 pub(crate) fn convert_tool_call_update(update: types::ToolCallUpdate) -> model::ToolCallUpdate {
-    let update_meta = update.fields.meta.clone();
-    let mut out = model::ToolCallUpdate::new(
-        update.tool_call_id,
-        convert_tool_call_update_fields(update.fields),
-    );
+    // Exhaustive destructure (no `..`) so a new wire field fails the
+    // build until it's mapped: the render model and wire shape can't
+    // silently drift.
+    let types::ToolCallUpdate { tool_call_id, fields } = update;
+    let update_meta = fields.meta.clone();
+    let mut out = model::ToolCallUpdate::new(tool_call_id, convert_tool_call_update_fields(fields));
     if let Some(meta) = update_meta {
         out = out.meta(meta);
     }
@@ -136,34 +137,49 @@ pub(crate) fn convert_tool_call_update(update: types::ToolCallUpdate) -> model::
 pub(super) fn convert_tool_call_update_fields(
     fields: types::ToolCallUpdateFields,
 ) -> model::ToolCallUpdateFields {
+    // Exhaustive destructure (no `..`) so a new wire field fails the
+    // build until it's mapped. `meta` is lifted onto the model's
+    // ToolCallUpdate by convert_tool_call_update, not carried here.
+    let types::ToolCallUpdateFields {
+        title,
+        kind,
+        status,
+        content,
+        raw_input,
+        raw_output,
+        output_metadata,
+        task_metadata,
+        locations,
+        meta: _,
+    } = fields;
     let mut out = model::ToolCallUpdateFields::new();
 
-    if let Some(title) = fields.title {
+    if let Some(title) = title {
         out = out.title(title);
     }
-    if let Some(kind) = fields.kind {
+    if let Some(kind) = kind {
         out = out.kind(kind);
     }
-    if let Some(status) = fields.status {
+    if let Some(status) = status {
         out = out.status(status);
     }
-    if let Some(content) = fields.content {
+    if let Some(content) = content {
         out = out
             .content(content.into_iter().filter_map(convert_tool_call_content).collect::<Vec<_>>());
     }
-    if let Some(raw_input) = fields.raw_input {
+    if let Some(raw_input) = raw_input {
         out = out.raw_input(raw_input);
     }
-    if let Some(raw_output) = fields.raw_output {
+    if let Some(raw_output) = raw_output {
         out = out.raw_output(serde_json::Value::String(raw_output));
     }
-    if let Some(output_metadata) = fields.output_metadata {
+    if let Some(output_metadata) = output_metadata {
         out = out.output_metadata(output_metadata);
     }
-    if let Some(task_metadata) = fields.task_metadata {
+    if let Some(task_metadata) = task_metadata {
         out = out.task_metadata(task_metadata);
     }
-    if let Some(locations) = fields.locations {
+    if let Some(locations) = locations {
         out = out.locations(locations);
     }
 

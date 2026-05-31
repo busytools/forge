@@ -117,7 +117,16 @@ impl SessionTask {
             && !cwd.is_empty()
             && let Some(workspace) = self.workspace.upgrade()
         {
-            workspace.record_connected_session(cwd, session_id, None);
+            // Skip the catalog mirror for workers: they're tracked via
+            // live_workers and their JSONL carries the forge:worker tag,
+            // but a tag-less mirror here lets a just-connected worker win
+            // resolve_lead_session's untagged-latest fallback during the
+            // boot window before that tag lands. The WorkerEntry is keyed
+            // by the synth/spawn key at this point (pre-rekey).
+            let lookup_key = self.spawn_key.clone().unwrap_or_else(|| self.key.clone());
+            if workspace.worker_lookup_for_session(&lookup_key).is_none() {
+                workspace.record_connected_session(cwd, session_id, None);
+            }
         }
 
         match event {
@@ -153,7 +162,7 @@ impl SessionTask {
                 // and subsequent Connecteds (the /new / login /
                 // logout flow that enters via `connected_once`).
                 // Each Connected carries a fresh session_id and the
-                // worker's tag must travel to the new JSONL  -
+                // worker's tag must travel to the new JSONL -
                 // without re-tagging on /new, the resume scan
                 // (#157/#164) finds the orphaned pre-/new JSONL and
                 // resumes that instead of the active post-/new
@@ -376,7 +385,7 @@ impl SessionTask {
                         tool_call_id,
                     );
                 } else {
-                    // TUI channel closed between insert and send  -
+                    // TUI channel closed between insert and send -
                     // resolve the orphan with Cancelled so the SDK
                     // callback unblocks.
                     if let Some(slot) =
@@ -944,7 +953,7 @@ pub(crate) fn execute_command_via_handle(
                 warn_no_session(key, "SetMode");
                 return Ok(());
             };
-            handle.set_mode(sid.to_owned(), mode.as_wire().to_owned())
+            handle.set_mode(sid.to_owned(), mode)
         }
         Command::SetModel { key: _, model } => {
             let Some(sid) = session_id else {
@@ -1470,7 +1479,7 @@ mod tests {
         match cmd {
             forge_primitives::AgentCommand::SetMode { session_id, mode } => {
                 assert_eq!(session_id.as_str(), "sess-1");
-                assert_eq!(mode, "plan");
+                assert_eq!(mode, PermissionMode::Plan);
             }
             other => panic!("expected SetMode, got {other:?}"),
         }

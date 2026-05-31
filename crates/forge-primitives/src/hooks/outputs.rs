@@ -1,6 +1,6 @@
 //! `hookSpecificOutput` typed wrappers - one per event kind.
 //!
-//! Mirrors  Each event kind
+//! Each event kind
 //! has its own `*HookSpecificOutput` `TypedDict` upstream with a fixed
 //! `hookEventName` discriminator plus event-specific optional fields. The
 //! Rust structs carry a zero-sized `event_name` field that serde always

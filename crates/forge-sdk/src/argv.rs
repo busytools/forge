@@ -24,8 +24,8 @@ pub fn build_args(options: &Options) -> Result<Vec<String>, Error> {
     args.push("stream-json".into());
     args.push("--verbose".into());
 
-    // system_prompt - the CLI always emits one of four flag forms
-    //, including an explicit
+    // system_prompt - the CLI always emits one of four flag forms,
+    // including an explicit
     // `--system-prompt ""` when the option is unset so the CLI
     // doesn't fall back to its builtin prompt. Match byte-for-byte.
     match options.system_prompt.as_ref() {

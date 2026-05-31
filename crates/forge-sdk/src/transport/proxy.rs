@@ -56,7 +56,7 @@ use parking_lot::Mutex;
 use serde_json::Value;
 use tokio::sync::oneshot;
 use tokio_rustls::TlsConnector;
-use tracing::{debug, info, warn};
+use tracing::{Instrument, debug, info, warn};
 
 use crate::Error;
 
@@ -157,11 +157,14 @@ pub async fn start() -> Result<ProxyHandle, Error> {
                 let _ = shutdown_rx.await;
             })
             .build();
-        tokio::spawn(async move {
-            if let Err(e) = proxy.start().await {
-                warn!("wire-rewriter proxy exited with error: {e}");
+        tokio::spawn(
+            async move {
+                if let Err(e) = proxy.start().await {
+                    warn!("wire-rewriter proxy exited with error: {e}");
+                }
             }
-        });
+            .instrument(tracing::info_span!("forge_sdk::wire_proxy")),
+        );
     } else {
         let https = HttpsConnectorBuilder::new()
             .with_tls_config((*tls_config).clone())
@@ -181,11 +184,14 @@ pub async fn start() -> Result<ProxyHandle, Error> {
                 let _ = shutdown_rx.await;
             })
             .build();
-        tokio::spawn(async move {
-            if let Err(e) = proxy.start().await {
-                warn!("wire-rewriter proxy exited with error: {e}");
+        tokio::spawn(
+            async move {
+                if let Err(e) = proxy.start().await {
+                    warn!("wire-rewriter proxy exited with error: {e}");
+                }
             }
-        });
+            .instrument(tracing::info_span!("forge_sdk::wire_proxy")),
+        );
     }
 
     info!(

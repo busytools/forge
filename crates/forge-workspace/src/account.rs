@@ -71,11 +71,6 @@ pub enum UsageFetchStatus {
 /// computation, while `Loading` and `Refreshing` keep the launchpad
 /// dim. A bailed account's `usage` is `None` by construction (the
 /// loader clears it on the transition).
-///
-/// Replaces the PR #238 `consecutive_unauthorized` counter: any
-/// auth-recovery 401 series that previously incremented the counter
-/// now drives the loading task into `Bailed` directly, with the
-/// same cache-clear side-effect.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoadingState {
     /// First-pass keychain fetch + probe in progress. The launchpad
@@ -157,7 +152,7 @@ pub(crate) struct AccountStateMap {
     /// Global round-robin cursor for `pick_for_project`. Each pick
     /// in the usable tier reads `cursor % usable_len`, then bumps
     /// the cursor. Shared across all projects so rotation spans the
-    /// whole spawn stream, not just per-project. In-memory only  -
+    /// whole spawn stream, not just per-project. In-memory only -
     /// resets to 0 on forge restart.
     rr_cursor: std::sync::atomic::AtomicUsize,
 }
@@ -238,6 +233,20 @@ impl AccountStateMap {
     /// hands the dir to `Agent::spawn` as `CLAUDE_CONFIG_DIR`).
     pub fn config_dir(&self, key: &AccountKey) -> Option<&PathBuf> {
         self.by_key.get(key).map(|s| &s.config_dir)
+    }
+
+    /// Distinct on-disk config_dirs across every known account. Used by
+    /// the team-resume scan, which must look under every account a
+    /// worker could have been spawned under (the assignment-plan
+    /// rotation distributes workers across accounts).
+    pub fn config_dirs(&self) -> Vec<PathBuf> {
+        let mut dirs: Vec<PathBuf> = Vec::new();
+        for state in self.by_key.values() {
+            if !dirs.contains(&state.config_dir) {
+                dirs.push(state.config_dir.clone());
+            }
+        }
+        dirs
     }
 
     /// Whether sessions for `key` should spawn with the rewriter
@@ -386,10 +395,6 @@ impl AccountStateMap {
     /// the assignment-plan compute step also fires off this signal.
     /// Empty maps return `true` (vacuous; no accounts means no work
     /// to wait on - relevant in the testing-stub path).
-    // Caller lands in Section 2.4 (workspace.rs::recompute_plan_if_ready)
-    // of #246. Temporary `dead_code` allow until that commit lands within
-    // the same PR.
-    #[allow(dead_code)]
     pub fn all_loaded(&self) -> bool {
         self.by_key
             .values()
@@ -401,10 +406,6 @@ impl AccountStateMap {
     /// (defensive - the launchpad's render path may briefly hold an
     /// account key that hasn't yet been registered in the map during
     /// reload).
-    // Caller lands in Section 1.4 (account_loader.rs) + 3.1 (launchpad)
-    // of #246. Temporary `dead_code` allow until those commits land
-    // within the same PR.
-    #[allow(dead_code)]
     pub fn loading_state(&self, key: &AccountKey) -> LoadingState {
         self.by_key.get(key).map_or(LoadingState::Loading, |s| s.loading)
     }

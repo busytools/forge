@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::ids::{SessionId, ToolUseId};
 use crate::image::ImageAttachment;
-use crate::{PermissionOutcome, QuestionOutcome};
+use crate::{PermissionMode, PermissionOutcome, QuestionOutcome};
 
 /// UI → agent channel envelope. Each variant maps to one inherent
 /// method on `forge_agent::ForgeSdkBridge`. Named `AgentCommand`
@@ -67,7 +67,7 @@ pub enum AgentCommand {
     // --- Controls ---
     SetMode {
         session_id: SessionId,
-        mode: String,
+        mode: PermissionMode,
     },
     SetModel {
         session_id: SessionId,
