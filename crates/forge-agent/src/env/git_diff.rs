@@ -64,6 +64,18 @@ const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 /// neighbours on tall trees.
 const TOP_FILE_COUNT: usize = 7;
 
+/// Classify `git rev-parse --abbrev-ref HEAD` output into either the
+/// branch string to proceed with, or the terminal `repo_gate`. Empty
+/// stdout is a clean "not a repo" signal (git ran and reported it);
+/// Failed / Oversize mean the scan subprocess itself crashed.
+fn classify_rev_parse(output: GitOutput) -> Result<String, RepoGate> {
+    match output {
+        GitOutput::Ok(s) => Ok(s.trim().to_owned()),
+        GitOutput::Empty => Err(RepoGate::NotARepo),
+        GitOutput::Failed | GitOutput::Oversize => Err(RepoGate::ScannerFailed),
+    }
+}
+
 /// Run the full scan sequence against `cwd` and return a snapshot.
 /// Always succeeds - every failure path collapses to a non-InRepo
 /// `repo_gate` and a WARN log naming the step that failed. Callers
@@ -76,40 +88,25 @@ const TOP_FILE_COUNT: usize = 7;
 /// `pr` / `closes` carry over without re-running `gh`. Pass `None`
 /// for cold starts.
 pub async fn scan(cwd: &Path, prev: Option<&GitDiffSnapshot>) -> GitDiffSnapshot {
-    let raw_branch = match run_git(cwd, &["rev-parse", "--abbrev-ref", "HEAD"]).await {
-        GitOutput::Ok(s) => s.trim().to_owned(),
-        GitOutput::Empty => {
-            // Empty output from rev-parse means "cwd genuinely isn't
-            // a git repo" (NotARepo, distinct from ScannerFailed - git
-            // ran fine and reported the state correctly). Layer states
-            // stay Clean: there's nothing to scan.
-            return GitDiffSnapshot {
-                branch: GitBranch::NoRepo,
-                default_branch: None,
-                repo_gate: RepoGate::NotARepo,
-                worktree: LayerState::Clean,
-                branch_ahead: LayerState::Clean,
-                pr: None,
-                closes: Vec::new(),
-            };
-        }
-        GitOutput::Failed | GitOutput::Oversize => {
-            // Subprocess crash, timeout, or unreadable output ->
-            // ScannerFailed so the renderer surfaces "scan failed"
-            // rather than "not a git repository." Layer states stay
-            // Clean: the ScannerFailed banner subsumes the per-layer
-            // signal in this collapsed state.
-            return GitDiffSnapshot {
-                branch: GitBranch::NoRepo,
-                default_branch: None,
-                repo_gate: RepoGate::ScannerFailed,
-                worktree: LayerState::Clean,
-                branch_ahead: LayerState::Clean,
-                pr: None,
-                closes: Vec::new(),
-            };
-        }
-    };
+    let raw_branch =
+        match classify_rev_parse(run_git(cwd, &["rev-parse", "--abbrev-ref", "HEAD"]).await) {
+            Ok(branch) => branch,
+            // Both the not-a-repo and scanner-crash cases collapse to the
+            // same all-Clean snapshot, differing only by `repo_gate` so the
+            // renderer can tell "not a git repository" from "scanner
+            // unhealthy."
+            Err(repo_gate) => {
+                return GitDiffSnapshot {
+                    branch: GitBranch::NoRepo,
+                    default_branch: None,
+                    repo_gate,
+                    worktree: LayerState::Clean,
+                    branch_ahead: LayerState::Clean,
+                    pr: None,
+                    closes: Vec::new(),
+                };
+            }
+        };
     let detached = raw_branch == "HEAD";
     let branch = if detached {
         GitBranch::Detached
@@ -1059,5 +1056,16 @@ mod tests {
         let snap = scan(dir.path(), Some(&prev)).await;
         assert_eq!(snap.pr, None);
         assert!(snap.closes.is_empty());
+    }
+
+    #[test]
+    fn classify_rev_parse_maps_output_to_repo_gate() {
+        // Ok(stdout) trims to the branch; Empty is a clean non-repo
+        // signal; Failed / Oversize are scanner crashes that route to
+        // the ScannerFailed gate (distinct from NotARepo).
+        assert_eq!(classify_rev_parse(GitOutput::Ok("  main\n".to_owned())), Ok("main".to_owned()));
+        assert_eq!(classify_rev_parse(GitOutput::Empty), Err(RepoGate::NotARepo));
+        assert_eq!(classify_rev_parse(GitOutput::Failed), Err(RepoGate::ScannerFailed));
+        assert_eq!(classify_rev_parse(GitOutput::Oversize), Err(RepoGate::ScannerFailed));
     }
 }
