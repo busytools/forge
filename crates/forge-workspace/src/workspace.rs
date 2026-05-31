@@ -6431,6 +6431,77 @@ config_dir = "~/.claude-subspace"
         dir
     }
 
+    /// Two org accounts in definition order (Alpha, Beta) and a
+    /// project with NO `accounts` allow-list, so the project pool IS
+    /// the org-ordered ready slice - the exact shape where HashMap
+    /// iteration order used to make the lead-account pick
+    /// non-deterministic across restarts.
+    fn make_workspace_dir_246_two_accounts() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("forge.toml"),
+            r#"
+[[orgs]]
+name = "Default"
+accounts = ["Alpha", "Beta"]
+
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+auto_start = true
+
+[[accounts]]
+display_name = "Alpha"
+config_dir = "~/.claude-alpha"
+
+[[accounts]]
+display_name = "Beta"
+config_dir = "~/.claude-beta"
+"#,
+        )
+        .expect("write forge.toml");
+        dir
+    }
+
+    #[tokio::test]
+    async fn recompute_plan_if_ready_binds_lead_in_account_definition_order() {
+        // Two ready accounts + an empty project allow-list: the pool is
+        // the org-ordered ready slice and the lone project's lead lands
+        // at pool[0]. The lead must bind to the first definition-order
+        // account (Alpha), not whatever HashMap iteration would surface
+        // - reverting `ordered_keys` to `by_key` makes this flaky.
+        let dir = make_workspace_dir_246_two_accounts();
+        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        {
+            let mut accounts = workspace.account_states().lock();
+            for name in ["Alpha", "Beta"] {
+                let snapshot = forge_primitives::usage::UsageSnapshot {
+                    source: forge_primitives::usage::UsageSourceKind::Oauth,
+                    fetched_at: std::time::SystemTime::UNIX_EPOCH,
+                    five_hour: None,
+                    seven_day: None,
+                    seven_day_opus: None,
+                    seven_day_sonnet: None,
+                    extra_usage: None,
+                };
+                accounts.set_usage(&AccountKey(name.to_owned()), snapshot);
+            }
+        }
+
+        workspace.recompute_plan_if_ready();
+        let plan = workspace.assignment_plan.lock();
+        let plan = plan.as_ref().expect("plan populates once all_loaded fires");
+        let project_key =
+            ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+                workspace.config.projects[0].path.to_string_lossy().as_ref(),
+            )));
+        assert_eq!(
+            plan.lookup(&project_key, &"lead".to_owned()).cloned(),
+            Some(AccountKey("Alpha".to_owned())),
+            "lead must bind to the first definition-order account, not a HashMap-order pick",
+        );
+    }
+
     #[tokio::test]
     async fn recompute_plan_if_ready_noop_while_loading() {
         let dir = make_workspace_dir_246();
