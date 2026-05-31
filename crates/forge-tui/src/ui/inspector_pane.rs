@@ -2939,4 +2939,47 @@ mod tests {
         );
         assert!(line_text(&lines[first_idx + 1]).is_empty(), "Bug 6: blank between entries");
     }
+
+    // ---------------------------------------------------------
+    // GIT section repo_gate render: NotARepo hides the section,
+    // ScannerFailed surfaces the unhealthy banner.
+    // ---------------------------------------------------------
+
+    fn app_with_git_gate(repo_gate: RepoGate) -> App {
+        let mut app = App::test_default();
+        let key = forge_workspace::SessionKey::from_session_id("inspector-git-test");
+        let mut session = crate::app::session::UiSession::new(key.clone());
+        session.git_diff_snapshot = Some(forge_primitives::git_diff::GitDiffSnapshot {
+            branch: forge_primitives::git::GitBranch::NoRepo,
+            default_branch: None,
+            repo_gate,
+            worktree: forge_primitives::git_diff::LayerState::Clean,
+            branch_ahead: forge_primitives::git_diff::LayerState::Clean,
+            pr: None,
+            closes: vec![],
+        });
+        app.sessions.insert(key.clone(), session);
+        app.active_session_key = Some(key);
+        app
+    }
+
+    #[test]
+    fn git_section_hidden_when_not_a_repo() {
+        let app = app_with_git_gate(RepoGate::NotARepo);
+        let mut lines = Vec::new();
+        append_git_section(&mut lines, &app, 60);
+        assert!(lines.is_empty(), "a clean non-repo cwd suppresses the GIT section");
+    }
+
+    #[test]
+    fn git_section_surfaces_unhealthy_banner_on_scanner_failure() {
+        let app = app_with_git_gate(RepoGate::ScannerFailed);
+        let mut lines = Vec::new();
+        append_git_section(&mut lines, &app, 60);
+        let joined = lines.iter().map(|l| line_text(l)).collect::<Vec<_>>().join("\n");
+        assert!(
+            joined.contains("git scanner unhealthy"),
+            "ScannerFailed must surface the unhealthy banner; got:\n{joined}"
+        );
+    }
 }
