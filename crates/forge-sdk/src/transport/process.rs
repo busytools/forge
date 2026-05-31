@@ -266,7 +266,10 @@ impl Subprocess {
             .ok_or_else(|| Error::Connection { reason: "stderr pipe missing".into() })?;
 
         let stderr_callback = options.stderr.clone();
-        let stderr_task = tokio::spawn(drain_stderr(stderr, stderr_callback));
+        let stderr_task = tokio::spawn(tracing::Instrument::instrument(
+            drain_stderr(stderr, stderr_callback),
+            tracing::info_span!("forge_sdk::stderr_reader"),
+        ));
 
         let buf_capacity = options.max_buffer_size.filter(|n| *n > 0);
         let (reader_tx, reader_rx) = mpsc::unbounded_channel();

@@ -2786,6 +2786,7 @@ impl Workspace {
         is_git_repo_at_spawn: bool,
         config_dir: &std::path::Path,
     ) {
+        use tracing::Instrument;
         let workspace = Arc::clone(self);
         let project_key = project_key.clone();
         let session_key = session_key.clone();
@@ -2796,6 +2797,11 @@ impl Workspace {
             is_git_repo_at_spawn,
         );
         let config_dir = config_dir.to_path_buf();
+        let span = tracing::info_span!(
+            "forge_workspace::worker_tag_write",
+            session_id = %session_key.as_str(),
+            label = %label,
+        );
         tokio::spawn(async move {
             let tag = forge_primitives::worker_tag(&label);
             let result = tag_session_with_retry(
@@ -2854,7 +2860,8 @@ impl Workspace {
                     workspace.release_session(&session_key);
                 }
             }
-        });
+        }
+        .instrument(span));
     }
 
     /// Opportunistically retry the JSONL tag-write for a worker whose
@@ -2910,6 +2917,7 @@ impl Workspace {
         is_git_repo_at_spawn: bool,
         config_dir: &std::path::Path,
     ) {
+        use tracing::Instrument;
         let workspace = Arc::clone(self);
         let project_key = project_key.clone();
         let session_key = session_key.clone();
@@ -2920,6 +2928,11 @@ impl Workspace {
             is_git_repo_at_spawn,
         );
         let config_dir = config_dir.to_path_buf();
+        let span = tracing::info_span!(
+            "forge_workspace::worker_tag_write",
+            session_id = %session_key.as_str(),
+            label = %label,
+        );
         tokio::spawn(async move {
             let tag = forge_primitives::worker_tag(&label);
             let result = tag_session_with_retry(
@@ -2967,7 +2980,8 @@ impl Workspace {
                     );
                 }
             }
-        });
+        }
+        .instrument(span));
     }
 
     // ---- Refresh helpers (workspace → agent) ----
