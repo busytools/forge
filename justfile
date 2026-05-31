@@ -121,7 +121,10 @@ release version:
     cargo update --workspace
     git add Cargo.toml Cargo.lock crates/*/Cargo.toml
     git commit -m "release v{{version}}"
-    git tag "v{{version}}"
+    # Annotated (`-m`) so it works under `tag.gpgSign = true`, which
+    # forces a signed tag - a bare `git tag <name>` errors with
+    # "no tag message?" when signing is on.
+    git tag -m "v{{version}}" "v{{version}}"
     @echo
     @echo "[OK] tagged v{{version}} locally. To publish:"
     @echo "     git push --follow-tags origin main"
