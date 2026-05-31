@@ -1,6 +1,6 @@
 //! Typed input payloads for each hook event.
 //!
-//! Mirrors  Every concrete
+//! Every concrete
 //! input flattens [`BaseHookInput`] so callbacks can access `session_id`,
 //! `transcript_path`, `cwd`, and (optionally) `permission_mode` without
 //! reaching back into [`super::HookContext`].

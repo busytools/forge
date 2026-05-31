@@ -377,7 +377,7 @@ impl std::fmt::Debug for Command {
 
 /// Update envelope: forge-workspace -> forge-tui.
 ///
-/// Permission/Question variants do NOT carry response oneshots  -
+/// Permission/Question variants do NOT carry response oneshots -
 /// responses flow back via `Command::Respond*`. The workspace stores
 /// the oneshot in `DomainSession.pending_interactions` when emitting
 /// these variants.

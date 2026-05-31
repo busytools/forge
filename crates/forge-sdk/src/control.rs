@@ -250,7 +250,7 @@ impl<'de> Deserialize<'de> for ControlRequestKind {
                 Ok(Self::HookCallback { callback_id, input, tool_use_id })
             }
             // Forward-compat catch-all. NOTE: when adding a new known
-            // `ControlRequestKind` variant, add a matching arm above  -
+            // `ControlRequestKind` variant, add a matching arm above -
             // a new variant without an arm here will silently land in
             // `Unknown` instead of being recognised.
             other => Ok(Self::Unknown { subtype: other.to_string(), raw }),
@@ -304,12 +304,12 @@ pub enum ControlResponseKind {
 /// `can_use_tool` response.
 ///
 /// Wraps the CLI's `PermissionResultAllow` / `PermissionResultDeny`.
-/// NOTE: wire keys are camelCase (`updatedInput`, `updatedPermissions`)  -
+/// NOTE: wire keys are camelCase (`updatedInput`, `updatedPermissions`) -
 /// do not rename to `snake_case`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "behavior", rename_all = "snake_case")]
 pub enum AllowBehavior {
-    /// Allow the call. `updated_input` is ALWAYS populated on the wire  -
+    /// Allow the call. `updated_input` is ALWAYS populated on the wire -
     /// when the callback had no override, caller must echo the original
     /// `input` into this field (the CLI always does).
     Allow {
@@ -327,8 +327,8 @@ pub enum AllowBehavior {
     Deny {
         /// Feedback forwarded to the model.
         message: String,
-        /// Interrupt flag. The CLI emits this only when truthy
-        ///; mirror that by skipping when
+        /// Interrupt flag. The CLI emits this only when truthy;
+        /// mirror that by skipping when
         /// `false`.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         interrupt: bool,

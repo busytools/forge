@@ -142,7 +142,7 @@ fn scroll_projects_pane(app: &mut App, lines: usize, up: bool) {
 
 /// True when the wheel event happened with the cursor inside the
 /// Inspector pane's scrollable body (NOT the pinned banner). Lookup
-/// is against the rect cached by the last inspector render  -
+/// is against the rect cached by the last inspector render -
 /// `Rect::default()` while no inspector render has happened yet,
 /// which collapses to `false` because zero-width rects don't
 /// contain any point.

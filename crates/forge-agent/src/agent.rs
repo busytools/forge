@@ -12,7 +12,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use forge_primitives::AgentCommand;
+use forge_primitives::{AgentCommand, PermissionMode};
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
 use tracing::Instrument;
@@ -164,7 +164,7 @@ impl AgentHandle {
         self.send(AgentCommand::Cancel { session_id: session_id.into() })
     }
 
-    pub fn set_mode(&self, session_id: String, mode: String) -> Result<(), AgentError> {
+    pub fn set_mode(&self, session_id: String, mode: PermissionMode) -> Result<(), AgentError> {
         self.send(AgentCommand::SetMode { session_id: session_id.into(), mode })
     }
 

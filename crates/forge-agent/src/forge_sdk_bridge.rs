@@ -32,7 +32,7 @@ use tracing::Instrument;
 
 use crate::client::{AgentEvent, SessionLaunchSettings};
 use crate::forge_sdk_worker;
-use forge_primitives::{PermissionOutcome, QuestionOutcome};
+use forge_primitives::{PermissionMode, PermissionOutcome, QuestionOutcome};
 
 /// Sentinel `config_dir` for `ForgeSdkBridge` test stubs that never
 /// exercise the path. Production code constructs the bridge with a
@@ -335,13 +335,12 @@ impl ForgeSdkBridge {
         })
     }
 
-    pub(crate) fn set_mode(&self, session_id: String, mode: String) -> anyhow::Result<()> {
+    pub(crate) fn set_mode(&self, session_id: String, mode: PermissionMode) -> anyhow::Result<()> {
         if !self.check_session_id(&session_id, "set_mode") {
             return Ok(());
         }
-        let parsed = forge_sdk_worker::parse_permission_mode(&mode)?;
         self.dispatch("set_mode", move |client| async move {
-            client.set_permission_mode(parsed).await?;
+            client.set_permission_mode(mode).await?;
             Ok(())
         })
     }

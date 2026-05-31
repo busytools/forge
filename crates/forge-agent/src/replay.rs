@@ -41,7 +41,7 @@ pub fn synthesize_replay_messages(messages: &[Value]) -> Vec<Message> {
         // Treat the inner `message` as Anthropic-API-shaped: the on-disk
         // JSONL nests the same `{id, role, model, content, …}` envelope
         // the live CLI emits, so deserialize-then-transform is the
-        // most direct path. Bail on any entry that fails to decode  -
+        // most direct path. Bail on any entry that fails to decode -
         // missing/malformed inner envelopes shouldn't crash a session
         // resume.
         let role = message_record.get("role").and_then(Value::as_str).unwrap_or(entry_type);

@@ -351,7 +351,7 @@ fn build_row_for_entry(entry: &ProcessEntry, wire_alive: &[&ToolCallInfo]) -> Pr
         !cmd.is_empty() && process_cmdline_matches_tool_input(&entry.command, cmd)
     });
     match matched {
-        // #273 Task 8: Monitor's authoritative surface is the
+        // Monitor's authoritative surface is the
         // dedicated MONITORS Inspector section. The PROCESSES row
         // no longer overlays the Monitor description on top of a
         // matching OS process - that produced double-surfaces (the
@@ -662,7 +662,7 @@ mod tests {
 
     #[test]
     fn rows_from_os_snapshot_falls_through_to_generic_when_wire_matches_monitor() {
-        // #273 Task 8: Monitor's authoritative surface moved to the
+        // Monitor's authoritative surface moved to the
         // dedicated MONITORS Inspector section. PROCESSES no longer
         // overlays Monitor descriptions on the matched OS row; the
         // row falls through to the generic-OS shape so the operator

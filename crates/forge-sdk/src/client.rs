@@ -77,7 +77,7 @@ struct ClientInner {
     /// the optional makes the test stubs and post-disconnect path
     /// total).
     claude_pid: Option<u32>,
-    /// Cached response from the `initialize` `control_request`  -
+    /// Cached response from the `initialize` `control_request` -
     /// populated during spawn and never mutated afterwards.
     initialization_result: Option<serde_json::Value>,
     /// Captured `system/init` payload (`model`, `tools`, `mcp_servers`,
@@ -253,7 +253,7 @@ impl Client {
                     return Err(Error::message_parse(format!("initialize failed: {err_msg}")));
                 }
                 "control_request" => {
-                    // Interleaved CLI → SDK request during init  -
+                    // Interleaved CLI → SDK request during init -
                     // most commonly an MCP `mcp_message` bootstrap.
                     // Dispatch synchronously through the dispatch
                     // handle (the reader task isn't running yet, so
@@ -287,7 +287,7 @@ impl Client {
                                 *current = id.to_string();
                             }
                         }
-                        // Drop `system/init` from the pre-init buffer  -
+                        // Drop `system/init` from the pre-init buffer -
                         // the CLI consumes it inside `query._fetch_init`
                         // and never surfaces it to callers; we mirror.
                         // Cache its `data` so `forge-agent` can read

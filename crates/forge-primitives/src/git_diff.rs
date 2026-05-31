@@ -44,6 +44,21 @@ impl<T> LayerState<T> {
     }
 }
 
+/// Three-state classification of the scan's repo gate. Replaces the
+/// earlier `in_repo` + `scanner_ok` bool pair so the illegal
+/// "in a repo but the scanner failed" combination is unrepresentable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RepoGate {
+    /// `git rev-parse` confirmed the cwd is inside a work tree.
+    InRepo,
+    /// `git rev-parse` reported the cwd is not a repo (empty output).
+    NotARepo,
+    /// The scan subprocess failed / timed out / exceeded the stdout cap
+    /// at the rev-parse gate. The renderer surfaces a "scanner
+    /// unhealthy" banner distinct from a legitimate non-repo cwd.
+    ScannerFailed,
+}
+
 /// Snapshot of one project's git state, suitable for rendering in
 /// the Inspector pane's GIT section. Branch info is folded in here
 /// so a single polled scan covers everything the renderer needs.
@@ -52,40 +67,12 @@ impl<T> LayerState<T> {
 /// topic branch with uncommitted edits surfaces both layers, while
 /// the lead on `main` with a clean tree surfaces neither.
 ///
-/// # Field invariants
-///
-/// Cross-field invariants the scanner enforces (and the renderer
-/// relies on). Use this as the contract when constructing a
-/// snapshot field-by-field in tests or future call sites; the type
-/// itself does not enforce them, the constructor in
-/// `forge_agent::env::git_diff::scan` does.
-///
-/// Valid combinations:
-/// - `in_repo: true,  scanner_ok: true` - the normal in-repo
-///   states. `worktree` and `branch_ahead` may each be in any
-///   [`LayerState`] independently. `pr` / `closes` may be populated
-///   for named non-default branches.
-/// - `in_repo: false, scanner_ok: true` - legitimate non-repo
-///   cwd (`git rev-parse` returned Empty). Both layer states are
-///   [`LayerState::Clean`]; `pr` / `closes` / `default_branch`
-///   empty.
-/// - `in_repo: false, scanner_ok: false` - failsafe collapse
-///   after `git rev-parse` returned Failed / Oversize. Both layer
-///   states are [`LayerState::Clean`]; the renderer surfaces a
-///   "scanner unhealthy" banner from `scanner_ok` rather than
-///   per-layer signals here.
-///
-/// Invalid combinations (do NOT construct):
-/// - `in_repo: false` with EITHER layer state set to
-///   [`LayerState::Populated`] or [`LayerState::ScanFailed`], or
-///   `default_branch` Some, or `closes` non-empty.
-/// - `scanner_ok: false` with `in_repo: true`. The two failure
-///   states (sick scanner vs healthy non-repo) are mutually
-///   exclusive at the rev-parse gate.
-/// - `branch_ahead: LayerState::Populated(_)` with
-///   `default_branch: None`. The layer is only populated when the
-///   default branch resolved; the renderer's tuple-match enforces
-///   this at the call site.
+/// `repo_gate` makes the repo-vs-scanner-failure states exclusive at
+/// the type level. The remaining cross-field invariant the scanner
+/// upholds: `branch_ahead` is only `Populated` when `default_branch`
+/// resolved (the renderer's tuple-match relies on it), and the layer
+/// states / `pr` / `closes` / `default_branch` stay empty unless
+/// `repo_gate` is [`RepoGate::InRepo`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitDiffSnapshot {
     /// Current branch (Named / Detached / NoRepo / Unknown).
@@ -94,12 +81,10 @@ pub struct GitDiffSnapshot {
     /// `None` when `origin/HEAD` is missing AND neither `main` nor
     /// `master` exists as a local ref.
     pub default_branch: Option<String>,
-    /// `false` when `cwd` is not inside a git repository (rev-parse
-    /// reported empty output). Combined with [`Self::scanner_ok`],
-    /// lets consumers distinguish "not a repo" (in_repo=false,
-    /// scanner_ok=true) from "scanner crashed" (in_repo=false,
-    /// scanner_ok=false).
-    pub in_repo: bool,
+    /// Repo gate: in-repo, not-a-repo, or scanner-failed. Replaces the
+    /// old `in_repo` + `scanner_ok` bool pair so the illegal
+    /// "in a repo but the scanner failed" combination can't be built.
+    pub repo_gate: RepoGate,
     /// Layer 1: uncommitted edits vs HEAD.
     pub worktree: LayerState<GitDiffStats>,
     /// Layer 2: commits the current branch has ahead of
@@ -117,12 +102,6 @@ pub struct GitDiffSnapshot {
     /// `closingIssuesReferences`). Empty when there's no PR or the
     /// PR doesn't reference any issues. Cached alongside `pr`.
     pub closes: Vec<GitIssueRef>,
-    /// `false` when the underlying scan hit a subprocess failure
-    /// (Failed / Oversize / timeout) at the rev-parse gate. Combined
-    /// with `in_repo` so the renderer can surface a "scanner
-    /// unhealthy" banner that's distinct from a legitimate non-repo
-    /// cwd.
-    pub scanner_ok: bool,
 }
 
 /// Per-file numstat plus aggregate totals for one diff layer.

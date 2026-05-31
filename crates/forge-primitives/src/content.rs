@@ -52,7 +52,7 @@ pub enum ContentBlock {
 
     /// Server-side tool invocation the API executed on the model's behalf
     /// (e.g. `advisor`, `web_search`, `web_fetch`). Surfaces alongside
-    /// regular `ToolUse` blocks but the caller never returns a result  -
+    /// regular `ToolUse` blocks but the caller never returns a result -
     /// the server supplies one in a matching [`ContentBlock::ServerToolResult`].
     /// `ServerToolUseBlock`.
     ///

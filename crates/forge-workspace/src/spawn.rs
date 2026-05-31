@@ -440,6 +440,22 @@ pub(crate) fn handle_start_default(
     }
 }
 
+/// Synthesize a unique pool key for a not-yet-spawned worker. The v4
+/// uuid suffix keeps concurrent same-label spawns from colliding on the
+/// pool / command_senders / domain_handles maps (only one would
+/// survive); the resume path uses a distinct `__resume_worker_` prefix
+/// so it's separable from the fresh case in tracing.
+fn synth_worker_key(project_key: &ProjectKey, label: &str, is_resume: bool) -> SessionKey {
+    let synth_prefix = if is_resume { "__resume_worker_" } else { "__spawn_worker_" };
+    SessionKey::from_session_id(format!(
+        "{}{}_{}_{}__",
+        synth_prefix,
+        project_key.as_str(),
+        label,
+        uuid::Uuid::new_v4().simple()
+    ))
+}
+
 /// Handle a `Command::SpawnWorker`: insert a `Spawning` worker entry
 /// in `live_workers[project_key]`, dispatch a fresh-session spawn
 /// via `SessionTarget::FreshInProject` with the charter threaded
@@ -480,22 +496,8 @@ pub(crate) fn handle_spawn_worker(
     // SessionTask rekeys this onto the real claude-issued UUID on
     // first Connected; migrate_session_task also rewrites the
     // matching WorkerEntry's session_key in lockstep.
-    //
-    // A v4 uuid suffix makes the key unique across concurrent spawns
-    // of the same label - two `spawn_worker(label="reviewer")` calls
-    // would otherwise collide on the pool / command_senders /
-    // domain_handles maps and only one would survive. The resume
-    // path uses a separate `__resume_worker_<...>__` synth prefix so
-    // it's distinguishable in tracing logs from the fresh case.
     let is_resume = resume_existing.is_some();
-    let synth_prefix = if is_resume { "__resume_worker_" } else { "__spawn_worker_" };
-    let synth_key = SessionKey::from_session_id(format!(
-        "{}{}_{}_{}__",
-        synth_prefix,
-        project_key.as_str(),
-        label,
-        uuid::Uuid::new_v4().simple()
-    ));
+    let synth_key = synth_worker_key(&project_key, label, is_resume);
     let tag = forge_primitives::worker_tag(label);
 
     // Insert WorkerEntry as Spawning BEFORE the agent spawn so the
@@ -1176,16 +1178,8 @@ config_dir = "~/.claude-stargate"
     #[test]
     fn synth_key_for_duplicate_label_is_unique() {
         let project = ProjectKey::new("forge");
-        let mk = |label: &str| -> SessionKey {
-            SessionKey::from_session_id(format!(
-                "__spawn_worker_{}_{}_{}__",
-                project.as_str(),
-                label,
-                uuid::Uuid::new_v4().simple()
-            ))
-        };
-        let a = mk("reviewer");
-        let b = mk("reviewer");
+        let a = synth_worker_key(&project, "reviewer", false);
+        let b = synth_worker_key(&project, "reviewer", false);
         assert_ne!(
             a.as_str(),
             b.as_str(),
@@ -1193,6 +1187,9 @@ config_dir = "~/.claude-stargate"
         );
         assert!(a.as_str().starts_with("__spawn_worker_forge_reviewer_"));
         assert!(b.as_str().starts_with("__spawn_worker_forge_reviewer_"));
+        // Resume path uses the distinct prefix.
+        let r = synth_worker_key(&project, "reviewer", true);
+        assert!(r.as_str().starts_with("__resume_worker_forge_reviewer_"));
     }
 
     /// `handle_deliver_worker_prompt` for a worker carrying

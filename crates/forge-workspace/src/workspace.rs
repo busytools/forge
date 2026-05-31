@@ -299,12 +299,21 @@ pub fn resolve_lead_session(sessions: &[SDKSessionInfo]) -> Option<&SDKSessionIn
 /// Workers from OTHER projects have cwds outside `project_dir` and
 /// are filtered out. Untagged or `forge:lead`-tagged sessions are
 /// filtered out by the tag-prefix check.
+///
+/// Scans every account's `config_dir`: team workers pick their account
+/// from the assignment-plan rotation, so a prior worker session can
+/// live under any account, not just the workspace's canonical dir.
 async fn scan_worker_resume_map(
-    config_dir: &std::path::Path,
+    config_dirs: &[PathBuf],
     project_dir: &std::path::Path,
 ) -> HashMap<String, String> {
-    let sessions =
-        forge_agent::userdata::catalog::scan::list_sessions(config_dir, None, None, 0, true).await;
+    let mut sessions: Vec<SDKSessionInfo> = Vec::new();
+    for config_dir in config_dirs {
+        sessions.extend(
+            forge_agent::userdata::catalog::scan::list_sessions(config_dir, None, None, 0, true)
+                .await,
+        );
+    }
     build_resume_map_from_sessions(&sessions, project_dir)
 }
 
@@ -323,8 +332,13 @@ fn build_resume_map_from_sessions(
     sessions: &[SDKSessionInfo],
     project_dir: &std::path::Path,
 ) -> HashMap<String, String> {
+    // Most-recently-modified session per label wins, including across
+    // sessions merged from multiple account config_dirs (list_sessions
+    // sorts within one account, not across the merge).
+    let mut ordered: Vec<&SDKSessionInfo> = sessions.iter().collect();
+    ordered.sort_by_key(|s| std::cmp::Reverse(s.last_modified));
     let mut resume_map: HashMap<String, String> = HashMap::new();
-    for info in sessions {
+    for info in ordered {
         let Some(cwd) = info.cwd.as_deref().map(std::path::Path::new) else {
             continue;
         };
@@ -983,20 +997,6 @@ impl Workspace {
         Some(SessionChipInfo { account_name: account_key.0, state })
     }
 
-    /// Crate-internal accessor for the assignment plan. Returns the
-    /// `Mutex<Option<...>>` so callers (the launchpad render path
-    /// and the spawn-path integration in §2.5) can take the lock
-    /// briefly without paying for an Option clone. `None` means
-    /// the boot-time loading tasks haven't all reached terminal
-    /// yet; `Some` means the plan is live and the launchpad can
-    /// un-dim project rows.
-    // Callers land in Sections 2.5 / 3 / 4 of #246. Temporary
-    // `dead_code` allow until those commits land within the same PR.
-    #[allow(dead_code)]
-    pub(crate) fn assignment_plan(&self) -> &Mutex<Option<crate::assignment_plan::AssignmentPlan>> {
-        &self.assignment_plan
-    }
-
     /// Look up the deterministic account assignment for a spawn
     /// target. Returns `(AccountKey, config_dir)` when:
     /// - the assignment plan is populated (`Some`), AND
@@ -1130,11 +1130,21 @@ impl Workspace {
             if !accounts.all_loaded() {
                 return;
             }
+            // Iterate in forge.toml definition order, not HashMap order:
+            // compute_plan is documented pure, and for a project with an
+            // empty `accounts` list the pool IS this slice, so HashMap
+            // randomness would assign the lead to a different account
+            // across restarts.
             accounts
-                .by_key
+                .ordered_keys
                 .iter()
-                .filter(|(_, s)| matches!(s.loading, LoadingState::Ready))
-                .map(|(k, _)| k.clone())
+                .filter(|k| {
+                    accounts
+                        .by_key
+                        .get(*k)
+                        .is_some_and(|s| matches!(s.loading, LoadingState::Ready))
+                })
+                .cloned()
                 .collect()
         };
 
@@ -2087,9 +2097,15 @@ impl Workspace {
             return;
         };
         let workspace = Arc::clone(self);
-        let config_dir = self.config_dir.clone();
+        let config_dirs = {
+            let mut dirs = self.accounts.lock().config_dirs();
+            if !dirs.contains(&self.config_dir) {
+                dirs.push(self.config_dir.clone());
+            }
+            dirs
+        };
         handle.spawn(async move {
-            let resume_map = scan_worker_resume_map(&config_dir, &project_dir).await;
+            let resume_map = scan_worker_resume_map(&config_dirs, &project_dir).await;
             let loaded = Self::load_team_roles(&team, &project_key);
             tracing::info!(
                 target: "forge_workspace::team",
@@ -2145,8 +2161,11 @@ impl Workspace {
     /// always false anyway).
     #[must_use]
     pub(crate) fn worker_has_progress_past_kick(&self, session_id: &str) -> bool {
+        let session_key = SessionKey::from_session_id(session_id.to_owned());
+        let config_dir =
+            self.config_dir_for(&session_key).unwrap_or_else(|| self.config_dir.clone());
         let messages = forge_agent::userdata::catalog::scan::get_session_messages(
-            &self.config_dir,
+            &config_dir,
             session_id,
             None,
         );
@@ -2752,6 +2771,7 @@ impl Workspace {
         is_git_repo_at_spawn: bool,
         config_dir: &std::path::Path,
     ) {
+        use tracing::Instrument;
         let workspace = Arc::clone(self);
         let project_key = project_key.clone();
         let session_key = session_key.clone();
@@ -2762,6 +2782,11 @@ impl Workspace {
             is_git_repo_at_spawn,
         );
         let config_dir = config_dir.to_path_buf();
+        let span = tracing::info_span!(
+            "forge_workspace::worker_tag_write",
+            session_id = %session_key.as_str(),
+            label = %label,
+        );
         tokio::spawn(async move {
             let tag = forge_primitives::worker_tag(&label);
             let result = tag_session_with_retry(
@@ -2820,7 +2845,8 @@ impl Workspace {
                     workspace.release_session(&session_key);
                 }
             }
-        });
+        }
+        .instrument(span));
     }
 
     /// Opportunistically retry the JSONL tag-write for a worker whose
@@ -2876,6 +2902,7 @@ impl Workspace {
         is_git_repo_at_spawn: bool,
         config_dir: &std::path::Path,
     ) {
+        use tracing::Instrument;
         let workspace = Arc::clone(self);
         let project_key = project_key.clone();
         let session_key = session_key.clone();
@@ -2886,6 +2913,11 @@ impl Workspace {
             is_git_repo_at_spawn,
         );
         let config_dir = config_dir.to_path_buf();
+        let span = tracing::info_span!(
+            "forge_workspace::worker_tag_write",
+            session_id = %session_key.as_str(),
+            label = %label,
+        );
         tokio::spawn(async move {
             let tag = forge_primitives::worker_tag(&label);
             let result = tag_session_with_retry(
@@ -2933,7 +2965,8 @@ impl Workspace {
                     );
                 }
             }
-        });
+        }
+        .instrument(span));
     }
 
     // ---- Refresh helpers (workspace → agent) ----
@@ -5669,6 +5702,21 @@ mod build_resume_map_tests {
         assert_eq!(map.get("planner"), Some(&"ours".to_owned()));
     }
 
+    /// Across sessions merged from multiple account config_dirs the
+    /// newest session per label wins, regardless of concat order.
+    #[test]
+    fn build_resume_map_keeps_newest_session_per_label() {
+        let project_dir = std::path::Path::new("/Users/me/Projects/forge");
+        let worktree = "/Users/me/Projects/forge/.claude/worktrees/planner";
+        let mut older = mk_info("old-uuid", Some(worktree), Some("forge:worker:planner"));
+        older.last_modified = 100;
+        let mut newer = mk_info("new-uuid", Some(worktree), Some("forge:worker:planner"));
+        newer.last_modified = 200;
+        // Older listed first, as a cross-account concat can produce.
+        let map = build_resume_map_from_sessions(&[older, newer], project_dir);
+        assert_eq!(map.get("planner"), Some(&"new-uuid".to_owned()));
+    }
+
     /// Lead-tagged sessions and untagged sessions are filtered out -
     /// only `forge:worker:*`-tagged sessions count.
     #[test]
@@ -5828,6 +5876,32 @@ mod async_worker_spawn_failure_tests {
         key
     }
 
+    /// Pins the lookup predicate the Connected catalog-mirror guard (in
+    /// session_task) depends on: worker_lookup_for_session keyed by the
+    /// pre-rekey synth key resolves a seeded worker (so its tag-less
+    /// mirror is skipped) and not a lead/regular session. The guard's
+    /// end-to-end skip is exercised in production.
+    #[test]
+    fn worker_lookup_drives_catalog_mirror_skip() {
+        let (workspace, _rx) = Workspace::testing_stub();
+        let project_key = ProjectKey::new("proj-x");
+        let synth_key = "__spawn_worker_proj-x_reviewer_abc__";
+        workspace.insert_live_worker(
+            &project_key,
+            fake_worker("reviewer", synth_key, "lead-uuid", false),
+        );
+        assert!(
+            workspace.worker_lookup_for_session(&SessionKey::from_session_id(synth_key)).is_some(),
+            "seeded worker must be detected so its tag-less catalog mirror is skipped"
+        );
+        assert!(
+            workspace
+                .worker_lookup_for_session(&SessionKey::from_session_id("lead-uuid"))
+                .is_none(),
+            "the lead is not a live worker, so it is still mirrored into the catalog"
+        );
+    }
+
     /// #146: async worktree-creation failure → notice envelope
     /// dispatched to the lead's chat AND the WorkerEntry rolled
     /// back. Verifies both effects in one go.
@@ -5868,11 +5942,10 @@ mod async_worker_spawn_failure_tests {
     }
 
     /// #146 + #245 Layer C: async failure with a non-worktree-classified
-    /// message must NOT dispatch a lead-notice. Behaviour was changed
-    /// in #245: previously the entry was rolled back (removed); now it
-    /// transitions to `WorkerLiveness::Failed` with the message as
-    /// diagnostic, so the user sees the failure surfaced on the row
-    /// rather than the worker silently vanishing.
+    /// message must NOT dispatch a lead-notice; the entry transitions to
+    /// `WorkerLiveness::Failed` with the message as diagnostic, so the
+    /// user sees the failure surfaced on the row rather than the worker
+    /// silently vanishing.
     #[tokio::test]
     async fn async_failure_without_worktree_classification_transitions_to_failed() {
         let (workspace, _update_rx) = Workspace::testing_stub();
@@ -6358,6 +6431,77 @@ config_dir = "~/.claude-stargate"
         dir
     }
 
+    /// Two org accounts in definition order (Alpha, Beta) and a
+    /// project with NO `accounts` allow-list, so the project pool IS
+    /// the org-ordered ready slice - the exact shape where HashMap
+    /// iteration order used to make the lead-account pick
+    /// non-deterministic across restarts.
+    fn make_workspace_dir_246_two_accounts() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("forge.toml"),
+            r#"
+[[orgs]]
+name = "Default"
+accounts = ["Alpha", "Beta"]
+
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+auto_start = true
+
+[[accounts]]
+display_name = "Alpha"
+config_dir = "~/.claude-alpha"
+
+[[accounts]]
+display_name = "Beta"
+config_dir = "~/.claude-beta"
+"#,
+        )
+        .expect("write forge.toml");
+        dir
+    }
+
+    #[tokio::test]
+    async fn recompute_plan_if_ready_binds_lead_in_account_definition_order() {
+        // Two ready accounts + an empty project allow-list: the pool is
+        // the org-ordered ready slice and the lone project's lead lands
+        // at pool[0]. The lead must bind to the first definition-order
+        // account (Alpha), not whatever HashMap iteration would surface
+        // - reverting `ordered_keys` to `by_key` makes this flaky.
+        let dir = make_workspace_dir_246_two_accounts();
+        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        {
+            let mut accounts = workspace.account_states().lock();
+            for name in ["Alpha", "Beta"] {
+                let snapshot = forge_primitives::usage::UsageSnapshot {
+                    source: forge_primitives::usage::UsageSourceKind::Oauth,
+                    fetched_at: std::time::SystemTime::UNIX_EPOCH,
+                    five_hour: None,
+                    seven_day: None,
+                    seven_day_opus: None,
+                    seven_day_sonnet: None,
+                    extra_usage: None,
+                };
+                accounts.set_usage(&AccountKey(name.to_owned()), snapshot);
+            }
+        }
+
+        workspace.recompute_plan_if_ready();
+        let plan = workspace.assignment_plan.lock();
+        let plan = plan.as_ref().expect("plan populates once all_loaded fires");
+        let project_key =
+            ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+                workspace.config.projects[0].path.to_string_lossy().as_ref(),
+            )));
+        assert_eq!(
+            plan.lookup(&project_key, &"lead".to_owned()).cloned(),
+            Some(AccountKey("Alpha".to_owned())),
+            "lead must bind to the first definition-order account, not a HashMap-order pick",
+        );
+    }
+
     #[tokio::test]
     async fn recompute_plan_if_ready_noop_while_loading() {
         let dir = make_workspace_dir_246();
@@ -6365,7 +6509,7 @@ config_dir = "~/.claude-stargate"
         // Fresh workspace: account starts in `Loading`. all_loaded
         // returns false; recompute must not populate the plan.
         workspace.recompute_plan_if_ready();
-        let plan = workspace.assignment_plan().lock();
+        let plan = workspace.assignment_plan.lock();
         assert!(plan.is_none(), "plan stays None while accounts are still Loading");
     }
 
@@ -6389,17 +6533,16 @@ config_dir = "~/.claude-stargate"
         }
 
         workspace.recompute_plan_if_ready();
-        let plan = workspace.assignment_plan().lock();
+        let plan = workspace.assignment_plan.lock();
         let plan = plan.as_ref().expect("plan populates once all_loaded fires");
         let project_key =
             ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
-                &dir.path().join("..").join("Projects").join("forge").to_string_lossy(),
+                workspace.config.projects[0].path.to_string_lossy().as_ref(),
             )));
-        // Don't assert the exact project_key (path expansion is
-        // env-dependent); just assert SOMETHING got assigned to
-        // the lone project.
-        let _ = project_key;
-        assert!(!plan.is_empty(), "plan must have at least one assignment for the lone project");
+        assert!(
+            !plan.project_has_no_assignments(&project_key),
+            "plan must have at least one assignment for the lone project",
+        );
     }
 
     #[tokio::test]
@@ -6421,12 +6564,12 @@ config_dir = "~/.claude-stargate"
         }
 
         workspace.recompute_plan_if_ready();
-        let first_plan = workspace.assignment_plan().lock().clone();
+        let first_plan = workspace.assignment_plan.lock().clone();
 
         // Recompute should be idempotent on the same ready set
         // (frozen overlay merges; existing assignments preserved).
         workspace.recompute_plan_if_ready();
-        let second_plan = workspace.assignment_plan().lock().clone();
+        let second_plan = workspace.assignment_plan.lock().clone();
         assert!(first_plan.is_some());
         assert!(second_plan.is_some());
         // Same plan contents (the frozen overlay preserves entries).
@@ -6460,7 +6603,7 @@ config_dir = "~/.claude-stargate"
                 workspace.config.projects[0].path.to_string_lossy().as_ref(),
             )));
         workspace.extend_plan_for_adhoc_worker(&project_key, "reviewer");
-        assert!(workspace.assignment_plan().lock().is_none(), "plan still unpopulated");
+        assert!(workspace.assignment_plan.lock().is_none(), "plan still unpopulated");
     }
 
     #[tokio::test]
@@ -6486,7 +6629,7 @@ config_dir = "~/.claude-stargate"
                 workspace.config.projects[0].path.to_string_lossy().as_ref(),
             )));
         workspace.extend_plan_for_adhoc_worker(&project_key, "reviewer");
-        let plan = workspace.assignment_plan().lock();
+        let plan = workspace.assignment_plan.lock();
         let plan = plan.as_ref().expect("populated");
         assert!(
             plan.lookup(&project_key, &"reviewer".to_owned()).is_some(),

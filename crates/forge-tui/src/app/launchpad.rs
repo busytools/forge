@@ -25,7 +25,7 @@ use super::view::{ActiveView, set_active_view};
 /// `/launchpad`).
 #[derive(Debug, Clone)]
 pub struct LaunchpadState {
-    /// Index into the flat selectable row list (project rows only  -
+    /// Index into the flat selectable row list (project rows only -
     /// org headers and tree-continuation rows are skipped). Defaults
     /// to the most-recently-active project's row if any project has
     /// session activity; otherwise row 0.

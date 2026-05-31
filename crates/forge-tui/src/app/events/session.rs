@@ -522,7 +522,7 @@ pub(super) fn handle_session_replaced_event(
     // tool-call indices / viewport scroll are not reachable from
     // anywhere in the UI. Leaving it behind would have the Projects
     // pane resolve "click forge" through the orphan instead of the
-    // new bucket, which is exactly the bug this whole sequence fixes.
+    // new bucket.
     if let Some(prev) = prev_active_key
         && prev != session_key
     {
@@ -725,7 +725,7 @@ pub(super) fn apply_session_update_connected(
         }
     }
     set_bucket_lifecycle_state(app, key, crate::app::session::SessionLifecycleState::Idle);
-    // Clear any captured connection error on a successful reconnect  -
+    // Clear any captured connection error on a successful reconnect -
     // the launchpad picker stops surfacing the stale `✗` row tail.
     if let Some(session) = app.session_mut(key) {
         session.last_connection_error = None;

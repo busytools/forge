@@ -46,11 +46,8 @@ pub(crate) const CMD_MOD: KeyModifiers = KeyModifiers::CONTROL;
 // (Android), Linux desktops, and Windows.
 pub(crate) const WORD_NAV_MOD: KeyModifiers = KeyModifiers::ALT;
 
-// Modifier that must NOT be set alongside WORD_NAV_MOD. Empty
-// universally now - any modifier mix containing ALT counts as word
-// nav. Previously Linux/Windows excluded ALT (because CTRL+ALT was
-// the host's compose path); the modifier swap above moots that
-// concern since the active path is Alt-only.
+// Modifier that must NOT be set alongside WORD_NAV_MOD. Empty - any
+// modifier mix containing ALT counts as word nav.
 pub(crate) const WORD_NAV_MOD_EXCLUDED: KeyModifiers = KeyModifiers::empty();
 
 fn is_ctrl_shortcut(modifiers: KeyModifiers) -> bool {

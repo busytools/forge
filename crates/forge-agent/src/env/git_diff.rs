@@ -22,17 +22,17 @@
 //!   per-layer subprocess-error signal.
 //!
 //! `scan` always returns a value. Subprocess failures, missing
-//! repos, oversize output, and timeouts all collapse to a snapshot
-//! with `in_repo = false`; the failure surfaces in the trace log at
-//! WARN level so a real issue can be diagnosed without breaking the
-//! rendering path.
+//! repos, oversize output, and timeouts all collapse to a non-InRepo
+//! `repo_gate` (`NotARepo` / `ScannerFailed`); the failure surfaces in
+//! the trace log at WARN level so a real issue can be diagnosed
+//! without breaking the rendering path.
 
 use std::path::Path;
 use std::time::Duration;
 
 use forge_primitives::git::{GitBranch, GitIssueRef, GitPrInfo};
 use forge_primitives::git_diff::{
-    GitBranchAhead, GitDiffFile, GitDiffSnapshot, GitDiffStats, LayerState,
+    GitBranchAhead, GitDiffFile, GitDiffSnapshot, GitDiffStats, LayerState, RepoGate,
 };
 use serde::Deserialize;
 use tokio::process::Command;
@@ -64,11 +64,23 @@ const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 /// neighbours on tall trees.
 const TOP_FILE_COUNT: usize = 7;
 
+/// Classify `git rev-parse --abbrev-ref HEAD` output into either the
+/// branch string to proceed with, or the terminal `repo_gate`. Empty
+/// stdout is a clean "not a repo" signal (git ran and reported it);
+/// Failed / Oversize mean the scan subprocess itself crashed.
+fn classify_rev_parse(output: GitOutput) -> Result<String, RepoGate> {
+    match output {
+        GitOutput::Ok(s) => Ok(s.trim().to_owned()),
+        GitOutput::Empty => Err(RepoGate::NotARepo),
+        GitOutput::Failed | GitOutput::Oversize => Err(RepoGate::ScannerFailed),
+    }
+}
+
 /// Run the full scan sequence against `cwd` and return a snapshot.
-/// Always succeeds - every failure path collapses to a snapshot
-/// with `in_repo = false` and a WARN log naming the step that
-/// failed. Callers should treat the snapshot as authoritative for
-/// rendering regardless of which variant came back.
+/// Always succeeds - every failure path collapses to a non-InRepo
+/// `repo_gate` and a WARN log naming the step that failed. Callers
+/// should treat the snapshot as authoritative for rendering
+/// regardless of which variant came back.
 ///
 /// `prev` is the most recent snapshot for this `cwd` (if any). It's
 /// used to reuse cached PR info: when `prev.branch` matches the
@@ -76,45 +88,25 @@ const TOP_FILE_COUNT: usize = 7;
 /// `pr` / `closes` carry over without re-running `gh`. Pass `None`
 /// for cold starts.
 pub async fn scan(cwd: &Path, prev: Option<&GitDiffSnapshot>) -> GitDiffSnapshot {
-    let raw_branch = match run_git(cwd, &["rev-parse", "--abbrev-ref", "HEAD"]).await {
-        GitOutput::Ok(s) => s.trim().to_owned(),
-        GitOutput::Empty => {
-            // Empty output from rev-parse means "cwd genuinely
-            // isn't a git repo" - scanner_ok=true since git itself
-            // ran fine and reported the state correctly. Layer
-            // states stay Clean: there's nothing to scan, so there's
-            // nothing that could have failed.
-            return GitDiffSnapshot {
-                branch: GitBranch::NoRepo,
-                default_branch: None,
-                in_repo: false,
-                worktree: LayerState::Clean,
-                branch_ahead: LayerState::Clean,
-                pr: None,
-                closes: Vec::new(),
-                scanner_ok: true,
-            };
-        }
-        GitOutput::Failed | GitOutput::Oversize => {
-            // Subprocess crash, timeout, or unreadable output.
-            // in_repo=false as the failsafe so existing render paths
-            // don't crash; scanner_ok=false tells consumers to
-            // surface "scan failed" rather than "not a git
-            // repository." Layer states stay Clean: the overall
-            // scanner_ok=false banner subsumes the per-layer signal
-            // in this collapsed state.
-            return GitDiffSnapshot {
-                branch: GitBranch::NoRepo,
-                default_branch: None,
-                in_repo: false,
-                worktree: LayerState::Clean,
-                branch_ahead: LayerState::Clean,
-                pr: None,
-                closes: Vec::new(),
-                scanner_ok: false,
-            };
-        }
-    };
+    let raw_branch =
+        match classify_rev_parse(run_git(cwd, &["rev-parse", "--abbrev-ref", "HEAD"]).await) {
+            Ok(branch) => branch,
+            // Both the not-a-repo and scanner-crash cases collapse to the
+            // same all-Clean snapshot, differing only by `repo_gate` so the
+            // renderer can tell "not a git repository" from "scanner
+            // unhealthy."
+            Err(repo_gate) => {
+                return GitDiffSnapshot {
+                    branch: GitBranch::NoRepo,
+                    default_branch: None,
+                    repo_gate,
+                    worktree: LayerState::Clean,
+                    branch_ahead: LayerState::Clean,
+                    pr: None,
+                    closes: Vec::new(),
+                };
+            }
+        };
     let detached = raw_branch == "HEAD";
     let branch = if detached {
         GitBranch::Detached
@@ -189,22 +181,21 @@ pub async fn scan(cwd: &Path, prev: Option<&GitDiffSnapshot>) -> GitDiffSnapshot
         _ => (None, Vec::new()),
     };
 
-    // scanner_ok=true here - we've passed the rev-parse gate and
+    // repo_gate=InRepo here - we've passed the rev-parse gate and
     // every downstream subprocess (default-branch resolution,
     // numstat, gh pr) is best-effort; failures collapse to safe
     // defaults plus per-layer `LayerState::ScanFailed` so the
     // renderer can surface them at the layer level rather than
-    // poisoning the overall snapshot. The scanner_ok=false case is
+    // poisoning the overall snapshot. The ScannerFailed gate is
     // only the rev-parse-failed return at the top of this function.
     GitDiffSnapshot {
         branch,
         default_branch,
-        in_repo: true,
+        repo_gate: RepoGate::InRepo,
         worktree,
         branch_ahead,
         pr,
         closes,
-        scanner_ok: true,
     }
 }
 
@@ -736,17 +727,16 @@ mod tests {
     }
 
     /// `tempfile::tempdir()` produces a dir with no `.git/`, so
-    /// `git rev-parse` returns non-zero exit. The scan reports
-    /// `in_repo = false` either way; `scanner_ok` reflects git's
-    /// exit status, which is non-zero here (the "not a git
-    /// repository" fatal line). The distinction matters for the
-    /// renderer: a healthy non-repo gets a clean hidden GIT
-    /// section, while a sick scanner surfaces the unhealthy banner.
+    /// `git rev-parse` reports the cwd isn't a repo. `repo_gate` is
+    /// then NotARepo (or ScannerFailed if git itself errored); either
+    /// way it isn't InRepo. The distinction matters for the renderer:
+    /// a healthy non-repo gets a clean hidden GIT section, while a sick
+    /// scanner surfaces the unhealthy banner.
     #[tokio::test(flavor = "current_thread")]
     async fn scan_no_repo_collapses_to_not_in_repo() {
         let dir = tempfile::tempdir().expect("tempdir");
         let snap = scan(dir.path(), None).await;
-        assert!(!snap.in_repo);
+        assert_ne!(snap.repo_gate, RepoGate::InRepo);
         assert!(matches!(snap.worktree, LayerState::Clean));
         assert!(matches!(snap.branch_ahead, LayerState::Clean));
         assert!(snap.default_branch.is_none());
@@ -759,7 +749,7 @@ mod tests {
         write_file(&dir, "README.md", "hello\n");
         commit_all(&dir, "init");
         let snap = scan(dir.path(), None).await;
-        assert!(snap.in_repo);
+        assert_eq!(snap.repo_gate, RepoGate::InRepo);
         assert!(matches!(snap.worktree, LayerState::Clean), "clean tree → no layer 1");
         assert!(matches!(snap.branch_ahead, LayerState::Clean), "on default → no layer 2");
         assert_eq!(snap.default_branch.as_deref(), Some("main"));
@@ -877,7 +867,7 @@ mod tests {
         };
         run(&["checkout", "-q", "HEAD~1"]);
         let snap = scan(dir.path(), None).await;
-        assert!(snap.in_repo);
+        assert_eq!(snap.repo_gate, RepoGate::InRepo);
         assert!(matches!(snap.worktree, LayerState::Clean));
         assert!(matches!(snap.branch_ahead, LayerState::Clean));
     }
@@ -949,12 +939,11 @@ mod tests {
         let prev = GitDiffSnapshot {
             branch: GitBranch::Named("feat/x".into()),
             default_branch: Some("main".into()),
-            in_repo: true,
+            repo_gate: RepoGate::InRepo,
             worktree: LayerState::Clean,
             branch_ahead: LayerState::Clean,
             pr: Some(pr.clone()),
             closes: closes.clone(),
-            scanner_ok: true,
         };
 
         let (got_pr, got_closes) = pr_for_branch(dir.path(), "feat/x", Some(&prev)).await;
@@ -972,12 +961,11 @@ mod tests {
         let prev = GitDiffSnapshot {
             branch: GitBranch::Named("feat/x".into()),
             default_branch: Some("main".into()),
-            in_repo: true,
+            repo_gate: RepoGate::InRepo,
             worktree: LayerState::Clean,
             branch_ahead: LayerState::Clean,
             pr: Some(GitPrInfo { number: 42, url: "https://example/pull/42".into() }),
             closes: Vec::new(),
-            scanner_ok: true,
         };
 
         let (got_pr, got_closes) = pr_for_branch(dir.path(), "feat/y", Some(&prev)).await;
@@ -995,12 +983,11 @@ mod tests {
         let prev = GitDiffSnapshot {
             branch: GitBranch::Detached,
             default_branch: Some("main".into()),
-            in_repo: true,
+            repo_gate: RepoGate::InRepo,
             worktree: LayerState::Clean,
             branch_ahead: LayerState::Clean,
             pr: Some(GitPrInfo { number: 42, url: "url".into() }),
             closes: Vec::new(),
-            scanner_ok: true,
         };
 
         let (got_pr, _got_closes) = pr_for_branch(dir.path(), "feat/x", Some(&prev)).await;
@@ -1032,12 +1019,11 @@ mod tests {
         let prev = GitDiffSnapshot {
             branch: GitBranch::Named("feat/cache".into()),
             default_branch: Some("main".into()),
-            in_repo: true,
+            repo_gate: RepoGate::InRepo,
             worktree: LayerState::Clean,
             branch_ahead: LayerState::Clean,
             pr: Some(synthetic_pr.clone()),
             closes: synthetic_closes.clone(),
-            scanner_ok: true,
         };
 
         let snap = scan(dir.path(), Some(&prev)).await;
@@ -1059,17 +1045,27 @@ mod tests {
         let prev = GitDiffSnapshot {
             branch: GitBranch::Named("main".into()),
             default_branch: Some("main".into()),
-            in_repo: true,
+            repo_gate: RepoGate::InRepo,
             worktree: LayerState::Clean,
             branch_ahead: LayerState::Clean,
             pr: Some(GitPrInfo { number: 1, url: "url".into() }),
             closes: Vec::new(),
-            scanner_ok: true,
         };
         // Even with a cache-hit-shaped prev, the default-branch gate
         // wins and the PR field clears.
         let snap = scan(dir.path(), Some(&prev)).await;
         assert_eq!(snap.pr, None);
         assert!(snap.closes.is_empty());
+    }
+
+    #[test]
+    fn classify_rev_parse_maps_output_to_repo_gate() {
+        // Ok(stdout) trims to the branch; Empty is a clean non-repo
+        // signal; Failed / Oversize are scanner crashes that route to
+        // the ScannerFailed gate (distinct from NotARepo).
+        assert_eq!(classify_rev_parse(GitOutput::Ok("  main\n".to_owned())), Ok("main".to_owned()));
+        assert_eq!(classify_rev_parse(GitOutput::Empty), Err(RepoGate::NotARepo));
+        assert_eq!(classify_rev_parse(GitOutput::Failed), Err(RepoGate::ScannerFailed));
+        assert_eq!(classify_rev_parse(GitOutput::Oversize), Err(RepoGate::ScannerFailed));
     }
 }

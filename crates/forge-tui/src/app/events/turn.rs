@@ -762,9 +762,9 @@ fn push_turn_error_message(
                 let prefix = format_rate_limit_summary(update);
                 let severity = match update.status {
                     model::RateLimitStatus::AllowedWarning => SystemSeverity::Warning,
-                    model::RateLimitStatus::Rejected | model::RateLimitStatus::Allowed => {
-                        SystemSeverity::Error
-                    }
+                    model::RateLimitStatus::Rejected
+                    | model::RateLimitStatus::Allowed
+                    | model::RateLimitStatus::Unknown => SystemSeverity::Error,
                 };
                 (severity, format!("{prefix}\n\n{base_message}"), rate_limit_notice_key(update))
             } else {

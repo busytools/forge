@@ -29,7 +29,7 @@ use serde_json::{Map, Value};
 use forge_sdk::Error;
 
 /// Three raw settings documents, each `None` when the underlying
-/// file is absent or unreadable. Malformed JSON also yields `None`  -
+/// file is absent or unreadable. Malformed JSON also yields `None` -
 /// consumers that care about distinguishing missing vs. corrupt
 /// should re-read directly.
 #[derive(Debug, Clone, Default, PartialEq)]

@@ -26,12 +26,6 @@
 //! recovered account; sessions already running keep their boot-time
 //! account so their wire identity doesn't shift mid-run.
 
-// Callers for the public surface land in Sections 2.4 and 2.5 of #246
-// (workspace plan storage + spawn-path integration). Temporary
-// `dead_code` allows on the constructors / accessors are removed in
-// those commits within the same PR.
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 
 use crate::account::AccountKey;
@@ -138,13 +132,6 @@ impl AssignmentPlan {
     #[must_use]
     pub fn project_has_no_assignments(&self, project: &ProjectKey) -> bool {
         !self.assignments.keys().any(|(p, _)| p == project)
-    }
-
-    /// Plan has at least one (project, label) entry. The launchpad
-    /// gates click on this AND `AccountStateMap::all_loaded()`.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.assignments.is_empty()
     }
 
     /// Assign an account to a worker spawned mid-session via

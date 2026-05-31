@@ -226,7 +226,7 @@ mod enabled {
     #[allow(clippy::unused_self)]
     impl PerfLogger {
         /// Open (or create) the log file. Returns `None` on I/O error
-        /// after logging the failure at warn level. Always appends  -
+        /// after logging the failure at warn level. Always appends -
         /// matches the standard log rolling behaviour so a forge
         /// restart immediately after a perf-relevant bug doesn't
         /// erase the evidence.
