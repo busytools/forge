@@ -589,10 +589,19 @@ fn apply_tool_result_block(
 /// `CronCreate` tool_use_result arrives. The CLI's result shape can
 /// be a bare-string id OR a `{"id": "..."}` object - cover both.
 /// No-op when the tool_use_id doesn't match a CronCreate call.
+///
+/// Identifies the call via `meta.claudeCode.toolName` (the SDK
+/// canonical name) instead of the wire-level `title`. The wire
+/// `title` is the formatter output from `forge_agent::tooling::tool_title`
+/// and would silently diverge from `"CronCreate"` if a future per-tool
+/// branch lands there (e.g. `"Cron */5 * * * *"`); the canonical
+/// name from meta stays stable.
 fn stamp_cron_job_id_if_applicable(app: &mut App, tool_use_id: &str, content: &Value) {
-    let is_cron_create = app
-        .with_turn_state(|ts| ts.tool_calls.get(tool_use_id).map(|tc| tc.title.clone()))
-        .is_some_and(|title| title == "CronCreate");
+    let is_cron_create = app.with_turn_state(|ts| {
+        ts.tool_calls.get(tool_use_id).is_some_and(|tc| {
+            super::tool_calls::sdk_tool_name_from_meta(tc.meta.as_ref()) == Some("CronCreate")
+        })
+    });
     if !is_cron_create {
         return;
     }
