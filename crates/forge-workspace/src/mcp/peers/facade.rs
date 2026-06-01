@@ -307,26 +307,34 @@ impl WorkspaceFacade for ProdWorkspaceFacade {
 
     fn whoami(&self, caller: &SessionKey) -> Option<PeerStatus> {
         let ws = self.0.upgrade()?;
-        let projects = ws.list_projects();
+        let cx = crate::mcp::caller_context::caller_context(&ws, caller)?;
+        // Liveness + stats key off the LEAD's session, not the
+        // caller's: `PeerStatus` represents project-level peer
+        // identity. A worker calling `whoami` sees its project's
+        // peer identity (the same identity another peer would see
+        // when targeting this project), not its own session - the
+        // lead-only match the pre-#298 impl gated on was wrong
+        // because workers also legitimately ask "who am I as a
+        // peer?".
         let stat_counters = ws.peer_stats.lock();
-        projects.into_iter().find_map(|view| {
-            let lead = lead_session_view(&ws, &view)?;
-            if lead.session != *caller {
-                return None;
+        let (status, spawned_at, counts) = match cx.lead_session_view.as_ref() {
+            Some(lead) => {
+                let counts = stat_counters.get(&lead.session).cloned().unwrap_or_default();
+                let status =
+                    if lead.is_open { PeerLiveness::Running } else { PeerLiveness::Sleeping };
+                let spawned_at = if lead.is_open { lead.last_activity } else { None };
+                (status, spawned_at, counts)
             }
-            let counts = stat_counters.get(&lead.session).cloned().unwrap_or_default();
-            let liveness =
-                if lead.is_open { PeerLiveness::Running } else { PeerLiveness::Sleeping };
-            let spawned_at = if lead.is_open { lead.last_activity } else { None };
-            Some(PeerStatus {
-                name: view.name,
-                org: view.org,
-                path: view.path,
-                status: liveness,
-                in_flight_incoming: counts.incoming,
-                in_flight_outgoing: counts.outgoing,
-                spawned_at,
-            })
+            None => (PeerLiveness::Sleeping, None, PeerInflightStats::default()),
+        };
+        Some(PeerStatus {
+            name: cx.project_name,
+            org: cx.project_org,
+            path: cx.project_path,
+            status,
+            in_flight_incoming: counts.incoming,
+            in_flight_outgoing: counts.outgoing,
+            spawned_at,
         })
     }
 
@@ -861,5 +869,33 @@ mod lead_resolution_tests {
         let (ws, _rx) = Workspace::testing_stub();
         let facade = ProdWorkspaceFacade::from_arc(&ws);
         assert!(facade.whoami(&SessionKey::from_session_id("nobody")).is_none());
+    }
+
+    /// #298 Cause 1: workers can call `peers__whoami` and see their
+    /// project's peer identity. Pre-fix, the impl required the caller
+    /// to be the lead session, which returned None for any worker.
+    #[test]
+    fn whoami_resolves_worker_caller_to_project_peer_identity() {
+        let (ws, _rx) = Workspace::testing_stub();
+        ws.seed_test_project_with_team("myproj", "/tmp/myproj", &[]);
+        ws.record_connected_session("/tmp/myproj", "lead-uuid", None);
+        let pk = crate::ProjectKey::new(
+            forge_agent::userdata::catalog::scan::project_key_for_directory(Some("/tmp/myproj")),
+        );
+        ws.insert_live_worker(&pk, worker_entry(SessionKey::from_session_id("worker-uuid")));
+
+        let facade = ProdWorkspaceFacade::from_arc(&ws);
+        let status = facade
+            .whoami(&SessionKey::from_session_id("worker-uuid"))
+            .expect("worker caller resolves to its project's peer identity");
+        assert_eq!(status.name, "myproj");
+        assert_eq!(status.org, "TestOrg");
+
+        // Regression lock: the pre-existing lead-only path still
+        // resolves to the same project identity.
+        let lead_status = facade
+            .whoami(&SessionKey::from_session_id("lead-uuid"))
+            .expect("lead caller still resolves");
+        assert_eq!(lead_status.name, "myproj");
     }
 }

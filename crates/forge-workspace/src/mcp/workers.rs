@@ -450,10 +450,13 @@ fn classify_workers_tell(
 }
 
 /// Resolve a `workers__tell` target label to a concrete session key.
-/// `LEAD_LABEL` → the caller's `spawned_by_session_id`. Other labels
-/// → look up the latest-spawned live worker in the caller's project
-/// matching the label. Returns `None` when the lookup fails (caller
-/// has no worker entry, label not live, etc.).
+/// `LEAD_LABEL` → the caller's project's currently-registered lead
+/// (re-resolved each call so a lead-resume rekey routes correctly;
+/// the previous snapshot of `spawned_by_session_id` taken at worker-
+/// spawn-time stayed stale across resumes - #298 Cause 2). Other
+/// labels → look up the latest-spawned live worker in the caller's
+/// project matching the label. Returns `None` when the lookup fails
+/// (caller has no worker entry, label not live, etc.).
 fn resolve_target_session(
     facade: &dyn WorkerFacade,
     caller_key: &crate::SessionKey,
@@ -467,11 +470,7 @@ fn resolve_target_session(
         if cp.is_lead {
             return None;
         }
-        return facade
-            .list_workers(caller_key)
-            .into_iter()
-            .find(|w| w.session_id == caller_key.as_str())
-            .map(|w| crate::SessionKey::from_session_id(w.spawned_by_session_id));
+        return facade.lead_session_for_caller(caller_key);
     }
     // Sibling-worker / cross-worker addressing. Use the same
     // latest-spawned-wins rule as the dispatcher.
@@ -1960,5 +1959,45 @@ mod tests {
         let kept =
             std::fs::read_to_string(role_dir.join("resume-kick.md")).expect("prior content kept");
         assert_eq!(kept, "prior content");
+    }
+
+    /// #298 Cause 2: `workers__tell("lead")` must re-resolve the lead
+    /// each call so a lead-resume rekey routes correctly. The old impl
+    /// snapshotted `spawned_by_session_id` at spawn time and never
+    /// rewrote it; tells routed to the dead pre-resume session id.
+    ///
+    /// `resolve_target_session` now reads through
+    /// `WorkerFacade::lead_session_for_caller`; the mock's `leads` map
+    /// is the test's source of truth for "who's the lead?". Two
+    /// fixture states (pre-resume `L1`, post-resume `L2`) exercise the
+    /// re-resolution: the prod facade implements the same trait method
+    /// against `caller_context`, which walks live catalog + worker
+    /// state on every call. A regression that re-introduced the
+    /// `spawned_by_session_id` snapshot would not see the `leads`-map
+    /// swap and the post-resume assertion would fail.
+    #[test]
+    fn workers_tell_lead_routes_to_current_lead_after_resume() {
+        let worker_key = fake_key("worker-uuid");
+        let project_key = crate::ProjectKey::new("forge");
+
+        let pre_mock = MockWorkerFacade::new();
+        pre_mock.callers.lock().insert(worker_key.clone(), worker_caller("forge"));
+        pre_mock.leads.lock().insert(project_key.clone(), fake_key("L1"));
+        let pre_facade: Arc<dyn WorkerFacade> = Arc::new(pre_mock);
+        let pre = resolve_target_session(&*pre_facade, &worker_key, LEAD_LABEL)
+            .expect("resolves pre-resume");
+        assert_eq!(pre.as_str(), "L1", "pre-resume target is the initial lead");
+
+        // Post-resume: a fresh facade with the new lead simulates the
+        // state migrate_session_task leaves behind (workers' static
+        // snapshot would still say L1; the lookup-through-the-trait
+        // returns L2).
+        let post_mock = MockWorkerFacade::new();
+        post_mock.callers.lock().insert(worker_key.clone(), worker_caller("forge"));
+        post_mock.leads.lock().insert(project_key, fake_key("L2"));
+        let post_facade: Arc<dyn WorkerFacade> = Arc::new(post_mock);
+        let post = resolve_target_session(&*post_facade, &worker_key, LEAD_LABEL)
+            .expect("resolves post-resume");
+        assert_eq!(post.as_str(), "L2", "post-resume target is the current lead");
     }
 }

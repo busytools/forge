@@ -490,8 +490,25 @@ impl Workspace {
         // acquire/drop showed up as the dominant hot spot in
         // `ui::render` under projects with ~14 entries.
         let catalog = self.catalog.lock();
+        // Iterate config.projects, with the test-only overlay appended
+        // so unit tests can seed projects via `seed_test_project_with_team`
+        // and exercise paths that read `list_projects` (matches the
+        // `project_root_for_key` / `find_project_view_by_name` overlay
+        // pattern).
+        #[cfg(any(test, feature = "testing"))]
+        let extra = self.test_extra_projects.lock();
+        let project_iter: Box<dyn Iterator<Item = &LoadedProject>> = {
+            #[cfg(any(test, feature = "testing"))]
+            {
+                Box::new(self.config.projects.iter().chain(extra.iter()))
+            }
+            #[cfg(not(any(test, feature = "testing")))]
+            {
+                Box::new(self.config.projects.iter())
+            }
+        };
         let mut views = Vec::with_capacity(self.config.projects.len());
-        for project in &self.config.projects {
+        for project in project_iter {
             let key =
                 ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(
                     Some(&project.path.to_string_lossy()),
@@ -3273,6 +3290,10 @@ impl Workspace {
         // matches the synthetic spawn key; rekey here so subsequent
         // lookups (close-worker by label, deliver-worker-prompt) find
         // the worker under its real claude-issued UUID.
+        // `spawned_by_session_id` stays at its spawn-time value
+        // (historical record); current-lead lookups now go through
+        // `caller_context::caller_context` and don't depend on this
+        // field being fresh (see #298 Cause 2).
         {
             let mut workers = self.live_workers.lock();
             for entries in workers.values_mut() {
