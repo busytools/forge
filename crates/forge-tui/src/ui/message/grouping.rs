@@ -191,6 +191,40 @@ impl GroupId {
     }
 }
 
+/// Aggregate status across a run's blocks, used by the L2 summary
+/// line's status_icon (spec decision 6 / v2.1). Priority:
+///
+/// - `InProgress` wins if ANY tool is in flight (the summary animates
+///   the spinner).
+/// - Else `Failed` wins if ANY tool failed or was killed (red cross).
+/// - Else `Pending` if any is still pending (hollow circle).
+/// - Else `Completed` (all clean - green check).
+///
+/// Non-ToolCall blocks are skipped (the partitioner never emits a
+/// Group containing them, but the helper stays defensive).
+pub fn aggregate_run_status(blocks: &[MessageBlock]) -> crate::agent::model::ToolCallStatus {
+    use crate::agent::model::ToolCallStatus;
+    let mut any_failed = false;
+    let mut any_pending = false;
+    for block in blocks {
+        if let MessageBlock::ToolCall(tc) = block {
+            match tc.status {
+                ToolCallStatus::InProgress => return ToolCallStatus::InProgress,
+                ToolCallStatus::Failed | ToolCallStatus::Killed => any_failed = true,
+                ToolCallStatus::Pending => any_pending = true,
+                ToolCallStatus::Completed => {}
+            }
+        }
+    }
+    if any_failed {
+        ToolCallStatus::Failed
+    } else if any_pending {
+        ToolCallStatus::Pending
+    } else {
+        ToolCallStatus::Completed
+    }
+}
+
 /// A render-time chunk: either an individual block (today's behaviour)
 /// or a Group over a maximal run of groupable tool calls. Indices into
 /// the underlying `Vec<MessageBlock>` keep the type non-borrowing so
@@ -198,7 +232,15 @@ impl GroupId {
 #[derive(Debug, Clone)]
 pub enum RenderUnit {
     Individual(usize),
-    Group { range: Range<usize>, leader_id: GroupId, kind_count: KindCount },
+    Group {
+        range: Range<usize>,
+        leader_id: GroupId,
+        kind_count: KindCount,
+        /// Aggregate status across the run (see `aggregate_run_status`)
+        /// so the L2 summary's status_icon stays in sync as tools flip
+        /// through the InProgress -> Completed lifecycle.
+        aggregate_status: crate::agent::model::ToolCallStatus,
+    },
 }
 
 /// Walk `blocks` and return the [`GroupId`] plus the run length of
@@ -270,10 +312,12 @@ pub fn partition_blocks_into_render_units(blocks: &[MessageBlock]) -> Vec<Render
                     kind_count.tally(&tc.sdk_tool_name);
                 }
             }
+            let aggregate_status = aggregate_run_status(&blocks[run_start..run_end_exclusive]);
             units.push(RenderUnit::Group {
                 range: run_start..run_end_exclusive,
                 leader_id,
                 kind_count,
+                aggregate_status,
             });
         }
         i = run_end_exclusive;
@@ -338,6 +382,18 @@ mod tests {
         let mut block = tool_call_block(id, sdk_tool_name);
         if let MessageBlock::ToolCall(tc) = &mut block {
             tc.hidden = true;
+        }
+        block
+    }
+
+    fn tool_call_block_with_status(
+        id: &str,
+        sdk_tool_name: &str,
+        status: model::ToolCallStatus,
+    ) -> MessageBlock {
+        let mut block = tool_call_block(id, sdk_tool_name);
+        if let MessageBlock::ToolCall(tc) = &mut block {
+            tc.status = status;
         }
         block
     }
@@ -514,7 +570,7 @@ mod tests {
         let units = partition_blocks_into_render_units(&blocks);
         assert_eq!(units.len(), 1);
         match &units[0] {
-            RenderUnit::Group { range, kind_count, leader_id } => {
+            RenderUnit::Group { range, kind_count, leader_id, .. } => {
                 assert_eq!(*range, 0..1);
                 assert_eq!(kind_count.reads, 1);
                 assert_eq!(leader_id.as_str(), "tu-0");
@@ -529,7 +585,7 @@ mod tests {
         let units = partition_blocks_into_render_units(&blocks);
         assert_eq!(units.len(), 1);
         match &units[0] {
-            RenderUnit::Group { range, kind_count, leader_id } => {
+            RenderUnit::Group { range, kind_count, leader_id, .. } => {
                 assert_eq!(*range, 0..2);
                 assert_eq!(kind_count.reads, 2);
                 assert_eq!(kind_count.reads + kind_count.searches + kind_count.commands, 2);
@@ -643,5 +699,99 @@ mod tests {
         let units = partition_blocks_into_render_units(&blocks);
         assert_eq!(units.len(), 3);
         assert!(units.iter().all(|u| matches!(u, RenderUnit::Individual(_))));
+    }
+
+    #[test]
+    fn aggregate_run_status_in_progress_wins_over_completed_and_pending() {
+        let blocks = vec![
+            tool_call_block_with_status("a", "Read", model::ToolCallStatus::Completed),
+            tool_call_block_with_status("b", "Read", model::ToolCallStatus::InProgress),
+            tool_call_block_with_status("c", "Read", model::ToolCallStatus::Pending),
+        ];
+        assert_eq!(aggregate_run_status(&blocks), model::ToolCallStatus::InProgress);
+    }
+
+    #[test]
+    fn aggregate_run_status_in_progress_wins_over_failed() {
+        let blocks = vec![
+            tool_call_block_with_status("a", "Bash", model::ToolCallStatus::Failed),
+            tool_call_block_with_status("b", "Bash", model::ToolCallStatus::InProgress),
+        ];
+        assert_eq!(aggregate_run_status(&blocks), model::ToolCallStatus::InProgress);
+    }
+
+    #[test]
+    fn aggregate_run_status_failed_wins_when_no_in_progress() {
+        let blocks = vec![
+            tool_call_block_with_status("a", "Read", model::ToolCallStatus::Completed),
+            tool_call_block_with_status("b", "Bash", model::ToolCallStatus::Failed),
+            tool_call_block_with_status("c", "Read", model::ToolCallStatus::Completed),
+        ];
+        assert_eq!(aggregate_run_status(&blocks), model::ToolCallStatus::Failed);
+    }
+
+    #[test]
+    fn aggregate_run_status_killed_treated_as_failure() {
+        let blocks = vec![
+            tool_call_block_with_status("a", "Read", model::ToolCallStatus::Completed),
+            tool_call_block_with_status("b", "Bash", model::ToolCallStatus::Killed),
+        ];
+        let agg = aggregate_run_status(&blocks);
+        assert!(matches!(agg, model::ToolCallStatus::Failed | model::ToolCallStatus::Killed));
+    }
+
+    #[test]
+    fn aggregate_run_status_pending_when_only_pending() {
+        let blocks = vec![
+            tool_call_block_with_status("a", "Read", model::ToolCallStatus::Pending),
+            tool_call_block_with_status("b", "Read", model::ToolCallStatus::Pending),
+        ];
+        assert_eq!(aggregate_run_status(&blocks), model::ToolCallStatus::Pending);
+    }
+
+    #[test]
+    fn aggregate_run_status_completed_when_all_completed() {
+        let blocks = vec![
+            tool_call_block_with_status("a", "Read", model::ToolCallStatus::Completed),
+            tool_call_block_with_status("b", "Grep", model::ToolCallStatus::Completed),
+        ];
+        assert_eq!(aggregate_run_status(&blocks), model::ToolCallStatus::Completed);
+    }
+
+    #[test]
+    fn aggregate_run_status_skips_non_tool_call_blocks() {
+        let blocks = vec![
+            text_block("hello"),
+            tool_call_block_with_status("a", "Read", model::ToolCallStatus::InProgress),
+        ];
+        assert_eq!(aggregate_run_status(&blocks), model::ToolCallStatus::InProgress);
+    }
+
+    #[test]
+    fn partition_carries_aggregate_status_on_group() {
+        // Default tool_call_block status is InProgress.
+        let blocks = make(&[("tool", "Read"), ("tool", "Read")]);
+        let units = partition_blocks_into_render_units(&blocks);
+        match &units[0] {
+            RenderUnit::Group { aggregate_status, .. } => {
+                assert_eq!(*aggregate_status, model::ToolCallStatus::InProgress);
+            }
+            RenderUnit::Individual(_) => panic!("expected Group"),
+        }
+    }
+
+    #[test]
+    fn partition_aggregate_completed_when_all_done() {
+        let blocks = vec![
+            tool_call_block_with_status("a", "Read", model::ToolCallStatus::Completed),
+            tool_call_block_with_status("b", "Read", model::ToolCallStatus::Completed),
+        ];
+        let units = partition_blocks_into_render_units(&blocks);
+        match &units[0] {
+            RenderUnit::Group { aggregate_status, .. } => {
+                assert_eq!(*aggregate_status, model::ToolCallStatus::Completed);
+            }
+            RenderUnit::Individual(_) => panic!("expected Group"),
+        }
     }
 }
