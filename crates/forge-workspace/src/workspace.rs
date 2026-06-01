@@ -266,7 +266,6 @@ pub(crate) struct PooledAgent {
 /// `list_sessions(..., include_workers = false)`, but this helper's
 /// own filter ensures correctness if a caller passes
 /// `include_workers = true`.
-#[must_use]
 pub fn resolve_lead_session(sessions: &[SDKSessionInfo]) -> Option<&SDKSessionInfo> {
     let latest_with = |pred: fn(&&SDKSessionInfo) -> bool| -> Option<&SDKSessionInfo> {
         sessions.iter().filter(pred).max_by_key(|s| s.last_modified)
@@ -327,7 +326,6 @@ async fn scan_worker_resume_map(
 /// `str::starts_with` so a project at `/foo/bar` doesn't match
 /// workers from a sibling project at `/foo/bar-old` whose cwd
 /// shares the byte-prefix.
-#[must_use]
 fn build_resume_map_from_sessions(
     sessions: &[SDKSessionInfo],
     project_dir: &std::path::Path,
@@ -941,7 +939,6 @@ impl Workspace {
     /// deterministic plan. Public so forge-tui can gate keyboard +
     /// mouse handlers on it without reaching into the crate-private
     /// account map.
-    #[must_use]
     pub fn all_accounts_loaded(&self) -> bool {
         self.accounts.lock().all_loaded()
     }
@@ -953,7 +950,6 @@ impl Workspace {
     /// `no usable accounts` hint for those rows and keeps them
     /// unclickable. Returns `false` when the plan isn't populated yet.
     /// Public for forge-tui to consult during render.
-    #[must_use]
     pub fn project_has_assigned_account(&self, project_key: &ProjectKey) -> bool {
         let plan = self.assignment_plan.lock();
         plan.as_ref().is_some_and(|p| !p.project_has_no_assignments(project_key))
@@ -964,7 +960,6 @@ impl Workspace {
     /// account loading glyph row from this; the order matches
     /// `forge.toml`'s `[[accounts]]` declarations so the glyphs sit
     /// next to the user's mental model of which-account-is-which.
-    #[must_use]
     pub fn account_loading_snapshot(&self) -> Vec<(String, crate::account::LoadingState)> {
         let accounts = self.accounts.lock();
         accounts.ordered_keys.iter().map(|k| (k.0.clone(), accounts.loading_state(k))).collect()
@@ -983,7 +978,6 @@ impl Workspace {
     ///   `FiveHourCap` (yellow; the session still runs but the
     ///   user should know they're inside the 5h budget cap window).
     /// - Otherwise -> `Normal` (DIM; default chip).
-    #[must_use]
     pub fn session_chip_for(
         &self,
         project_key: &ProjectKey,
@@ -2176,7 +2170,6 @@ impl Workspace {
     /// gates on this only for resume sessions; fresh sessions skip
     /// the check (their JSONL doesn't exist yet so the answer is
     /// always false anyway).
-    #[must_use]
     pub(crate) fn worker_has_progress_past_kick(&self, session_id: &str) -> bool {
         let session_key = SessionKey::from_session_id(session_id.to_owned());
         let config_dir =
@@ -2335,7 +2328,6 @@ impl Workspace {
     /// Snapshot the live workers for `project_key`. Returns an empty
     /// Vec when no workers exist (rather than `None`) so the TUI tree-
     /// child render can branch only on `is_empty`.
-    #[must_use]
     pub fn list_live_workers(
         &self,
         project_key: &ProjectKey,
@@ -2347,7 +2339,6 @@ impl Workspace {
     /// Used by the TUI's `find_running_bucket_for_path` to exclude
     /// worker buckets from project-row click routing without depending
     /// on `list_projects()` for enumeration.
-    #[must_use]
     pub fn all_live_worker_session_keys(&self) -> Vec<SessionKey> {
         self.live_workers
             .lock()
@@ -2533,7 +2524,6 @@ impl Workspace {
     /// lifecycle states resolve to the same final path. For non-
     /// worker sessions (project leads), non-git workers, or projects
     /// whose root can't be resolved, returns `cwd_raw` unchanged.
-    #[must_use]
     pub fn git_scan_cwd_for_session(
         &self,
         session_key: &SessionKey,

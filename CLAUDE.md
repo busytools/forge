@@ -570,8 +570,9 @@ behaviour we care about.
   shouldn't appear unless there's a specific, documentable reason.
   Forge is workspace-internal - compile breaks on enum/struct
   evolution are the point, not something `#[non_exhaustive]` should
-  paper over. `#[must_use]` is for futures / locks / builders at
-  the type level (one marker, not one per setter). `#[allow(...)]`
+  paper over. `#[must_use]` is forbidden outright (user-scope
+  standing rule); the unused-result lint catches the same cases
+  contextually without an annotation. `#[allow(...)]`
   on production code is dead-code or stale-lint tech debt; fix the
   underlying issue and remove the marker. Audit on every attribute
   you encounter: can it go?

@@ -241,7 +241,6 @@ pub struct MonitorInput {
 /// Parse a `Monitor` tool_use's `raw_input` into a `MonitorInput`.
 /// Returns `None` when `description` or `command` is missing or
 /// non-string - both are required for a meaningful render.
-#[must_use]
 pub fn parse_monitor_input(input: &Value) -> Option<MonitorInput> {
     let obj = input.as_object()?;
     let description = obj.get("description").and_then(Value::as_str)?.trim().to_owned();
@@ -270,7 +269,6 @@ pub struct WorkflowInput {
 /// Returns `None` when `script` is missing or non-string - the
 /// renderer can't show a phase tree or even an inferred meta name
 /// without the source.
-#[must_use]
 pub fn parse_workflow_input(input: &Value) -> Option<WorkflowInput> {
     let script = input.as_object()?.get("script").and_then(Value::as_str)?.to_owned();
     if script.is_empty() {

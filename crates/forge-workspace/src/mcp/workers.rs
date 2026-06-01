@@ -30,7 +30,6 @@ const HOP_LIMIT: u8 = 10;
 /// distinguishable from peer-MCP's plain-project-name fill at zero
 /// schema cost. `expire_inflight_for_closed_worker` matches on the
 /// composite when a worker's session is torn down.
-#[must_use]
 pub(crate) fn worker_target_project_key(project_key: &str, label: &str) -> String {
     format!("{project_key}::{label}")
 }

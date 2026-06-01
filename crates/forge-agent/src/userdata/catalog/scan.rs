@@ -358,7 +358,6 @@ const LIST_SESSIONS_MAX_CONCURRENT: usize = 16;
 /// True when `info` represents a worker session that should be
 /// hidden from default `list_sessions` / session-picker / resolver
 /// output. Callers opt in via `include_workers = true` to see them.
-#[must_use]
 pub fn should_exclude_worker_tag(info: &SDKSessionInfo) -> bool {
     info.tag.as_deref().is_some_and(|t| t.starts_with(FORGE_WORKER_TAG_PREFIX))
 }

@@ -6,7 +6,6 @@
 /// `.claude/worktrees/<label>/` and `--worktree` deletion is opt-in
 /// (the worktree survives the close); surface that to the user so
 /// they know it's still there.
-#[must_use]
 pub(crate) fn format_close_toast(label: &str, is_git_repo_at_spawn: bool) -> String {
     if is_git_repo_at_spawn {
         format!("Worker {label} closed. Worktree preserved at .claude/worktrees/{label}/")

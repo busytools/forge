@@ -18,7 +18,6 @@ pub const FORGE_WORKER_TAG_PREFIX: &str = "forge:worker:";
 
 /// Format a worker session's tag value: `forge:worker:<label>`.
 /// Used at spawn (writer side) and at scan (reader side).
-#[must_use]
 pub fn worker_tag(label: &str) -> String {
     format!("{FORGE_WORKER_TAG_PREFIX}{label}")
 }

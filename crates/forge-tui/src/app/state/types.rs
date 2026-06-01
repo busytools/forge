@@ -126,7 +126,6 @@ impl MonitorEntry {
     /// True when this entry is still actively watching. Used by the
     /// MONITORS-section visibility predicate (`section drops when no
     /// running monitor remains`).
-    #[must_use]
     pub fn is_running(&self) -> bool {
         self.status == MonitorStatus::Running
     }
@@ -173,7 +172,6 @@ impl ScheduleEntry {
     /// whose `fire_at` has passed, or a recurring cron older than
     /// `CRON_MAX_AGE`. One-shot crons hang until `CronDelete` (no
     /// cron-expr parsing in v1).
-    #[must_use]
     pub fn is_expired(&self, now: std::time::SystemTime) -> bool {
         match self.kind {
             ScheduleKind::Wakeup => self.fire_at.is_some_and(|t| now >= t),
@@ -277,7 +275,6 @@ impl WorkflowEntry {
     /// True when this workflow has at least one phase that hasn't
     /// reached `Completed`. The all-completed predicate drives the
     /// WORKFLOWS-section auto-clear.
-    #[must_use]
     pub fn is_in_progress(&self) -> bool {
         self.status == WorkflowStatus::InProgress
     }

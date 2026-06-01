@@ -135,7 +135,6 @@ pub enum WorkerSpawnError {
 /// MUST update this classifier (or switch to a typed channel) -
 /// the unit test `bridge_prefix_does_not_collide_with_worktree_predicate`
 /// pins this contract so the breaking change surfaces in CI.
-#[must_use]
 pub fn classify_worker_spawn_failure(
     message: &str,
     is_git_repo_at_spawn: bool,
@@ -324,7 +323,6 @@ pub struct ProdWorkerFacade {
 }
 
 impl ProdWorkerFacade {
-    #[must_use]
     pub fn from_arc(workspace: &Arc<Workspace>) -> Arc<dyn WorkerFacade> {
         Arc::new(Self { workspace: Arc::downgrade(workspace) })
     }
@@ -577,12 +575,10 @@ pub struct MockWorkerFacade {
 
 #[cfg(any(test, feature = "testing"))]
 impl MockWorkerFacade {
-    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    #[must_use]
     pub fn into_arc(self) -> std::sync::Arc<dyn WorkerFacade> {
         std::sync::Arc::new(self)
     }

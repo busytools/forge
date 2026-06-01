@@ -1628,7 +1628,6 @@ impl App {
 
     /// Active session's group collapse level for `id`. Defaults to
     /// L2 (summary line) when no override is stored.
-    #[must_use]
     pub fn group_collapse_level(
         &self,
         id: &crate::ui::message::grouping::GroupId,

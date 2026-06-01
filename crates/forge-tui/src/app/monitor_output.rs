@@ -64,7 +64,6 @@ const TAIL_WINDOW_BYTES: u64 = 64 * 1024;
 /// Errors emit `tracing::warn!` with the path + reason so operators
 /// see why the tail looks empty without forge panicking on a
 /// transient filesystem hiccup.
-#[must_use]
 pub fn read_output_file_tail(path: &Path, max_lines: usize) -> Option<Vec<String>> {
     if max_lines == 0 {
         return Some(Vec::new());
