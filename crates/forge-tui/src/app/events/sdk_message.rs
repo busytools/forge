@@ -306,7 +306,7 @@ fn handle_user(app: &mut App, msg: Message) {
     if tool_use_result.is_none() {
         app.set_latest_thinking_tokens(None);
     }
-    walk_user_tool_results(app, &message.content);
+    walk_user_tool_results(app, &message.content, tool_use_result.as_ref());
     // Peer-coordination user-turn echoes (#114). `Command::Prompt`
     // dispatched via `Workspace::deliver_peer_prompt` injects the
     // wrapped envelope into the target session's CLI as a user turn.
@@ -388,8 +388,16 @@ fn push_peer_envelope_user_turn_if_present(
 }
 
 /// Walk the typed `Message::User` content blocks and apply
-/// tool_result blocks via `apply_tool_result_block`.
-fn walk_user_tool_results(app: &mut App, content: &[forge_primitives::ContentBlock]) {
+/// tool_result blocks via `apply_tool_result_block`. `tool_use_result`
+/// is the outer envelope from `Message::User` (the CLI attaches a
+/// typed payload alongside the inner content blocks); some tools
+/// stamp post-result state from it (e.g. `CronCreate`'s job id at
+/// `tool_use_result.id`).
+fn walk_user_tool_results(
+    app: &mut App,
+    content: &[forge_primitives::ContentBlock],
+    tool_use_result: Option<&Value>,
+) {
     use forge_primitives::ContentBlock;
 
     for block in content {
@@ -398,7 +406,7 @@ fn walk_user_tool_results(app: &mut App, content: &[forge_primitives::ContentBlo
                 if tool_use_id.is_empty() {
                     continue;
                 }
-                stamp_cron_job_id_if_applicable(app, tool_use_id, content);
+                stamp_cron_job_id_if_applicable(app, tool_use_id, tool_use_result);
                 let raw_block = serde_json::to_value(block).map_err(|err| { tracing::warn!(target: "forge_tui::sdk_message", error = %err, "ContentBlock failed to serialize to Value"); err }).ok();
                 apply_tool_result_block(
                     app,
@@ -596,7 +604,11 @@ fn apply_tool_result_block(
 /// and would silently diverge from `"CronCreate"` if a future per-tool
 /// branch lands there (e.g. `"Cron */5 * * * *"`); the canonical
 /// name from meta stays stable.
-fn stamp_cron_job_id_if_applicable(app: &mut App, tool_use_id: &str, content: &Value) {
+fn stamp_cron_job_id_if_applicable(
+    app: &mut App,
+    tool_use_id: &str,
+    tool_use_result: Option<&Value>,
+) {
     let is_cron_create = app.with_turn_state(|ts| {
         ts.tool_calls.get(tool_use_id).is_some_and(|tc| {
             super::tool_calls::sdk_tool_name_from_meta(tc.meta.as_ref()) == Some("CronCreate")
@@ -605,13 +617,16 @@ fn stamp_cron_job_id_if_applicable(app: &mut App, tool_use_id: &str, content: &V
     if !is_cron_create {
         return;
     }
-    let job_id = content
-        .as_str()
-        .map(str::to_owned)
-        .or_else(|| content.get("id").and_then(Value::as_str).map(str::to_owned));
-    if let Some(job_id) = job_id {
-        app.stamp_cron_id_from_result(tool_use_id, &job_id);
-    }
+    // The canonical job id is `tool_use_result.id` (the envelope).
+    // The inner content text contains the id as a substring
+    // ("Scheduled recurring job <id> ..."), so reading from it stamps
+    // the wrong string and CronDelete's `remove_cron_by_id` never
+    // matches - the SCHEDULES entry persists as a phantom past its
+    // delete (#302).
+    let Some(job_id) = tool_use_result.and_then(|env| env.get("id")).and_then(Value::as_str) else {
+        return;
+    };
+    app.stamp_cron_id_from_result(tool_use_id, job_id);
 }
 
 /// Mutate `app.turn_state.tool_calls` with the supplied update

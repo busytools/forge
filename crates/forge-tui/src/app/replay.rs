@@ -393,6 +393,82 @@ mod tests {
         insta::assert_snapshot!(snapshot);
     }
 
+    /// #302: CronCreate's `tool_use_result` envelope carries the
+    /// canonical job id at `envelope.id`. A subsequent CronDelete
+    /// removes the SCHEDULES entry by that id. Pre-fix, the extractor
+    /// stamped the inner content text (the human description) onto
+    /// `cron_id`, so the delete never matched and the entry persisted
+    /// as a phantom. This test drives the full CronCreate ->
+    /// tool_use_result -> CronDelete sequence through the production
+    /// reducer (`decode_dispatch` + `apply_session_update`) and
+    /// asserts the SCHEDULES bucket drains.
+    #[test]
+    fn replay_cron_lifecycle_create_then_delete_drains_entry() {
+        let session_id = "replay-cron-302";
+        let job_id = "d17a030d";
+        // 1) Assistant turn: tool_use = CronCreate.
+        let create_tool_use = format!(
+            "{{\"type\":\"assistant\",\"message\":{{\"model\":\"claude-test\",\
+             \"id\":\"msg_cr\",\"type\":\"message\",\"role\":\"assistant\",\
+             \"content\":[{{\"type\":\"tool_use\",\"id\":\"tu_create\",\
+             \"name\":\"CronCreate\",\"input\":{{\"cron\":\"*/1 * * * *\",\
+             \"recurring\":true,\"durable\":false,\"reason\":\"test\"}}}}],\
+             \"stop_reason\":null,\"stop_sequence\":null,\"usage\":{{\
+             \"input_tokens\":0,\"output_tokens\":0}}}},\
+             \"parent_tool_use_id\":null,\"session_id\":\"{session_id}\",\
+             \"uuid\":\"uuid-create\"}}"
+        );
+        // 2) User turn: tool_result envelope. The inner content text
+        //    contains the id as a substring (the old extractor's
+        //    bug-source); the outer `tool_use_result.id` carries the
+        //    canonical id (the new extractor's source).
+        let create_result = format!(
+            "{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\
+             \"content\":[{{\"type\":\"tool_result\",\
+             \"tool_use_id\":\"tu_create\",\
+             \"content\":\"Scheduled recurring job {job_id} (Every minute)\",\
+             \"is_error\":false}}]}},\"parent_tool_use_id\":null,\
+             \"session_id\":\"{session_id}\",\"uuid\":\"uuid-result\",\
+             \"tool_use_result\":{{\"id\":\"{job_id}\",\
+             \"humanSchedule\":\"Every minute\",\"recurring\":true,\
+             \"durable\":false}}}}"
+        );
+        // 3) Assistant turn: tool_use = CronDelete, addressing the
+        //    job by id.
+        let delete_tool_use = format!(
+            "{{\"type\":\"assistant\",\"message\":{{\"model\":\"claude-test\",\
+             \"id\":\"msg_del\",\"type\":\"message\",\"role\":\"assistant\",\
+             \"content\":[{{\"type\":\"tool_use\",\"id\":\"tu_delete\",\
+             \"name\":\"CronDelete\",\"input\":{{\"id\":\"{job_id}\"}}}}],\
+             \"stop_reason\":null,\"stop_sequence\":null,\"usage\":{{\
+             \"input_tokens\":0,\"output_tokens\":0}}}},\
+             \"parent_tool_use_id\":null,\"session_id\":\"{session_id}\",\
+             \"uuid\":\"uuid-delete\"}}"
+        );
+
+        let mut app = App::test_default();
+        app.set_session_id(Some(model::SessionId::new(session_id)));
+        for (i, line) in [create_tool_use, create_result, delete_tool_use].iter().enumerate() {
+            let decoded = decode_dispatch(line, (i + 1) as u64)
+                .unwrap_or_else(|err| panic!("decode_dispatch line {}: {err}", i + 1));
+            if let DecodedLine::Message(msg) = decoded {
+                apply_session_update(
+                    &mut app,
+                    SessionUpdate::ChatAppended { session_id: session_id.to_owned(), msg },
+                );
+            }
+        }
+
+        let harness = ReplayHarness::from_app(app);
+        let schedules = &harness.default_session().schedules;
+        assert!(
+            schedules.is_empty(),
+            "CronDelete must drain the entry; got {} stale entry/entries: {:?}",
+            schedules.len(),
+            schedules.iter().map(|e| &e.label).collect::<Vec<_>>(),
+        );
+    }
+
     /// Chat tool-call grouping (L2 default): five consecutive Read
     /// tool calls in one assistant message collapse to a single
     /// summary line. The baselines on disk don't carry the four
