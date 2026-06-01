@@ -33,7 +33,7 @@ mod tests {
 
     #[test]
     fn render_group_summary_line_has_expected_text() {
-        let k = KindCount { reads: 5, searches: 3, commands: 2 };
+        let k = KindCount { reads: 5, searches: 3, commands: 2, calls: 0 };
         let lines = render_group_summary_line(k);
         assert_eq!(lines.len(), 1);
         let text = line_text(&lines[0]);

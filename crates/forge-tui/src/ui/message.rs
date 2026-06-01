@@ -8,7 +8,7 @@ use crate::ui::peer_block;
 use crate::ui::theme;
 use crate::ui::tool_call;
 
-pub(crate) mod grouping;
+pub mod grouping;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Paragraph, Wrap};
