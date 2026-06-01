@@ -22,10 +22,10 @@ pub use types::{
     AppStatus, ExtraUsage, HelpView, HistoryRetentionPolicy, HistoryRetentionStats, LoginHint,
     McpState, MessageUsage, ModeInfo, ModeState, MonitorEntry, MonitorStatus, PasteSessionState,
     PendingCommandAck, PhaseEntry, PhaseStatus, RecentSessionInfo, RenderCacheBudget,
-    ScheduleEntry, ScheduleKind, ScrollbarDragState, SelectionKind, SelectionPoint,
-    SelectionState, SessionTurnState, SessionUsageState, StopHookEntry, StopHookSummaryState,
-    TodoItem, TodoStatus, ToolCallScope, UsageSnapshot, UsageSourceKind, UsageSourceMode,
-    UsageState, UsageWindow, WorkflowEntry, WorkflowStatus,
+    ScheduleEntry, ScheduleKind, ScrollbarDragState, SelectionKind, SelectionPoint, SelectionState,
+    SessionTurnState, SessionUsageState, StopHookEntry, StopHookSummaryState, TodoItem, TodoStatus,
+    ToolCallScope, UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState, UsageWindow,
+    WorkflowEntry, WorkflowStatus,
 };
 pub use viewport::{
     ChatViewport, LayoutInvalidation, LayoutInvalidation as InvalidationLevel,
@@ -1646,9 +1646,7 @@ impl App {
 
     /// Mutable accessor for the active session's SCHEDULES list.
     /// Auto-creates the pre-Connect bucket if missing.
-    pub(crate) fn schedules_mut(
-        &mut self,
-    ) -> &mut Vec<crate::app::state::types::ScheduleEntry> {
+    pub(crate) fn schedules_mut(&mut self) -> &mut Vec<crate::app::state::types::ScheduleEntry> {
         &mut self.active_bucket_mut().schedules
     }
 
@@ -1665,8 +1663,7 @@ impl App {
     ) {
         let now = std::time::SystemTime::now();
         let schedules = self.schedules_mut();
-        schedules
-            .retain(|e| !matches!(e.kind, crate::app::state::types::ScheduleKind::Wakeup));
+        schedules.retain(|e| !matches!(e.kind, crate::app::state::types::ScheduleKind::Wakeup));
         schedules.push(crate::app::state::types::ScheduleEntry {
             key: tool_use_id.to_owned(),
             cron_id: None,
@@ -1690,7 +1687,7 @@ impl App {
     ) {
         let schedules = self.schedules_mut();
         if let Some(e) = schedules.iter_mut().find(|e| e.key == tool_use_id) {
-            e.label = cron_expr.to_owned();
+            cron_expr.clone_into(&mut e.label);
             e.kind = crate::app::state::types::ScheduleKind::Cron { recurring, durable };
             return;
         }
@@ -2889,11 +2886,7 @@ mod tests {
     fn upsert_wakeup_replaces_prior_wakeup() {
         let mut app = App::test_default();
         let t0 = std::time::SystemTime::UNIX_EPOCH;
-        app.upsert_wakeup_from_tool_input(
-            "tu1",
-            "first",
-            t0 + std::time::Duration::from_secs(60),
-        );
+        app.upsert_wakeup_from_tool_input("tu1", "first", t0 + std::time::Duration::from_secs(60));
         app.upsert_wakeup_from_tool_input(
             "tu2",
             "second",
@@ -2924,10 +2917,7 @@ mod tests {
         let t0 = std::time::SystemTime::UNIX_EPOCH;
         app.upsert_cron_from_tool_input("tu1", "*/5 * * * *", true, false, t0);
         assert_eq!(app.schedules().len(), 1);
-        assert!(matches!(
-            app.schedules()[0].kind,
-            ScheduleKind::Cron { recurring: true, .. }
-        ));
+        assert!(matches!(app.schedules()[0].kind, ScheduleKind::Cron { recurring: true, .. }));
         // Stamp the job id discovered from the CronCreate result.
         app.stamp_cron_id_from_result("tu1", "job-abc");
         assert_eq!(app.schedules()[0].cron_id.as_deref(), Some("job-abc"));
@@ -2942,11 +2932,7 @@ mod tests {
         let t0 = std::time::SystemTime::UNIX_EPOCH;
         app.upsert_cron_from_tool_input("tu1", "*/5 * * * *", true, false, t0);
         app.upsert_cron_from_tool_input("tu1", "*/5 * * * *", true, false, t0);
-        assert_eq!(
-            app.schedules().len(),
-            1,
-            "re-decoded same tool_use_id stays one entry"
-        );
+        assert_eq!(app.schedules().len(), 1, "re-decoded same tool_use_id stays one entry");
     }
 
     #[test]

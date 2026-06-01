@@ -29,9 +29,7 @@ use super::App;
 use crate::agent::model::ToolCallStatus;
 use crate::app::MessageBlock;
 use crate::app::MessageRole;
-use crate::app::state::tool_call_info::{
-    ToolCallInfo, is_execute_tool_name, is_monitor_tool_name,
-};
+use crate::app::state::tool_call_info::{ToolCallInfo, is_execute_tool_name, is_monitor_tool_name};
 
 /// Soft cap on the rendered PROCESSES section. Sanity bound so a
 /// runaway process tree doesn't blow up the body line count; users
@@ -892,5 +890,4 @@ mod tests {
         let rows = rows_from_os_snapshot(&snapshot, &[]);
         assert!(rows.is_empty());
     }
-
 }

@@ -167,8 +167,7 @@ pub struct ScheduleEntry {
 
 impl ScheduleEntry {
     /// Recurring crons auto-expire after 7 days (CLI-documented).
-    pub const CRON_MAX_AGE: std::time::Duration =
-        std::time::Duration::from_secs(7 * 24 * 60 * 60);
+    pub const CRON_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 60 * 60);
 
     /// True when `now` is at/after the entry's validity end: a wakeup
     /// whose `fire_at` has passed, or a recurring cron older than
@@ -178,9 +177,9 @@ impl ScheduleEntry {
     pub fn is_expired(&self, now: std::time::SystemTime) -> bool {
         match self.kind {
             ScheduleKind::Wakeup => self.fire_at.is_some_and(|t| now >= t),
-            ScheduleKind::Cron { recurring: true, .. } => now
-                .duration_since(self.created_at)
-                .is_ok_and(|age| age >= Self::CRON_MAX_AGE),
+            ScheduleKind::Cron { recurring: true, .. } => {
+                now.duration_since(self.created_at).is_ok_and(|age| age >= Self::CRON_MAX_AGE)
+            }
             ScheduleKind::Cron { recurring: false, .. } => false,
         }
     }

@@ -65,10 +65,8 @@ pub(super) fn handle_tool_call(app: &mut App, tc: model::ToolCall) {
         && let Some(input) = tc.raw_input.as_ref()
     {
         let expr = input.get("cron").and_then(serde_json::Value::as_str).unwrap_or("");
-        let recurring =
-            input.get("recurring").and_then(serde_json::Value::as_bool).unwrap_or(true);
-        let durable =
-            input.get("durable").and_then(serde_json::Value::as_bool).unwrap_or(false);
+        let recurring = input.get("recurring").and_then(serde_json::Value::as_bool).unwrap_or(true);
+        let durable = input.get("durable").and_then(serde_json::Value::as_bool).unwrap_or(false);
         app.upsert_cron_from_tool_input(
             &id_str,
             expr,

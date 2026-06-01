@@ -1315,10 +1315,9 @@ fn append_schedule_row(
         // Circle-with-upper-left-quadrant glyph for crons; distinct
         // from the chat-label hourglass so the section's row glyph
         // doesn't double up with the chat-side tool label.
-        ScheduleKind::Cron { recurring, .. } => (
-            "\u{25f4}",
-            if recurring { "recurring".to_owned() } else { "one-shot".to_owned() },
-        ),
+        ScheduleKind::Cron { recurring, .. } => {
+            ("\u{25f4}", if recurring { "recurring".to_owned() } else { "one-shot".to_owned() })
+        }
     };
     let header_chrome = usize::from(PANE_PAD)
         + 1                                                  // glyph cell
