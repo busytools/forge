@@ -275,19 +275,20 @@ pub(crate) fn render_inbound(
 ) -> Vec<Line<'static>> {
     match kind {
         PeerInboundKind::Question { from, body, .. } => {
-            render_block("Question", from, None, body, suppress_header, collapsed)
+            render_block("Question", from, None, body, INBOUND_GLYPH, suppress_header, collapsed)
         }
         PeerInboundKind::Message { from, body, .. } => {
-            render_block("Message", from, None, body, suppress_header, collapsed)
+            render_block("Message", from, None, body, INBOUND_GLYPH, suppress_header, collapsed)
         }
         PeerInboundKind::Reply { from, body, .. } => {
-            render_block("Reply", from, None, body, suppress_header, collapsed)
+            render_block("Reply", from, None, body, INBOUND_GLYPH, suppress_header, collapsed)
         }
         PeerInboundKind::LateReply { from, body, .. } => render_block(
             "Reply",
             from,
             Some(NoticeModifier::Late),
             body,
+            INBOUND_GLYPH,
             suppress_header,
             collapsed,
         ),
@@ -296,6 +297,7 @@ pub(crate) fn render_inbound(
             target,
             Some(NoticeModifier::TimedOut),
             body,
+            INBOUND_GLYPH,
             suppress_header,
             collapsed,
         ),
@@ -304,6 +306,7 @@ pub(crate) fn render_inbound(
             from,
             Some(NoticeModifier::Expired),
             body,
+            INBOUND_GLYPH,
             suppress_header,
             collapsed,
         ),
@@ -312,6 +315,7 @@ pub(crate) fn render_inbound(
             target,
             Some(NoticeModifier::Undeliverable),
             reason,
+            INBOUND_GLYPH,
             suppress_header,
             collapsed,
         ),
@@ -325,10 +329,10 @@ pub(crate) fn render_inbound(
 pub(crate) fn render_outbound(kind: &PeerOutboundKind, collapsed: bool) -> Vec<Line<'static>> {
     match kind {
         PeerOutboundKind::Ask { target, body } => {
-            render_block("Ask", target, None, body, false, collapsed)
+            render_block("Ask", target, None, body, OUTBOUND_GLYPH, false, collapsed)
         }
         PeerOutboundKind::Tell { target, body } => {
-            render_block("Tell", target, None, body, false, collapsed)
+            render_block("Tell", target, None, body, OUTBOUND_GLYPH, false, collapsed)
         }
     }
 }
@@ -338,21 +342,35 @@ pub(crate) fn render_outbound(kind: &PeerOutboundKind, collapsed: bool) -> Vec<L
 /// peer / worker row, not a tool call".
 const ROW_GLYPH: &str = "\u{25B6}"; // ▶
 
+/// Directional kind-icon for outbound rows (Ask / Tell). U+2934
+/// CURVED ARROW POINTING RIGHTWARDS AND CURVING UPWARDS.
+const OUTBOUND_GLYPH: &str = "\u{2934}";
+
+/// Directional kind-icon for inbound rows (Question / Message /
+/// Reply / LateReply / CallerTimeout / RecipientExpired /
+/// DeliveryFailure). U+2935 CURVED ARROW POINTING RIGHTWARDS AND
+/// CURVING DOWNWARDS.
+const INBOUND_GLYPH: &str = "\u{2935}";
+
 /// Unified renderer for the new chat-block shape:
 ///
 /// ```text
-///   ▶ Verb name[ - ⚠ modifier]
+///   ▶ ⤴ Verb name[ - ⚠ modifier]   (outbound)
+///   ▶ ⤵ Verb name[ - ⚠ modifier]   (inbound)
 ///   │  body line 1
 ///   └─ body line 2
 /// ```
 ///
-/// `suppress_header = true` drops the header row and renders the body
-/// alone (same-worker streak follower).
+/// `direction_glyph` is the leading kind-icon - `OUTBOUND_GLYPH` for
+/// `render_outbound` callers, `INBOUND_GLYPH` for every `render_inbound`
+/// arm. `suppress_header = true` drops the header row entirely (same-
+/// worker streak follower) and the glyph goes with it.
 fn render_block(
     verb: &str,
     name: &str,
     modifier: Option<NoticeModifier>,
     body: &str,
+    direction_glyph: &str,
     suppress_header: bool,
     collapsed: bool,
 ) -> Vec<Line<'static>> {
@@ -363,6 +381,11 @@ fn render_block(
         header.spans.push(Span::styled(
             ROW_GLYPH.to_owned(),
             Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
+        ));
+        header.spans.push(Span::raw(" "));
+        header.spans.push(Span::styled(
+            direction_glyph.to_owned(),
+            Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
         ));
         header.spans.push(Span::raw(" "));
         header.spans.push(Span::styled(
@@ -733,6 +756,99 @@ mod tests {
         let lines = render_outbound(&kind, false);
         let s = render_lines_to_strings(&lines);
         assert!(s[0].contains("Tell planner"));
+    }
+
+    #[test]
+    fn render_outbound_ask_includes_outbound_directional_glyph() {
+        let kind = PeerOutboundKind::Ask {
+            target: "planner".into(),
+            body: "Is the seam plan ready?".into(),
+        };
+        let lines = render_outbound(&kind, false);
+        let s = render_lines_to_strings(&lines);
+        assert!(
+            s[0].contains('\u{2934}'),
+            "outbound glyph ⤴ U+2934 must appear in header: {:?}",
+            s[0]
+        );
+    }
+
+    #[test]
+    fn render_outbound_tell_includes_outbound_directional_glyph() {
+        let kind = PeerOutboundKind::Tell {
+            target: "planner".into(),
+            body: "FYI: PR #187 is open.".into(),
+        };
+        let lines = render_outbound(&kind, false);
+        let s = render_lines_to_strings(&lines);
+        assert!(
+            s[0].contains('\u{2934}'),
+            "outbound glyph ⤴ U+2934 must appear in header: {:?}",
+            s[0]
+        );
+    }
+
+    #[test]
+    fn render_inbound_question_includes_inbound_directional_glyph() {
+        let kind = PeerInboundKind::Question {
+            from: "alice".into(),
+            org: "org".into(),
+            body: "what?".into(),
+        };
+        let lines = render_inbound(&kind, false, false);
+        let s = render_lines_to_strings(&lines);
+        assert!(
+            s[0].contains('\u{2935}'),
+            "inbound glyph ⤵ U+2935 must appear in header: {:?}",
+            s[0]
+        );
+    }
+
+    #[test]
+    fn render_inbound_reply_includes_inbound_directional_glyph() {
+        let kind = PeerInboundKind::Reply {
+            from: "alice".into(),
+            org: "org".into(),
+            body: "answer".into(),
+        };
+        let lines = render_inbound(&kind, false, false);
+        let s = render_lines_to_strings(&lines);
+        assert!(
+            s[0].contains('\u{2935}'),
+            "inbound glyph ⤵ U+2935 must appear in header: {:?}",
+            s[0]
+        );
+    }
+
+    #[test]
+    fn render_inbound_caller_timeout_carries_inbound_glyph() {
+        let kind = PeerInboundKind::CallerTimeout {
+            target: "planner".into(),
+            org: "Personal".into(),
+            body: "was: \"is the seam plan ready?\"".into(),
+        };
+        let lines = render_inbound(&kind, false, false);
+        let s = render_lines_to_strings(&lines);
+        assert!(
+            s[0].contains('\u{2935}'),
+            "CallerTimeout routes through render_inbound and carries ⤵: {:?}",
+            s[0]
+        );
+    }
+
+    #[test]
+    fn render_inbound_suppress_header_drops_directional_glyph_too() {
+        let kind = PeerInboundKind::Message {
+            from: "implementer".into(),
+            org: "Personal".into(),
+            body: "PR ready.".into(),
+        };
+        let lines = render_inbound(&kind, true, false);
+        let s = render_lines_to_strings(&lines);
+        assert!(
+            !s.iter().any(|line| line.contains('\u{2935}')),
+            "suppress_header drops the whole header (including glyph): {s:?}"
+        );
     }
 
     #[test]
