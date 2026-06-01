@@ -108,6 +108,30 @@ pub(crate) fn suspend_terminal() {
     let _ = crossterm::terminal::disable_raw_mode();
 }
 
+/// Wrap ratatui's restore-on-panic hook so a *caught* render panic
+/// can't corrupt the live TUI.
+///
+/// ratatui's hook runs at the panic site, before the `catch_unwind` in
+/// `ui::markdown::render_markdown_safe` swallows a markdown panic, and
+/// restores the terminal (raw mode off, leave alt-screen). That alone
+/// flips the terminal to cooked mode (which echoes input, rendering ESC
+/// as `^[`) while forge's mouse capture keeps streaming, leaking SGR
+/// motion sequences onto the screen. So: a panic inside the markdown
+/// guard is left untouched for `catch_unwind`; any other panic is a real
+/// crash and gets forge's full teardown (which also disables mouse
+/// capture, unlike ratatui's restore) before the captured hook prints
+/// the backtrace.
+fn install_panic_hook() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        if crate::ui::markdown::in_guarded_render() {
+            return;
+        }
+        suspend_terminal();
+        previous(info);
+    }));
+}
+
 /// Re-enable raw mode and crossterm features after a child process finishes.
 pub(crate) fn resume_terminal() {
     let _ = crossterm::terminal::enable_raw_mode();
@@ -134,6 +158,10 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
 
     // Enable bracketed paste, mouse capture, and enhanced keyboard protocol
     resume_terminal();
+
+    // Wrap ratatui's restore-on-panic hook so a caught markdown render
+    // panic can't flip the terminal out of raw mode mid-session.
+    install_panic_hook();
 
     let mut events = EventStream::new();
     // 4ms tick → ~250 Hz nominal sleep ceiling; practical FPS during

@@ -12,7 +12,7 @@ mod input;
 pub(crate) mod inspector_pane;
 pub mod launchpad;
 pub(crate) mod layout;
-mod markdown;
+pub(crate) mod markdown;
 mod message;
 pub(crate) mod peer_block;
 pub mod projects_pane;
