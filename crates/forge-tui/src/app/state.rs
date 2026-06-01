@@ -1693,6 +1693,19 @@ impl App {
         reason: &str,
         fire_at: std::time::SystemTime,
     ) {
+        // #302 redux: wakeups are inherently session-scoped - the
+        // /loop dynamic-pacing mechanism re-arms each turn, no
+        // `durable` flag exists. The CLI kills every live wakeup at
+        // session close, so any wakeup replayed during
+        // `load_resume_history` is an orphan. Skip the push so
+        // SCHEDULES doesn't surface phantom wakeups post-resume.
+        // Live operation is untouched - the /loop re-arm path is
+        // replay_in_progress=false. Mirrors the cron orphan-
+        // suppression below and #291's monitor pattern at
+        // `set_monitor_status`.
+        if self.replay_in_progress {
+            return;
+        }
         let now = std::time::SystemTime::now();
         let schedules = self.schedules_mut();
         schedules.retain(|e| !matches!(e.kind, crate::app::state::types::ScheduleKind::Wakeup));
@@ -1717,6 +1730,19 @@ impl App {
         durable: bool,
         created_at: std::time::SystemTime,
     ) {
+        // #302 redux: session-only crons (durable=false) replayed
+        // during `load_resume_history` are orphans - the CLI killed
+        // the live cron at session close (no CronDelete in the
+        // transcript), so the persisted ScheduleEntry has no
+        // counterpart. Skip the push so the SCHEDULES section
+        // doesn't surface a phantom recurring cron post-resume.
+        // Durable crons survive across sessions by design and
+        // replay normally. Mirrors #291's monitor orphan-
+        // suppression at `set_monitor_status` + the wakeup guard
+        // above.
+        if self.replay_in_progress && !durable {
+            return;
+        }
         let schedules = self.schedules_mut();
         if let Some(e) = schedules.iter_mut().find(|e| e.key == tool_use_id) {
             cron_expr.clone_into(&mut e.label);
@@ -5393,6 +5419,105 @@ mod tests {
         let monitors = app.monitors();
         assert_eq!(monitors.len(), 1);
         assert_eq!(monitors[0].status, crate::app::state::types::MonitorStatus::Running);
+    }
+
+    // -----------------------------------------------------------
+    // #302 redux: replay-orphan Schedule entries (cron + wakeup).
+    // Mirror of the Monitor orphan-suppression pattern above. The
+    // CLI kills session-only crons + all wakeups at session close,
+    // but the persisted ScheduleEntry replays on resume - without
+    // these guards, the SCHEDULES section surfaces phantoms.
+    // -----------------------------------------------------------
+
+    #[test]
+    fn upsert_cron_during_replay_skips_session_only_cron() {
+        let mut app = make_test_app();
+        app.replay_in_progress = true;
+        let now = std::time::SystemTime::now();
+
+        app.upsert_cron_from_tool_input(
+            "tu-orphan",
+            "*/5 * * * *",
+            true,  // recurring
+            false, // durable - session-only
+            now,
+        );
+
+        assert!(
+            app.schedules().is_empty(),
+            "session-only crons replayed during resume must NOT push an entry; got: {:?}",
+            app.schedules()
+        );
+    }
+
+    #[test]
+    fn upsert_cron_during_replay_keeps_durable_cron() {
+        let mut app = make_test_app();
+        app.replay_in_progress = true;
+        let now = std::time::SystemTime::now();
+
+        app.upsert_cron_from_tool_input(
+            "tu-durable",
+            "0 9 * * *",
+            true, // recurring
+            true, // durable - survives across sessions
+            now,
+        );
+
+        assert_eq!(
+            app.schedules().len(),
+            1,
+            "durable crons must replay normally; got: {:?}",
+            app.schedules()
+        );
+    }
+
+    #[test]
+    fn upsert_cron_outside_replay_pushes_regardless_of_durable() {
+        let mut app = make_test_app();
+        assert!(!app.replay_in_progress, "live default");
+        let now = std::time::SystemTime::now();
+
+        app.upsert_cron_from_tool_input("tu-live-session", "* * * * *", true, false, now);
+        app.upsert_cron_from_tool_input("tu-live-durable", "0 9 * * *", true, true, now);
+
+        assert_eq!(
+            app.schedules().len(),
+            2,
+            "live operation pushes both kinds; got: {:?}",
+            app.schedules()
+        );
+    }
+
+    #[test]
+    fn upsert_wakeup_during_replay_is_suppressed() {
+        let mut app = make_test_app();
+        app.replay_in_progress = true;
+        let fire_at = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
+
+        app.upsert_wakeup_from_tool_input("tu-wake", "loop poll", fire_at);
+
+        assert!(
+            app.schedules().is_empty(),
+            "wakeups replayed during resume must NOT push an entry; got: {:?}",
+            app.schedules()
+        );
+    }
+
+    #[test]
+    fn upsert_wakeup_outside_replay_pushes_normally() {
+        let mut app = make_test_app();
+        assert!(!app.replay_in_progress, "live default");
+        let fire_at = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
+
+        app.upsert_wakeup_from_tool_input("tu-live-wake", "poll", fire_at);
+
+        assert_eq!(
+            app.schedules().len(),
+            1,
+            "live wakeups push normally; got: {:?}",
+            app.schedules()
+        );
     }
 
     // -----------------------------------------------------------
