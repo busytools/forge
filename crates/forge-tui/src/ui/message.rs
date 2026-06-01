@@ -1280,6 +1280,7 @@ fn build_message_render_signature(
     use std::hash::{Hash, Hasher};
     let mut hasher = DefaultHasher::new();
     msg.role.hash(&mut hasher);
+    msg.turn_duration_ms.hash(&mut hasher);
     spinner.show_empty_thinking.hash(&mut hasher);
     spinner.show_thinking.hash(&mut hasher);
     spinner.show_compacting.hash(&mut hasher);
@@ -1554,15 +1555,19 @@ fn role_label_line(msg: &ChatMessage) -> Line<'static> {
                 ))
             }
         }
-        // #279: the prior `Forge · N.Ns` banner chip was deleted -
-        // CLI 2.1.156 never emits `system/turn_duration` in forge's
-        // flow (confirmed across 30+ baselines + 14 fresh captures),
-        // so the per-message stamp + per-session cache that fed the
-        // chip were dead code. Bare role label only.
-        MessageRole::Assistant => Line::from(Span::styled(
-            "Forge",
-            Style::default().fg(theme::ROLE_ASSISTANT).add_modifier(Modifier::BOLD),
-        )),
+        MessageRole::Assistant => {
+            let mut spans = vec![Span::styled(
+                "Forge",
+                Style::default().fg(theme::ROLE_ASSISTANT).add_modifier(Modifier::BOLD),
+            )];
+            if let Some(ms) = msg.turn_duration_ms {
+                spans.push(Span::styled(
+                    format!(" \u{b7} {}", format_turn_duration(ms)),
+                    Style::default().fg(theme::DIM),
+                ));
+            }
+            Line::from(spans)
+        }
         MessageRole::System(_) => system_role_label_line(system_severity_from_role(&msg.role)),
     }
 }
@@ -3668,14 +3673,26 @@ mod tests {
     }
 
     #[test]
-    fn assistant_role_label_renders_bare_forge_label() {
-        // #279: the prior banner chip was deleted (CLI 2.1.156 never
-        // emits `system/turn_duration` in forge's flow); the assistant
-        // role label is bare `Forge` in RUST_ORANGE BOLD.
+    fn assistant_role_label_renders_bare_forge_when_turn_duration_absent() {
         let msg = make_text_message(MessageRole::Assistant, "anything");
+        // turn_duration_ms defaults to None.
         let line = role_label_line(&msg);
         let rendered: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(rendered, "Forge");
+    }
+
+    #[test]
+    fn assistant_role_label_renders_chip_when_turn_duration_present() {
+        let mut msg = make_text_message(MessageRole::Assistant, "anything");
+        msg.turn_duration_ms = Some(12_400);
+        let line = role_label_line(&msg);
+        let rendered: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(rendered.contains("Forge"), "role banner stays Forge: {rendered:?}");
+        assert!(rendered.contains("12.4s"), "chip carries formatted duration: {rendered:?}");
+        assert!(
+            rendered.contains('\u{b7}'),
+            "chip separator is the middle-dot \u{b7}: {rendered:?}"
+        );
     }
 
     // ----------------------------------------------------------------
