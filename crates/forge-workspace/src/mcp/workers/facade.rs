@@ -183,6 +183,15 @@ pub trait WorkerFacade: Send + Sync {
     /// Returns `None` when `caller` matches no known session.
     fn caller_project(&self, caller: &SessionKey) -> Option<CallerProject>;
 
+    /// Resolve the current lead session for `caller`'s project.
+    /// Re-walks live state on every call so a `migrate_session_task`
+    /// rekey on lead-resume is reflected immediately (the previous
+    /// `spawned_by_session_id` snapshot taken at worker-spawn-time
+    /// stayed stale across resumes - #298 Cause 2). Returns `None`
+    /// when the caller doesn't belong to any project or the project
+    /// has no currently-registered lead.
+    fn lead_session_for_caller(&self, caller: &SessionKey) -> Option<SessionKey>;
+
     /// Resolve a display identity for `caller`. Always returns a value
     /// (no `Option`); the production impl falls back to the raw
     /// session id for genuinely unresolvable callers so the envelope
@@ -325,22 +334,14 @@ impl ProdWorkerFacade {
 impl WorkerFacade for ProdWorkerFacade {
     fn caller_project(&self, caller: &SessionKey) -> Option<CallerProject> {
         let ws = self.workspace.upgrade()?;
-        // live_workers is the authoritative "child agent" registry;
-        // a session is a worker iff it appears there. A session is a
-        // lead iff it appears in the project's catalog AND is NOT in
-        // live_workers. The catalog can index worker sessions once
-        // their Connected fires, so `sessions.first()` is not a
-        // reliable lead marker - read live_workers first.
-        for view in ws.list_projects() {
-            let live = ws.list_live_workers(&view.key);
-            if live.iter().any(|w| w.session_key == *caller) {
-                return Some(CallerProject { project_key: view.key, is_lead: false });
-            }
-            if view.sessions.iter().any(|s| s.session == *caller) {
-                return Some(CallerProject { project_key: view.key, is_lead: true });
-            }
-        }
-        None
+        let cx = crate::mcp::caller_context::caller_context(&ws, caller)?;
+        Some(CallerProject { project_key: cx.project_key, is_lead: cx.is_lead })
+    }
+
+    fn lead_session_for_caller(&self, caller: &SessionKey) -> Option<SessionKey> {
+        let ws = self.workspace.upgrade()?;
+        let cx = crate::mcp::caller_context::caller_context(&ws, caller)?;
+        cx.lead_session_view.map(|v| v.session)
     }
 
     fn caller_identity(&self, caller: &SessionKey) -> WorkerIdentity {
@@ -476,24 +477,25 @@ impl WorkerFacade for ProdWorkerFacade {
                 limit: wrapped.hop_limit,
             });
         }
-        let cp = self.caller_project(caller).ok_or(WorkerLeadDeliverError::UnknownCaller)?;
-        if cp.is_lead {
-            return Err(WorkerLeadDeliverError::LeadCallerHasNoLead);
-        }
         let Some(ws) = self.workspace.upgrade() else {
             return Err(WorkerLeadDeliverError::UnknownCaller);
         };
-        // Find the caller's WorkerEntry to read its spawned_by_session_id.
-        // The synth -> real key migration on Connected updates session_key
-        // on the entry, so matching by SessionKey works for both the
-        // pre-Connect and post-Connect windows.
-        let Some(entry) =
-            ws.list_live_workers(&cp.project_key).into_iter().find(|w| w.session_key == *caller)
-        else {
+        // Resolve the caller's project + current lead via the shared
+        // helper. The previous impl read `entry.spawned_by_session_id`
+        // (set once at spawn time, never rewritten on lead-resume) -
+        // tells routed to the dead pre-resume session id and were
+        // silently dropped. #298 Cause 2.
+        let Some(cx) = crate::mcp::caller_context::caller_context(&ws, caller) else {
             return Err(WorkerLeadDeliverError::UnknownCaller);
         };
-        let lead_session_id = entry.spawned_by_session_id.clone();
-        let target_lead_key = SessionKey::from_session_id(lead_session_id.clone());
+        if cx.is_lead {
+            return Err(WorkerLeadDeliverError::LeadCallerHasNoLead);
+        }
+        let Some(lead) = cx.lead_session_view else {
+            return Err(WorkerLeadDeliverError::UnknownCaller);
+        };
+        let target_lead_key = lead.session.clone();
+        let lead_session_id = target_lead_key.as_str().to_owned();
         // Defensive: confirm the lead's session is still in the pool
         // before dispatching. If it closed since the worker was
         // spawned, surface a clear error so the worker LLM can adapt.
@@ -549,6 +551,11 @@ pub struct MockWorkerFacade {
     /// Pre-loaded caller -> project mapping. Tests insert entries
     /// before invoking the tool.
     pub callers: parking_lot::Mutex<std::collections::HashMap<SessionKey, CallerProject>>,
+    /// Pre-loaded per-project lead session. `lead_session_for_caller`
+    /// resolves the caller's project_key via `callers` then looks up
+    /// the matching entry here. Tests that exercise the LEAD_LABEL
+    /// branch insert into this map.
+    pub leads: parking_lot::Mutex<std::collections::HashMap<crate::ProjectKey, SessionKey>>,
     /// Pre-loaded `live_workers` snapshot per project_key string.
     /// `list_workers` and `deliver_worker_prompt` both read from
     /// this.
@@ -586,6 +593,11 @@ impl MockWorkerFacade {
 impl WorkerFacade for MockWorkerFacade {
     fn caller_project(&self, caller: &SessionKey) -> Option<CallerProject> {
         self.callers.lock().get(caller).cloned()
+    }
+
+    fn lead_session_for_caller(&self, caller: &SessionKey) -> Option<SessionKey> {
+        let cp = self.caller_project(caller)?;
+        self.leads.lock().get(&cp.project_key).cloned()
     }
 
     fn caller_identity(&self, caller: &SessionKey) -> WorkerIdentity {
