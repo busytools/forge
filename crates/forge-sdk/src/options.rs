@@ -320,11 +320,8 @@ impl std::fmt::Debug for Options {
     }
 }
 
-/// Builder for [`Options`]. `#[must_use]` catches "constructed a
-/// builder, dropped it without `.build()`" - every setter returns
-/// `Self` and inherits the marker.
+/// Builder for [`Options`].
 #[derive(Clone, Default)]
-#[must_use]
 pub struct OptionsBuilder {
     inner: Options,
 }

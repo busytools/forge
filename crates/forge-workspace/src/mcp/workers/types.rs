@@ -20,7 +20,6 @@ use crate::SessionKey;
 /// (`forge-workspace::list_projects().path`); `label` is the worker's
 /// charter label; `is_git_repo_at_spawn` is the cached flag on
 /// `WorkerEntry`. Non-git workers run in the project root unmodified.
-#[must_use]
 pub fn worker_tag_dir(project_root: &Path, label: &str, is_git_repo_at_spawn: bool) -> PathBuf {
     if is_git_repo_at_spawn {
         project_root.join(".claude/worktrees").join(label)
@@ -68,7 +67,6 @@ impl WorkerEntry {
     /// Project the workspace-internal entry to the wire shape.
     /// `session_id` is the worker's claude-issued session UUID (=
     /// `session_key.as_str().to_owned()` once Connected).
-    #[must_use]
     pub fn to_status(&self) -> WorkerStatus {
         WorkerStatus {
             label: self.label.clone(),

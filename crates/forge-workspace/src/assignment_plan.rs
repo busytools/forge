@@ -82,7 +82,6 @@ impl AssignmentPlan {
     /// `None` when the project has no entry (the project's pool was
     /// empty at compute time) or the label wasn't assigned (a new
     /// adhoc-worker label that needs `assign_adhoc_worker` first).
-    #[must_use]
     pub fn lookup(&self, project: &ProjectKey, label: &SessionLabel) -> Option<&AccountKey> {
         self.assignments.get(&(project.clone(), label.clone()))
     }
@@ -129,7 +128,6 @@ impl AssignmentPlan {
     /// (every allowed account Bailed, or the allow-list contains no
     /// known accounts) render a `no usable accounts` hint and stay
     /// unclickable even though `all_loaded` returned true.
-    #[must_use]
     pub fn project_has_no_assignments(&self, project: &ProjectKey) -> bool {
         !self.assignments.keys().any(|(p, _)| p == project)
     }
@@ -171,7 +169,6 @@ impl AssignmentPlan {
 /// accounts + the project list. Pure function: same inputs always
 /// produce the same output. Section 4.4 of #246 uses a frozen-overlay
 /// variant that merges this output with an existing plan.
-#[must_use]
 pub fn compute_plan(ready_accounts: &[AccountKey], projects: &[ProjectInput]) -> AssignmentPlan {
     let mut plan = AssignmentPlan::default();
 

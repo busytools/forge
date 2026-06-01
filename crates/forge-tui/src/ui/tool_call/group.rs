@@ -13,7 +13,6 @@ use crate::ui::theme;
 
 /// Render the L2 summary line: `> 5 reads \u{b7} 3 searches \u{b7} 2 commands`.
 /// DIM, with `>` as the left-gutter expand affordance.
-#[must_use]
 pub fn render_group_summary_line(kind_count: KindCount) -> Vec<Line<'static>> {
     let summary = kind_count.format_summary();
     let dim = Style::default().fg(theme::DIM);

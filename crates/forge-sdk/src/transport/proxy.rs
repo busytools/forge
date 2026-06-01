@@ -72,20 +72,17 @@ pub struct ProxyHandle {
 
 impl ProxyHandle {
     /// HTTP URL the child should set as `HTTPS_PROXY`.
-    #[must_use]
     pub fn proxy_url(&self) -> String {
         format!("http://{}", self.listen_addr)
     }
 
     /// Path to the CA cert the child needs in `NODE_EXTRA_CA_CERTS`
     /// so its rustls / Node TLS layer trusts our man-in-the-middle.
-    #[must_use]
     pub fn ca_cert_path(&self) -> &std::path::Path {
         &self.ca_cert_path
     }
 
     /// Socket address the proxy is listening on.
-    #[must_use]
     pub fn listen_addr(&self) -> SocketAddr {
         self.listen_addr
     }
