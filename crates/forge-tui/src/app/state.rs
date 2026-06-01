@@ -1859,12 +1859,46 @@ impl App {
     /// of its `output_file`). The file is authoritative - the
     /// renderer's tail must match the file, not accumulate stale
     /// entries from prior events. No-op if no entry matches.
-    pub fn replace_monitor_output_tail_by_task_id(&mut self, task_id: &str, lines: Vec<String>) {
-        if let Some(entry) =
-            self.monitors_mut().iter_mut().find(|m| m.task_id.as_deref() == Some(task_id))
-        {
-            entry.output_tail = lines.into_iter().collect();
-        }
+    ///
+    /// Also stamps the last 5 lines onto the matching `ToolCallInfo`'s
+    /// `monitor_output_tail` and marks the tool call's layout dirty so
+    /// the in-chat live block re-renders in place. Mirrors the
+    /// `apply_terminal_payload` precedent in `terminal.rs` (terminal
+    /// stream + dirty bump).
+    pub fn replace_monitor_output_tail_by_task_id(&mut self, task_id: &str, lines: &[String]) {
+        const CHAT_TAIL_MAX: usize = 5;
+        // First update the per-session MonitorEntry. Capture the
+        // tool_use_id so the chat-tail stamp below can find the
+        // matching ToolCallInfo through `tool_call_index`.
+        let tool_use_id = {
+            let Some(entry) =
+                self.monitors_mut().iter_mut().find(|m| m.task_id.as_deref() == Some(task_id))
+            else {
+                return;
+            };
+            entry.output_tail = lines.iter().cloned().collect();
+            entry.tool_use_id.clone()
+        };
+        // Slice the last 5 lines for the chat block. Skip the
+        // `lookup_tool_call` -> `messages_mut` walk when the bucket
+        // doesn't carry that tool_use_id yet (the ToolCall block
+        // arrives via `handle_tool_call` and indexing happens slightly
+        // after); the next refresh tick re-stamps once indexed.
+        let last_five: Vec<String> = if lines.len() <= CHAT_TAIL_MAX {
+            lines.to_vec()
+        } else {
+            lines[lines.len() - CHAT_TAIL_MAX..].to_vec()
+        };
+        let Some((msg_idx, block_idx)) = self.lookup_tool_call(&tool_use_id) else {
+            return;
+        };
+        let Some(MessageBlock::ToolCall(tc)) =
+            self.active_messages_mut().get_mut(msg_idx).and_then(|m| m.blocks.get_mut(block_idx))
+        else {
+            return;
+        };
+        tc.monitor_output_tail = last_five;
+        tc.mark_tool_call_layout_dirty();
     }
 
     /// Read the matching Monitor's stored `output_file`
@@ -1891,7 +1925,7 @@ impl App {
             &path,
             crate::app::state::types::MonitorEntry::OUTPUT_TAIL_MAX,
         ) {
-            self.replace_monitor_output_tail_by_task_id(task_id, lines);
+            self.replace_monitor_output_tail_by_task_id(task_id, &lines);
         }
     }
 
@@ -2879,6 +2913,173 @@ mod tests {
     use crate::app::dialog;
     use crate::app::slash::{SlashCandidate, SlashContext, SlashState};
     use pretty_assertions::assert_eq;
+
+    #[test]
+    fn replace_monitor_output_tail_stamps_tool_call_info_and_bumps_dirty() {
+        use crate::agent::model::ToolCallStatus;
+        use crate::app::state::types::{MonitorEntry, MonitorStatus};
+        use std::collections::VecDeque;
+
+        let mut app = App::test_default();
+        let tool_use_id = "tu-mon-1";
+        let task_id = "task-mon-1";
+
+        // Seed the active session's MonitorEntry.
+        app.monitors_mut().push(MonitorEntry {
+            tool_use_id: tool_use_id.to_owned(),
+            task_id: Some(task_id.to_owned()),
+            description: "demo".to_owned(),
+            command: "echo demo".to_owned(),
+            persistent: true,
+            timeout_ms: 0,
+            status: MonitorStatus::Running,
+            output_file: None,
+            output_tail: VecDeque::new(),
+            expanded_in_inspector: false,
+        });
+
+        // Push a matching ToolCall MessageBlock with a fresh ToolCallInfo
+        // + index it so `lookup_tool_call` finds it.
+        let tc_info = ToolCallInfo {
+            id: tool_use_id.to_owned(),
+            title: "Monitor".to_owned(),
+            sdk_tool_name: "Monitor".to_owned(),
+            raw_input: None,
+            raw_input_bytes: 0,
+            output_metadata: None,
+            task_metadata: None,
+            status: ToolCallStatus::InProgress,
+            content: Vec::new(),
+            hidden: false,
+            terminal_id: None,
+            terminal_command: None,
+            terminal_output: None,
+            terminal_output_len: 0,
+            terminal_bytes_seen: 0,
+            terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
+            monitor_output_tail: Vec::default(),
+            render_epoch: 0,
+            layout_epoch: 0,
+            last_measured_width: 0,
+            last_measured_height: 0,
+            last_measured_layout_epoch: 0,
+            last_measured_layout_generation: 0,
+            cache: BlockCache::default(),
+            collapsed_override: None,
+            last_measured_y_in_msg: 0,
+        };
+        app.push_message_tracked(ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::ToolCall(Box::new(tc_info))],
+            None,
+        ));
+        let msg_idx = app.messages().len() - 1;
+        app.index_tool_call(tool_use_id.to_owned(), msg_idx, 0);
+        let initial_layout_epoch = {
+            let (mi, bi) = app.lookup_tool_call(tool_use_id).expect("indexed");
+            let MessageBlock::ToolCall(tc) = &app.messages()[mi].blocks[bi] else {
+                panic!("expected ToolCall block");
+            };
+            tc.layout_epoch
+        };
+
+        // Act: replace tail with 8 lines.
+        let lines: Vec<String> = (1..=8).map(|i| format!("line {i}")).collect();
+        app.replace_monitor_output_tail_by_task_id(task_id, &lines);
+
+        // Assert: monitor_output_tail carries the LAST 5 lines.
+        let (mi, bi) = app.lookup_tool_call(tool_use_id).expect("indexed");
+        let MessageBlock::ToolCall(tc) = &app.messages()[mi].blocks[bi] else {
+            panic!("expected ToolCall block");
+        };
+        assert_eq!(
+            tc.monitor_output_tail,
+            vec![
+                "line 4".to_owned(),
+                "line 5".to_owned(),
+                "line 6".to_owned(),
+                "line 7".to_owned(),
+                "line 8".to_owned(),
+            ]
+        );
+        assert!(
+            tc.layout_epoch > initial_layout_epoch,
+            "layout_epoch must bump so the cached chat block re-renders in place"
+        );
+    }
+
+    #[test]
+    fn replace_monitor_output_tail_handles_fewer_than_five_lines() {
+        use crate::agent::model::ToolCallStatus;
+        use crate::app::state::types::{MonitorEntry, MonitorStatus};
+        use std::collections::VecDeque;
+
+        let mut app = App::test_default();
+        let tool_use_id = "tu-mon-2";
+        let task_id = "task-mon-2";
+        app.monitors_mut().push(MonitorEntry {
+            tool_use_id: tool_use_id.to_owned(),
+            task_id: Some(task_id.to_owned()),
+            description: "demo".to_owned(),
+            command: "echo demo".to_owned(),
+            persistent: false,
+            timeout_ms: 0,
+            status: MonitorStatus::Running,
+            output_file: None,
+            output_tail: VecDeque::new(),
+            expanded_in_inspector: false,
+        });
+        let tc_info = ToolCallInfo {
+            id: tool_use_id.to_owned(),
+            title: "Monitor".to_owned(),
+            sdk_tool_name: "Monitor".to_owned(),
+            raw_input: None,
+            raw_input_bytes: 0,
+            output_metadata: None,
+            task_metadata: None,
+            status: ToolCallStatus::InProgress,
+            content: Vec::new(),
+            hidden: false,
+            terminal_id: None,
+            terminal_command: None,
+            terminal_output: None,
+            terminal_output_len: 0,
+            terminal_bytes_seen: 0,
+            terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
+            monitor_output_tail: Vec::default(),
+            render_epoch: 0,
+            layout_epoch: 0,
+            last_measured_width: 0,
+            last_measured_height: 0,
+            last_measured_layout_epoch: 0,
+            last_measured_layout_generation: 0,
+            cache: BlockCache::default(),
+            collapsed_override: None,
+            last_measured_y_in_msg: 0,
+        };
+        app.push_message_tracked(ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::ToolCall(Box::new(tc_info))],
+            None,
+        ));
+        let msg_idx = app.messages().len() - 1;
+        app.index_tool_call(tool_use_id.to_owned(), msg_idx, 0);
+
+        app.replace_monitor_output_tail_by_task_id(
+            task_id,
+            &["one".to_owned(), "two".to_owned(), "three".to_owned()],
+        );
+
+        let (mi, bi) = app.lookup_tool_call(tool_use_id).expect("indexed");
+        let MessageBlock::ToolCall(tc) = &app.messages()[mi].blocks[bi] else {
+            panic!("expected ToolCall block");
+        };
+        assert_eq!(
+            tc.monitor_output_tail,
+            vec!["one".to_owned(), "two".to_owned(), "three".to_owned()],
+            "tails shorter than 5 are kept verbatim",
+        );
+    }
     use ratatui::style::{Color, Style};
     use ratatui::text::{Line, Span};
 
@@ -3510,6 +3711,7 @@ mod tests {
                 terminal_output_len: 1024,
                 terminal_bytes_seen: 1024,
                 terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
+                monitor_output_tail: Vec::default(),
                 render_epoch: 0,
                 layout_epoch: 0,
                 last_measured_width: 0,
@@ -3548,6 +3750,7 @@ mod tests {
                 terminal_output_len: 1024,
                 terminal_bytes_seen: 1024,
                 terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
+                monitor_output_tail: Vec::default(),
                 render_epoch: 0,
                 layout_epoch: 0,
                 last_measured_width: 0,

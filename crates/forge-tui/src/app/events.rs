@@ -424,6 +424,7 @@ mod tests {
             terminal_output_len: 0,
             terminal_bytes_seen: 0,
             terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
+            monitor_output_tail: Vec::default(),
             render_epoch: 0,
             layout_epoch: 0,
             last_measured_width: 0,
