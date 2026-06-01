@@ -341,6 +341,15 @@ pub struct UiSession {
     /// staleness rule in `process_scanner::should_refresh`.
     pub process_last_refreshed_at: Option<std::time::Instant>,
 
+    /// Per-group collapse level for the chat tool-call grouping
+    /// feature. Absent key means default L2 (summary). Keyed by the
+    /// leading tool's `tool_use_id` so the identity is stable across
+    /// renders (blocks are append-only after construction).
+    pub group_collapse_levels: std::collections::HashMap<
+        crate::ui::message::grouping::GroupId,
+        crate::ui::message::grouping::GroupCollapseLevel,
+    >,
+
     // ---- Inspector pane scroll state ----
     /// Vertical scroll offset (lines from top) for the Inspector
     /// pane's scrollable body - everything from the `GIT` section
@@ -484,6 +493,7 @@ impl Default for UiSession {
             monitors: Vec::default(),
             schedules: Vec::default(),
             workflows: Vec::default(),
+            group_collapse_levels: std::collections::HashMap::default(),
             git_diff_snapshot: None,
             git_diff_generation: 0,
             git_diff_scan_in_flight: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),

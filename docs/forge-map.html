@@ -1110,6 +1110,47 @@ chat continues here...
   </div>
 </div>
 
+<div class="surface" id="chat-tool-grouping">
+  <div class="surface-head">
+    <h4>Chat tool-call grouping (L2 / L1 / L0)</h4>
+    <div class="when">visible: any assistant message that produced 2 or more consecutive collapsed-by-default tool calls (Read · Grep · Glob · Bash)</div>
+  </div>
+  <div class="surface-body">
+    <p>Runs of 2 or more consecutive groupable tool calls collapse into a single summary line by default. <strong>Groupable kinds:</strong> Read · Grep · Glob · Bash. <strong>Run-breakers</strong> (Edit, Write, Monitor, assistant text, any other tool) split a run into separate groups; each side independently meets the 2-item threshold. A lone groupable tool between two breakers stays an individual row.</p>
+    <p>The default <strong>L2 summary</strong> renders as a single DIM line at the run's position:</p>
+    <div class="term">
+      <pre class="indent">
+  <span class="dim bold">&gt; </span><span class="dim">5 reads · 3 searches · 2 commands</span>  <span class="dim">ctrl+x to expand</span></pre>
+    </div>
+    <p>Pluralization is per-kind (<code>1 read</code> / <code>5 reads</code>). Kinds with count 0 are dropped. Kind order is fixed: reads, then searches, then commands. <code>Grep</code> and <code>Glob</code> both count as searches.</p>
+    <p>Cycling ctrl+x walks the most-recent group's level through L2 (summary) → L1 (per-tool title rows, bodies closed) → L0 (titles + full bodies). When no chat tool-call group exists in the active session, ctrl+x falls through to its session-wide tools-collapsed toggle (the pre-grouping behaviour).</p>
+    <p><strong>L1 expansion</strong> (titles only, bodies still closed):</p>
+    <div class="term">
+      <pre class="indent">
+  <span class="success">✓</span> <span class="bold">▶</span> <span class="bold">Read</span> crates/forge-tui/src/ui/message.rs
+  <span class="success">✓</span> <span class="bold">▶</span> <span class="bold">Read</span> crates/forge-tui/src/app/state.rs
+  <span class="success">✓</span> <span class="bold">▶</span> <span class="bold">Read</span> crates/forge-tui/src/ui/chat.rs
+  <span class="success">✓</span> <span class="bold">▶</span> <span class="bold">Read</span> crates/forge-tui/src/app/session.rs
+  <span class="success">✓</span> <span class="bold">▶</span> <span class="bold">Read</span> crates/forge-tui/src/ui/tool_call.rs</pre>
+    </div>
+    <p><strong>L0 expansion</strong> falls through to the standard per-tool render: each row renders title + full body, indented under the standard <code>│  </code> / <code>└─</code> tree connectors. Individual rows still honour their per-tool <code>collapsed_override</code>, so a click on a row at L1 can still flip just that row's body open.</p>
+    <p><strong>Mid-run breaker example</strong>: a 3-Read run, an <code>Edit</code> breaker, then a 2-<code>Bash</code> run renders as two summary lines on either side of the <code>Edit</code> tool-card.</p>
+    <div class="term">
+      <pre class="indent">
+  <span class="dim bold">&gt; </span><span class="dim">3 reads</span>  <span class="dim">ctrl+x to expand</span>
+  <span class="success">✓</span> <span class="bold">▶</span> <span class="bold">Edit</span> crates/forge-tui/src/ui/message.rs
+  <span class="dim">│  </span><span class="dim">+    let units = grouping::partition_blocks_into_render_units(&amp;msg.blocks);</span>
+  <span class="dim">└─ </span><span class="dim">...</span>
+  <span class="dim bold">&gt; </span><span class="dim">2 commands</span>  <span class="dim">ctrl+x to expand</span></pre>
+    </div>
+    <dl>
+      <dt>code</dt><dd>Classifier + types + partitioner: <code>crates/forge-tui/src/ui/message/grouping.rs</code>. Per-session level state: <code>UiSession.group_collapse_levels</code> (HashMap keyed by the leader tool's <code>tool_use_id</code>). Render dispatch: <code>append_assistant_blocks</code> in <code>ui/message.rs</code> partitions blocks per message and switches on level per group. L2 summary glyph: <code>ui/tool_call/group.rs::render_group_summary_line</code>. ctrl+x: <code>keys.rs::toggle_all_tool_calls</code> picks the most recent group in the active session and cycles its level; falls through to the session-wide tools-collapsed toggle when no group exists.</dd>
+      <dt>cache</dt><dd>The message render signature folds each Group's <code>(range, level)</code> alongside the per-block hashes (<code>build_message_render_signature</code>), so a level flip on any one group invalidates only the affected message's cached layout.</dd>
+      <dt>focus model (v1)</dt><dd>ctrl+x cycles the LAST group in the active session's message list (most-recent-message-first walk). Mouse-driven per-group focus is a planned follow-up; mouse clicks on the summary row currently fall through to text selection.</dd>
+    </dl>
+  </div>
+</div>
+
 <div class="surface">
   <div class="surface-head">
     <h4>Task* family (TaskCreate · TaskUpdate · TaskList · TaskGet)</h4>

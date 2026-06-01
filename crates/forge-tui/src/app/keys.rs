@@ -1086,10 +1086,38 @@ fn handle_subagent_key(app: &mut App, key: KeyEvent) -> bool {
     }
 }
 
-/// Toggle the session-level collapsed preference for non-Execute tool calls.
+/// Cycle the most recent chat tool-call group's collapse level when
+/// one exists in the active session, otherwise toggle the session-
+/// level collapsed preference for individual tool calls (the
+/// pre-grouping behaviour). The "most recent group" heuristic keeps
+/// the v1 focus model simple: ctrl+x acts on whatever group is most
+/// likely to be in the user's viewport. Mouse-driven per-group focus
+/// is the planned v2 refinement.
 pub(super) fn toggle_all_tool_calls(app: &mut App) {
+    if let Some(leader_id) = most_recent_chat_group_leader(app) {
+        let _ = app.cycle_group_collapse_level(&leader_id);
+        app.invalidate_layout(InvalidationLevel::Global);
+        return;
+    }
     app.tools_collapsed = !app.tools_collapsed;
     app.invalidate_layout(InvalidationLevel::Global);
+}
+
+/// Walk the active session's chat messages in reverse to find the
+/// leader id of the most recent grouped run. `None` when no message
+/// in this session produces a group at the current partition pass.
+fn most_recent_chat_group_leader(app: &App) -> Option<crate::ui::message::grouping::GroupId> {
+    let session = app.active_session()?;
+    for msg in session.messages.iter().rev() {
+        let units = crate::ui::message::grouping::partition_blocks_into_render_units(&msg.blocks);
+        if let Some(leader) = units.into_iter().rev().find_map(|u| match u {
+            crate::ui::message::grouping::RenderUnit::Group { leader_id, .. } => Some(leader_id),
+            crate::ui::message::grouping::RenderUnit::Individual(_) => None,
+        }) {
+            return Some(leader);
+        }
+    }
+    None
 }
 
 /// Tier-aware Ctrl+B handler.

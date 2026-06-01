@@ -7,6 +7,8 @@ use crate::app::{
 use crate::ui::peer_block;
 use crate::ui::theme;
 use crate::ui::tool_call;
+
+pub(crate) mod grouping;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Paragraph, Wrap};
@@ -140,6 +142,14 @@ pub(crate) struct MessageRenderContext<'a> {
     /// `MessageRenderOptions` must stay `Copy + Default` for the cache
     /// key plumbing; the slice already inherits the `'a` lifetime here.
     stop_hook_summary_hooks: &'a [StopHookEntry],
+    /// Per-group collapse-level overrides for the chat tool-call
+    /// grouping feature. `None` (default) means every group renders at
+    /// `GroupCollapseLevel::L2Summary`. Lives on the context so the
+    /// cache signature folds it (a level flip invalidates the
+    /// corresponding message's render) and the dispatch path can
+    /// branch L2 / L1 / L0 without a separate `App` borrow.
+    group_collapse_levels:
+        Option<&'a std::collections::HashMap<grouping::GroupId, grouping::GroupCollapseLevel>>,
 }
 
 impl<'a> MessageRenderContext<'a> {
@@ -155,7 +165,24 @@ impl<'a> MessageRenderContext<'a> {
             layout_generation,
             options,
             stop_hook_summary_hooks: &[],
+            group_collapse_levels: None,
         }
+    }
+
+    /// Attach the active session's per-group collapse levels so the
+    /// chat tool-call grouping dispatch sees L1/L0 overrides and the
+    /// cache signature folds them. Default (no call) keeps every group
+    /// at L2 summary.
+    pub(crate) fn with_group_collapse_levels(
+        mut self,
+        levels: &'a std::collections::HashMap<grouping::GroupId, grouping::GroupCollapseLevel>,
+    ) -> Self {
+        self.group_collapse_levels = Some(levels);
+        self
+    }
+
+    fn group_level(&self, id: &grouping::GroupId) -> grouping::GroupCollapseLevel {
+        self.group_collapse_levels.and_then(|m| m.get(id).copied()).unwrap_or_default()
     }
 
     /// #273: Attach a hooks list for the stop_hook_summary chip
@@ -414,8 +441,48 @@ fn append_assistant_blocks(
 
     let show_compacting = spinner.show_compacting;
     let mut state = AssistantLayoutState::default();
-    for idx in 0..msg.blocks.len() {
-        append_assistant_block(&mut msg.blocks[idx], spinner, render_context, layout, &mut state);
+    let units = grouping::partition_blocks_into_render_units(&msg.blocks);
+    for unit in units {
+        match unit {
+            grouping::RenderUnit::Individual(idx) => {
+                append_assistant_block(
+                    &mut msg.blocks[idx],
+                    spinner,
+                    render_context,
+                    layout,
+                    &mut state,
+                );
+            }
+            grouping::RenderUnit::Group { range, leader_id, kind_count } => {
+                match render_context.group_level(&leader_id) {
+                    grouping::GroupCollapseLevel::L2Summary => {
+                        if !state.prev_was_tool && state.has_body_content {
+                            layout.push_blank();
+                        }
+                        let lines = tool_call::render_group_summary_line(kind_count);
+                        layout.push_wrapped_lines(lines, render_context.width);
+                        state.has_body_content = true;
+                        state.has_visible_content = true;
+                        state.prev_was_tool = true;
+                    }
+                    level @ (grouping::GroupCollapseLevel::L1Titles
+                    | grouping::GroupCollapseLevel::L0Bodies) => {
+                        let mut group_ctx = render_context;
+                        group_ctx.options.tools_collapsed =
+                            matches!(level, grouping::GroupCollapseLevel::L1Titles);
+                        for idx in range {
+                            append_assistant_block(
+                                &mut msg.blocks[idx],
+                                spinner,
+                                group_ctx,
+                                layout,
+                                &mut state,
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 
     if show_compacting {
@@ -1180,6 +1247,7 @@ fn build_message_render_cache_key(
             spinner,
             render_context.tool_render_context,
             render_context.stop_hook_summary_hooks,
+            render_context,
         ),
     }
 }
@@ -1189,6 +1257,7 @@ fn build_message_render_signature(
     spinner: &SpinnerState,
     tool_render_context: tool_call::ToolCallRenderContext<'_>,
     stop_hook_summary_hooks: &[StopHookEntry],
+    render_context: MessageRenderContext<'_>,
 ) -> MessageRenderSignature {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
@@ -1213,6 +1282,20 @@ fn build_message_render_signature(
     for hook in stop_hook_summary_hooks {
         hook.command.hash(&mut hasher);
         hook.duration_ms.hash(&mut hasher);
+    }
+    // Chat tool-call grouping: fold the level of each group present in
+    // this message so a `cycle_group_collapse_level` flip on a focused
+    // group invalidates the cache. Empty `group_collapse_levels` map
+    // hashes all groups at L2 default; the partition walk is cheap
+    // (one pass over `msg.blocks`) and only runs on a cache-miss-style
+    // path that was already iterating blocks.
+    let units = grouping::partition_blocks_into_render_units(&msg.blocks);
+    for unit in &units {
+        if let grouping::RenderUnit::Group { leader_id, range, .. } = unit {
+            range.start.hash(&mut hasher);
+            range.end.hash(&mut hasher);
+            render_context.group_level(leader_id).hash(&mut hasher);
+        }
     }
     MessageRenderSignature(hasher.finish())
 }

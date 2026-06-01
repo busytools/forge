@@ -1626,6 +1626,30 @@ impl App {
             .unwrap_or(false)
     }
 
+    /// Active session's group collapse level for `id`. Defaults to
+    /// L2 (summary line) when no override is stored.
+    #[must_use]
+    pub fn group_collapse_level(
+        &self,
+        id: &crate::ui::message::grouping::GroupId,
+    ) -> crate::ui::message::grouping::GroupCollapseLevel {
+        self.active_session()
+            .and_then(|s| s.group_collapse_levels.get(id).copied())
+            .unwrap_or_default()
+    }
+
+    /// Advance the group's collapse level one step (L2 -> L1 -> L0 -> L2).
+    /// Returns the new level. Auto-creates the active bucket if missing.
+    pub fn cycle_group_collapse_level(
+        &mut self,
+        id: &crate::ui::message::grouping::GroupId,
+    ) -> crate::ui::message::grouping::GroupCollapseLevel {
+        let current = self.group_collapse_level(id);
+        let next = current.next();
+        self.active_bucket_mut().group_collapse_levels.insert(id.clone(), next);
+        next
+    }
+
     /// Active session's MONITOR entries (chat notice +
     /// Inspector MONITORS section both read this).
     pub fn monitors(&self) -> &[crate::app::state::types::MonitorEntry] {
@@ -5474,5 +5498,24 @@ mod tests {
             crate::app::state::types::MonitorStatus::Completed,
             "terminal event must re-flip the replay-restored entry",
         );
+    }
+
+    #[test]
+    fn group_collapse_level_defaults_to_l2_when_absent() {
+        use crate::ui::message::grouping::{GroupCollapseLevel, GroupId};
+        let app = App::test_default();
+        let id = GroupId::from_leader_id("tu-x");
+        assert_eq!(app.group_collapse_level(&id), GroupCollapseLevel::L2Summary);
+    }
+
+    #[test]
+    fn cycle_group_collapse_level_walks_l2_l1_l0_back_to_l2() {
+        use crate::ui::message::grouping::{GroupCollapseLevel, GroupId};
+        let mut app = App::test_default();
+        let id = GroupId::from_leader_id("tu-x");
+        assert_eq!(app.cycle_group_collapse_level(&id), GroupCollapseLevel::L1Titles);
+        assert_eq!(app.group_collapse_level(&id), GroupCollapseLevel::L1Titles);
+        assert_eq!(app.cycle_group_collapse_level(&id), GroupCollapseLevel::L0Bodies);
+        assert_eq!(app.cycle_group_collapse_level(&id), GroupCollapseLevel::L2Summary);
     }
 }
