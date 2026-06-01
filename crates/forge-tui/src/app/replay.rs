@@ -86,6 +86,14 @@ impl ReplayHarness {
         self.app.sessions.get(key).expect("active_session_key must resolve to a populated bucket")
     }
 
+    /// Mutable handle on the replayed [`App`]. Lets tests drive
+    /// production-state mutators (e.g. `replace_monitor_output_tail_by_task_id`)
+    /// post-replay to exercise paths the captured baseline doesn't
+    /// naturally trigger.
+    pub(crate) fn app_mut(&mut self) -> &mut App {
+        &mut self.app
+    }
+
     /// Render the Inspector pane into a `TestBackend` buffer at the
     /// requested dimensions. Returns the rendered text-only multi-line
     /// String suitable for `insta::assert_snapshot!`.
@@ -293,10 +301,68 @@ mod tests {
         );
     }
 
-    /// Inspector pane render at the post-replay end-state. Captures the
-    /// `MONITORS` row that survives (per the assertions above: 1 entry,
-    /// status=Completed) plus the GIT and post-section chrome. Drift in
-    /// this snapshot would catch the layout-regression class fixed in
+    /// Monitor's matching `ToolCallInfo` carries the last-5 lines of
+    /// the watched command's output once `replace_monitor_output_tail_by_task_id`
+    /// fires (the production path the chat live block reads from).
+    /// The `monitor_persistent_stream` baseline doesn't include a
+    /// `system/task_notification` event with an `output_file`, so the
+    /// stamping path isn't naturally exercised - drive it manually
+    /// against the replayed Monitor's `task_id` to confirm the
+    /// end-to-end indexing + stamping wiring (matches the production
+    /// flow that fires when the wire delivers a notification).
+    #[test]
+    fn replay_monitor_persistent_stream_stamps_chat_tail() {
+        use crate::app::MessageBlock;
+
+        let mut harness = replay_baseline("monitor_persistent_stream");
+        // Pluck the Monitor's task_id from the replayed session state.
+        let task_id = harness
+            .default_session()
+            .monitors
+            .iter()
+            .find_map(|m| m.task_id.clone())
+            .expect("baseline replays a Monitor with a stamped task_id");
+
+        // Simulate the production task_notification path stamping new
+        // output lines onto the matching MonitorEntry + its
+        // ToolCallInfo. 8 lines in -> last 5 expected on the chat
+        // surface; the unit tests in `state::tests` cover the
+        // truncation arithmetic, this asserts the replay-built
+        // session state + tool_call_index actually resolve to a
+        // mutable ToolCallInfo.
+        let lines: Vec<String> = (1..=8).map(|i| format!("line {i}")).collect();
+        harness.app_mut().replace_monitor_output_tail_by_task_id(&task_id, lines);
+
+        let session = harness.default_session();
+        let tail: Vec<String> = session
+            .messages
+            .iter()
+            .flat_map(|m| m.blocks.iter())
+            .find_map(|block| match block {
+                MessageBlock::ToolCall(tc) if tc.sdk_tool_name == "Monitor" => {
+                    Some(tc.monitor_output_tail.clone())
+                }
+                _ => None,
+            })
+            .expect("baseline's Monitor tool_use produces a matching ToolCall MessageBlock");
+        assert_eq!(
+            tail,
+            vec![
+                "line 4".to_owned(),
+                "line 5".to_owned(),
+                "line 6".to_owned(),
+                "line 7".to_owned(),
+                "line 8".to_owned(),
+            ],
+            "ToolCallInfo.monitor_output_tail holds the last-5 lines after the production \
+             stamp path runs - the in-chat live block reads from here",
+        );
+    }
+
+    /// Inspector pane render at the post-replay end-state. The
+    /// MONITORS section is gone (Monitor lives in chat now); the
+    /// snapshot captures the surviving GIT + post-section chrome.
+    /// Drift here would catch the layout-regression class fixed in
     /// #281 / #284 (badge alignment, gutter changes, ragged-column
     /// reintroductions).
     #[test]
