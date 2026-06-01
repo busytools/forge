@@ -393,6 +393,34 @@ mod tests {
         insta::assert_snapshot!(snapshot);
     }
 
+    /// Turn-duration chip restore: every `Message::Result` carries
+    /// `duration_ms` on the wire. The new stamp path in
+    /// `handle_result` pulls it out of the destructure and writes
+    /// it onto the latest Assistant ChatMessage so the
+    /// `Forge - N.Ns` chip in `role_label_line` re-renders. This test
+    /// drives a real captured baseline (Result event with
+    /// `duration_ms = 12768`) through the production reducer and
+    /// asserts the stamp lands.
+    #[test]
+    fn replay_permission_suggestions_edit_stamps_turn_duration() {
+        use crate::app::MessageRole;
+
+        let harness = replay_baseline("permission_suggestions_edit");
+        let session = harness.default_session();
+        let latest = session
+            .messages
+            .iter()
+            .rev()
+            .find(|m| matches!(m.role, MessageRole::Assistant))
+            .expect("baseline produces at least one assistant message");
+        assert_eq!(
+            latest.turn_duration_ms,
+            Some(12_768),
+            "Result.duration_ms must stamp onto the latest assistant; got {:?}",
+            latest.turn_duration_ms,
+        );
+    }
+
     /// #302: CronCreate's `tool_use_result` envelope carries the
     /// canonical job id at `envelope.id`. A subsequent CronDelete
     /// removes the SCHEDULES entry by that id. Pre-fix, the extractor
