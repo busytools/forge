@@ -35,6 +35,7 @@ use forge_sdk::mcp::server::{McpServer, McpServerBuilder};
 use crate::mcp::peers::facade::{CallerKeyResolver, WorkspaceFacade};
 use crate::mcp::workers::facade::WorkerFacade;
 
+pub(crate) mod caller_context;
 pub mod peers;
 pub mod workers;
 
