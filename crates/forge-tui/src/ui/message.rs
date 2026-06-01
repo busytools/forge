@@ -3687,11 +3687,11 @@ mod tests {
         msg.turn_duration_ms = Some(12_400);
         let line = role_label_line(&msg);
         let rendered: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(rendered.contains("Forge"), "role banner stays Forge: {rendered:?}",);
-        assert!(rendered.contains("12.4s"), "chip carries formatted duration: {rendered:?}",);
+        assert!(rendered.contains("Forge"), "role banner stays Forge: {rendered:?}");
+        assert!(rendered.contains("12.4s"), "chip carries formatted duration: {rendered:?}");
         assert!(
             rendered.contains('\u{b7}'),
-            "chip separator is the middle-dot \u{b7}: {rendered:?}",
+            "chip separator is the middle-dot \u{b7}: {rendered:?}"
         );
     }
 
