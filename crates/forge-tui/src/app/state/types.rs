@@ -132,6 +132,59 @@ impl MonitorEntry {
     }
 }
 
+/// Kind of a schedule entry in the Inspector SCHEDULES section.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScheduleKind {
+    /// One-shot `ScheduleWakeup` (the /loop dynamic-pacing mechanism).
+    Wakeup,
+    /// `CronCreate` job. `recurring` distinguishes repeat vs one-shot;
+    /// `durable` mirrors the wire flag.
+    Cron { recurring: bool, durable: bool },
+}
+
+/// A pending time-based schedule surfaced in the Inspector SCHEDULES
+/// section. Wakeups carry a concrete `fire_at`; crons carry the raw
+/// expression in `label` and a `created_at` used for the 7-day
+/// recurring-expiry prune.
+#[derive(Debug, Clone)]
+pub struct ScheduleEntry {
+    /// Stable key. For a wakeup, the `tool_use_id` (one pending wakeup
+    /// per session; replaced each /loop re-arm). For a cron, the
+    /// `tool_use_id` of its `CronCreate` until the job id is stamped.
+    pub key: String,
+    /// Cron job id (from the `CronCreate` result), used to match a
+    /// later `CronDelete`. `None` for wakeups and un-stamped crons.
+    pub cron_id: Option<String>,
+    pub kind: ScheduleKind,
+    /// Wakeup: the `reason`. Cron: the raw cron expression.
+    pub label: String,
+    /// Wakeup: when it fires (now + delaySeconds). Cron: `None`.
+    pub fire_at: Option<std::time::SystemTime>,
+    /// When the entry was created. Recurring-cron 7-day-expiry
+    /// reference; informational for wakeups.
+    pub created_at: std::time::SystemTime,
+}
+
+impl ScheduleEntry {
+    /// Recurring crons auto-expire after 7 days (CLI-documented).
+    pub const CRON_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 60 * 60);
+
+    /// True when `now` is at/after the entry's validity end: a wakeup
+    /// whose `fire_at` has passed, or a recurring cron older than
+    /// `CRON_MAX_AGE`. One-shot crons hang until `CronDelete` (no
+    /// cron-expr parsing in v1).
+    #[must_use]
+    pub fn is_expired(&self, now: std::time::SystemTime) -> bool {
+        match self.kind {
+            ScheduleKind::Wakeup => self.fire_at.is_some_and(|t| now >= t),
+            ScheduleKind::Cron { recurring: true, .. } => {
+                now.duration_since(self.created_at).is_ok_and(|age| age >= Self::CRON_MAX_AGE)
+            }
+            ScheduleKind::Cron { recurring: false, .. } => false,
+        }
+    }
+}
+
 /// Lifecycle status of a Workflow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkflowStatus {
@@ -508,6 +561,55 @@ pub struct PasteSessionState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn schedule_entry_wakeup_expires_at_fire_time() {
+        let t0 = std::time::SystemTime::UNIX_EPOCH;
+        let fire = t0 + std::time::Duration::from_secs(60);
+        let e = ScheduleEntry {
+            key: "tu1".into(),
+            cron_id: None,
+            kind: ScheduleKind::Wakeup,
+            label: "poll".into(),
+            fire_at: Some(fire),
+            created_at: t0,
+        };
+        assert!(!e.is_expired(t0));
+        assert!(e.is_expired(fire));
+        assert!(e.is_expired(fire + std::time::Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn schedule_entry_recurring_cron_expires_after_7_days() {
+        let t0 = std::time::SystemTime::UNIX_EPOCH;
+        let e = ScheduleEntry {
+            key: "tu2".into(),
+            cron_id: Some("job1".into()),
+            kind: ScheduleKind::Cron { recurring: true, durable: false },
+            label: "*/5 * * * *".into(),
+            fire_at: None,
+            created_at: t0,
+        };
+        assert!(!e.is_expired(t0 + std::time::Duration::from_secs(60)));
+        assert!(e.is_expired(t0 + ScheduleEntry::CRON_MAX_AGE));
+    }
+
+    #[test]
+    fn schedule_entry_one_shot_cron_hangs_until_explicit_delete() {
+        // No cron-expr parsing in v1; one-shot crons sit until CronDelete
+        // (or the renderer/upstream cleanup) drains them.
+        let t0 = std::time::SystemTime::UNIX_EPOCH;
+        let e = ScheduleEntry {
+            key: "tu3".into(),
+            cron_id: Some("job2".into()),
+            kind: ScheduleKind::Cron { recurring: false, durable: true },
+            label: "0 9 1 1 *".into(),
+            fire_at: None,
+            created_at: t0,
+        };
+        assert!(!e.is_expired(t0));
+        assert!(!e.is_expired(t0 + ScheduleEntry::CRON_MAX_AGE * 2));
+    }
 
     #[test]
     fn workflow_entry_applies_progress_snapshot_to_build_phase_tree() {

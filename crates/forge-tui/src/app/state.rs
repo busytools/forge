@@ -22,10 +22,10 @@ pub use types::{
     AppStatus, ExtraUsage, HelpView, HistoryRetentionPolicy, HistoryRetentionStats, LoginHint,
     McpState, MessageUsage, ModeInfo, ModeState, MonitorEntry, MonitorStatus, PasteSessionState,
     PendingCommandAck, PhaseEntry, PhaseStatus, RecentSessionInfo, RenderCacheBudget,
-    ScrollbarDragState, SelectionKind, SelectionPoint, SelectionState, SessionTurnState,
-    SessionUsageState, StopHookEntry, StopHookSummaryState, TodoItem, TodoStatus, ToolCallScope,
-    UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState, UsageWindow, WorkflowEntry,
-    WorkflowStatus,
+    ScheduleEntry, ScheduleKind, ScrollbarDragState, SelectionKind, SelectionPoint, SelectionState,
+    SessionTurnState, SessionUsageState, StopHookEntry, StopHookSummaryState, TodoItem, TodoStatus,
+    ToolCallScope, UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState, UsageWindow,
+    WorkflowEntry, WorkflowStatus,
 };
 pub use viewport::{
     ChatViewport, LayoutInvalidation, LayoutInvalidation as InvalidationLevel,
@@ -1638,6 +1638,100 @@ impl App {
         &mut self.active_bucket_mut().monitors
     }
 
+    /// Active session's SCHEDULES entries (Inspector SCHEDULES
+    /// section). Pruned by the ~1s timer tick.
+    pub fn schedules(&self) -> &[crate::app::state::types::ScheduleEntry] {
+        self.active_session().map_or(&[], |s| s.schedules.as_slice())
+    }
+
+    /// Mutable accessor for the active session's SCHEDULES list.
+    /// Auto-creates the pre-Connect bucket if missing.
+    pub(crate) fn schedules_mut(&mut self) -> &mut Vec<crate::app::state::types::ScheduleEntry> {
+        &mut self.active_bucket_mut().schedules
+    }
+
+    /// Insert/replace the session's single pending wakeup. The /loop
+    /// dynamic-pacing mechanism re-arms each turn so at most one
+    /// `Wakeup` entry survives - a new `ScheduleWakeup` tool_use
+    /// replaces any prior wakeup regardless of `tool_use_id`. Cron
+    /// entries in the same bucket are left untouched.
+    pub fn upsert_wakeup_from_tool_input(
+        &mut self,
+        tool_use_id: &str,
+        reason: &str,
+        fire_at: std::time::SystemTime,
+    ) {
+        let now = std::time::SystemTime::now();
+        let schedules = self.schedules_mut();
+        schedules.retain(|e| !matches!(e.kind, crate::app::state::types::ScheduleKind::Wakeup));
+        schedules.push(crate::app::state::types::ScheduleEntry {
+            key: tool_use_id.to_owned(),
+            cron_id: None,
+            kind: crate::app::state::types::ScheduleKind::Wakeup,
+            label: if reason.is_empty() { "wakeup".to_owned() } else { reason.to_owned() },
+            fire_at: Some(fire_at),
+            created_at: now,
+        });
+    }
+
+    /// Insert/refresh a cron entry from a `CronCreate` tool_use,
+    /// keyed by `tool_use_id` until a job id is stamped via
+    /// [`Self::stamp_cron_id_from_result`]. Idempotent on re-decode.
+    pub fn upsert_cron_from_tool_input(
+        &mut self,
+        tool_use_id: &str,
+        cron_expr: &str,
+        recurring: bool,
+        durable: bool,
+        created_at: std::time::SystemTime,
+    ) {
+        let schedules = self.schedules_mut();
+        if let Some(e) = schedules.iter_mut().find(|e| e.key == tool_use_id) {
+            cron_expr.clone_into(&mut e.label);
+            e.kind = crate::app::state::types::ScheduleKind::Cron { recurring, durable };
+            return;
+        }
+        schedules.push(crate::app::state::types::ScheduleEntry {
+            key: tool_use_id.to_owned(),
+            cron_id: None,
+            kind: crate::app::state::types::ScheduleKind::Cron { recurring, durable },
+            label: if cron_expr.is_empty() {
+                "(unknown schedule)".to_owned()
+            } else {
+                cron_expr.to_owned()
+            },
+            fire_at: None,
+            created_at,
+        });
+    }
+
+    /// Stamp the cron job id (from the `CronCreate` result) onto the
+    /// matching entry so a later `CronDelete` can find it. No-op when
+    /// the entry has already been stamped or doesn't exist.
+    pub fn stamp_cron_id_from_result(&mut self, tool_use_id: &str, job_id: &str) {
+        if let Some(e) = self.schedules_mut().iter_mut().find(|e| e.key == tool_use_id)
+            && e.cron_id.is_none()
+        {
+            e.cron_id = Some(job_id.to_owned());
+        }
+    }
+
+    /// Remove a cron entry whose stamped job id matches `job_id`
+    /// (`CronDelete`). No-op when none matches.
+    pub fn remove_cron_by_id(&mut self, job_id: &str) {
+        self.schedules_mut().retain(|e| e.cron_id.as_deref() != Some(job_id));
+    }
+
+    /// Drop schedule entries that are no longer valid at `now`
+    /// (passed wakeups, 7-day-expired recurring crons). Called from
+    /// the ~1s timer tick.
+    pub fn prune_expired_schedules(&mut self, now: std::time::SystemTime) {
+        if self.active_session().is_none_or(|s| s.schedules.is_empty()) {
+            return;
+        }
+        self.schedules_mut().retain(|e| !e.is_expired(now));
+    }
+
     /// Insert / update a `MonitorEntry` based on a fresh
     /// `Monitor` tool_use. Idempotent: a matching `tool_use_id`
     /// refreshes the existing entry's input fields without touching
@@ -2787,6 +2881,59 @@ mod tests {
     use pretty_assertions::assert_eq;
     use ratatui::style::{Color, Style};
     use ratatui::text::{Line, Span};
+
+    #[test]
+    fn upsert_wakeup_replaces_prior_wakeup() {
+        let mut app = App::test_default();
+        let t0 = std::time::SystemTime::UNIX_EPOCH;
+        app.upsert_wakeup_from_tool_input("tu1", "first", t0 + std::time::Duration::from_secs(60));
+        app.upsert_wakeup_from_tool_input(
+            "tu2",
+            "second",
+            t0 + std::time::Duration::from_secs(120),
+        );
+        let s = app.schedules();
+        assert_eq!(s.len(), 1, "re-armed wakeup replaces the prior one");
+        assert_eq!(s[0].label, "second");
+        assert_eq!(s[0].key, "tu2");
+    }
+
+    #[test]
+    fn prune_expired_schedules_drops_passed_wakeup() {
+        let mut app = App::test_default();
+        let t0 = std::time::SystemTime::UNIX_EPOCH;
+        let fire = t0 + std::time::Duration::from_secs(60);
+        app.upsert_wakeup_from_tool_input("tu1", "poll", fire);
+        app.prune_expired_schedules(t0); // before fire - kept
+        assert_eq!(app.schedules().len(), 1);
+        app.prune_expired_schedules(fire); // at fire - dropped
+        assert!(app.schedules().is_empty());
+    }
+
+    #[test]
+    fn cron_lifecycle_upsert_stamp_delete() {
+        use crate::app::state::types::ScheduleKind;
+        let mut app = App::test_default();
+        let t0 = std::time::SystemTime::UNIX_EPOCH;
+        app.upsert_cron_from_tool_input("tu1", "*/5 * * * *", true, false, t0);
+        assert_eq!(app.schedules().len(), 1);
+        assert!(matches!(app.schedules()[0].kind, ScheduleKind::Cron { recurring: true, .. }));
+        // Stamp the job id discovered from the CronCreate result.
+        app.stamp_cron_id_from_result("tu1", "job-abc");
+        assert_eq!(app.schedules()[0].cron_id.as_deref(), Some("job-abc"));
+        // CronDelete by job id removes it.
+        app.remove_cron_by_id("job-abc");
+        assert!(app.schedules().is_empty());
+    }
+
+    #[test]
+    fn cron_upsert_idempotent_on_retry() {
+        let mut app = App::test_default();
+        let t0 = std::time::SystemTime::UNIX_EPOCH;
+        app.upsert_cron_from_tool_input("tu1", "*/5 * * * *", true, false, t0);
+        app.upsert_cron_from_tool_input("tu1", "*/5 * * * *", true, false, t0);
+        assert_eq!(app.schedules().len(), 1, "re-decoded same tool_use_id stays one entry");
+    }
 
     #[test]
     fn test_default_seeds_pre_connect_bucket_so_accessors_are_infallible() {

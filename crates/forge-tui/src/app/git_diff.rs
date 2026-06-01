@@ -211,6 +211,13 @@ fn apply_snapshot_ready(
 /// [`SNAPSHOT_STALENESS`]. Everything else is a no-op (cheap
 /// timestamp compare).
 fn apply_timer_tick(app: &mut App) {
+    // SCHEDULES auto-pruning rides the same ~1s tick the git poller
+    // uses: passed wakeups drop on the first tick after their fire
+    // time, recurring crons drop at +7 days. Runs before the early
+    // returns below so the prune fires even when no active session
+    // is git-watchable (pre-Connect, synthetic spawn buckets).
+    app.prune_expired_schedules(std::time::SystemTime::now());
+
     let Some(active_key) = app.active_session_key.clone() else {
         return;
     };
