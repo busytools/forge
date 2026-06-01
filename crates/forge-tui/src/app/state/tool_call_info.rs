@@ -21,6 +21,14 @@ pub struct ToolCallInfo {
     pub terminal_command: Option<String>,
     /// Snapshot of terminal output, updated each frame while `InProgress`.
     pub terminal_output: Option<String>,
+    /// Last 5 lines of the watched command's output for a `Monitor`
+    /// tool call, stamped from `MonitorEntry.output_tail` by
+    /// `App::replace_monitor_output_tail_by_task_id`. Empty for
+    /// non-Monitor tool calls. The in-chat live block renders this
+    /// (header + `$ command` + last-5 tail tree); bumping
+    /// `layout_epoch` after writing this re-renders the cached chat
+    /// block in place.
+    pub monitor_output_tail: Vec<String>,
     /// Length of terminal buffer at last snapshot - used to skip O(n) re-snapshots
     /// when the buffer hasn't grown.
     pub terminal_output_len: usize,
