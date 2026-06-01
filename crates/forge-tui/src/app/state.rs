@@ -324,6 +324,15 @@ pub struct App {
     /// Session-level preference for collapsing non-Execute tool call bodies.
     /// Toggled by Ctrl+X and applied at render/layout time.
     pub tools_collapsed: bool,
+    /// Test-only spy: records the level of the most recent
+    /// `invalidate_layout` call. Used by the chat-tool-grouping v2
+    /// regression-guard test to assert ctrl+x cycling a focused group
+    /// stays at `MessageChanged(msg_idx)` and never escalates to
+    /// `Global` (which produced a ~74ms hitch on long sessions
+    /// before the fix). Cleared by tests that want to observe the
+    /// next invalidation cleanly.
+    #[cfg(any(test, feature = "testing"))]
+    pub last_invalidation_level: std::cell::Cell<Option<crate::app::InvalidationLevel>>,
     /// Whether the Wide-tier Projects pane is currently visible.
     /// Toggled by Ctrl+B at Wide / Medium tiers. In-memory only -
     /// each launch starts visible. Has no effect at Narrow tier -
@@ -2471,6 +2480,8 @@ impl App {
     /// Single entry point for all layout invalidation. Replaces the former
     /// `mark_message_layout_dirty` / `mark_all_message_layout_dirty` methods.
     pub fn invalidate_layout(&mut self, level: LayoutInvalidation) {
+        #[cfg(any(test, feature = "testing"))]
+        self.last_invalidation_level.set(Some(level));
         match level {
             LayoutInvalidation::MessageChanged(idx) => {
                 self.active_viewport_mut().invalidate_message(idx);
@@ -2662,6 +2673,8 @@ impl App {
             spinner_frame: 0,
             spinner_last_advance_at: None,
             tools_collapsed: false,
+            #[cfg(any(test, feature = "testing"))]
+            last_invalidation_level: std::cell::Cell::new(None),
             projects_pane_visible: true,
             projects_pane_scroll_offset: 0,
             projects_pane_overlay_open: false,
@@ -5505,6 +5518,42 @@ mod tests {
         let app = App::test_default();
         let id = GroupId::from_leader_id("tu-x");
         assert_eq!(app.group_collapse_level(&id), GroupCollapseLevel::L2Summary);
+    }
+
+    /// #302 follow-on perf fix: ctrl+x cycling a focused group must
+    /// invalidate ONLY the message holding that group, never `Global`.
+    /// The pre-fix path cleared every message's layout cache on every
+    /// Cmd+X (199 misses → 184 re-measures → ~74ms hitch on long
+    /// sessions). Regression guard: assert the recorded invalidation
+    /// level is `MessageChanged(msg_idx)` for the keyboard-cycle path
+    /// and `Global` only for the non-group fall-through.
+    #[test]
+    fn ctrl_x_cycling_focused_group_invalidates_only_target_message() {
+        use crate::ui::message::grouping::GroupId;
+        let mut app = App::test_default();
+        let leader_id = GroupId::from_leader_id("tu-leader");
+        let msg_idx = 42;
+        // Mouse handler analogue: stamp the focused group with its
+        // msg_idx + leader id.
+        app.active_bucket_mut().focused_group = Some((leader_id.clone(), msg_idx));
+        app.last_invalidation_level.set(None);
+        super::super::keys::toggle_all_tool_calls(&mut app);
+        assert_eq!(
+            app.last_invalidation_level.get(),
+            Some(crate::app::InvalidationLevel::MessageChanged(msg_idx)),
+            "focused-group cycle must scope invalidation to the holding message",
+        );
+
+        // Fall-through path (no focus): the existing session-wide
+        // tools_collapsed toggle stays at Global.
+        app.active_bucket_mut().focused_group = None;
+        app.last_invalidation_level.set(None);
+        super::super::keys::toggle_all_tool_calls(&mut app);
+        assert_eq!(
+            app.last_invalidation_level.get(),
+            Some(crate::app::InvalidationLevel::Global),
+            "non-group fall-through must still invalidate Global (full re-measure)",
+        );
     }
 
     #[test]

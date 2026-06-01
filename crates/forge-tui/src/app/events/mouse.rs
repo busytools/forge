@@ -366,7 +366,7 @@ fn try_toggle_tool_call_at_click(app: &mut App, mouse: MouseEvent) -> bool {
             && matches!(level, crate::ui::message::grouping::GroupCollapseLevel::L2Summary)
         {
             if let Some(bucket) = app.try_active_bucket_mut() {
-                bucket.focused_group_id = Some(leader_id.clone());
+                bucket.focused_group = Some((leader_id.clone(), msg_idx));
             }
             let _ = app.cycle_group_collapse_level(&leader_id);
             app.invalidate_layout(crate::app::InvalidationLevel::MessageChanged(msg_idx));
