@@ -398,6 +398,7 @@ fn walk_user_tool_results(app: &mut App, content: &[forge_primitives::ContentBlo
                 if tool_use_id.is_empty() {
                     continue;
                 }
+                stamp_cron_job_id_if_applicable(app, tool_use_id, content);
                 let raw_block = serde_json::to_value(block).map_err(|err| { tracing::warn!(target: "forge_tui::sdk_message", error = %err, "ContentBlock failed to serialize to Value"); err }).ok();
                 apply_tool_result_block(
                     app,
@@ -582,6 +583,26 @@ fn apply_tool_result_block(
     let base = app.with_turn_state(|ts| ts.tool_calls.get(tool_use_id).cloned());
     let fields = build_tool_result_fields(is_error, raw_content, base.as_ref(), raw_block);
     apply_tool_call_update(app, tool_use_id, fields);
+}
+
+/// Stamp the cron job id onto the matching SCHEDULES entry when a
+/// `CronCreate` tool_use_result arrives. The CLI's result shape can
+/// be a bare-string id OR a `{"id": "..."}` object - cover both.
+/// No-op when the tool_use_id doesn't match a CronCreate call.
+fn stamp_cron_job_id_if_applicable(app: &mut App, tool_use_id: &str, content: &Value) {
+    let is_cron_create = app
+        .with_turn_state(|ts| ts.tool_calls.get(tool_use_id).map(|tc| tc.title.clone()))
+        .is_some_and(|title| title == "CronCreate");
+    if !is_cron_create {
+        return;
+    }
+    let job_id = content
+        .as_str()
+        .map(str::to_owned)
+        .or_else(|| content.get("id").and_then(Value::as_str).map(str::to_owned));
+    if let Some(job_id) = job_id {
+        app.stamp_cron_id_from_result(tool_use_id, &job_id);
+    }
 }
 
 /// Mutate `app.turn_state.tool_calls` with the supplied update
