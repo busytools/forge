@@ -198,7 +198,12 @@ pub fn group_leader_at(blocks: &[MessageBlock], block_idx: usize) -> Option<Grou
 /// other block (including lone groupable tools between breakers) becomes
 /// `RenderUnit::Individual`.
 pub fn partition_blocks_into_render_units(blocks: &[MessageBlock]) -> Vec<RenderUnit> {
-    const GROUP_THRESHOLD: usize = 2;
+    // v2 (PR following #300): every consecutive run of non-breaker
+    // tool calls forms a `RenderUnit::Group`, even runs of length 1.
+    // The single-item L2 render in `message.rs` short-circuits to the
+    // L1 path so the call stays visible by default; the cycle still
+    // walks L2 -> L1 -> L0.
+    const GROUP_THRESHOLD: usize = 1;
     let mut units = Vec::with_capacity(blocks.len());
     let mut i = 0;
     while i < blocks.len() {
@@ -429,11 +434,18 @@ mod tests {
     }
 
     #[test]
-    fn partition_lone_groupable_tool_stays_individual() {
+    fn partition_lone_groupable_tool_forms_single_item_group() {
         let blocks = make(&[("tool", "Read")]);
         let units = partition_blocks_into_render_units(&blocks);
         assert_eq!(units.len(), 1);
-        assert!(matches!(units[0], RenderUnit::Individual(0)));
+        match &units[0] {
+            RenderUnit::Group { range, kind_count, leader_id } => {
+                assert_eq!(*range, 0..1);
+                assert_eq!(kind_count.reads, 1);
+                assert_eq!(leader_id.as_str(), "tu-0");
+            }
+            RenderUnit::Individual(_) => panic!("expected Group, got Individual"),
+        }
     }
 
     #[test]
@@ -454,14 +466,18 @@ mod tests {
 
     #[test]
     fn partition_run_then_breaker_then_run_splits_into_three_units() {
-        let blocks = make(&[
-            ("tool", "Read"),
-            ("tool", "Read"),
-            ("tool", "Read"),
-            ("tool", "Edit"),
-            ("tool", "Bash"),
-            ("tool", "Bash"),
-        ]);
+        // v2: the Edit breaker carries a `Diff` content block so the
+        // render-class predicate flags it. Without the Diff content
+        // it'd render as the standard tool card and fold into the
+        // surrounding run.
+        let blocks = vec![
+            tool_call_block("tu-0", "Read"),
+            tool_call_block("tu-1", "Read"),
+            tool_call_block("tu-2", "Read"),
+            diff_tool_call_block("tu-3", "Edit"),
+            tool_call_block("tu-4", "Bash"),
+            tool_call_block("tu-5", "Bash"),
+        ];
         let units = partition_blocks_into_render_units(&blocks);
         assert_eq!(units.len(), 3);
         match &units[0] {
@@ -482,11 +498,34 @@ mod tests {
     }
 
     #[test]
-    fn partition_breaker_in_middle_keeps_lone_tools_individual() {
-        let blocks = make(&[("tool", "Read"), ("tool", "Edit"), ("tool", "Read")]);
+    fn partition_breaker_in_middle_splits_into_three_groups() {
+        // v2: lone Read on each side of the Edit breaker forms a
+        // single-item group instead of an Individual. The Edit
+        // breaker itself stays Individual. The Edit fixture must
+        // carry a `Diff` content block so the render-class predicate
+        // recognises it as a breaker.
+        let blocks = vec![
+            tool_call_block("tu-0", "Read"),
+            diff_tool_call_block("tu-1", "Edit"),
+            tool_call_block("tu-2", "Read"),
+        ];
         let units = partition_blocks_into_render_units(&blocks);
         assert_eq!(units.len(), 3);
-        assert!(units.iter().all(|u| matches!(u, RenderUnit::Individual(_))));
+        match &units[0] {
+            RenderUnit::Group { range, kind_count, .. } => {
+                assert_eq!(*range, 0..1);
+                assert_eq!(kind_count.reads, 1);
+            }
+            RenderUnit::Individual(_) => panic!("expected first Group"),
+        }
+        assert!(matches!(units[1], RenderUnit::Individual(1)));
+        match &units[2] {
+            RenderUnit::Group { range, kind_count, .. } => {
+                assert_eq!(*range, 2..3);
+                assert_eq!(kind_count.reads, 1);
+            }
+            RenderUnit::Individual(_) => panic!("expected third Group"),
+        }
     }
 
     #[test]
@@ -519,7 +558,13 @@ mod tests {
 
     #[test]
     fn partition_all_breakers_returns_all_individuals() {
-        let blocks = make(&[("tool", "Edit"), ("tool", "Write"), ("text", "hello")]);
+        // Mix of breaker shapes: Monitor (lifecycle), an Edit with a
+        // Diff content (diff-class), and a plain text block.
+        let blocks = vec![
+            tool_call_block("tu-0", "Monitor"),
+            diff_tool_call_block("tu-1", "Edit"),
+            text_block("hello"),
+        ];
         let units = partition_blocks_into_render_units(&blocks);
         assert_eq!(units.len(), 3);
         assert!(units.iter().all(|u| matches!(u, RenderUnit::Individual(_))));
