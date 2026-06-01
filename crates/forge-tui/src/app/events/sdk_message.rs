@@ -1345,10 +1345,19 @@ fn handle_rate_limit_event(app: &mut App, msg: Message) {
 }
 
 fn handle_result(app: &mut App, msg: Message) {
-    let Message::Result { is_error, subtype, errors, terminal_reason, fast_mode_state, .. } = msg
+    let Message::Result {
+        duration_ms,
+        is_error,
+        subtype,
+        errors,
+        terminal_reason,
+        fast_mode_state,
+        ..
+    } = msg
     else {
         return;
     };
+    stamp_turn_duration_on_latest_assistant(app, duration_ms);
     // #273: Turn ended - clear per-turn thinking-token chip so the
     // next in-progress turn starts with a bare spinner (it'll
     // re-populate once `Message::ThinkingTokens` fires for the new
@@ -1359,6 +1368,27 @@ fn handle_result(app: &mut App, msg: Message) {
         apply_fast_mode_state(app, state);
     }
     apply_result_finalize(app, is_error, &subtype, errors.unwrap_or_default(), terminal_reason);
+}
+
+/// Stamp `Message::Result.duration_ms` onto the latest Assistant
+/// ChatMessage in the active session, invalidating its render cache so
+/// the `Forge - N.Ns` chip in the role-label line re-renders.
+///
+/// No-op when no Assistant message is present (rare: Result fires
+/// before any assistant content has been pushed). The wire stamp +
+/// chip render are decoupled - the chip just won't appear that turn,
+/// no panic.
+fn stamp_turn_duration_on_latest_assistant(app: &mut App, duration_ms: u64) {
+    let Some(msg) = app
+        .active_messages_mut()
+        .iter_mut()
+        .rev()
+        .find(|m| matches!(m.role, crate::app::MessageRole::Assistant))
+    else {
+        return;
+    };
+    msg.turn_duration_ms = Some(duration_ms);
+    msg.invalidate_render_cache();
 }
 
 /// On a successful Result, finalise any still-open tool_calls
@@ -1544,6 +1574,65 @@ mod persistent_guard_tests {
         // must not panic on `as_object()` returning None.
         let input = json!("not-an-object");
         assert!(!raw_input_is_persistent(Some(&input)));
+    }
+}
+
+#[cfg(test)]
+mod stamp_turn_duration_tests {
+    //! Unit coverage for `stamp_turn_duration_on_latest_assistant`,
+    //! the helper called from `handle_result` when a `Message::Result`
+    //! frame arrives carrying the wire `duration_ms`. The full
+    //! handle_result -> finalize chain pushes a placeholder Assistant
+    //! for buffered-next-turn anticipation, so this module tests the
+    //! stamp helper in isolation; the wire-driven end-to-end path is
+    //! pinned in `replay.rs`.
+    use super::stamp_turn_duration_on_latest_assistant;
+    use crate::app::{App, ChatMessage, MessageRole};
+
+    #[test]
+    fn stamps_duration_on_latest_assistant_message() {
+        let mut app = App::test_default();
+        app.push_message_tracked(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
+
+        stamp_turn_duration_on_latest_assistant(&mut app, 12_768);
+
+        let latest = app
+            .messages()
+            .iter()
+            .rev()
+            .find(|m| matches!(m.role, MessageRole::Assistant))
+            .expect("seeded assistant message present");
+        assert_eq!(latest.turn_duration_ms, Some(12_768));
+    }
+
+    #[test]
+    fn no_op_when_no_assistant_message_present() {
+        let mut app = App::test_default();
+        // No assistant messages seeded; helper's rev().find() returns
+        // None and the stamp call is a no-op. Verifying no panic +
+        // no spurious mutation is the contract.
+        stamp_turn_duration_on_latest_assistant(&mut app, 99);
+        assert!(app.messages().is_empty());
+    }
+
+    #[test]
+    fn stamps_latest_assistant_skipping_intervening_user() {
+        let mut app = App::test_default();
+        app.push_message_tracked(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
+        app.push_message_tracked(ChatMessage::new(MessageRole::User, Vec::new(), None));
+        app.push_message_tracked(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
+        app.push_message_tracked(ChatMessage::new(MessageRole::User, Vec::new(), None));
+
+        stamp_turn_duration_on_latest_assistant(&mut app, 5_000);
+
+        // Latest (idx 2) Assistant gets the stamp; earlier (idx 0) stays None.
+        let assistants: Vec<Option<u64>> = app
+            .messages()
+            .iter()
+            .filter(|m| matches!(m.role, MessageRole::Assistant))
+            .map(|m| m.turn_duration_ms)
+            .collect();
+        assert_eq!(assistants, vec![None, Some(5_000)]);
     }
 }
 
