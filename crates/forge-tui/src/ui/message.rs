@@ -682,10 +682,7 @@ fn render_lifecycle_one_liner(tc: &crate::app::ToolCallInfo) -> Option<Vec<Line<
                     "\u{25c9} ".to_owned(),
                     Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(
-                    "Monitor".to_owned(),
-                    Style::default().add_modifier(Modifier::BOLD),
-                ),
+                Span::styled("Monitor".to_owned(), Style::default().add_modifier(Modifier::BOLD)),
                 Span::styled(
                     format!(" \u{b7} {}{suffix}", parsed.description),
                     Style::default().fg(theme::DIM),

@@ -1865,16 +1865,14 @@ impl App {
     /// the in-chat live block re-renders in place. Mirrors the
     /// `apply_terminal_payload` precedent in `terminal.rs` (terminal
     /// stream + dirty bump).
-    pub fn replace_monitor_output_tail_by_task_id(&mut self, task_id: &str, lines: Vec<String>) {
+    pub fn replace_monitor_output_tail_by_task_id(&mut self, task_id: &str, lines: &[String]) {
         const CHAT_TAIL_MAX: usize = 5;
         // First update the per-session MonitorEntry. Capture the
         // tool_use_id so the chat-tail stamp below can find the
         // matching ToolCallInfo through `tool_call_index`.
         let tool_use_id = {
-            let Some(entry) = self
-                .monitors_mut()
-                .iter_mut()
-                .find(|m| m.task_id.as_deref() == Some(task_id))
+            let Some(entry) =
+                self.monitors_mut().iter_mut().find(|m| m.task_id.as_deref() == Some(task_id))
             else {
                 return;
             };
@@ -1887,17 +1885,15 @@ impl App {
         // arrives via `handle_tool_call` and indexing happens slightly
         // after); the next refresh tick re-stamps once indexed.
         let last_five: Vec<String> = if lines.len() <= CHAT_TAIL_MAX {
-            lines.clone()
+            lines.to_vec()
         } else {
             lines[lines.len() - CHAT_TAIL_MAX..].to_vec()
         };
         let Some((msg_idx, block_idx)) = self.lookup_tool_call(&tool_use_id) else {
             return;
         };
-        let Some(MessageBlock::ToolCall(tc)) = self
-            .active_messages_mut()
-            .get_mut(msg_idx)
-            .and_then(|m| m.blocks.get_mut(block_idx))
+        let Some(MessageBlock::ToolCall(tc)) =
+            self.active_messages_mut().get_mut(msg_idx).and_then(|m| m.blocks.get_mut(block_idx))
         else {
             return;
         };
@@ -1929,7 +1925,7 @@ impl App {
             &path,
             crate::app::state::types::MonitorEntry::OUTPUT_TAIL_MAX,
         ) {
-            self.replace_monitor_output_tail_by_task_id(task_id, lines);
+            self.replace_monitor_output_tail_by_task_id(task_id, &lines);
         }
     }
 
@@ -2989,7 +2985,7 @@ mod tests {
 
         // Act: replace tail with 8 lines.
         let lines: Vec<String> = (1..=8).map(|i| format!("line {i}")).collect();
-        app.replace_monitor_output_tail_by_task_id(task_id, lines);
+        app.replace_monitor_output_tail_by_task_id(task_id, &lines);
 
         // Assert: monitor_output_tail carries the LAST 5 lines.
         let (mi, bi) = app.lookup_tool_call(tool_use_id).expect("indexed");
@@ -3071,7 +3067,7 @@ mod tests {
 
         app.replace_monitor_output_tail_by_task_id(
             task_id,
-            vec!["one".to_owned(), "two".to_owned(), "three".to_owned()],
+            &["one".to_owned(), "two".to_owned(), "three".to_owned()],
         );
 
         let (mi, bi) = app.lookup_tool_call(tool_use_id).expect("indexed");

@@ -331,7 +331,7 @@ mod tests {
         // session state + tool_call_index actually resolve to a
         // mutable ToolCallInfo.
         let lines: Vec<String> = (1..=8).map(|i| format!("line {i}")).collect();
-        harness.app_mut().replace_monitor_output_tail_by_task_id(&task_id, lines);
+        harness.app_mut().replace_monitor_output_tail_by_task_id(&task_id, &lines);
 
         let session = harness.default_session();
         let tail: Vec<String> = session
