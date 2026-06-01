@@ -213,6 +213,8 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
         spinner_frame: 0,
         spinner_last_advance_at: None,
         tools_collapsed: true,
+        #[cfg(any(test, feature = "testing"))]
+        last_invalidation_level: std::cell::Cell::new(None),
         projects_pane_visible,
         projects_pane_scroll_offset: 0,
         projects_pane_overlay_open: false,

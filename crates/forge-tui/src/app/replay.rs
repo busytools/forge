@@ -510,6 +510,52 @@ mod tests {
         insta::assert_snapshot!(snapshot);
     }
 
+    /// v2 regression-lock: single-item groups behave IDENTICALLY to
+    /// multi-item - no `len == 1` special-casing anywhere in the
+    /// render dispatch. A lone Read at default L2 renders the "1 read"
+    /// summary line just like a 5-Read group renders "5 reads"; the
+    /// cycle walks L2 (summary) -> L1 (title) -> L0 (title + body).
+    /// Decision 3 lock from the brainstorm: UI consistency wins
+    /// over body-visible-by-default; failed lone tools sit collapsed
+    /// at L2 and need one ctrl+x to expand.
+    #[test]
+    fn render_single_item_group_cycle_walks_l2_l1_l0_like_multi_item() {
+        let leader_id = first_chat_group_leader(&build_app_with_consecutive_reads(1))
+            .expect("single-item group present");
+
+        let mut harness = ReplayHarness::from_app(build_app_with_consecutive_reads(1));
+        let snap_l2 = harness.snapshot_chat(80, 10);
+        assert!(
+            snap_l2.contains("> 1 read"),
+            "single-item L2 must render the summary line (no special-casing); got:\n{snap_l2}",
+        );
+        assert!(
+            !snap_l2.contains("Read crates/forge-tui/src/0.rs"),
+            "single-item L2 must NOT render the title row directly; got:\n{snap_l2}",
+        );
+
+        let mut app = build_app_with_consecutive_reads(1);
+        let _ = app.cycle_group_collapse_level(&leader_id);
+        let snap_l1 = ReplayHarness::from_app(app).snapshot_chat(80, 10);
+        assert!(
+            snap_l1.contains("Read crates/forge-tui/src/0.rs"),
+            "single-item L1 must render the title row; got:\n{snap_l1}",
+        );
+        assert!(
+            !snap_l1.contains("> 1 read"),
+            "single-item L1 must NOT render the summary line; got:\n{snap_l1}",
+        );
+
+        let mut app = build_app_with_consecutive_reads(1);
+        let _ = app.cycle_group_collapse_level(&leader_id);
+        let _ = app.cycle_group_collapse_level(&leader_id);
+        let snap_l0 = ReplayHarness::from_app(app).snapshot_chat(80, 20);
+        assert!(
+            snap_l0.contains("Read crates/forge-tui/src/0.rs"),
+            "single-item L0 must render the title row; got:\n{snap_l0}",
+        );
+    }
+
     fn build_app_with_consecutive_reads(n: usize) -> App {
         use crate::agent::model::{self, SessionId};
         use crate::app::{

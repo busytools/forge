@@ -1093,10 +1093,15 @@ fn handle_subagent_key(app: &mut App, key: KeyEvent) -> bool {
 /// `app::events::mouse::handle_group_summary_click`; without one,
 /// ctrl+x stays the global toggle the user is used to.
 pub(super) fn toggle_all_tool_calls(app: &mut App) {
-    let focused = app.active_session().and_then(|s| s.focused_group_id.clone());
-    if let Some(leader_id) = focused {
+    let focused = app.active_session().and_then(|s| s.focused_group.clone());
+    if let Some((leader_id, msg_idx)) = focused {
         let _ = app.cycle_group_collapse_level(&leader_id);
-        app.invalidate_layout(InvalidationLevel::Global);
+        // Per-message invalidation: a single group's cycle changes only
+        // that message's layout, so clearing every other message's
+        // cache (Global) was a ~74ms hitch on long sessions. The mouse
+        // click path scoped correctly to MessageChanged from day one;
+        // this makes the keyboard path symmetric.
+        app.invalidate_layout(InvalidationLevel::MessageChanged(msg_idx));
         return;
     }
     app.tools_collapsed = !app.tools_collapsed;
