@@ -5339,10 +5339,7 @@ mod tests {
         app.active_messages_mut().push(user_text_message("a"));
         app.needs_redraw = false;
         app.invalidate_layout(InvalidationLevel::MessagesFrom(0));
-        assert!(
-            app.needs_redraw,
-            "invalidate_layout(MessagesFrom) must set needs_redraw"
-        );
+        assert!(app.needs_redraw, "invalidate_layout(MessagesFrom) must set needs_redraw");
     }
 
     #[test]
@@ -5351,10 +5348,7 @@ mod tests {
         app.active_messages_mut().push(user_text_message("a"));
         app.needs_redraw = false;
         app.invalidate_layout(InvalidationLevel::Global);
-        assert!(
-            app.needs_redraw,
-            "invalidate_layout(Global) must set needs_redraw"
-        );
+        assert!(app.needs_redraw, "invalidate_layout(Global) must set needs_redraw");
     }
 
     #[test]
