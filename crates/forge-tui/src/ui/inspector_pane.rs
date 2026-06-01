@@ -374,20 +374,12 @@ fn append_body(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
         append_workflows_section(lines, app, width);
     }
 
-    // MONITORS section sits between WORKFLOWS and
-    // PROCESSES; auto-clears when no entry is live (matches the
-    // TASKS section's all-completed shape).
-    if !app.monitors().is_empty() {
-        lines.push(Line::default());
-        push_section_rule(lines, width);
-        lines.push(Line::default());
-        append_monitors_section(lines, app, width);
-    }
-
-    // SCHEDULES sits between MONITORS and PROCESSES. Pending
+    // SCHEDULES sits between WORKFLOWS and PROCESSES. Pending
     // wakeups + crons; auto-clears entries on the ~1s prune tick
     // (passed wakeups, 7-day-expired recurring crons) and on
-    // explicit `CronDelete`.
+    // explicit `CronDelete`. The MONITORS section is gone; Monitor
+    // tool calls now render their live tail directly in chat (see
+    // `ui::message::render_lifecycle_one_liner`'s `"Monitor"` arm).
     if !app.schedules().is_empty() {
         lines.push(Line::default());
         push_section_rule(lines, width);
@@ -1293,8 +1285,8 @@ fn append_schedules_section(lines: &mut Vec<Line<'static>>, app: &App, width: u1
 /// Render one SCHEDULES row: glyph + label + trailing badge.
 /// Wakeups carry a live `in <countdown>` badge; crons carry their
 /// recurrence label (`recurring` / `one-shot`). Layout mirrors
-/// `append_monitor_row`'s chrome accounting + right-justified
-/// trailing badge.
+/// `append_workflow_row`'s chrome accounting + right-justified
+/// trailing badge (the #281 pad-spacer pattern).
 fn append_schedule_row(
     lines: &mut Vec<Line<'static>>,
     entry: &crate::app::ScheduleEntry,
@@ -1353,117 +1345,6 @@ fn fmt_countdown(d: std::time::Duration) -> String {
         format!("{}m", s / 60)
     } else {
         format!("{s}s")
-    }
-}
-
-fn append_monitors_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
-    let monitors = app.monitors();
-    if monitors.is_empty() {
-        return;
-    }
-
-    lines.push(Line::from(Span::styled(
-        " MONITORS".to_owned(),
-        Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
-    )));
-    lines.push(Line::default());
-
-    let inner_width = usize::from(width);
-    let last_idx = monitors.len().saturating_sub(1);
-    for (idx, monitor) in monitors.iter().enumerate() {
-        append_monitor_row(lines, monitor, inner_width);
-        // blank between entries so multiple Monitor
-        // rows don't visually crowd together. Skip after the last
-        // row to avoid leaving a trailing blank at the end of the
-        // section (matches TASKS' inter-entry spacing).
-        if idx < last_idx {
-            lines.push(Line::default());
-        }
-    }
-}
-
-/// Render one Monitor entry into the Inspector body. Layout:
-/// headline row (glyph + description + status badge + persistent
-/// flag), tail rows (`│   └─ <line>` style continuation) when
-/// expanded or running.
-fn append_monitor_row(
-    lines: &mut Vec<Line<'static>>,
-    monitor: &crate::app::MonitorEntry,
-    inner_width: usize,
-) {
-    use crate::app::MonitorStatus;
-
-    let (status_label, status_color) = match monitor.status {
-        MonitorStatus::Running => ("running", theme::RUST_ORANGE),
-        MonitorStatus::Completed => ("completed", Color::Green),
-        MonitorStatus::Stopped => ("stopped", theme::DIM),
-        MonitorStatus::TimedOut => ("timed out", theme::STATUS_WARNING),
-    };
-    let glyph = if monitor.is_running() { "\u{25c9}" } else { "\u{25cd}" };
-    let glyph_color = if monitor.is_running() { theme::RUST_ORANGE } else { theme::DIM };
-    let persistent_suffix = if monitor.persistent { " \u{00B7} persistent" } else { "" };
-
-    // chrome accumulator for the header row. The status
-    // badge + persistent suffix are appended AFTER the truncated
-    // headline, so the budget must count them up-front. Without this
-    // accounting the badge overflows the pane and ratatui clips
-    // it - which read as "no status badge ever appears" to the
-    // user.
-    let header_chrome = usize::from(PANE_PAD)           // left indent (matches TASKS)
-        + 1                                              // glyph cell
-        + 1                                              // space after glyph
-        + 3                                              // " · " separator
-        + status_label.chars().count()                   // status badge text
-        + persistent_suffix.chars().count()              // optional " · persistent"
-        + usize::from(PANE_PAD); // 1-col right gutter
-    let header_budget = row_text_budget(inner_width, header_chrome);
-
-    let headline = truncate_or_pass(&monitor.description, header_budget);
-    // #281: right-justify the status badge. The chrome budget already
-    // reserved room for ` · status` (+ optional ` · persistent`), so any
-    // unused headline width turns into a pad-spacer between the headline
-    // and the ` · ` separator. Mirrors GIT's `diff_subtitle_line` pattern.
-    let pad = header_budget.saturating_sub(headline.chars().count());
-    lines.push(Line::from(vec![
-        Span::raw(" ".repeat(usize::from(PANE_PAD))),
-        Span::styled(glyph.to_owned(), Style::default().fg(glyph_color)),
-        Span::raw(" ".to_owned()),
-        Span::styled(headline, Style::default().add_modifier(Modifier::BOLD)),
-        Span::raw(" ".repeat(pad)),
-        Span::styled(" \u{00B7} ".to_owned(), Style::default().fg(theme::DIM)),
-        Span::styled(status_label.to_owned(), Style::default().fg(status_color)),
-        Span::styled(persistent_suffix.to_owned(), Style::default().fg(theme::DIM)),
-    ]));
-
-    // tail renders whenever the buffer is non-empty -
-    // running, completed, expanded, all the same. The earlier gate
-    // hid tails for completed-and-collapsed entries, but the file
-    // read from `task_notification.output_file` is the whole point
-    // of capturing the tail; suppressing it on completion silenced
-    // the user-visible payload. Empty-tail short-circuits below
-    // preserve the no-output edge case so silent-completed
-    // Monitors don't render a vestigial empty body row.
-    if monitor.output_tail.is_empty() {
-        return;
-    }
-    // Tail-row chrome: 1-col indent + box-drawing connector + space
-    // + 1-col right gutter. Same budget for every row regardless of
-    // whether the connector is `└` (last) or `├` (mid).
-    let tail_chrome = usize::from(PANE_PAD)
-        + 1   // connector glyph (└ or ├)
-        + 1   // space after connector
-        + usize::from(PANE_PAD);
-    let tail_budget = row_text_budget(inner_width, tail_chrome);
-    let last_idx = monitor.output_tail.len().saturating_sub(1);
-    for (i, line) in monitor.output_tail.iter().enumerate() {
-        let connector_glyph = if i == last_idx { "\u{2514}" } else { "\u{251c}" };
-        let truncated = truncate_or_pass(line, tail_budget);
-        lines.push(Line::from(vec![
-            Span::raw(" ".repeat(usize::from(PANE_PAD))),
-            Span::styled(connector_glyph.to_owned(), Style::default().fg(theme::DIM)),
-            Span::raw(" ".to_owned()),
-            Span::styled(truncated, Style::default().fg(theme::DIM)),
-        ]));
     }
 }
 
@@ -2462,123 +2343,6 @@ mod tests {
     }
 
     // ---------------------------------------------------------
-    // MONITORS Inspector section.
-    // ---------------------------------------------------------
-
-    fn make_monitor_entry(
-        tool_use_id: &str,
-        description: &str,
-        persistent: bool,
-        status: crate::app::MonitorStatus,
-    ) -> crate::app::MonitorEntry {
-        crate::app::MonitorEntry {
-            tool_use_id: tool_use_id.to_owned(),
-            task_id: Some("task_1".to_owned()),
-            description: description.to_owned(),
-            command: "tail -F app.log".to_owned(),
-            persistent,
-            timeout_ms: 0,
-            status,
-            output_file: None,
-            output_tail: std::collections::VecDeque::new(),
-            expanded_in_inspector: false,
-        }
-    }
-
-    #[test]
-    fn monitors_section_renders_running_row_with_persistent_badge() {
-        let entry = make_monitor_entry(
-            "tu",
-            "forge-monitor-test",
-            true,
-            crate::app::MonitorStatus::Running,
-        );
-        let mut lines = Vec::new();
-        // pass inner_width (full pane), not text_budget.
-        // The 1-col left indent matches TASKS / PROCESSES.
-        append_monitor_row(&mut lines, &entry, 60);
-        let row_text = line_text(&lines[0]);
-        assert!(row_text.starts_with(" \u{25c9}"), "expected fisheye glyph; got {row_text:?}");
-        assert!(row_text.contains("forge-monitor-test"), "headline missing; got {row_text:?}");
-        assert!(row_text.contains("running"), "status badge missing; got {row_text:?}");
-        assert!(row_text.contains("persistent"), "persistent badge missing; got {row_text:?}");
-    }
-
-    #[test]
-    fn monitors_section_renders_stopped_row_with_dim_glyph() {
-        let entry = make_monitor_entry("tu", "ci-watch", false, crate::app::MonitorStatus::Stopped);
-        let mut lines = Vec::new();
-        append_monitor_row(&mut lines, &entry, 60);
-        let row_text = line_text(&lines[0]);
-        // Terminal glyph (◍ U+25CD) for stopped entries.
-        assert!(row_text.contains("\u{25cd}"), "expected stopped glyph; got {row_text:?}");
-        assert!(row_text.contains("stopped"), "stopped badge missing; got {row_text:?}");
-        // Non-persistent has no `persistent` badge.
-        assert!(!row_text.contains("persistent"));
-    }
-
-    #[test]
-    fn monitors_section_renders_output_tail_for_running_entry() {
-        let mut entry = make_monitor_entry(
-            "tu",
-            "forge-monitor-test",
-            true,
-            crate::app::MonitorStatus::Running,
-        );
-        entry.output_tail.push_back("stream started".to_owned());
-        entry.output_tail.push_back("first event landed".to_owned());
-        let mut lines = Vec::new();
-        append_monitor_row(&mut lines, &entry, 60);
-        assert_eq!(lines.len(), 3, "headline + 2 tail rows; got {}", lines.len());
-        assert!(line_text(&lines[1]).contains("stream started"));
-        assert!(line_text(&lines[2]).contains("first event landed"));
-    }
-
-    #[test]
-    fn monitors_section_shows_tail_for_stopped_entry_with_populated_tail() {
-        // the prior gate hid the tail for any
-        // non-running, non-expanded entry. After the relaxation,
-        // a completed Monitor that has captured an output_tail
-        // (from `task_notification.output_file`) renders its tail
-        // by default - that's the whole point of capturing the
-        // file contents. The expanded flag still surfaces the
-        // tail for empty-or-otherwise edge cases.
-        let mut entry =
-            make_monitor_entry("tu", "ci-watch", false, crate::app::MonitorStatus::Stopped);
-        entry.output_tail.push_back("stream ended".to_owned());
-        let mut lines = Vec::new();
-        append_monitor_row(&mut lines, &entry, 60);
-        // Stopped + collapsed + non-empty tail → tail renders.
-        assert_eq!(lines.len(), 2);
-        assert!(line_text(&lines[1]).contains("stream ended"));
-    }
-
-    #[test]
-    fn monitors_section_hides_tail_for_stopped_entry_with_empty_tail() {
-        // Empty `output_tail` short-circuits before the show_tail
-        // predicate runs; ensure the no-output path still produces
-        // just the headline (no vestigial empty-body row).
-        let entry = make_monitor_entry("tu", "ci-watch", false, crate::app::MonitorStatus::Stopped);
-        // No `output_tail` pushed.
-        let mut lines = Vec::new();
-        append_monitor_row(&mut lines, &entry, 60);
-        assert_eq!(lines.len(), 1, "no tail content → headline only");
-    }
-
-    #[test]
-    fn monitors_section_shows_tail_for_expanded_stopped_entry() {
-        let mut entry =
-            make_monitor_entry("tu", "ci-watch", false, crate::app::MonitorStatus::Stopped);
-        entry.output_tail.push_back("stream ended".to_owned());
-        entry.expanded_in_inspector = true;
-        let mut lines = Vec::new();
-        append_monitor_row(&mut lines, &entry, 40);
-        // Expanded → headline + 1 tail row.
-        assert_eq!(lines.len(), 2);
-        assert!(line_text(&lines[1]).contains("stream ended"));
-    }
-
-    // ---------------------------------------------------------
     // WORKFLOWS Inspector section.
     // ---------------------------------------------------------
 
@@ -2754,20 +2518,6 @@ mod tests {
         let inner_width: usize = 60;
         let mut all_rows: Vec<Line<'static>> = Vec::new();
 
-        // MONITORS header + tail rows (running, persistent, with output).
-        let mut monitor = make_monitor_entry(
-            "tu",
-            "A super long Monitor description that overflows the pane width by a lot",
-            true,
-            crate::app::MonitorStatus::Running,
-        );
-        monitor.output_tail.push_back(
-            "An equally long tail line that also overflows the pane width here too".to_owned(),
-        );
-        let mut mon_lines = Vec::new();
-        append_monitor_row(&mut mon_lines, &monitor, inner_width);
-        all_rows.extend(mon_lines);
-
         // WORKFLOWS header + phase rows.
         let mut workflow = make_workflow_entry(
             "wf",
@@ -2809,59 +2559,13 @@ mod tests {
     }
 
     // ---------------------------------------------------------
-    // #281: MONITORS + WORKFLOWS status-badge right-justify.
+    // #281: WORKFLOWS status-badge right-justify.
     // Trailing badge end column locks at `inner_width - PANE_PAD`
-    // regardless of headline length (short, long, persistent).
-    // Mirrors GIT's `diff_subtitle_line` pad-spacer pattern.
+    // regardless of headline length. Mirrors GIT's
+    // `diff_subtitle_line` pad-spacer pattern. (MONITORS variants
+    // retired with the section's removal; the badge math itself
+    // is exercised by the WORKFLOWS test below.)
     // ---------------------------------------------------------
-
-    #[test]
-    fn monitor_row_status_badge_right_justified_across_headline_lengths() {
-        let inner_width: usize = 38;
-        let short = make_monitor_entry("tu_a", "short", false, crate::app::MonitorStatus::Running);
-        let long = make_monitor_entry(
-            "tu_b",
-            "a much longer monitor description that approaches the truncation budget",
-            false,
-            crate::app::MonitorStatus::Running,
-        );
-
-        let mut short_lines = Vec::new();
-        append_monitor_row(&mut short_lines, &short, inner_width);
-        let mut long_lines = Vec::new();
-        append_monitor_row(&mut long_lines, &long, inner_width);
-
-        let short_w = rendered_width(&short_lines[0]);
-        let long_w = rendered_width(&long_lines[0]);
-        let target = inner_width.saturating_sub(usize::from(PANE_PAD));
-        assert_eq!(
-            short_w, target,
-            "short MONITORS row should pad out to inner_width - PANE_PAD; got {short_w}, want {target}",
-        );
-        assert_eq!(
-            long_w, target,
-            "long MONITORS row should also end at inner_width - PANE_PAD; got {long_w}, want {target}",
-        );
-    }
-
-    #[test]
-    fn monitor_row_status_badge_right_justified_with_persistent_suffix() {
-        let inner_width: usize = 50;
-        let entry = make_monitor_entry(
-            "tu",
-            "ci-watch",
-            true, // persistent
-            crate::app::MonitorStatus::Running,
-        );
-        let mut lines = Vec::new();
-        append_monitor_row(&mut lines, &entry, inner_width);
-        let w = rendered_width(&lines[0]);
-        let target = inner_width.saturating_sub(usize::from(PANE_PAD));
-        assert_eq!(
-            w, target,
-            "MONITORS row with ` · persistent` suffix should still end at inner_width - PANE_PAD; got {w}, want {target}",
-        );
-    }
 
     #[test]
     fn workflow_row_status_badge_right_justified_across_title_lengths() {
@@ -2892,59 +2596,13 @@ mod tests {
     }
 
     // ---------------------------------------------------------
-    // blank-line spacing between MONITORS / WORKFLOWS
-    // entries.
+    // blank-line spacing between WORKFLOWS entries.
     // ---------------------------------------------------------
-
-    fn build_session_with_monitors(monitors: Vec<crate::app::MonitorEntry>) -> App {
-        let mut app = App::test_default();
-        *app.monitors_mut() = monitors;
-        app
-    }
 
     fn build_session_with_workflows(workflows: Vec<crate::app::WorkflowEntry>) -> App {
         let mut app = App::test_default();
         *app.workflows_mut() = workflows;
         app
-    }
-
-    #[test]
-    fn monitors_section_inserts_blank_line_between_entries() {
-        let entries = vec![
-            make_monitor_entry("tu_a", "first-monitor", false, crate::app::MonitorStatus::Running),
-            make_monitor_entry("tu_b", "second-monitor", false, crate::app::MonitorStatus::Running),
-        ];
-        let app = build_session_with_monitors(entries);
-        let mut lines = Vec::new();
-        append_monitors_section(&mut lines, &app, 60);
-        // Expected layout:
-        //   0: " MONITORS"
-        //   1: blank (header -> first-row separator)
-        //   2: first row headline
-        //   3: blank (between entries - Bug 6)
-        //   4: second row headline
-        // No trailing blank after the last entry.
-        assert_eq!(lines.len(), 5, "got {} lines: {lines:?}", lines.len());
-        assert!(line_text(&lines[0]).contains("MONITORS"));
-        assert!(line_text(&lines[1]).is_empty());
-        assert!(line_text(&lines[2]).contains("first-monitor"));
-        assert!(line_text(&lines[3]).is_empty(), "Bug 6: blank between entries");
-        assert!(line_text(&lines[4]).contains("second-monitor"));
-    }
-
-    #[test]
-    fn monitors_section_single_entry_has_no_trailing_blank() {
-        let app = build_session_with_monitors(vec![make_monitor_entry(
-            "tu_solo",
-            "solo-monitor",
-            false,
-            crate::app::MonitorStatus::Running,
-        )]);
-        let mut lines = Vec::new();
-        append_monitors_section(&mut lines, &app, 60);
-        // 1 header + 1 blank + 1 row = 3 lines; no trailing blank.
-        assert_eq!(lines.len(), 3);
-        assert!(line_text(&lines[2]).contains("solo-monitor"));
     }
 
     #[test]
@@ -2956,7 +2614,7 @@ mod tests {
         let app = build_session_with_workflows(entries);
         let mut lines = Vec::new();
         append_workflows_section(&mut lines, &app, 60);
-        // Layout shape matches MONITORS: header + blank + row + blank-between + row.
+        // Layout shape: header + blank + row + blank-between + row.
         // Find the two workflow rows; assert there's a blank between them.
         let first_idx = lines
             .iter()
