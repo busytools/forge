@@ -1071,6 +1071,7 @@ chat continues here...
   <span class="success">✓</span> <span class="bold">⬚</span> <span class="bold">Read</span> /path/to/file.rs
   <span class="success">✓</span> <span class="bold">▣</span> <span class="bold">Edit</span> /path/to/file.rs (+34, -2)
   <span class="success">✓</span> <span class="bold">▣</span> <span class="bold">Write</span> /path/to/new_file.rs
+  <span class="success">✓</span> <span class="bold">▣</span> <span class="bold">Write</span> .claude/plans/launch.md (+45, -2)
   <span class="success">✓</span> <span class="bold">⌕</span> <span class="bold">Grep</span> "is_using_overage"
   <span class="success">✓</span> <span class="bold">⌕</span> <span class="bold">Glob</span> crates/**/Cargo.toml
   <span class="success">✓</span> <span class="bold">▶</span> <span class="bold">Bash</span> cargo nextest run -p forge-tui
@@ -1265,7 +1266,7 @@ chat continues here...
     <div class="when">visible: every <code>mcp__forge__peers__*</code> / <code>mcp__forge__workers__ask|tell</code> tool call the LLM emits, and every inbound wrapped envelope (<code>[Question ...]</code>, <code>[Message ...]</code>, <code>[Reply ...]</code>, <code>[Late reply ...]</code>, <code>[Ask ... timed out ...]</code>, <code>[Ask ... has expired ...]</code>, <code>[Ask ... failed to deliver: ...]</code>, <code>[Worker ... spawn failed ...]</code>)</div>
   </div>
   <div class="surface-body">
-    <p>Five TitleCase verbs cover every variant; direction is implied by the verb, so no extra arrow chrome. Each row reads <code>▶ Verb name</code> with the body indented under the standard tool-card tree connectors (<code>│  </code> for continuation, <code>└─ </code> for the last line). Same <code>Forge</code> role header that introduces assistant streams introduces these too - one identity, not two.</p>
+    <p>Five TitleCase verbs cover every variant; the verb names the kind, a leading directional kind-icon names the direction. Outbound (<code>Tell</code>, <code>Ask</code>) carries <code>⤴</code> (U+2934); inbound (<code>Message</code>, <code>Question</code>, <code>Reply</code>) carries <code>⤵</code> (U+2935). Each row reads <code>▶ ⤴ Verb name</code> (outbound) or <code>▶ ⤵ Verb name</code> (inbound) with the body indented under the standard tool-card tree connectors (<code>│  </code> for continuation, <code>└─ </code> for the last line). Same <code>Forge</code> role header that introduces assistant streams introduces these too - one identity, not two.</p>
     <table>
       <thead>
         <tr><th>Verb</th><th>Direction</th><th>Wire shape</th></tr>
@@ -1282,46 +1283,46 @@ chat continues here...
       <pre class="indent">
    <span class="accent bold">Forge</span>
 
-     <span class="accent bold">▶</span> <span class="bold">Tell planner</span>
+     <span class="accent bold">▶</span> <span class="dim bold">⤴</span> <span class="bold">Tell planner</span>
      <span class="dim">└─ Re-stating tight: #178 go option A, #179+#180 brainstorm, #182 opt-in.</span>
 
-     <span class="accent bold">▶</span> <span class="bold">Ask planner</span>
+     <span class="accent bold">▶</span> <span class="dim bold">⤴</span> <span class="bold">Ask planner</span>
      <span class="dim">└─ Is the seam plan ready for the workspace.rs split?</span>
 
-     <span class="accent bold">▶</span> <span class="bold">Message planner</span>
+     <span class="accent bold">▶</span> <span class="dim bold">⤵</span> <span class="bold">Message planner</span>
      <span class="dim">└─ Plan for #185 sent to implementer with background-priority note (queue...</span>
 
-     <span class="accent bold">▶</span> <span class="bold">Message implementer</span>
+     <span class="accent bold">▶</span> <span class="dim bold">⤵</span> <span class="bold">Message implementer</span>
      <span class="dim">│  PR #187 open (draft, closes #184). Worker-resume tag-path bug fix;</span>
      <span class="dim">│  reviewer pinged. Heads-up: #187's diff shows -105 lines as artifact...</span>
      <span class="dim">└─ Queued: #185 after these two land.</span>
 
-     <span class="accent bold">▶</span> <span class="bold">Reply planner</span>
+     <span class="accent bold">▶</span> <span class="dim bold">⤵</span> <span class="bold">Reply planner</span>
      <span class="dim">└─ Yes - seam plan attached, six carve-outs roughly 300 LOC each. Sign-of...</span>
 
-     <span class="accent bold">▶</span> <span class="bold">Question hub-modules</span>
+     <span class="accent bold">▶</span> <span class="dim bold">⤵</span> <span class="bold">Question hub-modules</span>
      <span class="dim">└─ Should we proceed with the runner upgrade now or wait for CI to drain?</span></pre>
     </div>
     <p>Notices stay single-line with a <code>⚠</code> modifier inline.</p>
     <div class="term">
       <pre class="indent">
-     <span class="accent bold">▶</span> <span class="bold">Ask planner</span> <span class="dim">-</span> <span class="warning">⚠ timed out</span>
+     <span class="accent bold">▶</span> <span class="dim bold">⤵</span> <span class="bold">Ask planner</span> <span class="dim">-</span> <span class="warning">⚠ timed out</span>
      <span class="dim">└─ was: "Is the seam plan ready for the workspace.rs split?"</span>
 
-     <span class="accent bold">▶</span> <span class="bold">Tell planner</span> <span class="dim">-</span> <span class="warning">⚠ undeliverable</span>
+     <span class="accent bold">▶</span> <span class="dim bold">⤵</span> <span class="bold">Tell planner</span> <span class="dim">-</span> <span class="warning">⚠ undeliverable</span>
      <span class="dim">└─ reason: target sleeping</span>
 
-     <span class="accent bold">▶</span> <span class="bold">Reply planner</span> <span class="dim">-</span> <span class="warning">⚠ late</span>
+     <span class="accent bold">▶</span> <span class="dim bold">⤵</span> <span class="bold">Reply planner</span> <span class="dim">-</span> <span class="warning">⚠ late</span>
      <span class="dim">└─ Sorry for the delay - the original ask had already expired.</span>
 
-     <span class="accent bold">▶</span> <span class="bold">Question forge</span> <span class="dim">-</span> <span class="warning">⚠ expired</span>
+     <span class="accent bold">▶</span> <span class="dim bold">⤵</span> <span class="bold">Question forge</span> <span class="dim">-</span> <span class="warning">⚠ expired</span>
      <span class="dim">└─ your reply will be tagged late.</span></pre>
     </div>
     <dl>
       <dt>code</dt><dd><code>crates/forge-tui/src/ui/peer_block.rs::detect_inbound</code> + <code>detect_outbound</code> + <code>render_block</code> (one renderer takes a TitleCase verb + name + optional modifier + body) · invoked from <code>ui::message::append_assistant_tool_block</code> + <code>append_user_blocks</code></dd>
       <dt>collapse / expand</dt><dd>body ellipsed to one line by default (collapsed shape: <code>└─ &lt;first 60 chars&gt;...</code>); click the row to expand the full body inline. Same affordance pattern the existing peer block uses for collapsed-by-default</dd>
       <dt>same-worker streak</dt><dd>three consecutive envelopes from the same worker (per <code>chat::group_envelope_streak</code>) stack body lines under one header - no repeated <code>▶ Message &lt;same-name&gt;</code> rows. Same-project envelope streaks (different workers in the same project) still get one header per worker</dd>
-      <dt>variants</dt><dd>5 main verbs (<code>Tell</code> · <code>Ask</code> · <code>Message</code> · <code>Question</code> · <code>Reply</code>) + 4 notice modifiers (<code>⚠ timed out</code> · <code>⚠ undeliverable</code> · <code>⚠ late</code> · <code>⚠ expired</code>). <code>[Worker ... spawn failed ...]</code> stays as a one-line system notice (no body chrome) because it's a workspace-generated lifecycle event, not a peer comm</dd>
+      <dt>variants</dt><dd>5 main verbs (<code>Tell</code> · <code>Ask</code> · <code>Message</code> · <code>Question</code> · <code>Reply</code>) + 4 notice modifiers (<code>⚠ timed out</code> · <code>⚠ undeliverable</code> · <code>⚠ late</code> · <code>⚠ expired</code>) + 2 directional kind-icons (<code>⤴</code> outbound · <code>⤵</code> inbound) in the slot between the row glyph and the verb. Outbound covers <code>render_outbound</code> (Ask / Tell); inbound covers every <code>render_inbound</code> arm including the timeout / delivery-failure notices whose original asks were ours but whose notice envelopes arrived inbound. <code>[Worker ... spawn failed ...]</code> stays as a one-line system notice with no kind-icon (workspace-generated lifecycle event, not a peer comm)</dd>
       <dt>dropped from prior shape</dt><dd>status glyph (<code>✓</code> / <code>⚠</code> / <code>✗</code>), kind icons (<code>←</code> / <code>→</code> / <code>↩</code>), correlation id chrome (<code>· q-...</code>), <code>(org)</code> meta on same-org rows, lowercase / TitleCase identity mismatch between <code>Forge</code> and <code>(worker in ...)</code>. <code>workers__spawn</code> / <code>workers__list</code> revert to standard tool_call rendering (they're worker lifecycle, not peer comm)</dd>
       <dt>parser shape</dt><dd>pure prefix string-match + manual field extraction (<code>take_until</code>, <code>rest_after_id</code>, <code>id_before</code>, <code>extract_from_agent_after</code>). No regex. Malformed envelopes fall through to the default user-message rendering rather than erroring</dd>
       <dt>suppression</dt><dd><code>crates/forge-tui/src/ui/tool_call.rs</code> sets <code>ToolCallInfo.hidden = true</code> for <code>mcp__forge__peers__*</code> and <code>mcp__forge__workers__ask</code> / <code>workers__tell</code>; <code>workers__spawn</code> / <code>workers__list</code> render as standard tool cards</dd>
@@ -1764,7 +1765,7 @@ chat continues here...
     <dl>
       <dt>code</dt><dd><code>crates/forge-tui/src/ui/diff.rs::render_diff</code> · uses <code>similar</code> crate's <code>unified_diff</code> with default 3-line context</dd>
       <dt>colors</dt><dd>Repository tag: DIM · Hunk header: <code>Color::Cyan</code> · Add: <code>Color::Green</code> · Delete: <code>Color::Red</code> · Context: default fg</dd>
-      <dt>indenting</dt><dd>Diff body sits inside the standard tool-call body indent. Each line is the standard body prefix (<code>  │  </code> or <code>  └─ </code> in DIM, 5 cells) followed by <code>DIFF_BODY_INDENT = "  "</code> (2 cells), then the diff content - so diff content starts at column 7. Write-tool diffs cap their length via <code>cap_write_diff_lines</code> (head + ellipsis + tail). Plan-file paths bypass the diff renderer and render as markdown via <code>render_plan_content</code>.</dd>
+      <dt>indenting</dt><dd>Diff body sits inside the standard tool-call body indent. Each line is the standard body prefix (<code>  │  </code> or <code>  └─ </code> in DIM, 5 cells) followed by <code>DIFF_BODY_INDENT = "  "</code> (2 cells), then the diff content - so diff content starts at column 7. Write-tool diffs cap their length via <code>cap_write_diff_lines</code> (head + ellipsis + tail). Markdown files (<code>.md</code>) render through the same diff path as code files - no special-case path, no parsed-markdown shortcut.</dd>
     </dl>
   </div>
 </div>
