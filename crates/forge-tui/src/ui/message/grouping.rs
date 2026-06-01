@@ -81,30 +81,36 @@ fn is_peer_block_render_tool(sdk_tool_name: &str) -> bool {
     )
 }
 
-/// Per-kind tally for a group's summary line. Read counts as a read;
-/// Grep / Glob count as searches; Bash counts as a command.
+/// Per-kind tally for a group's summary line. `Read` counts as a
+/// read; `Grep` / `Glob` / `WebSearch` count as searches; `Bash`
+/// counts as a command. Everything else (`WebFetch`, `LSP`, plain
+/// `mcp__*` calls) tallies into the generic `calls` bucket.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct KindCount {
     pub reads: usize,
     pub searches: usize,
     pub commands: usize,
+    /// Generic bucket for tools that fold but don't fit reads /
+    /// searches / commands. Renders last in the summary as
+    /// `<n> call` / `<n> calls`.
+    pub calls: usize,
 }
 
 impl KindCount {
     pub fn tally(&mut self, sdk_tool_name: &str) {
         match sdk_tool_name {
             "Read" => self.reads += 1,
-            "Grep" | "Glob" => self.searches += 1,
+            "Grep" | "Glob" | "WebSearch" => self.searches += 1,
             "Bash" => self.commands += 1,
-            _ => {}
+            _ => self.calls += 1,
         }
     }
 
-    /// `<n> reads \u{b7} <m> searches \u{b7} <k> commands`. Kinds with
-    /// count 0 are dropped. Order: reads, searches, commands. Empty
-    /// when total is 0.
+    /// `<n> reads \u{b7} <m> searches \u{b7} <k> commands \u{b7} <l> calls`.
+    /// Kinds with count 0 are dropped. Order: reads, searches,
+    /// commands, calls. Empty when every bucket is 0.
     pub fn format_summary(&self) -> String {
-        let mut parts: Vec<String> = Vec::with_capacity(3);
+        let mut parts: Vec<String> = Vec::with_capacity(4);
         if self.reads > 0 {
             parts.push(format!("{} {}", self.reads, plural(self.reads, "read", "reads")));
         }
@@ -121,6 +127,9 @@ impl KindCount {
                 self.commands,
                 plural(self.commands, "command", "commands")
             ));
+        }
+        if self.calls > 0 {
+            parts.push(format!("{} {}", self.calls, plural(self.calls, "call", "calls")));
         }
         parts.join(" \u{b7} ")
     }
@@ -424,13 +433,62 @@ mod tests {
 
     #[test]
     fn kind_count_format_summary_drops_zero_kinds_and_handles_singulars() {
-        let k = KindCount { reads: 5, searches: 3, commands: 2 };
+        let k = KindCount { reads: 5, searches: 3, commands: 2, calls: 0 };
         assert_eq!(k.format_summary(), "5 reads \u{b7} 3 searches \u{b7} 2 commands");
 
         let k = KindCount { reads: 1, commands: 1, ..KindCount::default() };
         assert_eq!(k.format_summary(), "1 read \u{b7} 1 command");
 
         assert_eq!(KindCount::default().format_summary(), "");
+    }
+
+    #[test]
+    fn kind_count_tallies_websearch_as_search_and_other_tools_as_calls() {
+        let mut k = KindCount::default();
+        k.tally("Read");
+        k.tally("Grep");
+        k.tally("Glob");
+        k.tally("WebSearch");
+        k.tally("Bash");
+        k.tally("WebFetch");
+        k.tally("LSP");
+        k.tally("mcp__forge__some_other_tool");
+        assert_eq!(k.reads, 1);
+        assert_eq!(k.searches, 3); // Grep + Glob + WebSearch
+        assert_eq!(k.commands, 1);
+        assert_eq!(k.calls, 3); // WebFetch + LSP + mcp__*
+    }
+
+    #[test]
+    fn kind_count_format_summary_includes_calls_bucket() {
+        let k = KindCount { reads: 3, searches: 2, commands: 1, calls: 4 };
+        assert_eq!(
+            k.format_summary(),
+            "3 reads \u{b7} 2 searches \u{b7} 1 command \u{b7} 4 calls",
+        );
+
+        let k = KindCount { calls: 1, ..KindCount::default() };
+        assert_eq!(k.format_summary(), "1 call");
+    }
+
+    #[test]
+    fn partition_mixed_kind_run_with_v2_tools_tallies_calls_bucket() {
+        let blocks = make(&[
+            ("tool", "Read"),
+            ("tool", "WebSearch"),
+            ("tool", "WebFetch"),
+            ("tool", "LSP"),
+        ]);
+        let units = partition_blocks_into_render_units(&blocks);
+        assert_eq!(units.len(), 1);
+        match &units[0] {
+            RenderUnit::Group { kind_count, .. } => {
+                assert_eq!(kind_count.reads, 1);
+                assert_eq!(kind_count.searches, 1); // WebSearch
+                assert_eq!(kind_count.calls, 2); // WebFetch + LSP
+            }
+            RenderUnit::Individual(_) => panic!("expected Group"),
+        }
     }
 
     #[test]
