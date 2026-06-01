@@ -1340,13 +1340,15 @@ chat continues here...
 <div class="surface">
   <div class="surface-head">
     <h4>Sidebar peer-activity badges (Projects pane)</h4>
-    <div class="when">visible: per-row on every live (active) project row in the <a href="#projects-pane">Projects pane</a> when any of the four counters is non-zero</div>
+    <div class="when">visible: per-row on every live (active) project row AND on every worker row in the <a href="#projects-pane">Projects pane</a> when any of the four counters is non-zero</div>
   </div>
   <div class="surface-body">
-    <p>Badge cluster between the project name and the close <code> x </code> button. Each badge is <code>·N</code> + glyph; counts of 0 are omitted entirely (the goal is "noise only when there's activity"). Failure badges (<code>⌛</code>, <code>✕</code>) disappear 60 s after the counter last incremented so a one-time spawn hiccup doesn't paint the sidebar red forever.</p>
+    <p>Badge cluster between the row name and the close <code> x </code> button. Each badge is <code>·N</code> + glyph; counts of 0 are omitted entirely (the goal is "noise only when there's activity"). Failure badges (<code>⌛</code>, <code>✕</code>) disappear 60 s after the counter last incremented so a one-time spawn hiccup doesn't paint the sidebar red forever. Workers carry their own per-session badges - a forge-asks-worker bumps the worker's <code>incoming</code>, a worker-asks-sibling bumps the worker's <code>outgoing</code>, so each row's counter reflects that row's own pending asks.</p>
     <div class="term">
       <pre class="indent">
  <span class="dim">└─ </span><span class="accent">⠋</span> <span class="accent bold">forge</span> <span class="dim">·2↑·1↓</span>             <span class="user-band"> x </span>
+ <span class="dim">   │  ├─ </span><span class="dim">⠋</span> <span class="dim">probe-a</span>  <span class="dim">·1↑</span>             <span class="user-band"> x </span>
+ <span class="dim">   │  └─ </span><span class="dim">⠋</span> <span class="dim">reviewer</span>                      <span class="user-band"> x </span>
  <span class="dim">└─ </span><span class="accent">⠋</span> <span class="accent bold">granite-backend</span> <span class="dim">·1↓</span><span class="warning">·1⌛</span> <span class="user-band"> x </span>
  <span class="dim">└─ </span><span class="accent">⠋</span> <span class="accent bold">granite-liq-bot</span> <span class="error">·1✕</span>     <span class="user-band"> x </span></pre>
     </div>
@@ -1362,7 +1364,7 @@ chat continues here...
       </tbody>
     </table>
     <dl>
-      <dt>code</dt><dd><code>crates/forge-tui/src/ui/projects_pane.rs::peer_badge_spans</code> · called from <code>append_org_project_row</code> · reads <code>UiSession.peer_badges</code> + <code>peer_badges_last_failure_at</code></dd>
+      <dt>code</dt><dd><code>crates/forge-tui/src/ui/projects_pane.rs::peer_badge_spans</code> · called from <code>append_org_project_row</code> (lead rows) AND <code>append_worker_tree_children</code> (worker rows) · reads <code>UiSession.peer_badges</code> + <code>peer_badges_last_failure_at</code> keyed by each row's own <code>session_key</code></dd>
       <dt>wire</dt><dd><code>SessionUpdate::PeerInflightStatsChanged { key, stats }</code> from <code>forge-workspace</code> · reducer arm in <code>crates/forge-tui/src/app/events/client.rs</code> stamps both fields atomically</dd>
       <dt>fade window</dt><dd><code>PEER_FAILURE_FADE = Duration::from_secs(60)</code> · failure badges (<code>·N⌛</code> / <code>·N✕</code>) hide once <code>now - peer_badges_last_failure_at &gt;= 60 s</code></dd>
       <dt>idle rows</dt><dd>no badge column. Sleeping projects have no <code>UiSession</code> bucket to read peer state from; the full name column gets the budget instead</dd>

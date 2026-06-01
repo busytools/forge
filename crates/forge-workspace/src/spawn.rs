@@ -201,11 +201,25 @@ pub(crate) fn handle_deliver_peer_prompt(
         // turn read the correct ambient hop via peek_current_inbound_hop.
         stamp_inbound_hop(workspace, &target_key, wrapped.hop);
         // Bump target's incoming counter (sidebar badge) - only for
-        // `Question` wrappers (an ask expecting a reply). Tells /
+        // `Question` wrappers (an ask expecting a reply).
+        //
+        // Tells (Message kind) are intentionally NOT bumped here.
+        // Badges represent pending asks awaiting reply, NOT generic
+        // activity. A tell has no matching decrement path - no reply
+        // correlates back - so bumping `outgoing` on every tell would
+        // grow the counter without bound. Future reader: if you see
+        // `outgoing` not advancing on a `tell_agent` call, that's by
+        // design. See #308 Fix B (user picked Option 1, 2026-06-01):
+        // tells stay non-bumping, badges retain ask-correlation
+        // semantics. If a future design wants an "is anything
+        // happening" signal that includes tells, that's a separate
+        // counter (and a separate glyph) rather than reusing the
+        // ask-correlated `outgoing` / `incoming`.
+        //
         // Replies / Late-replies / Caller-timeout / Recipient-expired
-        // / Delivery-failure all flow through this dispatch path too,
-        // but none of them are "awaiting reply" semantically, so they
-        // would never decrement and would leave the badge stuck.
+        // / Delivery-failure also flow through this dispatch path,
+        // and they too don't bump for the same "no matching
+        // decrement" reason.
         if matches!(wrapped.kind, crate::mcp::peers::types::WrappedKind::Question) {
             let facade = crate::mcp::peers::facade::ProdWorkspaceFacade::from_arc(workspace);
             facade.bump_inflight_stats(&target_key, PeerStatsDelta::IncomingPlus1);
@@ -1056,6 +1070,68 @@ config_dir = "~/.claude-subspace"
             })
             .sum();
         assert_eq!(total, 1, "wrapped prompt buffered exactly once across handles");
+    }
+
+    /// Closes #308 Fix B: tells (Message kind) are intentionally NOT
+    /// bumped through the peer-stats sidebar badge. Badges represent
+    /// pending asks awaiting reply, not generic activity. The
+    /// `if matches!(wrapped.kind, WrappedKind::Question)` gate at
+    /// spawn.rs:209 / :757 / :818 must stay in place; this test
+    /// regression-locks the end-state invariant by driving the
+    /// tell-dispatch path and asserting `workspace.peer_stats` stays
+    /// empty.
+    #[tokio::test]
+    async fn tell_dispatch_does_not_bump_peer_stats() {
+        let dir = tempdir().expect("tempdir");
+        fs::write(
+            dir.path().join("forge.toml"),
+            r#"
+[[orgs]]
+name = "Default"
+accounts = ["Subspace"]
+
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+auto_start = true
+
+[[orgs.projects]]
+name = "granite-backend"
+path = "~/Projects/granite-backend"
+auto_start = false
+
+[[accounts]]
+display_name = "Subspace"
+config_dir = "~/.claude-subspace"
+"#,
+        )
+        .expect("write forge.toml");
+        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        let mut rx = workspace.subscribe().expect("subscribe");
+
+        let caller = SessionKey::from_str_for_test("caller-tell");
+        let w = fixture_wrapped(); // WrappedKind::Message (tell)
+
+        handle_deliver_peer_prompt(&workspace, caller, "granite-backend".to_owned(), w);
+
+        // Drain the update channel - the spawn path may emit other
+        // events (ProjectSpawned, ConfigDirsChanged, etc.) but it MUST
+        // NOT emit `PeerInflightStatsChanged` for a tell.
+        while let Ok(update) = rx.try_recv() {
+            assert!(
+                !matches!(update, SessionUpdate::PeerInflightStatsChanged { .. }),
+                "tells (Message kind) must NOT bump peer_stats; got: {update:?}"
+            );
+        }
+        // End-state invariant: the workspace's per-session peer_stats
+        // map carries no entry for any session as a side-effect of a
+        // tell.
+        assert!(
+            workspace.peer_stats.lock().is_empty(),
+            "tells must NOT add any per-session peer_stats entry; \
+             got: {:?}",
+            workspace.peer_stats.lock(),
+        );
     }
 
     fn fake_worker_entry(label: &str, key: &str) -> crate::mcp::workers::types::WorkerEntry {
