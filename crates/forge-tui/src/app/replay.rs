@@ -525,9 +525,15 @@ mod tests {
 
         let mut harness = ReplayHarness::from_app(build_app_with_consecutive_reads(1));
         let snap_l2 = harness.snapshot_chat(80, 10);
+        // v2.1 (decision 6): summary shape is
+        // `<status_icon> ☰ <summary>   ctrl+x to expand`.
         assert!(
-            snap_l2.contains("> 1 read"),
+            snap_l2.contains("1 read"),
             "single-item L2 must render the summary line (no special-casing); got:\n{snap_l2}",
+        );
+        assert!(
+            snap_l2.contains('\u{2630}'),
+            "single-item L2 must carry the ☰ group-icon; got:\n{snap_l2}",
         );
         assert!(
             !snap_l2.contains("Read crates/forge-tui/src/0.rs"),
@@ -542,8 +548,8 @@ mod tests {
             "single-item L1 must render the title row; got:\n{snap_l1}",
         );
         assert!(
-            !snap_l1.contains("> 1 read"),
-            "single-item L1 must NOT render the summary line; got:\n{snap_l1}",
+            !snap_l1.contains('\u{2630}'),
+            "single-item L1 must NOT render the summary group-icon; got:\n{snap_l1}",
         );
 
         let mut app = build_app_with_consecutive_reads(1);
@@ -554,6 +560,39 @@ mod tests {
             snap_l0.contains("Read crates/forge-tui/src/0.rs"),
             "single-item L0 must render the title row; got:\n{snap_l0}",
         );
+    }
+
+    /// v2.1 (decision 6): a mid-run group renders the L2 summary
+    /// with an InProgress aggregate -> the leading status_icon is a
+    /// braille spinner frame, not the green check. The snapshot pins
+    /// the new line shape; the inline assertion below confirms a
+    /// braille codepoint appears in the buffer (the actual spinner
+    /// frame varies with `App::spinner_frame`, so we assert the
+    /// CLASS of glyph rather than a specific char).
+    #[test]
+    fn render_in_flight_group_l2_shows_spinner_status_icon() {
+        use crate::agent::model::ToolCallStatus;
+        let mut app = build_app_with_consecutive_reads(4);
+        // Flip the trailing Read to InProgress so the aggregate is
+        // InProgress; leave the first three at Completed (the
+        // builder default is `Completed`, see below).
+        if let Some(session) = app.try_active_bucket_mut()
+            && let Some(msg) = session.messages.last_mut()
+            && let Some(crate::app::MessageBlock::ToolCall(tc)) = msg.blocks.last_mut()
+        {
+            tc.status = ToolCallStatus::InProgress;
+        }
+        let mut harness = ReplayHarness::from_app(app);
+        let snap = harness.snapshot_chat(80, 10);
+        assert!(
+            snap.chars().any(|c| ('\u{2800}'..='\u{28FF}').contains(&c)),
+            "in-flight group L2 must show a braille spinner glyph; got:\n{snap}",
+        );
+        assert!(
+            snap.contains('\u{2630}'),
+            "in-flight group L2 must carry the ☰ group-icon; got:\n{snap}",
+        );
+        insta::assert_snapshot!(snap);
     }
 
     fn build_app_with_consecutive_reads(n: usize) -> App {

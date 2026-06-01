@@ -452,7 +452,7 @@ fn append_assistant_blocks(
                     &mut state,
                 );
             }
-            grouping::RenderUnit::Group { range, leader_id, kind_count } => {
+            grouping::RenderUnit::Group { range, leader_id, kind_count, aggregate_status } => {
                 match render_context.group_level(&leader_id) {
                     grouping::GroupCollapseLevel::L2Summary => {
                         if !state.prev_was_tool && state.has_body_content {
@@ -465,7 +465,11 @@ fn append_assistant_blocks(
                         // `grouping::group_leader_at` + level check
                         // and dispatches as a group-summary click when
                         // the position matches a group at L2.
-                        let summary_lines = tool_call::render_group_summary_line(kind_count);
+                        let summary_lines = tool_call::render_group_summary_line(
+                            kind_count,
+                            aggregate_status,
+                            spinner.frame,
+                        );
                         let y_in_msg = layout.height;
                         let height = rendered_lines_height(&summary_lines, render_context.width);
                         layout.push_wrapped_lines(summary_lines, render_context.width);
@@ -1304,10 +1308,17 @@ fn build_message_render_signature(
     // path that was already iterating blocks.
     let units = grouping::partition_blocks_into_render_units(&msg.blocks);
     for unit in &units {
-        if let grouping::RenderUnit::Group { leader_id, range, .. } = unit {
+        if let grouping::RenderUnit::Group { leader_id, range, aggregate_status, .. } = unit {
             range.start.hash(&mut hasher);
             range.end.hash(&mut hasher);
             render_context.group_level(leader_id).hash(&mut hasher);
+            // v2.1 decision 6: aggregate_status drives the L2 summary's
+            // status_icon. Per-tool hashes below already fold status
+            // transitions, but folding the aggregate here makes the
+            // dependency explicit + keeps the message cache invariant
+            // tight when a future refactor changes how aggregates are
+            // computed.
+            aggregate_status.hash(&mut hasher);
         }
     }
     MessageRenderSignature(hasher.finish())
