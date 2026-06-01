@@ -39,6 +39,12 @@ async fn failed_tool_call_with_xml_internal_error_renders_internal_banner_and_su
 
     assert_eq!(tool_call_text_payload(&app, tool_id).as_deref(), Some(xml_payload));
 
+    // v2 chat tool-call grouping: a lone Read renders the L2
+    // summary by default; cycle to L0 to surface the body where
+    // the internal-error banner lives.
+    let leader_id = forge_tui::ui::grouping::GroupId::from_leader_id(tool_id);
+    let _ = app.cycle_group_collapse_level(&leader_id);
+    let _ = app.cycle_group_collapse_level(&leader_id);
     let frame = render_frame_to_string(&mut app, 120, 36);
     assert!(frame.contains("Internal Agent SDK error"));
     assert!(frame.contains("Adapter process crashed"));
@@ -65,6 +71,14 @@ async fn failed_tool_call_with_jsonrpc_internal_error_renders_extracted_message(
         user_message(vec![tool_result_error_block(tool_id, serde_json::json!(json_payload))]),
     );
 
+    // v2 chat tool-call grouping: a lone Read forms a 1-item group
+    // that renders the summary line at default L2. Cycle to L0 to
+    // surface the full tool-card body where the internal-error
+    // banner lives (decision 3 from the brainstorm: failed lone
+    // tools sit collapsed by default; user expands with ctrl+x).
+    let leader_id = forge_tui::ui::grouping::GroupId::from_leader_id(tool_id);
+    let _ = app.cycle_group_collapse_level(&leader_id); // L2 -> L1
+    let _ = app.cycle_group_collapse_level(&leader_id); // L1 -> L0
     let frame = render_frame_to_string(&mut app, 120, 36);
     assert!(frame.contains("Internal Agent SDK error"));
     assert!(frame.contains("internal rpc fault"));
@@ -90,6 +104,11 @@ async fn failed_tool_call_with_plain_command_error_keeps_normal_rendering() {
         user_message(vec![tool_result_error_block(tool_id, serde_json::json!(plain_payload))]),
     );
 
+    // v2 chat tool-call grouping: a lone Read renders the L2
+    // summary by default; cycle to L0 to surface the body.
+    let leader_id = forge_tui::ui::grouping::GroupId::from_leader_id(tool_id);
+    let _ = app.cycle_group_collapse_level(&leader_id);
+    let _ = app.cycle_group_collapse_level(&leader_id);
     let frame = render_frame_to_string(&mut app, 120, 36);
     assert!(!frame.contains("Internal Agent SDK error"));
     assert!(frame.contains("command not found"));

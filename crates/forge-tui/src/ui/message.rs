@@ -8,7 +8,7 @@ use crate::ui::peer_block;
 use crate::ui::theme;
 use crate::ui::tool_call;
 
-pub(crate) mod grouping;
+pub mod grouping;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Paragraph, Wrap};
@@ -453,22 +453,7 @@ fn append_assistant_blocks(
                 );
             }
             grouping::RenderUnit::Group { range, leader_id, kind_count } => {
-                let level = render_context.group_level(&leader_id);
-                // v2 decision 3: a single-item group's default L2 view
-                // is visually identical to L1 (the single title row,
-                // no bare summary line). The cycle state still walks
-                // L2 -> L1 -> L0; rendering just collapses L2 to the
-                // L1 path for `len == 1` so the call stays visible
-                // with zero clicks. Multi-item groups keep the L2
-                // summary line.
-                let effective_level = if range.len() == 1
-                    && level == grouping::GroupCollapseLevel::L2Summary
-                {
-                    grouping::GroupCollapseLevel::L1Titles
-                } else {
-                    level
-                };
-                match effective_level {
+                match render_context.group_level(&leader_id) {
                     grouping::GroupCollapseLevel::L2Summary => {
                         if !state.prev_was_tool && state.has_body_content {
                             layout.push_blank();

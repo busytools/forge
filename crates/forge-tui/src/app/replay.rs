@@ -510,51 +510,50 @@ mod tests {
         insta::assert_snapshot!(snapshot);
     }
 
-    /// v2: a single Read in an assistant message forms a 1-item
-    /// group. At default L2 the render short-circuits to the L1 path
-    /// so the actual Read title shows up (no bare "1 read" summary).
+    /// v2 regression-lock: single-item groups behave IDENTICALLY to
+    /// multi-item - no `len == 1` special-casing anywhere in the
+    /// render dispatch. A lone Read at default L2 renders the "1 read"
+    /// summary line just like a 5-Read group renders "5 reads"; the
+    /// cycle walks L2 (summary) -> L1 (title) -> L0 (title + body).
+    /// Decision 3 lock from the brainstorm: UI consistency wins
+    /// over body-visible-by-default; failed lone tools sit collapsed
+    /// at L2 and need one ctrl+x to expand.
     #[test]
-    fn render_single_read_renders_title_at_default_l2() {
-        let app = build_app_with_consecutive_reads(1);
-        let mut harness = ReplayHarness::from_app(app);
-        let snapshot = harness.snapshot_chat(80, 10);
-        insta::assert_snapshot!(snapshot);
-    }
+    fn render_single_item_group_cycle_walks_l2_l1_l0_like_multi_item() {
+        let leader_id = first_chat_group_leader(&build_app_with_consecutive_reads(1))
+            .expect("single-item group present");
 
-    /// v2: the cycle L2 -> L1 -> L0 -> L2 still walks all three
-    /// states for a single-item group. L2 and L1 render identically
-    /// (the title row); L0 adds the body. Cycling back to L2 returns
-    /// to the title-only view.
-    #[test]
-    fn render_single_read_cycle_l2_l1_l0_walks_all_states() {
-        let mut app = build_app_with_consecutive_reads(1);
-        let leader_id = first_chat_group_leader(&app).expect("single-item group present");
-        // L2 (default) - identical to L1 for len==1.
-        let snap_l2_default = {
-            let mut harness = ReplayHarness::from_app(app);
-            harness.snapshot_chat(80, 10)
-        };
-        // Reconstruct because ReplayHarness took ownership.
-        let mut app = build_app_with_consecutive_reads(1);
-        // L2 -> L1
-        let _ = app.cycle_group_collapse_level(&leader_id);
-        let snap_l1 = {
-            let mut harness = ReplayHarness::from_app(app);
-            harness.snapshot_chat(80, 10)
-        };
-        assert_eq!(
-            snap_l2_default, snap_l1,
-            "single-item L2 default must render identically to L1",
+        let mut harness = ReplayHarness::from_app(build_app_with_consecutive_reads(1));
+        let snap_l2 = harness.snapshot_chat(80, 10);
+        assert!(
+            snap_l2.contains("> 1 read"),
+            "single-item L2 must render the summary line (no special-casing); got:\n{snap_l2}",
+        );
+        assert!(
+            !snap_l2.contains("Read crates/forge-tui/src/0.rs"),
+            "single-item L2 must NOT render the title row directly; got:\n{snap_l2}",
         );
 
-        // Build a fresh app to reach L0 in one cycle step (cycle is
-        // L2 -> L1 -> L0).
+        let mut app = build_app_with_consecutive_reads(1);
+        let _ = app.cycle_group_collapse_level(&leader_id);
+        let snap_l1 = ReplayHarness::from_app(app).snapshot_chat(80, 10);
+        assert!(
+            snap_l1.contains("Read crates/forge-tui/src/0.rs"),
+            "single-item L1 must render the title row; got:\n{snap_l1}",
+        );
+        assert!(
+            !snap_l1.contains("> 1 read"),
+            "single-item L1 must NOT render the summary line; got:\n{snap_l1}",
+        );
+
         let mut app = build_app_with_consecutive_reads(1);
         let _ = app.cycle_group_collapse_level(&leader_id);
         let _ = app.cycle_group_collapse_level(&leader_id);
-        let mut harness = ReplayHarness::from_app(app);
-        let snap_l0 = harness.snapshot_chat(80, 20);
-        insta::assert_snapshot!("render_single_read_cycle_l0_bodies", snap_l0);
+        let snap_l0 = ReplayHarness::from_app(app).snapshot_chat(80, 20);
+        assert!(
+            snap_l0.contains("Read crates/forge-tui/src/0.rs"),
+            "single-item L0 must render the title row; got:\n{snap_l0}",
+        );
     }
 
     fn build_app_with_consecutive_reads(n: usize) -> App {

@@ -353,14 +353,18 @@ fn try_toggle_tool_call_at_click(app: &mut App, mouse: MouseEvent) -> bool {
         return false;
     };
     // Chat tool-call grouping: when the clicked tool is the leader of
-    // a group AND that group is currently at L2, route to the group
-    // path (set focus + cycle to L1). The renderer stamped the
-    // leader's hit-test fields onto the summary line, so a click here
-    // landed there. Off the leader, or when the group is at L1/L0,
-    // fall through to the per-tool toggle below.
-    if let Some(leader_id) = group_leader_match(app, msg_idx, block_idx) {
+    // a multi-item group AND that group is currently at L2, route to
+    // the group path (set focus + cycle to L1). The renderer stamped
+    // the leader's hit-test fields onto the summary line, so a click
+    // here landed there. Off the leader, on a single-item group (the
+    // title row IS the per-tool row; clicking should toggle the body),
+    // or when the group is at L1 / L0, fall through to the per-tool
+    // toggle below.
+    if let Some((leader_id, run_len)) = group_leader_match(app, msg_idx, block_idx) {
         let level = app.group_collapse_level(&leader_id);
-        if matches!(level, crate::ui::message::grouping::GroupCollapseLevel::L2Summary) {
+        if run_len > 1
+            && matches!(level, crate::ui::message::grouping::GroupCollapseLevel::L2Summary)
+        {
             if let Some(bucket) = app.try_active_bucket_mut() {
                 bucket.focused_group_id = Some(leader_id.clone());
             }
@@ -405,14 +409,15 @@ fn try_toggle_tool_call_at_click(app: &mut App, mouse: MouseEvent) -> bool {
 }
 
 /// When the clicked `(msg_idx, block_idx)` is the leading tool-call
-/// of a group at the current partition pass, return its [`GroupId`].
-/// `None` for non-leader blocks (the user clicked an individual row
-/// or a non-leader member of a group at L1/L0).
+/// of a group at the current partition pass, return its [`GroupId`]
+/// plus the group's run length. The caller gates group-routing on
+/// `run_len > 1` so single-item groups fall through to per-tool
+/// toggle. `None` for non-leader blocks.
 fn group_leader_match(
     app: &App,
     msg_idx: usize,
     block_idx: usize,
-) -> Option<crate::ui::message::grouping::GroupId> {
+) -> Option<(crate::ui::message::grouping::GroupId, usize)> {
     let msg = app.messages().get(msg_idx)?;
     crate::ui::message::grouping::group_leader_at(&msg.blocks, block_idx)
 }

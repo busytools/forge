@@ -23,9 +23,13 @@ use crate::app::MessageBlock;
 ///   `events/tool_calls.rs::tool_call_chat_visibility` - Task* /
 ///   AskUserQuestion / Schedule* / Cron*; renders as nothing in the
 ///   chat stream but logically separates runs).
-/// - Any tool whose `content` carries a [`model::ToolCallContent::Diff`]
-///   entry (Edit / Write / MultiEdit / NotebookEdit - they render
-///   expanded diffs inline; folding would hide the diff).
+/// - Edit / Write / MultiEdit / NotebookEdit by name (mutations the
+///   user's hard requirement says NEVER fold, NEVER collapse by
+///   default). The diff-content check below catches the same set
+///   once the result lands; the name-based check covers the
+///   in-flight window before the diff content arrives.
+/// - Any tool whose `content` carries a `ToolCallContent::Diff`
+///   entry (Edit / Write / MultiEdit / NotebookEdit post-result).
 /// - Tools with a lifecycle-one-liner render path (Monitor / Workflow -
 ///   `ui/message.rs::render_lifecycle_one_liner` arms).
 /// - Tools rendered as a peer block
@@ -43,10 +47,11 @@ pub fn is_run_breaker(block: &MessageBlock) -> bool {
     if tc.hidden {
         return true;
     }
-    let has_diff = tc
-        .content
-        .iter()
-        .any(|c| matches!(c, crate::agent::model::ToolCallContent::Diff(_)));
+    if is_edit_tool(&tc.sdk_tool_name) {
+        return true;
+    }
+    let has_diff =
+        tc.content.iter().any(|c| matches!(c, crate::agent::model::ToolCallContent::Diff(_)));
     if has_diff {
         return true;
     }
@@ -57,6 +62,13 @@ pub fn is_run_breaker(block: &MessageBlock) -> bool {
         return true;
     }
     false
+}
+
+/// Mutation tools by name. Always-break belt-and-suspenders covering
+/// the in-flight window before the diff content arrives. The user's
+/// hard requirement: mutations NEVER fold, NEVER collapse by default.
+fn is_edit_tool(sdk_tool_name: &str) -> bool {
+    matches!(sdk_tool_name, "Edit" | "Write" | "MultiEdit" | "NotebookEdit")
 }
 
 /// Tools whose chat surface is the lifecycle one-liner / block render
@@ -189,15 +201,20 @@ pub enum RenderUnit {
     Group { range: Range<usize>, leader_id: GroupId, kind_count: KindCount },
 }
 
-/// Walk `blocks` and return the [`GroupId`] of the group whose
-/// run starts at `block_idx`, if any. Used by the mouse handler to
-/// classify a click on a tool-row position as either an in-group
-/// click (when the level is L2 and the position is the leader's) or
-/// a normal per-tool click.
-pub fn group_leader_at(blocks: &[MessageBlock], block_idx: usize) -> Option<GroupId> {
+/// Walk `blocks` and return the [`GroupId`] plus the run length of
+/// the group whose run starts at `block_idx`, if any. Used by the
+/// mouse handler to classify a click on a tool-row position as
+/// either an in-group click (multi-item group at L2 sets focus and
+/// cycles to L1) or a normal per-tool click. Single-item groups
+/// (run length 1) fall through to per-tool toggle even at L2
+/// because the title row IS the click target the user is
+/// interacting with; the group cycle is still reachable via ctrl+x.
+pub fn group_leader_at(blocks: &[MessageBlock], block_idx: usize) -> Option<(GroupId, usize)> {
     let units = partition_blocks_into_render_units(blocks);
     units.into_iter().find_map(|unit| match unit {
-        RenderUnit::Group { range, leader_id, .. } if range.start == block_idx => Some(leader_id),
+        RenderUnit::Group { range, leader_id, .. } if range.start == block_idx => {
+            Some((leader_id, range.len()))
+        }
         _ => None,
     })
 }
@@ -312,8 +329,7 @@ mod tests {
         // MultiEdit / NotebookEdit) and treat them as breakers.
         let mut block = tool_call_block(id, sdk_tool_name);
         if let MessageBlock::ToolCall(tc) = &mut block {
-            tc.content =
-                vec![model::ToolCallContent::Diff(model::Diff::new("/tmp/dummy.rs", ""))];
+            tc.content = vec![model::ToolCallContent::Diff(model::Diff::new("/tmp/dummy.rs", ""))];
         }
         block
     }
@@ -377,10 +393,18 @@ mod tests {
     /// tool folds and the bespoke render never fires.
     #[test]
     fn every_special_render_tool_is_a_run_breaker() {
+        // Mutations: assert breaker behaviour BOTH with diff content
+        // present (post-result) AND without (in-flight window). The
+        // name-based `is_edit_tool` check is belt-and-suspenders to
+        // the `has_diff` content check.
         for name in ["Edit", "Write", "MultiEdit", "NotebookEdit"] {
             assert!(
                 is_run_breaker(&diff_tool_call_block("x", name)),
-                "{name} renders a diff and MUST break runs",
+                "{name} with diff content MUST break runs",
+            );
+            assert!(
+                is_run_breaker(&tool_call_block("x", name)),
+                "{name} without diff content (in-flight) MUST still break runs",
             );
         }
         for name in ["Monitor", "Workflow"] {
@@ -462,10 +486,7 @@ mod tests {
     #[test]
     fn kind_count_format_summary_includes_calls_bucket() {
         let k = KindCount { reads: 3, searches: 2, commands: 1, calls: 4 };
-        assert_eq!(
-            k.format_summary(),
-            "3 reads \u{b7} 2 searches \u{b7} 1 command \u{b7} 4 calls",
-        );
+        assert_eq!(k.format_summary(), "3 reads \u{b7} 2 searches \u{b7} 1 command \u{b7} 4 calls",);
 
         let k = KindCount { calls: 1, ..KindCount::default() };
         assert_eq!(k.format_summary(), "1 call");
@@ -473,12 +494,8 @@ mod tests {
 
     #[test]
     fn partition_mixed_kind_run_with_v2_tools_tallies_calls_bucket() {
-        let blocks = make(&[
-            ("tool", "Read"),
-            ("tool", "WebSearch"),
-            ("tool", "WebFetch"),
-            ("tool", "LSP"),
-        ]);
+        let blocks =
+            make(&[("tool", "Read"), ("tool", "WebSearch"), ("tool", "WebFetch"), ("tool", "LSP")]);
         let units = partition_blocks_into_render_units(&blocks);
         assert_eq!(units.len(), 1);
         match &units[0] {

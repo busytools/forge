@@ -1117,19 +1117,19 @@ chat continues here...
   </div>
   <div class="surface-body">
     <p>Any consecutive tool calls between two user messages fold into one foldable header. The membership is render-class deny-list: a tool gets its own visible card only when it renders bespoke chat surface. <strong>Run-breakers (always inline, never folded)</strong>: Edit / Write / MultiEdit / NotebookEdit (inline diff view), Monitor / Workflow (lifecycle blocks), the peer block tools (<code>peers__ask_agent</code>, <code>peers__tell_agent</code>, <code>workers__ask</code>, <code>workers__tell</code>), and hidden chat-suppressed tools (Task* / AskUserQuestion / Schedule* / Cron*). Everything else folds, including <code>WebSearch</code> / <code>WebFetch</code> / <code>LSP</code> / plain <code>mcp__*</code> calls that used to render as standalone cards.</p>
-    <p>The threshold is 1: a single groupable call also wears the foldable header. At default <strong>L2</strong> a one-call group renders the call's actual title row (visible with zero clicks); a multi-call group renders the summary line. ctrl+x still cycles the focused group's level for both shapes.</p>
+    <p>The threshold is 1: a single groupable call also wears the foldable header and renders the same default <strong>L2</strong> summary line as a multi-call group. Cycling with ctrl+x walks the focused group's level through L2 (summary) → L1 (title row) → L0 (title + body); single-item groups follow the same path so the chat surface stays uniform regardless of run length.</p>
     <p><strong>L2 summary</strong> for a multi-kind run renders as a single DIM line at the run's position:</p>
     <div class="term">
       <pre class="indent">
   <span class="dim bold">&gt; </span><span class="dim">3 reads · 2 searches · 1 command · 4 calls</span>  <span class="dim">ctrl+x to expand</span></pre>
     </div>
     <p>Pluralization is per-kind (<code>1 read</code> / <code>5 reads</code>, <code>1 call</code> / <code>4 calls</code>). Kinds with count 0 are dropped. Order: reads, searches, commands, calls. <code>Grep</code> / <code>Glob</code> / <code>WebSearch</code> all count as searches; everything else outside reads / commands tallies into the generic <code>calls</code> bucket.</p>
-    <p><strong>Single-item group at default L2</strong> renders the actual call's title row, not a bare <code>&gt; 1 read</code> summary:</p>
+    <p><strong>Single-item group at default L2</strong> still renders a bare summary line; one ctrl+x expands the call's title, a second ctrl+x adds the body:</p>
     <div class="term">
       <pre class="indent">
-  <span class="success">✓</span> <span class="bold">▶</span> <span class="bold">Read</span> crates/forge-tui/src/ui/message.rs</pre>
+  <span class="dim bold">&gt; </span><span class="dim">1 read</span>  <span class="dim">ctrl+x to expand</span></pre>
     </div>
-    <p>Cycling ctrl+x walks the focused group's level through L2 (summary or single-item title) → L1 (per-tool title rows, bodies closed) → L0 (titles + full bodies). For a single-item group L2 and L1 render identically; the cycle still completes in three taps. When no group is focused (no mouse click landed on a group's summary row yet), ctrl+x falls through to the session-wide tools-collapsed toggle.</p>
+    <p>Cycling ctrl+x walks the focused group's level through L2 (summary) → L1 (per-tool title rows, bodies closed) → L0 (titles + full bodies). Single-item groups follow the same path as multi-item groups so the chat surface stays consistent regardless of run length. When no group is focused (no mouse click landed on a group's summary row yet), ctrl+x falls through to the session-wide tools-collapsed toggle.</p>
     <p><strong>L1 expansion</strong> (titles only, bodies still closed):</p>
     <div class="term">
       <pre class="indent">
