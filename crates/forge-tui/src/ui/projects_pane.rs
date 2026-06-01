@@ -615,7 +615,6 @@ fn append_worker_tree_children(
     // close-button column so worker and lead `x` glyphs line up
     // vertically.
     let total_width = usize::from(area.width);
-    let label_budget = total_width.saturating_sub(1 + 3 + 3 + 1 + 1 + 1 + 3 + 1);
     for (idx, worker) in workers.iter().enumerate() {
         // Leading breathing gap above the FIRST worker so the tree
         // connector visually links the project lead row to probe-a.
@@ -635,6 +634,25 @@ fn append_worker_tree_children(
         let row_y = area.y + line_count_as_u16(lines);
         let is_last = idx + 1 == worker_count;
         let tree_glyph = if is_last { "\u{2514}\u{2500} " } else { "\u{251C}\u{2500} " };
+        // Peer-activity badges mirror the project-lead row at :501 -
+        // every worker's `session_key` carries its own `peer_badges`
+        // populated by the `PeerInflightStatsChanged` reducer, so the
+        // counter advances on the worker row when forge asks the
+        // worker / when the worker asks a sibling.
+        //
+        // `unwrap_or_default()` handles the brief post-spawn window
+        // before Connected lands: `peer_badge_spans` with default stats
+        // returns empty spans + width=0, so the column collapses
+        // cleanly.
+        let (badge_stats, badge_last_failure_at) = app
+            .sessions
+            .get(&worker.session_key)
+            .map(|s| (s.peer_badges.clone(), s.peer_badges_last_failure_at))
+            .unwrap_or_default();
+        let (badge_spans, badge_width) =
+            peer_badge_spans(&badge_stats, badge_last_failure_at, Instant::now());
+        let label_budget =
+            total_width.saturating_sub(1 + 3 + 3 + 1 + 1 + 1 + 3 + 1 + badge_width);
         let label = truncate_with_ellipsis(worker.label.as_str(), label_budget);
         let label_pad = label_budget.saturating_sub(label.chars().count());
         let is_focused = active_session_key.as_ref() == Some(&worker.session_key);
@@ -704,6 +722,7 @@ fn append_worker_tree_children(
             Span::styled(label, label_style),
             Span::raw(" ".repeat(label_pad)),
         ];
+        spans.extend(badge_spans);
         spans.push(Span::raw(" "));
         spans.push(Span::styled(
             " x ".to_owned(),
@@ -1809,6 +1828,80 @@ mod tests {
         let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(!text.contains("\u{231b}"), "timeout glyph faded after 60 s: {text}");
         assert!(!text.contains("\u{2715}"), "failure glyph faded after 60 s: {text}");
+    }
+
+    /// Closes #308 Fix A: worker rows in the Projects pane MUST render
+    /// the same peer-activity badge cluster the project-lead row shows.
+    /// Bumps already fire correctly on the worker's `session_key`
+    /// (`PeerInflightStatsChanged` lands them on
+    /// `UiSession.peer_badges`); without this surface the user sees
+    /// the counter advance on the lead row but never on the worker
+    /// itself.
+    #[test]
+    fn worker_row_renders_peer_badge_when_stats_present() {
+        use crate::app::session::UiSession;
+        use forge_workspace::ProjectKey;
+        use forge_workspace::SessionKey;
+        use forge_workspace::WorkerEntry;
+        use std::time::SystemTime;
+
+        let mut app = App::test_default();
+        let workspace = app.workspace.clone().expect("workspace stub");
+        let project_key = ProjectKey::new_for_test("alice-project");
+        let worker_session_key = SessionKey::from_session_id("worker-probe-a");
+        let entry = WorkerEntry {
+            label: "probe-a".into(),
+            charter: "render-badge-test".into(),
+            session_key: worker_session_key.clone(),
+            status: forge_primitives::WorkerLiveness::Running,
+            spawned_at: SystemTime::UNIX_EPOCH,
+            spawned_by_session_id: "lead".into(),
+            needs_tag: false,
+            is_git_repo_at_spawn: false,
+            diagnostic: None,
+        };
+        workspace.insert_live_worker(&project_key, entry);
+        // Seed the worker's UiSession with peer_badges so the renderer
+        // has a non-default stats value to surface.
+        let mut worker_session = UiSession::new(worker_session_key.clone());
+        worker_session.peer_badges =
+            PeerInflightStats { outgoing: 2, incoming: 1, timed_out: 0, delivery_failed: 0 };
+        app.sessions.insert(worker_session_key.clone(), worker_session);
+
+        let project = ProjectView::new_for_test(
+            project_key.clone(),
+            "alice-project",
+            "/tmp/alice-project",
+            Vec::new(),
+        );
+        let area = Rect { x: 0, y: 0, width: 40, height: 20 };
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        append_worker_tree_children(&mut lines, area, &mut app, &project, 0);
+
+        let joined: Vec<String> = lines
+            .iter()
+            .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+            .collect();
+        let worker_row = joined
+            .iter()
+            .find(|line| {
+                line.contains("probe-a")
+                    && (line.contains("\u{2514}\u{2500}") || line.contains("\u{251C}\u{2500}"))
+            })
+            .expect("worker row should render with tree-connector + label");
+
+        assert!(
+            worker_row.contains('\u{2191}'),
+            "worker row should carry the outgoing arrow ↑; got: {worker_row}"
+        );
+        assert!(
+            worker_row.contains('\u{2193}'),
+            "worker row should carry the incoming arrow ↓; got: {worker_row}"
+        );
+        assert!(
+            worker_row.contains('2') && worker_row.contains('1'),
+            "worker row should render outgoing=2 + incoming=1; got: {worker_row}"
+        );
     }
 
     #[test]
