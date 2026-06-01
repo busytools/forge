@@ -155,15 +155,6 @@ pub fn is_monitor_tool_name(tool_name: &str) -> bool {
     tool_name.eq_ignore_ascii_case("monitor")
 }
 
-/// True when `tool_name` matches the `CronCreate` scheduling tool.
-/// CronCreate registers cron-style recurring or one-shot prompts
-/// (see `forge_test_harness` captures + claude CLI binary trace).
-/// Used by PROCESSES to surface scheduled jobs alongside live
-/// backgrounded tasks.
-pub fn is_cron_create_tool_name(tool_name: &str) -> bool {
-    tool_name.eq_ignore_ascii_case("croncreate")
-}
-
 #[cfg(test)]
 mod tool_name_tests {
     use super::*;
@@ -176,16 +167,5 @@ mod tool_name_tests {
         assert!(!is_monitor_tool_name("Bash"));
         assert!(!is_monitor_tool_name("MonitorTool"));
         assert!(!is_monitor_tool_name(""));
-    }
-
-    #[test]
-    fn is_cron_create_tool_name_matches_case_insensitive() {
-        assert!(is_cron_create_tool_name("CronCreate"));
-        assert!(is_cron_create_tool_name("croncreate"));
-        assert!(is_cron_create_tool_name("CRONCREATE"));
-        assert!(!is_cron_create_tool_name("CronDelete"));
-        assert!(!is_cron_create_tool_name("CronList"));
-        assert!(!is_cron_create_tool_name("Cron"));
-        assert!(!is_cron_create_tool_name(""));
     }
 }

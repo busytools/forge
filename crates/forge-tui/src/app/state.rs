@@ -22,10 +22,10 @@ pub use types::{
     AppStatus, ExtraUsage, HelpView, HistoryRetentionPolicy, HistoryRetentionStats, LoginHint,
     McpState, MessageUsage, ModeInfo, ModeState, MonitorEntry, MonitorStatus, PasteSessionState,
     PendingCommandAck, PhaseEntry, PhaseStatus, RecentSessionInfo, RenderCacheBudget,
-    ScrollbarDragState, SelectionKind, SelectionPoint, SelectionState, SessionTurnState,
-    SessionUsageState, StopHookEntry, StopHookSummaryState, TodoItem, TodoStatus, ToolCallScope,
-    UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState, UsageWindow, WorkflowEntry,
-    WorkflowStatus,
+    ScheduleEntry, ScheduleKind, ScrollbarDragState, SelectionKind, SelectionPoint,
+    SelectionState, SessionTurnState, SessionUsageState, StopHookEntry, StopHookSummaryState,
+    TodoItem, TodoStatus, ToolCallScope, UsageSnapshot, UsageSourceKind, UsageSourceMode,
+    UsageState, UsageWindow, WorkflowEntry, WorkflowStatus,
 };
 pub use viewport::{
     ChatViewport, LayoutInvalidation, LayoutInvalidation as InvalidationLevel,

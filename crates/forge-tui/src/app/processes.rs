@@ -30,7 +30,7 @@ use crate::agent::model::ToolCallStatus;
 use crate::app::MessageBlock;
 use crate::app::MessageRole;
 use crate::app::state::tool_call_info::{
-    ToolCallInfo, is_cron_create_tool_name, is_execute_tool_name, is_monitor_tool_name,
+    ToolCallInfo, is_execute_tool_name, is_monitor_tool_name,
 };
 
 /// Soft cap on the rendered PROCESSES section. Sanity bound so a
@@ -96,13 +96,13 @@ pub struct ProcessRow {
 pub enum ProcessKind {
     /// OS process matched against a wire-tracked backgrounded `Bash`.
     BashBackgrounded,
-    /// `CronCreate` registration - wire-only, no OS process.
-    Cron,
     /// OS process with no matching wire tool call (foreground Bash,
     /// grandchildren, anything claude's tool registry doesn't know
     /// about). #273 Task 8: Monitor tool_calls also fall through to
     /// this variant - their authoritative surface is now the
-    /// dedicated MONITORS Inspector section.
+    /// dedicated MONITORS Inspector section. CronCreate moved out to
+    /// the dedicated SCHEDULES Inspector section (Inspector SCHEDULES
+    /// plan), so it never lands here either.
     Process,
     /// Synthetic `+N more` row emitted when a single parent has more
     /// children than [`MAX_CHILDREN_PER_PARENT`] allows. Renders as
@@ -187,20 +187,13 @@ pub fn collect_active_processes(app: &App) -> ProcessCollection {
 
     let mut rows: Vec<ProcessRow> = Vec::new();
 
-    // 1. OS-walked entries - the source of truth for live work.
+    // OS-walked entries - the source of truth for live work.
+    // Bash / Monitor wire entries that didn't match an OS row are
+    // intentionally dropped (the OS walk is the truth of what is
+    // RUNNING). CronCreate registrations live in the dedicated
+    // SCHEDULES Inspector section, not here.
     if let Some(snapshot) = session.process_snapshot.as_ref() {
         rows.extend(rows_from_os_snapshot(snapshot, &wire_alive));
-    }
-
-    // 2. Cron registrations - wire-only; no backing OS process to
-    //    walk. Bash / Monitor wire entries that didn't match an OS
-    //    row are intentionally dropped (OS walk is the truth of what
-    //    is RUNNING). Cron is the exception because the wire IS
-    //    where the schedule lives.
-    for tc in &wire_alive {
-        if is_cron_create_tool_name(&tc.sdk_tool_name) {
-            rows.push(cron_row(tc));
-        }
     }
 
     rows.truncate(PROCESSES_MAX);
@@ -459,37 +452,6 @@ fn generic_os_row(entry: &ProcessEntry) -> ProcessRow {
     }
 }
 
-/// Cron registration row. Schedule expression as headline, prompt
-/// as detail. No OS process backs this - `memory_bytes` stays
-/// `None`, which sorts the row to the bottom of the section.
-fn cron_row(tc: &ToolCallInfo) -> ProcessRow {
-    let raw_input = tc.raw_input.as_ref();
-    let cron_expr = read_str_field(raw_input, "cron");
-    let prompt = read_str_field(raw_input, "prompt");
-    let recurring = read_bool_field(raw_input, "recurring").unwrap_or(true);
-    let durable = read_bool_field(raw_input, "durable").unwrap_or(false);
-
-    let mut metadata = String::from("Cron · ");
-    metadata.push_str(if recurring { "recurring" } else { "one-shot" });
-    metadata.push_str(if durable { " · durable" } else { " · session-only" });
-
-    ProcessRow {
-        kind: ProcessKind::Cron,
-        headline: if cron_expr.is_empty() {
-            "(unknown schedule)".to_owned()
-        } else {
-            cron_expr.to_owned()
-        },
-        detail: if prompt.is_empty() { None } else { Some(prompt.to_owned()) },
-        metadata,
-        status: tc.status,
-        memory_bytes: None,
-        depth: 0,
-        is_last_sibling: true,
-        ancestor_has_more: Vec::new(),
-    }
-}
-
 /// Format a byte count compactly for the metadata suffix:
 /// `< 1 KB` → `b`, `< 1 MB` → `K`, etc. Two significant digits in
 /// the fractional range, integer above 99.
@@ -522,10 +484,6 @@ fn read_str_field<'a>(raw_input: Option<&'a Value>, key: &str) -> &'a str {
         .unwrap_or("")
 }
 
-fn read_bool_field(raw_input: Option<&Value>, key: &str) -> Option<bool> {
-    raw_input.and_then(|v| v.as_object()).and_then(|o| o.get(key)).and_then(Value::as_bool)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -537,14 +495,6 @@ mod tests {
         assert_eq!(read_str_field(Some(&input), "description"), "hello");
         assert_eq!(read_str_field(Some(&input), "missing"), "");
         assert_eq!(read_str_field(None, "anything"), "");
-    }
-
-    #[test]
-    fn read_bool_field_returns_none_for_missing() {
-        let input = json!({"persistent": true, "other": "not_bool"});
-        assert_eq!(read_bool_field(Some(&input), "persistent"), Some(true));
-        assert_eq!(read_bool_field(Some(&input), "other"), None);
-        assert_eq!(read_bool_field(Some(&input), "missing"), None);
     }
 
     #[test]
@@ -943,14 +893,4 @@ mod tests {
         assert!(rows.is_empty());
     }
 
-    #[test]
-    fn rows_from_os_snapshot_cron_appended_separately() {
-        // Cron rows aren't part of the OS tree; they're appended
-        // by `collect_active_processes` AFTER the OS-walk DFS
-        // returns. Verify `rows_from_os_snapshot` itself emits zero
-        // Cron-kind rows.
-        let snapshot = tree_snapshot();
-        let rows = rows_from_os_snapshot(&snapshot, &[]);
-        assert!(rows.iter().all(|r| r.kind != ProcessKind::Cron));
-    }
 }

@@ -61,6 +61,7 @@ pub use state::{
     InvalidationLevel, LayoutInvalidation, LoginHint, McpState, MessageBlock, MessageRenderCache,
     MessageRenderCacheKey, MessageRenderSignature, MessageRole, MessageUsage, ModeInfo, ModeState,
     MonitorEntry, MonitorStatus, NoticeBlock, NoticeDedupKey, NoticeStage, PaneHitTarget,
+    ScheduleEntry, ScheduleKind,
     PasteSessionState, PendingCommandAck, PhaseEntry, PhaseStatus, RateLimitIncidentKey,
     RecentSessionInfo, ScrollbarGeometry, SelectionKind, SelectionPoint, SelectionState,
     SessionTurnState, SessionUsageState, StopHookEntry, StopHookSummaryState, SystemSeverity,
