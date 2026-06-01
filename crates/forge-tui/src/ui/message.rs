@@ -459,8 +459,22 @@ fn append_assistant_blocks(
                         if !state.prev_was_tool && state.has_body_content {
                             layout.push_blank();
                         }
-                        let lines = tool_call::render_group_summary_line(kind_count);
-                        layout.push_wrapped_lines(lines, render_context.width);
+                        // Stamp the leader's hit-test fields so a click
+                        // on the summary line maps to `range.start` via
+                        // the existing `locate_tool_call_block_at_click`
+                        // walk. The mouse handler reclassifies via
+                        // `grouping::group_leader_at` + level check
+                        // and dispatches as a group-summary click when
+                        // the position matches a group at L2.
+                        let summary_lines = tool_call::render_group_summary_line(kind_count);
+                        let y_in_msg = layout.height;
+                        let height = rendered_lines_height(&summary_lines, render_context.width);
+                        layout.push_wrapped_lines(summary_lines, render_context.width);
+                        if let Some(MessageBlock::ToolCall(tc)) = msg.blocks.get_mut(range.start) {
+                            tc.last_measured_y_in_msg = y_in_msg;
+                            tc.last_measured_height = height;
+                            tc.last_measured_width = render_context.width;
+                        }
                         state.has_body_content = true;
                         state.has_visible_content = true;
                         state.prev_was_tool = true;

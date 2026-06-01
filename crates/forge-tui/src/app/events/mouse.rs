@@ -352,6 +352,31 @@ fn try_toggle_tool_call_at_click(app: &mut App, mouse: MouseEvent) -> bool {
     let Some((msg_idx, block_idx)) = locate_tool_call_block_at_click(app, mouse) else {
         return false;
     };
+    // Chat tool-call grouping: when the clicked tool is the leader of
+    // a group AND that group is currently at L2, route to the group
+    // path (set focus + cycle to L1). The renderer stamped the
+    // leader's hit-test fields onto the summary line, so a click here
+    // landed there. Off the leader, or when the group is at L1/L0,
+    // fall through to the per-tool toggle below.
+    if let Some(leader_id) = group_leader_match(app, msg_idx, block_idx) {
+        let level = app.group_collapse_level(&leader_id);
+        if matches!(level, crate::ui::message::grouping::GroupCollapseLevel::L2Summary) {
+            if let Some(bucket) = app.try_active_bucket_mut() {
+                bucket.focused_group_id = Some(leader_id.clone());
+            }
+            let _ = app.cycle_group_collapse_level(&leader_id);
+            app.invalidate_layout(crate::app::InvalidationLevel::MessageChanged(msg_idx));
+            tracing::debug!(
+                target: crate::logging::targets::APP_INPUT,
+                event_name = "group_summary_click_expanded",
+                leader_id = leader_id.as_str(),
+                msg_idx,
+                block_idx,
+                "click on group L2 summary expanded to L1 + set focus",
+            );
+            return true;
+        }
+    }
     let global_default = app.tools_collapsed;
     let Some(MessageBlock::ToolCall(tc)) =
         app.active_messages_mut()[msg_idx].blocks.get_mut(block_idx)
@@ -377,6 +402,19 @@ fn try_toggle_tool_call_at_click(app: &mut App, mouse: MouseEvent) -> bool {
         "click toggled per-tool collapse override"
     );
     true
+}
+
+/// When the clicked `(msg_idx, block_idx)` is the leading tool-call
+/// of a group at the current partition pass, return its [`GroupId`].
+/// `None` for non-leader blocks (the user clicked an individual row
+/// or a non-leader member of a group at L1/L0).
+fn group_leader_match(
+    app: &App,
+    msg_idx: usize,
+    block_idx: usize,
+) -> Option<crate::ui::message::grouping::GroupId> {
+    let msg = app.messages().get(msg_idx)?;
+    crate::ui::message::grouping::group_leader_at(&msg.blocks, block_idx)
 }
 
 /// Map the chat-area click coordinate to a `(message_idx, block_idx)`

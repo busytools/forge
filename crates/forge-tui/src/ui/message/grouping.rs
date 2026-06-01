@@ -131,6 +131,20 @@ pub enum RenderUnit {
     Group { range: Range<usize>, leader_id: GroupId, kind_count: KindCount },
 }
 
+/// Walk `blocks` and return the [`GroupId`] of the group whose
+/// run starts at `block_idx`, if any. Used by the mouse handler to
+/// classify a click on a tool-row position as either an in-group
+/// click (when the level is L2 and the position is the leader's) or
+/// a normal per-tool click.
+#[must_use]
+pub fn group_leader_at(blocks: &[MessageBlock], block_idx: usize) -> Option<GroupId> {
+    let units = partition_blocks_into_render_units(blocks);
+    units.into_iter().find_map(|unit| match unit {
+        RenderUnit::Group { range, leader_id, .. } if range.start == block_idx => Some(leader_id),
+        _ => None,
+    })
+}
+
 /// Walk `blocks` identifying maximal runs of >= 2 consecutive groupable
 /// tool calls. Each qualifying run becomes a `RenderUnit::Group`; every
 /// other block (including lone groupable tools between breakers) becomes
