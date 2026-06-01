@@ -13,7 +13,7 @@ pub(crate) mod inspector_pane;
 pub mod launchpad;
 pub(crate) mod layout;
 pub(crate) mod markdown;
-mod message;
+pub(crate) mod message;
 pub(crate) mod peer_block;
 pub mod projects_pane;
 pub(crate) mod prompt;

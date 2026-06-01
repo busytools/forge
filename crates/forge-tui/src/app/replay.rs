@@ -94,6 +94,15 @@ impl ReplayHarness {
         &mut self.app
     }
 
+    /// Construct a `ReplayHarness` around a hand-built [`App`] for
+    /// render-snapshot tests that don't need a captured baseline.
+    /// The harness still gives `snapshot_chat` / `snapshot_inspector`
+    /// access against a `TestBackend`, which is the part replay-driven
+    /// tests use to lock layouts into `insta` snapshots.
+    pub(crate) fn from_app(app: App) -> Self {
+        Self { app }
+    }
+
     /// Render the Inspector pane into a `TestBackend` buffer at the
     /// requested dimensions. Returns the rendered text-only multi-line
     /// String suitable for `insta::assert_snapshot!`.
@@ -382,5 +391,103 @@ mod tests {
         let mut harness = replay_baseline("monitor_persistent_stream");
         let snapshot = harness.snapshot_chat(80, 40);
         insta::assert_snapshot!(snapshot);
+    }
+
+    /// Chat tool-call grouping (L2 default): five consecutive Read
+    /// tool calls in one assistant message collapse to a single
+    /// summary line. The baselines on disk don't carry the four
+    /// groupable tool names, so the test builds the chat state
+    /// in-memory (mirrors the production path's
+    /// `push_message_tracked` route) and renders via the existing
+    /// `snapshot_chat`.
+    #[test]
+    fn render_grouped_five_reads_at_l2_summary() {
+        let app = build_app_with_consecutive_reads(5);
+        let mut harness = ReplayHarness::from_app(app);
+        let snapshot = harness.snapshot_chat(80, 20);
+        insta::assert_snapshot!(snapshot);
+    }
+
+    /// L1: cycling the group lifts the summary into per-tool title
+    /// rows (bodies still closed). All five Read rows surface with
+    /// their titles.
+    #[test]
+    fn render_grouped_five_reads_at_l1_titles() {
+        let mut app = build_app_with_consecutive_reads(5);
+        let leader_id = first_chat_group_leader(&app).expect("baseline produces a group");
+        let _ = app.cycle_group_collapse_level(&leader_id);
+        let mut harness = ReplayHarness::from_app(app);
+        let snapshot = harness.snapshot_chat(80, 20);
+        insta::assert_snapshot!(snapshot);
+    }
+
+    /// L0: cycling once more renders titles + full bodies via the
+    /// standard per-tool path with `force_collapsed = false`.
+    #[test]
+    fn render_grouped_five_reads_at_l0_bodies() {
+        let mut app = build_app_with_consecutive_reads(5);
+        let leader_id = first_chat_group_leader(&app).expect("baseline produces a group");
+        let _ = app.cycle_group_collapse_level(&leader_id);
+        let _ = app.cycle_group_collapse_level(&leader_id);
+        let mut harness = ReplayHarness::from_app(app);
+        let snapshot = harness.snapshot_chat(80, 40);
+        insta::assert_snapshot!(snapshot);
+    }
+
+    fn build_app_with_consecutive_reads(n: usize) -> App {
+        use crate::agent::model::{self, SessionId};
+        use crate::app::{
+            BlockCache, ChatMessage, MessageBlock, MessageRole, TerminalSnapshotMode, ToolCallInfo,
+        };
+
+        let mut app = App::test_default();
+        app.set_session_id(Some(SessionId::new("group-render-test")));
+        let blocks: Vec<MessageBlock> = (0..n)
+            .map(|i| {
+                MessageBlock::ToolCall(Box::new(ToolCallInfo {
+                    id: format!("tu-{i}"),
+                    title: format!("Read crates/forge-tui/src/{i}.rs"),
+                    sdk_tool_name: "Read".to_owned(),
+                    raw_input: None,
+                    raw_input_bytes: 0,
+                    output_metadata: None,
+                    task_metadata: None,
+                    status: model::ToolCallStatus::Completed,
+                    content: Vec::new(),
+                    hidden: false,
+                    terminal_id: None,
+                    terminal_command: None,
+                    terminal_output: None,
+                    terminal_output_len: 0,
+                    terminal_bytes_seen: 0,
+                    terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
+                    monitor_output_tail: Vec::default(),
+                    render_epoch: 0,
+                    layout_epoch: 0,
+                    last_measured_width: 0,
+                    last_measured_height: 0,
+                    last_measured_layout_epoch: 0,
+                    last_measured_layout_generation: 0,
+                    cache: BlockCache::default(),
+                    collapsed_override: None,
+                    last_measured_y_in_msg: 0,
+                }))
+            })
+            .collect();
+        app.push_message_tracked(ChatMessage::new(MessageRole::Assistant, blocks, None));
+        app
+    }
+
+    fn first_chat_group_leader(app: &App) -> Option<crate::ui::message::grouping::GroupId> {
+        use crate::ui::message::grouping::{RenderUnit, partition_blocks_into_render_units};
+        let session = app.active_session()?;
+        for msg in &session.messages {
+            for unit in partition_blocks_into_render_units(&msg.blocks) {
+                if let RenderUnit::Group { leader_id, .. } = unit {
+                    return Some(leader_id);
+                }
+            }
+        }
+        None
     }
 }
