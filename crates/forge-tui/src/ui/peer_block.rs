@@ -274,33 +274,15 @@ pub(crate) fn render_inbound(
     collapsed: bool,
 ) -> Vec<Line<'static>> {
     match kind {
-        PeerInboundKind::Question { from, body, .. } => render_block(
-            "Question",
-            from,
-            None,
-            body,
-            INBOUND_GLYPH,
-            suppress_header,
-            collapsed,
-        ),
-        PeerInboundKind::Message { from, body, .. } => render_block(
-            "Message",
-            from,
-            None,
-            body,
-            INBOUND_GLYPH,
-            suppress_header,
-            collapsed,
-        ),
-        PeerInboundKind::Reply { from, body, .. } => render_block(
-            "Reply",
-            from,
-            None,
-            body,
-            INBOUND_GLYPH,
-            suppress_header,
-            collapsed,
-        ),
+        PeerInboundKind::Question { from, body, .. } => {
+            render_block("Question", from, None, body, INBOUND_GLYPH, suppress_header, collapsed)
+        }
+        PeerInboundKind::Message { from, body, .. } => {
+            render_block("Message", from, None, body, INBOUND_GLYPH, suppress_header, collapsed)
+        }
+        PeerInboundKind::Reply { from, body, .. } => {
+            render_block("Reply", from, None, body, INBOUND_GLYPH, suppress_header, collapsed)
+        }
         PeerInboundKind::LateReply { from, body, .. } => render_block(
             "Reply",
             from,

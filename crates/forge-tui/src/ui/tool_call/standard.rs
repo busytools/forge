@@ -278,8 +278,7 @@ fn render_tool_content(tc: &ToolCallInfo, width: u16) -> Vec<Line<'static>> {
         match content {
             model::ToolCallContent::Diff(diff) => {
                 let raw = render_diff(diff, width.saturating_sub(DIFF_BODY_INDENT_WIDTH));
-                let raw =
-                    if tc.sdk_tool_name == "Write" { cap_write_diff_lines(raw) } else { raw };
+                let raw = if tc.sdk_tool_name == "Write" { cap_write_diff_lines(raw) } else { raw };
                 lines.extend(indent_rendered_lines(raw, DIFF_BODY_INDENT));
             }
             model::ToolCallContent::McpResource(resource) => {
