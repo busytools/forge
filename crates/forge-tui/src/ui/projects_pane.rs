@@ -651,8 +651,7 @@ fn append_worker_tree_children(
             .unwrap_or_default();
         let (badge_spans, badge_width) =
             peer_badge_spans(&badge_stats, badge_last_failure_at, Instant::now());
-        let label_budget =
-            total_width.saturating_sub(1 + 3 + 3 + 1 + 1 + 1 + 3 + 1 + badge_width);
+        let label_budget = total_width.saturating_sub(1 + 3 + 3 + 1 + 1 + 1 + 3 + 1 + badge_width);
         let label = truncate_with_ellipsis(worker.label.as_str(), label_budget);
         let label_pad = label_budget.saturating_sub(label.chars().count());
         let is_focused = active_session_key.as_ref() == Some(&worker.session_key);
