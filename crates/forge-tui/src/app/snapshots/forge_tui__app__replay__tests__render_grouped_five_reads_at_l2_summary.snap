@@ -1,0 +1,6 @@
+---
+source: crates/forge-tui/src/app/replay.rs
+expression: snapshot
+---
+Forge
+> 5 reads  ctrl+x to expand

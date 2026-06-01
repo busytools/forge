@@ -1086,8 +1086,19 @@ fn handle_subagent_key(app: &mut App, key: KeyEvent) -> bool {
     }
 }
 
-/// Toggle the session-level collapsed preference for non-Execute tool calls.
+/// Cycle the focused chat tool-call group's collapse level when one
+/// is set; otherwise toggle the session-wide collapsed preference for
+/// individual tool calls (the pre-grouping behaviour). The focused
+/// group is set by mouse-click on a group summary row in
+/// `app::events::mouse::handle_group_summary_click`; without one,
+/// ctrl+x stays the global toggle the user is used to.
 pub(super) fn toggle_all_tool_calls(app: &mut App) {
+    let focused = app.active_session().and_then(|s| s.focused_group_id.clone());
+    if let Some(leader_id) = focused {
+        let _ = app.cycle_group_collapse_level(&leader_id);
+        app.invalidate_layout(InvalidationLevel::Global);
+        return;
+    }
     app.tools_collapsed = !app.tools_collapsed;
     app.invalidate_layout(InvalidationLevel::Global);
 }
