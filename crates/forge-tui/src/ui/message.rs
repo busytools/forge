@@ -648,13 +648,66 @@ fn render_lifecycle_one_liner(tc: &crate::app::ToolCallInfo) -> Option<Vec<Line<
                 tc.status,
                 ToolCallStatus::Completed | ToolCallStatus::Failed | ToolCallStatus::Killed
             );
-            let suffix = if parsed.persistent { " (persistent)" } else { "" };
-            let text = if is_terminal {
-                format!("\u{25c9} Monitor stopped \u{b7} {}{suffix}", parsed.description)
-            } else {
-                format!("\u{25c9} Monitor started \u{b7} {}{suffix}", parsed.description)
-            };
-            Some(vec![Line::from(Span::styled(text, Style::default().fg(theme::DIM)))])
+            if is_terminal {
+                // Collapsed one-liner: ✓ Monitor · <desc> · <status>
+                // Per #277's wire mapping (sdk_message::handle_task_updated):
+                // ToolCallStatus::Completed maps to MonitorStatus::Completed
+                // ("completed"); ToolCallStatus::Killed maps to
+                // MonitorStatus::Stopped ("stopped"). ToolCallStatus::Failed
+                // would map to "timed out" if/when the wire produces it
+                // (no current production path; kept for completeness).
+                let status_word = match tc.status {
+                    ToolCallStatus::Killed => "stopped",
+                    ToolCallStatus::Failed => "timed out",
+                    _ => "completed",
+                };
+                return Some(vec![Line::from(vec![
+                    Span::styled(
+                        format!("{} ", theme::ICON_COMPLETED),
+                        Style::default().fg(Color::Green),
+                    ),
+                    Span::styled("Monitor".to_owned(), Style::default().fg(theme::DIM)),
+                    Span::styled(
+                        format!(" \u{b7} {} \u{b7} {status_word}", parsed.description),
+                        Style::default().fg(theme::DIM),
+                    ),
+                ])]);
+            }
+            // Alive: header + $ command + last-5 tail tree.
+            let suffix = if parsed.persistent { " \u{b7} persistent" } else { "" };
+            let mut lines: Vec<Line<'static>> = Vec::new();
+            // Header: ◉ Monitor · <desc> [· persistent]
+            lines.push(Line::from(vec![
+                Span::styled(
+                    "\u{25c9} ".to_owned(),
+                    Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    "Monitor".to_owned(),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!(" \u{b7} {}{suffix}", parsed.description),
+                    Style::default().fg(theme::DIM),
+                ),
+            ]));
+            // Command line: │ $ <command>  (└ if tail empty, │ if tail follows).
+            let cmd_connector =
+                if tc.monitor_output_tail.is_empty() { "\u{2514} " } else { "\u{2502} " };
+            lines.push(Line::from(Span::styled(
+                format!("   {cmd_connector}$ {}", parsed.command),
+                Style::default().fg(theme::DIM),
+            )));
+            // Tail lines: │ <line> ... └ <last line>
+            let last_idx = tc.monitor_output_tail.len().saturating_sub(1);
+            for (idx, line) in tc.monitor_output_tail.iter().enumerate() {
+                let conn = if idx == last_idx { "\u{2514} " } else { "\u{2502} " };
+                lines.push(Line::from(Span::styled(
+                    format!("   {conn}{line}"),
+                    Style::default().fg(theme::DIM),
+                )));
+            }
+            Some(lines)
         }
         "Workflow" => {
             let parsed = tc
@@ -3681,7 +3734,44 @@ mod tests {
     // ----------------------------------------------------------------
 
     #[test]
-    fn monitor_running_renders_started_notice_with_persistent_suffix() {
+    fn monitor_alive_renders_block_with_header_command_and_tail() {
+        let mut tc = make_tool_call_info(
+            "toolu_mon",
+            "Monitor",
+            crate::agent::model::ToolCallStatus::InProgress,
+            "",
+        );
+        tc.raw_input = Some(serde_json::json!({
+            "description": "ci-watch",
+            "command": "gh run watch 18234567",
+            "persistent": true,
+            "timeout_ms": 0,
+        }));
+        tc.monitor_output_tail = vec![
+            "* build  \u{b7} in_progress".to_owned(),
+            "\u{2713} lint   \u{b7} success".to_owned(),
+            "* deploy \u{b7} queued".to_owned(),
+            "* notify \u{b7} queued".to_owned(),
+        ];
+        let lines = render_lifecycle_one_liner(&tc).expect("Monitor produces lines");
+        // 1 header + 1 command + 4 tail = 6 lines.
+        assert_eq!(lines.len(), 6, "got {} lines", lines.len());
+        let joined: String = lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(joined.contains("\u{25c9}"), "header ◉ glyph: {joined:?}");
+        assert!(joined.contains("Monitor"), "header label: {joined:?}");
+        assert!(joined.contains("ci-watch"), "description: {joined:?}");
+        assert!(joined.contains("persistent"), "persistent suffix: {joined:?}");
+        assert!(joined.contains("$ gh run watch 18234567"), "command line: {joined:?}");
+        assert!(joined.contains("\u{2502}"), "│ tree connector: {joined:?}");
+        assert!(joined.contains("\u{2514}"), "└ tree connector for last row: {joined:?}");
+    }
+
+    #[test]
+    fn monitor_alive_no_tail_yet_renders_just_header_and_command() {
         let mut tc = make_tool_call_info(
             "toolu_mon",
             "Monitor",
@@ -3691,20 +3781,29 @@ mod tests {
         tc.raw_input = Some(serde_json::json!({
             "description": "forge-monitor-test",
             "command": "tail -F app.log",
-            "persistent": true,
+            "persistent": false,
             "timeout_ms": 0,
         }));
+        // monitor_output_tail stays default-empty.
         let lines = render_lifecycle_one_liner(&tc).expect("Monitor produces lines");
-        assert_eq!(lines.len(), 1);
-        let rendered: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(
-            rendered.contains("\u{25c9} Monitor started \u{00b7} forge-monitor-test (persistent)"),
-            "got {rendered:?}",
-        );
+        assert_eq!(lines.len(), 2, "header + command only: {} lines", lines.len());
+        let joined: String = lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(joined.contains("forge-monitor-test"));
+        // Non-persistent: no " · persistent" suffix.
+        assert!(!joined.contains("persistent"), "persistent suffix suppressed: {joined:?}");
+        assert!(joined.contains("$ tail -F app.log"), "command present: {joined:?}");
+        // └ connector on the command row (no tail follows).
+        assert!(joined.contains("\u{2514}"), "└ connector when no tail: {joined:?}");
+        // No │ connector (would only appear if a tail row followed).
+        assert!(!joined.contains("\u{2502}"), "no │ connector when tail empty: {joined:?}");
     }
 
     #[test]
-    fn monitor_completed_renders_stopped_notice() {
+    fn monitor_terminal_completed_renders_collapsed_one_liner() {
         let mut tc = make_tool_call_info(
             "toolu_mon",
             "Monitor",
@@ -3718,13 +3817,50 @@ mod tests {
             "timeout_ms": 60000,
         }));
         let lines = render_lifecycle_one_liner(&tc).expect("Monitor produces lines");
+        assert_eq!(lines.len(), 1, "terminal collapses to one line");
         let rendered: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(
-            rendered.contains("\u{25c9} Monitor stopped \u{00b7} ci-watch"),
-            "got {rendered:?}",
+        assert!(rendered.contains("\u{2713}"), "✓ glyph: {rendered:?}");
+        assert!(rendered.contains("Monitor"));
+        assert!(rendered.contains("ci-watch"));
+        assert!(rendered.contains("completed"));
+    }
+
+    #[test]
+    fn monitor_terminal_killed_renders_stopped() {
+        let mut tc = make_tool_call_info(
+            "toolu_mon",
+            "Monitor",
+            crate::agent::model::ToolCallStatus::Killed,
+            "",
         );
-        // Non-persistent has no `(persistent)` suffix.
-        assert!(!rendered.contains("(persistent)"));
+        tc.raw_input = Some(serde_json::json!({
+            "description": "ci-watch",
+            "command": "gh run watch 1",
+            "persistent": false,
+            "timeout_ms": 0,
+        }));
+        let lines = render_lifecycle_one_liner(&tc).expect("Monitor produces lines");
+        let rendered: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(rendered.contains("stopped"), "Killed -> stopped: {rendered:?}");
+    }
+
+    #[test]
+    fn monitor_terminal_failed_renders_timed_out() {
+        let mut tc = make_tool_call_info(
+            "toolu_mon",
+            "Monitor",
+            crate::agent::model::ToolCallStatus::Failed,
+            "",
+        );
+        tc.raw_input = Some(serde_json::json!({
+            "description": "ci-watch",
+            "command": "gh run watch 1",
+            "persistent": false,
+            "timeout_ms": 1000,
+        }));
+        let lines = render_lifecycle_one_liner(&tc).expect("Monitor produces lines");
+        let rendered: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(rendered.contains("timed out"), "Failed -> timed out: {rendered:?}");
     }
 
     #[test]
