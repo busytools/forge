@@ -7,24 +7,78 @@ use std::ops::Range;
 
 use crate::app::MessageBlock;
 
-/// True when `sdk_tool_name` should be grouped when it appears in a
-/// run of >= 2 consecutive collapsed-by-default tool calls.
-pub fn is_groupable_by_default(sdk_tool_name: &str) -> bool {
-    matches!(sdk_tool_name, "Read" | "Grep" | "Glob" | "Bash")
-}
-
 /// True when `block` breaks a group-run when encountered. Run-breakers
 /// split a run into group-above / breaker / group-below; each side
-/// independently meets the `>= 2` threshold to form a group.
+/// independently meets the threshold (v2: 1+) to form a group.
 ///
-/// Run-breakers: any non-`ToolCall` block (Text, Notice, Welcome,
-/// ImageAttachment) plus any `ToolCall` whose `sdk_tool_name` is not
-/// groupable-by-default (Edit / Write / Monitor / Workflow / ...).
+/// A ToolCall is a run-breaker iff it has a bespoke chat render path
+/// rather than the standard collapsible tool card. Classified by
+/// RENDER CLASS (not a hardcoded name list) so any new tool that
+/// renders as the standard card folds by default; only adding a new
+/// bespoke renderer requires extending this predicate.
+///
+/// Run-breakers:
+/// - Any non-`ToolCall` block (Text, Notice, Welcome, ImageAttachment).
+/// - `tc.hidden == true` (chat-suppressed via
+///   `events/tool_calls.rs::tool_call_chat_visibility` - Task* /
+///   AskUserQuestion / Schedule* / Cron*; renders as nothing in the
+///   chat stream but logically separates runs).
+/// - Any tool whose `content` carries a [`model::ToolCallContent::Diff`]
+///   entry (Edit / Write / MultiEdit / NotebookEdit - they render
+///   expanded diffs inline; folding would hide the diff).
+/// - Tools with a lifecycle-one-liner render path (Monitor / Workflow -
+///   `ui/message.rs::render_lifecycle_one_liner` arms).
+/// - Tools rendered as a peer block
+///   (`ui/peer_block.rs::detect_outbound` match set:
+///   peers__ask_agent / peers__tell_agent / workers__ask /
+///   workers__tell).
+///
+/// Everything else folds, including WebFetch / WebSearch / LSP /
+/// plain MCP calls (all render as the standard collapsible tool
+/// card).
 pub fn is_run_breaker(block: &MessageBlock) -> bool {
-    match block {
-        MessageBlock::ToolCall(tc) => !is_groupable_by_default(&tc.sdk_tool_name),
-        _ => true,
+    let MessageBlock::ToolCall(tc) = block else {
+        return true;
+    };
+    if tc.hidden {
+        return true;
     }
+    let has_diff = tc
+        .content
+        .iter()
+        .any(|c| matches!(c, crate::agent::model::ToolCallContent::Diff(_)));
+    if has_diff {
+        return true;
+    }
+    if is_lifecycle_render_tool(&tc.sdk_tool_name) {
+        return true;
+    }
+    if is_peer_block_render_tool(&tc.sdk_tool_name) {
+        return true;
+    }
+    false
+}
+
+/// Tools whose chat surface is the lifecycle one-liner / block render
+/// in `ui/message.rs::render_lifecycle_one_liner` (rather than the
+/// standard tool card). Name-based because the render fn matches by
+/// `sdk_tool_name` literal.
+fn is_lifecycle_render_tool(sdk_tool_name: &str) -> bool {
+    matches!(sdk_tool_name, "Monitor" | "Workflow")
+}
+
+/// Tools whose chat surface is the peer-block render in
+/// `ui/peer_block.rs::detect_outbound` (rather than the standard tool
+/// card). Name-based because `detect_outbound` matches by
+/// `sdk_tool_name` literal. Mirror its match set exactly.
+fn is_peer_block_render_tool(sdk_tool_name: &str) -> bool {
+    matches!(
+        sdk_tool_name,
+        "mcp__forge__peers__ask_agent"
+            | "mcp__forge__peers__tell_agent"
+            | "mcp__forge__workers__ask"
+            | "mcp__forge__workers__tell",
+    )
 }
 
 /// Per-kind tally for a group's summary line. Read counts as a read;
@@ -237,6 +291,27 @@ mod tests {
         MessageBlock::Text(TextBlock::from_complete(text))
     }
 
+    fn diff_tool_call_block(id: &str, sdk_tool_name: &str) -> MessageBlock {
+        // A tool call whose content carries a `ToolCallContent::Diff`
+        // entry. The `is_run_breaker` predicate keys off this variant
+        // to recognize diff-rendering tools (Edit / Write /
+        // MultiEdit / NotebookEdit) and treat them as breakers.
+        let mut block = tool_call_block(id, sdk_tool_name);
+        if let MessageBlock::ToolCall(tc) = &mut block {
+            tc.content =
+                vec![model::ToolCallContent::Diff(model::Diff::new("/tmp/dummy.rs", ""))];
+        }
+        block
+    }
+
+    fn hidden_tool_call_block(id: &str, sdk_tool_name: &str) -> MessageBlock {
+        let mut block = tool_call_block(id, sdk_tool_name);
+        if let MessageBlock::ToolCall(tc) = &mut block {
+            tc.hidden = true;
+        }
+        block
+    }
+
     fn make(spec: &[(&str, &str)]) -> Vec<MessageBlock> {
         spec.iter()
             .enumerate()
@@ -249,24 +324,12 @@ mod tests {
     }
 
     #[test]
-    fn groupable_by_default_covers_the_four_collapsed_kinds() {
-        assert!(is_groupable_by_default("Read"));
-        assert!(is_groupable_by_default("Grep"));
-        assert!(is_groupable_by_default("Glob"));
-        assert!(is_groupable_by_default("Bash"));
-    }
-
-    #[test]
-    fn groupable_by_default_excludes_expanded_and_block_tools() {
-        for n in ["Edit", "Write", "MultiEdit", "Monitor", "Workflow", "Task", "Agent", ""] {
-            assert!(!is_groupable_by_default(n), "{n} must NOT be groupable");
-        }
-    }
-
-    #[test]
-    fn run_breaker_true_for_non_groupable_tools_and_text_blocks() {
-        assert!(is_run_breaker(&tool_call_block("a", "Edit")));
-        assert!(is_run_breaker(&tool_call_block("b", "Monitor")));
+    fn run_breaker_true_for_special_render_and_text_blocks() {
+        assert!(is_run_breaker(&diff_tool_call_block("a", "Edit")));
+        assert!(is_run_breaker(&diff_tool_call_block("b", "Write")));
+        assert!(is_run_breaker(&tool_call_block("c", "Monitor")));
+        assert!(is_run_breaker(&tool_call_block("d", "Workflow")));
+        assert!(is_run_breaker(&hidden_tool_call_block("e", "AskUserQuestion")));
         assert!(is_run_breaker(&text_block("hi")));
     }
 
@@ -274,6 +337,71 @@ mod tests {
     fn run_breaker_false_for_groupable_tools() {
         for n in ["Read", "Grep", "Glob", "Bash"] {
             assert!(!is_run_breaker(&tool_call_block("a", n)));
+        }
+    }
+
+    #[test]
+    fn run_breaker_false_for_v2_newly_grouped_tools() {
+        // Tools that v1 broke runs on (allow-list miss) but v2 folds
+        // because they render as the standard tool card.
+        for n in ["WebSearch", "WebFetch", "LSP", "mcp__forge__some_other_tool"] {
+            assert!(
+                !is_run_breaker(&tool_call_block("x", n)),
+                "{n} should fold in v2 (standard tool card render)",
+            );
+        }
+    }
+
+    /// Mandatory invariant: every tool that has a bespoke chat render
+    /// path (diff view, lifecycle one-liner, peer block, hidden /
+    /// chat-suppressed dock-morph) MUST be a run-breaker so its
+    /// render can't be silently folded away.
+    ///
+    /// Adding a new bespoke renderer requires extending BOTH this
+    /// test's enumeration AND `is_run_breaker`'s predicate in the
+    /// same change. Otherwise the next group containing the new
+    /// tool folds and the bespoke render never fires.
+    #[test]
+    fn every_special_render_tool_is_a_run_breaker() {
+        for name in ["Edit", "Write", "MultiEdit", "NotebookEdit"] {
+            assert!(
+                is_run_breaker(&diff_tool_call_block("x", name)),
+                "{name} renders a diff and MUST break runs",
+            );
+        }
+        for name in ["Monitor", "Workflow"] {
+            assert!(
+                is_run_breaker(&tool_call_block("x", name)),
+                "{name} renders a lifecycle block and MUST break runs",
+            );
+        }
+        for name in [
+            "mcp__forge__peers__ask_agent",
+            "mcp__forge__peers__tell_agent",
+            "mcp__forge__workers__ask",
+            "mcp__forge__workers__tell",
+        ] {
+            assert!(
+                is_run_breaker(&tool_call_block("x", name)),
+                "{name} renders as a peer block and MUST break runs",
+            );
+        }
+        for name in [
+            "TaskCreate",
+            "TaskUpdate",
+            "TaskList",
+            "TaskGet",
+            "TaskOutput",
+            "TaskStop",
+            "AskUserQuestion",
+            "ScheduleWakeup",
+            "CronCreate",
+            "CronDelete",
+        ] {
+            assert!(
+                is_run_breaker(&hidden_tool_call_block("x", name)),
+                "{name} is chat-suppressed (hidden) and MUST break runs",
+            );
         }
     }
 
