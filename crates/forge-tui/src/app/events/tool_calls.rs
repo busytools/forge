@@ -46,6 +46,45 @@ pub(super) fn handle_tool_call(app: &mut App, tc: model::ToolCall) {
         app.upsert_workflow_from_tool_input(&id_str, meta_name, meta_description);
     }
 
+    // ScheduleWakeup tool_use - one pending wakeup per session
+    // (the /loop dynamic-pacing re-arm). fire_at = now + delaySeconds;
+    // `reason` is the headline shown in the SCHEDULES section.
+    if sdk_tool_name == "ScheduleWakeup"
+        && let Some(input) = tc.raw_input.as_ref()
+    {
+        let delay = input.get("delaySeconds").and_then(serde_json::Value::as_u64).unwrap_or(0);
+        let reason = input.get("reason").and_then(serde_json::Value::as_str).unwrap_or("");
+        let fire_at = std::time::SystemTime::now() + std::time::Duration::from_secs(delay);
+        app.upsert_wakeup_from_tool_input(&id_str, reason, fire_at);
+    }
+
+    // CronCreate tool_use - upsert a cron entry keyed by tool_use_id.
+    // The CLI's CronCreate result carries the job id (stamped later
+    // via `stamp_cron_id_from_result` in the tool_use_result handler).
+    if sdk_tool_name == "CronCreate"
+        && let Some(input) = tc.raw_input.as_ref()
+    {
+        let expr = input.get("cron").and_then(serde_json::Value::as_str).unwrap_or("");
+        let recurring = input.get("recurring").and_then(serde_json::Value::as_bool).unwrap_or(true);
+        let durable = input.get("durable").and_then(serde_json::Value::as_bool).unwrap_or(false);
+        app.upsert_cron_from_tool_input(
+            &id_str,
+            expr,
+            recurring,
+            durable,
+            std::time::SystemTime::now(),
+        );
+    }
+
+    // CronDelete tool_use - remove the matching cron entry by job id.
+    // No-op when the job id is missing (malformed input).
+    if sdk_tool_name == "CronDelete"
+        && let Some(input) = tc.raw_input.as_ref()
+        && let Some(job_id) = input.get("id").and_then(serde_json::Value::as_str)
+    {
+        app.remove_cron_by_id(job_id);
+    }
+
     let tool_info = build_tool_info_from_tool_call(app, tc, sdk_tool_name, &scope);
     log_command_started(app, &tool_info);
     log_terminal_spawned(app, &tool_info, "initial");
@@ -165,7 +204,10 @@ fn build_tool_info_from_tool_call(
             | "TaskStop"
             | "AskUserQuestion"
             | "Monitor"
-            | "Workflow",
+            | "Workflow"
+            | "ScheduleWakeup"
+            | "CronCreate"
+            | "CronDelete",
     );
     let mut tool_info = ToolCallInfo {
         id: tc.tool_call_id,

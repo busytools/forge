@@ -384,6 +384,17 @@ fn append_body(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
         append_monitors_section(lines, app, width);
     }
 
+    // SCHEDULES sits between MONITORS and PROCESSES. Pending
+    // wakeups + crons; auto-clears entries on the ~1s prune tick
+    // (passed wakeups, 7-day-expired recurring crons) and on
+    // explicit `CronDelete`.
+    if !app.schedules().is_empty() {
+        lines.push(Line::default());
+        push_section_rule(lines, width);
+        lines.push(Line::default());
+        append_schedules_section(lines, app, width);
+    }
+
     let processes = collect_active_processes(app);
     if !processes.is_empty() {
         lines.push(Line::default());
@@ -1251,6 +1262,100 @@ const TASKS_MAX: usize = 5;
 /// entirely when `UiSession.monitors` is empty (auto-clears once
 /// every entry terminates) so the Inspector doesn't carry a stale
 /// "MONITORS" header with no rows.
+/// Render the Inspector SCHEDULES section: header + one row per
+/// pending `ScheduleWakeup` / `CronCreate`. The section hides
+/// entirely when no entries are present (the timer-tick prune is
+/// responsible for draining stale entries). Mirrors the MONITORS
+/// shape: header line, blank, per-entry rows with blank separators.
+fn append_schedules_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
+    let schedules = app.schedules();
+    if schedules.is_empty() {
+        return;
+    }
+
+    lines.push(Line::from(Span::styled(
+        " SCHEDULES".to_owned(),
+        Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::default());
+
+    let now = std::time::SystemTime::now();
+    let inner_width = usize::from(width);
+    let last_idx = schedules.len().saturating_sub(1);
+    for (idx, entry) in schedules.iter().enumerate() {
+        append_schedule_row(lines, entry, now, inner_width);
+        if idx < last_idx {
+            lines.push(Line::default());
+        }
+    }
+}
+
+/// Render one SCHEDULES row: glyph + label + trailing badge.
+/// Wakeups carry a live `in <countdown>` badge; crons carry their
+/// recurrence label (`recurring` / `one-shot`). Layout mirrors
+/// `append_monitor_row`'s chrome accounting + right-justified
+/// trailing badge.
+fn append_schedule_row(
+    lines: &mut Vec<Line<'static>>,
+    entry: &crate::app::ScheduleEntry,
+    now: std::time::SystemTime,
+    inner_width: usize,
+) {
+    use crate::app::ScheduleKind;
+
+    let (glyph, trailing) = match entry.kind {
+        // Alarm clock for wakeups.
+        ScheduleKind::Wakeup => {
+            let countdown = entry
+                .fire_at
+                .and_then(|t| t.duration_since(now).ok())
+                .map_or_else(|| "due".to_owned(), |d| format!("in {}", fmt_countdown(d)));
+            ("\u{23f0}", countdown)
+        }
+        // Circle-with-upper-left-quadrant glyph for crons; distinct
+        // from the chat-label hourglass so the section's row glyph
+        // doesn't double up with the chat-side tool label.
+        ScheduleKind::Cron { recurring, .. } => {
+            ("\u{25f4}", if recurring { "recurring".to_owned() } else { "one-shot".to_owned() })
+        }
+    };
+    let header_chrome = usize::from(PANE_PAD)
+        + 1                                                  // glyph cell
+        + 1                                                  // space after glyph
+        + 3                                                  // " · " separator
+        + trailing.chars().count()                           // trailing badge
+        + usize::from(PANE_PAD); // 1-col right gutter
+    let header_budget = row_text_budget(inner_width, header_chrome);
+    let headline = truncate_or_pass(&entry.label, header_budget);
+    // Right-justify the trailing badge the same way MONITORS /
+    // WORKFLOWS do (#281's pad-spacer pattern).
+    let pad = header_budget.saturating_sub(headline.chars().count());
+    lines.push(Line::from(vec![
+        Span::raw(" ".repeat(usize::from(PANE_PAD))),
+        Span::styled(glyph.to_owned(), Style::default().fg(theme::RUST_ORANGE)),
+        Span::raw(" ".to_owned()),
+        Span::styled(headline, Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw(" ".repeat(pad)),
+        Span::styled(" \u{00B7} ".to_owned(), Style::default().fg(theme::DIM)),
+        Span::styled(trailing, Style::default().fg(theme::DIM)),
+    ]));
+}
+
+/// Compact human countdown for the SCHEDULES wakeup badge:
+/// `45s`, `12m`, `1h32m`. Matches the rough shape of `format_turn_duration`
+/// without sub-second precision (one-second tick granularity is the
+/// finest the renderer ever sees).
+fn fmt_countdown(d: std::time::Duration) -> String {
+    let s = d.as_secs();
+    if s >= 3600 {
+        format!("{}h{}m", s / 3600, (s % 3600) / 60)
+    } else if s >= 60 {
+        format!("{}m", s / 60)
+    } else {
+        format!("{s}s")
+    }
+}
+
 fn append_monitors_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
     let monitors = app.monitors();
     if monitors.is_empty() {
@@ -1767,16 +1872,6 @@ fn glyph_and_style_for(process: &ProcessRow, spinner_frame: usize) -> (String, C
             ("\u{25CB}".to_owned(), theme::DIM, Style::default().fg(Color::Gray))
         }
         ToolCallStatus::InProgress => match process.kind {
-            ProcessKind::Cron => {
-                // Cron registration completes the moment claude calls
-                // CronCreate - InProgress is rare. Render with the
-                // schedule glyph regardless.
-                (
-                    "\u{23F0}".to_owned(),
-                    theme::DIM,
-                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
-                )
-            }
             ProcessKind::Process => {
                 // Unmatched OS process - same spinner as wire-tracked
                 // rows but DIM so the user's eye picks out the
@@ -2210,26 +2305,6 @@ mod tests {
         assert_eq!(count_digits(u64::MAX), 20);
     }
 
-    fn make_process_row(
-        kind: ProcessKind,
-        headline: &str,
-        detail: Option<&str>,
-        metadata: &str,
-        status: ToolCallStatus,
-    ) -> ProcessRow {
-        ProcessRow {
-            kind,
-            headline: headline.to_owned(),
-            detail: detail.map(str::to_owned),
-            metadata: metadata.to_owned(),
-            status,
-            memory_bytes: None,
-            depth: 0,
-            is_last_sibling: true,
-            ancestor_has_more: Vec::new(),
-        }
-    }
-
     /// Wrap test rows in a `ProcessCollection` so the existing tests
     /// stay readable. Memory rendering needs an explicit
     /// `memory_bytes`; tests opt in via [`make_process_row_with_memory`].
@@ -2267,46 +2342,6 @@ mod tests {
     }
 
     #[test]
-    fn processes_section_cron_supervisor_uses_metadata_suffix() {
-        // Cron rows have no memory_bytes (wire-only registrations).
-        // The metadata string IS the useful signal, so the suffix
-        // slot falls through to it - but only when the row width
-        // can fit BOTH the headline and the suffix without
-        // truncation. Test at 50 cols where everything fits.
-        let row = make_process_row(
-            ProcessKind::Cron,
-            "*/5 * * * *",
-            Some("audit memory health"),
-            "Cron · recurring",
-            ToolCallStatus::Completed,
-        );
-        let mut lines = Vec::new();
-        append_processes_section(&mut lines, &collection(vec![row]), 50, 0);
-
-        let row_text = line_text(&lines[2]);
-        // ✓ is the completed-status glyph; the cron clock ⏰ only
-        // fires for the (rare) InProgress case.
-        assert!(row_text.starts_with(" \u{2713} */5 * * * *"), "got {row_text:?}");
-        assert!(row_text.contains("recurring"), "metadata suffix present: {row_text:?}");
-    }
-
-    #[test]
-    fn processes_section_renders_in_progress_cron_with_clock_glyph() {
-        let row = make_process_row(
-            ProcessKind::Cron,
-            "daily 9am",
-            None,
-            "Cron · recurring",
-            ToolCallStatus::InProgress,
-        );
-        let mut lines = Vec::new();
-        append_processes_section(&mut lines, &collection(vec![row]), 40, 0);
-
-        let row_text = line_text(&lines[2]);
-        assert!(row_text.starts_with(" \u{23F0} daily 9am"), "got {row_text:?}");
-    }
-
-    #[test]
     fn processes_section_renders_failed_with_cross_glyph() {
         let row = make_row_with_memory(
             ProcessKind::BashBackgrounded,
@@ -2325,11 +2360,12 @@ mod tests {
     }
 
     #[test]
-    fn processes_section_two_kinds_together_renders_blank_between_rows() {
-        // #273 Task 8 retired Monitor from PROCESSES - verify the
-        // Bash + Cron pair still renders with a separating blank
-        // between rows. Monitor rows are now surfaced by the
-        // dedicated MONITORS section instead.
+    fn processes_section_two_bash_rows_render_blank_between() {
+        // Two same-kind Bash rows still render with a separating blank
+        // (the per-entry rendering shape is independent of which kinds
+        // are present). Cron used to be the second-kind partner here;
+        // Inspector SCHEDULES owns crons now, so the pair below
+        // exercises the more common "two backgrounded shells" case.
         let rows = vec![
             make_row_with_memory(
                 ProcessKind::BashBackgrounded,
@@ -2337,12 +2373,11 @@ mod tests {
                 "Bash · running",
                 8 * 1024 * 1024,
             ),
-            make_process_row(
-                ProcessKind::Cron,
-                "*/5 * * * *",
-                None,
-                "Cron · recurring",
-                ToolCallStatus::Completed,
+            make_row_with_memory(
+                ProcessKind::BashBackgrounded,
+                "Run lints",
+                "Bash · running",
+                4 * 1024 * 1024,
             ),
         ];
         let mut lines = Vec::new();
@@ -2351,7 +2386,7 @@ mod tests {
         // header + blank + 2 single-line rows + 1 blank between = 5 lines.
         assert_eq!(lines.len(), 5, "expected 5 rendered lines, got {}", lines.len());
         assert!(line_text(&lines[2]).contains("Run tests"));
-        assert!(line_text(&lines[4]).contains("*/5 * * * *"));
+        assert!(line_text(&lines[4]).contains("Run lints"));
     }
 
     #[test]

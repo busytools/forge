@@ -293,6 +293,11 @@ pub struct UiSession {
     /// `MonitorEntry::OUTPUT_TAIL_MAX` per entry.
     pub monitors: Vec<MonitorEntry>,
 
+    /// Pending time-based schedules (`ScheduleWakeup` + `CronCreate`)
+    /// surfaced in the Inspector SCHEDULES section. Pruned by the
+    /// ~1s timer tick via `App::prune_expired_schedules`.
+    pub schedules: Vec<crate::app::state::types::ScheduleEntry>,
+
     /// In-flight Workflow entries surfaced as the
     /// Inspector WORKFLOWS section + the chat one-liner notice.
     /// Populated when a `Workflow` tool_use enters the assistant
@@ -477,6 +482,7 @@ impl Default for UiSession {
             last_stop_hook_summary: None,
             stop_hook_summary_expanded: std::collections::HashMap::default(),
             monitors: Vec::default(),
+            schedules: Vec::default(),
             workflows: Vec::default(),
             git_diff_snapshot: None,
             git_diff_generation: 0,

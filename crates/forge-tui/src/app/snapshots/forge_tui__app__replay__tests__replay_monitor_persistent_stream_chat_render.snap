@@ -9,12 +9,6 @@ I'll load the Monitor and TaskStop tool schemas first since they're deferred.
 
 I'll start the persistent monitor now.
 Monitor is running. I'll wait for the three event notifications.
-
-  ✓ ⏲ ScheduleWakeup ScheduleWakeup
-  └─ Next wakeup scheduled for 14:55:00 (in 82s). Nothing more to do this turn
-— the harness re-invokes you when the wakeup fires or a task-notification
-arrives.
-
 All three events arrived. Stopping the monitor.
 The three lines I saw:
 
