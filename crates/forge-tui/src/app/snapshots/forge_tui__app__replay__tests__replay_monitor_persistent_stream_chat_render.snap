@@ -2,7 +2,7 @@
 source: crates/forge-tui/src/app/replay.rs
 expression: snapshot
 ---
-Forge
+Forge · 26.9s
 I'll load the Monitor and TaskStop tool schemas first since they're deferred.
 
 ✓ ☰ 1 call   ctrl+x to expand

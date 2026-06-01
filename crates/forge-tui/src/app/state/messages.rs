@@ -30,6 +30,11 @@ pub struct ChatMessage {
     /// the clickable chip line(s) (excludes the leading blank and
     /// any expanded hook rows). `0` when no chip is rendered.
     pub stop_hook_summary_height: usize,
+    /// Per-turn duration in ms, stamped from `Message::Result.duration_ms`
+    /// when the assistant's turn finishes. `None` until the Result event
+    /// arrives. Drives the `Forge - N.Ns` chip in the assistant role-
+    /// label line.
+    pub turn_duration_ms: Option<u64>,
 }
 
 impl ChatMessage {
@@ -42,6 +47,7 @@ impl ChatMessage {
             is_peer_envelope: false,
             stop_hook_summary_y_in_msg: 0,
             stop_hook_summary_height: 0,
+            turn_duration_ms: None,
         }
     }
 
@@ -63,6 +69,7 @@ impl ChatMessage {
             is_peer_envelope: true,
             stop_hook_summary_y_in_msg: 0,
             stop_hook_summary_height: 0,
+            turn_duration_ms: None,
         }
     }
 
