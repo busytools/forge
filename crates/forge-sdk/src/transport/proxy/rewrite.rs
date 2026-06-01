@@ -22,7 +22,6 @@ use serde_json::Value;
 ///
 /// The proxy is responsible for splicing the result back into the
 /// request URI - this function operates on the raw query string only.
-#[must_use]
 pub fn rewrite_bootstrap_query(query: &str) -> Option<String> {
     if !query.contains("entrypoint=") {
         return None;
@@ -52,7 +51,6 @@ pub fn rewrite_bootstrap_query(query: &str) -> Option<String> {
 ///
 /// Returns `None` when no rewrite is needed (no parens, already
 /// normalised). Returns the rewritten string otherwise.
-#[must_use]
 pub fn rewrite_user_agent(ua: &str) -> Option<String> {
     let start = ua.find('(')?;
     let end = ua.find(')')?;
@@ -139,7 +137,6 @@ fn walk_normalize(v: &mut Value, changed: &mut bool) {
 ///    classification leak via nomenclature.
 /// 2. Apply the recursive classification normaliser to the
 ///    remaining events, then the defensive byte-level pass.
-#[must_use]
 pub fn rewrite_event_logging(body: &Bytes) -> Bytes {
     let stripped = strip_sdk_events(body);
     rewrite_body_recursive(&stripped)
@@ -149,7 +146,6 @@ pub fn rewrite_event_logging(body: &Bytes) -> Bytes {
 /// specialisation: parse, recursive-normalise, byte-finalise. Used
 /// from the proxy's request handler so a new Anthropic surface gets
 /// covered without code changes here.
-#[must_use]
 pub fn rewrite_anthropic_unknown(body: &Bytes) -> Bytes {
     rewrite_body_recursive(body)
 }
@@ -157,7 +153,6 @@ pub fn rewrite_anthropic_unknown(body: &Bytes) -> Bytes {
 /// Rewrite a Statsig (`/api/eval/sdk-...`) feature evaluation body.
 /// Recursive normaliser handles `attributes.entrypoint` along with
 /// any other classification fields Anthropic adds to the payload.
-#[must_use]
 pub fn rewrite_statsig_features(body: &Bytes) -> Bytes {
     rewrite_body_recursive(body)
 }
@@ -166,7 +161,6 @@ pub fn rewrite_statsig_features(body: &Bytes) -> Bytes {
 /// classification two ways: in the JSON body keys (handled by the
 /// recursive normaliser) AND in the `ddtags` comma-joined string
 /// (handled by `rewrite_ddtags`).
-#[must_use]
 pub fn rewrite_datadog_logs(body: &Bytes) -> Bytes {
     // First pass: drop any log entry tagged with a forge SDK protocol
     // event name (`_sdk_` substring in ddtags or message). Then run
@@ -214,7 +208,6 @@ pub fn rewrite_datadog_logs(body: &Bytes) -> Bytes {
 ///    substring on every turn, so the JSON-key walker doesn't catch
 ///    it. This is the highest-volume leak by request count (one per
 ///    turn) and the most visible to anyone diffing alt vs native.
-#[must_use]
 pub fn rewrite_messages_body(body: &Bytes) -> Bytes {
     let Ok(mut v) = serde_json::from_slice::<Value>(body) else {
         return finalize_string_pass(body.clone());
@@ -322,7 +315,6 @@ const ANTHROPIC_BETA_INJECT_PATH: &str = "/v1/messages";
 ///
 /// Returns `None` when neither transform changed the set (header
 /// passes through unchanged).
-#[must_use]
 pub fn rewrite_anthropic_beta(header_value: &str, path: &str) -> Option<String> {
     let parts: Vec<&str> = header_value.split(',').map(str::trim).collect();
     let mut kept: Vec<String> = Vec::with_capacity(parts.len());
@@ -379,7 +371,6 @@ const SDK_EVENT_NAME_SUBSTRING: &str = "tengu_sdk_";
 /// (forge's `init_handshake`, `control_roundtrip`, `result`, `ttft`
 /// among others). Forge still records these via its local tracing
 /// layer; only the outbound telemetry copy is suppressed.
-#[must_use]
 pub fn strip_sdk_events(body: &Bytes) -> Bytes {
     let Ok(mut v) = serde_json::from_slice::<Value>(body) else {
         return body.clone();
@@ -413,7 +404,6 @@ pub fn strip_sdk_events(body: &Bytes) -> Bytes {
 /// Drops any log entry whose `ddtags` or `message` contains the
 /// `_sdk_` substring. The remaining entries pass through to the
 /// classification normaliser.
-#[must_use]
 pub fn strip_sdk_datadog_entries(body: &Bytes) -> Bytes {
     let Ok(mut v) = serde_json::from_slice::<Value>(body) else {
         return body.clone();

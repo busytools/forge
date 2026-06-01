@@ -9,7 +9,6 @@ use crate::app::MessageBlock;
 
 /// True when `sdk_tool_name` should be grouped when it appears in a
 /// run of >= 2 consecutive collapsed-by-default tool calls.
-#[must_use]
 pub fn is_groupable_by_default(sdk_tool_name: &str) -> bool {
     matches!(sdk_tool_name, "Read" | "Grep" | "Glob" | "Bash")
 }
@@ -21,7 +20,6 @@ pub fn is_groupable_by_default(sdk_tool_name: &str) -> bool {
 /// Run-breakers: any non-`ToolCall` block (Text, Notice, Welcome,
 /// ImageAttachment) plus any `ToolCall` whose `sdk_tool_name` is not
 /// groupable-by-default (Edit / Write / Monitor / Workflow / ...).
-#[must_use]
 pub fn is_run_breaker(block: &MessageBlock) -> bool {
     match block {
         MessageBlock::ToolCall(tc) => !is_groupable_by_default(&tc.sdk_tool_name),
@@ -51,7 +49,6 @@ impl KindCount {
     /// `<n> reads \u{b7} <m> searches \u{b7} <k> commands`. Kinds with
     /// count 0 are dropped. Order: reads, searches, commands. Empty
     /// when total is 0.
-    #[must_use]
     pub fn format_summary(&self) -> String {
         let mut parts: Vec<String> = Vec::with_capacity(3);
         if self.reads > 0 {
@@ -92,7 +89,6 @@ pub enum GroupCollapseLevel {
 }
 
 impl GroupCollapseLevel {
-    #[must_use]
     pub fn next(self) -> Self {
         match self {
             Self::L2Summary => Self::L1Titles,
@@ -115,7 +111,6 @@ impl GroupId {
         Self(leader_tool_use_id.into())
     }
 
-    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -136,7 +131,6 @@ pub enum RenderUnit {
 /// classify a click on a tool-row position as either an in-group
 /// click (when the level is L2 and the position is the leader's) or
 /// a normal per-tool click.
-#[must_use]
 pub fn group_leader_at(blocks: &[MessageBlock], block_idx: usize) -> Option<GroupId> {
     let units = partition_blocks_into_render_units(blocks);
     units.into_iter().find_map(|unit| match unit {
@@ -149,7 +143,6 @@ pub fn group_leader_at(blocks: &[MessageBlock], block_idx: usize) -> Option<Grou
 /// tool calls. Each qualifying run becomes a `RenderUnit::Group`; every
 /// other block (including lone groupable tools between breakers) becomes
 /// `RenderUnit::Individual`.
-#[must_use]
 pub fn partition_blocks_into_render_units(blocks: &[MessageBlock]) -> Vec<RenderUnit> {
     const GROUP_THRESHOLD: usize = 2;
     let mut units = Vec::with_capacity(blocks.len());

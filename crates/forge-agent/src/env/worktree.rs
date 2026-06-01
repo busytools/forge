@@ -17,7 +17,6 @@ use std::process::Command;
 /// worktree-in-worktree, detached HEAD, bare repo) by reading git's
 /// own answer rather than re-implementing detection. Non-existent
 /// paths return false because git itself errors on them.
-#[must_use]
 pub fn is_git_repo(path: &Path) -> bool {
     Command::new("git")
         .args(["rev-parse", "--git-dir"])
