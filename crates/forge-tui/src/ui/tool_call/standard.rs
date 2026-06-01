@@ -277,14 +277,10 @@ fn render_tool_content(tc: &ToolCallInfo, width: u16) -> Vec<Line<'static>> {
     for content in &tc.content {
         match content {
             model::ToolCallContent::Diff(diff) => {
-                if is_plan_file_path(&diff.path) {
-                    lines.extend(render_plan_content(&diff.new_text));
-                } else {
-                    let raw = render_diff(diff, width.saturating_sub(DIFF_BODY_INDENT_WIDTH));
-                    let raw =
-                        if tc.sdk_tool_name == "Write" { cap_write_diff_lines(raw) } else { raw };
-                    lines.extend(indent_rendered_lines(raw, DIFF_BODY_INDENT));
-                }
+                let raw = render_diff(diff, width.saturating_sub(DIFF_BODY_INDENT_WIDTH));
+                let raw =
+                    if tc.sdk_tool_name == "Write" { cap_write_diff_lines(raw) } else { raw };
+                lines.extend(indent_rendered_lines(raw, DIFF_BODY_INDENT));
             }
             model::ToolCallContent::McpResource(resource) => {
                 lines.extend(render_mcp_resource_content(tc, resource));
@@ -300,21 +296,6 @@ fn render_tool_content(tc: &ToolCallInfo, width: u16) -> Vec<Line<'static>> {
 
     debug_failed_tool_render(tc);
     lines
-}
-
-fn render_plan_content(text: &str) -> Vec<Line<'static>> {
-    let md_source = strip_outer_code_fence(text);
-    markdown::render_markdown_safe(&md_source, None)
-        .into_iter()
-        .map(|line| {
-            let owned: Vec<Span<'static>> = line
-                .spans
-                .into_iter()
-                .map(|span| Span::styled(span.content.into_owned(), span.style))
-                .collect();
-            Line::from(owned)
-        })
-        .collect()
 }
 
 fn render_text_content(tc: &ToolCallInfo, text: &str, lines: &mut Vec<Line<'static>>) {
@@ -385,14 +366,6 @@ fn indent_rendered_lines(lines: Vec<Line<'static>>, indent: &str) -> Vec<Line<'s
             Line::from(spans)
         })
         .collect()
-}
-
-/// Returns `true` for paths inside `.claude/plans/` (cross-platform).
-/// These files render as markdown plan content instead of unified diffs.
-fn is_plan_file_path(path: &std::path::Path) -> bool {
-    path.components()
-        .zip(path.components().skip(1))
-        .any(|(a, b)| a.as_os_str() == ".claude" && b.as_os_str() == "plans")
 }
 
 pub(super) fn cap_write_diff_lines(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {

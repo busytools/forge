@@ -906,7 +906,7 @@ mod tests {
     }
 
     #[test]
-    fn plan_files_render_markdown_instead_of_diff() {
+    fn plan_files_render_diff_like_code() {
         let mut tc = test_tool_call(
             "Write .claude/plans/launch.md",
             "Write",
@@ -926,10 +926,18 @@ mod tests {
             .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
             .collect();
 
-        assert!(rendered.iter().any(|line| line.contains("Launch Plan")));
-        assert!(rendered.iter().any(|line| line.contains("Render plan markdown")));
-        assert!(!rendered.iter().any(|line| line.contains("@@")));
-        assert!(!rendered.iter().any(|line| line.starts_with("+ ")));
+        assert!(
+            rendered.iter().any(|line| line.contains("lines ")),
+            "markdown edit must render the compact hunk header (`lines -N +M`); got {rendered:#?}",
+        );
+        assert!(
+            rendered.iter().any(|line| line.contains('+')),
+            "markdown edit must render added lines marked with +; got {rendered:#?}",
+        );
+        assert!(
+            rendered.iter().any(|line| line.contains('-')),
+            "markdown edit must render removed lines marked with -; got {rendered:#?}",
+        );
     }
 
     #[test]
