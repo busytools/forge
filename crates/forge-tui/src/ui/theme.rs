@@ -81,11 +81,13 @@ pub fn tool_name_label(sdk_tool_name: &str) -> (&'static str, &'static str) {
         "ScheduleWakeup" => ("\u{23f2}", "ScheduleWakeup"),
         "Skill" => ("\u{2726}", "Skill"),
         "ToolSearch" => ("\u{2316}", "ToolSearch"),
-        // Cron* family shares the ⏳ hourglass glyph; per-arm label
-        // preserves the originating tool name for log diagnostics.
-        "CronCreate" => ("\u{23f3}", "CronCreate"),
-        "CronDelete" => ("\u{23f3}", "CronDelete"),
-        "CronList" => ("\u{23f3}", "CronList"),
+        // Cron* family shares the ASCII `*` glyph (cron-syntax mapping
+        // `* * * * *`); width-1 keeps the kind-icon slot deterministic
+        // across terminals regardless of EAW interpretation. Per-arm
+        // label preserves the originating tool name for log diagnostics.
+        "CronCreate" => ("*", "CronCreate"),
+        "CronDelete" => ("*", "CronDelete"),
+        "CronList" => ("*", "CronList"),
         "PushNotification" => ("\u{25b2}", "PushNotification"),
         "RemoteTrigger" => ("\u{21e8}", "RemoteTrigger"),
         "LSP" => ("\u{2699}", "LSP"),
@@ -124,10 +126,10 @@ mod tests {
         assert_eq!(tool_name_label("Skill"), ("\u{2726}", "Skill"));
         assert_eq!(tool_name_label("ToolSearch"), ("\u{2316}", "ToolSearch"));
 
-        // Cron family shares the ⏳ hourglass glyph.
-        assert_eq!(tool_name_label("CronCreate"), ("\u{23f3}", "CronCreate"));
-        assert_eq!(tool_name_label("CronDelete"), ("\u{23f3}", "CronDelete"));
-        assert_eq!(tool_name_label("CronList"), ("\u{23f3}", "CronList"));
+        // Cron family shares the ASCII `*` glyph.
+        assert_eq!(tool_name_label("CronCreate"), ("*", "CronCreate"));
+        assert_eq!(tool_name_label("CronDelete"), ("*", "CronDelete"));
+        assert_eq!(tool_name_label("CronList"), ("*", "CronList"));
 
         assert_eq!(tool_name_label("PushNotification"), ("\u{25b2}", "PushNotification"));
         assert_eq!(tool_name_label("RemoteTrigger"), ("\u{21e8}", "RemoteTrigger"));
