@@ -1086,24 +1086,11 @@ fn handle_subagent_key(app: &mut App, key: KeyEvent) -> bool {
     }
 }
 
-/// Cycle the focused chat tool-call group's collapse level when one
-/// is set; otherwise toggle the session-wide collapsed preference for
-/// individual tool calls (the pre-grouping behaviour). The focused
-/// group is set by mouse-click on a group summary row in
-/// `app::events::mouse::handle_group_summary_click`; without one,
-/// ctrl+x stays the global toggle the user is used to.
+/// Toggle the session-wide `tools_collapsed` preference. Per-group
+/// expand/collapse cycling is bound to mouse-click on a group summary
+/// row (`app::events::mouse::try_toggle_tool_call_at_click`); the
+/// keyboard shortcut is the global toggle, always.
 pub(super) fn toggle_all_tool_calls(app: &mut App) {
-    let focused = app.active_session().and_then(|s| s.focused_group.clone());
-    if let Some((leader_id, msg_idx)) = focused {
-        let _ = app.cycle_group_collapse_level(&leader_id);
-        // Per-message invalidation: a single group's cycle changes only
-        // that message's layout, so clearing every other message's
-        // cache (Global) was a ~74ms hitch on long sessions. The mouse
-        // click path scoped correctly to MessageChanged from day one;
-        // this makes the keyboard path symmetric.
-        app.invalidate_layout(InvalidationLevel::MessageChanged(msg_idx));
-        return;
-    }
     app.tools_collapsed = !app.tools_collapsed;
     app.invalidate_layout(InvalidationLevel::Global);
 }

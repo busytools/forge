@@ -5692,38 +5692,21 @@ mod tests {
     }
 
     /// #302 follow-on perf fix: ctrl+x cycling a focused group must
-    /// invalidate ONLY the message holding that group, never `Global`.
-    /// The pre-fix path cleared every message's layout cache on every
-    /// Cmd+X (199 misses → 184 re-measures → ~74ms hitch on long
-    /// sessions). Regression guard: assert the recorded invalidation
-    /// level is `MessageChanged(msg_idx)` for the keyboard-cycle path
-    /// and `Global` only for the non-group fall-through.
+    /// Cmd+X with no prior click flips the global `tools_collapsed`
+    /// flag and emits a Global invalidation. Per-group cycling is
+    /// bound to mouse-click on a group summary row; the keyboard
+    /// shortcut is the global toggle, always.
     #[test]
-    fn ctrl_x_cycling_focused_group_invalidates_only_target_message() {
-        use crate::ui::message::grouping::GroupId;
+    fn cmd_x_with_no_prior_click_toggles_global_tools_collapsed() {
         let mut app = App::test_default();
-        let leader_id = GroupId::from_leader_id("tu-leader");
-        let msg_idx = 42;
-        // Mouse handler analogue: stamp the focused group with its
-        // msg_idx + leader id.
-        app.active_bucket_mut().focused_group = Some((leader_id.clone(), msg_idx));
+        let initial = app.tools_collapsed;
         app.last_invalidation_level.set(None);
         super::super::keys::toggle_all_tool_calls(&mut app);
-        assert_eq!(
-            app.last_invalidation_level.get(),
-            Some(crate::app::InvalidationLevel::MessageChanged(msg_idx)),
-            "focused-group cycle must scope invalidation to the holding message",
-        );
-
-        // Fall-through path (no focus): the existing session-wide
-        // tools_collapsed toggle stays at Global.
-        app.active_bucket_mut().focused_group = None;
-        app.last_invalidation_level.set(None);
-        super::super::keys::toggle_all_tool_calls(&mut app);
+        assert_eq!(app.tools_collapsed, !initial, "Cmd+X must flip tools_collapsed globally",);
         assert_eq!(
             app.last_invalidation_level.get(),
             Some(crate::app::InvalidationLevel::Global),
-            "non-group fall-through must still invalidate Global (full re-measure)",
+            "Cmd+X must emit Global invalidation",
         );
     }
 

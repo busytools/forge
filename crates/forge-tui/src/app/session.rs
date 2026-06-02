@@ -350,17 +350,6 @@ pub struct UiSession {
         crate::ui::message::grouping::GroupCollapseLevel,
     >,
 
-    /// Last group the user interacted with via mouse: the leader id
-    /// plus the index of the message that contains it. ctrl+x cycles
-    /// this group's level when set and invalidates only that message's
-    /// layout cache (see `keys.rs::toggle_all_tool_calls`); otherwise
-    /// ctrl+x falls through to the session-wide tool-cards toggle.
-    /// Carrying `msg_idx` alongside the id avoids the
-    /// `Global`-invalidation hitch the keyboard cycle had before #302's
-    /// follow-on - reading from this field at ctrl+x time keeps the
-    /// invalidation scoped to `MessageChanged(msg_idx)`.
-    pub focused_group: Option<(crate::ui::message::grouping::GroupId, usize)>,
-
     // ---- Inspector pane scroll state ----
     /// Vertical scroll offset (lines from top) for the Inspector
     /// pane's scrollable body - everything from the `GIT` section
@@ -505,7 +494,6 @@ impl Default for UiSession {
             schedules: Vec::default(),
             workflows: Vec::default(),
             group_collapse_levels: std::collections::HashMap::default(),
-            focused_group: Option::default(),
             git_diff_snapshot: None,
             git_diff_generation: 0,
             git_diff_scan_in_flight: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
