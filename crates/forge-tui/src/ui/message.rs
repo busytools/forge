@@ -455,7 +455,7 @@ fn append_assistant_blocks(
             grouping::RenderUnit::Group { range, leader_id, kind_count, aggregate_status } => {
                 match render_context.group_level(&leader_id) {
                     grouping::GroupCollapseLevel::L2Summary => {
-                        if !state.prev_was_tool && state.has_body_content {
+                        if state.has_body_content {
                             layout.push_blank();
                         }
                         // Stamp the leader's hit-test fields so a click
