@@ -354,18 +354,14 @@ fn try_toggle_tool_call_at_click(app: &mut App, mouse: MouseEvent) -> bool {
     };
     // Chat tool-call grouping: when the clicked tool is the leader of
     // a multi-item group AND that group is currently at L2, route to
-    // the group path (set focus + cycle to L1). The renderer stamped
-    // the leader's hit-test fields onto the summary line, so a click
-    // here landed there. Off the leader, on a single-item group (the
-    // title row IS the per-tool row; clicking should toggle the body),
-    // or when the group is at L1 / L0, fall through to the per-tool
-    // toggle below.
+    // the group path (cycle to L1). The renderer stamped the leader's
+    // hit-test fields onto the summary line, so a click here landed
+    // there. Off the leader, on a single-item group (the title row IS
+    // the per-tool row; clicking should toggle the body), or when the
+    // group is at L1 / L0, fall through to the per-tool toggle below.
     if let Some((leader_id, _run_len)) = group_leader_match(app, msg_idx, block_idx) {
         let level = app.group_collapse_level(&leader_id);
         if matches!(level, crate::ui::message::grouping::GroupCollapseLevel::L2Summary) {
-            if let Some(bucket) = app.try_active_bucket_mut() {
-                bucket.focused_group = Some((leader_id.clone(), msg_idx));
-            }
             let _ = app.cycle_group_collapse_level(&leader_id);
             app.invalidate_layout(crate::app::InvalidationLevel::MessageChanged(msg_idx));
             tracing::debug!(
@@ -374,7 +370,7 @@ fn try_toggle_tool_call_at_click(app: &mut App, mouse: MouseEvent) -> bool {
                 leader_id = leader_id.as_str(),
                 msg_idx,
                 block_idx,
-                "click on group L2 summary expanded to L1 + set focus",
+                "click on group L2 summary expanded to L1",
             );
             return true;
         }
@@ -1229,11 +1225,103 @@ mod tests {
             GroupCollapseLevel::L1Titles,
             "click cycles single-item group L2 -> L1",
         );
-        let focused = app.active_session().and_then(|s| s.focused_group.clone());
+    }
+
+    /// Cmd+X after a click on a group's leader must still toggle the
+    /// global `tools_collapsed` flag, not cycle the clicked group.
+    /// Per-group cycling stays bound to mouse-click on the leader; the
+    /// keyboard shortcut is the global toggle, always.
+    #[test]
+    fn cmd_x_after_group_click_still_toggles_global_tools_collapsed() {
+        use crate::agent::model;
+        use crate::app::{
+            BlockCache, ChatMessage, MessageRole, TerminalSnapshotMode, ToolCallInfo,
+        };
+        use crate::ui::message::grouping::{
+            GroupCollapseLevel, GroupId, RenderUnit, partition_blocks_into_render_units,
+        };
+        use crossterm::event::{KeyModifiers, MouseButton, MouseEventKind};
+        use ratatui::layout::Rect;
+
+        let mut app = App::test_default();
+        let tool_id = "tu-solo-2";
+        let tc = ToolCallInfo {
+            id: tool_id.to_owned(),
+            title: "Read /path/to/file.rs".to_owned(),
+            sdk_tool_name: "Read".to_owned(),
+            raw_input: None,
+            raw_input_bytes: 0,
+            output_metadata: None,
+            task_metadata: None,
+            status: model::ToolCallStatus::Completed,
+            content: Vec::new(),
+            hidden: false,
+            terminal_id: None,
+            terminal_command: None,
+            terminal_output: None,
+            terminal_output_len: 0,
+            terminal_bytes_seen: 0,
+            terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
+            monitor_output_tail: Vec::default(),
+            render_epoch: 0,
+            layout_epoch: 0,
+            last_measured_y_in_msg: 0,
+            last_measured_height: 1,
+            last_measured_width: 80,
+            last_measured_layout_epoch: 0,
+            last_measured_layout_generation: 0,
+            cache: BlockCache::default(),
+            collapsed_override: None,
+        };
+        app.push_message_tracked(ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::ToolCall(Box::new(tc))],
+            None,
+        ));
+        let _ = app.active_viewport_mut().on_frame(80, 20);
+        app.active_viewport_mut().set_message_height(0, 1);
+        app.active_viewport_mut().mark_heights_valid();
+        app.active_viewport_mut().rebuild_prefix_sums();
+        app.rendered_chat_area = Rect { x: 0, y: 0, width: 80, height: 20 };
+
+        let leader_id = {
+            let session = app.active_session().expect("active session");
+            let mut found = None;
+            for msg in &session.messages {
+                for unit in partition_blocks_into_render_units(&msg.blocks) {
+                    if let RenderUnit::Group { range, leader_id, .. } = unit {
+                        assert_eq!(range, 0..1, "single-item group expected");
+                        found = Some(leader_id);
+                    }
+                }
+            }
+            found.expect("partition produces a Group")
+        };
+        assert_eq!(leader_id, GroupId::from_leader_id(tool_id));
+
+        // Click the leader row cycles L2 -> L1 on the clicked group.
+        let mouse = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 5,
+            row: 0,
+            modifiers: KeyModifiers::empty(),
+        };
+        let consumed = try_toggle_tool_call_at_click(&mut app, mouse);
+        assert!(consumed, "click on single-item group L2 must be consumed");
+        let level_after_click = app.group_collapse_level(&leader_id);
+        assert_eq!(level_after_click, GroupCollapseLevel::L1Titles);
+
+        let pre_global = app.tools_collapsed;
+        crate::app::keys::toggle_all_tool_calls(&mut app);
+
         assert_eq!(
-            focused.as_ref().map(|(id, _)| id.clone()),
-            Some(leader_id),
-            "focused_group must be set so Cmd+X subsequently targets the same group",
+            app.tools_collapsed, !pre_global,
+            "Cmd+X after group-click must flip tools_collapsed globally",
+        );
+        assert_eq!(
+            app.group_collapse_level(&leader_id),
+            level_after_click,
+            "Cmd+X after group-click must NOT cycle the clicked group's level",
         );
     }
 
