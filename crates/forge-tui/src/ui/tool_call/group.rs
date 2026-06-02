@@ -15,12 +15,14 @@ use crate::ui::theme;
 use crate::ui::tool_call::status_icon;
 
 /// Render the L2 summary line for a grouped run:
-/// `<status_icon> ☰<summary>   ctrl+x to expand`.
+/// `<status_icon> = <summary>   ctrl+x to expand`.
 ///
 /// Prepends a 2-space LEFT indent matching
-/// `standard::render_tool_call_title`'s convention. The right edge is
-/// left as Paragraph-default cells (matches every other tool-call
-/// line's right-edge behavior).
+/// `standard::render_tool_call_title`'s convention. The group kind-icon
+/// is ASCII `=` followed by an explicit trailing space, giving a
+/// deterministic `<icon>(1) + space(1)` 2-cell slot matching every
+/// other tool-call row's chrome regardless of terminal EAW behavior.
+/// The right edge is left as Paragraph-default cells.
 ///
 /// `aggregate_status` drives the leading status_icon (spinner for
 /// InProgress, check for Completed, cross for Failed/Killed, hollow
@@ -46,10 +48,7 @@ pub fn render_group_summary_line(
             format!("{icon_glyph} "),
             Style::default().fg(icon_color).add_modifier(Modifier::BOLD),
         ),
-        Span::styled(
-            "\u{2630}".to_owned(),
-            Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
-        ),
+        Span::styled("= ".to_owned(), Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD)),
         Span::styled(summary, Style::default().add_modifier(Modifier::BOLD)),
         Span::styled("   ctrl+x to expand".to_owned(), dim),
     ])]
@@ -86,7 +85,7 @@ mod tests {
         assert_eq!(lines.len(), 1);
         let text = line_text(&lines[0]);
         assert!(text.contains(theme::ICON_COMPLETED), "completed status_icon: {text:?}");
-        assert!(text.contains('\u{2630}'), "group-icon ☰ missing: {text:?}");
+        assert!(text.contains('='), "group-icon `=` missing: {text:?}");
         assert!(text.contains("5 reads"));
         assert!(text.contains("3 searches"));
         assert!(text.contains("2 commands"));
@@ -111,7 +110,7 @@ mod tests {
         let text = line_text(&lines[0]);
         let has_braille = text.chars().any(|c| ('\u{2800}'..='\u{28FF}').contains(&c));
         assert!(has_braille, "InProgress must use a braille spinner glyph: {text:?}");
-        assert!(text.contains('\u{2630}'));
+        assert!(text.contains('='));
     }
 
     #[test]
@@ -120,7 +119,7 @@ mod tests {
         let lines = render_group_summary_line(k, ToolCallStatus::Failed, 0);
         let text = line_text(&lines[0]);
         assert!(text.contains(theme::ICON_FAILED), "failed status_icon: {text:?}");
-        assert!(text.contains('\u{2630}'));
+        assert!(text.contains('='));
     }
 
     #[test]
@@ -129,7 +128,7 @@ mod tests {
         let lines = render_group_summary_line(k, ToolCallStatus::Pending, 0);
         let text = line_text(&lines[0]);
         assert!(text.contains('\u{25CB}'), "Pending must use hollow circle: {text:?}");
-        assert!(text.contains('\u{2630}'));
+        assert!(text.contains('='));
     }
 
     #[test]
@@ -154,13 +153,11 @@ mod tests {
         );
     }
 
-    /// Regression-lock for the group-summary alignment: the line must
-    /// start with `"  "` (2-space LEFT indent matching standard tool-
-    /// call titles), contain `\u{2630}` (the 2-cell group-icon), and
-    /// emit NO trailing space after the glyph. The glyph's 2-cell
-    /// width occupies the same `<icon>(1)+space(1)` 2-cell slot
-    /// standard tool rows use, so an explicit space here would push
-    /// the summary text right one column versus other rows.
+    /// Group-summary alignment invariant: the line starts with the
+    /// 2-space LEFT indent, the group kind-icon is ASCII `=`, and
+    /// the char immediately after `=` is a space. The `<icon>(1) +
+    /// space(1)` slot fills 2 cells matching standard tool-row
+    /// chrome regardless of terminal EAW behavior.
     #[test]
     fn render_group_summary_line_glyph_alignment() {
         let k = KindCount { reads: 5, ..KindCount::default() };
@@ -170,17 +167,22 @@ mod tests {
             text.starts_with("  "),
             "group summary must start with 2-space LEFT indent; got {text:?}",
         );
-        let glyph_pos = text.find('\u{2630}').expect("group-icon glyph present");
         assert!(
-            glyph_pos >= 2,
-            "glyph must appear after the indent; got glyph_pos={glyph_pos}, text={text:?}",
+            !text.contains('\u{2630}'),
+            "group summary must not contain the U+2630 glyph; got {text:?}",
         );
-        let after_glyph_idx = glyph_pos + '\u{2630}'.len_utf8();
-        let after_glyph_char = text[after_glyph_idx..].chars().next();
-        assert_ne!(
-            after_glyph_char,
+        let equals_pos =
+            text.find('=').unwrap_or_else(|| panic!("ASCII `=` group-icon missing; got {text:?}"));
+        assert!(
+            equals_pos >= 2,
+            "`=` must appear after the indent; got equals_pos={equals_pos}, text={text:?}",
+        );
+        let after_equals_idx = equals_pos + '='.len_utf8();
+        let after_equals_char = text[after_equals_idx..].chars().next();
+        assert_eq!(
+            after_equals_char,
             Some(' '),
-            "no trailing space after the group glyph (alignment regression-lock); got {text:?}",
+            "ASCII `=` must be followed by an explicit space (2-cell slot); got {text:?}",
         );
     }
 }

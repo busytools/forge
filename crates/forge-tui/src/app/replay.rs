@@ -553,15 +553,14 @@ mod tests {
 
         let mut harness = ReplayHarness::from_app(build_app_with_consecutive_reads(1));
         let snap_l2 = harness.snapshot_chat(80, 10);
-        // v2.1 (decision 6): summary shape is
-        // `<status_icon> ☰ <summary>   ctrl+x to expand`.
+        // Summary shape: `<status_icon> = <summary>   ctrl+x to expand`.
         assert!(
             snap_l2.contains("1 read"),
             "single-item L2 must render the summary line (no special-casing); got:\n{snap_l2}",
         );
         assert!(
-            snap_l2.contains('\u{2630}'),
-            "single-item L2 must carry the ☰ group-icon; got:\n{snap_l2}",
+            snap_l2.contains("= "),
+            "single-item L2 must carry the `=` group-icon; got:\n{snap_l2}",
         );
         assert!(
             !snap_l2.contains("Read crates/forge-tui/src/0.rs"),
@@ -576,7 +575,7 @@ mod tests {
             "single-item L1 must render the title row; got:\n{snap_l1}",
         );
         assert!(
-            !snap_l1.contains('\u{2630}'),
+            !snap_l1.contains("= "),
             "single-item L1 must NOT render the summary group-icon; got:\n{snap_l1}",
         );
 
@@ -617,8 +616,8 @@ mod tests {
             "in-flight group L2 must show a braille spinner glyph; got:\n{snap}",
         );
         assert!(
-            snap.contains('\u{2630}'),
-            "in-flight group L2 must carry the ☰ group-icon; got:\n{snap}",
+            snap.contains("= "),
+            "in-flight group L2 must carry the `=` group-icon; got:\n{snap}",
         );
         insta::assert_snapshot!(snap);
     }
