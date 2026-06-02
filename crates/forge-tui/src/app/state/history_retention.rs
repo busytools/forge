@@ -276,7 +276,7 @@ impl super::App {
     /// `turn_notice_refs_mut().remove(...)` for a ref that pointed at
     /// the removed message - it is already gone, and an explicit
     /// remove will either panic on the emptied Vec or corrupt a
-    /// sibling ref. (Regression #324.)
+    /// sibling ref.
     pub(crate) fn remove_message_tracked(&mut self, idx: usize) -> Option<ChatMessage> {
         self.ensure_history_retention_accounting();
         let old_len = self.messages().len();

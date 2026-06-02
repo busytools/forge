@@ -3098,14 +3098,10 @@ mod tests {
         assert_ne!(second_notice.text.text, first_notice_text);
     }
 
-    /// Regression guard for #324: a notice inserted as Standalone
-    /// (no active assistant turn) MUST be promotable to Inline when
-    /// an assistant turn becomes active and the same dedup_key
-    /// re-upserts. Pre-fix this panicked at notices.rs:45 because
-    /// `remove_standalone_notice` already dropped the turn_notice_ref
-    /// via `shift_turn_notice_refs_for_remove`, leaving the explicit
-    /// `remove(existing_ref_idx)` on the next line to crash on the
-    /// emptied Vec (`removal index (is 0) should be < len (is 0)`).
+    /// A Standalone notice (inserted with no active assistant turn)
+    /// must be promotable to Inline when an assistant turn becomes
+    /// active and the same `dedup_key` re-upserts: exactly one ref,
+    /// of type Inline, no panic.
     #[test]
     fn upsert_turn_notice_promotes_standalone_to_inline_without_panic() {
         let mut app = make_test_app();
@@ -3136,10 +3132,9 @@ mod tests {
         app.bind_active_turn_assistant(app.messages().len() - 1);
 
         // 3. Same dedup_key, now with active turn -> promote-to-inline
-        // success-path. Pre-fix this panicked on the redundant remove.
+        // success-path.
         send_msg(&mut app, rate_limit_event(info));
 
-        // Post-fix: no panic, single Inline ref tracking the promoted notice.
         assert_eq!(app.turn_notice_refs().len(), 1, "exactly one ref after promotion",);
         assert!(
             matches!(app.turn_notice_refs()[0].location, TurnNoticeLocation::Inline { .. }),
