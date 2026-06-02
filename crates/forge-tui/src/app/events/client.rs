@@ -204,9 +204,27 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
             crate::app::prompt::snapshot_draft_if_needed(app);
         }
         SessionUpdate::QuestionRequest { key, tool_id, request } => {
+            // #314 diagnostic: log dispatch + enqueue so lead can bisect
+            // why the local AskUserQuestion path doesn't light the △-
+            // attention indicator. STRIP this block in the same commit
+            // that lands the real fix on a separate branch.
+            let session_present = app.session_mut(&key).is_some();
+            tracing::info!(
+                target: "forge_tui::triangle::diagnostic",
+                event_name = "question_request_dispatch",
+                key = %key.as_str(),
+                tool_id = %tool_id,
+                session_lookup_ok = session_present,
+            );
             if let Some(session) = app.session_mut(&key) {
                 let prompt = crate::app::prompt::PromptState::from_question(tool_id, request);
                 crate::app::prompt::enqueue_prompt(session, prompt);
+                tracing::info!(
+                    target: "forge_tui::triangle::diagnostic",
+                    event_name = "question_enqueued",
+                    key = %key.as_str(),
+                    prompt_queue_len = session.prompt_queue.len(),
+                );
             }
             crate::app::prompt::snapshot_draft_if_needed(app);
         }
