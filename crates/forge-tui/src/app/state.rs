@@ -5691,7 +5691,6 @@ mod tests {
         assert_eq!(app.group_collapse_level(&id), GroupCollapseLevel::L2Summary);
     }
 
-    /// #302 follow-on perf fix: ctrl+x cycling a focused group must
     /// Cmd+X with no prior click flips the global `tools_collapsed`
     /// flag and emits a Global invalidation. Per-group cycling is
     /// bound to mouse-click on a group summary row; the keyboard
