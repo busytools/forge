@@ -634,19 +634,12 @@ fn append_assistant_tool_block(
         if !state.prev_was_tool && state.has_body_content {
             layout.push_blank();
         }
-        // #143 item 5: routine `mcp__forge__*` calls collapse to a
-        // one-line summary by default - the wire shape is
-        // predictable and the user-facing intent is target +
-        // correlation_id, not the JSON args. A per-tc
-        // `collapsed_override` (set by clicking on the row) still
-        // wins so the user can expand for a specific call when
-        // they want the body preview. The global `tools_collapsed`
-        // setting is ignored on this path because these cards are
-        // intentionally compact by default; it'd be confusing to
-        // make them honor a setting whose name implies the
-        // OPPOSITE default behaviour ("tools_collapsed=false" =
-        // "show full tool cards" = wrong for these).
-        let collapsed = tc.collapsed_override.unwrap_or(true);
+        // Per-tc `collapsed_override` (set by clicking the row)
+        // wins; otherwise fall back to the session-wide
+        // `tools_collapsed` flag the same way the standard tool-call
+        // render does (`ui/tool_call/standard.rs::
+        // tool_call_effectively_collapsed`).
+        let collapsed = tc.collapsed_override.unwrap_or(render_context.options.tools_collapsed);
         let lines = peer_block::render_outbound(&kind, collapsed);
         // Same hit-target stamping the standard tool-call branch
         // below does so `mouse::locate_tool_call_block_at_click` can
@@ -3587,6 +3580,69 @@ mod tests {
         );
         tc.raw_input = Some(serde_json::json!({ "label": target, "message": body }));
         ChatMessage::new(MessageRole::Assistant, vec![MessageBlock::ToolCall(Box::new(tc))], None)
+    }
+
+    /// Peer-outbound render honors the global `tools_collapsed`
+    /// flag when no per-tc `collapsed_override` is set, mirroring
+    /// the standard tool-call render's pattern. With override set,
+    /// the override still wins regardless of the global flag.
+    #[test]
+    fn peer_block_render_honors_tools_collapsed_when_no_override() {
+        let spinner = idle_spinner();
+        let with_options = |tools_collapsed: bool| MessageRenderOptions {
+            tools_collapsed,
+            include_trailing_separator: false,
+            suppress_group_header: false,
+            envelope_streak_position: None,
+            stop_hook_summary_actions: 0,
+            stop_hook_summary_expanded: false,
+        };
+        let render_text = |tools_collapsed: bool, override_val: Option<bool>| -> String {
+            // Body long enough that the collapsed summary trims it,
+            // making the collapsed-vs-expanded shape visibly distinct.
+            let mut msg = make_assistant_with_workers_tell(
+                "lead",
+                "line one\nline two\nline three\nline four",
+            );
+            if let MessageBlock::ToolCall(tc) = &mut msg.blocks[0] {
+                tc.collapsed_override = override_val;
+            }
+            let mut lines = Vec::new();
+            render_message(
+                &mut msg,
+                &spinner,
+                MessageRenderContext::new(None, 80, 0, with_options(tools_collapsed)),
+                &mut lines,
+            );
+            lines
+                .iter()
+                .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        let no_override_expanded = render_text(false, None);
+        let no_override_collapsed = render_text(true, None);
+        assert!(
+            no_override_expanded.contains("line four"),
+            "tools_collapsed=false + no override must render the full body; got:\n{no_override_expanded}",
+        );
+        assert!(
+            no_override_collapsed.contains("click or ctrl+x to expand"),
+            "tools_collapsed=true + no override must render the collapsed summary hint; got:\n{no_override_collapsed}",
+        );
+
+        // Override wins regardless of the global flag.
+        let override_collapsed = render_text(false, Some(true));
+        assert!(
+            override_collapsed.contains("click or ctrl+x to expand"),
+            "override=Some(true) must render the collapsed summary even with tools_collapsed=false; got:\n{override_collapsed}",
+        );
+        let override_expanded = render_text(true, Some(false));
+        assert!(
+            override_expanded.contains("line four"),
+            "override=Some(false) must render the full body even with tools_collapsed=true; got:\n{override_expanded}",
+        );
     }
 
     #[test]

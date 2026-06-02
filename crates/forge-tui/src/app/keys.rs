@@ -1086,11 +1086,28 @@ fn handle_subagent_key(app: &mut App, key: KeyEvent) -> bool {
     }
 }
 
-/// Toggle the session-wide `tools_collapsed` preference. Per-group
-/// expand/collapse cycling is bound to mouse-click on a group summary
-/// row (`app::events::mouse::try_toggle_tool_call_at_click`); the
-/// keyboard shortcut is the global toggle, always.
+/// Toggle the session-wide `tools_collapsed` preference and clear
+/// every per-item collapse override (per-tool `collapsed_override`,
+/// per-peer-text-block `peer_collapsed_override`, per-group
+/// `group_collapse_levels`) so the new global state is authoritative
+/// across every tool, group, and MCP message uniformly. Per-group
+/// expand/collapse cycling stays bound to mouse-click on a group
+/// summary row (`app::events::mouse::try_toggle_tool_call_at_click`);
+/// the keyboard shortcut is the global toggle, always.
 pub(super) fn toggle_all_tool_calls(app: &mut App) {
+    use crate::app::MessageBlock;
+    if let Some(bucket) = app.try_active_bucket_mut() {
+        for msg in &mut bucket.messages {
+            for block in &mut msg.blocks {
+                match block {
+                    MessageBlock::ToolCall(tc) => tc.collapsed_override = None,
+                    MessageBlock::Text(text) => text.peer_collapsed_override = None,
+                    _ => {}
+                }
+            }
+        }
+        bucket.group_collapse_levels.clear();
+    }
     app.tools_collapsed = !app.tools_collapsed;
     app.invalidate_layout(InvalidationLevel::Global);
 }
