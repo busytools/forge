@@ -96,10 +96,12 @@ pub struct SessionChipInfo {
 pub enum SessionChipState {
     /// Account is Ready and within budget. DIM foreground.
     Normal,
-    /// Account is Ready but its 5h budget window is currently
-    /// capped. Yellow foreground signals "still works but expect
-    /// throttle until the 5h window resets."
-    FiveHourCap,
+    /// Account is Ready but at least one usage window (5h or weekly)
+    /// is currently at the cap. Yellow foreground signals "still
+    /// spawns but expect throttling until the window resets." When
+    /// every account is capped the plan is forced to assign one
+    /// anyway, so every session's chip shows this state.
+    AtCap,
     /// Account flipped to Bailed. Red foreground + `⚠ ` prefix.
     /// The session's spawn would fall through to round-robin until
     /// the recovery poll flips the account back to Ready.
@@ -974,9 +976,11 @@ impl Workspace {
     /// State derivation:
     /// - `LoadingState::Bailed` -> `SessionChipState::Bailed`
     ///   (renderer renders red with a `⚠ ` prefix).
-    /// - `Ready` + 5h `UsageWindow::is_currently_limited` true ->
-    ///   `FiveHourCap` (yellow; the session still runs but the
-    ///   user should know they're inside the 5h budget cap window).
+    /// - `Ready` + any usage window at the cap (the same
+    ///   `is_saturated` signal the assignment plan uses to avoid an
+    ///   account) -> `AtCap` (yellow; the session still spawns but
+    ///   will throttle - and in the all-accounts-capped case it was
+    ///   assigned only because nothing else was free).
     /// - Otherwise -> `Normal` (DIM; default chip).
     pub fn session_chip_for(
         &self,
@@ -990,18 +994,12 @@ impl Workspace {
 
         let accounts = self.accounts.lock();
         let loading = accounts.loading_state(&account_key);
-        let usage = accounts.usage(&account_key).cloned();
+        let saturated = accounts.is_saturated(&account_key);
         drop(accounts);
 
         let state = match loading {
             crate::account::LoadingState::Bailed => SessionChipState::Bailed,
-            crate::account::LoadingState::Ready => {
-                let limited = usage
-                    .as_ref()
-                    .and_then(|u| u.five_hour.as_ref())
-                    .is_some_and(forge_primitives::usage::UsageWindow::is_currently_limited);
-                if limited { SessionChipState::FiveHourCap } else { SessionChipState::Normal }
-            }
+            crate::account::LoadingState::Ready if saturated => SessionChipState::AtCap,
             _ => SessionChipState::Normal,
         };
 
@@ -1136,7 +1134,7 @@ impl Workspace {
         use crate::account::LoadingState;
         use crate::assignment_plan::{ProjectInput, compute_plan};
 
-        let ready_accounts: Vec<AccountKey> = {
+        let (ready_accounts, saturated): (Vec<AccountKey>, Vec<AccountKey>) = {
             let accounts = self.accounts.lock();
             if !accounts.all_loaded() {
                 return;
@@ -1146,7 +1144,7 @@ impl Workspace {
             // empty `accounts` list the pool IS this slice, so HashMap
             // randomness would assign the lead to a different account
             // across restarts.
-            accounts
+            let ready: Vec<AccountKey> = accounts
                 .ordered_keys
                 .iter()
                 .filter(|k| {
@@ -1156,7 +1154,13 @@ impl Workspace {
                         .is_some_and(|s| matches!(s.loading, LoadingState::Ready))
                 })
                 .cloned()
-                .collect()
+                .collect();
+            // Accounts that loaded fine but sit at the usage cap. The
+            // plan prefers the rest so a freshly-exhausted account
+            // doesn't get sessions assigned to it on boot.
+            let saturated: Vec<AccountKey> =
+                ready.iter().filter(|k| accounts.is_saturated(k)).cloned().collect();
+            (ready, saturated)
         };
 
         let projects: Vec<ProjectInput> = self
@@ -1174,7 +1178,7 @@ impl Workspace {
             })
             .collect();
 
-        let fresh = compute_plan(&ready_accounts, &projects);
+        let fresh = compute_plan(&ready_accounts, &saturated, &projects);
         let mut plan_guard = self.assignment_plan.lock();
         match plan_guard.as_mut() {
             // First compute - just store. Boot-time path.
@@ -6694,7 +6698,7 @@ config_dir = "~/.claude-beta"
     }
 
     #[tokio::test]
-    async fn session_chip_for_five_hour_cap_branch() {
+    async fn session_chip_for_at_cap_branch() {
         let dir = make_workspace_dir_246();
         let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
         {
@@ -6702,7 +6706,7 @@ config_dir = "~/.claude-beta"
             let snapshot = forge_primitives::usage::UsageSnapshot {
                 source: forge_primitives::usage::UsageSourceKind::Oauth,
                 fetched_at: std::time::SystemTime::UNIX_EPOCH,
-                // 5h window at 100% with future resets_at -> FiveHourCap branch.
+                // 5h window at 100% with future resets_at -> AtCap branch.
                 five_hour: Some(forge_primitives::usage::UsageWindow {
                     utilization: 100.0,
                     resets_at: Some(
@@ -6723,7 +6727,41 @@ config_dir = "~/.claude-beta"
                 workspace.config.projects[0].path.to_string_lossy().as_ref(),
             )));
         let chip = workspace.session_chip_for(&project_key, "lead").expect("chip");
-        assert_eq!(chip.state, SessionChipState::FiveHourCap);
+        assert_eq!(chip.state, SessionChipState::AtCap);
+    }
+
+    #[tokio::test]
+    async fn session_chip_for_at_cap_on_weekly_window() {
+        // A weekly (7-day) cap alone, 5h window clear, must still flag
+        // the chip AtCap - saturation is any-window, not 5h-only.
+        let dir = make_workspace_dir_246();
+        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        {
+            let mut accounts = workspace.account_states().lock();
+            let snapshot = forge_primitives::usage::UsageSnapshot {
+                source: forge_primitives::usage::UsageSourceKind::Oauth,
+                fetched_at: std::time::SystemTime::UNIX_EPOCH,
+                five_hour: None,
+                seven_day: Some(forge_primitives::usage::UsageWindow {
+                    utilization: 100.0,
+                    resets_at: Some(
+                        std::time::SystemTime::now() + std::time::Duration::from_secs(86_400),
+                    ),
+                    reset_description: None,
+                }),
+                seven_day_opus: None,
+                seven_day_sonnet: None,
+                extra_usage: None,
+            };
+            accounts.set_usage(&AccountKey("Stargate".to_owned()), snapshot);
+        }
+        workspace.recompute_plan_if_ready();
+        let project_key =
+            ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+                workspace.config.projects[0].path.to_string_lossy().as_ref(),
+            )));
+        let chip = workspace.session_chip_for(&project_key, "lead").expect("chip");
+        assert_eq!(chip.state, SessionChipState::AtCap);
     }
 
     #[tokio::test]

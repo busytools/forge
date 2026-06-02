@@ -401,6 +401,15 @@ impl AccountStateMap {
             .all(|s| matches!(s.loading, LoadingState::Ready | LoadingState::Bailed))
     }
 
+    /// True when `key`'s loaded usage snapshot shows it at-or-beyond
+    /// the plan cap - the same saturation signal the fallback picker's
+    /// tier classification uses. A Ready-but-saturated account logs in
+    /// fine but trips the rate limit on its next request, so the
+    /// assignment plan prefers other accounts when one is available.
+    pub(crate) fn is_saturated(&self, key: &AccountKey) -> bool {
+        self.by_key.get(key).and_then(|s| s.usage.as_ref()).is_some_and(is_rate_limited)
+    }
+
     /// Snapshot the current `LoadingState` for `key`. Returns
     /// `LoadingState::Loading` by default for unknown keys
     /// (defensive - the launchpad's render path may briefly hold an
