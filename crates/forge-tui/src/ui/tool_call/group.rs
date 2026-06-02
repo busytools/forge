@@ -68,36 +68,6 @@ mod tests {
     /// trims trailing spaces, so a re-introduced pad would NOT trip
     /// any snapshot test - this assertion inspects the rendered Line
     /// directly to close that gap.
-    /// Regression-lock for the group-summary alignment: the line
-    /// must start with `"  "` (2-space LEFT indent matching standard
-    /// tool-call titles), contain `\u{2630}` (the 2-cell group-icon),
-    /// and emit NO trailing space after the glyph. The glyph's 2-cell
-    /// width occupies the same `<icon>(1)+space(1)` 2-cell slot
-    /// standard tool rows use, so adding an explicit space here pushes
-    /// the summary text right one column versus other rows.
-    #[test]
-    fn render_group_summary_line_starts_with_indent_glyph_space() {
-        let k = KindCount { reads: 5, ..KindCount::default() };
-        let lines = render_group_summary_line(k, ToolCallStatus::Completed, 0);
-        let text = line_text(&lines[0]);
-        assert!(
-            text.starts_with("  "),
-            "group summary must start with 2-space LEFT indent; got {text:?}",
-        );
-        let glyph_pos = text.find('\u{2630}').expect("group-icon glyph present");
-        assert!(
-            glyph_pos >= 2,
-            "glyph must appear after the indent; got glyph_pos={glyph_pos}, text={text:?}",
-        );
-        let after_glyph_idx = glyph_pos + '\u{2630}'.len_utf8();
-        let after_glyph_char = text[after_glyph_idx..].chars().next();
-        assert_ne!(
-            after_glyph_char,
-            Some(' '),
-            "no trailing space after the group glyph (alignment regression-lock); got {text:?}",
-        );
-    }
-
     #[test]
     fn render_group_summary_line_has_no_trailing_whitespace_pad() {
         let k = KindCount { reads: 5, ..KindCount::default() };
@@ -181,6 +151,36 @@ mod tests {
         assert!(
             text.starts_with("  "),
             "group summary must have 2-space LEFT indent matching standard tool-call title; got {text:?}"
+        );
+    }
+
+    /// Regression-lock for the group-summary alignment: the line must
+    /// start with `"  "` (2-space LEFT indent matching standard tool-
+    /// call titles), contain `\u{2630}` (the 2-cell group-icon), and
+    /// emit NO trailing space after the glyph. The glyph's 2-cell
+    /// width occupies the same `<icon>(1)+space(1)` 2-cell slot
+    /// standard tool rows use, so an explicit space here would push
+    /// the summary text right one column versus other rows.
+    #[test]
+    fn render_group_summary_line_glyph_alignment() {
+        let k = KindCount { reads: 5, ..KindCount::default() };
+        let lines = render_group_summary_line(k, ToolCallStatus::Completed, 0);
+        let text = line_text(&lines[0]);
+        assert!(
+            text.starts_with("  "),
+            "group summary must start with 2-space LEFT indent; got {text:?}",
+        );
+        let glyph_pos = text.find('\u{2630}').expect("group-icon glyph present");
+        assert!(
+            glyph_pos >= 2,
+            "glyph must appear after the indent; got glyph_pos={glyph_pos}, text={text:?}",
+        );
+        let after_glyph_idx = glyph_pos + '\u{2630}'.len_utf8();
+        let after_glyph_char = text[after_glyph_idx..].chars().next();
+        assert_ne!(
+            after_glyph_char,
+            Some(' '),
+            "no trailing space after the group glyph (alignment regression-lock); got {text:?}",
         );
     }
 }
