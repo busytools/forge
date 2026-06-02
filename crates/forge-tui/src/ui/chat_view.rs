@@ -49,6 +49,37 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     // Projects pane before consulting `pane_hit_targets`.
     app.layout = areas.clone();
 
+    // #313 diagnostic: per-frame layout geometry + grouped-line
+    // presence. Lead reads `forge.log` post-repro to determine whether
+    // `pane_right_separator.x` varies between group-on-screen vs
+    // group-off-screen frames. STRIP this block in the same commit
+    // that lands the real fix on a separate branch.
+    let has_group_summary = {
+        use crate::ui::message::grouping;
+        app.messages().iter().any(|msg| {
+            grouping::partition_blocks_into_render_units(&msg.blocks)
+                .iter()
+                .any(|u| matches!(u, grouping::RenderUnit::Group { .. }))
+        })
+    };
+    tracing::info!(
+        target: "forge_tui::layout::diagnostic",
+        event_name = "frame_layout_geometry",
+        frame_w = frame_area.width,
+        frame_h = frame_area.height,
+        projects_visible = app.projects_pane_visible,
+        inspector_visible = app.inspector_pane_visible,
+        pane_x = areas.pane.map_or(-1, |r| i32::from(r.x)),
+        pane_w = areas.pane.map_or(-1, |r| i32::from(r.width)),
+        pane_sep_x = areas.pane_separator.map_or(-1, |r| i32::from(r.x)),
+        body_x = areas.body.x,
+        body_w = areas.body.width,
+        right_sep_x = areas.pane_right_separator.map_or(-1, |r| i32::from(r.x)),
+        pane_right_x = areas.pane_right.map_or(-1, |r| i32::from(r.x)),
+        pane_right_w = areas.pane_right.map_or(-1, |r| i32::from(r.width)),
+        has_group_summary,
+    );
+
     // Narrow tier with either overlay open replaces the chat body
     // with the overlay's full-screen content. Wide / Medium tiers
     // and Narrow-with-no-overlay render the chat normally.
