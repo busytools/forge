@@ -11,12 +11,12 @@ mod tool_calls;
 mod tool_updates;
 pub(crate) mod turn;
 
+#[cfg(test)]
+use super::TurnNoticeLocation;
 use super::{
     ActiveView, App, AppStatus, ChatMessage, InvalidationLevel, MessageBlock, MessageRole,
     PendingCommandAck, SystemSeverity, TextBlock,
 };
-#[cfg(test)]
-use super::TurnNoticeLocation;
 use crate::agent::model;
 #[cfg(test)]
 use crate::app::keys::{CMD_MOD, WORD_NAV_MOD};
@@ -3123,10 +3123,7 @@ mod tests {
         send_msg(&mut app, rate_limit_event(info.clone()));
         assert_eq!(app.turn_notice_refs().len(), 1);
         assert!(
-            matches!(
-                app.turn_notice_refs()[0].location,
-                TurnNoticeLocation::Standalone { .. }
-            ),
+            matches!(app.turn_notice_refs()[0].location, TurnNoticeLocation::Standalone { .. }),
             "precondition: first upsert is Standalone, got {:?}",
             app.turn_notice_refs()[0].location,
         );
@@ -3143,16 +3140,9 @@ mod tests {
         send_msg(&mut app, rate_limit_event(info));
 
         // Post-fix: no panic, single Inline ref tracking the promoted notice.
-        assert_eq!(
-            app.turn_notice_refs().len(),
-            1,
-            "exactly one ref after promotion",
-        );
+        assert_eq!(app.turn_notice_refs().len(), 1, "exactly one ref after promotion",);
         assert!(
-            matches!(
-                app.turn_notice_refs()[0].location,
-                TurnNoticeLocation::Inline { .. }
-            ),
+            matches!(app.turn_notice_refs()[0].location, TurnNoticeLocation::Inline { .. }),
             "promoted ref must be Inline, got {:?}",
             app.turn_notice_refs()[0].location,
         );
