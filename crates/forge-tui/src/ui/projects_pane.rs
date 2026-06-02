@@ -483,6 +483,20 @@ fn append_org_project_row(
         // "background session needs you", not "the one you're looking at".
         let needs_attention = !*is_focused
             && app.sessions.get(session_key).is_some_and(|b| !b.prompt_queue.is_empty());
+        // #314 diagnostic: per-frame △-gate inputs + result for the
+        // project-lead row so lead can bisect which conjunct breaks
+        // for the local AskUserQuestion path. STRIP this block in
+        // the same commit that lands the real fix.
+        let prompt_queue_len = app.sessions.get(session_key).map_or(0, |b| b.prompt_queue.len());
+        tracing::info!(
+            target: "forge_tui::triangle::diagnostic",
+            event_name = "triangle_gate_eval",
+            row_kind = "project",
+            session_key = %session_key.as_str(),
+            is_focused = *is_focused,
+            prompt_queue_len,
+            needs_attention,
+        );
         let (glyph, glyph_color) = if needs_attention {
             ("\u{25b3}".to_owned(), theme::STATUS_WARNING)
         } else {
@@ -694,6 +708,22 @@ fn append_worker_tree_children(
             .map_or(SessionLifecycleState::Spawning, |s| s.lifecycle_state);
         let needs_attention = !is_focused
             && app.sessions.get(&worker.session_key).is_some_and(|b| !b.prompt_queue.is_empty());
+        // #314 diagnostic: per-frame △-gate inputs + result for the
+        // worker row so lead can bisect which conjunct breaks for the
+        // local AskUserQuestion path. STRIP this block in the same
+        // commit that lands the real fix.
+        let prompt_queue_len =
+            app.sessions.get(&worker.session_key).map_or(0, |b| b.prompt_queue.len());
+        tracing::info!(
+            target: "forge_tui::triangle::diagnostic",
+            event_name = "triangle_gate_eval",
+            row_kind = "worker",
+            session_key = %worker.session_key.as_str(),
+            worker_label = %worker.label,
+            is_focused,
+            prompt_queue_len,
+            needs_attention,
+        );
         let (glyph, glyph_color) = if needs_attention {
             ("\u{25b3}".to_owned(), theme::STATUS_WARNING)
         } else if matches!(worker.status, forge_primitives::WorkerLiveness::Failed) {
