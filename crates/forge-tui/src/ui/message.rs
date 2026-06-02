@@ -469,7 +469,6 @@ fn append_assistant_blocks(
                             kind_count,
                             aggregate_status,
                             spinner.frame,
-                            render_context.width,
                         );
                         let y_in_msg = layout.height;
                         let height = rendered_lines_height(&summary_lines, render_context.width);
