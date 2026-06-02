@@ -5709,6 +5709,240 @@ mod tests {
         );
     }
 
+    /// Cmd+X clears every tool-call's `collapsed_override` across
+    /// the active session's message list so older / scrolled-up
+    /// tools snap to the global state on the flip - per-tool
+    /// overrides don't survive Cmd+X.
+    #[test]
+    fn cmd_x_clears_collapsed_override_on_all_tool_calls() {
+        use crate::agent::model;
+        use crate::app::TerminalSnapshotMode;
+        use crate::app::{BlockCache, ChatMessage, MessageBlock, MessageRole, ToolCallInfo};
+        let mut app = App::test_default();
+        let push_tool = |app: &mut App, id: &str, override_val: bool| {
+            app.active_messages_mut().push(ChatMessage::new(
+                MessageRole::Assistant,
+                vec![MessageBlock::ToolCall(Box::new(ToolCallInfo {
+                    id: id.to_owned(),
+                    title: format!("Read {id}"),
+                    sdk_tool_name: "Read".to_owned(),
+                    raw_input: None,
+                    raw_input_bytes: 0,
+                    output_metadata: None,
+                    task_metadata: None,
+                    status: model::ToolCallStatus::Completed,
+                    content: Vec::new(),
+                    hidden: false,
+                    terminal_id: None,
+                    terminal_command: None,
+                    terminal_output: None,
+                    terminal_output_len: 0,
+                    terminal_bytes_seen: 0,
+                    terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
+                    monitor_output_tail: Vec::default(),
+                    render_epoch: 0,
+                    layout_epoch: 0,
+                    last_measured_y_in_msg: 0,
+                    last_measured_height: 0,
+                    last_measured_width: 0,
+                    last_measured_layout_epoch: 0,
+                    last_measured_layout_generation: 0,
+                    cache: BlockCache::default(),
+                    collapsed_override: Some(override_val),
+                }))],
+                None,
+            ));
+        };
+        push_tool(&mut app, "tu-a", true);
+        push_tool(&mut app, "tu-b", false);
+
+        let read_override = |app: &App, id: &str| -> Option<bool> {
+            app.active_session()
+                .expect("active session")
+                .messages
+                .iter()
+                .find_map(|msg| {
+                    msg.blocks.iter().find_map(|b| match b {
+                        MessageBlock::ToolCall(tc) if tc.id == id => Some(tc.collapsed_override),
+                        _ => None,
+                    })
+                })
+                .expect("tool found")
+        };
+        assert_eq!(read_override(&app, "tu-a"), Some(true));
+        assert_eq!(read_override(&app, "tu-b"), Some(false));
+
+        super::super::keys::toggle_all_tool_calls(&mut app);
+
+        assert_eq!(
+            read_override(&app, "tu-a"),
+            None,
+            "tool A's collapsed_override must clear on Cmd+X",
+        );
+        assert_eq!(
+            read_override(&app, "tu-b"),
+            None,
+            "tool B's collapsed_override must clear on Cmd+X",
+        );
+    }
+
+    /// Cmd+X clears every peer-inbound text block's
+    /// `peer_collapsed_override` so MCP messages snap to the global
+    /// state on the flip - per-peer-block overrides don't survive
+    /// Cmd+X.
+    #[test]
+    fn cmd_x_clears_peer_collapsed_override_on_all_text_blocks() {
+        let mut app = App::test_default();
+        let push_peer = |app: &mut App, sender: &str, override_val: bool| {
+            let text = format!(
+                "[Message id=t-12345678 hop=1/10 from agent '{sender}' (org 'Personal')]\n\nhi"
+            );
+            let mut block = TextBlock::from_complete(&text);
+            block.peer_collapsed_override = Some(override_val);
+            app.active_messages_mut().push(ChatMessage::new_peer_envelope(
+                MessageRole::User,
+                vec![MessageBlock::Text(block)],
+                None,
+            ));
+        };
+        push_peer(&mut app, "peer-a", true);
+        push_peer(&mut app, "peer-b", false);
+
+        let read_override = |app: &App, msg_idx: usize| -> Option<bool> {
+            match &app.active_session().expect("session").messages[msg_idx].blocks[0] {
+                MessageBlock::Text(b) => b.peer_collapsed_override,
+                _ => panic!("expected text block"),
+            }
+        };
+        assert_eq!(read_override(&app, 0), Some(true));
+        assert_eq!(read_override(&app, 1), Some(false));
+
+        super::super::keys::toggle_all_tool_calls(&mut app);
+
+        assert_eq!(
+            read_override(&app, 0),
+            None,
+            "peer A's peer_collapsed_override must clear on Cmd+X",
+        );
+        assert_eq!(
+            read_override(&app, 1),
+            None,
+            "peer B's peer_collapsed_override must clear on Cmd+X",
+        );
+    }
+
+    /// Cmd+X clears the `group_collapse_levels` map so older /
+    /// scrolled-up groups snap to the global state on the flip -
+    /// per-group cycle state doesn't survive Cmd+X.
+    #[test]
+    fn cmd_x_clears_group_collapse_levels_map() {
+        use crate::ui::message::grouping::GroupId;
+        let mut app = App::test_default();
+        let group_a = GroupId::from_leader_id("tu-leader-a");
+        let group_b = GroupId::from_leader_id("tu-leader-b");
+        let _ = app.cycle_group_collapse_level(&group_a);
+        let _ = app.cycle_group_collapse_level(&group_b);
+        assert!(
+            app.active_session().expect("session").group_collapse_levels.contains_key(&group_a),
+            "group A's level recorded pre-Cmd+X",
+        );
+        assert!(
+            app.active_session().expect("session").group_collapse_levels.contains_key(&group_b),
+            "group B's level recorded pre-Cmd+X",
+        );
+
+        super::super::keys::toggle_all_tool_calls(&mut app);
+
+        assert!(
+            app.active_session().expect("session").group_collapse_levels.is_empty(),
+            "group_collapse_levels must be cleared on Cmd+X",
+        );
+    }
+
+    /// Regression-lock: after Cmd+X clears overrides, the per-tool
+    /// `collapsed_override` field is still writable so the next
+    /// click can set a fresh per-tool override. The click path is
+    /// unchanged; the clear is only at Cmd+X time.
+    #[test]
+    fn click_on_tool_after_cmd_x_sets_fresh_collapsed_override() {
+        use crate::agent::model;
+        use crate::app::TerminalSnapshotMode;
+        use crate::app::{BlockCache, ChatMessage, MessageBlock, MessageRole, ToolCallInfo};
+        fn read_override(app: &App) -> Option<bool> {
+            app.active_session()
+                .expect("session")
+                .messages
+                .iter()
+                .find_map(|msg| {
+                    msg.blocks.iter().find_map(|b| match b {
+                        MessageBlock::ToolCall(tc) if tc.id == "tu-a" => {
+                            Some(tc.collapsed_override)
+                        }
+                        _ => None,
+                    })
+                })
+                .expect("tool found")
+        }
+        fn set_override(app: &mut App, value: Option<bool>) {
+            for msg in app.active_messages_mut() {
+                for b in &mut msg.blocks {
+                    if let MessageBlock::ToolCall(tc) = b
+                        && tc.id == "tu-a"
+                    {
+                        tc.collapsed_override = value;
+                        return;
+                    }
+                }
+            }
+            panic!("tool not found");
+        }
+        let mut app = App::test_default();
+        app.active_messages_mut().push(ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::ToolCall(Box::new(ToolCallInfo {
+                id: "tu-a".to_owned(),
+                title: "Read tu-a".to_owned(),
+                sdk_tool_name: "Read".to_owned(),
+                raw_input: None,
+                raw_input_bytes: 0,
+                output_metadata: None,
+                task_metadata: None,
+                status: model::ToolCallStatus::Completed,
+                content: Vec::new(),
+                hidden: false,
+                terminal_id: None,
+                terminal_command: None,
+                terminal_output: None,
+                terminal_output_len: 0,
+                terminal_bytes_seen: 0,
+                terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
+                monitor_output_tail: Vec::default(),
+                render_epoch: 0,
+                layout_epoch: 0,
+                last_measured_y_in_msg: 0,
+                last_measured_height: 0,
+                last_measured_width: 0,
+                last_measured_layout_epoch: 0,
+                last_measured_layout_generation: 0,
+                cache: BlockCache::default(),
+                collapsed_override: Some(true),
+            }))],
+            None,
+        ));
+
+        super::super::keys::toggle_all_tool_calls(&mut app);
+
+        assert_eq!(read_override(&app), None, "Cmd+X cleared the override");
+
+        // Simulate a click setting a fresh override post-Cmd+X.
+        set_override(&mut app, Some(false));
+        assert_eq!(
+            read_override(&app),
+            Some(false),
+            "post-Cmd+X mutation must set a fresh collapsed_override",
+        );
+    }
+
     #[test]
     fn cycle_group_collapse_level_walks_l2_l1_l0_back_to_l2() {
         use crate::ui::message::grouping::{GroupCollapseLevel, GroupId};
