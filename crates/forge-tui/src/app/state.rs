@@ -2502,6 +2502,14 @@ impl App {
                 debug_assert!(false, "Resize should not be dispatched through invalidate_layout");
             }
         }
+        // #310 architectural fix: invalidating layout always implies
+        // re-rendering. Without this, callers that forget to set
+        // needs_redraw produce idle-state bugs where the invalidated
+        // state never reaches the screen (e.g. ctrl+x group cycle,
+        // group summary click). Setting it unconditionally here kills
+        // the whole class - a no-op when the caller already set it;
+        // the cure when they didn't.
+        self.needs_redraw = true;
     }
 
     pub(crate) fn invalidate_message_set<I>(&mut self, indices: I)
@@ -5303,6 +5311,44 @@ mod tests {
         assert_eq!(app.active_viewport_mut().prefix_dirty_from(), Some(0));
         assert_eq!(app.viewport().prefix_sums_width, 0);
         assert_eq!(app.viewport().layout_generation, gen_before + 1);
+    }
+
+    /// #310 architectural-fix regression-lock: `invalidate_layout`
+    /// must always set `needs_redraw` so callers that invalidate layout
+    /// can't silently fail to surface their change. Pre-fix, two
+    /// handlers (`toggle_all_tool_calls` + `handle_group_summary_click`)
+    /// called `invalidate_layout(MessageChanged)` without setting
+    /// `needs_redraw`, leaving the grouping cycle dead in idle state.
+    /// The fix makes the invariant "invalidating layout implies
+    /// re-rendering" intrinsic to the function.
+    #[test]
+    fn invalidate_layout_sets_needs_redraw_for_message_changed() {
+        let mut app = make_test_app();
+        app.active_messages_mut().push(user_text_message("a"));
+        app.needs_redraw = false;
+        app.invalidate_layout(InvalidationLevel::MessageChanged(0));
+        assert!(
+            app.needs_redraw,
+            "invalidate_layout(MessageChanged) must set needs_redraw so the next frame renders the invalidated state"
+        );
+    }
+
+    #[test]
+    fn invalidate_layout_sets_needs_redraw_for_messages_from() {
+        let mut app = make_test_app();
+        app.active_messages_mut().push(user_text_message("a"));
+        app.needs_redraw = false;
+        app.invalidate_layout(InvalidationLevel::MessagesFrom(0));
+        assert!(app.needs_redraw, "invalidate_layout(MessagesFrom) must set needs_redraw");
+    }
+
+    #[test]
+    fn invalidate_layout_sets_needs_redraw_for_global() {
+        let mut app = make_test_app();
+        app.active_messages_mut().push(user_text_message("a"));
+        app.needs_redraw = false;
+        app.invalidate_layout(InvalidationLevel::Global);
+        assert!(app.needs_redraw, "invalidate_layout(Global) must set needs_redraw");
     }
 
     #[test]
