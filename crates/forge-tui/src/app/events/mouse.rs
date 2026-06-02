@@ -360,11 +360,9 @@ fn try_toggle_tool_call_at_click(app: &mut App, mouse: MouseEvent) -> bool {
     // title row IS the per-tool row; clicking should toggle the body),
     // or when the group is at L1 / L0, fall through to the per-tool
     // toggle below.
-    if let Some((leader_id, run_len)) = group_leader_match(app, msg_idx, block_idx) {
+    if let Some((leader_id, _run_len)) = group_leader_match(app, msg_idx, block_idx) {
         let level = app.group_collapse_level(&leader_id);
-        if run_len > 1
-            && matches!(level, crate::ui::message::grouping::GroupCollapseLevel::L2Summary)
-        {
+        if matches!(level, crate::ui::message::grouping::GroupCollapseLevel::L2Summary) {
             if let Some(bucket) = app.try_active_bucket_mut() {
                 bucket.focused_group = Some((leader_id.clone(), msg_idx));
             }
@@ -410,9 +408,9 @@ fn try_toggle_tool_call_at_click(app: &mut App, mouse: MouseEvent) -> bool {
 
 /// When the clicked `(msg_idx, block_idx)` is the leading tool-call
 /// of a group at the current partition pass, return its [`GroupId`]
-/// plus the group's run length. The caller gates group-routing on
-/// `run_len > 1` so single-item groups fall through to per-tool
-/// toggle. `None` for non-leader blocks.
+/// plus the group's run length. Any group at L2 cycles on click (the
+/// caller no longer filters on run length; single-item groups cycle
+/// the same as multi-item ones). `None` for non-leader blocks.
 fn group_leader_match(
     app: &App,
     msg_idx: usize,
@@ -1138,6 +1136,110 @@ mod tests {
         assert_eq!(
             app.active_session_key, initial_active,
             "missing-bucket worker click must not change active session",
+        );
+    }
+
+    /// #319: mouse-click on a single-item group's L2 summary line
+    /// must cycle the group AND set `focused_group` (so Cmd+X then
+    /// cycles the same group via the keyboard path). Pre-fix, the
+    /// `run_len > 1` filter at the L2 cycle gate rejected the click
+    /// on single-item groups, leaving them stuck at L2 from the
+    /// mouse-input side.
+    #[test]
+    fn try_toggle_tool_call_at_click_single_item_group_cycles_to_l1() {
+        use crate::agent::model;
+        use crate::app::{
+            BlockCache, ChatMessage, MessageRole, TerminalSnapshotMode, ToolCallInfo,
+        };
+        use crate::ui::message::grouping::{
+            GroupCollapseLevel, GroupId, RenderUnit, partition_blocks_into_render_units,
+        };
+        use crossterm::event::{KeyModifiers, MouseButton, MouseEventKind};
+        use ratatui::layout::Rect;
+
+        let mut app = App::test_default();
+        let tool_id = "tu-solo";
+        let tc = ToolCallInfo {
+            id: tool_id.to_owned(),
+            title: "Read /path/to/file.rs".to_owned(),
+            sdk_tool_name: "Read".to_owned(),
+            raw_input: None,
+            raw_input_bytes: 0,
+            output_metadata: None,
+            task_metadata: None,
+            status: model::ToolCallStatus::Completed,
+            content: Vec::new(),
+            hidden: false,
+            terminal_id: None,
+            terminal_command: None,
+            terminal_output: None,
+            terminal_output_len: 0,
+            terminal_bytes_seen: 0,
+            terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
+            monitor_output_tail: Vec::default(),
+            render_epoch: 0,
+            layout_epoch: 0,
+            // Hit-test fields the renderer would stamp on a real frame.
+            // 1-cell tall row at y=0 within the message, occupying the
+            // full chat width.
+            last_measured_y_in_msg: 0,
+            last_measured_height: 1,
+            last_measured_width: 80,
+            last_measured_layout_epoch: 0,
+            last_measured_layout_generation: 0,
+            cache: BlockCache::default(),
+            collapsed_override: None,
+        };
+        app.push_message_tracked(ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::ToolCall(Box::new(tc))],
+            None,
+        ));
+        // Drive viewport prefix-sum state the locate path reads.
+        let _ = app.active_viewport_mut().on_frame(80, 20);
+        app.active_viewport_mut().set_message_height(0, 1);
+        app.active_viewport_mut().mark_heights_valid();
+        app.active_viewport_mut().rebuild_prefix_sums();
+        // The locate path also needs `rendered_chat_area` populated.
+        app.rendered_chat_area = Rect { x: 0, y: 0, width: 80, height: 20 };
+
+        // Sanity: the partitioner produces a 1-item Group with the
+        // leader we expect.
+        let leader_id = {
+            let session = app.active_session().expect("active session");
+            let mut found = None;
+            for msg in &session.messages {
+                for unit in partition_blocks_into_render_units(&msg.blocks) {
+                    if let RenderUnit::Group { range, leader_id, .. } = unit {
+                        assert_eq!(range, 0..1, "single-item group expected");
+                        found = Some(leader_id);
+                    }
+                }
+            }
+            found.expect("partition produces a Group")
+        };
+        assert_eq!(leader_id, GroupId::from_leader_id(tool_id));
+        assert_eq!(app.group_collapse_level(&leader_id), GroupCollapseLevel::L2Summary);
+
+        let mouse = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 5,
+            row: 0,
+            modifiers: KeyModifiers::empty(),
+        };
+        let consumed = try_toggle_tool_call_at_click(&mut app, mouse);
+
+        assert!(consumed, "click on single-item group L2 must be consumed by the group path");
+        assert_eq!(
+            app.group_collapse_level(&leader_id),
+            GroupCollapseLevel::L1Titles,
+            "click cycles single-item group L2 -> L1",
+        );
+        let focused = app.active_session().and_then(|s| s.focused_group.clone());
+        assert_eq!(
+            focused.as_ref().map(|(id, _)| id.clone()),
+            Some(leader_id),
+            "focused_group must be set so Cmd+X subsequently targets the same group",
         );
     }
 
