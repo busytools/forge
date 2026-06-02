@@ -3772,6 +3772,13 @@ mod tests {
         app.rendered_chat_area = Rect::new(0, 0, chat_width, 10);
         app.tools_collapsed = false;
 
+        // The seeded Read forms a single-item group at L2Summary by
+        // default; a click at L2 routes to the group cycle (NOT the
+        // per-tool toggle this test exercises). Move the group's
+        // level out of L2 so the click hits the per-tool path.
+        let leader_id = crate::ui::message::grouping::GroupId::from_leader_id("tool-1");
+        let _ = app.cycle_group_collapse_level(&leader_id);
+
         // Click somewhere inside the tool call's rendered y-range.
         handle_terminal_event(
             &mut app,
