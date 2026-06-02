@@ -1308,8 +1308,7 @@ mod tests {
         };
         let consumed = try_toggle_tool_call_at_click(&mut app, mouse);
         assert!(consumed, "click on single-item group L2 must be consumed");
-        let level_after_click = app.group_collapse_level(&leader_id);
-        assert_eq!(level_after_click, GroupCollapseLevel::L1Titles);
+        assert_eq!(app.group_collapse_level(&leader_id), GroupCollapseLevel::L1Titles);
 
         let pre_global = app.tools_collapsed;
         crate::app::keys::toggle_all_tool_calls(&mut app);
@@ -1320,8 +1319,8 @@ mod tests {
         );
         assert_eq!(
             app.group_collapse_level(&leader_id),
-            level_after_click,
-            "Cmd+X after group-click must NOT cycle the clicked group's level",
+            GroupCollapseLevel::L2Summary,
+            "Cmd+X must reset the clicked group's level to default, not cycle it",
         );
     }
 
