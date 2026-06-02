@@ -265,6 +265,18 @@ impl super::App {
         self.needs_redraw = true;
     }
 
+    /// Remove the message at `idx` from the active session and keep
+    /// the cross-cutting indices consistent: `active_turn_assistant_idx`
+    /// is shifted via `shift_active_turn_assistant_for_remove`, and
+    /// every `turn_notice_ref` is fed through
+    /// `shift_turn_notice_refs_for_remove` which drops any ref whose
+    /// `msg_idx` EQUALS `idx` (the `Ordering::Equal` arm).
+    ///
+    /// Callers MUST NOT subsequently call
+    /// `turn_notice_refs_mut().remove(...)` for a ref that pointed at
+    /// the removed message - it is already gone, and an explicit
+    /// remove will either panic on the emptied Vec or corrupt a
+    /// sibling ref.
     pub(crate) fn remove_message_tracked(&mut self, idx: usize) -> Option<ChatMessage> {
         self.ensure_history_retention_accounting();
         let old_len = self.messages().len();

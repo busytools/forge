@@ -42,7 +42,9 @@ pub(super) fn upsert_turn_notice(
                 && remove_standalone_notice(app, msg_idx)
                 && let Some(owner_idx) = app.active_turn_assistant_idx()
             {
-                app.turn_notice_refs_mut().remove(existing_ref_idx);
+                // remove_standalone_notice already dropped this ref via
+                // shift_turn_notice_refs_for_remove; do NOT remove again
+                // (would panic on emptied Vec or corrupt sibling refs).
                 insert_inline_notice(app, owner_idx, dedup_key, stage, severity, message);
                 return;
             }

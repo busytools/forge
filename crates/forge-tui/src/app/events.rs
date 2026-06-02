@@ -11,6 +11,8 @@ mod tool_calls;
 mod tool_updates;
 pub(crate) mod turn;
 
+#[cfg(test)]
+use super::TurnNoticeLocation;
 use super::{
     ActiveView, App, AppStatus, ChatMessage, InvalidationLevel, MessageBlock, MessageRole,
     PendingCommandAck, SystemSeverity, TextBlock,
@@ -3094,6 +3096,51 @@ mod tests {
         };
         assert!(second_notice.text.text.contains("daily rate limit"));
         assert_ne!(second_notice.text.text, first_notice_text);
+    }
+
+    /// A Standalone notice (inserted with no active assistant turn)
+    /// must be promotable to Inline when an assistant turn becomes
+    /// active and the same `dedup_key` re-upserts: exactly one ref,
+    /// of type Inline, no panic.
+    #[test]
+    fn upsert_turn_notice_promotes_standalone_to_inline_without_panic() {
+        let mut app = make_test_app();
+
+        let info = build_rate_limit_info(
+            forge_primitives::RateLimitStatus::AllowedWarning,
+            Some(123),
+            Some(0.92),
+            Some("five_hour"),
+            None,
+            None,
+        );
+
+        // 1. No active assistant turn -> upsert lands as Standalone.
+        send_msg(&mut app, rate_limit_event(info.clone()));
+        assert_eq!(app.turn_notice_refs().len(), 1);
+        assert!(
+            matches!(app.turn_notice_refs()[0].location, TurnNoticeLocation::Standalone { .. }),
+            "precondition: first upsert is Standalone, got {:?}",
+            app.turn_notice_refs()[0].location,
+        );
+
+        // 2. Bind an active assistant turn so the next upsert takes
+        // the standalone->inline promotion branch.
+        app.status = AppStatus::Thinking;
+        app.active_messages_mut().push(user_msg("hello"));
+        app.active_messages_mut().push(assistant_msg(vec![]));
+        app.bind_active_turn_assistant(app.messages().len() - 1);
+
+        // 3. Same dedup_key, now with active turn -> promote-to-inline
+        // success-path.
+        send_msg(&mut app, rate_limit_event(info));
+
+        assert_eq!(app.turn_notice_refs().len(), 1, "exactly one ref after promotion",);
+        assert!(
+            matches!(app.turn_notice_refs()[0].location, TurnNoticeLocation::Inline { .. }),
+            "promoted ref must be Inline, got {:?}",
+            app.turn_notice_refs()[0].location,
+        );
     }
 
     #[test]
