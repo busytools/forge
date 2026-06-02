@@ -3773,9 +3773,9 @@ mod tests {
         app.tools_collapsed = false;
 
         // The seeded Read forms a single-item group at L2Summary by
-        // default; #319's fix routes a click at L2 to the group cycle
-        // (NOT the per-tool toggle this test exercises). Move the
-        // group's level out of L2 so the click hits the per-tool path.
+        // default; a click at L2 routes to the group cycle (NOT the
+        // per-tool toggle this test exercises). Move the group's
+        // level out of L2 so the click hits the per-tool path.
         let leader_id = crate::ui::message::grouping::GroupId::from_leader_id("tool-1");
         let _ = app.cycle_group_collapse_level(&leader_id);
 

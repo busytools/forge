@@ -1139,12 +1139,6 @@ mod tests {
         );
     }
 
-    /// #319: mouse-click on a single-item group's L2 summary line
-    /// must cycle the group AND set `focused_group` (so Cmd+X then
-    /// cycles the same group via the keyboard path). Pre-fix, the
-    /// `run_len > 1` filter at the L2 cycle gate rejected the click
-    /// on single-item groups, leaving them stuck at L2 from the
-    /// mouse-input side.
     #[test]
     fn try_toggle_tool_call_at_click_single_item_group_cycles_to_l1() {
         use crate::agent::model;
