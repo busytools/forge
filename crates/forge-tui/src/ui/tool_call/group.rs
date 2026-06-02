@@ -63,6 +63,22 @@ mod tests {
         line.spans.iter().map(|s| s.content.as_ref()).collect::<String>()
     }
 
+    /// Regression guard: the right-edge pad span removed in #321 must
+    /// not come back. The replay snapshot harness's `buffer_to_text`
+    /// trims trailing spaces, so a re-introduced pad would NOT trip
+    /// any snapshot test - this assertion inspects the rendered Line
+    /// directly to close that gap.
+    #[test]
+    fn render_group_summary_line_has_no_trailing_whitespace_pad() {
+        let k = KindCount { reads: 5, ..KindCount::default() };
+        let lines = render_group_summary_line(k, ToolCallStatus::Completed, 0);
+        let text = line_text(&lines[0]);
+        assert!(
+            !text.ends_with(' '),
+            "group summary must not end with whitespace pad; got {text:?}",
+        );
+    }
+
     #[test]
     fn render_group_summary_line_completed_uses_checkmark_and_group_icon() {
         let k = KindCount { reads: 5, searches: 3, commands: 2, calls: 0 };
