@@ -349,7 +349,15 @@ fn mouse_point_to_selection(app: &App, mouse: MouseEvent) -> Option<MouseSelecti
 /// the event. Returns `true` when a tool call was toggled (so the
 /// caller can skip starting a text selection).
 fn try_toggle_tool_call_at_click(app: &mut App, mouse: MouseEvent) -> bool {
-    let Some((msg_idx, block_idx)) = locate_tool_call_block_at_click(app, mouse) else {
+    let locate_result = locate_tool_call_block_at_click(app, mouse);
+    tracing::info!(
+        target: "forge_tui::group::diagnostic",
+        event_name = "click_locate_result",
+        mouse_col = i32::from(mouse.column),
+        mouse_row = i32::from(mouse.row),
+        hit_msg_block = ?locate_result,
+    );
+    let Some((msg_idx, block_idx)) = locate_result else {
         return false;
     };
     // Chat tool-call grouping: when the clicked tool is the leader of
@@ -360,7 +368,18 @@ fn try_toggle_tool_call_at_click(app: &mut App, mouse: MouseEvent) -> bool {
     // title row IS the per-tool row; clicking should toggle the body),
     // or when the group is at L1 / L0, fall through to the per-tool
     // toggle below.
-    if let Some((leader_id, run_len)) = group_leader_match(app, msg_idx, block_idx) {
+    let leader_match = group_leader_match(app, msg_idx, block_idx);
+    tracing::info!(
+        target: "forge_tui::group::diagnostic",
+        event_name = "click_group_leader_match",
+        leader_match = ?leader_match,
+        current_level = leader_match
+            .as_ref()
+            .map_or("no_match".to_owned(), |(id, _)| {
+                format!("{:?}", app.group_collapse_level(id))
+            }),
+    );
+    if let Some((leader_id, run_len)) = leader_match {
         let level = app.group_collapse_level(&leader_id);
         if run_len > 1
             && matches!(level, crate::ui::message::grouping::GroupCollapseLevel::L2Summary)
@@ -369,6 +388,13 @@ fn try_toggle_tool_call_at_click(app: &mut App, mouse: MouseEvent) -> bool {
                 bucket.focused_group = Some((leader_id.clone(), msg_idx));
             }
             let _ = app.cycle_group_collapse_level(&leader_id);
+            tracing::info!(
+                target: "forge_tui::group::diagnostic",
+                event_name = "cycle_invoked",
+                source = "mouse_click",
+                leader_id = leader_id.as_str(),
+                msg_idx = i32::try_from(msg_idx).unwrap_or(-1),
+            );
             app.invalidate_layout(crate::app::InvalidationLevel::MessageChanged(msg_idx));
             tracing::debug!(
                 target: crate::logging::targets::APP_INPUT,

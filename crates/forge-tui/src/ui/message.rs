@@ -465,6 +465,12 @@ fn append_assistant_blocks(
                         // `grouping::group_leader_at` + level check
                         // and dispatches as a group-summary click when
                         // the position matches a group at L2.
+                        tracing::info!(
+                            target: "forge_tui::group::diagnostic",
+                            event_name = "render_context_width_for_group",
+                            width = i32::from(render_context.width),
+                            range_start = i32::try_from(range.start).unwrap_or(-1),
+                        );
                         let summary_lines = tool_call::render_group_summary_line(
                             kind_count,
                             aggregate_status,

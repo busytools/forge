@@ -1655,6 +1655,13 @@ impl App {
         let current = self.group_collapse_level(id);
         let next = current.next();
         self.active_bucket_mut().group_collapse_levels.insert(id.clone(), next);
+        tracing::info!(
+            target: "forge_tui::group::diagnostic",
+            event_name = "cycle_group_collapse_level",
+            leader_id = id.as_str(),
+            old_level = ?current,
+            new_level = ?next,
+        );
         next
     }
 
@@ -2506,6 +2513,11 @@ impl App {
     /// Single entry point for all layout invalidation. Replaces the former
     /// `mark_message_layout_dirty` / `mark_all_message_layout_dirty` methods.
     pub fn invalidate_layout(&mut self, level: LayoutInvalidation) {
+        tracing::info!(
+            target: "forge_tui::group::diagnostic",
+            event_name = "invalidate_layout_called",
+            level = ?level,
+        );
         #[cfg(any(test, feature = "testing"))]
         self.last_invalidation_level.set(Some(level));
         match level {

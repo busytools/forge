@@ -60,6 +60,17 @@ pub fn render_group_summary_line(
     if pad > 0 {
         spans.push(Span::raw(" ".repeat(pad)));
     }
+    let final_line_width: usize =
+        spans.iter().map(|s| UnicodeWidthStr::width(s.content.as_ref())).sum();
+    tracing::info!(
+        target: "forge_tui::group::diagnostic",
+        event_name = "group_summary_padding",
+        chat_content_width = i32::from(chat_content_width),
+        rendered_width_before_pad = i32::try_from(rendered_width).unwrap_or(-1),
+        pad_cells = i32::try_from(pad).unwrap_or(-1),
+        final_line_width = i32::try_from(final_line_width).unwrap_or(-1),
+        spans_count = i32::try_from(spans.len()).unwrap_or(-1),
+    );
     vec![Line::from(spans)]
 }
 

@@ -1094,8 +1094,20 @@ fn handle_subagent_key(app: &mut App, key: KeyEvent) -> bool {
 /// ctrl+x stays the global toggle the user is used to.
 pub(super) fn toggle_all_tool_calls(app: &mut App) {
     let focused = app.active_session().and_then(|s| s.focused_group.clone());
+    tracing::info!(
+        target: "forge_tui::group::diagnostic",
+        event_name = "ctrl_x_pressed",
+        focused_group = ?focused,
+    );
     if let Some((leader_id, msg_idx)) = focused {
         let _ = app.cycle_group_collapse_level(&leader_id);
+        tracing::info!(
+            target: "forge_tui::group::diagnostic",
+            event_name = "cycle_invoked",
+            source = "ctrl_x",
+            leader_id = leader_id.as_str(),
+            msg_idx = i32::try_from(msg_idx).unwrap_or(-1),
+        );
         // Per-message invalidation: a single group's cycle changes only
         // that message's layout, so clearing every other message's
         // cache (Global) was a ~74ms hitch on long sessions. The mouse
