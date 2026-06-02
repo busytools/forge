@@ -209,6 +209,9 @@ pub fn aggregate_run_status(blocks: &[MessageBlock]) -> crate::agent::model::Too
     let mut any_pending = false;
     for block in blocks {
         if let MessageBlock::ToolCall(tc) = block {
+            if tc.hidden {
+                continue;
+            }
             match tc.status {
                 ToolCallStatus::InProgress => return ToolCallStatus::InProgress,
                 ToolCallStatus::Failed | ToolCallStatus::Killed => any_failed = true,
@@ -262,20 +265,41 @@ pub fn group_leader_at(blocks: &[MessageBlock], block_idx: usize) -> Option<(Gro
     })
 }
 
+/// True when `block` is a hidden / chat-suppressed tool call.
+/// Hidden tools render nothing in the chat stream; the partitioner
+/// emits them as `RenderUnit::Individual` (to preserve their block
+/// index for hit-test consistency) but never includes them as the
+/// leader of a Group, and they neither tally into KindCount nor
+/// contribute to the aggregate run status.
+fn is_hidden_tool_call(block: &MessageBlock) -> bool {
+    matches!(block, MessageBlock::ToolCall(tc) if tc.hidden)
+}
+
 /// Walk `blocks` identifying maximal runs of >= 2 consecutive groupable
 /// tool calls. Each qualifying run becomes a `RenderUnit::Group`; every
-/// other block (including lone groupable tools between breakers) becomes
-/// `RenderUnit::Individual`.
+/// other block (including lone groupable tools between breakers and
+/// any hidden tool call) becomes `RenderUnit::Individual`.
 pub fn partition_blocks_into_render_units(blocks: &[MessageBlock]) -> Vec<RenderUnit> {
     // v2 (PR following #300): every consecutive run of non-breaker
     // tool calls forms a `RenderUnit::Group`, even runs of length 1.
     // The single-item L2 render in `message.rs` short-circuits to the
     // L1 path so the call stays visible by default; the cycle still
     // walks L2 -> L1 -> L0.
+    //
+    // Hidden / chat-suppressed tool calls render nothing visible. They
+    // pass THROUGH a run so adjacent visible groups merge across them,
+    // but a lone hidden block between visible breakers is emitted as
+    // Individual (never starts its own Group). Inside a run they
+    // extend the range but never tally or set the leader.
     const GROUP_THRESHOLD: usize = 1;
     let mut units = Vec::with_capacity(blocks.len());
     let mut i = 0;
     while i < blocks.len() {
+        if is_hidden_tool_call(&blocks[i]) {
+            units.push(RenderUnit::Individual(i));
+            i += 1;
+            continue;
+        }
         if is_run_breaker(&blocks[i]) {
             units.push(RenderUnit::Individual(i));
             i += 1;
@@ -283,7 +307,15 @@ pub fn partition_blocks_into_render_units(blocks: &[MessageBlock]) -> Vec<Render
         }
         let run_start = i;
         let mut run_end_exclusive = i + 1;
-        while run_end_exclusive < blocks.len() && !is_run_breaker(&blocks[run_end_exclusive]) {
+        while run_end_exclusive < blocks.len() {
+            let block = &blocks[run_end_exclusive];
+            if is_hidden_tool_call(block) {
+                run_end_exclusive += 1;
+                continue;
+            }
+            if is_run_breaker(block) {
+                break;
+            }
             run_end_exclusive += 1;
         }
         let run_len = run_end_exclusive - run_start;
@@ -292,13 +324,11 @@ pub fn partition_blocks_into_render_units(blocks: &[MessageBlock]) -> Vec<Render
                 units.push(RenderUnit::Individual(idx));
             }
         } else {
-            // `blocks[run_start]` is guaranteed to be a groupable ToolCall:
-            // we only enter this branch from the outer `if is_run_breaker`
-            // false branch, and `is_run_breaker` returns false only for
-            // ToolCall(tc) with a groupable sdk_tool_name. Defensive
-            // fallback path (the leading block somehow isn't a ToolCall)
-            // emits the run as Individual rows so the renderer can't
-            // panic on bad input.
+            // `blocks[run_start]` is guaranteed to be a visible groupable
+            // ToolCall: the outer loop's hidden-and-breaker checks both
+            // return false for this slot. Defensive fallback (the leading
+            // block somehow isn't a ToolCall) emits the run as Individual
+            // rows so the renderer can't panic on bad input.
             let MessageBlock::ToolCall(leader_tc) = &blocks[run_start] else {
                 for idx in run_start..run_end_exclusive {
                     units.push(RenderUnit::Individual(idx));
@@ -309,7 +339,9 @@ pub fn partition_blocks_into_render_units(blocks: &[MessageBlock]) -> Vec<Render
             let leader_id = GroupId::from_leader_id(leader_tc.id.clone());
             let mut kind_count = KindCount::default();
             for block in &blocks[run_start..run_end_exclusive] {
-                if let MessageBlock::ToolCall(tc) = block {
+                if let MessageBlock::ToolCall(tc) = block
+                    && !tc.hidden
+                {
                     kind_count.tally(&tc.sdk_tool_name);
                 }
             }
@@ -881,6 +913,27 @@ mod tests {
         let groups: Vec<_> =
             units.iter().filter(|u| matches!(u, RenderUnit::Group { .. })).collect();
         assert_eq!(groups.len(), 2, "text block must continue to split adjacent tool-call groups");
+    }
+
+    /// A lone hidden block between visible breakers must not form a
+    /// visible Group on its own. Hidden tools render nothing; emitting
+    /// a single-item Group around one would surface a `1 call` L2
+    /// summary line where the user expects nothing.
+    #[test]
+    fn lone_hidden_block_renders_nothing_visible() {
+        let blocks = vec![
+            text_block("before"),
+            hidden_tool_call_block("a", "TaskCreate"),
+            text_block("after"),
+        ];
+        let units = partition_blocks_into_render_units(&blocks);
+        let groups: Vec<_> =
+            units.iter().filter(|u| matches!(u, RenderUnit::Group { .. })).collect();
+        assert_eq!(
+            groups.len(),
+            0,
+            "a lone hidden block between text breakers must not form a visible group",
+        );
     }
 
     /// Edge case: a visible group followed by a trailing hidden block

@@ -8,17 +8,8 @@ I'll load the Monitor and TaskStop tool schemas first since they're deferred.
   ✓ = 1 call   ctrl+x to expand
 
 I'll start the persistent monitor now.
-
-  ✓ = 1 call   ctrl+x to expand
-
 Monitor is running. I'll wait for the three event notifications.
-
-  ✓ = 1 call   ctrl+x to expand
-
 All three events arrived. Stopping the monitor.
-
-  ✗ = 1 call   ctrl+x to expand
-
 The three lines I saw:
 
 - monitor-line-1
