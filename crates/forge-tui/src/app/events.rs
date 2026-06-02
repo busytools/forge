@@ -15,6 +15,8 @@ use super::{
     ActiveView, App, AppStatus, ChatMessage, InvalidationLevel, MessageBlock, MessageRole,
     PendingCommandAck, SystemSeverity, TextBlock,
 };
+#[cfg(test)]
+use super::TurnNoticeLocation;
 use crate::agent::model;
 #[cfg(test)]
 use crate::app::keys::{CMD_MOD, WORD_NAV_MOD};
@@ -3094,6 +3096,66 @@ mod tests {
         };
         assert!(second_notice.text.text.contains("daily rate limit"));
         assert_ne!(second_notice.text.text, first_notice_text);
+    }
+
+    /// Regression guard for #324: a notice inserted as Standalone
+    /// (no active assistant turn) MUST be promotable to Inline when
+    /// an assistant turn becomes active and the same dedup_key
+    /// re-upserts. Pre-fix this panicked at notices.rs:45 because
+    /// `remove_standalone_notice` already dropped the turn_notice_ref
+    /// via `shift_turn_notice_refs_for_remove`, leaving the explicit
+    /// `remove(existing_ref_idx)` on the next line to crash on the
+    /// emptied Vec (`removal index (is 0) should be < len (is 0)`).
+    #[test]
+    fn upsert_turn_notice_promotes_standalone_to_inline_without_panic() {
+        let mut app = make_test_app();
+
+        let info = build_rate_limit_info(
+            forge_primitives::RateLimitStatus::AllowedWarning,
+            Some(123),
+            Some(0.92),
+            Some("five_hour"),
+            None,
+            None,
+        );
+
+        // 1. No active assistant turn -> upsert lands as Standalone.
+        send_msg(&mut app, rate_limit_event(info.clone()));
+        assert_eq!(app.turn_notice_refs().len(), 1);
+        assert!(
+            matches!(
+                app.turn_notice_refs()[0].location,
+                TurnNoticeLocation::Standalone { .. }
+            ),
+            "precondition: first upsert is Standalone, got {:?}",
+            app.turn_notice_refs()[0].location,
+        );
+
+        // 2. Bind an active assistant turn so the next upsert takes
+        // the standalone->inline promotion branch.
+        app.status = AppStatus::Thinking;
+        app.active_messages_mut().push(user_msg("hello"));
+        app.active_messages_mut().push(assistant_msg(vec![]));
+        app.bind_active_turn_assistant(app.messages().len() - 1);
+
+        // 3. Same dedup_key, now with active turn -> promote-to-inline
+        // success-path. Pre-fix this panicked on the redundant remove.
+        send_msg(&mut app, rate_limit_event(info));
+
+        // Post-fix: no panic, single Inline ref tracking the promoted notice.
+        assert_eq!(
+            app.turn_notice_refs().len(),
+            1,
+            "exactly one ref after promotion",
+        );
+        assert!(
+            matches!(
+                app.turn_notice_refs()[0].location,
+                TurnNoticeLocation::Inline { .. }
+            ),
+            "promoted ref must be Inline, got {:?}",
+            app.turn_notice_refs()[0].location,
+        );
     }
 
     #[test]
