@@ -1121,21 +1121,21 @@ chat continues here...
   <div class="surface-body">
     <p>Any consecutive tool calls between two user messages fold into one foldable header. The membership is render-class deny-list: a tool gets its own visible card only when it renders bespoke chat surface. <strong>Run-breakers (always inline, never folded)</strong>: Edit / Write / MultiEdit / NotebookEdit (inline diff view), Monitor / Workflow (lifecycle blocks), the peer block tools (<code>peers__ask_agent</code>, <code>peers__tell_agent</code>, <code>workers__ask</code>, <code>workers__tell</code>), and hidden chat-suppressed tools (Task* / AskUserQuestion / Schedule* / Cron*). Everything else folds, including <code>WebSearch</code> / <code>WebFetch</code> / <code>LSP</code> / plain <code>mcp__*</code> calls that used to render as standalone cards.</p>
     <p>The threshold is 1: a single groupable call also wears the foldable header and renders the same default <strong>L2</strong> summary line as a multi-call group. Cycling with ctrl+x walks the focused group's level through L2 (summary) → L1 (title row) → L0 (title + body); single-item groups follow the same path so the chat surface stays uniform regardless of run length.</p>
-    <p><strong>L2 summary</strong> renders as a single line at the run's position. The line carries a 2-space LEFT indent matching <code>standard::render_tool_call_title</code>'s convention (so the status_icon aligns with every other tool row's icon column). The leading <strong>status_icon</strong> aggregates over the run (animated braille spinner while any call runs, green check when all complete, red cross if any failed, hollow circle when only pending). The <code>☰</code> glyph is the group kind-icon, sitting in the same slot a per-tool row's kind-icon (<code>▶</code>) occupies. Mid-run:</p>
+    <p><strong>L2 summary</strong> renders as a single line at the run's position. The line carries a 2-space LEFT indent matching <code>standard::render_tool_call_title</code>'s convention (so the status_icon aligns with every other tool row's icon column). The leading <strong>status_icon</strong> aggregates over the run (animated braille spinner while any call runs, green check when all complete, red cross if any failed, hollow circle when only pending). The <code>☰</code> glyph is the group kind-icon, sitting in the same slot a per-tool row's kind-icon (<code>▶</code>) occupies; no trailing space between the glyph and the summary text since the glyph renders 2 cells wide (matches the standard <code>&lt;icon&gt;(1) + space(1)</code> = 2-cell prefix other rows use). Summary text + group-icon render BOLD to match the emphasis peer/worker chat blocks and Bash rows use; the <code>ctrl+x to expand</code> hint stays DIM-only since it's a contextual affordance, not message body. The block carries a leading blank line so it reads as a separate message when adjacent to peer/MCP messages. Mid-run:</p>
     <div class="term">
       <pre class="indent">
-  <span class="accent bold">⠋</span> <span class="dim bold">☰</span> <span class="dim">3 reads · 2 searches · 1 command · 4 calls</span>   <span class="dim">ctrl+x to expand</span></pre>
+  <span class="accent bold">⠋</span> <span class="dim bold">☰</span><span class="bold">3 reads · 2 searches · 1 command · 4 calls</span>   <span class="dim">ctrl+x to expand</span></pre>
     </div>
     <p>Completed:</p>
     <div class="term">
       <pre class="indent">
-  <span class="success">✓</span> <span class="dim bold">☰</span> <span class="dim">5 reads · 3 searches · 2 commands</span>   <span class="dim">ctrl+x to expand</span></pre>
+  <span class="success">✓</span> <span class="dim bold">☰</span><span class="bold">5 reads · 3 searches · 2 commands</span>   <span class="dim">ctrl+x to expand</span></pre>
     </div>
     <p>Pluralization is per-kind (<code>1 read</code> / <code>5 reads</code>, <code>1 call</code> / <code>4 calls</code>). Kinds with count 0 are dropped. Order: reads, searches, commands, calls. <code>Grep</code> / <code>Glob</code> / <code>WebSearch</code> all count as searches; everything else outside reads / commands tallies into the generic <code>calls</code> bucket.</p>
     <p><strong>Single-item group at default L2</strong> renders the same status_icon + <code>☰</code> + summary shape, visually distinct from a plain individual tool row (which carries the per-tool kind-icon like <code>▶ Read</code>):</p>
     <div class="term">
       <pre class="indent">
-  <span class="accent bold">⠋</span> <span class="dim bold">☰</span> <span class="dim">1 read</span>   <span class="dim">ctrl+x to expand</span></pre>
+  <span class="accent bold">⠋</span> <span class="dim bold">☰</span><span class="bold">1 read</span>   <span class="dim">ctrl+x to expand</span></pre>
     </div>
     <p>Cycling ctrl+x walks the focused group's level through L2 (summary) → L1 (per-tool title rows, bodies closed) → L0 (titles + full bodies). Single-item groups follow the same path as multi-item groups so the chat surface stays consistent regardless of run length. When no group is focused (no mouse click landed on a group's summary row yet), ctrl+x falls through to the session-wide tools-collapsed toggle.</p>
     <p><strong>L1 expansion</strong> (titles only, bodies still closed):</p>
@@ -1150,11 +1150,11 @@ chat continues here...
     <p><strong>Mid-run breaker example</strong>: a 3-Read run, an <code>Edit</code> breaker, then a 2-<code>Bash</code> run renders as two summary lines on either side of the <code>Edit</code> tool-card.</p>
     <div class="term">
       <pre class="indent">
-  <span class="success">✓</span> <span class="dim bold">☰</span> <span class="dim">3 reads</span>   <span class="dim">ctrl+x to expand</span>
+  <span class="success">✓</span> <span class="dim bold">☰</span><span class="bold">3 reads</span>   <span class="dim">ctrl+x to expand</span>
   <span class="success">✓</span> <span class="bold">▶</span> <span class="bold">Edit</span> crates/forge-tui/src/ui/message.rs
   <span class="dim">│  </span><span class="dim">+    let units = grouping::partition_blocks_into_render_units(&amp;msg.blocks);</span>
   <span class="dim">└─ </span><span class="dim">...</span>
-  <span class="success">✓</span> <span class="dim bold">☰</span> <span class="dim">2 commands</span>   <span class="dim">ctrl+x to expand</span></pre>
+  <span class="success">✓</span> <span class="dim bold">☰</span><span class="bold">2 commands</span>   <span class="dim">ctrl+x to expand</span></pre>
     </div>
     <dl>
       <dt>code</dt><dd>Render-class breaker predicate + partitioner: <code>crates/forge-tui/src/ui/message/grouping.rs</code> (<code>is_run_breaker</code> keys off <code>tc.hidden</code>, <code>ContentBlock::Diff</code> in <code>tc.content</code>, and the by-name lifecycle / peer-block render sets). Per-session level state: <code>UiSession.group_collapse_levels</code> (HashMap keyed by the leader tool's <code>tool_use_id</code>). Render dispatch: <code>append_assistant_blocks</code> in <code>ui/message.rs</code> partitions blocks per message and switches on level per group. Single-item groups behave identically to multi-item: L2 renders the same status_icon + <code>☰</code> + summary line, Cmd+X cycles L2 → L1 → L0 the same way. L2 summary render: <code>ui/tool_call/group.rs::render_group_summary_line(kind_count, aggregate_status, spinner_frame)</code>. ctrl+x: <code>keys.rs::toggle_all_tool_calls</code> reads <code>focused_group</code> (carries leader id + msg_idx) set by mouse click on a summary row, cycles its level, and invalidates only the holding message's layout cache; falls through to the session-wide tools-collapsed toggle when no focus.</dd>
