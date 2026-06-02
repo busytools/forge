@@ -350,6 +350,16 @@ pub struct UiSession {
         crate::ui::message::grouping::GroupCollapseLevel,
     >,
 
+    /// Per-messaging-group collapse level for the chat messaging
+    /// grouping feature. Sibling of `group_collapse_levels` but keyed
+    /// separately so tool-group and messaging-group leader ids never
+    /// collide on the same hashmap. Cleared on Cmd+X by
+    /// `toggle_all_tool_calls` alongside the tool-group map.
+    pub messaging_group_collapse_levels: std::collections::HashMap<
+        crate::ui::message::grouping::GroupId,
+        crate::ui::message::grouping::GroupCollapseLevel,
+    >,
+
     // ---- Inspector pane scroll state ----
     /// Vertical scroll offset (lines from top) for the Inspector
     /// pane's scrollable body - everything from the `GIT` section
@@ -494,6 +504,7 @@ impl Default for UiSession {
             schedules: Vec::default(),
             workflows: Vec::default(),
             group_collapse_levels: std::collections::HashMap::default(),
+            messaging_group_collapse_levels: std::collections::HashMap::default(),
             git_diff_snapshot: None,
             git_diff_generation: 0,
             git_diff_scan_in_flight: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),

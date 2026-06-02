@@ -229,10 +229,60 @@ pub fn aggregate_run_status(blocks: &[MessageBlock]) -> crate::agent::model::Too
     }
 }
 
-/// A render-time chunk: either an individual block (today's behaviour)
-/// or a Group over a maximal run of groupable tool calls. Indices into
-/// the underlying `Vec<MessageBlock>` keep the type non-borrowing so
-/// callers can still mutably index back into the message.
+/// First-N target names plus an `+N` overflow count for the remaining
+/// targets that don't render by name. Per the chat-messaging-grouping
+/// spec: render the first 2 targets by name; everything past that
+/// counts into `overflow_n` (rendered as `+N` after the named list).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub struct MessagingDirectionTargets {
+    /// First-N target names in order of first appearance.
+    pub targets: Vec<String>,
+    /// Count of remaining targets beyond `targets`; renders as `+N`.
+    pub overflow_n: usize,
+}
+
+impl MessagingDirectionTargets {
+    /// `true` when no targets at all (rendered direction clause is
+    /// omitted entirely - no "0 inbound" filler).
+    pub fn is_empty(&self) -> bool {
+        self.targets.is_empty() && self.overflow_n == 0
+    }
+}
+
+/// One per-message slice of a messaging group. A messaging group can
+/// span multiple messages (cross-turn merge) - each message's render
+/// reads the segment whose `msg_idx` matches, and the segment carries
+/// the per-message render data plus pointers to its position in the
+/// parent group (above/below continuation markers + total count).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct MessagingGroupSegment {
+    /// Index of the message this segment lives in.
+    pub msg_idx: usize,
+    /// Block range within that message (start..end exclusive).
+    pub block_range: Range<usize>,
+    /// Count of peer/worker blocks in THIS segment only.
+    pub segment_count: usize,
+    /// Outbound targets seen in THIS segment.
+    pub segment_outbound_targets: MessagingDirectionTargets,
+    /// Inbound targets seen in THIS segment.
+    pub segment_inbound_targets: MessagingDirectionTargets,
+    /// True if the parent group has segments in earlier messages.
+    pub segment_continues_above: bool,
+    /// True if the parent group has segments in later messages.
+    pub segment_continues_below: bool,
+    /// Aggregate run-status across THIS segment.
+    pub aggregate_status: crate::agent::model::ToolCallStatus,
+    /// Total count across all segments in the parent group.
+    pub group_total_count: usize,
+}
+
+/// A render-time chunk: either an individual block (today's behaviour),
+/// a Group over a maximal run of groupable tool calls, or a
+/// MessagingGroup over a run of peer/worker messages (potentially
+/// spanning multiple messages via the session-walking partitioner).
+/// Indices into the underlying `Vec<MessageBlock>` keep the type
+/// non-borrowing so callers can still mutably index back into the
+/// message.
 #[derive(Debug, Clone)]
 pub enum RenderUnit {
     Individual(usize),
@@ -244,6 +294,17 @@ pub enum RenderUnit {
         /// so the L2 summary's status_icon stays in sync as tools flip
         /// through the InProgress -> Completed lifecycle.
         aggregate_status: crate::agent::model::ToolCallStatus,
+    },
+    /// A run of consecutive peer/worker MCP message blocks (outbound
+    /// + inbound). Unlike `Group`, a messaging group can span multiple
+    /// messages - each segment carries its per-message slice + the
+    /// `segment_continues_above/below` flags for the continuation
+    /// marker render. All segments share `group_leader_id` so a click
+    /// or cycle on any segment maps to the same collapse level via
+    /// `UiSession.messaging_group_collapse_levels`.
+    MessagingGroup {
+        segments: Vec<MessagingGroupSegment>,
+        group_leader_id: GroupId,
     },
 }
 
