@@ -37,10 +37,7 @@ pub fn render_group_summary_line(
     let (icon_glyph, icon_color) = status_icon(aggregate_status, spinner_frame);
     let summary = kind_count.format_summary();
     let dim = Style::default().fg(theme::DIM);
-    // 2-space LEFT indent matches `standard::render_tool_call_title`
-    // (standard.rs:59 starts its first span with `"  {icon} "`). #313:
-    // without this, the group's content column sat 2 cells left of
-    // every other tool-call row.
+    // 2-space LEFT indent matches `standard::render_tool_call_title`.
     let mut spans = vec![
         Span::raw("  ".to_owned()),
         Span::styled(
@@ -56,7 +53,7 @@ pub fn render_group_summary_line(
     ];
     // RIGHT-edge padding: pad the line out to `chat_content_width` so
     // no trailing blank cell reads as a shifted right-border via the
-    // scrollbar-thumb-visibility cosmetic. #313 user-visible fix.
+    // scrollbar-thumb-visibility cosmetic.
     let rendered_width: usize =
         spans.iter().map(|s| UnicodeWidthStr::width(s.content.as_ref())).sum();
     let pad = usize::from(chat_content_width).saturating_sub(rendered_width);
@@ -143,10 +140,6 @@ mod tests {
         assert_ne!(icon_a, icon_b, "spinner frames 0 and 3 must produce different glyphs");
     }
 
-    /// #313: group summary must prepend the 2-space LEFT indent so its
-    /// status_icon aligns with `standard::render_tool_call_title`'s
-    /// icon column. Pre-fix, the group's content column sat 2 cells
-    /// left of every other tool-call row.
     #[test]
     fn render_group_summary_line_has_two_space_left_indent() {
         let k = KindCount { reads: 5, ..KindCount::default() };
@@ -159,9 +152,6 @@ mod tests {
         );
     }
 
-    /// #313: group summary pads out to `chat_content_width` so trailing
-    /// blank cells don't read as a shifted right-border via the
-    /// scrollbar-thumb-visibility cosmetic.
     #[test]
     fn render_group_summary_line_padded_to_chat_content_width() {
         use unicode_width::UnicodeWidthStr;
