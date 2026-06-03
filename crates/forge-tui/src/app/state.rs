@@ -2741,7 +2741,7 @@ impl App {
             cli_version_info: None,
             spinner_frame: 0,
             spinner_last_advance_at: None,
-            tools_collapsed: false,
+            tools_collapsed: true,
             #[cfg(any(test, feature = "testing"))]
             last_invalidation_level: std::cell::Cell::new(None),
             projects_pane_visible: true,

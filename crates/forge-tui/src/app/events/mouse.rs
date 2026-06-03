@@ -1320,10 +1320,17 @@ mod tests {
             app.tools_collapsed, !pre_global,
             "Cmd+X after group-click must flip tools_collapsed globally",
         );
+        // Test setup: `App::test_default()` starts with
+        // `tools_collapsed = true`. Cmd+X flips to `false` (expanded);
+        // the resolver returns `L0Bodies` for an absent per-group
+        // entry against an expanded global directive. The earlier
+        // click had set `Some(L1Titles)`, but Cmd+X CLEARS the map
+        // first so the resolver derives from the global directive
+        // alone.
         assert_eq!(
             app.group_collapse_level(&leader_id),
-            GroupCollapseLevel::L2Summary,
-            "Cmd+X must reset the clicked group's level to default, not cycle it",
+            GroupCollapseLevel::L0Bodies,
+            "Cmd+X-to-expand resolves cleared groups to L0Bodies",
         );
     }
 

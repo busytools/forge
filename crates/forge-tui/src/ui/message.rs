@@ -2567,7 +2567,7 @@ mod tests {
 
     fn default_options() -> MessageRenderOptions {
         MessageRenderOptions {
-            tools_collapsed: false,
+            tools_collapsed: true,
             include_trailing_separator: true,
             suppress_group_header: false,
             envelope_streak_position: None,
@@ -2578,7 +2578,7 @@ mod tests {
 
     fn options_without_separator() -> MessageRenderOptions {
         MessageRenderOptions {
-            tools_collapsed: false,
+            tools_collapsed: true,
             include_trailing_separator: false,
             suppress_group_header: false,
             envelope_streak_position: None,
@@ -2875,7 +2875,7 @@ mod tests {
             80,
             1,
             MessageRenderOptions {
-                tools_collapsed: false,
+                tools_collapsed: true,
                 include_trailing_separator: false,
                 suppress_group_header: false,
                 envelope_streak_position: None,
@@ -2909,7 +2909,7 @@ mod tests {
             80,
             1,
             MessageRenderOptions {
-                tools_collapsed: false,
+                tools_collapsed: true,
                 include_trailing_separator: false,
                 suppress_group_header: false,
                 envelope_streak_position: None,
@@ -3552,7 +3552,7 @@ mod tests {
         let mut msg = make_peer_envelope_message("forge", "Personal", "hello");
         let spinner = idle_spinner();
         let options_with_label = MessageRenderOptions {
-            tools_collapsed: false,
+            tools_collapsed: true,
             include_trailing_separator: false,
             suppress_group_header: false,
             envelope_streak_position: None,
@@ -3572,7 +3572,7 @@ mod tests {
         // already distinguishes the two, but we want to be explicit).
         msg.invalidate_render_cache();
         let options_no_label = MessageRenderOptions {
-            tools_collapsed: false,
+            tools_collapsed: true,
             include_trailing_separator: false,
             suppress_group_header: true,
             envelope_streak_position: None,
