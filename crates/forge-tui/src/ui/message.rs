@@ -502,6 +502,23 @@ fn append_assistant_blocks(
                     }
                 }
             }
+            grouping::RenderUnit::MessagingGroup { segments, .. } => {
+                // The per-message partitioner never emits this variant;
+                // only the session-walking partitioner does. If one ever
+                // reaches here, fall back to rendering each block in each
+                // segment as its individual row so the call still surfaces.
+                for segment in segments {
+                    for idx in segment.block_range {
+                        append_assistant_block(
+                            &mut msg.blocks[idx],
+                            spinner,
+                            render_context,
+                            layout,
+                            &mut state,
+                        );
+                    }
+                }
+            }
         }
     }
 

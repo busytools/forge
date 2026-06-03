@@ -1664,6 +1664,33 @@ impl App {
         next
     }
 
+    /// Active session's messaging-group collapse level for `id`.
+    /// Defaults to L2 (summary line) when no override is stored.
+    /// Sibling of `group_collapse_level` but keyed on
+    /// `messaging_group_collapse_levels` so tool-group and
+    /// messaging-group leader ids never collide.
+    pub fn messaging_group_collapse_level(
+        &self,
+        id: &crate::ui::message::grouping::GroupId,
+    ) -> crate::ui::message::grouping::GroupCollapseLevel {
+        self.active_session()
+            .and_then(|s| s.messaging_group_collapse_levels.get(id).copied())
+            .unwrap_or_default()
+    }
+
+    /// Advance the messaging-group's collapse level one step
+    /// (L2 -> L1 -> L0 -> L2). Returns the new level. Auto-creates
+    /// the active bucket if missing.
+    pub fn cycle_messaging_group_collapse_level(
+        &mut self,
+        id: &crate::ui::message::grouping::GroupId,
+    ) -> crate::ui::message::grouping::GroupCollapseLevel {
+        let current = self.messaging_group_collapse_level(id);
+        let next = current.next();
+        self.active_bucket_mut().messaging_group_collapse_levels.insert(id.clone(), next);
+        next
+    }
+
     /// Active session's MONITOR entries (chat notice +
     /// Inspector MONITORS section both read this).
     pub fn monitors(&self) -> &[crate::app::state::types::MonitorEntry] {
