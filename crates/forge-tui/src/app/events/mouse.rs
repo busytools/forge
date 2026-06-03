@@ -375,13 +375,31 @@ fn try_toggle_tool_call_at_click(app: &mut App, mouse: MouseEvent) -> bool {
             return true;
         }
     }
+    // Messaging-group click cycle: a click on the leading peer
+    // block of a messaging group at L2 cycles to L1 (titles only),
+    // then L1 to L0 (full bodies), then L0 back to L2. Mirrors the
+    // tool-call group cycle above.
+    if let Some((leader_id, _run_len)) = messaging_group_leader_match(app, msg_idx, block_idx) {
+        let _ = app.cycle_messaging_group_collapse_level(&leader_id);
+        app.invalidate_layout(crate::app::InvalidationLevel::MessageChanged(msg_idx));
+        tracing::debug!(
+            target: crate::logging::targets::APP_INPUT,
+            event_name = "messaging_group_summary_click_cycled",
+            leader_id = leader_id.as_str(),
+            msg_idx,
+            block_idx,
+            "click on messaging-group summary cycled level",
+        );
+        return true;
+    }
     let global_default = app.tools_collapsed;
     let Some(MessageBlock::ToolCall(tc)) =
         app.active_messages_mut()[msg_idx].blocks.get_mut(block_idx)
     else {
         return false;
     };
-    let current = tc.collapsed_override.unwrap_or(global_default);
+    let current =
+        crate::ui::collapse::resolve_collapsed_bool(tc.collapsed_override, global_default);
     let new_collapsed = !current;
     tc.collapsed_override = Some(new_collapsed);
     let tool_id = tc.id.clone();
@@ -414,6 +432,19 @@ fn group_leader_match(
 ) -> Option<(crate::ui::message::grouping::GroupId, usize)> {
     let msg = app.messages().get(msg_idx)?;
     crate::ui::message::grouping::group_leader_at(&msg.blocks, block_idx)
+}
+
+/// Sibling of [`group_leader_match`] for messaging groups. Resolves
+/// the click target back to a messaging-group's leader id + segment
+/// length when the clicked `(msg_idx, block_idx)` is the leading
+/// peer/worker block of a `MessagingGroup` segment.
+fn messaging_group_leader_match(
+    app: &App,
+    msg_idx: usize,
+    block_idx: usize,
+) -> Option<(crate::ui::message::grouping::GroupId, usize)> {
+    let msg = app.messages().get(msg_idx)?;
+    crate::ui::message::grouping::messaging_group_leader_at(&msg.blocks, block_idx)
 }
 
 /// Map the chat-area click coordinate to a `(message_idx, block_idx)`
@@ -507,13 +538,33 @@ fn try_toggle_peer_user_block_at_click(app: &mut App, mouse: MouseEvent) -> bool
     let Some((msg_idx, block_idx)) = locate_peer_user_block_at_click(app, mouse) else {
         return false;
     };
+    // Messaging-group click cycle: same shape as the tool-call group
+    // path. When the clicked inbound peer text block is the leader
+    // of a messaging-group segment, cycle the group's level instead
+    // of toggling the per-block override.
+    if let Some((leader_id, _run_len)) = messaging_group_leader_match(app, msg_idx, block_idx) {
+        let _ = app.cycle_messaging_group_collapse_level(&leader_id);
+        app.invalidate_layout(crate::app::InvalidationLevel::MessageChanged(msg_idx));
+        tracing::debug!(
+            target: crate::logging::targets::APP_INPUT,
+            event_name = "messaging_group_summary_click_cycled_inbound",
+            leader_id = leader_id.as_str(),
+            msg_idx,
+            block_idx,
+            "click on inbound peer block at messaging-group leader cycled level",
+        );
+        return true;
+    }
     let global_default = app.tools_collapsed;
     let Some(MessageBlock::Text(text_block)) =
         app.active_messages_mut()[msg_idx].blocks.get_mut(block_idx)
     else {
         return false;
     };
-    let current = text_block.peer_collapsed_override.unwrap_or(global_default);
+    let current = crate::ui::collapse::resolve_collapsed_bool(
+        text_block.peer_collapsed_override,
+        global_default,
+    );
     let new_collapsed = !current;
     text_block.peer_collapsed_override = Some(new_collapsed);
     app.invalidate_layout(crate::app::InvalidationLevel::MessageChanged(msg_idx));
@@ -1317,10 +1368,17 @@ mod tests {
             app.tools_collapsed, !pre_global,
             "Cmd+X after group-click must flip tools_collapsed globally",
         );
+        // Test setup: `App::test_default()` starts with
+        // `tools_collapsed = true`. Cmd+X flips to `false` (expanded);
+        // the resolver returns `L0Bodies` for an absent per-group
+        // entry against an expanded global directive. The earlier
+        // click had set `Some(L1Titles)`, but Cmd+X CLEARS the map
+        // first so the resolver derives from the global directive
+        // alone.
         assert_eq!(
             app.group_collapse_level(&leader_id),
-            GroupCollapseLevel::L2Summary,
-            "Cmd+X must reset the clicked group's level to default, not cycle it",
+            GroupCollapseLevel::L0Bodies,
+            "Cmd+X-to-expand resolves cleared groups to L0Bodies",
         );
     }
 

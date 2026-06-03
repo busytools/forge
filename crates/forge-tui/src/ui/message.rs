@@ -150,6 +150,20 @@ pub(crate) struct MessageRenderContext<'a> {
     /// branch L2 / L1 / L0 without a separate `App` borrow.
     group_collapse_levels:
         Option<&'a std::collections::HashMap<grouping::GroupId, grouping::GroupCollapseLevel>>,
+    /// Per-messaging-group collapse-level overrides, sibling of
+    /// `group_collapse_levels` keyed on the messaging-group's
+    /// `group_leader_id`. `None` (default) means every messaging
+    /// group renders at L2 summary when the global directive is
+    /// collapsed, L0 when expanded (via `resolve_group_level`).
+    messaging_group_collapse_levels:
+        Option<&'a std::collections::HashMap<grouping::GroupId, grouping::GroupCollapseLevel>>,
+    /// Pre-computed render-unit list for THIS message produced by
+    /// the session-walking partitioner. `Some` carries cross-message
+    /// peer/worker run state - segments may have continuation flags
+    /// and a shared `group_leader_id` with segments in sibling
+    /// messages. `None` falls back to the per-message partition,
+    /// which only sees within-message runs.
+    session_message_units: Option<&'a [grouping::RenderUnit]>,
 }
 
 impl<'a> MessageRenderContext<'a> {
@@ -166,7 +180,36 @@ impl<'a> MessageRenderContext<'a> {
             options,
             stop_hook_summary_hooks: &[],
             group_collapse_levels: None,
+            messaging_group_collapse_levels: None,
+            session_message_units: None,
         }
+    }
+
+    /// Attach a pre-computed render-unit list for THIS message
+    /// (sliced out of `partition_session_into_render_units`'s output
+    /// over the full session). Required for cross-message peer/worker
+    /// run merging to fire; absent falls back to the per-message
+    /// partition.
+    pub(crate) fn with_session_message_units(mut self, units: &'a [grouping::RenderUnit]) -> Self {
+        self.session_message_units = Some(units);
+        self
+    }
+
+    /// Attach the active session's per-messaging-group collapse
+    /// levels so the messaging-group dispatch sees L1/L0 overrides
+    /// and the cache signature folds them. Default (no call) keeps
+    /// every messaging group at its global-directive default.
+    pub(crate) fn with_messaging_group_collapse_levels(
+        mut self,
+        levels: &'a std::collections::HashMap<grouping::GroupId, grouping::GroupCollapseLevel>,
+    ) -> Self {
+        self.messaging_group_collapse_levels = Some(levels);
+        self
+    }
+
+    fn messaging_group_level(&self, id: &grouping::GroupId) -> grouping::GroupCollapseLevel {
+        let per_group = self.messaging_group_collapse_levels.and_then(|m| m.get(id).copied());
+        crate::ui::collapse::resolve_group_level(per_group, self.options.tools_collapsed)
     }
 
     /// Attach the active session's per-group collapse levels so the
@@ -182,7 +225,8 @@ impl<'a> MessageRenderContext<'a> {
     }
 
     fn group_level(&self, id: &grouping::GroupId) -> grouping::GroupCollapseLevel {
-        self.group_collapse_levels.and_then(|m| m.get(id).copied()).unwrap_or_default()
+        let per_group = self.group_collapse_levels.and_then(|m| m.get(id).copied());
+        crate::ui::collapse::resolve_group_level(per_group, self.options.tools_collapsed)
     }
 
     /// #273: Attach a hooks list for the stop_hook_summary chip
@@ -346,14 +390,16 @@ fn append_user_blocks(
                 // workspace injects a `[Question id=...]` /
                 // `[Reply id=...]` / etc. user-turn, render a styled
                 // peer block instead of the default user bubble.
-                // Collapse state mirrors the global tool-card
-                // preference so Ctrl+X flips peer rows and tool rows
-                // together. Inbound peer turns don't (yet) have a
-                // per-row override the way ToolCallInfo does - the
-                // global default is the only knob.
+                // Inbound peer blocks follow the global collapse
+                // directive via `resolve_collapsed_bool`. Per-block
+                // click override wins; absent falls through to
+                // `tools_collapsed`.
                 if let Some(kind) = peer_block::detect_inbound(&block.text) {
                     let trailing_gap = block.trailing_blank_lines();
-                    let collapsed = block.peer_collapsed_override.unwrap_or(tools_collapsed);
+                    let collapsed = crate::ui::collapse::resolve_collapsed_bool(
+                        block.peer_collapsed_override,
+                        tools_collapsed,
+                    );
                     // #163 + #189: same-worker streak followers drop
                     // the `▶ Verb name` header line and just stack body
                     // lines under the previous envelope. Different-worker
@@ -440,8 +486,18 @@ fn append_assistant_blocks(
 
     let show_compacting = spinner.show_compacting;
     let mut state = AssistantLayoutState::default();
-    let units = grouping::partition_blocks_into_render_units(&msg.blocks);
-    for unit in units {
+    // Session-walking partition wins when attached: it carries
+    // cross-message peer/worker run state (shared group_leader_id,
+    // continuation flags, group_total_count). Absent (no
+    // `with_session_message_units` call) falls back to the
+    // per-message partition, which only sees within-message runs.
+    let owned_units: Vec<grouping::RenderUnit> =
+        if let Some(slice) = render_context.session_message_units {
+            slice.to_vec()
+        } else {
+            grouping::partition_blocks_into_render_units(&msg.blocks)
+        };
+    for unit in owned_units.iter().cloned() {
         match unit {
             grouping::RenderUnit::Individual(idx) => {
                 append_assistant_block(
@@ -495,6 +551,58 @@ fn append_assistant_blocks(
                                 layout,
                                 &mut state,
                             );
+                        }
+                    }
+                }
+            }
+            grouping::RenderUnit::MessagingGroup { segments, group_leader_id } => {
+                let level = render_context.messaging_group_level(&group_leader_id);
+                match level {
+                    grouping::GroupCollapseLevel::L2Summary => {
+                        if state.has_body_content {
+                            layout.push_blank();
+                        }
+                        for segment in &segments {
+                            let summary_lines = peer_block::render_messaging_group_summary_line(
+                                segment,
+                                spinner.frame,
+                            );
+                            // Stamp the leading peer-class block's
+                            // hit-test fields so a click on the
+                            // summary line maps back to the segment's
+                            // first block via the existing
+                            // `locate_tool_call_block_at_click` walk.
+                            let y_in_msg = layout.height;
+                            let height =
+                                rendered_lines_height(&summary_lines, render_context.width);
+                            layout.push_wrapped_lines(summary_lines, render_context.width);
+                            if let Some(MessageBlock::ToolCall(tc)) =
+                                msg.blocks.get_mut(segment.block_range.start)
+                            {
+                                tc.last_measured_y_in_msg = y_in_msg;
+                                tc.last_measured_height = height;
+                                tc.last_measured_width = render_context.width;
+                            }
+                            state.has_body_content = true;
+                            state.has_visible_content = true;
+                            state.prev_was_tool = true;
+                        }
+                    }
+                    sub_level @ (grouping::GroupCollapseLevel::L1Titles
+                    | grouping::GroupCollapseLevel::L0Bodies) => {
+                        let mut group_ctx = render_context;
+                        group_ctx.options.tools_collapsed =
+                            matches!(sub_level, grouping::GroupCollapseLevel::L1Titles);
+                        for segment in segments {
+                            for idx in segment.block_range {
+                                append_assistant_block(
+                                    &mut msg.blocks[idx],
+                                    spinner,
+                                    group_ctx,
+                                    layout,
+                                    &mut state,
+                                );
+                            }
                         }
                     }
                 }
@@ -634,19 +742,17 @@ fn append_assistant_tool_block(
         if !state.prev_was_tool && state.has_body_content {
             layout.push_blank();
         }
-        // #143 item 5: routine `mcp__forge__*` calls collapse to a
-        // one-line summary by default - the wire shape is
-        // predictable and the user-facing intent is target +
-        // correlation_id, not the JSON args. A per-tc
-        // `collapsed_override` (set by clicking on the row) still
-        // wins so the user can expand for a specific call when
-        // they want the body preview. The global `tools_collapsed`
-        // setting is ignored on this path because these cards are
-        // intentionally compact by default; it'd be confusing to
-        // make them honor a setting whose name implies the
-        // OPPOSITE default behaviour ("tools_collapsed=false" =
-        // "show full tool cards" = wrong for these).
-        let collapsed = tc.collapsed_override.unwrap_or(true);
+        // Outbound peer-tool blocks (peers__* / workers__*) follow
+        // the global collapse directive via the unified
+        // `resolve_collapsed_bool`. Per-block click override wins;
+        // absent falls through to `tools_collapsed`. The invariant:
+        // every render-time collapsed-decision routes through a
+        // resolver in `crate::ui::collapse`; no inline
+        // `unwrap_or(<arbitrary>)`.
+        let collapsed = crate::ui::collapse::resolve_collapsed_bool(
+            tc.collapsed_override,
+            render_context.options.tools_collapsed,
+        );
         let lines = peer_block::render_outbound(&kind, collapsed);
         // Same hit-target stamping the standard tool-call branch
         // below does so `mouse::locate_tool_call_block_at_click` can
@@ -1301,25 +1407,46 @@ fn build_message_render_signature(
         hook.command.hash(&mut hasher);
         hook.duration_ms.hash(&mut hasher);
     }
-    // Chat tool-call grouping: fold the level of each group present in
-    // this message so a `cycle_group_collapse_level` flip on a focused
-    // group invalidates the cache. Empty `group_collapse_levels` map
-    // hashes all groups at L2 default; the partition walk is cheap
-    // (one pass over `msg.blocks`) and only runs on a cache-miss-style
-    // path that was already iterating blocks.
-    let units = grouping::partition_blocks_into_render_units(&msg.blocks);
-    for unit in &units {
-        if let grouping::RenderUnit::Group { leader_id, range, aggregate_status, .. } = unit {
-            range.start.hash(&mut hasher);
-            range.end.hash(&mut hasher);
-            render_context.group_level(leader_id).hash(&mut hasher);
-            // v2.1 decision 6: aggregate_status drives the L2 summary's
-            // status_icon. Per-tool hashes below already fold status
-            // transitions, but folding the aggregate here makes the
-            // dependency explicit + keeps the message cache invariant
-            // tight when a future refactor changes how aggregates are
-            // computed.
-            aggregate_status.hash(&mut hasher);
+    // Chat tool-call + messaging grouping: fold the level of each
+    // group present in this message so a `cycle_*_collapse_level`
+    // flip invalidates the cache. The session-walking partition
+    // attached to the context (when present) folds cross-message
+    // peer/worker continuation state too - segment counts, group
+    // totals, leader ids - so a downstream turn's extension of an
+    // in-flight messaging run invalidates this message's cache.
+    let owned_units: Vec<grouping::RenderUnit> =
+        if let Some(slice) = render_context.session_message_units {
+            slice.to_vec()
+        } else {
+            grouping::partition_blocks_into_render_units(&msg.blocks)
+        };
+    for unit in &owned_units {
+        match unit {
+            grouping::RenderUnit::Group { leader_id, range, aggregate_status, .. } => {
+                range.start.hash(&mut hasher);
+                range.end.hash(&mut hasher);
+                render_context.group_level(leader_id).hash(&mut hasher);
+                aggregate_status.hash(&mut hasher);
+            }
+            grouping::RenderUnit::MessagingGroup { segments, group_leader_id } => {
+                group_leader_id.as_str().hash(&mut hasher);
+                render_context.messaging_group_level(group_leader_id).hash(&mut hasher);
+                for segment in segments {
+                    segment.msg_idx.hash(&mut hasher);
+                    segment.block_range.start.hash(&mut hasher);
+                    segment.block_range.end.hash(&mut hasher);
+                    segment.segment_count.hash(&mut hasher);
+                    segment.segment_continues_above.hash(&mut hasher);
+                    segment.segment_continues_below.hash(&mut hasher);
+                    segment.group_total_count.hash(&mut hasher);
+                    segment.aggregate_status.hash(&mut hasher);
+                    segment.segment_outbound_targets.targets.hash(&mut hasher);
+                    segment.segment_outbound_targets.overflow_n.hash(&mut hasher);
+                    segment.segment_inbound_targets.targets.hash(&mut hasher);
+                    segment.segment_inbound_targets.overflow_n.hash(&mut hasher);
+                }
+            }
+            grouping::RenderUnit::Individual(_) => {}
         }
     }
     MessageRenderSignature(hasher.finish())
@@ -2549,7 +2676,7 @@ mod tests {
 
     fn default_options() -> MessageRenderOptions {
         MessageRenderOptions {
-            tools_collapsed: false,
+            tools_collapsed: true,
             include_trailing_separator: true,
             suppress_group_header: false,
             envelope_streak_position: None,
@@ -2560,7 +2687,7 @@ mod tests {
 
     fn options_without_separator() -> MessageRenderOptions {
         MessageRenderOptions {
-            tools_collapsed: false,
+            tools_collapsed: true,
             include_trailing_separator: false,
             suppress_group_header: false,
             envelope_streak_position: None,
@@ -2857,7 +2984,7 @@ mod tests {
             80,
             1,
             MessageRenderOptions {
-                tools_collapsed: false,
+                tools_collapsed: true,
                 include_trailing_separator: false,
                 suppress_group_header: false,
                 envelope_streak_position: None,
@@ -2891,7 +3018,7 @@ mod tests {
             80,
             1,
             MessageRenderOptions {
-                tools_collapsed: false,
+                tools_collapsed: true,
                 include_trailing_separator: false,
                 suppress_group_header: false,
                 envelope_streak_position: None,
@@ -3534,7 +3661,7 @@ mod tests {
         let mut msg = make_peer_envelope_message("forge", "Personal", "hello");
         let spinner = idle_spinner();
         let options_with_label = MessageRenderOptions {
-            tools_collapsed: false,
+            tools_collapsed: true,
             include_trailing_separator: false,
             suppress_group_header: false,
             envelope_streak_position: None,
@@ -3554,7 +3681,7 @@ mod tests {
         // already distinguishes the two, but we want to be explicit).
         msg.invalidate_render_cache();
         let options_no_label = MessageRenderOptions {
-            tools_collapsed: false,
+            tools_collapsed: true,
             include_trailing_separator: false,
             suppress_group_header: true,
             envelope_streak_position: None,

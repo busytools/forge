@@ -531,6 +531,65 @@ fn extract_from_agent_after_with_trailer(rest: &str) -> Option<(String, String, 
     Some((name.to_owned(), org.to_owned(), trailing.to_owned()))
 }
 
+/// Render the L2 summary line for a messaging group: 2-space indent
+/// + status_icon + `@ ` (BOLD DIM) + BOLD heading + DIM ctrl+x hint.
+///
+/// Heading shape: `<n> message(s)` followed by direction-qualified
+/// target clauses (`· outbound to <targets>` and/or
+/// `· inbound from <targets>`). Targets render in order of first
+/// appearance; `+N` overflow appends after the named list. Direction
+/// clauses with no targets are omitted entirely (no "0 inbound"
+/// filler).
+///
+/// The aggregate status drives the leading icon via the same
+/// `tool_call::status_icon` helper the per-tool render uses; the
+/// braille spinner animates on `InProgress`.
+pub(crate) fn render_messaging_group_summary_line(
+    segment: &crate::ui::message::grouping::MessagingGroupSegment,
+    spinner_frame: usize,
+) -> Vec<Line<'static>> {
+    let (icon_glyph, icon_color) =
+        crate::ui::tool_call::status_icon(segment.aggregate_status, spinner_frame);
+    let dim = Style::default().fg(theme::DIM);
+
+    let count = segment.group_total_count.max(segment.segment_count);
+    let count_word = if count == 1 { "message" } else { "messages" };
+    let mut heading = format!("{count} {count_word}");
+    if !segment.segment_outbound_targets.is_empty() {
+        heading.push_str(" \u{b7} outbound to ");
+        heading.push_str(&format_direction_targets(&segment.segment_outbound_targets));
+    }
+    if !segment.segment_inbound_targets.is_empty() {
+        heading.push_str(" \u{b7} inbound from ");
+        heading.push_str(&format_direction_targets(&segment.segment_inbound_targets));
+    }
+
+    vec![Line::from(vec![
+        Span::raw("  ".to_owned()),
+        Span::styled(
+            format!("{icon_glyph} "),
+            Style::default().fg(icon_color).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("@ ".to_owned(), Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD)),
+        Span::styled(heading, Style::default().add_modifier(Modifier::BOLD)),
+        Span::styled("   ctrl+x to expand".to_owned(), dim),
+    ])]
+}
+
+fn format_direction_targets(
+    targets: &crate::ui::message::grouping::MessagingDirectionTargets,
+) -> String {
+    let mut out = targets.targets.join(", ");
+    if targets.overflow_n > 0 {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push('+');
+        out.push_str(&targets.overflow_n.to_string());
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
