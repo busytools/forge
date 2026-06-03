@@ -413,6 +413,32 @@ pub fn submit_prompt(app: &mut crate::app::App) {
                 .filter(|o| !matches!(o.kind, PermissionOptionKind::Notes))
                 .map(|o| o.option_id.clone())
                 .collect();
+            // Record the resolved answer onto the AskUserQuestion tool so
+            // it un-hides and renders as the answered-card in the chat
+            // stream. Picked options show their labels; a typed "Other"
+            // answer shows the literal notes text.
+            let selected_labels: Vec<String> = selected_indices
+                .iter()
+                .filter_map(|&i| prompt.options.get(i))
+                .filter(|o| !matches!(o.kind, PermissionOptionKind::Notes))
+                .map(|o| o.name.clone())
+                .collect();
+            let answered = if selected_labels.is_empty() {
+                notes_text.as_ref().map(|n| crate::app::AnsweredQuestion {
+                    question: q.question.clone(),
+                    answer: n.clone(),
+                    typed: true,
+                })
+            } else {
+                Some(crate::app::AnsweredQuestion {
+                    question: q.question.clone(),
+                    answer: selected_labels.join(", "),
+                    typed: false,
+                })
+            };
+            if let Some(qa) = answered {
+                app.record_answered_question(&prompt.tool_id, qa);
+            }
             let annotation = notes_text
                 .as_ref()
                 .map(|n| QuestionAnnotation { preview: None, notes: Some(n.clone()) });

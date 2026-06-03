@@ -18,7 +18,8 @@ pub use messages::{
     hash_text_block_content, hash_welcome_block_content,
 };
 pub use tool_call_info::{
-    TerminalSnapshotMode, ToolCallInfo, is_execute_tool_name, is_monitor_tool_name,
+    AnsweredQuestion, TerminalSnapshotMode, ToolCallInfo, is_execute_tool_name,
+    is_monitor_tool_name,
 };
 pub use types::{
     AppStatus, ExtraUsage, HelpView, HistoryRetentionPolicy, HistoryRetentionStats, LoginHint,
@@ -2483,6 +2484,26 @@ impl App {
         self.tool_call_index().get(id).copied()
     }
 
+    /// Stamp a resolved answer onto an AskUserQuestion tool call: append
+    /// the question -> answer pair, un-hide it (it was chat-suppressed
+    /// while the dock prompt was live), and invalidate its render so the
+    /// answered-card paints. No-op when the tool call isn't found (e.g.
+    /// the session switched between prompt and answer).
+    pub(crate) fn record_answered_question(&mut self, tool_id: &str, answered: AnsweredQuestion) {
+        let Some((mi, bi)) = self.lookup_tool_call(tool_id) else {
+            return;
+        };
+        if let Some(MessageBlock::ToolCall(tc)) =
+            self.active_messages_mut().get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
+        {
+            let tc = tc.as_mut();
+            tc.answered_questions.push(answered);
+            tc.hidden = false;
+            tc.mark_tool_call_render_dirty();
+            tc.mark_tool_call_layout_dirty();
+        }
+    }
+
     /// Register a tool call's position in the message/block arrays.
     pub fn index_tool_call(&mut self, id: String, msg_idx: usize, block_idx: usize) {
         self.active_tool_call_index_mut().insert(id, (msg_idx, block_idx));
@@ -3071,6 +3092,7 @@ mod tests {
             cache: BlockCache::default(),
             collapsed_override: None,
             last_measured_y_in_msg: 0,
+            answered_questions: Vec::new(),
         };
         app.push_message_tracked(ChatMessage::new(
             MessageRole::Assistant,
@@ -3110,6 +3132,68 @@ mod tests {
             tc.layout_epoch > initial_layout_epoch,
             "layout_epoch must bump so the cached chat block re-renders in place"
         );
+    }
+
+    #[test]
+    fn record_answered_question_unhides_and_appends() {
+        use crate::agent::model::ToolCallStatus;
+        let mut app = App::test_default();
+        let tool_use_id = "tu-q-1";
+        // A chat-suppressed (hidden) AskUserQuestion, as it sits while
+        // the dock prompt is the live answering surface.
+        let tc_info = ToolCallInfo {
+            id: tool_use_id.to_owned(),
+            title: "AskUserQuestion".to_owned(),
+            sdk_tool_name: "AskUserQuestion".to_owned(),
+            raw_input: None,
+            raw_input_bytes: 0,
+            output_metadata: None,
+            task_metadata: None,
+            status: ToolCallStatus::InProgress,
+            content: Vec::new(),
+            hidden: true,
+            terminal_id: None,
+            terminal_command: None,
+            terminal_output: None,
+            terminal_output_len: 0,
+            terminal_bytes_seen: 0,
+            terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
+            monitor_output_tail: Vec::default(),
+            render_epoch: 0,
+            layout_epoch: 0,
+            last_measured_width: 0,
+            last_measured_height: 0,
+            last_measured_layout_epoch: 0,
+            last_measured_layout_generation: 0,
+            cache: BlockCache::default(),
+            collapsed_override: None,
+            last_measured_y_in_msg: 0,
+            answered_questions: Vec::new(),
+        };
+        app.push_message_tracked(ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::ToolCall(Box::new(tc_info))],
+            None,
+        ));
+        let msg_idx = app.messages().len() - 1;
+        app.index_tool_call(tool_use_id.to_owned(), msg_idx, 0);
+
+        app.record_answered_question(
+            tool_use_id,
+            crate::app::AnsweredQuestion {
+                question: "Which path?".to_owned(),
+                answer: "Clean card".to_owned(),
+                typed: false,
+            },
+        );
+
+        let (mi, bi) = app.lookup_tool_call(tool_use_id).expect("indexed");
+        let MessageBlock::ToolCall(tc) = &app.messages()[mi].blocks[bi] else {
+            panic!("expected ToolCall block");
+        };
+        assert!(!tc.hidden, "answered question must un-hide so the card renders");
+        assert_eq!(tc.answered_questions.len(), 1);
+        assert_eq!(tc.answered_questions[0].answer, "Clean card");
     }
 
     #[test]
@@ -3160,6 +3244,7 @@ mod tests {
             cache: BlockCache::default(),
             collapsed_override: None,
             last_measured_y_in_msg: 0,
+            answered_questions: Vec::new(),
         };
         app.push_message_tracked(ChatMessage::new(
             MessageRole::Assistant,
@@ -3825,6 +3910,7 @@ mod tests {
                 cache: BlockCache::default(),
                 collapsed_override: None,
                 last_measured_y_in_msg: 0,
+                answered_questions: Vec::new(),
             }))],
             None,
         )
@@ -3864,6 +3950,7 @@ mod tests {
                 cache: BlockCache::default(),
                 collapsed_override: None,
                 last_measured_y_in_msg: 0,
+                answered_questions: Vec::new(),
             }))],
             None,
         )
@@ -5777,6 +5864,7 @@ mod tests {
                     render_epoch: 0,
                     layout_epoch: 0,
                     last_measured_y_in_msg: 0,
+                    answered_questions: Vec::new(),
                     last_measured_height: 0,
                     last_measured_width: 0,
                     last_measured_layout_epoch: 0,
@@ -5954,6 +6042,7 @@ mod tests {
                 render_epoch: 0,
                 layout_epoch: 0,
                 last_measured_y_in_msg: 0,
+                answered_questions: Vec::new(),
                 last_measured_height: 0,
                 last_measured_width: 0,
                 last_measured_layout_epoch: 0,

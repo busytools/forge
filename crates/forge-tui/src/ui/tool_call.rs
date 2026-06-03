@@ -312,6 +312,7 @@ mod tests {
             cache: BlockCache::default(),
             collapsed_override: None,
             last_measured_y_in_msg: 0,
+            answered_questions: Vec::new(),
         }
     }
 
@@ -1016,6 +1017,7 @@ mod tests {
             cache: BlockCache::default(),
             collapsed_override: None,
             last_measured_y_in_msg: 0,
+            answered_questions: Vec::new(),
         };
         assert_eq!(content_summary(&tc), "done");
     }
@@ -1049,6 +1051,7 @@ mod tests {
             cache: BlockCache::default(),
             collapsed_override: None,
             last_measured_y_in_msg: 0,
+            answered_questions: Vec::new(),
         };
         assert_eq!(content_summary(&tc), "bad");
     }
@@ -1084,6 +1087,7 @@ mod tests {
             cache: BlockCache::default(),
             collapsed_override: None,
             last_measured_y_in_msg: 0,
+            answered_questions: Vec::new(),
         };
         assert_eq!(content_summary(&tc), "Exit code 1");
     }
@@ -1142,6 +1146,7 @@ mod tests {
             cache: BlockCache::default(),
             collapsed_override: None,
             last_measured_y_in_msg: 0,
+            answered_questions: Vec::new(),
         };
 
         let mut out = Vec::new();

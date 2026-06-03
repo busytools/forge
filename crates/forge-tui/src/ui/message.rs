@@ -710,6 +710,25 @@ fn append_assistant_tool_block(
     if tc.hidden_unless_focused_interaction() {
         return;
     }
+    // Answered AskUserQuestion: once the user responds, the dock prompt
+    // is gone and the tool renders as a compact question -> answer card.
+    // While unanswered it stays hidden (returns above), so this only
+    // fires post-answer.
+    if let Some(lines) = render_question_answered_card(tc) {
+        if !state.prev_was_tool && state.has_body_content {
+            layout.push_blank();
+        }
+        let y_in_msg = layout.height;
+        let height = rendered_lines_height(&lines, render_context.width);
+        layout.push_wrapped_lines(lines, render_context.width);
+        tc.last_measured_y_in_msg = y_in_msg;
+        tc.last_measured_height = height;
+        tc.last_measured_width = render_context.width;
+        state.has_body_content = true;
+        state.has_visible_content = true;
+        state.prev_was_tool = true;
+        return;
+    }
     // Peer-coordination outbound (#114) - replace the default
     // tool_use card for `mcp__forge__peers__ask_agent` /
     // `peers__tell_agent` with a styled peer block in the same
@@ -812,6 +831,41 @@ fn trailing_gap_for_text_like_block(
     trailing_blank_lines: usize,
 ) -> usize {
     if !has_visible_content && rendered_height == 0 { 0 } else { trailing_blank_lines }
+}
+
+/// Render the post-answer card for an answered AskUserQuestion. Returns
+/// `None` while the question is unanswered (the dock prompt is the live
+/// surface) or for any non-question tool. Each answered pair renders as
+/// a `? <question>` line then an indented answer line; a typed "Other"
+/// answer surfaces the literal text the user entered.
+fn render_question_answered_card(tc: &crate::app::ToolCallInfo) -> Option<Vec<Line<'static>>> {
+    if !tc.is_ask_question_tool() || tc.answered_questions.is_empty() {
+        return None;
+    }
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    for qa in &tc.answered_questions {
+        lines.push(Line::from(vec![
+            Span::styled(
+                "? ".to_owned(),
+                Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(qa.question.clone(), Style::default().fg(theme::DIM)),
+        ]));
+        let mut answer_spans =
+            vec![Span::styled("  \u{2192} ".to_owned(), Style::default().fg(theme::DIM))];
+        if qa.typed {
+            answer_spans
+                .push(Span::styled("you typed: ".to_owned(), Style::default().fg(theme::DIM)));
+            answer_spans.push(Span::styled(
+                format!("\"{}\"", qa.answer),
+                Style::default().add_modifier(Modifier::BOLD),
+            ));
+        } else {
+            answer_spans.push(Span::styled(qa.answer.clone(), Style::default().fg(Color::Green)));
+        }
+        lines.push(Line::from(answer_spans));
+    }
+    Some(lines)
 }
 
 /// #273 Tasks 8 + 9: collapse Monitor / Workflow tool_use cards to a
@@ -2643,6 +2697,7 @@ mod tests {
             cache: BlockCache::default(),
             collapsed_override: None,
             last_measured_y_in_msg: 0,
+            answered_questions: Vec::new(),
         }
     }
 
@@ -2651,6 +2706,80 @@ mod tests {
             .iter()
             .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
             .collect()
+    }
+
+    #[test]
+    fn answered_question_renders_question_and_picked_label() {
+        let mut tc = make_tool_call_info(
+            "toolu_q",
+            "AskUserQuestion",
+            crate::agent::model::ToolCallStatus::Completed,
+            "",
+        );
+        tc.answered_questions = vec![crate::app::AnsweredQuestion {
+            question: "Which build path?".to_owned(),
+            answer: "Clean answered-card".to_owned(),
+            typed: false,
+        }];
+        let lines =
+            render_question_answered_card(&tc).expect("answered AskUserQuestion produces lines");
+        let joined = render_lines_to_strings(&lines).join("\n");
+        assert!(joined.contains("Which build path?"), "question text: {joined:?}");
+        assert!(joined.contains("Clean answered-card"), "picked label: {joined:?}");
+    }
+
+    #[test]
+    fn answered_question_typed_answer_surfaces_literal_text() {
+        let mut tc = make_tool_call_info(
+            "toolu_q",
+            "AskUserQuestion",
+            crate::agent::model::ToolCallStatus::Completed,
+            "",
+        );
+        tc.answered_questions = vec![crate::app::AnsweredQuestion {
+            question: "How should it look?".to_owned(),
+            answer: "Can you show me some visuals please?".to_owned(),
+            typed: true,
+        }];
+        let lines = render_question_answered_card(&tc).expect("typed answer produces lines");
+        let joined = render_lines_to_strings(&lines).join("\n");
+        assert!(
+            joined.contains("Can you show me some visuals please?"),
+            "literal typed text must be shown: {joined:?}",
+        );
+    }
+
+    #[test]
+    fn answered_question_card_none_while_unanswered() {
+        let tc = make_tool_call_info(
+            "toolu_q",
+            "AskUserQuestion",
+            crate::agent::model::ToolCallStatus::InProgress,
+            "",
+        );
+        assert!(
+            render_question_answered_card(&tc).is_none(),
+            "no card until the user has answered (dock is the live surface)",
+        );
+    }
+
+    #[test]
+    fn answered_question_card_none_for_non_question_tool() {
+        let mut tc = make_tool_call_info(
+            "toolu_r",
+            "Read",
+            crate::agent::model::ToolCallStatus::Completed,
+            "",
+        );
+        tc.answered_questions = vec![crate::app::AnsweredQuestion {
+            question: "q".to_owned(),
+            answer: "a".to_owned(),
+            typed: false,
+        }];
+        assert!(
+            render_question_answered_card(&tc).is_none(),
+            "only AskUserQuestion renders the card",
+        );
     }
 
     fn make_welcome_message(subscription: &str, cwd: &str, session_id: &str) -> ChatMessage {
