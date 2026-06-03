@@ -485,6 +485,18 @@ fn merge_messaging_groups(blocks: &[MessageBlock], tool_units: &[RenderUnit]) ->
                 _ => {} // hidden tool call: pass through, doesn't tally
             }
         }
+        // Threshold-2: a lone messaging block doesn't form an @
+        // group. Push back the original Individual units so the
+        // single block renders as the plain peer block via
+        // `append_assistant_tool_block`'s peer-block arm. Hidden
+        // pass-throughs in the run survive as Individuals too.
+        if segment_count < 2 {
+            for unit in &tool_units[run_start_pos..run_end_pos] {
+                output.push(unit.clone());
+            }
+            i = run_end_pos;
+            continue;
+        }
         let leader_id = leader_id
             .unwrap_or_else(|| GroupId::from_leader_id(format!("block-{first_block_idx}")));
         let aggregate_status = any_status.unwrap_or(crate::agent::model::ToolCallStatus::Completed);
@@ -892,6 +904,18 @@ pub fn partition_session_into_render_units(
                 for unit in partition_blocks_into_render_units(gap) {
                     msg_units.push(shift_unit(unit, cursor));
                 }
+            }
+            if segment.group_total_count < 2 {
+                // Threshold-2: a lone messaging block (the entire
+                // cross-turn run is size 1) renders as the plain
+                // peer block. Emit Individual per block index in the
+                // segment range; hidden pass-throughs in the span
+                // become their own Individuals too.
+                for idx in segment.block_range.clone() {
+                    msg_units.push(RenderUnit::Individual(idx));
+                }
+                cursor = segment.block_range.end;
+                continue;
             }
             let leader_id = find_segment_leader(&messaging_drafts, &segment);
             msg_units.push(RenderUnit::MessagingGroup {
@@ -1737,8 +1761,11 @@ mod tests {
     }
 
     /// Threshold-1: a single peer block folds into a messaging group.
+    /// A lone outbound peer/worker block does NOT form an @ group;
+    /// it renders as an `Individual` (plain peer block). The group
+    /// minimum is 2.
     #[test]
-    fn messaging_group_partitions_single_peer_block() {
+    fn messaging_group_single_outbound_session_walk_renders_individual() {
         let messages =
             vec![assistant_message_with_blocks(vec![outbound_peer_block("planner", "Tell")])];
         let per_message_units = partition_session_into_render_units(&messages);
@@ -1747,7 +1774,60 @@ mod tests {
             .flatten()
             .filter(|u| matches!(u, RenderUnit::MessagingGroup { .. }))
             .collect();
-        assert_eq!(groups.len(), 1, "threshold-1: single peer block folds");
+        assert!(
+            groups.is_empty(),
+            "threshold-2: a lone outbound peer block must not form an @ group",
+        );
+        assert!(
+            per_message_units[0].iter().any(|u| matches!(u, RenderUnit::Individual(0))),
+            "lone outbound renders as Individual(0); got {:?}",
+            per_message_units[0],
+        );
+    }
+
+    /// Same threshold-2 invariant for inbound: a lone inbound peer
+    /// text block renders as `Individual`, not a MessagingGroup.
+    #[test]
+    fn messaging_group_single_inbound_session_walk_renders_individual() {
+        let messages = vec![crate::app::ChatMessage::new(
+            crate::app::MessageRole::User,
+            vec![inbound_peer_block("tester", "Message")],
+            None,
+        )];
+        let per_message_units = partition_session_into_render_units(&messages);
+        let groups: Vec<&RenderUnit> = per_message_units
+            .iter()
+            .flatten()
+            .filter(|u| matches!(u, RenderUnit::MessagingGroup { .. }))
+            .collect();
+        assert!(
+            groups.is_empty(),
+            "threshold-2: a lone inbound peer block must not form an @ group",
+        );
+    }
+
+    /// Same threshold-2 invariant on the per-message partition path
+    /// (`merge_messaging_groups`): a within-message run of length 1
+    /// stays Individual; runs of length 2+ still fold.
+    #[test]
+    fn messaging_group_within_message_threshold_two() {
+        let one = vec![outbound_peer_block("planner", "Tell")];
+        let units_one = partition_blocks_into_render_units(&one);
+        assert!(
+            !units_one.iter().any(|u| matches!(u, RenderUnit::MessagingGroup { .. })),
+            "single peer block: per-message partition emits Individual, not MessagingGroup",
+        );
+        assert!(
+            units_one.iter().any(|u| matches!(u, RenderUnit::Individual(0))),
+            "single peer block renders as Individual(0); got {units_one:?}",
+        );
+
+        let two =
+            vec![outbound_peer_block("planner", "Tell"), outbound_peer_block("debugger", "Ask")];
+        let units_two = partition_blocks_into_render_units(&two);
+        let groups: Vec<&RenderUnit> =
+            units_two.iter().filter(|u| matches!(u, RenderUnit::MessagingGroup { .. })).collect();
+        assert_eq!(groups.len(), 1, "two-block run still folds into one MessagingGroup");
     }
 
     /// Within a single message, a peer/worker run produces ONE
