@@ -1665,17 +1665,19 @@ impl App {
     }
 
     /// Active session's messaging-group collapse level for `id`.
-    /// Defaults to L2 (summary line) when no override is stored.
-    /// Sibling of `group_collapse_level` but keyed on
-    /// `messaging_group_collapse_levels` so tool-group and
+    /// Per-group override wins; absent falls through to the global
+    /// directive via `resolve_group_level` (the same resolver that
+    /// drives tool-call groups). Sibling of `group_collapse_level`
+    /// keyed on `messaging_group_collapse_levels` so tool-group and
     /// messaging-group leader ids never collide.
     pub fn messaging_group_collapse_level(
         &self,
         id: &crate::ui::message::grouping::GroupId,
     ) -> crate::ui::message::grouping::GroupCollapseLevel {
-        self.active_session()
-            .and_then(|s| s.messaging_group_collapse_levels.get(id).copied())
-            .unwrap_or_default()
+        let per_group = self
+            .active_session()
+            .and_then(|s| s.messaging_group_collapse_levels.get(id).copied());
+        crate::ui::collapse::resolve_group_level(per_group, self.tools_collapsed)
     }
 
     /// Advance the messaging-group's collapse level one step
