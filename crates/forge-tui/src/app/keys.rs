@@ -1107,6 +1107,7 @@ pub(super) fn toggle_all_tool_calls(app: &mut App) {
             }
         }
         bucket.group_collapse_levels.clear();
+        bucket.messaging_group_collapse_levels.clear();
     }
     app.tools_collapsed = !app.tools_collapsed;
     app.invalidate_layout(InvalidationLevel::Global);

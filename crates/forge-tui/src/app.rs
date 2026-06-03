@@ -68,7 +68,7 @@ pub use state::{
     TodoItem, TodoStatus, ToolCallInfo, ToolCallScope, TurnNoticeLocation, TurnNoticeRef,
     UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState, UsageWindow, WelcomeBlock,
     WorkflowEntry, WorkflowStatus, compute_scrollbar_geometry, hash_text_block_content,
-    hash_welcome_block_content, is_execute_tool_name,
+    hash_welcome_block_content, is_execute_tool_name, is_monitor_tool_name,
 };
 pub use view::ActiveView;
 

@@ -1067,7 +1067,8 @@ chat continues here...
   <div class="surface-body">
     <p>Single line: 2-space indent + status icon (success / fail / spinner) in status color + space + tool kind icon (white bold) + space + <strong>kind label</strong> (white bold - "Read", "Edit", "Bash", etc. from <code>theme::tool_name_label</code>) + space + display title (markdown inline spans, default fg). Body lines (when present) prefix each with "<code>  │  </code>" dim (5 chars: 2 + box-drawing-vertical + 2), last line with "<code>  └─ </code>" dim (5 chars). If <code>tc.title</code> from claude already starts with the kind label (e.g. claude often sends "Read /path/to/file.rs"), the duplicate prefix is stripped so the column reads cleanly.</p>
     <p><strong>Collapsed</strong> (when collapse is in effect and the tool call has no diff / pending permission / pending question): the body collapses to a single summary line "<code>  └─ &lt;content_summary&gt;  click or ctrl+x to expand</code>" (all DIM). The summary text comes from <code>content_summary</code> - last non-empty line of terminal output (capped at 80 chars), or the file name for a Diff, or an MCP resource path, etc.</p>
-    <p><strong>Collapse precedence:</strong> per-tool override (<code>tc.collapsed_override: Option&lt;bool&gt;</code>, set by clicking the tool's row) wins; otherwise the global <code>app.tools_collapsed</code> default applies. Ctrl+X (Cmd+X) flips the global default AND clears every per-tool <code>collapsed_override</code>, every per-peer-text-block <code>peer_collapsed_override</code>, and the per-group <code>group_collapse_levels</code> map. Result: any tool, group, or peer/MCP block the user had clicked open or closed resets to its default-render state on Cmd+X, so the chat surface stays consistent (no "some rows clicked-open, others not" inconsistency after the flip). Peer/MCP outbound rows stay default-collapsed-by-design regardless of <code>tools_collapsed</code> (per <code>message.rs::append_assistant_tool_block</code>'s peer-block branch). The next click on any row sets a fresh per-item override from clean state. Diff / permission / question short-circuits still keep those interactions visible regardless.</p>
+    <p><strong>Collapse precedence (unified resolver):</strong> every render-time "should this be collapsed?" decision routes through <code>crate::ui::collapse</code>. Two pure resolvers: <code>resolve_collapsed_bool(per_item, global_collapsed)</code> for 2-state items (loose tool-calls, peer/MCP blocks inbound + outbound) and <code>resolve_group_level(per_group, global_collapsed)</code> for 3-state items (tool-call groups, messaging groups) where absent + global-collapsed returns <code>L2Summary</code> and absent + global-expanded returns <code>L0Bodies</code>. Per-item state (the override fields) wins when present; absent falls through to <code>app.tools_collapsed</code>. The carve-out predicate <code>is_carved_out_from_global_directive(tc)</code> names the kinds that bypass the global directive entirely - Execute / Bash, diff content (Edit/Write/MultiEdit/NotebookEdit), Monitor, Workflow - those render expanded regardless.</p>
+    <p>Ctrl+X (Cmd+X) is a <strong>binary global toggle</strong>, not a graduated cycle. Press 1 expands every non-carved-out kind (groups to <code>L0Bodies</code>, tools / peer / MCP to expanded); press 2 collapses everything (groups to <code>L2Summary</code>, tools / peer / MCP to collapsed). The gesture also clears every per-item override (<code>tc.collapsed_override</code>, <code>text.peer_collapsed_override</code>, <code>group_collapse_levels</code>, <code>messaging_group_collapse_levels</code>) so any row the user had clicked open or closed resets to its default-render state. The intermediate <code>L1Titles</code> group level stays reachable only via mouse-click on a group summary row (the per-group L2 → L1 → L0 click cycle is unchanged). At session start the global directive defaults to COLLAPSED, so a fresh chat opens compact.</p>
     <div class="term">
       <pre class="indent">
   <span class="success">✓</span> <span class="bold">⬚</span> <span class="bold">Read</span> /path/to/file.rs
@@ -1137,7 +1138,7 @@ chat continues here...
       <pre class="indent">
   <span class="accent bold">⠋</span> <span class="dim bold">= </span><span class="bold">1 read</span>   <span class="dim">ctrl+x to expand</span></pre>
     </div>
-    <p>Clicking a group's summary row walks that group's level through L2 (summary) → L1 (per-tool title rows, bodies closed) → L0 (titles + full bodies). Single-item groups follow the same path as multi-item groups so the chat surface stays consistent regardless of run length. ctrl+x (Cmd+X) toggles the session-wide tools-collapsed flag - when on, every tool-call row collapses; when off, every row expands. Per-group state is independent of the global flag.</p>
+    <p>Clicking a group's summary row walks that group's level through L2 (summary) → L1 (per-tool title rows, bodies closed) → L0 (titles + full bodies). Single-item groups follow the same path as multi-item groups so the chat surface stays consistent regardless of run length. ctrl+x (Cmd+X) is a binary global toggle that clears every per-group override and resets to the global directive: collapsed → all groups at L2, expanded → all groups at L0. The intermediate L1Titles level stays reachable only via the per-group click cycle.</p>
     <p><strong>L1 expansion</strong> (titles only, bodies still closed):</p>
     <div class="term">
       <pre class="indent">
@@ -1161,6 +1162,70 @@ chat continues here...
       <dt>cache</dt><dd>The message render signature folds each Group's <code>(range, level, aggregate_status)</code> alongside the per-block hashes (<code>build_message_render_signature</code>), so a level flip or status transition on any one group invalidates only the affected message's cached layout. Spinner ticks invalidate the message cache (via the existing per-tool frame hash on InProgress tools) but NOT the layout cache - the single status_icon cell changes, line width stays stable.</dd>
       <dt>focus model</dt><dd>Mouse click on a group's summary row cycles that group's level (single-item groups follow the same path); the leader tool's <code>last_measured_y_in_msg</code> stamps the summary line's region so existing <code>locate_tool_call_block_at_click</code> resolves the click, and the mouse handler reclassifies via <code>grouping::group_leader_at</code>, scoping invalidation to <code>MessageChanged(msg_idx)</code>. ctrl+x stays bound to the session-wide global toggle - per-group state is independent of the global flag, so a click can cycle one group without disturbing the rest. Click on an individual row inside an L1 group flips just that row's body via the standard per-tool <code>collapsed_override</code> path.</dd>
       <dt>invariant</dt><dd><code>every_special_render_tool_is_a_run_breaker</code> (unit test in <code>grouping.rs</code>) enumerates every diff / lifecycle / peer-block tool with a bespoke visible render path and asserts the breaker predicate returns true. Chat-suppressed tools (Task* / AskUserQuestion / Schedule* / Cron*) are covered by the inverse test <code>run_breaker_false_for_hidden_chat_suppressed_tools</code>: they render nothing visible and must pass through the run. Adding a new bespoke visible renderer requires extending both the predicate AND the test enumeration in the same change; otherwise the next group containing the new tool folds and the bespoke render never fires.</dd>
+    </dl>
+  </div>
+</div>
+
+<div class="surface" id="chat-messaging-grouping">
+  <div class="surface-head">
+    <h4>Chat peer/worker messaging grouping (L2 / L1 / L0)</h4>
+    <div class="when">visible: any run of consecutive peer/worker MCP messages (<code>peers__*</code> / <code>workers__*</code> outbound + inbound envelopes). Threshold 1 - single messages fold under the same shape. Runs <strong>merge across user/assistant turn boundaries</strong>, deliberately diverging from the per-message tool-group partitioner.</div>
+  </div>
+  <div class="surface-body">
+    <p><strong>Parallel to <a href="#chat-tool-grouping">chat-tool-grouping</a></strong> but with one structural inversion: tool groups are strictly per-message (cross-message boundary is a hard run-breaker, per #327), whereas <strong>messaging groups merge across turn boundaries</strong> so a long-running multi-turn coordination session reads as ONE logical group rather than fragmenting into one group per turn. A run of peer/worker messages - outbound (<code>Tell</code>, <code>Ask</code>) and inbound (<code>Message</code>, <code>Question</code>, <code>Reply</code>) - folds into ONE messaging group; mixed direction lives in the same group (no split by direction). The partitioner is type-aware: peer/worker run produces a <strong>messaging group</strong>, tool-call run produces a <strong>tool group</strong>, adjacent and never merged - they sit side-by-side as separate render units.</p>
+    <p><strong>L2 summary</strong> mirrors the tool-group line shape - 2-space LEFT indent, aggregated status_icon, BOLD heading, DIM <code>ctrl+x to expand</code> hint. The kind-icon slot carries the <strong><code>@</code></strong> glyph (width-1 ASCII; chat-UI mention semantic mirroring <code>@user</code> in Slack/Discord). The slot is exactly <code>@</code>(1) + space(1) = 2 cells matching standard chrome, deterministic across terminals regardless of EAW interpretation. The heading after the glyph is <code>N messages</code> followed by direction-qualified target clauses (<code>· outbound to &lt;targets&gt;</code> and/or <code>· inbound from &lt;targets&gt;</code>). Targets render in order of first appearance. Direction clauses with no targets in that direction are omitted entirely (no <code>0 inbound</code> filler).</p>
+    <p>Completed (mixed direction):</p>
+    <div class="term">
+      <pre class="indent">
+  <span class="success">✓</span> <span class="dim bold">@ </span><span class="bold">5 messages · outbound to planner, debugger · inbound from tester</span>   <span class="dim">ctrl+x to expand</span></pre>
+    </div>
+    <p>Mid-run (an outbound <code>Ask</code> still pending):</p>
+    <div class="term">
+      <pre class="indent">
+  <span class="accent bold">⠋</span> <span class="dim bold">@ </span><span class="bold">3 messages · outbound to lead · inbound from reviewer</span>   <span class="dim">ctrl+x to expand</span></pre>
+    </div>
+    <p>Direction-only runs omit the absent clause cleanly:</p>
+    <div class="term">
+      <pre class="indent">
+  <span class="success">✓</span> <span class="dim bold">@ </span><span class="bold">2 messages · outbound to lead</span>   <span class="dim">ctrl+x to expand</span>
+  <span class="success">✓</span> <span class="dim bold">@ </span><span class="bold">1 message · inbound from reviewer</span>   <span class="dim">ctrl+x to expand</span></pre>
+    </div>
+    <p>Pluralization is per-count (<code>1 message</code> / <code>5 messages</code>); target list is comma-joined in order-of-first-appearance.</p>
+    <p><strong>Target-list overflow</strong> on narrow chat widths uses an ellipsis-plus-count suffix per direction. Convention: render the first 2 targets by name; if more, append <code>+N</code> for the remaining count:</p>
+    <div class="term">
+      <pre class="indent">
+  <span class="success">✓</span> <span class="dim bold">@ </span><span class="bold">12 messages · outbound to planner, debugger +2 · inbound from tester, reviewer +1</span>   <span class="dim">ctrl+x to expand</span></pre>
+    </div>
+    <p><strong>Merge across turn boundaries</strong> - the structurally distinctive case. A messaging-group run that spans multiple user/assistant turns continues into one logical group across the boundary. The scrollback renders ONE summary line per turn-segment the run occupies (so the user can see, at the scrollback location of each turn, what coordination happened during that turn). All segments share collapse state - clicking ANY segment cycles the whole group's L2 → L1 → L0; <code>ctrl+x</code> applies to the whole group via the global flag. A per-segment continuation marker tells the reader the group extends.</p>
+    <div class="term">
+      <pre class="indent">
+<span class="dim italic">// turn N assistant content above</span>
+  <span class="success">✓</span> <span class="dim bold">@ </span><span class="bold">5 messages · outbound to planner · inbound from tester</span>   <span class="dim">ctrl+x to expand</span>
+  <span class="dim">└─ part of an 8-message group · continues into next turn ↓</span>
+
+<span class="dim italic">// turn N+1 user prompt: &quot;any update?&quot;</span>
+<span class="dim italic">// turn N+1 assistant content</span>
+  <span class="success">✓</span> <span class="dim bold">@ </span><span class="bold">3 messages · outbound to debugger · inbound from reviewer</span>   <span class="dim">ctrl+x to expand</span>
+  <span class="dim">└─ continued from previous turn · 8 total in group</span></pre>
+    </div>
+    <p>The mockup shows two segments (5 + 3 = 8 total); a longer multi-turn coordination would extend the pattern with one summary line per turn-segment. Expanding any one segment expands all of them (shared collapse state); the L1 view interleaves all 8 messages chronologically across turns, with the underlying turn boundaries visible only in L0 (full body view).</p>
+    <p><strong>L1 expansion</strong> renders the per-message title rows (no body) using the existing five-verb peer-block contract; each row keeps its own direction kind-icon (<code>⤴</code> outbound, <code>⤵</code> inbound) and target label:</p>
+    <div class="term">
+      <pre class="indent">
+  <span class="success">✓</span> <span class="bold">▶ ⤴</span> <span class="bold">Tell planner</span>
+  <span class="success">✓</span> <span class="bold">▶ ⤴</span> <span class="bold">Ask debugger</span>
+  <span class="success">✓</span> <span class="bold">▶ ⤵</span> <span class="bold">Reply from tester</span>
+  <span class="success">✓</span> <span class="bold">▶ ⤴</span> <span class="bold">Tell lead</span>
+  <span class="success">✓</span> <span class="bold">▶ ⤵</span> <span class="bold">Message from reviewer</span></pre>
+    </div>
+    <p><strong>L0 expansion</strong> falls through to the standard <a href="#peer-block">peer-block render</a> per message - full body indented under <code>│  </code> / <code>└─</code> tree connectors, Forge role header introducing each direction transition. Individual row body can still be re-collapsed via the standard <code>collapsed_override</code> path.</p>
+    <p>Click on a messaging group's summary row cycles its level (L2 → L1 → L0). <code>ctrl+x</code> (Cmd+X) is the binary global toggle: collapsed → L2, expanded → L0; the gesture also clears the per-group <code>messaging_group_collapse_levels</code> map alongside the tool-group map so a fresh resolve-from-global applies uniformly. <code>L1Titles</code> stays reachable only via the per-group click cycle.</p>
+    <p><strong>Implementation note - structural divergence from <code>partition_blocks_into_render_units</code>.</strong> The current partitioner operates per-message (one assistant message's block list at a time); cross-message boundaries naturally produce separate render units. Messaging groups invert this - peer/worker blocks across all messages in the active session need to be partitioned into one logical group when adjacent in the block-sequence sense (no non-peer/worker visible content between them). The implementation has to walk a session-wide block list (or thread the prior message's trailing peer/worker run-state forward across the next message's leading peer/worker blocks). This is the trickiest piece of the spec - call it out explicitly in the plan and write the cross-message-merge invariant test up front.</p>
+    <dl>
+      <dt>code</dt><dd><strong>Proposed.</strong> Session-level partitioner pass in <code>crates/forge-tui/src/ui/message/grouping.rs</code> (or a new sibling file if the per-message pattern is too entrenched to extend cleanly). New <code>RenderUnit::MessagingGroup { segment_range, total_count, outbound_targets, inbound_targets, aggregate_status, group_leader_id, segment_continues_above: bool, segment_continues_below: bool }</code>. <code>segment_continues_above/below</code> drives the per-segment continuation marker below the L2 summary line. Tool-call run → existing <code>RenderUnit::Group</code> (no change to per-message partition). Adjacent peer + tool runs never merge. Per-session collapse state extends <code>UiSession.group_collapse_levels</code> with messaging-group leader keys; the leader is the FIRST peer/worker block in the run, even across turns. L2 summary render: a new <code>ui/peer_block.rs::render_messaging_group_summary_line</code> (sibling to <code>tool_call/group.rs::render_group_summary_line</code>, sharing indent + glyph-slot + BOLD + hint chrome).</dd>
+      <dt>cache</dt><dd>Per-segment message render signature folds each <code>MessagingGroup</code> segment's <code>(segment_range, level, aggregate_status, segment_outbound_targets, segment_inbound_targets, group_total_count)</code> alongside the per-block hashes. <strong>Cross-message coupling</strong>: a new peer/worker message arriving on turn N+1 retroactively bumps the <code>group_total_count</code> on turn N's segment summary - the message render signature includes that count, so turn N's cached layout invalidates when the group extends.</dd>
+      <dt>focus model</dt><dd>Mouse click on a messaging-group summary row (any segment) cycles the whole group's level via <code>locate_tool_call_block_at_click</code> + a new <code>grouping::messaging_group_leader_at</code> path. <code>last_measured_y_in_msg</code> stamps the summary line's region the same way tool groups do. <code>ctrl+x</code> stays the global tools-collapsed toggle. Click on a continuation-marker row routes to the same cycle as the summary line above it (single clickable region per segment).</dd>
+      <dt>invariant</dt><dd>Three new unit tests in <code>grouping.rs</code>: <code>messaging_group_partitions_peer_worker_runs</code> (a run of N peer/worker blocks in one message produces one MessagingGroup with correct outbound + inbound target tallies); <code>messaging_group_merges_across_turn_boundary</code> (peer/worker run extending from end-of-message-N into start-of-message-N+1 produces ONE MessagingGroup with two segments, total_count = sum, continuation markers stamped); <code>messaging_and_tool_groups_never_merge</code> (adjacent peer-worker + tool-call runs partition into two separate render units, never one). The existing <code>every_special_render_tool_is_a_run_breaker</code> invariant doesn't need extending - peer/worker blocks are already breakers for tool-call grouping; this PR adds the symmetric "tool-call blocks are breakers for messaging-group grouping" check inline in the new partition pass.</dd>
     </dl>
   </div>
 </div>
@@ -1657,7 +1722,7 @@ chat continues here...
   <span class="accent">         \            </span>
   <span class="accent">            _~^~^~_  </span>
   <span class="accent">        \) /  o o  \ (/</span>
-  <span class="accent">          '_   -   _' </span>
+  <span class="accent">          '_ - _' </span>
   <span class="accent">          / '-----' \ </span>
 
 
