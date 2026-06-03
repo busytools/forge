@@ -325,6 +325,10 @@ fn measure_message_height_at(
     let stop_hook_snapshot = stop_hook_summary_for(app, idx);
     let group_collapse_levels =
         app.active_session().map(|s| s.group_collapse_levels.clone()).unwrap_or_default();
+    let messaging_group_collapse_levels = app
+        .active_session()
+        .map(|s| s.messaging_group_collapse_levels.clone())
+        .unwrap_or_default();
     let (h, rendered_lines) = measure_message_height(
         &mut app.active_messages_mut()[idx],
         &sp,
@@ -341,6 +345,7 @@ fn measure_message_height_at(
         },
         stop_hook_snapshot.hooks.as_slice(),
         &group_collapse_levels,
+        &messaging_group_collapse_levels,
     );
     app.sync_render_cache_message(idx);
     stats.measured_msgs += 1;
@@ -396,12 +401,17 @@ fn measure_message_height(
         crate::ui::message::grouping::GroupId,
         crate::ui::message::grouping::GroupCollapseLevel,
     >,
+    messaging_group_collapse_levels: &std::collections::HashMap<
+        crate::ui::message::grouping::GroupId,
+        crate::ui::message::grouping::GroupCollapseLevel,
+    >,
 ) -> (usize, usize) {
     let _t = crate::perf::start_with("chat::measure_msg", "blocks", msg.blocks.len());
     let render_context =
         message::MessageRenderContext::new(current_mode_id, width, layout_generation, options)
             .with_stop_hook_hooks(stop_hook_hooks)
-            .with_group_collapse_levels(group_collapse_levels);
+            .with_group_collapse_levels(group_collapse_levels)
+            .with_messaging_group_collapse_levels(messaging_group_collapse_levels);
     let (h, wrapped_lines) =
         message::measure_message_height_cached_with_context(msg, spinner, render_context);
     crate::perf::mark_with("chat::measure_msg_wrapped_lines", "lines", wrapped_lines);
@@ -788,6 +798,10 @@ fn render_culled_messages(
     let tools_collapsed = app.tools_collapsed;
     let group_collapse_levels =
         app.active_session().map(|s| s.group_collapse_levels.clone()).unwrap_or_default();
+    let messaging_group_collapse_levels = app
+        .active_session()
+        .map(|s| s.messaging_group_collapse_levels.clone())
+        .unwrap_or_default();
     for i in render_start..msg_count {
         let sp = msg_spinner(base, i, active_turn_assistant, &app.messages()[i]);
         let before = out.len();
@@ -805,7 +819,8 @@ fn render_culled_messages(
         };
         let ctx = message::MessageRenderContext::new(mode_id, width, layout_generation, options)
             .with_stop_hook_hooks(stop_hook.hooks.as_slice())
-            .with_group_collapse_levels(&group_collapse_levels);
+            .with_group_collapse_levels(&group_collapse_levels)
+            .with_messaging_group_collapse_levels(&messaging_group_collapse_levels);
         if structural_skip > 0 {
             let remaining_skip = message::render_message_from_offset_internal_with_mode(
                 &mut app.active_messages_mut()[i],

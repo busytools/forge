@@ -150,6 +150,13 @@ pub(crate) struct MessageRenderContext<'a> {
     /// branch L2 / L1 / L0 without a separate `App` borrow.
     group_collapse_levels:
         Option<&'a std::collections::HashMap<grouping::GroupId, grouping::GroupCollapseLevel>>,
+    /// Per-messaging-group collapse-level overrides, sibling of
+    /// `group_collapse_levels` keyed on the messaging-group's
+    /// `group_leader_id`. `None` (default) means every messaging
+    /// group renders at L2 summary when the global directive is
+    /// collapsed, L0 when expanded (via `resolve_group_level`).
+    messaging_group_collapse_levels:
+        Option<&'a std::collections::HashMap<grouping::GroupId, grouping::GroupCollapseLevel>>,
 }
 
 impl<'a> MessageRenderContext<'a> {
@@ -166,7 +173,29 @@ impl<'a> MessageRenderContext<'a> {
             options,
             stop_hook_summary_hooks: &[],
             group_collapse_levels: None,
+            messaging_group_collapse_levels: None,
         }
+    }
+
+    /// Attach the active session's per-messaging-group collapse
+    /// levels so the messaging-group dispatch sees L1/L0 overrides
+    /// and the cache signature folds them. Default (no call) keeps
+    /// every messaging group at its global-directive default.
+    pub(crate) fn with_messaging_group_collapse_levels(
+        mut self,
+        levels: &'a std::collections::HashMap<grouping::GroupId, grouping::GroupCollapseLevel>,
+    ) -> Self {
+        self.messaging_group_collapse_levels = Some(levels);
+        self
+    }
+
+    fn messaging_group_level(
+        &self,
+        id: &grouping::GroupId,
+    ) -> grouping::GroupCollapseLevel {
+        let per_group =
+            self.messaging_group_collapse_levels.and_then(|m| m.get(id).copied());
+        crate::ui::collapse::resolve_group_level(per_group, self.options.tools_collapsed)
     }
 
     /// Attach the active session's per-group collapse levels so the
@@ -502,20 +531,55 @@ fn append_assistant_blocks(
                     }
                 }
             }
-            grouping::RenderUnit::MessagingGroup { segments, .. } => {
-                // The per-message partitioner never emits this variant;
-                // only the session-walking partitioner does. If one ever
-                // reaches here, fall back to rendering each block in each
-                // segment as its individual row so the call still surfaces.
-                for segment in segments {
-                    for idx in segment.block_range {
-                        append_assistant_block(
-                            &mut msg.blocks[idx],
-                            spinner,
-                            render_context,
-                            layout,
-                            &mut state,
-                        );
+            grouping::RenderUnit::MessagingGroup { segments, group_leader_id } => {
+                let level = render_context.messaging_group_level(&group_leader_id);
+                match level {
+                    grouping::GroupCollapseLevel::L2Summary => {
+                        if state.has_body_content {
+                            layout.push_blank();
+                        }
+                        for segment in &segments {
+                            let summary_lines = peer_block::render_messaging_group_summary_line(
+                                segment,
+                                spinner.frame,
+                            );
+                            // Stamp the leading peer-class block's
+                            // hit-test fields so a click on the
+                            // summary line maps back to the segment's
+                            // first block via the existing
+                            // `locate_tool_call_block_at_click` walk.
+                            let y_in_msg = layout.height;
+                            let height =
+                                rendered_lines_height(&summary_lines, render_context.width);
+                            layout.push_wrapped_lines(summary_lines, render_context.width);
+                            if let Some(MessageBlock::ToolCall(tc)) =
+                                msg.blocks.get_mut(segment.block_range.start)
+                            {
+                                tc.last_measured_y_in_msg = y_in_msg;
+                                tc.last_measured_height = height;
+                                tc.last_measured_width = render_context.width;
+                            }
+                            state.has_body_content = true;
+                            state.has_visible_content = true;
+                            state.prev_was_tool = true;
+                        }
+                    }
+                    sub_level @ (grouping::GroupCollapseLevel::L1Titles
+                    | grouping::GroupCollapseLevel::L0Bodies) => {
+                        let mut group_ctx = render_context;
+                        group_ctx.options.tools_collapsed =
+                            matches!(sub_level, grouping::GroupCollapseLevel::L1Titles);
+                        for segment in segments {
+                            for idx in segment.block_range {
+                                append_assistant_block(
+                                    &mut msg.blocks[idx],
+                                    spinner,
+                                    group_ctx,
+                                    layout,
+                                    &mut state,
+                                );
+                            }
+                        }
                     }
                 }
             }
