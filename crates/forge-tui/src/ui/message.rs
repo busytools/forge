@@ -182,7 +182,8 @@ impl<'a> MessageRenderContext<'a> {
     }
 
     fn group_level(&self, id: &grouping::GroupId) -> grouping::GroupCollapseLevel {
-        self.group_collapse_levels.and_then(|m| m.get(id).copied()).unwrap_or_default()
+        let per_group = self.group_collapse_levels.and_then(|m| m.get(id).copied());
+        crate::ui::collapse::resolve_group_level(per_group, self.options.tools_collapsed)
     }
 
     /// #273: Attach a hooks list for the stop_hook_summary chip
@@ -346,14 +347,16 @@ fn append_user_blocks(
                 // workspace injects a `[Question id=...]` /
                 // `[Reply id=...]` / etc. user-turn, render a styled
                 // peer block instead of the default user bubble.
-                // Collapse state mirrors the global tool-card
-                // preference so Ctrl+X flips peer rows and tool rows
-                // together. Inbound peer turns don't (yet) have a
-                // per-row override the way ToolCallInfo does - the
-                // global default is the only knob.
+                // Inbound peer blocks follow the global collapse
+                // directive via `resolve_collapsed_bool`. Per-block
+                // click override wins; absent falls through to
+                // `tools_collapsed`.
                 if let Some(kind) = peer_block::detect_inbound(&block.text) {
                     let trailing_gap = block.trailing_blank_lines();
-                    let collapsed = block.peer_collapsed_override.unwrap_or(tools_collapsed);
+                    let collapsed = crate::ui::collapse::resolve_collapsed_bool(
+                        block.peer_collapsed_override,
+                        tools_collapsed,
+                    );
                     // #163 + #189: same-worker streak followers drop
                     // the `▶ Verb name` header line and just stack body
                     // lines under the previous envelope. Different-worker
@@ -634,19 +637,17 @@ fn append_assistant_tool_block(
         if !state.prev_was_tool && state.has_body_content {
             layout.push_blank();
         }
-        // #143 item 5: routine `mcp__forge__*` calls collapse to a
-        // one-line summary by default - the wire shape is
-        // predictable and the user-facing intent is target +
-        // correlation_id, not the JSON args. A per-tc
-        // `collapsed_override` (set by clicking on the row) still
-        // wins so the user can expand for a specific call when
-        // they want the body preview. The global `tools_collapsed`
-        // setting is ignored on this path because these cards are
-        // intentionally compact by default; it'd be confusing to
-        // make them honor a setting whose name implies the
-        // OPPOSITE default behaviour ("tools_collapsed=false" =
-        // "show full tool cards" = wrong for these).
-        let collapsed = tc.collapsed_override.unwrap_or(true);
+        // Outbound peer-tool blocks (peers__* / workers__*) follow
+        // the global collapse directive via the unified
+        // `resolve_collapsed_bool`. Per-block click override wins;
+        // absent falls through to `tools_collapsed`. The invariant:
+        // every render-time collapsed-decision routes through a
+        // resolver in `crate::ui::collapse`; no inline
+        // `unwrap_or(<arbitrary>)`.
+        let collapsed = crate::ui::collapse::resolve_collapsed_bool(
+            tc.collapsed_override,
+            render_context.options.tools_collapsed,
+        );
         let lines = peer_block::render_outbound(&kind, collapsed);
         // Same hit-target stamping the standard tool-call branch
         // below does so `mouse::locate_tool_call_block_at_click` can

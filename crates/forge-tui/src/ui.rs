@@ -1,6 +1,7 @@
 mod autocomplete;
 pub(crate) mod chat;
 mod chat_view;
+pub(crate) mod collapse;
 mod config;
 mod diff;
 mod diff_overlay;

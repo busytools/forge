@@ -97,12 +97,15 @@ pub(super) fn tool_call_body_depends_on_width(tc: &ToolCallInfo) -> bool {
 }
 
 pub(super) fn tool_call_effectively_collapsed(tc: &ToolCallInfo, tools_collapsed: bool) -> bool {
-    let has_diff = tc.content.iter().any(|c| matches!(c, model::ToolCallContent::Diff(_)));
-    // Per-tool override (set by clicking the row) wins; otherwise fall
-    // back to the global session-level collapse default. The diff
-    // short-circuit keeps diffs visible regardless of preference.
-    let prefers_collapsed = tc.collapsed_override.unwrap_or(tools_collapsed);
-    prefers_collapsed && !has_diff
+    // Carve-out kinds (Execute / Diff content / Monitor / Workflow)
+    // render expanded regardless of the global directive. Their chat
+    // paths (Execute live-streaming, diff view, render_lifecycle_one_liner)
+    // bypass this function by construction; the helper here is the
+    // belt to the rest of the system's suspenders.
+    if crate::ui::collapse::is_carved_out_from_global_directive(tc) {
+        return false;
+    }
+    crate::ui::collapse::resolve_collapsed_bool(tc.collapsed_override, tools_collapsed)
 }
 
 pub(super) fn render_collapsed_tool_call_summary(

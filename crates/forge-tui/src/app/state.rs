@@ -17,7 +17,9 @@ pub use messages::{
     RateLimitIncidentKey, SystemSeverity, TextBlock, TextBlockSpacing, WelcomeBlock,
     hash_text_block_content, hash_welcome_block_content,
 };
-pub use tool_call_info::{TerminalSnapshotMode, ToolCallInfo, is_execute_tool_name};
+pub use tool_call_info::{
+    TerminalSnapshotMode, ToolCallInfo, is_execute_tool_name, is_monitor_tool_name,
+};
 pub use types::{
     AppStatus, ExtraUsage, HelpView, HistoryRetentionPolicy, HistoryRetentionStats, LoginHint,
     McpState, MessageUsage, ModeInfo, ModeState, MonitorEntry, MonitorStatus, PasteSessionState,
@@ -1635,15 +1637,19 @@ impl App {
             .unwrap_or(false)
     }
 
-    /// Active session's group collapse level for `id`. Defaults to
-    /// L2 (summary line) when no override is stored.
+    /// Active session's group collapse level for `id`. Per-group
+    /// override wins; absent falls through to the global directive
+    /// via `resolve_group_level` (L2Summary when collapsed, L0Bodies
+    /// when expanded). Used by mouse handlers, replay tests, and
+    /// non-render consumers; the chat render path consults the same
+    /// resolver via `MessageRenderContext::group_level`.
     pub fn group_collapse_level(
         &self,
         id: &crate::ui::message::grouping::GroupId,
     ) -> crate::ui::message::grouping::GroupCollapseLevel {
-        self.active_session()
-            .and_then(|s| s.group_collapse_levels.get(id).copied())
-            .unwrap_or_default()
+        let per_group =
+            self.active_session().and_then(|s| s.group_collapse_levels.get(id).copied());
+        crate::ui::collapse::resolve_group_level(per_group, self.tools_collapsed)
     }
 
     /// Advance the group's collapse level one step (L2 -> L1 -> L0 -> L2).
