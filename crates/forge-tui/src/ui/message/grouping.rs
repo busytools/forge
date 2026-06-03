@@ -327,6 +327,28 @@ pub fn group_leader_at(blocks: &[MessageBlock], block_idx: usize) -> Option<(Gro
     })
 }
 
+/// Sibling of [`group_leader_at`] for messaging groups. Returns the
+/// [`GroupId`] + segment-block-count when `block_idx` is the leading
+/// block of a `RenderUnit::MessagingGroup` segment in this message.
+/// `None` for non-leader blocks (so per-block click toggle wins).
+pub fn messaging_group_leader_at(
+    blocks: &[MessageBlock],
+    block_idx: usize,
+) -> Option<(GroupId, usize)> {
+    let units = partition_blocks_into_render_units(blocks);
+    units.into_iter().find_map(|unit| match unit {
+        RenderUnit::MessagingGroup { segments, group_leader_id } => {
+            let segment = segments.first()?;
+            if segment.block_range.start == block_idx {
+                Some((group_leader_id, segment.block_range.len()))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    })
+}
+
 /// True when `block` is a hidden / chat-suppressed tool call.
 /// Hidden tools render nothing in the chat stream; the partitioner
 /// emits them as `RenderUnit::Individual` (to preserve their block
