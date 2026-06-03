@@ -236,6 +236,7 @@ fn build_tool_info_from_tool_call(
         cache: BlockCache::default(),
         collapsed_override: None,
         last_measured_y_in_msg: 0,
+        answered_questions: Vec::new(),
     };
     tool_info.raw_input_bytes =
         tool_info.raw_input.as_ref().map_or(0, ToolCallInfo::estimate_json_value_bytes);

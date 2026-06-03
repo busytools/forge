@@ -33,10 +33,11 @@ use crate::app::MessageBlock;
 ///   peers__ask_agent / peers__tell_agent / workers__ask /
 ///   workers__tell).
 ///
-/// `tc.hidden == true` (chat-suppressed: Task* / AskUserQuestion /
-/// Schedule* / Cron*) is NOT a breaker - hidden tools render nothing
-/// visible in the chat stream, so they pass through the run so
-/// adjacent visible groups merge across them.
+/// `tc.hidden == true` (chat-suppressed: Task* / AskUserQuestion while
+/// unanswered / Schedule* / Cron*) is NOT a breaker - hidden tools
+/// render nothing visible in the chat stream, so they pass through the
+/// run so adjacent visible groups merge across them. (AskUserQuestion
+/// un-hides once answered and then breaks, per the arm above.)
 ///
 /// Everything else folds, including WebFetch / WebSearch / LSP /
 /// plain MCP calls (all render as the standard collapsible tool
@@ -47,6 +48,12 @@ pub fn is_run_breaker(block: &MessageBlock) -> bool {
     };
     if tc.hidden {
         return false;
+    }
+    // An answered AskUserQuestion un-hides (the record at answer time
+    // flips it visible) and renders the question -> answer card, so it
+    // breaks runs like any bespoke-render tool.
+    if tc.is_ask_question_tool() {
+        return true;
     }
     if is_edit_tool(&tc.sdk_tool_name) {
         return true;
@@ -998,6 +1005,7 @@ mod tests {
             cache: BlockCache::default(),
             collapsed_override: None,
             last_measured_y_in_msg: 0,
+            answered_questions: Vec::new(),
         }))
     }
 
@@ -1146,6 +1154,13 @@ mod tests {
                 "{name} renders as a peer block and MUST break runs",
             );
         }
+        // AskUserQuestion is hidden (pass-through) while unanswered;
+        // once answered it un-hides and renders the answered-card, so a
+        // visible (non-hidden) one MUST break.
+        assert!(
+            is_run_breaker(&tool_call_block("x", "AskUserQuestion")),
+            "answered AskUserQuestion renders the answered-card and MUST break runs",
+        );
     }
 
     #[test]

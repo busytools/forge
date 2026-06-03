@@ -824,6 +824,7 @@ mod tests {
             cache: BlockCache::default(),
             collapsed_override: None,
             last_measured_y_in_msg: 0,
+            answered_questions: Vec::new(),
         }
     }
 
@@ -859,6 +860,7 @@ mod tests {
             cache: BlockCache::default(),
             collapsed_override: None,
             last_measured_y_in_msg: 0,
+            answered_questions: Vec::new(),
         }
     }
 

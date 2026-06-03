@@ -56,7 +56,7 @@ pub use service_status_check::start_service_status_check;
 pub(crate) use state::MarkdownRenderKey;
 pub(crate) use state::cache_metrics;
 pub use state::{
-    App, AppStatus, BlockCache, CacheMetrics, CachedMessageSegment, ChatMessage,
+    AnsweredQuestion, App, AppStatus, BlockCache, CacheMetrics, CachedMessageSegment, ChatMessage,
     ChatRenderTraceState, ChatViewport, ExtraUsage, HelpView, IncrementalMarkdown,
     InvalidationLevel, LayoutInvalidation, LoginHint, McpState, MessageBlock, MessageRenderCache,
     MessageRenderCacheKey, MessageRenderSignature, MessageRole, MessageUsage, ModeInfo, ModeState,
