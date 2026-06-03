@@ -157,6 +157,13 @@ pub(crate) struct MessageRenderContext<'a> {
     /// collapsed, L0 when expanded (via `resolve_group_level`).
     messaging_group_collapse_levels:
         Option<&'a std::collections::HashMap<grouping::GroupId, grouping::GroupCollapseLevel>>,
+    /// Pre-computed render-unit list for THIS message produced by
+    /// the session-walking partitioner. `Some` carries cross-message
+    /// peer/worker run state - segments may have continuation flags
+    /// and a shared `group_leader_id` with segments in sibling
+    /// messages. `None` falls back to the per-message partition,
+    /// which only sees within-message runs.
+    session_message_units: Option<&'a [grouping::RenderUnit]>,
 }
 
 impl<'a> MessageRenderContext<'a> {
@@ -174,7 +181,18 @@ impl<'a> MessageRenderContext<'a> {
             stop_hook_summary_hooks: &[],
             group_collapse_levels: None,
             messaging_group_collapse_levels: None,
+            session_message_units: None,
         }
+    }
+
+    /// Attach a pre-computed render-unit list for THIS message
+    /// (sliced out of `partition_session_into_render_units`'s output
+    /// over the full session). Required for cross-message peer/worker
+    /// run merging to fire; absent falls back to the per-message
+    /// partition.
+    pub(crate) fn with_session_message_units(mut self, units: &'a [grouping::RenderUnit]) -> Self {
+        self.session_message_units = Some(units);
+        self
     }
 
     /// Attach the active session's per-messaging-group collapse
@@ -468,8 +486,18 @@ fn append_assistant_blocks(
 
     let show_compacting = spinner.show_compacting;
     let mut state = AssistantLayoutState::default();
-    let units = grouping::partition_blocks_into_render_units(&msg.blocks);
-    for unit in units {
+    // Session-walking partition wins when attached: it carries
+    // cross-message peer/worker run state (shared group_leader_id,
+    // continuation flags, group_total_count). Absent (no
+    // `with_session_message_units` call) falls back to the
+    // per-message partition, which only sees within-message runs.
+    let owned_units: Vec<grouping::RenderUnit> =
+        if let Some(slice) = render_context.session_message_units {
+            slice.to_vec()
+        } else {
+            grouping::partition_blocks_into_render_units(&msg.blocks)
+        };
+    for unit in owned_units.iter().cloned() {
         match unit {
             grouping::RenderUnit::Individual(idx) => {
                 append_assistant_block(
@@ -1379,25 +1407,46 @@ fn build_message_render_signature(
         hook.command.hash(&mut hasher);
         hook.duration_ms.hash(&mut hasher);
     }
-    // Chat tool-call grouping: fold the level of each group present in
-    // this message so a `cycle_group_collapse_level` flip on a focused
-    // group invalidates the cache. Empty `group_collapse_levels` map
-    // hashes all groups at L2 default; the partition walk is cheap
-    // (one pass over `msg.blocks`) and only runs on a cache-miss-style
-    // path that was already iterating blocks.
-    let units = grouping::partition_blocks_into_render_units(&msg.blocks);
-    for unit in &units {
-        if let grouping::RenderUnit::Group { leader_id, range, aggregate_status, .. } = unit {
-            range.start.hash(&mut hasher);
-            range.end.hash(&mut hasher);
-            render_context.group_level(leader_id).hash(&mut hasher);
-            // v2.1 decision 6: aggregate_status drives the L2 summary's
-            // status_icon. Per-tool hashes below already fold status
-            // transitions, but folding the aggregate here makes the
-            // dependency explicit + keeps the message cache invariant
-            // tight when a future refactor changes how aggregates are
-            // computed.
-            aggregate_status.hash(&mut hasher);
+    // Chat tool-call + messaging grouping: fold the level of each
+    // group present in this message so a `cycle_*_collapse_level`
+    // flip invalidates the cache. The session-walking partition
+    // attached to the context (when present) folds cross-message
+    // peer/worker continuation state too - segment counts, group
+    // totals, leader ids - so a downstream turn's extension of an
+    // in-flight messaging run invalidates this message's cache.
+    let owned_units: Vec<grouping::RenderUnit> =
+        if let Some(slice) = render_context.session_message_units {
+            slice.to_vec()
+        } else {
+            grouping::partition_blocks_into_render_units(&msg.blocks)
+        };
+    for unit in &owned_units {
+        match unit {
+            grouping::RenderUnit::Group { leader_id, range, aggregate_status, .. } => {
+                range.start.hash(&mut hasher);
+                range.end.hash(&mut hasher);
+                render_context.group_level(leader_id).hash(&mut hasher);
+                aggregate_status.hash(&mut hasher);
+            }
+            grouping::RenderUnit::MessagingGroup { segments, group_leader_id } => {
+                group_leader_id.as_str().hash(&mut hasher);
+                render_context.messaging_group_level(group_leader_id).hash(&mut hasher);
+                for segment in segments {
+                    segment.msg_idx.hash(&mut hasher);
+                    segment.block_range.start.hash(&mut hasher);
+                    segment.block_range.end.hash(&mut hasher);
+                    segment.segment_count.hash(&mut hasher);
+                    segment.segment_continues_above.hash(&mut hasher);
+                    segment.segment_continues_below.hash(&mut hasher);
+                    segment.group_total_count.hash(&mut hasher);
+                    segment.aggregate_status.hash(&mut hasher);
+                    segment.segment_outbound_targets.targets.hash(&mut hasher);
+                    segment.segment_outbound_targets.overflow_n.hash(&mut hasher);
+                    segment.segment_inbound_targets.targets.hash(&mut hasher);
+                    segment.segment_inbound_targets.overflow_n.hash(&mut hasher);
+                }
+            }
+            grouping::RenderUnit::Individual(_) => {}
         }
     }
     MessageRenderSignature(hasher.finish())

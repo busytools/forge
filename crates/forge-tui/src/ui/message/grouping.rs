@@ -706,7 +706,6 @@ pub fn partition_session_into_render_units(
     let mut messaging_drafts: Vec<SessionDraftSegment> = Vec::new();
 
     let mut active_run_leader: Option<GroupId> = None;
-    let mut active_run_first_run_idx: Option<usize> = None;
 
     for (msg_idx, msg) in messages.iter().enumerate() {
         let classes = &classifications[msg_idx];
@@ -716,7 +715,6 @@ pub fn partition_session_into_render_units(
             match &classes[i] {
                 SessionBlockClass::Breaker => {
                     active_run_leader = None;
-                    active_run_first_run_idx = None;
                     i += 1;
                     continue;
                 }
@@ -786,7 +784,6 @@ pub fn partition_session_into_render_units(
 
             if active_run_leader.is_none() {
                 active_run_leader = Some(leader_id.clone());
-                active_run_first_run_idx = Some(messaging_drafts.len());
             }
 
             messaging_drafts.push(SessionDraftSegment {
@@ -805,7 +802,6 @@ pub fn partition_session_into_render_units(
                 && matches!(classes[segment_end], SessionBlockClass::Breaker)
             {
                 active_run_leader = None;
-                active_run_first_run_idx = None;
                 i = segment_end + 1;
                 continue;
             }
@@ -814,7 +810,6 @@ pub fn partition_session_into_render_units(
             i = segment_end;
         }
     }
-    let _ = active_run_first_run_idx; // intentionally unused after walk
 
     // Pass 2: group segments by leader_id, stamp continuation +
     // totals.
@@ -891,7 +886,7 @@ pub fn partition_session_into_render_units(
                     msg_units.push(shift_unit(unit, cursor));
                 }
             }
-            let leader_id = find_segment_leader(&messaging_drafts, &segment_by_draft_idx, &segment);
+            let leader_id = find_segment_leader(&messaging_drafts, &segment);
             msg_units.push(RenderUnit::MessagingGroup {
                 segments: vec![segment.clone()],
                 group_leader_id: leader_id,
@@ -934,11 +929,7 @@ fn update_aggregate(
 /// Look up the leader id for a segment by scanning the draft list
 /// for the matching `(msg_idx, block_range.start)` pair. The leader
 /// is shared across cross-message segments of the same run.
-fn find_segment_leader(
-    drafts: &[SessionDraftSegment],
-    _segments: &[MessagingGroupSegment],
-    segment: &MessagingGroupSegment,
-) -> GroupId {
+fn find_segment_leader(drafts: &[SessionDraftSegment], segment: &MessagingGroupSegment) -> GroupId {
     for draft in drafts {
         if draft.msg_idx == segment.msg_idx && draft.block_range.start == segment.block_range.start
         {
@@ -1220,7 +1211,7 @@ mod tests {
             }
             RenderUnit::Individual(_) => panic!("expected Group"),
             RenderUnit::MessagingGroup { .. } => {
-                unreachable!("per-message partitioner never emits MessagingGroup")
+                unreachable!("tool-call-only test input does not produce MessagingGroup")
             }
         }
     }
@@ -1238,7 +1229,7 @@ mod tests {
             }
             RenderUnit::Individual(_) => panic!("expected Group, got Individual"),
             RenderUnit::MessagingGroup { .. } => {
-                unreachable!("per-message partitioner never emits MessagingGroup")
+                unreachable!("tool-call-only test input does not produce MessagingGroup")
             }
         }
     }
@@ -1257,7 +1248,7 @@ mod tests {
             }
             RenderUnit::Individual(_) => panic!("expected Group"),
             RenderUnit::MessagingGroup { .. } => {
-                unreachable!("per-message partitioner never emits MessagingGroup")
+                unreachable!("tool-call-only test input does not produce MessagingGroup")
             }
         }
     }
@@ -1285,7 +1276,7 @@ mod tests {
             }
             RenderUnit::Individual(_) => panic!("expected first Group"),
             RenderUnit::MessagingGroup { .. } => {
-                unreachable!("per-message partitioner never emits MessagingGroup")
+                unreachable!("tool-call-only test input does not produce MessagingGroup")
             }
         }
         assert!(matches!(units[1], RenderUnit::Individual(3)));
@@ -1296,7 +1287,7 @@ mod tests {
             }
             RenderUnit::Individual(_) => panic!("expected second Group"),
             RenderUnit::MessagingGroup { .. } => {
-                unreachable!("per-message partitioner never emits MessagingGroup")
+                unreachable!("tool-call-only test input does not produce MessagingGroup")
             }
         }
     }
@@ -1322,7 +1313,7 @@ mod tests {
             }
             RenderUnit::Individual(_) => panic!("expected first Group"),
             RenderUnit::MessagingGroup { .. } => {
-                unreachable!("per-message partitioner never emits MessagingGroup")
+                unreachable!("tool-call-only test input does not produce MessagingGroup")
             }
         }
         assert!(matches!(units[1], RenderUnit::Individual(1)));
@@ -1333,7 +1324,7 @@ mod tests {
             }
             RenderUnit::Individual(_) => panic!("expected third Group"),
             RenderUnit::MessagingGroup { .. } => {
-                unreachable!("per-message partitioner never emits MessagingGroup")
+                unreachable!("tool-call-only test input does not produce MessagingGroup")
             }
         }
     }
@@ -1358,7 +1349,7 @@ mod tests {
             }
             RenderUnit::Individual(_) => panic!("expected Group"),
             RenderUnit::MessagingGroup { .. } => {
-                unreachable!("per-message partitioner never emits MessagingGroup")
+                unreachable!("tool-call-only test input does not produce MessagingGroup")
             }
         }
     }
@@ -1460,7 +1451,7 @@ mod tests {
             }
             RenderUnit::Individual(_) => panic!("expected Group"),
             RenderUnit::MessagingGroup { .. } => {
-                unreachable!("per-message partitioner never emits MessagingGroup")
+                unreachable!("tool-call-only test input does not produce MessagingGroup")
             }
         }
     }
@@ -1478,7 +1469,7 @@ mod tests {
             }
             RenderUnit::Individual(_) => panic!("expected Group"),
             RenderUnit::MessagingGroup { .. } => {
-                unreachable!("per-message partitioner never emits MessagingGroup")
+                unreachable!("tool-call-only test input does not produce MessagingGroup")
             }
         }
     }
