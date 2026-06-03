@@ -1,1 +1,0 @@
-You are now active. Run `gh pr list --search "review:none" --json number,title,author,isDraft --limit 10` to find PRs awaiting review. Skip drafts. For each non-draft PR ready for review, decide whether to start now (priority + PR size). Report back to lead via `workers__tell("lead", ...)` with either 'reviewing PR #N now' or 'no PRs awaiting review, idle'.

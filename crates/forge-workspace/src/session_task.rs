@@ -1535,11 +1535,10 @@ mod team_hook_tests {
     }
 
     /// One-time setup writing the canonical shipped default charters
-    /// (planner / implementer / reviewer / debugger / tester / lead)
-    /// to a shared tempdir + redirecting `forge_team_root()` to it
-    /// for the rest of the process. All tests in this module call
-    /// `ensure_test_charter_root()` before exercising the team-spawn
-    /// or kick paths.
+    /// (implementer + lead) to a shared tempdir + redirecting
+    /// `forge_team_root()` to it for the rest of the process. All
+    /// tests in this module call `ensure_test_charter_root()` before
+    /// exercising the team-spawn or kick paths.
     fn ensure_test_charter_root() {
         static ROOT: OnceLock<tempfile::TempDir> = OnceLock::new();
         let dir = ROOT.get_or_init(|| {
@@ -1549,29 +1548,9 @@ mod team_hook_tests {
             // `include_str!` paths are relative to THIS source file.
             for (label, charter, kick) in [
                 (
-                    "planner",
-                    include_str!("../../../docs/forge-team-defaults/planner/charter.md"),
-                    include_str!("../../../docs/forge-team-defaults/planner/kick.md"),
-                ),
-                (
                     "implementer",
                     include_str!("../../../docs/forge-team-defaults/implementer/charter.md"),
                     include_str!("../../../docs/forge-team-defaults/implementer/kick.md"),
-                ),
-                (
-                    "reviewer",
-                    include_str!("../../../docs/forge-team-defaults/reviewer/charter.md"),
-                    include_str!("../../../docs/forge-team-defaults/reviewer/kick.md"),
-                ),
-                (
-                    "debugger",
-                    include_str!("../../../docs/forge-team-defaults/debugger/charter.md"),
-                    include_str!("../../../docs/forge-team-defaults/debugger/kick.md"),
-                ),
-                (
-                    "tester",
-                    include_str!("../../../docs/forge-team-defaults/tester/charter.md"),
-                    include_str!("../../../docs/forge-team-defaults/tester/kick.md"),
                 ),
                 (
                     "lead",
@@ -1600,18 +1579,14 @@ mod team_hook_tests {
         ensure_test_charter_root();
         let (workspace, _update_rx) = Workspace::testing_stub();
         workspace.enable_test_dispatch_intercept();
-        workspace.seed_test_project_with_team(
-            "proj-x",
-            "/tmp/proj-x",
-            &["planner".to_owned(), "reviewer".to_owned()],
-        );
+        workspace.seed_test_project_with_team("proj-x", "/tmp/proj-x", &["implementer".to_owned()]);
 
         on_connected_for_test(&workspace, &synth_lead_key("proj-x"), "lead-uuid");
 
         let dispatched = workspace.drain_test_dispatch_buffer();
         let spawns: Vec<&Command> =
             dispatched.iter().filter(|c| matches!(c, Command::SpawnWorker { .. })).collect();
-        assert_eq!(spawns.len(), 2, "one SpawnWorker per role");
+        assert_eq!(spawns.len(), 1, "one SpawnWorker per role");
     }
 
     /// A lead Connected for a project with NO team configuration is
@@ -1652,7 +1627,7 @@ mod team_hook_tests {
         ensure_test_charter_root();
         let (workspace, _update_rx) = Workspace::testing_stub();
         workspace.enable_test_dispatch_intercept();
-        workspace.seed_test_project_with_team("proj-x", "/tmp/proj-x", &["planner".to_owned()]);
+        workspace.seed_test_project_with_team("proj-x", "/tmp/proj-x", &["implementer".to_owned()]);
 
         let lead_synth = synth_lead_key("proj-x");
 
@@ -1673,7 +1648,7 @@ mod team_hook_tests {
         workspace.insert_live_worker(
             &project_key,
             crate::mcp::workers::types::WorkerEntry {
-                label: "planner".into(),
+                label: "implementer".into(),
                 charter: "test".into(),
                 session_key: SessionKey::from_session_id("worker-uuid"),
                 status: forge_primitives::WorkerLiveness::Running,
@@ -1709,7 +1684,7 @@ mod team_hook_tests {
         workspace.enable_test_dispatch_intercept();
         workspace.start_kick_dispatcher();
 
-        let worker_synth = SessionKey::from_session_id("__spawn_worker_forge_planner_abc123__");
+        let worker_synth = SessionKey::from_session_id("__spawn_worker_forge_implementer_abc123__");
         on_connected_for_test(&workspace, &worker_synth, "worker-uuid");
 
         // Drainer pulls the just-enqueued kick on the next runtime
@@ -1721,12 +1696,12 @@ mod team_hook_tests {
         let dispatched = workspace.drain_test_dispatch_buffer();
         let prompts: Vec<&Command> =
             dispatched.iter().filter(|c| matches!(c, Command::Prompt { .. })).collect();
-        assert_eq!(prompts.len(), 1, "planner worker gets exactly one kick");
+        assert_eq!(prompts.len(), 1, "implementer worker gets exactly one kick");
         if let Command::Prompt { key, text, .. } = prompts[0] {
             assert_eq!(key.as_str(), "worker-uuid", "kick targets the worker's real session id");
             assert!(
-                text.contains("gh issue list -l untriaged"),
-                "kick carries planner-specific gh command; got: {text}",
+                text.contains("gh issue list"),
+                "kick carries the role-specific gh command; got: {text}",
             );
             assert!(
                 text.contains("You are now active"),
