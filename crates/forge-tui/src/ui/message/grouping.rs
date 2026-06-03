@@ -420,6 +420,401 @@ pub fn partition_blocks_into_render_units(blocks: &[MessageBlock]) -> Vec<Render
     units
 }
 
+/// Classification of a single block for session-walking partition.
+/// `Outbound` and `Inbound` extend a messaging run; the pass-through
+/// kinds extend a run without contributing to it; `Breaker` ends a
+/// run. See [`partition_session_into_render_units`].
+#[derive(Debug, Clone)]
+enum SessionBlockClass {
+    /// Peer/worker outbound tool call. Carries the target's display
+    /// name and the block's tool-use id.
+    Outbound { target: String, tool_use_id: String },
+    /// User-turn text that carries a peer envelope wrapper. Carries
+    /// the sender's display name.
+    Inbound { from: String },
+    /// Hidden tool call. Renders nothing visible; passes through
+    /// without contributing.
+    HiddenPassThrough,
+    /// Plain text inside a User-role message (without a peer envelope
+    /// wrapper). Treated as a turn-separator: passes through a
+    /// messaging run rather than breaking it.
+    UserTurnPassThrough,
+    /// Any other visible block. Ends an in-flight run.
+    Breaker,
+}
+
+/// Classify one block in the context of its enclosing message's role.
+fn classify_session_block(role: &crate::app::MessageRole, block: &MessageBlock) -> SessionBlockClass {
+    use crate::app::MessageRole;
+    use crate::ui::peer_block::{self, PeerInboundKind, PeerOutboundKind};
+    match block {
+        MessageBlock::ToolCall(tc) => {
+            if tc.hidden {
+                return SessionBlockClass::HiddenPassThrough;
+            }
+            if let Some(kind) = peer_block::detect_outbound(tc) {
+                let target = match kind {
+                    PeerOutboundKind::Ask { target, .. } | PeerOutboundKind::Tell { target, .. } => target,
+                };
+                return SessionBlockClass::Outbound { target, tool_use_id: tc.id.clone() };
+            }
+            SessionBlockClass::Breaker
+        }
+        MessageBlock::Text(text) => {
+            if let Some(kind) = peer_block::detect_inbound(&text.text) {
+                let from = match kind {
+                    PeerInboundKind::Question { from, .. }
+                    | PeerInboundKind::Message { from, .. }
+                    | PeerInboundKind::Reply { from, .. }
+                    | PeerInboundKind::LateReply { from, .. }
+                    | PeerInboundKind::RecipientExpired { from, .. } => from,
+                    PeerInboundKind::CallerTimeout { target, .. }
+                    | PeerInboundKind::DeliveryFailure { target, .. } => target,
+                    PeerInboundKind::WorkerSpawnFailed { label, .. } => label,
+                };
+                return SessionBlockClass::Inbound { from };
+            }
+            if matches!(role, MessageRole::User) {
+                SessionBlockClass::UserTurnPassThrough
+            } else {
+                SessionBlockClass::Breaker
+            }
+        }
+        _ => SessionBlockClass::Breaker,
+    }
+}
+
+/// Append a target name to the rolling first-N + overflow tally. The
+/// first `TARGETS_NAMED_LIMIT` distinct targets render by name; every
+/// additional distinct target counts into `overflow_n`. Repeat hits
+/// of an already-named target are no-ops.
+fn append_target(targets: &mut MessagingDirectionTargets, name: &str) {
+    const TARGETS_NAMED_LIMIT: usize = 2;
+    if targets.targets.iter().any(|t| t == name) {
+        return;
+    }
+    if targets.targets.len() < TARGETS_NAMED_LIMIT {
+        targets.targets.push(name.to_owned());
+    } else {
+        targets.overflow_n += 1;
+    }
+}
+
+/// Walks a complete session's messages and produces per-message
+/// render-unit lists, threading peer/worker run-state across message
+/// boundaries so a messaging-group can span multiple turns. Non-peer
+/// blocks are partitioned per-message via the existing
+/// [`partition_blocks_into_render_units`] logic for tool-call
+/// grouping.
+///
+/// Returns a `Vec<Vec<RenderUnit>>` parallel to `messages`: the inner
+/// vec is what the per-message renderer dispatches over.
+///
+/// Implementation: two-pass walk. Pass 1 (this function's first half)
+/// classifies every block, identifies maximal messaging runs across
+/// messages, and emits draft segments. Pass 2 (second half) stamps
+/// continuation flags and group_total_count onto each segment.
+/// Finally per-message render-unit lists are assembled by merging
+/// segment units back into the position the messaging blocks held in
+/// each message and partitioning the gaps via the per-message
+/// partitioner.
+/// Draft segment captured during the session walk's first pass. The
+/// second pass groups drafts by `leader_id` to stamp continuation
+/// flags + `group_total_count` onto the final
+/// [`MessagingGroupSegment`].
+struct SessionDraftSegment {
+    msg_idx: usize,
+    block_range: Range<usize>,
+    segment_count: usize,
+    segment_outbound_targets: MessagingDirectionTargets,
+    segment_inbound_targets: MessagingDirectionTargets,
+    aggregate_status: crate::agent::model::ToolCallStatus,
+    leader_id: GroupId,
+}
+
+pub fn partition_session_into_render_units(
+    messages: &[crate::app::ChatMessage],
+) -> Vec<Vec<RenderUnit>> {
+    let classifications: Vec<Vec<SessionBlockClass>> = messages
+        .iter()
+        .map(|msg| msg.blocks.iter().map(|b| classify_session_block(&msg.role, b)).collect())
+        .collect();
+
+    // Per-message: ranges of indices that belong to a messaging run,
+    // plus the run identifier each range belongs to. Same run id is
+    // shared across messages when the run spans turn boundaries.
+    let mut messaging_drafts: Vec<SessionDraftSegment> = Vec::new();
+
+    let mut active_run_leader: Option<GroupId> = None;
+    let mut active_run_first_run_idx: Option<usize> = None;
+
+    for (msg_idx, msg) in messages.iter().enumerate() {
+        let classes = &classifications[msg_idx];
+        let mut i = 0;
+        while i < classes.len() {
+            // Skip leading non-messaging breakers - they end the run.
+            match &classes[i] {
+                SessionBlockClass::Breaker => {
+                    active_run_leader = None;
+                    active_run_first_run_idx = None;
+                    i += 1;
+                    continue;
+                }
+                SessionBlockClass::HiddenPassThrough | SessionBlockClass::UserTurnPassThrough => {
+                    // Pass-through without an active run: just skip.
+                    i += 1;
+                    continue;
+                }
+                _ => {}
+            }
+
+            // Found a messaging-class block. Open or extend a run.
+            let segment_start = i;
+            let mut segment_end = i;
+            let mut outbound_targets = MessagingDirectionTargets::default();
+            let mut inbound_targets = MessagingDirectionTargets::default();
+            let mut segment_count = 0_usize;
+            let mut segment_leader: Option<GroupId> = None;
+            let mut any_status: Option<crate::agent::model::ToolCallStatus> = None;
+
+            // Scan within this message until we hit a Breaker, ALWAYS
+            // extending across HiddenPassThrough + UserTurnPassThrough.
+            while segment_end < classes.len() {
+                match &classes[segment_end] {
+                    SessionBlockClass::Outbound { target, tool_use_id } => {
+                        if segment_leader.is_none() && active_run_leader.is_none() {
+                            segment_leader =
+                                Some(GroupId::from_leader_id(tool_use_id.clone()));
+                        }
+                        append_target(&mut outbound_targets, target);
+                        segment_count += 1;
+                        if let MessageBlock::ToolCall(tc) = &msg.blocks[segment_end] {
+                            update_aggregate(&mut any_status, tc.status);
+                        }
+                    }
+                    SessionBlockClass::Inbound { from } => {
+                        if segment_leader.is_none() && active_run_leader.is_none() {
+                            // Inbound blocks don't carry a tool-use id;
+                            // use a stable synthetic leader keyed on
+                            // (msg_idx, block_idx).
+                            segment_leader = Some(GroupId::from_leader_id(format!(
+                                "msg-{msg_idx}-block-{segment_end}-inbound"
+                            )));
+                        }
+                        append_target(&mut inbound_targets, from);
+                        segment_count += 1;
+                    }
+                    SessionBlockClass::HiddenPassThrough
+                    | SessionBlockClass::UserTurnPassThrough => {
+                        // Pass through without contributing.
+                    }
+                    SessionBlockClass::Breaker => break,
+                }
+                segment_end += 1;
+            }
+
+            if segment_count == 0 {
+                // The scan only saw pass-through blocks - no real
+                // messaging contribution. Treat as gap; advance.
+                i = segment_end.max(i + 1);
+                continue;
+            }
+
+            let leader_id = active_run_leader
+                .clone()
+                .or(segment_leader)
+                .unwrap_or_else(|| GroupId::from_leader_id(format!("msg-{msg_idx}-fallback")));
+
+            if active_run_leader.is_none() {
+                active_run_leader = Some(leader_id.clone());
+                active_run_first_run_idx = Some(messaging_drafts.len());
+            }
+
+            messaging_drafts.push(SessionDraftSegment {
+                msg_idx,
+                block_range: segment_start..segment_end,
+                segment_count,
+                segment_outbound_targets: outbound_targets,
+                segment_inbound_targets: inbound_targets,
+                aggregate_status: any_status
+                    .unwrap_or(crate::agent::model::ToolCallStatus::Completed),
+                leader_id,
+            });
+
+            // If a Breaker terminated this segment, the run ends here.
+            if segment_end < classes.len()
+                && matches!(classes[segment_end], SessionBlockClass::Breaker)
+            {
+                active_run_leader = None;
+                active_run_first_run_idx = None;
+                i = segment_end + 1;
+                continue;
+            }
+            // Otherwise the segment ran out at end-of-message; the run
+            // stays open into the next message.
+            i = segment_end;
+        }
+    }
+    let _ = active_run_first_run_idx; // intentionally unused after walk
+
+    // Pass 2: group segments by leader_id, stamp continuation +
+    // totals.
+    use std::collections::HashMap;
+    let mut by_leader: HashMap<String, Vec<usize>> = HashMap::new();
+    for (idx, draft) in messaging_drafts.iter().enumerate() {
+        by_leader.entry(draft.leader_id.as_str().to_owned()).or_default().push(idx);
+    }
+
+    let mut segment_by_draft_idx: Vec<MessagingGroupSegment> =
+        Vec::with_capacity(messaging_drafts.len());
+    for draft in &messaging_drafts {
+        // Placeholder; overwritten in the per-leader stamp loop below.
+        segment_by_draft_idx.push(MessagingGroupSegment {
+            msg_idx: draft.msg_idx,
+            block_range: draft.block_range.clone(),
+            segment_count: draft.segment_count,
+            segment_outbound_targets: draft.segment_outbound_targets.clone(),
+            segment_inbound_targets: draft.segment_inbound_targets.clone(),
+            segment_continues_above: false,
+            segment_continues_below: false,
+            aggregate_status: draft.aggregate_status,
+            group_total_count: draft.segment_count,
+        });
+    }
+    for indices in by_leader.values() {
+        let total: usize = indices.iter().map(|&i| messaging_drafts[i].segment_count).sum();
+        let last_pos = indices.len().saturating_sub(1);
+        for (pos, &idx) in indices.iter().enumerate() {
+            let segment = &mut segment_by_draft_idx[idx];
+            segment.segment_continues_above = pos > 0;
+            segment.segment_continues_below = pos < last_pos;
+            segment.group_total_count = total;
+        }
+    }
+
+    // Now assemble per-message render-unit lists. For each message:
+    // - Walk the message's classifications.
+    // - Wherever a messaging segment lives (per draft), emit a single
+    //   MessagingGroup unit covering the segment's block_range.
+    // - For runs of non-messaging blocks between/around segments,
+    //   defer to per-message tool-call partition via
+    //   `partition_blocks_into_render_units` restricted to the gap.
+    let mut output: Vec<Vec<RenderUnit>> = Vec::with_capacity(messages.len());
+    for (msg_idx, msg) in messages.iter().enumerate() {
+        let segments_in_msg: Vec<MessagingGroupSegment> = messaging_drafts
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, draft)| {
+                if draft.msg_idx == msg_idx {
+                    Some(segment_by_draft_idx[idx].clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if segments_in_msg.is_empty() {
+            // No messaging activity in this message; reuse the
+            // existing per-message partitioner directly.
+            output.push(partition_blocks_into_render_units(&msg.blocks));
+            continue;
+        }
+
+        // Assemble interleaved units honouring original block order.
+        let mut msg_units: Vec<RenderUnit> = Vec::new();
+        let mut cursor = 0_usize;
+        for segment in segments_in_msg {
+            if segment.block_range.start > cursor {
+                // Gap before this segment - partition it via the
+                // per-message tool-call partitioner.
+                let gap = &msg.blocks[cursor..segment.block_range.start];
+                for unit in partition_blocks_into_render_units(gap) {
+                    msg_units.push(shift_unit(unit, cursor));
+                }
+            }
+            let leader_id =
+                find_segment_leader(&messaging_drafts, &segment_by_draft_idx, &segment);
+            msg_units.push(RenderUnit::MessagingGroup {
+                segments: vec![segment.clone()],
+                group_leader_id: leader_id,
+            });
+            cursor = segment.block_range.end;
+        }
+        if cursor < msg.blocks.len() {
+            let tail = &msg.blocks[cursor..];
+            for unit in partition_blocks_into_render_units(tail) {
+                msg_units.push(shift_unit(unit, cursor));
+            }
+        }
+        output.push(msg_units);
+    }
+    output
+}
+
+/// Update an in-progress aggregate status with one tool-call's status.
+/// Mirrors [`aggregate_run_status`]'s priority (InProgress > Failed >
+/// Pending > Completed).
+fn update_aggregate(
+    aggregate: &mut Option<crate::agent::model::ToolCallStatus>,
+    status: crate::agent::model::ToolCallStatus,
+) {
+    use crate::agent::model::ToolCallStatus;
+    match (aggregate, status) {
+        (slot @ None, s) => *slot = Some(s),
+        (Some(ToolCallStatus::InProgress), _) => {}
+        (slot, ToolCallStatus::InProgress) => *slot = Some(ToolCallStatus::InProgress),
+        (Some(ToolCallStatus::Failed | ToolCallStatus::Killed), _) => {}
+        (slot, ToolCallStatus::Failed | ToolCallStatus::Killed) => {
+            *slot = Some(ToolCallStatus::Failed);
+        }
+        (Some(ToolCallStatus::Pending), _) => {}
+        (slot, ToolCallStatus::Pending) => *slot = Some(ToolCallStatus::Pending),
+        _ => {}
+    }
+}
+
+/// Look up the leader id for a segment by scanning the draft list
+/// for the matching `(msg_idx, block_range.start)` pair. The leader
+/// is shared across cross-message segments of the same run.
+fn find_segment_leader(
+    drafts: &[SessionDraftSegment],
+    _segments: &[MessagingGroupSegment],
+    segment: &MessagingGroupSegment,
+) -> GroupId {
+    for draft in drafts {
+        if draft.msg_idx == segment.msg_idx && draft.block_range.start == segment.block_range.start
+        {
+            return draft.leader_id.clone();
+        }
+    }
+    GroupId::from_leader_id(format!("msg-{}-fallback", segment.msg_idx))
+}
+
+/// Shift a [`RenderUnit`]'s block indices by `offset` so a partition
+/// computed on a slice can be re-anchored to its position in the
+/// full block list.
+fn shift_unit(unit: RenderUnit, offset: usize) -> RenderUnit {
+    match unit {
+        RenderUnit::Individual(i) => RenderUnit::Individual(i + offset),
+        RenderUnit::Group { range, leader_id, kind_count, aggregate_status } => RenderUnit::Group {
+            range: (range.start + offset)..(range.end + offset),
+            leader_id,
+            kind_count,
+            aggregate_status,
+        },
+        RenderUnit::MessagingGroup { segments, group_leader_id } => RenderUnit::MessagingGroup {
+            segments: segments
+                .into_iter()
+                .map(|s| MessagingGroupSegment {
+                    block_range: (s.block_range.start + offset)..(s.block_range.end + offset),
+                    ..s
+                })
+                .collect(),
+            group_leader_id,
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
