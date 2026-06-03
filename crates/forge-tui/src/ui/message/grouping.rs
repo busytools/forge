@@ -342,17 +342,152 @@ fn is_hidden_tool_call(block: &MessageBlock) -> bool {
 /// other block (including lone groupable tools between breakers and
 /// any hidden tool call) becomes `RenderUnit::Individual`.
 pub fn partition_blocks_into_render_units(blocks: &[MessageBlock]) -> Vec<RenderUnit> {
-    // v2 (PR following #300): every consecutive run of non-breaker
-    // tool calls forms a `RenderUnit::Group`, even runs of length 1.
-    // The single-item L2 render in `message.rs` short-circuits to the
-    // L1 path so the call stays visible by default; the cycle still
-    // walks L2 -> L1 -> L0.
-    //
-    // Hidden / chat-suppressed tool calls render nothing visible. They
-    // pass THROUGH a run so adjacent visible groups merge across them,
-    // but a lone hidden block between visible breakers is emitted as
-    // Individual (never starts its own Group). Inside a run they
-    // extend the range but never tally or set the leader.
+    let tool_call_units = partition_tool_call_groups(blocks);
+    merge_messaging_groups(blocks, tool_call_units)
+}
+
+/// True when `block` is a within-message messaging-class block:
+/// either an outbound peer/worker tool call OR a Text block carrying
+/// a peer envelope wrapper. Hidden tool calls return false (they're
+/// neither messaging nor breakers; the partitioner passes them
+/// through). The session-walking partitioner classifies more finely;
+/// this per-message predicate is for the within-message post-pass.
+fn is_messaging_block(block: &MessageBlock) -> bool {
+    use crate::ui::peer_block;
+    match block {
+        MessageBlock::ToolCall(tc) if !tc.hidden => peer_block::detect_outbound(tc).is_some(),
+        MessageBlock::Text(text) => peer_block::detect_inbound(&text.text).is_some(),
+        _ => false,
+    }
+}
+
+/// Post-process the tool-call partition: replace maximal runs of
+/// Individual units pointing to messaging-class blocks with a single
+/// `RenderUnit::MessagingGroup` covering one within-message segment.
+/// Hidden tool calls between messaging blocks pass through.
+fn merge_messaging_groups(blocks: &[MessageBlock], tool_units: Vec<RenderUnit>) -> Vec<RenderUnit> {
+    use crate::ui::peer_block::{self, PeerInboundKind, PeerOutboundKind};
+    let mut output: Vec<RenderUnit> = Vec::with_capacity(tool_units.len());
+    let mut i = 0;
+    while i < tool_units.len() {
+        // Only Individual units that index a messaging-class block
+        // start a run.
+        let is_messaging_start = matches!(
+            &tool_units[i],
+            RenderUnit::Individual(idx) if is_messaging_block(&blocks[*idx])
+        );
+        if !is_messaging_start {
+            output.push(tool_units[i].clone());
+            i += 1;
+            continue;
+        }
+        // Scan forward: collect a run of consecutive Individual units
+        // that point to messaging blocks OR hidden tool calls (pass
+        // through). Stop at the first unit that doesn't fit.
+        let run_start_pos = i;
+        let mut run_end_pos = i + 1;
+        while run_end_pos < tool_units.len() {
+            match &tool_units[run_end_pos] {
+                RenderUnit::Individual(idx)
+                    if is_messaging_block(&blocks[*idx]) || is_hidden_tool_call(&blocks[*idx]) =>
+                {
+                    run_end_pos += 1;
+                }
+                _ => break,
+            }
+        }
+        // Compute block_range from the first and last block-indices in
+        // the run.
+        let first_block_idx = match &tool_units[run_start_pos] {
+            RenderUnit::Individual(idx) => *idx,
+            _ => unreachable!("run_start_pos must be Individual"),
+        };
+        let last_block_idx = match &tool_units[run_end_pos - 1] {
+            RenderUnit::Individual(idx) => *idx,
+            _ => unreachable!("run_end_pos - 1 must be Individual"),
+        };
+        let block_range = first_block_idx..(last_block_idx + 1);
+
+        // Walk the block range and accumulate per-direction targets,
+        // segment_count, aggregate_status.
+        let mut segment_outbound_targets = MessagingDirectionTargets::default();
+        let mut segment_inbound_targets = MessagingDirectionTargets::default();
+        let mut segment_count = 0_usize;
+        let mut any_status: Option<crate::agent::model::ToolCallStatus> = None;
+        let mut leader_id: Option<GroupId> = None;
+        for (offset, block) in blocks[block_range.clone()].iter().enumerate() {
+            let block_idx = first_block_idx + offset;
+            match block {
+                MessageBlock::ToolCall(tc) if !tc.hidden => {
+                    if let Some(kind) = peer_block::detect_outbound(tc) {
+                        let target = match kind {
+                            PeerOutboundKind::Ask { target, .. }
+                            | PeerOutboundKind::Tell { target, .. } => target,
+                        };
+                        append_target(&mut segment_outbound_targets, &target);
+                        segment_count += 1;
+                        update_aggregate(&mut any_status, tc.status);
+                        if leader_id.is_none() {
+                            leader_id = Some(GroupId::from_leader_id(tc.id.clone()));
+                        }
+                    }
+                }
+                MessageBlock::Text(text) => {
+                    if let Some(kind) = peer_block::detect_inbound(&text.text) {
+                        let from = match kind {
+                            PeerInboundKind::Question { from, .. }
+                            | PeerInboundKind::Message { from, .. }
+                            | PeerInboundKind::Reply { from, .. }
+                            | PeerInboundKind::LateReply { from, .. }
+                            | PeerInboundKind::RecipientExpired { from, .. } => from,
+                            PeerInboundKind::CallerTimeout { target, .. }
+                            | PeerInboundKind::DeliveryFailure { target, .. } => target,
+                            PeerInboundKind::WorkerSpawnFailed { label, .. } => label,
+                        };
+                        append_target(&mut segment_inbound_targets, &from);
+                        segment_count += 1;
+                        if leader_id.is_none() {
+                            leader_id = Some(GroupId::from_leader_id(format!(
+                                "msg-block-{block_idx}-inbound"
+                            )));
+                        }
+                    }
+                }
+                _ => {} // hidden tool call: pass through, doesn't tally
+            }
+        }
+        let leader_id =
+            leader_id.unwrap_or_else(|| GroupId::from_leader_id(format!("block-{first_block_idx}")));
+        let aggregate_status =
+            any_status.unwrap_or(crate::agent::model::ToolCallStatus::Completed);
+        let segment = MessagingGroupSegment {
+            msg_idx: 0,
+            block_range,
+            segment_count,
+            segment_outbound_targets,
+            segment_inbound_targets,
+            segment_continues_above: false,
+            segment_continues_below: false,
+            aggregate_status,
+            group_total_count: segment_count,
+        };
+        output.push(RenderUnit::MessagingGroup {
+            segments: vec![segment],
+            group_leader_id: leader_id,
+        });
+        i = run_end_pos;
+    }
+    output
+}
+
+/// Internal: the original tool-call grouping pass over `blocks`.
+/// Identifies maximal runs of >= 1 consecutive groupable tool calls.
+/// Each qualifying run becomes a `RenderUnit::Group`; every other
+/// block (including any hidden tool call) becomes
+/// `RenderUnit::Individual`. The result is post-processed by
+/// `merge_messaging_groups` to also emit `RenderUnit::MessagingGroup`
+/// for within-message peer/worker runs.
+fn partition_tool_call_groups(blocks: &[MessageBlock]) -> Vec<RenderUnit> {
     const GROUP_THRESHOLD: usize = 1;
     let mut units = Vec::with_capacity(blocks.len());
     let mut i = 0;
@@ -1449,5 +1584,273 @@ mod tests {
                 assert!(total > 0, "no empty group should be produced");
             }
         }
+    }
+
+    // ─── partition_session_into_render_units (MG T2) ────────────
+
+    fn outbound_peer_block(target: &str, kind: &str) -> MessageBlock {
+        // `kind` is "Tell" or "Ask"; map to the matching MCP tool name
+        // + raw_input shape that `peer_block::detect_outbound` keys on.
+        let (sdk_tool_name, body_key) = match kind {
+            "Tell" => ("mcp__forge__peers__tell_agent", "message"),
+            "Ask" => ("mcp__forge__peers__ask_agent", "prompt"),
+            other => panic!("unknown outbound kind {other:?}; use Tell|Ask"),
+        };
+        let mut block = tool_call_block("tu-out", sdk_tool_name);
+        if let MessageBlock::ToolCall(tc) = &mut block {
+            tc.raw_input = Some(serde_json::json!({
+                "target": target,
+                body_key: "body",
+            }));
+        }
+        block
+    }
+
+    fn inbound_peer_block(from: &str, kind: &str) -> MessageBlock {
+        // `kind` is "Question" | "Message" | "Reply" | "LateReply". Use
+        // the wrapper-prose shape `peer_block::detect_inbound` matches.
+        let id = "t-test1234";
+        let header = match kind {
+            "Question" => format!(
+                "[Question id={id} hop=1/10 from agent '{from}' (org 'forge')]"
+            ),
+            "Message" => format!(
+                "[Message id={id} hop=1/10 from agent '{from}' (org 'forge')]"
+            ),
+            "Reply" => {
+                format!("[Reply id={id} from agent '{from}' (org 'forge')]")
+            }
+            "LateReply" => {
+                format!("[Late reply id={id} from agent '{from}' (org 'forge')]")
+            }
+            other => panic!("unknown inbound kind {other:?}"),
+        };
+        let text = format!("{header}\n\nbody");
+        MessageBlock::Text(TextBlock::from_complete(&text))
+    }
+
+    fn assistant_message_with_blocks(blocks: Vec<MessageBlock>) -> crate::app::ChatMessage {
+        crate::app::ChatMessage::new(crate::app::MessageRole::Assistant, blocks, None)
+    }
+
+    fn user_text_message(text: &str) -> crate::app::ChatMessage {
+        crate::app::ChatMessage::new(
+            crate::app::MessageRole::User,
+            vec![MessageBlock::Text(TextBlock::from_complete(text))],
+            None,
+        )
+    }
+
+    /// CRITICAL invariant: a peer/worker run extending from the end
+    /// of message N into the start of message N+1 produces ONE
+    /// MessagingGroup with two segments. `group_total_count` is the
+    /// sum of `segment_count`s; continuation markers stamped.
+    #[test]
+    fn messaging_group_merges_across_turn_boundary() {
+        let messages = vec![
+            assistant_message_with_blocks(vec![
+                outbound_peer_block("planner", "Tell"),
+                outbound_peer_block("debugger", "Ask"),
+                inbound_peer_block("tester", "Reply"),
+            ]),
+            user_text_message("any update?"),
+            assistant_message_with_blocks(vec![
+                outbound_peer_block("debugger", "Tell"),
+                inbound_peer_block("reviewer", "Message"),
+            ]),
+        ];
+
+        let per_message_units = partition_session_into_render_units(&messages);
+        let messaging_groups: Vec<&RenderUnit> = per_message_units
+            .iter()
+            .flatten()
+            .filter(|u| matches!(u, RenderUnit::MessagingGroup { .. }))
+            .collect();
+
+        assert_eq!(
+            messaging_groups.len(),
+            2,
+            "cross-message peer/worker run produces ONE logical group with TWO per-message render units (one per segment); got {}",
+            messaging_groups.len(),
+        );
+
+        // Both render units must share the same group_leader_id so a
+        // click on either resolves to the same collapse state.
+        let leaders: Vec<&GroupId> = messaging_groups
+            .iter()
+            .map(|u| match u {
+                RenderUnit::MessagingGroup { group_leader_id, .. } => group_leader_id,
+                _ => unreachable!(),
+            })
+            .collect();
+        assert_eq!(leaders[0], leaders[1], "segments share a single leader_id across the turn boundary");
+
+        // Validate per-segment shapes.
+        let segments: Vec<&MessagingGroupSegment> = messaging_groups
+            .iter()
+            .flat_map(|u| match u {
+                RenderUnit::MessagingGroup { segments, .. } => segments.iter(),
+                _ => unreachable!(),
+            })
+            .collect();
+        assert_eq!(segments.len(), 2);
+
+        assert_eq!(segments[0].msg_idx, 0);
+        assert_eq!(segments[0].segment_count, 3);
+        assert!(segments[0].segment_continues_below);
+        assert!(!segments[0].segment_continues_above);
+        assert_eq!(segments[0].group_total_count, 5);
+
+        assert_eq!(segments[1].msg_idx, 2);
+        assert_eq!(segments[1].segment_count, 2);
+        assert!(!segments[1].segment_continues_below);
+        assert!(segments[1].segment_continues_above);
+        assert_eq!(segments[1].group_total_count, 5);
+    }
+
+    /// Threshold-1: a single peer block folds into a messaging group.
+    #[test]
+    fn messaging_group_partitions_single_peer_block() {
+        let messages = vec![assistant_message_with_blocks(vec![outbound_peer_block(
+            "planner", "Tell",
+        )])];
+        let per_message_units = partition_session_into_render_units(&messages);
+        let groups: Vec<&RenderUnit> = per_message_units
+            .iter()
+            .flatten()
+            .filter(|u| matches!(u, RenderUnit::MessagingGroup { .. }))
+            .collect();
+        assert_eq!(groups.len(), 1, "threshold-1: single peer block folds");
+    }
+
+    /// Within a single message, a peer/worker run produces ONE
+    /// MessagingGroup with ONE segment.
+    #[test]
+    fn messaging_group_partitions_within_message_run() {
+        let messages = vec![assistant_message_with_blocks(vec![
+            outbound_peer_block("planner", "Tell"),
+            outbound_peer_block("debugger", "Ask"),
+            inbound_peer_block("tester", "Reply"),
+        ])];
+        let per_message_units = partition_session_into_render_units(&messages);
+        let groups: Vec<&RenderUnit> = per_message_units
+            .iter()
+            .flatten()
+            .filter(|u| matches!(u, RenderUnit::MessagingGroup { .. }))
+            .collect();
+        assert_eq!(groups.len(), 1);
+        let RenderUnit::MessagingGroup { segments, .. } = groups[0] else {
+            unreachable!()
+        };
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].segment_count, 3);
+        assert_eq!(segments[0].group_total_count, 3);
+    }
+
+    /// Mixed direction lives in the same group; targets render in
+    /// order of first appearance.
+    #[test]
+    fn messaging_group_mixed_direction_targets_ordered() {
+        let messages = vec![assistant_message_with_blocks(vec![
+            outbound_peer_block("planner", "Tell"),
+            inbound_peer_block("tester", "Reply"),
+            outbound_peer_block("debugger", "Ask"),
+            inbound_peer_block("reviewer", "Message"),
+        ])];
+        let per_message_units = partition_session_into_render_units(&messages);
+        let groups: Vec<&RenderUnit> = per_message_units
+            .iter()
+            .flatten()
+            .filter(|u| matches!(u, RenderUnit::MessagingGroup { .. }))
+            .collect();
+        let RenderUnit::MessagingGroup { segments, .. } = groups[0] else {
+            unreachable!()
+        };
+        assert_eq!(
+            segments[0].segment_outbound_targets.targets,
+            vec!["planner".to_owned(), "debugger".to_owned()],
+        );
+        assert_eq!(
+            segments[0].segment_inbound_targets.targets,
+            vec!["tester".to_owned(), "reviewer".to_owned()],
+        );
+    }
+
+    /// `+N` overflow: first 2 targets render by name; the rest count
+    /// into `overflow_n`.
+    #[test]
+    fn messaging_group_overflow_n_at_more_than_two_targets() {
+        let messages = vec![assistant_message_with_blocks(vec![
+            outbound_peer_block("a", "Tell"),
+            outbound_peer_block("b", "Tell"),
+            outbound_peer_block("c", "Tell"),
+            outbound_peer_block("d", "Tell"),
+            outbound_peer_block("e", "Tell"),
+        ])];
+        let per_message_units = partition_session_into_render_units(&messages);
+        let groups: Vec<&RenderUnit> = per_message_units
+            .iter()
+            .flatten()
+            .filter(|u| matches!(u, RenderUnit::MessagingGroup { .. }))
+            .collect();
+        let RenderUnit::MessagingGroup { segments, .. } = groups[0] else {
+            unreachable!()
+        };
+        assert_eq!(
+            segments[0].segment_outbound_targets.targets,
+            vec!["a".to_owned(), "b".to_owned()],
+        );
+        assert_eq!(segments[0].segment_outbound_targets.overflow_n, 3);
+    }
+
+    /// Adjacent peer/worker + tool-call runs partition into TWO render
+    /// units (one MessagingGroup, one tool Group), never merged.
+    #[test]
+    fn messaging_and_tool_groups_never_merge() {
+        let messages = vec![assistant_message_with_blocks(vec![
+            outbound_peer_block("planner", "Tell"),
+            outbound_peer_block("debugger", "Ask"),
+            tool_call_block("r1", "Read"),
+            tool_call_block("r2", "Read"),
+            tool_call_block("r3", "Read"),
+        ])];
+        let per_message_units = partition_session_into_render_units(&messages);
+        let units = &per_message_units[0];
+        let messaging_count = units
+            .iter()
+            .filter(|u| matches!(u, RenderUnit::MessagingGroup { .. }))
+            .count();
+        let tool_group_count =
+            units.iter().filter(|u| matches!(u, RenderUnit::Group { .. })).count();
+        assert_eq!(messaging_count, 1, "one messaging group");
+        assert_eq!(tool_group_count, 1, "one tool group");
+    }
+
+    /// A visible text block (assistant role, non-peer) BREAKS the run.
+    /// The two peer runs split into TWO messaging groups.
+    #[test]
+    fn messaging_group_splits_across_visible_block() {
+        let messages = vec![
+            assistant_message_with_blocks(vec![
+                outbound_peer_block("planner", "Tell"),
+                outbound_peer_block("debugger", "Ask"),
+            ]),
+            user_text_message("any update?"),
+            assistant_message_with_blocks(vec![
+                text_block("here's an update"),
+                outbound_peer_block("reviewer", "Tell"),
+            ]),
+        ];
+        let per_message_units = partition_session_into_render_units(&messages);
+        let groups: Vec<&RenderUnit> = per_message_units
+            .iter()
+            .flatten()
+            .filter(|u| matches!(u, RenderUnit::MessagingGroup { .. }))
+            .collect();
+        assert_eq!(
+            groups.len(),
+            2,
+            "an assistant-role text block between peer runs MUST split into two groups",
+        );
     }
 }
