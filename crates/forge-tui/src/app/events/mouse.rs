@@ -379,9 +379,7 @@ fn try_toggle_tool_call_at_click(app: &mut App, mouse: MouseEvent) -> bool {
     // block of a messaging group at L2 cycles to L1 (titles only),
     // then L1 to L0 (full bodies), then L0 back to L2. Mirrors the
     // tool-call group cycle above.
-    if let Some((leader_id, _run_len)) =
-        messaging_group_leader_match(app, msg_idx, block_idx)
-    {
+    if let Some((leader_id, _run_len)) = messaging_group_leader_match(app, msg_idx, block_idx) {
         let _ = app.cycle_messaging_group_collapse_level(&leader_id);
         app.invalidate_layout(crate::app::InvalidationLevel::MessageChanged(msg_idx));
         tracing::debug!(
@@ -544,9 +542,7 @@ fn try_toggle_peer_user_block_at_click(app: &mut App, mouse: MouseEvent) -> bool
     // path. When the clicked inbound peer text block is the leader
     // of a messaging-group segment, cycle the group's level instead
     // of toggling the per-block override.
-    if let Some((leader_id, _run_len)) =
-        messaging_group_leader_match(app, msg_idx, block_idx)
-    {
+    if let Some((leader_id, _run_len)) = messaging_group_leader_match(app, msg_idx, block_idx) {
         let _ = app.cycle_messaging_group_collapse_level(&leader_id);
         app.invalidate_layout(crate::app::InvalidationLevel::MessageChanged(msg_idx));
         tracing::debug!(

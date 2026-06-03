@@ -325,10 +325,8 @@ fn measure_message_height_at(
     let stop_hook_snapshot = stop_hook_summary_for(app, idx);
     let group_collapse_levels =
         app.active_session().map(|s| s.group_collapse_levels.clone()).unwrap_or_default();
-    let messaging_group_collapse_levels = app
-        .active_session()
-        .map(|s| s.messaging_group_collapse_levels.clone())
-        .unwrap_or_default();
+    let messaging_group_collapse_levels =
+        app.active_session().map(|s| s.messaging_group_collapse_levels.clone()).unwrap_or_default();
     let (h, rendered_lines) = measure_message_height(
         &mut app.active_messages_mut()[idx],
         &sp,
@@ -798,10 +796,8 @@ fn render_culled_messages(
     let tools_collapsed = app.tools_collapsed;
     let group_collapse_levels =
         app.active_session().map(|s| s.group_collapse_levels.clone()).unwrap_or_default();
-    let messaging_group_collapse_levels = app
-        .active_session()
-        .map(|s| s.messaging_group_collapse_levels.clone())
-        .unwrap_or_default();
+    let messaging_group_collapse_levels =
+        app.active_session().map(|s| s.messaging_group_collapse_levels.clone()).unwrap_or_default();
     for i in render_start..msg_count {
         let sp = msg_spinner(base, i, active_turn_assistant, &app.messages()[i]);
         let before = out.len();

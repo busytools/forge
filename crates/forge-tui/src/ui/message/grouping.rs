@@ -365,7 +365,7 @@ fn is_hidden_tool_call(block: &MessageBlock) -> bool {
 /// any hidden tool call) becomes `RenderUnit::Individual`.
 pub fn partition_blocks_into_render_units(blocks: &[MessageBlock]) -> Vec<RenderUnit> {
     let tool_call_units = partition_tool_call_groups(blocks);
-    merge_messaging_groups(blocks, tool_call_units)
+    merge_messaging_groups(blocks, &tool_call_units)
 }
 
 /// True when `block` is a within-message messaging-class block:
@@ -387,7 +387,7 @@ fn is_messaging_block(block: &MessageBlock) -> bool {
 /// Individual units pointing to messaging-class blocks with a single
 /// `RenderUnit::MessagingGroup` covering one within-message segment.
 /// Hidden tool calls between messaging blocks pass through.
-fn merge_messaging_groups(blocks: &[MessageBlock], tool_units: Vec<RenderUnit>) -> Vec<RenderUnit> {
+fn merge_messaging_groups(blocks: &[MessageBlock], tool_units: &[RenderUnit]) -> Vec<RenderUnit> {
     use crate::ui::peer_block::{self, PeerInboundKind, PeerOutboundKind};
     let mut output: Vec<RenderUnit> = Vec::with_capacity(tool_units.len());
     let mut i = 0;
@@ -478,10 +478,9 @@ fn merge_messaging_groups(blocks: &[MessageBlock], tool_units: Vec<RenderUnit>) 
                 _ => {} // hidden tool call: pass through, doesn't tally
             }
         }
-        let leader_id =
-            leader_id.unwrap_or_else(|| GroupId::from_leader_id(format!("block-{first_block_idx}")));
-        let aggregate_status =
-            any_status.unwrap_or(crate::agent::model::ToolCallStatus::Completed);
+        let leader_id = leader_id
+            .unwrap_or_else(|| GroupId::from_leader_id(format!("block-{first_block_idx}")));
+        let aggregate_status = any_status.unwrap_or(crate::agent::model::ToolCallStatus::Completed);
         let segment = MessagingGroupSegment {
             msg_idx: 0,
             block_range,
@@ -601,7 +600,10 @@ enum SessionBlockClass {
 }
 
 /// Classify one block in the context of its enclosing message's role.
-fn classify_session_block(role: &crate::app::MessageRole, block: &MessageBlock) -> SessionBlockClass {
+fn classify_session_block(
+    role: &crate::app::MessageRole,
+    block: &MessageBlock,
+) -> SessionBlockClass {
     use crate::app::MessageRole;
     use crate::ui::peer_block::{self, PeerInboundKind, PeerOutboundKind};
     match block {
@@ -611,7 +613,8 @@ fn classify_session_block(role: &crate::app::MessageRole, block: &MessageBlock) 
             }
             if let Some(kind) = peer_block::detect_outbound(tc) {
                 let target = match kind {
-                    PeerOutboundKind::Ask { target, .. } | PeerOutboundKind::Tell { target, .. } => target,
+                    PeerOutboundKind::Ask { target, .. }
+                    | PeerOutboundKind::Tell { target, .. } => target,
                 };
                 return SessionBlockClass::Outbound { target, tool_use_id: tc.id.clone() };
             }
@@ -740,8 +743,7 @@ pub fn partition_session_into_render_units(
                 match &classes[segment_end] {
                     SessionBlockClass::Outbound { target, tool_use_id } => {
                         if segment_leader.is_none() && active_run_leader.is_none() {
-                            segment_leader =
-                                Some(GroupId::from_leader_id(tool_use_id.clone()));
+                            segment_leader = Some(GroupId::from_leader_id(tool_use_id.clone()));
                         }
                         append_target(&mut outbound_targets, target);
                         segment_count += 1;
@@ -816,8 +818,8 @@ pub fn partition_session_into_render_units(
 
     // Pass 2: group segments by leader_id, stamp continuation +
     // totals.
-    use std::collections::HashMap;
-    let mut by_leader: HashMap<String, Vec<usize>> = HashMap::new();
+    let mut by_leader: std::collections::HashMap<String, Vec<usize>> =
+        std::collections::HashMap::new();
     for (idx, draft) in messaging_drafts.iter().enumerate() {
         by_leader.entry(draft.leader_id.as_str().to_owned()).or_default().push(idx);
     }
@@ -889,8 +891,7 @@ pub fn partition_session_into_render_units(
                     msg_units.push(shift_unit(unit, cursor));
                 }
             }
-            let leader_id =
-                find_segment_leader(&messaging_drafts, &segment_by_draft_idx, &segment);
+            let leader_id = find_segment_leader(&messaging_drafts, &segment_by_draft_idx, &segment);
             msg_units.push(RenderUnit::MessagingGroup {
                 segments: vec![segment.clone()],
                 group_leader_id: leader_id,
@@ -1633,12 +1634,8 @@ mod tests {
         // the wrapper-prose shape `peer_block::detect_inbound` matches.
         let id = "t-test1234";
         let header = match kind {
-            "Question" => format!(
-                "[Question id={id} hop=1/10 from agent '{from}' (org 'forge')]"
-            ),
-            "Message" => format!(
-                "[Message id={id} hop=1/10 from agent '{from}' (org 'forge')]"
-            ),
+            "Question" => format!("[Question id={id} hop=1/10 from agent '{from}' (org 'forge')]"),
+            "Message" => format!("[Message id={id} hop=1/10 from agent '{from}' (org 'forge')]"),
             "Reply" => {
                 format!("[Reply id={id} from agent '{from}' (org 'forge')]")
             }
@@ -1705,7 +1702,10 @@ mod tests {
                 _ => unreachable!(),
             })
             .collect();
-        assert_eq!(leaders[0], leaders[1], "segments share a single leader_id across the turn boundary");
+        assert_eq!(
+            leaders[0], leaders[1],
+            "segments share a single leader_id across the turn boundary"
+        );
 
         // Validate per-segment shapes.
         let segments: Vec<&MessagingGroupSegment> = messaging_groups
@@ -1733,9 +1733,8 @@ mod tests {
     /// Threshold-1: a single peer block folds into a messaging group.
     #[test]
     fn messaging_group_partitions_single_peer_block() {
-        let messages = vec![assistant_message_with_blocks(vec![outbound_peer_block(
-            "planner", "Tell",
-        )])];
+        let messages =
+            vec![assistant_message_with_blocks(vec![outbound_peer_block("planner", "Tell")])];
         let per_message_units = partition_session_into_render_units(&messages);
         let groups: Vec<&RenderUnit> = per_message_units
             .iter()
@@ -1761,9 +1760,7 @@ mod tests {
             .filter(|u| matches!(u, RenderUnit::MessagingGroup { .. }))
             .collect();
         assert_eq!(groups.len(), 1);
-        let RenderUnit::MessagingGroup { segments, .. } = groups[0] else {
-            unreachable!()
-        };
+        let RenderUnit::MessagingGroup { segments, .. } = groups[0] else { unreachable!() };
         assert_eq!(segments.len(), 1);
         assert_eq!(segments[0].segment_count, 3);
         assert_eq!(segments[0].group_total_count, 3);
@@ -1785,9 +1782,7 @@ mod tests {
             .flatten()
             .filter(|u| matches!(u, RenderUnit::MessagingGroup { .. }))
             .collect();
-        let RenderUnit::MessagingGroup { segments, .. } = groups[0] else {
-            unreachable!()
-        };
+        let RenderUnit::MessagingGroup { segments, .. } = groups[0] else { unreachable!() };
         assert_eq!(
             segments[0].segment_outbound_targets.targets,
             vec!["planner".to_owned(), "debugger".to_owned()],
@@ -1815,9 +1810,7 @@ mod tests {
             .flatten()
             .filter(|u| matches!(u, RenderUnit::MessagingGroup { .. }))
             .collect();
-        let RenderUnit::MessagingGroup { segments, .. } = groups[0] else {
-            unreachable!()
-        };
+        let RenderUnit::MessagingGroup { segments, .. } = groups[0] else { unreachable!() };
         assert_eq!(
             segments[0].segment_outbound_targets.targets,
             vec!["a".to_owned(), "b".to_owned()],
@@ -1838,10 +1831,8 @@ mod tests {
         ])];
         let per_message_units = partition_session_into_render_units(&messages);
         let units = &per_message_units[0];
-        let messaging_count = units
-            .iter()
-            .filter(|u| matches!(u, RenderUnit::MessagingGroup { .. }))
-            .count();
+        let messaging_count =
+            units.iter().filter(|u| matches!(u, RenderUnit::MessagingGroup { .. })).count();
         let tool_group_count =
             units.iter().filter(|u| matches!(u, RenderUnit::Group { .. })).count();
         assert_eq!(messaging_count, 1, "one messaging group");

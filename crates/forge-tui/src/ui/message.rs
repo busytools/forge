@@ -189,12 +189,8 @@ impl<'a> MessageRenderContext<'a> {
         self
     }
 
-    fn messaging_group_level(
-        &self,
-        id: &grouping::GroupId,
-    ) -> grouping::GroupCollapseLevel {
-        let per_group =
-            self.messaging_group_collapse_levels.and_then(|m| m.get(id).copied());
+    fn messaging_group_level(&self, id: &grouping::GroupId) -> grouping::GroupCollapseLevel {
+        let per_group = self.messaging_group_collapse_levels.and_then(|m| m.get(id).copied());
         crate::ui::collapse::resolve_group_level(per_group, self.options.tools_collapsed)
     }
 
