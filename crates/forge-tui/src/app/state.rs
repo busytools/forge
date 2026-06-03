@@ -1674,9 +1674,8 @@ impl App {
         &self,
         id: &crate::ui::message::grouping::GroupId,
     ) -> crate::ui::message::grouping::GroupCollapseLevel {
-        let per_group = self
-            .active_session()
-            .and_then(|s| s.messaging_group_collapse_levels.get(id).copied());
+        let per_group =
+            self.active_session().and_then(|s| s.messaging_group_collapse_levels.get(id).copied());
         crate::ui::collapse::resolve_group_level(per_group, self.tools_collapsed)
     }
 

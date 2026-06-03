@@ -381,7 +381,8 @@ fn try_toggle_tool_call_at_click(app: &mut App, mouse: MouseEvent) -> bool {
     else {
         return false;
     };
-    let current = crate::ui::collapse::resolve_collapsed_bool(tc.collapsed_override, global_default);
+    let current =
+        crate::ui::collapse::resolve_collapsed_bool(tc.collapsed_override, global_default);
     let new_collapsed = !current;
     tc.collapsed_override = Some(new_collapsed);
     let tool_id = tc.id.clone();

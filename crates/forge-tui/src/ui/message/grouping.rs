@@ -296,12 +296,13 @@ pub enum RenderUnit {
         aggregate_status: crate::agent::model::ToolCallStatus,
     },
     /// A run of consecutive peer/worker MCP message blocks (outbound
-    /// + inbound). Unlike `Group`, a messaging group can span multiple
-    /// messages - each segment carries its per-message slice + the
-    /// `segment_continues_above/below` flags for the continuation
-    /// marker render. All segments share `group_leader_id` so a click
-    /// or cycle on any segment maps to the same collapse level via
-    /// `UiSession.messaging_group_collapse_levels`.
+    /// and inbound). Unlike `Group`, a messaging group can span
+    /// multiple messages; each segment carries its per-message slice
+    /// plus the `segment_continues_above/below` flags for the
+    /// continuation marker render. All segments share `group_leader_id`
+    /// so a click or cycle on any segment maps to the same collapse
+    /// level via the `messaging_group_collapse_levels` map on
+    /// `UiSession`.
     MessagingGroup {
         segments: Vec<MessagingGroupSegment>,
         group_leader_id: GroupId,
@@ -665,7 +666,9 @@ mod tests {
                 assert_eq!(kind_count.calls, 2); // WebFetch + LSP
             }
             RenderUnit::Individual(_) => panic!("expected Group"),
-            RenderUnit::MessagingGroup { .. } => unreachable!("per-message partitioner never emits MessagingGroup"),
+            RenderUnit::MessagingGroup { .. } => {
+                unreachable!("per-message partitioner never emits MessagingGroup")
+            }
         }
     }
 
@@ -681,7 +684,9 @@ mod tests {
                 assert_eq!(leader_id.as_str(), "tu-0");
             }
             RenderUnit::Individual(_) => panic!("expected Group, got Individual"),
-            RenderUnit::MessagingGroup { .. } => unreachable!("per-message partitioner never emits MessagingGroup"),
+            RenderUnit::MessagingGroup { .. } => {
+                unreachable!("per-message partitioner never emits MessagingGroup")
+            }
         }
     }
 
@@ -698,7 +703,9 @@ mod tests {
                 assert_eq!(leader_id.as_str(), "tu-0");
             }
             RenderUnit::Individual(_) => panic!("expected Group"),
-            RenderUnit::MessagingGroup { .. } => unreachable!("per-message partitioner never emits MessagingGroup"),
+            RenderUnit::MessagingGroup { .. } => {
+                unreachable!("per-message partitioner never emits MessagingGroup")
+            }
         }
     }
 
@@ -724,7 +731,9 @@ mod tests {
                 assert_eq!(*range, 0..3);
             }
             RenderUnit::Individual(_) => panic!("expected first Group"),
-            RenderUnit::MessagingGroup { .. } => unreachable!("per-message partitioner never emits MessagingGroup"),
+            RenderUnit::MessagingGroup { .. } => {
+                unreachable!("per-message partitioner never emits MessagingGroup")
+            }
         }
         assert!(matches!(units[1], RenderUnit::Individual(3)));
         match &units[2] {
@@ -733,7 +742,9 @@ mod tests {
                 assert_eq!(*range, 4..6);
             }
             RenderUnit::Individual(_) => panic!("expected second Group"),
-            RenderUnit::MessagingGroup { .. } => unreachable!("per-message partitioner never emits MessagingGroup"),
+            RenderUnit::MessagingGroup { .. } => {
+                unreachable!("per-message partitioner never emits MessagingGroup")
+            }
         }
     }
 
@@ -757,7 +768,9 @@ mod tests {
                 assert_eq!(kind_count.reads, 1);
             }
             RenderUnit::Individual(_) => panic!("expected first Group"),
-            RenderUnit::MessagingGroup { .. } => unreachable!("per-message partitioner never emits MessagingGroup"),
+            RenderUnit::MessagingGroup { .. } => {
+                unreachable!("per-message partitioner never emits MessagingGroup")
+            }
         }
         assert!(matches!(units[1], RenderUnit::Individual(1)));
         match &units[2] {
@@ -766,7 +779,9 @@ mod tests {
                 assert_eq!(kind_count.reads, 1);
             }
             RenderUnit::Individual(_) => panic!("expected third Group"),
-            RenderUnit::MessagingGroup { .. } => unreachable!("per-message partitioner never emits MessagingGroup"),
+            RenderUnit::MessagingGroup { .. } => {
+                unreachable!("per-message partitioner never emits MessagingGroup")
+            }
         }
     }
 
@@ -789,7 +804,9 @@ mod tests {
                 assert_eq!(kind_count.reads + kind_count.searches + kind_count.commands, 5);
             }
             RenderUnit::Individual(_) => panic!("expected Group"),
-            RenderUnit::MessagingGroup { .. } => unreachable!("per-message partitioner never emits MessagingGroup"),
+            RenderUnit::MessagingGroup { .. } => {
+                unreachable!("per-message partitioner never emits MessagingGroup")
+            }
         }
     }
 
@@ -889,7 +906,9 @@ mod tests {
                 assert_eq!(*aggregate_status, model::ToolCallStatus::InProgress);
             }
             RenderUnit::Individual(_) => panic!("expected Group"),
-            RenderUnit::MessagingGroup { .. } => unreachable!("per-message partitioner never emits MessagingGroup"),
+            RenderUnit::MessagingGroup { .. } => {
+                unreachable!("per-message partitioner never emits MessagingGroup")
+            }
         }
     }
 
@@ -905,7 +924,9 @@ mod tests {
                 assert_eq!(*aggregate_status, model::ToolCallStatus::Completed);
             }
             RenderUnit::Individual(_) => panic!("expected Group"),
-            RenderUnit::MessagingGroup { .. } => unreachable!("per-message partitioner never emits MessagingGroup"),
+            RenderUnit::MessagingGroup { .. } => {
+                unreachable!("per-message partitioner never emits MessagingGroup")
+            }
         }
     }
 
