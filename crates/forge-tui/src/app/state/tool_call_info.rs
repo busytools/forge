@@ -63,6 +63,22 @@ pub struct ToolCallInfo {
     /// Cleared back to 0 whenever the tool isn't currently rendered
     /// (hidden subagent children, layout dirty, fresh construction).
     pub last_measured_y_in_msg: usize,
+    /// Q&A pairs captured when the user answers this AskUserQuestion
+    /// tool's dock prompt. Empty until answered; populated at submit
+    /// time in `app::prompt`. When non-empty the tool unhides and
+    /// renders as the answered-card instead of staying chat-suppressed.
+    pub answered_questions: Vec<AnsweredQuestion>,
+}
+
+/// One question -> answer pair captured when the user responds to an
+/// AskUserQuestion dock prompt. `typed` is true when the user wrote a
+/// custom answer ("Other") instead of picking an option, so the render
+/// can surface the literal text they entered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnsweredQuestion {
+    pub question: String,
+    pub answer: String,
+    pub typed: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

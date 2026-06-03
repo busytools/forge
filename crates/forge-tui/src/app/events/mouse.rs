@@ -1224,6 +1224,7 @@ mod tests {
             // 1-cell tall row at y=0 within the message, occupying the
             // full chat width.
             last_measured_y_in_msg: 0,
+            answered_questions: Vec::new(),
             last_measured_height: 1,
             last_measured_width: 80,
             last_measured_layout_epoch: 0,
@@ -1317,6 +1318,7 @@ mod tests {
             render_epoch: 0,
             layout_epoch: 0,
             last_measured_y_in_msg: 0,
+            answered_questions: Vec::new(),
             last_measured_height: 1,
             last_measured_width: 80,
             last_measured_layout_epoch: 0,
