@@ -4355,6 +4355,7 @@ mod tests {
             show_thinking: false,
             show_compacting: false,
             thinking_tokens: None,
+            running_subagents: None,
         };
 
         let _ = crate::ui::measure_message_height_cached(
