@@ -114,12 +114,16 @@ fn tool_title(name: &str, input: &Value) -> String {
                 _ => name.to_owned(),
             }
         }
-        // Server-side tool calls (wire `ServerToolUse` blocks). Without
-        // these arms the card title falls back to the raw wire name
-        // (e.g. `tool_search_tool_regex`) and the user can't see what
-        // the LLM is searching for. Pull the relevant input field so
-        // the query / url surfaces in the title.
-        "tool_search_tool_regex" | "tool_search_tool_bm25" => {
+        // ToolSearch surfaces with two wire shapes that both render
+        // as the same card: the server `ServerToolUse` discriminator
+        // (`tool_search_tool_regex` / `_bm25`) AND the CLIENT tool_use
+        // a forge agent calls via deferred tools (wire name literal
+        // `"ToolSearch"`, input `{query, max_results}`). Pair them in
+        // one arm so the title carries the query regardless of which
+        // side of the wire the call comes from. Mirror of
+        // `theme::tool_name_label`'s `"ToolSearch" |
+        // "tool_search_tool_regex" | "tool_search_tool_bm25"` pairing.
+        "ToolSearch" | "tool_search_tool_regex" | "tool_search_tool_bm25" => {
             let query = s("query");
             if query.is_empty() { "ToolSearch".to_owned() } else { format!("ToolSearch {query}") }
         }
@@ -929,6 +933,33 @@ mod tests {
         let advisor =
             create_tool_call("stu5", "advisor", &json!({"query": "how to handle X"}), None);
         assert_eq!(advisor.title, "Advisor how to handle X");
+    }
+
+    /// CLIENT-side `ToolSearch` (deferred-tools tool a forge agent
+    /// calls itself; wire name is the literal `"ToolSearch"`, not
+    /// the server `tool_search_tool_*` discriminator). Locks the
+    /// client-name -> query-arm pairing - without it the card
+    /// renders `\u{2316} ToolSearch ToolSearch` (duplicated label,
+    /// since the generic fallback returns the bare name) and the
+    /// user can't see the query the LLM searched for.
+    #[test]
+    fn create_tool_call_titles_client_tool_search_carries_query() {
+        let with_query = create_tool_call(
+            "tu_client_ts",
+            "ToolSearch",
+            &json!({"query": "schedule cron recurring"}),
+            None,
+        );
+        assert_eq!(with_query.title, "ToolSearch schedule cron recurring");
+
+        // Empty-query: stable title, no trailing space.
+        let empty = create_tool_call("tu_client_ts2", "ToolSearch", &json!({}), None);
+        assert_eq!(empty.title, "ToolSearch");
+        assert!(
+            !empty.title.ends_with(' '),
+            "empty-query title must not end with whitespace; got {:?}",
+            empty.title,
+        );
     }
 
     #[test]
