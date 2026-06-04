@@ -253,6 +253,23 @@ fn walk_assistant_content(
                     raw_block.as_ref(),
                 );
             }
+            ContentBlock::ServerToolResult { tool_use_id, content } => {
+                // `advisor_tool_result` lands as the typed enum
+                // variant (per `ContentBlock::from_raw_block`'s match).
+                // Without an arm here it gets dropped; the server-tool
+                // card then renders without its result. The other
+                // server-tool result wire types
+                // (`tool_search_tool_result`, `web_search_tool_result`,
+                // `web_fetch_tool_result`) deserialise to `Unknown` and
+                // travel through the `is_tool_result_block_type` path
+                // below. `ServerToolResult` carries no `is_error` flag;
+                // failure is encoded inside `content`.
+                if tool_use_id.is_empty() {
+                    continue;
+                }
+                let raw_block = serde_json::to_value(block).map_err(|err| { tracing::warn!(target: "forge_tui::sdk_message", error = %err, "ContentBlock failed to serialize to Value"); err }).ok();
+                apply_tool_result_block(app, tool_use_id, false, Some(content), raw_block.as_ref());
+            }
             ContentBlock::Unknown { type_str, raw }
                 if forge_workspace::tooling::is_tool_result_block_type(type_str) =>
             {
