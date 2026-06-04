@@ -25,10 +25,11 @@ pub use types::{
     AppStatus, ExtraUsage, HelpView, HistoryRetentionPolicy, HistoryRetentionStats, LoginHint,
     McpState, MessageUsage, ModeInfo, ModeState, MonitorEntry, MonitorStatus, PasteSessionState,
     PendingCommandAck, PhaseEntry, PhaseStatus, RecentSessionInfo, RenderCacheBudget,
-    ScheduleEntry, ScheduleKind, ScrollbarDragState, SelectionKind, SelectionPoint, SelectionState,
-    SessionTurnState, SessionUsageState, StopHookEntry, StopHookSummaryState, TodoItem, TodoStatus,
-    ToolCallScope, UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState, UsageWindow,
-    WorkflowEntry, WorkflowStatus,
+    SUBAGENT_TAIL_CAP, ScheduleEntry, ScheduleKind, ScrollbarDragState, SelectionKind,
+    SelectionPoint, SelectionState, SessionTurnState, SessionUsageState, StopHookEntry,
+    StopHookSummaryState, SubagentChildEntry, SubagentEntry, TodoItem, TodoStatus, ToolCallScope,
+    UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState, UsageWindow, WorkflowEntry,
+    WorkflowStatus,
 };
 pub use viewport::{
     ChatViewport, LayoutInvalidation, LayoutInvalidation as InvalidationLevel,
@@ -2041,6 +2042,121 @@ impl App {
         self.active_session().map_or(&[], |s| s.workflows.as_slice())
     }
 
+    /// Active-session SUBAGENTS Inspector view. Derives one entry
+    /// per `Task` / `Agent` dispatch (a visible root) plus a tail of
+    /// the last `SUBAGENT_TAIL_CAP` `SubagentChild` tool calls under
+    /// each root, identified via `parent_tool_use_id` on the
+    /// scope-registered map. Returns an empty Vec when every root in
+    /// the view is at a terminal status - mirrors
+    /// `clear_workflows_if_all_terminal` so the section auto-clears.
+    /// Pure derive over `UiSession` state; no mutation, no new wire
+    /// surface.
+    pub fn subagents_view(&self) -> Vec<crate::app::state::types::SubagentEntry> {
+        let Some(session) = self.active_session() else {
+            return Vec::new();
+        };
+
+        // Index every tool call by id and remember the registered
+        // scope. Walking each message linearly preserves block order,
+        // which is what feeds the chronological tail later.
+        let mut by_id: std::collections::HashMap<&str, &crate::app::ToolCallInfo> =
+            std::collections::HashMap::new();
+        let mut ordered_tool_ids: Vec<&str> = Vec::new();
+        for msg in &session.messages {
+            for block in &msg.blocks {
+                if let crate::app::MessageBlock::ToolCall(tc) = block
+                    && !by_id.contains_key(tc.id.as_str())
+                {
+                    by_id.insert(tc.id.as_str(), tc.as_ref());
+                    ordered_tool_ids.push(tc.id.as_str());
+                }
+            }
+        }
+
+        // Walk in block order: collect roots first (so the order in
+        // the Inspector mirrors the chat scrollback's dispatch order)
+        // and a flat list of children per-root-id.
+        let mut roots: Vec<&crate::app::ToolCallInfo> = Vec::new();
+        let mut children_by_parent: std::collections::HashMap<
+            &str,
+            Vec<&crate::app::ToolCallInfo>,
+        > = std::collections::HashMap::new();
+        for id in &ordered_tool_ids {
+            let Some(tc) = by_id.get(id) else { continue };
+            match self.tool_call_scope(id) {
+                Some(crate::app::state::types::ToolCallScope::SubagentRoot) => roots.push(tc),
+                Some(crate::app::state::types::ToolCallScope::SubagentChild {
+                    parent_tool_use_id,
+                }) => {
+                    // The parent's id is in the registered scope -
+                    // copy a stable str borrow off the indexed map
+                    // (its keys outlive the children vec).
+                    if let Some((&parent_key, _)) = by_id.get_key_value(parent_tool_use_id.as_str())
+                    {
+                        children_by_parent.entry(parent_key).or_default().push(tc);
+                    }
+                }
+                Some(crate::app::state::types::ToolCallScope::MainAgent) | None => {}
+            }
+        }
+
+        // Auto-clear: if every root is terminal the section disappears.
+        // Empty `roots` already gates the section via `is_empty`; this
+        // additional check mirrors the WORKFLOWS all-terminal drain.
+        if !roots.is_empty()
+            && roots.iter().all(|r| {
+                matches!(
+                    r.status,
+                    crate::agent::model::ToolCallStatus::Completed
+                        | crate::agent::model::ToolCallStatus::Failed
+                        | crate::agent::model::ToolCallStatus::Killed
+                )
+            })
+        {
+            return Vec::new();
+        }
+
+        let cap = crate::app::state::types::SUBAGENT_TAIL_CAP;
+        roots
+            .into_iter()
+            .map(|root| {
+                let children = children_by_parent.remove(root.id.as_str()).unwrap_or_default();
+                let total_count = children.len();
+                // Terminal roots show the trailing `· N tools` summary
+                // instead of the live tail (per the render path), so
+                // honour that contract by emptying the field in the
+                // derive too - `tail` then literally means "the live
+                // tail to render". `total_count` survives because the
+                // summary reads from it.
+                let in_progress = matches!(
+                    root.status,
+                    crate::agent::model::ToolCallStatus::InProgress
+                        | crate::agent::model::ToolCallStatus::Pending
+                );
+                let tail = if in_progress {
+                    let tail_start = children.len().saturating_sub(cap);
+                    children[tail_start..]
+                        .iter()
+                        .map(|c| crate::app::state::types::SubagentChildEntry {
+                            sdk_tool_name: c.sdk_tool_name.clone(),
+                            title: c.title.clone(),
+                            status: c.status,
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                crate::app::state::types::SubagentEntry {
+                    tool_use_id: root.id.clone(),
+                    label: subagent_label_from_root(root),
+                    status: root.status,
+                    tail,
+                    total_count,
+                }
+            })
+            .collect()
+    }
+
     /// Mutable accessor for the active session's
     /// WORKFLOWS list. Auto-creates the pre-Connect bucket if
     /// missing.
@@ -3029,6 +3145,34 @@ impl App {
             ctx = ctx.with(FocusTarget::Help);
         }
         ctx
+    }
+}
+
+/// Build the SUBAGENTS row's header label from a Task/Agent root
+/// tool call's `raw_input`. Combines `subagent_type` with the first
+/// non-empty line of `description` (or `prompt` as a sibling fallback)
+/// into `"<type> · <line>"`. Falls back to either piece on its own
+/// when the other is missing, then to the raw `sdk_tool_name` so the
+/// row always renders something even on a malformed dispatch.
+fn subagent_label_from_root(root: &ToolCallInfo) -> String {
+    let raw = root.raw_input.as_ref().and_then(|v| v.as_object());
+    let read = |k: &str| -> Option<String> {
+        raw.and_then(|r| r.get(k))
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+    };
+    let subagent_type = read("subagent_type");
+    let summary = read("description")
+        .or_else(|| read("prompt"))
+        .and_then(|s| s.lines().find(|line| !line.trim().is_empty()).map(str::to_owned))
+        .map(|s| s.trim().to_owned());
+    match (subagent_type, summary) {
+        (Some(kind), Some(line)) => format!("{kind} \u{b7} {line}"),
+        (Some(kind), None) => kind,
+        (None, Some(line)) => line,
+        (None, None) => root.sdk_tool_name.clone(),
     }
 }
 
@@ -6076,5 +6220,272 @@ mod tests {
         assert_eq!(app.group_collapse_level(&id), GroupCollapseLevel::L1Titles);
         assert_eq!(app.cycle_group_collapse_level(&id), GroupCollapseLevel::L0Bodies);
         assert_eq!(app.cycle_group_collapse_level(&id), GroupCollapseLevel::L2Summary);
+    }
+
+    // ─── SUBAGENTS Inspector view (subagents_view) ─────────────────
+    //
+    // Helpers build a session with a Task root + N SubagentChild
+    // tool calls underneath it. Each child is registered via
+    // `register_tool_call_scope` so `subagents_view` can group them.
+
+    fn make_subagent_root_tc(
+        id: &str,
+        subagent_type: &str,
+        description: &str,
+        status: model::ToolCallStatus,
+    ) -> ToolCallInfo {
+        ToolCallInfo {
+            id: id.to_owned(),
+            title: "Task".to_owned(),
+            sdk_tool_name: "Task".to_owned(),
+            raw_input: Some(serde_json::json!({
+                "subagent_type": subagent_type,
+                "description": description,
+                "prompt": description,
+            })),
+            raw_input_bytes: 0,
+            output_metadata: None,
+            task_metadata: None,
+            status,
+            content: Vec::new(),
+            hidden: false,
+            terminal_id: None,
+            terminal_command: None,
+            terminal_output: None,
+            terminal_output_len: 0,
+            terminal_bytes_seen: 0,
+            terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
+            monitor_output_tail: Vec::default(),
+            render_epoch: 0,
+            layout_epoch: 0,
+            last_measured_width: 0,
+            last_measured_height: 0,
+            last_measured_layout_epoch: 0,
+            last_measured_layout_generation: 0,
+            cache: BlockCache::default(),
+            collapsed_override: None,
+            last_measured_y_in_msg: 0,
+            answered_questions: Vec::new(),
+        }
+    }
+
+    fn make_subagent_child_tc(id: &str, sdk_tool_name: &str, title: &str) -> ToolCallInfo {
+        ToolCallInfo {
+            id: id.to_owned(),
+            title: title.to_owned(),
+            sdk_tool_name: sdk_tool_name.to_owned(),
+            raw_input: None,
+            raw_input_bytes: 0,
+            output_metadata: None,
+            task_metadata: None,
+            status: model::ToolCallStatus::Completed,
+            content: Vec::new(),
+            hidden: true,
+            terminal_id: None,
+            terminal_command: None,
+            terminal_output: None,
+            terminal_output_len: 0,
+            terminal_bytes_seen: 0,
+            terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
+            monitor_output_tail: Vec::default(),
+            render_epoch: 0,
+            layout_epoch: 0,
+            last_measured_width: 0,
+            last_measured_height: 0,
+            last_measured_layout_epoch: 0,
+            last_measured_layout_generation: 0,
+            cache: BlockCache::default(),
+            collapsed_override: None,
+            last_measured_y_in_msg: 0,
+            answered_questions: Vec::new(),
+        }
+    }
+
+    fn push_subagent_session(
+        app: &mut App,
+        root: ToolCallInfo,
+        children: Vec<ToolCallInfo>,
+    ) -> String {
+        let root_id = root.id.clone();
+        app.register_tool_call_scope(root_id.clone(), ToolCallScope::SubagentRoot);
+        let mut blocks: Vec<MessageBlock> = Vec::with_capacity(1 + children.len());
+        blocks.push(MessageBlock::ToolCall(Box::new(root)));
+        for child in children {
+            app.register_tool_call_scope(
+                child.id.clone(),
+                ToolCallScope::SubagentChild { parent_tool_use_id: root_id.clone() },
+            );
+            blocks.push(MessageBlock::ToolCall(Box::new(child)));
+        }
+        app.push_message_tracked(ChatMessage::new(MessageRole::Assistant, blocks, None));
+        root_id
+    }
+
+    /// One running root + a handful of children produces one entry
+    /// in the SUBAGENTS view. The label combines subagent_type with
+    /// the first line of description; the tail carries each child's
+    /// `sdk_tool_name` + `title` in chronological order; total_count
+    /// matches the actual children pushed.
+    #[test]
+    fn subagents_view_collects_roots_and_children() {
+        let mut app = App::test_default();
+        let root = make_subagent_root_tc(
+            "tu-root-1",
+            "Explore",
+            "map hidden tool calls\nadditional context line",
+            model::ToolCallStatus::InProgress,
+        );
+        let children = vec![
+            make_subagent_child_tc("tu-c-1", "Grep", "Grep SubagentChild"),
+            make_subagent_child_tc("tu-c-2", "Read", "Read inspector_pane.rs"),
+            make_subagent_child_tc("tu-c-3", "Bash", "git log --oneline -3"),
+        ];
+        push_subagent_session(&mut app, root, children);
+
+        let view = app.subagents_view();
+        assert_eq!(view.len(), 1, "one running root produces one entry; got {view:?}");
+        let entry = &view[0];
+        assert_eq!(entry.tool_use_id, "tu-root-1");
+        assert_eq!(
+            entry.label, "Explore · map hidden tool calls",
+            "label combines subagent_type + first line of description; got {:?}",
+            entry.label,
+        );
+        assert_eq!(entry.status, model::ToolCallStatus::InProgress);
+        assert_eq!(entry.total_count, 3);
+        assert_eq!(entry.tail.len(), 3);
+        assert_eq!(entry.tail[0].sdk_tool_name, "Grep");
+        assert_eq!(entry.tail[1].sdk_tool_name, "Read");
+        assert_eq!(entry.tail[2].sdk_tool_name, "Bash");
+        assert_eq!(entry.tail[2].title, "git log --oneline -3");
+    }
+
+    /// Tail cap: more than [`SUBAGENT_TAIL_CAP`] children -> tail
+    /// surfaces only the LAST N (most recent), total_count counts
+    /// every child registered under the root.
+    #[test]
+    fn subagents_view_tail_caps_at_constant() {
+        let mut app = App::test_default();
+        let root = make_subagent_root_tc(
+            "tu-root-2",
+            "code-reviewer",
+            "review the diff",
+            model::ToolCallStatus::InProgress,
+        );
+        // 6 children -> tail cap (4) keeps only the LAST 4: c-3..c-6.
+        let mut children = Vec::new();
+        for i in 1..=6 {
+            children.push(make_subagent_child_tc(
+                &format!("tu-c-{i}"),
+                "Read",
+                &format!("file-{i}.rs"),
+            ));
+        }
+        push_subagent_session(&mut app, root, children);
+
+        let view = app.subagents_view();
+        assert_eq!(view.len(), 1);
+        let entry = &view[0];
+        assert_eq!(entry.total_count, 6, "total_count counts every child");
+        assert_eq!(
+            entry.tail.len(),
+            SUBAGENT_TAIL_CAP,
+            "tail caps at SUBAGENT_TAIL_CAP; got {} entries",
+            entry.tail.len(),
+        );
+        assert_eq!(
+            entry.tail.first().map(|c| c.title.as_str()),
+            Some("file-3.rs"),
+            "tail drops the oldest children (file-1, file-2); got {:?}",
+            entry.tail,
+        );
+        assert_eq!(
+            entry.tail.last().map(|c| c.title.as_str()),
+            Some("file-6.rs"),
+            "tail ends with the newest child; got {:?}",
+            entry.tail,
+        );
+    }
+
+    /// Auto-clear: when every root in the session is at a terminal
+    /// status the view returns empty, mirroring
+    /// `clear_workflows_if_all_terminal` so the section disappears.
+    #[test]
+    fn subagents_view_returns_empty_when_every_root_is_terminal() {
+        let mut app = App::test_default();
+        let root_a = make_subagent_root_tc(
+            "tu-root-a",
+            "Explore",
+            "first",
+            model::ToolCallStatus::Completed,
+        );
+        let children_a = vec![make_subagent_child_tc("tu-c-a", "Read", "foo.rs")];
+        push_subagent_session(&mut app, root_a, children_a);
+        let root_b = make_subagent_root_tc(
+            "tu-root-b",
+            "code-reviewer",
+            "second",
+            model::ToolCallStatus::Failed,
+        );
+        push_subagent_session(&mut app, root_b, Vec::new());
+
+        assert!(
+            app.subagents_view().is_empty(),
+            "every-terminal session must auto-clear the view; got {:?}",
+            app.subagents_view(),
+        );
+    }
+
+    /// Mixed terminal + in-progress roots: ANY in-progress keeps the
+    /// section visible. Returns BOTH roots so the user can see the
+    /// completed one's `· N tools` summary next to the running one's
+    /// live tail.
+    #[test]
+    fn subagents_view_keeps_terminal_roots_when_others_still_running() {
+        let mut app = App::test_default();
+        let done = make_subagent_root_tc(
+            "tu-root-done",
+            "code-reviewer",
+            "review the diff",
+            model::ToolCallStatus::Completed,
+        );
+        let done_children = vec![
+            make_subagent_child_tc("tu-c-done-1", "Read", "diff.rs"),
+            make_subagent_child_tc("tu-c-done-2", "Grep", "old"),
+        ];
+        push_subagent_session(&mut app, done, done_children);
+        let running = make_subagent_root_tc(
+            "tu-root-run",
+            "Explore",
+            "ongoing",
+            model::ToolCallStatus::InProgress,
+        );
+        push_subagent_session(&mut app, running, Vec::new());
+
+        let view = app.subagents_view();
+        assert_eq!(view.len(), 2, "both roots present while one is in-progress; got {view:?}");
+        let done_entry = view.iter().find(|e| e.tool_use_id == "tu-root-done").expect("done");
+        assert_eq!(done_entry.total_count, 2);
+        assert_eq!(done_entry.status, model::ToolCallStatus::Completed);
+        assert!(
+            done_entry.tail.is_empty(),
+            "terminal root carries no live tail (the section renders `· N tools` from total_count instead); got {:?}",
+            done_entry.tail,
+        );
+        let running_entry = view.iter().find(|e| e.tool_use_id == "tu-root-run").expect("run");
+        assert!(
+            running_entry.tail.is_empty()
+                || running_entry.tail.len() <= crate::app::SUBAGENT_TAIL_CAP,
+            "in-progress root's tail respects the cap; got {:?}",
+            running_entry.tail,
+        );
+    }
+
+    /// No subagent dispatches in the session -> empty view (section
+    /// stays hidden).
+    #[test]
+    fn subagents_view_empty_when_no_subagent_dispatch() {
+        let app = App::test_default();
+        assert!(app.subagents_view().is_empty());
     }
 }

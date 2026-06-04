@@ -374,7 +374,19 @@ fn append_body(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
         append_workflows_section(lines, app, width);
     }
 
-    // SCHEDULES sits between WORKFLOWS and PROCESSES. Pending
+    // SUBAGENTS sits between WORKFLOWS and SCHEDULES. Mirrors the
+    // WORKFLOWS all-terminal-drain trigger: `App::subagents_view`
+    // returns an empty Vec once every visible Task/Agent root in the
+    // session has reached a terminal status, so the entire section
+    // disappears.
+    if !app.subagents_view().is_empty() {
+        lines.push(Line::default());
+        push_section_rule(lines, width);
+        lines.push(Line::default());
+        append_subagents_section(lines, app, width);
+    }
+
+    // SCHEDULES sits between SUBAGENTS and PROCESSES. Pending
     // wakeups + crons; auto-clears entries on the ~1s prune tick
     // (passed wakeups, 7-day-expired recurring crons) and on
     // explicit `CronDelete`. The MONITORS section is gone; Monitor
@@ -1345,6 +1357,130 @@ fn fmt_countdown(d: std::time::Duration) -> String {
         format!("{}m", s / 60)
     } else {
         format!("{s}s")
+    }
+}
+
+/// Append the SUBAGENTS Inspector section. Header + one entry per
+/// active `Task` / `Agent` dispatch, each followed (while running) by
+/// a live tail of the last `SUBAGENT_TAIL_CAP` otherwise-hidden child
+/// tool calls under that root. Terminal entries collapse their tail
+/// to a `· N tools` summary on the header line. The whole section
+/// disappears when every visible root reaches a terminal status -
+/// `App::subagents_view` returns an empty Vec in that case (mirroring
+/// `clear_workflows_if_all_terminal`).
+fn append_subagents_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
+    let entries = app.subagents_view();
+    if entries.is_empty() {
+        return;
+    }
+
+    lines.push(Line::from(Span::styled(
+        " SUBAGENTS".to_owned(),
+        Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::default());
+
+    let inner_width = usize::from(width);
+    let last_idx = entries.len().saturating_sub(1);
+    for (idx, entry) in entries.iter().enumerate() {
+        append_subagent_row(lines, entry, inner_width, app.spinner_frame);
+        if idx < last_idx {
+            lines.push(Line::default());
+        }
+    }
+}
+
+/// Render one SUBAGENTS entry: header (status_icon + `◇` + label,
+/// plus a `· N tools` trailing summary on terminal roots) and, for
+/// in-progress roots, an indented tail of the last 3-4 hidden child
+/// tool calls. Each tail row reuses `theme::tool_name_label` so the
+/// kind glyph + label match the standard chat tool row.
+fn append_subagent_row(
+    lines: &mut Vec<Line<'static>>,
+    entry: &crate::app::SubagentEntry,
+    inner_width: usize,
+    spinner_frame: usize,
+) {
+    use crate::agent::model::ToolCallStatus;
+
+    let in_progress = matches!(entry.status, ToolCallStatus::InProgress | ToolCallStatus::Pending);
+    let (status_glyph, status_color) = match entry.status {
+        ToolCallStatus::Completed => (theme::ICON_COMPLETED.to_owned(), Color::Green),
+        ToolCallStatus::Failed | ToolCallStatus::Killed => {
+            (theme::ICON_FAILED.to_owned(), theme::STATUS_ERROR)
+        }
+        ToolCallStatus::Pending => ("\u{25cb}".to_owned(), theme::DIM),
+        ToolCallStatus::InProgress => {
+            (spinner_frame_char(spinner_frame).to_owned(), theme::RUST_ORANGE)
+        }
+    };
+    // Terminal roots get a `  · N tools` summary right-justified on
+    // the header (matches MONITORS / WORKFLOWS / SCHEDULES'
+    // pad-spacer pattern). In-progress roots have no summary on the
+    // header line; their tail rows render the live activity below.
+    let trailing = if in_progress {
+        String::new()
+    } else {
+        let noun = if entry.total_count == 1 { "tool" } else { "tools" };
+        format!("{} {}", entry.total_count, noun)
+    };
+    let trailing_chrome = if trailing.is_empty() {
+        0
+    } else {
+        3 /* " · " */ + trailing.chars().count()
+    };
+    let header_chrome = usize::from(PANE_PAD)
+        + 1   // status glyph
+        + 1   // space after status
+        + 1   // ◇ kind glyph
+        + 1   // space after ◇
+        + trailing_chrome
+        + usize::from(PANE_PAD);
+    let header_budget = row_text_budget(inner_width, header_chrome);
+    let label = truncate_or_pass(&entry.label, header_budget);
+    let pad = header_budget.saturating_sub(label.chars().count());
+    let mut header_spans = vec![
+        Span::raw(" ".repeat(usize::from(PANE_PAD))),
+        Span::styled(status_glyph, Style::default().fg(status_color).add_modifier(Modifier::BOLD)),
+        Span::raw(" ".to_owned()),
+        Span::styled("\u{25c7}".to_owned(), Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw(" ".to_owned()),
+        Span::styled(label, Style::default().add_modifier(Modifier::BOLD)),
+    ];
+    if !trailing.is_empty() {
+        header_spans.push(Span::raw(" ".repeat(pad)));
+        header_spans.push(Span::styled(" \u{00B7} ".to_owned(), Style::default().fg(theme::DIM)));
+        header_spans.push(Span::styled(trailing, Style::default().fg(theme::DIM)));
+    }
+    lines.push(Line::from(header_spans));
+
+    if !in_progress {
+        return;
+    }
+
+    // Tail rows: 6-space indent + kind glyph + space + kind label +
+    // double-space + title. Layout mirrors a standard chat tool-call
+    // row's icon column but nested deeper to read as a child of the
+    // root header above.
+    let tail_indent = "      "; // 6 spaces - 2 pane pad + 4 for the nest.
+    let fixed_chrome = tail_indent.chars().count()
+        + 1   // kind glyph cell
+        + 1   // space after kind glyph
+        + 2   // "  " between kind label + title
+        + usize::from(PANE_PAD); // right gutter
+    for child in &entry.tail {
+        let (kind_glyph, kind_label) = theme::tool_name_label(&child.sdk_tool_name);
+        let title_budget =
+            row_text_budget(inner_width, fixed_chrome.saturating_add(kind_label.chars().count()));
+        let title = truncate_or_pass(&child.title, title_budget.max(1));
+        lines.push(Line::from(vec![
+            Span::raw(tail_indent.to_owned()),
+            Span::styled(kind_glyph.to_owned(), Style::default().fg(theme::DIM)),
+            Span::raw(" ".to_owned()),
+            Span::styled(kind_label.to_owned(), Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw("  ".to_owned()),
+            Span::styled(title, Style::default().fg(theme::DIM)),
+        ]));
     }
 }
 
@@ -2593,6 +2729,181 @@ mod tests {
             long_w, target,
             "long WORKFLOWS row should also end at inner_width - PANE_PAD; got {long_w}, want {target}",
         );
+    }
+
+    // ---------------------------------------------------------
+    // SUBAGENTS section: live tail + terminal `· N tools` summary.
+    // ---------------------------------------------------------
+
+    fn subagents_test_app() -> App {
+        use crate::agent::model::ToolCallStatus;
+        use crate::app::{ChatMessage, MessageBlock, MessageRole, ToolCallScope};
+
+        let mut app = App::test_default();
+        // Active subagent: Task "Explore" with three SubagentChild
+        // tool calls. The children are hidden in chat but should
+        // surface as the live tail in the SUBAGENTS section.
+        let mut blocks: Vec<MessageBlock> = Vec::new();
+        let root_id = "tu-explore-root";
+        app.register_tool_call_scope(root_id.to_owned(), ToolCallScope::SubagentRoot);
+        let root = subagent_test_root_info(root_id, "Explore", "map hidden tool calls");
+        blocks.push(MessageBlock::ToolCall(Box::new(root)));
+        for (id, kind, title) in [
+            ("tu-c-grep", "Grep", "SubagentChild"),
+            ("tu-c-read", "Read", "inspector_pane.rs"),
+            ("tu-c-bash", "Bash", "git log --oneline -3"),
+        ] {
+            app.register_tool_call_scope(
+                id.to_owned(),
+                ToolCallScope::SubagentChild { parent_tool_use_id: root_id.to_owned() },
+            );
+            blocks
+                .push(MessageBlock::ToolCall(Box::new(subagent_test_child_info(id, kind, title))));
+        }
+        // Terminal subagent: code-reviewer that already finished
+        // with a bunch of children. Should render the trailing
+        // `· N tools` summary on the header (no tail rows).
+        let done_id = "tu-review-root";
+        app.register_tool_call_scope(done_id.to_owned(), ToolCallScope::SubagentRoot);
+        let mut done = subagent_test_root_info(done_id, "code-reviewer", "review the diff");
+        done.status = ToolCallStatus::Completed;
+        blocks.push(MessageBlock::ToolCall(Box::new(done)));
+        for i in 0..12_u32 {
+            let id = format!("tu-review-c-{i}");
+            app.register_tool_call_scope(
+                id.clone(),
+                ToolCallScope::SubagentChild { parent_tool_use_id: done_id.to_owned() },
+            );
+            blocks.push(MessageBlock::ToolCall(Box::new(subagent_test_child_info(
+                &id,
+                "Read",
+                &format!("file-{i}.rs"),
+            ))));
+        }
+        app.push_message_tracked(ChatMessage::new(MessageRole::Assistant, blocks, None));
+        app
+    }
+
+    fn subagent_test_root_info(
+        id: &str,
+        subagent_type: &str,
+        description: &str,
+    ) -> crate::app::ToolCallInfo {
+        use crate::agent::model::ToolCallStatus;
+        use crate::app::{BlockCache, TerminalSnapshotMode, ToolCallInfo};
+        ToolCallInfo {
+            id: id.to_owned(),
+            title: "Task".to_owned(),
+            sdk_tool_name: "Task".to_owned(),
+            raw_input: Some(serde_json::json!({
+                "subagent_type": subagent_type,
+                "description": description,
+                "prompt": description,
+            })),
+            raw_input_bytes: 0,
+            output_metadata: None,
+            task_metadata: None,
+            status: ToolCallStatus::InProgress,
+            content: Vec::new(),
+            hidden: false,
+            terminal_id: None,
+            terminal_command: None,
+            terminal_output: None,
+            terminal_output_len: 0,
+            terminal_bytes_seen: 0,
+            terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
+            monitor_output_tail: Vec::default(),
+            render_epoch: 0,
+            layout_epoch: 0,
+            last_measured_width: 0,
+            last_measured_height: 0,
+            last_measured_layout_epoch: 0,
+            last_measured_layout_generation: 0,
+            cache: BlockCache::default(),
+            collapsed_override: None,
+            last_measured_y_in_msg: 0,
+            answered_questions: Vec::new(),
+        }
+    }
+
+    fn subagent_test_child_info(
+        id: &str,
+        sdk_tool_name: &str,
+        title: &str,
+    ) -> crate::app::ToolCallInfo {
+        use crate::agent::model::ToolCallStatus;
+        use crate::app::{BlockCache, TerminalSnapshotMode, ToolCallInfo};
+        ToolCallInfo {
+            id: id.to_owned(),
+            title: title.to_owned(),
+            sdk_tool_name: sdk_tool_name.to_owned(),
+            raw_input: None,
+            raw_input_bytes: 0,
+            output_metadata: None,
+            task_metadata: None,
+            status: ToolCallStatus::Completed,
+            content: Vec::new(),
+            hidden: true,
+            terminal_id: None,
+            terminal_command: None,
+            terminal_output: None,
+            terminal_output_len: 0,
+            terminal_bytes_seen: 0,
+            terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
+            monitor_output_tail: Vec::default(),
+            render_epoch: 0,
+            layout_epoch: 0,
+            last_measured_width: 0,
+            last_measured_height: 0,
+            last_measured_layout_epoch: 0,
+            last_measured_layout_generation: 0,
+            cache: BlockCache::default(),
+            collapsed_override: None,
+            last_measured_y_in_msg: 0,
+            answered_questions: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn subagents_section_renders_header_running_tail_and_done_summary() {
+        let app = subagents_test_app();
+        let mut lines = Vec::new();
+        append_subagents_section(&mut lines, &app, 60);
+
+        let joined = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert!(joined.contains(" SUBAGENTS"), "section header must be present; got:\n{joined}");
+        // Running root: header + 3 tail rows.
+        assert!(
+            joined.contains("Explore \u{b7} map hidden tool calls"),
+            "running root header must render the combined label; got:\n{joined}",
+        );
+        for kind_label in ["Grep", "Read", "Bash"] {
+            assert!(
+                joined.contains(kind_label),
+                "live tail must surface {kind_label} kind label; got:\n{joined}",
+            );
+        }
+        assert!(
+            joined.contains("inspector_pane.rs"),
+            "live tail must carry the child title; got:\n{joined}",
+        );
+        // Terminal root: header + trailing `· 12 tools`. No tail rows.
+        assert!(
+            joined.contains("code-reviewer \u{b7} review the diff"),
+            "terminal root header must render the combined label; got:\n{joined}",
+        );
+        assert!(
+            joined.contains("12 tools"),
+            "terminal root must render the `· N tools` summary; got:\n{joined}",
+        );
+    }
+
+    #[test]
+    fn subagents_section_hidden_when_view_is_empty() {
+        let app = App::test_default();
+        let mut lines = Vec::new();
+        append_subagents_section(&mut lines, &app, 60);
+        assert!(lines.is_empty(), "empty view -> section emits zero lines; got {lines:?}");
     }
 
     // ---------------------------------------------------------
