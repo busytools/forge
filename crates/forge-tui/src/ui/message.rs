@@ -852,19 +852,19 @@ fn render_question_answered_card(tc: &crate::app::ToolCallInfo) -> Option<Vec<Li
             ),
             Span::styled(qa.question.clone(), Style::default().fg(theme::DIM)),
         ]));
-        let mut answer_spans =
-            vec![Span::styled("  \u{2192} ".to_owned(), Style::default().fg(theme::DIM))];
-        if qa.typed {
-            answer_spans
-                .push(Span::styled("you typed: ".to_owned(), Style::default().fg(theme::DIM)));
-            answer_spans.push(Span::styled(
-                format!("\"{}\"", qa.answer),
-                Style::default().add_modifier(Modifier::BOLD),
-            ));
-        } else {
-            answer_spans.push(Span::styled(qa.answer.clone(), Style::default().fg(Color::Green)));
+        if !qa.picked_labels.is_empty() {
+            lines.push(Line::from(vec![
+                Span::styled("  \u{2192} ".to_owned(), Style::default().fg(theme::DIM)),
+                Span::styled(qa.picked_labels.join(", "), Style::default().fg(Color::Green)),
+            ]));
         }
-        lines.push(Line::from(answer_spans));
+        if let Some(typed) = qa.typed_note.as_ref().filter(|s| !s.is_empty()) {
+            lines.push(Line::from(vec![
+                Span::styled("  \u{2192} ".to_owned(), Style::default().fg(theme::DIM)),
+                Span::styled("you typed: ".to_owned(), Style::default().fg(theme::DIM)),
+                Span::styled(format!("\"{typed}\""), Style::default().add_modifier(Modifier::BOLD)),
+            ]));
+        }
     }
     Some(lines)
 }
@@ -2719,14 +2719,18 @@ mod tests {
         );
         tc.answered_questions = vec![crate::app::AnsweredQuestion {
             question: "Which build path?".to_owned(),
-            answer: "Clean answered-card".to_owned(),
-            typed: false,
+            picked_labels: vec!["Clean answered-card".to_owned()],
+            typed_note: None,
         }];
         let lines =
             render_question_answered_card(&tc).expect("answered AskUserQuestion produces lines");
         let joined = render_lines_to_strings(&lines).join("\n");
         assert!(joined.contains("Which build path?"), "question text: {joined:?}");
         assert!(joined.contains("Clean answered-card"), "picked label: {joined:?}");
+        assert!(
+            !joined.contains("you typed"),
+            "picked-only card must not show the typed lead-in: {joined:?}",
+        );
     }
 
     #[test]
@@ -2739,14 +2743,58 @@ mod tests {
         );
         tc.answered_questions = vec![crate::app::AnsweredQuestion {
             question: "How should it look?".to_owned(),
-            answer: "Can you show me some visuals please?".to_owned(),
-            typed: true,
+            picked_labels: Vec::new(),
+            typed_note: Some("Can you show me some visuals please?".to_owned()),
         }];
         let lines = render_question_answered_card(&tc).expect("typed answer produces lines");
         let joined = render_lines_to_strings(&lines).join("\n");
         assert!(
             joined.contains("Can you show me some visuals please?"),
             "literal typed text must be shown: {joined:?}",
+        );
+        assert!(joined.contains("you typed"), "typed lead-in must be shown: {joined:?}");
+    }
+
+    /// Fix 1 (data loss): the bug the plan targets. When the user
+    /// picks one or more options in a multiSelect AND types text into
+    /// the "Other" free-text, the card MUST surface BOTH on their
+    /// own answer lines. The previous shape (`answer: String` +
+    /// `typed: bool`) collapsed to either-or and dropped the typed
+    /// text whenever picks were non-empty.
+    #[test]
+    fn answered_question_renders_picked_labels_and_typed_note_together() {
+        let mut tc = make_tool_call_info(
+            "toolu_q",
+            "AskUserQuestion",
+            crate::agent::model::ToolCallStatus::Completed,
+            "",
+        );
+        tc.answered_questions = vec![crate::app::AnsweredQuestion {
+            question: "Which areas need work?".to_owned(),
+            picked_labels: vec!["Performance".to_owned(), "Documentation".to_owned()],
+            typed_note: Some("and the bot reviewer reply etiquette".to_owned()),
+        }];
+        let lines = render_question_answered_card(&tc).expect("mixed answer produces lines");
+        let strings = render_lines_to_strings(&lines);
+        let joined = strings.join("\n");
+        assert!(joined.contains("Which areas need work?"), "question text: {joined:?}");
+        assert!(
+            joined.contains("Performance, Documentation"),
+            "picked-labels line must surface: {joined:?}",
+        );
+        assert!(
+            joined.contains("and the bot reviewer reply etiquette"),
+            "typed note must ALSO surface (the bug being fixed): {joined:?}",
+        );
+        assert!(
+            joined.contains("you typed"),
+            "typed line must carry the lead-in even alongside picks: {joined:?}",
+        );
+        // Both surfaces means 3 lines total: question + picked + typed.
+        assert_eq!(
+            strings.len(),
+            3,
+            "mixed card has question + picked + typed lines; got {strings:?}"
         );
     }
 
@@ -2774,8 +2822,8 @@ mod tests {
         );
         tc.answered_questions = vec![crate::app::AnsweredQuestion {
             question: "q".to_owned(),
-            answer: "a".to_owned(),
-            typed: false,
+            picked_labels: vec!["a".to_owned()],
+            typed_note: None,
         }];
         assert!(
             render_question_answered_card(&tc).is_none(),

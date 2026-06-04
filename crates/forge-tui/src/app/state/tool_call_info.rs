@@ -71,14 +71,23 @@ pub struct ToolCallInfo {
 }
 
 /// One question -> answer pair captured when the user responds to an
-/// AskUserQuestion dock prompt. `typed` is true when the user wrote a
-/// custom answer ("Other") instead of picking an option, so the render
-/// can surface the literal text they entered.
+/// AskUserQuestion dock prompt. Holds the picked option labels and the
+/// typed "Other" note as DISTINCT fields rather than collapsing to
+/// an either-or - multiSelect can carry both at once, and the
+/// answered-card renders each on its own line.
+///
+/// - `picked_labels`: option labels the user checked. Empty when the
+///   user only typed a free-text answer.
+/// - `typed_note`: the literal text the user entered in the "Other"
+///   free-text field. `None` when the user only picked options.
+///
+/// At least one of the two will be populated (else the card path is
+/// skipped by the submit handler).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AnsweredQuestion {
     pub question: String,
-    pub answer: String,
-    pub typed: bool,
+    pub picked_labels: Vec<String>,
+    pub typed_note: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
