@@ -834,6 +834,24 @@ pub fn build_tool_result_fields(
         }
     }
 
+    // ToolSearch: the deferred-tools client tool's result wire shape
+    // is an array of `{type: tool_reference, tool_name: "..."}` blocks
+    // that `extract_text` filters to "". Walk the array for the
+    // tool_name fields directly and synthesise a compact one-line
+    // summary so the card body shows what the search matched without
+    // dumping the raw `<functions>` schema.
+    if !is_error && tool_name == "ToolSearch" {
+        let matches = tool_search_matches_from_content(raw_content);
+        if !matches.is_empty() {
+            let summary = format!("Found {}", matches.join(", "));
+            fields.raw_output = Some(summary.clone());
+            fields.content = Some(vec![ToolCallContent::Content {
+                content: ChunkContent::Text { text: summary },
+            }]);
+            return fields;
+        }
+    }
+
     // Generic fallback: wrap raw_output as content.
     if !raw_output.is_empty() {
         fields.content = Some(vec![ToolCallContent::Content {
@@ -841,6 +859,31 @@ pub fn build_tool_result_fields(
         }]);
     }
     fields
+}
+
+/// Walk a `tool_result.content` array looking for the CLIENT
+/// `ToolSearch` result wire shape -
+/// `[{type: "tool_reference", tool_name: "..."}, ...]` - and return
+/// the matched tool names in source order. Anything not a
+/// tool_reference entry is skipped, so a mixed-content result still
+/// surfaces the references it carried.
+fn tool_search_matches_from_content(raw_content: Option<&Value>) -> Vec<String> {
+    let Some(arr) = raw_content.and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let mut out = Vec::with_capacity(arr.len());
+    for entry in arr {
+        let Some(record) = entry.as_object() else { continue };
+        if record.get("type").and_then(Value::as_str) != Some("tool_reference") {
+            continue;
+        }
+        if let Some(name) =
+            record.get("tool_name").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty())
+        {
+            out.push(name.to_owned());
+        }
+    }
+    out
 }
 
 /// Mirrors `unwrapToolUseResult(rawResult)`. Walks the `tool_result`
@@ -960,6 +1003,43 @@ mod tests {
             "empty-query title must not end with whitespace; got {:?}",
             empty.title,
         );
+    }
+
+    /// Client ToolSearch's tool_result wire shape is an array of
+    /// `{type: tool_reference, tool_name: "..."}` blocks - the
+    /// generic `extract_text` walker filters those out (no `text`
+    /// field) and the card body renders empty. A ToolSearch-aware
+    /// branch in `build_tool_result_fields` should surface the
+    /// matched tool names so the user sees what the search found
+    /// without expanding to a raw schema dump.
+    #[test]
+    fn build_fields_client_tool_search_renders_compact_matched_tool_names() {
+        let base = make_base("ToolSearch", &json!({"query": "select:Monitor,TaskStop"}));
+        let raw_content = json!([
+            {"type": "tool_reference", "tool_name": "Monitor"},
+            {"type": "tool_reference", "tool_name": "TaskStop"},
+        ]);
+        let f = build_tool_result_fields(false, Some(&raw_content), Some(&base), None);
+        let raw = f.raw_output.as_deref().expect("ToolSearch result must produce a raw_output");
+        assert!(raw.contains("Monitor"), "raw_output must list Monitor; got {raw:?}");
+        assert!(raw.contains("TaskStop"), "raw_output must list TaskStop; got {raw:?}");
+        let Some(ToolCallContent::Content { content: ChunkContent::Text { text } }) =
+            f.content.as_ref().and_then(|c| c.first())
+        else {
+            panic!("expected text content in ToolSearch card body, got: {:?}", f.content);
+        };
+        assert!(text.contains("Monitor") && text.contains("TaskStop"));
+    }
+
+    /// Defensive: a ToolSearch result with no tool_reference entries
+    /// (empty matches) must not blow up. Fields stay set so the card
+    /// reads as completed even with no body.
+    #[test]
+    fn build_fields_client_tool_search_handles_empty_matches() {
+        let base = make_base("ToolSearch", &json!({"query": "select:Nothing"}));
+        let raw_content = json!([]);
+        let f = build_tool_result_fields(false, Some(&raw_content), Some(&base), None);
+        assert_eq!(f.status, Some(forge_primitives::ToolCallStatus::Completed));
     }
 
     #[test]
