@@ -219,7 +219,13 @@ fn build_tool_info_from_tool_call(
         task_metadata: tc.task_metadata,
         status: tc.status,
         content: tc.content,
-        hidden: is_chat_suppressed || matches!(scope, ToolCallScope::SubagentChild { .. }),
+        // Subagent scopes are Inspector-only. The root + every child
+        // tool call lives in the message list (so `App::subagents_view`
+        // can walk both via the registered scope), but the chat render
+        // skips them - a Task/Agent dispatch shows nothing in the chat
+        // stream and surfaces only in the Inspector SUBAGENTS section.
+        hidden: is_chat_suppressed
+            || matches!(scope, ToolCallScope::SubagentRoot | ToolCallScope::SubagentChild { .. },),
         terminal_id,
         terminal_command,
         terminal_output: None,
