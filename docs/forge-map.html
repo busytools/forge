@@ -699,7 +699,7 @@ chat continues here...
 
     <p id="inspector-monitors"><strong>MONITORS</strong> is no longer an Inspector section. The Monitor live tail and summary render in the chat pane instead - see the <a href="#monitor-chat">Monitor tool call (chat surface)</a> below. <code>UiSession.monitors</code> still holds the per-monitor state that feeds the chat block.</p>
 
-    <p id="inspector-subagents"><strong>SUBAGENTS section</strong>: surfaces hidden subagent activity. A <code>Task</code> / <code>Agent</code> tool call (the dispatch) renders one entry in chat as usual, but every tool call that subagent makes underneath - keyed in state as <code>ToolCallScope::SubagentChild { parent_tool_use_id }</code> - is forced <code>hidden: true</code> at <code>tool_calls.rs:222</code> so it never appears in chat. Before this section those child calls had no Inspector surface either; the user saw a subagent dispatch and then had no way to watch what it was doing. Sits between WORKFLOWS and SCHEDULES with its own DIM <code>─</code> separator.</p>
+    <p id="inspector-subagents"><strong>SUBAGENTS section</strong>: the SOLE surface for subagent activity. A <code>Task</code> / <code>Agent</code> dispatch and every tool call that subagent makes underneath are BOTH chat-suppressed (both <code>ToolCallScope::SubagentRoot</code> and <code>ToolCallScope::SubagentChild</code> set <code>hidden: true</code> at <code>tool_calls.rs:222</code>) - the chat stream shows nothing, and the Inspector SUBAGENTS section renders the dispatch the moment it lands plus a live tail of the child tool calls. Auto-clears once every root in the active session reaches a terminal status. Sits between WORKFLOWS and SCHEDULES with its own DIM <code>─</code> separator.</p>
     <p>Each entry pairs the subagent root with a live tail of its last 3-4 child tool calls. The root header is <code>&lt;status_icon&gt; ◇ &lt;label&gt;</code> (spinner while running, <code>✓</code>/<code>✗</code> on terminal) with the label derived from the dispatch's <code>subagent_type</code> + first line of <code>prompt</code>, shortened the same way chat tool titles are. Each tail row mirrors the standard chat tool-row chrome: <code>&lt;status&gt; &lt;kind_glyph&gt; &lt;kind_label&gt; &lt;title&gt;</code> via the existing <code>theme::tool_name_label</code> + tool-title shortening. A finished subagent collapses its tail to a <code>· N tools</code> summary on the header line, and the section auto-clears once <strong>every</strong> root in the active session is terminal - mirroring the WORKFLOWS all-terminal-drain trigger so the section reads as "active subagent work, nothing else".</p>
     <div class="term">
       <pre class="indent">
@@ -1357,19 +1357,11 @@ chat continues here...
 <div class="surface">
   <div class="surface-head">
     <h4>Subagent (Task / Agent)</h4>
-    <div class="when">visible: when an assistant spawns a subagent (Task or Agent tool)</div>
+    <div class="when">chat-suppressed - the dispatch + every child tool call render in the <a href="#inspector-subagents">Inspector SUBAGENTS section</a>, never in chat</div>
   </div>
   <div class="surface-body">
-    <p>Same standard tool-call shape - status icon + diamond kind icon (white bold) + display title. Subagents have an extended summary limit (<code>IN_PROGRESS_SUBAGENT_COLLAPSED_TEXT_SUMMARY_LIMIT = 180</code> chars vs <code>DEFAULT_COLLAPSED_TEXT_SUMMARY_LIMIT = 60</code> for everything else) so collapsed subagent rows show more progress text. <code>SUBAGENT_TOKEN</code> (light blue) is reserved for token mentions of subagent names elsewhere; the tool-call row itself follows the standard color palette.</p>
-    <div class="term">
-      <pre class="indent">
-  <span class="success">✓</span> <span class="bold">◇</span> Explore the rate-limit code paths
-  <span class="dim">└─ </span>Returned 4 matches across 2 files. Key path: crates/.../rate_limit.rs:65</pre>
-    </div>
-    <dl>
-      <dt>code</dt><dd><code>crates/forge-tui/src/ui/tool_call/standard.rs</code> · <code>matches!(tc.sdk_tool_name.as_str(), "Agent" | "Task")</code> selects the longer summary limit</dd>
-      <dt>backgrounded badges</dt><dd>via <code>tool_output_badge_spans</code> - <code>  [backgrounded]</code> when <code>task_metadata.is_backgrounded == Some(true)</code> · <code>  [assistant backgrounded]</code> for Bash that the assistant auto-backgrounded (signalled in <code>BashOutputMetadata.assistant_auto_backgrounded</code>)</dd>
-    </dl>
+    <p>A Task / Agent dispatch is Inspector-only: the root tool call gets <code>ToolCallScope::SubagentRoot</code> and every nested child call gets <code>ToolCallScope::SubagentChild { parent_tool_use_id }</code>; both scopes set <code>hidden: true</code> in <code>tool_calls.rs:222</code> so the chat stream shows nothing for the entire subagent lifecycle. The SUBAGENTS Inspector section is the sole surface - it renders the root header (with subagent_type + first line of the prompt) plus a live tail of the last 3-4 child tool calls, auto-clearing once every root reaches a terminal status. See the <a href="#inspector-subagents">SUBAGENTS section</a> for the full chrome.</p>
+    <p>Backgrounded-task badges (<code>  [backgrounded]</code> / <code>  [assistant backgrounded]</code> via <code>tool_output_badge_spans</code>) remain available on the few non-subagent tools that still emit them (e.g. backgrounded Bash); subagent roots themselves never reach the chat tool-card renderer.</p>
   </div>
 </div>
 
