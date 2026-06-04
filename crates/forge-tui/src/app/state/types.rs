@@ -237,6 +237,49 @@ impl PhaseEntry {
     }
 }
 
+/// One row in the SUBAGENTS Inspector section's per-root tail. The
+/// otherwise-hidden child tool call this row represents - the
+/// underlying `ToolCallInfo` stays `hidden: true` in the chat
+/// stream, the Inspector surface is the only place it appears.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubagentChildEntry {
+    /// `sdk_tool_name` from the child `ToolCallInfo`. Drives the
+    /// kind glyph + label via `theme::tool_name_label`, same as a
+    /// chat tool row.
+    pub sdk_tool_name: String,
+    /// Already-shortened title (`tc.title` after the standard
+    /// `shorten_tool_title` pass at tool-use arrival).
+    pub title: String,
+    pub status: model::ToolCallStatus,
+}
+
+/// One SUBAGENTS Inspector entry: a `Task` / `Agent` dispatch
+/// (the visible root) plus the last [`SUBAGENT_TAIL_CAP`] of its
+/// otherwise-hidden child tool calls. Built per-render by
+/// `App::subagents_view` from the active session's message list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubagentEntry {
+    pub tool_use_id: String,
+    /// `subagent_type · first-line-of-description` when both are in
+    /// `raw_input`; falls back to whichever piece is present, then
+    /// the raw sdk_tool_name (`Task` / `Agent`).
+    pub label: String,
+    pub status: model::ToolCallStatus,
+    /// Last [`SUBAGENT_TAIL_CAP`] children in chronological (block)
+    /// order. Empty when no children have arrived yet OR when the
+    /// root is at a terminal status (the section then renders the
+    /// trailing `· N tools` summary instead of the live tail).
+    pub tail: Vec<SubagentChildEntry>,
+    /// Total visible-or-hidden child tool calls registered under
+    /// this root - the truncated `tail` may carry fewer entries.
+    pub total_count: usize,
+}
+
+/// Maximum children kept in the live tail before rolling into the
+/// `+N more` overflow on the terminal-summary line. Picked to match
+/// the SUBAGENTS mockup in `docs/forge-map.html`.
+pub const SUBAGENT_TAIL_CAP: usize = 4;
+
 /// A single Workflow entry surfaced in chat + the
 /// Inspector WORKFLOWS section. Populated on `Workflow` tool_use;
 /// `phases` / `final_result_summary` updated from each
