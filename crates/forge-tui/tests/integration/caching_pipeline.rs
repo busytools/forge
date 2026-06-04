@@ -30,6 +30,7 @@ fn inactive_spinner() -> SpinnerState {
         show_thinking: false,
         show_compacting: false,
         thinking_tokens: None,
+        running_subagents: None,
     }
 }
 
