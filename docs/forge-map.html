@@ -1615,7 +1615,7 @@ chat continues here...
 <span class="accent bold">┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛</span></pre>
     </div>
 
-    <p><strong>AskUserQuestion</strong> - multi-select with notes-option toggled. Question header gets a <code>?</code> in RUST_ORANGE, the question body is white below it, options use checkbox markers (<code>[x]</code> / <code>[ ]</code>) before the icon; toggling the <code>... Tell Claude something else</code> entry expands an inline notes editor:</p>
+    <p><strong>AskUserQuestion</strong> - multi-select with notes-option toggled. Question header gets a <code>?</code> in RUST_ORANGE, the question body is white below it, options use checkbox markers (<code>[x]</code> / <code>[ ]</code>) before the icon; toggling the <code>... Tell Claude something else</code> entry expands an inline notes editor. The Notes row's <code>[x]</code> is display-only - it tracks the live notes buffer (so the user sees confirmation the typed content will be included on submit) AND the wire <code>annotation.notes</code> field carries the typed text independently of <code>selected_option_indices</code>:</p>
     <div class="term">
       <pre class="indent"><span class="accent bold">┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓</span>
 <span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
