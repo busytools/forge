@@ -56,7 +56,7 @@ const WELCOME_TIPS: &[&str] = &[
 
 /// Snapshot of the app state needed by the spinner -- extracted before
 /// the message loop so we don't need `&App` (which conflicts with `&mut msg`).
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 // Spinner state - bools track frame ticks, blink flag, halted, idle, etc. - separate flags read better than a packed bitmask at call sites.
 pub struct SpinnerState {
     pub frame: usize,
@@ -72,6 +72,22 @@ pub struct SpinnerState {
     /// turn. `None` when no `Message::ThinkingTokens` event has fired
     /// yet; the spinner falls back to bare `Thinking...`.
     pub thinking_tokens: Option<u64>,
+    /// One-line chat indicator for the session waiting on >=1
+    /// non-terminal `SubagentRoot`. `Some` whenever
+    /// `App::subagents_view` is non-empty for the active session;
+    /// `None` when no subagent is active. ADDITIVE to
+    /// `show_thinking` (both lines render together when both apply).
+    pub running_subagents: Option<RunningSubagentsLine>,
+}
+
+/// Snapshot of the active-subagent set surfaced by the chat
+/// running-subagents indicator. Carries the total count + the
+/// primary entry's label so [`subagent_running_line`] can format the
+/// single / multi-subagent shape without re-reading session state.
+#[derive(Clone)]
+pub struct RunningSubagentsLine {
+    pub count: usize,
+    pub primary_label: Option<String>,
 }
 
 struct MessageLayout {
@@ -623,6 +639,20 @@ fn append_assistant_blocks(
         }
         layout.push_wrapped_line(
             thinking_line(spinner.frame, spinner.thinking_tokens),
+            render_context.width,
+        );
+    }
+    // Additive to the thinking line: both can render simultaneously
+    // when the assistant is mid-stream AND a subagent is non-terminal.
+    if let Some(running) = spinner.running_subagents.as_ref()
+        && !show_compacting
+        && spinner.is_active_turn_assistant
+    {
+        if state.has_body_content || spinner.show_thinking {
+            layout.push_blank();
+        }
+        layout.push_wrapped_line(
+            subagent_running_line(spinner.frame, running.count, running.primary_label.as_deref()),
             render_context.width,
         );
     }
@@ -1968,6 +1998,29 @@ pub fn format_token_count_short(n: u64) -> String {
     format!("{}M", n / M)
 }
 
+/// One-line chat indicator for a session waiting on >=1 non-terminal
+/// `SubagentRoot`. Subagents are Inspector-only, so without this line
+/// the chat goes silent while a subagent runs. Sibling of
+/// [`thinking_line`] / [`compacting_line`]; additive to `thinking_line`
+/// (both render together when the assistant is mid-stream AND a
+/// subagent is still going). Single shape:
+/// `⠋ ◇ running subagent: <label>… (see Inspector)`; multi:
+/// `⠋ ◇ running N subagents… (see Inspector)`. The label arg falls
+/// back to the count form when absent.
+fn subagent_running_line(frame: usize, count: usize, label: Option<&str>) -> Line<'static> {
+    let spinner = SPINNER_FRAMES[frame % SPINNER_FRAMES.len()];
+    let body = match (count, label) {
+        (n, _) if n > 1 => {
+            format!("{spinner} \u{25c7} running {n} subagents\u{2026} (see Inspector)")
+        }
+        (_, Some(label)) if !label.is_empty() => {
+            format!("{spinner} \u{25c7} running subagent: {label}\u{2026} (see Inspector)")
+        }
+        _ => format!("{spinner} \u{25c7} running subagent\u{2026} (see Inspector)"),
+    };
+    Line::from(Span::styled(body, Style::default().fg(theme::DIM)))
+}
+
 fn compacting_line(frame: usize) -> Line<'static> {
     let ch = SPINNER_FRAMES[frame % SPINNER_FRAMES.len()];
     Line::from(Span::styled(
@@ -2895,6 +2948,7 @@ mod tests {
             show_thinking: false,
             show_compacting: false,
             thinking_tokens: None,
+            running_subagents: None,
         }
     }
 
@@ -3999,6 +4053,174 @@ mod tests {
             "expected fallback shape when no count; got {rendered:?}",
         );
         assert!(!rendered.contains("tok"));
+    }
+
+    // ----------------------------------------------------------------
+    // subagent_running_line: the chat-side "running subagent..." line
+    // that surfaces while `App::subagents_view` is non-empty. Additive
+    // to `thinking_line` - both render together when both apply.
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn subagent_running_line_single_uses_label_and_inspector_pointer() {
+        let line = subagent_running_line(0, 1, Some("Explore \u{b7} map hidden tool calls"));
+        let rendered: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            rendered.contains("\u{25c7}"),
+            "expected the \u{25c7} subagent glyph; got {rendered:?}",
+        );
+        assert!(
+            rendered.contains("running subagent: Explore \u{b7} map hidden tool calls"),
+            "expected single-subagent label form; got {rendered:?}",
+        );
+        assert!(rendered.contains("see Inspector"), "expected Inspector pointer; got {rendered:?}");
+    }
+
+    #[test]
+    fn subagent_running_line_multi_uses_count() {
+        let line = subagent_running_line(0, 3, Some("Explore"));
+        let rendered: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            rendered.contains("running 3 subagents"),
+            "expected count form for >1 subagent; got {rendered:?}",
+        );
+        assert!(
+            !rendered.contains("subagent:"),
+            "expected the single-form `subagent:` label to be absent; got {rendered:?}",
+        );
+    }
+
+    #[test]
+    fn subagent_running_line_falls_back_when_label_is_unavailable() {
+        let line = subagent_running_line(0, 1, None);
+        let rendered: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            rendered.contains("running subagent"),
+            "expected fallback to the count form when label missing; got {rendered:?}",
+        );
+        assert!(rendered.contains("see Inspector"));
+    }
+
+    #[test]
+    fn assistant_render_shows_subagent_line_when_only_subagent_active() {
+        let spinner = SpinnerState {
+            is_active_turn_assistant: true,
+            running_subagents: Some(RunningSubagentsLine {
+                count: 1,
+                primary_label: Some("Explore".to_owned()),
+            }),
+            ..idle_spinner()
+        };
+        let mut msg = ChatMessage::new(MessageRole::Assistant, Vec::new(), None);
+        let mut lines = Vec::new();
+
+        render_message(
+            &mut msg,
+            &spinner,
+            MessageRenderContext::new(None, 120, 0, default_options()),
+            &mut lines,
+        );
+
+        let rendered = render_lines_to_strings(&lines);
+        assert!(
+            rendered.iter().any(|line| line.contains("running subagent: Explore")),
+            "expected the running-subagent line; got {rendered:?}",
+        );
+        assert!(
+            !rendered.iter().any(|line| line.contains("Thinking...")),
+            "thinking_line absent when show_thinking is false; got {rendered:?}",
+        );
+    }
+
+    #[test]
+    fn assistant_render_stacks_subagent_line_with_thinking_when_both_active() {
+        let spinner = SpinnerState {
+            is_active_turn_assistant: true,
+            show_thinking: true,
+            running_subagents: Some(RunningSubagentsLine { count: 2, primary_label: None }),
+            ..idle_spinner()
+        };
+        let mut msg = make_text_message(MessageRole::Assistant, "streaming");
+        let mut lines = Vec::new();
+
+        render_message(
+            &mut msg,
+            &spinner,
+            MessageRenderContext::new(None, 120, 0, default_options()),
+            &mut lines,
+        );
+
+        let rendered = render_lines_to_strings(&lines);
+        let thinking_idx = rendered.iter().position(|line| line.contains("Thinking..."));
+        let subagent_idx = rendered.iter().position(|line| line.contains("running 2 subagents"));
+        assert!(
+            thinking_idx.is_some(),
+            "expected the thinking line alongside the subagent line; got {rendered:?}",
+        );
+        assert!(
+            subagent_idx.is_some(),
+            "expected the running-subagents line alongside the thinking line; got {rendered:?}",
+        );
+        assert!(
+            thinking_idx < subagent_idx,
+            "thinking line should appear above the subagent line; got {rendered:?}",
+        );
+    }
+
+    #[test]
+    fn assistant_render_keeps_thinking_when_no_subagent_active() {
+        let spinner = SpinnerState {
+            is_active_turn_assistant: true,
+            show_thinking: true,
+            running_subagents: None,
+            ..idle_spinner()
+        };
+        let mut msg = make_text_message(MessageRole::Assistant, "streaming");
+        let mut lines = Vec::new();
+
+        render_message(
+            &mut msg,
+            &spinner,
+            MessageRenderContext::new(None, 120, 0, default_options()),
+            &mut lines,
+        );
+
+        let rendered = render_lines_to_strings(&lines);
+        assert!(
+            rendered.iter().any(|line| line.contains("Thinking...")),
+            "expected the thinking line in the no-subagent baseline; got {rendered:?}",
+        );
+        assert!(
+            !rendered.iter().any(|line| line.contains("running subagent")),
+            "no running-subagent line when running_subagents is None; got {rendered:?}",
+        );
+    }
+
+    #[test]
+    fn assistant_render_skips_subagent_line_for_non_active_assistant() {
+        let spinner = SpinnerState {
+            is_active_turn_assistant: false,
+            running_subagents: Some(RunningSubagentsLine {
+                count: 1,
+                primary_label: Some("Explore".to_owned()),
+            }),
+            ..idle_spinner()
+        };
+        let mut msg = make_text_message(MessageRole::Assistant, "older reply");
+        let mut lines = Vec::new();
+
+        render_message(
+            &mut msg,
+            &spinner,
+            MessageRenderContext::new(None, 120, 0, default_options()),
+            &mut lines,
+        );
+
+        let rendered = render_lines_to_strings(&lines);
+        assert!(
+            !rendered.iter().any(|line| line.contains("running subagent")),
+            "non-active assistant messages must not render the chat-wide status line; got {rendered:?}",
+        );
     }
 
     // ----------------------------------------------------------------

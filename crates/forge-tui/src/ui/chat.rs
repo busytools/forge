@@ -7,7 +7,7 @@ use crate::app::cache_metrics;
 use crate::app::{
     App, AppStatus, MessageBlock, MessageRole, ScrollbarGeometry, SelectionKind, SelectionState,
 };
-use crate::ui::message::{self, SpinnerState};
+use crate::ui::message::{self, RunningSubagentsLine, SpinnerState};
 use crate::ui::theme;
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
@@ -98,7 +98,7 @@ fn chat_scrollbar_area(area: Rect) -> Option<Rect> {
 }
 /// Build a `SpinnerState` for a specific message index.
 fn msg_spinner(
-    base: SpinnerState,
+    base: &SpinnerState,
     index: usize,
     active_turn_assistant: Option<usize>,
     msg: &crate::app::ChatMessage,
@@ -111,7 +111,7 @@ fn msg_spinner(
         show_empty_thinking: is_active_turn_assistant && base.show_empty_thinking,
         show_thinking: is_active_turn_assistant && base.show_thinking && has_blocks,
         show_compacting: is_active_turn_assistant && base.show_compacting,
-        ..base
+        ..base.clone()
     }
 }
 
@@ -129,7 +129,7 @@ fn msg_spinner(
 /// O(n) to O(1).
 fn update_visual_heights(
     app: &mut App,
-    base: SpinnerState,
+    base: &SpinnerState,
     width: u16,
     viewport_height: usize,
 ) -> HeightUpdateStats {
@@ -263,7 +263,7 @@ fn needs_height_measure(
 
 fn sync_active_turn_height_state(
     app: &mut App,
-    base: SpinnerState,
+    base: &SpinnerState,
     active_turn_assistant: Option<usize>,
 ) {
     let next = active_turn_assistant.and_then(|idx| {
@@ -303,7 +303,7 @@ fn sync_active_turn_height_state(
 // avoids N String allocations on remeasure-heavy frames.
 fn measure_message_height_at(
     app: &mut App,
-    base: SpinnerState,
+    base: &SpinnerState,
     active_turn_assistant: Option<usize>,
     width: u16,
     idx: usize,
@@ -446,10 +446,32 @@ fn build_base_spinner(app: &App) -> SpinnerState {
         // `handle_result`, but gating here keeps the chip from
         // briefly flashing across the final layout pass.
         thinking_tokens: if turn_in_flight { app.latest_thinking_tokens() } else { None },
+        running_subagents: derive_running_subagents(app),
     }
 }
 
-fn sync_chat_layout(app: &mut App, area: Rect, base_spinner: SpinnerState) -> usize {
+fn derive_running_subagents(app: &App) -> Option<RunningSubagentsLine> {
+    let view = app.subagents_view();
+    let running: Vec<&crate::app::SubagentEntry> = view
+        .iter()
+        .filter(|entry| {
+            !matches!(
+                entry.status,
+                crate::agent::model::ToolCallStatus::Completed
+                    | crate::agent::model::ToolCallStatus::Failed
+                    | crate::agent::model::ToolCallStatus::Killed
+            )
+        })
+        .collect();
+    if running.is_empty() {
+        return None;
+    }
+    let count = running.len();
+    let primary_label = (count == 1).then(|| running[0].label.clone());
+    Some(RunningSubagentsLine { count, primary_label })
+}
+
+fn sync_chat_layout(app: &mut App, area: Rect, base_spinner: &SpinnerState) -> usize {
     let width = area.width;
     let viewport_height = usize::from(area.height);
 
@@ -496,7 +518,7 @@ fn sync_chat_layout(app: &mut App, area: Rect, base_spinner: SpinnerState) -> us
 
 fn build_scrolled_render_data(
     app: &mut App,
-    base: SpinnerState,
+    base: &SpinnerState,
     width: u16,
     content_height: usize,
     viewport_height: usize,
@@ -556,7 +578,7 @@ fn render_scrolled(
     frame: &mut Frame,
     area: Rect,
     app: &mut App,
-    base: SpinnerState,
+    base: &SpinnerState,
     width: u16,
     content_height: usize,
     viewport_height: usize,
@@ -599,11 +621,11 @@ pub(super) fn refresh_selection_snapshot(app: &mut App) {
     }
 
     let base_spinner = build_base_spinner(app);
-    let content_height = sync_chat_layout(app, area, base_spinner);
+    let content_height = sync_chat_layout(app, area, &base_spinner);
     let _t = app.perf.as_ref().map(|p| p.start("chat::selection_capture"));
     let render_data = build_scrolled_render_data(
         app,
-        base_spinner,
+        &base_spinner,
         area.width,
         content_height,
         usize::from(area.height),
@@ -771,7 +793,7 @@ fn render_scrollbar_overlay(
 /// Returns the local scroll offset to pass to `Paragraph::scroll()`.
 fn render_culled_messages(
     app: &mut App,
-    base: SpinnerState,
+    base: &SpinnerState,
     width: u16,
     scroll: usize,
     viewport_height: usize,
@@ -880,7 +902,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     let width = content_area.width;
     let viewport_height = content_area.height as usize;
     let base_spinner = build_base_spinner(app);
-    let content_height = sync_chat_layout(app, content_area, base_spinner);
+    let content_height = sync_chat_layout(app, content_area, &base_spinner);
 
     if content_height <= viewport_height {
         crate::perf::mark_with("chat::path_short", "active", 1);
@@ -888,7 +910,15 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         crate::perf::mark_with("chat::path_scrolled", "active", 1);
     }
 
-    render_scrolled(frame, content_area, app, base_spinner, width, content_height, viewport_height);
+    render_scrolled(
+        frame,
+        content_area,
+        app,
+        &base_spinner,
+        width,
+        content_height,
+        viewport_height,
+    );
 
     if let Some(sel) = app.selection().copied()
         && sel.kind == SelectionKind::Chat
@@ -1157,6 +1187,7 @@ mod tests {
             show_thinking: false,
             show_compacting: false,
             thinking_tokens: None,
+            running_subagents: None,
         }
     }
 
@@ -1170,7 +1201,7 @@ mod tests {
                 let _ = app.active_viewport_mut().on_frame(content_area.width, content_area.height);
                 update_visual_heights(
                     app,
-                    spinner,
+                    &spinner,
                     content_area.width,
                     usize::from(content_area.height),
                 );
@@ -1180,7 +1211,7 @@ mod tests {
                     frame,
                     content_area,
                     app,
-                    spinner,
+                    &spinner,
                     content_area.width,
                     total_h,
                     usize::from(content_area.height),
@@ -1188,6 +1219,21 @@ mod tests {
             })
             .expect("draw");
         super::refresh_selection_snapshot(app);
+    }
+
+    #[test]
+    fn derive_running_subagents_returns_none_without_dispatch() {
+        let app = App::test_default();
+        assert!(super::derive_running_subagents(&app).is_none());
+    }
+
+    #[test]
+    fn build_base_spinner_carries_no_running_subagents_by_default() {
+        let mut app = App::test_default();
+        app.status = AppStatus::Running;
+        let spinner = super::build_base_spinner(&app);
+        assert!(spinner.running_subagents.is_none());
+        assert!(spinner.show_thinking, "thinking remains independent of the subagent surface");
     }
 
     #[test]
@@ -1199,11 +1245,11 @@ mod tests {
 
         let _ = app.active_viewport_mut().on_frame(40, 8);
         let first_spinner = SpinnerState { frame: 0, show_thinking: true, ..idle_spinner() };
-        let first = update_visual_heights(&mut app, first_spinner, 40, 8);
+        let first = update_visual_heights(&mut app, &first_spinner, 40, 8);
         assert_eq!(first.measured_msgs, 1);
 
         let second_spinner = SpinnerState { frame: 1, show_thinking: true, ..idle_spinner() };
-        let second = update_visual_heights(&mut app, second_spinner, 40, 8);
+        let second = update_visual_heights(&mut app, &second_spinner, 40, 8);
         assert_eq!(second.measured_msgs, 0);
     }
 
@@ -1270,7 +1316,7 @@ mod tests {
         let _ = app.active_viewport_mut().on_frame(12, 8);
         let spinner = idle_spinner();
 
-        update_visual_heights(&mut app, spinner, 12, 8);
+        update_visual_heights(&mut app, &spinner, 12, 8);
         let base_h = app.active_viewport_mut().message_height(0);
         assert!(base_h > 0);
 
@@ -1284,7 +1330,7 @@ mod tests {
         }
         app.invalidate_layout(InvalidationLevel::MessagesFrom(0));
 
-        update_visual_heights(&mut app, spinner, 12, 8);
+        update_visual_heights(&mut app, &spinner, 12, 8);
         assert!(
             app.active_viewport_mut().message_height(0) > base_h,
             "dirty non-tail message should be remeasured"
@@ -1300,7 +1346,7 @@ mod tests {
         let _ = app.active_viewport_mut().on_frame(40, 8);
         let spinner = idle_spinner();
 
-        update_visual_heights(&mut app, spinner, 40, 8);
+        update_visual_heights(&mut app, &spinner, 40, 8);
         app.active_viewport_mut().rebuild_prefix_sums();
 
         assert_eq!(app.active_viewport_mut().message_height(0), 2);
@@ -1324,7 +1370,7 @@ mod tests {
         let _ = app.active_viewport_mut().on_frame(40, 8);
         let spinner = SpinnerState { show_empty_thinking: true, ..idle_spinner() };
 
-        update_visual_heights(&mut app, spinner, 40, 8);
+        update_visual_heights(&mut app, &spinner, 40, 8);
         app.active_viewport_mut().rebuild_prefix_sums();
 
         assert_eq!(
@@ -1357,14 +1403,14 @@ mod tests {
         let _ = app.active_viewport_mut().on_frame(40, 8);
         let spinner = idle_spinner();
 
-        update_visual_heights(&mut app, spinner, 40, 8);
+        update_visual_heights(&mut app, &spinner, 40, 8);
         app.active_viewport_mut().rebuild_prefix_sums();
         assert_eq!(app.active_viewport_mut().message_height(0), 2);
         assert_eq!(app.active_viewport_mut().total_message_height(), 2);
 
         app.push_message_tracked(user_message("follow-up"));
 
-        update_visual_heights(&mut app, spinner, 40, 8);
+        update_visual_heights(&mut app, &spinner, 40, 8);
         app.active_viewport_mut().rebuild_prefix_sums();
         assert_eq!(app.active_viewport_mut().message_height(0), 3);
         assert_eq!(app.active_viewport_mut().message_height(1), 2);
@@ -1381,7 +1427,7 @@ mod tests {
         let _ = app.active_viewport_mut().on_frame(40, 8);
         let spinner = idle_spinner();
 
-        update_visual_heights(&mut app, spinner, 40, 8);
+        update_visual_heights(&mut app, &spinner, 40, 8);
         app.active_viewport_mut().rebuild_prefix_sums();
         assert_eq!(app.active_viewport_mut().message_height(0), 3);
         assert_eq!(app.active_viewport_mut().message_height(1), 2);
@@ -1389,7 +1435,7 @@ mod tests {
         let removed = app.remove_message_tracked(1);
         assert!(removed.is_some());
 
-        update_visual_heights(&mut app, spinner, 40, 8);
+        update_visual_heights(&mut app, &spinner, 40, 8);
         app.active_viewport_mut().rebuild_prefix_sums();
         assert_eq!(app.active_viewport_mut().message_height(0), 2);
         assert_eq!(app.active_viewport_mut().total_message_height(), 2);
@@ -1405,7 +1451,7 @@ mod tests {
         let spinner = idle_spinner();
 
         let _ = app.active_viewport_mut().on_frame(48, 12);
-        update_visual_heights(&mut app, spinner, 48, 12);
+        update_visual_heights(&mut app, &spinner, 48, 12);
         app.active_viewport_mut().rebuild_prefix_sums();
         let per_message_height = app.active_viewport_mut().message_height(0);
         assert!(per_message_height > 0);
@@ -1416,7 +1462,7 @@ mod tests {
         app.active_viewport_mut().scroll_pos = app.viewport().scroll_offset as f32;
 
         assert!(app.active_viewport_mut().on_frame(18, 12).width_changed);
-        update_visual_heights(&mut app, spinner, 18, visible_rows);
+        update_visual_heights(&mut app, &spinner, 18, visible_rows);
 
         assert_eq!(app.viewport().message_heights_width, 0);
         assert!(app.active_viewport_mut().resize_remeasure_active());
@@ -1435,7 +1481,7 @@ mod tests {
         let spinner = idle_spinner();
 
         let _ = app.active_viewport_mut().on_frame(48, 12);
-        update_visual_heights(&mut app, spinner, 48, 12);
+        update_visual_heights(&mut app, &spinner, 48, 12);
         app.active_viewport_mut().rebuild_prefix_sums();
         let per_message_height = app.active_viewport_mut().message_height(0);
         app.active_viewport_mut().scroll_offset = per_message_height * 12;
@@ -1444,7 +1490,7 @@ mod tests {
 
         assert!(app.active_viewport_mut().on_frame(18, 12).width_changed);
         for _ in 0..8 {
-            update_visual_heights(&mut app, spinner, 18, per_message_height * 2);
+            update_visual_heights(&mut app, &spinner, 18, per_message_height * 2);
             app.active_viewport_mut().rebuild_prefix_sums();
             if !app.active_viewport_mut().resize_remeasure_active() {
                 break;
@@ -1467,7 +1513,7 @@ mod tests {
         let spinner = idle_spinner();
 
         let _ = app.active_viewport_mut().on_frame(48, 12);
-        update_visual_heights(&mut app, spinner, 48, 12);
+        update_visual_heights(&mut app, &spinner, 48, 12);
         app.active_viewport_mut().rebuild_prefix_sums();
         let per_message_height = app.active_viewport_mut().message_height(0);
         app.active_viewport_mut().scroll_offset = per_message_height * 2;
@@ -1477,9 +1523,9 @@ mod tests {
         assert!(app.active_viewport_mut().on_frame(18, 12).width_changed);
         app.invalidate_layout(InvalidationLevel::MessagesFrom(0));
 
-        let first = update_visual_heights(&mut app, spinner, 18, per_message_height * 2);
+        let first = update_visual_heights(&mut app, &spinner, 18, per_message_height * 2);
         app.active_viewport_mut().rebuild_prefix_sums();
-        let second = update_visual_heights(&mut app, spinner, 18, per_message_height * 2);
+        let second = update_visual_heights(&mut app, &spinner, 18, per_message_height * 2);
 
         assert!(first.measured_msgs >= app.messages().len());
         assert_eq!(second.measured_msgs, 0);
@@ -1498,7 +1544,7 @@ mod tests {
         let spinner = idle_spinner();
 
         let _ = app.active_viewport_mut().on_frame(width, viewport_height_u16);
-        update_visual_heights(&mut app, spinner, width, viewport_height);
+        update_visual_heights(&mut app, &spinner, width, viewport_height);
         app.active_viewport_mut().rebuild_prefix_sums();
 
         let scroll = 60;
@@ -1531,7 +1577,7 @@ mod tests {
         let mut culled_lines = Vec::new();
         let stats = render_culled_messages(
             &mut app,
-            spinner,
+            &spinner,
             width,
             scroll,
             viewport_height,
@@ -1559,7 +1605,7 @@ mod tests {
         let spinner = idle_spinner();
 
         let _ = app.active_viewport_mut().on_frame(width, viewport_height_u16);
-        update_visual_heights(&mut app, spinner, width, viewport_height);
+        update_visual_heights(&mut app, &spinner, width, viewport_height);
         app.active_viewport_mut().rebuild_prefix_sums();
 
         assert!(app.active_viewport_mut().message_height(0) >= 3);
@@ -1594,7 +1640,7 @@ mod tests {
         let mut culled_lines = Vec::new();
         let stats = render_culled_messages(
             &mut app,
-            spinner,
+            &spinner,
             width,
             scroll,
             viewport_height,
@@ -1625,7 +1671,7 @@ mod tests {
         let spinner = idle_spinner();
 
         let _ = app.active_viewport_mut().on_frame(width, viewport_height_u16);
-        update_visual_heights(&mut app, spinner, width, viewport_height);
+        update_visual_heights(&mut app, &spinner, width, viewport_height);
         app.active_viewport_mut().rebuild_prefix_sums();
 
         assert!(app.active_viewport_mut().message_height(0) > 200);
@@ -1633,7 +1679,7 @@ mod tests {
         let mut culled_lines = Vec::new();
         let stats = render_culled_messages(
             &mut app,
-            spinner,
+            &spinner,
             width,
             40,
             viewport_height,
