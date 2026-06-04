@@ -522,9 +522,10 @@ fn append_assistant_blocks(
                         // and dispatches as a group-summary click when
                         // the position matches a group at L2.
                         let summary_lines = tool_call::render_group_summary_line(
-                            kind_count,
+                            &kind_count,
                             aggregate_status,
                             spinner.frame,
+                            render_context.width as usize,
                         );
                         let y_in_msg = layout.height;
                         let height = rendered_lines_height(&summary_lines, render_context.width);

@@ -3,4 +3,4 @@ source: crates/forge-tui/src/app/replay.rs
 expression: snapshot
 ---
 Forge
-  ✓ = 5 reads   ctrl+x to expand
+  ✓ = read 0.rs, 1.rs, 2.rs +2   ctrl+x to expand
