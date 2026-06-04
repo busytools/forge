@@ -404,3 +404,73 @@ async fn title_shortened_relative_to_cwd() {
         panic!("expected ToolCall block");
     }
 }
+
+/// Real-wire end-to-end contract for the SUBAGENTS Inspector
+/// section. Drives the production
+/// `apply_tool_use_block` -> `handle_tool_call` ->
+/// `register_tool_call_scope` pipeline (NOT the synthetic
+/// `App::register_tool_call_scope` shortcut some unit tests use) for
+/// an Agent dispatch + a SubagentChild, then asserts:
+///
+/// 1. Scope registration: root scopes `SubagentRoot`, child scopes
+///    `SubagentChild { parent }`.
+/// 2. Derive: `App::subagents_view` surfaces one entry with the
+///    expected tail while the root is still running.
+/// 3. Inspector-only: the root + child are BOTH chat-suppressed
+///    (`hidden: true`) so they never reach the chat renderer.
+#[tokio::test]
+async fn subagent_root_via_real_wire_surfaces_in_subagents_view() {
+    let mut app = test_app();
+
+    send_msg(
+        &mut app,
+        assistant_message(vec![tool_use_block(
+            "toolu_root",
+            "Agent",
+            serde_json::json!({
+                "subagent_type": "Explore",
+                "description": "map hidden tool calls",
+                "prompt": "map hidden tool calls",
+            }),
+        )]),
+    );
+    send_msg(
+        &mut app,
+        assistant_message_with_parent(
+            vec![tool_use_block(
+                "toolu_child",
+                "Grep",
+                serde_json::json!({"pattern": "SubagentChild"}),
+            )],
+            "toolu_root",
+        ),
+    );
+
+    assert_eq!(app.tool_call_scope("toolu_root"), Some(ToolCallScope::SubagentRoot));
+    assert_eq!(
+        app.tool_call_scope("toolu_child"),
+        Some(ToolCallScope::SubagentChild { parent_tool_use_id: "toolu_root".to_owned() }),
+    );
+
+    let view = app.subagents_view();
+    assert_eq!(
+        view.len(),
+        1,
+        "real-wire Agent dispatch must surface in subagents_view; got {view:?}",
+    );
+    let entry = &view[0];
+    assert_eq!(entry.tool_use_id, "toolu_root");
+    assert_eq!(entry.total_count, 1);
+    assert_eq!(entry.tail.len(), 1);
+    assert_eq!(entry.tail[0].sdk_tool_name, "Grep");
+
+    // Inspector-only: the SubagentRoot itself is chat-suppressed - no
+    // card, no group. The hidden flag stays in the message block (so
+    // `subagents_view` still sees it) but the chat render skips it.
+    assert!(
+        tool_call_block(&app, "toolu_root").hidden,
+        "SubagentRoot must be hidden from chat (Inspector-only); got hidden={}",
+        tool_call_block(&app, "toolu_root").hidden,
+    );
+    assert!(tool_call_block(&app, "toolu_child").hidden, "SubagentChild stays hidden as before");
+}
