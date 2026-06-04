@@ -2122,15 +2122,30 @@ impl App {
             .map(|root| {
                 let children = children_by_parent.remove(root.id.as_str()).unwrap_or_default();
                 let total_count = children.len();
-                let tail_start = children.len().saturating_sub(cap);
-                let tail = children[tail_start..]
-                    .iter()
-                    .map(|c| crate::app::state::types::SubagentChildEntry {
-                        sdk_tool_name: c.sdk_tool_name.clone(),
-                        title: c.title.clone(),
-                        status: c.status,
-                    })
-                    .collect();
+                // Terminal roots show the trailing `· N tools` summary
+                // instead of the live tail (per the render path), so
+                // honour that contract by emptying the field in the
+                // derive too - `tail` then literally means "the live
+                // tail to render". `total_count` survives because the
+                // summary reads from it.
+                let in_progress = matches!(
+                    root.status,
+                    crate::agent::model::ToolCallStatus::InProgress
+                        | crate::agent::model::ToolCallStatus::Pending
+                );
+                let tail = if in_progress {
+                    let tail_start = children.len().saturating_sub(cap);
+                    children[tail_start..]
+                        .iter()
+                        .map(|c| crate::app::state::types::SubagentChildEntry {
+                            sdk_tool_name: c.sdk_tool_name.clone(),
+                            title: c.title.clone(),
+                            status: c.status,
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
                 crate::app::state::types::SubagentEntry {
                     tool_use_id: root.id.clone(),
                     label: subagent_label_from_root(root),
@@ -6452,6 +6467,18 @@ mod tests {
         let done_entry = view.iter().find(|e| e.tool_use_id == "tu-root-done").expect("done");
         assert_eq!(done_entry.total_count, 2);
         assert_eq!(done_entry.status, model::ToolCallStatus::Completed);
+        assert!(
+            done_entry.tail.is_empty(),
+            "terminal root carries no live tail (the section renders `· N tools` from total_count instead); got {:?}",
+            done_entry.tail,
+        );
+        let running_entry = view.iter().find(|e| e.tool_use_id == "tu-root-run").expect("run");
+        assert!(
+            running_entry.tail.is_empty()
+                || running_entry.tail.len() <= crate::app::SUBAGENT_TAIL_CAP,
+            "in-progress root's tail respects the cap; got {:?}",
+            running_entry.tail,
+        );
     }
 
     /// No subagent dispatches in the session -> empty view (section
