@@ -195,9 +195,18 @@ fn build_option_lines(
             PromptSource::Permission { .. } => None,
         };
 
+    // Display-only: in multi-select, the Notes/"Other" row reads as
+    // checked whenever the user has typed non-empty text into the
+    // free-text buffer, so the live option list confirms the typed
+    // content will be included on submit. The wire (`annotation.notes`)
+    // carries the typed text independently of `selected_option_indices`,
+    // so this never mutates the selection set.
+    let notes_has_text = notes_text.is_some_and(|t| !t.trim().is_empty());
     for (i, opt) in prompt.options.iter().enumerate() {
         let is_focused = i == prompt.focused_option_index;
-        let is_toggled = prompt.selected_option_indices.contains(&i);
+        let is_notes_kind = matches!(opt.kind, PermissionOptionKind::Notes);
+        let is_toggled = prompt.selected_option_indices.contains(&i)
+            || (is_multi && is_notes_kind && notes_has_text);
         let (icon, icon_color) = icon_for_kind(opt.kind);
         let pointer = if is_focused { "▸ " } else { "  " };
         let pointer_style = if is_focused {
@@ -502,6 +511,50 @@ mod tests {
         let out = render_to_string(&prompt, 1, 80, 14);
         assert!(out.contains("[x] ✓ Red"), "expected [x] on toggled option; got:\n{out}");
         assert!(out.contains("[ ] ✓ Blue"), "expected [ ] on untoggled option; got:\n{out}");
+    }
+
+    /// Fix 3: in multiSelect mode, when the user types non-empty text
+    /// into the "Other" / Notes free-text field, the Notes option's
+    /// row MUST render as checked so the user sees the typed content
+    /// will be included on submit. The wire already carries
+    /// `annotation.notes` independently, so this is display-only - the
+    /// `selected_option_indices` set is NOT mutated.
+    #[test]
+    fn multi_select_notes_option_renders_checked_when_user_typed() {
+        let request = make_question_request(true);
+        let prompt = PromptState::from_question("tc-q".into(), request);
+        // Sanity: no picks; only a non-empty notes buffer.
+        assert!(prompt.selected_option_indices.is_empty());
+        let area = Rect::new(0, 0, 80, 18);
+        let mut buf = Buffer::empty(area);
+        render(area, &mut buf, &prompt, 1, Some("a note about etiquette"));
+        let out: String = (0..area.height)
+            .map(|y| (0..area.width).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            out.contains("[x] … Tell Claude something else"),
+            "the Notes/Other row must render as [x] when the user has typed text; got:\n{out}",
+        );
+    }
+
+    /// Sibling regression: when the notes buffer is empty (default
+    /// state with no typed text), the Notes row MUST stay unchecked.
+    #[test]
+    fn multi_select_notes_option_renders_unchecked_when_user_has_not_typed() {
+        let request = make_question_request(true);
+        let prompt = PromptState::from_question("tc-q".into(), request);
+        let area = Rect::new(0, 0, 80, 18);
+        let mut buf = Buffer::empty(area);
+        render(area, &mut buf, &prompt, 1, None);
+        let out: String = (0..area.height)
+            .map(|y| (0..area.width).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            out.contains("[ ] … Tell Claude something else"),
+            "Notes/Other row must stay [ ] when no text has been typed; got:\n{out}",
+        );
     }
 
     #[test]

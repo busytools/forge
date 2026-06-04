@@ -415,29 +415,26 @@ pub fn submit_prompt(app: &mut crate::app::App) {
                 .collect();
             // Record the resolved answer onto the AskUserQuestion tool so
             // it un-hides and renders as the answered-card in the chat
-            // stream. Picked options show their labels; a typed "Other"
-            // answer shows the literal notes text.
-            let selected_labels: Vec<String> = selected_indices
+            // stream. multiSelect can carry BOTH picked options and a
+            // typed "Other" note - keep them as distinct fields rather
+            // than collapsing to one String, so neither is lost in the
+            // card render.
+            let picked_labels: Vec<String> = selected_indices
                 .iter()
                 .filter_map(|&i| prompt.options.get(i))
                 .filter(|o| !matches!(o.kind, PermissionOptionKind::Notes))
                 .map(|o| o.name.clone())
                 .collect();
-            let answered = if selected_labels.is_empty() {
-                notes_text.as_ref().map(|n| crate::app::AnsweredQuestion {
-                    question: q.question.clone(),
-                    answer: n.clone(),
-                    typed: true,
-                })
-            } else {
-                Some(crate::app::AnsweredQuestion {
-                    question: q.question.clone(),
-                    answer: selected_labels.join(", "),
-                    typed: false,
-                })
-            };
-            if let Some(qa) = answered {
-                app.record_answered_question(&prompt.tool_id, qa);
+            let typed_note = notes_text.clone();
+            if !picked_labels.is_empty() || typed_note.is_some() {
+                app.record_answered_question(
+                    &prompt.tool_id,
+                    crate::app::AnsweredQuestion {
+                        question: q.question.clone(),
+                        picked_labels,
+                        typed_note,
+                    },
+                );
             }
             let annotation = notes_text
                 .as_ref()

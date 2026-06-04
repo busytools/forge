@@ -3182,8 +3182,8 @@ mod tests {
             tool_use_id,
             crate::app::AnsweredQuestion {
                 question: "Which path?".to_owned(),
-                answer: "Clean card".to_owned(),
-                typed: false,
+                picked_labels: vec!["Clean card".to_owned()],
+                typed_note: None,
             },
         );
 
@@ -3193,7 +3193,8 @@ mod tests {
         };
         assert!(!tc.hidden, "answered question must un-hide so the card renders");
         assert_eq!(tc.answered_questions.len(), 1);
-        assert_eq!(tc.answered_questions[0].answer, "Clean card");
+        assert_eq!(tc.answered_questions[0].picked_labels, vec!["Clean card".to_owned()]);
+        assert!(tc.answered_questions[0].typed_note.is_none());
     }
 
     #[test]

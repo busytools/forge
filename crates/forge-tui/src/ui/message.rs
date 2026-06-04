@@ -843,28 +843,33 @@ fn render_question_answered_card(tc: &crate::app::ToolCallInfo) -> Option<Vec<Li
     if !tc.is_ask_question_tool() || tc.answered_questions.is_empty() {
         return None;
     }
+    // Indent the question line 2 spaces so the `?` lands in the
+    // tool-icon column (matching `standard::render_tool_call_title`'s
+    // `format!("  {icon} ")` convention) and nest the answer line(s)
+    // one level deeper so the `->` sits at column 4, under the
+    // question text.
     let mut lines: Vec<Line<'static>> = Vec::new();
     for qa in &tc.answered_questions {
         lines.push(Line::from(vec![
             Span::styled(
-                "? ".to_owned(),
+                "  ? ".to_owned(),
                 Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
             ),
             Span::styled(qa.question.clone(), Style::default().fg(theme::DIM)),
         ]));
-        let mut answer_spans =
-            vec![Span::styled("  \u{2192} ".to_owned(), Style::default().fg(theme::DIM))];
-        if qa.typed {
-            answer_spans
-                .push(Span::styled("you typed: ".to_owned(), Style::default().fg(theme::DIM)));
-            answer_spans.push(Span::styled(
-                format!("\"{}\"", qa.answer),
-                Style::default().add_modifier(Modifier::BOLD),
-            ));
-        } else {
-            answer_spans.push(Span::styled(qa.answer.clone(), Style::default().fg(Color::Green)));
+        if !qa.picked_labels.is_empty() {
+            lines.push(Line::from(vec![
+                Span::styled("    \u{2192} ".to_owned(), Style::default().fg(theme::DIM)),
+                Span::styled(qa.picked_labels.join(", "), Style::default().fg(Color::Green)),
+            ]));
         }
-        lines.push(Line::from(answer_spans));
+        if let Some(typed) = qa.typed_note.as_ref().filter(|s| !s.is_empty()) {
+            lines.push(Line::from(vec![
+                Span::styled("    \u{2192} ".to_owned(), Style::default().fg(theme::DIM)),
+                Span::styled("you typed: ".to_owned(), Style::default().fg(theme::DIM)),
+                Span::styled(format!("\"{typed}\""), Style::default().add_modifier(Modifier::BOLD)),
+            ]));
+        }
     }
     Some(lines)
 }
@@ -2719,14 +2724,18 @@ mod tests {
         );
         tc.answered_questions = vec![crate::app::AnsweredQuestion {
             question: "Which build path?".to_owned(),
-            answer: "Clean answered-card".to_owned(),
-            typed: false,
+            picked_labels: vec!["Clean answered-card".to_owned()],
+            typed_note: None,
         }];
         let lines =
             render_question_answered_card(&tc).expect("answered AskUserQuestion produces lines");
         let joined = render_lines_to_strings(&lines).join("\n");
         assert!(joined.contains("Which build path?"), "question text: {joined:?}");
         assert!(joined.contains("Clean answered-card"), "picked label: {joined:?}");
+        assert!(
+            !joined.contains("you typed"),
+            "picked-only card must not show the typed lead-in: {joined:?}",
+        );
     }
 
     #[test]
@@ -2739,14 +2748,99 @@ mod tests {
         );
         tc.answered_questions = vec![crate::app::AnsweredQuestion {
             question: "How should it look?".to_owned(),
-            answer: "Can you show me some visuals please?".to_owned(),
-            typed: true,
+            picked_labels: Vec::new(),
+            typed_note: Some("Can you show me some visuals please?".to_owned()),
         }];
         let lines = render_question_answered_card(&tc).expect("typed answer produces lines");
         let joined = render_lines_to_strings(&lines).join("\n");
         assert!(
             joined.contains("Can you show me some visuals please?"),
             "literal typed text must be shown: {joined:?}",
+        );
+        assert!(joined.contains("you typed"), "typed lead-in must be shown: {joined:?}");
+    }
+
+    /// Fix 1 (data loss): the bug the plan targets. When the user
+    /// picks one or more options in a multiSelect AND types text into
+    /// the "Other" free-text, the card MUST surface BOTH on their
+    /// own answer lines. The previous shape (`answer: String` +
+    /// `typed: bool`) collapsed to either-or and dropped the typed
+    /// text whenever picks were non-empty.
+    #[test]
+    fn answered_question_renders_picked_labels_and_typed_note_together() {
+        let mut tc = make_tool_call_info(
+            "toolu_q",
+            "AskUserQuestion",
+            crate::agent::model::ToolCallStatus::Completed,
+            "",
+        );
+        tc.answered_questions = vec![crate::app::AnsweredQuestion {
+            question: "Which areas need work?".to_owned(),
+            picked_labels: vec!["Performance".to_owned(), "Documentation".to_owned()],
+            typed_note: Some("and the bot reviewer reply etiquette".to_owned()),
+        }];
+        let lines = render_question_answered_card(&tc).expect("mixed answer produces lines");
+        let strings = render_lines_to_strings(&lines);
+        let joined = strings.join("\n");
+        assert!(joined.contains("Which areas need work?"), "question text: {joined:?}");
+        assert!(
+            joined.contains("Performance, Documentation"),
+            "picked-labels line must surface: {joined:?}",
+        );
+        assert!(
+            joined.contains("and the bot reviewer reply etiquette"),
+            "typed note must ALSO surface (the bug being fixed): {joined:?}",
+        );
+        assert!(
+            joined.contains("you typed"),
+            "typed line must carry the lead-in even alongside picks: {joined:?}",
+        );
+        // Both surfaces means 3 lines total: question + picked + typed.
+        assert_eq!(
+            strings.len(),
+            3,
+            "mixed card has question + picked + typed lines; got {strings:?}"
+        );
+    }
+
+    /// Fix 2 (visual): the answered-card MUST align with the
+    /// tool-icon column. Every standard tool row opens with a
+    /// 2-space indent so the icon lands at column 2; the card's
+    /// `?` should match that, and the `->` answer prefix nests one
+    /// level deeper at column 4. Assert directly on the rendered
+    /// Line's leading content (the snapshot harness's
+    /// `buffer_to_text` trims TRAILING whitespace but leading
+    /// indent survives).
+    #[test]
+    fn answered_question_card_indents_to_match_tool_icon_column() {
+        let mut tc = make_tool_call_info(
+            "toolu_q",
+            "AskUserQuestion",
+            crate::agent::model::ToolCallStatus::Completed,
+            "",
+        );
+        tc.answered_questions = vec![crate::app::AnsweredQuestion {
+            question: "Which build path?".to_owned(),
+            picked_labels: vec!["Clean answered-card".to_owned()],
+            typed_note: Some("with a side of toast".to_owned()),
+        }];
+        let lines = render_question_answered_card(&tc).expect("answered card produces lines");
+        let strings = render_lines_to_strings(&lines);
+        assert_eq!(strings.len(), 3, "question + picked + typed = 3 lines; got {strings:?}");
+        assert!(
+            strings[0].starts_with("  ? "),
+            "question line must indent 2 spaces so `?` lands at the icon column; got {:?}",
+            strings[0],
+        );
+        assert!(
+            strings[1].starts_with("    \u{2192} "),
+            "picked-answer line must nest one level deeper (4-space indent before →); got {:?}",
+            strings[1],
+        );
+        assert!(
+            strings[2].starts_with("    \u{2192} "),
+            "typed-answer line must nest one level deeper (4-space indent before →); got {:?}",
+            strings[2],
         );
     }
 
@@ -2774,8 +2868,8 @@ mod tests {
         );
         tc.answered_questions = vec![crate::app::AnsweredQuestion {
             question: "q".to_owned(),
-            answer: "a".to_owned(),
-            typed: false,
+            picked_labels: vec!["a".to_owned()],
+            typed_note: None,
         }];
         assert!(
             render_question_answered_card(&tc).is_none(),
