@@ -52,8 +52,8 @@ pub fn tool_name_label(sdk_tool_name: &str) -> (&'static str, &'static str) {
         "LS" => ("\u{2315}", "LS"),
         "Bash" => ("\u{25b6}", "Bash"),
         "Task" | "Agent" => ("\u{25c7}", "Subagent"),
-        "WebFetch" => ("\u{2295}", "WebFetch"),
-        "WebSearch" => ("\u{2295}", "WebSearch"),
+        "WebFetch" | "web_fetch" => ("\u{2295}", "WebFetch"),
+        "WebSearch" | "web_search" => ("\u{2295}", "WebSearch"),
         "ExitPlanMode" | "EnterPlanMode" => (
             "\u{2299}",
             match sdk_tool_name {
@@ -80,7 +80,9 @@ pub fn tool_name_label(sdk_tool_name: &str) -> (&'static str, &'static str) {
         // Workflow's distinct filled-diamond marker.
         "ScheduleWakeup" => ("\u{23f2}", "ScheduleWakeup"),
         "Skill" => ("\u{2726}", "Skill"),
-        "ToolSearch" => ("\u{2316}", "ToolSearch"),
+        "ToolSearch" | "tool_search_tool_regex" | "tool_search_tool_bm25" => {
+            ("\u{2316}", "ToolSearch")
+        }
         // Cron* family shares the ASCII `*` glyph (cron-syntax mapping
         // `* * * * *`); width-1 keeps the kind-icon slot deterministic
         // across terminals regardless of EAW interpretation. Per-arm
@@ -96,6 +98,15 @@ pub fn tool_name_label(sdk_tool_name: &str) -> (&'static str, &'static str) {
         // Filled diamond ◆ - agent-script flow, distinct from
         // Task/Agent's hollow ◇ subagent-dispatch glyph.
         "Workflow" => ("\u{25c6}", "Workflow"),
+        // `advisor` is the upstream server-tool wire name for the
+        // model-side advisor call. Borrows the Skill sparkle (✦) since
+        // both surface model-side counsel without a local handler. The
+        // other server-tool wire names (`tool_search_tool_regex`,
+        // `tool_search_tool_bm25`, `web_search`, `web_fetch`) share the
+        // in-process arms above so the card chrome stays visually
+        // consistent regardless of which side of the wire the call
+        // came from.
+        "advisor" => ("\u{2726}", "Advisor"),
         _ => ("\u{25cb}", "Tool"),
     }
 }
@@ -140,5 +151,21 @@ mod tests {
         // Workflow is the filled diamond ◆, distinct from Task/Agent's
         // hollow ◇ - agent-script flow vs subagent dispatch.
         assert_eq!(tool_name_label("Workflow"), ("\u{25c6}", "Workflow"));
+    }
+
+    /// Server-side tool wire names land here too (e.g. ToolSearch
+    /// arrives as `tool_search_tool_regex` or `_bm25`, not the
+    /// in-process `ToolSearch`). Without a display arm they fall to
+    /// the generic `("\u{25cb}", "Tool")` and the card chrome is
+    /// meaningless. Reuse the in-process glyphs so the visual stays
+    /// stable regardless of which side of the wire the call comes
+    /// from.
+    #[test]
+    fn server_tool_wire_names_map_to_friendly_labels() {
+        assert_eq!(tool_name_label("tool_search_tool_regex"), ("\u{2316}", "ToolSearch"));
+        assert_eq!(tool_name_label("tool_search_tool_bm25"), ("\u{2316}", "ToolSearch"));
+        assert_eq!(tool_name_label("web_search"), ("\u{2295}", "WebSearch"));
+        assert_eq!(tool_name_label("web_fetch"), ("\u{2295}", "WebFetch"));
+        assert_eq!(tool_name_label("advisor"), ("\u{2726}", "Advisor"));
     }
 }

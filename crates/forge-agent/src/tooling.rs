@@ -114,6 +114,27 @@ fn tool_title(name: &str, input: &Value) -> String {
                 _ => name.to_owned(),
             }
         }
+        // Server-side tool calls (wire `ServerToolUse` blocks). Without
+        // these arms the card title falls back to the raw wire name
+        // (e.g. `tool_search_tool_regex`) and the user can't see what
+        // the LLM is searching for. Pull the relevant input field so
+        // the query / url surfaces in the title.
+        "tool_search_tool_regex" | "tool_search_tool_bm25" => {
+            let query = s("query");
+            if query.is_empty() { "ToolSearch".to_owned() } else { format!("ToolSearch {query}") }
+        }
+        "web_search" => {
+            let query = s("query");
+            if query.is_empty() { "WebSearch".to_owned() } else { format!("WebSearch {query}") }
+        }
+        "web_fetch" => {
+            let url = s("url");
+            if url.is_empty() { "WebFetch".to_owned() } else { format!("WebFetch {url}") }
+        }
+        "advisor" => {
+            let query = s("query");
+            if query.is_empty() { "Advisor".to_owned() } else { format!("Advisor {query}") }
+        }
         _ => name.to_owned(),
     }
 }
@@ -871,6 +892,43 @@ mod tests {
 
         let task = create_tool_call("tu4", "Task", &json!({}), None);
         assert_eq!(task.kind, ToolKind::Think);
+    }
+
+    /// Server-side tools (`ServerToolUse` wire blocks) - the wire `name`
+    /// is the discriminator literal (e.g. `tool_search_tool_regex`,
+    /// `web_search`). Without a tool_title arm the title falls back to
+    /// the raw wire name and the card body is empty - the LLM's query
+    /// is invisible. Pull the relevant input field (query / url) so the
+    /// card carries it.
+    #[test]
+    fn create_tool_call_titles_server_tools_carry_query_or_url() {
+        let regex = create_tool_call(
+            "stu1",
+            "tool_search_tool_regex",
+            &json!({"query": "select:CronList"}),
+            None,
+        );
+        assert_eq!(regex.title, "ToolSearch select:CronList");
+
+        let bm25 = create_tool_call(
+            "stu2",
+            "tool_search_tool_bm25",
+            &json!({"query": "notebook jupyter"}),
+            None,
+        );
+        assert_eq!(bm25.title, "ToolSearch notebook jupyter");
+
+        let web_search =
+            create_tool_call("stu3", "web_search", &json!({"query": "rust async"}), None);
+        assert_eq!(web_search.title, "WebSearch rust async");
+
+        let web_fetch =
+            create_tool_call("stu4", "web_fetch", &json!({"url": "https://example.com"}), None);
+        assert_eq!(web_fetch.title, "WebFetch https://example.com");
+
+        let advisor =
+            create_tool_call("stu5", "advisor", &json!({"query": "how to handle X"}), None);
+        assert_eq!(advisor.title, "Advisor how to handle X");
     }
 
     #[test]
