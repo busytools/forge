@@ -553,10 +553,11 @@ mod tests {
 
         let mut harness = ReplayHarness::from_app(build_app_with_consecutive_reads(1));
         let snap_l2 = harness.snapshot_chat(80, 10);
-        // Summary shape: `<status_icon> = <summary>   ctrl+x to expand`.
+        // Summary shape (post-enrichment):
+        // `<status_icon> = read <basename>   ctrl+x to expand`.
         assert!(
-            snap_l2.contains("1 read"),
-            "single-item L2 must render the summary line (no special-casing); got:\n{snap_l2}",
+            snap_l2.contains("read 0.rs"),
+            "single-item L2 must surface the target via the rich summary; got:\n{snap_l2}",
         );
         assert!(
             snap_l2.contains("= "),
@@ -564,7 +565,7 @@ mod tests {
         );
         assert!(
             !snap_l2.contains("Read crates/forge-tui/src/0.rs"),
-            "single-item L2 must NOT render the title row directly; got:\n{snap_l2}",
+            "single-item L2 must NOT render the full title row; got:\n{snap_l2}",
         );
 
         let mut app = build_app_with_consecutive_reads(1);

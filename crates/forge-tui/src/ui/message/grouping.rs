@@ -105,47 +105,103 @@ fn is_peer_block_render_tool(sdk_tool_name: &str) -> bool {
 /// read; `Grep` / `Glob` / `WebSearch` count as searches; `Bash`
 /// counts as a command. Everything else (`WebFetch`, `LSP`, plain
 /// `mcp__*` calls) tallies into the generic `calls` bucket.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+///
+/// Alongside the per-kind counter, the struct collects up to
+/// [`MAX_TARGETS_PER_KIND`] representative target strings per kind
+/// (file basenames for reads, command strings for ran, query /
+/// pattern for searches). [`KindCount::format_summary`] uses those
+/// targets to render the richer L2 summary line that surfaces the
+/// actual files / commands / queries the user is curious about
+/// without expanding the group.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct KindCount {
     pub reads: usize,
     pub searches: usize,
     pub commands: usize,
     /// Generic bucket for tools that fold but don't fit reads /
     /// searches / commands. Renders last in the summary as
-    /// `<n> call` / `<n> calls`.
+    /// `<n> call` / `<n> calls`. No target list because the generic
+    /// bucket has no obvious natural representative (each call's
+    /// tool name differs; the count alone is the most honest signal).
     pub calls: usize,
+    /// Up to [`MAX_TARGETS_PER_KIND`] file basenames for Read calls
+    /// in order of first appearance. Empty when no Read carried a
+    /// recognisable `file_path` (in which case `format_summary`
+    /// falls back to the count-only shape for the read kind).
+    pub read_targets: Vec<String>,
+    /// Up to [`MAX_TARGETS_PER_KIND`] command strings for Bash calls
+    /// in order of first appearance, individually clipped to
+    /// [`MAX_TARGET_DISPLAY_WIDTH`] characters.
+    pub command_targets: Vec<String>,
+    /// Up to [`MAX_TARGETS_PER_KIND`] pattern / query strings for
+    /// Grep / Glob / WebSearch calls in order of first appearance.
+    pub search_targets: Vec<String>,
 }
 
+/// Maximum number of representative target strings carried per kind
+/// in the L2 summary. Anything beyond this count rolls into the
+/// `+N` overflow suffix.
+pub const MAX_TARGETS_PER_KIND: usize = 3;
+
+/// Per-target character cap. Bash commands routinely run long; the
+/// L2 summary line is meant to fit on a single chat-width row, so
+/// individual targets clip to this width and trailing whitespace is
+/// stripped. The clip uses character count (not display cells)
+/// since command / path strings are virtually always ASCII; the
+/// outer truncation in `render_group_summary_line` is the
+/// cell-aware fence.
+pub const MAX_TARGET_DISPLAY_WIDTH: usize = 30;
+
 impl KindCount {
-    pub fn tally(&mut self, sdk_tool_name: &str) {
-        match sdk_tool_name {
-            "Read" => self.reads += 1,
-            "Grep" | "Glob" | "WebSearch" => self.searches += 1,
-            "Bash" => self.commands += 1,
+    pub fn tally(&mut self, tc: &crate::app::ToolCallInfo) {
+        match tc.sdk_tool_name.as_str() {
+            "Read" => {
+                self.reads += 1;
+                push_target_if_room(&mut self.read_targets, read_target(tc));
+            }
+            "Grep" | "Glob" | "WebSearch" => {
+                self.searches += 1;
+                push_target_if_room(&mut self.search_targets, search_target(tc));
+            }
+            "Bash" => {
+                self.commands += 1;
+                push_target_if_room(&mut self.command_targets, command_target(tc));
+            }
             _ => self.calls += 1,
         }
     }
 
-    /// `<n> reads \u{b7} <m> searches \u{b7} <k> commands \u{b7} <l> calls`.
-    /// Kinds with count 0 are dropped. Order: reads, searches,
-    /// commands, calls. Empty when every bucket is 0.
+    /// Render the per-group summary as one string. Per-kind segments
+    /// join with ` \u{b7} ` (middle dot). When targets are
+    /// available for a kind, that kind renders as
+    /// `<verb> <t1>, <t2>, <t3> +<overflow>`; otherwise the kind
+    /// falls back to `<n> <kind-noun>` (e.g. `5 reads`). The
+    /// generic `calls` bucket has no target list and always renders
+    /// `<n> calls`. Order: reads, ran, searches, calls.
     pub fn format_summary(&self) -> String {
         let mut parts: Vec<String> = Vec::with_capacity(4);
         if self.reads > 0 {
-            parts.push(format!("{} {}", self.reads, plural(self.reads, "read", "reads")));
-        }
-        if self.searches > 0 {
-            parts.push(format!(
-                "{} {}",
-                self.searches,
-                plural(self.searches, "search", "searches")
+            parts.push(format_kind_segment(
+                "read",
+                &self.read_targets,
+                self.reads,
+                ("read", "reads"),
             ));
         }
         if self.commands > 0 {
-            parts.push(format!(
-                "{} {}",
+            parts.push(format_kind_segment(
+                "ran",
+                &self.command_targets,
                 self.commands,
-                plural(self.commands, "command", "commands")
+                ("command", "commands"),
+            ));
+        }
+        if self.searches > 0 {
+            parts.push(format_kind_segment(
+                "search",
+                &self.search_targets,
+                self.searches,
+                ("search", "searches"),
             ));
         }
         if self.calls > 0 {
@@ -157,6 +213,95 @@ impl KindCount {
 
 fn plural(n: usize, one: &'static str, many: &'static str) -> &'static str {
     if n == 1 { one } else { many }
+}
+
+fn push_target_if_room(targets: &mut Vec<String>, candidate: Option<String>) {
+    if targets.len() >= MAX_TARGETS_PER_KIND {
+        return;
+    }
+    if let Some(value) = candidate.filter(|s| !s.is_empty()) {
+        targets.push(value);
+    }
+}
+
+fn format_kind_segment(
+    verb: &'static str,
+    targets: &[String],
+    total: usize,
+    noun_forms: (&'static str, &'static str),
+) -> String {
+    if targets.is_empty() {
+        return format!("{} {}", total, plural(total, noun_forms.0, noun_forms.1));
+    }
+    let names = targets.join(", ");
+    let overflow = total.saturating_sub(targets.len());
+    if overflow > 0 { format!("{verb} {names} +{overflow}") } else { format!("{verb} {names}") }
+}
+
+fn read_target(tc: &crate::app::ToolCallInfo) -> Option<String> {
+    let raw = tc.raw_input.as_ref().and_then(|v| v.as_object());
+    let path =
+        raw.and_then(|r| r.get("file_path")).and_then(serde_json::Value::as_str).map(str::to_owned);
+    if let Some(p) = path {
+        return Some(basename(&p));
+    }
+    // raw_input absent (a defensive code path the renderer can hit
+    // pre-result; the test fixtures also pass raw_input: None).
+    // Recover by trimming the leading kind-label from `tc.title` -
+    // for Read it's `"Read /path/to/file"`, for Edit `"Edit ..."`.
+    let title = tc.title.trim();
+    let stripped = title.strip_prefix("Read ").or_else(|| title.strip_prefix("Edit "));
+    stripped.map(|p| basename(p.trim()))
+}
+
+fn search_target(tc: &crate::app::ToolCallInfo) -> Option<String> {
+    let raw = tc.raw_input.as_ref().and_then(|v| v.as_object())?;
+    let value = match tc.sdk_tool_name.as_str() {
+        "Grep" | "Glob" => raw.get("pattern"),
+        "WebSearch" => raw.get("query"),
+        _ => None,
+    };
+    value
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(clip_to_target_width)
+}
+
+fn command_target(tc: &crate::app::ToolCallInfo) -> Option<String> {
+    let raw = tc.raw_input.as_ref().and_then(|v| v.as_object());
+    let command = raw
+        .and_then(|r| r.get("command"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(clip_to_target_width);
+    if let Some(cmd) = command {
+        return Some(cmd);
+    }
+    // Defensive: when raw_input is missing, `tool_title("Bash", ...)`
+    // emits the bare command as `tc.title`. Use it directly (without
+    // a kind-label strip since Bash has no prefix).
+    let title = tc.title.trim();
+    if title.is_empty() { None } else { Some(clip_to_target_width(title)) }
+}
+
+fn basename(path: &str) -> String {
+    let trimmed = path.trim_end_matches('/');
+    let last = trimmed.rsplit(['/', '\\']).next().unwrap_or(trimmed);
+    last.to_owned()
+}
+
+fn clip_to_target_width(s: &str) -> String {
+    if s.chars().count() <= MAX_TARGET_DISPLAY_WIDTH {
+        return s.to_owned();
+    }
+    // Reserve 3 chars for `...` so the clipped form still fits in
+    // the cap.
+    let keep = MAX_TARGET_DISPLAY_WIDTH.saturating_sub(3);
+    let mut out: String = s.chars().take(keep).collect();
+    out.push_str("...");
+    out
 }
 
 /// Group expand level. ctrl+x cycles L2 -> L1 -> L0 -> L2.
@@ -579,7 +724,7 @@ fn partition_tool_call_groups(blocks: &[MessageBlock]) -> Vec<RenderUnit> {
                 if let MessageBlock::ToolCall(tc) = block
                     && !tc.hidden
                 {
-                    kind_count.tally(&tc.sdk_tool_name);
+                    kind_count.tally(tc);
                 }
             }
             let aggregate_status = aggregate_run_status(&blocks[run_start..run_end_exclusive]);
@@ -1201,8 +1346,8 @@ mod tests {
 
     #[test]
     fn kind_count_format_summary_drops_zero_kinds_and_handles_singulars() {
-        let k = KindCount { reads: 5, searches: 3, commands: 2, calls: 0 };
-        assert_eq!(k.format_summary(), "5 reads \u{b7} 3 searches \u{b7} 2 commands");
+        let k = KindCount { reads: 5, searches: 3, commands: 2, calls: 0, ..KindCount::default() };
+        assert_eq!(k.format_summary(), "5 reads \u{b7} 2 commands \u{b7} 3 searches");
 
         let k = KindCount { reads: 1, commands: 1, ..KindCount::default() };
         assert_eq!(k.format_summary(), "1 read \u{b7} 1 command");
@@ -1210,17 +1355,37 @@ mod tests {
         assert_eq!(KindCount::default().format_summary(), "");
     }
 
+    fn tool_call_block_with_input(
+        id: &str,
+        sdk_tool_name: &str,
+        title: &str,
+        raw_input: Option<serde_json::Value>,
+    ) -> MessageBlock {
+        let mut block = tool_call_block(id, sdk_tool_name);
+        if let MessageBlock::ToolCall(tc) = &mut block {
+            tc.title = title.to_owned();
+            tc.raw_input = raw_input;
+        }
+        block
+    }
+
+    fn tally_block(k: &mut KindCount, block: &MessageBlock) {
+        if let MessageBlock::ToolCall(tc) = block {
+            k.tally(tc);
+        }
+    }
+
     #[test]
     fn kind_count_tallies_websearch_as_search_and_other_tools_as_calls() {
         let mut k = KindCount::default();
-        k.tally("Read");
-        k.tally("Grep");
-        k.tally("Glob");
-        k.tally("WebSearch");
-        k.tally("Bash");
-        k.tally("WebFetch");
-        k.tally("LSP");
-        k.tally("mcp__forge__some_other_tool");
+        tally_block(&mut k, &tool_call_block("a", "Read"));
+        tally_block(&mut k, &tool_call_block("b", "Grep"));
+        tally_block(&mut k, &tool_call_block("c", "Glob"));
+        tally_block(&mut k, &tool_call_block("d", "WebSearch"));
+        tally_block(&mut k, &tool_call_block("e", "Bash"));
+        tally_block(&mut k, &tool_call_block("f", "WebFetch"));
+        tally_block(&mut k, &tool_call_block("g", "LSP"));
+        tally_block(&mut k, &tool_call_block("h", "mcp__forge__some_other_tool"));
         assert_eq!(k.reads, 1);
         assert_eq!(k.searches, 3); // Grep + Glob + WebSearch
         assert_eq!(k.commands, 1);
@@ -1229,11 +1394,114 @@ mod tests {
 
     #[test]
     fn kind_count_format_summary_includes_calls_bucket() {
-        let k = KindCount { reads: 3, searches: 2, commands: 1, calls: 4 };
-        assert_eq!(k.format_summary(), "3 reads \u{b7} 2 searches \u{b7} 1 command \u{b7} 4 calls",);
+        let k = KindCount { reads: 3, searches: 2, commands: 1, calls: 4, ..KindCount::default() };
+        assert_eq!(k.format_summary(), "3 reads \u{b7} 1 command \u{b7} 2 searches \u{b7} 4 calls",);
 
         let k = KindCount { calls: 1, ..KindCount::default() };
         assert_eq!(k.format_summary(), "1 call");
+    }
+
+    /// The plan's headline requirement: the L2 summary line MUST show
+    /// what the group actually did (filenames / commands / queries),
+    /// not just counts. Reads pull file_path from raw_input (basename
+    /// only); Bash pulls `command`; Grep / Glob pull `pattern`;
+    /// WebSearch pulls `query`. Targets render in order of appearance.
+    #[test]
+    fn kind_count_tally_collects_representative_targets() {
+        let mut k = KindCount::default();
+        tally_block(
+            &mut k,
+            &tool_call_block_with_input(
+                "r1",
+                "Read",
+                "Read /repo/src/foo.rs",
+                Some(serde_json::json!({"file_path": "/repo/src/foo.rs"})),
+            ),
+        );
+        tally_block(
+            &mut k,
+            &tool_call_block_with_input(
+                "r2",
+                "Read",
+                "Read /repo/src/bar.rs",
+                Some(serde_json::json!({"file_path": "/repo/src/bar.rs"})),
+            ),
+        );
+        tally_block(
+            &mut k,
+            &tool_call_block_with_input(
+                "b1",
+                "Bash",
+                "cargo check",
+                Some(serde_json::json!({"command": "cargo check"})),
+            ),
+        );
+        tally_block(
+            &mut k,
+            &tool_call_block_with_input(
+                "g1",
+                "Grep",
+                "Grep",
+                Some(serde_json::json!({"pattern": "FooBar"})),
+            ),
+        );
+        tally_block(
+            &mut k,
+            &tool_call_block_with_input(
+                "ws1",
+                "WebSearch",
+                "WebSearch rust async",
+                Some(serde_json::json!({"query": "rust async"})),
+            ),
+        );
+
+        assert_eq!(k.read_targets, vec!["foo.rs".to_owned(), "bar.rs".to_owned()]);
+        assert_eq!(k.command_targets, vec!["cargo check".to_owned()]);
+        assert_eq!(k.search_targets, vec!["FooBar".to_owned(), "rust async".to_owned()]);
+    }
+
+    /// `format_summary` MUST surface the collected targets, not just
+    /// `<N> reads`. Counts above the per-kind cap drop into a `+N`
+    /// overflow suffix. The plan example shape:
+    ///   `read foo.rs, bar.rs +2  ·  ran cargo check  ·  search "Foo"`
+    #[test]
+    fn kind_count_format_summary_renders_targets_with_overflow() {
+        let k = KindCount {
+            reads: 5,
+            commands: 1,
+            searches: 1,
+            calls: 0,
+            read_targets: vec!["foo.rs".to_owned(), "bar.rs".to_owned(), "baz.rs".to_owned()],
+            command_targets: vec!["cargo check".to_owned()],
+            search_targets: vec!["FooBar".to_owned()],
+        };
+        let s = k.format_summary();
+        assert!(s.contains("read foo.rs, bar.rs, baz.rs +2"), "rich read line missing in {s:?}");
+        assert!(s.contains("ran cargo check"), "ran line missing in {s:?}");
+        assert!(s.contains("search FooBar"), "search line missing in {s:?}");
+        // bare counts must NOT appear when targets are present.
+        assert!(!s.contains("5 reads"), "bare count must not appear alongside targets in {s:?}");
+    }
+
+    /// Per-kind singular form when the run is a single hit with no
+    /// overflow: `read foo.rs` (no overflow suffix), not `read foo.rs +0`.
+    #[test]
+    fn kind_count_format_summary_omits_zero_overflow_suffix() {
+        let k =
+            KindCount { reads: 1, read_targets: vec!["foo.rs".to_owned()], ..KindCount::default() };
+        let s = k.format_summary();
+        assert!(s.contains("read foo.rs"), "expected `read foo.rs` in {s:?}");
+        assert!(!s.contains("+0"), "must not show `+0` overflow in {s:?}");
+    }
+
+    /// Defensive fallback: when targets weren't extracted (e.g.
+    /// raw_input was None and the title parse failed), the summary
+    /// drops back to the count-only shape (`5 reads`). Better than
+    /// rendering a bare verb with no info.
+    #[test]
+    fn kind_count_format_summary_falls_back_to_count_when_no_targets() {
+        let k = KindCount { reads: 5, ..KindCount::default() };
+        assert_eq!(k.format_summary(), "5 reads");
     }
 
     #[test]
