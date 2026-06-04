@@ -1306,7 +1306,8 @@ chat continues here...
   </div>
   <div class="surface-body">
     <p>AskUserQuestion's <code>tool_input.questions</code> is an array - a single tool call can carry N questions. forge dispatches each question onto the session's <code>prompt_queue</code> as a separate <code>PromptState</code>; the existing <a href="#prompts">dock-morph widget</a> already supports the Q-of-N indicator (see the "Q2 of 3" mockup in §prompts).</p>
-    <p>While the dock prompt is live the tool call is chat-suppressed (<code>hidden: true</code>). Once the user answers, the submit handler records the resolved answer onto the tool call (<code>App::record_answered_question</code>), which un-hides it and renders a compact <strong>answered-card</strong> in the scrollback, so the Q&amp;A survives after the dock clears. A picked option shows its label; a typed "Other" answer shows the literal text the user entered. A multi-question call accumulates one question/answer pair per answered question.</p>
+    <p>While the dock prompt is live the tool call is chat-suppressed (<code>hidden: true</code>). Once the user answers, the submit handler records the resolved answer onto the tool call (<code>App::record_answered_question</code>), which un-hides it and renders a compact <strong>answered-card</strong> in the scrollback, so the Q&amp;A survives after the dock clears. A picked option shows its label; a typed "Other" answer shows the literal text the user entered. <strong>multiSelect</strong> may carry BOTH - picked options AND a typed Other note - in which case the card renders both on their own answer lines (picked labels first, then the typed line) so neither is lost. A multi-question call accumulates one question/answer pair per answered question.</p>
+    <p>Card chrome: the question line indents 2 spaces so the <code>?</code> lands in the tool-icon column (matching the standard tool row's <code>&lt;icon&gt;</code> at column 2); the answer line(s) nest one level deeper so the <code>→</code> sits at column 4, under the question text.</p>
     <p>Wire shape per question: <code>{question, header, multiSelect, options: [{label, description}]}</code>. The <code>"(Recommended)"</code> suffix on <code>label</code> is a CLI-side convention - forge strips it, marks the option as recommended (bold), and pre-selects it. The universal "<code>... Tell Claude something else</code>" escape-hatch is appended to every question's options list (consistent with permission prompts).</p>
     <div class="term">
       <pre class="indent">
@@ -1314,7 +1315,11 @@ chat continues here...
   <span class="dim">  → </span><span class="success">Clean answered-card</span>
 
   <span class="accent bold">?</span> <span class="dim">How should the answered question appear in the chat?</span>
-  <span class="dim">  → you typed: </span><span class="bold">"Can you show me some visuals please?"</span></pre>
+  <span class="dim">  → you typed: </span><span class="bold">"Can you show me some visuals please?"</span>
+
+  <span class="accent bold">?</span> <span class="dim">Which areas need work? (multiSelect)</span>
+  <span class="dim">  → </span><span class="success">Performance, Documentation</span>
+  <span class="dim">  → you typed: </span><span class="bold">"and the bot reviewer reply etiquette"</span></pre>
     </div>
     <dl>
       <dt>code</dt><dd><code>crates/forge-tui/src/app/events/tool_calls.rs</code> dispatches the AskUserQuestion tool_use to a sibling of <code>build_permission_options</code> (<code>build_question_options</code>) per question, pushing N <code>PromptState</code> entries onto <code>UiSession.prompt_queue</code></dd>
@@ -1610,7 +1615,7 @@ chat continues here...
 <span class="accent bold">┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛</span></pre>
     </div>
 
-    <p><strong>AskUserQuestion</strong> - multi-select with notes-option toggled. Question header gets a <code>?</code> in RUST_ORANGE, the question body is white below it, options use checkbox markers (<code>[x]</code> / <code>[ ]</code>) before the icon; toggling the <code>... Tell Claude something else</code> entry expands an inline notes editor:</p>
+    <p><strong>AskUserQuestion</strong> - multi-select with notes-option toggled. Question header gets a <code>?</code> in RUST_ORANGE, the question body is white below it, options use checkbox markers (<code>[x]</code> / <code>[ ]</code>) before the icon; toggling the <code>... Tell Claude something else</code> entry expands an inline notes editor. The Notes row's <code>[x]</code> is display-only - it tracks the live notes buffer (so the user sees confirmation the typed content will be included on submit) AND the wire <code>annotation.notes</code> field carries the typed text independently of <code>selected_option_indices</code>:</p>
     <div class="term">
       <pre class="indent"><span class="accent bold">┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓</span>
 <span class="accent bold">┃</span>                                                                      <span class="accent bold">┃</span>
