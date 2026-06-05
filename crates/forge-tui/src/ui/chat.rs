@@ -156,14 +156,43 @@ fn update_visual_heights(
     let layout_generation = app.viewport().layout_generation;
     let tools_collapsed = app.tools_collapsed;
 
-    let (visible_start, visible_end) = app
-        .active_viewport_mut()
-        .remeasure_anchor_window(viewport_height)
-        .or_else(|| app.active_viewport_mut().current_visible_window(viewport_height))
-        .unwrap_or((0, 0));
+    // The visible window for the priority + visible loops follows
+    // the CURRENT scroll position, not the frozen scroll_anchor on
+    // the remeasure plan. Without this, an off-screen
+    // `invalidate_message` captured the scroll at invalidate-time,
+    // and a subsequent user scroll left the stale message
+    // permanently outside the anchor-window so it could never
+    // re-measure (the lazy contract this PR enforces). The plan's
+    // anchor still drives the resize loop's outward growth (below).
+    //
+    // Bootstrap degenerate case: with all heights == 0,
+    // `current_visible_window` returns `(N-1, N-1)` because no
+    // prefix-sum entry strictly exceeds scroll = 0. Fall back to
+    // `(0, min(viewport_height - 1, msg_count - 1))` so the visible
+    // loop measures roughly a viewport-worth of messages from the
+    // TOP, including idx 0. The off-screen tail stays stale and is
+    // converged by the budgeted resize loop over subsequent frames.
+    let bootstrap = app.viewport().total_message_height() == 0 && msg_count > 0;
+    let (visible_start, visible_end) = if bootstrap {
+        let last = msg_count.saturating_sub(1);
+        (0_usize, viewport_height.saturating_sub(1).min(last))
+    } else {
+        app.active_viewport_mut()
+            .current_visible_window(viewport_height)
+            .or_else(|| app.active_viewport_mut().remeasure_anchor_window(viewport_height))
+            .unwrap_or((0, 0))
+    };
     app.active_viewport_mut().ensure_remeasure_anchor(visible_start, visible_end, msg_count);
 
+    // Priority loop: drain queued urgent indices, but only MEASURE
+    // those that are currently visible. Off-screen entries keep
+    // their stale bit set (we never call `mark_message_height_measured`
+    // here) and re-measure lazily when they scroll into view via
+    // the visible loop. This is half of the off-screen-laziness fix.
     while let Some(i) = app.active_viewport_mut().next_priority_remeasure() {
+        if !(visible_start..=visible_end).contains(&i) {
+            continue;
+        }
         let is_last = i + 1 == msg_count;
         if !needs_height_measure(app, i, is_last, active_turn_assistant, is_streaming) {
             stats.reused_msgs += 1;
@@ -182,6 +211,14 @@ fn update_visual_heights(
         );
     }
 
+    // Visible loop: every message in the live visible window must
+    // be current by the end of this loop. The window itself is
+    // narrow (find_first_visible / find_last_visible binary-search
+    // prefix sums and stop once the viewport_height is covered) so
+    // walking it in full is the correct upper bound. Bootstrap
+    // (no prefix sums yet) hands off the off-screen tail to the
+    // budgeted background loop below; we don't try to measure it
+    // here.
     for i in visible_start..=visible_end {
         let is_last = i + 1 == msg_count;
         if !needs_height_measure(app, i, is_last, active_turn_assistant, is_streaming) {
@@ -218,8 +255,14 @@ fn update_visual_heights(
         }
     }
 
+    // Skip the background re-measure loop on the bootstrap frame -
+    // the visible loop above already covered a viewport-worth and
+    // we'd otherwise eagerly chew another viewport-worth off-screen,
+    // doubling the bootstrap cost. Subsequent frames have non-zero
+    // heights, fall through the bootstrap branch, and let the
+    // budgeted loop converge the rest incrementally.
     let mut budget = RemeasureBudget::new(viewport_height);
-    while app.active_viewport_mut().remeasure_active() && !budget.exhausted() {
+    while !bootstrap && app.active_viewport_mut().remeasure_active() && !budget.exhausted() {
         let Some(i) = app.active_viewport_mut().next_remeasure_index(msg_count) else {
             break;
         };
@@ -1236,6 +1279,34 @@ mod tests {
         assert!(spinner.show_thinking, "thinking remains independent of the subagent surface");
     }
 
+    /// Bootstrap of a long session must NOT relocate the O(history)
+    /// cost into the first frame: the priority + visible loops should
+    /// stop after measuring roughly a viewport-worth of messages, and
+    /// the remaining off-screen tail converges over later frames via
+    /// the budgeted background loop. Without this, a fresh /resume
+    /// of a 1000-message session would be one all-N-measured frame.
+    #[test]
+    fn bootstrap_measures_visible_only_not_all_history() {
+        let mut app = App::test_default();
+        app.status = AppStatus::Ready;
+        let history: Vec<ChatMessage> = (0..60).map(|i| {
+            assistant_text_message(&format!(
+                "msg {i}: some content that wraps a bit so heights are non-trivial\nsecond line of content",
+            ))
+        }).collect();
+        *app.active_messages_mut() = history;
+
+        let _ = app.active_viewport_mut().on_frame(80, 24);
+        let spinner = idle_spinner();
+        let stats = update_visual_heights(&mut app, &spinner, 80, 24);
+        assert!(stats.measured_msgs > 0, "must measure at least one message");
+        assert!(
+            stats.measured_msgs < 30,
+            "bootstrap must be visible-first; expected fewer than half the history measured on frame 1, got {} of 60",
+            stats.measured_msgs,
+        );
+    }
+
     #[test]
     fn spinner_only_frames_do_not_remeasure_active_assistant_height() {
         let mut app = App::test_default();
@@ -1451,8 +1522,17 @@ mod tests {
         let spinner = idle_spinner();
 
         let _ = app.active_viewport_mut().on_frame(48, 12);
-        update_visual_heights(&mut app, &spinner, 48, 12);
-        app.active_viewport_mut().rebuild_prefix_sums();
+        for _ in 0..16 {
+            update_visual_heights(&mut app, &spinner, 48, 12);
+            app.active_viewport_mut().rebuild_prefix_sums();
+            if !app.active_viewport_mut().resize_remeasure_active() {
+                break;
+            }
+        }
+        assert!(
+            !app.active_viewport_mut().resize_remeasure_active(),
+            "frame-1 setup must fully measure the initial scrollback before mid-scroll resize",
+        );
         let per_message_height = app.active_viewport_mut().message_height(0);
         assert!(per_message_height > 0);
 
