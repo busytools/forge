@@ -139,7 +139,11 @@ fn update_visual_heights(
 
     let is_streaming = matches!(app.status, AppStatus::Thinking | AppStatus::Running);
     let active_turn_assistant = app.active_turn_assistant_idx();
-    sync_active_turn_height_state(app, base, active_turn_assistant);
+    {
+        let _t =
+            app.perf.as_ref().map(|p| p.start("chat::update_heights::sync_active_turn_height"));
+        sync_active_turn_height_state(app, base, active_turn_assistant);
+    }
     let mut stats = HeightUpdateStats::default();
 
     if msg_count == 0 {
@@ -162,46 +166,76 @@ fn update_visual_heights(
         .or_else(|| app.active_viewport_mut().current_visible_window(viewport_height))
         .unwrap_or((0, 0));
     app.active_viewport_mut().ensure_remeasure_anchor(visible_start, visible_end, msg_count);
+    crate::perf::mark_with(
+        "chat::update_heights::visible_span",
+        "msgs",
+        visible_end.saturating_sub(visible_start).saturating_add(1),
+    );
+    crate::perf::mark_with("chat::update_heights::visible_start", "idx", visible_start);
+    crate::perf::mark_with("chat::update_heights::visible_end", "idx", visible_end);
 
-    while let Some(i) = app.active_viewport_mut().next_priority_remeasure() {
-        let is_last = i + 1 == msg_count;
-        if !needs_height_measure(app, i, is_last, active_turn_assistant, is_streaming) {
-            stats.reused_msgs += 1;
-            continue;
+    {
+        let _t = app.perf.as_ref().map(|p| p.start("chat::update_heights::priority_loop"));
+        let mut priority_measured = 0usize;
+        let mut priority_reused = 0usize;
+        while let Some(i) = app.active_viewport_mut().next_priority_remeasure() {
+            let is_last = i + 1 == msg_count;
+            if !needs_height_measure(app, i, is_last, active_turn_assistant, is_streaming) {
+                stats.reused_msgs += 1;
+                priority_reused += 1;
+                continue;
+            }
+            measure_message_height_at(
+                app,
+                base,
+                active_turn_assistant,
+                width,
+                i,
+                mode_id,
+                layout_generation,
+                tools_collapsed,
+                &mut stats,
+            );
+            priority_measured += 1;
         }
-        measure_message_height_at(
-            app,
-            base,
-            active_turn_assistant,
-            width,
-            i,
-            mode_id,
-            layout_generation,
-            tools_collapsed,
-            &mut stats,
+        crate::perf::mark_with(
+            "chat::update_heights::priority_measured",
+            "msgs",
+            priority_measured,
         );
+        crate::perf::mark_with("chat::update_heights::priority_reused", "msgs", priority_reused);
     }
 
-    for i in visible_start..=visible_end {
-        let is_last = i + 1 == msg_count;
-        if !needs_height_measure(app, i, is_last, active_turn_assistant, is_streaming) {
-            stats.reused_msgs += 1;
-            continue;
+    {
+        let _t = app.perf.as_ref().map(|p| p.start("chat::update_heights::visible_loop"));
+        let mut visible_measured = 0usize;
+        let mut visible_reused = 0usize;
+        for i in visible_start..=visible_end {
+            let is_last = i + 1 == msg_count;
+            if !needs_height_measure(app, i, is_last, active_turn_assistant, is_streaming) {
+                stats.reused_msgs += 1;
+                visible_reused += 1;
+                continue;
+            }
+            measure_message_height_at(
+                app,
+                base,
+                active_turn_assistant,
+                width,
+                i,
+                mode_id,
+                layout_generation,
+                tools_collapsed,
+                &mut stats,
+            );
+            visible_measured += 1;
         }
-        measure_message_height_at(
-            app,
-            base,
-            active_turn_assistant,
-            width,
-            i,
-            mode_id,
-            layout_generation,
-            tools_collapsed,
-            &mut stats,
-        );
+        crate::perf::mark_with("chat::update_heights::visible_measured", "msgs", visible_measured);
+        crate::perf::mark_with("chat::update_heights::visible_reused", "msgs", visible_reused);
     }
 
     if is_streaming {
+        let _t = app.perf.as_ref().map(|p| p.start("chat::update_heights::streaming_tail"));
         let last = msg_count.saturating_sub(1);
         if needs_height_measure(app, last, true, active_turn_assistant, true) {
             measure_message_height_at(
@@ -215,35 +249,59 @@ fn update_visual_heights(
                 tools_collapsed,
                 &mut stats,
             );
+            crate::perf::mark_with("chat::update_heights::streaming_tail_measured", "msgs", 1);
+        } else {
+            crate::perf::mark_with("chat::update_heights::streaming_tail_reused", "msgs", 1);
         }
     }
 
-    let mut budget = RemeasureBudget::new(viewport_height);
-    while app.active_viewport_mut().remeasure_active() && !budget.exhausted() {
-        let Some(i) = app.active_viewport_mut().next_remeasure_index(msg_count) else {
-            break;
-        };
-        if (visible_start..=visible_end).contains(&i) {
-            continue;
+    {
+        let _t = app.perf.as_ref().map(|p| p.start("chat::update_heights::resize_loop"));
+        let mut budget = RemeasureBudget::new(viewport_height);
+        let mut resize_measured = 0usize;
+        let mut resize_reused = 0usize;
+        let mut resize_visible_skipped = 0usize;
+        while app.active_viewport_mut().remeasure_active() && !budget.exhausted() {
+            let Some(i) = app.active_viewport_mut().next_remeasure_index(msg_count) else {
+                break;
+            };
+            if (visible_start..=visible_end).contains(&i) {
+                resize_visible_skipped += 1;
+                continue;
+            }
+            let is_last = i + 1 == msg_count;
+            if !needs_height_measure(app, i, is_last, active_turn_assistant, is_streaming) {
+                stats.reused_msgs += 1;
+                resize_reused += 1;
+                continue;
+            }
+            let measured_lines_before = stats.measured_lines;
+            measure_message_height_at(
+                app,
+                base,
+                active_turn_assistant,
+                width,
+                i,
+                mode_id,
+                layout_generation,
+                tools_collapsed,
+                &mut stats,
+            );
+            resize_measured += 1;
+            budget.consume(stats.measured_lines.saturating_sub(measured_lines_before));
         }
-        let is_last = i + 1 == msg_count;
-        if !needs_height_measure(app, i, is_last, active_turn_assistant, is_streaming) {
-            stats.reused_msgs += 1;
-            continue;
-        }
-        let measured_lines_before = stats.measured_lines;
-        measure_message_height_at(
-            app,
-            base,
-            active_turn_assistant,
-            width,
-            i,
-            mode_id,
-            layout_generation,
-            tools_collapsed,
-            &mut stats,
+        crate::perf::mark_with("chat::update_heights::resize_measured", "msgs", resize_measured);
+        crate::perf::mark_with("chat::update_heights::resize_reused", "msgs", resize_reused);
+        crate::perf::mark_with(
+            "chat::update_heights::resize_visible_skipped",
+            "msgs",
+            resize_visible_skipped,
         );
-        budget.consume(stats.measured_lines.saturating_sub(measured_lines_before));
+        crate::perf::mark_with(
+            "chat::update_heights::layout_generation",
+            "gen",
+            usize::try_from(layout_generation).unwrap_or(usize::MAX),
+        );
     }
 
     app.active_viewport_mut().finalize_remeasure_if_clean();
@@ -427,6 +485,7 @@ fn measure_message_height(
 }
 
 fn build_base_spinner(app: &App) -> SpinnerState {
+    let _t = crate::perf::start("chat::build_base_spinner");
     // `show_thinking` fires on both `Thinking` (no body streamed yet)
     // and `Running` (mid-stream / tool execution) so the spinner keeps
     // ticking visibly across the whole turn - not just the pre-body
@@ -451,6 +510,8 @@ fn build_base_spinner(app: &App) -> SpinnerState {
 }
 
 fn derive_running_subagents(app: &App) -> Option<RunningSubagentsLine> {
+    let _t =
+        crate::perf::start_with("chat::derive_running_subagents", "msgs", app.messages().len());
     let view = app.subagents_view();
     let running: Vec<&crate::app::SubagentEntry> = view
         .iter()
