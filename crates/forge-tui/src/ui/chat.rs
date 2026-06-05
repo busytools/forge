@@ -255,14 +255,21 @@ fn update_visual_heights(
         }
     }
 
-    // Skip the background re-measure loop on the bootstrap frame -
-    // the visible loop above already covered a viewport-worth and
-    // we'd otherwise eagerly chew another viewport-worth off-screen,
-    // doubling the bootstrap cost. Subsequent frames have non-zero
-    // heights, fall through the bootstrap branch, and let the
-    // budgeted loop converge the rest incrementally.
+    // Background re-measure runs only when a Resize / Global /
+    // MessagesFrom invalidation has set the sticky convergence flag.
+    // Per-message tool events (`MessageChanged`) leave the flag
+    // false, so a session with many Bash / Monitor / streaming
+    // invalidations no longer chews up to viewport_height off-screen
+    // messages every frame - those stay stale and re-measure lazily
+    // when scrolled into view. Also skipped on the bootstrap frame
+    // (visible loop already covered a viewport-worth; we don't want
+    // to double the cost off-screen on the very first frame).
+    let run_resize_loop = !bootstrap && app.viewport().background_convergence_pending;
     let mut budget = RemeasureBudget::new(viewport_height);
-    while !bootstrap && app.active_viewport_mut().remeasure_active() && !budget.exhausted() {
+    while run_resize_loop
+        && app.active_viewport_mut().remeasure_active()
+        && !budget.exhausted()
+    {
         let Some(i) = app.active_viewport_mut().next_remeasure_index(msg_count) else {
             break;
         };
@@ -1277,6 +1284,61 @@ mod tests {
         let spinner = super::build_base_spinner(&app);
         assert!(spinner.running_subagents.is_none());
         assert!(spinner.show_thinking, "thinking remains independent of the subagent surface");
+    }
+
+    /// The bug this PR closes: an off-screen `MessageChanged`
+    /// invalidation must NOT trigger per-frame background
+    /// re-measurement work. Today (without the convergence-flag
+    /// gate) the resize loop wakes on any active plan and chews up
+    /// to `viewport_height` off-screen stale messages, paying full
+    /// layout cost on each. In a streaming session with Bash output
+    /// + Monitor refreshes that's ~20 measurements per frame for a
+    /// user who only sees 1-3 messages.
+    #[test]
+    fn off_screen_invalidate_does_not_force_resize_loop_to_remeasure() {
+        let mut app = App::test_default();
+        app.status = AppStatus::Ready;
+        let text = "assistant reply that wraps over a line or two for height\n\
+                    so heights vary between consecutive messages";
+        let history: Vec<ChatMessage> =
+            (0..200).map(|_| assistant_text_message(text)).collect();
+        *app.active_messages_mut() = history;
+
+        let _ = app.active_viewport_mut().on_frame(80, 8);
+        let spinner = idle_spinner();
+        for _ in 0..64 {
+            update_visual_heights(&mut app, &spinner, 80, 8);
+            app.active_viewport_mut().rebuild_prefix_sums();
+            if !app.active_viewport_mut().resize_remeasure_active() {
+                break;
+            }
+        }
+        assert!(
+            !app.active_viewport_mut().resize_remeasure_active(),
+            "setup must fully converge so background_convergence_pending is clear before the test fires",
+        );
+
+        let max_scroll = app.active_viewport_mut().total_message_height().saturating_sub(8);
+        let vp = app.active_viewport_mut();
+        vp.scroll_target = max_scroll;
+        vp.scroll_pos = max_scroll as f32;
+        vp.scroll_offset = max_scroll;
+        vp.auto_scroll = true;
+
+        let off_screen_idx = 12;
+        app.invalidate_layout(InvalidationLevel::MessageChanged(off_screen_idx));
+
+        let frame = update_visual_heights(&mut app, &spinner, 80, 8);
+        assert_eq!(
+            frame.measured_msgs, 0,
+            "off-screen MessageChanged invalidate must not drive per-frame re-measurement; got measured={} reused={}",
+            frame.measured_msgs,
+            frame.reused_msgs,
+        );
+        assert!(
+            !app.active_viewport_mut().message_height_is_current(off_screen_idx),
+            "the off-screen target stays stale (re-measures lazily when scrolled in)",
+        );
     }
 
     /// Bootstrap of a long session must NOT relocate the O(history)
