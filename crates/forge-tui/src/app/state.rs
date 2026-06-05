@@ -5196,7 +5196,7 @@ mod tests {
     }
 
     #[test]
-    fn viewport_preserves_resize_anchor_when_followup_remeasure_replaces_plan() {
+    fn viewport_preserves_resize_anchor_when_followup_remeasure_keeps_higher_priority_reason() {
         let mut vp = ChatViewport::new();
         let _ = vp.on_frame(80, 24);
         vp.sync_message_count(4);
@@ -5218,7 +5218,11 @@ mod tests {
 
         vp.invalidate_messages_from(0);
 
-        assert_eq!(vp.remeasure_reason(), Some(LayoutRemeasureReason::MessagesFrom));
+        assert_eq!(
+            vp.remeasure_reason(),
+            Some(LayoutRemeasureReason::Resize),
+            "a follow-up MessagesFrom must not downgrade the in-flight Resize plan",
+        );
         assert_eq!(vp.resize_scroll_anchor(), Some(resize_anchor));
         assert_eq!(vp.scroll_anchor_to_restore(), Some(resize_anchor));
     }
@@ -5338,7 +5342,11 @@ mod tests {
 
         vp.invalidate_message(5);
 
-        assert_eq!(vp.remeasure_reason(), Some(LayoutRemeasureReason::MessageChanged));
+        assert_eq!(
+            vp.remeasure_reason(),
+            Some(LayoutRemeasureReason::Global),
+            "a single-message invalidate must not downgrade the in-flight Global plan",
+        );
         assert_eq!(vp.scroll_anchor_to_restore(), Some(anchor));
 
         vp.set_message_height(0, 12);
@@ -5353,6 +5361,162 @@ mod tests {
 
         assert_eq!(vp.find_first_visible(vp.scroll_offset), 3);
         assert_eq!(vp.scroll_offset, 27);
+    }
+
+    // ----------------------------------------------------------------
+    // background_convergence_pending flag + schedule_remeasure
+    // no-downgrade merge: the C1 plumbing for the off-screen-laziness
+    // perf fix. MessageChanged events must dirty their target but
+    // must NOT set the convergence flag or downgrade an in-flight
+    // higher-priority plan.
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn viewport_background_convergence_pending_starts_false() {
+        let vp = ChatViewport::new();
+        assert!(!vp.background_convergence_pending);
+    }
+
+    #[test]
+    fn viewport_background_convergence_pending_set_by_resize() {
+        let mut vp = ChatViewport::new();
+        let _ = vp.on_frame(80, 24);
+        vp.sync_message_count(4);
+        for idx in 0..4 {
+            vp.set_message_height(idx, 5);
+        }
+        vp.mark_heights_valid();
+        assert!(!vp.background_convergence_pending, "mark_heights_valid clears the flag");
+
+        let _ = vp.on_frame(40, 24);
+        assert!(vp.background_convergence_pending, "width resize must set the flag");
+    }
+
+    #[test]
+    fn viewport_background_convergence_pending_set_by_global() {
+        let mut vp = ChatViewport::new();
+        let _ = vp.on_frame(80, 24);
+        vp.sync_message_count(4);
+        vp.mark_heights_valid();
+        assert!(!vp.background_convergence_pending);
+
+        vp.invalidate_all_messages(LayoutRemeasureReason::Global);
+        assert!(vp.background_convergence_pending, "Global must set the flag");
+    }
+
+    #[test]
+    fn viewport_background_convergence_pending_set_by_messages_from() {
+        let mut vp = ChatViewport::new();
+        let _ = vp.on_frame(80, 24);
+        vp.sync_message_count(4);
+        vp.mark_heights_valid();
+        assert!(!vp.background_convergence_pending);
+
+        vp.invalidate_messages_from(2);
+        assert!(vp.background_convergence_pending, "MessagesFrom must set the flag");
+    }
+
+    #[test]
+    fn viewport_background_convergence_pending_not_set_by_message_changed() {
+        let mut vp = ChatViewport::new();
+        let _ = vp.on_frame(80, 24);
+        vp.sync_message_count(4);
+        vp.mark_heights_valid();
+        assert!(!vp.background_convergence_pending);
+
+        vp.invalidate_message(2);
+        assert!(
+            !vp.background_convergence_pending,
+            "single MessageChanged must NOT set the convergence flag",
+        );
+    }
+
+    #[test]
+    fn viewport_background_convergence_pending_cleared_when_clean() {
+        let mut vp = ChatViewport::new();
+        let _ = vp.on_frame(80, 24);
+        vp.sync_message_count(2);
+        vp.invalidate_messages_from(0);
+        assert!(vp.background_convergence_pending);
+        for idx in 0..2 {
+            vp.set_message_height(idx, 4);
+            vp.mark_message_height_measured(idx);
+        }
+        vp.finalize_remeasure_if_clean();
+        assert!(
+            !vp.background_convergence_pending,
+            "finalize_remeasure_if_clean must clear the flag once all messages are current",
+        );
+    }
+
+    #[test]
+    fn viewport_schedule_remeasure_keeps_resize_over_messages_from() {
+        let mut vp = ChatViewport::new();
+        let _ = vp.on_frame(80, 24);
+        vp.sync_message_count(4);
+        vp.mark_heights_valid();
+
+        let _ = vp.on_frame(40, 24);
+        assert_eq!(vp.remeasure_reason(), Some(LayoutRemeasureReason::Resize));
+        vp.invalidate_messages_from(0);
+        assert_eq!(
+            vp.remeasure_reason(),
+            Some(LayoutRemeasureReason::Resize),
+            "MessagesFrom must not downgrade an in-flight Resize plan",
+        );
+    }
+
+    #[test]
+    fn viewport_schedule_remeasure_keeps_messages_from_over_message_changed() {
+        let mut vp = ChatViewport::new();
+        let _ = vp.on_frame(80, 24);
+        vp.sync_message_count(4);
+        vp.mark_heights_valid();
+
+        vp.invalidate_messages_from(2);
+        assert_eq!(vp.remeasure_reason(), Some(LayoutRemeasureReason::MessagesFrom));
+        vp.invalidate_message(0);
+        assert_eq!(
+            vp.remeasure_reason(),
+            Some(LayoutRemeasureReason::MessagesFrom),
+            "MessageChanged must not downgrade an in-flight MessagesFrom plan",
+        );
+    }
+
+    #[test]
+    fn viewport_schedule_remeasure_upgrades_message_changed_to_resize() {
+        let mut vp = ChatViewport::new();
+        let _ = vp.on_frame(80, 24);
+        vp.sync_message_count(4);
+        vp.mark_heights_valid();
+
+        vp.invalidate_message(1);
+        assert_eq!(vp.remeasure_reason(), Some(LayoutRemeasureReason::MessageChanged));
+
+        let _ = vp.on_frame(40, 24);
+        assert_eq!(
+            vp.remeasure_reason(),
+            Some(LayoutRemeasureReason::Resize),
+            "Resize must override a stale MessageChanged plan reason",
+        );
+    }
+
+    #[test]
+    fn viewport_message_changed_marks_target_stale_without_setting_flag() {
+        let mut vp = ChatViewport::new();
+        let _ = vp.on_frame(80, 24);
+        vp.sync_message_count(4);
+        vp.mark_heights_valid();
+
+        vp.invalidate_message(2);
+        assert!(
+            !vp.message_height_is_current(2),
+            "MessageChanged must mark its target stale so it re-measures on scroll-in",
+        );
+        assert!(
+            !vp.background_convergence_pending,
+            "MessageChanged still must not set the convergence flag",
+        );
     }
 
     #[test]
