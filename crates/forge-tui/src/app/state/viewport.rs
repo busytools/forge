@@ -31,6 +31,20 @@ pub enum LayoutRemeasureReason {
     Global,
 }
 
+/// Priority ordering for [`schedule_remeasure`]'s no-downgrade merge.
+/// `Resize` and `Global` are equally convergent (both trigger a full
+/// re-measure pass); `MessagesFrom` is mid-tier (new tail / history
+/// retention); `MessageChanged` is the lowest (single-tool /
+/// streaming-chunk events that must not strand a higher-priority
+/// in-flight plan).
+fn reason_priority(reason: LayoutRemeasureReason) -> u8 {
+    match reason {
+        LayoutRemeasureReason::MessageChanged => 0,
+        LayoutRemeasureReason::MessagesFrom => 1,
+        LayoutRemeasureReason::Resize | LayoutRemeasureReason::Global => 2,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct FrameGeometryChange {
     pub width_changed: bool,
@@ -199,6 +213,20 @@ pub struct ChatViewport {
     priority_remeasure: Vec<usize>,
     /// Visible-first queued remeasurement plan.
     pub remeasure_plan: Option<LayoutRemeasurePlan>,
+    /// True while a `Resize` / `Global` / `MessagesFrom` invalidation
+    /// has pending off-screen work that the background re-measure
+    /// loop must converge. `MessageChanged` events (single tool /
+    /// notice / streaming-chunk invalidations) do NOT set this flag -
+    /// those routinely fire dozens of times between two render frames
+    /// in a long session and walking them off-screen every frame was
+    /// the dominant `chat::update_heights` cost. MessageChanged
+    /// entries still mark `stale_message_heights[idx] = true`, so
+    /// they re-measure lazily when scrolled into view. The flag is
+    /// sticky across frames - `finalize_remeasure_if_clean` clears it
+    /// once every message is current again, so an in-flight
+    /// convergence keeps progressing even when a MessageChanged
+    /// invalidation re-shapes the plan mid-flight.
+    pub background_convergence_pending: bool,
 
     // --- Prefix sums ---
     /// Cumulative heights: `height_prefix_sums[i]` = sum of heights `0..=i`.
@@ -229,6 +257,7 @@ impl ChatViewport {
             stale_message_heights: Vec::new(),
             priority_remeasure: Vec::new(),
             remeasure_plan: None,
+            background_convergence_pending: false,
             height_prefix_sums: Vec::new(),
             prefix_sums_width: 0,
             prefix_dirty_from: None,
@@ -479,6 +508,32 @@ impl ChatViewport {
             self.remeasure_plan = None;
             return;
         }
+        // Convergent invalidations (Resize / Global / MessagesFrom)
+        // set the sticky `background_convergence_pending` flag that
+        // gates the chat-render resize loop. `MessageChanged` does
+        // NOT - those are routine tool / streaming events that
+        // dirty their one message but should not drive off-screen
+        // chew work each frame in long sessions.
+        if matches!(
+            reason,
+            LayoutRemeasureReason::Resize
+                | LayoutRemeasureReason::Global
+                | LayoutRemeasureReason::MessagesFrom,
+        ) {
+            self.background_convergence_pending = true;
+        }
+        // Don't downgrade an in-flight plan's reason. A late
+        // `MessageChanged` invalidation must NOT clobber a
+        // `MessagesFrom` / `Resize` / `Global` already mid-convergence
+        // - the plan's reason informs scroll-anchor preservation, and
+        // a strand on convergence ends with off-screen messages
+        // permanently stuck at height 0 until they scroll back into
+        // view (and even when they do, the cached plan anchor stays
+        // wrong).
+        let effective_reason = match self.remeasure_plan.map(|plan| plan.reason) {
+            Some(existing) if reason_priority(existing) > reason_priority(reason) => existing,
+            _ => reason,
+        };
         let (anchor_index, anchor_offset) = self.current_scroll_anchor();
         let preserved_scroll_anchor = if self.auto_scroll {
             self.remeasure_plan.and_then(|plan| plan.preserved_scroll_anchor)
@@ -487,10 +542,14 @@ impl ChatViewport {
         {
             Some(anchor)
         } else {
-            Some(PreservedScrollAnchor { reason, index: anchor_index, offset: anchor_offset })
+            Some(PreservedScrollAnchor {
+                reason: effective_reason,
+                index: anchor_index,
+                offset: anchor_offset,
+            })
         };
         self.remeasure_plan = Some(LayoutRemeasurePlan::from_scroll_anchor(
-            reason,
+            effective_reason,
             anchor_index,
             anchor_offset,
             preserved_scroll_anchor,
@@ -675,6 +734,7 @@ impl ChatViewport {
         self.measured_message_widths.fill(self.width);
         self.priority_remeasure.clear();
         self.remeasure_plan = None;
+        self.background_convergence_pending = false;
     }
 
     /// Mark all message heights exact at the current width.
