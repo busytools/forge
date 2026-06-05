@@ -266,10 +266,7 @@ fn update_visual_heights(
     // to double the cost off-screen on the very first frame).
     let run_resize_loop = !bootstrap && app.viewport().background_convergence_pending;
     let mut budget = RemeasureBudget::new(viewport_height);
-    while run_resize_loop
-        && app.active_viewport_mut().remeasure_active()
-        && !budget.exhausted()
-    {
+    while run_resize_loop && app.active_viewport_mut().remeasure_active() && !budget.exhausted() {
         let Some(i) = app.active_viewport_mut().next_remeasure_index(msg_count) else {
             break;
         };
@@ -1292,16 +1289,15 @@ mod tests {
     /// gate) the resize loop wakes on any active plan and chews up
     /// to `viewport_height` off-screen stale messages, paying full
     /// layout cost on each. In a streaming session with Bash output
-    /// + Monitor refreshes that's ~20 measurements per frame for a
-    /// user who only sees 1-3 messages.
+    /// plus Monitor refreshes that's ~20 measurements per frame
+    /// for a user who only sees a few visible messages.
     #[test]
     fn off_screen_invalidate_does_not_force_resize_loop_to_remeasure() {
         let mut app = App::test_default();
         app.status = AppStatus::Ready;
         let text = "assistant reply that wraps over a line or two for height\n\
                     so heights vary between consecutive messages";
-        let history: Vec<ChatMessage> =
-            (0..200).map(|_| assistant_text_message(text)).collect();
+        let history: Vec<ChatMessage> = (0..200).map(|_| assistant_text_message(text)).collect();
         *app.active_messages_mut() = history;
 
         let _ = app.active_viewport_mut().on_frame(80, 8);
@@ -1332,12 +1328,88 @@ mod tests {
         assert_eq!(
             frame.measured_msgs, 0,
             "off-screen MessageChanged invalidate must not drive per-frame re-measurement; got measured={} reused={}",
-            frame.measured_msgs,
-            frame.reused_msgs,
+            frame.measured_msgs, frame.reused_msgs,
         );
         assert!(
             !app.active_viewport_mut().message_height_is_current(off_screen_idx),
             "the off-screen target stays stale (re-measures lazily when scrolled in)",
+        );
+    }
+
+    /// Correctness guard for the off-screen-laziness contract: an
+    /// off-screen `MessageChanged` invalidate must (1) leave the
+    /// target stale, (2) keep its last-known height in
+    /// `total_message_height()` so the scrollbar stays usable, and
+    /// (3) re-measure on the frame it scrolls into the visible
+    /// window via the live `current_visible_window` walk.
+    #[test]
+    fn stale_off_screen_message_remeasures_when_it_scrolls_in() {
+        let mut app = App::test_default();
+        app.status = AppStatus::Ready;
+        let history: Vec<ChatMessage> =
+            (0..80).map(|i| assistant_text_message(&format!("msg {i}\nsecond line"))).collect();
+        *app.active_messages_mut() = history;
+
+        let _ = app.active_viewport_mut().on_frame(80, 24);
+        let spinner = idle_spinner();
+        for _ in 0..32 {
+            update_visual_heights(&mut app, &spinner, 80, 24);
+            app.active_viewport_mut().rebuild_prefix_sums();
+            if !app.active_viewport_mut().resize_remeasure_active() {
+                break;
+            }
+        }
+        let total_before = app.active_viewport_mut().total_message_height();
+        let off_screen_idx = 5;
+        let height_before = app.active_viewport_mut().message_height(off_screen_idx);
+        assert!(height_before > 0, "setup must populate the off-screen target's height");
+
+        let max_scroll = total_before.saturating_sub(24);
+        {
+            let vp = app.active_viewport_mut();
+            vp.auto_scroll = true;
+            vp.scroll_target = max_scroll;
+            vp.scroll_pos = max_scroll as f32;
+            vp.scroll_offset = max_scroll;
+        }
+
+        app.invalidate_layout(InvalidationLevel::MessageChanged(off_screen_idx));
+        let _ = update_visual_heights(&mut app, &spinner, 80, 24);
+        app.active_viewport_mut().rebuild_prefix_sums();
+
+        assert_eq!(
+            app.active_viewport_mut().message_height(off_screen_idx),
+            height_before,
+            "stale off-screen target keeps its last-known height so the scrollbar stays stable",
+        );
+        assert_eq!(
+            app.active_viewport_mut().total_message_height(),
+            total_before,
+            "scrollbar geometry must not jump while the off-screen height is still stale",
+        );
+        assert!(
+            !app.active_viewport_mut().message_height_is_current(off_screen_idx),
+            "off-screen MessageChanged must leave the target stale (lazy measure on scroll-in)",
+        );
+
+        {
+            let vp = app.active_viewport_mut();
+            vp.auto_scroll = false;
+            vp.scroll_target = 0;
+            vp.scroll_pos = 0.0;
+            vp.scroll_offset = 0;
+        }
+
+        let frame = update_visual_heights(&mut app, &spinner, 80, 24);
+        assert!(
+            frame.measured_msgs >= 1,
+            "scrolling the stale message into the visible window must re-measure it; got measured={} reused={}",
+            frame.measured_msgs,
+            frame.reused_msgs,
+        );
+        assert!(
+            app.active_viewport_mut().message_height_is_current(off_screen_idx),
+            "after entering the visible window the height becomes current again",
         );
     }
 
