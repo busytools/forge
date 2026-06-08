@@ -1956,7 +1956,9 @@ impl App {
     ///
     /// Also stamps the last 5 lines onto the matching `ToolCallInfo`'s
     /// `monitor_output_tail` and marks the tool call's layout dirty so
-    /// the in-chat live block re-renders in place. Mirrors the
+    /// the in-chat live block re-renders in place - but only when that
+    /// rendered tail actually changed, so a timer-polled Monitor with no
+    /// new output doesn't churn the cache. Mirrors the
     /// `apply_terminal_payload` precedent in `terminal.rs` (terminal
     /// stream + dirty bump).
     pub fn replace_monitor_output_tail_by_task_id(&mut self, task_id: &str, lines: &[String]) {
@@ -1991,6 +1993,11 @@ impl App {
         else {
             return;
         };
+        // A timer-polled Monitor with no new output re-runs this path; only
+        // re-stamp + invalidate when the rendered chat tail actually changed.
+        if tc.monitor_output_tail == last_five {
+            return;
+        }
         tc.monitor_output_tail = last_five;
         tc.mark_tool_call_layout_dirty();
     }
@@ -3412,6 +3419,105 @@ mod tests {
             tc.monitor_output_tail,
             vec!["one".to_owned(), "two".to_owned(), "three".to_owned()],
             "tails shorter than 5 are kept verbatim",
+        );
+    }
+
+    #[test]
+    fn replace_monitor_output_tail_unchanged_is_noop_changed_still_dirties() {
+        use crate::agent::model::ToolCallStatus;
+        use crate::app::state::types::{MonitorEntry, MonitorStatus};
+        use std::collections::VecDeque;
+
+        let mut app = App::test_default();
+        let tool_use_id = "tu-mon-3";
+        let task_id = "task-mon-3";
+        app.monitors_mut().push(MonitorEntry {
+            tool_use_id: tool_use_id.to_owned(),
+            task_id: Some(task_id.to_owned()),
+            description: "demo".to_owned(),
+            command: "echo demo".to_owned(),
+            persistent: true,
+            timeout_ms: 0,
+            status: MonitorStatus::Running,
+            output_file: None,
+            output_tail: VecDeque::new(),
+            expanded_in_inspector: false,
+        });
+        let tc_info = ToolCallInfo {
+            id: tool_use_id.to_owned(),
+            title: "Monitor".to_owned(),
+            sdk_tool_name: "Monitor".to_owned(),
+            raw_input: None,
+            raw_input_bytes: 0,
+            output_metadata: None,
+            task_metadata: None,
+            status: ToolCallStatus::InProgress,
+            content: Vec::new(),
+            hidden: false,
+            terminal_id: None,
+            terminal_command: None,
+            terminal_output: None,
+            terminal_output_len: 0,
+            terminal_bytes_seen: 0,
+            terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
+            monitor_output_tail: Vec::default(),
+            render_epoch: 0,
+            layout_epoch: 0,
+            last_measured_width: 0,
+            last_measured_height: 0,
+            last_measured_layout_epoch: 0,
+            last_measured_layout_generation: 0,
+            cache: BlockCache::default(),
+            collapsed_override: None,
+            last_measured_y_in_msg: 0,
+            answered_questions: Vec::new(),
+        };
+        app.push_message_tracked(ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::ToolCall(Box::new(tc_info))],
+            None,
+        ));
+        let msg_idx = app.messages().len() - 1;
+        app.index_tool_call(tool_use_id.to_owned(), msg_idx, 0);
+
+        let lines = vec!["alpha".to_owned(), "beta".to_owned()];
+
+        // First refresh stamps the tail and bumps layout_epoch.
+        app.replace_monitor_output_tail_by_task_id(task_id, &lines);
+        let epoch_after_first = {
+            let (mi, bi) = app.lookup_tool_call(tool_use_id).expect("indexed");
+            let MessageBlock::ToolCall(tc) = &app.messages()[mi].blocks[bi] else {
+                panic!("expected ToolCall block");
+            };
+            assert_eq!(tc.monitor_output_tail, lines);
+            tc.layout_epoch
+        };
+
+        // Second refresh with the SAME tail must not re-invalidate.
+        app.replace_monitor_output_tail_by_task_id(task_id, &lines);
+        let epoch_after_unchanged = {
+            let (mi, bi) = app.lookup_tool_call(tool_use_id).expect("indexed");
+            let MessageBlock::ToolCall(tc) = &app.messages()[mi].blocks[bi] else {
+                panic!("expected ToolCall block");
+            };
+            tc.layout_epoch
+        };
+        assert_eq!(
+            epoch_after_unchanged, epoch_after_first,
+            "an unchanged monitor-tail refresh must not dirty the cached block",
+        );
+
+        // Third refresh with a CHANGED tail re-stamps and re-dirties.
+        let changed = vec!["alpha".to_owned(), "beta".to_owned(), "gamma".to_owned()];
+        app.replace_monitor_output_tail_by_task_id(task_id, &changed);
+        let (mi, bi) = app.lookup_tool_call(tool_use_id).expect("indexed");
+        let MessageBlock::ToolCall(tc) = &app.messages()[mi].blocks[bi] else {
+            panic!("expected ToolCall block");
+        };
+        assert_eq!(tc.monitor_output_tail, changed, "a changed tail must re-stamp");
+        assert!(
+            tc.layout_epoch > epoch_after_unchanged,
+            "a changed monitor-tail refresh must dirty so the block re-renders",
         );
     }
     use ratatui::style::{Color, Style};
