@@ -49,26 +49,25 @@ pub fn scan_catalog(namespace: Option<&str>) -> Vec<RoleSummary> {
     let mut by_label: std::collections::BTreeMap<String, RoleSummary> =
         std::collections::BTreeMap::new();
     // Top-level globals, bare, `lead` excluded.
-    for r in collect_roles(&root, None) {
+    for r in collect_roles(&root) {
         by_label.insert(r.label.clone(), r);
     }
     // The project's `<ns>/*` roles as bare labels, shadowing same-named
     // globals.
     if let Some(ns) = namespace {
-        for r in collect_roles(&root.join(ns), None) {
+        for r in collect_roles(&root.join(ns)) {
             by_label.insert(r.label.clone(), r);
         }
     }
     by_label.into_values().collect()
 }
 
-/// Collect `<dir>/<role>/charter.md` entries. When `namespace` is
-/// `Some(ns)` the produced labels are `ns/<role>`; when `None` they are
-/// bare global labels (with `lead` filtered out). A subdir without a
-/// direct `charter.md` (e.g. a project-namespace dir while scanning the
-/// root) is skipped, which is how globals are distinguished from
-/// namespaces.
-fn collect_roles(dir: &Path, namespace: Option<&str>) -> Vec<RoleSummary> {
+/// Collect `<dir>/<role>/charter.md` entries as BARE-label
+/// `RoleSummary`s (the role dir name), skipping the reserved `lead`. A
+/// subdir without a direct `charter.md` is skipped, which is how a
+/// project-namespace dir is distinguished from a role dir when scanning
+/// the root.
+fn collect_roles(dir: &Path) -> Vec<RoleSummary> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
@@ -80,18 +79,14 @@ fn collect_roles(dir: &Path, namespace: Option<&str>) -> Vec<RoleSummary> {
         let Some(role) = entry.file_name().to_str().map(ToOwned::to_owned) else {
             continue;
         };
-        if namespace.is_none() && role == LEAD_LABEL {
+        if role == LEAD_LABEL {
             continue;
         }
         let charter_path = entry.path().join("charter.md");
         let Ok(text) = std::fs::read_to_string(&charter_path) else {
             continue; // no direct charter.md => namespace dir or empty; skip
         };
-        let label = match namespace {
-            Some(ns) => format!("{ns}/{role}"),
-            None => role,
-        };
-        out.push(RoleSummary { label, description: description_from_charter(&text) });
+        out.push(RoleSummary { label: role, description: description_from_charter(&text) });
     }
     out
 }
