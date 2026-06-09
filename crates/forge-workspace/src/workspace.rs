@@ -556,6 +556,13 @@ impl Workspace {
         self.find_project_by_name(name).map(|_| ())
     }
 
+    /// Build the rendered delegation catalog for a Lead session in the
+    /// project named `namespace`. Always returns text (the capability
+    /// preamble at minimum).
+    fn build_delegation_catalog(namespace: &str) -> String {
+        crate::team::catalog::render_catalog(&crate::team::catalog::scan_catalog(Some(namespace)))
+    }
+
     /// Hands out the `Arc<AgentHandle>` for the requested session,
     /// spawning the underlying Agent lazily if it isn't already pooled.
     /// Idempotent - repeated calls for the same target return the same
@@ -589,7 +596,7 @@ impl Workspace {
     pub fn get_agent_handle_with_spawn_key(
         self: &Arc<Self>,
         target: SessionTarget,
-        settings: SessionLaunchSettings,
+        mut settings: SessionLaunchSettings,
         spawn_key: Option<SessionKey>,
     ) -> Result<Arc<AgentHandle>> {
         let session_key = self.resolve_target(&target)?;
@@ -748,6 +755,10 @@ impl Workspace {
         match target {
             SessionTarget::Default => {
                 let project = self.config.default_project();
+                if matches!(session_kind, crate::mcp::SessionKind::Lead) {
+                    settings.delegation_catalog =
+                        Some(Self::build_delegation_catalog(&project.name));
+                }
                 let cwd = project.path.to_string_lossy().to_string();
                 if let Some(lead) = self.try_lead_session_id_for(project) {
                     handle.resume_or_new_session(lead.as_str().to_owned(), cwd, settings)?;
@@ -757,6 +768,10 @@ impl Workspace {
             }
             SessionTarget::Named(name) => {
                 let project = self.find_project_by_name(&name)?;
+                if matches!(session_kind, crate::mcp::SessionKind::Lead) {
+                    settings.delegation_catalog =
+                        Some(Self::build_delegation_catalog(&project.name));
+                }
                 let cwd = project.path.to_string_lossy().to_string();
                 if let Some(lead) = self.try_lead_session_id_for(project) {
                     handle.resume_or_new_session(lead.as_str().to_owned(), cwd, settings)?;
@@ -5466,6 +5481,22 @@ mod team_spawn_tests {
             charter: format!("test charter for {label}"),
             initial_kick: format!("test kick for {label}"),
         }
+    }
+
+    #[test]
+    fn delegation_catalog_lists_globals_for_a_project() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path().join("implementer");
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        std::fs::write(dir.join("charter.md"), "description: Generic code-writer\n")
+            .expect("write");
+        let prev = crate::team::roles::set_forge_team_root_for_test(Some(tmp.path().to_path_buf()));
+
+        let text = Workspace::build_delegation_catalog("forge");
+        assert!(text.contains("workers__spawn"));
+        assert!(text.contains("implementer - Generic code-writer"));
+
+        crate::team::roles::set_forge_team_root_for_test(prev);
     }
 
     #[test]
