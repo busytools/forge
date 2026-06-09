@@ -2366,9 +2366,10 @@ impl Workspace {
             .collect()
     }
 
-    /// Insert a worker entry into `live_workers[project_key]`. Duplicate
-    /// labels are allowed; addressing by label uses latest-spawned wins
-    /// (see `remove_latest_worker`).
+    /// Insert a worker entry into `live_workers[project_key]`.
+    /// MCP-driven spawns dedup on label (`workers__spawn` refuses a
+    /// second live worker per label per project); `remove_latest_worker`
+    /// resolves the single live match.
     pub fn insert_live_worker(
         &self,
         project_key: &ProjectKey,

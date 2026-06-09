@@ -189,6 +189,9 @@ fn format_spawn_error(err: &WorkerSpawnError) -> String {
         WorkerSpawnError::CharterFileMissing { label } => format!(
             "no stored charter for role '{label}' at ~/.claude/forge-team/{label}/charter.md. Pass an inline charter, or create the role with workers__create_role."
         ),
+        WorkerSpawnError::AlreadyRunning { label, session_id } => format!(
+            "a worker labeled '{label}' is already running (session {session_id}). Message it with workers__tell / workers__ask, or close it first - only one live worker per label is allowed."
+        ),
     }
 }
 

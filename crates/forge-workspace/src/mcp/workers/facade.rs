@@ -6,7 +6,7 @@
 
 use std::sync::{Arc, Weak};
 
-use forge_primitives::WorkerStatus;
+use forge_primitives::{WorkerLiveness, WorkerStatus};
 
 use crate::SessionKey;
 use crate::mcp::peers::facade::PeerStatsDelta;
@@ -100,6 +100,9 @@ pub enum WorkerSpawnError {
     /// File-driven spawn (`charter` omitted) but no charter file
     /// exists for `label`.
     CharterFileMissing { label: String },
+    /// A live worker already carries this label in the caller's
+    /// project. Spawn refused; message the existing one instead.
+    AlreadyRunning { label: String, session_id: String },
 }
 
 /// Heuristic mapping from a raw spawn-error message + the worker's
@@ -289,6 +292,14 @@ pub(super) fn validate_worker_spawn(is_lead: bool, label: &str) -> Result<(), Wo
     Ok(())
 }
 
+/// First non-`Failed` worker carrying `label`, if any. The one-live-
+/// worker-per-label dedup guard: a `Spawning`/`Running` worker already
+/// holds the label so a re-spawn is refused, while a `Failed` entry is
+/// ignored (its label may be re-spawned).
+fn live_worker_with_label<'a>(entries: &'a [WorkerEntry], label: &str) -> Option<&'a WorkerEntry> {
+    entries.iter().find(|w| w.label == label && !matches!(w.status, WorkerLiveness::Failed))
+}
+
 /// Identity classification shared by the production and mock
 /// `caller_identity` impls so the lead / labeled-worker / detached
 /// mapping is exercised against the real rules. The caller resolves
@@ -381,6 +392,16 @@ impl WorkerFacade for ProdWorkerFacade {
         };
         let is_git_repo_at_spawn = forge_agent::env::worktree::is_git_repo(&view.path);
         let namespace = view.name;
+        // One live worker per (project, label): refuse a second spawn
+        // for a label already held by a live worker. The lead messages
+        // the existing one instead of forking a duplicate.
+        let live = ws.list_live_workers(&cp.project_key);
+        if let Some(existing) = live_worker_with_label(&live, &label) {
+            return Err(WorkerSpawnError::AlreadyRunning {
+                label,
+                session_id: existing.session_key.as_str().to_owned(),
+            });
+        }
         // `Some(non-empty)` is an ad-hoc inline mission. `None` loads
         // the role's stored charter, scope-checked against the
         // caller's namespace so a project can't spawn another
@@ -836,6 +857,33 @@ mod mock_tests {
         use crate::team::catalog::label_in_scope;
         assert!(label_in_scope("implementer", "forge"));
         assert!(!label_in_scope("hub-modules/steward", "forge"));
+    }
+
+    #[test]
+    fn dedup_finds_non_failed_label_ignores_failed() {
+        use forge_primitives::WorkerLiveness;
+        use std::time::SystemTime;
+        let entry = |label: &str, status: WorkerLiveness| WorkerEntry {
+            label: label.to_owned(),
+            charter: "c".into(),
+            session_key: SessionKey::from_session_id("w-uuid"),
+            status,
+            spawned_at: SystemTime::UNIX_EPOCH,
+            spawned_by_session_id: "lead".into(),
+            needs_tag: false,
+            is_git_repo_at_spawn: false,
+            diagnostic: None,
+        };
+        // Running / Spawning workers hold the label -> dedup blocks re-spawn.
+        let running = vec![entry("implementer", WorkerLiveness::Running)];
+        assert!(live_worker_with_label(&running, "implementer").is_some());
+        let spawning = vec![entry("implementer", WorkerLiveness::Spawning)];
+        assert!(live_worker_with_label(&spawning, "implementer").is_some());
+        // A Failed entry is ignored -> its label can be re-spawned.
+        let failed = vec![entry("implementer", WorkerLiveness::Failed)];
+        assert!(live_worker_with_label(&failed, "implementer").is_none());
+        // No matching label.
+        assert!(live_worker_with_label(&running, "tester").is_none());
     }
 
     #[test]
