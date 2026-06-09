@@ -44,6 +44,28 @@ impl Role {
             initial_kick: load_initial_kick(label)?,
         })
     }
+
+    /// Resolve `label` project-first-then-global within `namespace`,
+    /// then load the resolved charter + kick. The Role's `label` stays
+    /// BARE; only the files come from the resolved dir.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CharterError::CharterNotFound`] when neither a project
+    /// nor a global charter resolves for `label`; otherwise the
+    /// underlying [`load_charter`] / [`load_initial_kick`] error.
+    pub fn load_for(label: &str, namespace: &str) -> Result<Self, CharterError> {
+        let resolved =
+            resolve_role(label, namespace).ok_or_else(|| CharterError::CharterNotFound {
+                label: label.to_owned(),
+                path: role_dir(label).map(|d| d.join("charter.md")).unwrap_or_default(),
+            })?;
+        Ok(Self {
+            label: label.to_owned(),
+            charter: load_charter(&resolved)?,
+            initial_kick: load_initial_kick(&resolved)?,
+        })
+    }
 }
 
 /// Reserved label addressing the caller's own lead - see the workers
@@ -177,6 +199,28 @@ pub fn role_dir(label: &str) -> Result<PathBuf, CharterError> {
     Ok(root.join(label))
 }
 
+/// True when `<label>/charter.md` exists under the forge-team root.
+/// `label` may be bare or namespaced.
+fn role_charter_exists(label: &str) -> bool {
+    role_dir(label).is_ok_and(|d| d.join("charter.md").is_file())
+}
+
+/// Resolve a BARE role `label` for a session in `project_namespace` to
+/// the on-disk dir-label whose charter exists: project-local
+/// (`<namespace>/<label>`) first, then global (`<label>`). `None` when
+/// neither exists. The returned value is for loading files only - the
+/// worker keeps the bare `label` for display + addressing.
+pub fn resolve_role(label: &str, project_namespace: &str) -> Option<String> {
+    let scoped = format!("{project_namespace}/{label}");
+    if role_charter_exists(&scoped) {
+        return Some(scoped);
+    }
+    if role_charter_exists(label) {
+        return Some(label.to_owned());
+    }
+    None
+}
+
 /// Load `<label>/charter.md` from the forge-team root.
 ///
 /// # Errors
@@ -302,5 +346,33 @@ mod tests {
         let s = err.to_string();
         assert!(s.contains("researcher"));
         assert!(s.contains("/tmp/forge-team/researcher/charter.md"));
+    }
+
+    fn mk(root: &std::path::Path, label: &str) {
+        let d = root.join(label);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("charter.md"), "description: x\n").unwrap();
+        std::fs::write(d.join("kick.md"), "go\n").unwrap();
+    }
+
+    #[test]
+    fn resolve_prefers_project_then_global() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let root = tmp.path();
+        mk(root, "implementer"); // global
+        mk(root, "hub-modules/steward"); // project
+        mk(root, "forge/implementer"); // project override of a global
+        let prev = set_forge_team_root_for_test(Some(root.to_path_buf()));
+
+        // bare project role resolves to <ns>/<label> from its own project
+        assert_eq!(resolve_role("steward", "hub-modules").as_deref(), Some("hub-modules/steward"));
+        // from another project, the project role does NOT resolve (scope)
+        assert_eq!(resolve_role("steward", "forge"), None);
+        // global resolves anywhere when no project role shadows it
+        assert_eq!(resolve_role("implementer", "hub-modules").as_deref(), Some("implementer"));
+        // project role shadows a global of the same bare name
+        assert_eq!(resolve_role("implementer", "forge").as_deref(), Some("forge/implementer"));
+
+        set_forge_team_root_for_test(prev);
     }
 }

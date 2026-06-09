@@ -2063,11 +2063,12 @@ impl Workspace {
     /// in `team = [...]` doesn't block the rest of the team.
     fn load_team_roles(
         team: &[String],
+        namespace: &str,
         project_key: &crate::target::ProjectKey,
     ) -> Vec<crate::team::Role> {
         let mut loaded: Vec<crate::team::Role> = Vec::with_capacity(team.len());
         for label in team {
-            match crate::team::Role::load(label) {
+            match crate::team::Role::load_for(label, namespace) {
                 Ok(role) => loaded.push(role),
                 Err(err) => {
                     tracing::warn!(
@@ -2075,7 +2076,7 @@ impl Workspace {
                         project = %project_key.as_str(),
                         label = %label,
                         error = %err,
-                        "no charter / kick file found for worker label; spawn skipped. Populate ~/.claude/forge-team/<label>/charter.md and kick.md (copy from docs/forge-team-defaults/<label>/) or use the workers__create_role MCP tool."
+                        "no charter/kick for worker label (project-first then global); spawn skipped. Populate ~/.claude/forge-team/<project>/<label>/ or ~/.claude/forge-team/<label>/ (copy from docs/forge-team-defaults/) or use workers__create_role."
                     );
                 }
             }
@@ -2088,6 +2089,7 @@ impl Workspace {
         lead_session_id: String,
         project_key: crate::target::ProjectKey,
         project_dir: PathBuf,
+        namespace: String,
         team: Vec<String>,
     ) {
         if team.is_empty() {
@@ -2116,7 +2118,7 @@ impl Workspace {
                 project = %project_key.as_str(),
                 "no tokio runtime in scope; falling back to sync team-spawn (test path)",
             );
-            let loaded = Self::load_team_roles(&team, &project_key);
+            let loaded = Self::load_team_roles(&team, &namespace, &project_key);
             self.spawn_team_for_lead_with_resume(
                 &lead_session_id,
                 &project_key,
@@ -2136,7 +2138,7 @@ impl Workspace {
         };
         handle.spawn(async move {
             let resume_map = scan_worker_resume_map(&config_dirs, &project_dir).await;
-            let loaded = Self::load_team_roles(&team, &project_key);
+            let loaded = Self::load_team_roles(&team, &namespace, &project_key);
             tracing::info!(
                 target: "forge_workspace::team",
                 project = %project_key.as_str(),
@@ -5542,6 +5544,40 @@ mod team_spawn_tests {
         for c in charters {
             assert!(!c.trim().is_empty(), "role charter must be non-empty");
         }
+    }
+
+    #[test]
+    fn team_spawn_resolves_bare_label_to_project_charter() {
+        // Fixture: a project-scoped hub-modules/steward charter only.
+        let tmp = tempfile::tempdir().expect("tmp");
+        let steward = tmp.path().join("hub-modules").join("steward");
+        std::fs::create_dir_all(&steward).expect("mkdir");
+        std::fs::write(steward.join("charter.md"), "description: Hub steward\n").expect("charter");
+        std::fs::write(steward.join("kick.md"), "go\n").expect("kick");
+        let prev = crate::team::set_forge_team_root_for_test(Some(tmp.path().to_path_buf()));
+
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        workspace.enable_test_dispatch_intercept();
+        // No tokio runtime in a plain #[test] -> the sync fallback runs
+        // load_team_roles inline, so the bare label resolves here.
+        workspace.spawn_team_for_lead_with_catalog_scan(
+            "lead-uuid".to_owned(),
+            ProjectKey::new("hub-modules"),
+            std::path::PathBuf::from("/tmp/hub-modules"),
+            "hub-modules".to_owned(),
+            vec!["steward".to_owned()],
+        );
+
+        let dispatched = workspace.drain_test_dispatch_buffer();
+        let spawns: Vec<&Command> =
+            dispatched.iter().filter(|c| matches!(c, Command::SpawnWorker { .. })).collect();
+        assert_eq!(spawns.len(), 1, "bare team label resolves + spawns one worker");
+        if let Command::SpawnWorker { label, charter, .. } = spawns[0] {
+            assert_eq!(label, "steward", "worker label stays BARE, not hub-modules/steward");
+            assert!(charter.contains("Hub steward"), "charter loaded from the project-scoped dir");
+        }
+
+        crate::team::set_forge_team_root_for_test(prev);
     }
 
     #[test]
