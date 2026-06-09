@@ -17,18 +17,6 @@ pub struct RoleSummary {
     pub description: String,
 }
 
-/// True iff a session in `project_namespace` may spawn/load `label`.
-/// A single-segment label is a global role (allowed everywhere) unless
-/// it is the reserved `lead`. A namespaced `ns/role` label is allowed
-/// only from its own project. Assumes `label` already passed
-/// `roles::validate_label`.
-pub fn label_in_scope(label: &str, project_namespace: &str) -> bool {
-    match label.split_once('/') {
-        None => label != LEAD_LABEL,
-        Some((ns, _role)) => ns == project_namespace,
-    }
-}
-
 /// First non-empty line of a charter, used as its catalog blurb. A
 /// leading `description:` wins; otherwise the line with markdown
 /// heading / quote markers stripped. Truncated to 100 chars.
@@ -135,20 +123,6 @@ mod tests {
     use super::*;
     use crate::team::roles::set_forge_team_root_for_test;
     use std::fs;
-
-    #[test]
-    fn scope_allows_globals_everywhere_rejects_lead() {
-        assert!(label_in_scope("implementer", "forge"));
-        assert!(label_in_scope("implementer", "hub-modules"));
-        assert!(!label_in_scope("lead", "forge"));
-    }
-
-    #[test]
-    fn scope_confines_namespaced_roles_to_their_project() {
-        assert!(label_in_scope("hub-modules/steward", "hub-modules"));
-        assert!(!label_in_scope("hub-modules/steward", "forge"));
-        assert!(label_in_scope("forge/probe", "forge"));
-    }
 
     #[test]
     fn description_prefers_explicit_line_then_heading() {

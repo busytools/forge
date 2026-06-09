@@ -183,11 +183,8 @@ fn format_spawn_error(err: &WorkerSpawnError) -> String {
         WorkerSpawnError::WorktreeCreationFailed { reason } => {
             format!("worktree creation failed: {reason}")
         }
-        WorkerSpawnError::OutOfScope { label } => format!(
-            "role '{label}' is not available from this project - it belongs to another project's namespace. Spawn a global role (e.g. 'implementer') or one under your own project."
-        ),
         WorkerSpawnError::CharterFileMissing { label } => format!(
-            "no stored charter for role '{label}' at ~/.claude/forge-team/{label}/charter.md. Pass an inline charter, or create the role with workers__create_role."
+            "role '{label}' resolves to no charter from this project (looked under ~/.claude/forge-team/<project>/{label}/ then ~/.claude/forge-team/{label}/). Pass an inline charter, or create the role with workers__create_role."
         ),
         WorkerSpawnError::AlreadyRunning { label, session_id } => format!(
             "a worker labeled '{label}' is already running (session {session_id}). Message it with workers__tell / workers__ask, or close it first - only one live worker per label is allowed."
