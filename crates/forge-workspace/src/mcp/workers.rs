@@ -940,8 +940,11 @@ impl Tool for CreateRole {
             ));
         }
 
+        // Echo the BARE label the caller passed - roles are addressed by
+        // bare label (resolution adds the namespace when loading files);
+        // the namespaced `<ns>/<label>` paths below are a storage detail.
         let mut body = serde_json::json!({
-            "label": label,
+            "label": raw_label,
             "charter_path": charter_path.display().to_string(),
             "kick_path": kick_path.display().to_string(),
         });
@@ -1866,6 +1869,11 @@ mod tests {
             !tmp.path().join("probe").join("charter.md").exists(),
             "must NOT create a top-level (global) role"
         );
+        // The tool's surface stays bare: the echoed label is the name
+        // the caller passed, not the on-disk namespaced path.
+        let body: serde_json::Value =
+            serde_json::from_str(&output.blocks[0].text).expect("returned JSON parses");
+        assert_eq!(body["label"], "probe", "response echoes the BARE label, not forge/probe");
     }
 
     #[tokio::test]
