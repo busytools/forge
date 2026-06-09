@@ -81,7 +81,8 @@ pub(crate) struct Spawn {
 #[derive(serde::Deserialize)]
 struct SpawnArgs {
     label: String,
-    charter: String,
+    #[serde(default)]
+    charter: Option<String>,
 }
 
 #[async_trait::async_trait]
@@ -96,17 +97,20 @@ impl Tool for Spawn {
         "Spawn a new worker session inside YOUR project (lead-only). \
          The worker is a full forge session - its own claude subprocess, \
          own chat view, own permissions - addressable from your session \
-         by `label` via workers__tell / workers__ask. `charter` is the \
-         worker's mission statement; it is threaded into the new \
-         session's system prompt so the worker LLM has context for what \
-         it is being asked to do. Returns the worker's session_id and \
-         tag (`forge:worker:<label>`). Labels are free-form and need \
-         not be unique - if you spawn multiple workers with the same \
-         label, addressing picks the latest-spawned. The label 'lead' \
-         is reserved (used by workers__tell / workers__ask to address \
-         the spawning lead) and rejected here. Use workers__list to \
-         see your project's current worker pool. This tool errors if \
-         called from a worker session; only the project lead may spawn."
+         by `label` via workers__tell / workers__ask. `charter` is \
+         optional: omit it to load the role's stored charter from \
+         ~/.claude/forge-team/<label>/charter.md (e.g. \
+         label=\"implementer\"), or provide it to spawn an ad-hoc \
+         worker with an inline mission threaded into the new session's \
+         system prompt. Returns the worker's session_id and tag \
+         (`forge:worker:<label>`). At most one live worker per label - \
+         if one already exists, this errors and you should message it \
+         with workers__tell / workers__ask instead of spawning again. \
+         The label 'lead' is reserved (used by workers__tell / \
+         workers__ask to address the spawning lead) and rejected here. \
+         Use workers__list to see your project's current worker pool. \
+         This tool errors if called from a worker session; only the \
+         project lead may spawn."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -115,14 +119,14 @@ impl Tool for Spawn {
             "properties": {
                 "label": {
                     "type": "string",
-                    "description": "Short free-form identifier you will use to address this worker later via workers__tell / workers__ask. Non-empty after trim. Duplicates are allowed; if you reuse a label, addressing picks the latest-spawned.",
+                    "description": "Identifier you will use to address this worker later via workers__tell / workers__ask. Non-empty after trim. For a file-driven spawn (no charter), this is the role name whose charter is loaded from ~/.claude/forge-team/<label>/charter.md. At most one live worker per label - reusing a label with a live worker is rejected.",
                 },
                 "charter": {
                     "type": "string",
-                    "description": "The worker's mission statement. Threaded into the new session's system prompt so the worker LLM understands what it is being asked to do. Non-empty after trim. Write it as direct instructions to the worker.",
+                    "description": "Optional. Omit to load the role's stored charter from ~/.claude/forge-team/<label>/charter.md (e.g. label=\"implementer\"). Provide it to spawn an ad-hoc worker with an inline mission, threaded into the new session's system prompt. Non-empty after trim when provided.",
                 },
             },
-            "required": ["label", "charter"],
+            "required": ["label"],
             "additionalProperties": false,
         })
     }
@@ -179,6 +183,12 @@ fn format_spawn_error(err: &WorkerSpawnError) -> String {
         WorkerSpawnError::WorktreeCreationFailed { reason } => {
             format!("worktree creation failed: {reason}")
         }
+        WorkerSpawnError::OutOfScope { label } => format!(
+            "role '{label}' is not available from this project - it belongs to another project's namespace. Spawn a global role (e.g. 'implementer') or one under your own project."
+        ),
+        WorkerSpawnError::CharterFileMissing { label } => format!(
+            "no stored charter for role '{label}' at ~/.claude/forge-team/{label}/charter.md. Pass an inline charter, or create the role with workers__create_role."
+        ),
     }
 }
 
@@ -1065,8 +1075,8 @@ mod tests {
         let output = tool
             .call(ToolInput {
                 value: serde_json::json!({
-                    // missing required 'charter'
-                    "label": "reviewer",
+                    // missing required 'label' (charter is optional)
+                    "charter": "review the diff",
                 }),
             })
             .await;
@@ -1084,7 +1094,7 @@ mod tests {
         let schema = tool.input_schema();
         let required = schema["required"].as_array().expect("required field present");
         assert!(required.iter().any(|v| v == "label"));
-        assert!(required.iter().any(|v| v == "charter"));
+        assert!(!required.iter().any(|v| v == "charter"), "charter is optional (file-load default)");
     }
 
     fn fake_worker(label: &str, charter: &str) -> forge_primitives::WorkerStatus {
