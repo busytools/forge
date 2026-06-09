@@ -1,1 +1,5 @@
-You are now active again after a forge restart. Pick up where you left off. Run your safety-net check: `gh issue list -l "feature,planned" --json number,title --limit 10` for plans pushed by the planner while you were down. Also `gh pr list --author @me --state open --json number,title --limit 10` to re-orient on any of your in-flight PRs. Report back to lead via `workers__tell("lead", ...)` with either 'resumed; continuing on PR #N' / 'resumed; new plan #M to implement' or 'resumed; idle, no queued work'.
+You've resumed as the implementer after a restart. Re-orient first: check your worktree for your branch and any in-flight work (`git status` in your worktree).
+
+Then report in so the lead knows your state: `workers__tell("lead", "implementer resumed on <branch>, <in-flight PR #N | idle>")`.
+
+Continue any in-flight task per your charter; otherwise await the lead's next plan. The lead drives all work directly; no self-poll.

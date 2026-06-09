@@ -1700,12 +1700,16 @@ mod team_hook_tests {
         if let Command::Prompt { key, text, .. } = prompts[0] {
             assert_eq!(key.as_str(), "worker-uuid", "kick targets the worker's real session id");
             assert!(
-                text.contains("gh issue list"),
-                "kick carries the role-specific gh command; got: {text}",
-            );
-            assert!(
                 text.contains("You are now active"),
                 "kick opens with activation framing; got: {text}",
+            );
+            assert!(
+                !text.contains("gh issue list"),
+                "generic kick must not self-poll GitHub issues; got: {text}",
+            );
+            assert!(
+                text.contains("awaiting a plan"),
+                "kick tells the implementer to await a lead-driven plan; got: {text}",
             );
         }
     }
