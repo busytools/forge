@@ -754,6 +754,7 @@ fn maybe_spawn_team_on_connected(
         real_session_id.to_owned(),
         project_key,
         project.path.clone(),
+        project.name.clone(),
         project.team.clone(),
     );
 }
