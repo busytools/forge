@@ -5,6 +5,7 @@
 //! `docs/superpowers/specs/2026-05-25-engineering-team-design.md` for
 //! the closed-enum predecessor design.
 
+pub mod catalog;
 pub mod roles;
 
 pub use roles::{
