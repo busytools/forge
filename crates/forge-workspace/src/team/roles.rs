@@ -55,12 +55,11 @@ impl Role {
     /// nor a global charter resolves for `label`; otherwise the
     /// underlying [`load_charter`] / [`load_initial_kick`] error.
     pub fn load_for(label: &str, namespace: &str) -> Result<Self, CharterError> {
-        let resolved = resolve_role(label, namespace).ok_or_else(|| {
-            CharterError::CharterNotFound {
+        let resolved =
+            resolve_role(label, namespace).ok_or_else(|| CharterError::CharterNotFound {
                 label: label.to_owned(),
                 path: role_dir(label).map(|d| d.join("charter.md")).unwrap_or_default(),
-            }
-        })?;
+            })?;
         Ok(Self {
             label: label.to_owned(),
             charter: load_charter(&resolved)?,
