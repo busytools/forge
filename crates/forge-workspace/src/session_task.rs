@@ -754,23 +754,26 @@ fn maybe_spawn_team_on_connected(
         real_session_id.to_owned(),
         project_key,
         project.path.clone(),
+        project.name.clone(),
         project.team.clone(),
     );
 }
 
-/// Parse a worker synthetic spawn key. Recognises both:
+/// Parse a worker synthetic spawn key into `(project_key, label)`.
+/// Recognises both:
 ///
 /// - `__spawn_worker_<project>_<label>_<uuid>__` (fresh-spawn shape,
 ///   `handle_spawn_worker` with `resume_existing = None`)
 /// - `__resume_worker_<project>_<label>_<uuid>__` (resume shape,
 ///   `handle_spawn_worker` with `resume_existing = Some(...)`)
 ///
-/// Returns the label segment. `None` for lead synth keys or any
-/// other shape. Project keys are alphanumeric+dash only (no
-/// underscores) and uuids are hex (no underscores), so
-/// `splitn(3, '_')` on the "<project>_<label>_<uuid>" remainder
-/// yields exactly three parts.
-fn parse_worker_label_from_synth_key(key: &SessionKey) -> Option<String> {
+/// `None` for lead synth keys or any other shape. Project keys are
+/// alphanumeric+dash only (no underscores) and uuids are hex (no
+/// underscores), so `splitn(3, '_')` on the "<project>_<label>_<uuid>"
+/// remainder yields exactly three parts. The project_key segment lets
+/// the kick hooks recover the worker's namespace for project-first
+/// role resolution.
+fn parse_worker_synth_key(key: &SessionKey) -> Option<(String, String)> {
     let s = key.as_str();
     let inner =
         s.strip_prefix("__spawn_").or_else(|| s.strip_prefix("__resume_"))?.strip_suffix("__")?;
@@ -779,7 +782,7 @@ fn parse_worker_label_from_synth_key(key: &SessionKey) -> Option<String> {
     if parts.len() != 3 {
         return None;
     }
-    Some(parts[1].to_owned())
+    Some((parts[0].to_owned(), parts[1].to_owned()))
 }
 
 /// True when `key` is the resume-shaped worker synth key
@@ -813,10 +816,22 @@ fn maybe_kick_worker_on_connected(
     spawn_key: &SessionKey,
     real_session_id: &str,
 ) {
-    let Some(label) = parse_worker_label_from_synth_key(spawn_key) else {
+    let Some((project_key, label)) = parse_worker_synth_key(spawn_key) else {
         return;
     };
     let is_resume = is_resume_worker_synth_key(spawn_key);
+
+    // Recover the worker's project namespace (the forge.toml name) so
+    // the kick resolves project-first-then-global, matching the charter
+    // the worker was spawned with. Fall back to the bare label when the
+    // project is gone so global-role workers still kick.
+    let resolved = workspace
+        .list_projects()
+        .into_iter()
+        .find(|v| v.key.as_str() == project_key)
+        .map(|v| v.name)
+        .and_then(|namespace| crate::team::roles::resolve_role(&label, &namespace))
+        .unwrap_or_else(|| label.clone());
 
     // Resume path: prefer the resume-specific kick when the role
     // ships one. `<label>/resume-kick.md` is opt-in (absent file is
@@ -826,7 +841,7 @@ fn maybe_kick_worker_on_connected(
     // had progressed past their initial kick - the whole point of a
     // resume-kick is to wake the worker up post-restart.
     let kick_text = if is_resume {
-        match crate::team::load_resume_kick(&label) {
+        match crate::team::load_resume_kick(&resolved) {
             Ok(Some(text)) => Some(text),
             Ok(None) => None,
             Err(err) => {
@@ -858,7 +873,7 @@ fn maybe_kick_worker_on_connected(
 
     // Fall-through: fresh spawn OR resume-without-resume-kick. Load
     // the regular `<label>/kick.md`.
-    let initial_kick = match crate::team::load_initial_kick(&label) {
+    let initial_kick = match crate::team::load_initial_kick(&resolved) {
         Ok(kick) => kick,
         Err(err) => {
             tracing::warn!(
@@ -1714,6 +1729,56 @@ mod team_hook_tests {
         }
     }
 
+    /// A project-scoped worker (bare label `steward` in `data-modules`)
+    /// resolves its kick project-first to `data-modules/steward/kick.md`,
+    /// even though no global `steward` exists.
+    #[tokio::test]
+    async fn worker_kick_resolves_project_scoped_role() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let steward = tmp.path().join("data-modules").join("steward");
+        std::fs::create_dir_all(&steward).expect("mkdir");
+        std::fs::write(steward.join("charter.md"), "description: Hub steward\n").expect("charter");
+        std::fs::write(steward.join("kick.md"), "STEWARD-KICK: tend the modules\n").expect("kick");
+        let prev = crate::team::set_forge_team_root_for_test(Some(tmp.path().to_path_buf()));
+
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        workspace.enable_test_dispatch_intercept();
+        workspace.start_kick_dispatcher();
+        workspace.seed_test_project_with_team(
+            "data-modules",
+            "/tmp/data-modules",
+            &["steward".to_owned()],
+        );
+        // Build the worker synth key from the seeded project's resolved
+        // key so the kick hook recovers `data-modules` as the namespace.
+        let project_key = workspace
+            .list_projects()
+            .into_iter()
+            .find(|v| v.name == "data-modules")
+            .expect("seeded project present")
+            .key;
+        let synth = SessionKey::from_session_id(format!(
+            "__spawn_worker_{}_steward_deadbeef__",
+            project_key.as_str()
+        ));
+        on_connected_for_test(&workspace, &synth, "worker-uuid");
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+
+        let dispatched = workspace.drain_test_dispatch_buffer();
+        let prompts: Vec<&Command> =
+            dispatched.iter().filter(|c| matches!(c, Command::Prompt { .. })).collect();
+        assert_eq!(prompts.len(), 1, "project-scoped worker gets exactly one kick");
+        if let Command::Prompt { text, .. } = prompts[0] {
+            assert!(
+                text.contains("STEWARD-KICK"),
+                "kick resolved from data-modules/steward/kick.md; got: {text}",
+            );
+        }
+
+        crate::team::set_forge_team_root_for_test(prev);
+    }
+
     /// Worker Connected with a label NOT matching a built-in role
     /// (e.g. an LLM-driven `workers__spawn("scratchpad", ...)` for
     /// ad-hoc work) does not get a kick - only engineering-team
@@ -1754,37 +1819,34 @@ mod team_hook_tests {
     }
 
     #[test]
-    fn parse_worker_label_from_synth_key_extracts_label_for_canonical_shape() {
+    fn parse_worker_synth_key_extracts_project_and_label_for_canonical_shape() {
         let key = SessionKey::from_session_id("__spawn_worker_forge_planner_abc123__");
-        assert_eq!(parse_worker_label_from_synth_key(&key), Some("planner".to_owned()));
+        assert_eq!(parse_worker_synth_key(&key), Some(("forge".to_owned(), "planner".to_owned())));
     }
 
     #[test]
-    fn parse_worker_label_from_synth_key_rejects_lead_synth_keys() {
+    fn parse_worker_synth_key_rejects_lead_synth_keys() {
         let key = SessionKey::from_session_id("__spawn_forge__");
-        assert_eq!(parse_worker_label_from_synth_key(&key), None);
+        assert_eq!(parse_worker_synth_key(&key), None);
     }
 
     #[test]
-    fn parse_worker_label_from_synth_key_rejects_unrelated_shapes() {
+    fn parse_worker_synth_key_rejects_unrelated_shapes() {
+        assert_eq!(parse_worker_synth_key(&SessionKey::from_session_id("not-a-synth-key")), None);
         assert_eq!(
-            parse_worker_label_from_synth_key(&SessionKey::from_session_id("not-a-synth-key")),
-            None,
-        );
-        assert_eq!(
-            parse_worker_label_from_synth_key(&SessionKey::from_session_id("__spawn_worker__")),
+            parse_worker_synth_key(&SessionKey::from_session_id("__spawn_worker__")),
             None,
             "worker prefix with no project/label/uuid segments must reject",
         );
     }
 
     /// #157: the resume-shaped worker synth key
-    /// (`__resume_worker_<project>_<label>_<uuid>__`) parses to the
-    /// same label as the fresh-shape - the parser accepts both.
+    /// (`__resume_worker_<project>_<label>_<uuid>__`) parses the same as
+    /// the fresh shape - the parser accepts both.
     #[test]
-    fn parse_worker_label_from_synth_key_extracts_label_for_resume_shape() {
+    fn parse_worker_synth_key_extracts_project_and_label_for_resume_shape() {
         let key = SessionKey::from_session_id("__resume_worker_forge_planner_abc123__");
-        assert_eq!(parse_worker_label_from_synth_key(&key), Some("planner".to_owned()));
+        assert_eq!(parse_worker_synth_key(&key), Some(("forge".to_owned(), "planner".to_owned())));
     }
 
     #[test]

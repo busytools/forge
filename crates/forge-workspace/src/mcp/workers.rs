@@ -183,11 +183,8 @@ fn format_spawn_error(err: &WorkerSpawnError) -> String {
         WorkerSpawnError::WorktreeCreationFailed { reason } => {
             format!("worktree creation failed: {reason}")
         }
-        WorkerSpawnError::OutOfScope { label } => format!(
-            "role '{label}' is not available from this project - it belongs to another project's namespace. Spawn a global role (e.g. 'implementer') or one under your own project."
-        ),
         WorkerSpawnError::CharterFileMissing { label } => format!(
-            "no stored charter for role '{label}' at ~/.claude/forge-team/{label}/charter.md. Pass an inline charter, or create the role with workers__create_role."
+            "role '{label}' resolves to no charter from this project (looked under ~/.claude/forge-team/<project>/{label}/ then ~/.claude/forge-team/{label}/). Pass an inline charter, or create the role with workers__create_role."
         ),
         WorkerSpawnError::AlreadyRunning { label, session_id } => format!(
             "a worker labeled '{label}' is already running (session {session_id}). Message it with workers__tell / workers__ask, or close it first - only one live worker per label is allowed."
@@ -943,8 +940,11 @@ impl Tool for CreateRole {
             ));
         }
 
+        // Echo the BARE label the caller passed - roles are addressed by
+        // bare label (resolution adds the namespace when loading files);
+        // the namespaced `<ns>/<label>` paths below are a storage detail.
         let mut body = serde_json::json!({
-            "label": label,
+            "label": raw_label,
             "charter_path": charter_path.display().to_string(),
             "kick_path": kick_path.display().to_string(),
         });
@@ -1869,6 +1869,11 @@ mod tests {
             !tmp.path().join("probe").join("charter.md").exists(),
             "must NOT create a top-level (global) role"
         );
+        // The tool's surface stays bare: the echoed label is the name
+        // the caller passed, not the on-disk namespaced path.
+        let body: serde_json::Value =
+            serde_json::from_str(&output.blocks[0].text).expect("returned JSON parses");
+        assert_eq!(body["label"], "probe", "response echoes the BARE label, not forge/probe");
     }
 
     #[tokio::test]

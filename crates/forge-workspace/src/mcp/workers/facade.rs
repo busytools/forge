@@ -94,11 +94,9 @@ pub enum WorkerSpawnError {
     /// pick a different label, or `git commit --allow-empty` first
     /// in the empty-repo case).
     WorktreeCreationFailed { reason: String },
-    /// Requested `label` is outside the caller project's scope (not a
-    /// global role and not under the caller's own namespace).
-    OutOfScope { label: String },
-    /// File-driven spawn (`charter` omitted) but no charter file
-    /// exists for `label`.
+    /// File-driven spawn (`charter` omitted) but `label` resolves to no
+    /// charter (neither a project-local `<namespace>/<label>` nor a
+    /// global `<label>`).
     CharterFileMissing { label: String },
     /// A live worker already carries this label in the caller's
     /// project. Spawn refused; message the existing one instead.
@@ -414,18 +412,20 @@ impl WorkerFacade for ProdWorkerFacade {
                 session_id: existing.session_key.as_str().to_owned(),
             });
         }
-        // `Some(non-empty)` is an ad-hoc inline mission. `None` loads
-        // the role's stored charter, scope-checked against the
-        // caller's namespace so a project can't spawn another
-        // project's role by label.
+        // `Some(non-empty)` is an ad-hoc inline mission. `None` resolves
+        // the bare label project-first-then-global and loads that
+        // charter; resolution IS the scope check (a project only ever
+        // resolves its own roles + globals).
         let charter = match charter {
             Some(text) if !text.trim().is_empty() => text,
             Some(_) => return Err(WorkerSpawnError::EmptyCharter),
             None => {
-                if !crate::team::catalog::label_in_scope(&label, &namespace) {
-                    return Err(WorkerSpawnError::OutOfScope { label });
+                if label.contains('/') {
+                    return Err(WorkerSpawnError::CharterFileMissing { label }); // bare names only
                 }
-                match crate::team::roles::load_charter(&label) {
+                let resolved = crate::team::roles::resolve_role(&label, &namespace)
+                    .ok_or_else(|| WorkerSpawnError::CharterFileMissing { label: label.clone() })?;
+                match crate::team::roles::load_charter(&resolved) {
                     Ok(text) => text,
                     Err(_) => return Err(WorkerSpawnError::CharterFileMissing { label }),
                 }
@@ -872,10 +872,20 @@ mod mock_tests {
     }
 
     #[test]
-    fn scope_predicate_blocks_cross_project_file_load() {
-        use crate::team::catalog::label_in_scope;
-        assert!(label_in_scope("implementer", "forge"));
-        assert!(!label_in_scope("data-modules/steward", "forge"));
+    fn resolution_scopes_project_role_to_its_own_project() {
+        // A project role resolves only from its own project; resolution
+        // IS the scope check now (a project sees its own roles + globals).
+        use crate::team::roles::{resolve_role, set_forge_team_root_for_test};
+        let tmp = tempfile::tempdir().expect("tmp");
+        let steward = tmp.path().join("data-modules").join("steward");
+        std::fs::create_dir_all(&steward).expect("mkdir");
+        std::fs::write(steward.join("charter.md"), "description: Hub steward\n").expect("charter");
+        let prev = set_forge_team_root_for_test(Some(tmp.path().to_path_buf()));
+
+        assert_eq!(resolve_role("steward", "data-modules").as_deref(), Some("data-modules/steward"));
+        assert_eq!(resolve_role("steward", "forge"), None);
+
+        set_forge_team_root_for_test(prev);
     }
 
     #[test]

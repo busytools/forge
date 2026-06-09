@@ -17,18 +17,6 @@ pub struct RoleSummary {
     pub description: String,
 }
 
-/// True iff a session in `project_namespace` may spawn/load `label`.
-/// A single-segment label is a global role (allowed everywhere) unless
-/// it is the reserved `lead`. A namespaced `ns/role` label is allowed
-/// only from its own project. Assumes `label` already passed
-/// `roles::validate_label`.
-pub fn label_in_scope(label: &str, project_namespace: &str) -> bool {
-    match label.split_once('/') {
-        None => label != LEAD_LABEL,
-        Some((ns, _role)) => ns == project_namespace,
-    }
-}
-
 /// First non-empty line of a charter, used as its catalog blurb. A
 /// leading `description:` wins; otherwise the line with markdown
 /// heading / quote markers stripped. Truncated to 100 chars.
@@ -48,33 +36,38 @@ fn truncate(s: &str, max: usize) -> String {
     s.chars().take(max).collect()
 }
 
-/// Roles a session in `namespace` may spawn: top-level globals
-/// (excluding `lead`) plus that project's `<namespace>/*` roles. Reads
-/// the live forge-team dir; any IO failure degrades to fewer entries
-/// rather than erroring (a missing catalog must never block a spawn).
-/// Ordered globals-first, alphabetical within each group.
+/// Roles a session in `namespace` may spawn, listed by BARE label:
+/// top-level globals (excluding `lead`) plus that project's roles, with
+/// a project role shadowing a same-named global. Reads the live
+/// forge-team dir; any IO failure degrades to fewer entries rather than
+/// erroring (a missing catalog must never block a spawn). Ordered
+/// alphabetically by label.
 pub fn scan_catalog(namespace: Option<&str>) -> Vec<RoleSummary> {
     let Some(root) = forge_team_root() else {
         return Vec::new();
     };
-    let mut globals = collect_roles(&root, None);
-    let mut project = match namespace {
-        Some(ns) => collect_roles(&root.join(ns), Some(ns)),
-        None => Vec::new(),
-    };
-    globals.sort_by(|a, b| a.label.cmp(&b.label));
-    project.sort_by(|a, b| a.label.cmp(&b.label));
-    globals.extend(project);
-    globals
+    let mut by_label: std::collections::BTreeMap<String, RoleSummary> =
+        std::collections::BTreeMap::new();
+    // Top-level globals, bare, `lead` excluded.
+    for r in collect_roles(&root) {
+        by_label.insert(r.label.clone(), r);
+    }
+    // The project's `<ns>/*` roles as bare labels, shadowing same-named
+    // globals.
+    if let Some(ns) = namespace {
+        for r in collect_roles(&root.join(ns)) {
+            by_label.insert(r.label.clone(), r);
+        }
+    }
+    by_label.into_values().collect()
 }
 
-/// Collect `<dir>/<role>/charter.md` entries. When `namespace` is
-/// `Some(ns)` the produced labels are `ns/<role>`; when `None` they are
-/// bare global labels (with `lead` filtered out). A subdir without a
-/// direct `charter.md` (e.g. a project-namespace dir while scanning the
-/// root) is skipped, which is how globals are distinguished from
-/// namespaces.
-fn collect_roles(dir: &Path, namespace: Option<&str>) -> Vec<RoleSummary> {
+/// Collect `<dir>/<role>/charter.md` entries as BARE-label
+/// `RoleSummary`s (the role dir name), skipping the reserved `lead`. A
+/// subdir without a direct `charter.md` is skipped, which is how a
+/// project-namespace dir is distinguished from a role dir when scanning
+/// the root.
+fn collect_roles(dir: &Path) -> Vec<RoleSummary> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
@@ -86,18 +79,14 @@ fn collect_roles(dir: &Path, namespace: Option<&str>) -> Vec<RoleSummary> {
         let Some(role) = entry.file_name().to_str().map(ToOwned::to_owned) else {
             continue;
         };
-        if namespace.is_none() && role == LEAD_LABEL {
+        if role == LEAD_LABEL {
             continue;
         }
         let charter_path = entry.path().join("charter.md");
         let Ok(text) = std::fs::read_to_string(&charter_path) else {
             continue; // no direct charter.md => namespace dir or empty; skip
         };
-        let label = match namespace {
-            Some(ns) => format!("{ns}/{role}"),
-            None => role,
-        };
-        out.push(RoleSummary { label, description: description_from_charter(&text) });
+        out.push(RoleSummary { label: role, description: description_from_charter(&text) });
     }
     out
 }
@@ -137,20 +126,6 @@ mod tests {
     use std::fs;
 
     #[test]
-    fn scope_allows_globals_everywhere_rejects_lead() {
-        assert!(label_in_scope("implementer", "forge"));
-        assert!(label_in_scope("implementer", "data-modules"));
-        assert!(!label_in_scope("lead", "forge"));
-    }
-
-    #[test]
-    fn scope_confines_namespaced_roles_to_their_project() {
-        assert!(label_in_scope("data-modules/steward", "data-modules"));
-        assert!(!label_in_scope("data-modules/steward", "forge"));
-        assert!(label_in_scope("forge/probe", "forge"));
-    }
-
-    #[test]
     fn description_prefers_explicit_line_then_heading() {
         assert_eq!(
             description_from_charter("description:  Generic code-writer\n# x"),
@@ -161,7 +136,7 @@ mod tests {
     }
 
     #[test]
-    fn scan_lists_globals_plus_own_project_excludes_others() {
+    fn scan_lists_globals_plus_own_project_as_bare_labels() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path();
         // globals
@@ -174,10 +149,28 @@ mod tests {
 
         let forge = scan_catalog(Some("forge"));
         let labels: Vec<_> = forge.iter().map(|r| r.label.as_str()).collect();
+        // own project's role appears by its BARE name, no slash
         assert!(labels.contains(&"implementer"));
-        assert!(labels.contains(&"forge/probe"));
-        assert!(!labels.contains(&"data-modules/steward")); // other project hidden
+        assert!(labels.contains(&"probe"));
+        assert!(!labels.contains(&"forge/probe")); // never namespaced in the catalog
+        assert!(!labels.contains(&"steward")); // other project's role hidden
         assert!(!labels.contains(&"lead")); // reserved
+
+        set_forge_team_root_for_test(prev);
+    }
+
+    #[test]
+    fn scan_catalog_shadows_global_with_project_role() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        write_charter(root, "implementer", "description: Global implementer\n");
+        write_charter(root, "forge/implementer", "description: Forge implementer\n");
+        let prev = set_forge_team_root_for_test(Some(root.to_path_buf()));
+
+        let forge = scan_catalog(Some("forge"));
+        let implementers: Vec<_> = forge.iter().filter(|r| r.label == "implementer").collect();
+        assert_eq!(implementers.len(), 1, "shadowed global shows once, by its bare name");
+        assert_eq!(implementers[0].description, "Forge implementer", "project role wins");
 
         set_forge_team_root_for_test(prev);
     }
