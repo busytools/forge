@@ -191,6 +191,12 @@ pub trait WorkerFacade: Send + Sync {
     /// Returns `None` when `caller` matches no known session.
     fn caller_project(&self, caller: &SessionKey) -> Option<CallerProject>;
 
+    /// Resolve the caller's project namespace (the forge.toml `name`),
+    /// used to scope `workers__create_role` writes under
+    /// `<namespace>/<label>`. Returns `None` when the caller matches no
+    /// known project.
+    fn caller_namespace(&self, caller: &SessionKey) -> Option<String>;
+
     /// Resolve the current lead session for `caller`'s project.
     /// Re-walks live state on every call so a `migrate_session_task`
     /// rekey on lead-resume is reflected immediately (the previous
@@ -346,6 +352,12 @@ impl WorkerFacade for ProdWorkerFacade {
         let ws = self.workspace.upgrade()?;
         let cx = crate::mcp::caller_context::caller_context(&ws, caller)?;
         Some(CallerProject { project_key: cx.project_key, is_lead: cx.is_lead })
+    }
+
+    fn caller_namespace(&self, caller: &SessionKey) -> Option<String> {
+        let ws = self.workspace.upgrade()?;
+        let cp = self.caller_project(caller)?;
+        ws.list_projects().into_iter().find(|v| v.key == cp.project_key).map(|v| v.name)
     }
 
     fn lead_session_for_caller(&self, caller: &SessionKey) -> Option<SessionKey> {
@@ -624,6 +636,12 @@ impl MockWorkerFacade {
 impl WorkerFacade for MockWorkerFacade {
     fn caller_project(&self, caller: &SessionKey) -> Option<CallerProject> {
         self.callers.lock().get(caller).cloned()
+    }
+
+    fn caller_namespace(&self, caller: &SessionKey) -> Option<String> {
+        // Tests set `project_key` to the project name they want, so the
+        // mock namespace is the key string.
+        self.caller_project(caller).map(|cp| cp.project_key.as_str().to_owned())
     }
 
     fn lead_session_for_caller(&self, caller: &SessionKey) -> Option<SessionKey> {

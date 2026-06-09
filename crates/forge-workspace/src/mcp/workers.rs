@@ -838,8 +838,32 @@ impl Tool for CreateRole {
             );
         }
 
+        // New roles are scoped under the caller's project namespace
+        // (`<namespace>/<label>`) so a created role can't leak into
+        // another project's catalog or be spawned cross-project.
+        let Some(namespace) = self.facade.caller_namespace(&caller_key) else {
+            return tool_error(
+                "workers__create_role: caller resolves to no known project".to_owned(),
+            );
+        };
+        let raw_label = args.label.trim();
+        if raw_label.contains('/') {
+            return tool_error(format!(
+                "label '{raw_label}' must be a bare role name; the project namespace '{namespace}/' is prepended automatically."
+            ));
+        }
+        // Reject the reserved keyword on the bare name before namespacing.
+        if raw_label == crate::team::LEAD_LABEL {
+            return tool_error(format!(
+                "label '{}' is reserved - it addresses the caller's lead via \
+                 workers__tell / workers__ask and ships as a built-in default. \
+                 Pick a different label.",
+                crate::team::LEAD_LABEL
+            ));
+        }
+        let label = format!("{namespace}/{raw_label}");
+
         // Trim then validate non-empty content.
-        let label = args.label.trim().to_owned();
         let charter = args.charter.trim_end().to_owned();
         let initial_kick = args.initial_kick.trim_end().to_owned();
         if charter.is_empty() {
@@ -866,15 +890,7 @@ impl Tool for CreateRole {
             None => None,
         };
 
-        // Validate label format + reject reserved keyword.
-        if label == crate::team::LEAD_LABEL {
-            return tool_error(format!(
-                "label '{}' is reserved - it addresses the caller's lead via \
-                 workers__tell / workers__ask and ships as a built-in default. \
-                 Pick a different label.",
-                crate::team::LEAD_LABEL
-            ));
-        }
+        // Validate the namespaced label format.
         if let Err(err) = crate::team::validate_label(&label) {
             return tool_error(err.to_string());
         }
@@ -1824,6 +1840,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn create_role_writes_under_caller_namespace() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let _guard = redirect_forge_team_root(tmp.path().to_path_buf());
+
+        let mock = Arc::new(MockWorkerFacade::new());
+        let tool = lead_create_role_tool(mock); // caller resolves to project "forge"
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({
+                    "label": "probe",
+                    "charter": "Probe the thing.",
+                    "initial_kick": "Start probing.",
+                }),
+            })
+            .await;
+
+        assert!(!output.is_error, "create_role must succeed: {:?}", output.blocks);
+        // Namespaced under the caller's project ("forge"), never top-level.
+        assert!(
+            tmp.path().join("forge").join("probe").join("charter.md").exists(),
+            "charter must land under <namespace>/<label>"
+        );
+        assert!(
+            !tmp.path().join("probe").join("charter.md").exists(),
+            "must NOT create a top-level (global) role"
+        );
+    }
+
+    #[tokio::test]
     async fn create_role_writes_three_files_when_resume_kick_some() {
         // resume_kick present: all three files land + the returned
         // JSON carries `resume_kick_path`.
@@ -1845,9 +1890,9 @@ mod tests {
 
         assert!(!output.is_error, "create_role with resume_kick must succeed: {:?}", output.blocks);
 
-        let charter_disk = tmp.path().join("researcher").join("charter.md");
-        let kick_disk = tmp.path().join("researcher").join("kick.md");
-        let resume_kick_disk = tmp.path().join("researcher").join("resume-kick.md");
+        let charter_disk = tmp.path().join("forge").join("researcher").join("charter.md");
+        let kick_disk = tmp.path().join("forge").join("researcher").join("kick.md");
+        let resume_kick_disk = tmp.path().join("forge").join("researcher").join("resume-kick.md");
         assert!(charter_disk.exists(), "charter.md must exist on disk");
         assert!(kick_disk.exists(), "kick.md must exist on disk");
         assert!(resume_kick_disk.exists(), "resume-kick.md must exist on disk");
@@ -1880,7 +1925,7 @@ mod tests {
             .await;
 
         assert!(!output.is_error);
-        let resume_kick_disk = tmp.path().join("researcher").join("resume-kick.md");
+        let resume_kick_disk = tmp.path().join("forge").join("researcher").join("resume-kick.md");
         assert!(!resume_kick_disk.exists(), "resume-kick.md must NOT be written when arg is None");
         let body: serde_json::Value =
             serde_json::from_str(&output.blocks[0].text).expect("returned JSON parses");
@@ -1900,7 +1945,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let _guard = redirect_forge_team_root(tmp.path().to_path_buf());
 
-        let role_dir = tmp.path().join("researcher");
+        let role_dir = tmp.path().join("forge").join("researcher");
         std::fs::create_dir_all(&role_dir).unwrap();
         std::fs::write(role_dir.join("charter.md"), b"stale charter").unwrap();
         std::fs::write(role_dir.join("kick.md"), b"stale kick").unwrap();
@@ -1944,7 +1989,7 @@ mod tests {
         // Seed only the resume-kick file in advance; charter + kick
         // are absent. Without the broadened existence-check, the
         // tool would happily overwrite the existing resume-kick.md.
-        let role_dir = tmp.path().join("researcher");
+        let role_dir = tmp.path().join("forge").join("researcher");
         std::fs::create_dir_all(&role_dir).unwrap();
         std::fs::write(role_dir.join("resume-kick.md"), b"prior content").unwrap();
 
