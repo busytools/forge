@@ -36,24 +36,30 @@ fn truncate(s: &str, max: usize) -> String {
     s.chars().take(max).collect()
 }
 
-/// Roles a session in `namespace` may spawn: top-level globals
-/// (excluding `lead`) plus that project's `<namespace>/*` roles. Reads
-/// the live forge-team dir; any IO failure degrades to fewer entries
-/// rather than erroring (a missing catalog must never block a spawn).
-/// Ordered globals-first, alphabetical within each group.
+/// Roles a session in `namespace` may spawn, listed by BARE label:
+/// top-level globals (excluding `lead`) plus that project's roles, with
+/// a project role shadowing a same-named global. Reads the live
+/// forge-team dir; any IO failure degrades to fewer entries rather than
+/// erroring (a missing catalog must never block a spawn). Ordered
+/// alphabetically by label.
 pub fn scan_catalog(namespace: Option<&str>) -> Vec<RoleSummary> {
     let Some(root) = forge_team_root() else {
         return Vec::new();
     };
-    let mut globals = collect_roles(&root, None);
-    let mut project = match namespace {
-        Some(ns) => collect_roles(&root.join(ns), Some(ns)),
-        None => Vec::new(),
-    };
-    globals.sort_by(|a, b| a.label.cmp(&b.label));
-    project.sort_by(|a, b| a.label.cmp(&b.label));
-    globals.extend(project);
-    globals
+    let mut by_label: std::collections::BTreeMap<String, RoleSummary> =
+        std::collections::BTreeMap::new();
+    // Top-level globals, bare, `lead` excluded.
+    for r in collect_roles(&root, None) {
+        by_label.insert(r.label.clone(), r);
+    }
+    // The project's `<ns>/*` roles as bare labels, shadowing same-named
+    // globals.
+    if let Some(ns) = namespace {
+        for r in collect_roles(&root.join(ns), None) {
+            by_label.insert(r.label.clone(), r);
+        }
+    }
+    by_label.into_values().collect()
 }
 
 /// Collect `<dir>/<role>/charter.md` entries. When `namespace` is
@@ -135,7 +141,7 @@ mod tests {
     }
 
     #[test]
-    fn scan_lists_globals_plus_own_project_excludes_others() {
+    fn scan_lists_globals_plus_own_project_as_bare_labels() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path();
         // globals
@@ -148,10 +154,28 @@ mod tests {
 
         let forge = scan_catalog(Some("forge"));
         let labels: Vec<_> = forge.iter().map(|r| r.label.as_str()).collect();
+        // own project's role appears by its BARE name, no slash
         assert!(labels.contains(&"implementer"));
-        assert!(labels.contains(&"forge/probe"));
-        assert!(!labels.contains(&"hub-modules/steward")); // other project hidden
+        assert!(labels.contains(&"probe"));
+        assert!(!labels.contains(&"forge/probe")); // never namespaced in the catalog
+        assert!(!labels.contains(&"steward")); // other project's role hidden
         assert!(!labels.contains(&"lead")); // reserved
+
+        set_forge_team_root_for_test(prev);
+    }
+
+    #[test]
+    fn scan_catalog_shadows_global_with_project_role() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        write_charter(root, "implementer", "description: Global implementer\n");
+        write_charter(root, "forge/implementer", "description: Forge implementer\n");
+        let prev = set_forge_team_root_for_test(Some(root.to_path_buf()));
+
+        let forge = scan_catalog(Some("forge"));
+        let implementers: Vec<_> = forge.iter().filter(|r| r.label == "implementer").collect();
+        assert_eq!(implementers.len(), 1, "shadowed global shows once, by its bare name");
+        assert_eq!(implementers[0].description, "Forge implementer", "project role wins");
 
         set_forge_team_root_for_test(prev);
     }
