@@ -1232,8 +1232,8 @@ pub(crate) fn clamp_percentage_to_u8(p: f64) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::{
-        PendingQuestions, PendingResponses, build_forge_system_prompt,
-        deliver_permission_response, deliver_question_response, synth_permission_request,
+        PendingQuestions, PendingResponses, build_forge_system_prompt, deliver_permission_response,
+        deliver_question_response, synth_permission_request,
     };
     use crate::client::AgentEvent;
     use forge_primitives::ToolPermissionContext;

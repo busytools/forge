@@ -1113,7 +1113,10 @@ mod tests {
         let schema = tool.input_schema();
         let required = schema["required"].as_array().expect("required field present");
         assert!(required.iter().any(|v| v == "label"));
-        assert!(!required.iter().any(|v| v == "charter"), "charter is optional (file-load default)");
+        assert!(
+            !required.iter().any(|v| v == "charter"),
+            "charter is optional (file-load default)"
+        );
     }
 
     fn fake_worker(label: &str, charter: &str) -> forge_primitives::WorkerStatus {

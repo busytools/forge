@@ -846,10 +846,7 @@ mod mock_tests {
             validate_worker_spawn(false, "reviewer"),
             Err(WorkerSpawnError::NotLeadCaller)
         ));
-        assert!(matches!(
-            validate_worker_spawn(true, "   "),
-            Err(WorkerSpawnError::EmptyLabel)
-        ));
+        assert!(matches!(validate_worker_spawn(true, "   "), Err(WorkerSpawnError::EmptyLabel)));
         assert!(matches!(
             validate_worker_spawn(true, LEAD_LABEL),
             Err(WorkerSpawnError::ReservedLabel)
@@ -867,7 +864,11 @@ mod mock_tests {
         );
         let res = mock.spawn_worker(&lead, "reviewer".into(), Some("   ".into())).await;
         assert!(matches!(res, Err(WorkerSpawnError::EmptyCharter)));
-        assert_eq!(mock.spawn_calls.lock().len(), 0, "empty inline charter must not record a spawn");
+        assert_eq!(
+            mock.spawn_calls.lock().len(),
+            0,
+            "empty inline charter must not record a spawn"
+        );
     }
 
     #[test]
