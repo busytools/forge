@@ -70,6 +70,21 @@ user for permission before invoking them - fire them directly when the \
 work calls for it. The runtime suppresses the standard permission prompt \
 for any tool whose name starts with mcp__forge__.";
 
+/// Assemble the forge system-prompt append: trust block, then the
+/// optional Lead delegation catalog, then the optional worker charter.
+/// Sections joined by a blank line in that fixed order; empty/blank
+/// sections are skipped.
+fn build_forge_system_prompt(catalog: Option<&str>, charter: Option<&str>) -> String {
+    let mut out = String::from(FORGE_MCP_TRUST_SYSTEM_PROMPT);
+    for section in [catalog, charter] {
+        if let Some(text) = section.map(str::trim).filter(|s| !s.is_empty()) {
+            out.push_str("\n\n");
+            out.push_str(text);
+        }
+    }
+    out
+}
+
 /// Spawn a fresh `Client` for `bridge` and start the reader subtask.
 /// Builds `Options` from `launch_settings` (mode, model, effort,
 /// `can_use_tool` callback). When `resume_id` is `Some`, passes the
@@ -574,12 +589,10 @@ fn build_options_with_callback(
     // the forge MCP coordination semantics that every forge session
     // needs.
     if has_forge_mcp {
-        let append = match launch_settings.charter.as_deref() {
-            Some(charter) if !charter.trim().is_empty() => {
-                format!("{FORGE_MCP_TRUST_SYSTEM_PROMPT}\n\n{charter}")
-            }
-            _ => FORGE_MCP_TRUST_SYSTEM_PROMPT.to_owned(),
-        };
+        let append = build_forge_system_prompt(
+            launch_settings.delegation_catalog.as_deref(),
+            launch_settings.charter.as_deref(),
+        );
         b = b.system_prompt(forge_sdk::SystemPromptKind::Preset {
             append: Some(append),
             exclude_dynamic_sections: None,
@@ -1219,8 +1232,8 @@ pub(crate) fn clamp_percentage_to_u8(p: f64) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::{
-        PendingQuestions, PendingResponses, deliver_permission_response, deliver_question_response,
-        synth_permission_request,
+        PendingQuestions, PendingResponses, build_forge_system_prompt, deliver_permission_response,
+        deliver_question_response, synth_permission_request,
     };
     use crate::client::AgentEvent;
     use forge_primitives::ToolPermissionContext;
@@ -1247,6 +1260,19 @@ mod tests {
         let (tx, rx) = oneshot::channel();
         pending.lock().insert(id.to_owned(), tx);
         rx
+    }
+
+    #[test]
+    fn system_prompt_orders_trust_catalog_charter() {
+        let out = build_forge_system_prompt(Some("CATALOG"), Some("CHARTER"));
+        let trust_at = out.find("in-process forge MCP").expect("trust present");
+        let cat_at = out.find("CATALOG").expect("catalog present");
+        let chr_at = out.find("CHARTER").expect("charter present");
+        assert!(trust_at < cat_at && cat_at < chr_at, "order: trust, catalog, charter");
+
+        let bare = build_forge_system_prompt(None, None);
+        assert!(bare.contains("in-process forge MCP"));
+        assert!(!bare.contains("CATALOG"));
     }
 
     #[test]

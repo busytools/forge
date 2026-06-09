@@ -16,6 +16,12 @@ pub struct SessionLaunchSettings {
     /// other spawn path (leads, resumes).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub charter: Option<String>,
+    /// Lead-session delegation catalog: when `Some`, appended to the
+    /// system prompt after the forge MCP trust block so a Lead session
+    /// knows which worker roles it can spawn. Built by the workspace
+    /// for Lead spawns only; `None` for workers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delegation_catalog: Option<String>,
     /// Spawn-path-specific extra CLI args to thread through to the
     /// `claude` subprocess via `OptionsBuilder::extra_arg`. Each pair
     /// becomes `--<flag> <value>` (or `--<flag>` when the value is
@@ -33,6 +39,7 @@ impl SessionLaunchSettings {
             && self.settings.is_none()
             && self.agent_progress_summaries.is_none()
             && self.charter.is_none()
+            && self.delegation_catalog.is_none()
             && self.extra_args.is_empty()
     }
 }
