@@ -261,6 +261,13 @@ fn emit_with_descendants<'a>(
 ) {
     let mut row = build_row_for_entry(entry, wire_alive);
     row.depth = depth;
+    // Supervisor (depth-0) rows show the whole subtree's resident
+    // memory; a bare parent's own RSS (a 2 MB zsh over a 256 MB cargo
+    // child) reads wrong. Descendants keep their own RSS.
+    if depth == 0 {
+        let mut visited = HashSet::new();
+        row.memory_bytes = Some(subtree_memory(entry, children_of, &mut visited));
+    }
     row.is_last_sibling = is_last_sibling;
     row.ancestor_has_more = ancestor_has_more.to_vec();
     out.push(row);
@@ -310,6 +317,27 @@ fn emit_with_descendants<'a>(
     if hidden > 0 {
         out.push(overflow_row(hidden, depth.saturating_add(1), next_ancestors));
     }
+}
+
+/// Sum the resident memory of `entry` plus all its descendants in the
+/// snapshot. The snapshot is a tree so each pid appears once; the
+/// `visited` set guards against a pathological parent-chain cycle so
+/// the recursion can't run away or double-count.
+fn subtree_memory(
+    entry: &ProcessEntry,
+    children_of: &std::collections::HashMap<u32, Vec<&ProcessEntry>>,
+    visited: &mut HashSet<u32>,
+) -> u64 {
+    if !visited.insert(entry.pid) {
+        return 0;
+    }
+    let mut total = entry.memory_bytes;
+    if let Some(kids) = children_of.get(&entry.pid) {
+        for kid in kids {
+            total = total.saturating_add(subtree_memory(kid, children_of, visited));
+        }
+    }
+    total
 }
 
 /// Per-parent cap on visible children. Beyond this, only
@@ -778,6 +806,20 @@ mod tests {
         assert!(rows[1].headline.starts_with("cargo"));
         assert_eq!(rows[2].depth, 2);
         assert_eq!(rows[3].depth, 2);
+    }
+
+    #[test]
+    fn rows_from_os_snapshot_rolls_subtree_memory_onto_depth0() {
+        // The depth-0 supervisor reads the whole subtree's memory (its
+        // own 2 MB zsh parent over heavy children is misleading);
+        // descendants keep their own RSS.
+        let snapshot = tree_snapshot();
+        let rows = rows_from_os_snapshot(&snapshot, &[]);
+        let subtree = (8 + 256 + 512 + 384) * 1024 * 1024;
+        assert_eq!(rows[0].depth, 0);
+        assert_eq!(rows[0].memory_bytes, Some(subtree), "depth-0 = subtree total");
+        assert_eq!(rows[1].depth, 1);
+        assert_eq!(rows[1].memory_bytes, Some(256 * 1024 * 1024), "depth-1 keeps own RSS");
     }
 
     #[test]
