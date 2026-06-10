@@ -203,7 +203,7 @@ fn collect_descendants(
 
 /// Unwrap a shell-wrapper cmdline to the user command inside it.
 /// Recognizes the shape claude wraps Bash tool calls in (captured via
-/// `ps -axww`): `/bin/zsh -c source <snapshot> … && eval '<CMD>' <
+/// `ps -axww`): `/bin/zsh -c source <snapshot> ... && eval '<CMD>' <
 /// /dev/null && pwd -P >| /tmp/claude-<hash>-cwd`. The inner command is
 /// single-quoted between `eval '` and `' < /dev/null`. Returns `None`
 /// when `cmdline` is not a recognized wrapper (non-shell processes pass
@@ -230,7 +230,7 @@ fn normalize_ws(s: &str) -> String {
 /// the same work.
 ///
 /// Unwraps the shell wrapper first (so the comparison is against the
-/// user command, not the `/bin/zsh -c … eval '…'` chrome), then matches
+/// user command, not the `/bin/zsh -c ... eval '...'` chrome), then matches
 /// on a whitespace-normalized substring basis.
 ///
 /// Empty `tool_command` returns `false` (no useful match possible).
@@ -264,7 +264,7 @@ pub struct InfraLabel {
 /// Recognizes the two shapes captured via `ps -axww`: an
 /// `npm exec @<scope>/<pkg>-mcp[-server]` invocation (e.g.
 /// `@upstash/context7-mcp` → `context7`) and a
-/// `node …/<pkg>-mcp[-server][.js]` fallback.
+/// `node .../<pkg>-mcp[-server][.js]` fallback.
 pub fn classify_known_infra(cmdline: &str) -> Option<InfraLabel> {
     let name = mcp_name_from_npm(cmdline).or_else(|| mcp_name_from_node(cmdline))?;
     Some(InfraLabel { name, kind: InfraKind::McpServer })
@@ -320,7 +320,7 @@ mod tests {
     /// Ground-truth wrapper captured via `ps -axww` on this machine
     /// (a backgrounded Bash tool call). Differs from the idealized
     /// `-c -l source ~/.zshrc` shape: no `-l`, a `source <snapshot>
-    /// 2>/dev/null || true` clause, a `setopt … || true` clause, and a
+    /// 2>/dev/null || true` clause, a `setopt ... || true` clause, and a
     /// trailing `&& pwd -P >| /tmp/claude-<hash>-cwd` after the
     /// `< /dev/null` redirect. The inner command is single-quoted
     /// between `eval '` and `' < /dev/null`.

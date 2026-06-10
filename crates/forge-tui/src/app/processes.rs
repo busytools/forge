@@ -480,7 +480,7 @@ fn enriched_bash_row(tc: &ToolCallInfo, entry: &ProcessEntry) -> ProcessRow {
 /// the cmdline.
 fn generic_os_row(entry: &ProcessEntry) -> ProcessRow {
     // A shell-wrapper cmdline shows its inner command (the raw
-    // `/bin/zsh -c … eval '…'` chrome is never a headline). Otherwise
+    // `/bin/zsh -c ... eval '...'` chrome is never a headline). Otherwise
     // the cmdline is the headline - for unmatched supervisors that's the
     // only meaningful context (the process name alone is too vague, e.g.
     // "node" tells you nothing about WHICH node process it is). Falls
@@ -625,7 +625,7 @@ mod tests {
 
     /// Real wrapper shape captured via `ps -axww`: inner command is
     /// single-quoted between `eval '` and `' < /dev/null`, with a
-    /// `source … || true` prefix and trailing `pwd -P` redirect.
+    /// `source ... || true` prefix and trailing `pwd -P` redirect.
     fn real_wrapper(inner: &str) -> String {
         format!(
             "/bin/zsh -c source /Users/x/.claude/shell-snapshots/snap.sh 2>/dev/null || true && setopt NO_EXTENDED_GLOB 2>/dev/null || true && eval '{inner}' < /dev/null && pwd -P >| /tmp/claude-ab12-cwd"
