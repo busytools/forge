@@ -201,18 +201,37 @@ fn collect_descendants(
     }
 }
 
+/// Unwrap a shell-wrapper cmdline to the user command inside it.
+/// Recognizes the shape claude wraps Bash tool calls in (captured via
+/// `ps -axww`): `/bin/zsh -c source <snapshot> … && eval '<CMD>' <
+/// /dev/null && pwd -P >| /tmp/claude-<hash>-cwd`. The inner command is
+/// single-quoted between `eval '` and `' < /dev/null`. Returns `None`
+/// when `cmdline` is not a recognized wrapper (non-shell processes pass
+/// through unchanged at the call site).
+pub fn extract_inner_command(cmdline: &str) -> Option<String> {
+    let after_eval = cmdline.split_once("eval '")?.1;
+    let inner = after_eval.split_once("' < /dev/null")?.0;
+    Some(inner.trim().to_owned())
+}
+
+/// Collapse every run of ASCII whitespace (spaces, tabs, newlines) to a
+/// single space and trim the ends. `sysinfo`'s `proc.cmd()` joins argv
+/// with single spaces, so a multi-line / multi-space wire command never
+/// matches the captured cmdline byte-for-byte; normalizing both sides
+/// first makes the substring check robust.
+fn normalize_ws(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// True when `process_cmd` plausibly matches the shell command
 /// captured in a wire-tracked tool's `raw_input.command`. Used by
 /// the Inspector's row builder (path A+) to overlay wire-tracked
 /// task descriptions onto OS-detected processes when both refer to
 /// the same work.
 ///
-/// Match strategy: substring containment. Shell wrappers add
-/// `/bin/zsh -c -l "source ... && eval '<command>' < /dev/null"`
-/// around the user-typed command, so exact equality almost never
-/// holds - but the user's command appears verbatim somewhere in
-/// the wrapped cmdline. Returns `true` when `tool_command` is a
-/// non-empty substring of `process_cmd`.
+/// Unwraps the shell wrapper first (so the comparison is against the
+/// user command, not the `/bin/zsh -c … eval '…'` chrome), then matches
+/// on a whitespace-normalized substring basis.
 ///
 /// Empty `tool_command` returns `false` (no useful match possible).
 pub fn process_cmdline_matches_tool_input(process_cmd: &str, tool_command: &str) -> bool {
@@ -220,7 +239,8 @@ pub fn process_cmdline_matches_tool_input(process_cmd: &str, tool_command: &str)
     if needle.is_empty() {
         return false;
     }
-    process_cmd.contains(needle)
+    let haystack = extract_inner_command(process_cmd).unwrap_or_else(|| process_cmd.to_owned());
+    normalize_ws(&haystack).contains(&normalize_ws(needle))
 }
 
 #[cfg(test)]
@@ -233,15 +253,39 @@ mod tests {
         assert!(!process_cmdline_matches_tool_input("any process cmd", "   "));
     }
 
+    /// Ground-truth wrapper captured via `ps -axww` on this machine
+    /// (a backgrounded Bash tool call). Differs from the idealized
+    /// `-c -l source ~/.zshrc` shape: no `-l`, a `source <snapshot>
+    /// 2>/dev/null || true` clause, a `setopt … || true` clause, and a
+    /// trailing `&& pwd -P >| /tmp/claude-<hash>-cwd` after the
+    /// `< /dev/null` redirect. The inner command is single-quoted
+    /// between `eval '` and `' < /dev/null`.
+    const REAL_WRAPPER: &str = "/bin/zsh -c source /Users/x/.claude/shell-snapshots/snapshot-zsh-1.sh 2>/dev/null || true && setopt NO_EXTENDED_GLOB NO_BARE_GLOB_QUAL 2>/dev/null || true && eval 'gh run watch 123 --exit-status' < /dev/null && pwd -P >| /tmp/claude-ab12-cwd";
+
+    #[test]
+    fn extract_inner_command_unwraps_real_wrapper() {
+        assert_eq!(extract_inner_command(REAL_WRAPPER).as_deref(), Some("gh run watch 123 --exit-status"));
+        // A plain non-wrapper cmdline passes through as None so the
+        // caller keeps the original.
+        assert_eq!(extract_inner_command("rustc --crate-name forge_tui"), None);
+        assert_eq!(extract_inner_command("node balance-transfer.mjs"), None);
+    }
+
     #[test]
     fn substring_match_holds_for_wrapped_shell_invocation() {
-        // Real-world shape: claude's Bash tool runs commands via a
-        // shell wrapper. The user-typed command is a substring of
-        // the actual process cmdline.
-        let process_cmd =
-            "/bin/zsh -c -l source ~/.zshrc && eval 'cargo nextest run --no-fail-fast' < /dev/null";
-        let tool_command = "cargo nextest run --no-fail-fast";
-        assert!(process_cmdline_matches_tool_input(process_cmd, tool_command));
+        // The user-typed command resolves out of the real wrapper.
+        let tool_command = "gh run watch 123 --exit-status";
+        assert!(process_cmdline_matches_tool_input(REAL_WRAPPER, tool_command));
+    }
+
+    #[test]
+    fn wrapped_multiline_command_matches_after_normalize() {
+        // The failure the idealized fixture hid: `proc.cmd()` joins argv
+        // with single spaces, so a multi-line / multi-space wire command
+        // is not a raw substring of the captured cmdline. Normalizing
+        // whitespace on both sides (after unwrapping) makes it match.
+        let tool_command = "gh run watch 123\n  --exit-status";
+        assert!(process_cmdline_matches_tool_input(REAL_WRAPPER, tool_command));
     }
 
     #[test]

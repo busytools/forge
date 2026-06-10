@@ -21,7 +21,7 @@
 use std::collections::HashSet;
 
 use forge_workspace::env::processes::{
-    ProcessEntry, ProcessSnapshot, process_cmdline_matches_tool_input,
+    ProcessEntry, ProcessSnapshot, extract_inner_command, process_cmdline_matches_tool_input,
 };
 use serde_json::Value;
 
@@ -399,7 +399,14 @@ fn is_matched_entry(entry: &ProcessEntry, wire_alive: &[&ToolCallInfo]) -> bool 
 /// suffixed with memory.
 fn enriched_bash_row(tc: &ToolCallInfo, entry: &ProcessEntry) -> ProcessRow {
     let description = read_str_field(tc.raw_input.as_ref(), "description");
-    let headline = if description.is_empty() { entry.name.clone() } else { description.to_owned() };
+    // Headline precedence: wire description, else the unwrapped inner
+    // command (so a backgrounded `gh run watch <id>` with no description
+    // reads as that, not `zsh`), else the OS process name.
+    let headline = if description.is_empty() {
+        extract_inner_command(&entry.command).unwrap_or_else(|| entry.name.clone())
+    } else {
+        description.to_owned()
+    };
     ProcessRow {
         kind: ProcessKind::BashBackgrounded,
         headline,
@@ -420,14 +427,17 @@ fn enriched_bash_row(tc: &ToolCallInfo, entry: &ProcessEntry) -> ProcessRow {
 /// grandchildren, etc.). Headline is the OS process name; detail is
 /// the cmdline.
 fn generic_os_row(entry: &ProcessEntry) -> ProcessRow {
-    // Use the cmdline as headline when available - for unmatched
-    // supervisors that's the only meaningful context (the process
-    // name alone is too vague, e.g. "node" tells you nothing about
-    // WHICH node process it is). Falls back to the process name
-    // when the cmdline is empty (some short-lived processes don't
-    // expose one via sysinfo).
+    // A shell-wrapper cmdline shows its inner command (the raw
+    // `/bin/zsh -c … eval '…'` chrome is never a headline). Otherwise
+    // the cmdline is the headline - for unmatched supervisors that's the
+    // only meaningful context (the process name alone is too vague, e.g.
+    // "node" tells you nothing about WHICH node process it is). Falls
+    // back to the process name when the cmdline is empty (some
+    // short-lived processes don't expose one via sysinfo).
     let cmd = entry.command.trim();
-    let headline = if cmd.is_empty() {
+    let headline = if let Some(inner) = extract_inner_command(&entry.command) {
+        inner
+    } else if cmd.is_empty() {
         if entry.name.is_empty() { "(process)".to_owned() } else { entry.name.clone() }
     } else {
         cmd.to_owned()
@@ -561,6 +571,39 @@ mod tests {
         assert!(coll.is_empty());
     }
 
+    /// Real wrapper shape captured via `ps -axww`: inner command is
+    /// single-quoted between `eval '` and `' < /dev/null`, with a
+    /// `source … || true` prefix and trailing `pwd -P` redirect.
+    fn real_wrapper(inner: &str) -> String {
+        format!(
+            "/bin/zsh -c source /Users/x/.claude/shell-snapshots/snap.sh 2>/dev/null || true && setopt NO_EXTENDED_GLOB 2>/dev/null || true && eval '{inner}' < /dev/null && pwd -P >| /tmp/claude-ab12-cwd"
+        )
+    }
+
+    #[test]
+    fn enriched_bash_row_uses_inner_command_when_description_empty() {
+        // Matched Bash with NO description: headline falls back to the
+        // unwrapped inner command, never the raw "zsh" process name.
+        let tc = fake_tool_call_info(
+            "toolu_1",
+            "Bash",
+            json!({ "command": "gh run watch 123", "run_in_background": true }),
+        );
+        let entry = fake_entry(42, "zsh", &real_wrapper("gh run watch 123"), 8 * 1024 * 1024);
+        let row = enriched_bash_row(&tc, &entry);
+        assert_eq!(row.headline, "gh run watch 123");
+    }
+
+    #[test]
+    fn generic_os_row_unwraps_shell_wrapper_headline() {
+        // An unmatched shell-wrapper process shows the inner command,
+        // never the raw /bin/zsh wrapper.
+        let entry = fake_entry(42, "zsh", &real_wrapper("npm run build"), 8 * 1024 * 1024);
+        let row = generic_os_row(&entry);
+        assert_eq!(row.headline, "npm run build");
+        assert!(!row.headline.contains("/bin/zsh"));
+    }
+
     #[test]
     fn rows_from_os_snapshot_matches_wire_bash_via_cmdline_substring() {
         // Wire-tracked Bash with command="cargo nextest run".
@@ -651,7 +694,7 @@ mod tests {
                     pid: 10,
                     parent_pid: 1,
                     name: "zsh".to_owned(),
-                    command: "/bin/zsh -c -l eval 'cargo nextest run'".to_owned(),
+                    command: "/bin/zsh -c source /x/snap.sh 2>/dev/null || true && eval 'cargo nextest run' < /dev/null && pwd -P >| /tmp/claude-a-cwd".to_owned(),
                     memory_bytes: 8 * 1024 * 1024,
                     started_at_unix: None,
                 },
@@ -692,8 +735,10 @@ mod tests {
         // DFS pre-order: zsh (d0) → cargo (d1) → rustc (d2) → rustc (d2)
         assert_eq!(rows.len(), 4);
         assert_eq!(rows[0].depth, 0);
-        // Unmatched supervisor headline = cmdline (not name).
-        assert!(rows[0].headline.starts_with("/bin/zsh"));
+        // Unmatched shell-wrapper supervisor headline = the unwrapped
+        // inner command; the raw /bin/zsh wrapper is never a headline.
+        assert_eq!(rows[0].headline, "cargo nextest run");
+        assert!(!rows[0].headline.contains("/bin/zsh"));
         assert_eq!(rows[1].depth, 1);
         assert!(rows[1].headline.starts_with("cargo"));
         assert_eq!(rows[2].depth, 2);
@@ -720,7 +765,7 @@ mod tests {
                     pid: 100,
                     parent_pid: 1,
                     name: "node".to_owned(),
-                    command: "node /path/to/mcp-server".to_owned(),
+                    command: "node /path/to/build-helper.js".to_owned(),
                     memory_bytes: 128 * 1024 * 1024,
                     started_at_unix: None,
                 },
@@ -728,7 +773,7 @@ mod tests {
                     pid: 200,
                     parent_pid: 1,
                     name: "zsh".to_owned(),
-                    command: "/bin/zsh -c -l eval 'cargo nextest run'".to_owned(),
+                    command: "/bin/zsh -c source /x/snap.sh 2>/dev/null || true && eval 'cargo nextest run' < /dev/null && pwd -P >| /tmp/claude-b-cwd".to_owned(),
                     memory_bytes: 8 * 1024 * 1024,
                     started_at_unix: None,
                 },
@@ -741,8 +786,8 @@ mod tests {
         assert_eq!(rows[0].kind, ProcessKind::BashBackgrounded);
         assert_eq!(rows[0].headline, "Run unit tests");
         assert_eq!(rows[1].kind, ProcessKind::Process);
-        // Unmatched supervisor headline = cmdline (cmdline-as-name).
-        assert_eq!(rows[1].headline, "node /path/to/mcp-server");
+        // Unmatched non-wrapper supervisor headline = its cmdline.
+        assert_eq!(rows[1].headline, "node /path/to/build-helper.js");
     }
 
     #[test]
