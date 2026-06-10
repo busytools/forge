@@ -328,7 +328,10 @@ mod tests {
 
     #[test]
     fn extract_inner_command_unwraps_real_wrapper() {
-        assert_eq!(extract_inner_command(REAL_WRAPPER).as_deref(), Some("gh run watch 123 --exit-status"));
+        assert_eq!(
+            extract_inner_command(REAL_WRAPPER).as_deref(),
+            Some("gh run watch 123 --exit-status")
+        );
         // A plain non-wrapper cmdline passes through as None so the
         // caller keeps the original.
         assert_eq!(extract_inner_command("rustc --crate-name forge_tui"), None);
