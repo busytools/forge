@@ -243,6 +243,70 @@ pub fn process_cmdline_matches_tool_input(process_cmd: &str, tool_command: &str)
     normalize_ws(&haystack).contains(&normalize_ws(needle))
 }
 
+/// What flavour of known infra a process is. MCP servers are the only
+/// recognized kind today; the enum keeps a typed slot so a future
+/// recognizer doesn't have to widen the call sites.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InfraKind {
+    McpServer,
+}
+
+/// Friendly display name + kind for a recognized known-infra process.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InfraLabel {
+    pub name: String,
+    pub kind: InfraKind,
+}
+
+/// Friendly name for a known-infra process (MCP servers today), derived
+/// from its cmdline. `None` when unrecognized.
+///
+/// Recognizes the two shapes captured via `ps -axww`: an
+/// `npm exec @<scope>/<pkg>-mcp[-server]` invocation (e.g.
+/// `@upstash/context7-mcp` → `context7`) and a
+/// `node …/<pkg>-mcp[-server][.js]` fallback.
+pub fn classify_known_infra(cmdline: &str) -> Option<InfraLabel> {
+    let name = mcp_name_from_npm(cmdline).or_else(|| mcp_name_from_node(cmdline))?;
+    Some(InfraLabel { name, kind: InfraKind::McpServer })
+}
+
+/// Strip a trailing `-mcp-server` or `-mcp` from a package / binary base
+/// name. `None` when neither suffix is present (so non-MCP packages
+/// aren't mislabeled) or the result would be empty.
+fn strip_mcp_suffix(pkg: &str) -> Option<String> {
+    pkg.strip_suffix("-mcp-server")
+        .or_else(|| pkg.strip_suffix("-mcp"))
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+/// `npm exec @upstash/context7-mcp` → `context7`. Requires the literal
+/// `npm` + `exec` argv prefix; the package spec's basename must carry an
+/// MCP suffix or this returns `None`.
+fn mcp_name_from_npm(cmdline: &str) -> Option<String> {
+    let mut toks = cmdline.split_whitespace();
+    if toks.next()? != "npm" || toks.next()? != "exec" {
+        return None;
+    }
+    let pkg_spec = toks.next()?;
+    let pkg = pkg_spec.rsplit('/').next()?; // `@scope/pkg` → `pkg`; bare `pkg` → `pkg`
+    strip_mcp_suffix(pkg)
+}
+
+/// `node /opt/foo-mcp-server.js` → `foo`. Requires a `node` argv[0] and
+/// a later token whose basename (sans `.js`) carries an MCP suffix.
+fn mcp_name_from_node(cmdline: &str) -> Option<String> {
+    let mut toks = cmdline.split_whitespace();
+    if !toks.next()?.ends_with("node") {
+        return None;
+    }
+    toks.find_map(|tok| {
+        let base = tok.rsplit('/').next().unwrap_or(tok);
+        let base = base.strip_suffix(".js").unwrap_or(base);
+        strip_mcp_suffix(base)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -312,6 +376,30 @@ mod tests {
         // alternative (token-level match) is more code for a
         // marginal win on personal-use scope.
         assert!(process_cmdline_matches_tool_input("/usr/bin/cargo build", "cargo"));
+    }
+
+    #[test]
+    fn classify_known_infra_recognizes_npm_exec_mcp() {
+        // Real shapes captured via ps -axww.
+        let c = classify_known_infra("npm exec @upstash/context7-mcp").expect("context7");
+        assert_eq!(c.name, "context7");
+        assert_eq!(c.kind, InfraKind::McpServer);
+
+        let n = classify_known_infra("npm exec @notionhq/notion-mcp-server").expect("notion");
+        assert_eq!(n.name, "notion");
+        assert_eq!(n.kind, InfraKind::McpServer);
+
+        // Non-MCP npm exec + unrelated processes don't classify.
+        assert!(classify_known_infra("npm exec @scope/some-tool").is_none());
+        assert!(classify_known_infra("rustc --crate-name forge_tui").is_none());
+        assert!(classify_known_infra("node balance-transfer.mjs").is_none());
+    }
+
+    #[test]
+    fn classify_known_infra_recognizes_node_launched_mcp() {
+        let l = classify_known_infra("node /opt/foo-mcp-server.js").expect("foo");
+        assert_eq!(l.name, "foo");
+        assert_eq!(l.kind, InfraKind::McpServer);
     }
 
     #[test]

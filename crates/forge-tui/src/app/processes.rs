@@ -21,7 +21,8 @@
 use std::collections::HashSet;
 
 use forge_workspace::env::processes::{
-    ProcessEntry, ProcessSnapshot, extract_inner_command, process_cmdline_matches_tool_input,
+    InfraLabel, ProcessEntry, ProcessSnapshot, classify_known_infra, extract_inner_command,
+    process_cmdline_matches_tool_input,
 };
 use serde_json::Value;
 
@@ -106,6 +107,10 @@ pub enum ProcessKind {
     /// children than [`MAX_CHILDREN_PER_PARENT`] allows. Renders as
     /// a single dim italic line at the trimmed siblings' depth.
     Overflow,
+    /// A recognized long-lived infra process (MCP server today). Carries
+    /// a friendly name headline + steady (non-spinner) glyph, since it's
+    /// persistent infrastructure, not transient tool work.
+    McpServer,
 }
 
 /// Result of [`collect_active_processes`]: rows that survived
@@ -351,10 +356,29 @@ fn build_row_for_entry(entry: &ProcessEntry, wire_alive: &[&ToolCallInfo]) -> Pr
         // so the user can still see the underlying work.
         Some(tc) if is_monitor_tool_name(&tc.sdk_tool_name) => generic_os_row(entry),
         Some(tc) if is_execute_tool_name(&tc.sdk_tool_name) => enriched_bash_row(tc, entry),
-        // Matched something we don't have a special kind for
-        // (defensive - shouldn't fire today). Fall through to
-        // the generic OS row so we still surface the process.
-        _ => generic_os_row(entry),
+        // No wire match: a known-infra process (MCP server) gets a
+        // friendly-labeled row; everything else is a generic OS row.
+        _ => match classify_known_infra(&entry.command) {
+            Some(infra) => mcp_server_row(entry, &infra),
+            None => generic_os_row(entry),
+        },
+    }
+}
+
+/// Recognized long-lived infra (MCP server). Headline is the friendly
+/// name; metadata carries the "MCP server" descriptor. Kept visible
+/// (the user wants more infra visibility, not filtering).
+fn mcp_server_row(entry: &ProcessEntry, infra: &InfraLabel) -> ProcessRow {
+    ProcessRow {
+        kind: ProcessKind::McpServer,
+        headline: infra.name.clone(),
+        detail: None,
+        metadata: "MCP server".to_owned(),
+        status: ToolCallStatus::InProgress,
+        memory_bytes: Some(entry.memory_bytes),
+        depth: 0,
+        is_last_sibling: true,
+        ancestor_has_more: Vec::new(),
     }
 }
 
@@ -592,6 +616,17 @@ mod tests {
         let entry = fake_entry(42, "zsh", &real_wrapper("gh run watch 123"), 8 * 1024 * 1024);
         let row = enriched_bash_row(&tc, &entry);
         assert_eq!(row.headline, "gh run watch 123");
+    }
+
+    #[test]
+    fn build_row_classifies_mcp_server_with_friendly_name() {
+        // An MCP server process (no wire match) gets a friendly name +
+        // McpServer kind, and stays visible (not filtered).
+        let entry = fake_entry(50, "npm", "npm exec @upstash/context7-mcp", 46 * 1024 * 1024);
+        let row = build_row_for_entry(&entry, &[]);
+        assert_eq!(row.kind, ProcessKind::McpServer);
+        assert_eq!(row.headline, "context7");
+        assert!(row.metadata.contains("MCP server"));
     }
 
     #[test]
