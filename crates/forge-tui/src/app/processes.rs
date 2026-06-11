@@ -21,8 +21,8 @@
 use std::collections::HashSet;
 
 use forge_workspace::env::processes::{
-    InfraLabel, ProcessEntry, ProcessSnapshot, classify_known_infra, extract_inner_command,
-    process_cmdline_matches_tool_input,
+    InfraLabel, ProcessEntry, ProcessSnapshot, basename_exe, classify_known_infra,
+    extract_inner_command, process_cmdline_matches_tool_input,
 };
 use serde_json::Value;
 
@@ -468,7 +468,9 @@ fn enriched_bash_row(tc: &ToolCallInfo, entry: &ProcessEntry) -> ProcessRow {
     // command (so a backgrounded `gh run watch <id>` with no description
     // reads as that, not `zsh`), else the OS process name.
     let headline = if description.is_empty() {
-        extract_inner_command(&entry.command).unwrap_or_else(|| entry.name.clone())
+        extract_inner_command(&entry.command)
+            .map(|c| basename_exe(&c))
+            .unwrap_or_else(|| entry.name.clone())
     } else {
         description.to_owned()
     };
@@ -501,11 +503,11 @@ fn generic_os_row(entry: &ProcessEntry) -> ProcessRow {
     // short-lived processes don't expose one via sysinfo).
     let cmd = entry.command.trim();
     let headline = if let Some(inner) = extract_inner_command(&entry.command) {
-        inner
+        basename_exe(&inner)
     } else if cmd.is_empty() {
         if entry.name.is_empty() { "(process)".to_owned() } else { entry.name.clone() }
     } else {
-        cmd.to_owned()
+        basename_exe(cmd)
     };
     ProcessRow {
         kind: ProcessKind::Process,
@@ -668,6 +670,20 @@ mod tests {
         assert_eq!(row.kind, ProcessKind::McpServer);
         assert_eq!(row.headline, "context7");
         assert!(row.metadata.contains("MCP server"));
+    }
+
+    #[test]
+    fn generic_os_row_basenames_full_path_headline() {
+        // A child process with a full executable path shows just the
+        // basename + args, not the directory-eating absolute path.
+        let entry = fake_entry(
+            60,
+            "rustc",
+            "/Users/x/.rustup/toolchains/nightly/bin/rustc --crate-name forge_tui",
+            256 * 1024 * 1024,
+        );
+        let row = generic_os_row(&entry);
+        assert_eq!(row.headline, "rustc --crate-name forge_tui");
     }
 
     #[test]
