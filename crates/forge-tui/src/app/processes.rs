@@ -469,8 +469,7 @@ fn enriched_bash_row(tc: &ToolCallInfo, entry: &ProcessEntry) -> ProcessRow {
     // reads as that, not `zsh`), else the OS process name.
     let headline = if description.is_empty() {
         extract_inner_command(&entry.command)
-            .map(|c| basename_exe(&c))
-            .unwrap_or_else(|| entry.name.clone())
+            .map_or_else(|| entry.name.clone(), |c| basename_exe(&c))
     } else {
         description.to_owned()
     };
