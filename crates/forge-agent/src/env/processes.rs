@@ -405,7 +405,10 @@ mod tests {
             "rustc --crate-name forge_tui"
         );
         // A bare test binary with no args is just its basename.
-        assert_eq!(basename_exe("/Users/x/proj/target/debug/deps/some_test-9ab1"), "some_test-9ab1");
+        assert_eq!(
+            basename_exe("/Users/x/proj/target/debug/deps/some_test-9ab1"),
+            "some_test-9ab1"
+        );
         // First token with no `/` (a process title) is returned unchanged.
         assert_eq!(basename_exe("postgres: walwriter"), "postgres: walwriter");
         // Already-bare command is unchanged.
