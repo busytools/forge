@@ -228,7 +228,16 @@ fn rows_from_os_snapshot<'a>(
     // parent means the parent IS claude itself).
     let mut roots: Vec<&ProcessEntry> =
         snapshot.processes.iter().filter(|e| !by_pid.contains_key(&e.parent_pid)).collect();
-    sort_siblings_inplace(&mut roots, wire_alive);
+    // Depth-0 roots sort by the subtree total they display, not their
+    // own RSS - precompute it once per root rather than per-comparison.
+    let root_subtree: HashMap<u32, u64> = roots
+        .iter()
+        .map(|r| {
+            let mut visited = HashSet::new();
+            (r.pid, subtree_memory(r, &children_of, &mut visited))
+        })
+        .collect();
+    sort_siblings_inplace(&mut roots, wire_alive, Some(&root_subtree));
 
     let mut rows = Vec::new();
     let n_roots = roots.len();
@@ -276,7 +285,7 @@ fn emit_with_descendants<'a>(
         return;
     };
     let mut kids = kids_ref.clone();
-    sort_siblings_inplace(&mut kids, wire_alive);
+    sort_siblings_inplace(&mut kids, wire_alive, None);
 
     // The next level's ancestor_has_more appends THIS row's
     // "more-siblings-below" bit so a deep descendant knows whether
@@ -410,27 +419,31 @@ fn mcp_server_row(entry: &ProcessEntry, infra: &InfraLabel) -> ProcessRow {
     }
 }
 
-/// Sort entries in place: wire-matched first (so highlighted
-/// supervisors pin to the top of their sibling group), then PID
-/// ascending as the sole stable tie-break.
+/// Sort entries in place: wire-matched rows pin to the top of their
+/// sibling group, then by effective memory descending with PID as the
+/// stable tie-break (PID is fixed for a process's lifetime so ties stay
+/// deterministic across frames).
 ///
-/// Deliberately NOT sorted by memory - memory fluctuates each poll
-/// and using it as a sort key causes the section to reshuffle every
-/// frame, which reads as flicker. PID is fixed for a process's
-/// lifetime so the order is stable across refreshes.
-fn sort_siblings_inplace(entries: &mut [&ProcessEntry], wire_alive: &[&ToolCallInfo]) {
+/// `subtree_totals`, when supplied for depth-0 roots, overrides each
+/// entry's sort-memory with its subtree total - so a supervisor sorts
+/// by the same figure it displays (a 2 MB zsh wrapper over a 1 GB
+/// subtree sorts as 1 GB, not 2 MB). Descendants pass `None` and sort
+/// by their own RSS, which is also what they display.
+fn sort_siblings_inplace(
+    entries: &mut [&ProcessEntry],
+    wire_alive: &[&ToolCallInfo],
+    subtree_totals: Option<&std::collections::HashMap<u32, u64>>,
+) {
+    let sort_mem = |e: &ProcessEntry| -> u64 {
+        subtree_totals.and_then(|m| m.get(&e.pid).copied()).unwrap_or(e.memory_bytes)
+    };
     entries.sort_by(|a, b| {
         let a_m = is_matched_entry(a, wire_alive);
         let b_m = is_matched_entry(b, wire_alive);
-        // Matched (pinned) rows stay on top of their unpinned
-        // siblings; within each group sort by memory descending so
-        // the heaviest workloads land at the top. PID is the stable
-        // tie-break so identical-memory siblings keep a deterministic
-        // order across frames.
         match (a_m, b_m) {
             (true, false) => std::cmp::Ordering::Less,
             (false, true) => std::cmp::Ordering::Greater,
-            _ => b.memory_bytes.cmp(&a.memory_bytes).then_with(|| a.pid.cmp(&b.pid)),
+            _ => sort_mem(b).cmp(&sort_mem(a)).then_with(|| a.pid.cmp(&b.pid)),
         }
     });
 }
@@ -865,6 +878,50 @@ mod tests {
         assert_eq!(rows[1].kind, ProcessKind::Process);
         // Unmatched non-wrapper supervisor headline = its cmdline.
         assert_eq!(rows[1].headline, "node /path/to/build-helper.js");
+    }
+
+    #[test]
+    fn rows_from_os_snapshot_sorts_depth0_by_subtree_total() {
+        // Root A: light own RSS (2 MB zsh wrapper) over a heavy 1000 MB
+        // child -> subtree 1002 MB. Root B: heavy own RSS (500 MB), no
+        // children. A must sort ABOVE B (it displays 1002 MB), even
+        // though A's OWN RSS is far smaller.
+        let snapshot = ProcessSnapshot {
+            scanned_at: std::time::SystemTime::now(),
+            processes: vec![
+                ProcessEntry {
+                    pid: 10,
+                    parent_pid: 1,
+                    name: "zsh".to_owned(),
+                    command: real_wrapper("run the build"),
+                    memory_bytes: 2 * 1024 * 1024,
+                    started_at_unix: None,
+                },
+                ProcessEntry {
+                    pid: 11,
+                    parent_pid: 10,
+                    name: "cargo".to_owned(),
+                    command: "cargo build".to_owned(),
+                    memory_bytes: 1000 * 1024 * 1024,
+                    started_at_unix: None,
+                },
+                ProcessEntry {
+                    pid: 20,
+                    parent_pid: 1,
+                    name: "node".to_owned(),
+                    command: "node server.mjs".to_owned(),
+                    memory_bytes: 500 * 1024 * 1024,
+                    started_at_unix: None,
+                },
+            ],
+        };
+        let rows = rows_from_os_snapshot(&snapshot, &[]);
+        assert_eq!(rows[0].depth, 0);
+        assert_eq!(rows[0].headline, "run the build", "heavy-subtree root sorts first");
+        assert_eq!(rows[0].memory_bytes, Some(1002 * 1024 * 1024));
+        // Root B (own 500 MB, lighter subtree) comes after root A's subtree.
+        assert_eq!(rows[2].depth, 0);
+        assert_eq!(rows[2].headline, "node server.mjs");
     }
 
     #[test]
