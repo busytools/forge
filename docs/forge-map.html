@@ -951,6 +951,8 @@ chat continues here...
 
 <p class="intro">Every message in the scrollback belongs to one role. Roles render with different visual treatments today.</p>
 
+<p>Hovering the chat shows an I-beam pointer over selectable text and a hand over clickable blocks (tool calls, group headers, the scrollbar, pane rows), so you can tell where a drag will select versus toggle. The shape is the OS pointer set via <code>OSC 22</code> (forge enables any-motion mouse tracking to drive it); it is not rendered by forge, so hovering never triggers a redraw.</p>
+
 <div class="surface">
   <div class="surface-head">
     <h4>User message</h4>
