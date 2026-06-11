@@ -21,7 +21,8 @@
 use std::collections::HashSet;
 
 use forge_workspace::env::processes::{
-    ProcessEntry, ProcessSnapshot, process_cmdline_matches_tool_input,
+    InfraLabel, ProcessEntry, ProcessSnapshot, classify_known_infra, extract_inner_command,
+    process_cmdline_matches_tool_input,
 };
 use serde_json::Value;
 
@@ -106,6 +107,10 @@ pub enum ProcessKind {
     /// children than [`MAX_CHILDREN_PER_PARENT`] allows. Renders as
     /// a single dim italic line at the trimmed siblings' depth.
     Overflow,
+    /// A recognized long-lived infra process (MCP server today). Carries
+    /// a friendly name headline + steady (non-spinner) glyph, since it's
+    /// persistent infrastructure, not transient tool work.
+    McpServer,
 }
 
 /// Result of [`collect_active_processes`]: rows that survived
@@ -223,7 +228,16 @@ fn rows_from_os_snapshot<'a>(
     // parent means the parent IS claude itself).
     let mut roots: Vec<&ProcessEntry> =
         snapshot.processes.iter().filter(|e| !by_pid.contains_key(&e.parent_pid)).collect();
-    sort_siblings_inplace(&mut roots, wire_alive);
+    // Depth-0 roots sort by the subtree total they display, not their
+    // own RSS - precompute it once per root rather than per-comparison.
+    let root_subtree: HashMap<u32, u64> = roots
+        .iter()
+        .map(|r| {
+            let mut visited = HashSet::new();
+            (r.pid, subtree_memory(r, &children_of, &mut visited))
+        })
+        .collect();
+    sort_siblings_inplace(&mut roots, wire_alive, Some(&root_subtree));
 
     let mut rows = Vec::new();
     let n_roots = roots.len();
@@ -256,6 +270,13 @@ fn emit_with_descendants<'a>(
 ) {
     let mut row = build_row_for_entry(entry, wire_alive);
     row.depth = depth;
+    // Supervisor (depth-0) rows show the whole subtree's resident
+    // memory; a bare parent's own RSS (a 2 MB zsh over a 256 MB cargo
+    // child) reads wrong. Descendants keep their own RSS.
+    if depth == 0 {
+        let mut visited = HashSet::new();
+        row.memory_bytes = Some(subtree_memory(entry, children_of, &mut visited));
+    }
     row.is_last_sibling = is_last_sibling;
     row.ancestor_has_more = ancestor_has_more.to_vec();
     out.push(row);
@@ -264,7 +285,7 @@ fn emit_with_descendants<'a>(
         return;
     };
     let mut kids = kids_ref.clone();
-    sort_siblings_inplace(&mut kids, wire_alive);
+    sort_siblings_inplace(&mut kids, wire_alive, None);
 
     // The next level's ancestor_has_more appends THIS row's
     // "more-siblings-below" bit so a deep descendant knows whether
@@ -305,6 +326,27 @@ fn emit_with_descendants<'a>(
     if hidden > 0 {
         out.push(overflow_row(hidden, depth.saturating_add(1), next_ancestors));
     }
+}
+
+/// Sum the resident memory of `entry` plus all its descendants in the
+/// snapshot. The snapshot is a tree so each pid appears once; the
+/// `visited` set guards against a pathological parent-chain cycle so
+/// the recursion can't run away or double-count.
+fn subtree_memory(
+    entry: &ProcessEntry,
+    children_of: &std::collections::HashMap<u32, Vec<&ProcessEntry>>,
+    visited: &mut HashSet<u32>,
+) -> u64 {
+    if !visited.insert(entry.pid) {
+        return 0;
+    }
+    let mut total = entry.memory_bytes;
+    if let Some(kids) = children_of.get(&entry.pid) {
+        for kid in kids {
+            total = total.saturating_add(subtree_memory(kid, children_of, visited));
+        }
+    }
+    total
 }
 
 /// Per-parent cap on visible children. Beyond this, only
@@ -351,34 +393,57 @@ fn build_row_for_entry(entry: &ProcessEntry, wire_alive: &[&ToolCallInfo]) -> Pr
         // so the user can still see the underlying work.
         Some(tc) if is_monitor_tool_name(&tc.sdk_tool_name) => generic_os_row(entry),
         Some(tc) if is_execute_tool_name(&tc.sdk_tool_name) => enriched_bash_row(tc, entry),
-        // Matched something we don't have a special kind for
-        // (defensive - shouldn't fire today). Fall through to
-        // the generic OS row so we still surface the process.
-        _ => generic_os_row(entry),
+        // No wire match: a known-infra process (MCP server) gets a
+        // friendly-labeled row; everything else is a generic OS row.
+        _ => match classify_known_infra(&entry.command) {
+            Some(infra) => mcp_server_row(entry, &infra),
+            None => generic_os_row(entry),
+        },
     }
 }
 
-/// Sort entries in place: wire-matched first (so highlighted
-/// supervisors pin to the top of their sibling group), then PID
-/// ascending as the sole stable tie-break.
+/// Recognized long-lived infra (MCP server). Headline is the friendly
+/// name; metadata carries the "MCP server" descriptor. Kept visible
+/// (the user wants more infra visibility, not filtering).
+fn mcp_server_row(entry: &ProcessEntry, infra: &InfraLabel) -> ProcessRow {
+    ProcessRow {
+        kind: ProcessKind::McpServer,
+        headline: infra.name.clone(),
+        detail: None,
+        metadata: "MCP server".to_owned(),
+        status: ToolCallStatus::InProgress,
+        memory_bytes: Some(entry.memory_bytes),
+        depth: 0,
+        is_last_sibling: true,
+        ancestor_has_more: Vec::new(),
+    }
+}
+
+/// Sort entries in place: wire-matched rows pin to the top of their
+/// sibling group, then by effective memory descending with PID as the
+/// stable tie-break (PID is fixed for a process's lifetime so ties stay
+/// deterministic across frames).
 ///
-/// Deliberately NOT sorted by memory - memory fluctuates each poll
-/// and using it as a sort key causes the section to reshuffle every
-/// frame, which reads as flicker. PID is fixed for a process's
-/// lifetime so the order is stable across refreshes.
-fn sort_siblings_inplace(entries: &mut [&ProcessEntry], wire_alive: &[&ToolCallInfo]) {
+/// `subtree_totals`, when supplied for depth-0 roots, overrides each
+/// entry's sort-memory with its subtree total - so a supervisor sorts
+/// by the same figure it displays (a 2 MB zsh wrapper over a 1 GB
+/// subtree sorts as 1 GB, not 2 MB). Descendants pass `None` and sort
+/// by their own RSS, which is also what they display.
+fn sort_siblings_inplace(
+    entries: &mut [&ProcessEntry],
+    wire_alive: &[&ToolCallInfo],
+    subtree_totals: Option<&std::collections::HashMap<u32, u64>>,
+) {
+    let sort_mem = |e: &ProcessEntry| -> u64 {
+        subtree_totals.and_then(|m| m.get(&e.pid).copied()).unwrap_or(e.memory_bytes)
+    };
     entries.sort_by(|a, b| {
         let a_m = is_matched_entry(a, wire_alive);
         let b_m = is_matched_entry(b, wire_alive);
-        // Matched (pinned) rows stay on top of their unpinned
-        // siblings; within each group sort by memory descending so
-        // the heaviest workloads land at the top. PID is the stable
-        // tie-break so identical-memory siblings keep a deterministic
-        // order across frames.
         match (a_m, b_m) {
             (true, false) => std::cmp::Ordering::Less,
             (false, true) => std::cmp::Ordering::Greater,
-            _ => b.memory_bytes.cmp(&a.memory_bytes).then_with(|| a.pid.cmp(&b.pid)),
+            _ => sort_mem(b).cmp(&sort_mem(a)).then_with(|| a.pid.cmp(&b.pid)),
         }
     });
 }
@@ -399,7 +464,14 @@ fn is_matched_entry(entry: &ProcessEntry, wire_alive: &[&ToolCallInfo]) -> bool 
 /// suffixed with memory.
 fn enriched_bash_row(tc: &ToolCallInfo, entry: &ProcessEntry) -> ProcessRow {
     let description = read_str_field(tc.raw_input.as_ref(), "description");
-    let headline = if description.is_empty() { entry.name.clone() } else { description.to_owned() };
+    // Headline precedence: wire description, else the unwrapped inner
+    // command (so a backgrounded `gh run watch <id>` with no description
+    // reads as that, not `zsh`), else the OS process name.
+    let headline = if description.is_empty() {
+        extract_inner_command(&entry.command).unwrap_or_else(|| entry.name.clone())
+    } else {
+        description.to_owned()
+    };
     ProcessRow {
         kind: ProcessKind::BashBackgrounded,
         headline,
@@ -420,14 +492,17 @@ fn enriched_bash_row(tc: &ToolCallInfo, entry: &ProcessEntry) -> ProcessRow {
 /// grandchildren, etc.). Headline is the OS process name; detail is
 /// the cmdline.
 fn generic_os_row(entry: &ProcessEntry) -> ProcessRow {
-    // Use the cmdline as headline when available - for unmatched
-    // supervisors that's the only meaningful context (the process
-    // name alone is too vague, e.g. "node" tells you nothing about
-    // WHICH node process it is). Falls back to the process name
-    // when the cmdline is empty (some short-lived processes don't
-    // expose one via sysinfo).
+    // A shell-wrapper cmdline shows its inner command (the raw
+    // `/bin/zsh -c ... eval '...'` chrome is never a headline). Otherwise
+    // the cmdline is the headline - for unmatched supervisors that's the
+    // only meaningful context (the process name alone is too vague, e.g.
+    // "node" tells you nothing about WHICH node process it is). Falls
+    // back to the process name when the cmdline is empty (some
+    // short-lived processes don't expose one via sysinfo).
     let cmd = entry.command.trim();
-    let headline = if cmd.is_empty() {
+    let headline = if let Some(inner) = extract_inner_command(&entry.command) {
+        inner
+    } else if cmd.is_empty() {
         if entry.name.is_empty() { "(process)".to_owned() } else { entry.name.clone() }
     } else {
         cmd.to_owned()
@@ -561,6 +636,50 @@ mod tests {
         assert!(coll.is_empty());
     }
 
+    /// Real wrapper shape captured via `ps -axww`: inner command is
+    /// single-quoted between `eval '` and `' < /dev/null`, with a
+    /// `source ... || true` prefix and trailing `pwd -P` redirect.
+    fn real_wrapper(inner: &str) -> String {
+        format!(
+            "/bin/zsh -c source /Users/x/.claude/shell-snapshots/snap.sh 2>/dev/null || true && setopt NO_EXTENDED_GLOB 2>/dev/null || true && eval '{inner}' < /dev/null && pwd -P >| /tmp/claude-ab12-cwd"
+        )
+    }
+
+    #[test]
+    fn enriched_bash_row_uses_inner_command_when_description_empty() {
+        // Matched Bash with NO description: headline falls back to the
+        // unwrapped inner command, never the raw "zsh" process name.
+        let tc = fake_tool_call_info(
+            "toolu_1",
+            "Bash",
+            json!({ "command": "gh run watch 123", "run_in_background": true }),
+        );
+        let entry = fake_entry(42, "zsh", &real_wrapper("gh run watch 123"), 8 * 1024 * 1024);
+        let row = enriched_bash_row(&tc, &entry);
+        assert_eq!(row.headline, "gh run watch 123");
+    }
+
+    #[test]
+    fn build_row_classifies_mcp_server_with_friendly_name() {
+        // An MCP server process (no wire match) gets a friendly name +
+        // McpServer kind, and stays visible (not filtered).
+        let entry = fake_entry(50, "npm", "npm exec @upstash/context7-mcp", 46 * 1024 * 1024);
+        let row = build_row_for_entry(&entry, &[]);
+        assert_eq!(row.kind, ProcessKind::McpServer);
+        assert_eq!(row.headline, "context7");
+        assert!(row.metadata.contains("MCP server"));
+    }
+
+    #[test]
+    fn generic_os_row_unwraps_shell_wrapper_headline() {
+        // An unmatched shell-wrapper process shows the inner command,
+        // never the raw /bin/zsh wrapper.
+        let entry = fake_entry(42, "zsh", &real_wrapper("npm run build"), 8 * 1024 * 1024);
+        let row = generic_os_row(&entry);
+        assert_eq!(row.headline, "npm run build");
+        assert!(!row.headline.contains("/bin/zsh"));
+    }
+
     #[test]
     fn rows_from_os_snapshot_matches_wire_bash_via_cmdline_substring() {
         // Wire-tracked Bash with command="cargo nextest run".
@@ -651,7 +770,7 @@ mod tests {
                     pid: 10,
                     parent_pid: 1,
                     name: "zsh".to_owned(),
-                    command: "/bin/zsh -c -l eval 'cargo nextest run'".to_owned(),
+                    command: "/bin/zsh -c source /x/snap.sh 2>/dev/null || true && eval 'cargo nextest run' < /dev/null && pwd -P >| /tmp/claude-a-cwd".to_owned(),
                     memory_bytes: 8 * 1024 * 1024,
                     started_at_unix: None,
                 },
@@ -692,12 +811,28 @@ mod tests {
         // DFS pre-order: zsh (d0) → cargo (d1) → rustc (d2) → rustc (d2)
         assert_eq!(rows.len(), 4);
         assert_eq!(rows[0].depth, 0);
-        // Unmatched supervisor headline = cmdline (not name).
-        assert!(rows[0].headline.starts_with("/bin/zsh"));
+        // Unmatched shell-wrapper supervisor headline = the unwrapped
+        // inner command; the raw /bin/zsh wrapper is never a headline.
+        assert_eq!(rows[0].headline, "cargo nextest run");
+        assert!(!rows[0].headline.contains("/bin/zsh"));
         assert_eq!(rows[1].depth, 1);
         assert!(rows[1].headline.starts_with("cargo"));
         assert_eq!(rows[2].depth, 2);
         assert_eq!(rows[3].depth, 2);
+    }
+
+    #[test]
+    fn rows_from_os_snapshot_rolls_subtree_memory_onto_depth0() {
+        // The depth-0 supervisor reads the whole subtree's memory (its
+        // own 2 MB zsh parent over heavy children is misleading);
+        // descendants keep their own RSS.
+        let snapshot = tree_snapshot();
+        let rows = rows_from_os_snapshot(&snapshot, &[]);
+        let subtree = (8 + 256 + 512 + 384) * 1024 * 1024;
+        assert_eq!(rows[0].depth, 0);
+        assert_eq!(rows[0].memory_bytes, Some(subtree), "depth-0 = subtree total");
+        assert_eq!(rows[1].depth, 1);
+        assert_eq!(rows[1].memory_bytes, Some(256 * 1024 * 1024), "depth-1 keeps own RSS");
     }
 
     #[test]
@@ -720,7 +855,7 @@ mod tests {
                     pid: 100,
                     parent_pid: 1,
                     name: "node".to_owned(),
-                    command: "node /path/to/mcp-server".to_owned(),
+                    command: "node /path/to/build-helper.js".to_owned(),
                     memory_bytes: 128 * 1024 * 1024,
                     started_at_unix: None,
                 },
@@ -728,7 +863,7 @@ mod tests {
                     pid: 200,
                     parent_pid: 1,
                     name: "zsh".to_owned(),
-                    command: "/bin/zsh -c -l eval 'cargo nextest run'".to_owned(),
+                    command: "/bin/zsh -c source /x/snap.sh 2>/dev/null || true && eval 'cargo nextest run' < /dev/null && pwd -P >| /tmp/claude-b-cwd".to_owned(),
                     memory_bytes: 8 * 1024 * 1024,
                     started_at_unix: None,
                 },
@@ -741,8 +876,52 @@ mod tests {
         assert_eq!(rows[0].kind, ProcessKind::BashBackgrounded);
         assert_eq!(rows[0].headline, "Run unit tests");
         assert_eq!(rows[1].kind, ProcessKind::Process);
-        // Unmatched supervisor headline = cmdline (cmdline-as-name).
-        assert_eq!(rows[1].headline, "node /path/to/mcp-server");
+        // Unmatched non-wrapper supervisor headline = its cmdline.
+        assert_eq!(rows[1].headline, "node /path/to/build-helper.js");
+    }
+
+    #[test]
+    fn rows_from_os_snapshot_sorts_depth0_by_subtree_total() {
+        // Root A: light own RSS (2 MB zsh wrapper) over a heavy 1000 MB
+        // child -> subtree 1002 MB. Root B: heavy own RSS (500 MB), no
+        // children. A must sort ABOVE B (it displays 1002 MB), even
+        // though A's OWN RSS is far smaller.
+        let snapshot = ProcessSnapshot {
+            scanned_at: std::time::SystemTime::now(),
+            processes: vec![
+                ProcessEntry {
+                    pid: 10,
+                    parent_pid: 1,
+                    name: "zsh".to_owned(),
+                    command: real_wrapper("run the build"),
+                    memory_bytes: 2 * 1024 * 1024,
+                    started_at_unix: None,
+                },
+                ProcessEntry {
+                    pid: 11,
+                    parent_pid: 10,
+                    name: "cargo".to_owned(),
+                    command: "cargo build".to_owned(),
+                    memory_bytes: 1000 * 1024 * 1024,
+                    started_at_unix: None,
+                },
+                ProcessEntry {
+                    pid: 20,
+                    parent_pid: 1,
+                    name: "node".to_owned(),
+                    command: "node server.mjs".to_owned(),
+                    memory_bytes: 500 * 1024 * 1024,
+                    started_at_unix: None,
+                },
+            ],
+        };
+        let rows = rows_from_os_snapshot(&snapshot, &[]);
+        assert_eq!(rows[0].depth, 0);
+        assert_eq!(rows[0].headline, "run the build", "heavy-subtree root sorts first");
+        assert_eq!(rows[0].memory_bytes, Some(1002 * 1024 * 1024));
+        // Root B (own 500 MB, lighter subtree) comes after root A's subtree.
+        assert_eq!(rows[2].depth, 0);
+        assert_eq!(rows[2].headline, "node server.mjs");
     }
 
     #[test]
