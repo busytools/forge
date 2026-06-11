@@ -214,6 +214,22 @@ pub fn extract_inner_command(cmdline: &str) -> Option<String> {
     Some(inner.trim().to_owned())
 }
 
+/// Strip the executable's directory from a cmdline headline so the row
+/// reads `cargo nextest run`, not `/opt/homebrew/bin/cargo nextest run`.
+/// Only the FIRST token (the executable) is basenamed; args are kept
+/// verbatim (they carry the distinguishing detail). A first token with
+/// no `/` (e.g. a `postgres: walwriter` process title) is unchanged.
+pub fn basename_exe(cmdline: &str) -> String {
+    let cmdline = cmdline.trim();
+    match cmdline.split_once(char::is_whitespace) {
+        Some((exe, rest)) => {
+            let base = exe.rsplit('/').next().unwrap_or(exe);
+            format!("{base} {rest}")
+        }
+        None => cmdline.rsplit('/').next().unwrap_or(cmdline).to_owned(),
+    }
+}
+
 /// Collapse every run of ASCII whitespace (spaces, tabs, newlines) to a
 /// single space and trim the ends. `sysinfo`'s `proc.cmd()` joins argv
 /// with single spaces, so a multi-line / multi-space wire command never
@@ -379,6 +395,27 @@ mod tests {
         // alternative (token-level match) is more code for a
         // marginal win on personal-use scope.
         assert!(process_cmdline_matches_tool_input("/usr/bin/cargo build", "cargo"));
+    }
+
+    #[test]
+    fn basename_exe_strips_exe_dir_keeps_args() {
+        assert_eq!(basename_exe("/opt/homebrew/bin/cargo nextest run"), "cargo nextest run");
+        assert_eq!(
+            basename_exe("/Users/x/.rustup/toolchains/nightly/bin/rustc --crate-name forge_tui"),
+            "rustc --crate-name forge_tui"
+        );
+        // A bare test binary with no args is just its basename.
+        assert_eq!(
+            basename_exe("/Users/x/proj/target/debug/deps/some_test-9ab1"),
+            "some_test-9ab1"
+        );
+        // First token with no `/` (a process title) is returned unchanged.
+        assert_eq!(basename_exe("postgres: walwriter"), "postgres: walwriter");
+        // Already-bare command is unchanged.
+        assert_eq!(basename_exe("cargo build"), "cargo build");
+        // Edges don't panic.
+        assert_eq!(basename_exe(""), "");
+        let _ = basename_exe("/");
     }
 
     #[test]

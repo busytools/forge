@@ -21,8 +21,8 @@
 use std::collections::HashSet;
 
 use forge_workspace::env::processes::{
-    InfraLabel, ProcessEntry, ProcessSnapshot, classify_known_infra, extract_inner_command,
-    process_cmdline_matches_tool_input,
+    InfraLabel, ProcessEntry, ProcessSnapshot, basename_exe, classify_known_infra,
+    extract_inner_command, process_cmdline_matches_tool_input,
 };
 use serde_json::Value;
 
@@ -284,7 +284,13 @@ fn emit_with_descendants<'a>(
     let Some(kids_ref) = children_of.get(&entry.pid) else {
         return;
     };
-    let mut kids = kids_ref.clone();
+    // Collapse a same-name MCP server's redundant backing child (the
+    // `node ...context7-mcp` leaf under its `npm exec @upstash/context7-mcp`
+    // parent, which classifies to the same name) - the parent already
+    // represents the server and its subtree memory already counts the
+    // child.
+    let mut kids: Vec<&ProcessEntry> =
+        kids_ref.iter().copied().filter(|kid| !is_redundant_mcp_child(entry, kid)).collect();
     sort_siblings_inplace(&mut kids, wire_alive, None);
 
     // The next level's ancestor_has_more appends THIS row's
@@ -402,6 +408,17 @@ fn build_row_for_entry(entry: &ProcessEntry, wire_alive: &[&ToolCallInfo]) -> Pr
     }
 }
 
+/// True when `child` classifies as the SAME MCP server name as
+/// `parent` - the redundant backing process (e.g. the `node` child
+/// under an `npm exec @scope/<name>-mcp` parent). Suppressing it
+/// collapses the one logical server to a single row.
+fn is_redundant_mcp_child(parent: &ProcessEntry, child: &ProcessEntry) -> bool {
+    match (classify_known_infra(&parent.command), classify_known_infra(&child.command)) {
+        (Some(p), Some(c)) => p.name == c.name,
+        _ => false,
+    }
+}
+
 /// Recognized long-lived infra (MCP server). Headline is the friendly
 /// name; metadata carries the "MCP server" descriptor. Kept visible
 /// (the user wants more infra visibility, not filtering).
@@ -468,7 +485,8 @@ fn enriched_bash_row(tc: &ToolCallInfo, entry: &ProcessEntry) -> ProcessRow {
     // command (so a backgrounded `gh run watch <id>` with no description
     // reads as that, not `zsh`), else the OS process name.
     let headline = if description.is_empty() {
-        extract_inner_command(&entry.command).unwrap_or_else(|| entry.name.clone())
+        extract_inner_command(&entry.command)
+            .map_or_else(|| entry.name.clone(), |c| basename_exe(&c))
     } else {
         description.to_owned()
     };
@@ -501,11 +519,11 @@ fn generic_os_row(entry: &ProcessEntry) -> ProcessRow {
     // short-lived processes don't expose one via sysinfo).
     let cmd = entry.command.trim();
     let headline = if let Some(inner) = extract_inner_command(&entry.command) {
-        inner
+        basename_exe(&inner)
     } else if cmd.is_empty() {
         if entry.name.is_empty() { "(process)".to_owned() } else { entry.name.clone() }
     } else {
-        cmd.to_owned()
+        basename_exe(cmd)
     };
     ProcessRow {
         kind: ProcessKind::Process,
@@ -660,6 +678,41 @@ mod tests {
     }
 
     #[test]
+    fn rows_from_os_snapshot_collapses_duplicate_mcp_child() {
+        // Live shape: `npm exec @upstash/context7-mcp` (parent) ->
+        // `node .../.bin/context7-mcp` (child) both classify as context7.
+        // Render as ONE row (the parent), not two nested context7 rows.
+        let snapshot = ProcessSnapshot {
+            scanned_at: std::time::SystemTime::now(),
+            processes: vec![
+                ProcessEntry {
+                    pid: 100,
+                    parent_pid: 1,
+                    name: "npm".to_owned(),
+                    command: "npm exec @upstash/context7-mcp".to_owned(),
+                    memory_bytes: 81 * 1024 * 1024,
+                    started_at_unix: None,
+                },
+                ProcessEntry {
+                    pid: 101,
+                    parent_pid: 100,
+                    name: "node".to_owned(),
+                    command: "node /Users/x/.npm/_npx/abc/node_modules/.bin/context7-mcp"
+                        .to_owned(),
+                    memory_bytes: 81 * 1024 * 1024,
+                    started_at_unix: None,
+                },
+            ],
+        };
+        let rows = rows_from_os_snapshot(&snapshot, &[]);
+        assert_eq!(rows.len(), 1, "the redundant same-name MCP child is not emitted");
+        assert_eq!(rows[0].kind, ProcessKind::McpServer);
+        assert_eq!(rows[0].headline, "context7");
+        // Parent keeps the subtree total (its own 81 + the child's 81).
+        assert_eq!(rows[0].memory_bytes, Some(162 * 1024 * 1024));
+    }
+
+    #[test]
     fn build_row_classifies_mcp_server_with_friendly_name() {
         // An MCP server process (no wire match) gets a friendly name +
         // McpServer kind, and stays visible (not filtered).
@@ -668,6 +721,20 @@ mod tests {
         assert_eq!(row.kind, ProcessKind::McpServer);
         assert_eq!(row.headline, "context7");
         assert!(row.metadata.contains("MCP server"));
+    }
+
+    #[test]
+    fn generic_os_row_basenames_full_path_headline() {
+        // A child process with a full executable path shows just the
+        // basename + args, not the directory-eating absolute path.
+        let entry = fake_entry(
+            60,
+            "rustc",
+            "/Users/x/.rustup/toolchains/nightly/bin/rustc --crate-name forge_tui",
+            256 * 1024 * 1024,
+        );
+        let row = generic_os_row(&entry);
+        assert_eq!(row.headline, "rustc --crate-name forge_tui");
     }
 
     #[test]
