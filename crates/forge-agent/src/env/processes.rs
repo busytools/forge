@@ -277,40 +277,69 @@ pub struct InfraLabel {
 /// Friendly name for a known-infra process (MCP servers today), derived
 /// from its cmdline. `None` when unrecognized.
 ///
-/// Recognizes the two shapes captured via `ps -axww`: an
-/// `npm exec @<scope>/<pkg>-mcp[-server]` invocation (e.g.
-/// `@upstash/context7-mcp` → `context7`) and a
-/// `node .../<pkg>-mcp[-server][.js]` fallback.
+/// Recognizes the `npm exec <pkg>` and `node .../<bin>` shapes captured
+/// via `ps -axww`, with the `@version` suffix stripped: `<base>-mcp[-server]`
+/// → `<base>` (`@upstash/context7-mcp` → `context7`), a package literally
+/// named `mcp` → its scope (`@playwright/mcp@latest` → `playwright`), and
+/// the `@modelcontextprotocol/server-<base>` convention → `<base>`.
 pub fn classify_known_infra(cmdline: &str) -> Option<InfraLabel> {
     let name = mcp_name_from_npm(cmdline).or_else(|| mcp_name_from_node(cmdline))?;
     Some(InfraLabel { name, kind: InfraKind::McpServer })
 }
 
-/// Strip a trailing `-mcp-server` or `-mcp` from a package / binary base
-/// name. `None` when neither suffix is present (so non-MCP packages
-/// aren't mislabeled) or the result would be empty.
-fn strip_mcp_suffix(pkg: &str) -> Option<String> {
-    pkg.strip_suffix("-mcp-server")
-        .or_else(|| pkg.strip_suffix("-mcp"))
-        .filter(|s| !s.is_empty())
-        .map(ToOwned::to_owned)
+/// Parse an npm package spec into `(scope, name)` with the `@version`
+/// stripped. `@playwright/mcp@latest` -> `(Some("playwright"), "mcp")`;
+/// `@upstash/context7-mcp` -> `(Some("upstash"), "context7-mcp")`;
+/// `context7-mcp@1.0` -> `(None, "context7-mcp")`.
+fn parse_npm_pkg(pkg_spec: &str) -> (Option<&str>, &str) {
+    let (scope, rest) = match pkg_spec.strip_prefix('@') {
+        Some(after_at) => match after_at.split_once('/') {
+            Some((scope, rest)) => (Some(scope), rest),
+            None => (None, pkg_spec),
+        },
+        None => (None, pkg_spec),
+    };
+    let name = rest.split('@').next().unwrap_or(rest);
+    (scope, name)
 }
 
-/// `npm exec @upstash/context7-mcp` → `context7`. Requires the literal
-/// `npm` + `exec` argv prefix; the package spec's basename must carry an
-/// MCP suffix or this returns `None`.
+/// Friendly MCP name from a parsed `(scope, name)`, or `None` when the
+/// package isn't a recognized MCP server:
+/// - `<base>-mcp` / `<base>-mcp-server` -> `<base>`
+/// - package literally named `mcp` -> the scope (`@playwright/mcp` -> `playwright`)
+/// - `server-<base>` (the `@modelcontextprotocol` convention) -> `<base>`
+fn mcp_friendly_name(scope: Option<&str>, name: &str) -> Option<String> {
+    if let Some(base) = name.strip_suffix("-mcp-server").or_else(|| name.strip_suffix("-mcp"))
+        && !base.is_empty()
+    {
+        return Some(base.to_owned());
+    }
+    if name == "mcp" {
+        return scope.filter(|s| !s.is_empty()).map(ToOwned::to_owned);
+    }
+    if let Some(base) = name.strip_prefix("server-")
+        && !base.is_empty()
+    {
+        return Some(base.to_owned());
+    }
+    None
+}
+
+/// `npm exec @playwright/mcp@latest` → `playwright`. Requires the literal
+/// `npm` + `exec` argv prefix; the package spec must resolve to an MCP
+/// name via [`mcp_friendly_name`] or this returns `None`.
 fn mcp_name_from_npm(cmdline: &str) -> Option<String> {
     let mut toks = cmdline.split_whitespace();
     if toks.next()? != "npm" || toks.next()? != "exec" {
         return None;
     }
-    let pkg_spec = toks.next()?;
-    let pkg = pkg_spec.rsplit('/').next()?; // `@scope/pkg` → `pkg`; bare `pkg` → `pkg`
-    strip_mcp_suffix(pkg)
+    let (scope, name) = parse_npm_pkg(toks.next()?);
+    mcp_friendly_name(scope, name)
 }
 
 /// `node /opt/foo-mcp-server.js` → `foo`. Requires a `node` argv[0] and
-/// a later token whose basename (sans `.js`) carries an MCP suffix.
+/// a later token whose basename (sans `.js` / `@version`) resolves via
+/// [`mcp_friendly_name`] (scope-less, so a bare `mcp` doesn't match).
 fn mcp_name_from_node(cmdline: &str) -> Option<String> {
     let mut toks = cmdline.split_whitespace();
     if !toks.next()?.ends_with("node") {
@@ -319,7 +348,8 @@ fn mcp_name_from_node(cmdline: &str) -> Option<String> {
     toks.find_map(|tok| {
         let base = tok.rsplit('/').next().unwrap_or(tok);
         let base = base.strip_suffix(".js").unwrap_or(base);
-        strip_mcp_suffix(base)
+        let name = base.split('@').next().unwrap_or(base);
+        mcp_friendly_name(None, name)
     })
 }
 
@@ -440,6 +470,47 @@ mod tests {
         let l = classify_known_infra("node /opt/foo-mcp-server.js").expect("foo");
         assert_eq!(l.name, "foo");
         assert_eq!(l.kind, InfraKind::McpServer);
+    }
+
+    #[test]
+    fn classify_known_infra_recognizes_broadened_shapes() {
+        // @scope/mcp (package literally named `mcp`) -> the scope is the
+        // name. Real shape captured via ps: `npm exec @playwright/mcp@latest
+        // --cdp-endpoint ...`.
+        assert_eq!(
+            classify_known_infra(
+                "npm exec @playwright/mcp@latest --cdp-endpoint http://localhost:9222"
+            )
+            .expect("playwright")
+            .name,
+            "playwright"
+        );
+        assert_eq!(
+            classify_known_infra("npm exec @playwright/mcp").expect("playwright").name,
+            "playwright"
+        );
+        // @modelcontextprotocol/server-<name> convention.
+        assert_eq!(
+            classify_known_infra("npm exec @modelcontextprotocol/server-filesystem")
+                .expect("filesystem")
+                .name,
+            "filesystem"
+        );
+        // @version suffix stripped on the existing -mcp shape.
+        assert_eq!(
+            classify_known_infra("npm exec @upstash/context7-mcp@2.0").expect("context7").name,
+            "context7"
+        );
+        // The real playwright node child folds to the same name, so the
+        // same-name MCP-child dedup collapses it under the parent.
+        assert_eq!(
+            classify_known_infra(
+                "node /Users/x/.npm/_npx/abc/node_modules/.bin/playwright-mcp --cdp-endpoint http://localhost:9222"
+            )
+            .expect("playwright child")
+            .name,
+            "playwright"
+        );
     }
 
     #[test]
