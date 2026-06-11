@@ -1190,7 +1190,9 @@ mod tests {
     /// Returns the leader's `GroupId`.
     fn seed_single_tool_call(app: &mut App) -> crate::ui::message::grouping::GroupId {
         use crate::agent::model;
-        use crate::app::{BlockCache, ChatMessage, MessageRole, TerminalSnapshotMode, ToolCallInfo};
+        use crate::app::{
+            BlockCache, ChatMessage, MessageRole, TerminalSnapshotMode, ToolCallInfo,
+        };
         use crate::ui::message::grouping::GroupId;
         let tool_id = "tu-solo";
         let tc = ToolCallInfo {

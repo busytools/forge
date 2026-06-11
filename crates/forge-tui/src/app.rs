@@ -166,8 +166,10 @@ pub(crate) fn resume_terminal() {
 /// is a terminal side-channel, off the render path).
 fn flush_pointer_shape(app: &mut App) {
     if app.pointer_shape != app.emitted_pointer_shape {
-        let _ =
-            crossterm::execute!(std::io::stdout(), crossterm::style::Print(app.pointer_shape.osc()));
+        let _ = crossterm::execute!(
+            std::io::stdout(),
+            crossterm::style::Print(app.pointer_shape.osc())
+        );
         app.emitted_pointer_shape = app.pointer_shape;
     }
 }
