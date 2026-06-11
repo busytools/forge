@@ -13,6 +13,66 @@ use ratatui::layout::Rect;
 
 pub(super) const MOUSE_SCROLL_LINES: usize = 3;
 
+/// OS mouse-pointer shapes forge requests via OSC 22. Only the three
+/// macOS-Ghostty-supported shapes are used (`text`/`pointer`/`default`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum PointerShape {
+    /// I-beam - over selectable text.
+    Text,
+    /// Hand - over clickable blocks (tool calls, group headers, panes).
+    Hand,
+    /// Arrow - chrome / gaps.
+    #[default]
+    Default,
+}
+
+impl PointerShape {
+    /// The `OSC 22 ; <shape> BEL` byte sequence that sets this shape.
+    pub(crate) fn osc(self) -> &'static str {
+        match self {
+            PointerShape::Text => "\x1b]22;text\x07",
+            PointerShape::Hand => "\x1b]22;pointer\x07",
+            PointerShape::Default => "\x1b]22;default\x07",
+        }
+    }
+}
+
+/// Read-only: which pointer shape the cell under `mouse` should get.
+/// Clickable targets win (hand), then selectable text (I-beam), then
+/// chrome (arrow). Reuses the same read-only hit-tests the click
+/// handler runs, in the same priority order, so the affordance is
+/// honest about where a drag selects versus toggles.
+pub(super) fn pointer_shape_at(app: &App, mouse: MouseEvent) -> PointerShape {
+    // 1. Clickable chrome: scrollbar rail + stamped pane targets.
+    if mouse_on_scrollbar_rail(app, mouse) {
+        return PointerShape::Hand;
+    }
+    if app.pane_hit_targets.iter().any(|t| t.contains(mouse.column, mouse.row)) {
+        return PointerShape::Hand;
+    }
+    // 1b. Overlay-aware: a Narrow-tier overlay covers the chat body, so
+    // its non-row chrome is NOT selectable text (rows were caught above
+    // as Hand). Without this, `mouse_point_to_selection` would falsely
+    // resolve the hidden chat and show an I-beam over the overlay.
+    if app.projects_pane_overlay_open || app.inspector_pane_overlay_open {
+        return PointerShape::Default;
+    }
+    // 2. Clickable chat blocks: tool calls, peer blocks, stop-hook chips.
+    if locate_tool_call_block_at_click(app, mouse).is_some()
+        || locate_peer_user_block_at_click(app, mouse).is_some()
+        || locate_stop_hook_summary_at_click(app, mouse).is_some()
+    {
+        return PointerShape::Hand;
+    }
+    // 3. Selectable text: chat body or input box (`mouse_point_to_selection`
+    // returns `Some` exactly for those rects).
+    if mouse_point_to_selection(app, mouse).is_some() {
+        return PointerShape::Text;
+    }
+    // 4. Everything else (pane chrome, gaps).
+    PointerShape::Default
+}
+
 struct MouseSelectionPoint {
     kind: SelectionKind,
     point: SelectionPoint,
@@ -61,6 +121,17 @@ pub(super) fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
             app.scrollbar_drag = None;
             if let Some(sel) = app.selection_mut().as_mut() {
                 sel.dragging = false;
+            }
+        }
+        MouseEventKind::Moved => {
+            // Hover: update the desired pointer shape only. Never sets
+            // needs_redraw - the shape is a terminal side-channel flushed
+            // by the main loop. Skip mid-drag (Ghostty ignores shape
+            // changes with the button down anyway).
+            let dragging =
+                app.scrollbar_drag.is_some() || app.selection().is_some_and(|s| s.dragging);
+            if !dragging {
+                app.pointer_shape = pointer_shape_at(app, mouse);
             }
         }
         _ => {}
@@ -1097,6 +1168,143 @@ mod tests {
     use super::*;
     use crate::app::session::{SessionLifecycleState, UiSession};
 
+    #[test]
+    fn pointer_shape_osc_sequences() {
+        assert_eq!(PointerShape::Text.osc(), "\x1b]22;text\x07");
+        assert_eq!(PointerShape::Hand.osc(), "\x1b]22;pointer\x07");
+        assert_eq!(PointerShape::Default.osc(), "\x1b]22;default\x07");
+    }
+
+    fn moved(column: u16, row: u16) -> MouseEvent {
+        MouseEvent {
+            kind: MouseEventKind::Moved,
+            column,
+            row,
+            modifiers: crossterm::event::KeyModifiers::empty(),
+        }
+    }
+
+    /// Seed `app` with a single 1-row `Read` tool call at y=0, an 80x20
+    /// chat area, and driven viewport prefix sums - the exact setup the
+    /// single-item group click + the pointer-shape hover tests share.
+    /// Returns the leader's `GroupId`.
+    fn seed_single_tool_call(app: &mut App) -> crate::ui::message::grouping::GroupId {
+        use crate::agent::model;
+        use crate::app::{
+            BlockCache, ChatMessage, MessageRole, TerminalSnapshotMode, ToolCallInfo,
+        };
+        use crate::ui::message::grouping::GroupId;
+        let tool_id = "tu-solo";
+        let tc = ToolCallInfo {
+            id: tool_id.to_owned(),
+            title: "Read /path/to/file.rs".to_owned(),
+            sdk_tool_name: "Read".to_owned(),
+            raw_input: None,
+            raw_input_bytes: 0,
+            output_metadata: None,
+            task_metadata: None,
+            status: model::ToolCallStatus::Completed,
+            content: Vec::new(),
+            hidden: false,
+            terminal_id: None,
+            terminal_command: None,
+            terminal_output: None,
+            terminal_output_len: 0,
+            terminal_bytes_seen: 0,
+            terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
+            monitor_output_tail: Vec::default(),
+            render_epoch: 0,
+            layout_epoch: 0,
+            last_measured_y_in_msg: 0,
+            answered_questions: Vec::new(),
+            last_measured_height: 1,
+            last_measured_width: 80,
+            last_measured_layout_epoch: 0,
+            last_measured_layout_generation: 0,
+            cache: BlockCache::default(),
+            collapsed_override: None,
+        };
+        app.push_message_tracked(ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::ToolCall(Box::new(tc))],
+            None,
+        ));
+        let _ = app.active_viewport_mut().on_frame(80, 20);
+        app.active_viewport_mut().set_message_height(0, 1);
+        app.active_viewport_mut().mark_heights_valid();
+        app.active_viewport_mut().rebuild_prefix_sums();
+        app.rendered_chat_area = Rect { x: 0, y: 0, width: 80, height: 20 };
+        GroupId::from_leader_id(tool_id)
+    }
+
+    #[test]
+    fn pointer_shape_hand_over_tool_call() {
+        let mut app = App::test_default();
+        seed_single_tool_call(&mut app);
+        assert_eq!(pointer_shape_at(&app, moved(5, 0)), PointerShape::Hand);
+    }
+
+    #[test]
+    fn pointer_shape_text_over_plain_chat_row() {
+        let mut app = App::test_default();
+        app.rendered_chat_area = Rect { x: 0, y: 0, width: 80, height: 20 };
+        // A row with no clickable block under it is selectable text.
+        assert_eq!(pointer_shape_at(&app, moved(5, 3)), PointerShape::Text);
+    }
+
+    #[test]
+    fn pointer_shape_text_over_input() {
+        let mut app = App::test_default();
+        app.rendered_input_area = Rect { x: 0, y: 21, width: 80, height: 3 };
+        assert_eq!(pointer_shape_at(&app, moved(4, 22)), PointerShape::Text);
+    }
+
+    #[test]
+    fn pointer_shape_hand_over_scrollbar_rail() {
+        let mut app = App::test_default();
+        app.rendered_chat_area = Rect { x: 0, y: 0, width: 80, height: 20 };
+        assert_eq!(pointer_shape_at(&app, moved(80, 5)), PointerShape::Hand);
+    }
+
+    #[test]
+    fn pointer_shape_default_outside_everything() {
+        let app = App::test_default();
+        assert_eq!(pointer_shape_at(&app, moved(200, 200)), PointerShape::Default);
+    }
+
+    #[test]
+    fn pointer_shape_default_over_open_overlay_chrome() {
+        let mut app = App::test_default();
+        app.rendered_chat_area = Rect { x: 0, y: 0, width: 80, height: 20 };
+        app.projects_pane_overlay_open = true;
+        // Inside the chat rect but the overlay covers it -> overlay chrome,
+        // not selectable text.
+        assert_eq!(pointer_shape_at(&app, moved(5, 3)), PointerShape::Default);
+    }
+
+    #[test]
+    fn moved_event_sets_pointer_shape_text_over_input() {
+        let mut app = App::test_default();
+        app.rendered_input_area = Rect { x: 0, y: 21, width: 80, height: 3 };
+        handle_mouse_event(&mut app, moved(4, 22));
+        assert_eq!(app.pointer_shape, PointerShape::Text);
+    }
+
+    #[test]
+    fn moved_event_skipped_during_drag() {
+        let mut app = App::test_default();
+        app.rendered_input_area = Rect { x: 0, y: 21, width: 80, height: 3 };
+        app.pointer_shape = PointerShape::Hand;
+        *app.selection_mut() = Some(crate::app::SelectionState {
+            kind: SelectionKind::Input,
+            start: SelectionPoint { row: 0, col: 0 },
+            end: SelectionPoint { row: 0, col: 1 },
+            dragging: true,
+        });
+        handle_mouse_event(&mut app, moved(4, 22));
+        assert_eq!(app.pointer_shape, PointerShape::Hand, "no shape change mid-drag");
+    }
+
     /// Per-project click-gate: clicking a sibling project in the
     /// projects pane while its bucket is mid-spawn would land the
     /// user on the chat-view connecting stub (no session_id yet,
@@ -1188,62 +1396,14 @@ mod tests {
 
     #[test]
     fn try_toggle_tool_call_at_click_single_item_group_cycles_to_l1() {
-        use crate::agent::model;
-        use crate::app::{
-            BlockCache, ChatMessage, MessageRole, TerminalSnapshotMode, ToolCallInfo,
-        };
         use crate::ui::message::grouping::{
             GroupCollapseLevel, GroupId, RenderUnit, partition_blocks_into_render_units,
         };
         use crossterm::event::{KeyModifiers, MouseButton, MouseEventKind};
-        use ratatui::layout::Rect;
 
         let mut app = App::test_default();
         let tool_id = "tu-solo";
-        let tc = ToolCallInfo {
-            id: tool_id.to_owned(),
-            title: "Read /path/to/file.rs".to_owned(),
-            sdk_tool_name: "Read".to_owned(),
-            raw_input: None,
-            raw_input_bytes: 0,
-            output_metadata: None,
-            task_metadata: None,
-            status: model::ToolCallStatus::Completed,
-            content: Vec::new(),
-            hidden: false,
-            terminal_id: None,
-            terminal_command: None,
-            terminal_output: None,
-            terminal_output_len: 0,
-            terminal_bytes_seen: 0,
-            terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
-            monitor_output_tail: Vec::default(),
-            render_epoch: 0,
-            layout_epoch: 0,
-            // Hit-test fields the renderer would stamp on a real frame.
-            // 1-cell tall row at y=0 within the message, occupying the
-            // full chat width.
-            last_measured_y_in_msg: 0,
-            answered_questions: Vec::new(),
-            last_measured_height: 1,
-            last_measured_width: 80,
-            last_measured_layout_epoch: 0,
-            last_measured_layout_generation: 0,
-            cache: BlockCache::default(),
-            collapsed_override: None,
-        };
-        app.push_message_tracked(ChatMessage::new(
-            MessageRole::Assistant,
-            vec![MessageBlock::ToolCall(Box::new(tc))],
-            None,
-        ));
-        // Drive viewport prefix-sum state the locate path reads.
-        let _ = app.active_viewport_mut().on_frame(80, 20);
-        app.active_viewport_mut().set_message_height(0, 1);
-        app.active_viewport_mut().mark_heights_valid();
-        app.active_viewport_mut().rebuild_prefix_sums();
-        // The locate path also needs `rendered_chat_area` populated.
-        app.rendered_chat_area = Rect { x: 0, y: 0, width: 80, height: 20 };
+        seed_single_tool_call(&mut app);
 
         // Sanity: the partitioner produces a 1-item Group with the
         // leader we expect.

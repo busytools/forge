@@ -416,6 +416,14 @@ pub struct App {
     pub rendered_input_lines: Vec<String>,
     /// Area where input content was rendered (for selection mapping).
     pub rendered_input_area: ratatui::layout::Rect,
+    /// Desired OS pointer shape from the last hover hit-test. The main
+    /// loop emits the OSC only when this differs from
+    /// `emitted_pointer_shape`. Hover is a terminal side-channel - it
+    /// never triggers a redraw.
+    pub(crate) pointer_shape: crate::app::events::mouse::PointerShape,
+    /// Last pointer shape actually written to the terminal (de-dupes
+    /// OSC 22 writes; a still pointer costs nothing).
+    pub(crate) emitted_pointer_shape: crate::app::events::mouse::PointerShape,
     /// Area where the Inspector pane's **scrollable body** was last
     /// rendered (excluding the pinned banner + rule above it). Used
     /// by the mouse-wheel handler to detect "wheel scrolled while
@@ -2905,6 +2913,8 @@ impl App {
             rendered_chat_area: ratatui::layout::Rect::default(),
             rendered_input_lines: Vec::new(),
             rendered_input_area: ratatui::layout::Rect::default(),
+            pointer_shape: crate::app::events::mouse::PointerShape::Default,
+            emitted_pointer_shape: crate::app::events::mouse::PointerShape::Default,
             rendered_inspector_body_area: ratatui::layout::Rect::default(),
             rendered_projects_pane_body_area: ratatui::layout::Rect::default(),
             paste_burst: super::paste_burst::PasteBurstDetector::new(),

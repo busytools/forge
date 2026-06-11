@@ -1,6 +1,6 @@
 mod api_retry;
 mod client;
-mod mouse;
+pub(crate) mod mouse;
 mod notices;
 pub(super) mod rate_limit;
 mod sdk_message;
