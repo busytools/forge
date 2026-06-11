@@ -285,7 +285,7 @@ fn emit_with_descendants<'a>(
         return;
     };
     // Collapse a same-name MCP server's redundant backing child (the
-    // `node …context7-mcp` leaf under its `npm exec @upstash/context7-mcp`
+    // `node ...context7-mcp` leaf under its `npm exec @upstash/context7-mcp`
     // parent, which classifies to the same name) - the parent already
     // represents the server and its subtree memory already counts the
     // child.
@@ -680,7 +680,7 @@ mod tests {
     #[test]
     fn rows_from_os_snapshot_collapses_duplicate_mcp_child() {
         // Live shape: `npm exec @upstash/context7-mcp` (parent) ->
-        // `node …/.bin/context7-mcp` (child) both classify as context7.
+        // `node .../.bin/context7-mcp` (child) both classify as context7.
         // Render as ONE row (the parent), not two nested context7 rows.
         let snapshot = ProcessSnapshot {
             scanned_at: std::time::SystemTime::now(),
