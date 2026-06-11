@@ -501,8 +501,8 @@ mod tests {
             classify_known_infra("npm exec @upstash/context7-mcp@2.0").expect("context7").name,
             "context7"
         );
-        // The real playwright node child folds to the same name, so #351's
-        // dedup collapses it under the parent.
+        // The real playwright node child folds to the same name, so the
+        // same-name MCP-child dedup collapses it under the parent.
         assert_eq!(
             classify_known_infra(
                 "node /Users/x/.npm/_npx/abc/node_modules/.bin/playwright-mcp --cdp-endpoint http://localhost:9222"
