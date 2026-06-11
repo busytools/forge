@@ -284,7 +284,13 @@ fn emit_with_descendants<'a>(
     let Some(kids_ref) = children_of.get(&entry.pid) else {
         return;
     };
-    let mut kids = kids_ref.clone();
+    // Collapse a same-name MCP server's redundant backing child (the
+    // `node …context7-mcp` leaf under its `npm exec @upstash/context7-mcp`
+    // parent, which classifies to the same name) - the parent already
+    // represents the server and its subtree memory already counts the
+    // child.
+    let mut kids: Vec<&ProcessEntry> =
+        kids_ref.iter().copied().filter(|kid| !is_redundant_mcp_child(entry, kid)).collect();
     sort_siblings_inplace(&mut kids, wire_alive, None);
 
     // The next level's ancestor_has_more appends THIS row's
@@ -399,6 +405,17 @@ fn build_row_for_entry(entry: &ProcessEntry, wire_alive: &[&ToolCallInfo]) -> Pr
             Some(infra) => mcp_server_row(entry, &infra),
             None => generic_os_row(entry),
         },
+    }
+}
+
+/// True when `child` classifies as the SAME MCP server name as
+/// `parent` - the redundant backing process (e.g. the `node` child
+/// under an `npm exec @scope/<name>-mcp` parent). Suppressing it
+/// collapses the one logical server to a single row.
+fn is_redundant_mcp_child(parent: &ProcessEntry, child: &ProcessEntry) -> bool {
+    match (classify_known_infra(&parent.command), classify_known_infra(&child.command)) {
+        (Some(p), Some(c)) => p.name == c.name,
+        _ => false,
     }
 }
 
@@ -658,6 +675,41 @@ mod tests {
         let entry = fake_entry(42, "zsh", &real_wrapper("gh run watch 123"), 8 * 1024 * 1024);
         let row = enriched_bash_row(&tc, &entry);
         assert_eq!(row.headline, "gh run watch 123");
+    }
+
+    #[test]
+    fn rows_from_os_snapshot_collapses_duplicate_mcp_child() {
+        // Live shape: `npm exec @upstash/context7-mcp` (parent) ->
+        // `node …/.bin/context7-mcp` (child) both classify as context7.
+        // Render as ONE row (the parent), not two nested context7 rows.
+        let snapshot = ProcessSnapshot {
+            scanned_at: std::time::SystemTime::now(),
+            processes: vec![
+                ProcessEntry {
+                    pid: 100,
+                    parent_pid: 1,
+                    name: "npm".to_owned(),
+                    command: "npm exec @upstash/context7-mcp".to_owned(),
+                    memory_bytes: 81 * 1024 * 1024,
+                    started_at_unix: None,
+                },
+                ProcessEntry {
+                    pid: 101,
+                    parent_pid: 100,
+                    name: "node".to_owned(),
+                    command: "node /Users/x/.npm/_npx/abc/node_modules/.bin/context7-mcp"
+                        .to_owned(),
+                    memory_bytes: 81 * 1024 * 1024,
+                    started_at_unix: None,
+                },
+            ],
+        };
+        let rows = rows_from_os_snapshot(&snapshot, &[]);
+        assert_eq!(rows.len(), 1, "the redundant same-name MCP child is not emitted");
+        assert_eq!(rows[0].kind, ProcessKind::McpServer);
+        assert_eq!(rows[0].headline, "context7");
+        // Parent keeps the subtree total (its own 81 + the child's 81).
+        assert_eq!(rows[0].memory_bytes, Some(162 * 1024 * 1024));
     }
 
     #[test]
