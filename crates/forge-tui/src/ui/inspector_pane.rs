@@ -1915,6 +1915,15 @@ fn glyph_and_style_for(process: &ProcessRow, spinner_frame: usize) -> (String, C
                 theme::RUST_ORANGE,
                 Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
             ),
+            ProcessKind::McpServer => (
+                // Recognized long-lived infra - a STEADY hexagon (no
+                // spinner) so it reads as persistent infrastructure
+                // rather than transient work, in a Cyan accent distinct
+                // from the orange Bash + dim generic spinners.
+                "\u{2B22}".to_owned(),
+                Color::Cyan,
+                Style::default().fg(Color::White),
+            ),
         },
     }
 }
