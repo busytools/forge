@@ -106,6 +106,13 @@ pub(crate) fn suspend_terminal() {
         crossterm::event::DisableFocusChange,
         PopKeyboardEnhancementFlags
     );
+    // Turn off any-motion tracking (1003) and reset the OS pointer to
+    // the arrow so an exited forge / child process doesn't inherit a
+    // stale shape.
+    let _ = crossterm::execute!(
+        std::io::stdout(),
+        crossterm::style::Print("\x1b[?1003l\x1b]22;default\x07")
+    );
     let _ = crossterm::terminal::disable_raw_mode();
 }
 
@@ -147,6 +154,22 @@ pub(crate) fn resume_terminal() {
                 | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
         )
     );
+    // Any-motion mouse tracking (1003) so forge receives hover-move
+    // events, not just drags - needed for the pointer-shape affordance.
+    // crossterm's EnableMouseCapture only sets 1000/1002/1006.
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::style::Print("\x1b[?1003h"));
+}
+
+/// Emit the OSC 22 pointer-shape sequence iff the desired shape changed
+/// since the last write. Called once per loop pass, de-duped so a still
+/// pointer costs nothing - and never touches the ratatui frame (hover
+/// is a terminal side-channel, off the render path).
+fn flush_pointer_shape(app: &mut App) {
+    if app.pointer_shape != app.emitted_pointer_shape {
+        let _ =
+            crossterm::execute!(std::io::stdout(), crossterm::style::Print(app.pointer_shape.osc()));
+        app.emitted_pointer_shape = app.pointer_shape;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -265,6 +288,10 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
         if app.active_view == ActiveView::Chat && app.pending_submit().is_some() {
             finalize_deferred_submit(app);
         }
+
+        // Flush the desired OS pointer shape (off the render path, every
+        // pass, de-duped) so hover updates the cursor without a redraw.
+        flush_pointer_shape(app);
 
         if app.should_quit {
             break;

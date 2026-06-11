@@ -233,6 +233,8 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
         rendered_chat_area: ratatui::layout::Rect::new(0, 0, 0, 0),
         rendered_input_lines: Vec::new(),
         rendered_input_area: ratatui::layout::Rect::new(0, 0, 0, 0),
+        pointer_shape: crate::app::events::mouse::PointerShape::Default,
+        emitted_pointer_shape: crate::app::events::mouse::PointerShape::Default,
         rendered_inspector_body_area: ratatui::layout::Rect::new(0, 0, 0, 0),
         rendered_projects_pane_body_area: ratatui::layout::Rect::new(0, 0, 0, 0),
         paste_burst: super::paste_burst::PasteBurstDetector::new(),
