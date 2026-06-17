@@ -558,6 +558,7 @@ mod tests {
     fn resolve_log_path_uses_explicit_path_when_provided() {
         let cli = Cli {
             project: None,
+            new: false,
             generate_completion: None,
             diagnostics_preset: None,
             log_file: Some(PathBuf::from("custom.log")),
@@ -577,6 +578,7 @@ mod tests {
         // accidentally re-introduce the "opt-in" gate.
         let cli = Cli {
             project: None,
+            new: false,
             generate_completion: None,
             diagnostics_preset: None,
             log_file: None,
@@ -612,6 +614,7 @@ mod tests {
     fn resolve_log_path_uses_default_when_filter_enables_logging() {
         let cli = Cli {
             project: None,
+            new: false,
             generate_completion: None,
             diagnostics_preset: None,
             log_file: None,
@@ -629,6 +632,7 @@ mod tests {
     fn resolve_log_path_uses_default_when_no_log_file() {
         let cli = Cli {
             project: None,
+            new: false,
             generate_completion: None,
             diagnostics_preset: None,
             log_file: None,
@@ -644,6 +648,7 @@ mod tests {
     fn resolve_log_path_uses_default_when_preset_is_set() {
         let cli = Cli {
             project: None,
+            new: false,
             generate_completion: None,
             diagnostics_preset: Some(DiagnosticsPreset::Session),
             log_file: None,
@@ -660,6 +665,7 @@ mod tests {
     fn resolve_perf_path_uses_default_when_no_perf_log() {
         let cli = Cli {
             project: None,
+            new: false,
             generate_completion: None,
             diagnostics_preset: None,
             log_file: None,
@@ -677,6 +683,7 @@ mod tests {
     fn resolve_perf_path_returns_none_without_perf_feature() {
         let cli = Cli {
             project: None,
+            new: false,
             generate_completion: None,
             diagnostics_preset: None,
             log_file: None,

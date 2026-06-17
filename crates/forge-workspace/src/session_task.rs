@@ -235,7 +235,13 @@ impl SessionTask {
                     if let Some(spawn_key) = self.spawn_key.as_ref()
                         && let Some(workspace) = self.workspace.upgrade()
                     {
-                        maybe_spawn_team_on_connected(&workspace, spawn_key, real_key.as_str());
+                        let force_new = self.domain.lock().spawned_force_new;
+                        maybe_spawn_team_on_connected(
+                            &workspace,
+                            spawn_key,
+                            real_key.as_str(),
+                            force_new,
+                        );
                         maybe_kick_worker_on_connected(&workspace, spawn_key, real_key.as_str());
                     }
                     // First Connected: emit KeyRenamed { from:
@@ -725,6 +731,7 @@ fn maybe_spawn_team_on_connected(
     workspace: &Arc<crate::Workspace>,
     spawn_key: &SessionKey,
     real_session_id: &str,
+    force_new: bool,
 ) {
     let Some(project_name) = parse_project_lead_synth_key(spawn_key) else {
         return;
@@ -756,6 +763,7 @@ fn maybe_spawn_team_on_connected(
         project.path.clone(),
         project.name.clone(),
         project.team.clone(),
+        force_new,
     );
 }
 
@@ -925,7 +933,9 @@ pub fn on_connected_for_test(
     synth_key: &SessionKey,
     real_session_id: &str,
 ) {
-    maybe_spawn_team_on_connected(workspace, synth_key, real_session_id);
+    // Normal (non-`--new`) Connected simulation; the force-new cascade
+    // is exercised directly against spawn_team_for_lead_with_catalog_scan.
+    maybe_spawn_team_on_connected(workspace, synth_key, real_session_id, false);
     maybe_kick_worker_on_connected(workspace, synth_key, real_session_id);
 }
 

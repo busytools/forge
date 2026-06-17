@@ -187,6 +187,7 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
         status: AppStatus::Connecting,
         should_quit: false,
         exit_error: None,
+        start_new_run: cli.new,
         workspace: Some(workspace),
         #[rustfmt::skip] #[cfg(feature = "testing")] test_dispatched_permission_outcomes: std::cell::RefCell::new(Vec::new()),
         #[rustfmt::skip] #[cfg(feature = "testing")] test_dispatched_question_outcomes: std::cell::RefCell::new(Vec::new()),
@@ -292,10 +293,17 @@ pub fn start_connection(app: &mut App) {
     };
 
     app.connection_started = true;
-    let launch_settings = session_start::session_launch_settings_for_reason(
+    let mut launch_settings = session_start::session_launch_settings_for_reason(
         app,
         session_start::SessionStartReason::Startup,
     );
+    // Boot wave only: --new makes the auto_start leads start fresh
+    // instead of resuming (and cascades to their workers). Stamped on
+    // the shared boot settings so every dispatch below carries it - the
+    // focused project's StartDefault and the rest's SpawnProject alike.
+    // Later click-to-spawn builds its own settings where force_new
+    // defaults false, so it keeps resuming.
+    launch_settings.force_new = app.start_new_run;
 
     // Launchpad branch: the user invoked `forge` without an argv, so
     // no project is focused. Every `auto_start = true` project spawns
@@ -387,6 +395,7 @@ mod tests {
     fn cli_with(project: Option<&str>) -> Cli {
         Cli {
             project: project.map(str::to_owned),
+            new: false,
             generate_completion: None,
             diagnostics_preset: None,
             log_file: None,
@@ -474,5 +483,29 @@ mod tests {
         // invariant the launchpad change cares about is just
         // "argv supplied ⇒ never the launchpad."
         assert_ne!(app.active_view, crate::app::ActiveView::Launchpad);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn create_app_threads_new_flag_onto_start_new_run() {
+        let config_dir = tempfile::tempdir().expect("tempdir");
+        let project_dir = tempfile::tempdir().expect("project tempdir");
+        write_default_forge_toml(config_dir.path(), project_dir.path());
+        let workspace =
+            forge_workspace::Workspace::new(config_dir.path().to_owned()).await.expect("workspace");
+        let mut cli = cli_with(Some("forge-test"));
+        cli.new = true;
+        let local = tokio::task::LocalSet::new();
+        let app = local.run_until(async { super::create_app(&cli, Arc::new(workspace)) }).await;
+        assert!(app.start_new_run, "--new threads onto App.start_new_run");
+    }
+
+    #[test]
+    fn startup_launch_settings_default_force_new_false() {
+        // The boundary: only the boot dispatch stamps force_new. The
+        // builders default it false, so click-to-spawn / launchpad /
+        // peer-spawn (which build their own settings) keep resuming.
+        let app = crate::app::App::test_default();
+        let settings = super::session_launch_settings_for_startup(&app);
+        assert!(!settings.force_new, "non-boot launch settings default force_new=false");
     }
 }
