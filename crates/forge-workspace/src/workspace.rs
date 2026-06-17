@@ -760,7 +760,11 @@ impl Workspace {
                         Some(Self::build_delegation_catalog(&project.name));
                 }
                 let cwd = project.path.to_string_lossy().to_string();
-                if let Some(lead) = self.try_lead_session_id_for(project) {
+                let resume_target = Self::apply_force_new_gate(
+                    self.try_lead_session_id_for(project),
+                    settings.force_new,
+                );
+                if let Some(lead) = resume_target {
                     handle.resume_or_new_session(lead.as_str().to_owned(), cwd, settings)?;
                 } else {
                     handle.new_session(cwd, settings)?;
@@ -773,7 +777,11 @@ impl Workspace {
                         Some(Self::build_delegation_catalog(&project.name));
                 }
                 let cwd = project.path.to_string_lossy().to_string();
-                if let Some(lead) = self.try_lead_session_id_for(project) {
+                let resume_target = Self::apply_force_new_gate(
+                    self.try_lead_session_id_for(project),
+                    settings.force_new,
+                );
+                if let Some(lead) = resume_target {
                     handle.resume_or_new_session(lead.as_str().to_owned(), cwd, settings)?;
                 } else {
                     handle.new_session(cwd, settings)?;
@@ -1655,6 +1663,16 @@ impl Workspace {
         let entries = catalog.get(&key)?;
         let lead = resolve_lead_session(entries)?;
         Some(SessionKey::from_session_id(lead.session_id.clone()))
+    }
+
+    /// Resume target for a project-rooted spawn: the project's catalog
+    /// `lead`, unless `--new` (`force_new`) forces a fresh session.
+    /// `Some(lead)` => resume that session; `None` => start fresh
+    /// (`new_session`). `force_new` overrides a present lead - that is
+    /// what makes the boot wave's leads come up fresh under `--new`,
+    /// while every non-boot spawn leaves `force_new` false and resumes.
+    fn apply_force_new_gate(lead: Option<SessionKey>, force_new: bool) -> Option<SessionKey> {
+        if force_new { None } else { lead }
     }
 
     /// Locate a `ProjectView`-like (`LoadedProject`) by `name` from
@@ -3852,6 +3870,22 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::tempdir;
+
+    #[test]
+    fn force_new_gate_overrides_present_lead() {
+        let lead = SessionKey::from_session_id("lead-uuid");
+        // Normal boot (force_new = false): a resumable catalog lead is
+        // resumed.
+        assert_eq!(Workspace::apply_force_new_gate(Some(lead.clone()), false), Some(lead.clone()),);
+        // `--new` (force_new = true): the present lead is skipped, so
+        // the spawn falls to new_session - this is what makes
+        // `forge <project> --new` (which boots the focused lead via
+        // StartDefault -> the same gate) come up fresh.
+        assert_eq!(Workspace::apply_force_new_gate(Some(lead), true), None);
+        // No catalog lead: fresh either way.
+        assert_eq!(Workspace::apply_force_new_gate(None, false), None);
+        assert_eq!(Workspace::apply_force_new_gate(None, true), None);
+    }
 
     fn make_workspace_dir() -> tempfile::TempDir {
         let dir = tempdir().expect("tempdir");
