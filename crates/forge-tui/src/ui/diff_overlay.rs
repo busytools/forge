@@ -4,8 +4,8 @@
 //! `🦉` click. One continuous top-to-bottom scroll of every changed
 //! file (flat git order), GitHub-style: a FILES jump rail on the left
 //! (hidden below 120 cols, body then full-width) and the diff body on
-//! the right. Each file is introduced by a sticky header (caret + path
-//! + status badge + `+N -M`) that pins at the top of the viewport
+//! the right. Each file is introduced by a sticky header (caret, path,
+//! status badge, `+N -M` counts) that pins at the top of the viewport
 //! while its body scrolls beneath it. Unified (one column) is the
 //! default; `t` flips the whole document to split (side-by-side).
 //! Long lines soft-wrap; deleted files collapse to a one-line notice.
@@ -490,47 +490,64 @@ fn render_separator(frame: &mut Frame, area: Rect) {
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-/// Render a one-line footer along the bottom edge showing the
-/// pending comment count + key hints. Painted over the last row of
-/// `area`; the body Paragraph occupies the same row but Paragraph's
-/// last-line clipping inside a Layout still produces overlap-free
-/// output because we paint after it.
+/// Render the pinned key-hints bar along the bottom edge: scroll /
+/// page / `t` toggle / click-to-comment / click-to-jump / Esc, with
+/// the current mode (unified / split) right-justified. With a comment
+/// editor open it shows the editor's Enter/Esc hints instead. Painted
+/// over the last row of `area`, after the body, so it never overlaps.
 fn render_footer(frame: &mut Frame, area: Rect, overlay: &DiffOverlayState) {
     if area.height < 2 {
         return;
     }
     let footer_rect = Rect { x: area.x, y: area.y + area.height - 1, width: area.width, height: 1 };
-    let count = overlay.comments.len();
     let dim = Style::default().fg(theme::DIM);
+    let orange = Style::default().fg(theme::RUST_ORANGE);
+    let count = overlay.comments.len();
     let mut spans = vec![Span::raw("  ")];
     if count > 0 {
         spans.push(Span::styled(
             format!("{count} comment{}", if count == 1 { "" } else { "s" }),
-            Style::default().fg(theme::RUST_ORANGE),
+            orange,
         ));
         spans.push(Span::styled(" pending  ·  ", dim));
     }
     if overlay.active_input.is_some() {
-        spans.push(Span::styled("Enter ", dim));
-        spans.push(Span::styled("save", Style::default().fg(theme::RUST_ORANGE)));
-        spans.push(Span::styled("   ·  ", dim));
-        spans.push(Span::styled("Esc ", dim));
-        spans.push(Span::styled("cancel input", Style::default().fg(theme::RUST_ORANGE)));
+        spans.push(Span::styled("Enter ", orange));
+        spans.push(Span::styled("save", dim));
+        spans.push(Span::styled("  ·  ", dim));
+        spans.push(Span::styled("Esc ", orange));
+        spans.push(Span::styled("cancel input", dim));
     } else {
-        spans.push(Span::styled("click a diff line ", dim));
-        spans.push(Span::styled("to comment", Style::default().fg(theme::RUST_ORANGE)));
-        spans.push(Span::styled("   ·  ", dim));
-        spans.push(Span::styled("← / →  ", dim));
-        spans.push(Span::styled("scroll", Style::default().fg(theme::RUST_ORANGE)));
-        spans.push(Span::styled("   ·  ", dim));
-        if count > 0 {
-            spans.push(Span::styled("Esc ", dim));
-            spans.push(Span::styled("submit & close", Style::default().fg(theme::RUST_ORANGE)));
-        } else {
-            spans.push(Span::styled("Esc ", dim));
-            spans.push(Span::styled("close", Style::default().fg(theme::RUST_ORANGE)));
+        let close_label = if count > 0 { "save & close" } else { "close" };
+        let hints: [(&str, &str); 6] = [
+            ("\u{2191}\u{2193}", "scroll"),
+            ("PgUp/Dn", "page"),
+            ("t", "split/unified"),
+            ("click line", "comment"),
+            ("click file", "jump"),
+            ("Esc", close_label),
+        ];
+        for (idx, (key, label)) in hints.iter().enumerate() {
+            if idx > 0 {
+                spans.push(Span::styled("  ·  ", dim));
+            }
+            spans.push(Span::styled(format!("{key} "), orange));
+            spans.push(Span::styled(*label, dim));
         }
     }
+    // Right-justify the current mode.
+    let mode = match overlay.view_mode {
+        DiffViewMode::Unified => "unified",
+        DiffViewMode::Split => "split",
+    };
+    let left_width: usize = spans.iter().map(Span::width).sum();
+    let pad = usize::from(area.width)
+        .saturating_sub(left_width)
+        .saturating_sub(mode.width())
+        .saturating_sub(2);
+    spans.push(Span::raw(" ".repeat(pad)));
+    spans.push(Span::styled(mode, orange));
+    spans.push(Span::raw(" "));
     frame.render_widget(Paragraph::new(Line::from(spans)), footer_rect);
 }
 

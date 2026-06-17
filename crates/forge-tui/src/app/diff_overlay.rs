@@ -800,8 +800,57 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
         }
         return;
     }
-    if key.code == KeyCode::Esc {
-        close_with_submit(app);
+    match key.code {
+        KeyCode::Esc => close_with_submit(app),
+        KeyCode::Char('t') => toggle_view_mode(app),
+        KeyCode::Up => scroll_doc(app, false),
+        KeyCode::Down => scroll_doc(app, true),
+        KeyCode::PageUp => scroll_doc_page(app, false),
+        KeyCode::PageDown => scroll_doc_page(app, true),
+        _ => {}
+    }
+}
+
+/// Flip the body layout (unified <-> split) and drop the measured
+/// heights - the two modes have different row counts. The span cache
+/// is layout-independent and stays intact, so the toggle is instant
+/// (no re-highlight).
+fn toggle_view_mode(app: &mut App) {
+    if let Some(overlay) = app.diff_overlay.as_mut() {
+        overlay.view_mode = match overlay.view_mode {
+            DiffViewMode::Unified => DiffViewMode::Split,
+            DiffViewMode::Split => DiffViewMode::Unified,
+        };
+        overlay.invalidate_measured_heights();
+        app.needs_redraw = true;
+    }
+}
+
+/// Step the document scroll by one row. The renderer clamps against
+/// the document height and viewport each frame, so this just nudges
+/// `doc_scroll` and lets render bound it.
+fn scroll_doc(app: &mut App, down: bool) {
+    if let Some(overlay) = app.diff_overlay.as_mut() {
+        overlay.doc_scroll = if down {
+            overlay.doc_scroll.saturating_add(1)
+        } else {
+            overlay.doc_scroll.saturating_sub(1)
+        };
+        app.needs_redraw = true;
+    }
+}
+
+/// Page the document scroll by roughly a viewport (the last rendered
+/// frame height minus the hint-bar row). Render clamps the result.
+fn scroll_doc_page(app: &mut App, down: bool) {
+    let page = u32::from(app.cached_frame_area.height.saturating_sub(1)).max(1);
+    if let Some(overlay) = app.diff_overlay.as_mut() {
+        overlay.doc_scroll = if down {
+            overlay.doc_scroll.saturating_add(page)
+        } else {
+            overlay.doc_scroll.saturating_sub(page)
+        };
+        app.needs_redraw = true;
     }
 }
 
@@ -1598,6 +1647,31 @@ mod tests {
         let effect = handle_left_click(&mut state, 60, 4, 160); // left half
         assert!(effect.redraw);
         assert_eq!(state.active_input.as_ref().map(|i| i.key), Some(key));
+    }
+
+    #[test]
+    fn t_key_toggles_view_mode_and_clears_height_cache() {
+        let mut app = App::test_default();
+        let mut state = sample_state();
+        state.measured_heights = vec![Some(10), Some(4)];
+        app.diff_overlay = Some(state);
+        set_active_view(&mut app, ActiveView::Diff);
+        handle_key(&mut app, KeyEvent::from(KeyCode::Char('t')));
+        let o = app.diff_overlay.as_ref().expect("overlay");
+        assert_eq!(o.view_mode, DiffViewMode::Split);
+        assert!(
+            o.measured_heights.iter().all(Option::is_none),
+            "height cache invalidated on toggle",
+        );
+    }
+
+    #[test]
+    fn down_key_advances_doc_scroll() {
+        let mut app = App::test_default();
+        app.diff_overlay = Some(sample_state());
+        set_active_view(&mut app, ActiveView::Diff);
+        handle_key(&mut app, KeyEvent::from(KeyCode::Down));
+        assert_eq!(app.diff_overlay.as_ref().expect("overlay").doc_scroll, 1);
     }
 
     #[test]
