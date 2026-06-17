@@ -1,27 +1,28 @@
 //! Renderer for [`crate::app::ActiveView::Diff`].
 //!
 //! Full-screen takeover triggered by `/diff` or the Inspector GIT
-//! `🦉` click. Two-pane layout with chrome mirroring the Projects
-//! pane: FILES rail on the left (banner + DIM rule + 2-col content
-//! indent), DIFF body on the right (sibling banner showing the
-//! currently-viewed file's path + per-file `+N -M` totals when
-//! non-zero, same rule pattern). The two rules sit at the same
-//! y-position so the `│` separator interrupts what visually reads
-//! as one continuous line.
+//! `🦉` click. One continuous top-to-bottom scroll of every changed
+//! file (flat git order), GitHub-style: a FILES jump rail on the left
+//! (hidden below 120 cols, body then full-width) and the diff body on
+//! the right. Each file is introduced by a sticky header (caret, path,
+//! status badge, `+N -M` counts) that pins at the top of the viewport
+//! while its body scrolls beneath it. Unified (one column) is the
+//! default; `t` flips the whole document to split (side-by-side).
+//! Long lines soft-wrap; deleted files collapse to a one-line notice.
 //!
-//! The body itself renders a GitHub-style split (side-by-side) view:
-//! left column is the OLD file (context + removed), right column is
-//! the NEW file (context + added). Per-line syntax highlighting
-//! attaches via [`crate::ui::highlight::LineHighlighter`], one
-//! instance per (file, side) so multi-line constructs (strings,
-//! block comments) carry state across hunk lines on the same side.
+//! Per-line syntax highlighting reuses
+//! [`crate::ui::highlight::LineHighlighter`] - two stateful passes per
+//! file (old side: context + removed; new side: context + added) run
+//! once on window-entry and cached as unwrapped spans, so a scroll
+//! never re-runs syntect. Heights are measured lazily (with soft-wrap)
+//! for the visible window and cached; off-screen files contribute a
+//! cheap estimate to the scrollbar math until scrolled near.
 //!
 //! Click-to-comment lands here: `body_keys` is the parallel
 //! per-rendered-row index the click handler reads to resolve
-//! `mouse.row` → `BodyRowKey`. The split-row variant carries both
-//! column keys; the click handler picks left/right by comparing
-//! the click column against the pane midpoint. Comment chips (💬
-//! `L<line>`) render one row each after their anchor line; the
+//! `mouse.row` → `BodyRowKey`. In unified a click anywhere on a row
+//! opens the comment; in split the handler picks the old/new side by
+//! the click column. Comment chips render after their anchor line; the
 //! active editor's TextArea expands inline below its anchor.
 
 mod pairing;
@@ -29,7 +30,7 @@ mod pairing;
 use forge_workspace::env::git_diff::hunks::{DiffLineKind, FileHunks, FileStatus, Hunk};
 
 use crate::app::diff_overlay::{
-    ActiveCommentInput, BODY_HEAD_ROWS, BodyRowKey, HunkComment, LineKey, RailRowKey,
+    ActiveCommentInput, BodyRowKey, DiffViewMode, FileHighlight, HunkComment, LineKey, RailRowKey,
     rail_width_for,
 };
 use pairing::{PairedDiffRow, pair_hunk_lines};
@@ -45,117 +46,127 @@ use crate::app::diff_overlay::DiffOverlayState;
 use crate::ui::highlight::LineHighlighter;
 use crate::ui::theme;
 
-/// Minimum terminal width to render the split view. Below this we
-/// show a "resize" notice - the body needs room for the rail plus
-/// two columns of readable code, and squeezing harder loses more
-/// than it saves.
+/// Minimum body width (in columns) for the side-by-side split view -
+/// two columns of readable code need the room. Unified renders at any
+/// width (it soft-wraps), so below this the split toggle silently
+/// falls back to unified rather than blocking the overlay.
 const MIN_WIDTH_FOR_SPLIT: u16 = 100;
+
+/// The layout to actually render: the user's stored choice, except a
+/// body narrower than [`MIN_WIDTH_FOR_SPLIT`] forces unified (split's
+/// two columns don't fit). The stored `view_mode` is untouched, so
+/// widening the pane restores split.
+fn effective_view_mode(stored: DiffViewMode, pane_width: u16) -> DiffViewMode {
+    if pane_width < MIN_WIDTH_FOR_SPLIT { DiffViewMode::Unified } else { stored }
+}
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
     app.cached_frame_area = area;
 
-    let Some(overlay) = app.diff_overlay.as_ref() else {
+    if app.diff_overlay.is_none() {
         render_missing_state(frame, area);
         return;
-    };
-
-    if area.width < MIN_WIDTH_FOR_SPLIT {
-        render_too_narrow_notice(frame, area, app);
-        return;
-    }
-    let rail_width = rail_width_for(area.width);
-    if rail_width == 0 {
-        // Defensive: `rail_width_for` returning 0 implies the area is
-        // narrower than MIN_WIDTH_FOR_SPLIT would already have caught,
-        // but keep the bail for safety.
-        render_too_narrow_notice(frame, area, app);
-        return;
     }
 
-    // Reserve the bottom row of the overlay for the footer (key
-    // hints + comment count). Without this, the body Paragraph
-    // would paint into that row first and the footer would draw
-    // on top, visually overwriting whatever diff content was the
-    // last visible line.
+    // Reserve the bottom row for the key-hints bar.
     let usable_height = area.height.saturating_sub(1);
     let usable_area = Rect { x: area.x, y: area.y, width: area.width, height: usable_height };
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(rail_width), Constraint::Length(1), Constraint::Min(0)])
-        .split(usable_area);
-    let rail_area = chunks[0];
-    let sep_area = chunks[1];
-    let pane_area = chunks[2];
 
-    // Short-circuit on a too-short pane: skip building the body
-    // lines (allocating Vec<Line> + per-line spans only to drop
-    // them is wasted work) and surface a "terminal too short"
-    // notice so the user knows why the body is empty.
-    if pane_area.height < 3 {
-        render_rail(frame, rail_area, app);
-        render_separator(frame, sep_area);
-        if pane_area.height >= 1 {
-            frame.render_widget(
-                Paragraph::new("  Terminal too short - resize and re-open /diff.")
-                    .style(Style::default().fg(theme::STATUS_WARNING)),
-                pane_area,
-            );
-        }
-        // Stash geometry even on the too-short path so a click that
-        // races a resize back-up doesn't read stale dimensions.
+    // The jump rail shows at >= 120 cols (`rail_width_for`); below that
+    // it hides and the continuous body takes the full width.
+    let rail_width = rail_width_for(area.width);
+    let (rail_area, sep_area, pane_area) = if rail_width > 0 {
+        let chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Length(rail_width),
+                Constraint::Length(1),
+                Constraint::Min(0),
+            ])
+            .split(usable_area);
+        (Some(chunks[0]), Some(chunks[1]), chunks[2])
+    } else {
+        (None, None, usable_area)
+    };
+
+    if pane_area.height == 0 {
         if let Some(o) = app.diff_overlay.as_mut() {
-            o.pane_origin_row = pane_area.y;
-            o.pane_origin_col = pane_area.x;
-            o.pane_width = pane_area.width;
             o.body_keys.clear();
             o.body_head_rows = 0;
         }
         return;
     }
 
-    // Build the body line list up-front so we know its total
-    // height; clamp body_scroll against (total - visible_tail) so
-    // a wheel-past-end leaves a useful one-screen-of-tail visible.
-    // Banner + rule + blank are PINNED - they don't scroll with the
-    // body, so the diff target / per-file totals stay visible while
-    // the user pages through hunks.
-    let (body_lines, body_keys) = build_pane_lines(overlay, pane_area);
-    let head_count = BODY_HEAD_ROWS.min(body_lines.len());
-    let tail_count = body_lines.len().saturating_sub(head_count);
-    let head_height = u16::try_from(head_count).unwrap_or(u16::MAX);
-    let tail_height = pane_area.height.saturating_sub(head_height);
-    let max_offset = tail_count.saturating_sub(usize::from(tail_height));
-    let max_offset_u16 = u16::try_from(max_offset).unwrap_or(u16::MAX);
-    let body_scroll = if let Some(overlay_mut) = app.diff_overlay.as_mut() {
-        let clamped = overlay_mut.body_scroll.min(max_offset_u16);
-        overlay_mut.body_scroll = clamped;
-        overlay_mut.body_keys = body_keys;
-        overlay_mut.body_head_rows = BODY_HEAD_ROWS;
-        overlay_mut.pane_origin_row = pane_area.y;
-        overlay_mut.pane_origin_col = pane_area.x;
-        overlay_mut.pane_width = pane_area.width;
-        clamped
-    } else {
-        0
-    };
+    // A resize changes every file's wrapped row count, so the cached
+    // heights are stale. Drop them before the offset table reads them
+    // (the span cache is width-independent and stays put).
+    if let Some(o) = app.diff_overlay.as_mut() {
+        o.invalidate_heights_if_width_changed(pane_area.width);
+    }
 
-    render_rail(frame, rail_area, app);
-    render_separator(frame, sep_area);
+    // 1. Offset table (measured-or-estimate), clamp the document
+    //    scroll, find the file at the top of the viewport + the row
+    //    into it.
     let Some(overlay) = app.diff_overlay.as_ref() else { return };
-    // Split into pinned head + scrolling tail.
-    let (head, tail) = body_lines.split_at(head_count);
+    let viewport_rows = u32::from(pane_area.height);
+    let offsets = overlay.doc_offsets();
+    let max_scroll = offsets.total.saturating_sub(viewport_rows);
+    let doc_scroll = overlay.doc_scroll.min(max_scroll);
+    let first_visible = offsets.file_at_row(doc_scroll);
+    let local_offset =
+        doc_scroll.saturating_sub(offsets.starts.get(first_visible).copied().unwrap_or(0));
+
+    // 2. Populate the height + span caches for the window of files
+    //    overlapping the viewport (lazy on entry), storing the clamped
+    //    scroll.
+    if let Some(o) = app.diff_overlay.as_mut() {
+        o.doc_scroll = doc_scroll;
+        populate_window_cache(o, pane_area.width, viewport_rows, first_visible, local_offset);
+    }
+
+    // 3. Build the visible body from the populated caches.
+    let Some(overlay) = app.diff_overlay.as_ref() else { return };
+    let ContinuousBody { lines, keys, tail_scroll } = build_continuous_body(
+        overlay,
+        pane_area.width,
+        pane_area.height,
+        first_visible,
+        local_offset,
+    );
+
+    // 4. Stash geometry + the hit-test scroll for the click handler.
+    if let Some(o) = app.diff_overlay.as_mut() {
+        o.body_keys = keys;
+        o.body_head_rows = 1;
+        o.body_tail_scroll = tail_scroll;
+        o.pane_origin_row = pane_area.y;
+        o.pane_origin_col = pane_area.x;
+        o.pane_width = pane_area.width;
+    }
+
+    // 5. Draw: rail (if shown), separator, the pinned sticky header +
+    //    the scrolling tail beneath it, then the key-hints bar.
+    if let (Some(rail_area), Some(sep_area)) = (rail_area, sep_area) {
+        render_rail(frame, rail_area, app);
+        render_separator(frame, sep_area);
+    }
+    let Some(overlay) = app.diff_overlay.as_ref() else { return };
+    let head_count = 1.min(lines.len());
+    let head_height = u16::try_from(head_count).unwrap_or(1);
+    let (head, tail) = lines.split_at(head_count);
     let head_rect =
         Rect { x: pane_area.x, y: pane_area.y, width: pane_area.width, height: head_height };
     let tail_rect = Rect {
         x: pane_area.x,
         y: pane_area.y.saturating_add(head_height),
         width: pane_area.width,
-        height: tail_height,
+        height: pane_area.height.saturating_sub(head_height),
     };
     frame.render_widget(Paragraph::new(head.to_vec()), head_rect);
-    frame.render_widget(Paragraph::new(tail.to_vec()).scroll((body_scroll, 0)), tail_rect);
-    render_footer(frame, area, overlay);
+    let tail_scroll_u16 = u16::try_from(tail_scroll).unwrap_or(u16::MAX);
+    frame.render_widget(Paragraph::new(tail.to_vec()).scroll((tail_scroll_u16, 0)), tail_rect);
+    render_footer(frame, area, overlay, effective_view_mode(overlay.view_mode, pane_area.width));
 }
 
 fn render_missing_state(frame: &mut Frame, area: Rect) {
@@ -179,6 +190,9 @@ fn render_rail(frame: &mut Frame, area: Rect, app: &mut App) {
     }
     let Some(overlay) = app.diff_overlay.as_ref() else { return };
     let inner_width = usize::from(area.width.saturating_sub(4));
+    // Highlight the leaf whose document range owns the top of the
+    // viewport - the same file the sticky header pins.
+    let current_idx = overlay.doc_offsets().file_at_row(overlay.doc_scroll);
 
     // Build the full row list (banner + rule + blank + tree rows +
     // optional untracked notice). We materialise everything because
@@ -194,7 +208,16 @@ fn render_rail(frame: &mut Frame, area: Rect, app: &mut App) {
     all_keys.push(RailRowKey::Blank);
 
     let tree = build_rail_tree(&overlay.files);
-    walk_rail_tree(&tree, "", true, &mut all_lines, &mut all_keys, overlay, inner_width);
+    walk_rail_tree(
+        &tree,
+        "",
+        true,
+        &mut all_lines,
+        &mut all_keys,
+        overlay,
+        current_idx,
+        inner_width,
+    );
 
     if overlay.untracked_suppressed > 0 {
         // Surface the cap overflow so a fresh-repo state with many
@@ -335,12 +358,23 @@ fn walk_rail_tree(
     lines: &mut Vec<Line<'static>>,
     keys: &mut Vec<RailRowKey>,
     overlay: &DiffOverlayState,
+    current_idx: usize,
     inner_width: usize,
 ) {
     let count = node.children.len();
     for (idx, child) in node.children.iter().enumerate() {
         let is_last = idx + 1 == count;
-        emit_rail_node(child, prefix, is_top_level, is_last, lines, keys, overlay, inner_width);
+        emit_rail_node(
+            child,
+            prefix,
+            is_top_level,
+            is_last,
+            lines,
+            keys,
+            overlay,
+            current_idx,
+            inner_width,
+        );
     }
 }
 
@@ -352,6 +386,7 @@ fn emit_rail_node(
     lines: &mut Vec<Line<'static>>,
     keys: &mut Vec<RailRowKey>,
     overlay: &DiffOverlayState,
+    current_idx: usize,
     inner_width: usize,
 ) {
     let connector = if is_top_level {
@@ -370,7 +405,7 @@ fn emit_rail_node(
             keys.push(RailRowKey::Directory);
         }
         Some(leaf) => {
-            let is_current = overlay.current_file_idx == leaf.file_idx;
+            let is_current = leaf.file_idx == current_idx;
             let comment_count = overlay.comment_counts.get(leaf.file_idx).copied().unwrap_or(0);
             lines.push(rail_file_row(
                 &line_prefix,
@@ -404,6 +439,7 @@ fn emit_rail_node(
             lines,
             keys,
             overlay,
+            current_idx,
             inner_width,
         );
     }
@@ -463,84 +499,308 @@ fn render_separator(frame: &mut Frame, area: Rect) {
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-/// Render a one-line footer along the bottom edge showing the
-/// pending comment count + key hints. Painted over the last row of
-/// `area`; the body Paragraph occupies the same row but Paragraph's
-/// last-line clipping inside a Layout still produces overlap-free
-/// output because we paint after it.
-fn render_footer(frame: &mut Frame, area: Rect, overlay: &DiffOverlayState) {
+/// Render the pinned key-hints bar along the bottom edge: scroll /
+/// page / `t` toggle / click-to-comment / click-to-jump / Esc, with
+/// the current mode (unified / split) right-justified. With a comment
+/// editor open it shows the editor's Enter/Esc hints instead. Painted
+/// over the last row of `area`, after the body, so it never overlaps.
+fn render_footer(frame: &mut Frame, area: Rect, overlay: &DiffOverlayState, mode: DiffViewMode) {
     if area.height < 2 {
         return;
     }
     let footer_rect = Rect { x: area.x, y: area.y + area.height - 1, width: area.width, height: 1 };
-    let count = overlay.comments.len();
     let dim = Style::default().fg(theme::DIM);
+    let orange = Style::default().fg(theme::RUST_ORANGE);
+    let count = overlay.comments.len();
     let mut spans = vec![Span::raw("  ")];
     if count > 0 {
         spans.push(Span::styled(
             format!("{count} comment{}", if count == 1 { "" } else { "s" }),
-            Style::default().fg(theme::RUST_ORANGE),
+            orange,
         ));
         spans.push(Span::styled(" pending  ·  ", dim));
     }
     if overlay.active_input.is_some() {
-        spans.push(Span::styled("Enter ", dim));
-        spans.push(Span::styled("save", Style::default().fg(theme::RUST_ORANGE)));
-        spans.push(Span::styled("   ·  ", dim));
-        spans.push(Span::styled("Esc ", dim));
-        spans.push(Span::styled("cancel input", Style::default().fg(theme::RUST_ORANGE)));
+        spans.push(Span::styled("Enter ", orange));
+        spans.push(Span::styled("save", dim));
+        spans.push(Span::styled("  ·  ", dim));
+        spans.push(Span::styled("Esc ", orange));
+        spans.push(Span::styled("cancel input", dim));
     } else {
-        spans.push(Span::styled("click a diff line ", dim));
-        spans.push(Span::styled("to comment", Style::default().fg(theme::RUST_ORANGE)));
-        spans.push(Span::styled("   ·  ", dim));
-        spans.push(Span::styled("← / →  ", dim));
-        spans.push(Span::styled("scroll", Style::default().fg(theme::RUST_ORANGE)));
-        spans.push(Span::styled("   ·  ", dim));
-        if count > 0 {
-            spans.push(Span::styled("Esc ", dim));
-            spans.push(Span::styled("submit & close", Style::default().fg(theme::RUST_ORANGE)));
-        } else {
-            spans.push(Span::styled("Esc ", dim));
-            spans.push(Span::styled("close", Style::default().fg(theme::RUST_ORANGE)));
+        let close_label = if count > 0 { "save & close" } else { "close" };
+        let hints: [(&str, &str); 6] = [
+            ("\u{2191}\u{2193}", "scroll"),
+            ("PgUp/Dn", "page"),
+            ("t", "split/unified"),
+            ("click line", "comment"),
+            ("click file", "jump"),
+            ("Esc", close_label),
+        ];
+        for (idx, (key, label)) in hints.iter().enumerate() {
+            if idx > 0 {
+                spans.push(Span::styled("  ·  ", dim));
+            }
+            spans.push(Span::styled(format!("{key} "), orange));
+            spans.push(Span::styled(*label, dim));
         }
     }
+    // Right-justify the effective mode (what's actually rendered -
+    // a narrow pane shows unified even when split is the stored choice).
+    let mode_label = match mode {
+        DiffViewMode::Unified => "unified",
+        DiffViewMode::Split => "split",
+    };
+    let left_width: usize = spans.iter().map(Span::width).sum();
+    let pad = usize::from(area.width)
+        .saturating_sub(left_width)
+        .saturating_sub(mode_label.width())
+        .saturating_sub(2);
+    spans.push(Span::raw(" ".repeat(pad)));
+    spans.push(Span::styled(mode_label, orange));
+    spans.push(Span::raw(" "));
     frame.render_widget(Paragraph::new(Line::from(spans)), footer_rect);
 }
 
-/// Build the right pane's body lines (banner + rule + per-hunk
-/// content). Lifted out of the renderer so the top-level `render`
-/// can compute total height and clamp `body_scroll` before drawing.
-/// Returns the lines + a parallel `BodyRowKey` vector indexed by
-/// row offset - the click handler reads it to resolve a mouse y
-/// coordinate into an action.
-fn build_pane_lines(
-    overlay: &DiffOverlayState,
-    area: Rect,
-) -> (Vec<Line<'static>>, Vec<BodyRowKey>) {
+/// One logical row of the unified body, before syntax highlighting
+/// and soft-wrap. The renderer turns each into one or more visual
+/// `Line`s - styled spans pulled from the per-file highlight cache,
+/// then wrapped to the content width - stamping `key` onto every
+/// visual row (including wrap continuations) so a click anywhere on
+/// the logical line resolves to its `LineKey`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct UnifiedRow {
+    pub key: BodyRowKey,
+    /// `'+'` added, `'-'` removed, `' '` context or hunk header.
+    pub sign: char,
+    /// Gutter line number: new-side for added / context, old-side for
+    /// removed; `None` for hunk headers.
+    pub line_no: Option<u32>,
+    /// Raw line text (no marker). For a hunk header, the `@@ … @@`
+    /// string.
+    pub text: String,
+}
+
+/// Flatten one file's hunks into the unified body's logical rows: a
+/// `@@ … @@` header row per hunk, then one row per diff line in
+/// source order (which is already removed-then-added within a change
+/// block). Pure - no highlighting, no wrap; those happen lazily at
+/// render time against the per-file span cache + content width.
+///
+/// `BodyRowKey` keying mirrors the split pairing so the existing
+/// click hit-test resolves: added / context carry the key on the
+/// right, removed on the left. In unified the row is one column, so
+/// the renderer's click handler resolves `left.or(right)` - either
+/// side opens the comment.
+pub(crate) fn unified_rows(file_idx: usize, file: &FileHunks) -> Vec<UnifiedRow> {
+    let mut rows = Vec::new();
+    for (hunk_idx, hunk) in file.hunks.iter().enumerate() {
+        rows.push(UnifiedRow {
+            key: BodyRowKey::HunkHeader { file_idx, hunk_idx },
+            sign: ' ',
+            line_no: None,
+            text: format!(
+                "@@ -{},{} +{},{} @@",
+                hunk.old_start, hunk.old_count, hunk.new_start, hunk.new_count
+            ),
+        });
+        for (line_idx, line) in hunk.lines.iter().enumerate() {
+            let key = LineKey { file_idx, hunk_idx, line_idx };
+            let (sign, line_no, body_key) = match line.kind {
+                DiffLineKind::Added => {
+                    ('+', line.new_line, BodyRowKey::HunkRow { left: None, right: Some(key) })
+                }
+                DiffLineKind::Removed => {
+                    ('-', line.old_line, BodyRowKey::HunkRow { left: Some(key), right: None })
+                }
+                DiffLineKind::Context => {
+                    (' ', line.new_line, BodyRowKey::HunkRow { left: None, right: Some(key) })
+                }
+            };
+            rows.push(UnifiedRow { key: body_key, sign, line_no, text: line.text.clone() });
+        }
+    }
+    rows
+}
+
+/// Content-column width for a unified row: the pane minus the leading
+/// 2-col indent, the line-number gutter, and the 3-col sign zone
+/// (space + sign + space). Wrap continuations align at this same
+/// column, so they wrap at the same width.
+fn unified_content_width(pane_width: u16, gutter_width: usize) -> usize {
+    usize::from(pane_width).saturating_sub(2).saturating_sub(gutter_width).saturating_sub(3)
+}
+
+/// Measured document height of one file in rows: the sticky header (1)
+/// plus the exact rows the renderer emits for the body. Built by
+/// running the same `push_file_body` the renderer uses into a scratch
+/// buffer and counting, so the measured height never drifts from what
+/// is drawn - it accounts for soft-wrap (`wrap_spans_to_width`), split
+/// pairing, the collapsed-deleted notice, and any inline comment chips
+/// or open editor anchored in the file. The file's highlight spans
+/// must be cached first (a collapsed deleted file needs none).
+fn file_height(overlay: &DiffOverlayState, file_idx: usize, pane_width: u16) -> u32 {
+    let comments_by_key = index_comments_by_key(&overlay.comments);
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut keys: Vec<BodyRowKey> = Vec::new();
-    lines.push(pane_banner_row(overlay));
-    keys.push(BodyRowKey::Banner);
-    lines.push(rule_row(area.width));
-    keys.push(BodyRowKey::Rule);
-    lines.push(Line::default());
-    keys.push(BodyRowKey::Blank);
+    // include_header = false: the sticky header is the pinned row,
+    // counted as the +1 below, not part of the scrolling body.
+    push_file_body(overlay, file_idx, false, pane_width, &comments_by_key, &mut lines, &mut keys);
+    1u32.saturating_add(u32::try_from(lines.len()).unwrap_or(u32::MAX))
+}
 
-    // Precedence is intentional: when the scanner failed we MUST
-    // show the failure regardless of whether any files came back.
-    // The partial-failure case is `name-status` ran fine (so we
-    // have file entries) but `--no-ext-diff` failed (so every
-    // file's `hunks` is empty). Without this guard the renderer
-    // would fall into `Some(file) if file.hunks.is_empty()` and
-    // print "(binary file or no diff content)" - a lie that
-    // trains the user to ignore a real subprocess crash.
+/// Highlight one file's diff lines into unwrapped styled spans,
+/// indexed `[hunk_idx][line_idx]`. Two stateful highlighters track the
+/// old side (context + removed) and new side (context + added)
+/// independently so multi-line constructs colour correctly within
+/// each side - the same per-side pass the split renderer used inline,
+/// now run once and cached. A context line advances both sides but is
+/// stored with its new-side spans (GitHub convention); a context line
+/// is identical text on both sides, so split reuses the same spans for
+/// its old column.
+fn build_file_highlight(file: &FileHunks) -> FileHighlight {
+    let mut old_hl = LineHighlighter::for_path(&file.path);
+    let mut new_hl = LineHighlighter::for_path(&file.path);
+    file.hunks
+        .iter()
+        .map(|hunk| {
+            hunk.lines
+                .iter()
+                .map(|line| match line.kind {
+                    DiffLineKind::Removed => old_hl.highlight(&line.text),
+                    DiffLineKind::Added => new_hl.highlight(&line.text),
+                    DiffLineKind::Context => {
+                        let _ = old_hl.highlight(&line.text);
+                        new_hl.highlight(&line.text)
+                    }
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// Cached spans for one diff line, or an empty slice when the file
+/// isn't cached yet / the key is out of range (defensive - the
+/// renderer populates the cache before reading it).
+fn cached_line_spans(cache: Option<&FileHighlight>, key: LineKey) -> &[Span<'static>] {
+    match cache.and_then(|c| c.get(key.hunk_idx)).and_then(|h| h.get(key.line_idx)) {
+        Some(spans) => spans.as_slice(),
+        None => &[],
+    }
+}
+
+/// Soft-wrap a styled span list into visual rows of at most
+/// `content_width` display columns, splitting a span mid-content when
+/// a token straddles the boundary. Always returns at least one row
+/// (possibly empty). The row count matches [`wrap_count`] for
+/// single-width text, which keeps the measured height and the
+/// rendered rows in step.
+fn wrap_spans_to_width(spans: &[Span<'static>], content_width: usize) -> Vec<Vec<Span<'static>>> {
+    if content_width == 0 {
+        return vec![Vec::new()];
+    }
+    let mut rows: Vec<Vec<Span<'static>>> = Vec::new();
+    let mut current: Vec<Span<'static>> = Vec::new();
+    let mut current_width = 0usize;
+    for span in spans {
+        let mut buf = String::new();
+        for ch in span.content.chars() {
+            let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+            if current_width.saturating_add(ch_width) > content_width {
+                if !buf.is_empty() {
+                    current.push(Span::styled(std::mem::take(&mut buf), span.style));
+                }
+                rows.push(std::mem::take(&mut current));
+                current_width = 0;
+            }
+            buf.push(ch);
+            current_width = current_width.saturating_add(ch_width);
+        }
+        if !buf.is_empty() {
+            current.push(Span::styled(buf, span.style));
+        }
+    }
+    if !current.is_empty() || rows.is_empty() {
+        rows.push(current);
+    }
+    rows
+}
+
+/// Ensure file `idx`'s highlight spans + measured height are cached,
+/// computing them only if absent (lazy on window-entry). Highlight
+/// runs first because `file_height` counts the rendered (wrapped) rows
+/// off those spans. A collapsed deleted file skips the highlight pass -
+/// it shows no diff lines.
+fn ensure_file_cached(overlay: &mut DiffOverlayState, idx: usize, pane_width: u16) {
+    let collapsed = overlay.is_collapsed(idx);
+    if !collapsed
+        && overlay.highlighted.get(idx).is_some_and(Option::is_none)
+        && let Some(file) = overlay.files.get(idx)
+    {
+        let spans = build_file_highlight(file);
+        if let Some(slot) = overlay.highlighted.get_mut(idx) {
+            *slot = Some(spans);
+        }
+    }
+    if overlay.measured_heights.get(idx).copied().flatten().is_none() {
+        let height = file_height(overlay, idx, pane_width);
+        if let Some(slot) = overlay.measured_heights.get_mut(idx) {
+            *slot = Some(height);
+        }
+    }
+}
+
+/// Measure + highlight the window of files overlapping the viewport,
+/// from `first_visible` until the accumulated height covers the rows
+/// needed (the scroll into the first file plus one viewport). Files
+/// past the window keep their cheap estimate until scrolled near.
+fn populate_window_cache(
+    overlay: &mut DiffOverlayState,
+    pane_width: u16,
+    viewport_rows: u32,
+    first_visible: usize,
+    local_offset: u32,
+) {
+    let needed = local_offset.saturating_add(viewport_rows);
+    let mut accumulated = 0u32;
+    let mut idx = first_visible;
+    while idx < overlay.files.len() && accumulated < needed {
+        ensure_file_cached(overlay, idx, pane_width);
+        accumulated = accumulated
+            .saturating_add(overlay.measured_heights.get(idx).copied().flatten().unwrap_or(0));
+        idx = idx.saturating_add(1);
+    }
+}
+
+/// The visible body: `lines[0]` is the pinned sticky header (the file
+/// at the top of the viewport), `lines[1..]` the scrolling tail (that
+/// file's body, then following files). `keys` is parallel. `tail_scroll`
+/// is the `Paragraph::scroll` to apply to the tail.
+struct ContinuousBody {
+    lines: Vec<Line<'static>>,
+    keys: Vec<BodyRowKey>,
+    tail_scroll: usize,
+}
+
+/// Build the continuous body for the current viewport: the pinned
+/// sticky header for `first_visible`, then the scrolling tail starting
+/// from that file's body and walking following files until the
+/// viewport is filled. `local_offset` is the row into `first_visible`'s
+/// extent that sits at the top of the viewport (0 = its header).
+fn build_continuous_body(
+    overlay: &DiffOverlayState,
+    pane_width: u16,
+    viewport_rows: u16,
+    first_visible: usize,
+    local_offset: u32,
+) -> ContinuousBody {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut keys: Vec<BodyRowKey> = Vec::new();
+
+    // Scanner failure trumps everything: surface it regardless of
+    // whether any file entries came back (a partial failure leaves
+    // every file's hunks empty). Spell out `target: agent.env_git` -
+    // the actual tracing-target string an operator would grep for.
     if !overlay.scanner_ok {
-        // Include the target ref so a user who typoed (`/diff develpoment`)
-        // can spot the mistake without dismissing the overlay to scroll
-        // chat. Spell out `target: agent.env_git` because that's the
-        // actual tracing-target string an operator would grep for -
-        // `ENV_GIT` was the const identifier, which doesn't match
-        // anything in the log stream.
         lines.push(Line::from(Span::styled(
             format!(
                 "  Scan failed for `{}` - see tracing logs (target: agent.env_git). Press Esc to retry.",
@@ -549,114 +809,325 @@ fn build_pane_lines(
             Style::default().fg(theme::STATUS_ERROR),
         )));
         keys.push(BodyRowKey::EmptyState);
-        return (lines, keys);
+        return ContinuousBody { lines, keys, tail_scroll: 0 };
     }
-    match overlay.current_file() {
-        None => {
-            lines.push(Line::from(Span::styled(
-                "  (no file selected)",
-                Style::default().fg(theme::DIM),
-            )));
-            keys.push(BodyRowKey::EmptyState);
-        }
-        Some(file) if file.hunks.is_empty() => {
-            // An Untracked file with no hunks comes from one of
-            // the scan_untracked drop paths (size-cap exceeded,
-            // non-regular file, IO error) - all of which log WARN
-            // under the agent.env_git tracing target. The
-            // tracked-file case is a real binary diff from git.
-            // Differentiate so the user knows whether to grep logs
-            // vs accept the answer.
-            let message = if file.status == FileStatus::Untracked {
-                "  (untracked, content not surfaced - see logs (target: agent.env_git))"
-            } else {
-                "  (binary file or no diff content)"
-            };
-            lines.push(Line::from(Span::styled(message, Style::default().fg(theme::DIM))));
-            keys.push(BodyRowKey::EmptyState);
-        }
-        Some(file) => {
-            let file_idx = overlay.current_file_idx;
-            let gutter_width = gutter_width_for(file);
-            // Pre-index saved comments by line key so chip rendering
-            // is O(1) per line instead of O(comments) per line. Net
-            // win once comments > 4 or so; harmless at 0.
-            let comments_by_key = index_comments_by_key(&overlay.comments);
-            // One highlighter per side so multi-line constructs
-            // (strings, block comments) carry state correctly within
-            // each column independently of the other.
-            let mut left_hl = LineHighlighter::for_path(&file.path);
-            let mut right_hl = LineHighlighter::for_path(&file.path);
-            for (hunk_idx, hunk) in file.hunks.iter().enumerate() {
-                if hunk_idx > 0 {
-                    lines.push(Line::default());
-                    keys.push(BodyRowKey::Blank);
+    if overlay.files.is_empty() {
+        lines.push(Line::from(Span::styled("  (no changes)", Style::default().fg(theme::DIM))));
+        keys.push(BodyRowKey::EmptyState);
+        return ContinuousBody { lines, keys, tail_scroll: 0 };
+    }
+
+    let comments_by_key = index_comments_by_key(&overlay.comments);
+
+    // Pinned sticky header = the file owning the top of the viewport.
+    let Some(header_file) = overlay.files.get(first_visible) else {
+        return ContinuousBody { lines, keys, tail_scroll: 0 };
+    };
+    lines.push(file_header_line(header_file, pane_width, overlay.is_collapsed(first_visible)));
+    keys.push(BodyRowKey::FileHeader { file_idx: first_visible });
+
+    // Tail: first_visible's body (its header is pinned, so skip it
+    // here), then following files header-and-body, until we have
+    // enough rows past the tail scroll to fill the viewport.
+    let tail_scroll = usize::try_from(local_offset.saturating_sub(1)).unwrap_or(usize::MAX);
+    let needed = tail_scroll.saturating_add(usize::from(viewport_rows)).saturating_add(1);
+    let mut file_idx = first_visible;
+    while file_idx < overlay.files.len() && keys.len().saturating_sub(1) < needed {
+        push_file_body(
+            overlay,
+            file_idx,
+            file_idx != first_visible,
+            pane_width,
+            &comments_by_key,
+            &mut lines,
+            &mut keys,
+        );
+        file_idx = file_idx.saturating_add(1);
+    }
+
+    ContinuousBody { lines, keys, tail_scroll }
+}
+
+/// Append one file's rows to `lines`/`keys`: optionally its sticky
+/// header (skipped for the top file, whose header is pinned), then the
+/// collapsed notice for an unexpanded deleted file, an empty-state
+/// notice for a binary/untracked file, or the diff body (unified or
+/// split per `view_mode`) reading highlighted spans from the cache.
+fn push_file_body(
+    overlay: &DiffOverlayState,
+    file_idx: usize,
+    include_header: bool,
+    pane_width: u16,
+    comments_by_key: &std::collections::HashMap<LineKey, &HunkComment>,
+    lines: &mut Vec<Line<'static>>,
+    keys: &mut Vec<BodyRowKey>,
+) {
+    let Some(file) = overlay.files.get(file_idx) else { return };
+    if include_header {
+        lines.push(file_header_line(file, pane_width, overlay.is_collapsed(file_idx)));
+        keys.push(BodyRowKey::FileHeader { file_idx });
+    }
+    if overlay.is_collapsed(file_idx) {
+        let removed = file.removed_count();
+        lines.push(Line::from(vec![
+            Span::raw("    "),
+            Span::styled(
+                format!(
+                    "File deleted - {removed} line{} removed",
+                    if removed == 1 { "" } else { "s" }
+                ),
+                Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC),
+            ),
+        ]));
+        keys.push(BodyRowKey::DeletedCollapsed { file_idx });
+        return;
+    }
+    if file.hunks.is_empty() {
+        // An untracked file with no hunks was dropped by one of the
+        // scan_untracked paths (size cap, non-regular, IO error), all
+        // logged WARN under agent.env_git. A tracked file with no
+        // hunks is a real binary diff. Differentiate so the user knows
+        // whether to grep logs or accept the answer.
+        let message = if file.status == FileStatus::Untracked {
+            "    (untracked, content not surfaced - see logs (target: agent.env_git))"
+        } else {
+            "    (binary file or no diff content)"
+        };
+        lines.push(Line::from(Span::styled(message, Style::default().fg(theme::DIM))));
+        keys.push(BodyRowKey::EmptyState);
+        return;
+    }
+    let gutter_width = gutter_width_for(file);
+    let cache = overlay.highlighted.get(file_idx).and_then(Option::as_ref);
+    match effective_view_mode(overlay.view_mode, pane_width) {
+        DiffViewMode::Unified => push_unified_body(
+            overlay,
+            file,
+            file_idx,
+            gutter_width,
+            pane_width,
+            cache,
+            comments_by_key,
+            lines,
+            keys,
+        ),
+        DiffViewMode::Split => push_split_body(
+            overlay,
+            file,
+            file_idx,
+            gutter_width,
+            pane_width,
+            cache,
+            comments_by_key,
+            lines,
+            keys,
+        ),
+    }
+}
+
+/// Append a file's unified body: each hunk's `@@` header, then each
+/// diff line as `[gutter] [sign] [highlighted text]` soft-wrapped to
+/// the content width, with the inline comment chip / editor after the
+/// anchored line.
+fn push_unified_body(
+    overlay: &DiffOverlayState,
+    file: &FileHunks,
+    file_idx: usize,
+    gutter_width: usize,
+    pane_width: u16,
+    cache: Option<&FileHighlight>,
+    comments_by_key: &std::collections::HashMap<LineKey, &HunkComment>,
+    lines: &mut Vec<Line<'static>>,
+    keys: &mut Vec<BodyRowKey>,
+) {
+    let content_width = unified_content_width(pane_width, gutter_width).max(1);
+    for row in unified_rows(file_idx, file) {
+        match row.key {
+            BodyRowKey::HunkHeader { .. } => {
+                lines.push(Line::from(Span::styled(
+                    format!("  {}", row.text),
+                    Style::default().fg(Color::Cyan),
+                )));
+                keys.push(row.key);
+            }
+            BodyRowKey::HunkRow { left, right } => {
+                let line_key = left.or(right);
+                let spans = line_key.map_or(&[][..], |key| cached_line_spans(cache, key));
+                push_unified_diff_rows(&row, spans, gutter_width, content_width, lines, keys);
+                if let Some(key) = line_key {
+                    if let Some(comment) = comments_by_key.get(&key) {
+                        render_comment_chip(comment, key, gutter_width, pane_width, lines, keys);
+                    }
+                    if let Some(input) = overlay.active_input.as_ref().filter(|i| i.key == key) {
+                        render_active_input(
+                            input,
+                            gutter_width,
+                            row.line_no.unwrap_or(0),
+                            pane_width,
+                            lines,
+                            keys,
+                        );
+                    }
                 }
-                lines.push(hunk_header_row(hunk));
-                keys.push(BodyRowKey::HunkHeader { file_idx, hunk_idx });
-                let pairs = pair_hunk_lines(file_idx, hunk_idx, &hunk.lines);
-                for pair in pairs {
-                    let row = split_diff_row(
-                        file,
-                        pair,
-                        gutter_width,
-                        area.width,
-                        usize::from(overlay.body_scroll_x),
-                        &mut left_hl,
-                        &mut right_hl,
-                    );
-                    lines.push(row);
-                    keys.push(BodyRowKey::HunkRow { left: pair.left, right: pair.right });
-                    // Emit chip + active editor for each side that
-                    // has one anchored on it. Context lines point
-                    // both halves at the same LineKey, so dedupe
-                    // before iterating to avoid duplicate chips.
-                    let mut sides: Vec<LineKey> = Vec::new();
-                    if let Some(k) = pair.left {
-                        sides.push(k);
-                    }
-                    if let Some(k) = pair.right
-                        && Some(k) != pair.left
-                    {
-                        sides.push(k);
-                    }
-                    for side_key in sides {
-                        if let Some(c) = comments_by_key.get(&side_key) {
-                            render_comment_chip(
-                                c,
-                                side_key,
-                                gutter_width,
-                                area.width,
-                                &mut lines,
-                                &mut keys,
-                            );
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Push the visual rows for one unified diff line, soft-wrapping its
+/// cached spans to `content_width`. The first row carries the line
+/// number + sign; continuation rows blank both and align the text
+/// under the content column. Every row carries the line's `key` so a
+/// click anywhere on the wrapped line resolves.
+fn push_unified_diff_rows(
+    row: &UnifiedRow,
+    spans: &[Span<'static>],
+    gutter_width: usize,
+    content_width: usize,
+    lines: &mut Vec<Line<'static>>,
+    keys: &mut Vec<BodyRowKey>,
+) {
+    let (sign_color, bg) = unified_sign_style(row.sign);
+    let wrapped = wrap_spans_to_width(spans, content_width);
+    for (seg_idx, segment) in wrapped.into_iter().enumerate() {
+        let gutter = if seg_idx == 0 {
+            match row.line_no {
+                Some(n) => format!("{n:>gutter_width$}"),
+                None => " ".repeat(gutter_width),
+            }
+        } else {
+            " ".repeat(gutter_width)
+        };
+        let sign = if seg_idx == 0 { row.sign } else { ' ' };
+        let cell_style = bg.map_or_else(Style::default, |bg| Style::default().bg(bg));
+        let mut out: Vec<Span<'static>> = vec![
+            Span::raw("  "),
+            Span::styled(gutter, Style::default().fg(theme::DIM)),
+            Span::raw(" "),
+            Span::styled(
+                sign.to_string(),
+                bg.map_or_else(
+                    || Style::default().fg(sign_color),
+                    |bg| Style::default().fg(sign_color).bg(bg),
+                ),
+            ),
+            Span::styled(" ", cell_style),
+        ];
+        for mut span in segment {
+            if let Some(bg) = bg
+                && span.style.bg.is_none()
+            {
+                span.style = span.style.bg(bg);
+            }
+            out.push(span);
+        }
+        lines.push(Line::from(out));
+        keys.push(row.key);
+    }
+}
+
+/// Append a file's split body: each hunk's `@@` header, then each
+/// paired row side-by-side (old | new) reading cached spans, with the
+/// inline comment chip / editor after an anchored line.
+fn push_split_body(
+    overlay: &DiffOverlayState,
+    file: &FileHunks,
+    file_idx: usize,
+    gutter_width: usize,
+    pane_width: u16,
+    cache: Option<&FileHighlight>,
+    comments_by_key: &std::collections::HashMap<LineKey, &HunkComment>,
+    lines: &mut Vec<Line<'static>>,
+    keys: &mut Vec<BodyRowKey>,
+) {
+    for (hunk_idx, hunk) in file.hunks.iter().enumerate() {
+        lines.push(hunk_header_row(hunk));
+        keys.push(BodyRowKey::HunkHeader { file_idx, hunk_idx });
+        for pair in pair_hunk_lines(file_idx, hunk_idx, &hunk.lines) {
+            lines.push(split_diff_row(file, pair, gutter_width, pane_width, cache));
+            keys.push(BodyRowKey::HunkRow { left: pair.left, right: pair.right });
+            // Chip + editor per anchored side; context points both
+            // halves at one key, so dedupe before emitting.
+            let mut sides: Vec<LineKey> = Vec::new();
+            if let Some(k) = pair.left {
+                sides.push(k);
+            }
+            if let Some(k) = pair.right
+                && Some(k) != pair.left
+            {
+                sides.push(k);
+            }
+            for side_key in sides {
+                if let Some(comment) = comments_by_key.get(&side_key) {
+                    render_comment_chip(comment, side_key, gutter_width, pane_width, lines, keys);
+                }
+                if let Some(input) = overlay.active_input.as_ref().filter(|i| i.key == side_key) {
+                    let diff_line = &file.hunks[side_key.hunk_idx].lines[side_key.line_idx];
+                    let anchor_line = match diff_line.kind {
+                        DiffLineKind::Removed => diff_line.old_line.unwrap_or(0),
+                        DiffLineKind::Added | DiffLineKind::Context => {
+                            diff_line.new_line.unwrap_or(0)
                         }
-                        if let Some(input) = overlay.active_input.as_ref()
-                            && input.key == side_key
-                        {
-                            let diff_line = &file.hunks[side_key.hunk_idx].lines[side_key.line_idx];
-                            let anchor_line = match diff_line.kind {
-                                DiffLineKind::Removed => diff_line.old_line.unwrap_or(0),
-                                DiffLineKind::Added | DiffLineKind::Context => {
-                                    diff_line.new_line.unwrap_or(0)
-                                }
-                            };
-                            render_active_input(
-                                input,
-                                gutter_width,
-                                anchor_line,
-                                area.width,
-                                &mut lines,
-                                &mut keys,
-                            );
-                        }
-                    }
+                    };
+                    render_active_input(input, gutter_width, anchor_line, pane_width, lines, keys);
                 }
             }
         }
     }
+}
 
-    (lines, keys)
+/// Colour + optional background tint for a unified row's sign cell:
+/// green/add-tint for `+`, red/del-tint for `-`, dim/none for context.
+fn unified_sign_style(sign: char) -> (Color, Option<Color>) {
+    match sign {
+        '+' => (Color::Green, Some(theme::DIFF_ADDITION_BG)),
+        '-' => (Color::Red, Some(theme::DIFF_DELETION_BG)),
+        _ => (theme::DIM, None),
+    }
+}
+
+/// Sticky file-divider header: caret + path (bold) + status badge,
+/// with the `+N -M` totals right-justified. `collapsed` picks the
+/// `▸` (collapsed) vs `▾` (expanded) caret.
+fn file_header_line(file: &FileHunks, pane_width: u16, collapsed: bool) -> Line<'static> {
+    let caret = if collapsed { "\u{25b8}" } else { "\u{25be}" };
+    let (badge, badge_color) = status_badge(file.status);
+    let mut left: Vec<Span<'static>> = vec![
+        Span::raw("  "),
+        Span::styled(caret, Style::default().fg(theme::DIM)),
+        Span::raw(" "),
+        Span::styled(file.path.clone(), Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw("  "),
+        Span::styled(badge, Style::default().fg(badge_color)),
+    ];
+    let added = file.added_count();
+    let removed = file.removed_count();
+    let counts = format!("+{added} -{removed}");
+    let left_width: usize = left.iter().map(Span::width).sum();
+    let pad = usize::from(pane_width)
+        .saturating_sub(left_width)
+        .saturating_sub(counts.width())
+        .saturating_sub(2);
+    left.push(Span::raw(" ".repeat(pad)));
+    left.push(Span::styled(format!("+{added}"), Style::default().fg(Color::Green)));
+    left.push(Span::raw(" "));
+    left.push(Span::styled(format!("-{removed}"), Style::default().fg(Color::Red)));
+    Line::from(left)
+}
+
+/// Status badge word + colour for a file header.
+fn status_badge(status: FileStatus) -> (&'static str, Color) {
+    match status {
+        FileStatus::Modified => ("modified", theme::RUST_ORANGE),
+        FileStatus::Added => ("added", Color::Green),
+        FileStatus::Deleted => ("deleted", theme::STATUS_ERROR),
+        FileStatus::Renamed => ("renamed", theme::RUST_ORANGE),
+        FileStatus::Copied => ("copied", theme::RUST_ORANGE),
+        FileStatus::Typechange => ("typechange", theme::RUST_ORANGE),
+        FileStatus::Unmerged => ("unmerged", theme::STATUS_ERROR),
+        FileStatus::Untracked => ("untracked", theme::STATUS_WARNING),
+    }
 }
 
 /// Index `comments` by `LineKey` for O(1) chip lookup during row
@@ -930,9 +1401,7 @@ fn split_diff_row(
     pair: PairedDiffRow,
     gutter_width: usize,
     pane_width: u16,
-    scroll_cols: usize,
-    left_hl: &mut LineHighlighter,
-    right_hl: &mut LineHighlighter,
+    cache: Option<&FileHighlight>,
 ) -> Line<'static> {
     // Per-side body width: pane minus 2-col leading indent minus the
     // 3-col divider zone (space + '│' + space). Splits as floor/ceil
@@ -945,9 +1414,8 @@ fn split_diff_row(
     let left_width = usable / 2;
     let right_width = usable - left_width;
 
-    let left = build_split_half(file, pair.left, gutter_width, left_width, scroll_cols, left_hl);
-    let right =
-        build_split_half(file, pair.right, gutter_width, right_width, scroll_cols, right_hl);
+    let left = build_split_half(file, pair.left, gutter_width, left_width, cache);
+    let right = build_split_half(file, pair.right, gutter_width, right_width, cache);
 
     let mut spans: Vec<Span<'static>> = Vec::with_capacity(left.len() + right.len() + 4);
     spans.push(Span::raw("  "));
@@ -961,14 +1429,15 @@ fn split_diff_row(
 
 /// Build one half (left or right) of a split row. `key` of `None`
 /// means this side is blank - fill with spaces sized to match the
-/// other side so columns stay aligned.
+/// other side so columns stay aligned. Text spans come from the
+/// per-file highlight cache (truncated to fit; long lines clip in
+/// split, matching the mockup's `overflow:hidden` columns).
 fn build_split_half(
     file: &FileHunks,
     key: Option<LineKey>,
     gutter_width: usize,
     text_width: usize,
-    scroll_cols: usize,
-    highlighter: &mut LineHighlighter,
+    cache: Option<&FileHighlight>,
 ) -> Vec<Span<'static>> {
     let Some(key) = key else {
         // Blank side: gutter padding + space + marker padding + space
@@ -990,9 +1459,8 @@ fn build_split_half(
         Some(bg) => Style::default().fg(marker_color).bg(bg),
         None => Style::default().fg(marker_color),
     };
-    let raw_spans = highlighter.highlight(&line.text);
-    let scrolled_spans = skip_spans_columns(raw_spans, scroll_cols);
-    let mut text_spans = truncate_spans_to_width(scrolled_spans, text_width);
+    let raw_spans = cached_line_spans(cache, key).to_vec();
+    let mut text_spans = truncate_spans_to_width(raw_spans, text_width);
     // Pad text up to text_width so the right-side column starts at a
     // consistent x-coordinate. With per-line background tint, the
     // pad fills the tinted area to the full column width.
@@ -1069,111 +1537,11 @@ fn truncate_spans_to_width(spans: Vec<Span<'static>>, max_width: usize) -> Vec<S
     out
 }
 
-/// Drop the first `skip_cols` columns of `spans` and return the rest
-/// in render order. Used by the horizontal-scroll path so both
-/// halves of a split row can be scrolled by the same amount before
-/// being truncated to the per-side width.
-fn skip_spans_columns(spans: Vec<Span<'static>>, skip_cols: usize) -> Vec<Span<'static>> {
-    if skip_cols == 0 {
-        return spans;
-    }
-    let mut out: Vec<Span<'static>> = Vec::with_capacity(spans.len());
-    let mut remaining = skip_cols;
-    for span in spans {
-        if remaining == 0 {
-            out.push(span);
-            continue;
-        }
-        let span_width = span.content.width();
-        if span_width <= remaining {
-            remaining -= span_width;
-            continue;
-        }
-        // Partial skip inside this span - slice off the leading
-        // `remaining` cols and keep the tail.
-        let mut buf = String::with_capacity(span.content.len());
-        let mut to_skip = remaining;
-        let mut started = false;
-        for c in span.content.chars() {
-            let cw = UnicodeWidthChar::width(c).unwrap_or(0);
-            if !started && to_skip >= cw {
-                to_skip -= cw;
-                continue;
-            }
-            started = true;
-            buf.push(c);
-        }
-        remaining = 0;
-        if !buf.is_empty() {
-            out.push(Span::styled(buf, span.style));
-        }
-    }
-    out
-}
-
-/// Narrow-tier renderer (terminal width < 120): drops the rail and
-/// renders just the body, with a one-line header carrying the
-/// current file's path + `◀ N/M ▶` cycle controls. Clicks on the
-/// arrows advance / retreat `current_file_idx`; clicks on body
-/// lines open the comment editor as in the wide tier. The mouse
-/// handler at `app::diff_overlay::handle_narrow_arrow_click` reads
-/// the arrow positions stashed during this render.
-///
-/// Takes `&mut App` so the renderer can write the pane geometry
-/// (`pane_origin_*`, `pane_width`) and the parallel `body_keys`
-/// index back to overlay state - without this writeback, the
-/// click hit-tester finds an empty `body_keys` and silently no-ops.
-/// Render the "terminal too narrow" notice in place of the body.
-/// The split view needs both columns of readable code plus the rail;
-/// below `MIN_WIDTH_FOR_SPLIT` we tell the user to resize rather
-/// than squeeze the rendering harder. Clears every geometry field
-/// the click handler reads so a click during this state can't
-/// hit-test against stale wide-tier values.
-fn render_too_narrow_notice(frame: &mut Frame, area: Rect, app: &mut App) {
-    let msg =
-        format!("Terminal too narrow - resize to ≥ {MIN_WIDTH_FOR_SPLIT} cols and re-open /diff.");
-    frame
-        .render_widget(Paragraph::new(msg).style(Style::default().fg(theme::STATUS_WARNING)), area);
-    if let Some(o) = app.diff_overlay.as_mut() {
-        o.body_keys.clear();
-        o.body_head_rows = 0;
-        o.pane_origin_row = area.y;
-        o.pane_origin_col = area.x;
-        o.pane_width = area.width;
-    }
-}
-
 fn banner_row(label: &'static str) -> Line<'static> {
     Line::from(vec![
         Span::raw("  "),
         Span::styled(label, Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)),
     ])
-}
-
-/// Build the pane banner line. The footer hint already advertises
-/// `Esc close`, so the banner is informational only - no in-banner
-/// affordance to dismiss.
-fn pane_banner_row(overlay: &DiffOverlayState) -> Line<'static> {
-    let dim = Style::default().fg(theme::DIM);
-    let (title, added, removed) = overlay.current_file().map_or_else(
-        || ("(no file)".to_owned(), 0u32, 0u32),
-        |f| (f.path.clone(), f.added_count(), f.removed_count()),
-    );
-    let mut spans = vec![
-        Span::raw("  "),
-        Span::styled("DIFF", Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)),
-        Span::styled(" · ", dim),
-        Span::styled(title, dim),
-    ];
-    if added > 0 {
-        spans.push(Span::raw("  "));
-        spans.push(Span::styled(format!("+{added}"), Style::default().fg(Color::Green)));
-    }
-    if removed > 0 {
-        spans.push(Span::raw(" "));
-        spans.push(Span::styled(format!("-{removed}"), Style::default().fg(Color::Red)));
-    }
-    Line::from(spans)
 }
 
 fn rule_row(width: u16) -> Line<'static> {
@@ -1264,5 +1632,198 @@ mod tests {
     fn wrap_chip_body_handles_empty_input() {
         let rows = wrap_chip_body("", 40);
         assert_eq!(rows, vec![String::new()]);
+    }
+
+    #[test]
+    fn unified_rows_emits_header_then_signed_lines_with_keys() {
+        use forge_workspace::env::git_diff::hunks::DiffLine;
+        let file = FileHunks {
+            path: "a.rs".into(),
+            status: FileStatus::Modified,
+            hunks: vec![Hunk {
+                old_start: 1,
+                old_count: 2,
+                new_start: 1,
+                new_count: 2,
+                lines: vec![
+                    DiffLine {
+                        kind: DiffLineKind::Context,
+                        text: "ctx".into(),
+                        old_line: Some(1),
+                        new_line: Some(1),
+                    },
+                    DiffLine {
+                        kind: DiffLineKind::Removed,
+                        text: "old".into(),
+                        old_line: Some(2),
+                        new_line: None,
+                    },
+                    DiffLine {
+                        kind: DiffLineKind::Added,
+                        text: "new".into(),
+                        old_line: None,
+                        new_line: Some(2),
+                    },
+                ],
+            }],
+        };
+        let rows = unified_rows(0, &file);
+        assert_eq!(rows.len(), 4, "one header + three diff lines");
+
+        // Hunk header: no gutter number, @@ text.
+        assert!(matches!(rows[0].key, BodyRowKey::HunkHeader { file_idx: 0, hunk_idx: 0 }));
+        assert_eq!(rows[0].line_no, None);
+        assert!(rows[0].text.starts_with("@@"));
+
+        // Context: new-side line number, key on the right.
+        assert_eq!(rows[1].sign, ' ');
+        assert_eq!(rows[1].line_no, Some(1));
+        assert_eq!(
+            rows[1].key,
+            BodyRowKey::HunkRow {
+                left: None,
+                right: Some(LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 }),
+            }
+        );
+
+        // Removed: old-side line number, key on the left.
+        assert_eq!(rows[2].sign, '-');
+        assert_eq!(rows[2].line_no, Some(2));
+        assert_eq!(
+            rows[2].key,
+            BodyRowKey::HunkRow {
+                left: Some(LineKey { file_idx: 0, hunk_idx: 0, line_idx: 1 }),
+                right: None,
+            }
+        );
+
+        // Added: new-side line number, key on the right.
+        assert_eq!(rows[3].sign, '+');
+        assert_eq!(rows[3].line_no, Some(2));
+        assert_eq!(
+            rows[3].key,
+            BodyRowKey::HunkRow {
+                left: None,
+                right: Some(LineKey { file_idx: 0, hunk_idx: 0, line_idx: 2 }),
+            }
+        );
+    }
+
+    #[test]
+    fn file_height_collapsed_deleted_is_two_rows() {
+        let mut state = DiffOverlayState::new(
+            std::path::PathBuf::from("/tmp/repo"),
+            "HEAD".to_owned(),
+            vec![FileHunks {
+                path: "gone.rs".into(),
+                status: FileStatus::Deleted,
+                hunks: Vec::new(),
+            }],
+        );
+        ensure_file_cached(&mut state, 0, 120);
+        // Sticky header + the one-line "file deleted" notice.
+        assert_eq!(state.measured_heights[0], Some(2));
+    }
+
+    #[test]
+    fn file_height_counts_rendered_wrapped_rows() {
+        use forge_workspace::env::git_diff::hunks::DiffLine;
+        // gutter for line numbers up to 2 = 2 cols; at pane width 40
+        // content width = 40 - 2 indent - 2 gutter - 3 sign zone = 33,
+        // so the 70-col line wraps into ceil(70 / 33) = 3 visual rows.
+        let long = "x".repeat(70);
+        let file = FileHunks {
+            path: "a.rs".into(),
+            status: FileStatus::Modified,
+            hunks: vec![Hunk {
+                old_start: 1,
+                old_count: 1,
+                new_start: 1,
+                new_count: 2,
+                lines: vec![
+                    DiffLine {
+                        kind: DiffLineKind::Context,
+                        text: "short".into(),
+                        old_line: Some(1),
+                        new_line: Some(1),
+                    },
+                    DiffLine {
+                        kind: DiffLineKind::Added,
+                        text: long,
+                        old_line: None,
+                        new_line: Some(2),
+                    },
+                ],
+            }],
+        };
+        let mut state =
+            DiffOverlayState::new(std::path::PathBuf::from("/tmp"), "HEAD".to_owned(), vec![file]);
+        // ensure_file_cached highlights, then measures off the rendered
+        // (wrapped) rows: 1 sticky header + 1 @@ header + 1 short + 3
+        // wrapped = 6.
+        ensure_file_cached(&mut state, 0, 40);
+        assert_eq!(state.measured_heights[0], Some(6));
+    }
+
+    #[test]
+    fn effective_view_mode_forces_unified_below_split_threshold() {
+        assert_eq!(effective_view_mode(DiffViewMode::Split, 80), DiffViewMode::Unified);
+        assert_eq!(
+            effective_view_mode(DiffViewMode::Split, MIN_WIDTH_FOR_SPLIT),
+            DiffViewMode::Split,
+        );
+        assert_eq!(effective_view_mode(DiffViewMode::Unified, 200), DiffViewMode::Unified);
+    }
+
+    #[test]
+    fn narrow_pane_renders_unified_even_with_split_stored() {
+        use forge_workspace::env::git_diff::hunks::DiffLine;
+        // One removed + one added line. Unified emits both as separate
+        // rows (header + @@ + removed + added = 4); split pairs them
+        // into one row (header + @@ + paired = 3). Measuring off the
+        // rendered rows lets us tell which layout actually drew.
+        let make = || FileHunks {
+            path: "a.rs".into(),
+            status: FileStatus::Modified,
+            hunks: vec![Hunk {
+                old_start: 1,
+                old_count: 1,
+                new_start: 1,
+                new_count: 1,
+                lines: vec![
+                    DiffLine {
+                        kind: DiffLineKind::Removed,
+                        text: "old".into(),
+                        old_line: Some(1),
+                        new_line: None,
+                    },
+                    DiffLine {
+                        kind: DiffLineKind::Added,
+                        text: "new".into(),
+                        old_line: None,
+                        new_line: Some(1),
+                    },
+                ],
+            }],
+        };
+        // Split is the stored choice, but a 60-col pane is below the
+        // split threshold, so it falls back to unified (4 rows).
+        let mut narrow = DiffOverlayState::new(
+            std::path::PathBuf::from("/tmp"),
+            "HEAD".to_owned(),
+            vec![make()],
+        );
+        narrow.view_mode = DiffViewMode::Split;
+        ensure_file_cached(&mut narrow, 0, 60);
+        assert_eq!(narrow.measured_heights[0], Some(4), "narrow pane falls back to unified");
+        // A wide pane honors the stored split (3 rows).
+        let mut wide = DiffOverlayState::new(
+            std::path::PathBuf::from("/tmp"),
+            "HEAD".to_owned(),
+            vec![make()],
+        );
+        wide.view_mode = DiffViewMode::Split;
+        ensure_file_cached(&mut wide, 0, 160);
+        assert_eq!(wide.measured_heights[0], Some(3), "wide pane honors split");
     }
 }
