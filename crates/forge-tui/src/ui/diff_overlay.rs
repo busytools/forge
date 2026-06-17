@@ -1533,24 +1533,13 @@ fn truncate_spans_to_width(spans: Vec<Span<'static>>, max_width: usize) -> Vec<S
     out
 }
 
-/// Narrow-tier renderer (terminal width < 120): drops the rail and
-/// renders just the body, with a one-line header carrying the
-/// current file's path + `◀ N/M ▶` cycle controls. Clicks on the
-/// arrows advance / retreat `current_file_idx`; clicks on body
-/// lines open the comment editor as in the wide tier. The mouse
-/// handler at `app::diff_overlay::handle_narrow_arrow_click` reads
-/// the arrow positions stashed during this render.
-///
-/// Takes `&mut App` so the renderer can write the pane geometry
-/// (`pane_origin_*`, `pane_width`) and the parallel `body_keys`
-/// index back to overlay state - without this writeback, the
-/// click hit-tester finds an empty `body_keys` and silently no-ops.
-/// Render the "terminal too narrow" notice in place of the body.
-/// The split view needs both columns of readable code plus the rail;
-/// below `MIN_WIDTH_FOR_SPLIT` we tell the user to resize rather
-/// than squeeze the rendering harder. Clears every geometry field
-/// the click handler reads so a click during this state can't
-/// hit-test against stale wide-tier values.
+/// Render the "terminal too narrow" notice in place of the whole
+/// overlay body. Below `MIN_WIDTH_FOR_SPLIT` there isn't room for a
+/// readable column, so we ask the user to resize rather than squeeze
+/// the rendering harder. Takes `&mut App` to clear every geometry
+/// field the click handler reads (`body_keys`, `body_head_rows`,
+/// `pane_*`) so a click during this state can't hit-test against stale
+/// wide-tier values.
 fn render_too_narrow_notice(frame: &mut Frame, area: Rect, app: &mut App) {
     let msg =
         format!("Terminal too narrow - resize to ≥ {MIN_WIDTH_FOR_SPLIT} cols and re-open /diff.");

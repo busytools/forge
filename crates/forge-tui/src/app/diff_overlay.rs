@@ -140,12 +140,6 @@ pub enum RailRowKey {
 /// click (`row` + the tail scroll) → action without re-walking it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BodyRowKey {
-    /// A non-interactive chrome row (no click action).
-    Banner,
-    /// A non-interactive `─` rule row.
-    Rule,
-    /// A non-interactive blank spacer row.
-    Blank,
     /// Empty-state notice (scan failed / no changes / binary / etc.).
     EmptyState,
     /// Sticky file-divider header (path + status badge + `+N -M`).
@@ -1266,12 +1260,9 @@ fn handle_body_click(overlay: &mut DiffOverlayState, column: u16, row: u16) -> M
         BodyRowKey::FileHeader { file_idx } | BodyRowKey::DeletedCollapsed { file_idx } => {
             toggle_deleted_collapse(overlay, file_idx)
         }
-        BodyRowKey::Banner
-        | BodyRowKey::Rule
-        | BodyRowKey::Blank
-        | BodyRowKey::EmptyState
-        | BodyRowKey::HunkHeader { .. }
-        | BodyRowKey::InputRow(_) => MouseEffect::default(),
+        BodyRowKey::EmptyState | BodyRowKey::HunkHeader { .. } | BodyRowKey::InputRow(_) => {
+            MouseEffect::default()
+        }
     }
 }
 
@@ -1594,9 +1585,7 @@ mod tests {
         let left_key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
         let right_key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 1 };
         state.body_keys = vec![
-            BodyRowKey::Banner,
-            BodyRowKey::Rule,
-            BodyRowKey::Blank,
+            BodyRowKey::FileHeader { file_idx: 0 },
             BodyRowKey::HunkHeader { file_idx: 0, hunk_idx: 0 },
             BodyRowKey::HunkRow { left: Some(left_key), right: Some(right_key) },
         ];
@@ -1604,7 +1593,7 @@ mod tests {
         state.pane_origin_col = 41; // Past rail + separator on wide.
         state.pane_width = 119;
         // Left half: pane-local col in [0, 59) → click_col in [41, 100).
-        let effect = handle_left_click(&mut state, 60, 4, 160);
+        let effect = handle_left_click(&mut state, 60, 2, 160);
         assert!(effect.redraw);
         assert_eq!(state.active_input.as_ref().map(|i| i.key), Some(left_key));
     }
@@ -1616,9 +1605,7 @@ mod tests {
         let left_key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
         let right_key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 1 };
         state.body_keys = vec![
-            BodyRowKey::Banner,
-            BodyRowKey::Rule,
-            BodyRowKey::Blank,
+            BodyRowKey::FileHeader { file_idx: 0 },
             BodyRowKey::HunkHeader { file_idx: 0, hunk_idx: 0 },
             BodyRowKey::HunkRow { left: Some(left_key), right: Some(right_key) },
         ];
@@ -1626,7 +1613,7 @@ mod tests {
         state.pane_origin_col = 41;
         state.pane_width = 119;
         // Right half: pane-local col in [60, 119) → click_col in [101, 160).
-        let effect = handle_left_click(&mut state, 120, 4, 160);
+        let effect = handle_left_click(&mut state, 120, 2, 160);
         assert!(effect.redraw);
         assert_eq!(state.active_input.as_ref().map(|i| i.key), Some(right_key));
     }
@@ -1639,9 +1626,7 @@ mod tests {
         state.view_mode = DiffViewMode::Split;
         let right_key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
         state.body_keys = vec![
-            BodyRowKey::Banner,
-            BodyRowKey::Rule,
-            BodyRowKey::Blank,
+            BodyRowKey::FileHeader { file_idx: 0 },
             BodyRowKey::HunkHeader { file_idx: 0, hunk_idx: 0 },
             BodyRowKey::HunkRow { left: None, right: Some(right_key) },
         ];
@@ -1649,7 +1634,7 @@ mod tests {
         state.pane_origin_col = 41;
         state.pane_width = 119;
         // Click in the (blank) LEFT half - left=None, so no editor opens.
-        let effect = handle_left_click(&mut state, 60, 4, 160);
+        let effect = handle_left_click(&mut state, 60, 2, 160);
         assert!(!effect.redraw);
         assert!(state.active_input.is_none());
     }
@@ -1662,16 +1647,14 @@ mod tests {
         let mut state = sample_state(); // view_mode defaults to Unified
         let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
         state.body_keys = vec![
-            BodyRowKey::Banner,
-            BodyRowKey::Rule,
-            BodyRowKey::Blank,
+            BodyRowKey::FileHeader { file_idx: 0 },
             BodyRowKey::HunkHeader { file_idx: 0, hunk_idx: 0 },
             BodyRowKey::HunkRow { left: None, right: Some(key) },
         ];
         state.pane_origin_row = 0;
         state.pane_origin_col = 41;
         state.pane_width = 119;
-        let effect = handle_left_click(&mut state, 60, 4, 160); // left half
+        let effect = handle_left_click(&mut state, 60, 2, 160); // left half
         assert!(effect.redraw);
         assert_eq!(state.active_input.as_ref().map(|i| i.key), Some(key));
     }
@@ -1748,9 +1731,9 @@ mod tests {
             comment_text: "needs unwrap fix".into(),
         });
         state.body_keys = vec![
-            BodyRowKey::Banner,
-            BodyRowKey::Rule,
-            BodyRowKey::Blank,
+            BodyRowKey::FileHeader { file_idx: 0 },
+            BodyRowKey::HunkHeader { file_idx: 0, hunk_idx: 0 },
+            BodyRowKey::HunkRow { left: Some(key), right: Some(key) },
             BodyRowKey::CommentChip(key),
         ];
         state.pane_origin_row = 0;
