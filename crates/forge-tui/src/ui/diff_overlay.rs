@@ -348,7 +348,6 @@ fn fold_rail_chains(node: &mut RailNode) {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn walk_rail_tree(
     node: &RailNode,
     prefix: &str,
@@ -376,7 +375,6 @@ fn walk_rail_tree(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn emit_rail_node(
     node: &RailNode,
     prefix: &str,
@@ -951,7 +949,6 @@ fn push_file_body(
 /// diff line as `[gutter] [sign] [highlighted text]` soft-wrapped to
 /// the content width, with the inline comment chip / editor after the
 /// anchored line.
-#[allow(clippy::too_many_arguments)]
 fn push_unified_body(
     overlay: &DiffOverlayState,
     file: &FileHunks,
@@ -1053,7 +1050,6 @@ fn push_unified_diff_rows(
 /// Append a file's split body: each hunk's `@@` header, then each
 /// paired row side-by-side (old | new) reading cached spans, with the
 /// inline comment chip / editor after an anchored line.
-#[allow(clippy::too_many_arguments)]
 fn push_split_body(
     overlay: &DiffOverlayState,
     file: &FileHunks,
