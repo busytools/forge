@@ -716,6 +716,10 @@ impl Workspace {
                 fresh
             }
         };
+        // Carry `--new` onto the domain so a project lead's
+        // Connected-time team spawn skips the worker resume scan and
+        // brings its workers up fresh alongside the fresh lead.
+        domain_arc.lock().spawned_force_new = settings.force_new;
 
         // Build the per-session `forge` MCP server. ONE server name;
         // tool surface depends on whether this spawn is for a project
@@ -2109,6 +2113,7 @@ impl Workspace {
         project_dir: PathBuf,
         namespace: String,
         team: Vec<String>,
+        force_new: bool,
     ) {
         if team.is_empty() {
             return;
@@ -2119,6 +2124,20 @@ impl Workspace {
                 project = %project_key.as_str(),
                 "team-spawn already in flight; skipping duplicate Connected fire",
             );
+            return;
+        }
+        // `--new`: the lead came up fresh, so its workers do too. Skip
+        // the catalog resume scan entirely and spawn every role fresh
+        // (an empty resume map => `resume_existing = None` for all).
+        if force_new {
+            let loaded = Self::load_team_roles(&team, &namespace, &project_key);
+            self.spawn_team_for_lead_with_resume(
+                &lead_session_id,
+                &project_key,
+                &loaded,
+                &std::collections::HashMap::new(),
+            );
+            self.release_team_spawn(&project_key);
             return;
         }
         // When invoked inside a tokio runtime (production + any
@@ -5600,6 +5619,7 @@ mod team_spawn_tests {
             std::path::PathBuf::from("/tmp/hub-modules"),
             "hub-modules".to_owned(),
             vec!["steward".to_owned()],
+            false,
         );
 
         let dispatched = workspace.drain_test_dispatch_buffer();
@@ -5609,6 +5629,41 @@ mod team_spawn_tests {
         if let Command::SpawnWorker { label, charter, .. } = spawns[0] {
             assert_eq!(label, "steward", "worker label stays BARE, not hub-modules/steward");
             assert!(charter.contains("Hub steward"), "charter loaded from the project-scoped dir");
+        }
+
+        crate::team::set_forge_team_root_for_test(prev);
+    }
+
+    #[test]
+    fn force_new_team_spawn_dispatches_workers_fresh() {
+        // A force-new lead's team spawn skips the catalog resume scan,
+        // so every worker dispatches with resume_existing = None. (The
+        // resume mechanic itself is covered by
+        // spawn_team_for_lead_with_resume_all_resume.)
+        let tmp = tempfile::tempdir().expect("tmp");
+        let steward = tmp.path().join("hub-modules").join("steward");
+        std::fs::create_dir_all(&steward).expect("mkdir");
+        std::fs::write(steward.join("charter.md"), "description: Hub steward\n").expect("charter");
+        std::fs::write(steward.join("kick.md"), "go\n").expect("kick");
+        let prev = crate::team::set_forge_team_root_for_test(Some(tmp.path().to_path_buf()));
+
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        workspace.enable_test_dispatch_intercept();
+        workspace.spawn_team_for_lead_with_catalog_scan(
+            "lead-uuid".to_owned(),
+            ProjectKey::new("hub-modules"),
+            std::path::PathBuf::from("/tmp/hub-modules"),
+            "hub-modules".to_owned(),
+            vec!["steward".to_owned()],
+            true, // force_new: skip the resume scan
+        );
+
+        let dispatched = workspace.drain_test_dispatch_buffer();
+        let spawns: Vec<&Command> =
+            dispatched.iter().filter(|c| matches!(c, Command::SpawnWorker { .. })).collect();
+        assert_eq!(spawns.len(), 1, "force-new still spawns the configured worker");
+        if let Command::SpawnWorker { resume_existing, .. } = spawns[0] {
+            assert!(resume_existing.is_none(), "force_new => worker spawns fresh (no resume)");
         }
 
         crate::team::set_forge_team_root_for_test(prev);

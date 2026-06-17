@@ -52,6 +52,13 @@ pub struct DomainSession {
     /// when the LLM is mid-turn on a user-initiated (not peer-
     /// forwarded) prompt.
     pub current_inbound_hop: Option<u8>,
+    /// `--new` boot-wave flag, stamped at spawn time from
+    /// `SessionLaunchSettings.force_new`. For a project lead it makes
+    /// the Connected-time team spawn skip the worker resume scan
+    /// (`resume_existing = None` for every role), so the workers come
+    /// up fresh alongside their fresh lead. `false` for every non-boot
+    /// spawn.
+    pub spawned_force_new: bool,
 }
 
 impl DomainSession {
@@ -67,6 +74,7 @@ impl DomainSession {
             pending_interactions: HashMap::new(),
             pending_peer_prompts: Vec::new(),
             current_inbound_hop: None,
+            spawned_force_new: false,
         }
     }
 }
