@@ -2,10 +2,10 @@
 //!
 //! The overlay is the floor of the `/diff` flow: a snapshot of
 //! file-level hunks fetched via
-//! [`forge_workspace::Workspace::scan_git_diff_hunks`] rendered as
-//! a two-pane layout. See [`crate::ui::diff_overlay`] for the
-//! renderer; this module owns the transient state and the key /
-//! mouse dispatch.
+//! [`forge_workspace::Workspace::scan_git_diff_hunks`] rendered as a
+//! single continuous scroll of every changed file with a FILES jump
+//! rail. See [`crate::ui::diff_overlay`] for the renderer; this module
+//! owns the transient state and the key / mouse dispatch.
 //!
 //! Key handling:
 //! - With a comment editor open: Enter saves the text into
@@ -24,7 +24,7 @@ use std::sync::mpsc as std_mpsc;
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use forge_primitives::git_diff::RepoGate;
 use forge_workspace::env::git_diff::hunks::ScanOutcome;
-use forge_workspace::env::git_diff::hunks::{DiffLine, DiffLineKind, FileHunks};
+use forge_workspace::env::git_diff::hunks::{DiffLine, DiffLineKind, FileHunks, FileStatus};
 use tui_textarea::TextArea;
 
 use super::App;
@@ -38,6 +38,65 @@ pub enum DiffViewMode {
     #[default]
     Unified,
     Split,
+}
+
+/// Document offset table: `starts[i]` is file `i`'s first row in the
+/// concatenated document; `total` is the document height in rows.
+/// Drives the document scroll, the rail-jump, and the rail's
+/// current-file highlight - all of which need to map a row offset to
+/// a file (and back) across the whole flattened diff.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocOffsets {
+    pub starts: Vec<u32>,
+    pub total: u32,
+}
+
+impl DocOffsets {
+    /// File index whose row-range contains `row`; clamps to the last
+    /// file when `row` is past the end (empty doc returns 0).
+    pub fn file_at_row(&self, row: u32) -> usize {
+        match self.starts.binary_search(&row) {
+            Ok(idx) => idx,
+            Err(0) => 0,
+            Err(idx) => idx - 1,
+        }
+    }
+}
+
+/// Prefix-sum the per-file heights into a [`DocOffsets`].
+pub fn file_offsets(heights: &[u32]) -> DocOffsets {
+    let mut starts = Vec::with_capacity(heights.len());
+    let mut acc = 0u32;
+    for &h in heights {
+        starts.push(acc);
+        acc = acc.saturating_add(h);
+    }
+    DocOffsets { starts, total: acc }
+}
+
+/// Unwrapped, syntax-highlighted spans for one file's diff lines,
+/// indexed `[hunk_idx][line_idx]` (the innermost `Vec` is one line's
+/// spans). Cached on [`DiffOverlayState::highlighted`] and reused
+/// across frames - a line's colour is layout-independent, so it
+/// survives scroll, view_mode flip, and resize untouched, and a
+/// plain scroll never re-runs syntect.
+pub type FileHighlight = Vec<Vec<Vec<ratatui::text::Span<'static>>>>;
+
+/// Cheap height estimate for an off-screen file (no wrap, no pairing):
+/// 1 sticky header row + per hunk (1 `@@` header + raw line count), or
+/// 2 for a collapsed deleted file. The offset table uses this for
+/// not-yet-measured files; the renderer's `file_height` replaces it
+/// (storing into `measured_heights`) when the file enters the window.
+pub(crate) fn estimated_height(file: &FileHunks, collapsed: bool) -> u32 {
+    if collapsed {
+        return 2;
+    }
+    let mut rows: u32 = 1; // file sticky header
+    for hunk in &file.hunks {
+        rows = rows.saturating_add(1); // @@ header
+        rows = rows.saturating_add(u32::try_from(hunk.lines.len()).unwrap_or(u32::MAX));
+    }
+    rows
 }
 
 /// Identifies a single rendered diff line - `(file_idx, hunk_idx,
@@ -78,17 +137,24 @@ pub enum RailRowKey {
 /// What a single rendered row in the right pane corresponds to.
 /// Built by the renderer alongside the `Vec<Line>` it returns, and
 /// stashed on `DiffOverlayState` so the mouse handler can resolve a
-/// click (`row, body_scroll`) → action without re-walking the diff.
+/// click (`row` + the tail scroll) → action without re-walking it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BodyRowKey {
-    /// Banner row (`DIFF · <path>  +N -M`). Click does nothing in v1.
+    /// A non-interactive chrome row (no click action).
     Banner,
-    /// The DIM `─` rule under the banner.
+    /// A non-interactive `─` rule row.
     Rule,
-    /// A blank spacer line.
+    /// A non-interactive blank spacer row.
     Blank,
-    /// Empty-state notice (scan failed / no file / binary / etc.).
+    /// Empty-state notice (scan failed / no changes / binary / etc.).
     EmptyState,
+    /// Sticky file-divider header (path + status badge + `+N -M`).
+    /// Click on a Deleted file's header toggles its collapse; other
+    /// statuses are non-interactive.
+    FileHeader { file_idx: usize },
+    /// The one-line "File deleted - N lines removed" notice shown for
+    /// a collapsed deleted file. Click expands it.
+    DeletedCollapsed { file_idx: usize },
     /// `@@ -A,B +C,D @@` hunk header - non-interactive in v1.
     HunkHeader { file_idx: usize, hunk_idx: usize },
     /// A diff row in the split body. Carries both column keys -
@@ -461,8 +527,8 @@ pub struct DiffOverlayState {
     /// which project they're reviewing.
     pub cwd: PathBuf,
     /// Diff target passed to `git diff` (`"HEAD"`, branch name,
-    /// SHA). Kept so the renderer can display it in the right-pane
-    /// banner alongside the file path.
+    /// SHA). Surfaced in the scan-failed notice and in the markdown
+    /// comment bundle so the agent sees what was reviewed.
     pub target: String,
     /// Files in the diff, in the order the scanner returned them.
     pub files: Vec<FileHunks>,
@@ -533,12 +599,33 @@ pub struct DiffOverlayState {
     /// Filled fresh on every render.
     pub rail_keys: Vec<RailRowKey>,
     /// Number of leading rows in `body_keys` that are pinned (not
-    /// scrolled with `body_scroll`). Wide-tier sets this to
-    /// `BODY_HEAD_ROWS` because the renderer keeps the banner +
-    /// rule + blank pinned above the scrolling tail. The click
-    /// handler reads it to decide whether `body_scroll` should
-    /// offset a given row.
+    /// scrolled). The renderer sets this to 1 - the sticky file header
+    /// for the file at the top of the viewport stays pinned while its
+    /// body scrolls beneath it. The click handler reads it to decide
+    /// whether `body_tail_scroll` offsets a given row.
     pub body_head_rows: usize,
+    /// Row offset the renderer applied to the scrolling tail this
+    /// frame (the `Paragraph::scroll` amount). The click handler adds
+    /// it to a body click past the pinned head rows to index
+    /// `body_keys`. Distinct from `doc_scroll` (the document position):
+    /// this is the within-window tail scroll derived from it each
+    /// frame, stashed like the other geometry fields.
+    pub body_tail_scroll: usize,
+    /// Per-file measured document height in rows, at the current
+    /// width + view_mode. `None` = not measured yet (off-screen, or
+    /// invalidated); the offset table falls back to a cheap estimate
+    /// for `None` entries so the scrollbar stays stable before a file
+    /// is measured on window-entry. Length tracks `files`. Cleared on
+    /// view_mode flip, deleted-collapse toggle, and width change - the
+    /// three things that change a file's wrapped row count.
+    pub measured_heights: Vec<Option<u32>>,
+    /// Per-file unwrapped syntax-highlighted spans, built once when a
+    /// file first enters the viewport window and reused every frame
+    /// after. A line's colour is layout-independent, so this is NEVER
+    /// invalidated during the overlay's life (scroll, view_mode flip,
+    /// resize all leave it valid); a fresh scan is a fresh state with
+    /// an empty cache. Length tracks `files`.
+    pub highlighted: Vec<Option<FileHighlight>>,
 }
 
 impl DiffOverlayState {
@@ -555,6 +642,43 @@ impl DiffOverlayState {
                 *slot = slot.saturating_add(1);
             }
         }
+    }
+
+    /// Drop every measured height so the next frame re-measures
+    /// lazily. Called on view_mode flip and width change - both
+    /// change the wrapped row count for every file. The span cache is
+    /// deliberately left intact (a line's colour is layout-independent).
+    pub fn invalidate_measured_heights(&mut self) {
+        for height in &mut self.measured_heights {
+            *height = None;
+        }
+    }
+
+    /// True when file `idx` renders as the one-line collapsed notice -
+    /// a deleted file the user hasn't expanded.
+    pub fn is_collapsed(&self, idx: usize) -> bool {
+        self.files.get(idx).is_some_and(|f| f.status == FileStatus::Deleted)
+            && !self.deleted_expanded.contains(&idx)
+    }
+
+    /// Document offset table for the current frame: each file's height
+    /// is its measured value when known, else the cheap estimate. Used
+    /// to find the file at the top of the viewport, jump the scroll
+    /// from the rail, and size the scrollbar.
+    pub fn doc_offsets(&self) -> DocOffsets {
+        let heights: Vec<u32> = self
+            .files
+            .iter()
+            .enumerate()
+            .map(|(idx, file)| {
+                self.measured_heights
+                    .get(idx)
+                    .copied()
+                    .flatten()
+                    .unwrap_or_else(|| estimated_height(file, self.is_collapsed(idx)))
+            })
+            .collect();
+        file_offsets(&heights)
     }
 
     /// Build a fresh state for a newly-opened overlay. Test-only -
@@ -586,6 +710,9 @@ impl DiffOverlayState {
             comment_counts: vec![0; file_count],
             rail_keys: Vec::new(),
             body_head_rows: 0,
+            body_tail_scroll: 0,
+            measured_heights: vec![None; file_count],
+            highlighted: vec![None; file_count],
         }
     }
 
@@ -613,14 +740,10 @@ impl DiffOverlayState {
             comment_counts: vec![0; file_count],
             rail_keys: Vec::new(),
             body_head_rows: 0,
+            body_tail_scroll: 0,
+            measured_heights: vec![None; file_count],
+            highlighted: vec![None; file_count],
         }
-    }
-
-    /// First file in the document, or `None` when the diff is empty.
-    /// Transitional shim while the renderer still draws a single file;
-    /// the continuous-body rework drops it.
-    pub fn current_file(&self) -> Option<&FileHunks> {
-        self.files.first()
     }
 }
 
@@ -869,10 +992,8 @@ fn save_active_input(app: &mut App) {
 }
 
 /// Lines scrolled per wheel notch in the diff body. Same value as
-/// `crate::app::events::mouse::MOUSE_SCROLL_LINES` (which is
-/// `usize` because it feeds `Viewport::scroll_up/down`) - kept as
-/// `u16` here because `body_scroll` is `u16` for ratatui's
-/// `Paragraph::scroll`.
+/// `crate::app::events::mouse::MOUSE_SCROLL_LINES`; applied to the
+/// `u32` document scroll (`doc_scroll`).
 const SCROLL_LINES_PER_NOTCH: u16 = 3;
 
 /// Minimum FILES rail width when the rail is shown. Below this the
@@ -893,12 +1014,6 @@ pub(crate) const MEDIUM_MIN: u16 = 120;
 /// `ui::diff_overlay::render_rail` chose this geometry; the click
 /// handler uses it for the inverse mapping.
 pub(crate) const FIRST_FILE_ROW_Y: u16 = 3;
-
-/// Number of head rows (banner + rule + blank) at the top of the
-/// DIFF body pane that DON'T scroll with `body_scroll`. The click
-/// handler uses this to map `mouse.row` into the right `body_keys`
-/// index without applying the scroll offset to head clicks.
-pub(crate) const BODY_HEAD_ROWS: usize = 3;
 
 /// Pick the FILES rail width for the current terminal width.
 /// Returns `0` at Narrow tier (rail hidden). Shared with the
@@ -923,19 +1038,18 @@ struct MouseEffect {
 
 /// Handle a mouse event while the diff overlay is active.
 ///
-/// Bindings (v1):
+/// Bindings:
 /// - Scroll wheel over the rail → advance `rail_scroll`.
-/// - Scroll wheel over the body → advance `body_scroll`.
-/// - Horizontal scroll uses Left/Right arrow keys; trackpad
-///   horizontal swipes don't propagate from at least Ghostty / iTerm.
-/// - Left click on a file row in the FILES rail → switch the right
-///   pane to that file; resets `body_scroll` to 0.
+/// - Scroll wheel over the body → advance `doc_scroll` (the single
+///   document scroll across all files).
+/// - Left click on a file row in the FILES rail → jump `doc_scroll`
+///   to that file's first row.
 /// - Left click on a diff line in the body → open an inline comment
 ///   input anchored at that line. (If an input is already open, the
 ///   click cancels it before opening the new one.)
 /// - Left click on a saved-comment chip → re-open that comment for
 ///   editing.
-/// - Left click on the banner `✕` → equivalent to Esc.
+/// - Left click on a collapsed deleted file's header → expand it.
 pub(crate) fn handle_mouse(app: &mut App, mouse: MouseEvent) {
     let terminal_width = app.cached_frame_area.width;
     let effect = if let Some(overlay) = app.diff_overlay.as_mut() {
@@ -1032,9 +1146,10 @@ fn handle_rail_click(overlay: &mut DiffOverlayState, row: u16) -> MouseEffect {
     if file_idx >= overlay.files.len() {
         return MouseEffect::default();
     }
-    // The document-offset jump (set `doc_scroll` to this file's start
-    // row) lands with the continuous body. Closing the active editor
-    // on rail interaction preserves a reopened chip's prior comment.
+    // Jump the document scroll to this file's first row. Closing the
+    // active editor on rail interaction preserves a reopened chip's
+    // prior comment.
+    overlay.doc_scroll = overlay.doc_offsets().starts.get(file_idx).copied().unwrap_or(0);
     close_active_input_preserving_prior(overlay);
     MouseEffect { redraw: true }
 }
@@ -1051,16 +1166,15 @@ fn handle_body_click(overlay: &mut DiffOverlayState, column: u16, row: u16) -> M
         return MouseEffect::default();
     }
     let local_row = usize::from(row - overlay.pane_origin_row);
-    // The first `body_head_rows` rows are pinned and don't scroll.
-    // Wide tier sets this to BODY_HEAD_ROWS so a click in the
-    // banner/rule/blank zone maps directly to body_keys[local_row].
-    // Narrow tier sets it to 0 because the renderer already stripped
-    // the head rows from body_keys, so every body row is scrollable.
+    // The first `body_head_rows` rows are pinned (the sticky file
+    // header) and don't scroll, so they map directly to
+    // `body_keys[local_row]`. Rows past the head add the tail scroll
+    // the renderer applied this frame.
     let head = overlay.body_head_rows;
     let body_idx = if local_row < head {
         Some(local_row)
     } else {
-        local_row.checked_add(usize::try_from(overlay.doc_scroll).unwrap_or(usize::MAX))
+        local_row.checked_add(overlay.body_tail_scroll)
     };
     let Some(idx) = body_idx else {
         return MouseEffect::default();
@@ -1070,20 +1184,28 @@ fn handle_body_click(overlay: &mut DiffOverlayState, column: u16, row: u16) -> M
     };
     match key {
         BodyRowKey::HunkRow { left, right } => {
-            // Pick the clicked column. The divider sits at pane
-            // midpoint; clicks on it (or to the left) resolve to
-            // the left key, clicks to the right resolve to the
-            // right key. If the picked side is empty (blank half
-            // of an unbalanced row), no-op.
-            let pane_local_col = column.saturating_sub(overlay.pane_origin_col);
-            let mid_col = overlay.pane_width / 2;
-            let key = if pane_local_col < mid_col { left } else { right };
+            // Unified is one column, so either side resolves the
+            // line. Split has two columns: the divider sits at the
+            // pane midpoint, so clicks left of it pick the old side,
+            // right of it the new side. An empty picked side (blank
+            // half of an unbalanced split row) is a no-op.
+            let key = match overlay.view_mode {
+                DiffViewMode::Unified => left.or(right),
+                DiffViewMode::Split => {
+                    let pane_local_col = column.saturating_sub(overlay.pane_origin_col);
+                    let mid_col = overlay.pane_width / 2;
+                    if pane_local_col < mid_col { left } else { right }
+                }
+            };
             match key {
                 Some(key) => open_input_for_key(overlay, key),
                 None => MouseEffect::default(),
             }
         }
         BodyRowKey::CommentChip(line_key) => reopen_comment_for_key(overlay, line_key),
+        BodyRowKey::FileHeader { file_idx } | BodyRowKey::DeletedCollapsed { file_idx } => {
+            toggle_deleted_collapse(overlay, file_idx)
+        }
         BodyRowKey::Banner
         | BodyRowKey::Rule
         | BodyRowKey::Blank
@@ -1091,6 +1213,23 @@ fn handle_body_click(overlay: &mut DiffOverlayState, column: u16, row: u16) -> M
         | BodyRowKey::HunkHeader { .. }
         | BodyRowKey::InputRow(_) => MouseEffect::default(),
     }
+}
+
+/// Toggle a deleted file's expanded state (collapse <-> full body).
+/// Only deleted files collapse; a click on any other file's header is
+/// a no-op. Clears the file's measured height so the next frame
+/// re-measures it at the new row count.
+fn toggle_deleted_collapse(overlay: &mut DiffOverlayState, file_idx: usize) -> MouseEffect {
+    if overlay.files.get(file_idx).map(|f| f.status) != Some(FileStatus::Deleted) {
+        return MouseEffect::default();
+    }
+    if !overlay.deleted_expanded.insert(file_idx) {
+        overlay.deleted_expanded.remove(&file_idx);
+    }
+    if let Some(slot) = overlay.measured_heights.get_mut(file_idx) {
+        *slot = None;
+    }
+    MouseEffect { redraw: true }
 }
 
 fn open_input_for_key(overlay: &mut DiffOverlayState, key: LineKey) -> MouseEffect {
@@ -1294,9 +1433,38 @@ mod tests {
     }
 
     #[test]
-    fn current_file_is_none_on_empty_diff() {
-        let state = DiffOverlayState::new(PathBuf::from("/tmp"), "HEAD".into(), vec![]);
-        assert!(state.current_file().is_none());
+    fn file_offsets_are_prefix_sums_of_heights() {
+        // heights: file0=10, file1=4, file2=7  -> offsets 0,10,14 ; total 21
+        let offsets = file_offsets(&[10, 4, 7]);
+        assert_eq!(offsets.starts, vec![0, 10, 14]);
+        assert_eq!(offsets.total, 21);
+    }
+
+    #[test]
+    fn file_index_at_row_finds_owning_file() {
+        let offsets = file_offsets(&[10, 4, 7]); // ranges 0..10, 10..14, 14..21
+        assert_eq!(offsets.file_at_row(0), 0);
+        assert_eq!(offsets.file_at_row(9), 0);
+        assert_eq!(offsets.file_at_row(10), 1);
+        assert_eq!(offsets.file_at_row(13), 1);
+        assert_eq!(offsets.file_at_row(14), 2);
+        assert_eq!(offsets.file_at_row(100), 2); // past end clamps to last
+    }
+
+    #[test]
+    fn file_offsets_empty_is_total_zero() {
+        let offsets = file_offsets(&[]);
+        assert!(offsets.starts.is_empty());
+        assert_eq!(offsets.total, 0);
+    }
+
+    #[test]
+    fn invalidate_measured_heights_clears_all_preserving_len() {
+        let mut state = sample_state();
+        state.measured_heights = vec![Some(10), Some(4)];
+        state.invalidate_measured_heights();
+        assert!(state.measured_heights.iter().all(Option::is_none));
+        assert_eq!(state.measured_heights.len(), 2, "length tracks files");
     }
 
     // The rail file-leaf click now JUMPS `doc_scroll` to the file's
@@ -1343,9 +1511,10 @@ mod tests {
 
     #[test]
     fn body_click_left_column_opens_comment_input_on_left_key() {
-        // Simulate a rendered split row with both columns present;
-        // click in the left half resolves to the left key.
+        // Split row with both columns present; a click in the left
+        // half resolves to the left key (split picks by column).
         let mut state = sample_state();
+        state.view_mode = DiffViewMode::Split;
         let left_key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
         let right_key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 1 };
         state.body_keys = vec![
@@ -1367,6 +1536,7 @@ mod tests {
     #[test]
     fn body_click_right_column_opens_comment_input_on_right_key() {
         let mut state = sample_state();
+        state.view_mode = DiffViewMode::Split;
         let left_key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
         let right_key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 1 };
         state.body_keys = vec![
@@ -1387,7 +1557,10 @@ mod tests {
 
     #[test]
     fn body_click_on_empty_side_is_noop() {
+        // Split-only: clicking the blank half of an unbalanced row
+        // (left = None) is a no-op. Unified would resolve right.
         let mut state = sample_state();
+        state.view_mode = DiffViewMode::Split;
         let right_key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
         state.body_keys = vec![
             BodyRowKey::Banner,
@@ -1403,6 +1576,63 @@ mod tests {
         let effect = handle_left_click(&mut state, 60, 4, 160);
         assert!(!effect.redraw);
         assert!(state.active_input.is_none());
+    }
+
+    #[test]
+    fn body_click_unified_resolves_either_column_to_the_line() {
+        // Unified is one column: a click anywhere on the row opens the
+        // comment, even the left half of an added/context row whose
+        // key sits on the right. (Split would no-op the empty left.)
+        let mut state = sample_state(); // view_mode defaults to Unified
+        let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        state.body_keys = vec![
+            BodyRowKey::Banner,
+            BodyRowKey::Rule,
+            BodyRowKey::Blank,
+            BodyRowKey::HunkHeader { file_idx: 0, hunk_idx: 0 },
+            BodyRowKey::HunkRow { left: None, right: Some(key) },
+        ];
+        state.pane_origin_row = 0;
+        state.pane_origin_col = 41;
+        state.pane_width = 119;
+        let effect = handle_left_click(&mut state, 60, 4, 160); // left half
+        assert!(effect.redraw);
+        assert_eq!(state.active_input.as_ref().map(|i| i.key), Some(key));
+    }
+
+    #[test]
+    fn rail_click_jumps_doc_scroll_to_file_offset() {
+        let mut state = sample_state(); // 2 files
+        // Give file 0 a measured height of 10 so file 1 starts at row 10.
+        state.measured_heights = vec![Some(10), Some(4)];
+        let effect = handle_left_click(&mut state, 5, 4, 160); // rail row 4 = file idx 1
+        assert!(effect.redraw);
+        assert_eq!(state.doc_scroll, 10, "rail click jumps to the file's document offset");
+    }
+
+    #[test]
+    fn body_click_on_deleted_header_toggles_expand() {
+        let mut state = DiffOverlayState::new(
+            PathBuf::from("/tmp/repo"),
+            "HEAD".to_owned(),
+            vec![FileHunks { path: "gone.rs".into(), status: FileStatus::Deleted, hunks: vec![] }],
+        );
+        state.measured_heights = vec![Some(2)];
+        state.body_keys = vec![BodyRowKey::FileHeader { file_idx: 0 }];
+        state.body_head_rows = 1;
+        state.pane_origin_row = 0;
+        state.pane_origin_col = 24;
+        state.pane_width = 120;
+        // Click the pinned header (row 0, within the head). Column past
+        // the rail so it routes to the body.
+        let effect = handle_left_click(&mut state, 50, 0, 160);
+        assert!(effect.redraw);
+        assert!(state.deleted_expanded.contains(&0), "deleted header click expands");
+        assert!(state.measured_heights[0].is_none(), "height invalidated on toggle");
+        // Click again collapses.
+        let effect = handle_left_click(&mut state, 50, 0, 160);
+        assert!(effect.redraw);
+        assert!(!state.deleted_expanded.contains(&0), "second click collapses again");
     }
 
     #[test]
