@@ -31,6 +31,14 @@ pub struct SessionLaunchSettings {
     /// this empty.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra_args: Vec<(String, Option<String>)>,
+    /// Boot-wave fresh-start routing flag (`--new`). When `true`, the
+    /// project-target spawn arms skip resuming the catalog lead session
+    /// and start a fresh one, and the lead cascades it to its workers.
+    /// Pure workspace-side routing - `#[serde(skip)]` keeps it out of
+    /// every serialized form, so it never reaches the `settings` JSON
+    /// sent to `claude`. Defaults `false`; only the boot dispatch sets it.
+    #[serde(skip)]
+    pub force_new: bool,
 }
 
 impl SessionLaunchSettings {
