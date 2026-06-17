@@ -54,7 +54,7 @@ impl DiagnosticsPreset {
 }
 
 #[derive(Parser, Debug)]
-#[command(name = "forge", about = "Native Rust terminal for Claude Code")]
+#[command(name = "forge", about = "Native Rust terminal for Claude Code", version)]
 pub struct Cli {
     /// Project name to open. When omitted, opens the project marked
     /// `default = true` in forge.toml. Must match a project's `name`
@@ -127,6 +127,15 @@ mod tests {
     fn new_flag_defaults_false() {
         let cli = Cli::try_parse_from(["forge"]).expect("parse");
         assert!(!cli.new);
+    }
+
+    #[test]
+    fn version_flag_exits_with_display_version() {
+        // clap handles --version as print-and-exit inside parse(), so
+        // it surfaces as an Err with kind DisplayVersion (same shape as
+        // --help / bad args) and never returns a parsed Cli.
+        let err = Cli::try_parse_from(["forge", "--version"]).expect_err("--version exits");
+        assert_eq!(err.kind(), clap::error::ErrorKind::DisplayVersion);
     }
 
     #[test]
