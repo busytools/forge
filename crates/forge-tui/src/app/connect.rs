@@ -187,6 +187,7 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
         status: AppStatus::Connecting,
         should_quit: false,
         exit_error: None,
+        start_new_run: cli.new,
         workspace: Some(workspace),
         #[rustfmt::skip] #[cfg(feature = "testing")] test_dispatched_permission_outcomes: std::cell::RefCell::new(Vec::new()),
         #[rustfmt::skip] #[cfg(feature = "testing")] test_dispatched_question_outcomes: std::cell::RefCell::new(Vec::new()),
@@ -475,5 +476,19 @@ mod tests {
         // invariant the launchpad change cares about is just
         // "argv supplied ⇒ never the launchpad."
         assert_ne!(app.active_view, crate::app::ActiveView::Launchpad);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn create_app_threads_new_flag_onto_start_new_run() {
+        let config_dir = tempfile::tempdir().expect("tempdir");
+        let project_dir = tempfile::tempdir().expect("project tempdir");
+        write_default_forge_toml(config_dir.path(), project_dir.path());
+        let workspace =
+            forge_workspace::Workspace::new(config_dir.path().to_owned()).await.expect("workspace");
+        let mut cli = cli_with(Some("forge-test"));
+        cli.new = true;
+        let local = tokio::task::LocalSet::new();
+        let app = local.run_until(async { super::create_app(&cli, Arc::new(workspace)) }).await;
+        assert!(app.start_new_run, "--new threads onto App.start_new_run");
     }
 }
