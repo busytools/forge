@@ -716,6 +716,10 @@ impl Workspace {
                 fresh
             }
         };
+        // Carry `--new` onto the domain so a project lead's
+        // Connected-time team spawn skips the worker resume scan and
+        // brings its workers up fresh alongside the fresh lead.
+        domain_arc.lock().spawned_force_new = settings.force_new;
 
         // Build the per-session `forge` MCP server. ONE server name;
         // tool surface depends on whether this spawn is for a project
@@ -760,7 +764,11 @@ impl Workspace {
                         Some(Self::build_delegation_catalog(&project.name));
                 }
                 let cwd = project.path.to_string_lossy().to_string();
-                if let Some(lead) = self.try_lead_session_id_for(project) {
+                let resume_target = Self::apply_force_new_gate(
+                    self.try_lead_session_id_for(project),
+                    settings.force_new,
+                );
+                if let Some(lead) = resume_target {
                     handle.resume_or_new_session(lead.as_str().to_owned(), cwd, settings)?;
                 } else {
                     handle.new_session(cwd, settings)?;
@@ -773,7 +781,11 @@ impl Workspace {
                         Some(Self::build_delegation_catalog(&project.name));
                 }
                 let cwd = project.path.to_string_lossy().to_string();
-                if let Some(lead) = self.try_lead_session_id_for(project) {
+                let resume_target = Self::apply_force_new_gate(
+                    self.try_lead_session_id_for(project),
+                    settings.force_new,
+                );
+                if let Some(lead) = resume_target {
                     handle.resume_or_new_session(lead.as_str().to_owned(), cwd, settings)?;
                 } else {
                     handle.new_session(cwd, settings)?;
@@ -1657,6 +1669,16 @@ impl Workspace {
         Some(SessionKey::from_session_id(lead.session_id.clone()))
     }
 
+    /// Resume target for a project-rooted spawn: the project's catalog
+    /// `lead`, unless `--new` (`force_new`) forces a fresh session.
+    /// `Some(lead)` => resume that session; `None` => start fresh
+    /// (`new_session`). `force_new` overrides a present lead - that is
+    /// what makes the boot wave's leads come up fresh under `--new`,
+    /// while every non-boot spawn leaves `force_new` false and resumes.
+    fn apply_force_new_gate(lead: Option<SessionKey>, force_new: bool) -> Option<SessionKey> {
+        if force_new { None } else { lead }
+    }
+
     /// Locate a `ProjectView`-like (`LoadedProject`) by `name` from
     /// `forge.toml`. Returns `None` when no project carries that name.
     /// Used by the spawn handlers to resolve the project's path / cwd
@@ -2091,6 +2113,7 @@ impl Workspace {
         project_dir: PathBuf,
         namespace: String,
         team: Vec<String>,
+        force_new: bool,
     ) {
         if team.is_empty() {
             return;
@@ -2101,6 +2124,20 @@ impl Workspace {
                 project = %project_key.as_str(),
                 "team-spawn already in flight; skipping duplicate Connected fire",
             );
+            return;
+        }
+        // `--new`: the lead came up fresh, so its workers do too. Skip
+        // the catalog resume scan entirely and spawn every role fresh
+        // (an empty resume map => `resume_existing = None` for all).
+        if force_new {
+            let loaded = Self::load_team_roles(&team, &namespace, &project_key);
+            self.spawn_team_for_lead_with_resume(
+                &lead_session_id,
+                &project_key,
+                &loaded,
+                &std::collections::HashMap::new(),
+            );
+            self.release_team_spawn(&project_key);
             return;
         }
         // When invoked inside a tokio runtime (production + any
@@ -3853,6 +3890,22 @@ mod tests {
     use std::fs;
     use tempfile::tempdir;
 
+    #[test]
+    fn force_new_gate_overrides_present_lead() {
+        let lead = SessionKey::from_session_id("lead-uuid");
+        // Normal boot (force_new = false): a resumable catalog lead is
+        // resumed.
+        assert_eq!(Workspace::apply_force_new_gate(Some(lead.clone()), false), Some(lead.clone()),);
+        // `--new` (force_new = true): the present lead is skipped, so
+        // the spawn falls to new_session - this is what makes
+        // `forge <project> --new` (which boots the focused lead via
+        // StartDefault -> the same gate) come up fresh.
+        assert_eq!(Workspace::apply_force_new_gate(Some(lead), true), None);
+        // No catalog lead: fresh either way.
+        assert_eq!(Workspace::apply_force_new_gate(None, false), None);
+        assert_eq!(Workspace::apply_force_new_gate(None, true), None);
+    }
+
     fn make_workspace_dir() -> tempfile::TempDir {
         let dir = tempdir().expect("tempdir");
         fs::write(
@@ -5566,6 +5619,7 @@ mod team_spawn_tests {
             std::path::PathBuf::from("/tmp/hub-modules"),
             "hub-modules".to_owned(),
             vec!["steward".to_owned()],
+            false,
         );
 
         let dispatched = workspace.drain_test_dispatch_buffer();
@@ -5575,6 +5629,41 @@ mod team_spawn_tests {
         if let Command::SpawnWorker { label, charter, .. } = spawns[0] {
             assert_eq!(label, "steward", "worker label stays BARE, not hub-modules/steward");
             assert!(charter.contains("Hub steward"), "charter loaded from the project-scoped dir");
+        }
+
+        crate::team::set_forge_team_root_for_test(prev);
+    }
+
+    #[test]
+    fn force_new_team_spawn_dispatches_workers_fresh() {
+        // A force-new lead's team spawn skips the catalog resume scan,
+        // so every worker dispatches with resume_existing = None. (The
+        // resume mechanic itself is covered by
+        // spawn_team_for_lead_with_resume_all_resume.)
+        let tmp = tempfile::tempdir().expect("tmp");
+        let steward = tmp.path().join("hub-modules").join("steward");
+        std::fs::create_dir_all(&steward).expect("mkdir");
+        std::fs::write(steward.join("charter.md"), "description: Hub steward\n").expect("charter");
+        std::fs::write(steward.join("kick.md"), "go\n").expect("kick");
+        let prev = crate::team::set_forge_team_root_for_test(Some(tmp.path().to_path_buf()));
+
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        workspace.enable_test_dispatch_intercept();
+        workspace.spawn_team_for_lead_with_catalog_scan(
+            "lead-uuid".to_owned(),
+            ProjectKey::new("hub-modules"),
+            std::path::PathBuf::from("/tmp/hub-modules"),
+            "hub-modules".to_owned(),
+            vec!["steward".to_owned()],
+            true, // force_new: skip the resume scan
+        );
+
+        let dispatched = workspace.drain_test_dispatch_buffer();
+        let spawns: Vec<&Command> =
+            dispatched.iter().filter(|c| matches!(c, Command::SpawnWorker { .. })).collect();
+        assert_eq!(spawns.len(), 1, "force-new still spawns the configured worker");
+        if let Command::SpawnWorker { resume_existing, .. } = spawns[0] {
+            assert!(resume_existing.is_none(), "force_new => worker spawns fresh (no resume)");
         }
 
         crate::team::set_forge_team_root_for_test(prev);

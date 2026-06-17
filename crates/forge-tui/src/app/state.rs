@@ -243,6 +243,14 @@ pub struct App {
     pub should_quit: bool,
     /// Optional fatal app error that should be surfaced at CLI boundary.
     pub exit_error: Option<crate::error::AppError>,
+    /// Boot-wave fresh-start flag from the `--new` launch flag. When
+    /// set, the boot dispatch stamps `force_new` on the boot
+    /// `SessionLaunchSettings` it spawns with, so both the focused
+    /// project (`StartDefault`) and the rest (`SpawnProject`) bring
+    /// their leads + workers up fresh instead of resuming. Later
+    /// click-to-spawn builds its own settings (force_new false) and is
+    /// unaffected.
+    pub start_new_run: bool,
     /// Multi-session orchestrator. Hands out `AgentHandle`s via
     /// `get_agent_handle(SessionTarget::Default, ...)` at startup.
     /// `None` only in test contexts (`App::test_default`); production
@@ -2867,6 +2875,7 @@ impl App {
             status: AppStatus::Ready,
             should_quit: false,
             exit_error: None,
+            start_new_run: false,
             workspace: Some(workspace),
             #[rustfmt::skip] #[cfg(feature = "testing")] test_dispatched_permission_outcomes: std::cell::RefCell::new(Vec::new()),
             #[rustfmt::skip] #[cfg(feature = "testing")] test_dispatched_question_outcomes: std::cell::RefCell::new(Vec::new()),
