@@ -128,8 +128,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let max_offset = tail_count.saturating_sub(usize::from(tail_height));
     let max_offset_u16 = u16::try_from(max_offset).unwrap_or(u16::MAX);
     let body_scroll = if let Some(overlay_mut) = app.diff_overlay.as_mut() {
-        let clamped = overlay_mut.body_scroll.min(max_offset_u16);
-        overlay_mut.body_scroll = clamped;
+        let current = u16::try_from(overlay_mut.doc_scroll).unwrap_or(u16::MAX);
+        let clamped = current.min(max_offset_u16);
+        overlay_mut.doc_scroll = u32::from(clamped);
         overlay_mut.body_keys = body_keys;
         overlay_mut.body_head_rows = BODY_HEAD_ROWS;
         overlay_mut.pane_origin_row = pane_area.y;
@@ -370,7 +371,7 @@ fn emit_rail_node(
             keys.push(RailRowKey::Directory);
         }
         Some(leaf) => {
-            let is_current = overlay.current_file_idx == leaf.file_idx;
+            let is_current = leaf.file_idx == 0;
             let comment_count = overlay.comment_counts.get(leaf.file_idx).copied().unwrap_or(0);
             lines.push(rail_file_row(
                 &line_prefix,
@@ -576,7 +577,7 @@ fn build_pane_lines(
             keys.push(BodyRowKey::EmptyState);
         }
         Some(file) => {
-            let file_idx = overlay.current_file_idx;
+            let file_idx = 0;
             let gutter_width = gutter_width_for(file);
             // Pre-index saved comments by line key so chip rendering
             // is O(1) per line instead of O(comments) per line. Net
@@ -601,7 +602,7 @@ fn build_pane_lines(
                         pair,
                         gutter_width,
                         area.width,
-                        usize::from(overlay.body_scroll_x),
+                        0,
                         &mut left_hl,
                         &mut right_hl,
                     );

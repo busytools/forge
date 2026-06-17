@@ -30,6 +30,16 @@ use tui_textarea::TextArea;
 use super::App;
 use super::view::{ActiveView, set_active_view};
 
+/// Diff body layout. Unified is the default GitHub-style inline view;
+/// `t` toggles to side-by-side split. The toggle flips the whole
+/// document, not a single file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DiffViewMode {
+    #[default]
+    Unified,
+    Split,
+}
+
 /// Identifies a single rendered diff line - `(file_idx, hunk_idx,
 /// line_idx_in_hunk)`. Comments attach to a `LineKey`; the body
 /// hit-test resolves a mouse y-coordinate to a key by walking the
@@ -467,17 +477,19 @@ pub struct DiffOverlayState {
     /// as a "+N untracked suppressed" row so a fresh-repo state
     /// doesn't render identically to a clean tree.
     pub untracked_suppressed: usize,
-    /// Index into [`Self::files`] for the currently-viewed file in
-    /// the right pane. Bounds-checked by [`Self::current_file`].
-    pub current_file_idx: usize,
-    /// Scroll offset (in lines) for the right pane's diff body.
-    /// Resets to 0 when the user switches files.
-    pub body_scroll: u16,
-    /// Horizontal scroll offset (in columns) applied to both halves
-    /// of the split diff body. Left/Right arrow keys advance and
-    /// retreat this; resets to 0 when the user switches files. Both
-    /// halves use the same offset so the split stays aligned.
-    pub body_scroll_x: u16,
+    /// Scroll offset (in rows) across the whole concatenated document
+    /// of every file's diff. `u32` because a large multi-file diff can
+    /// exceed `u16` rows. The single source of vertical scroll truth.
+    pub doc_scroll: u32,
+    /// Unified (default) vs split body layout. Toggled by `t`; flips
+    /// the whole document. Invalidates the measured-height cache (the
+    /// two modes have different row counts) but not the span cache.
+    pub view_mode: DiffViewMode,
+    /// File indices of deleted files the user has expanded. Deleted
+    /// files render collapsed (a one-line notice) by default; a
+    /// membership here means "expanded". Non-deleted files are always
+    /// expanded and never appear here.
+    pub deleted_expanded: std::collections::HashSet<usize>,
     /// Scroll offset (in lines) for the left FILES rail. Wheel
     /// events with the cursor over the rail advance this; the
     /// renderer clamps it against `max(0, file_count - visible)`.
@@ -561,9 +573,9 @@ impl DiffOverlayState {
             files,
             scanner_ok: true,
             untracked_suppressed: 0,
-            current_file_idx: 0,
-            body_scroll: 0,
-            body_scroll_x: 0,
+            doc_scroll: 0,
+            view_mode: DiffViewMode::default(),
+            deleted_expanded: std::collections::HashSet::new(),
             rail_scroll: 0,
             comments: Vec::new(),
             active_input: None,
@@ -588,9 +600,9 @@ impl DiffOverlayState {
             files: event.files,
             scanner_ok: event.scanner_ok,
             untracked_suppressed: event.untracked_suppressed,
-            current_file_idx: 0,
-            body_scroll: 0,
-            body_scroll_x: 0,
+            doc_scroll: 0,
+            view_mode: DiffViewMode::default(),
+            deleted_expanded: std::collections::HashSet::new(),
             rail_scroll: 0,
             comments: Vec::new(),
             active_input: None,
@@ -604,9 +616,11 @@ impl DiffOverlayState {
         }
     }
 
-    /// Currently-viewed file, or `None` when the diff is empty.
+    /// First file in the document, or `None` when the diff is empty.
+    /// Transitional shim while the renderer still draws a single file;
+    /// the continuous-body rework drops it.
     pub fn current_file(&self) -> Option<&FileHunks> {
-        self.files.get(self.current_file_idx)
+        self.files.first()
     }
 }
 
@@ -663,34 +677,10 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
         }
         return;
     }
-    match key.code {
-        KeyCode::Esc => close_with_submit(app),
-        KeyCode::Left => scroll_body_horizontal(app, -1),
-        KeyCode::Right => scroll_body_horizontal(app, 1),
-        _ => {}
+    if key.code == KeyCode::Esc {
+        close_with_submit(app);
     }
 }
-
-/// Step the diff body's horizontal scroll by `delta` columns
-/// (`SCROLL_COLS_PER_STEP` per arrow press). Negative goes left,
-/// positive goes right. Clamped at 0 on the left; the right has no
-/// upper bound here because the renderer just truncates whatever
-/// content extends past the available width.
-fn scroll_body_horizontal(app: &mut App, delta: i32) {
-    let Some(overlay) = app.diff_overlay.as_mut() else {
-        return;
-    };
-    let step = i32::from(SCROLL_COLS_PER_STEP);
-    let next = i32::from(overlay.body_scroll_x).saturating_add(delta.saturating_mul(step));
-    let clamped = next.clamp(0, i32::from(u16::MAX));
-    overlay.body_scroll_x = u16::try_from(clamped).unwrap_or(0);
-    app.needs_redraw = true;
-}
-
-/// Columns advanced / retreated per Left / Right arrow press. 8 cols
-/// is enough to reveal a typical token-or-two of context per press
-/// without making short lines feel like they scroll forever.
-const SCROLL_COLS_PER_STEP: u16 = 8;
 
 /// Route bracketed paste into the active comment editor. Returns
 /// `true` when the paste was consumed (editor present), `false`
@@ -986,9 +976,9 @@ fn handle_scroll(
             overlay.rail_scroll = overlay.rail_scroll.saturating_sub(SCROLL_LINES_PER_NOTCH);
         }
     } else if down {
-        overlay.body_scroll = overlay.body_scroll.saturating_add(SCROLL_LINES_PER_NOTCH);
+        overlay.doc_scroll = overlay.doc_scroll.saturating_add(u32::from(SCROLL_LINES_PER_NOTCH));
     } else {
-        overlay.body_scroll = overlay.body_scroll.saturating_sub(SCROLL_LINES_PER_NOTCH);
+        overlay.doc_scroll = overlay.doc_scroll.saturating_sub(u32::from(SCROLL_LINES_PER_NOTCH));
     }
     MouseEffect { redraw: true }
 }
@@ -1042,15 +1032,9 @@ fn handle_rail_click(overlay: &mut DiffOverlayState, row: u16) -> MouseEffect {
     if file_idx >= overlay.files.len() {
         return MouseEffect::default();
     }
-    if overlay.current_file_idx == file_idx {
-        return MouseEffect::default();
-    }
-    overlay.current_file_idx = file_idx;
-    overlay.body_scroll = 0;
-    overlay.body_scroll_x = 0;
-    // Close the active editor on file switch - the editor is
-    // anchored to a specific line in the previous file, and the
-    // helper preserves prior_comment if it was a chip-reopen.
+    // The document-offset jump (set `doc_scroll` to this file's start
+    // row) lands with the continuous body. Closing the active editor
+    // on rail interaction preserves a reopened chip's prior comment.
     close_active_input_preserving_prior(overlay);
     MouseEffect { redraw: true }
 }
@@ -1076,7 +1060,7 @@ fn handle_body_click(overlay: &mut DiffOverlayState, column: u16, row: u16) -> M
     let body_idx = if local_row < head {
         Some(local_row)
     } else {
-        local_row.checked_add(usize::from(overlay.body_scroll))
+        local_row.checked_add(usize::try_from(overlay.doc_scroll).unwrap_or(usize::MAX))
     };
     let Some(idx) = body_idx else {
         return MouseEffect::default();
@@ -1303,25 +1287,10 @@ mod tests {
     }
 
     #[test]
-    fn new_sets_cursor_and_scrolls_to_zero() {
+    fn new_state_defaults_unified_and_doc_scroll_zero() {
         let state = sample_state();
-        assert_eq!(state.current_file_idx, 0);
-        assert_eq!(state.body_scroll, 0);
-    }
-
-    #[test]
-    fn current_file_returns_indexed_file() {
-        let mut state = sample_state();
-        assert_eq!(state.current_file().map(|f| f.path.as_str()), Some("a.rs"));
-        state.current_file_idx = 1;
-        assert_eq!(state.current_file().map(|f| f.path.as_str()), Some("b.rs"));
-    }
-
-    #[test]
-    fn current_file_is_none_when_idx_oob() {
-        let mut state = sample_state();
-        state.current_file_idx = 99;
-        assert!(state.current_file().is_none());
+        assert_eq!(state.view_mode, DiffViewMode::Unified);
+        assert_eq!(state.doc_scroll, 0);
     }
 
     #[test]
@@ -1330,34 +1299,20 @@ mod tests {
         assert!(state.current_file().is_none());
     }
 
-    #[test]
-    fn rail_click_switches_current_file_at_wide_tier() {
-        let mut state = sample_state();
-        // Column inside rail (<40), row 4 = file index 1.
-        let effect = handle_left_click(&mut state, 5, 4, 160);
-        assert!(effect.redraw);
-        assert_eq!(state.current_file_idx, 1);
-        assert_eq!(state.body_scroll, 0);
-    }
-
-    #[test]
-    fn rail_click_resets_body_scroll() {
-        let mut state = sample_state();
-        state.body_scroll = 12;
-        let effect = handle_left_click(&mut state, 5, 4, 160);
-        assert!(effect.redraw);
-        assert_eq!(state.body_scroll, 0);
-    }
+    // The rail file-leaf click now JUMPS `doc_scroll` to the file's
+    // document offset instead of switching `current_file_idx`. That
+    // jump needs the offset table + height cache, so the positive
+    // jump assertion lives with the continuous body. The no-op rail
+    // paths below stay valid regardless.
 
     #[test]
     fn rail_click_outside_rail_routes_to_body() {
-        // After the body hit-test was added, a click past the rail
-        // routes into handle_body_click which finds no body_keys
-        // in a freshly-constructed state - returns no-redraw.
+        // A click past the rail routes into handle_body_click, which
+        // finds no body_keys in a freshly-constructed state - no-redraw.
         let mut state = sample_state();
         let effect = handle_left_click(&mut state, 50, 4, 160);
         assert!(!effect.redraw);
-        assert_eq!(state.current_file_idx, 0);
+        assert_eq!(state.doc_scroll, 0);
     }
 
     #[test]
@@ -1365,7 +1320,7 @@ mod tests {
         let mut state = sample_state();
         let effect = handle_left_click(&mut state, 5, 0, 160); // Banner row.
         assert!(!effect.redraw);
-        assert_eq!(state.current_file_idx, 0);
+        assert_eq!(state.doc_scroll, 0);
     }
 
     #[test]
@@ -1373,15 +1328,7 @@ mod tests {
         let mut state = sample_state();
         let effect = handle_left_click(&mut state, 5, 99, 160); // No file at this row.
         assert!(!effect.redraw);
-        assert_eq!(state.current_file_idx, 0);
-    }
-
-    #[test]
-    fn rail_click_same_file_returns_no_redraw() {
-        let mut state = sample_state();
-        let effect = handle_left_click(&mut state, 5, 3, 160); // Already on file 0.
-        assert!(!effect.redraw);
-        assert_eq!(state.current_file_idx, 0);
+        assert_eq!(state.doc_scroll, 0);
     }
 
     #[test]
@@ -1391,7 +1338,7 @@ mod tests {
         let mut state = sample_state();
         let effect = handle_left_click(&mut state, 5, 4, 100);
         assert!(!effect.redraw);
-        assert_eq!(state.current_file_idx, 0);
+        assert_eq!(state.doc_scroll, 0);
     }
 
     #[test]
