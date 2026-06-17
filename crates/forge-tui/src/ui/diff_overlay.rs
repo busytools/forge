@@ -46,11 +46,19 @@ use crate::app::diff_overlay::DiffOverlayState;
 use crate::ui::highlight::LineHighlighter;
 use crate::ui::theme;
 
-/// Minimum terminal width to render the split view. Below this we
-/// show a "resize" notice - the body needs room for the rail plus
-/// two columns of readable code, and squeezing harder loses more
-/// than it saves.
+/// Minimum body width (in columns) for the side-by-side split view -
+/// two columns of readable code need the room. Unified renders at any
+/// width (it soft-wraps), so below this the split toggle silently
+/// falls back to unified rather than blocking the overlay.
 const MIN_WIDTH_FOR_SPLIT: u16 = 100;
+
+/// The layout to actually render: the user's stored choice, except a
+/// body narrower than [`MIN_WIDTH_FOR_SPLIT`] forces unified (split's
+/// two columns don't fit). The stored `view_mode` is untouched, so
+/// widening the pane restores split.
+fn effective_view_mode(stored: DiffViewMode, pane_width: u16) -> DiffViewMode {
+    if pane_width < MIN_WIDTH_FOR_SPLIT { DiffViewMode::Unified } else { stored }
+}
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
@@ -58,11 +66,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     if app.diff_overlay.is_none() {
         render_missing_state(frame, area);
-        return;
-    }
-
-    if area.width < MIN_WIDTH_FOR_SPLIT {
-        render_too_narrow_notice(frame, area, app);
         return;
     }
 
@@ -163,7 +166,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     frame.render_widget(Paragraph::new(head.to_vec()), head_rect);
     let tail_scroll_u16 = u16::try_from(tail_scroll).unwrap_or(u16::MAX);
     frame.render_widget(Paragraph::new(tail.to_vec()).scroll((tail_scroll_u16, 0)), tail_rect);
-    render_footer(frame, area, overlay);
+    render_footer(frame, area, overlay, effective_view_mode(overlay.view_mode, pane_area.width));
 }
 
 fn render_missing_state(frame: &mut Frame, area: Rect) {
@@ -501,7 +504,7 @@ fn render_separator(frame: &mut Frame, area: Rect) {
 /// the current mode (unified / split) right-justified. With a comment
 /// editor open it shows the editor's Enter/Esc hints instead. Painted
 /// over the last row of `area`, after the body, so it never overlaps.
-fn render_footer(frame: &mut Frame, area: Rect, overlay: &DiffOverlayState) {
+fn render_footer(frame: &mut Frame, area: Rect, overlay: &DiffOverlayState, mode: DiffViewMode) {
     if area.height < 2 {
         return;
     }
@@ -541,18 +544,19 @@ fn render_footer(frame: &mut Frame, area: Rect, overlay: &DiffOverlayState) {
             spans.push(Span::styled(*label, dim));
         }
     }
-    // Right-justify the current mode.
-    let mode = match overlay.view_mode {
+    // Right-justify the effective mode (what's actually rendered -
+    // a narrow pane shows unified even when split is the stored choice).
+    let mode_label = match mode {
         DiffViewMode::Unified => "unified",
         DiffViewMode::Split => "split",
     };
     let left_width: usize = spans.iter().map(Span::width).sum();
     let pad = usize::from(area.width)
         .saturating_sub(left_width)
-        .saturating_sub(mode.width())
+        .saturating_sub(mode_label.width())
         .saturating_sub(2);
     spans.push(Span::raw(" ".repeat(pad)));
-    spans.push(Span::styled(mode, orange));
+    spans.push(Span::styled(mode_label, orange));
     spans.push(Span::raw(" "));
     frame.render_widget(Paragraph::new(Line::from(spans)), footer_rect);
 }
@@ -895,7 +899,7 @@ fn push_file_body(
     }
     let gutter_width = gutter_width_for(file);
     let cache = overlay.highlighted.get(file_idx).and_then(Option::as_ref);
-    match overlay.view_mode {
+    match effective_view_mode(overlay.view_mode, pane_width) {
         DiffViewMode::Unified => push_unified_body(
             overlay,
             file,
@@ -1533,27 +1537,6 @@ fn truncate_spans_to_width(spans: Vec<Span<'static>>, max_width: usize) -> Vec<S
     out
 }
 
-/// Render the "terminal too narrow" notice in place of the whole
-/// overlay body. Below `MIN_WIDTH_FOR_SPLIT` there isn't room for a
-/// readable column, so we ask the user to resize rather than squeeze
-/// the rendering harder. Takes `&mut App` to clear every geometry
-/// field the click handler reads (`body_keys`, `body_head_rows`,
-/// `pane_*`) so a click during this state can't hit-test against stale
-/// wide-tier values.
-fn render_too_narrow_notice(frame: &mut Frame, area: Rect, app: &mut App) {
-    let msg =
-        format!("Terminal too narrow - resize to ≥ {MIN_WIDTH_FOR_SPLIT} cols and re-open /diff.");
-    frame
-        .render_widget(Paragraph::new(msg).style(Style::default().fg(theme::STATUS_WARNING)), area);
-    if let Some(o) = app.diff_overlay.as_mut() {
-        o.body_keys.clear();
-        o.body_head_rows = 0;
-        o.pane_origin_row = area.y;
-        o.pane_origin_col = area.x;
-        o.pane_width = area.width;
-    }
-}
-
 fn banner_row(label: &'static str) -> Line<'static> {
     Line::from(vec![
         Span::raw("  "),
@@ -1780,5 +1763,67 @@ mod tests {
         // wrapped = 6.
         ensure_file_cached(&mut state, 0, 40);
         assert_eq!(state.measured_heights[0], Some(6));
+    }
+
+    #[test]
+    fn effective_view_mode_forces_unified_below_split_threshold() {
+        assert_eq!(effective_view_mode(DiffViewMode::Split, 80), DiffViewMode::Unified);
+        assert_eq!(
+            effective_view_mode(DiffViewMode::Split, MIN_WIDTH_FOR_SPLIT),
+            DiffViewMode::Split,
+        );
+        assert_eq!(effective_view_mode(DiffViewMode::Unified, 200), DiffViewMode::Unified);
+    }
+
+    #[test]
+    fn narrow_pane_renders_unified_even_with_split_stored() {
+        use forge_workspace::env::git_diff::hunks::DiffLine;
+        // One removed + one added line. Unified emits both as separate
+        // rows (header + @@ + removed + added = 4); split pairs them
+        // into one row (header + @@ + paired = 3). Measuring off the
+        // rendered rows lets us tell which layout actually drew.
+        let make = || FileHunks {
+            path: "a.rs".into(),
+            status: FileStatus::Modified,
+            hunks: vec![Hunk {
+                old_start: 1,
+                old_count: 1,
+                new_start: 1,
+                new_count: 1,
+                lines: vec![
+                    DiffLine {
+                        kind: DiffLineKind::Removed,
+                        text: "old".into(),
+                        old_line: Some(1),
+                        new_line: None,
+                    },
+                    DiffLine {
+                        kind: DiffLineKind::Added,
+                        text: "new".into(),
+                        old_line: None,
+                        new_line: Some(1),
+                    },
+                ],
+            }],
+        };
+        // Split is the stored choice, but a 60-col pane is below the
+        // split threshold, so it falls back to unified (4 rows).
+        let mut narrow = DiffOverlayState::new(
+            std::path::PathBuf::from("/tmp"),
+            "HEAD".to_owned(),
+            vec![make()],
+        );
+        narrow.view_mode = DiffViewMode::Split;
+        ensure_file_cached(&mut narrow, 0, 60);
+        assert_eq!(narrow.measured_heights[0], Some(4), "narrow pane falls back to unified");
+        // A wide pane honors the stored split (3 rows).
+        let mut wide = DiffOverlayState::new(
+            std::path::PathBuf::from("/tmp"),
+            "HEAD".to_owned(),
+            vec![make()],
+        );
+        wide.view_mode = DiffViewMode::Split;
+        ensure_file_cached(&mut wide, 0, 160);
+        assert_eq!(wide.measured_heights[0], Some(3), "wide pane honors split");
     }
 }
