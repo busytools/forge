@@ -654,6 +654,17 @@ impl DiffOverlayState {
         }
     }
 
+    /// Drop the measured heights when the body width changed since the
+    /// last frame (compared against the stashed `pane_width`). Soft-wrap
+    /// makes every wrapped row count width-dependent, so a resize / pane
+    /// reflow leaves them stale; the renderer calls this before reading
+    /// the offset table. Span cache is width-independent and untouched.
+    pub fn invalidate_heights_if_width_changed(&mut self, width: u16) {
+        if self.pane_width != width {
+            self.invalidate_measured_heights();
+        }
+    }
+
     /// True when file `idx` renders as the one-line collapsed notice -
     /// a deleted file the user hasn't expanded.
     pub fn is_collapsed(&self, idx: usize) -> bool {
@@ -1514,6 +1525,22 @@ mod tests {
         state.invalidate_measured_heights();
         assert!(state.measured_heights.iter().all(Option::is_none));
         assert_eq!(state.measured_heights.len(), 2, "length tracks files");
+    }
+
+    #[test]
+    fn width_change_invalidates_measured_heights() {
+        let mut state = sample_state();
+        state.pane_width = 80;
+        state.measured_heights = vec![Some(10), Some(4)];
+        // Same width: the wrapped-row counts are still valid.
+        state.invalidate_heights_if_width_changed(80);
+        assert_eq!(state.measured_heights, vec![Some(10), Some(4)], "same width keeps the cache");
+        // Changed width (resize / pane reflow): drop the stale heights.
+        state.invalidate_heights_if_width_changed(120);
+        assert!(
+            state.measured_heights.iter().all(Option::is_none),
+            "a width change drops the height cache so the next frame re-measures",
+        );
     }
 
     // The rail file-leaf click now JUMPS `doc_scroll` to the file's

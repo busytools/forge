@@ -56,10 +56,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
     app.cached_frame_area = area;
 
-    let Some(overlay) = app.diff_overlay.as_ref() else {
+    if app.diff_overlay.is_none() {
         render_missing_state(frame, area);
         return;
-    };
+    }
 
     if area.width < MIN_WIDTH_FOR_SPLIT {
         render_too_narrow_notice(frame, area, app);
@@ -95,9 +95,17 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         return;
     }
 
+    // A resize changes every file's wrapped row count, so the cached
+    // heights are stale. Drop them before the offset table reads them
+    // (the span cache is width-independent and stays put).
+    if let Some(o) = app.diff_overlay.as_mut() {
+        o.invalidate_heights_if_width_changed(pane_area.width);
+    }
+
     // 1. Offset table (measured-or-estimate), clamp the document
     //    scroll, find the file at the top of the viewport + the row
     //    into it.
+    let Some(overlay) = app.diff_overlay.as_ref() else { return };
     let viewport_rows = u32::from(pane_area.height);
     let offsets = overlay.doc_offsets();
     let max_scroll = offsets.total.saturating_sub(viewport_rows);
