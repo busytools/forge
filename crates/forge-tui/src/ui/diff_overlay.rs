@@ -626,49 +626,22 @@ fn unified_content_width(pane_width: u16, gutter_width: usize) -> usize {
     usize::from(pane_width).saturating_sub(2).saturating_sub(gutter_width).saturating_sub(3)
 }
 
-/// Visual rows one `text` line occupies when soft-wrapped to
-/// `content_width` display columns. Always at least 1 (a blank line
-/// still takes a row); `content_width == 0` collapses to 1.
-fn wrap_count(text: &str, content_width: usize) -> u32 {
-    if content_width == 0 {
-        return 1;
-    }
-    let width = text.width();
-    if width == 0 {
-        return 1;
-    }
-    u32::try_from(width.div_ceil(content_width)).unwrap_or(u32::MAX)
-}
-
-/// Measured document height of one file in rows, at `pane_width` in
-/// `view_mode`. A collapsed deleted file is 2 rows (sticky header +
-/// the "file deleted" notice). Otherwise 1 sticky header, then per
-/// hunk a `@@` header row plus the file's diff rows - soft-wrapped in
-/// unified, one per pair in split.
-fn file_height(file: &FileHunks, pane_width: u16, view_mode: DiffViewMode, collapsed: bool) -> u32 {
-    if collapsed {
-        return 2;
-    }
-    let mut rows: u32 = 1; // file sticky header
-    match view_mode {
-        DiffViewMode::Unified => {
-            let content_width = unified_content_width(pane_width, gutter_width_for(file));
-            for hunk in &file.hunks {
-                rows = rows.saturating_add(1); // @@ header
-                for line in &hunk.lines {
-                    rows = rows.saturating_add(wrap_count(&line.text, content_width));
-                }
-            }
-        }
-        DiffViewMode::Split => {
-            for (hunk_idx, hunk) in file.hunks.iter().enumerate() {
-                rows = rows.saturating_add(1); // @@ header
-                let pairs = pair_hunk_lines(0, hunk_idx, &hunk.lines).len();
-                rows = rows.saturating_add(u32::try_from(pairs).unwrap_or(u32::MAX));
-            }
-        }
-    }
-    rows
+/// Measured document height of one file in rows: the sticky header (1)
+/// plus the exact rows the renderer emits for the body. Built by
+/// running the same `push_file_body` the renderer uses into a scratch
+/// buffer and counting, so the measured height never drifts from what
+/// is drawn - it accounts for soft-wrap (`wrap_spans_to_width`), split
+/// pairing, the collapsed-deleted notice, and any inline comment chips
+/// or open editor anchored in the file. The file's highlight spans
+/// must be cached first (a collapsed deleted file needs none).
+fn file_height(overlay: &DiffOverlayState, file_idx: usize, pane_width: u16) -> u32 {
+    let comments_by_key = index_comments_by_key(&overlay.comments);
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut keys: Vec<BodyRowKey> = Vec::new();
+    // include_header = false: the sticky header is the pinned row,
+    // counted as the +1 below, not part of the scrolling body.
+    push_file_body(overlay, file_idx, false, pane_width, &comments_by_key, &mut lines, &mut keys);
+    1u32.saturating_add(u32::try_from(lines.len()).unwrap_or(u32::MAX))
 }
 
 /// Highlight one file's diff lines into unwrapped styled spans,
@@ -748,23 +721,26 @@ fn wrap_spans_to_width(spans: &[Span<'static>], content_width: usize) -> Vec<Vec
     rows
 }
 
-/// Ensure file `idx`'s measured height + highlight spans are cached,
-/// computing them only if absent (lazy on window-entry). A collapsed
-/// deleted file skips the highlight pass - it shows no diff lines.
+/// Ensure file `idx`'s highlight spans + measured height are cached,
+/// computing them only if absent (lazy on window-entry). Highlight
+/// runs first because `file_height` counts the rendered (wrapped) rows
+/// off those spans. A collapsed deleted file skips the highlight pass -
+/// it shows no diff lines.
 fn ensure_file_cached(overlay: &mut DiffOverlayState, idx: usize, pane_width: u16) {
     let collapsed = overlay.is_collapsed(idx);
-    let needs_measure = overlay.measured_heights.get(idx).copied().flatten().is_none();
-    let needs_highlight = !collapsed && overlay.highlighted.get(idx).is_some_and(Option::is_none);
-    if needs_measure && let Some(file) = overlay.files.get(idx) {
-        let height = file_height(file, pane_width, overlay.view_mode, collapsed);
-        if let Some(slot) = overlay.measured_heights.get_mut(idx) {
-            *slot = Some(height);
-        }
-    }
-    if needs_highlight && let Some(file) = overlay.files.get(idx) {
+    if !collapsed
+        && overlay.highlighted.get(idx).is_some_and(Option::is_none)
+        && let Some(file) = overlay.files.get(idx)
+    {
         let spans = build_file_highlight(file);
         if let Some(slot) = overlay.highlighted.get_mut(idx) {
             *slot = Some(spans);
+        }
+    }
+    if overlay.measured_heights.get(idx).copied().flatten().is_none() {
+        let height = file_height(overlay, idx, pane_width);
+        if let Some(slot) = overlay.measured_heights.get_mut(idx) {
+            *slot = Some(height);
         }
     }
 }
@@ -1762,29 +1738,28 @@ mod tests {
     }
 
     #[test]
-    fn wrap_count_is_ceil_div_min_one() {
-        assert_eq!(wrap_count("", 10), 1); // blank line still occupies a row
-        assert_eq!(wrap_count("abc", 10), 1);
-        assert_eq!(wrap_count(&"x".repeat(10), 10), 1);
-        assert_eq!(wrap_count(&"x".repeat(11), 10), 2);
-        assert_eq!(wrap_count(&"x".repeat(25), 10), 3);
-        assert_eq!(wrap_count("anything", 0), 1); // zero content width never divides
-    }
-
-    #[test]
     fn file_height_collapsed_deleted_is_two_rows() {
-        let file =
-            FileHunks { path: "gone.rs".into(), status: FileStatus::Deleted, hunks: Vec::new() };
-        assert_eq!(file_height(&file, 120, DiffViewMode::Unified, true), 2);
-        assert_eq!(file_height(&file, 120, DiffViewMode::Split, true), 2);
+        let mut state = DiffOverlayState::new(
+            std::path::PathBuf::from("/tmp/repo"),
+            "HEAD".to_owned(),
+            vec![FileHunks {
+                path: "gone.rs".into(),
+                status: FileStatus::Deleted,
+                hunks: Vec::new(),
+            }],
+        );
+        ensure_file_cached(&mut state, 0, 120);
+        // Sticky header + the one-line "file deleted" notice.
+        assert_eq!(state.measured_heights[0], Some(2));
     }
 
     #[test]
-    fn file_height_unified_counts_header_plus_wrapped_lines() {
+    fn file_height_counts_rendered_wrapped_rows() {
         use forge_workspace::env::git_diff::hunks::DiffLine;
         // gutter for line numbers up to 2 = 2 cols; at pane width 40
-        // content width = 40 - 2 indent - 2 gutter - 3 sign zone = 33.
-        let long = "x".repeat(70); // ceil(70 / 33) = 3 visual rows
+        // content width = 40 - 2 indent - 2 gutter - 3 sign zone = 33,
+        // so the 70-col line wraps into ceil(70 / 33) = 3 visual rows.
+        let long = "x".repeat(70);
         let file = FileHunks {
             path: "a.rs".into(),
             status: FileStatus::Modified,
@@ -1809,7 +1784,12 @@ mod tests {
                 ],
             }],
         };
-        // 1 file header + 1 @@ header + 1 (short) + 3 (long wraps) = 6.
-        assert_eq!(file_height(&file, 40, DiffViewMode::Unified, false), 6);
+        let mut state =
+            DiffOverlayState::new(std::path::PathBuf::from("/tmp"), "HEAD".to_owned(), vec![file]);
+        // ensure_file_cached highlights, then measures off the rendered
+        // (wrapped) rows: 1 sticky header + 1 @@ header + 1 short + 3
+        // wrapped = 6.
+        ensure_file_cached(&mut state, 0, 40);
+        assert_eq!(state.measured_heights[0], Some(6));
     }
 }
