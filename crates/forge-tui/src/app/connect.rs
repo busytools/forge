@@ -387,6 +387,7 @@ mod tests {
     fn cli_with(project: Option<&str>) -> Cli {
         Cli {
             project: project.map(str::to_owned),
+            new: false,
             generate_completion: None,
             diagnostics_preset: None,
             log_file: None,

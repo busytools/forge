@@ -62,6 +62,12 @@ pub struct Cli {
     #[arg(value_name = "PROJECT")]
     pub project: Option<String>,
 
+    /// Start every boot session fresh: auto_start projects and their
+    /// workers spawn as new sessions instead of resuming. Only affects
+    /// the startup wave - clicking a sleeping project later still resumes.
+    #[arg(long)]
+    pub new: bool,
+
     /// Generate a shell completion script and print to stdout, then
     /// exit. Hidden from --help; called by `scripts/install.sh`.
     #[arg(long, value_name = "SHELL", hide = true)]
@@ -109,6 +115,18 @@ mod tests {
     #[test]
     fn cli_rejects_legacy_resume_flag() {
         assert!(Cli::try_parse_from(["forge", "--resume", "abc-123"]).is_err());
+    }
+
+    #[test]
+    fn new_flag_parses() {
+        let cli = Cli::try_parse_from(["forge", "--new"]).expect("parse");
+        assert!(cli.new);
+    }
+
+    #[test]
+    fn new_flag_defaults_false() {
+        let cli = Cli::try_parse_from(["forge"]).expect("parse");
+        assert!(!cli.new);
     }
 
     #[test]
