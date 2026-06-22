@@ -1449,11 +1449,13 @@ mod tests {
         app.bind_active_turn_assistant(0);
 
         let _ = app.active_viewport_mut().on_frame(40, 8);
-        let first_spinner = SpinnerState { glyph: '\u{280B}', show_thinking: true, ..idle_spinner() };
+        let first_spinner =
+            SpinnerState { glyph: '\u{280B}', show_thinking: true, ..idle_spinner() };
         let first = update_visual_heights(&mut app, &first_spinner, 40, 8);
         assert_eq!(first.measured_msgs, 1);
 
-        let second_spinner = SpinnerState { glyph: '\u{2819}', show_thinking: true, ..idle_spinner() };
+        let second_spinner =
+            SpinnerState { glyph: '\u{2819}', show_thinking: true, ..idle_spinner() };
         let second = update_visual_heights(&mut app, &second_spinner, 40, 8);
         assert_eq!(second.measured_msgs, 0);
     }

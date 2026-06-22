@@ -1527,11 +1527,8 @@ fn append_workflow_row(
         WorkflowStatus::InProgress => ("in progress", theme::RUST_ORANGE),
         WorkflowStatus::Completed => ("done", Color::Green),
     };
-    let glyph = if workflow.is_in_progress() {
-        active_glyph.to_string()
-    } else {
-        "\u{25c6}".to_owned()
-    };
+    let glyph =
+        if workflow.is_in_progress() { active_glyph.to_string() } else { "\u{25c6}".to_owned() };
     let glyph_color = if workflow.is_in_progress() { theme::RUST_ORANGE } else { Color::Green };
 
     // same shape as MONITORS header. Badge follows

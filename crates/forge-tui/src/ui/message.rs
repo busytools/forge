@@ -3649,7 +3649,8 @@ mod tests {
     fn message_render_cache_rebuilds_when_indicator_visibility_changes() {
         let mut msg = make_text_message(MessageRole::Assistant, "cached");
         let base_spinner = idle_spinner();
-        let thinking_spinner = SpinnerState { show_thinking: true, glyph: '\u{2819}', ..idle_spinner() };
+        let thinking_spinner =
+            SpinnerState { show_thinking: true, glyph: '\u{2819}', ..idle_spinner() };
         let options = default_options();
 
         let base_cache = get_or_build_message_render_cache(
@@ -4056,7 +4057,8 @@ mod tests {
 
     #[test]
     fn subagent_running_line_single_uses_label_and_inspector_pointer() {
-        let line = subagent_running_line('\u{280B}', 1, Some("Explore \u{b7} map hidden tool calls"));
+        let line =
+            subagent_running_line('\u{280B}', 1, Some("Explore \u{b7} map hidden tool calls"));
         let rendered: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(
             rendered.contains("\u{25c7}"),

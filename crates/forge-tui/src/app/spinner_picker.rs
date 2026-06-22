@@ -127,7 +127,11 @@ mod tests {
         app.spinner_style = SpinnerStyle::ALL_STYLES[0];
         open(&mut app);
         handle_key(&mut app, key(KeyCode::Down));
-        assert_ne!(app.spinner_style, SpinnerStyle::ALL_STYLES[0], "navigation changed the live style");
+        assert_ne!(
+            app.spinner_style,
+            SpinnerStyle::ALL_STYLES[0],
+            "navigation changed the live style"
+        );
         assert!(handle_key(&mut app, key(KeyCode::Esc)));
         assert_eq!(
             app.spinner_style,
@@ -144,7 +148,11 @@ mod tests {
         open(&mut app);
         handle_key(&mut app, key(KeyCode::Up));
         let last = SpinnerStyle::ALL_STYLES.len() - 1;
-        assert_eq!(app.spinner_picker.expect("open").highlight, last, "up from first wraps to last");
+        assert_eq!(
+            app.spinner_picker.expect("open").highlight,
+            last,
+            "up from first wraps to last"
+        );
         assert_eq!(app.spinner_style, SpinnerStyle::ALL_STYLES[last]);
     }
 }

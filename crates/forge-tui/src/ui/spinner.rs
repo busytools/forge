@@ -19,11 +19,8 @@ const REDUCED_FLOOR_MS: u64 = 160;
 /// `elapsed / cadence`, wrapped to the frame count; under reduced
 /// motion the cadence is floored so the fast styles slow down.
 pub fn spinner_frame_index(style: SpinnerStyle, elapsed_ms: u128, reduced_motion: bool) -> usize {
-    let cadence = if reduced_motion {
-        style.cadence_ms().max(REDUCED_FLOOR_MS)
-    } else {
-        style.cadence_ms()
-    };
+    let cadence =
+        if reduced_motion { style.cadence_ms().max(REDUCED_FLOOR_MS) } else { style.cadence_ms() };
     let cadence = u128::from(cadence).max(1);
     ((elapsed_ms / cadence) as usize) % style.frames().len()
 }

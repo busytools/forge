@@ -359,7 +359,8 @@ mod tests {
         let mut tc = test_tool_call("tc-bg", "Agent", model::ToolCallStatus::InProgress);
         tc.task_metadata = Some(model::TaskMetadata::new().backgrounded(Some(true)));
 
-        let line = standard::render_tool_call_title(&tc, ToolCallRenderContext::default(), 80, '\u{280B}');
+        let line =
+            standard::render_tool_call_title(&tc, ToolCallRenderContext::default(), 80, '\u{280B}');
         let rendered: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
 
         assert!(rendered.contains("[backgrounded]"));
@@ -373,7 +374,8 @@ mod tests {
         let mut tc = test_tool_call("ls -la", "Bash", model::ToolCallStatus::Completed);
         tc.terminal_command = Some("ls -la".to_owned());
 
-        let line = standard::render_tool_call_title(&tc, ToolCallRenderContext::default(), 80, '\u{280B}');
+        let line =
+            standard::render_tool_call_title(&tc, ToolCallRenderContext::default(), 80, '\u{280B}');
         let rendered: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
 
         assert!(rendered.contains("Bash "), "expected 'Bash ' label in title; got: {rendered:?}");
@@ -399,7 +401,12 @@ mod tests {
             model::ToolCallStatus::Completed,
         );
 
-        let line = standard::render_tool_call_title(&tc, ToolCallRenderContext::default(), 120, '\u{280B}');
+        let line = standard::render_tool_call_title(
+            &tc,
+            ToolCallRenderContext::default(),
+            120,
+            '\u{280B}',
+        );
         let rendered: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
 
         // "Read" appears once (from our label), the path follows,
@@ -451,7 +458,12 @@ mod tests {
                 model::BashOutputMetadata::new().assistant_auto_backgrounded(Some(true)),
             )));
 
-        let title = standard::render_tool_call_title(&tc, ToolCallRenderContext::default(), 100, '\u{280B}');
+        let title = standard::render_tool_call_title(
+            &tc,
+            ToolCallRenderContext::default(),
+            100,
+            '\u{280B}',
+        );
         let text: String = title.spans.iter().map(|span| span.content.as_ref()).collect();
         assert!(text.contains("[assistant backgrounded]"));
     }
@@ -478,7 +490,8 @@ mod tests {
         let mut tc = test_tool_call("ls -la", "Bash", model::ToolCallStatus::Completed);
         tc.terminal_command = Some("ls -la".to_owned());
 
-        let title = standard::render_tool_call_title(&tc, ToolCallRenderContext::default(), 80, '\u{280B}');
+        let title =
+            standard::render_tool_call_title(&tc, ToolCallRenderContext::default(), 80, '\u{280B}');
         let text: String = title.spans.iter().map(|span| span.content.as_ref()).collect();
 
         assert!(text.contains('\u{25B6}'), "expected ▶ (U+25B6) in Bash row title; got: {text:?}");

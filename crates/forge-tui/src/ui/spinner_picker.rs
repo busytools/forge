@@ -48,7 +48,10 @@ pub(crate) fn render(frame: &mut Frame, area: Rect, app: &App) {
         lines.push(Line::from(vec![
             Span::styled(format!("{marker} "), Style::default().fg(theme::RUST_ORANGE)),
             Span::styled(format!("{glyph}  "), row_style),
-            Span::styled(format!("{}  \u{00B7}  {}ms", style.key(), style.cadence_ms()), meta_style),
+            Span::styled(
+                format!("{}  \u{00B7}  {}ms", style.key(), style.cadence_ms()),
+                meta_style,
+            ),
         ]));
     }
     lines.push(Line::default());

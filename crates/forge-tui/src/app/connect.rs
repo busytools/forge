@@ -173,10 +173,8 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
     // session.
     let active_view = if cli.project.is_none() { ActiveView::Launchpad } else { ActiveView::Chat };
     let spinner_style = workspace.ui_settings().spinner;
-    let initial_launchpad_state = crate::app::LaunchpadState {
-        selected_index: 0,
-        opened_at: std::time::Instant::now(),
-    };
+    let initial_launchpad_state =
+        crate::app::LaunchpadState { selected_index: 0, opened_at: std::time::Instant::now() };
     let mut app = App {
         active_view,
         config: ConfigState::default(),
@@ -533,8 +531,11 @@ mod tests {
         .expect("write forge.toml");
         // Runtime override in the forge-state.toml sidecar must win over
         // the forge.toml [ui] default.
-        std::fs::write(config_dir.path().join("forge-state.toml"), "version = 1\nspinner = \"ember\"\n")
-            .expect("write forge-state.toml");
+        std::fs::write(
+            config_dir.path().join("forge-state.toml"),
+            "version = 1\nspinner = \"ember\"\n",
+        )
+        .expect("write forge-state.toml");
         let workspace =
             forge_workspace::Workspace::new(config_dir.path().to_owned()).await.expect("workspace");
         let cli = cli_with(None);

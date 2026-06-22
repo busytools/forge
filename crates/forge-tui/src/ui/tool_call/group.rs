@@ -181,18 +181,12 @@ mod tests {
     #[test]
     fn render_group_summary_line_in_progress_uses_active_glyph() {
         let k = KindCount { reads: 1, ..KindCount::default() };
-        let text_a = line_text(&render_group_summary_line(
-            &k,
-            ToolCallStatus::InProgress,
-            '\u{280B}',
-            80,
-        )[0]);
-        let text_b = line_text(&render_group_summary_line(
-            &k,
-            ToolCallStatus::InProgress,
-            '\u{2819}',
-            80,
-        )[0]);
+        let text_a = line_text(
+            &render_group_summary_line(&k, ToolCallStatus::InProgress, '\u{280B}', 80)[0],
+        );
+        let text_b = line_text(
+            &render_group_summary_line(&k, ToolCallStatus::InProgress, '\u{2819}', 80)[0],
+        );
         let icon_a = text_a.chars().nth(2).expect("status icon char");
         let icon_b = text_b.chars().nth(2).expect("status icon char");
         assert_ne!(icon_a, icon_b, "distinct active glyphs must render distinct icons");
