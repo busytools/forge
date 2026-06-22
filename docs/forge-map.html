@@ -2050,7 +2050,7 @@ use a let-else with explicit error path
   <div class="surface-body">
     <p>Live picker for the active <code>SpinnerStyle</code> - the one source of truth that now drives <em>every</em> animated spinner in forge: chat thinking/working, the input box, the projects pane, the inspector TASKS / SUBAGENTS / WORKFLOWS / PROCESSES rows, the in-progress tool-call icon, and the launchpad. The overlay lists all five styles, each row animating at <strong>its own cadence</strong> via the shared time-based frame-index helper, with the live glyph + key + cadence. Moving the highlight is a <strong>live preview</strong>: the whole UI immediately animates with the highlighted style, so you see it in context before committing.</p>
 
-    <p>Each style's own cadence reads through: <code>braille</code> (80ms, fast 10-frame spin), <code>phase_of_moon</code> (120ms, ◐◓◑◒), <code>pulse</code> (100ms, breathing fill), <code>forge_dot</code> (1400ms, single ● - flat on the main surfaces; the slow opacity tween is launchpad-only), <code>ember</code> (180ms, · ✦ ✧ sparkles). Reduced motion floors the fast styles so they slow down.</p>
+    <p>Each style's own cadence reads through: <code>braille</code> (80ms, fast 10-frame spin), <code>phase_of_moon</code> (120ms, ◐◓◑◒), <code>pulse</code> (100ms, breathing fill), <code>forge_dot</code> (single ● - a flat dot on every surface for now; an opacity tween is a possible follow-up, not built yet), <code>ember</code> (180ms, · ✦ ✧ sparkles). Reduced motion floors the fast styles so they slow down.</p>
 
     <div class="term">
       <pre class="indent">

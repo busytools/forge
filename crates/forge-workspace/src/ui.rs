@@ -41,11 +41,10 @@ pub enum SpinnerStyle {
     PhaseOfMoon,
     /// `○◔◑◕●◕◑◔` - pulse fill. Breathing in and out, "alive."
     Pulse,
-    /// `●` - solid bullet. Intended for a forge-orange intensity
-    /// tween at the render layer; the frame is single-glyph so the
-    /// animation is driven by colour modulation rather than glyph
-    /// changes. See `forge_dot_alpha_step` in the launchpad
-    /// renderer for the opacity ramp.
+    /// `●` - solid bullet. Single-glyph; renders as a flat dot on
+    /// every surface today. A forge-orange opacity tween (animating
+    /// via colour modulation rather than glyph swaps) is a possible
+    /// future follow-up, not currently built.
     ForgeDot,
     /// `· ✦ ✧ ✦` - ember sparkles. Branded but works on any unicode
     /// terminal (no truecolor required). 180ms cadence reads as
@@ -91,10 +90,10 @@ impl SpinnerStyle {
     /// driver derives the current frame index from
     /// `elapsed_since_open.as_millis() / cadence_ms`.
     ///
-    /// `forge_dot` is the special one - its frame table is single-
-    /// glyph and the cadence here drives a full opacity tween cycle
-    /// (so it's intentionally much slower than the others, ~1.4s
-    /// per cycle).
+    /// `forge_dot` is single-glyph, so its slow (~1.4s) cadence
+    /// produces no visible glyph change today - it stays a flat `●`.
+    /// The slow value is reserved for an opacity-tween follow-up that
+    /// isn't built yet.
     pub fn cadence_ms(self) -> u64 {
         match self {
             Self::Braille => 80,
