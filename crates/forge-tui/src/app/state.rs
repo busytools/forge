@@ -333,6 +333,10 @@ pub struct App {
     pub cli_version_info: Option<forge_workspace::env::cli_version::CliVersionInfo>,
     pub spinner_frame: usize,
     pub spinner_last_advance_at: Option<Instant>,
+    /// Active spinner style for every animated surface (chat, input,
+    /// projects pane, inspector, launchpad). Seeded from the config
+    /// `spinner` field at startup; mutated live by `/spinner`.
+    pub spinner_style: forge_workspace::SpinnerStyle,
     /// Session-level preference for collapsing non-Execute tool call bodies.
     /// Toggled by Ctrl+X and applied at render/layout time.
     pub tools_collapsed: bool,
@@ -2901,6 +2905,7 @@ impl App {
             cli_version_info: None,
             spinner_frame: 0,
             spinner_last_advance_at: None,
+            spinner_style: forge_workspace::SpinnerStyle::default(),
             tools_collapsed: true,
             #[cfg(any(test, feature = "testing"))]
             last_invalidation_level: std::cell::Cell::new(None),
