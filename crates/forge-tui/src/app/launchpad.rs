@@ -183,7 +183,7 @@ mod tests {
     }
 
     #[test]
-    fn open_resets_state_from_workspace_ui_settings() {
+    fn open_switches_to_launchpad_view_and_resets_selection() {
         let mut app = App::test_default();
         app.active_view = ActiveView::Chat;
         // Move selection off zero to confirm `open` resets it.
