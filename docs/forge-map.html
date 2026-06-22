@@ -875,7 +875,7 @@ chat continues here...
         <li><strong>Failed</strong> → "<code>r  retry</code>" → no-op on Enter; press <kbd>r</kbd> for the explicit retry path (drops failed bucket + dispatches fresh <code>SpawnProject</code>).</li>
       </ul></dd>
       <dt>slash subset</dt><dd>The launchpad has no input area, so slash commands are reached through the corresponding keybindings: <code>/help</code> ≡ <kbd>?</kbd>, <code>/quit</code> ≡ <kbd>Ctrl+Q</kbd>. <code>/config</code> and <code>/plugins</code> live behind a picked project - open one with <kbd>Enter</kbd> first. The candidate-filter logic still recognises the four-command subset for any caller that queries it (kept in sync with the spec for forward compatibility).</dd>
-      <dt>config</dt><dd><code>[ui] launchpad_spinner</code> (one of <code>braille</code> / <code>phase_of_moon</code> / <code>pulse</code> / <code>forge_dot</code> / <code>ember</code>, default <code>braille</code>) controls the per-row + cold-boot spinner glyph.</dd>
+      <dt>config</dt><dd><code>[ui] spinner</code> (one of <code>braille</code> / <code>phase_of_moon</code> / <code>pulse</code> / <code>forge_dot</code> / <code>ember</code>, default <code>braille</code>) is the active spinner style for <em>every</em> animated surface - launchpad rows, chat thinking/working, input, projects pane, inspector - one <code>SpinnerStyle</code> source of truth. The legacy <code>launchpad_spinner</code> key still parses (serde alias). <code>/spinner</code> overrides it live and persists the choice to the <code>forge-state.toml</code> sidecar, layered over this forge.toml default (see <a href="#spinner-picker">the /spinner picker</a>).</dd>
     </dl>
   </div>
 </div>
@@ -2038,6 +2038,39 @@ use a let-else with explicit error path
       <dt>click</dt><dd>FILES rail file leaf → jump <code>doc_scroll</code> to that file's first row, close any open comment editor. Collapsed-deleted file header / notice → toggle the file's expand (clears its measured height). Diff line → open a <code>tui_textarea::TextArea</code> inline below the line (unified: a click anywhere on the row resolves it; split: the click column picks old/new); <kbd>Enter</kbd> saves, <kbd>Esc</kbd> cancels just the editor. Saved <code>💬</code> chip → reopens the saved comment for re-edit. <kbd>t</kbd> → flip unified ↔ split. <kbd>↑↓</kbd> / <kbd>PgUp/PgDn</kbd> / wheel over body → advance <code>doc_scroll</code>; wheel over the rail → <code>rail_scroll</code>. <kbd>Esc</kbd> with no editor open → close overlay; if comments are pending, bundle them into a markdown chat message and dispatch it as a fresh prompt to the agent (one bubble, one turn). Inspector pane's <code>🦉</code> glyph → enter overlay via <code>open_default</code> (auto-detected target).</dd>
       <dt>data source</dt><dd><code>forge_agent::env::git_diff::hunks::scan(cwd, target)</code> runs three subprocess calls per invocation: <code>git diff &lt;target&gt; --name-status</code> (file list with M/A/D/R/C/T/U classification), <code>git diff &lt;target&gt; --no-ext-diff</code> (full unified diff content - <code>--no-ext-diff</code> defeats user-configured difftastic / delta so the parser sees standard format), and <code>git ls-files --others --exclude-standard</code> (untracked files, only when <code>target == "HEAD"</code>; capped at <code>MAX_UNTRACKED_FILES=4</code>, each read up to <code>MAX_UNTRACKED_FILE_SIZE=1024</code> bytes). Returns <code>ScanOutcome { files, scanner_ok, untracked_suppressed }</code> - <code>scanner_ok</code> is <code>false</code> when any subprocess hit Failed / Oversize so the renderer surfaces "Scan failed" instead of an ambiguous empty pane; <code>untracked_suppressed</code> carries the cap-overflow count for the rail's yellow notice. Files keep <code>git --name-status</code> order, which is the document order. Unknown <code>--name-status</code> codes (X, B) and malformed <code>@@</code> headers fire WARN logs under <code>agent.env_git</code> and drop the entry. Single-shot scan on overlay open - no polling.</dd>
       <dt>scope</dt><dd>Rail shown at ≥120 cols (15% of width, min 20ch; matches the <code>rail_width_for</code> threshold) with the body filling the rest; below 120 the rail hides and the continuous body goes full-width; below 100 cols of body width (<code>MIN_WIDTH_FOR_SPLIT</code>) the split toggle falls back to unified (which soft-wraps) - there is no "too narrow" wall. The whole document shares one scroll (<code>doc_scroll</code>); per-file heights + highlight spans are cached lazily for the visible window. Persisted state: none - the overlay state is fully transient, doesn't survive a session restart. Comments survive the duration of a single open; <kbd>Esc</kbd> bundles them into chat and discards local state.</dd>
+    </dl>
+  </div>
+</div>
+
+<div class="surface" id="spinner-picker">
+  <div class="surface-head">
+    <h4>Spinner picker (<code>/spinner</code>)</h4>
+    <div class="when">visible: when <code>/spinner</code> (no arg) runs - a transient centered overlay drawn over whatever view is active (chat OR launchpad). <code>/spinner &lt;name&gt;</code> sets the style directly without opening the overlay.</div>
+  </div>
+  <div class="surface-body">
+    <p>Live picker for the active <code>SpinnerStyle</code> - the one source of truth that now drives <em>every</em> animated spinner in forge: chat thinking/working, the input box, the projects pane, the inspector TASKS / SUBAGENTS / WORKFLOWS / PROCESSES rows, the in-progress tool-call icon, and the launchpad. The overlay lists all five styles, each row animating at <strong>its own cadence</strong> via the shared time-based frame-index helper, with the live glyph + key + cadence. Moving the highlight is a <strong>live preview</strong>: the whole UI immediately animates with the highlighted style, so you see it in context before committing.</p>
+
+    <p>Each style's own cadence reads through: <code>braille</code> (80ms, fast 10-frame spin), <code>phase_of_moon</code> (120ms, ◐◓◑◒), <code>pulse</code> (100ms, breathing fill), <code>forge_dot</code> (1400ms, single ● - flat on the main surfaces; the slow opacity tween is launchpad-only), <code>ember</code> (180ms, · ✦ ✧ sparkles). Reduced motion floors the fast styles so they slow down.</p>
+
+    <div class="term">
+      <pre class="indent">
+                    <span class="dim">┌─ spinner ───────────────────────────┐</span>
+                    <span class="dim">│</span>   <span class="dim">⠹  braille  ·  80ms</span>              <span class="dim">│</span>
+                    <span class="dim">│</span> <span class="accent-bold">▶ ◐  phase_of_moon  ·  120ms</span>       <span class="dim">│</span>
+                    <span class="dim">│</span>   <span class="dim">◑  pulse  ·  100ms</span>               <span class="dim">│</span>
+                    <span class="dim">│</span>   <span class="dim">●  forge_dot  ·  1400ms</span>          <span class="dim">│</span>
+                    <span class="dim">│</span>   <span class="dim">✦  ember  ·  180ms</span>               <span class="dim">│</span>
+                    <span class="dim">│</span>                                     <span class="dim">│</span>
+                    <span class="dim">│</span> <span class="dim">↑↓ preview   enter apply   esc cancel</span> <span class="dim">│</span>
+                    <span class="dim">└─────────────────────────────────────┘</span></pre>
+    </div>
+
+    <dl>
+      <dt>keys</dt><dd><kbd>↑</kbd> <kbd>↓</kbd> move the highlight AND live-preview that style across the whole UI · <kbd>Enter</kbd> commit the highlighted style (persist) + close · <kbd>Esc</kbd> restore the style active when the overlay opened (no persist) + close. The overlay is modal - it captures every key while open, over chat and launchpad alike. Keyboard-only for v1; mouse-click selection is a possible follow-up.</dd>
+      <dt>persistence</dt><dd>The picker's <kbd>Enter</kbd> and <code>/spinner &lt;name&gt;</code> both write the choice to the <code>forge-state.toml</code> runtime sidecar (never the hand-authored <code>forge.toml</code>). At the next boot the sidecar override layers over the <code>[ui] spinner</code> default, which falls back to <code>braille</code>. The in-session active style is <code>App::spinner_style</code>; the sidecar write only affects later launches.</dd>
+      <dt>code</dt><dd><code>crates/forge-tui/src/app/spinner_picker.rs</code> (state + key handling: open / preview / commit / cancel) · <code>crates/forge-tui/src/ui/spinner_picker.rs::render</code> (centered overlay) · per-row glyph via <code>App::spinner_glyph_for</code> + the shared <code>ui::spinner::spinner_frame_index</code> · <code>/spinner</code> handler at <code>crates/forge-tui/src/app/slash/executors.rs::handle_spinner_submit</code> · style enum + <code>from_key</code> / <code>ALL_STYLES</code> / <code>cadence_ms</code> in <code>forge_workspace::ui::SpinnerStyle</code> · persist via <code>forge_workspace::Workspace::persist_spinner</code> → <code>account_cache::store_spinner</code>.</dd>
+      <dt>color</dt><dd>border + selection marker (<code>▶</code>): <span class="accent">RUST_ORANGE</span> · highlighted row (glyph + key + cadence): <span class="accent">RUST_ORANGE</span> bold · unselected glyph: default fg · unselected key/cadence + footer hints: <code>DIM</code>.</dd>
+      <dt>scope</dt><dd>Fully transient - the open/highlight state doesn't survive a session restart (only the committed style persists, via the sidecar). Works identically from chat and the launchpad.</dd>
     </dl>
   </div>
 </div>
