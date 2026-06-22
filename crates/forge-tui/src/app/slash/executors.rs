@@ -461,17 +461,12 @@ fn handle_resume_submit(app: &mut App, args: &[&str]) -> bool {
 fn handle_spinner_submit(app: &mut App, args: &[&str]) -> bool {
     use forge_workspace::SpinnerStyle;
 
-    let valid_keys = || {
-        SpinnerStyle::ALL_STYLES.iter().map(|s| s.key()).collect::<Vec<_>>().join(", ")
-    };
-
     if args.is_empty() {
-        push_system_info(
-            app,
-            format!("Spinner: {} (valid: {})", app.spinner_style.key(), valid_keys()),
-        );
+        crate::app::spinner_picker::open(app);
         return true;
     }
+    let valid_keys =
+        || SpinnerStyle::ALL_STYLES.iter().map(|s| s.key()).collect::<Vec<_>>().join(", ");
     let [name_arg] = args else {
         push_system_message(app, "Usage: /spinner [name]");
         return true;
@@ -525,10 +520,15 @@ mod tests {
     }
 
     #[test]
-    fn spinner_no_arg_reports_current_without_changing() {
+    fn spinner_no_arg_opens_picker_without_changing_style() {
         let mut app = App::test_default();
         app.spinner_style = SpinnerStyle::PhaseOfMoon;
         assert!(handle_spinner_submit(&mut app, &[]));
-        assert_eq!(app.spinner_style, SpinnerStyle::PhaseOfMoon);
+        assert!(app.spinner_picker.is_some(), "no-arg opens the picker overlay");
+        assert_eq!(
+            app.spinner_style,
+            SpinnerStyle::PhaseOfMoon,
+            "opening the picker must not change the active style",
+        );
     }
 }

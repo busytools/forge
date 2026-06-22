@@ -19,6 +19,7 @@ pub(crate) mod peer_block;
 pub mod projects_pane;
 pub(crate) mod prompt;
 pub(crate) mod spinner;
+pub(crate) mod spinner_picker;
 pub(crate) mod theme;
 mod tool_call;
 pub mod top_bar;
@@ -40,6 +41,11 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         ActiveView::Mcp => config::render_mcp(frame, app),
         ActiveView::Launchpad => launchpad::render(frame, app),
         ActiveView::Diff => diff_overlay::render(frame, app),
+    }
+    // Modal overlay drawn over whatever view rendered above.
+    if app.spinner_picker.is_some() {
+        let area = frame.area();
+        spinner_picker::render(frame, area, app);
     }
 }
 

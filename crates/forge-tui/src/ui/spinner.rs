@@ -34,10 +34,18 @@ impl App {
     /// main-UI surface calls this so they animate in lock-step at the
     /// active style's own cadence.
     pub fn active_spinner_glyph(&self) -> char {
+        self.spinner_glyph_for(self.spinner_style)
+    }
+
+    /// Current glyph for an arbitrary `style` (not necessarily the
+    /// active one), using the same epoch + reduced-motion inputs as
+    /// [`Self::active_spinner_glyph`]. The `/spinner` picker animates
+    /// each row at its own style's cadence through this.
+    pub fn spinner_glyph_for(&self, style: SpinnerStyle) -> char {
         let elapsed = self.spinner_epoch.elapsed().as_millis();
         let reduced = self.config.prefers_reduced_motion_effective();
-        let idx = spinner_frame_index(self.spinner_style, elapsed, reduced);
-        self.spinner_style.frames()[idx]
+        let idx = spinner_frame_index(style, elapsed, reduced);
+        style.frames()[idx]
     }
 }
 
