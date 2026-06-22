@@ -363,7 +363,7 @@ impl Workspace {
     /// `[[orgs.projects]]` entries, unknown account references). No
     /// Agents are spawned on success.
     pub async fn new(config_dir: PathBuf) -> Result<Self, WorkspaceError> {
-        let config = load_from_dir(&config_dir)?;
+        let mut config = load_from_dir(&config_dir)?;
 
         // Boot the wire-classification rewriter proxy BEFORE any
         // session can spawn. Hard-fail policy: if the proxy can't
@@ -418,6 +418,13 @@ impl Workspace {
         let state = crate::account_cache::load(&config_dir);
         accounts.seed_from_cache(&state.account_usage);
 
+        // Resolve the active spinner: the forge-state.toml runtime
+        // override (set via `/spinner`) wins over the hand-authored
+        // forge.toml `[ui] spinner` default. Folding it into
+        // `config.ui` here means `ui_settings()` returns the effective
+        // style, so the boot seed needs no separate lookup.
+        config.ui.spinner = state.spinner.unwrap_or(config.ui.spinner);
+
         let (update_tx, update_rx) = mpsc::unbounded_channel::<SessionUpdate>();
         let (kick_dispatcher_tx, kick_dispatcher_rx) = mpsc::unbounded_channel::<KickRequest>();
         Ok(Self {
@@ -459,12 +466,26 @@ impl Workspace {
         self.config.orgs.iter().map(|org| (org.name.clone(), org.accounts.clone())).collect()
     }
 
-    /// Snapshot of the `[ui]` section from `forge.toml`. All fields
-    /// have defaults so callers can use the result without worrying
-    /// about whether the section was present in the config file.
-    /// Cheap clone - the struct is shallow.
+    /// Effective `[ui]` settings. All fields have defaults so callers
+    /// can use the result without worrying about whether the section
+    /// was present in the config file. `spinner` carries the resolved
+    /// active style: the `forge-state.toml` runtime override (set via
+    /// `/spinner`) if present, else the forge.toml `[ui] spinner`
+    /// default. Cheap clone - the struct is shallow.
     pub fn ui_settings(&self) -> crate::ui::UiSettings {
         self.config.ui.clone()
+    }
+
+    /// Persist `style` as the runtime spinner override in
+    /// `forge-state.toml` (the writable sidecar - never touches the
+    /// hand-authored forge.toml). The next boot's `Workspace::new`
+    /// layers it over the forge.toml `[ui] spinner` default. Called by
+    /// the `/spinner` picker (enter-apply) and the direct
+    /// `/spinner <name>` path; the in-session active style lives on
+    /// the TUI's `App::spinner_style`, so this write only affects
+    /// subsequent launches.
+    pub fn persist_spinner(&self, style: crate::ui::SpinnerStyle) {
+        crate::account_cache::store_spinner(&self.config_dir, Some(style));
     }
 
     /// Return the names of all projects that should spawn at forge

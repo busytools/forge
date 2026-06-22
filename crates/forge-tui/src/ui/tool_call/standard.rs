@@ -49,9 +49,9 @@ pub(super) fn render_tool_call_title(
     tc: &ToolCallInfo,
     render_context: ToolCallRenderContext<'_>,
     _width: u16,
-    spinner_frame: usize,
+    spinner_glyph: char,
 ) -> Line<'static> {
-    let (icon, icon_color) = status_icon(tc.status, spinner_frame);
+    let (icon, icon_color) = status_icon(tc.status, spinner_glyph);
     let (kind_icon, kind_name) = theme::tool_name_label(&tc.sdk_tool_name);
     let bold_white = Style::default().fg(ratatui::style::Color::White).add_modifier(Modifier::BOLD);
 

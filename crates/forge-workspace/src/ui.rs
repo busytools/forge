@@ -1,25 +1,23 @@
 //! UI configuration knobs - the `[ui]` section in `forge.toml`.
 //!
-//! Currently carries the launchpad spinner style.
+//! Currently carries the active spinner style.
 //! Distinct from per-session UI state (input editor, viewport, etc.)
 //! which lives on `UiSession` in forge-tui - this is workspace-level
 //! configuration that survives across sessions and processes.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// All `[ui]` section knobs. Every field has a default so an
 /// absent `[ui]` section in `forge.toml` is equivalent to all
 /// defaults.
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
 pub struct UiSettings {
-    /// Spinner style used by the launchpad's "loading projects"
-    /// indicator and per-project loading glyph. Distinct from the
-    /// in-chat braille spinner so the visual language separates
-    /// launchpad context from in-conversation context. Default is
-    /// `Braille` - same glyph as everywhere else, ensuring no
-    /// surprise for users who don't touch the config.
-    #[serde(default)]
-    pub launchpad_spinner: SpinnerStyle,
+    /// Active spinner style for every animated surface (launchpad,
+    /// chat thinking/working, input box, projects pane, inspector).
+    /// Default is `Braille`. The legacy `launchpad_spinner` key is
+    /// accepted as an alias so an existing forge.toml keeps working.
+    #[serde(default, alias = "launchpad_spinner")]
+    pub spinner: SpinnerStyle,
 }
 
 /// Spinner glyph cycle used by the launchpad. Each variant carries
@@ -30,7 +28,7 @@ pub struct UiSettings {
 /// Glyph choice is intentionally varied - different launchpad
 /// personalities should pick visually distinct alternatives so the
 /// terminal mode "feels different" from the in-chat braille spinner.
-#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SpinnerStyle {
     /// `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏` - the default braille spinner used everywhere
@@ -43,11 +41,10 @@ pub enum SpinnerStyle {
     PhaseOfMoon,
     /// `○◔◑◕●◕◑◔` - pulse fill. Breathing in and out, "alive."
     Pulse,
-    /// `●` - solid bullet. Intended for a forge-orange intensity
-    /// tween at the render layer; the frame is single-glyph so the
-    /// animation is driven by colour modulation rather than glyph
-    /// changes. See `forge_dot_alpha_step` in the launchpad
-    /// renderer for the opacity ramp.
+    /// `●` - solid bullet. Single-glyph; renders as a flat dot on
+    /// every surface today. A forge-orange opacity tween (animating
+    /// via colour modulation rather than glyph swaps) is a possible
+    /// future follow-up, not currently built.
     ForgeDot,
     /// `· ✦ ✧ ✦` - ember sparkles. Branded but works on any unicode
     /// terminal (no truecolor required). 180ms cadence reads as
@@ -93,10 +90,10 @@ impl SpinnerStyle {
     /// driver derives the current frame index from
     /// `elapsed_since_open.as_millis() / cadence_ms`.
     ///
-    /// `forge_dot` is the special one - its frame table is single-
-    /// glyph and the cadence here drives a full opacity tween cycle
-    /// (so it's intentionally much slower than the others, ~1.4s
-    /// per cycle).
+    /// `forge_dot` is single-glyph, so its slow (~1.4s) cadence
+    /// produces no visible glyph change today - it stays a flat `●`.
+    /// The slow value is reserved for an opacity-tween follow-up that
+    /// isn't built yet.
     pub fn cadence_ms(self) -> u64 {
         match self {
             Self::Braille => 80,
@@ -106,19 +103,23 @@ impl SpinnerStyle {
             Self::Ember => 180,
         }
     }
+
+    /// Every style in picker display order. Single source of truth for
+    /// "all spinner styles" - the `/spinner` picker and the name parser
+    /// both iterate this.
+    pub const ALL_STYLES: [SpinnerStyle; 5] =
+        [Self::Braille, Self::PhaseOfMoon, Self::Pulse, Self::ForgeDot, Self::Ember];
+
+    /// Parse a lower-case key (the inverse of [`Self::key`]) into its
+    /// style. `None` for any unrecognised key.
+    pub fn from_key(key: &str) -> Option<Self> {
+        Self::ALL_STYLES.into_iter().find(|style| style.key() == key)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    const ALL_STYLES: [SpinnerStyle; 5] = [
-        SpinnerStyle::Braille,
-        SpinnerStyle::PhaseOfMoon,
-        SpinnerStyle::Pulse,
-        SpinnerStyle::ForgeDot,
-        SpinnerStyle::Ember,
-    ];
 
     #[test]
     fn default_spinner_is_braille() {
@@ -129,7 +130,7 @@ mod tests {
 
     #[test]
     fn each_variant_has_non_empty_frames() {
-        for style in ALL_STYLES {
+        for style in SpinnerStyle::ALL_STYLES {
             assert!(
                 !style.frames().is_empty(),
                 "{} should have a non-empty frame cycle",
@@ -140,10 +141,10 @@ mod tests {
 
     #[test]
     fn key_round_trips_through_serde() {
-        for style in ALL_STYLES {
-            let toml = format!("launchpad_spinner = \"{}\"\n", style.key());
+        for style in SpinnerStyle::ALL_STYLES {
+            let toml = format!("spinner = \"{}\"\n", style.key());
             let parsed: UiSettings = toml::from_str(&toml).expect("parse round trip");
-            assert_eq!(parsed.launchpad_spinner, style);
+            assert_eq!(parsed.spinner, style);
         }
     }
 
@@ -151,13 +152,25 @@ mod tests {
     fn absent_ui_section_yields_defaults() {
         let parsed: UiSettings = toml::from_str("").expect("empty parses");
         assert_eq!(parsed, UiSettings::default());
-        assert_eq!(parsed.launchpad_spinner, SpinnerStyle::Braille);
+        assert_eq!(parsed.spinner, SpinnerStyle::Braille);
     }
 
     #[test]
     fn unknown_spinner_key_errors() {
         let result: Result<UiSettings, _> = toml::from_str("launchpad_spinner = \"corkscrew\"\n");
         assert!(result.is_err(), "unknown spinner key should error");
+    }
+
+    #[test]
+    fn spinner_field_parses_new_key() {
+        let parsed: UiSettings = toml::from_str("spinner = \"ember\"\n").expect("parse");
+        assert_eq!(parsed.spinner, SpinnerStyle::Ember);
+    }
+
+    #[test]
+    fn legacy_launchpad_spinner_key_still_parses_via_alias() {
+        let parsed: UiSettings = toml::from_str("launchpad_spinner = \"pulse\"\n").expect("parse");
+        assert_eq!(parsed.spinner, SpinnerStyle::Pulse);
     }
 
     #[test]
@@ -169,5 +182,23 @@ mod tests {
         assert_eq!(SpinnerStyle::Pulse.cadence_ms(), 100);
         assert_eq!(SpinnerStyle::ForgeDot.cadence_ms(), 1_400);
         assert_eq!(SpinnerStyle::Ember.cadence_ms(), 180);
+    }
+
+    #[test]
+    fn from_key_round_trips_every_style() {
+        for style in SpinnerStyle::ALL_STYLES {
+            assert_eq!(SpinnerStyle::from_key(style.key()), Some(style));
+        }
+    }
+
+    #[test]
+    fn from_key_rejects_unknown() {
+        assert_eq!(SpinnerStyle::from_key("nope"), None);
+        assert_eq!(SpinnerStyle::from_key(""), None);
+    }
+
+    #[test]
+    fn all_styles_lists_every_variant() {
+        assert_eq!(SpinnerStyle::ALL_STYLES.len(), 5);
     }
 }

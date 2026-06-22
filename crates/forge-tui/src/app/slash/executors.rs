@@ -42,6 +42,7 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
         "/model" => handle_model_submit(app, &parsed.args),
         "/new" => handle_new_session_submit(app, &parsed.args),
         "/resume" => handle_resume_submit(app, &parsed.args),
+        "/spinner" => handle_spinner_submit(app, &parsed.args),
         _ => handle_unknown_submit(app, parsed.name),
     }
 }
@@ -451,10 +452,83 @@ fn handle_resume_submit(app: &mut App, args: &[&str]) -> bool {
     true
 }
 
+/// `/spinner` - no arg shows the current style + the valid keys;
+/// `/spinner <name>` sets the active style live across every surface
+/// and persists it as the forge-state.toml override (survives restart,
+/// layered over the forge.toml `[ui] spinner` default). Works from chat
+/// and the launchpad - no active session required. The no-arg picker
+/// overlay lands in the follow-up task.
+fn handle_spinner_submit(app: &mut App, args: &[&str]) -> bool {
+    use forge_workspace::SpinnerStyle;
+
+    if args.is_empty() {
+        crate::app::spinner_picker::open(app);
+        return true;
+    }
+    let valid_keys =
+        || SpinnerStyle::ALL_STYLES.iter().map(|s| s.key()).collect::<Vec<_>>().join(", ");
+    let [name_arg] = args else {
+        push_system_message(app, "Usage: /spinner [name]");
+        return true;
+    };
+    let name = name_arg.trim();
+    let Some(style) = SpinnerStyle::from_key(name) else {
+        push_system_message(app, format!("Unknown spinner: {name} (valid: {})", valid_keys()));
+        return true;
+    };
+
+    app.spinner_style = style;
+    if let Some(ws) = app.workspace.as_ref() {
+        ws.persist_spinner(style);
+    }
+    app.needs_redraw = true;
+    push_system_info(app, format!("Spinner: {}", style.key()));
+    true
+}
+
 fn handle_unknown_submit(app: &mut App, command_name: &str) -> bool {
     if super::candidates::is_supported_command(app, command_name) {
         return false;
     }
     push_system_message(app, format!("{command_name} is not yet supported"));
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use forge_workspace::SpinnerStyle;
+
+    #[test]
+    fn spinner_name_sets_active_style() {
+        let mut app = App::test_default();
+        assert_eq!(app.spinner_style, SpinnerStyle::Braille);
+        assert!(handle_spinner_submit(&mut app, &["ember"]));
+        assert_eq!(app.spinner_style, SpinnerStyle::Ember);
+    }
+
+    #[test]
+    fn spinner_unknown_name_leaves_style_unchanged() {
+        let mut app = App::test_default();
+        app.spinner_style = SpinnerStyle::Pulse;
+        assert!(handle_spinner_submit(&mut app, &["corkscrew"]));
+        assert_eq!(
+            app.spinner_style,
+            SpinnerStyle::Pulse,
+            "an unknown name must not change the active style",
+        );
+    }
+
+    #[test]
+    fn spinner_no_arg_opens_picker_without_changing_style() {
+        let mut app = App::test_default();
+        app.spinner_style = SpinnerStyle::PhaseOfMoon;
+        assert!(handle_spinner_submit(&mut app, &[]));
+        assert!(app.spinner_picker.is_some(), "no-arg opens the picker overlay");
+        assert_eq!(
+            app.spinner_style,
+            SpinnerStyle::PhaseOfMoon,
+            "opening the picker must not change the active style",
+        );
+    }
 }

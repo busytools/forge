@@ -543,13 +543,13 @@ fn extract_from_agent_after_with_trailer(rest: &str) -> Option<(String, String, 
 ///
 /// The aggregate status drives the leading icon via the same
 /// `tool_call::status_icon` helper the per-tool render uses; the
-/// braille spinner animates on `InProgress`.
+/// active spinner glyph animates on `InProgress`.
 pub(crate) fn render_messaging_group_summary_line(
     segment: &crate::ui::message::grouping::MessagingGroupSegment,
-    spinner_frame: usize,
+    spinner_glyph: char,
 ) -> Vec<Line<'static>> {
     let (icon_glyph, icon_color) =
-        crate::ui::tool_call::status_icon(segment.aggregate_status, spinner_frame);
+        crate::ui::tool_call::status_icon(segment.aggregate_status, spinner_glyph);
     let dim = Style::default().fg(theme::DIM);
 
     let count = segment.group_total_count.max(segment.segment_count);

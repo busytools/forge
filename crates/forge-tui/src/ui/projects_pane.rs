@@ -296,7 +296,7 @@ fn append_project_rows(
     projects: &[ProjectView],
 ) {
     let active_session_key = app.active_session_key.clone();
-    let spinner_frame = app.spinner_frame;
+    let spinner_glyph = app.active_spinner_glyph();
     // Worker session_keys across every project. Used to skip worker
     // entries when picking each project's "live lead" - the catalog
     // includes worker JSONLs post-Connected, and naive iteration would
@@ -425,10 +425,10 @@ fn append_project_rows(
                 project,
                 live.as_ref(),
                 is_last,
-                spinner_frame,
+                spinner_glyph,
                 now,
             );
-            append_worker_tree_children(lines, area, app, project, spinner_frame);
+            append_worker_tree_children(lines, area, app, project, spinner_glyph);
             // Deadzone gap row between adjacent projects in the
             // same org - emits the `│  ` tree continuation so the
             // connector lines visually link across the breathing
@@ -464,7 +464,7 @@ fn append_org_project_row(
     project: &ProjectView,
     live: Option<&LiveRowMeta>,
     is_last: bool,
-    spinner_frame: usize,
+    spinner_glyph: char,
     now: SystemTime,
 ) {
     let row_y = area.y + line_count_as_u16(lines);
@@ -486,7 +486,7 @@ fn append_org_project_row(
         let (glyph, glyph_color) = if needs_attention {
             ("\u{25b3}".to_owned(), theme::STATUS_WARNING)
         } else {
-            glyph_for_lifecycle(*lifecycle, *is_focused, spinner_frame)
+            glyph_for_lifecycle(*lifecycle, *is_focused, spinner_glyph)
         };
         let name_style = if *is_focused {
             Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)
@@ -596,7 +596,7 @@ fn append_worker_tree_children(
     area: Rect,
     app: &mut App,
     project: &ProjectView,
-    spinner_frame: usize,
+    spinner_glyph: char,
 ) {
     let Some(workspace) = app.workspace.as_ref() else {
         return;
@@ -702,7 +702,7 @@ fn append_worker_tree_children(
             // human-readable reason (set by transition_worker_to_failed).
             ("\u{2715}".to_owned(), theme::STATUS_ERROR)
         } else {
-            glyph_for_lifecycle(lifecycle, is_focused, spinner_frame)
+            glyph_for_lifecycle(lifecycle, is_focused, spinner_glyph)
         };
 
         // Left-indent (1) + `│  ` (3) so the worker's tree connector
@@ -853,31 +853,21 @@ pub(crate) fn resolve_active_project_view<'p>(
     projects.iter().copied().find(|p| p.sessions.iter().any(|sess| &sess.session == active_key))
 }
 
-/// Braille spinner frames - same sequence used by `ui::input` and
-/// `ui::message`, kept in sync so every running indicator in the TUI
-/// turns at the same pace. `app.spinner_frame` advances every
-/// `SPINNER_FRAME_INTERVAL_NORMAL` per the render tick in `app.rs`.
-const SPINNER_FRAMES: &[char] = &[
-    '\u{280B}', '\u{2819}', '\u{2839}', '\u{2838}', '\u{283C}', '\u{2834}', '\u{2826}', '\u{2827}',
-    '\u{2807}', '\u{280F}',
-];
-
 /// Glyph + foreground color for a session row based on its lifecycle
 /// state. The session-is-active flag drives whether the
 /// Running/Spawning spinner picks up the accent color (active +
 /// running = `RUST_ORANGE`, background + running = terminal default).
-/// `spinner_frame` indexes into `SPINNER_FRAMES` so the spinner
-/// actually animates instead of sitting on `⠋`.
+/// `spinner_glyph` is the active style's current frame, resolved by
+/// the caller via `App::active_spinner_glyph`.
 fn glyph_for_lifecycle(
     lifecycle: SessionLifecycleState,
     session_is_active: bool,
-    spinner_frame: usize,
+    spinner_glyph: char,
 ) -> (String, Color) {
     match lifecycle {
         SessionLifecycleState::Running | SessionLifecycleState::Spawning => {
             let color = if session_is_active { theme::RUST_ORANGE } else { Color::Reset };
-            let ch = SPINNER_FRAMES[spinner_frame % SPINNER_FRAMES.len()];
-            (ch.to_string(), color)
+            (spinner_glyph.to_string(), color)
         }
         SessionLifecycleState::Attention => ("△".to_owned(), theme::STATUS_WARNING),
         // Idle = "alive, no turn in progress". Use a filled bullet so
@@ -1875,7 +1865,7 @@ mod tests {
         );
         let area = Rect { x: 0, y: 0, width: 40, height: 20 };
         let mut lines: Vec<Line<'static>> = Vec::new();
-        append_worker_tree_children(&mut lines, area, &mut app, &project, 0);
+        append_worker_tree_children(&mut lines, area, &mut app, &project, '\u{280B}');
 
         let joined: Vec<String> = lines
             .iter()
@@ -1927,7 +1917,7 @@ mod tests {
             ProjectView::new_for_test(project_key.clone(), "forge", "~/Projects/forge", Vec::new());
         let area = Rect { x: 0, y: 0, width: 32, height: 20 };
         let mut lines: Vec<Line<'static>> = Vec::new();
-        append_worker_tree_children(&mut lines, area, &mut app, &project, 0);
+        append_worker_tree_children(&mut lines, area, &mut app, &project, '\u{280B}');
 
         assert!(lines.is_empty(), "zero workers must render zero rows");
         let workers_targets: Vec<_> = app
@@ -1981,7 +1971,7 @@ mod tests {
             );
             let area = Rect { x: 0, y: 0, width: 32, height: 20 };
             let mut lines: Vec<Line<'static>> = Vec::new();
-            append_worker_tree_children(&mut lines, area, &mut app, &project, 0);
+            append_worker_tree_children(&mut lines, area, &mut app, &project, '\u{280B}');
             // One worker → 2 lines: leading spacer (`│  ` bridge from
             // project lead) + worker row.
             assert_eq!(lines.len(), 2, "baseline: one worker = leading spacer + one row");
@@ -2007,7 +1997,7 @@ mod tests {
             ProjectView::new_for_test(project_key, "forge", "~/Projects/forge", Vec::new());
         let area = Rect { x: 0, y: 0, width: 32, height: 20 };
         let mut lines: Vec<Line<'static>> = Vec::new();
-        append_worker_tree_children(&mut lines, area, &mut app, &project, 0);
+        append_worker_tree_children(&mut lines, area, &mut app, &project, '\u{280B}');
         assert!(lines.is_empty(), "after Removed, render shows no worker rows");
     }
 
@@ -2055,7 +2045,7 @@ mod tests {
             ProjectView::new_for_test(project_key.clone(), "forge", "~/Projects/forge", Vec::new());
         let area = Rect { x: 0, y: 0, width: 32, height: 20 };
         let mut lines: Vec<Line<'static>> = Vec::new();
-        append_worker_tree_children(&mut lines, area, &mut app, &project, 0);
+        append_worker_tree_children(&mut lines, area, &mut app, &project, '\u{280B}');
 
         // Two workers → 4 lines: leading spacer (bridge from project
         // lead) + worker + inter-row spacer + worker.
@@ -2183,7 +2173,7 @@ mod tests {
             ProjectView::new_for_test(project_key, "forge", "~/Projects/forge", Vec::new());
         let area = Rect { x: 0, y: 0, width: 32, height: 20 };
         let mut lines: Vec<Line<'static>> = Vec::new();
-        append_worker_tree_children(&mut lines, area, &mut app, &project, 0);
+        append_worker_tree_children(&mut lines, area, &mut app, &project, '\u{280B}');
 
         // First line is the leading spacer (bridge from project lead);
         // second line is the worker row.
@@ -2238,7 +2228,7 @@ mod tests {
             ProjectView::new_for_test(project_key, "forge", "~/Projects/forge", Vec::new());
         let area = Rect { x: 0, y: 0, width: 32, height: 20 };
         let mut lines: Vec<Line<'static>> = Vec::new();
-        append_worker_tree_children(&mut lines, area, &mut app, &project, 0);
+        append_worker_tree_children(&mut lines, area, &mut app, &project, '\u{280B}');
 
         assert_eq!(lines.len(), 2);
         let any_triangle =
@@ -2369,7 +2359,7 @@ mod tests {
             ProjectView::new_for_test(project_key, "forge", "~/Projects/forge", Vec::new());
         let area = Rect { x: 0, y: 0, width: 40, height: 20 };
         let mut lines: Vec<Line<'static>> = Vec::new();
-        append_worker_tree_children(&mut lines, area, &mut app, &project, 0);
+        append_worker_tree_children(&mut lines, area, &mut app, &project, '\u{280B}');
 
         // Expect: leading spacer + worker row + diagnostic sub-row.
         assert_eq!(lines.len(), 3, "Failed worker row should include a diagnostic sub-line");
@@ -2417,7 +2407,7 @@ mod tests {
             ProjectView::new_for_test(project_key, "forge", "~/Projects/forge", Vec::new());
         let area = Rect { x: 0, y: 0, width: 40, height: 20 };
         let mut lines: Vec<Line<'static>> = Vec::new();
-        append_worker_tree_children(&mut lines, area, &mut app, &project, 0);
+        append_worker_tree_children(&mut lines, area, &mut app, &project, '\u{280B}');
 
         let sub_row: String = lines[2].spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(
