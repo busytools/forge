@@ -20,36 +20,30 @@ pub struct UiSettings {
     pub spinner: SpinnerStyle,
 }
 
-/// Spinner glyph cycle used by the launchpad. Each variant carries
-/// a `frames()` accessor returning the cycle as `&'static [char]`
-/// and a `cadence_ms()` accessor returning the per-style frame
-/// duration.
-///
-/// Glyph choice is intentionally varied - different launchpad
-/// personalities should pick visually distinct alternatives so the
-/// terminal mode "feels different" from the in-chat braille spinner.
+/// A spinner glyph cycle. Each variant carries a `frames()` accessor
+/// (the cycle as `&'static [char]`) and a `cadence_ms()` accessor (the
+/// per-style frame duration). One source of truth for the active
+/// spinner across every animated surface - chat, input, projects pane,
+/// inspector, tool-call icons, and the launchpad.
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SpinnerStyle {
-    /// `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏` - the default braille spinner used everywhere
-    /// else in forge. Familiar; the launchpad reads as continuous
-    /// with the rest of the chrome.
+    /// `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏` - the fast default braille spinner. Familiar;
+    /// reads as continuous with the rest of the chrome.
     #[default]
     Braille,
-    /// `◐◓◑◒` - phase-of-moon rotation. Calm, smooth, distinct
-    /// from braille so the launchpad reads as its own surface.
+    /// `◐◓◑◒` - phase-of-moon rotation. Calm, smooth.
     PhaseOfMoon,
-    /// `○◔◑◕●◕◑◔` - pulse fill. Breathing in and out, "alive."
-    Pulse,
-    /// `●` - solid bullet. Single-glyph; renders as a flat dot on
-    /// every surface today. A forge-orange opacity tween (animating
-    /// via colour modulation rather than glyph swaps) is a possible
-    /// future follow-up, not currently built.
-    ForgeDot,
-    /// `· ✦ ✧ ✦` - ember sparkles. Branded but works on any unicode
-    /// terminal (no truecolor required). 180ms cadence reads as
-    /// "sparks flying off hot metal" rather than anxious blinking.
+    /// `· ✦ ✧ ✦` - ember sparkles. Works on any unicode terminal (no
+    /// truecolor required); reads as "sparks flying off hot metal".
     Ember,
+    /// `▁▂▃▄▅▆▇█▇▆▅▄▃▂` - vertical bar rising then falling, a smooth
+    /// VU-meter pulse.
+    BarsV,
+    /// `✶✸✹✺✹✷` - rotating six-point star; twinkles.
+    Star,
+    /// `✦✧✩✪` - sparkle cycle; a lighter twinkle than the star.
+    Sparkle,
 }
 
 impl SpinnerStyle {
@@ -63,12 +57,13 @@ impl SpinnerStyle {
                 '\u{2827}', '\u{2807}', '\u{280F}',
             ],
             Self::PhaseOfMoon => &['\u{25D0}', '\u{25D3}', '\u{25D1}', '\u{25D2}'],
-            Self::Pulse => &[
-                '\u{25CB}', '\u{25D4}', '\u{25D1}', '\u{25D5}', '\u{25CF}', '\u{25D5}', '\u{25D1}',
-                '\u{25D4}',
-            ],
-            Self::ForgeDot => &['\u{25CF}'],
             Self::Ember => &['\u{00B7}', '\u{2726}', '\u{2727}', '\u{2726}'],
+            Self::BarsV => &[
+                '\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}', '\u{2587}',
+                '\u{2588}', '\u{2587}', '\u{2586}', '\u{2585}', '\u{2584}', '\u{2583}', '\u{2582}',
+            ],
+            Self::Star => &['\u{2736}', '\u{2738}', '\u{2739}', '\u{273A}', '\u{2739}', '\u{2737}'],
+            Self::Sparkle => &['\u{2726}', '\u{2727}', '\u{2729}', '\u{272A}'],
         }
     }
 
@@ -80,35 +75,34 @@ impl SpinnerStyle {
         match self {
             Self::Braille => "braille",
             Self::PhaseOfMoon => "phase_of_moon",
-            Self::Pulse => "pulse",
-            Self::ForgeDot => "forge_dot",
             Self::Ember => "ember",
+            Self::BarsV => "bars_v",
+            Self::Star => "star",
+            Self::Sparkle => "sparkle",
         }
     }
 
-    /// Per-style frame cadence in milliseconds. The launchpad render
-    /// driver derives the current frame index from
-    /// `elapsed_since_open.as_millis() / cadence_ms`.
-    ///
-    /// `forge_dot` is single-glyph, so its slow (~1.4s) cadence
-    /// produces no visible glyph change today - it stays a flat `●`.
-    /// The slow value is reserved for an opacity-tween follow-up that
-    /// isn't built yet.
+    /// Per-style frame cadence in milliseconds. Every spinner surface
+    /// derives the current frame index as `elapsed_ms / cadence_ms`
+    /// (modulo the frame count), so each style animates at its own
+    /// speed. Braille is the fast default (30ms, one frame per redraw
+    /// tick); the rest are tuned per glyph set.
     pub fn cadence_ms(self) -> u64 {
         match self {
             Self::Braille => 30,
-            Self::PhaseOfMoon => 120,
-            Self::Pulse => 100,
-            Self::ForgeDot => 1_400,
-            Self::Ember => 180,
+            Self::PhaseOfMoon => 90,
+            Self::Ember => 160,
+            Self::BarsV => 70,
+            Self::Star => 130,
+            Self::Sparkle => 160,
         }
     }
 
     /// Every style in picker display order. Single source of truth for
     /// "all spinner styles" - the `/spinner` picker and the name parser
     /// both iterate this.
-    pub const ALL_STYLES: [SpinnerStyle; 5] =
-        [Self::Braille, Self::PhaseOfMoon, Self::Pulse, Self::ForgeDot, Self::Ember];
+    pub const ALL_STYLES: [SpinnerStyle; 6] =
+        [Self::Braille, Self::PhaseOfMoon, Self::Ember, Self::BarsV, Self::Star, Self::Sparkle];
 
     /// Parse a lower-case key (the inverse of [`Self::key`]) into its
     /// style. `None` for any unrecognised key.
@@ -169,19 +163,20 @@ mod tests {
 
     #[test]
     fn legacy_launchpad_spinner_key_still_parses_via_alias() {
-        let parsed: UiSettings = toml::from_str("launchpad_spinner = \"pulse\"\n").expect("parse");
-        assert_eq!(parsed.spinner, SpinnerStyle::Pulse);
+        let parsed: UiSettings = toml::from_str("launchpad_spinner = \"ember\"\n").expect("parse");
+        assert_eq!(parsed.spinner, SpinnerStyle::Ember);
     }
 
     #[test]
     fn cadence_ms_is_per_style() {
-        // Each style has its own cadence - drift means the launchpad
-        // animation no longer ticks at the design-spec frequency.
+        // Each style has its own cadence - drift means a surface no
+        // longer ticks at the design-spec frequency.
         assert_eq!(SpinnerStyle::Braille.cadence_ms(), 30);
-        assert_eq!(SpinnerStyle::PhaseOfMoon.cadence_ms(), 120);
-        assert_eq!(SpinnerStyle::Pulse.cadence_ms(), 100);
-        assert_eq!(SpinnerStyle::ForgeDot.cadence_ms(), 1_400);
-        assert_eq!(SpinnerStyle::Ember.cadence_ms(), 180);
+        assert_eq!(SpinnerStyle::PhaseOfMoon.cadence_ms(), 90);
+        assert_eq!(SpinnerStyle::Ember.cadence_ms(), 160);
+        assert_eq!(SpinnerStyle::BarsV.cadence_ms(), 70);
+        assert_eq!(SpinnerStyle::Star.cadence_ms(), 130);
+        assert_eq!(SpinnerStyle::Sparkle.cadence_ms(), 160);
     }
 
     #[test]
@@ -199,6 +194,15 @@ mod tests {
 
     #[test]
     fn all_styles_lists_every_variant() {
-        assert_eq!(SpinnerStyle::ALL_STYLES.len(), 5);
+        assert_eq!(SpinnerStyle::ALL_STYLES.len(), 6);
+    }
+
+    #[test]
+    fn revised_set_drops_pulse_forgedot_adds_new() {
+        assert_eq!(SpinnerStyle::BarsV.frames().len(), 14);
+        assert_eq!(SpinnerStyle::Star.key(), "star");
+        assert_eq!(SpinnerStyle::from_key("sparkle"), Some(SpinnerStyle::Sparkle));
+        assert_eq!(SpinnerStyle::from_key("pulse"), None);
+        assert_eq!(SpinnerStyle::from_key("forge_dot"), None);
     }
 }

@@ -330,14 +330,14 @@ mod tests {
     #[test]
     fn store_account_usage_preserves_spinner_override() {
         let dir = tempdir().expect("tempdir");
-        store_spinner(dir.path(), Some(crate::ui::SpinnerStyle::Pulse));
+        store_spinner(dir.path(), Some(crate::ui::SpinnerStyle::Ember));
         let mut entries = std::collections::BTreeMap::new();
         entries.insert("Granite".to_owned(), fixture_entry());
         store(dir.path(), &entries);
         let loaded = load(dir.path());
         assert_eq!(
             loaded.spinner,
-            Some(crate::ui::SpinnerStyle::Pulse),
+            Some(crate::ui::SpinnerStyle::Ember),
             "an account-usage write must not wipe the spinner override",
         );
         assert_eq!(loaded.account_usage.len(), 1);
@@ -349,10 +349,10 @@ mod tests {
         let mut entries = std::collections::BTreeMap::new();
         entries.insert("Granite".to_owned(), fixture_entry());
         store(dir.path(), &entries);
-        store_spinner(dir.path(), Some(crate::ui::SpinnerStyle::ForgeDot));
+        store_spinner(dir.path(), Some(crate::ui::SpinnerStyle::Star));
         let loaded = load(dir.path());
         assert_eq!(loaded.account_usage.len(), 1, "a spinner write must not wipe account usage");
-        assert_eq!(loaded.spinner, Some(crate::ui::SpinnerStyle::ForgeDot));
+        assert_eq!(loaded.spinner, Some(crate::ui::SpinnerStyle::Star));
     }
 
     #[test]
@@ -372,7 +372,7 @@ mod tests {
         let p1 = dir.path().to_path_buf();
         let h1 = thread::spawn(move || {
             for _ in 0..200 {
-                store_spinner(&p1, Some(crate::ui::SpinnerStyle::Pulse));
+                store_spinner(&p1, Some(crate::ui::SpinnerStyle::BarsV));
             }
         });
         let p2 = dir.path().to_path_buf();
@@ -389,7 +389,7 @@ mod tests {
         let loaded = load(dir.path());
         assert_eq!(
             loaded.spinner,
-            Some(crate::ui::SpinnerStyle::Pulse),
+            Some(crate::ui::SpinnerStyle::BarsV),
             "spinner writer's final value must survive concurrent usage writes",
         );
         assert!(

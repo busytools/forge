@@ -88,12 +88,12 @@ mod tests {
     #[test]
     fn open_seeds_highlight_and_prior_from_active() {
         let mut app = App::test_default();
-        app.spinner_style = SpinnerStyle::Pulse;
+        app.spinner_style = SpinnerStyle::Star;
         open(&mut app);
         let state = app.spinner_picker.expect("picker open");
-        let expected = SpinnerStyle::ALL_STYLES.iter().position(|s| *s == SpinnerStyle::Pulse);
+        let expected = SpinnerStyle::ALL_STYLES.iter().position(|s| *s == SpinnerStyle::Star);
         assert_eq!(Some(state.highlight), expected, "highlight is the active style's index");
-        assert_eq!(state.prior_style, SpinnerStyle::Pulse);
+        assert_eq!(state.prior_style, SpinnerStyle::Star);
     }
 
     #[test]
