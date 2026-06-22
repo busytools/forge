@@ -1,6 +1,6 @@
 //! UI configuration knobs - the `[ui]` section in `forge.toml`.
 //!
-//! Currently carries the launchpad spinner style.
+//! Currently carries the active spinner style.
 //! Distinct from per-session UI state (input editor, viewport, etc.)
 //! which lives on `UiSession` in forge-tui - this is workspace-level
 //! configuration that survives across sessions and processes.
@@ -12,14 +12,12 @@ use serde::Deserialize;
 /// defaults.
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
 pub struct UiSettings {
-    /// Spinner style used by the launchpad's "loading projects"
-    /// indicator and per-project loading glyph. Distinct from the
-    /// in-chat braille spinner so the visual language separates
-    /// launchpad context from in-conversation context. Default is
-    /// `Braille` - same glyph as everywhere else, ensuring no
-    /// surprise for users who don't touch the config.
-    #[serde(default)]
-    pub launchpad_spinner: SpinnerStyle,
+    /// Active spinner style for every animated surface (launchpad,
+    /// chat thinking/working, input box, projects pane, inspector).
+    /// Default is `Braille`. The legacy `launchpad_spinner` key is
+    /// accepted as an alias so an existing forge.toml keeps working.
+    #[serde(default, alias = "launchpad_spinner")]
+    pub spinner: SpinnerStyle,
 }
 
 /// Spinner glyph cycle used by the launchpad. Each variant carries
@@ -141,9 +139,9 @@ mod tests {
     #[test]
     fn key_round_trips_through_serde() {
         for style in ALL_STYLES {
-            let toml = format!("launchpad_spinner = \"{}\"\n", style.key());
+            let toml = format!("spinner = \"{}\"\n", style.key());
             let parsed: UiSettings = toml::from_str(&toml).expect("parse round trip");
-            assert_eq!(parsed.launchpad_spinner, style);
+            assert_eq!(parsed.spinner, style);
         }
     }
 
@@ -151,13 +149,25 @@ mod tests {
     fn absent_ui_section_yields_defaults() {
         let parsed: UiSettings = toml::from_str("").expect("empty parses");
         assert_eq!(parsed, UiSettings::default());
-        assert_eq!(parsed.launchpad_spinner, SpinnerStyle::Braille);
+        assert_eq!(parsed.spinner, SpinnerStyle::Braille);
     }
 
     #[test]
     fn unknown_spinner_key_errors() {
         let result: Result<UiSettings, _> = toml::from_str("launchpad_spinner = \"corkscrew\"\n");
         assert!(result.is_err(), "unknown spinner key should error");
+    }
+
+    #[test]
+    fn spinner_field_parses_new_key() {
+        let parsed: UiSettings = toml::from_str("spinner = \"ember\"\n").expect("parse");
+        assert_eq!(parsed.spinner, SpinnerStyle::Ember);
+    }
+
+    #[test]
+    fn legacy_launchpad_spinner_key_still_parses_via_alias() {
+        let parsed: UiSettings = toml::from_str("launchpad_spinner = \"pulse\"\n").expect("parse");
+        assert_eq!(parsed.spinner, SpinnerStyle::Pulse);
     }
 
     #[test]

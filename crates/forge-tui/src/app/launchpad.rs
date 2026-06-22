@@ -60,7 +60,7 @@ impl Default for LaunchpadState {
 /// the View transitions atomically with App construction.
 pub(crate) fn open(app: &mut App) {
     let spinner_style =
-        app.workspace.as_ref().map(|w| w.ui_settings().launchpad_spinner).unwrap_or_default();
+        app.workspace.as_ref().map(|w| w.ui_settings().spinner).unwrap_or_default();
     app.launchpad = LaunchpadState { selected_index: 0, opened_at: Instant::now(), spinner_style };
     set_active_view(app, ActiveView::Launchpad);
     app.needs_redraw = true;

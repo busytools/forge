@@ -177,7 +177,7 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
         crate::app::LaunchpadState {
             selected_index: 0,
             opened_at: std::time::Instant::now(),
-            spinner_style: ui.launchpad_spinner,
+            spinner_style: ui.spinner,
         }
     };
     let mut app = App {
