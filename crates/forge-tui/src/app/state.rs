@@ -337,6 +337,9 @@ pub struct App {
     /// projects pane, inspector, launchpad). Seeded from the config
     /// `spinner` field at startup; mutated live by `/spinner`.
     pub spinner_style: forge_workspace::SpinnerStyle,
+    /// Monotonic start anchor for the time-based spinner. Frame index
+    /// derives from `spinner_epoch.elapsed() / cadence_ms`.
+    pub spinner_epoch: Instant,
     /// Session-level preference for collapsing non-Execute tool call bodies.
     /// Toggled by Ctrl+X and applied at render/layout time.
     pub tools_collapsed: bool,
@@ -2906,6 +2909,7 @@ impl App {
             spinner_frame: 0,
             spinner_last_advance_at: None,
             spinner_style: forge_workspace::SpinnerStyle::default(),
+            spinner_epoch: Instant::now(),
             tools_collapsed: true,
             #[cfg(any(test, feature = "testing"))]
             last_invalidation_level: std::cell::Cell::new(None),

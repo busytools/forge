@@ -18,6 +18,7 @@ pub(crate) mod message;
 pub(crate) mod peer_block;
 pub mod projects_pane;
 pub(crate) mod prompt;
+pub(crate) mod spinner;
 pub(crate) mod theme;
 mod tool_call;
 pub mod top_bar;

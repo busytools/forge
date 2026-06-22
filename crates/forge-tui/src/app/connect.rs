@@ -212,6 +212,7 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
         spinner_frame: 0,
         spinner_last_advance_at: None,
         spinner_style,
+        spinner_epoch: std::time::Instant::now(),
         tools_collapsed: true,
         #[cfg(any(test, feature = "testing"))]
         last_invalidation_level: std::cell::Cell::new(None),
