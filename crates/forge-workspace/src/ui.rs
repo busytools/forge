@@ -96,7 +96,7 @@ impl SpinnerStyle {
     /// isn't built yet.
     pub fn cadence_ms(self) -> u64 {
         match self {
-            Self::Braille => 80,
+            Self::Braille => 30,
             Self::PhaseOfMoon => 120,
             Self::Pulse => 100,
             Self::ForgeDot => 1_400,
@@ -177,7 +177,7 @@ mod tests {
     fn cadence_ms_is_per_style() {
         // Each style has its own cadence - drift means the launchpad
         // animation no longer ticks at the design-spec frequency.
-        assert_eq!(SpinnerStyle::Braille.cadence_ms(), 80);
+        assert_eq!(SpinnerStyle::Braille.cadence_ms(), 30);
         assert_eq!(SpinnerStyle::PhaseOfMoon.cadence_ms(), 120);
         assert_eq!(SpinnerStyle::Pulse.cadence_ms(), 100);
         assert_eq!(SpinnerStyle::ForgeDot.cadence_ms(), 1_400);
