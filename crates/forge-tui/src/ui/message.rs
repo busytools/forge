@@ -13,11 +13,6 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Paragraph, Wrap};
 
-const SPINNER_FRAMES: &[char] = &[
-    '\u{280B}', '\u{2819}', '\u{2839}', '\u{2838}', '\u{283C}', '\u{2834}', '\u{2826}', '\u{2827}',
-    '\u{2807}', '\u{280F}',
-];
-
 const FERRIS_SAYS: &[&str] = &[
     r" ------------------------ ",
     r"< Welcome back to Forge! >",
@@ -57,9 +52,10 @@ const WELCOME_TIPS: &[&str] = &[
 /// Snapshot of the app state needed by the spinner -- extracted before
 /// the message loop so we don't need `&App` (which conflicts with `&mut msg`).
 #[derive(Clone)]
-// Spinner state - bools track frame ticks, blink flag, halted, idle, etc. - separate flags read better than a packed bitmask at call sites.
 pub struct SpinnerState {
-    pub frame: usize,
+    /// Current spinner glyph for the active style, resolved once per
+    /// frame from `App::active_spinner_glyph`.
+    pub glyph: char,
     /// True when this message owns the currently active assistant turn.
     pub is_active_turn_assistant: bool,
     /// True when this message should show the initial empty-turn thinking indicator.
@@ -489,12 +485,12 @@ fn append_assistant_blocks(
     layout: &mut MessageLayout,
 ) {
     if msg.blocks.is_empty() && spinner.show_compacting {
-        layout.push_wrapped_line(compacting_line(spinner.frame), render_context.width);
+        layout.push_wrapped_line(compacting_line(spinner.glyph), render_context.width);
         return;
     }
     if msg.blocks.is_empty() && spinner.show_empty_thinking {
         layout.push_wrapped_line(
-            thinking_line(spinner.frame, spinner.thinking_tokens),
+            thinking_line(spinner.glyph, spinner.thinking_tokens),
             render_context.width,
         );
         return;
@@ -540,7 +536,7 @@ fn append_assistant_blocks(
                         let summary_lines = tool_call::render_group_summary_line(
                             &kind_count,
                             aggregate_status,
-                            spinner.frame,
+                            spinner.glyph,
                             render_context.width as usize,
                         );
                         let y_in_msg = layout.height;
@@ -582,7 +578,7 @@ fn append_assistant_blocks(
                         for segment in &segments {
                             let summary_lines = peer_block::render_messaging_group_summary_line(
                                 segment,
-                                spinner.frame,
+                                spinner.glyph,
                             );
                             // Stamp the leading peer-class block's
                             // hit-test fields so a click on the
@@ -631,14 +627,14 @@ fn append_assistant_blocks(
         if state.has_body_content {
             layout.push_blank();
         }
-        layout.push_wrapped_line(compacting_line(spinner.frame), render_context.width);
+        layout.push_wrapped_line(compacting_line(spinner.glyph), render_context.width);
     }
     if spinner.show_thinking && !show_compacting {
         if state.has_body_content {
             layout.push_blank();
         }
         layout.push_wrapped_line(
-            thinking_line(spinner.frame, spinner.thinking_tokens),
+            thinking_line(spinner.glyph, spinner.thinking_tokens),
             render_context.width,
         );
     }
@@ -652,7 +648,7 @@ fn append_assistant_blocks(
             layout.push_blank();
         }
         layout.push_wrapped_line(
-            subagent_running_line(spinner.frame, running.count, running.primary_label.as_deref()),
+            subagent_running_line(spinner.glyph, running.count, running.primary_label.as_deref()),
             render_context.width,
         );
     }
@@ -829,7 +825,7 @@ fn append_assistant_tool_block(
         tc,
         render_context.tool_render_context,
         render_context.width,
-        spinner.frame,
+        spinner.glyph,
         render_context.options.tools_collapsed,
         &mut lines,
     );
@@ -837,7 +833,7 @@ fn append_assistant_tool_block(
         tc,
         render_context.tool_render_context,
         render_context.width,
-        spinner.frame,
+        spinner.glyph,
         render_context.layout_generation,
         render_context.options.tools_collapsed,
     );
@@ -1481,7 +1477,7 @@ fn build_message_render_signature(
     spinner.show_thinking.hash(&mut hasher);
     spinner.show_compacting.hash(&mut hasher);
     let assistant_frame = if message_has_frame_dependent_assistant_lines(msg, spinner) {
-        Some(spinner.frame)
+        Some(spinner.glyph)
     } else {
         None
     };
@@ -1591,7 +1587,7 @@ fn hash_message_block_into<H: std::hash::Hasher>(
             // has to be folded into the signature alongside the global
             // tools_collapsed bit (which lives on MessageRenderCacheKey).
             tc.collapsed_override.hash(hasher);
-            let frame = tool_call_needs_spinner_frame(tc).then_some(spinner.frame);
+            let frame = tool_call_needs_spinner_frame(tc).then_some(spinner.glyph);
             frame.hash(hasher);
         }
         MessageBlock::Welcome(block) => {
@@ -1950,8 +1946,7 @@ fn system_role_label_line(severity: SystemSeverity) -> Line<'static> {
     Line::from(Span::styled(label, Style::default().fg(color).add_modifier(Modifier::BOLD)))
 }
 
-fn thinking_line(frame: usize, thinking_tokens: Option<u64>) -> Line<'static> {
-    let ch = SPINNER_FRAMES[frame % SPINNER_FRAMES.len()];
+fn thinking_line(ch: char, thinking_tokens: Option<u64>) -> Line<'static> {
     // #273: when ThinkingTokens has fired for the current turn the
     // chip swaps from `Thinking...` to `thinking · N tok` (with k/M
     // abbreviation). Falls back to the bare `Thinking...` shape when
@@ -2007,8 +2002,7 @@ pub fn format_token_count_short(n: u64) -> String {
 /// `⠋ ◇ running subagent: <label>… (see Inspector)`; multi:
 /// `⠋ ◇ running N subagents… (see Inspector)`. The label arg falls
 /// back to the count form when absent.
-fn subagent_running_line(frame: usize, count: usize, label: Option<&str>) -> Line<'static> {
-    let spinner = SPINNER_FRAMES[frame % SPINNER_FRAMES.len()];
+fn subagent_running_line(spinner: char, count: usize, label: Option<&str>) -> Line<'static> {
     let body = match (count, label) {
         (n, _) if n > 1 => {
             format!("{spinner} \u{25c7} running {n} subagents\u{2026} (see Inspector)")
@@ -2021,8 +2015,7 @@ fn subagent_running_line(frame: usize, count: usize, label: Option<&str>) -> Lin
     Line::from(Span::styled(body, Style::default().fg(theme::DIM)))
 }
 
-fn compacting_line(frame: usize) -> Line<'static> {
-    let ch = SPINNER_FRAMES[frame % SPINNER_FRAMES.len()];
+fn compacting_line(ch: char) -> Line<'static> {
     Line::from(Span::styled(
         format!("{ch} Compacting context..."),
         Style::default().fg(theme::RUST_ORANGE),
@@ -2942,7 +2935,7 @@ mod tests {
 
     fn idle_spinner() -> SpinnerState {
         SpinnerState {
-            frame: 0,
+            glyph: '\u{280B}',
             is_active_turn_assistant: false,
             show_empty_thinking: false,
             show_thinking: false,
@@ -3656,7 +3649,8 @@ mod tests {
     fn message_render_cache_rebuilds_when_indicator_visibility_changes() {
         let mut msg = make_text_message(MessageRole::Assistant, "cached");
         let base_spinner = idle_spinner();
-        let thinking_spinner = SpinnerState { show_thinking: true, frame: 1, ..idle_spinner() };
+        let thinking_spinner =
+            SpinnerState { show_thinking: true, glyph: '\u{2819}', ..idle_spinner() };
         let options = default_options();
 
         let base_cache = get_or_build_message_render_cache(
@@ -4036,7 +4030,7 @@ mod tests {
 
     #[test]
     fn thinking_line_renders_chip_when_token_count_provided() {
-        let line = thinking_line(0, Some(1_234));
+        let line = thinking_line('\u{280B}', Some(1_234));
         let rendered: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(
             rendered.contains("thinking · 1.2k tok"),
@@ -4046,7 +4040,7 @@ mod tests {
 
     #[test]
     fn thinking_line_falls_back_to_bare_thinking_when_no_tokens_yet() {
-        let line = thinking_line(0, None);
+        let line = thinking_line('\u{280B}', None);
         let rendered: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(
             rendered.contains("Thinking..."),
@@ -4063,7 +4057,8 @@ mod tests {
 
     #[test]
     fn subagent_running_line_single_uses_label_and_inspector_pointer() {
-        let line = subagent_running_line(0, 1, Some("Explore \u{b7} map hidden tool calls"));
+        let line =
+            subagent_running_line('\u{280B}', 1, Some("Explore \u{b7} map hidden tool calls"));
         let rendered: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(
             rendered.contains("\u{25c7}"),
@@ -4078,7 +4073,7 @@ mod tests {
 
     #[test]
     fn subagent_running_line_multi_uses_count() {
-        let line = subagent_running_line(0, 3, Some("Explore"));
+        let line = subagent_running_line('\u{280B}', 3, Some("Explore"));
         let rendered: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(
             rendered.contains("running 3 subagents"),
@@ -4092,7 +4087,7 @@ mod tests {
 
     #[test]
     fn subagent_running_line_falls_back_when_label_is_unavailable() {
-        let line = subagent_running_line(0, 1, None);
+        let line = subagent_running_line('\u{280B}', 1, None);
         let rendered: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(
             rendered.contains("running subagent"),

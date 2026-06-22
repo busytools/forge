@@ -21,6 +21,7 @@
 //! poller succeeds." Tracing surfaces the breadcrumb at debug level.
 
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use forge_primitives::usage::UsageSnapshot;
 use serde::{Deserialize, Serialize};
@@ -55,6 +56,11 @@ pub(crate) struct CachedAccountUsage {
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub(crate) struct ForgeState {
     version: u8,
+    /// Runtime spinner-style override set via `/spinner` (the picker or
+    /// the direct `<name>` path). `None` means no override - the active
+    /// style falls back to forge.toml's `[ui] spinner` default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spinner: Option<crate::ui::SpinnerStyle>,
     /// Account display name → cached snapshot. `BTreeMap` so the
     /// TOML serialisation is deterministic for diffing.
     #[serde(default)]
@@ -63,7 +69,11 @@ pub(crate) struct ForgeState {
 
 impl ForgeState {
     fn empty() -> Self {
-        Self { version: CACHE_SCHEMA_VERSION, account_usage: std::collections::BTreeMap::new() }
+        Self {
+            version: CACHE_SCHEMA_VERSION,
+            spinner: None,
+            account_usage: std::collections::BTreeMap::new(),
+        }
     }
 }
 
@@ -120,18 +130,58 @@ pub(crate) fn load(config_dir: &Path) -> ForgeState {
     parsed
 }
 
-/// Persist the in-memory snapshot collection to disk via atomic
-/// replace. The config dir is expected to already exist (forge.toml
-/// lives there). Failures are non-fatal and logged at warn so a
-/// persistent permission / disk-full problem surfaces, but a single
-/// failed write doesn't cascade.
+/// Serializes the whole load-merge-write cycle for `forge-state.toml`.
+/// The background usage poller (a `spawn_blocking` thread) and the
+/// `/spinner` persist path run on different threads; without this lock
+/// their read+write pairs can interleave into a lost update - the
+/// poller's stale snapshot reverts a just-applied spinner pick, which
+/// (unlike the usage case) never self-heals until the user re-picks.
+/// Process-global: forge is single-process and these writes are rare,
+/// so the contention is negligible. Holding it across the file I/O
+/// also removes the shared `.toml.tmp` write race between the writers.
+static STATE_WRITE_LOCK: Mutex<()> = Mutex::new(());
+
+/// Load the current state, apply `mutate`, and write it back - the
+/// whole cycle under [`STATE_WRITE_LOCK`] so concurrent writers
+/// serialize instead of clobbering each other. The single write path
+/// both [`store`] and [`store_spinner`] route through.
+fn update_forge_state(config_dir: &Path, mutate: impl FnOnce(&mut ForgeState)) {
+    // Poisoning is irrelevant for a `()` guard - recover it and proceed
+    // so a panic in one writer doesn't wedge every later write.
+    let _guard = STATE_WRITE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut state = load(config_dir);
+    mutate(&mut state);
+    write_state(config_dir, &state);
+}
+
+/// Persist the in-memory account-usage snapshots to disk. Load-merge-
+/// write (under the shared lock) so the write preserves any other
+/// on-disk state (the spinner override) and can't be lost to a
+/// concurrent spinner write. The config dir is expected to already
+/// exist (forge.toml lives there); failures are non-fatal + logged.
 pub(crate) fn store(
     config_dir: &Path,
     entries: &std::collections::BTreeMap<String, CachedAccountUsage>,
 ) {
-    let state = ForgeState { version: CACHE_SCHEMA_VERSION, account_usage: entries.clone() };
+    update_forge_state(config_dir, |state| state.account_usage = entries.clone());
+}
+
+/// Persist the runtime spinner-style override (set via `/spinner` -
+/// the picker's enter-apply or the direct `<name>` path), preserving
+/// the account-usage cache via the same locked load-merge-write path.
+/// `None` clears the override so the active style falls back to the
+/// forge.toml `[ui] spinner` default on the next boot.
+pub(crate) fn store_spinner(config_dir: &Path, spinner: Option<crate::ui::SpinnerStyle>) {
+    update_forge_state(config_dir, |state| state.spinner = spinner);
+}
+
+/// Serialise `state` to `<config_dir>/forge-state.toml` via atomic
+/// tmp-file + rename: a crash between write and rename leaves the
+/// previous state intact rather than a partial file. Failures are
+/// non-fatal and logged at warn.
+fn write_state(config_dir: &Path, state: &ForgeState) {
     let path = state_path(config_dir);
-    let serialised = match toml::to_string_pretty(&state) {
+    let serialised = match toml::to_string_pretty(state) {
         Ok(s) => s,
         Err(e) => {
             tracing::warn!(
@@ -142,9 +192,6 @@ pub(crate) fn store(
             return;
         }
     };
-    // Atomic replace: write to <path>.tmp then rename. A crash
-    // between write+rename leaves the previous state intact rather
-    // than a partial file.
     let tmp_path = path.with_extension("toml.tmp");
     if let Err(e) = std::fs::write(&tmp_path, &serialised) {
         tracing::warn!(
@@ -270,5 +317,84 @@ mod tests {
         assert!(after.contains("Subspace"), "new entry present");
         assert!(!after.contains("Granite"), "old entry replaced");
         let _ = len_before; // both writes succeeded
+    }
+
+    #[test]
+    fn spinner_override_round_trips() {
+        let dir = tempdir().expect("tempdir");
+        store_spinner(dir.path(), Some(crate::ui::SpinnerStyle::Ember));
+        let loaded = load(dir.path());
+        assert_eq!(loaded.spinner, Some(crate::ui::SpinnerStyle::Ember));
+    }
+
+    #[test]
+    fn store_account_usage_preserves_spinner_override() {
+        let dir = tempdir().expect("tempdir");
+        store_spinner(dir.path(), Some(crate::ui::SpinnerStyle::Pulse));
+        let mut entries = std::collections::BTreeMap::new();
+        entries.insert("Granite".to_owned(), fixture_entry());
+        store(dir.path(), &entries);
+        let loaded = load(dir.path());
+        assert_eq!(
+            loaded.spinner,
+            Some(crate::ui::SpinnerStyle::Pulse),
+            "an account-usage write must not wipe the spinner override",
+        );
+        assert_eq!(loaded.account_usage.len(), 1);
+    }
+
+    #[test]
+    fn store_spinner_preserves_account_usage() {
+        let dir = tempdir().expect("tempdir");
+        let mut entries = std::collections::BTreeMap::new();
+        entries.insert("Granite".to_owned(), fixture_entry());
+        store(dir.path(), &entries);
+        store_spinner(dir.path(), Some(crate::ui::SpinnerStyle::ForgeDot));
+        let loaded = load(dir.path());
+        assert_eq!(loaded.account_usage.len(), 1, "a spinner write must not wipe account usage");
+        assert_eq!(loaded.spinner, Some(crate::ui::SpinnerStyle::ForgeDot));
+    }
+
+    #[test]
+    fn concurrent_usage_and_spinner_writes_do_not_lose_updates() {
+        use std::thread;
+        let dir = tempdir().expect("tempdir");
+        // Seed both fields so each writer mutates one of two present fields.
+        store_spinner(dir.path(), Some(crate::ui::SpinnerStyle::Ember));
+        let mut seed = std::collections::BTreeMap::new();
+        seed.insert("Granite".to_owned(), fixture_entry());
+        store(dir.path(), &seed);
+
+        // Hammer both writers concurrently. Under STATE_WRITE_LOCK each
+        // load-merge-write is atomic, so the last write of EACH field
+        // survives; without the lock one writer's stale snapshot would
+        // revert the other's value (the lost update this guards).
+        let p1 = dir.path().to_path_buf();
+        let h1 = thread::spawn(move || {
+            for _ in 0..200 {
+                store_spinner(&p1, Some(crate::ui::SpinnerStyle::Pulse));
+            }
+        });
+        let p2 = dir.path().to_path_buf();
+        let h2 = thread::spawn(move || {
+            let mut usage = std::collections::BTreeMap::new();
+            usage.insert("Subspace".to_owned(), fixture_entry());
+            for _ in 0..200 {
+                store(&p2, &usage);
+            }
+        });
+        h1.join().expect("spinner writer thread");
+        h2.join().expect("usage writer thread");
+
+        let loaded = load(dir.path());
+        assert_eq!(
+            loaded.spinner,
+            Some(crate::ui::SpinnerStyle::Pulse),
+            "spinner writer's final value must survive concurrent usage writes",
+        );
+        assert!(
+            loaded.account_usage.contains_key("Subspace"),
+            "usage writer's final value must survive concurrent spinner writes",
+        );
     }
 }

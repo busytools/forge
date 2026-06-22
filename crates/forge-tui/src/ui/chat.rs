@@ -483,7 +483,7 @@ fn build_base_spinner(app: &App) -> SpinnerState {
     // coming.
     let turn_in_flight = matches!(app.status, AppStatus::Thinking | AppStatus::Running);
     SpinnerState {
-        frame: app.spinner_frame,
+        glyph: app.active_spinner_glyph(),
         is_active_turn_assistant: false,
         show_empty_thinking: turn_in_flight,
         show_thinking: turn_in_flight,
@@ -1228,7 +1228,7 @@ mod tests {
 
     fn idle_spinner() -> SpinnerState {
         SpinnerState {
-            frame: 0,
+            glyph: '\u{280B}',
             is_active_turn_assistant: false,
             show_empty_thinking: false,
             show_thinking: false,
@@ -1449,11 +1449,13 @@ mod tests {
         app.bind_active_turn_assistant(0);
 
         let _ = app.active_viewport_mut().on_frame(40, 8);
-        let first_spinner = SpinnerState { frame: 0, show_thinking: true, ..idle_spinner() };
+        let first_spinner =
+            SpinnerState { glyph: '\u{280B}', show_thinking: true, ..idle_spinner() };
         let first = update_visual_heights(&mut app, &first_spinner, 40, 8);
         assert_eq!(first.measured_msgs, 1);
 
-        let second_spinner = SpinnerState { frame: 1, show_thinking: true, ..idle_spinner() };
+        let second_spinner =
+            SpinnerState { glyph: '\u{2819}', show_thinking: true, ..idle_spinner() };
         let second = update_visual_heights(&mut app, &second_spinner, 40, 8);
         assert_eq!(second.measured_msgs, 0);
     }

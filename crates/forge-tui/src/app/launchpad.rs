@@ -5,17 +5,15 @@
 //! [`crate::ui::launchpad`]). It owns:
 //!
 //! - The selection cursor over the picker rows.
-//! - The spinner timer anchor (`opened_at`) so the renderer can
-//!   derive frame indices from elapsed-time-vs-cadence without
-//!   sharing global ticker state.
-//! - The user-chosen spinner style at open time. Snapshotting at
-//!   open ensures the picker doesn't visibly jump if the user
-//!   edits `~/.claude/forge.toml`'s `[ui]` block while the
-//!   launchpad is up.
+//! - The open-time anchor (`opened_at`) used to detect the first
+//!   frame after the view opens (for the default row selection).
+//!
+//! The spinner glyph is driven by the live `App::spinner_style`
+//! through the shared `ui::spinner` helper, so the launchpad reflects
+//! the active style without snapshotting its own copy.
 use std::time::Instant;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use forge_workspace::SpinnerStyle;
 
 use super::App;
 use super::view::{ActiveView, set_active_view};
@@ -30,38 +28,27 @@ pub struct LaunchpadState {
     /// to the most-recently-active project's row if any project has
     /// session activity; otherwise row 0.
     pub selected_index: usize,
-    /// Monotonic anchor for spinner frame derivation. Renderer
-    /// computes `(elapsed_ms / cadence_ms) % frames.len()`.
+    /// Open-time anchor. Used to detect the first frame after the
+    /// view opens so the initial selection can default to the most
+    /// recently active project.
     pub opened_at: Instant,
-    /// Spinner style snapshotted at open time. Re-reading from
-    /// `Workspace::ui_settings()` each frame would make the picker
-    /// jump if the user edits `forge.toml` mid-session.
-    pub spinner_style: SpinnerStyle,
 }
 
 impl Default for LaunchpadState {
     fn default() -> Self {
-        Self {
-            selected_index: 0,
-            opened_at: Instant::now(),
-            spinner_style: SpinnerStyle::default(),
-        }
+        Self { selected_index: 0, opened_at: Instant::now() }
     }
 }
 
-/// Reset the launchpad state when entering the view. Reads the
-/// user's chosen spinner style from `Workspace::ui_settings()` and
-/// snapshots it. Selected index defaults to 0; the render path
-/// picks a smarter "most recently active" default the first time
-/// it has the project list.
+/// Reset the launchpad state when entering the view. Selected index
+/// defaults to 0; the render path picks a smarter "most recently
+/// active" default the first time it has the project list.
 ///
 /// Wired into `/launchpad` slash command execution; the boot-time
-/// path builds the equivalent snapshot inline in `create_app` so
-/// the View transitions atomically with App construction.
+/// path builds the equivalent state inline in `create_app` so the
+/// View transitions atomically with App construction.
 pub(crate) fn open(app: &mut App) {
-    let spinner_style =
-        app.workspace.as_ref().map(|w| w.ui_settings().launchpad_spinner).unwrap_or_default();
-    app.launchpad = LaunchpadState { selected_index: 0, opened_at: Instant::now(), spinner_style };
+    app.launchpad = LaunchpadState { selected_index: 0, opened_at: Instant::now() };
     set_active_view(app, ActiveView::Launchpad);
     app.needs_redraw = true;
 }
@@ -145,10 +132,9 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     #[test]
-    fn default_state_picks_braille() {
+    fn default_state_selects_first_row() {
         let state = LaunchpadState::default();
         assert_eq!(state.selected_index, 0);
-        assert_eq!(state.spinner_style, SpinnerStyle::Braille);
     }
 
     #[test]
@@ -197,7 +183,7 @@ mod tests {
     }
 
     #[test]
-    fn open_resets_state_from_workspace_ui_settings() {
+    fn open_switches_to_launchpad_view_and_resets_selection() {
         let mut app = App::test_default();
         app.active_view = ActiveView::Chat;
         // Move selection off zero to confirm `open` resets it.

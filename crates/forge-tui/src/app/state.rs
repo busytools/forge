@@ -333,6 +333,15 @@ pub struct App {
     pub cli_version_info: Option<forge_workspace::env::cli_version::CliVersionInfo>,
     pub spinner_frame: usize,
     pub spinner_last_advance_at: Option<Instant>,
+    /// Active spinner style for every animated surface (chat, input,
+    /// projects pane, inspector, launchpad). Seeded from the config
+    /// `spinner` field at startup; mutated live by `/spinner`.
+    pub spinner_style: forge_workspace::SpinnerStyle,
+    /// Monotonic start anchor for the time-based spinner. Frame index
+    /// derives from `spinner_epoch.elapsed() / cadence_ms`.
+    pub spinner_epoch: Instant,
+    /// Open `/spinner` picker overlay state; `None` when closed.
+    pub spinner_picker: Option<crate::app::spinner_picker::SpinnerPickerState>,
     /// Session-level preference for collapsing non-Execute tool call bodies.
     /// Toggled by Ctrl+X and applied at render/layout time.
     pub tools_collapsed: bool,
@@ -2901,6 +2910,9 @@ impl App {
             cli_version_info: None,
             spinner_frame: 0,
             spinner_last_advance_at: None,
+            spinner_style: forge_workspace::SpinnerStyle::default(),
+            spinner_epoch: Instant::now(),
+            spinner_picker: None,
             tools_collapsed: true,
             #[cfg(any(test, feature = "testing"))]
             last_invalidation_level: std::cell::Cell::new(None),
@@ -4474,7 +4486,7 @@ mod tests {
         ];
 
         let spinner = crate::ui::SpinnerState {
-            frame: 0,
+            glyph: '\u{280B}',
             is_active_turn_assistant: false,
             show_empty_thinking: false,
             show_thinking: false,

@@ -35,8 +35,8 @@ const SUMMARY_CHROME_WIDTH: usize = 25;
 /// `aggregate_status` drives the leading status_icon (spinner for
 /// InProgress, check for Completed, cross for Failed/Killed, hollow
 /// circle for Pending) via the same `tool_call::status_icon` helper
-/// the per-tool render uses. `spinner_frame` selects the braille
-/// frame when the aggregate is InProgress; otherwise unused.
+/// the per-tool render uses. `spinner_glyph` is the active style's
+/// current glyph, used when the aggregate is InProgress; otherwise unused.
 ///
 /// `max_width` is the chat-pane render width. The summary text
 /// truncates with an ASCII `...` ellipsis to fit on a single row
@@ -51,10 +51,10 @@ const SUMMARY_CHROME_WIDTH: usize = 25;
 pub fn render_group_summary_line(
     kind_count: &KindCount,
     aggregate_status: ToolCallStatus,
-    spinner_frame: usize,
+    spinner_glyph: char,
     max_width: usize,
 ) -> Vec<Line<'static>> {
-    let (icon_glyph, icon_color) = status_icon(aggregate_status, spinner_frame);
+    let (icon_glyph, icon_color) = status_icon(aggregate_status, spinner_glyph);
     let summary = kind_count.format_summary();
     let available = max_width.saturating_sub(SUMMARY_CHROME_WIDTH).max(MIN_SUMMARY_BUDGET);
     let summary = clip_summary_to_width(&summary, available);
@@ -117,7 +117,7 @@ mod tests {
     #[test]
     fn render_group_summary_line_has_no_trailing_whitespace_pad() {
         let k = KindCount { reads: 5, ..KindCount::default() };
-        let lines = render_group_summary_line(&k, ToolCallStatus::Completed, 0, 80);
+        let lines = render_group_summary_line(&k, ToolCallStatus::Completed, '\u{280B}', 80);
         let text = line_text(&lines[0]);
         assert!(
             !text.ends_with(' '),
@@ -128,7 +128,7 @@ mod tests {
     #[test]
     fn render_group_summary_line_completed_uses_checkmark_and_group_icon() {
         let k = KindCount { reads: 5, searches: 3, commands: 2, calls: 0, ..KindCount::default() };
-        let lines = render_group_summary_line(&k, ToolCallStatus::Completed, 0, 80);
+        let lines = render_group_summary_line(&k, ToolCallStatus::Completed, '\u{280B}', 80);
         assert_eq!(lines.len(), 1);
         let text = line_text(&lines[0]);
         assert!(text.contains(theme::ICON_COMPLETED), "completed status_icon: {text:?}");
@@ -143,7 +143,7 @@ mod tests {
     #[test]
     fn render_group_summary_line_drops_zero_kinds() {
         let k = KindCount { reads: 5, ..KindCount::default() };
-        let lines = render_group_summary_line(&k, ToolCallStatus::Completed, 0, 80);
+        let lines = render_group_summary_line(&k, ToolCallStatus::Completed, '\u{280B}', 80);
         let text = line_text(&lines[0]);
         assert!(text.contains("5 reads"));
         assert!(!text.contains("searches"));
@@ -153,7 +153,7 @@ mod tests {
     #[test]
     fn render_group_summary_line_in_progress_uses_braille_spinner() {
         let k = KindCount { reads: 3, ..KindCount::default() };
-        let lines = render_group_summary_line(&k, ToolCallStatus::InProgress, 0, 80);
+        let lines = render_group_summary_line(&k, ToolCallStatus::InProgress, '\u{280B}', 80);
         let text = line_text(&lines[0]);
         let has_braille = text.chars().any(|c| ('\u{2800}'..='\u{28FF}').contains(&c));
         assert!(has_braille, "InProgress must use a braille spinner glyph: {text:?}");
@@ -163,7 +163,7 @@ mod tests {
     #[test]
     fn render_group_summary_line_failed_uses_cross() {
         let k = KindCount { reads: 1, ..KindCount::default() };
-        let lines = render_group_summary_line(&k, ToolCallStatus::Failed, 0, 80);
+        let lines = render_group_summary_line(&k, ToolCallStatus::Failed, '\u{280B}', 80);
         let text = line_text(&lines[0]);
         assert!(text.contains(theme::ICON_FAILED), "failed status_icon: {text:?}");
         assert!(text.contains('='));
@@ -172,28 +172,30 @@ mod tests {
     #[test]
     fn render_group_summary_line_pending_uses_hollow_circle() {
         let k = KindCount { reads: 1, ..KindCount::default() };
-        let lines = render_group_summary_line(&k, ToolCallStatus::Pending, 0, 80);
+        let lines = render_group_summary_line(&k, ToolCallStatus::Pending, '\u{280B}', 80);
         let text = line_text(&lines[0]);
         assert!(text.contains('\u{25CB}'), "Pending must use hollow circle: {text:?}");
         assert!(text.contains('='));
     }
 
     #[test]
-    fn render_group_summary_line_spinner_frame_advances() {
+    fn render_group_summary_line_in_progress_uses_active_glyph() {
         let k = KindCount { reads: 1, ..KindCount::default() };
-        let text_a =
-            line_text(&render_group_summary_line(&k, ToolCallStatus::InProgress, 0, 80)[0]);
-        let text_b =
-            line_text(&render_group_summary_line(&k, ToolCallStatus::InProgress, 3, 80)[0]);
+        let text_a = line_text(
+            &render_group_summary_line(&k, ToolCallStatus::InProgress, '\u{280B}', 80)[0],
+        );
+        let text_b = line_text(
+            &render_group_summary_line(&k, ToolCallStatus::InProgress, '\u{2819}', 80)[0],
+        );
         let icon_a = text_a.chars().nth(2).expect("status icon char");
         let icon_b = text_b.chars().nth(2).expect("status icon char");
-        assert_ne!(icon_a, icon_b, "spinner frames 0 and 3 must produce different glyphs");
+        assert_ne!(icon_a, icon_b, "distinct active glyphs must render distinct icons");
     }
 
     #[test]
     fn render_group_summary_line_has_two_space_left_indent() {
         let k = KindCount { reads: 5, ..KindCount::default() };
-        let lines = render_group_summary_line(&k, ToolCallStatus::Completed, 0, 80);
+        let lines = render_group_summary_line(&k, ToolCallStatus::Completed, '\u{280B}', 80);
         assert_eq!(lines.len(), 1);
         let text = line_text(&lines[0]);
         assert!(
@@ -218,7 +220,7 @@ mod tests {
             ],
             ..KindCount::default()
         };
-        let lines = render_group_summary_line(&k, ToolCallStatus::Completed, 0, 60);
+        let lines = render_group_summary_line(&k, ToolCallStatus::Completed, '\u{280B}', 60);
         assert_eq!(lines.len(), 1, "summary must stay one line even when truncated");
         let text = line_text(&lines[0]);
         let width = unicode_width::UnicodeWidthStr::width(text.as_str());
@@ -235,7 +237,7 @@ mod tests {
     #[test]
     fn render_group_summary_line_glyph_alignment() {
         let k = KindCount { reads: 5, ..KindCount::default() };
-        let lines = render_group_summary_line(&k, ToolCallStatus::Completed, 0, 80);
+        let lines = render_group_summary_line(&k, ToolCallStatus::Completed, '\u{280B}', 80);
         let text = line_text(&lines[0]);
         assert!(
             text.starts_with("  "),
