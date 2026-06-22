@@ -52,27 +52,18 @@ mod tests {
 
     #[test]
     fn spinner_index_advances_by_cadence() {
-        let s = SpinnerStyle::Braille; // 10 frames, 80ms
+        let s = SpinnerStyle::Braille; // 10 frames, 30ms
         assert_eq!(spinner_frame_index(s, 0, false), 0);
-        assert_eq!(spinner_frame_index(s, 80, false), 1);
-        assert_eq!(spinner_frame_index(s, 800, false), 0); // wraps at len*cadence
+        assert_eq!(spinner_frame_index(s, 30, false), 1);
+        assert_eq!(spinner_frame_index(s, 300, false), 0); // wraps at len*cadence (10*30)
     }
 
     #[test]
     fn spinner_index_reduced_motion_is_slower() {
-        let s = SpinnerStyle::Braille; // 80ms normal
-        // At 80ms elapsed: normal shows frame 1, reduced (floored to
+        let s = SpinnerStyle::Braille; // 30ms normal
+        // At 30ms elapsed: normal shows frame 1; reduced (floored to
         // 160ms) is still on frame 0.
-        assert_eq!(spinner_frame_index(s, 80, true), 0);
-        assert_eq!(spinner_frame_index(s, 80, false), 1);
-    }
-
-    #[test]
-    fn single_frame_style_is_always_index_zero() {
-        // forge_dot has one frame; any elapsed maps to index 0 with no
-        // out-of-range access.
-        let s = SpinnerStyle::ForgeDot;
-        assert_eq!(spinner_frame_index(s, 0, false), 0);
-        assert_eq!(spinner_frame_index(s, 9_999, false), 0);
+        assert_eq!(spinner_frame_index(s, 30, true), 0);
+        assert_eq!(spinner_frame_index(s, 30, false), 1);
     }
 }

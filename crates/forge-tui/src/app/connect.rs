@@ -505,7 +505,7 @@ mod tests {
         std::fs::write(
             config_dir.path().join("forge.toml"),
             format!(
-                "[[orgs]]\nname = \"Default\"\naccounts = [\"Stargate\"]\n\n[[orgs.projects]]\nname = \"forge-test\"\npath = \"{project_path_str}\"\nauto_start = true\n\n[[accounts]]\ndisplay_name = \"Stargate\"\nconfig_dir = \"~/.claude-stargate\"\n\n[ui]\nspinner = \"pulse\"\n"
+                "[[orgs]]\nname = \"Default\"\naccounts = [\"Stargate\"]\n\n[[orgs.projects]]\nname = \"forge-test\"\npath = \"{project_path_str}\"\nauto_start = true\n\n[[accounts]]\ndisplay_name = \"Stargate\"\nconfig_dir = \"~/.claude-stargate\"\n\n[ui]\nspinner = \"ember\"\n"
             ),
         )
         .expect("write forge.toml");
@@ -514,7 +514,7 @@ mod tests {
         let cli = cli_with(None);
         let local = tokio::task::LocalSet::new();
         let app = local.run_until(async { super::create_app(&cli, Arc::new(workspace)) }).await;
-        assert_eq!(app.spinner_style, forge_workspace::SpinnerStyle::Pulse);
+        assert_eq!(app.spinner_style, forge_workspace::SpinnerStyle::Ember);
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -525,7 +525,7 @@ mod tests {
         std::fs::write(
             config_dir.path().join("forge.toml"),
             format!(
-                "[[orgs]]\nname = \"Default\"\naccounts = [\"Stargate\"]\n\n[[orgs.projects]]\nname = \"forge-test\"\npath = \"{project_path_str}\"\nauto_start = true\n\n[[accounts]]\ndisplay_name = \"Stargate\"\nconfig_dir = \"~/.claude-stargate\"\n\n[ui]\nspinner = \"pulse\"\n"
+                "[[orgs]]\nname = \"Default\"\naccounts = [\"Stargate\"]\n\n[[orgs.projects]]\nname = \"forge-test\"\npath = \"{project_path_str}\"\nauto_start = true\n\n[[accounts]]\ndisplay_name = \"Stargate\"\nconfig_dir = \"~/.claude-stargate\"\n\n[ui]\nspinner = \"star\"\n"
             ),
         )
         .expect("write forge.toml");
