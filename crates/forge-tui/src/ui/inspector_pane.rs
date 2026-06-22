@@ -404,7 +404,7 @@ fn append_body(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
         lines.push(Line::default());
         push_section_rule(lines, width);
         lines.push(Line::default());
-        append_processes_section(lines, &processes, width, app.spinner_frame);
+        append_processes_section(lines, &processes, width, app.active_spinner_glyph());
     }
 }
 
@@ -1094,7 +1094,7 @@ fn fit_path_head_truncated(s: &str, max_chars: usize) -> String {
 
 fn append_tasks_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
     let todos = app.todos();
-    let spinner_frame = app.spinner_frame;
+    let active_glyph = app.active_spinner_glyph();
 
     if todos.is_empty() {
         return;
@@ -1178,7 +1178,7 @@ fn append_tasks_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
         // practice - the visible_todos filter strips them).
         let (glyph, glyph_color) = match todo.status {
             TodoStatus::Completed => ("\u{2713}".to_owned(), Color::Green),
-            TodoStatus::InProgress => (spinner_glyph(spinner_frame), theme::RUST_ORANGE),
+            TodoStatus::InProgress => (active_glyph.to_string(), theme::RUST_ORANGE),
             TodoStatus::Pending => ("\u{25cb}".to_owned(), theme::DIM),
         };
         let text_style = match todo.status {
@@ -1383,7 +1383,7 @@ fn append_subagents_section(lines: &mut Vec<Line<'static>>, app: &App, width: u1
     let inner_width = usize::from(width);
     let last_idx = entries.len().saturating_sub(1);
     for (idx, entry) in entries.iter().enumerate() {
-        append_subagent_row(lines, entry, inner_width, app.spinner_frame);
+        append_subagent_row(lines, entry, inner_width, app.active_spinner_glyph());
         if idx < last_idx {
             lines.push(Line::default());
         }
@@ -1399,7 +1399,7 @@ fn append_subagent_row(
     lines: &mut Vec<Line<'static>>,
     entry: &crate::app::SubagentEntry,
     inner_width: usize,
-    spinner_frame: usize,
+    active_glyph: char,
 ) {
     use crate::agent::model::ToolCallStatus;
 
@@ -1410,9 +1410,7 @@ fn append_subagent_row(
             (theme::ICON_FAILED.to_owned(), theme::STATUS_ERROR)
         }
         ToolCallStatus::Pending => ("\u{25cb}".to_owned(), theme::DIM),
-        ToolCallStatus::InProgress => {
-            (spinner_frame_char(spinner_frame).to_owned(), theme::RUST_ORANGE)
-        }
+        ToolCallStatus::InProgress => (active_glyph.to_string(), theme::RUST_ORANGE),
     };
     // Terminal roots get a `  · N tools` summary right-justified on
     // the header (matches MONITORS / WORKFLOWS / SCHEDULES'
@@ -1505,7 +1503,7 @@ fn append_workflows_section(lines: &mut Vec<Line<'static>>, app: &App, width: u1
     let inner_width = usize::from(width);
     let last_idx = workflows.len().saturating_sub(1);
     for (idx, workflow) in workflows.iter().enumerate() {
-        append_workflow_row(lines, workflow, inner_width, app.spinner_frame);
+        append_workflow_row(lines, workflow, inner_width, app.active_spinner_glyph());
         // blank between entries (matches the MONITORS
         // section's inter-entry spacing).
         if idx < last_idx {
@@ -1521,7 +1519,7 @@ fn append_workflow_row(
     lines: &mut Vec<Line<'static>>,
     workflow: &crate::app::WorkflowEntry,
     inner_width: usize,
-    spinner_frame: usize,
+    active_glyph: char,
 ) {
     use crate::app::{PhaseStatus, WorkflowStatus};
 
@@ -1529,8 +1527,11 @@ fn append_workflow_row(
         WorkflowStatus::InProgress => ("in progress", theme::RUST_ORANGE),
         WorkflowStatus::Completed => ("done", Color::Green),
     };
-    let glyph =
-        if workflow.is_in_progress() { spinner_frame_char(spinner_frame) } else { "\u{25c6}" };
+    let glyph = if workflow.is_in_progress() {
+        active_glyph.to_string()
+    } else {
+        "\u{25c6}".to_owned()
+    };
     let glyph_color = if workflow.is_in_progress() { theme::RUST_ORANGE } else { Color::Green };
 
     // same shape as MONITORS header. Badge follows
@@ -1547,7 +1548,7 @@ fn append_workflow_row(
     let pad = header_budget.saturating_sub(header_text.chars().count());
     lines.push(Line::from(vec![
         Span::raw(" ".repeat(usize::from(PANE_PAD))),
-        Span::styled(glyph.to_owned(), Style::default().fg(glyph_color)),
+        Span::styled(glyph, Style::default().fg(glyph_color)),
         Span::raw(" ".to_owned()),
         Span::styled(header_text, Style::default().add_modifier(Modifier::BOLD)),
         Span::raw(" ".repeat(pad)),
@@ -1593,16 +1594,16 @@ fn append_workflow_row(
             let is_last = i + 1 == phase_count;
             let connector_glyph = if is_last { "\u{2514}" } else { "\u{251c}" };
             let (phase_glyph, phase_color) = match phase.status {
-                PhaseStatus::Completed => ("\u{2713}", Color::Green),
-                PhaseStatus::InProgress => (spinner_frame_char(spinner_frame), theme::RUST_ORANGE),
-                PhaseStatus::Pending => ("\u{25CB}", theme::DIM),
+                PhaseStatus::Completed => ("\u{2713}".to_owned(), Color::Green),
+                PhaseStatus::InProgress => (active_glyph.to_string(), theme::RUST_ORANGE),
+                PhaseStatus::Pending => ("\u{25CB}".to_owned(), theme::DIM),
             };
             let row = truncate_or_pass(&phase.title, phase_budget);
             lines.push(Line::from(vec![
                 Span::raw(" ".repeat(usize::from(PANE_PAD))),
                 Span::styled(connector_glyph.to_owned(), Style::default().fg(theme::DIM)),
                 Span::raw(" ".to_owned()),
-                Span::styled(phase_glyph.to_owned(), Style::default().fg(phase_color)),
+                Span::styled(phase_glyph, Style::default().fg(phase_color)),
                 Span::raw(" ".to_owned()),
                 Span::styled(row, Style::default().fg(theme::DIM)),
             ]));
@@ -1664,17 +1665,6 @@ fn row_text_budget(inner_width: usize, chrome_chars: usize) -> usize {
     inner_width.saturating_sub(chrome_chars).max(1)
 }
 
-/// Pick the active spinner frame character from the shared SPINNER
-/// table. Exposed as a tiny helper so both monitor + workflow rows
-/// use the same animation.
-fn spinner_frame_char(frame: usize) -> &'static str {
-    const FRAMES: &[&str] = &[
-        "\u{280B}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283C}", "\u{2834}", "\u{2826}",
-        "\u{2827}", "\u{2807}", "\u{280F}",
-    ];
-    FRAMES[frame % FRAMES.len()]
-}
-
 /// Helper: truncate a string to `max_chars` columns, appending a
 /// single `...` ellipsis when the input is longer. Returns the input
 /// unchanged when it already fits.
@@ -1721,7 +1711,7 @@ fn append_processes_section(
     lines: &mut Vec<Line<'static>>,
     collection: &ProcessCollection,
     width: u16,
-    spinner_frame: usize,
+    active_glyph: char,
 ) {
     lines.push(Line::from(Span::styled(
         " PROCESSES".to_owned(),
@@ -1732,7 +1722,7 @@ fn append_processes_section(
     let include_memory = width >= PROCESSES_MEMORY_WIDTH_THRESHOLD;
     let process_count = collection.rows.len();
     for (idx, process) in collection.rows.iter().enumerate() {
-        append_process_row(lines, process, width, include_memory, spinner_frame);
+        append_process_row(lines, process, width, include_memory, active_glyph);
         // Blank between SUPERVISOR rows (depth-0). Descendant rows
         // pack tight under their supervisor with no blanks so the
         // tree reads as one connected block.
@@ -1773,7 +1763,7 @@ fn append_process_row(
     process: &ProcessRow,
     width: u16,
     include_memory: bool,
-    spinner_frame: usize,
+    active_glyph: char,
 ) {
     let mut spans: Vec<Span<'static>> = Vec::new();
     spans.push(Span::raw(" ".repeat(usize::from(PANE_PAD))));
@@ -1823,7 +1813,7 @@ fn append_process_row(
     //    signal there.
     // 3. Nothing - `+N more` overflow rows have no memory + empty
     //    metadata, so the row is just glyph + headline.
-    let (glyph, glyph_color, headline_style) = glyph_and_style_for(process, spinner_frame);
+    let (glyph, glyph_color, headline_style) = glyph_and_style_for(process, active_glyph);
     let glyph_cols = if process.depth == 0 {
         spans.push(Span::styled(glyph, Style::default().fg(glyph_color)));
         spans.push(Span::raw(" "));
@@ -1875,7 +1865,7 @@ fn append_process_row(
 /// (Completed / Failed / Killed) override the kind glyph so the
 /// section reads accurately as a state monitor regardless of the
 /// originating tool kind.
-fn glyph_and_style_for(process: &ProcessRow, spinner_frame: usize) -> (String, Color, Style) {
+fn glyph_and_style_for(process: &ProcessRow, active_glyph: char) -> (String, Color, Style) {
     match process.status {
         ToolCallStatus::Completed => {
             ("\u{2713}".to_owned(), Color::Green, Style::default().fg(theme::DIM))
@@ -1894,7 +1884,7 @@ fn glyph_and_style_for(process: &ProcessRow, spinner_frame: usize) -> (String, C
                 // rows but DIM so the user's eye picks out the
                 // bright-coloured matched rows first. Still animates
                 // because the row IS live work.
-                (spinner_glyph(spinner_frame), theme::DIM, Style::default().fg(Color::Gray))
+                (active_glyph.to_string(), theme::DIM, Style::default().fg(Color::Gray))
             }
             ProcessKind::Overflow => {
                 // Synthetic `+N more` row. No glyph; the dim italic
@@ -1911,7 +1901,7 @@ fn glyph_and_style_for(process: &ProcessRow, spinner_frame: usize) -> (String, C
                 // spinners of generic OS processes. (#273 Task 8
                 // retired Monitor from PROCESSES, so this branch is
                 // exclusively Bash.)
-                spinner_glyph(spinner_frame),
+                active_glyph.to_string(),
                 theme::RUST_ORANGE,
                 Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
             ),
@@ -1926,20 +1916,6 @@ fn glyph_and_style_for(process: &ProcessRow, spinner_frame: usize) -> (String, C
             ),
         },
     }
-}
-
-/// Braille spinner frames, kept in sync with the Projects pane and
-/// chat-area spinners (same sequence in `ui::projects_pane`,
-/// `ui::input`, `ui::message`). The pulse is what tells the user the
-/// row is alive rather than a stale snapshot.
-const PROCESS_SPINNER_FRAMES: &[char] = &[
-    '\u{280B}', '\u{2819}', '\u{2839}', '\u{2838}', '\u{283C}', '\u{2834}', '\u{2826}', '\u{2827}',
-    '\u{2807}', '\u{280F}',
-];
-
-fn spinner_glyph(frame: usize) -> String {
-    let ch = PROCESS_SPINNER_FRAMES[frame % PROCESS_SPINNER_FRAMES.len()];
-    ch.to_string()
 }
 
 fn wrap_text(s: &str, max_chars: usize) -> Vec<String> {
@@ -2351,7 +2327,7 @@ mod tests {
             8 * 1024 * 1024,
         );
         let mut lines = Vec::new();
-        append_processes_section(&mut lines, &collection(vec![row]), 40, 0);
+        append_processes_section(&mut lines, &collection(vec![row]), 40, '\u{280B}');
 
         // header + blank + single supervisor row = 3 lines.
         assert_eq!(lines.len(), 3, "expected 3 rendered lines, got {}", lines.len());
@@ -2379,7 +2355,7 @@ mod tests {
         let mut rows = vec![row];
         rows[0].status = ToolCallStatus::Failed;
         let mut lines = Vec::new();
-        append_processes_section(&mut lines, &collection(rows), 40, 0);
+        append_processes_section(&mut lines, &collection(rows), 40, '\u{280B}');
 
         let row_text = line_text(&lines[2]);
         assert!(row_text.starts_with(" \u{2717} Run integration tests"), "got {row_text:?}");
@@ -2407,7 +2383,7 @@ mod tests {
             ),
         ];
         let mut lines = Vec::new();
-        append_processes_section(&mut lines, &collection(rows), 40, 0);
+        append_processes_section(&mut lines, &collection(rows), 40, '\u{280B}');
 
         // header + blank + 2 single-line rows + 1 blank between = 5 lines.
         assert_eq!(lines.len(), 5, "expected 5 rendered lines, got {}", lines.len());
@@ -2424,7 +2400,7 @@ mod tests {
             8 * 1024 * 1024,
         );
         let mut lines = Vec::new();
-        append_processes_section(&mut lines, &collection(vec![row]), 40, 0);
+        append_processes_section(&mut lines, &collection(vec![row]), 40, '\u{280B}');
 
         let row_text = line_text(&lines[2]);
         assert!(row_text.contains('\u{2026}'), "expected ellipsis: {row_text:?}");
@@ -2464,7 +2440,7 @@ mod tests {
             12 * 1024 * 1024,
         );
         let mut lines = Vec::new();
-        append_processes_section(&mut lines, &collection(vec![row]), 40, 0);
+        append_processes_section(&mut lines, &collection(vec![row]), 40, '\u{280B}');
 
         let row_text = line_text(&lines[2]);
         assert!(row_text.contains("12 MB"), "expected memory suffix on Wide tier: {row_text:?}");
@@ -2481,7 +2457,7 @@ mod tests {
             12 * 1024 * 1024,
         );
         let mut lines = Vec::new();
-        append_processes_section(&mut lines, &collection(vec![row]), 30, 0);
+        append_processes_section(&mut lines, &collection(vec![row]), 30, '\u{280B}');
 
         let row_text = line_text(&lines[2]);
         assert!(!row_text.contains("MB"), "expected no memory suffix on Medium tier: {row_text:?}");
@@ -2519,7 +2495,7 @@ mod tests {
             logs: std::collections::VecDeque::from(["running StructuredOutput".to_owned()]),
         }];
         let mut lines = Vec::new();
-        append_workflow_row(&mut lines, &workflow, 60, 0);
+        append_workflow_row(&mut lines, &workflow, 60, '\u{280B}');
         assert!(lines.iter().any(|l| line_text(l).contains("minimal-ping")));
         assert!(
             lines
@@ -2543,7 +2519,7 @@ mod tests {
         }];
         workflow.final_result_summary = Some("{\"answer\":\"pong\"}".to_owned());
         let mut lines = Vec::new();
-        append_workflow_row(&mut lines, &workflow, 60, 0);
+        append_workflow_row(&mut lines, &workflow, 60, '\u{280B}');
         // Collapsed completed entry: header + summary line only;
         // phase tree suppressed because `expanded_in_inspector =
         // false` and `is_in_progress() = false`.
@@ -2563,7 +2539,7 @@ mod tests {
         }];
         workflow.expanded_in_inspector = true;
         let mut lines = Vec::new();
-        append_workflow_row(&mut lines, &workflow, 60, 0);
+        append_workflow_row(&mut lines, &workflow, 60, '\u{280B}');
         // Expanded → header + phase tree row.
         assert!(
             lines
@@ -2580,7 +2556,7 @@ mod tests {
             make_workflow_entry("tu", "minimal-ping", crate::app::WorkflowStatus::InProgress);
         workflow.meta_description = Some("sanity".to_owned());
         let mut lines = Vec::new();
-        append_workflow_row(&mut lines, &workflow, 60, 0);
+        append_workflow_row(&mut lines, &workflow, 60, '\u{280B}');
         assert!(lines.iter().any(|l| line_text(l).contains("sanity")));
     }
 
@@ -2611,7 +2587,7 @@ mod tests {
             8 * 1024 * 1024,
         );
         let mut lines = Vec::new();
-        append_processes_section(&mut lines, &collection(vec![row]), 40, 0);
+        append_processes_section(&mut lines, &collection(vec![row]), 40, '\u{280B}');
 
         let headline = line_text(&lines[2]);
         // Unmatched `Process` kind also renders the spinner glyph
@@ -2683,7 +2659,7 @@ mod tests {
             ]),
         }];
         let mut wf_lines = Vec::new();
-        append_workflow_row(&mut wf_lines, &workflow, inner_width, 0);
+        append_workflow_row(&mut wf_lines, &workflow, inner_width, '\u{280B}');
         all_rows.extend(wf_lines);
 
         for (i, line) in all_rows.iter().enumerate() {
@@ -2723,9 +2699,9 @@ mod tests {
         );
 
         let mut short_lines = Vec::new();
-        append_workflow_row(&mut short_lines, &short, inner_width, 0);
+        append_workflow_row(&mut short_lines, &short, inner_width, '\u{280B}');
         let mut long_lines = Vec::new();
-        append_workflow_row(&mut long_lines, &long, inner_width, 0);
+        append_workflow_row(&mut long_lines, &long, inner_width, '\u{280B}');
 
         let short_w = rendered_width(&short_lines[0]);
         let long_w = rendered_width(&long_lines[0]);

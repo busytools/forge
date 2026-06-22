@@ -24,7 +24,7 @@ use crate::message_helpers::{assistant_message, send_msg, text_block};
 
 fn inactive_spinner() -> SpinnerState {
     SpinnerState {
-        frame: 0,
+        glyph: '\u{280B}',
         is_active_turn_assistant: false,
         show_empty_thinking: false,
         show_thinking: false,

@@ -176,7 +176,6 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
     let initial_launchpad_state = crate::app::LaunchpadState {
         selected_index: 0,
         opened_at: std::time::Instant::now(),
-        spinner_style,
     };
     let mut app = App {
         active_view,

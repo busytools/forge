@@ -13,7 +13,7 @@
 use std::time::SystemTime;
 
 use forge_primitives::SessionLifecycleState;
-use forge_workspace::{ProjectView, SessionChipInfo, SessionChipState, SessionKey, SpinnerStyle};
+use forge_workspace::{ProjectView, SessionChipInfo, SessionChipState, SessionKey};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -471,8 +471,7 @@ fn push_project_row(
     _area_width: u16,
 ) {
     let connector = if row.is_last_in_org { "└─" } else { "├─" };
-    let (glyph, glyph_color) =
-        glyph_for_row(row.lifecycle, app.launchpad.spinner_style, app.launchpad.opened_at);
+    let (glyph, glyph_color) = glyph_for_row(row.lifecycle, app.active_spinner_glyph());
     let intent = effective_click_intent(app, &row.project_name, row.lifecycle);
     // Base name style - BOLD when the row is interactive (Idle /
     // Running / Sleeping / Failed), DIM when not (Spawning waits for
@@ -655,11 +654,7 @@ fn push_no_usable_accounts_row(lines: &mut Vec<Line<'static>>, area_width: u16) 
     lines.push(Line::from(vec![Span::raw(" ".repeat(pad)), Span::styled(truncated, style)]));
 }
 
-fn glyph_for_row(
-    lifecycle: SessionLifecycleState,
-    style: SpinnerStyle,
-    opened_at: std::time::Instant,
-) -> (String, Color) {
+fn glyph_for_row(lifecycle: SessionLifecycleState, spinner_glyph: char) -> (String, Color) {
     match lifecycle {
         // Idle = "alive, no turn in flight". `●` filled bullet in
         // `RUST_ORANGE` - same accent as the Projects pane uses for
@@ -674,8 +669,7 @@ fn glyph_for_row(
         // already idle. Same `RUST_ORANGE` colour as the Projects
         // pane uses for its spinner glyph.
         SessionLifecycleState::Spawning | SessionLifecycleState::Running => {
-            let glyph = spinner_glyph(style, opened_at).to_string();
-            (glyph, theme::RUST_ORANGE)
+            (spinner_glyph.to_string(), theme::RUST_ORANGE)
         }
         SessionLifecycleState::Failed => ("✗".to_owned(), theme::STATUS_ERROR),
         SessionLifecycleState::Sleeping
@@ -683,19 +677,6 @@ fn glyph_for_row(
         | SessionLifecycleState::LoggedOut
         | SessionLifecycleState::Attention => ("○".to_owned(), theme::DIM),
     }
-}
-
-/// Pick the current frame glyph for `style` based on
-/// `elapsed_since_open / cadence_ms`. `forge_dot` is a single-glyph
-/// style - the opacity tween is handled separately at the colour
-/// layer (currently rendered as a flat `●`; a follow-up can wire
-/// the alpha walk in once a colour-blend helper exists in theme.rs).
-fn spinner_glyph(style: SpinnerStyle, opened_at: std::time::Instant) -> char {
-    let frames = style.frames();
-    let cadence = u128::from(style.cadence_ms()).max(1);
-    let elapsed_ms = opened_at.elapsed().as_millis();
-    let frame_idx = ((elapsed_ms / cadence) as usize) % frames.len();
-    frames[frame_idx]
 }
 
 fn render_footer(frame: &mut Frame, area: Rect, app: &App, rows: &[PickerRow]) {

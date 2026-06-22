@@ -52,12 +52,6 @@ const HIGHLIGHT_SUBAGENT_PRIORITY: u8 = 8;
 const HIGHLIGHT_PASTE_PRIORITY: u8 = 9;
 const HIGHLIGHT_IMAGE_BADGE_PRIORITY: u8 = 10;
 
-/// Braille spinner frames (same as message.rs) for the connecting animation.
-const SPINNER_FRAMES: &[char] = &[
-    '\u{280B}', '\u{2819}', '\u{2839}', '\u{2838}', '\u{283C}', '\u{2834}', '\u{2826}', '\u{2827}',
-    '\u{2807}', '\u{280F}',
-];
-
 /// Height of the login hint banner in lines (0 when no hint is active).
 /// Used internally by `visual_line_count` and `render` so the layout
 /// calculation and rendering stay in sync.
@@ -180,7 +174,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         }
 
         if app.pending_cancel() {
-            let spinner_ch = SPINNER_FRAMES[app.spinner_frame % SPINNER_FRAMES.len()];
+            let spinner_ch = app.active_spinner_glyph();
             let cancel_line = Line::from(vec![
                 Span::styled(format!("{spinner_ch} "), Style::default().fg(theme::DIM)),
                 Span::styled("Cancelling current turn...", Style::default().fg(theme::DIM)),
@@ -211,7 +205,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
 
     // During Connecting state, show a spinner with static text
     if app.status == AppStatus::Connecting {
-        let spinner_ch = SPINNER_FRAMES[app.spinner_frame % SPINNER_FRAMES.len()];
+        let spinner_ch = app.active_spinner_glyph();
         let line = Line::from(vec![
             Span::styled(format!("{spinner_ch} "), Style::default().fg(theme::DIM)),
             Span::styled("Connecting to Claude Code...", Style::default().fg(theme::DIM)),
@@ -221,7 +215,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     }
 
     if app.status == AppStatus::CommandPending {
-        let spinner_ch = SPINNER_FRAMES[app.spinner_frame % SPINNER_FRAMES.len()];
+        let spinner_ch = app.active_spinner_glyph();
         let label = app.pending_command_label().unwrap_or("Processing command...");
         let line = Line::from(vec![
             Span::styled(format!("{spinner_ch} "), Style::default().fg(theme::DIM)),

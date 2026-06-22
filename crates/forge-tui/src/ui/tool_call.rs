@@ -47,27 +47,18 @@ fn stable_hash_usize(s: &str) -> usize {
     truncated
 }
 
-/// Spinner frames as `&'static str` for use in `status_icon` return type.
-const SPINNER_STRS: &[&str] = &[
-    "\u{280B}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283C}", "\u{2834}", "\u{2826}", "\u{2827}",
-    "\u{2807}", "\u{280F}",
-];
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ToolCallRenderContext<'a> {
     pub current_mode_id: Option<&'a str>,
 }
 
-pub fn status_icon(status: model::ToolCallStatus, spinner_frame: usize) -> (&'static str, Color) {
+pub fn status_icon(status: model::ToolCallStatus, spinner_glyph: char) -> (String, Color) {
     match status {
-        model::ToolCallStatus::Pending => ("\u{25CB}", theme::RUST_ORANGE),
-        model::ToolCallStatus::InProgress => {
-            let s = SPINNER_STRS[spinner_frame % SPINNER_STRS.len()];
-            (s, theme::RUST_ORANGE)
-        }
-        model::ToolCallStatus::Completed => (theme::ICON_COMPLETED, theme::RUST_ORANGE),
+        model::ToolCallStatus::Pending => ("\u{25CB}".to_owned(), theme::RUST_ORANGE),
+        model::ToolCallStatus::InProgress => (spinner_glyph.to_string(), theme::RUST_ORANGE),
+        model::ToolCallStatus::Completed => (theme::ICON_COMPLETED.to_owned(), theme::RUST_ORANGE),
         model::ToolCallStatus::Failed | model::ToolCallStatus::Killed => {
-            (theme::ICON_FAILED, theme::STATUS_ERROR)
+            (theme::ICON_FAILED.to_owned(), theme::STATUS_ERROR)
         }
     }
 }
@@ -92,11 +83,11 @@ pub fn render_tool_call_cached_with_tools_collapsed(
     tc: &mut ToolCallInfo,
     render_context: ToolCallRenderContext<'_>,
     width: u16,
-    spinner_frame: usize,
+    spinner_glyph: char,
     tools_collapsed: bool,
     out: &mut Vec<Line<'static>>,
 ) {
-    let title = standard::render_tool_call_title(tc, render_context, width, spinner_frame);
+    let title = standard::render_tool_call_title(tc, render_context, width, spinner_glyph);
     out.push(title);
 
     let has_execute_body = tc.is_execute_tool()
@@ -151,7 +142,7 @@ pub fn measure_tool_call_height_cached_with_tools_collapsed(
     tc: &mut ToolCallInfo,
     render_context: ToolCallRenderContext<'_>,
     width: u16,
-    spinner_frame: usize,
+    spinner_glyph: char,
     layout_generation: u64,
     tools_collapsed: bool,
 ) -> (usize, usize) {
@@ -161,7 +152,7 @@ pub fn measure_tool_call_height_cached_with_tools_collapsed(
     }
     crate::perf::mark("tc_measure_recompute_count");
 
-    let title = standard::render_tool_call_title(tc, render_context, width, spinner_frame);
+    let title = standard::render_tool_call_title(tc, render_context, width, spinner_glyph);
     let title_h =
         Paragraph::new(Text::from(vec![title])).wrap(Wrap { trim: false }).line_count(width);
     let has_execute_body = tc.is_execute_tool()
@@ -320,72 +311,37 @@ mod tests {
 
     #[test]
     fn status_icon_pending() {
-        let (icon, color) = status_icon(model::ToolCallStatus::Pending, 0);
+        let (icon, color) = status_icon(model::ToolCallStatus::Pending, '\u{280B}');
         assert!(!icon.is_empty());
         assert_eq!(color, theme::RUST_ORANGE);
     }
 
     #[test]
-    fn status_icon_in_progress() {
-        let (icon, color) = status_icon(model::ToolCallStatus::InProgress, 3);
-        assert!(!icon.is_empty());
+    fn status_icon_in_progress_uses_active_glyph() {
+        let (icon, color) = status_icon(model::ToolCallStatus::InProgress, '\u{280B}');
+        assert_eq!(icon, "\u{280B}");
         assert_eq!(color, theme::RUST_ORANGE);
     }
 
     #[test]
     fn status_icon_completed() {
-        let (icon, color) = status_icon(model::ToolCallStatus::Completed, 0);
+        let (icon, color) = status_icon(model::ToolCallStatus::Completed, '\u{280B}');
         assert_eq!(icon, theme::ICON_COMPLETED);
         assert_eq!(color, theme::RUST_ORANGE);
     }
 
     #[test]
     fn status_icon_failed() {
-        let (icon, color) = status_icon(model::ToolCallStatus::Failed, 0);
+        let (icon, color) = status_icon(model::ToolCallStatus::Failed, '\u{280B}');
         assert_eq!(icon, theme::ICON_FAILED);
         assert_eq!(color, theme::STATUS_ERROR);
     }
 
     #[test]
     fn status_icon_killed() {
-        let (icon, color) = status_icon(model::ToolCallStatus::Killed, 0);
+        let (icon, color) = status_icon(model::ToolCallStatus::Killed, '\u{280B}');
         assert_eq!(icon, theme::ICON_FAILED);
         assert_eq!(color, theme::STATUS_ERROR);
-    }
-
-    #[test]
-    fn status_icon_spinner_wraps() {
-        let (icon_a, _) = status_icon(model::ToolCallStatus::InProgress, 0);
-        let (icon_b, _) = status_icon(model::ToolCallStatus::InProgress, SPINNER_STRS.len());
-        assert_eq!(icon_a, icon_b);
-    }
-
-    #[test]
-    fn status_icon_all_spinner_frames_valid() {
-        for i in 0..SPINNER_STRS.len() {
-            let (icon, _) = status_icon(model::ToolCallStatus::InProgress, i);
-            assert!(!icon.is_empty());
-        }
-    }
-
-    /// Spinner frames are all distinct.
-    #[test]
-    fn status_icon_spinner_frames_distinct() {
-        let frames: Vec<&str> = (0..SPINNER_STRS.len())
-            .map(|i| status_icon(model::ToolCallStatus::InProgress, i).0)
-            .collect();
-        for i in 0..frames.len() {
-            for j in (i + 1)..frames.len() {
-                assert_ne!(frames[i], frames[j], "frames {i} and {j} are identical");
-            }
-        }
-    }
-
-    /// Large spinner frame number wraps correctly.
-    #[test]
-    fn status_icon_spinner_large_frame() {
-        let (icon, _) = status_icon(model::ToolCallStatus::Pending, 999_999);
-        assert!(!icon.is_empty());
     }
 
     #[test]
@@ -403,7 +359,7 @@ mod tests {
         let mut tc = test_tool_call("tc-bg", "Agent", model::ToolCallStatus::InProgress);
         tc.task_metadata = Some(model::TaskMetadata::new().backgrounded(Some(true)));
 
-        let line = standard::render_tool_call_title(&tc, ToolCallRenderContext::default(), 80, 0);
+        let line = standard::render_tool_call_title(&tc, ToolCallRenderContext::default(), 80, '\u{280B}');
         let rendered: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
 
         assert!(rendered.contains("[backgrounded]"));
@@ -417,7 +373,7 @@ mod tests {
         let mut tc = test_tool_call("ls -la", "Bash", model::ToolCallStatus::Completed);
         tc.terminal_command = Some("ls -la".to_owned());
 
-        let line = standard::render_tool_call_title(&tc, ToolCallRenderContext::default(), 80, 0);
+        let line = standard::render_tool_call_title(&tc, ToolCallRenderContext::default(), 80, '\u{280B}');
         let rendered: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
 
         assert!(rendered.contains("Bash "), "expected 'Bash ' label in title; got: {rendered:?}");
@@ -443,7 +399,7 @@ mod tests {
             model::ToolCallStatus::Completed,
         );
 
-        let line = standard::render_tool_call_title(&tc, ToolCallRenderContext::default(), 120, 0);
+        let line = standard::render_tool_call_title(&tc, ToolCallRenderContext::default(), 120, '\u{280B}');
         let rendered: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
 
         // "Read" appears once (from our label), the path follows,
@@ -479,7 +435,7 @@ mod tests {
             &tc,
             ToolCallRenderContext { current_mode_id: Some("plan") },
             80,
-            0,
+            '\u{280B}',
         );
         let text: String = rendered.spans.iter().map(|span| span.content.as_ref()).collect();
 
@@ -495,7 +451,7 @@ mod tests {
                 model::BashOutputMetadata::new().assistant_auto_backgrounded(Some(true)),
             )));
 
-        let title = standard::render_tool_call_title(&tc, ToolCallRenderContext::default(), 100, 0);
+        let title = standard::render_tool_call_title(&tc, ToolCallRenderContext::default(), 100, '\u{280B}');
         let text: String = title.spans.iter().map(|span| span.content.as_ref()).collect();
         assert!(text.contains("[assistant backgrounded]"));
     }
@@ -509,7 +465,7 @@ mod tests {
             &tc,
             ToolCallRenderContext { current_mode_id: Some("plan") },
             80,
-            0,
+            '\u{280B}',
         );
         let text: String = title.spans.iter().map(|span| span.content.as_ref()).collect();
 
@@ -522,7 +478,7 @@ mod tests {
         let mut tc = test_tool_call("ls -la", "Bash", model::ToolCallStatus::Completed);
         tc.terminal_command = Some("ls -la".to_owned());
 
-        let title = standard::render_tool_call_title(&tc, ToolCallRenderContext::default(), 80, 0);
+        let title = standard::render_tool_call_title(&tc, ToolCallRenderContext::default(), 80, '\u{280B}');
         let text: String = title.spans.iter().map(|span| span.content.as_ref()).collect();
 
         assert!(text.contains('\u{25B6}'), "expected ▶ (U+25B6) in Bash row title; got: {text:?}");
@@ -546,7 +502,7 @@ mod tests {
             &mut tc,
             ToolCallRenderContext::default(),
             80,
-            0,
+            '\u{280B}',
             false,
             &mut out,
         );
@@ -586,7 +542,7 @@ mod tests {
             &mut tc,
             ToolCallRenderContext::default(),
             80,
-            0,
+            '\u{280B}',
             1,
             false,
         );
@@ -597,7 +553,7 @@ mod tests {
             &mut tc,
             ToolCallRenderContext::default(),
             80,
-            4,
+            '\u{2839}',
             1,
             false,
         );
@@ -615,7 +571,7 @@ mod tests {
             &mut tc,
             ToolCallRenderContext::default(),
             80,
-            0,
+            '\u{280B}',
             1,
             false,
         );
@@ -624,7 +580,7 @@ mod tests {
             &mut tc,
             ToolCallRenderContext::default(),
             80,
-            0,
+            '\u{280B}',
             2,
             false,
         );
@@ -640,7 +596,7 @@ mod tests {
             &mut tc,
             ToolCallRenderContext::default(),
             80,
-            0,
+            '\u{280B}',
             1,
             false,
         );
@@ -649,7 +605,7 @@ mod tests {
             &mut tc,
             ToolCallRenderContext::default(),
             80,
-            0,
+            '\u{280B}',
             1,
             false,
         );
@@ -662,7 +618,7 @@ mod tests {
                 &mut tc,
                 ToolCallRenderContext::default(),
                 80,
-                0,
+                '\u{280B}',
                 1,
                 false,
             );
@@ -732,7 +688,7 @@ mod tests {
             &mut tc,
             ToolCallRenderContext::default(),
             80,
-            0,
+            '\u{280B}',
             false,
             &mut expanded,
         );
@@ -748,7 +704,7 @@ mod tests {
             &mut tc,
             ToolCallRenderContext::default(),
             80,
-            0,
+            '\u{280B}',
             true,
             &mut collapsed,
         );
@@ -772,7 +728,7 @@ mod tests {
             &mut tc,
             ToolCallRenderContext::default(),
             24,
-            0,
+            '\u{280B}',
             1,
             false,
         );
@@ -780,7 +736,7 @@ mod tests {
             &mut tc,
             ToolCallRenderContext::default(),
             24,
-            0,
+            '\u{280B}',
             2,
             true,
         );
@@ -800,7 +756,7 @@ mod tests {
             &mut tc,
             ToolCallRenderContext::default(),
             80,
-            0,
+            '\u{280B}',
             true,
             &mut rendered,
         );
@@ -1154,7 +1110,7 @@ mod tests {
             &mut tc,
             ToolCallRenderContext::default(),
             120,
-            0,
+            '\u{280B}',
             false,
             &mut out,
         );
