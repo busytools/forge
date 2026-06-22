@@ -59,7 +59,11 @@ pub(crate) struct ForgeState {
     /// Runtime spinner-style override set via `/spinner` (the picker or
     /// the direct `<name>` path). `None` means no override - the active
     /// style falls back to forge.toml's `[ui] spinner` default.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::ui::deserialize_lenient_opt"
+    )]
     pub spinner: Option<crate::ui::SpinnerStyle>,
     /// Account display name → cached snapshot. `BTreeMap` so the
     /// TOML serialisation is deterministic for diffing.
@@ -395,6 +399,31 @@ mod tests {
         assert!(
             loaded.account_usage.contains_key("Subspace"),
             "usage writer's final value must survive concurrent spinner writes",
+        );
+    }
+
+    #[test]
+    fn unknown_persisted_spinner_falls_back_without_dropping_usage() {
+        let dir = tempdir().expect("tempdir");
+        // Write a valid state (usage + a valid spinner), then corrupt the
+        // spinner key on disk to a removed variant.
+        let mut entries = std::collections::BTreeMap::new();
+        entries.insert("Granite".to_owned(), fixture_entry());
+        store(dir.path(), &entries);
+        store_spinner(dir.path(), Some(crate::ui::SpinnerStyle::Ember));
+        let path = state_path(dir.path());
+        let contents = std::fs::read_to_string(&path).expect("read state");
+        let mutated = contents.replace("spinner = \"ember\"", "spinner = \"forge_dot\"");
+        assert_ne!(contents, mutated, "the spinner key should have been present to mutate");
+        std::fs::write(&path, mutated).expect("write mutated state");
+
+        // The stale key must NOT fail the whole load (which would also
+        // drop the account-usage cache); it resolves to None.
+        let loaded = load(dir.path());
+        assert_eq!(loaded.spinner, None, "an unknown persisted spinner key resolves to None");
+        assert!(
+            loaded.account_usage.contains_key("Granite"),
+            "a stale spinner key must not drop the account-usage cache",
         );
     }
 }

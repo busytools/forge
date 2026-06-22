@@ -16,8 +16,34 @@ pub struct UiSettings {
     /// chat thinking/working, input box, projects pane, inspector).
     /// Default is `Braille`. The legacy `launchpad_spinner` key is
     /// accepted as an alias so an existing forge.toml keeps working.
-    #[serde(default, alias = "launchpad_spinner")]
+    /// An unknown/removed key falls back to the default rather than
+    /// failing the load (see `deserialize_lenient`).
+    #[serde(default, alias = "launchpad_spinner", deserialize_with = "deserialize_lenient")]
     pub spinner: SpinnerStyle,
+}
+
+/// Lenient deserialize for a persisted spinner key (the `[ui] spinner`
+/// config field): an unknown/removed key (a dropped variant, a typo)
+/// resolves to the default style instead of failing the whole load - a
+/// stale value must never break boot.
+pub fn deserialize_lenient<'de, D>(deserializer: D) -> Result<SpinnerStyle, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let key = String::deserialize(deserializer)?;
+    Ok(SpinnerStyle::from_key(&key).unwrap_or_default())
+}
+
+/// Lenient deserialize for an optional persisted spinner key (the
+/// forge-state.toml sidecar override): an unknown/removed key maps to
+/// `None` so the boot resolve order falls through to the config default
+/// rather than failing the whole state load.
+pub fn deserialize_lenient_opt<'de, D>(deserializer: D) -> Result<Option<SpinnerStyle>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let opt = Option::<String>::deserialize(deserializer)?;
+    Ok(opt.and_then(|key| SpinnerStyle::from_key(&key)))
 }
 
 /// A spinner glyph cycle. Each variant carries a `frames()` accessor
@@ -150,9 +176,16 @@ mod tests {
     }
 
     #[test]
-    fn unknown_spinner_key_errors() {
-        let result: Result<UiSettings, _> = toml::from_str("launchpad_spinner = \"corkscrew\"\n");
-        assert!(result.is_err(), "unknown spinner key should error");
+    fn unknown_spinner_key_falls_back_to_default() {
+        // A removed variant or a typo must NOT fail the config load - it
+        // resolves to the default (Braille) so a stale forge.toml value
+        // never breaks boot.
+        let removed: UiSettings =
+            toml::from_str("spinner = \"pulse\"\n").expect("removed key parses");
+        assert_eq!(removed.spinner, SpinnerStyle::Braille);
+        let typo: UiSettings =
+            toml::from_str("spinner = \"corkscrew\"\n").expect("typo parses");
+        assert_eq!(typo.spinner, SpinnerStyle::Braille);
     }
 
     #[test]
