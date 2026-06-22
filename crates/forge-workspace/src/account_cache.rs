@@ -59,7 +59,11 @@ pub(crate) struct ForgeState {
     /// Runtime spinner-style override set via `/spinner` (the picker or
     /// the direct `<name>` path). `None` means no override - the active
     /// style falls back to forge.toml's `[ui] spinner` default.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::ui::deserialize_lenient_opt"
+    )]
     pub spinner: Option<crate::ui::SpinnerStyle>,
     /// Account display name → cached snapshot. `BTreeMap` so the
     /// TOML serialisation is deterministic for diffing.
@@ -330,14 +334,14 @@ mod tests {
     #[test]
     fn store_account_usage_preserves_spinner_override() {
         let dir = tempdir().expect("tempdir");
-        store_spinner(dir.path(), Some(crate::ui::SpinnerStyle::Pulse));
+        store_spinner(dir.path(), Some(crate::ui::SpinnerStyle::Ember));
         let mut entries = std::collections::BTreeMap::new();
         entries.insert("Granite".to_owned(), fixture_entry());
         store(dir.path(), &entries);
         let loaded = load(dir.path());
         assert_eq!(
             loaded.spinner,
-            Some(crate::ui::SpinnerStyle::Pulse),
+            Some(crate::ui::SpinnerStyle::Ember),
             "an account-usage write must not wipe the spinner override",
         );
         assert_eq!(loaded.account_usage.len(), 1);
@@ -349,10 +353,10 @@ mod tests {
         let mut entries = std::collections::BTreeMap::new();
         entries.insert("Granite".to_owned(), fixture_entry());
         store(dir.path(), &entries);
-        store_spinner(dir.path(), Some(crate::ui::SpinnerStyle::ForgeDot));
+        store_spinner(dir.path(), Some(crate::ui::SpinnerStyle::Star));
         let loaded = load(dir.path());
         assert_eq!(loaded.account_usage.len(), 1, "a spinner write must not wipe account usage");
-        assert_eq!(loaded.spinner, Some(crate::ui::SpinnerStyle::ForgeDot));
+        assert_eq!(loaded.spinner, Some(crate::ui::SpinnerStyle::Star));
     }
 
     #[test]
@@ -372,7 +376,7 @@ mod tests {
         let p1 = dir.path().to_path_buf();
         let h1 = thread::spawn(move || {
             for _ in 0..200 {
-                store_spinner(&p1, Some(crate::ui::SpinnerStyle::Pulse));
+                store_spinner(&p1, Some(crate::ui::SpinnerStyle::BarsV));
             }
         });
         let p2 = dir.path().to_path_buf();
@@ -389,12 +393,37 @@ mod tests {
         let loaded = load(dir.path());
         assert_eq!(
             loaded.spinner,
-            Some(crate::ui::SpinnerStyle::Pulse),
+            Some(crate::ui::SpinnerStyle::BarsV),
             "spinner writer's final value must survive concurrent usage writes",
         );
         assert!(
             loaded.account_usage.contains_key("Subspace"),
             "usage writer's final value must survive concurrent spinner writes",
+        );
+    }
+
+    #[test]
+    fn unknown_persisted_spinner_falls_back_without_dropping_usage() {
+        let dir = tempdir().expect("tempdir");
+        // Write a valid state (usage + a valid spinner), then corrupt the
+        // spinner key on disk to a removed variant.
+        let mut entries = std::collections::BTreeMap::new();
+        entries.insert("Granite".to_owned(), fixture_entry());
+        store(dir.path(), &entries);
+        store_spinner(dir.path(), Some(crate::ui::SpinnerStyle::Ember));
+        let path = state_path(dir.path());
+        let contents = std::fs::read_to_string(&path).expect("read state");
+        let mutated = contents.replace("spinner = \"ember\"", "spinner = \"forge_dot\"");
+        assert_ne!(contents, mutated, "the spinner key should have been present to mutate");
+        std::fs::write(&path, mutated).expect("write mutated state");
+
+        // The stale key must NOT fail the whole load (which would also
+        // drop the account-usage cache); it resolves to None.
+        let loaded = load(dir.path());
+        assert_eq!(loaded.spinner, None, "an unknown persisted spinner key resolves to None");
+        assert!(
+            loaded.account_usage.contains_key("Granite"),
+            "a stale spinner key must not drop the account-usage cache",
         );
     }
 }

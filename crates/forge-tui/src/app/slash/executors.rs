@@ -510,11 +510,11 @@ mod tests {
     #[test]
     fn spinner_unknown_name_leaves_style_unchanged() {
         let mut app = App::test_default();
-        app.spinner_style = SpinnerStyle::Pulse;
+        app.spinner_style = SpinnerStyle::Ember;
         assert!(handle_spinner_submit(&mut app, &["corkscrew"]));
         assert_eq!(
             app.spinner_style,
-            SpinnerStyle::Pulse,
+            SpinnerStyle::Ember,
             "an unknown name must not change the active style",
         );
     }
