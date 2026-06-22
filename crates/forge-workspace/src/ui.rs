@@ -5,7 +5,7 @@
 //! which lives on `UiSession` in forge-tui - this is workspace-level
 //! configuration that survives across sessions and processes.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// All `[ui]` section knobs. Every field has a default so an
 /// absent `[ui]` section in `forge.toml` is equivalent to all
@@ -28,7 +28,7 @@ pub struct UiSettings {
 /// Glyph choice is intentionally varied - different launchpad
 /// personalities should pick visually distinct alternatives so the
 /// terminal mode "feels different" from the in-chat braille spinner.
-#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SpinnerStyle {
     /// `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏` - the default braille spinner used everywhere
@@ -104,19 +104,23 @@ impl SpinnerStyle {
             Self::Ember => 180,
         }
     }
+
+    /// Every style in picker display order. Single source of truth for
+    /// "all spinner styles" - the `/spinner` picker and the name parser
+    /// both iterate this.
+    pub const ALL_STYLES: [SpinnerStyle; 5] =
+        [Self::Braille, Self::PhaseOfMoon, Self::Pulse, Self::ForgeDot, Self::Ember];
+
+    /// Parse a lower-case key (the inverse of [`Self::key`]) into its
+    /// style. `None` for any unrecognised key.
+    pub fn from_key(key: &str) -> Option<Self> {
+        Self::ALL_STYLES.into_iter().find(|style| style.key() == key)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    const ALL_STYLES: [SpinnerStyle; 5] = [
-        SpinnerStyle::Braille,
-        SpinnerStyle::PhaseOfMoon,
-        SpinnerStyle::Pulse,
-        SpinnerStyle::ForgeDot,
-        SpinnerStyle::Ember,
-    ];
 
     #[test]
     fn default_spinner_is_braille() {
@@ -127,7 +131,7 @@ mod tests {
 
     #[test]
     fn each_variant_has_non_empty_frames() {
-        for style in ALL_STYLES {
+        for style in SpinnerStyle::ALL_STYLES {
             assert!(
                 !style.frames().is_empty(),
                 "{} should have a non-empty frame cycle",
@@ -138,7 +142,7 @@ mod tests {
 
     #[test]
     fn key_round_trips_through_serde() {
-        for style in ALL_STYLES {
+        for style in SpinnerStyle::ALL_STYLES {
             let toml = format!("spinner = \"{}\"\n", style.key());
             let parsed: UiSettings = toml::from_str(&toml).expect("parse round trip");
             assert_eq!(parsed.spinner, style);
@@ -179,5 +183,23 @@ mod tests {
         assert_eq!(SpinnerStyle::Pulse.cadence_ms(), 100);
         assert_eq!(SpinnerStyle::ForgeDot.cadence_ms(), 1_400);
         assert_eq!(SpinnerStyle::Ember.cadence_ms(), 180);
+    }
+
+    #[test]
+    fn from_key_round_trips_every_style() {
+        for style in SpinnerStyle::ALL_STYLES {
+            assert_eq!(SpinnerStyle::from_key(style.key()), Some(style));
+        }
+    }
+
+    #[test]
+    fn from_key_rejects_unknown() {
+        assert_eq!(SpinnerStyle::from_key("nope"), None);
+        assert_eq!(SpinnerStyle::from_key(""), None);
+    }
+
+    #[test]
+    fn all_styles_lists_every_variant() {
+        assert_eq!(SpinnerStyle::ALL_STYLES.len(), 5);
     }
 }

@@ -55,6 +55,13 @@ pub(crate) struct CachedAccountUsage {
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub(crate) struct ForgeState {
     version: u8,
+    /// Runtime spinner-style override set via `/spinner` (the picker or
+    /// the direct `<name>` path). `None` means no override - the active
+    /// style falls back to forge.toml's `[ui] spinner` default. Declared
+    /// before `account_usage` so this plain key serialises ahead of the
+    /// usage tables (a TOML key after a table would bind to that table).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spinner: Option<crate::ui::SpinnerStyle>,
     /// Account display name → cached snapshot. `BTreeMap` so the
     /// TOML serialisation is deterministic for diffing.
     #[serde(default)]
@@ -63,7 +70,11 @@ pub(crate) struct ForgeState {
 
 impl ForgeState {
     fn empty() -> Self {
-        Self { version: CACHE_SCHEMA_VERSION, account_usage: std::collections::BTreeMap::new() }
+        Self {
+            version: CACHE_SCHEMA_VERSION,
+            spinner: None,
+            account_usage: std::collections::BTreeMap::new(),
+        }
     }
 }
 
@@ -129,9 +140,32 @@ pub(crate) fn store(
     config_dir: &Path,
     entries: &std::collections::BTreeMap<String, CachedAccountUsage>,
 ) {
-    let state = ForgeState { version: CACHE_SCHEMA_VERSION, account_usage: entries.clone() };
+    // Load-merge-write so a usage-snapshot write preserves any other
+    // on-disk state (the spinner override). Rebuilding the document
+    // from `entries` alone would silently drop sibling fields.
+    let mut state = load(config_dir);
+    state.account_usage = entries.clone();
+    write_state(config_dir, &state);
+}
+
+/// Persist the runtime spinner-style override (set via `/spinner` -
+/// the picker's enter-apply or the direct `<name>` path), preserving
+/// the account-usage cache via the same load-merge-write path. `None`
+/// clears the override so the active style falls back to the
+/// forge.toml `[ui] spinner` default on the next boot.
+pub(crate) fn store_spinner(config_dir: &Path, spinner: Option<crate::ui::SpinnerStyle>) {
+    let mut state = load(config_dir);
+    state.spinner = spinner;
+    write_state(config_dir, &state);
+}
+
+/// Serialise `state` to `<config_dir>/forge-state.toml` via atomic
+/// tmp-file + rename: a crash between write and rename leaves the
+/// previous state intact rather than a partial file. Failures are
+/// non-fatal and logged at warn.
+fn write_state(config_dir: &Path, state: &ForgeState) {
     let path = state_path(config_dir);
-    let serialised = match toml::to_string_pretty(&state) {
+    let serialised = match toml::to_string_pretty(state) {
         Ok(s) => s,
         Err(e) => {
             tracing::warn!(
@@ -142,9 +176,6 @@ pub(crate) fn store(
             return;
         }
     };
-    // Atomic replace: write to <path>.tmp then rename. A crash
-    // between write+rename leaves the previous state intact rather
-    // than a partial file.
     let tmp_path = path.with_extension("toml.tmp");
     if let Err(e) = std::fs::write(&tmp_path, &serialised) {
         tracing::warn!(
@@ -270,5 +301,41 @@ mod tests {
         assert!(after.contains("Subspace"), "new entry present");
         assert!(!after.contains("Granite"), "old entry replaced");
         let _ = len_before; // both writes succeeded
+    }
+
+    #[test]
+    fn spinner_override_round_trips() {
+        let dir = tempdir().expect("tempdir");
+        store_spinner(dir.path(), Some(crate::ui::SpinnerStyle::Ember));
+        let loaded = load(dir.path());
+        assert_eq!(loaded.spinner, Some(crate::ui::SpinnerStyle::Ember));
+    }
+
+    #[test]
+    fn store_account_usage_preserves_spinner_override() {
+        let dir = tempdir().expect("tempdir");
+        store_spinner(dir.path(), Some(crate::ui::SpinnerStyle::Pulse));
+        let mut entries = std::collections::BTreeMap::new();
+        entries.insert("Granite".to_owned(), fixture_entry());
+        store(dir.path(), &entries);
+        let loaded = load(dir.path());
+        assert_eq!(
+            loaded.spinner,
+            Some(crate::ui::SpinnerStyle::Pulse),
+            "an account-usage write must not wipe the spinner override",
+        );
+        assert_eq!(loaded.account_usage.len(), 1);
+    }
+
+    #[test]
+    fn store_spinner_preserves_account_usage() {
+        let dir = tempdir().expect("tempdir");
+        let mut entries = std::collections::BTreeMap::new();
+        entries.insert("Granite".to_owned(), fixture_entry());
+        store(dir.path(), &entries);
+        store_spinner(dir.path(), Some(crate::ui::SpinnerStyle::ForgeDot));
+        let loaded = load(dir.path());
+        assert_eq!(loaded.account_usage.len(), 1, "a spinner write must not wipe account usage");
+        assert_eq!(loaded.spinner, Some(crate::ui::SpinnerStyle::ForgeDot));
     }
 }
