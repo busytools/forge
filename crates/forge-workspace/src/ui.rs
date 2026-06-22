@@ -117,10 +117,9 @@ impl SpinnerStyle {
         match self {
             Self::Braille => 30,
             Self::PhaseOfMoon => 90,
-            Self::Ember => 160,
             Self::BarsV => 70,
             Self::Star => 130,
-            Self::Sparkle => 160,
+            Self::Ember | Self::Sparkle => 160,
         }
     }
 
@@ -183,8 +182,7 @@ mod tests {
         let removed: UiSettings =
             toml::from_str("spinner = \"pulse\"\n").expect("removed key parses");
         assert_eq!(removed.spinner, SpinnerStyle::Braille);
-        let typo: UiSettings =
-            toml::from_str("spinner = \"corkscrew\"\n").expect("typo parses");
+        let typo: UiSettings = toml::from_str("spinner = \"corkscrew\"\n").expect("typo parses");
         assert_eq!(typo.spinner, SpinnerStyle::Braille);
     }
 
