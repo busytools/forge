@@ -58,9 +58,7 @@ pub(crate) struct ForgeState {
     version: u8,
     /// Runtime spinner-style override set via `/spinner` (the picker or
     /// the direct `<name>` path). `None` means no override - the active
-    /// style falls back to forge.toml's `[ui] spinner` default. Declared
-    /// before `account_usage` so this plain key serialises ahead of the
-    /// usage tables (a TOML key after a table would bind to that table).
+    /// style falls back to forge.toml's `[ui] spinner` default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spinner: Option<crate::ui::SpinnerStyle>,
     /// Account display name → cached snapshot. `BTreeMap` so the
