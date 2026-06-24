@@ -22,6 +22,7 @@ use ratatui::widgets::Paragraph;
 
 use super::theme;
 use crate::app::App;
+use crate::app::launchpad::reconcile_scroll;
 use crate::app::view::{ActiveView, set_active_view};
 
 /// ANSI Shadow figlet for "forge". 6 rows × 43 cols. Locked by the
@@ -47,6 +48,15 @@ const PICKER_WIDTH: u16 = 56;
 /// `RUST_ORANGE` for clickable selections and `DIM` for Block
 /// (Spawning) selections; unselected rows render two spaces.
 const SELECTION_PREFIX_WIDTH: usize = 2;
+
+/// Rows of breathing above the wordmark so it pins near the top of
+/// the screen rather than sitting flush at row 0.
+const PICKER_TOP_MARGIN: u16 = 1;
+
+/// Total vertical breathing reserved around the picker box (split
+/// above + below by the centering) so the wordmark + footer stay on
+/// screen even when the list fills the available height.
+const PICKER_BOX_MARGIN: u16 = 4;
 
 /// What pressing Enter on this row does. Drives the click handlers
 /// and the footer hint, so the user always sees the next action that
@@ -250,42 +260,39 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let picker_inner_width = PICKER_WIDTH.min(area.width.saturating_sub(8));
     let picker_outer_width = picker_inner_width;
 
-    // Vertical layout: identity block at top (with breathing room),
-    // picker frame in the middle, footer hint pinned to the last
-    // row.
+    // Vertical layout: identity block pinned near the top, footer hint
+    // pinned to the last row, picker box centered in the gap between
+    // them. The box extends to most of that gap (capped so the
+    // wordmark + footer always stay on screen) and scrolls internally
+    // when the project list overflows.
     let identity_height = identity_block_height(app);
-    let picker_height = picker_frame_height(rows.len(), &rows);
     let footer_height: u16 = 1;
-    let total_content = identity_height + picker_height + footer_height + 3; // 3 = breathing rows
-    let top_padding =
-        if area.height > total_content { ((area.height - total_content) / 4).max(1) } else { 0 };
 
-    let mut current_y = area.y + top_padding;
+    let identity_top = area.y + PICKER_TOP_MARGIN;
+    render_identity_block(frame, area, app, identity_top);
 
-    render_identity_block(frame, area, app, current_y);
-    current_y += identity_height + 2;
-
-    let picker_x = area.x + area.width.saturating_sub(picker_outer_width) / 2;
-    let picker_area = Rect {
-        x: picker_x,
-        y: current_y,
+    let identity_bottom = identity_top + identity_height;
+    let footer_top = area.y + area.height.saturating_sub(footer_height);
+    let region = Rect {
+        x: area.x + area.width.saturating_sub(picker_outer_width) / 2,
+        y: identity_bottom,
         width: picker_outer_width,
-        height: picker_height
-            .min(area.height.saturating_sub(current_y - area.y).saturating_sub(footer_height)),
+        height: footer_top.saturating_sub(identity_bottom),
     };
-    render_picker(frame, picker_area, app, &rows);
+    render_picker(frame, region, app, &rows);
 
-    let footer_y = area.y + area.height.saturating_sub(footer_height);
     render_footer(
         frame,
-        Rect { x: area.x, y: footer_y, width: area.width, height: footer_height },
+        Rect { x: area.x, y: footer_top, width: area.width, height: footer_height },
         app,
         &rows,
     );
 }
 
-/// Static line count for the identity block: 6 wordmark rows +
-/// version line + claude line + optional update indicator.
+/// Line count for the identity block: 6 wordmark rows, the version
+/// line, the claude line, an optional update indicator, and the
+/// per-account status row (blank separator + chips) shown when any
+/// account is loading.
 fn identity_block_height(app: &App) -> u16 {
     let mut h: u16 = 6 + 1 + 1;
     if app
@@ -294,6 +301,9 @@ fn identity_block_height(app: &App) -> u16 {
         .is_some_and(forge_workspace::env::cli_version::CliVersionInfo::has_update)
     {
         h += 1;
+    }
+    if app.workspace.as_ref().is_some_and(|ws| !ws.account_loading_snapshot().is_empty()) {
+        h += 2;
     }
     h
 }
@@ -378,39 +388,20 @@ fn centered_text_line(text: &str, area_width: u16, style: Style) -> Line<'static
     Line::from(vec![Span::raw(" ".repeat(pad)), Span::styled(text.to_owned(), style)])
 }
 
-/// Estimated height: top rule + cold-boot row (if applicable) + per-
-/// org rows + per-org separators + bottom rule. Used to size the
-/// picker_area Rect before render.
-fn picker_frame_height(_total_rows: usize, rows: &[PickerRow]) -> u16 {
-    let mut h: u16 = 2; // top + bottom rules
-    let mut last_org: Option<&str> = None;
-    for row in rows {
-        if last_org != Some(row.org.as_str()) {
-            if last_org.is_some() {
-                h += 1; // blank between orgs
-            }
-            h += 1; // org header
-            last_org = Some(row.org.as_str());
-        }
-        h += 1; // project row
-        if row.error.is_some() {
-            h += 1; // error description row beneath a failed project
-        }
-    }
-    h
-}
-
-fn render_picker(frame: &mut Frame, area: Rect, app: &mut App, rows: &[PickerRow]) {
-    if area.width == 0 || area.height == 0 {
-        return;
-    }
-
+/// Build the scrollable picker content - everything that sits between
+/// the two framing rules: org headers, project rows, and any
+/// error/worker/no-usable-accounts rows. Returns the lines plus the
+/// flat-line index of the selected project's row (so the scroll
+/// window can follow the selection). `width` is the box inner width,
+/// used to truncate row content.
+fn build_picker_content(
+    app: &App,
+    rows: &[PickerRow],
+    width: u16,
+) -> (Vec<Line<'static>>, Option<usize>) {
     let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut selected_flat: Option<usize> = None;
     let dim = Style::default().fg(theme::DIM);
-    let rule_width = usize::from(area.width);
-    let rule_line = || Line::from(Span::styled("─".repeat(rule_width), dim));
-
-    lines.push(rule_line());
 
     let mut last_org: Option<String> = None;
     for (project_row_idx, row) in rows.iter().enumerate() {
@@ -426,9 +417,12 @@ fn render_picker(frame: &mut Frame, area: Rect, app: &mut App, rows: &[PickerRow
             last_org = Some(row.org.clone());
         }
         let selected = project_row_idx == app.launchpad.selected_index;
-        push_project_row(&mut lines, row, selected, app, area.width);
+        if selected {
+            selected_flat = Some(lines.len());
+        }
+        push_project_row(&mut lines, row, selected, app, width);
         if let Some(err) = &row.error {
-            push_error_row(&mut lines, err, area.width);
+            push_error_row(&mut lines, err, width);
         }
         // Worker rows: show forge.toml team labels (if any) nested
         // under the project, each with its assigned-account chip
@@ -452,15 +446,117 @@ fn render_picker(frame: &mut Frame, area: Rect, app: &mut App, rows: &[PickerRow
                 .as_ref()
                 .is_some_and(|p| !workspace.project_has_assigned_account(&p.key))
         {
-            push_no_usable_accounts_row(&mut lines, area.width);
+            push_no_usable_accounts_row(&mut lines, width);
         }
     }
 
-    lines.push(rule_line());
+    (lines, selected_flat)
+}
 
-    let height = u16::try_from(lines.len()).unwrap_or(0).min(area.height);
-    let render_area = Rect { x: area.x, y: area.y, width: area.width, height };
-    frame.render_widget(Paragraph::new(lines), render_area);
+/// Render the picker box centered in `area` (the gap between the
+/// identity block and the footer). The box extends to most of that
+/// gap, capped by [`BOX_MARGIN`]; two of its rows are the top/bottom
+/// rules and the rest is the list viewport, which windows the content
+/// by `scroll_offset` so the selected project stays visible.
+fn render_picker(frame: &mut Frame, area: Rect, app: &mut App, rows: &[PickerRow]) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let dim = Style::default().fg(theme::DIM);
+
+    let (content_lines, selected_flat) = build_picker_content(app, rows, area.width);
+    let content_count = content_lines.len();
+
+    // Breathing reserved around the box so the wordmark + footer stay
+    // clear even on a full list.
+    let max_box = area.height.saturating_sub(PICKER_BOX_MARGIN).max(3);
+    let desired_box = u16::try_from(content_count).unwrap_or(u16::MAX).saturating_add(2);
+    let box_height = desired_box.min(max_box).min(area.height);
+    let viewport_h = box_height.saturating_sub(2);
+    let box_top = area.y + area.height.saturating_sub(box_height) / 2;
+
+    let offset = reconcile_scroll(
+        selected_flat.unwrap_or(0),
+        usize::from(viewport_h),
+        content_count,
+        app.launchpad.scroll_offset,
+    );
+    app.launchpad.scroll_offset = offset;
+
+    // Reserve a 1-col gutter at the right edge for the scrollbar when
+    // the list overflows the box.
+    let overflow = content_count > usize::from(viewport_h);
+    let gutter = u16::from(overflow);
+
+    let rule_width = usize::from(area.width);
+    let rule = || Line::from(Span::styled("─".repeat(rule_width), dim));
+
+    frame.render_widget(
+        Paragraph::new(rule()),
+        Rect { x: area.x, y: box_top, width: area.width, height: 1 },
+    );
+    if viewport_h > 0 {
+        let list_area = Rect {
+            x: area.x,
+            y: box_top + 1,
+            width: area.width.saturating_sub(gutter),
+            height: viewport_h,
+        };
+        frame.render_widget(Paragraph::new(content_lines).scroll((offset, 0)), list_area);
+    }
+    frame.render_widget(
+        Paragraph::new(rule()),
+        Rect { x: area.x, y: box_top + 1 + viewport_h, width: area.width, height: 1 },
+    );
+
+    if overflow {
+        render_picker_thumb(
+            frame,
+            area.x,
+            box_top + 1,
+            area.width,
+            viewport_h,
+            content_count,
+            offset,
+        );
+    }
+}
+
+/// Paint the launchpad scrollbar in the box's right-edge gutter: a
+/// DIM `│` track with a RUST_ORANGE `▐` thumb sized + positioned by
+/// the shared [`crate::app::compute_scrollbar_geometry`]. The caller
+/// gates this on the list overflowing the viewport.
+fn render_picker_thumb(
+    frame: &mut Frame,
+    x: u16,
+    top_y: u16,
+    width: u16,
+    viewport: u16,
+    total: usize,
+    offset: u16,
+) {
+    let Some(geometry) =
+        crate::app::compute_scrollbar_geometry(total, usize::from(viewport), f32::from(offset))
+    else {
+        return;
+    };
+    let rail_x = x + width.saturating_sub(1);
+    let track_style = Style::default().fg(theme::DIM);
+    let thumb_style = Style::default().fg(theme::RUST_ORANGE);
+    let buf = frame.buffer_mut();
+    for row in 0..usize::from(viewport) {
+        let in_thumb = row >= geometry.thumb_top && row < geometry.thumb_top + geometry.thumb_size;
+        let y = top_y + u16::try_from(row).unwrap_or(u16::MAX);
+        if let Some(cell) = buf.cell_mut((rail_x, y)) {
+            if in_thumb {
+                cell.set_symbol("▐");
+                cell.set_style(thumb_style);
+            } else {
+                cell.set_symbol("│");
+                cell.set_style(track_style);
+            }
+        }
+    }
 }
 
 fn push_project_row(
@@ -945,6 +1041,89 @@ mod tests {
         let mut app = App::test_default();
         app.workspace = None;
         assert_eq!(selectable_row_count(&app), 0);
+    }
+
+    fn fixture_rows() -> Vec<PickerRow> {
+        let mut rows = Vec::new();
+        for (org, projects) in
+            [("A", ["a1", "a2", "a3"]), ("B", ["b1", "b2", "b3"]), ("C", ["c1", "c2", "c3"])]
+        {
+            let n = projects.len();
+            for (i, name) in projects.iter().enumerate() {
+                rows.push(PickerRow {
+                    project_name: (*name).to_owned(),
+                    org: org.to_owned(),
+                    last_activity_label: "now".to_owned(),
+                    lifecycle: SessionLifecycleState::Sleeping,
+                    error: None,
+                    is_last_in_org: i + 1 == n,
+                });
+            }
+        }
+        rows
+    }
+
+    #[test]
+    fn build_picker_content_window_follows_selection() {
+        let mut app = App::test_default();
+        app.workspace = None;
+        let rows = fixture_rows();
+        let view = 5usize;
+
+        // Selecting the last project scrolls the window to the bottom.
+        app.launchpad.selected_index = rows.len() - 1;
+        let (lines, selected_flat) = build_picker_content(&app, &rows, 56);
+        let total = lines.len();
+        let selected_flat = selected_flat.expect("a project is selected");
+        assert!(total > view, "fixture must overflow the viewport");
+        let offset = reconcile_scroll(selected_flat, view, total, 0);
+        assert!(offset > 0, "selecting the last project scrolls the window down");
+        assert!(
+            selected_flat >= usize::from(offset) && selected_flat < usize::from(offset) + view,
+            "selected row stays inside the visible window",
+        );
+
+        // Moving back to the first project scrolls the window toward
+        // the top, keeping the first row visible.
+        app.launchpad.selected_index = 0;
+        let (_, first_flat) = build_picker_content(&app, &rows, 56);
+        let first_flat = first_flat.expect("a project is selected");
+        let back = reconcile_scroll(first_flat, view, total, offset);
+        assert!(back < offset, "moving back to the first project scrolls toward the top");
+        assert!(
+            first_flat >= usize::from(back) && first_flat < usize::from(back) + view,
+            "first row stays inside the visible window",
+        );
+    }
+
+    #[test]
+    fn picker_thumb_paints_track_and_thumb_on_overflow() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let width: u16 = 8;
+        let viewport: u16 = 12;
+        let backend = TestBackend::new(width, viewport);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| render_picker_thumb(frame, 0, 0, width, viewport, 24, 0))
+            .expect("draw");
+        let buffer = terminal.backend().buffer();
+        let w = usize::from(buffer.area.width);
+        let rail_x = usize::from(width - 1);
+        let mut thumb = 0usize;
+        let mut track = 0usize;
+        for y in 0..usize::from(viewport) {
+            match buffer.content[y * w + rail_x].symbol() {
+                "▐" => thumb += 1,
+                "│" => track += 1,
+                other => panic!("unexpected rail cell at row {y}: {other:?}"),
+            }
+        }
+        // viewport² / total = 144 / 24 = 6 thumb cells; the rest is track.
+        assert_eq!(thumb, 6, "thumb spans viewport² / total rows");
+        assert_eq!(track, usize::from(viewport) - 6, "the remaining rail is track");
+        // At offset 0 the thumb starts at the top of the rail.
+        assert_eq!(buffer.content[rail_x].symbol(), "▐");
     }
 
     #[test]
