@@ -32,12 +32,39 @@ pub struct LaunchpadState {
     /// view opens so the initial selection can default to the most
     /// recently active project.
     pub opened_at: Instant,
+    /// Scroll offset (flat-row units) for the project list when it
+    /// overflows the picker box. Follows the selection so the
+    /// highlighted project stays visible; reconciled each render via
+    /// `reconcile_scroll`.
+    pub scroll_offset: u16,
 }
 
 impl Default for LaunchpadState {
     fn default() -> Self {
-        Self { selected_index: 0, opened_at: Instant::now() }
+        Self { selected_index: 0, opened_at: Instant::now(), scroll_offset: 0 }
     }
+}
+
+/// Reconcile the launchpad scroll offset so the selected flat row
+/// stays inside the visible window. `selected_flat` is the flat-row
+/// index of the selected project (org headers + project + error/worker
+/// rows all count), `view` the visible row count, `total` the flat row
+/// count, `cur` the current offset. Returns the new offset clamped to
+/// `[0, total - view]`; content that fits the view stays at 0.
+pub(crate) fn reconcile_scroll(selected_flat: usize, view: usize, total: usize, cur: u16) -> u16 {
+    if view == 0 || total <= view {
+        return 0;
+    }
+    let max_offset = total - view;
+    let cur = usize::from(cur);
+    let offset = if selected_flat < cur {
+        selected_flat
+    } else if selected_flat >= cur + view {
+        selected_flat + 1 - view
+    } else {
+        cur
+    };
+    u16::try_from(offset.min(max_offset)).unwrap_or(u16::MAX)
 }
 
 /// Reset the launchpad state when entering the view. Selected index
@@ -48,7 +75,8 @@ impl Default for LaunchpadState {
 /// path builds the equivalent state inline in `create_app` so the
 /// View transitions atomically with App construction.
 pub(crate) fn open(app: &mut App) {
-    app.launchpad = LaunchpadState { selected_index: 0, opened_at: Instant::now() };
+    app.launchpad =
+        LaunchpadState { selected_index: 0, opened_at: Instant::now(), scroll_offset: 0 };
     set_active_view(app, ActiveView::Launchpad);
     app.needs_redraw = true;
 }
@@ -135,6 +163,38 @@ mod tests {
     fn default_state_selects_first_row() {
         let state = LaunchpadState::default();
         assert_eq!(state.selected_index, 0);
+        assert_eq!(state.scroll_offset, 0);
+    }
+
+    // `reconcile_scroll(selected_flat, view, total, cur)` keeps the
+    // selected flat row inside `[offset, offset+view)` and clamps to
+    // `[0, total-view]`; content that fits stays at 0.
+    #[test]
+    fn scroll_follows_selection_down() {
+        // 20 rows, view 12, selecting flat row 15 from offset 0 -> 15-12+1.
+        assert_eq!(reconcile_scroll(15, 12, 20, 0), 4);
+    }
+
+    #[test]
+    fn scroll_follows_selection_up() {
+        // selected above the window -> offset snaps to it
+        assert_eq!(reconcile_scroll(2, 12, 20, 6), 2);
+    }
+
+    #[test]
+    fn scroll_noop_when_visible() {
+        assert_eq!(reconcile_scroll(5, 12, 20, 0), 0);
+    }
+
+    #[test]
+    fn scroll_clamps_to_max() {
+        // never scroll past the last full window (total - view)
+        assert_eq!(reconcile_scroll(19, 12, 20, 0), 8);
+    }
+
+    #[test]
+    fn no_scroll_when_content_fits() {
+        assert_eq!(reconcile_scroll(9, 12, 10, 0), 0);
     }
 
     #[test]

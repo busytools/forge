@@ -835,7 +835,7 @@ chat continues here...
     <div class="when">visible: <code>ActiveView::Launchpad</code> only</div>
   </div>
   <div class="surface-body">
-    <p>Three vertical zones: identity block (centered horizontally near the top), picker frame (centered, framed by full-width DIM rules), and a single-row footer hint anchored to the terminal's bottom edge.</p>
+    <p>Three vertical zones: identity block (pinned near the top), picker box (centered in the gap between the identity block and the footer, extended to use most of that height and capped so the wordmark + footer always stay on screen), and a single-row footer hint anchored to the terminal's bottom edge. The box windows its rows by a scroll offset that follows the selection, so a project past the fold scrolls into view instead of being clipped; a scrollbar appears on the box's right edge only when the list overflows. Short lists still render short + centered.</p>
     <div class="term">
       <pre class="indent">
             <span class="rust-orange bold">███████╗ ██████╗ ██████╗  ██████╗ ███████╗</span>
@@ -848,26 +848,26 @@ chat continues here...
                           <span class="dim">v0.15.1 · 7d88141</span>
                           <span class="dim">claude 2.1.133</span>
 
-      <span class="dim">────────────────────────────────────────────────────────</span>
-        <span class="dim">Busytools</span>
-      <span class="rust-orange bold">▶</span> <span class="dim">├─</span> <span class="rust-orange">●</span>  <span class="bold">forge       </span> <span class="dim">(personal)        now</span>
-        <span class="dim">├─</span> <span class="rust-orange">⠹</span>  <span class="dim">hub-modules    (personal)   spawning</span>
-        <span class="dim">└─</span> <span class="dim">○</span>  trader-cc      <span class="dim">(personal)         2d</span>
-
-        <span class="dim">Granite</span>
-        <span class="dim">└─</span> <span class="dim">○</span>  core-v1        <span class="dim">(granite)          1w</span>
-
-        <span class="dim">Subspace</span>
-        <span class="dim">└─</span> <span class="rust-orange">●</span>  <span class="bold">subspace    </span> <span class="dim">(subspace)        12m</span>
-      <span class="dim">────────────────────────────────────────────────────────</span>
+      <span class="dim">────────────────────────────────────────────────────</span>
+        <span class="dim">Busytools</span>                                        <span class="rust-orange">▐</span>
+      <span class="rust-orange bold">▶</span> <span class="dim">├─</span> <span class="rust-orange">●</span>  <span class="bold">forge       </span> <span class="dim">(personal)        now</span>         <span class="rust-orange">▐</span>
+        <span class="dim">├─</span> <span class="rust-orange">⠹</span>  <span class="dim">hub-modules    (personal)   spawning</span>       <span class="rust-orange">▐</span>
+        <span class="dim">└─</span> <span class="dim">○</span>  trader-cc      <span class="dim">(personal)         2d</span>       <span class="rust-orange">▐</span>
+                                                         <span class="rust-orange">▐</span>
+        <span class="dim">Granite</span>                                          <span class="dim">│</span>
+        <span class="dim">└─</span> <span class="dim">○</span>  core-v1        <span class="dim">(granite)          1w</span>       <span class="dim">│</span>
+                                                         <span class="dim">│</span>
+        <span class="dim">Subspace</span>                                         <span class="dim">│</span>
+        <span class="dim">└─</span> <span class="rust-orange">●</span>  <span class="bold">subspace    </span> <span class="dim">(subspace)        12m</span>         <span class="dim">│</span>
+      <span class="dim">────────────────────────────────────────────────────</span>
 
  <span class="dim">↑↓  navigate     enter  open     ?  help     ctrl+q  quit</span></pre>
     </div>
     <dl>
       <dt>code</dt><dd><code>crates/forge-tui/src/ui/launchpad.rs</code> (renderer) + <code>crates/forge-tui/src/app/launchpad.rs</code> (state + keyboard handler) · wordmark stored as <code>const FORGE_WORDMARK: [&amp;str; 6]</code> (43 cols × 6 rows ANSI Shadow figlet)</dd>
-      <dt>color</dt><dd>wordmark: <code>RUST_ORANGE</code> + BOLD · version lines / org headers / tree connectors / footer hint / account hints / pending glyphs (<code>○</code>) / picker rules: <code>DIM</code> · idle <code>●</code>: <code>RUST_ORANGE</code> · running / spawning spinner: <code>RUST_ORANGE</code> · failed <code>✗</code>: <code>STATUS_ERROR</code> · selection indicator: <code>RUST_ORANGE</code> + BOLD <code>▶</code> arrow in a reserved 2-cell column at the row's left edge for clickable selections, <code>DIM</code> + BOLD <code>▶</code> when the selected row is in <code>Spawning</code> (signals "selected but not yet actionable") · spawning row name: <code>DIM</code> (not BOLD) reinforces "not yet interactive" · update indicator (<code>↑ vX.Y.Z available</code>): <code>RUST_ORANGE</code></dd>
+      <dt>color</dt><dd>wordmark: <code>RUST_ORANGE</code> + BOLD · version lines / org headers / tree connectors / footer hint / account hints / pending glyphs (<code>○</code>) / picker rules: <code>DIM</code> · idle <code>●</code>: <code>RUST_ORANGE</code> · running / spawning spinner: <code>RUST_ORANGE</code> · failed <code>✗</code>: <code>STATUS_ERROR</code> · selection indicator: <code>RUST_ORANGE</code> + BOLD <code>▶</code> arrow in a reserved 2-cell column at the row's left edge for clickable selections, <code>DIM</code> + BOLD <code>▶</code> when the selected row is in <code>Spawning</code> (signals "selected but not yet actionable") · spawning row name: <code>DIM</code> (not BOLD) reinforces "not yet interactive" · update indicator (<code>↑ vX.Y.Z available</code>): <code>RUST_ORANGE</code> · scrollbar (overflow only): <code>▐</code> thumb <code>RUST_ORANGE</code>, <code>│</code> track <code>DIM</code>, in a 1-col gutter at the box's right edge</dd>
       <dt>data sources</dt><dd>Projects via <code>Workspace::list_projects()</code> grouped by org (alpha-sorted, alpha-sorted within each org) · per-row lifecycle from <code>UiSession::lifecycle_state</code> with fallback to <code>Sleeping</code> · last-activity from <code>ProjectView::sessions[0].last_activity</code> · account hint from <code>ProjectView::primary_account_hint()</code> (first item of the org's <code>accounts</code> list, lowercased) · forge version from <code>FORGE_VERSION_SHORT</code> · claude version + update flag from <code>app.cli_version_info</code> (async npm probe)</dd>
-      <dt>keys</dt><dd><kbd>↑</kbd> <kbd>↓</kbd> / <kbd>k</kbd> <kbd>j</kbd> navigate · <kbd>Enter</kbd> intent-aware (open / start / blocked / no-op - see "Click intent" below) · <kbd>r</kbd> retry (only when row is Failed) · <kbd>?</kbd> toggle help (≡ <code>/help</code>) · <kbd>Esc</kbd> no-op · <kbd>Ctrl+Q</kbd> quit (≡ <code>/quit</code>) · <kbd>Ctrl+B</kbd> <kbd>Ctrl+E</kbd> swallowed (no panes to toggle)</dd>
+      <dt>keys</dt><dd><kbd>↑</kbd> <kbd>↓</kbd> / <kbd>k</kbd> <kbd>j</kbd> navigate (the list scrolls to keep the selection visible) · <kbd>Enter</kbd> intent-aware (open / start / blocked / no-op - see "Click intent" below) · <kbd>r</kbd> retry (only when row is Failed) · <kbd>?</kbd> toggle help (≡ <code>/help</code>) · <kbd>Esc</kbd> no-op · <kbd>Ctrl+Q</kbd> quit (≡ <code>/quit</code>) · <kbd>Ctrl+B</kbd> <kbd>Ctrl+E</kbd> swallowed (no panes to toggle)</dd>
       <dt>click intent</dt><dd>Enter behavior depends on the selected row's lifecycle. Footer hint reflects this label.<ul>
         <li><strong>Idle / Running / Attention / AuthRequired / LoggedOut</strong> → "<code>enter  open</code>" → switch chat view to the session.</li>
         <li><strong>Sleeping</strong> → "<code>enter  start</code>" → dispatch <code>Command::SpawnProject</code> and stay on the launchpad. The row transitions Sleeping → Spawning → Idle; a second Enter once it reaches Idle takes the user into chat. Avoids the chat-view "Connecting to Claude Code..." stub for cold projects.</li>

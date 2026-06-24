@@ -173,8 +173,11 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
     // session.
     let active_view = if cli.project.is_none() { ActiveView::Launchpad } else { ActiveView::Chat };
     let spinner_style = workspace.ui_settings().spinner;
-    let initial_launchpad_state =
-        crate::app::LaunchpadState { selected_index: 0, opened_at: std::time::Instant::now() };
+    let initial_launchpad_state = crate::app::LaunchpadState {
+        selected_index: 0,
+        opened_at: std::time::Instant::now(),
+        scroll_offset: 0,
+    };
     let mut app = App {
         active_view,
         config: ConfigState::default(),
