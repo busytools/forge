@@ -152,6 +152,14 @@ pub const MAX_TARGETS_PER_KIND: usize = 3;
 /// cell-aware fence.
 pub const MAX_TARGET_DISPLAY_WIDTH: usize = 30;
 
+/// Per-description character cap for the Bash group-summary headline.
+/// Wider than [`MAX_TARGET_DISPLAY_WIDTH`] because the description IS
+/// the headline (the readable hint that replaces the raw command); the
+/// outer `render_group_summary_line` cell-fence still bounds the whole
+/// line, so a single wide description can't overflow - the larger cap
+/// just keeps multi-target groups fair.
+pub const DESCRIPTION_DISPLAY_WIDTH: usize = 48;
+
 impl KindCount {
     pub fn tally(&mut self, tc: &crate::app::ToolCallInfo) {
         match tc.sdk_tool_name.as_str() {
@@ -270,6 +278,20 @@ fn search_target(tc: &crate::app::ToolCallInfo) -> Option<String> {
 
 fn command_target(tc: &crate::app::ToolCallInfo) -> Option<String> {
     let raw = tc.raw_input.as_ref().and_then(|v| v.as_object());
+    // Prefer Claude's human-readable description (the collapsed
+    // headline) - it rides the same raw_input object as the command,
+    // and the raw command often starts with a long `cd <path>` that
+    // clips to nothing useful. Headline cap is wider than the command
+    // cap; falls back to the command when no description was sent.
+    let description = raw
+        .and_then(|r| r.get("description"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| clip_to_width(s, DESCRIPTION_DISPLAY_WIDTH));
+    if let Some(desc) = description {
+        return Some(desc);
+    }
     let command = raw
         .and_then(|r| r.get("command"))
         .and_then(serde_json::Value::as_str)
@@ -293,12 +315,16 @@ fn basename(path: &str) -> String {
 }
 
 fn clip_to_target_width(s: &str) -> String {
-    if s.chars().count() <= MAX_TARGET_DISPLAY_WIDTH {
+    clip_to_width(s, MAX_TARGET_DISPLAY_WIDTH)
+}
+
+fn clip_to_width(s: &str, width: usize) -> String {
+    if s.chars().count() <= width {
         return s.to_owned();
     }
     // Reserve 3 chars for `...` so the clipped form still fits in
     // the cap.
-    let keep = MAX_TARGET_DISPLAY_WIDTH.saturating_sub(3);
+    let keep = width.saturating_sub(3);
     let mut out: String = s.chars().take(keep).collect();
     out.push_str("...");
     out
@@ -1458,6 +1484,70 @@ mod tests {
         assert_eq!(k.read_targets, vec!["foo.rs".to_owned(), "bar.rs".to_owned()]);
         assert_eq!(k.command_targets, vec!["cargo check".to_owned()]);
         assert_eq!(k.search_targets, vec!["FooBar".to_owned(), "rust async".to_owned()]);
+    }
+
+    /// A Bash call with a `description` summarizes by the description
+    /// (the readable headline), keeping the `ran` verb. The raw command
+    /// starts with a long `cd <path>` that would clip to nothing useful.
+    #[test]
+    fn bash_group_summary_uses_description() {
+        let mut k = KindCount::default();
+        tally_block(
+            &mut k,
+            &tool_call_block_with_input(
+                "b1",
+                "Bash",
+                "cd /Users/x/Projects/forge && gh pr merge 358 --squash",
+                Some(serde_json::json!({
+                    "command": "cd /Users/x/Projects/forge && gh pr merge 358 --squash",
+                    "description": "Squash-merge PR and confirm on main"
+                })),
+            ),
+        );
+        // 35 chars < DESCRIPTION_DISPLAY_WIDTH (48) -> shown in full.
+        assert_eq!(k.command_targets, vec!["Squash-merge PR and confirm on main".to_owned()]);
+        assert_eq!(k.format_summary(), "ran Squash-merge PR and confirm on main");
+    }
+
+    /// No description -> falls back to the raw command at the existing
+    /// 30-char cap (byte-identical to today, no regression).
+    #[test]
+    fn bash_group_summary_falls_back_to_command_without_description() {
+        let mut k = KindCount::default();
+        tally_block(
+            &mut k,
+            &tool_call_block_with_input(
+                "b1",
+                "Bash",
+                "cargo nextest run -p forge-tui",
+                Some(serde_json::json!({"command": "cargo nextest run -p forge-tui"})),
+            ),
+        );
+        assert_eq!(k.command_targets, vec!["cargo nextest run -p forge-tui".to_owned()]);
+        assert!(k.format_summary().starts_with("ran cargo nextest"));
+    }
+
+    /// A description longer than the headline cap clips to 48 chars
+    /// with a trailing ellipsis (the full command is still on expand).
+    #[test]
+    fn bash_group_summary_clips_long_description() {
+        let long = "Regenerate every baseline fixture and re-run the conformance suite twice";
+        let mut k = KindCount::default();
+        tally_block(
+            &mut k,
+            &tool_call_block_with_input(
+                "b1",
+                "Bash",
+                "x",
+                Some(serde_json::json!({"command": "x", "description": long})),
+            ),
+        );
+        let target = &k.command_targets[0];
+        assert_eq!(target.chars().count(), DESCRIPTION_DISPLAY_WIDTH);
+        assert!(
+            target.ends_with("..."),
+            "long description should clip with an ellipsis: {target:?}"
+        );
     }
 
     /// `format_summary` MUST surface the collected targets, not just
