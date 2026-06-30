@@ -636,31 +636,26 @@ pub(crate) fn handle_spawn_worker(
     }
 }
 
-/// Handle a `Command::CloseWorker`: remove the latest-spawned worker
-/// matching `label` from `live_workers[project_key]`, release its
-/// session (terminates the claude subprocess), and emit a `Removed`
-/// status event. JSONL on disk is NOT deleted - "close" only means
-/// "remove from in-memory live state".
+/// Shared worker teardown used by both `handle_close_worker` (the TUI
+/// X-button) and `handle_despawn_worker` (the `workers__despawn` MCP
+/// tool): remove the latest-spawned worker matching `label` from
+/// `live_workers[project_key]`, release its session (terminates the
+/// claude subprocess on drop), expire its inflight asks, and emit a
+/// `Removed` status event. Returns the removed `WorkerEntry`, or
+/// `None` when no live worker matched. JSONL on disk is NOT deleted -
+/// teardown only removes the in-memory live state.
 ///
 /// Worker-bound asks whose `target_project` composite
-/// (`<project_key>::<label>`) names the closed worker are expired
+/// (`<project_key>::<label>`) names the torn-down worker are expired
 /// via `Workspace::expire_inflight_for_closed_worker` so their
 /// caller's LLM receives a `DeliveryFailureNotice` instead of
 /// waiting forever for a reply.
-pub(crate) fn handle_close_worker(
+pub(crate) fn teardown_worker(
     workspace: &Arc<Workspace>,
     project_key: &ProjectKey,
     label: &str,
-) {
-    let Some(entry) = workspace.remove_latest_worker(project_key, label) else {
-        tracing::warn!(
-            target: "forge_workspace::spawn",
-            project = %project_key.as_str(),
-            label = %label,
-            "handle_close_worker: no matching live worker"
-        );
-        return;
-    };
+) -> Option<crate::mcp::workers::types::WorkerEntry> {
+    let entry = workspace.remove_latest_worker(project_key, label)?;
     let status = entry.to_status();
     let is_git_repo_at_spawn = entry.is_git_repo_at_spawn;
     // MUST call the non-cascading `release_session` primitive (NOT
@@ -679,6 +674,110 @@ pub(crate) fn handle_close_worker(
         status,
         is_git_repo_at_spawn,
     });
+    Some(entry)
+}
+
+/// Handle a `Command::CloseWorker` (the TUI per-row X-button): tear
+/// the worker down via [`teardown_worker`]. Does NOT touch the git
+/// worktree - that's the `workers__despawn` path's job; the X-button's
+/// behavior is intentionally unchanged.
+pub(crate) fn handle_close_worker(
+    workspace: &Arc<Workspace>,
+    project_key: &ProjectKey,
+    label: &str,
+) {
+    if teardown_worker(workspace, project_key, label).is_none() {
+        tracing::warn!(
+            target: "forge_workspace::spawn",
+            project = %project_key.as_str(),
+            label = %label,
+            "handle_close_worker: no matching live worker"
+        );
+    }
+}
+
+/// Handle a `Command::DespawnWorker` (the `workers__despawn` MCP
+/// tool): the lead's clean-close gesture. Unlike `handle_close_worker`
+/// it also cleans up the worker's git worktree.
+///
+/// Order matters: the worktree dirty-check runs BEFORE any teardown,
+/// so a dirty worker (uncommitted/untracked or unpushed) is blocked
+/// without being killed (unless `force`). Then the teardown runs (the
+/// subprocess dies on drop - the kill signal is sent synchronously,
+/// before the worktree is touched). Then the worktree is removed. A
+/// post-teardown worktree-removal failure is surfaced as a warning in
+/// the [`DespawnResult`] but never rolls back the kill - teardown and
+/// worktree cleanup are independent.
+pub(crate) fn handle_despawn_worker(
+    workspace: &Arc<Workspace>,
+    project_key: &ProjectKey,
+    label: &str,
+    force: bool,
+    respond: tokio::sync::oneshot::Sender<crate::protocol::DespawnResult>,
+) {
+    use crate::protocol::DespawnResult;
+
+    // Peek the latest-spawned matching worker WITHOUT removing it, so a
+    // blocked despawn leaves it live.
+    let Some(entry) =
+        workspace.list_live_workers(project_key).into_iter().rev().find(|w| w.label == label)
+    else {
+        let _ = respond.send(DespawnResult::NotFound);
+        return;
+    };
+
+    // Resolve the worktree path for git-repo workers (claude's
+    // `<project_root>/.claude/worktrees/<label>/`). Non-git workers
+    // have no worktree to clean.
+    let worktree_path = if entry.is_git_repo_at_spawn {
+        workspace
+            .list_projects()
+            .into_iter()
+            .find(|v| v.key == *project_key)
+            .map(|v| crate::mcp::workers::types::worker_tag_dir(&v.path, label, true))
+    } else {
+        None
+    };
+
+    // Dirty-check BEFORE teardown: block (nothing torn down) when the
+    // worktree is dirty and `force` is not set.
+    if !force
+        && let Some(path) = worktree_path.as_ref()
+        && let Some(reason) = forge_agent::env::worktree::worktree_dirty_reason(path)
+    {
+        let _ = respond.send(DespawnResult::Blocked { reason });
+        return;
+    }
+
+    // Teardown (kills the subprocess on drop). The single-threaded
+    // command loop means nothing mutated `live_workers` between the
+    // peek above and here, but re-checking the removal is defensive.
+    if teardown_worker(workspace, project_key, label).is_none() {
+        let _ = respond.send(DespawnResult::NotFound);
+        return;
+    }
+
+    // Worktree cleanup runs AFTER teardown on a verified-clean (or
+    // forced) worktree. A failure here is reported but never rolls
+    // back the already-completed teardown.
+    let worktree_cleanup_warning = match worktree_path.as_ref() {
+        Some(path) => match forge_agent::env::worktree::remove_worktree(path, force) {
+            Ok(()) => None,
+            Err(err) => {
+                tracing::warn!(
+                    target: "forge_workspace::spawn",
+                    project = %project_key.as_str(),
+                    label = %label,
+                    error = %err,
+                    "despawn: worker torn down but worktree cleanup failed"
+                );
+                Some(err.to_string())
+            }
+        },
+        None => None,
+    };
+
+    let _ = respond.send(DespawnResult::Despawned { worktree_cleanup_warning });
 }
 
 /// Handle a `Command::DeliverWorkerPrompt`: route a wrapped peer-style
@@ -1226,6 +1325,163 @@ config_dir = "~/.claude-subspace"
         handle_close_worker(&workspace, &project, "missing");
 
         assert!(rx.try_recv().is_err(), "no events emitted for unknown label");
+    }
+
+    fn run_git(dir: &std::path::Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .status()
+            .expect("spawn git");
+        assert!(status.success(), "git {args:?} failed in {dir:?}");
+    }
+
+    fn fake_git_worker_entry(label: &str, key: &str) -> crate::mcp::workers::types::WorkerEntry {
+        let mut entry = fake_worker_entry(label, key);
+        entry.is_git_repo_at_spawn = true;
+        entry
+    }
+
+    /// A non-git worker despawns cleanly with no worktree step (the
+    /// teardown runs, nothing touches a worktree).
+    #[tokio::test]
+    async fn despawn_non_git_worker_tears_down_without_worktree_step() {
+        let (workspace, mut rx) = Workspace::testing_stub();
+        let project = ProjectKey::new("forge");
+        workspace.insert_live_worker(&project, fake_worker_entry("r1", "worker-1"));
+
+        let (tx, resp_rx) = tokio::sync::oneshot::channel();
+        handle_despawn_worker(&workspace, &project, "r1", false, tx);
+        let result = resp_rx.await.expect("despawn result");
+
+        assert!(
+            matches!(
+                result,
+                crate::protocol::DespawnResult::Despawned { worktree_cleanup_warning: None }
+            ),
+            "non-git worker despawns cleanly: {result:?}"
+        );
+        assert!(workspace.list_live_workers(&project).is_empty(), "worker removed");
+        let mut saw_removed = false;
+        while let Ok(update) = rx.try_recv() {
+            if let SessionUpdate::WorkerStatusChanged { action, .. } = update
+                && action == WorkerStatusAction::Removed
+            {
+                saw_removed = true;
+            }
+        }
+        assert!(saw_removed, "Removed event emitted");
+    }
+
+    /// Despawning an unknown label reports NotFound and emits nothing.
+    #[tokio::test]
+    async fn despawn_unknown_label_reports_not_found() {
+        let (workspace, mut rx) = Workspace::testing_stub();
+        let project = ProjectKey::new("forge");
+        let (tx, resp_rx) = tokio::sync::oneshot::channel();
+        handle_despawn_worker(&workspace, &project, "missing", false, tx);
+        assert!(matches!(resp_rx.await.expect("result"), crate::protocol::DespawnResult::NotFound));
+        assert!(rx.try_recv().is_err(), "no events for unknown label");
+    }
+
+    /// Build a workspace whose single project points at a temp git
+    /// repo, add a worktree at `<project>/.claude/worktrees/<label>`,
+    /// and register a live git-worker under it. The worktree is built
+    /// from the project path `list_projects` reports so the handler's
+    /// `worker_tag_dir` resolves to the exact on-disk worktree (avoids
+    /// the macOS /tmp symlink mismatch). Returns the pieces the test
+    /// asserts on plus the tempdir guards (which must outlive the test).
+    async fn git_despawn_fixture(
+        label: &str,
+    ) -> (Arc<Workspace>, ProjectKey, std::path::PathBuf, tempfile::TempDir, tempfile::TempDir)
+    {
+        let repo = tempdir().expect("repo tempdir");
+        run_git(repo.path(), &["init", "-q"]);
+        run_git(repo.path(), &["config", "user.email", "t@example.com"]);
+        run_git(repo.path(), &["config", "user.name", "Test"]);
+        std::fs::write(repo.path().join("README.md"), "seed").expect("write seed");
+        run_git(repo.path(), &["add", "."]);
+        run_git(repo.path(), &["commit", "-q", "-m", "init"]);
+
+        let config = tempdir().expect("config tempdir");
+        let repo_path_str = repo.path().to_string_lossy().replace('\\', "/");
+        std::fs::write(
+            config.path().join("forge.toml"),
+            format!(
+                "[[orgs]]\nname = \"Default\"\naccounts = [\"Subspace\"]\n\n[[orgs.projects]]\nname = \"forge\"\npath = \"{repo_path_str}\"\n\n[[accounts]]\ndisplay_name = \"Subspace\"\nconfig_dir = \"~/.claude-subspace\"\n"
+            ),
+        )
+        .expect("write forge.toml");
+
+        let workspace =
+            Arc::new(Workspace::new(config.path().to_owned()).await.expect("workspace new"));
+        let view = workspace.list_projects().into_iter().next().expect("one project");
+        let project_key = view.key.clone();
+        let project_path = view.path.clone();
+
+        let wt = project_path.join(".claude").join("worktrees").join(label);
+        std::fs::create_dir_all(wt.parent().expect("wt parent")).expect("mkdir worktrees");
+        run_git(&project_path, &["worktree", "add", "-q", wt.to_str().expect("utf8 path")]);
+
+        workspace.insert_live_worker(&project_key, fake_git_worker_entry(label, "worker-1"));
+        (workspace, project_key, wt, repo, config)
+    }
+
+    /// A git worker with a clean worktree despawns AND removes the
+    /// worktree.
+    #[tokio::test]
+    async fn despawn_git_worker_removes_clean_worktree() {
+        let (workspace, project_key, wt, _repo, _config) = git_despawn_fixture("reviewer").await;
+        assert!(wt.exists(), "worktree exists before despawn");
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_despawn_worker(&workspace, &project_key, "reviewer", false, tx);
+        let result = rx.await.expect("result");
+        assert!(
+            matches!(
+                result,
+                crate::protocol::DespawnResult::Despawned { worktree_cleanup_warning: None }
+            ),
+            "clean git worktree despawns + removes: {result:?}"
+        );
+        assert!(workspace.list_live_workers(&project_key).is_empty(), "worker removed");
+        assert!(!wt.exists(), "clean worktree removed");
+    }
+
+    /// A dirty worktree without `force` BLOCKS the despawn: nothing is
+    /// torn down, the worker stays live, the worktree is intact.
+    #[tokio::test]
+    async fn despawn_dirty_worktree_without_force_blocks() {
+        let (workspace, project_key, wt, _repo, _config) = git_despawn_fixture("reviewer").await;
+        std::fs::write(wt.join("scratch.txt"), "uncommitted").expect("write scratch");
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_despawn_worker(&workspace, &project_key, "reviewer", false, tx);
+        let result = rx.await.expect("result");
+        assert!(
+            matches!(result, crate::protocol::DespawnResult::Blocked { .. }),
+            "dirty worktree blocks without force: {result:?}"
+        );
+        assert_eq!(
+            workspace.list_live_workers(&project_key).len(),
+            1,
+            "worker stays live when blocked"
+        );
+        assert!(wt.exists(), "worktree intact when blocked");
+    }
+
+    /// A dirty worktree WITH `force` tears down + discards the worktree.
+    #[tokio::test]
+    async fn despawn_dirty_worktree_force_discards() {
+        let (workspace, project_key, wt, _repo, _config) = git_despawn_fixture("reviewer").await;
+        std::fs::write(wt.join("scratch.txt"), "uncommitted").expect("write scratch");
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_despawn_worker(&workspace, &project_key, "reviewer", true, tx);
+        let result = rx.await.expect("result");
+        assert!(
+            matches!(result, crate::protocol::DespawnResult::Despawned { .. }),
+            "force despawns a dirty worktree: {result:?}"
+        );
+        assert!(workspace.list_live_workers(&project_key).is_empty(), "worker removed under force");
+        assert!(!wt.exists(), "worktree discarded under force");
     }
 
     /// `handle_deliver_worker_prompt` is a no-op when the target

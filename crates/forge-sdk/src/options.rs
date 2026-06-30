@@ -625,6 +625,7 @@ mod tests_options_build {
         assert!(pred("mcp__forge__workers__list"));
         assert!(pred("mcp__forge__workers__tell"));
         assert!(pred("mcp__forge__workers__ask"));
+        assert!(pred("mcp__forge__workers__despawn"));
         assert!(pred("mcp__forge__"));
         // Sibling prefixes must NOT match (no partial-string fuzz).
         assert!(!pred("mcp__forgery__steal_secrets"));

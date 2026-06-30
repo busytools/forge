@@ -103,6 +103,40 @@ pub enum WorkerSpawnError {
     AlreadyRunning { label: String, session_id: String },
 }
 
+/// Synchronous outcome of `despawn_worker` - the success-shaped half
+/// of a `Command::DespawnWorker`. Gating + dispatch errors are the
+/// `Err` arm of the result; these two variants are what the
+/// `workers__despawn` Tool renders as `status: "despawned" | "blocked"`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DespawnOutcome {
+    /// Worker torn down. `worktree_cleanup_warning` is `Some` when the
+    /// post-teardown `git worktree remove` failed (the worker is still
+    /// gone; only the worktree directory lingers).
+    Despawned { worktree_cleanup_warning: Option<String> },
+    /// Despawn refused: the worktree is dirty (uncommitted/untracked or
+    /// unpushed) and `force` was not set. `reason` names what is dirty;
+    /// the worker stays live.
+    Blocked { reason: String },
+}
+
+/// Synchronous error from `despawn_worker`. Gating (lead-only,
+/// non-empty label) happens before dispatch; `UnknownLabel` is
+/// surfaced from the handler's `NotFound`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WorkerDespawnError {
+    /// Caller is a worker, not a project lead. Despawn is lead-only.
+    NotLeadCaller,
+    /// `label` is empty after trim.
+    EmptyLabel,
+    /// Caller's session key resolves to no known project (defensive).
+    UnknownCallerProject,
+    /// No live worker matched `label` in the caller's project.
+    UnknownLabel { label: String, project_key: String },
+    /// Despawn was dispatched but the workspace channel failed or the
+    /// handler dropped the reply.
+    DispatchFailed { message: String },
+}
+
 /// Heuristic mapping from a raw spawn-error message + the worker's
 /// `is_git_repo_at_spawn` flag to a typed [`WorkerSpawnError`].
 ///
@@ -227,6 +261,17 @@ pub trait WorkerFacade: Send + Sync {
         label: String,
         charter: Option<String>,
     ) -> Result<WorkerSpawnReply, WorkerSpawnError>;
+
+    /// Dispatch a `Command::DespawnWorker` and await its result.
+    /// Gating (lead-only, non-empty label) happens before dispatch.
+    /// `force` removes a dirty worktree; without it a dirty worktree
+    /// blocks the despawn (`DespawnOutcome::Blocked`).
+    async fn despawn_worker(
+        &self,
+        caller: &SessionKey,
+        label: &str,
+        force: bool,
+    ) -> Result<DespawnOutcome, WorkerDespawnError>;
 
     /// Snapshot of every worker in the caller's project. Returns an
     /// empty Vec when the caller resolves to no project.
@@ -457,6 +502,51 @@ impl WorkerFacade for ProdWorkerFacade {
         }
     }
 
+    async fn despawn_worker(
+        &self,
+        caller: &SessionKey,
+        label: &str,
+        force: bool,
+    ) -> Result<DespawnOutcome, WorkerDespawnError> {
+        let cp = self.caller_project(caller).ok_or(WorkerDespawnError::UnknownCallerProject)?;
+        if !cp.is_lead {
+            return Err(WorkerDespawnError::NotLeadCaller);
+        }
+        if label.trim().is_empty() {
+            return Err(WorkerDespawnError::EmptyLabel);
+        }
+        let ws = self.workspace.upgrade().ok_or_else(|| WorkerDespawnError::DispatchFailed {
+            message: "workspace dropped".into(),
+        })?;
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let cmd = Command::DespawnWorker {
+            project_key: cp.project_key.clone(),
+            label: label.to_owned(),
+            force,
+            respond: tx,
+        };
+        if let Err(err) = ws.dispatch(cmd) {
+            return Err(WorkerDespawnError::DispatchFailed {
+                message: format!("dispatch failed: {err:?}"),
+            });
+        }
+        match rx.await {
+            Ok(crate::protocol::DespawnResult::Despawned { worktree_cleanup_warning }) => {
+                Ok(DespawnOutcome::Despawned { worktree_cleanup_warning })
+            }
+            Ok(crate::protocol::DespawnResult::Blocked { reason }) => {
+                Ok(DespawnOutcome::Blocked { reason })
+            }
+            Ok(crate::protocol::DespawnResult::NotFound) => Err(WorkerDespawnError::UnknownLabel {
+                label: label.to_owned(),
+                project_key: cp.project_key.as_str().to_owned(),
+            }),
+            Err(_) => Err(WorkerDespawnError::DispatchFailed {
+                message: "despawn handler dropped reply channel".into(),
+            }),
+        }
+    }
+
     fn list_workers(&self, caller: &SessionKey) -> Vec<WorkerStatus> {
         let Some(cp) = self.caller_project(caller) else {
             return Vec::new();
@@ -618,6 +708,11 @@ pub struct MockWorkerFacade {
     /// expected delta sequence (e.g. `OutgoingPlus1` on ask, then
     /// `IncomingMinus1` + `OutgoingMinus1` on a reply tell).
     pub bumps: parking_lot::Mutex<Vec<(SessionKey, PeerStatsDelta)>>,
+    /// Captured `despawn_worker` calls: (caller, label, force).
+    pub despawn_calls: parking_lot::Mutex<Vec<(SessionKey, String, bool)>>,
+    /// Pre-loaded outcome for `despawn_worker` on a known label. When
+    /// `None`, defaults to `Despawned { worktree_cleanup_warning: None }`.
+    pub despawn_outcome: parking_lot::Mutex<Option<DespawnOutcome>>,
 }
 
 #[cfg(any(test, feature = "testing"))]
@@ -683,6 +778,38 @@ impl WorkerFacade for MockWorkerFacade {
         self.spawn_reply.lock().clone().unwrap_or(Err(WorkerSpawnError::DispatchFailed {
             message: "no preloaded reply".into(),
         }))
+    }
+
+    async fn despawn_worker(
+        &self,
+        caller: &SessionKey,
+        label: &str,
+        force: bool,
+    ) -> Result<DespawnOutcome, WorkerDespawnError> {
+        let cp = self.caller_project(caller).ok_or(WorkerDespawnError::UnknownCallerProject)?;
+        if !cp.is_lead {
+            return Err(WorkerDespawnError::NotLeadCaller);
+        }
+        if label.trim().is_empty() {
+            return Err(WorkerDespawnError::EmptyLabel);
+        }
+        let known = self
+            .workers
+            .lock()
+            .get(cp.project_key.as_str())
+            .is_some_and(|ws| ws.iter().any(|w| w.label == label));
+        if !known {
+            return Err(WorkerDespawnError::UnknownLabel {
+                label: label.to_owned(),
+                project_key: cp.project_key.as_str().to_owned(),
+            });
+        }
+        self.despawn_calls.lock().push((caller.clone(), label.to_owned(), force));
+        Ok(self
+            .despawn_outcome
+            .lock()
+            .clone()
+            .unwrap_or(DespawnOutcome::Despawned { worktree_cleanup_warning: None }))
     }
 
     fn list_workers(&self, caller: &SessionKey) -> Vec<WorkerStatus> {
