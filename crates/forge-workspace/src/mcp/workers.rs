@@ -271,7 +271,10 @@ impl Tool for Despawn {
             Err(err) => return tool_error(err.to_string()),
         };
 
-        match self.facade.despawn_worker(&caller_key, &args.label, args.force.unwrap_or(false)).await
+        match self
+            .facade
+            .despawn_worker(&caller_key, &args.label, args.force.unwrap_or(false))
+            .await
         {
             Ok(DespawnOutcome::Despawned { worktree_cleanup_warning }) => {
                 let mut body = serde_json::json!({ "status": "despawned" });

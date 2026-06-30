@@ -265,7 +265,7 @@ pub trait WorkerFacade: Send + Sync {
     /// Dispatch a `Command::DespawnWorker` and await its result.
     /// Gating (lead-only, non-empty label) happens before dispatch.
     /// `force` removes a dirty worktree; without it a dirty worktree
-    /// blocks the despawn ([`DespawnOutcome::Blocked`]).
+    /// blocks the despawn (`DespawnOutcome::Blocked`).
     async fn despawn_worker(
         &self,
         caller: &SessionKey,

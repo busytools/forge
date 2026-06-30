@@ -96,7 +96,8 @@ pub fn worktree_dirty_reason(path: &Path) -> Option<String> {
 /// uncommitted/untracked changes; the unpushed-commits guard lives in
 /// [`worktree_dirty_reason`] (git's own check does not cover unpushed).
 pub fn remove_worktree(path: &Path, force: bool) -> Result<(), WorktreeError> {
-    let parent = path.parent().ok_or_else(|| WorktreeError::NoParent(path.display().to_string()))?;
+    let parent =
+        path.parent().ok_or_else(|| WorktreeError::NoParent(path.display().to_string()))?;
     let mut cmd = Command::new("git");
     cmd.arg("worktree").arg("remove");
     if force {

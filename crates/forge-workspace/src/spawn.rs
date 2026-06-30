@@ -1393,7 +1393,8 @@ config_dir = "~/.claude-subspace"
     /// asserts on plus the tempdir guards (which must outlive the test).
     async fn git_despawn_fixture(
         label: &str,
-    ) -> (Arc<Workspace>, ProjectKey, std::path::PathBuf, tempfile::TempDir, tempfile::TempDir) {
+    ) -> (Arc<Workspace>, ProjectKey, std::path::PathBuf, tempfile::TempDir, tempfile::TempDir)
+    {
         let repo = tempdir().expect("repo tempdir");
         run_git(repo.path(), &["init", "-q"]);
         run_git(repo.path(), &["config", "user.email", "t@example.com"]);
