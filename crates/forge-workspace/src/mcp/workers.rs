@@ -14,7 +14,8 @@ use forge_sdk::mcp::tool::{Tool, ToolInput, ToolOutput, ToolOutputBlock};
 use crate::mcp::peers::facade::{CallerKeyResolver, PeerStatsDelta};
 use crate::mcp::peers::types::{CorrelationId, InflightAsk, WrappedKind, WrappedPrompt};
 use crate::mcp::workers::facade::{
-    LEAD_LABEL, WorkerDeliverError, WorkerFacade, WorkerLeadDeliverError, WorkerSpawnError,
+    DespawnOutcome, LEAD_LABEL, WorkerDeliverError, WorkerDespawnError, WorkerFacade,
+    WorkerLeadDeliverError, WorkerSpawnError,
 };
 
 pub mod facade;
@@ -57,8 +58,9 @@ pub(crate) fn add_tools(
     let list = List { facade: facade.clone(), caller_key: caller_key.clone() };
     let tell = Tell { facade: facade.clone(), caller_key: caller_key.clone() };
     let ask = Ask { facade: facade.clone(), caller_key: caller_key.clone() };
+    let despawn = Despawn { facade: facade.clone(), caller_key: caller_key.clone() };
     let create_role = CreateRole { facade, caller_key };
-    builder.tool(spawn).tool(list).tool(tell).tool(ask).tool(create_role)
+    builder.tool(spawn).tool(list).tool(tell).tool(ask).tool(despawn).tool(create_role)
 }
 
 /// `workers__spawn` - lead-only. Allocates a new SessionTask in the
@@ -189,6 +191,130 @@ fn format_spawn_error(err: &WorkerSpawnError) -> String {
         WorkerSpawnError::AlreadyRunning { label, session_id } => format!(
             "a worker labeled '{label}' is already running (session {session_id}). Message it with workers__tell / workers__ask, or close it first - only one live worker per label is allowed."
         ),
+    }
+}
+
+/// `workers__despawn` - lead-only. Closes a worker by label and cleans
+/// up its git worktree. A clean worktree is removed; a dirty one
+/// (uncommitted/untracked or unpushed commits) blocks the despawn
+/// unless `force`.
+///
+/// Arguments:
+/// - `label` (string, required) - the worker to close, from `workers__list`
+/// - `force` (bool, optional, default false) - discard a dirty worktree
+///
+/// Returns `{ "status": "despawned" }` (optionally with a
+/// `worktree_cleanup_warning`), or `{ "status": "blocked", "reason": ... }`.
+pub(crate) struct Despawn {
+    pub(crate) facade: Arc<dyn WorkerFacade>,
+    pub(crate) caller_key: CallerKeyResolver,
+}
+
+#[derive(serde::Deserialize)]
+struct DespawnArgs {
+    label: String,
+    #[serde(default)]
+    force: Option<bool>,
+}
+
+#[async_trait::async_trait]
+impl Tool for Despawn {
+    #[allow(clippy::unnecessary_literal_bound)]
+    fn name(&self) -> &str {
+        "workers__despawn"
+    }
+
+    #[allow(clippy::unnecessary_literal_bound)]
+    fn description(&self) -> &str {
+        "Despawn (close + clean up) a worker in YOUR project by label \
+         (lead-only). Kills the worker's claude subprocess, removes it \
+         from workers__list, expires any inflight asks addressed to it, \
+         AND cleans up its git worktree. A CLEAN worktree is removed as \
+         part of the despawn; a DIRTY one (uncommitted/untracked changes \
+         or unpushed commits) BLOCKS the despawn and returns a reason - \
+         clean it up (commit + push, or reset) and retry, or pass \
+         force=true to tear down and discard the worktree. Nothing is \
+         ever silently discarded. Returns {status:\"despawned\"} (with an \
+         optional worktree_cleanup_warning when the worktree removal \
+         itself failed) or {status:\"blocked\", reason}. This is the \
+         clean end-of-flow gesture once a worker's work is merged. \
+         Errors if called from a worker session; only the project lead \
+         may despawn."
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "label": {
+                    "type": "string",
+                    "description": "Worker label from workers__list to close. Non-empty after trim.",
+                },
+                "force": {
+                    "type": "boolean",
+                    "description": "Tear down and discard the worktree even if it has uncommitted/untracked changes or unpushed commits. Default false: a dirty worktree blocks the despawn with a reason instead, so work is never silently discarded.",
+                },
+            },
+            "required": ["label"],
+            "additionalProperties": false,
+        })
+    }
+
+    async fn call(&self, input: ToolInput) -> ToolOutput {
+        let args: DespawnArgs = match serde_json::from_value(input.value) {
+            Ok(a) => a,
+            Err(err) => return tool_error(format!("invalid arguments: {err}")),
+        };
+
+        let caller_key = match self.caller_key.current() {
+            Ok(k) => k,
+            Err(err) => return tool_error(err.to_string()),
+        };
+
+        match self.facade.despawn_worker(&caller_key, &args.label, args.force.unwrap_or(false)).await
+        {
+            Ok(DespawnOutcome::Despawned { worktree_cleanup_warning }) => {
+                let mut body = serde_json::json!({ "status": "despawned" });
+                if let Some(warning) = worktree_cleanup_warning
+                    && let Some(map) = body.as_object_mut()
+                {
+                    map.insert(
+                        "worktree_cleanup_warning".to_owned(),
+                        serde_json::Value::String(warning),
+                    );
+                }
+                match serde_json::to_string_pretty(&body) {
+                    Ok(json) => ToolOutput::text(json),
+                    Err(err) => tool_error(format!("response serialization failed: {err}")),
+                }
+            }
+            Ok(DespawnOutcome::Blocked { reason }) => {
+                let body = serde_json::json!({ "status": "blocked", "reason": reason });
+                match serde_json::to_string_pretty(&body) {
+                    Ok(json) => ToolOutput::text(json),
+                    Err(err) => tool_error(format!("response serialization failed: {err}")),
+                }
+            }
+            Err(err) => tool_error(format_despawn_error(&err)),
+        }
+    }
+}
+
+fn format_despawn_error(err: &WorkerDespawnError) -> String {
+    match err {
+        WorkerDespawnError::NotLeadCaller => {
+            "workers__despawn is lead-only; this session is a worker. Only the project lead may despawn workers.".to_owned()
+        }
+        WorkerDespawnError::EmptyLabel => "label must be non-empty after trim".to_owned(),
+        WorkerDespawnError::UnknownCallerProject => {
+            "could not resolve caller to a known project (forge bug)".to_owned()
+        }
+        WorkerDespawnError::UnknownLabel { label, project_key } => format!(
+            "no live worker with label '{label}' in project '{project_key}'. Call workers__list to see the current pool."
+        ),
+        WorkerDespawnError::DispatchFailed { message } => {
+            format!("worker despawn failed: {message}")
+        }
     }
 }
 
@@ -1119,6 +1245,108 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn despawn_lead_caller_succeeds() {
+        let mock = Arc::new(MockWorkerFacade::new());
+        let caller = fake_key("lead-key");
+        mock.callers.lock().insert(caller.clone(), lead_caller("forge"));
+        mock.workers.lock().insert("forge".into(), vec![fake_worker("reviewer", "c")]);
+        let facade: Arc<dyn WorkerFacade> = mock.clone();
+        let tool = Despawn { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
+        let output =
+            tool.call(ToolInput { value: serde_json::json!({ "label": "reviewer" }) }).await;
+        assert!(!output.is_error, "despawn happy path should not error: {:?}", output.blocks);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&output.blocks[0].text).expect("valid JSON");
+        assert_eq!(parsed["status"], "despawned");
+        assert!(!mock.despawn_calls.lock()[0].2, "force defaults to false");
+    }
+
+    #[tokio::test]
+    async fn despawn_non_lead_caller_is_error() {
+        let mock = MockWorkerFacade::new();
+        mock.callers.lock().insert(fake_key("worker-key"), worker_caller("forge"));
+        let facade = mock.into_arc();
+        let tool =
+            Despawn { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("worker-key")) };
+        let output = tool.call(ToolInput { value: serde_json::json!({ "label": "x" }) }).await;
+        assert!(output.is_error, "non-lead caller must surface as is_error");
+        assert!(output.blocks[0].text.to_lowercase().contains("lead-only"));
+    }
+
+    #[tokio::test]
+    async fn despawn_empty_label_is_error() {
+        let mock = MockWorkerFacade::new();
+        mock.callers.lock().insert(fake_key("lead-key"), lead_caller("forge"));
+        let facade = mock.into_arc();
+        let tool =
+            Despawn { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("lead-key")) };
+        let output = tool.call(ToolInput { value: serde_json::json!({ "label": "   " }) }).await;
+        assert!(output.is_error);
+        assert!(output.blocks[0].text.to_lowercase().contains("label"));
+    }
+
+    #[tokio::test]
+    async fn despawn_unknown_label_is_error() {
+        let mock = MockWorkerFacade::new();
+        mock.callers.lock().insert(fake_key("lead-key"), lead_caller("forge"));
+        // No workers preloaded -> the label resolves to nothing.
+        let facade = mock.into_arc();
+        let tool =
+            Despawn { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("lead-key")) };
+        let output = tool.call(ToolInput { value: serde_json::json!({ "label": "ghost" }) }).await;
+        assert!(output.is_error);
+        assert!(output.blocks[0].text.contains("ghost"));
+    }
+
+    #[tokio::test]
+    async fn despawn_blocked_surfaces_reason() {
+        let mock = Arc::new(MockWorkerFacade::new());
+        let caller = fake_key("lead-key");
+        mock.callers.lock().insert(caller.clone(), lead_caller("forge"));
+        mock.workers.lock().insert("forge".into(), vec![fake_worker("reviewer", "c")]);
+        *mock.despawn_outcome.lock() =
+            Some(DespawnOutcome::Blocked { reason: "2 unpushed commits".into() });
+        let facade: Arc<dyn WorkerFacade> = mock.clone();
+        let tool = Despawn { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
+        let output =
+            tool.call(ToolInput { value: serde_json::json!({ "label": "reviewer" }) }).await;
+        assert!(!output.is_error, "blocked is a normal outcome, not an error: {:?}", output.blocks);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&output.blocks[0].text).expect("valid JSON");
+        assert_eq!(parsed["status"], "blocked");
+        assert!(parsed["reason"].as_str().expect("reason present").contains("unpushed"));
+    }
+
+    #[tokio::test]
+    async fn despawn_force_passes_through() {
+        let mock = Arc::new(MockWorkerFacade::new());
+        let caller = fake_key("lead-key");
+        mock.callers.lock().insert(caller.clone(), lead_caller("forge"));
+        mock.workers.lock().insert("forge".into(), vec![fake_worker("reviewer", "c")]);
+        let facade: Arc<dyn WorkerFacade> = mock.clone();
+        let tool = Despawn { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
+        let output = tool
+            .call(ToolInput { value: serde_json::json!({ "label": "reviewer", "force": true }) })
+            .await;
+        assert!(!output.is_error);
+        assert!(mock.despawn_calls.lock()[0].2, "force=true passes through to the facade");
+    }
+
+    #[test]
+    fn despawn_metadata_shape() {
+        let mock = MockWorkerFacade::new();
+        let facade = mock.into_arc();
+        let tool = Despawn { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("k")) };
+        assert_eq!(tool.name(), "workers__despawn");
+        assert!(tool.description().to_lowercase().contains("despawn"));
+        let schema = tool.input_schema();
+        let required = schema["required"].as_array().expect("required field present");
+        assert!(required.iter().any(|v| v == "label"));
+        assert!(required.iter().all(|v| v != "force"), "force is optional");
+        assert!(schema["properties"].as_object().unwrap().contains_key("force"));
+    }
+
     fn fake_worker(label: &str, charter: &str) -> forge_primitives::WorkerStatus {
         forge_primitives::WorkerStatus {
             label: label.to_owned(),
@@ -1445,6 +1673,7 @@ mod tests {
             "workers__list",
             "workers__tell",
             "workers__ask",
+            "workers__despawn",
             "workers__create_role",
         ] {
             assert!(
