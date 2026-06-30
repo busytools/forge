@@ -182,15 +182,17 @@ impl KindCount {
     /// Render the per-group summary as one string. Per-kind segments
     /// join with ` \u{b7} ` (middle dot). When targets are
     /// available for a kind, that kind renders as
-    /// `<verb> <t1>, <t2>, <t3> +<overflow>`; otherwise the kind
-    /// falls back to `<n> <kind-noun>` (e.g. `5 reads`). The
-    /// generic `calls` bucket has no target list and always renders
-    /// `<n> calls`. Order: reads, ran, searches, calls.
+    /// `<verb> <t1>, <t2>, <t3> +<overflow>` (the command segment
+    /// omits the verb - its description is already an action phrase);
+    /// otherwise the kind falls back to `<n> <kind-noun>` (e.g.
+    /// `5 reads`). The generic `calls` bucket has no target list and
+    /// always renders `<n> calls`. Order: reads, commands, searches,
+    /// calls.
     pub fn format_summary(&self) -> String {
         let mut parts: Vec<String> = Vec::with_capacity(4);
         if self.reads > 0 {
             parts.push(format_kind_segment(
-                "read",
+                Some("read"),
                 &self.read_targets,
                 self.reads,
                 ("read", "reads"),
@@ -198,7 +200,7 @@ impl KindCount {
         }
         if self.commands > 0 {
             parts.push(format_kind_segment(
-                "ran",
+                None,
                 &self.command_targets,
                 self.commands,
                 ("command", "commands"),
@@ -206,7 +208,7 @@ impl KindCount {
         }
         if self.searches > 0 {
             parts.push(format_kind_segment(
-                "search",
+                Some("search"),
                 &self.search_targets,
                 self.searches,
                 ("search", "searches"),
@@ -233,7 +235,7 @@ fn push_target_if_room(targets: &mut Vec<String>, candidate: Option<String>) {
 }
 
 fn format_kind_segment(
-    verb: &'static str,
+    verb: Option<&'static str>,
     targets: &[String],
     total: usize,
     noun_forms: (&'static str, &'static str),
@@ -243,7 +245,8 @@ fn format_kind_segment(
     }
     let names = targets.join(", ");
     let overflow = total.saturating_sub(targets.len());
-    if overflow > 0 { format!("{verb} {names} +{overflow}") } else { format!("{verb} {names}") }
+    let prefix = verb.map_or_else(String::new, |v| format!("{v} "));
+    if overflow > 0 { format!("{prefix}{names} +{overflow}") } else { format!("{prefix}{names}") }
 }
 
 fn read_target(tc: &crate::app::ToolCallInfo) -> Option<String> {
@@ -1487,8 +1490,9 @@ mod tests {
     }
 
     /// A Bash call with a `description` summarizes by the description
-    /// (the readable headline), keeping the `ran` verb. The raw command
-    /// starts with a long `cd <path>` that would clip to nothing useful.
+    /// (the readable headline) shown directly, with no verb. The raw
+    /// command starts with a long `cd <path>` that would clip to
+    /// nothing useful.
     #[test]
     fn bash_group_summary_uses_description() {
         let mut k = KindCount::default();
@@ -1506,7 +1510,7 @@ mod tests {
         );
         // 35 chars < DESCRIPTION_DISPLAY_WIDTH (48) -> shown in full.
         assert_eq!(k.command_targets, vec!["Squash-merge PR and confirm on main".to_owned()]);
-        assert_eq!(k.format_summary(), "ran Squash-merge PR and confirm on main");
+        assert_eq!(k.format_summary(), "Squash-merge PR and confirm on main");
     }
 
     /// No description -> falls back to the raw command at the existing
@@ -1524,7 +1528,7 @@ mod tests {
             ),
         );
         assert_eq!(k.command_targets, vec!["cargo nextest run -p forge-tui".to_owned()]);
-        assert!(k.format_summary().starts_with("ran cargo nextest"));
+        assert!(k.format_summary().starts_with("cargo nextest"));
     }
 
     /// A description longer than the headline cap clips to 48 chars
@@ -1552,8 +1556,9 @@ mod tests {
 
     /// `format_summary` MUST surface the collected targets, not just
     /// `<N> reads`. Counts above the per-kind cap drop into a `+N`
-    /// overflow suffix. The plan example shape:
-    ///   `read foo.rs, bar.rs +2  ·  ran cargo check  ·  search "Foo"`
+    /// overflow suffix. The command segment carries no verb; read and
+    /// search keep theirs. Example shape:
+    ///   `read foo.rs, bar.rs +2  ·  cargo check  ·  search "Foo"`
     #[test]
     fn kind_count_format_summary_renders_targets_with_overflow() {
         let k = KindCount {
@@ -1567,7 +1572,8 @@ mod tests {
         };
         let s = k.format_summary();
         assert!(s.contains("read foo.rs, bar.rs, baz.rs +2"), "rich read line missing in {s:?}");
-        assert!(s.contains("ran cargo check"), "ran line missing in {s:?}");
+        assert!(s.contains("cargo check"), "command line missing in {s:?}");
+        assert!(!s.contains("ran "), "command segment must not carry the ran verb in {s:?}");
         assert!(s.contains("search FooBar"), "search line missing in {s:?}");
         // bare counts must NOT appear when targets are present.
         assert!(!s.contains("5 reads"), "bare count must not appear alongside targets in {s:?}");
