@@ -235,6 +235,11 @@ pub enum Command {
         charter: String,
         spawned_by_session_id: String,
         resume_existing: Option<String>,
+        /// Inline first-message for `workers__spawn(kick=...)`. Delivered
+        /// as the worker's first user turn on Connected via the same
+        /// kick dispatcher the file-driven `kick.md` uses. `None` -> no
+        /// auto-kick (the worker idles until told).
+        kick: Option<String>,
         return_to: oneshot::Sender<Result<WorkerSpawnReply, String>>,
     },
     /// Close (terminate agent + remove from `live_workers`) the
