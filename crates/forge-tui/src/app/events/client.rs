@@ -262,9 +262,11 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
             // projects-pane renderer reads from `workspace.list_live_workers`
             // each frame so a redraw covers Added / StatusChanged.
             // Removed additionally surfaces a system-message toast in
-            // the active session's chat so the operator knows the
-            // worker is gone and, for git-repo workers, that the
-            // worktree is preserved on disk. Removed ALSO drops the
+            // the worker's spawning-lead session (not the focused one,
+            // so a despawn can't leak its toast across projects;
+            // dropped when that lead isn't live here) so the operator
+            // knows the worker is gone and, for git-repo workers, that
+            // the worktree is preserved on disk. Removed ALSO drops the
             // worker's UiSession bucket from `app.sessions` and, when
             // it was the active session, falls back to the worker's
             // spawning lead (or any other live session) - without
@@ -277,16 +279,16 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
                     &status.label,
                     is_git_repo_at_spawn,
                 );
-                super::push_system_message_with_severity(
+                let lead_key = SessionKey::from_session_id(status.spawned_by_session_id.clone());
+                super::push_system_message_to_session(
                     app,
+                    &lead_key,
                     Some(crate::app::SystemSeverity::Info),
                     &toast,
                 );
                 let worker_key = SessionKey::from_session_id(status.session_id.clone());
                 app.sessions.remove(&worker_key);
                 if app.active_session_key.as_ref() == Some(&worker_key) {
-                    let lead_key =
-                        SessionKey::from_session_id(status.spawned_by_session_id.clone());
                     let fallback = if app.sessions.contains_key(&lead_key) {
                         Some(lead_key)
                     } else {
@@ -1961,13 +1963,14 @@ mod tests {
     #[test]
     fn worker_removed_event_pushes_close_toast_for_git_repo_worker() {
         let mut app = App::test_default();
-        let active_key =
-            app.active_session_key.clone().expect("test_default seeds an active session");
-        let before = app.sessions.get(&active_key).expect("active bucket").messages.len();
+        let lead_key = SessionKey::from_session_id("lead-uuid");
+        app.sessions
+            .insert(lead_key.clone(), crate::app::session::UiSession::new(lead_key.clone()));
+        let before = app.sessions.get(&lead_key).expect("lead bucket").messages.len();
 
         apply_session_update(&mut app, worker_removed_event("reviewer", true));
 
-        let bucket = app.sessions.get(&active_key).expect("active bucket");
+        let bucket = app.sessions.get(&lead_key).expect("lead bucket");
         assert!(bucket.messages.len() > before, "Removed event should push a system-message toast");
         let toast = chat_message_text(bucket.messages.last().expect("toast message present"));
         assert!(toast.contains("Worker reviewer closed."), "missing close text: {toast:?}");
@@ -1981,16 +1984,70 @@ mod tests {
     #[test]
     fn worker_removed_event_pushes_plain_toast_for_non_git_worker() {
         let mut app = App::test_default();
-        let active_key =
-            app.active_session_key.clone().expect("test_default seeds an active session");
+        let lead_key = SessionKey::from_session_id("lead-uuid");
+        app.sessions
+            .insert(lead_key.clone(), crate::app::session::UiSession::new(lead_key.clone()));
 
         apply_session_update(&mut app, worker_removed_event("notes", false));
 
-        let bucket = app.sessions.get(&active_key).expect("active bucket");
+        let bucket = app.sessions.get(&lead_key).expect("lead bucket");
         let toast = chat_message_text(bucket.messages.last().expect("toast message present"));
         assert_eq!(toast, "Worker notes closed.");
         assert!(!toast.contains("worktree"), "must not mention worktree: {toast:?}");
         assert!(!toast.contains("Worktree"), "must not mention worktree: {toast:?}");
+    }
+
+    /// The close toast must land in the worker's OWNING lead session
+    /// (its `spawned_by_session_id`), never the focused one. Viewing a
+    /// different project while a worker despawns must not leak the
+    /// toast into that project's chat.
+    #[test]
+    fn worker_removed_event_routes_close_toast_to_lead_not_active() {
+        let mut app = App::test_default();
+        let lead_key = SessionKey::from_session_id("lead-uuid");
+        let focused_key = SessionKey::from_session_id("other-uuid");
+        app.sessions
+            .insert(lead_key.clone(), crate::app::session::UiSession::new(lead_key.clone()));
+        app.sessions
+            .insert(focused_key.clone(), crate::app::session::UiSession::new(focused_key.clone()));
+        app.active_session_key = Some(focused_key.clone());
+        let lead_before = app.sessions.get(&lead_key).expect("lead bucket").messages.len();
+        let focused_before = app.sessions.get(&focused_key).expect("focused bucket").messages.len();
+
+        apply_session_update(&mut app, worker_removed_event("reviewer", false));
+
+        let lead = app.sessions.get(&lead_key).expect("lead bucket");
+        assert!(
+            lead.messages.len() > lead_before,
+            "toast must land in the worker's owning lead session",
+        );
+        let toast = chat_message_text(lead.messages.last().expect("toast message present"));
+        assert_eq!(toast, "Worker reviewer closed.");
+        assert_eq!(
+            app.sessions.get(&focused_key).expect("focused bucket").messages.len(),
+            focused_before,
+            "the focused session must not receive the worker-close toast",
+        );
+    }
+
+    /// When the worker's lead session isn't live in this process (its
+    /// project isn't open here), the toast is dropped rather than
+    /// leaked into the focused session.
+    #[test]
+    fn worker_removed_event_drops_close_toast_when_lead_not_live() {
+        let mut app = App::test_default();
+        let active_key =
+            app.active_session_key.clone().expect("test_default seeds an active session");
+        // No `lead-uuid` bucket: the worker's owning project isn't open here.
+        let active_before = app.sessions.get(&active_key).expect("active bucket").messages.len();
+
+        apply_session_update(&mut app, worker_removed_event("reviewer", true));
+
+        assert_eq!(
+            app.sessions.get(&active_key).expect("active bucket").messages.len(),
+            active_before,
+            "no toast may leak to the focused session when the lead isn't live",
+        );
     }
 
     /// Removed must drop the worker's UiSession bucket. Without

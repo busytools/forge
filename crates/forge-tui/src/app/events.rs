@@ -339,6 +339,27 @@ pub(crate) fn push_system_message_with_severity(
     app.active_viewport_mut().engage_auto_scroll();
 }
 
+/// Push a system-message toast into a specific session's chat
+/// bucket rather than the active one. No-op when that session
+/// isn't live - callers rely on this to drop a toast instead of
+/// leaking it into whatever session happens to be focused.
+pub(crate) fn push_system_message_to_session(
+    app: &mut App,
+    key: &forge_workspace::SessionKey,
+    severity: Option<SystemSeverity>,
+    message: &str,
+) {
+    if let Some(session) = app.sessions.get_mut(key) {
+        session.messages.push(ChatMessage::new(
+            MessageRole::System(severity),
+            vec![MessageBlock::Text(TextBlock::from_complete(message))],
+            None,
+        ));
+        session.message_retained_bytes.push(0);
+        app.needs_redraw = true;
+    }
+}
+
 pub(super) fn clear_compaction_state(app: &mut App, emit_manual_success: bool) {
     if !app.is_compacting() && !app.pending_compact_clear() {
         return;
