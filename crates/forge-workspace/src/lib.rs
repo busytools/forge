@@ -62,6 +62,7 @@ mod account_cache;
 mod account_loader;
 mod assignment_plan;
 mod config;
+mod cron_store;
 mod domain_session;
 mod error;
 pub(crate) mod mcp;
