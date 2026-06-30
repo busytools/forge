@@ -1962,6 +1962,7 @@ impl Workspace {
                     charter,
                     spawned_by_session_id,
                     resume_existing,
+                    kick,
                     return_to,
                 } => {
                     let span = tracing::info_span!(
@@ -1978,6 +1979,7 @@ impl Workspace {
                         charter,
                         spawned_by_session_id,
                         resume_existing,
+                        kick,
                         return_to,
                     );
                 }
@@ -2083,6 +2085,7 @@ impl Workspace {
                 charter: role.charter.clone(),
                 spawned_by_session_id: lead_session_id.to_owned(),
                 resume_existing,
+                kick: None,
                 return_to: tx,
             };
             if let Err(err) = self.dispatch(cmd) {
@@ -4761,6 +4764,7 @@ mod workers_state_tests {
             needs_tag: false,
             is_git_repo_at_spawn: false,
             diagnostic: None,
+            kick: None,
         }
     }
 
@@ -4858,6 +4862,7 @@ mod release_session_cascade_tests {
             needs_tag: false,
             is_git_repo_at_spawn: false,
             diagnostic: None,
+            kick: None,
         }
     }
 
@@ -5140,6 +5145,7 @@ mod tag_retry_tests {
             needs_tag,
             is_git_repo_at_spawn: false,
             diagnostic: None,
+            kick: None,
         }
     }
 
@@ -6062,6 +6068,7 @@ mod async_worker_spawn_failure_tests {
             needs_tag: true,
             is_git_repo_at_spawn: is_git,
             diagnostic: None,
+            kick: None,
         }
     }
 
@@ -6407,6 +6414,7 @@ mod git_scan_cwd_tests {
             needs_tag: false,
             is_git_repo_at_spawn: is_git,
             diagnostic: None,
+            kick: None,
         }
     }
 

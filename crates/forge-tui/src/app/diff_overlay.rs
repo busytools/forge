@@ -2276,6 +2276,7 @@ mod tests {
                 needs_tag: false,
                 is_git_repo_at_spawn: true,
                 diagnostic: None,
+                kick: None,
             },
         );
 

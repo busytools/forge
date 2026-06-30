@@ -493,6 +493,7 @@ pub(crate) fn handle_spawn_worker(
     charter: String,
     spawned_by_session_id: String,
     resume_existing: Option<String>,
+    kick: Option<String>,
     return_to: tokio::sync::oneshot::Sender<Result<WorkerSpawnReply, String>>,
 ) {
     // Verify the project exists before claiming a synth key. Probe
@@ -548,6 +549,7 @@ pub(crate) fn handle_spawn_worker(
         needs_tag: !is_resume,
         is_git_repo_at_spawn: is_git,
         diagnostic: None,
+        kick,
     };
     workspace.insert_live_worker(&project_key, entry.clone());
     // Extend the assignment plan so this adhoc worker's account is
@@ -1244,6 +1246,7 @@ config_dir = "~/.claude-stargate"
             needs_tag: false,
             is_git_repo_at_spawn: false,
             diagnostic: None,
+            kick: None,
         }
     }
 
@@ -1601,6 +1604,7 @@ config_dir = "~/.claude-stargate"
                 needs_tag: true,
                 is_git_repo_at_spawn: false,
                 diagnostic: None,
+                kick: None,
             },
         );
 

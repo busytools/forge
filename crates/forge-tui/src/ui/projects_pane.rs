@@ -1848,6 +1848,7 @@ mod tests {
             needs_tag: false,
             is_git_repo_at_spawn: false,
             diagnostic: None,
+            kick: None,
         };
         workspace.insert_live_worker(&project_key, entry);
         // Seed the worker's UiSession with peer_badges so the renderer
@@ -1958,6 +1959,7 @@ mod tests {
             needs_tag: false,
             is_git_repo_at_spawn: false,
             diagnostic: None,
+            kick: None,
         };
         workspace.insert_live_worker(&project_key, entry.clone());
 
@@ -2024,6 +2026,7 @@ mod tests {
                 needs_tag: false,
                 is_git_repo_at_spawn: false,
                 diagnostic: None,
+                kick: None,
             },
         );
         workspace.insert_live_worker(
@@ -2038,6 +2041,7 @@ mod tests {
                 needs_tag: false,
                 is_git_repo_at_spawn: false,
                 diagnostic: None,
+                kick: None,
             },
         );
 
@@ -2161,6 +2165,7 @@ mod tests {
                 needs_tag: false,
                 is_git_repo_at_spawn: false,
                 diagnostic: None,
+                kick: None,
             },
         );
         // Active session is something else - the worker is
@@ -2218,6 +2223,7 @@ mod tests {
                 needs_tag: false,
                 is_git_repo_at_spawn: false,
                 diagnostic: None,
+                kick: None,
             },
         );
         // Active session IS the worker - override must NOT fire.
@@ -2272,6 +2278,7 @@ mod tests {
                 needs_tag: false,
                 is_git_repo_at_spawn: false,
                 diagnostic: None,
+                kick: None,
             },
         );
 
@@ -2352,6 +2359,7 @@ mod tests {
                 needs_tag: false,
                 is_git_repo_at_spawn: false,
                 diagnostic: Some("No conversation found".into()),
+                kick: None,
             },
         );
 
@@ -2400,6 +2408,7 @@ mod tests {
                 needs_tag: false,
                 is_git_repo_at_spawn: false,
                 diagnostic: None,
+                kick: None,
             },
         );
 

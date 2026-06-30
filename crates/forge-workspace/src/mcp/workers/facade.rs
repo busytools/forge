@@ -260,6 +260,7 @@ pub trait WorkerFacade: Send + Sync {
         caller: &SessionKey,
         label: String,
         charter: Option<String>,
+        kick: Option<String>,
     ) -> Result<WorkerSpawnReply, WorkerSpawnError>;
 
     /// Dispatch a `Command::DespawnWorker` and await its result.
@@ -432,6 +433,7 @@ impl WorkerFacade for ProdWorkerFacade {
         caller: &SessionKey,
         label: String,
         charter: Option<String>,
+        kick: Option<String>,
     ) -> Result<WorkerSpawnReply, WorkerSpawnError> {
         let cp = self.caller_project(caller).ok_or(WorkerSpawnError::UnknownCallerProject)?;
         validate_worker_spawn(cp.is_lead, &label)?;
@@ -486,6 +488,7 @@ impl WorkerFacade for ProdWorkerFacade {
             // explicitly requested a NEW worker. Resume is for the
             // engineering-team Connected hook only.
             resume_existing: None,
+            kick,
             return_to: tx,
         };
         if let Err(err) = ws.dispatch(cmd) {
@@ -676,6 +679,11 @@ impl WorkerFacade for ProdWorkerFacade {
     }
 }
 
+/// A captured `MockWorkerFacade::spawn_worker` call:
+/// `(caller, label, resolved charter, kick)`.
+#[cfg(any(test, feature = "testing"))]
+type RecordedSpawnCall = (SessionKey, String, String, Option<String>);
+
 /// Mock for unit-testing the four Tool impls. Captures every
 /// dispatched call into a Vec so tests can assert "tool X
 /// dispatched spawn with these args" without spinning up a real
@@ -696,7 +704,7 @@ pub struct MockWorkerFacade {
     /// this.
     pub workers: parking_lot::Mutex<std::collections::HashMap<String, Vec<WorkerStatus>>>,
     /// Captured `spawn_worker` calls.
-    pub spawn_calls: parking_lot::Mutex<Vec<(SessionKey, String, String)>>,
+    pub spawn_calls: parking_lot::Mutex<Vec<RecordedSpawnCall>>,
     /// Pre-loaded reply for `spawn_worker`. When `None`, the mock
     /// returns `DispatchFailed { message: "no preloaded reply" }`.
     pub spawn_reply: parking_lot::Mutex<Option<Result<WorkerSpawnReply, WorkerSpawnError>>>,
@@ -763,6 +771,7 @@ impl WorkerFacade for MockWorkerFacade {
         caller: &SessionKey,
         label: String,
         charter: Option<String>,
+        kick: Option<String>,
     ) -> Result<WorkerSpawnReply, WorkerSpawnError> {
         let cp = self.caller_project(caller).ok_or(WorkerSpawnError::UnknownCallerProject)?;
         validate_worker_spawn(cp.is_lead, &label)?;
@@ -774,7 +783,7 @@ impl WorkerFacade for MockWorkerFacade {
             Some(_) => return Err(WorkerSpawnError::EmptyCharter),
             None => format!("file-charter:{label}"),
         };
-        self.spawn_calls.lock().push((caller.clone(), label, charter));
+        self.spawn_calls.lock().push((caller.clone(), label, charter, kick));
         self.spawn_reply.lock().clone().unwrap_or(Err(WorkerSpawnError::DispatchFailed {
             message: "no preloaded reply".into(),
         }))
@@ -937,6 +946,7 @@ mod mock_tests {
                 &SessionKey::from_session_id("k1"),
                 "reviewer".into(),
                 Some("charter".into()),
+                None,
             )
             .await;
         assert!(matches!(res, Err(WorkerSpawnError::NotLeadCaller)));
@@ -958,6 +968,7 @@ mod mock_tests {
                 &SessionKey::from_session_id("lead-key"),
                 "reviewer".into(),
                 Some("charter".into()),
+                None,
             )
             .await
             .unwrap();
@@ -989,7 +1000,7 @@ mod mock_tests {
             lead.clone(),
             CallerProject { project_key: crate::ProjectKey::new("forge"), is_lead: true },
         );
-        let res = mock.spawn_worker(&lead, "reviewer".into(), Some("   ".into())).await;
+        let res = mock.spawn_worker(&lead, "reviewer".into(), Some("   ".into()), None).await;
         assert!(matches!(res, Err(WorkerSpawnError::EmptyCharter)));
         assert_eq!(
             mock.spawn_calls.lock().len(),
@@ -1029,6 +1040,7 @@ mod mock_tests {
             needs_tag: false,
             is_git_repo_at_spawn: false,
             diagnostic: None,
+            kick: None,
         };
         // Running / Spawning workers hold the label -> dedup blocks re-spawn.
         let running = vec![entry("implementer", WorkerLiveness::Running)];

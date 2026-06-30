@@ -512,7 +512,8 @@ chat continues here...
     <div class="when">visible: per project in the <a href="#projects-pane">Projects pane</a> when <code>Workspace.live_workers[project_key]</code> is non-empty. Rendered at every tier (Wide / Medium / Narrow overlay).</div>
   </div>
   <div class="surface-body">
-    <p>When a project's lead has spawned workers via <code>mcp__forge__workers__spawn(label, charter)</code>, the projects pane renders them as indented tree-children immediately below the lead row. Worker rows are flat regardless of who spawned them (a worker spawning a sub-worker still appears as a sibling under the same project). Tree-by-spawner is deferred to v2.</p>
+    <p>When a project's lead has spawned workers via <code>mcp__forge__workers__spawn(label, charter, kick?)</code>, the projects pane renders them as indented tree-children immediately below the lead row. Worker rows are flat regardless of who spawned them (a worker spawning a sub-worker still appears as a sibling under the same project). Tree-by-spawner is deferred to v2.</p>
+    <p>The optional <code>kick</code> is the worker's first-turn message: when provided it's delivered the moment the worker connects (through the same rate-limited kick dispatcher the file-driven <code>kick.md</code> uses, preferred over <code>kick.md</code> when both exist), so the worker starts working at once. WITHOUT a <code>kick</code> an inline-charter spawn sits idle until the lead sends a <code>workers__tell</code> - a "begin now" line in the charter does not run on its own. The kick lands as a plain first user turn (identical to a file-driven role's <code>kick.md</code>), stashed on the worker's <code>WorkerEntry</code> at spawn and enqueued in <code>maybe_kick_worker_on_connected</code>.</p>
     <div class="term">
       <pre class="indent">
   <span class="accent-bold">PROJECTS</span>
