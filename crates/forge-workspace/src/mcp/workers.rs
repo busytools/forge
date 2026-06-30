@@ -85,6 +85,8 @@ struct SpawnArgs {
     label: String,
     #[serde(default)]
     charter: Option<String>,
+    #[serde(default)]
+    kick: Option<String>,
 }
 
 #[async_trait::async_trait]
@@ -127,6 +129,10 @@ impl Tool for Spawn {
                     "type": "string",
                     "description": "Optional. Omit to load the role's stored charter from ~/.claude/forge-team/<label>/charter.md (e.g. label=\"implementer\"). Provide it to spawn an ad-hoc worker with an inline mission, threaded into the new session's system prompt. Non-empty after trim when provided.",
                 },
+                "kick": {
+                    "type": "string",
+                    "description": "Optional first-turn message delivered to the worker the moment it connects, so it STARTS WORKING IMMEDIATELY (equivalent to sending a workers__tell right after spawn). STRONGLY RECOMMENDED for ad-hoc spawns: WITHOUT a kick the worker sits idle until you send it a workers__tell - a 'begin now' line in the charter does NOT run on its own. Omit only when you intend to drive the worker yourself with a later workers__tell.",
+                },
             },
             "required": ["label"],
             "additionalProperties": false,
@@ -143,7 +149,7 @@ impl Tool for Spawn {
             Ok(k) => k,
             Err(err) => return tool_error(err.to_string()),
         };
-        match self.facade.spawn_worker(&caller_key, args.label, args.charter).await {
+        match self.facade.spawn_worker(&caller_key, args.label, args.charter, args.kick).await {
             Ok(reply) => {
                 let body = serde_json::json!({
                     "session_id": reply.session_id,
@@ -1246,6 +1252,61 @@ mod tests {
             !required.iter().any(|v| v == "charter"),
             "charter is optional (file-load default)"
         );
+    }
+
+    #[tokio::test]
+    async fn spawn_passes_kick_through_to_facade() {
+        let mock = Arc::new(MockWorkerFacade::new());
+        let caller = fake_key("lead-key");
+        mock.callers.lock().insert(caller.clone(), lead_caller("forge"));
+        *mock.spawn_reply.lock() = Some(Ok(WorkerSpawnReply {
+            session_id: "u".into(),
+            tag: "forge:worker:reviewer".into(),
+        }));
+        let facade: Arc<dyn WorkerFacade> = mock.clone();
+        let tool = Spawn { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({
+                    "label": "reviewer",
+                    "charter": "Review the diff.",
+                    "kick": "Start on PR #42 now.",
+                }),
+            })
+            .await;
+        assert!(!output.is_error, "spawn with kick should not error: {:?}", output.blocks);
+        let calls = mock.spawn_calls.lock();
+        assert_eq!(calls[0].3.as_deref(), Some("Start on PR #42 now."), "kick passes through");
+    }
+
+    #[tokio::test]
+    async fn spawn_without_kick_passes_none() {
+        let mock = Arc::new(MockWorkerFacade::new());
+        let caller = fake_key("lead-key");
+        mock.callers.lock().insert(caller.clone(), lead_caller("forge"));
+        *mock.spawn_reply.lock() =
+            Some(Ok(WorkerSpawnReply { session_id: "u".into(), tag: "t".into() }));
+        let facade: Arc<dyn WorkerFacade> = mock.clone();
+        let tool = Spawn { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
+        let output = tool
+            .call(ToolInput { value: serde_json::json!({ "label": "reviewer", "charter": "Review." }) })
+            .await;
+        assert!(!output.is_error);
+        assert_eq!(mock.spawn_calls.lock()[0].3, None, "absent kick is None");
+    }
+
+    #[test]
+    fn spawn_schema_has_optional_kick() {
+        let mock = MockWorkerFacade::new();
+        let facade = mock.into_arc();
+        let tool = Spawn { facade, caller_key: CallerKeyResolver::from_fixed(fake_key("k")) };
+        let schema = tool.input_schema();
+        assert!(
+            schema["properties"].as_object().expect("properties").contains_key("kick"),
+            "schema exposes the kick property"
+        );
+        let required = schema["required"].as_array().expect("required present");
+        assert!(required.iter().all(|v| v != "kick"), "kick is optional");
     }
 
     #[tokio::test]
