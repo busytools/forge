@@ -1024,6 +1024,7 @@ pub(crate) fn execute_command_via_handle(
         | Command::DeliverPeerPrompt { .. }
         | Command::SpawnWorker { .. }
         | Command::CloseWorker { .. }
+        | Command::DespawnWorker { .. }
         | Command::DeliverWorkerPrompt { .. }
         | Command::DeliverWorkerPromptToLead { .. }) => {
             tracing::warn!(

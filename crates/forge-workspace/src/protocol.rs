@@ -78,6 +78,25 @@ pub struct WorkerSpawnReply {
     pub tag: String,
 }
 
+/// Outcome of a [`Command::DespawnWorker`], sent back to the calling
+/// `workers__despawn` Tool via the command's `respond` oneshot.
+#[derive(Debug)]
+pub enum DespawnResult {
+    /// The worker was torn down (subprocess killed, dropped from
+    /// `live_workers`, inflight asks expired). `worktree_cleanup_warning`
+    /// is `Some` when the post-teardown `git worktree remove` failed -
+    /// the worker is still gone; only the worktree directory lingers.
+    /// Teardown and worktree cleanup are independent: a cleanup failure
+    /// never rolls back the kill.
+    Despawned { worktree_cleanup_warning: Option<String> },
+    /// Despawn refused: the worktree has uncommitted/untracked changes
+    /// or unpushed commits and `force` was not set. Nothing was torn
+    /// down; the worker stays live. `reason` names what is dirty.
+    Blocked { reason: String },
+    /// No live worker matched `label` (already gone or never existed).
+    NotFound,
+}
+
 /// Mutation kind for a `SessionUpdate::WorkerStatusChanged` event.
 /// `Added` and `StatusChanged` carry a fresh `WorkerStatus` snapshot;
 /// `Removed` carries the last-known snapshot for symmetry but the TUI
@@ -226,6 +245,20 @@ pub enum Command {
         project_key: crate::ProjectKey,
         label: String,
     },
+    /// Despawn the worker identified by `label` in `project_key`:
+    /// terminate its agent, drop it from `live_workers`, expire its
+    /// inflight asks, AND clean up its git worktree. Dispatched by the
+    /// `workers__despawn` MCP tool (lead-only). Unlike `CloseWorker`
+    /// (the TUI X-button), this also removes the worker's git worktree:
+    /// a clean worktree is removed; a dirty one (uncommitted/untracked
+    /// or unpushed commits) blocks the despawn unless `force`. The
+    /// outcome flows back via `respond`.
+    DespawnWorker {
+        project_key: crate::ProjectKey,
+        label: String,
+        force: bool,
+        respond: oneshot::Sender<DespawnResult>,
+    },
     /// Deliver a wrapped peer-style prompt to a worker. Same envelope
     /// as `DeliverPeerPrompt` but addressed by worker label within
     /// the caller's project rather than by cross-project name.
@@ -276,6 +309,7 @@ impl Command {
             | Self::DeliverPeerPrompt { .. }
             | Self::SpawnWorker { .. }
             | Self::CloseWorker { .. }
+            | Self::DespawnWorker { .. }
             | Self::DeliverWorkerPrompt { .. }
             | Self::DeliverWorkerPromptToLead { .. } => None,
         }
@@ -360,6 +394,12 @@ impl std::fmt::Debug for Command {
                 .field("project_key", project_key)
                 .field("label", label)
                 .finish(),
+            Self::DespawnWorker { project_key, label, force, .. } => f
+                .debug_struct("DespawnWorker")
+                .field("project_key", project_key)
+                .field("label", label)
+                .field("force", force)
+                .finish_non_exhaustive(),
             Self::DeliverWorkerPrompt { caller, project_key, target_label, .. } => f
                 .debug_struct("DeliverWorkerPrompt")
                 .field("caller", caller)
