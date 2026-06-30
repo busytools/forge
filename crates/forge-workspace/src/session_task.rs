@@ -827,16 +827,41 @@ fn maybe_kick_worker_on_connected(
     let Some((project_key, label)) = parse_worker_synth_key(spawn_key) else {
         return;
     };
+
+    // Resolve the worker's project view once: its `ProjectKey` for the
+    // live-workers lookup below, and its name (namespace) for the
+    // file-driven role-kick resolution further down.
+    let project_view =
+        workspace.list_projects().into_iter().find(|v| v.key.as_str() == project_key);
+
+    // Inline kick from `workers__spawn(kick=...)` takes precedence over
+    // the file-driven `kick.md`: an ad-hoc spawn has no kick.md, so the
+    // WorkerEntry-stashed kick is the only thing that gives it a first
+    // turn. Delivered through the same rate-limited kick dispatcher the
+    // file kicks use.
+    if let Some(view) = project_view.as_ref() {
+        let inline_kick = workspace
+            .list_live_workers(&view.key)
+            .into_iter()
+            .rev()
+            .find(|w| w.label == label)
+            .and_then(|w| w.kick);
+        if let Some(kick) = inline_kick {
+            workspace.enqueue_kick(crate::workspace::KickRequest {
+                session_key: SessionKey::from_session_id(real_session_id.to_owned()),
+                prompt_body: kick,
+            });
+            return;
+        }
+    }
+
     let is_resume = is_resume_worker_synth_key(spawn_key);
 
     // Recover the worker's project namespace (the forge.toml name) so
     // the kick resolves project-first-then-global, matching the charter
     // the worker was spawned with. Fall back to the bare label when the
     // project is gone so global-role workers still kick.
-    let resolved = workspace
-        .list_projects()
-        .into_iter()
-        .find(|v| v.key.as_str() == project_key)
+    let resolved = project_view
         .map(|v| v.name)
         .and_then(|namespace| crate::team::roles::resolve_role(&label, &namespace))
         .unwrap_or_else(|| label.clone());
@@ -1789,6 +1814,93 @@ mod team_hook_tests {
         }
 
         crate::team::set_forge_team_root_for_test(prev);
+    }
+
+    /// Helper: insert a live ad-hoc worker carrying `kick` under the
+    /// seeded project, returning its synth key for `on_connected_for_test`.
+    #[cfg(test)]
+    fn seed_adhoc_worker_with_kick(
+        workspace: &Arc<Workspace>,
+        label: &str,
+        kick: Option<String>,
+    ) -> SessionKey {
+        workspace.seed_test_project_with_team("forge", "/tmp/forge", &[]);
+        let project_key = workspace
+            .list_projects()
+            .into_iter()
+            .find(|v| v.name == "forge")
+            .expect("seeded project present")
+            .key;
+        workspace.insert_live_worker(
+            &project_key,
+            crate::mcp::workers::types::WorkerEntry {
+                label: label.to_owned(),
+                charter: "ad-hoc".into(),
+                session_key: SessionKey::from_session_id("worker-uuid"),
+                status: forge_primitives::WorkerLiveness::Running,
+                spawned_at: std::time::SystemTime::UNIX_EPOCH,
+                spawned_by_session_id: "lead".into(),
+                needs_tag: false,
+                is_git_repo_at_spawn: false,
+                diagnostic: None,
+                kick,
+            },
+        );
+        SessionKey::from_session_id(format!(
+            "__spawn_worker_{}_{label}_abc__",
+            project_key.as_str()
+        ))
+    }
+
+    /// An inline `workers__spawn(kick=...)` worker (non-role label, no
+    /// kick.md) gets its kick delivered as the first turn, verbatim,
+    /// through the same dispatcher the file kicks use.
+    #[tokio::test(start_paused = true)]
+    async fn worker_with_inline_kick_dispatches_it_as_first_turn() {
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        workspace.enable_test_dispatch_intercept();
+        workspace.start_kick_dispatcher();
+        let synth = seed_adhoc_worker_with_kick(
+            &workspace,
+            "scratch",
+            Some("Begin: triage the failing test now.".into()),
+        );
+
+        on_connected_for_test(&workspace, &synth, "worker-uuid");
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+
+        let dispatched = workspace.drain_test_dispatch_buffer();
+        let prompts: Vec<&Command> =
+            dispatched.iter().filter(|c| matches!(c, Command::Prompt { .. })).collect();
+        assert_eq!(prompts.len(), 1, "inline-kick worker gets exactly one kick");
+        if let Command::Prompt { key, text, .. } = prompts[0] {
+            assert_eq!(key.as_str(), "worker-uuid", "kick targets the worker's real session id");
+            assert_eq!(
+                text, "Begin: triage the failing test now.",
+                "inline kick delivered verbatim",
+            );
+        }
+    }
+
+    /// An ad-hoc worker with NO inline kick and no kick.md gets no
+    /// kick - it idles until the lead sends a workers__tell (today's
+    /// behavior, unchanged).
+    #[tokio::test(start_paused = true)]
+    async fn worker_without_inline_kick_for_adhoc_label_does_not_kick() {
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        workspace.enable_test_dispatch_intercept();
+        workspace.start_kick_dispatcher();
+        let synth = seed_adhoc_worker_with_kick(&workspace, "scratch", None);
+
+        on_connected_for_test(&workspace, &synth, "worker-uuid");
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+
+        let dispatched = workspace.drain_test_dispatch_buffer();
+        let prompts: Vec<&Command> =
+            dispatched.iter().filter(|c| matches!(c, Command::Prompt { .. })).collect();
+        assert!(prompts.is_empty(), "no kick without an inline kick or a kick.md");
     }
 
     /// Worker Connected with a label NOT matching a built-in role
