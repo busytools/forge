@@ -73,6 +73,20 @@ pub(super) fn pointer_shape_at(app: &App, mouse: MouseEvent) -> PointerShape {
     PointerShape::Default
 }
 
+/// Decide whether the OS pointer shape needs (re)writing. Returns the
+/// `OSC 22` bytes to emit and records the shape as emitted, or `None`
+/// when it is unchanged since the last write (de-dupe - a still pointer
+/// costs nothing). The first call after construction always emits
+/// because `emitted_pointer_shape` starts `None`, so the arrow is set at
+/// startup rather than left to the terminal's text-surface I-beam.
+pub(crate) fn take_pointer_shape_emit(app: &mut App) -> Option<&'static str> {
+    if app.emitted_pointer_shape == Some(app.pointer_shape) {
+        return None;
+    }
+    app.emitted_pointer_shape = Some(app.pointer_shape);
+    Some(app.pointer_shape.osc())
+}
+
 struct MouseSelectionPoint {
     kind: SelectionKind,
     point: SelectionPoint,
@@ -1303,6 +1317,31 @@ mod tests {
         });
         handle_mouse_event(&mut app, moved(4, 22));
         assert_eq!(app.pointer_shape, PointerShape::Hand, "no shape change mid-drag");
+    }
+
+    #[test]
+    fn first_pointer_emit_fires_even_when_shape_is_default() {
+        // At construction `emitted_pointer_shape` is `None`, so the first
+        // flush emits the default (arrow) shape even though the desired
+        // shape already equals the default. Without this the terminal
+        // keeps its own text-surface I-beam until the first hover.
+        let mut app = App::test_default();
+        assert_eq!(app.emitted_pointer_shape, None);
+        assert_eq!(app.pointer_shape, PointerShape::Default);
+
+        let first = take_pointer_shape_emit(&mut app);
+        assert_eq!(first, Some(PointerShape::Default.osc()));
+        assert_eq!(app.emitted_pointer_shape, Some(PointerShape::Default));
+
+        // A second pass with an unchanged shape must not re-emit.
+        let second = take_pointer_shape_emit(&mut app);
+        assert_eq!(second, None);
+        assert_eq!(app.emitted_pointer_shape, Some(PointerShape::Default));
+
+        // A changed shape emits again, then de-dupes.
+        app.pointer_shape = PointerShape::Text;
+        assert_eq!(take_pointer_shape_emit(&mut app), Some(PointerShape::Text.osc()));
+        assert_eq!(take_pointer_shape_emit(&mut app), None);
     }
 
     /// Per-project click-gate: clicking a sibling project in the
