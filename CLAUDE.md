@@ -43,9 +43,14 @@ forge-tui        ──→ primitives + workspace       (no direct agent dep)
   (forge-sdk ↔ claude CLI). Replay-based offline tests + opt-in live
   capture.
 
-Multiple sessions = one `forge` process per tmux/zellij pane, with
-multiple `Workspace`-managed sessions inside that process. No daemon,
-no shared state across processes.
+forge runs **single-instance per config dir**: one `forge` process owns
+a given config dir (`$CLAUDE_CONFIG_DIR`, else `~/.claude`) and manages
+many `Workspace` sessions inside it. A second `forge` on the same config
+dir is refused at boot with the holder's PID - an exclusive `flock` on
+`<config_dir>/forge.lock`, released automatically on exit/crash; the
+`WorkspaceError::AlreadyRunning` hard-fail mirrors the proxy one. Genuinely
+separate profiles / config dirs still coexist. No daemon, no cross-process
+shared state.
 
 ## Crate placement guide (where does my new code go?)
 

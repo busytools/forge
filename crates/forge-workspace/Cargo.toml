@@ -44,6 +44,7 @@ tracing = { workspace = true }
 parking_lot = { workspace = true }
 dirs = { workspace = true }
 uuid = { workspace = true }
+rustix = { workspace = true }
 
 [dev-dependencies]
 forge-agent = { workspace = true, features = ["testing"] }

@@ -218,6 +218,13 @@ pub struct Workspace {
     /// `new()` and therefore the proxy boot. Tests don't drive real
     /// subprocesses, so the absence is fine.
     proxy: Option<forge_agent::proxy::ProxyHandle>,
+    /// Single-instance lock file held open for the process lifetime.
+    /// `Workspace::new` takes an exclusive flock on `<config_dir>/forge.lock`
+    /// so a second forge on the same config dir refuses to start; the
+    /// flock releases when this `File` drops (Workspace teardown / process
+    /// exit / crash). Held purely for that side effect - never read.
+    /// `None` in `testing_stub` and on the degraded acquire path.
+    _single_instance_lock: Option<std::fs::File>,
     /// Per-project in-flight guard for the engineering-team Connected
     /// hook's catalog scan. Inserted synchronously when
     /// `spawn_team_for_lead_with_catalog_scan` starts; removed when
@@ -365,6 +372,19 @@ impl Workspace {
     pub async fn new(config_dir: PathBuf) -> Result<Self, WorkspaceError> {
         let mut config = load_from_dir(&config_dir)?;
 
+        // Single-instance guard: forge runs one process per config dir.
+        // Take it BEFORE the proxy boot so a doomed second instance
+        // refuses without binding proxy ports. The held File is stored
+        // on `Self` for the process lifetime; flock auto-releases on
+        // exit/crash. A second forge on the same config dir hard-fails
+        // here exactly like ProxyUnavailable does below.
+        let single_instance_lock = match crate::single_instance::acquire(&config_dir) {
+            Ok(lock) => lock,
+            Err(crate::single_instance::AcquireError::AlreadyRunning { pid }) => {
+                return Err(WorkspaceError::AlreadyRunning { pid });
+            }
+        };
+
         // Boot the wire-classification rewriter proxy BEFORE any
         // session can spawn. Hard-fail policy: if the proxy can't
         // bind / load its CA / build the TLS context, forge refuses
@@ -445,6 +465,7 @@ impl Workspace {
             kick_dispatcher_tx,
             kick_dispatcher_rx_slot: Mutex::new(Some(kick_dispatcher_rx)),
             proxy: Some(proxy),
+            _single_instance_lock: single_instance_lock,
             team_spawn_in_flight: Mutex::new(std::collections::HashSet::new()),
             #[cfg(any(test, feature = "testing"))]
             command_intercept: Mutex::new(None),
@@ -3629,6 +3650,7 @@ impl Workspace {
             // testing_stub skips Workspace::new and therefore the
             // proxy boot. Tests don't drive real subprocesses.
             proxy: None,
+            _single_instance_lock: None,
             team_spawn_in_flight: Mutex::new(std::collections::HashSet::new()),
             command_intercept: Mutex::new(None),
             test_extra_projects: Mutex::new(Vec::new()),

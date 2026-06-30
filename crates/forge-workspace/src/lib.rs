@@ -67,6 +67,7 @@ mod error;
 pub(crate) mod mcp;
 pub mod protocol;
 mod session_task;
+mod single_instance;
 mod spawn;
 mod target;
 pub mod team;
