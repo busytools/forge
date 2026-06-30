@@ -439,8 +439,11 @@ pub struct App {
     /// never triggers a redraw.
     pub(crate) pointer_shape: crate::app::events::mouse::PointerShape,
     /// Last pointer shape actually written to the terminal (de-dupes
-    /// OSC 22 writes; a still pointer costs nothing).
-    pub(crate) emitted_pointer_shape: crate::app::events::mouse::PointerShape,
+    /// OSC 22 writes; a still pointer costs nothing). `None` until the
+    /// first emit, so the initial flush always fires - that's what sets
+    /// the arrow at startup instead of inheriting the terminal's own
+    /// text-surface I-beam default.
+    pub(crate) emitted_pointer_shape: Option<crate::app::events::mouse::PointerShape>,
     /// Area where the Inspector pane's **scrollable body** was last
     /// rendered (excluding the pinned banner + rule above it). Used
     /// by the mouse-wheel handler to detect "wheel scrolled while
@@ -2935,7 +2938,7 @@ impl App {
             rendered_input_lines: Vec::new(),
             rendered_input_area: ratatui::layout::Rect::default(),
             pointer_shape: crate::app::events::mouse::PointerShape::Default,
-            emitted_pointer_shape: crate::app::events::mouse::PointerShape::Default,
+            emitted_pointer_shape: None,
             rendered_inspector_body_area: ratatui::layout::Rect::default(),
             rendered_projects_pane_body_area: ratatui::layout::Rect::default(),
             paste_burst: super::paste_burst::PasteBurstDetector::new(),

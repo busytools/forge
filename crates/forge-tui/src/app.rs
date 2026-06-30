@@ -167,12 +167,8 @@ pub(crate) fn resume_terminal() {
 /// pointer costs nothing - and never touches the ratatui frame (hover
 /// is a terminal side-channel, off the render path).
 fn flush_pointer_shape(app: &mut App) {
-    if app.pointer_shape != app.emitted_pointer_shape {
-        let _ = crossterm::execute!(
-            std::io::stdout(),
-            crossterm::style::Print(app.pointer_shape.osc())
-        );
-        app.emitted_pointer_shape = app.pointer_shape;
+    if let Some(osc) = crate::app::events::mouse::take_pointer_shape_emit(app) {
+        let _ = crossterm::execute!(std::io::stdout(), crossterm::style::Print(osc));
     }
 }
 

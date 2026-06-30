@@ -953,7 +953,7 @@ chat continues here...
 
 <p class="intro">Every message in the scrollback belongs to one role. Roles render with different visual treatments today.</p>
 
-<p>Hovering the chat shows an I-beam pointer over selectable text and a hand over clickable blocks (tool calls, group headers, the scrollbar, pane rows), so you can tell where a drag will select versus toggle. The shape is the OS pointer set via <code>OSC 22</code> (forge enables any-motion mouse tracking to drive it); it is not rendered by forge, so hovering never triggers a redraw.</p>
+<p>Hovering the chat shows an I-beam pointer over selectable text and a hand over clickable blocks (tool calls, group headers, the scrollbar, pane rows), so you can tell where a drag will select versus toggle. The shape is the OS pointer set via <code>OSC 22</code> (forge enables any-motion mouse tracking to drive it); it is not rendered by forge, so hovering never triggers a redraw. forge emits the default (arrow) shape once at startup, so the pointer is correct over chrome before the first hover instead of showing the terminal's own text-surface I-beam.</p>
 
 <div class="surface">
   <div class="surface-head">
