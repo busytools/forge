@@ -1990,6 +1990,16 @@ impl Workspace {
                     let _enter = span.enter();
                     spawn::handle_close_worker(self, &project_key, &label);
                 }
+                Command::DespawnWorker { project_key, label, force, respond } => {
+                    let span = tracing::info_span!(
+                        "despawn_worker",
+                        project = %project_key.as_str(),
+                        label = %label,
+                        force,
+                    );
+                    let _enter = span.enter();
+                    spawn::handle_despawn_worker(self, &project_key, &label, force, respond);
+                }
                 Command::DeliverWorkerPrompt { caller, project_key, target_label, wrapped } => {
                     let span = tracing::info_span!(
                         "deliver_worker_prompt",
