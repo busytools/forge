@@ -837,9 +837,11 @@ chat continues here...
     <div class="when">visible: <code>ActiveView::Launchpad</code> only</div>
   </div>
   <div class="surface-body">
-    <p>Three vertical zones: identity block (pinned near the top), picker box (centered in the gap between the identity block and the footer, extended to use most of that height and capped so the wordmark + footer always stay on screen), and a single-row footer hint anchored to the terminal's bottom edge. The box windows its rows by a scroll offset that follows the selection, so a project past the fold scrolls into view instead of being clipped; a scrollbar appears on the box's right edge only when the list overflows. Short lists still render short + centered.</p>
+    <p>The identity block (wordmark + version + optional update line + account chips) and the picker box ride together as one <strong>vertically-centered unit</strong>; the single-row footer hint stays anchored to the terminal's bottom edge. The leftover height above the footer splits roughly symmetrically above the wordmark and below the box, so there's no dead gap between the wordmark and the list. The box grows to use most of the height left once the identity block is accounted for (capped so the block keeps breathing) and windows its rows by a scroll offset that follows the selection, so a project past the fold scrolls into view instead of being clipped; a scrollbar appears on the box's right edge only when the list overflows. On a long list or short screen the block top-aligns and the box scrolls; short lists render short and centered.</p>
     <div class="term">
       <pre class="indent">
+
+
             <span class="rust-orange bold">███████╗ ██████╗ ██████╗  ██████╗ ███████╗</span>
             <span class="rust-orange bold">██╔════╝██╔═══██╗██╔══██╗██╔════╝ ██╔════╝</span>
             <span class="rust-orange bold">█████╗  ██║   ██║██████╔╝██║  ███╗█████╗  </span>

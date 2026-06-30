@@ -49,13 +49,14 @@ const PICKER_WIDTH: u16 = 56;
 /// (Spawning) selections; unselected rows render two spaces.
 const SELECTION_PREFIX_WIDTH: usize = 2;
 
-/// Rows of breathing above the wordmark so it pins near the top of
-/// the screen rather than sitting flush at row 0.
-const PICKER_TOP_MARGIN: u16 = 1;
+/// Vertical gap between the identity block and the picker box. Zero:
+/// the picker's top framing rule already separates it from the
+/// identity block, so no spacer row is needed.
+const IDENTITY_PICKER_GAP: u16 = 0;
 
-/// Total vertical breathing reserved around the picker box (split
-/// above + below by the centering) so the wordmark + footer stay on
-/// screen even when the list fills the available height.
+/// Vertical breathing the picker box reserves on a full list: it caps
+/// the box below the region height so the centered block keeps a
+/// margin above the wordmark and below the box before the footer.
 const PICKER_BOX_MARGIN: u16 = 4;
 
 /// What pressing Enter on this row does. Drives the click handlers
@@ -260,26 +261,32 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let picker_inner_width = PICKER_WIDTH.min(area.width.saturating_sub(8));
     let picker_outer_width = picker_inner_width;
 
-    // Vertical layout: identity block pinned near the top, footer hint
-    // pinned to the last row, picker box centered in the gap between
-    // them. The box extends to most of that gap (capped so the
-    // wordmark + footer always stay on screen) and scrolls internally
-    // when the project list overflows.
+    // Build the scrollable picker content once so render can size the
+    // box before placing the whole block.
+    let (content_lines, selected_flat) = build_picker_content(app, &rows, picker_outer_width);
+    let content_count = content_lines.len();
+
+    // Vertical layout: the identity block + picker box ride together as
+    // one centered unit; the footer hint stays pinned to the last row.
     let identity_height = identity_block_height(app);
     let footer_height: u16 = 1;
-
-    let identity_top = area.y + PICKER_TOP_MARGIN;
-    render_identity_block(frame, area, app, identity_top);
-
-    let identity_bottom = identity_top + identity_height;
     let footer_top = area.y + area.height.saturating_sub(footer_height);
+    let available = footer_top.saturating_sub(area.y);
+
+    let picker_region = available.saturating_sub(identity_height + IDENTITY_PICKER_GAP);
+    let box_height = picker_box_height(content_count, picker_region);
+
+    let block_top =
+        area.y + block_top_offset(area.height, identity_height, box_height, footer_height);
+    render_identity_block(frame, area, app, block_top);
+
     let region = Rect {
         x: area.x + area.width.saturating_sub(picker_outer_width) / 2,
-        y: identity_bottom,
+        y: block_top + identity_height + IDENTITY_PICKER_GAP,
         width: picker_outer_width,
-        height: footer_top.saturating_sub(identity_bottom),
+        height: box_height,
     };
-    render_picker(frame, region, app, &rows);
+    render_picker(frame, region, app, content_lines, selected_flat);
 
     render_footer(
         frame,
@@ -287,6 +294,35 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         app,
         &rows,
     );
+}
+
+/// Picker box height (the framed list area, including its two rule
+/// rows) for `content_count` lines, given `region_height` - the most
+/// vertical space the box may occupy. The box grows to the content
+/// plus its two framing rules, then caps at
+/// `region_height - PICKER_BOX_MARGIN` so a long list leaves the
+/// centered block breathing, never exceeding `region_height` itself.
+fn picker_box_height(content_count: usize, region_height: u16) -> u16 {
+    let max_box = region_height.saturating_sub(PICKER_BOX_MARGIN).max(3);
+    let desired_box = u16::try_from(content_count).unwrap_or(u16::MAX).saturating_add(2);
+    desired_box.min(max_box).min(region_height)
+}
+
+/// Vertical offset (rows below `area.y`) at which the centered block -
+/// identity + [`IDENTITY_PICKER_GAP`] + picker box - begins, so the
+/// whole block sits centered in the space above the footer. A block
+/// taller than that space clamps to 0 (top-aligned); the picker box
+/// cap keeps it from overlapping the footer.
+fn block_top_offset(
+    area_height: u16,
+    identity_height: u16,
+    box_height: u16,
+    footer_height: u16,
+) -> u16 {
+    let available = area_height.saturating_sub(footer_height);
+    let total_block =
+        identity_height.saturating_add(IDENTITY_PICKER_GAP).saturating_add(box_height);
+    available.saturating_sub(total_block) / 2
 }
 
 /// Line count for the identity block: 6 wordmark rows, the version
@@ -453,27 +489,26 @@ fn build_picker_content(
     (lines, selected_flat)
 }
 
-/// Render the picker box centered in `area` (the gap between the
-/// identity block and the footer). The box extends to most of that
-/// gap, capped by [`BOX_MARGIN`]; two of its rows are the top/bottom
-/// rules and the rest is the list viewport, which windows the content
-/// by `scroll_offset` so the selected project stays visible.
-fn render_picker(frame: &mut Frame, area: Rect, app: &mut App, rows: &[PickerRow]) {
+/// Paint the picker box into `area`, which `render` has already sized
+/// and placed (so the box top-aligns within the rect). The first and
+/// last rows are the top/bottom rules; the rest is the list viewport,
+/// which windows `content_lines` by `scroll_offset` so the selected
+/// project stays visible. A scrollbar thumb appears on overflow.
+fn render_picker(
+    frame: &mut Frame,
+    area: Rect,
+    app: &mut App,
+    content_lines: Vec<Line<'static>>,
+    selected_flat: Option<usize>,
+) {
     if area.width == 0 || area.height == 0 {
         return;
     }
     let dim = Style::default().fg(theme::DIM);
-
-    let (content_lines, selected_flat) = build_picker_content(app, rows, area.width);
     let content_count = content_lines.len();
 
-    // Breathing reserved around the box so the wordmark + footer stay
-    // clear even on a full list.
-    let max_box = area.height.saturating_sub(PICKER_BOX_MARGIN).max(3);
-    let desired_box = u16::try_from(content_count).unwrap_or(u16::MAX).saturating_add(2);
-    let box_height = desired_box.min(max_box).min(area.height);
-    let viewport_h = box_height.saturating_sub(2);
-    let box_top = area.y + area.height.saturating_sub(box_height) / 2;
+    let box_top = area.y;
+    let viewport_h = area.height.saturating_sub(2);
 
     let offset = reconcile_scroll(
         selected_flat.unwrap_or(0),
@@ -1152,5 +1187,58 @@ mod tests {
                 "{ready:?} should be clickable into chat",
             );
         }
+    }
+
+    // Vertical placement: the whole block (identity + gap + picker box)
+    // is centered in the space above the footer; a block taller than
+    // that space top-aligns. (IDENTITY_PICKER_GAP is 0.)
+    #[test]
+    fn block_top_offset_centers_a_short_block() {
+        // area 40, footer 1 -> available 39; block = 8 + 10 = 18;
+        // offset = (39 - 18) / 2 = 10.
+        assert_eq!(block_top_offset(40, 8, 10, 1), 10);
+    }
+
+    #[test]
+    fn block_top_offset_top_aligns_a_tall_block() {
+        // area 20, footer 1 -> available 19; block = 8 + 15 = 23 > 19
+        // -> top-aligned at 0.
+        assert_eq!(block_top_offset(20, 8, 15, 1), 0);
+    }
+
+    #[test]
+    fn block_top_offset_never_overlaps_footer() {
+        // A long list, capped by picker_box_height, still leaves the
+        // placed block clear of the footer slot.
+        let area_height = 40u16;
+        let footer_height = 1u16;
+        let identity_height = 8u16;
+        let available = area_height - footer_height;
+        let region = available - identity_height - IDENTITY_PICKER_GAP;
+        let box_height = picker_box_height(1000, region);
+        let offset = block_top_offset(area_height, identity_height, box_height, footer_height);
+        let block_bottom = offset + identity_height + IDENTITY_PICKER_GAP + box_height;
+        assert!(block_bottom <= available, "block must not reach into the footer row");
+    }
+
+    // Box sizing preserves the existing cap: grow to content + 2
+    // framing rules, cap at region - PICKER_BOX_MARGIN, never exceed
+    // the region.
+    #[test]
+    fn picker_box_height_fits_short_content() {
+        assert_eq!(picker_box_height(5, 30), 7);
+    }
+
+    #[test]
+    fn picker_box_height_caps_long_content() {
+        // 30 - PICKER_BOX_MARGIN(4) = 26.
+        assert_eq!(picker_box_height(100, 30), 26);
+    }
+
+    #[test]
+    fn picker_box_height_floors_on_a_tiny_region() {
+        // The 3-row minimum holds, but never beyond the region itself.
+        assert_eq!(picker_box_height(100, 4), 3);
+        assert_eq!(picker_box_height(100, 2), 2);
     }
 }
