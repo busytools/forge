@@ -679,6 +679,11 @@ impl WorkerFacade for ProdWorkerFacade {
     }
 }
 
+/// A captured `MockWorkerFacade::spawn_worker` call:
+/// `(caller, label, resolved charter, kick)`.
+#[cfg(any(test, feature = "testing"))]
+type RecordedSpawnCall = (SessionKey, String, String, Option<String>);
+
 /// Mock for unit-testing the four Tool impls. Captures every
 /// dispatched call into a Vec so tests can assert "tool X
 /// dispatched spawn with these args" without spinning up a real
@@ -699,7 +704,7 @@ pub struct MockWorkerFacade {
     /// this.
     pub workers: parking_lot::Mutex<std::collections::HashMap<String, Vec<WorkerStatus>>>,
     /// Captured `spawn_worker` calls.
-    pub spawn_calls: parking_lot::Mutex<Vec<(SessionKey, String, String, Option<String>)>>,
+    pub spawn_calls: parking_lot::Mutex<Vec<RecordedSpawnCall>>,
     /// Pre-loaded reply for `spawn_worker`. When `None`, the mock
     /// returns `DispatchFailed { message: "no preloaded reply" }`.
     pub spawn_reply: parking_lot::Mutex<Option<Result<WorkerSpawnReply, WorkerSpawnError>>>,

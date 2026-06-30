@@ -106,8 +106,14 @@ impl Tool for Spawn {
          ~/.claude/forge-team/<label>/charter.md (e.g. \
          label=\"implementer\"), or provide it to spawn an ad-hoc \
          worker with an inline mission threaded into the new session's \
-         system prompt. Returns the worker's session_id and tag \
-         (`forge:worker:<label>`). At most one live worker per label - \
+         system prompt. PROVIDE `kick` TO START THE WORKER IMMEDIATELY: \
+         the kick is delivered as the worker's first user-turn the moment \
+         it connects, so it begins working at once. WITHOUT a kick the \
+         worker sits idle until you send it a workers__tell - a 'begin \
+         now' line in the charter does NOT run on its own, so pass `kick` \
+         for any ad-hoc spawn you want to start now. Returns the worker's \
+         session_id and tag (`forge:worker:<label>`). At most one live \
+         worker per label - \
          if one already exists, this errors and you should message it \
          with workers__tell / workers__ask instead of spawning again. \
          The label 'lead' is reserved (used by workers__tell / \
@@ -1270,13 +1276,17 @@ mod tests {
                 value: serde_json::json!({
                     "label": "reviewer",
                     "charter": "Review the diff.",
-                    "kick": "Start on PR #42 now.",
+                    "kick": "Begin: triage the failing test now.",
                 }),
             })
             .await;
         assert!(!output.is_error, "spawn with kick should not error: {:?}", output.blocks);
         let calls = mock.spawn_calls.lock();
-        assert_eq!(calls[0].3.as_deref(), Some("Start on PR #42 now."), "kick passes through");
+        assert_eq!(
+            calls[0].3.as_deref(),
+            Some("Begin: triage the failing test now."),
+            "kick passes through",
+        );
     }
 
     #[tokio::test]
@@ -1289,7 +1299,9 @@ mod tests {
         let facade: Arc<dyn WorkerFacade> = mock.clone();
         let tool = Spawn { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
         let output = tool
-            .call(ToolInput { value: serde_json::json!({ "label": "reviewer", "charter": "Review." }) })
+            .call(ToolInput {
+                value: serde_json::json!({ "label": "reviewer", "charter": "Review." }),
+            })
             .await;
         assert!(!output.is_error);
         assert_eq!(mock.spawn_calls.lock()[0].3, None, "absent kick is None");

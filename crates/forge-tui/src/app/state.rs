@@ -3846,6 +3846,7 @@ mod tests {
                 needs_tag: false,
                 is_git_repo_at_spawn: false,
                 diagnostic: None,
+                kick: None,
             },
         );
 
