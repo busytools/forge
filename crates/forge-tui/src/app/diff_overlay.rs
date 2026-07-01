@@ -3183,6 +3183,23 @@ mod tests {
     }
 
     #[test]
+    fn step_commit_from_all_changes_reenters_first_commit() {
+        let mut state = commit_mode_state();
+        // Sit on "All changes" (cache it so the switch is synchronous).
+        state.whole_diff_cache = Some(CachedScan {
+            files: vec![one_file("x.rs", FileStatus::Modified)],
+            scanner_ok: true,
+        });
+        state.select_scope(DiffScope::WholeDiff);
+        assert_eq!(state.scope, DiffScope::WholeDiff);
+        // Backward from the whole-diff view re-enters the stepper at the
+        // first commit (the one WholeDiff → Commit path).
+        assert_eq!(state.step_commit(false), Some(NavOutcome::Ready));
+        assert_eq!(state.scope, DiffScope::Commit(0));
+        assert_eq!(state.files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(), vec!["a.rs"]);
+    }
+
+    #[test]
     fn comments_accumulate_across_commits_but_count_current_scope() {
         let mut state = commit_mode_state();
         state.comments.push(HunkComment {
