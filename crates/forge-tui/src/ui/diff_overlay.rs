@@ -319,7 +319,8 @@ fn jump_commit_line(
     let right_w = right.width();
     let fixed = index_label.width() + short_sha.width() + 1;
     let gap = if right_w > 0 { 2 } else { 0 };
-    let subj_budget = inner.saturating_sub(fixed).saturating_sub(right_w).saturating_sub(gap).max(1);
+    let subj_budget =
+        inner.saturating_sub(fixed).saturating_sub(right_w).saturating_sub(gap).max(1);
     let subject_fitted = fit_box_content(subject, subj_budget);
     let used = fixed + subject_fitted.width() + right_w;
     let pad = inner.saturating_sub(used);
@@ -363,7 +364,10 @@ fn render_jump_dropdown(frame: &mut Frame, area: Rect, overlay: &DiffOverlayStat
     let inner = bw.saturating_sub(4);
 
     let mut lines: Vec<Line<'static>> = Vec::new();
-    lines.push(Line::from(Span::styled(format!("\u{250c}{}\u{2510}", "\u{2500}".repeat(bw.saturating_sub(2))), dim)));
+    lines.push(Line::from(Span::styled(
+        format!("\u{250c}{}\u{2510}", "\u{2500}".repeat(bw.saturating_sub(2))),
+        dim,
+    )));
 
     // "All changes" row.
     {
@@ -373,7 +377,8 @@ fn render_jump_dropdown(frame: &mut Frame, area: Rect, overlay: &DiffOverlayStat
         let right = jump_row_marker(whole_count, current);
         let right_w = right.width();
         let gap = if right_w > 0 { 2 } else { 0 };
-        let hint_budget = inner.saturating_sub(base.width()).saturating_sub(right_w).saturating_sub(gap);
+        let hint_budget =
+            inner.saturating_sub(base.width()).saturating_sub(right_w).saturating_sub(gap);
         let hint = fit_box_content(" (whole branch, one diff)", hint_budget);
         let used = base.width() + hint.width() + right_w;
         let pad = inner.saturating_sub(used);
@@ -410,15 +415,17 @@ fn render_jump_dropdown(frame: &mut Frame, area: Rect, overlay: &DiffOverlayStat
         ));
     }
 
-    lines.push(Line::from(Span::styled(format!("\u{2514}{}\u{2518}", "\u{2500}".repeat(bw.saturating_sub(2))), dim)));
+    lines.push(Line::from(Span::styled(
+        format!("\u{2514}{}\u{2518}", "\u{2500}".repeat(bw.saturating_sub(2))),
+        dim,
+    )));
 
     let max_h = area.height.saturating_sub(STEPPER_HEIGHT);
     let height = u16::try_from(lines.len()).unwrap_or(u16::MAX).min(max_h);
     if height == 0 {
         return;
     }
-    let rect =
-        Rect { x: area.x + indent, y: area.y + STEPPER_HEIGHT, width: box_width, height };
+    let rect = Rect { x: area.x + indent, y: area.y + STEPPER_HEIGHT, width: box_width, height };
     frame.render_widget(Paragraph::new(lines), rect);
 }
 
@@ -2131,10 +2138,10 @@ mod tests {
 
     #[test]
     fn render_stepper_shows_branch_position_and_stashes_jump_span() {
-        use ratatui::Terminal;
-        use ratatui::backend::TestBackend;
         use crate::app::diff_overlay::DiffScope;
         use forge_workspace::env::git_diff::hunks::CommitMeta;
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
 
         let mut state = DiffOverlayState::new(
             std::path::PathBuf::from("/tmp"),
@@ -2143,8 +2150,16 @@ mod tests {
         );
         state.branch = Some("feat/x".to_owned());
         state.commits = vec![
-            CommitMeta { sha: "a".into(), short_sha: "a3f9c1e".into(), subject: "fix threshold".into() },
-            CommitMeta { sha: "b".into(), short_sha: "b90bbef".into(), subject: "wire banner".into() },
+            CommitMeta {
+                sha: "a".into(),
+                short_sha: "a3f9c1e".into(),
+                subject: "fix threshold".into(),
+            },
+            CommitMeta {
+                sha: "b".into(),
+                short_sha: "b90bbef".into(),
+                subject: "wire banner".into(),
+            },
         ];
         state.scope = DiffScope::Commit(0);
 
@@ -2168,7 +2183,10 @@ mod tests {
         assert!(row1.contains("1 / 2"), "position");
         assert!(row1.contains("a3f9c1e"), "current commit's sha");
         assert!(row1.contains("jump"), "jump affordance");
-        assert!(state.jump_hint_span.is_some(), "the jump click span is stashed for the mouse handler");
+        assert!(
+            state.jump_hint_span.is_some(),
+            "the jump click span is stashed for the mouse handler"
+        );
     }
 
     #[test]

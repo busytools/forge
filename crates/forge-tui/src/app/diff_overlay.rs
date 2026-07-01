@@ -452,13 +452,13 @@ pub fn open_with_target(app: &mut App, target: String) {
     let cwd = resolve_active_diff_cwd(app, &cwd_raw);
     // Branch under review for the stepper header, from the Inspector
     // snapshot (best-effort; `None` on detached HEAD / no snapshot).
-    let branch = app
-        .active_session()
-        .and_then(|s| s.git_diff_snapshot.as_ref())
-        .and_then(|snap| match &snap.branch {
-            forge_primitives::git::GitBranch::Named(name) => Some(name.clone()),
-            _ => None,
-        });
+    let branch =
+        app.active_session().and_then(|s| s.git_diff_snapshot.as_ref()).and_then(
+            |snap| match &snap.branch {
+                forge_primitives::git::GitBranch::Named(name) => Some(name.clone()),
+                _ => None,
+            },
+        );
     // Bump the seq before spawning so the new scan's events
     // outrank anything still in flight from an earlier /diff call.
     // Old events arriving on the channel after this bump will be
@@ -862,8 +862,8 @@ impl DiffOverlayState {
     }
 
     /// Point the overlay at `scope`, closing the jump dropdown. If the
-    /// scope's hunks are cached, swap them in and report [`NavOutcome::Ready`];
-    /// otherwise mark it loading and report [`NavOutcome::NeedsScan`] so
+    /// scope's hunks are cached, swap them in and report `NavOutcome::Ready`;
+    /// otherwise mark it loading and report `NavOutcome::NeedsScan` so
     /// the caller can spawn the lazy fetch. Commit scopes never carry
     /// untracked files (a commit's diff is closed over its own changes),
     /// so the untracked count is 0.
@@ -949,8 +949,11 @@ impl DiffOverlayState {
     /// Move the dropdown highlight (clamped to the row range).
     pub fn jump_move(&mut self, down: bool) {
         let last = self.jump_row_count().saturating_sub(1);
-        self.jump_selected =
-            if down { (self.jump_selected + 1).min(last) } else { self.jump_selected.saturating_sub(1) };
+        self.jump_selected = if down {
+            (self.jump_selected + 1).min(last)
+        } else {
+            self.jump_selected.saturating_sub(1)
+        };
     }
 
     /// Confirm the highlighted dropdown row: close the menu and navigate
@@ -1058,15 +1061,8 @@ impl DiffOverlayState {
     /// (its diff is `event.files`, cached at slot 0); otherwise
     /// whole-diff mode, exactly as before.
     fn new_initial(event: DiffOverlayEvent) -> Self {
-        let DiffOverlayEvent {
-            cwd,
-            target,
-            files,
-            scanner_ok,
-            untracked_suppressed,
-            seq: _,
-            kind,
-        } = event;
+        let DiffOverlayEvent { cwd, target, files, scanner_ok, untracked_suppressed, seq: _, kind } =
+            event;
         // drain_events only routes Initial events here; a Scope event
         // would be a bug, so fall back to whole-diff defensively.
         let (commits, branch) = match kind {
@@ -1858,7 +1854,13 @@ pub(super) fn close_with_submit(app: &mut App) {
     // in practice - confusing for future maintainers.
     let snapshot = app.diff_overlay.as_mut().map(|o| {
         let comments = std::mem::take(&mut o.comments);
-        (comments, o.target.clone(), o.cwd.display().to_string(), o.branch.clone(), o.commits.clone())
+        (
+            comments,
+            o.target.clone(),
+            o.cwd.display().to_string(),
+            o.branch.clone(),
+            o.commits.clone(),
+        )
     });
     if let Some((comments, target, cwd_display, branch, commits)) = snapshot
         && !comments.is_empty()
@@ -1900,8 +1902,10 @@ pub(crate) fn format_diff_comments(
     }
 
     let total = comments.len();
-    let commit_hits =
-        commits.iter().filter(|c| comments.iter().any(|x| x.commit.as_deref() == Some(&c.sha))).count();
+    let commit_hits = commits
+        .iter()
+        .filter(|c| comments.iter().any(|x| x.commit.as_deref() == Some(&c.sha)))
+        .count();
     let header_lead = match branch {
         Some(b) => format!("{b} vs {target}"),
         None => target.to_owned(),
@@ -1916,7 +1920,8 @@ pub(crate) fn format_diff_comments(
     write_repo_line(&mut out, cwd_display);
 
     for commit in commits {
-        let mut scoped = comments.iter().filter(|c| c.commit.as_deref() == Some(&commit.sha)).peekable();
+        let mut scoped =
+            comments.iter().filter(|c| c.commit.as_deref() == Some(&commit.sha)).peekable();
         if scoped.peek().is_none() {
             continue;
         }
@@ -2391,7 +2396,8 @@ mod tests {
                 commit: Some("e55f210".into()),
             },
         ];
-        let md = format_diff_comments("main", Some("worker/rate-limit"), "/repo", &commits, &comments);
+        let md =
+            format_diff_comments("main", Some("worker/rate-limit"), "/repo", &commits, &comments);
         assert!(
             md.contains("## Diff review (worker/rate-limit vs main, 2 comments across 2 commits)"),
             "grouped header names the branch, target, and totals; got:\n{md}",
@@ -3221,7 +3227,11 @@ mod tests {
         );
         assert!(state.commit_loading, "loading while the scan is in flight");
         assert!(state.files.is_empty(), "no files shown until the scan lands");
-        state.install_scan(DiffScope::Commit(2), vec![one_file("c.rs", FileStatus::Modified)], true);
+        state.install_scan(
+            DiffScope::Commit(2),
+            vec![one_file("c.rs", FileStatus::Modified)],
+            true,
+        );
         assert!(!state.commit_loading, "loading cleared once installed");
         assert_eq!(state.files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(), vec!["c.rs"]);
     }
@@ -3231,7 +3241,11 @@ mod tests {
         let mut state = commit_mode_state();
         state.commit_cache[2] = None;
         // Still on commit 0 when commit 2's scan lands.
-        state.install_scan(DiffScope::Commit(2), vec![one_file("c.rs", FileStatus::Modified)], true);
+        state.install_scan(
+            DiffScope::Commit(2),
+            vec![one_file("c.rs", FileStatus::Modified)],
+            true,
+        );
         assert_eq!(state.scope, DiffScope::Commit(0), "off-scope result doesn't swap the view");
         assert_eq!(state.files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(), vec!["a.rs"]);
         assert_eq!(
@@ -3336,8 +3350,7 @@ mod tests {
                 new_line: Some(1),
             }],
         }];
-        let mut state =
-            DiffOverlayState::new(PathBuf::from("/tmp"), "HEAD".to_owned(), vec![file]);
+        let mut state = DiffOverlayState::new(PathBuf::from("/tmp"), "HEAD".to_owned(), vec![file]);
         // Whole-diff-only mode: no commits, scope stays WholeDiff.
         let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
         let mut editor = TextArea::default();
