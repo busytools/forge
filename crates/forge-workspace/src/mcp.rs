@@ -32,6 +32,7 @@ use std::sync::Arc;
 
 use forge_sdk::mcp::server::{McpServer, McpServerBuilder};
 
+use crate::mcp::cron::facade::CronFacade;
 use crate::mcp::peers::facade::{CallerKeyResolver, WorkspaceFacade};
 use crate::mcp::workers::facade::WorkerFacade;
 
@@ -56,13 +57,17 @@ pub enum SessionKind {
 /// `forge` carrying the coordination tool groups appropriate for the
 /// calling session's [`SessionKind`]:
 ///
-/// - [`SessionKind::Lead`] → peers + workers (eight tools).
-/// - [`SessionKind::Worker`] → workers only (four tools).
+/// - [`SessionKind::Lead`] → peers + workers + cron.
+/// - [`SessionKind::Worker`] → workers + cron (no cross-project peers).
 ///
-/// Both submodules share the server name when present so the LLM
-/// sees a single namespace (`mcp__forge__<group>__*`) and the
-/// auto-approve fast-path in `forge-sdk::control_dispatch` matches
-/// every tool group with one `mcp__forge__` prefix check.
+/// `cron` is any-caller (every session manages its own project's
+/// crons), so it registers for both kinds - unlike `peers`, which is
+/// lead-only.
+///
+/// All submodules share the server name so the LLM sees a single
+/// namespace (`mcp__forge__<group>__*`) and the auto-approve fast-path
+/// in `forge-sdk::control_dispatch` matches every tool group with one
+/// `mcp__forge__` prefix check.
 ///
 /// Building two separate `McpServer::builder("forge")` instances and
 /// pushing both into `OptionsBuilder::mcp_server` would collide on
@@ -72,6 +77,7 @@ pub enum SessionKind {
 pub fn build_forge_server(
     workspace_facade: Arc<dyn WorkspaceFacade>,
     worker_facade: Arc<dyn WorkerFacade>,
+    cron_facade: Arc<dyn CronFacade>,
     caller_key: CallerKeyResolver,
     kind: SessionKind,
 ) -> McpServer {
@@ -79,7 +85,8 @@ pub fn build_forge_server(
     if matches!(kind, SessionKind::Lead) {
         builder = peers::add_tools(builder, workspace_facade, caller_key.clone());
     }
-    builder = workers::add_tools(builder, worker_facade, caller_key);
+    builder = workers::add_tools(builder, worker_facade, caller_key.clone());
+    builder = cron::add_tools(builder, cron_facade, caller_key);
     builder.build()
 }
 
@@ -87,6 +94,7 @@ pub fn build_forge_server(
 mod tests {
     use super::*;
     use crate::SessionKey;
+    use crate::mcp::cron::facade::MockCronFacade;
     use crate::mcp::peers::facade::MockWorkspaceFacade;
     use crate::mcp::workers::facade::MockWorkerFacade;
 
@@ -95,12 +103,18 @@ mod tests {
     }
 
     #[test]
-    fn build_forge_server_lead_registers_all_eight_tools() {
+    fn build_forge_server_lead_registers_peers_workers_and_cron() {
         let workspace_facade = MockWorkspaceFacade::new().into_arc();
         let worker_facade = MockWorkerFacade::new().into_arc();
+        let cron_facade = MockCronFacade::new().into_arc();
         let resolver = CallerKeyResolver::from_fixed(fake_key("test"));
-        let server =
-            build_forge_server(workspace_facade, worker_facade, resolver, SessionKind::Lead);
+        let server = build_forge_server(
+            workspace_facade,
+            worker_facade,
+            cron_facade,
+            resolver,
+            SessionKind::Lead,
+        );
         let debug = format!("{server:?}");
         for expected in [
             "peers__whoami",
@@ -111,6 +125,9 @@ mod tests {
             "workers__list",
             "workers__tell",
             "workers__ask",
+            "cron__create",
+            "cron__list",
+            "cron__delete",
         ] {
             assert!(
                 debug.contains(expected),
@@ -118,22 +135,36 @@ mod tests {
             );
         }
         // Server name is `forge` so tools render as `mcp__forge__<name>`
-        // on the LLM side and the SDK auto-approve fast-path covers both
-        // groups with one `mcp__forge__` prefix check.
+        // on the LLM side and the SDK auto-approve fast-path covers every
+        // group with one `mcp__forge__` prefix check.
         assert!(debug.contains("name: \"forge\""), "server name must be 'forge'; debug: {debug}");
     }
 
     #[test]
-    fn build_forge_server_worker_registers_only_workers_tools() {
+    fn build_forge_server_worker_registers_workers_and_cron_but_not_peers() {
         let workspace_facade = MockWorkspaceFacade::new().into_arc();
         let worker_facade = MockWorkerFacade::new().into_arc();
+        let cron_facade = MockCronFacade::new().into_arc();
         let resolver = CallerKeyResolver::from_fixed(fake_key("test"));
-        let server =
-            build_forge_server(workspace_facade, worker_facade, resolver, SessionKind::Worker);
+        let server = build_forge_server(
+            workspace_facade,
+            worker_facade,
+            cron_facade,
+            resolver,
+            SessionKind::Worker,
+        );
         let debug = format!("{server:?}");
-        // Workers MUST see the four workers__* tools so they can talk
-        // to their sibling workers within the same project.
-        for expected in ["workers__spawn", "workers__list", "workers__tell", "workers__ask"] {
+        // Workers see workers__* (talk to sibling workers) and cron__*
+        // (crons are any-caller - a worker may schedule for its project).
+        for expected in [
+            "workers__spawn",
+            "workers__list",
+            "workers__tell",
+            "workers__ask",
+            "cron__create",
+            "cron__list",
+            "cron__delete",
+        ] {
             assert!(
                 debug.contains(expected),
                 "worker build_forge_server must include {expected}; debug: {debug}",

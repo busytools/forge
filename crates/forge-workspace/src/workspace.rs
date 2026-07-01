@@ -225,6 +225,13 @@ pub struct Workspace {
     /// exit / crash). Held purely for that side effect - never read.
     /// `None` in `testing_stub` and on the degraded acquire path.
     _single_instance_lock: Option<std::fs::File>,
+    /// Durable forge crons (`mcp__forge__cron`). In-memory working set,
+    /// loaded from `forge-cron.toml` at boot and persisted back after
+    /// every mutation - create/delete, the scheduler's fire-advance, and
+    /// boot catch-up - through the one [`Workspace::with_crons_mut`] path.
+    /// The single-instance guard makes this the only process touching the
+    /// file, so this mutex alone serialises writes.
+    crons: Mutex<Vec<forge_primitives::CronEntry>>,
     /// Per-project in-flight guard for the engineering-team Connected
     /// hook's catalog scan. Inserted synchronously when
     /// `spawn_team_for_lead_with_catalog_scan` starts; removed when
@@ -385,6 +392,11 @@ impl Workspace {
             }
         };
 
+        // Load durable forge crons into the in-memory working set. Boot
+        // catch-up for entries that came due while forge was down runs
+        // after construction, once the dispatch machinery is live.
+        let crons = crate::cron_store::load_crons(&config_dir);
+
         // Boot the wire-classification rewriter proxy BEFORE any
         // session can spawn. Hard-fail policy: if the proxy can't
         // bind / load its CA / build the TLS context, forge refuses
@@ -466,6 +478,7 @@ impl Workspace {
             kick_dispatcher_rx_slot: Mutex::new(Some(kick_dispatcher_rx)),
             proxy: Some(proxy),
             _single_instance_lock: single_instance_lock,
+            crons: Mutex::new(crons),
             team_spawn_in_flight: Mutex::new(std::collections::HashSet::new()),
             #[cfg(any(test, feature = "testing"))]
             command_intercept: Mutex::new(None),
@@ -783,8 +796,15 @@ impl Workspace {
         let forge_server = {
             let workspace_facade = crate::mcp::peers::facade::ProdWorkspaceFacade::from_arc(self);
             let worker_facade = crate::mcp::workers::facade::ProdWorkerFacade::from_arc(self);
+            let cron_facade = crate::mcp::cron::facade::ProdCronFacade::from_arc(self);
             let resolver = crate::mcp::peers::facade::CallerKeyResolver::from_domain(&domain_arc);
-            crate::mcp::build_forge_server(workspace_facade, worker_facade, resolver, session_kind)
+            crate::mcp::build_forge_server(
+                workspace_facade,
+                worker_facade,
+                cron_facade,
+                resolver,
+                session_kind,
+            )
         };
 
         let handle = forge_agent::Agent::spawn(
@@ -2448,6 +2468,42 @@ impl Workspace {
         self.live_workers.lock().get(project_key).cloned().unwrap_or_default()
     }
 
+    /// Lock the durable cron list, apply `f`, and persist to
+    /// `forge-cron.toml`. Every cron-list mutation routes through here -
+    /// `cron__create` / `cron__delete`, the scheduler's fire-advance, and
+    /// boot catch-up - so the in-memory set and the file never diverge.
+    pub(crate) fn with_crons_mut<R>(
+        &self,
+        f: impl FnOnce(&mut Vec<forge_primitives::CronEntry>) -> R,
+    ) -> R {
+        let mut crons = self.crons.lock();
+        let result = f(&mut crons);
+        crate::cron_store::store_crons(&self.config_dir, &crons);
+        result
+    }
+
+    /// Append a cron and persist. Backs `cron__create`.
+    pub(crate) fn push_cron(&self, entry: forge_primitives::CronEntry) {
+        self.with_crons_mut(|crons| crons.push(entry));
+    }
+
+    /// Remove the cron `id` if it belongs to `project_name`, persist, and
+    /// report whether an entry was removed. Backs `cron__delete`, scoped
+    /// so a caller only deletes its own project's crons.
+    pub(crate) fn remove_cron(&self, project_name: &str, id: &forge_primitives::CronId) -> bool {
+        self.with_crons_mut(|crons| {
+            let before = crons.len();
+            crons.retain(|c| !(c.id == *id && c.project_name == project_name));
+            crons.len() != before
+        })
+    }
+
+    /// The crons registered for `project_name`. Backs `cron__list` and the
+    /// Inspector SCHEDULES snapshot.
+    pub fn crons_for_project(&self, project_name: &str) -> Vec<forge_primitives::CronEntry> {
+        self.crons.lock().iter().filter(|c| c.project_name == project_name).cloned().collect()
+    }
+
     /// Snapshot every live worker's session_key across every project.
     /// Used by the TUI's `find_running_bucket_for_path` to exclude
     /// worker buckets from project-row click routing without depending
@@ -3651,6 +3707,7 @@ impl Workspace {
             // proxy boot. Tests don't drive real subprocesses.
             proxy: None,
             _single_instance_lock: None,
+            crons: Mutex::new(Vec::new()),
             team_spawn_in_flight: Mutex::new(std::collections::HashSet::new()),
             command_intercept: Mutex::new(None),
             test_extra_projects: Mutex::new(Vec::new()),
@@ -3960,6 +4017,42 @@ mod tests {
         // No catalog lead: fresh either way.
         assert_eq!(Workspace::apply_force_new_gate(None, false), None);
         assert_eq!(Workspace::apply_force_new_gate(None, true), None);
+    }
+
+    #[test]
+    fn cron_methods_push_list_remove_and_persist() {
+        use forge_primitives::cron::{CronEntry, CronId, CronKind};
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+
+        let entry = CronEntry {
+            id: CronId::from("c1"),
+            project_name: "forge".to_owned(),
+            kind: CronKind::Recurring("0 9 * * *".to_owned()),
+            prompt: "stand-up".to_owned(),
+            created_at: std::time::SystemTime::UNIX_EPOCH,
+            last_fire: None,
+            next_fire: std::time::SystemTime::UNIX_EPOCH,
+        };
+
+        ws.push_cron(entry.clone());
+        assert_eq!(ws.crons_for_project("forge"), vec![entry.clone()], "listed for its project");
+        assert!(ws.crons_for_project("other").is_empty(), "scoped by project name");
+        assert_eq!(
+            crate::cron_store::load_crons(dir.path()),
+            vec![entry.clone()],
+            "push persisted to forge-cron.toml",
+        );
+
+        // A different project cannot delete another project's cron.
+        assert!(!ws.remove_cron("other", &entry.id), "delete is scoped to the owning project");
+        assert_eq!(ws.crons_for_project("forge").len(), 1);
+
+        assert!(ws.remove_cron("forge", &entry.id), "the owning project removes it");
+        assert!(ws.crons_for_project("forge").is_empty());
+        assert!(crate::cron_store::load_crons(dir.path()).is_empty(), "removal persisted");
+
+        assert!(!ws.remove_cron("forge", &CronId::from("c1")), "removing a gone id reports false");
     }
 
     fn make_workspace_dir() -> tempfile::TempDir {

@@ -1,24 +1,19 @@
 //! Durable forge-cron persistence: `<config_dir>/forge-cron.toml`.
 //!
-//! Mirrors [`crate::account_cache`]'s atomic tmp-file + rename writer.
-//! Cross-process safety comes for free from the single-instance boot
-//! guard ([`crate::single_instance`]): forge refuses to start a second
-//! instance on the same config dir, so exactly one process ever touches
-//! a given `forge-cron.toml`. That means an in-process `Mutex` is
-//! enough here - no flock on the cron data, no separate cron lockfile.
+//! The `Workspace` holds the cron list in memory (`Mutex<Vec<CronEntry>>`)
+//! as the working source of truth; this module loads it at boot
+//! ([`load_crons`]) and persists it after each mutation ([`store_crons`])
+//! via an atomic tmp-file + rename, mirroring [`crate::account_cache`].
 //!
-//! Reads ([`load_crons`]) take no lock: atomic rename means a writer
-//! never exposes a torn file. The read-modify-write primitive
-//! ([`with_cron_lock`]) holds the in-process mutex so a create / delete
-//! and the scheduler's fire-advance can't interleave; it is what the
-//! `cron__create` / `cron__delete` tools, the scheduler, and boot
-//! catch-up build on.
+//! No file lock lives here: the single-instance boot guard
+//! ([`crate::single_instance`]) guarantees one forge process per config
+//! dir, and the workspace's `crons` mutex serialises writes within that
+//! process, so `store_crons` is always called under that lock.
 //!
-//! Failures are non-fatal: a missing file loads empty and a corrupt
-//! file loads empty + warns.
+//! Failures are non-fatal: a missing file loads empty, a corrupt file
+//! loads empty + warns.
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 
 use forge_primitives::cron::CronEntry;
 use serde::{Deserialize, Serialize};
@@ -36,33 +31,17 @@ struct ForgeCronDoc {
     crons: Vec<CronEntry>,
 }
 
-impl ForgeCronDoc {
-    fn empty() -> Self {
-        Self { version: CRON_SCHEMA_VERSION, crons: Vec::new() }
-    }
-}
-
 fn cron_path(config_dir: &Path) -> PathBuf {
     config_dir.join(CRON_FILE_RELATIVE_PATH)
 }
 
-/// Serializes the load-mutate-write cycle within this process. The
-/// single-instance guard already rules out a second forge, so this is
-/// the only coordination the cron store needs.
-static CRON_WRITE_LOCK: Mutex<()> = Mutex::new(());
-
-/// Read forge-cron.toml. Returns an empty list on any failure (missing
-/// file, IO error, parse error, schema-version mismatch). No lock: the
-/// atomic-rename writer never exposes a torn file.
+/// Read forge-cron.toml at boot. Returns an empty list on any failure
+/// (missing file, IO error, parse error, schema-version mismatch).
 pub(crate) fn load_crons(config_dir: &Path) -> Vec<CronEntry> {
-    read_doc(config_dir).crons
-}
-
-fn read_doc(config_dir: &Path) -> ForgeCronDoc {
     let path = cron_path(config_dir);
     let contents = match std::fs::read_to_string(&path) {
         Ok(s) => s,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return ForgeCronDoc::empty(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
         Err(e) => {
             tracing::warn!(
                 target: "forge_workspace::cron_store",
@@ -70,7 +49,7 @@ fn read_doc(config_dir: &Path) -> ForgeCronDoc {
                 path = %path.display(),
                 "forge-cron.toml present but read failed; treating as empty",
             );
-            return ForgeCronDoc::empty();
+            return Vec::new();
         }
     };
     let parsed: ForgeCronDoc = match toml::from_str(&contents) {
@@ -82,7 +61,7 @@ fn read_doc(config_dir: &Path) -> ForgeCronDoc {
                 path = %path.display(),
                 "forge-cron.toml parse failed; treating as empty",
             );
-            return ForgeCronDoc::empty();
+            return Vec::new();
         }
     };
     if parsed.version != CRON_SCHEMA_VERSION {
@@ -92,35 +71,19 @@ fn read_doc(config_dir: &Path) -> ForgeCronDoc {
             expected_version = CRON_SCHEMA_VERSION,
             "forge-cron.toml schema-version mismatch; ignoring on-disk entries",
         );
-        return ForgeCronDoc::empty();
+        return Vec::new();
     }
-    parsed
+    parsed.crons
 }
 
-/// Run `mutate` against the current cron list with the write lock held,
-/// then persist the result - the whole load-mutate-store cycle is atomic
-/// against other threads in this process. Every cron write routes
-/// through here: `cron__create` pushes, `cron__delete` retains, the
-/// scheduler advances/removes a fired entry, and boot catch-up reconciles
-/// the whole list.
-pub(crate) fn with_cron_lock<R>(
-    config_dir: &Path,
-    mutate: impl FnOnce(&mut Vec<CronEntry>) -> R,
-) -> R {
-    let _guard = CRON_WRITE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let mut crons = read_doc(config_dir).crons;
-    let result = mutate(&mut crons);
-    write_doc(config_dir, &ForgeCronDoc { version: CRON_SCHEMA_VERSION, crons });
-    result
-}
-
-/// Serialise `doc` to `<config_dir>/forge-cron.toml` via tmp-file +
+/// Persist the current cron list to forge-cron.toml via tmp-file +
 /// atomic rename: a crash between write and rename leaves the previous
-/// document intact rather than a partial file. Failures are non-fatal
-/// and logged at warn.
-fn write_doc(config_dir: &Path, doc: &ForgeCronDoc) {
+/// document intact rather than a partial file. Called under the
+/// workspace's `crons` mutex. Failures are non-fatal and logged at warn.
+pub(crate) fn store_crons(config_dir: &Path, crons: &[CronEntry]) {
+    let doc = ForgeCronDoc { version: CRON_SCHEMA_VERSION, crons: crons.to_vec() };
     let path = cron_path(config_dir);
-    let serialised = match toml::to_string_pretty(doc) {
+    let serialised = match toml::to_string_pretty(&doc) {
         Ok(s) => s,
         Err(e) => {
             tracing::warn!(
@@ -188,12 +151,6 @@ mod tests {
         }
     }
 
-    /// Seed the file by routing a full replacement through the write
-    /// primitive - the same path prod uses, exercised in tests.
-    fn seed(dir: &Path, crons: Vec<CronEntry>) {
-        with_cron_lock(dir, |existing| *existing = crons);
-    }
-
     #[test]
     fn load_returns_empty_when_file_missing() {
         let dir = tempdir().expect("tempdir");
@@ -204,10 +161,8 @@ mod tests {
     fn round_trip_recurring_and_once() {
         let dir = tempdir().expect("tempdir");
         let crons = vec![recurring("r-1"), once("o-1")];
-        seed(dir.path(), crons.clone());
-
-        let loaded = load_crons(dir.path());
-        assert_eq!(loaded, crons, "both kinds survive a TOML round-trip");
+        store_crons(dir.path(), &crons);
+        assert_eq!(load_crons(dir.path()), crons, "both kinds survive a TOML round-trip");
     }
 
     #[test]
@@ -225,9 +180,9 @@ mod tests {
     }
 
     #[test]
-    fn write_uses_atomic_rename_and_leaves_no_tmp_file() {
+    fn store_uses_atomic_rename_and_leaves_no_tmp_file() {
         let dir = tempdir().expect("tempdir");
-        seed(dir.path(), vec![recurring("r-1")]);
+        store_crons(dir.path(), &[recurring("r-1")]);
 
         let canonical = cron_path(dir.path());
         assert!(canonical.exists(), "canonical cron file present");
@@ -238,51 +193,13 @@ mod tests {
     }
 
     #[test]
-    fn full_replace_overwrites_existing_file() {
+    fn store_overwrites_existing_file() {
         let dir = tempdir().expect("tempdir");
-        seed(dir.path(), vec![recurring("r-1")]);
-        seed(dir.path(), vec![once("o-1")]);
+        store_crons(dir.path(), &[recurring("r-1")]);
+        store_crons(dir.path(), &[once("o-1")]);
 
         let loaded = load_crons(dir.path());
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].id, CronId::from("o-1"), "the second write replaced the first");
-    }
-
-    #[test]
-    fn with_cron_lock_read_modify_write_appends() {
-        let dir = tempdir().expect("tempdir");
-        seed(dir.path(), vec![recurring("r-1")]);
-        with_cron_lock(dir.path(), |crons| crons.push(once("o-1")));
-
-        let loaded = load_crons(dir.path());
-        assert_eq!(loaded.len(), 2, "with_cron_lock preserved the seed and added the new entry");
-    }
-
-    /// Two threads hammering `with_cron_lock` concurrently: every
-    /// distinct entry must survive. The in-process mutex makes each
-    /// read-modify-write atomic, so the file ends with all 200 entries
-    /// instead of losing updates to an interleave.
-    #[test]
-    fn concurrent_with_cron_lock_loses_no_updates() {
-        use std::thread;
-        let dir = tempdir().expect("tempdir");
-
-        let p1 = dir.path().to_path_buf();
-        let h1 = thread::spawn(move || {
-            for i in 0..100 {
-                with_cron_lock(&p1, |crons| crons.push(recurring(&format!("a-{i}"))));
-            }
-        });
-        let p2 = dir.path().to_path_buf();
-        let h2 = thread::spawn(move || {
-            for i in 0..100 {
-                with_cron_lock(&p2, |crons| crons.push(once(&format!("b-{i}"))));
-            }
-        });
-        h1.join().expect("thread a");
-        h2.join().expect("thread b");
-
-        let loaded = load_crons(dir.path());
-        assert_eq!(loaded.len(), 200, "no read-modify-write lost an update under the lock");
     }
 }
