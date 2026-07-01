@@ -24,7 +24,9 @@ use std::sync::mpsc as std_mpsc;
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use forge_primitives::git_diff::RepoGate;
 use forge_workspace::env::git_diff::hunks::ScanOutcome;
-use forge_workspace::env::git_diff::hunks::{DiffLine, DiffLineKind, FileHunks, FileStatus};
+use forge_workspace::env::git_diff::hunks::{
+    CommitMeta, DiffLine, DiffLineKind, FileHunks, FileStatus,
+};
 use tui_textarea::TextArea;
 
 use super::App;
@@ -38,6 +40,39 @@ pub enum DiffViewMode {
     #[default]
     Unified,
     Split,
+}
+
+/// Which slice of the branch the overlay currently shows. The stepper
+/// (`commits` non-empty) walks `Commit(i)`; `WholeDiff` is the
+/// whole-branch view - today's behavior, and the "All changes" entry in
+/// the jump dropdown. When `commits` is empty the scope is always
+/// `WholeDiff` and the stepper never renders.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DiffScope {
+    #[default]
+    WholeDiff,
+    Commit(usize),
+}
+
+/// A completed scan for one scope, cached so re-navigating to it is
+/// instant (and a comment's `LineKey` stays valid because the file set
+/// for a scope never changes once scanned). `scanner_ok` mirrors the
+/// scan outcome so a per-commit scan failure surfaces distinctly.
+#[derive(Debug, Clone)]
+pub struct CachedScan {
+    pub files: Vec<FileHunks>,
+    pub scanner_ok: bool,
+}
+
+/// Result of pointing the overlay at a scope: either its hunks were
+/// cached (files already swapped) or an async scan must be spawned by
+/// the caller (which has the event channel).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NavOutcome {
+    /// Scope's hunks were cached; the file set is already swapped in.
+    Ready,
+    /// Scope needs a scan; the caller should spawn one for this scope.
+    NeedsScan(DiffScope),
 }
 
 /// Document offset table: `starts[i]` is file `i`'s first row in the
@@ -179,6 +214,11 @@ pub struct HunkComment {
     /// the markdown bundle so the agent sees the local context.
     pub hunk_context: Vec<DiffLine>,
     pub comment_text: String,
+    /// Commit the comment was made against (the sha), or `None` in
+    /// whole-diff scope. Together with `key`/`path`/`line` this scopes
+    /// the comment: navigating between commits keeps every comment but
+    /// only those matching the current scope render and count.
+    pub commit: Option<String>,
 }
 
 /// Currently-active comment input. Mounts inline below the clicked
@@ -620,6 +660,31 @@ pub struct DiffOverlayState {
     /// resize all leave it valid); a fresh scan is a fresh state with
     /// an empty cache. Length tracks `files`.
     pub highlighted: Vec<Option<FileHighlight>>,
+    /// Ordered commit list for the stepper (oldest first). Empty in
+    /// whole-diff-only mode (no commits ahead of the target) - the
+    /// stepper never renders and the overlay behaves exactly as before.
+    pub commits: Vec<CommitMeta>,
+    /// Branch under review, for the stepper header. `None` when unknown
+    /// (detached HEAD, no snapshot).
+    pub branch: Option<String>,
+    /// Which slice is currently shown. `WholeDiff` in whole-diff-only
+    /// mode; starts at `Commit(0)` when opened in commit mode.
+    pub scope: DiffScope,
+    /// Lazily-filled per-commit hunk caches, parallel to `commits`.
+    /// `None` until the user first navigates to that commit (its scan
+    /// runs on first visit). Length tracks `commits`.
+    pub commit_cache: Vec<Option<CachedScan>>,
+    /// The whole-branch diff, cached for the "All changes" dropdown
+    /// entry in commit mode. `None` until first requested.
+    pub whole_diff_cache: Option<CachedScan>,
+    /// True while the current scope's lazy scan is in flight - the body
+    /// shows a "loading" notice instead of "(no changes)".
+    pub commit_loading: bool,
+    /// Jump-dropdown open state.
+    pub jump_open: bool,
+    /// Highlighted row in the jump dropdown: `0` = "All changes",
+    /// `1..=commits.len()` = `commits[idx - 1]`.
+    pub jump_selected: usize,
 }
 
 impl DiffOverlayState {
@@ -627,15 +692,167 @@ impl DiffOverlayState {
     /// [`Self::comments`]. Cheap (`O(comments)`) and only runs on
     /// save / cancel / file switch, not on render. Resets the
     /// per-file slot to zero before counting so removed comments
-    /// don't linger.
+    /// don't linger. Counts only comments in the current scope - a
+    /// comment's `file_idx` indexes its own scope's file set, so
+    /// tallying an off-scope comment would point at the wrong file.
     pub fn recompute_comment_counts(&mut self) {
         self.comment_counts.clear();
         self.comment_counts.resize(self.files.len(), 0);
+        let sha = self.current_commit_sha();
         for c in &self.comments {
+            if c.commit != sha {
+                continue;
+            }
             if let Some(slot) = self.comment_counts.get_mut(c.key.file_idx) {
                 *slot = slot.saturating_add(1);
             }
         }
+    }
+
+    /// The current scope's commit sha (`None` in whole-diff scope).
+    /// Stamped onto new comments and used to scope rendering + counts.
+    pub fn current_commit_sha(&self) -> Option<String> {
+        match self.scope {
+            DiffScope::WholeDiff => None,
+            DiffScope::Commit(i) => self.commits.get(i).map(|c| c.sha.clone()),
+        }
+    }
+
+    /// Comments belonging to the current scope (matching commit sha, or
+    /// `None` in whole-diff). The renderer indexes only these so a
+    /// comment's `LineKey` - relative to its own scope's file set -
+    /// never renders against a different scope's files.
+    pub fn scoped_comments(&self) -> Vec<&HunkComment> {
+        let sha = self.current_commit_sha();
+        self.comments.iter().filter(|c| c.commit == sha).collect()
+    }
+
+    /// Cached scan for `scope`, if it has been fetched.
+    fn cached_for(&self, scope: DiffScope) -> Option<&CachedScan> {
+        match scope {
+            DiffScope::WholeDiff => self.whole_diff_cache.as_ref(),
+            DiffScope::Commit(i) => self.commit_cache.get(i).and_then(Option::as_ref),
+        }
+    }
+
+    /// Swap the displayed file set (on a scope change) and reset every
+    /// per-file-indexed cache so a stale height / highlight / count from
+    /// the previous scope can't leak. `doc_scroll` / `rail_scroll` reset
+    /// to the top; `deleted_expanded` clears (indices were per-file-set);
+    /// `comments` persist and are re-tallied for the new scope. Callers
+    /// must close any open editor (preserving its prior) first.
+    fn set_files(&mut self, files: Vec<FileHunks>, scanner_ok: bool, untracked_suppressed: usize) {
+        let n = files.len();
+        self.files = files;
+        self.scanner_ok = scanner_ok;
+        self.untracked_suppressed = untracked_suppressed;
+        self.doc_scroll = 0;
+        self.rail_scroll = 0;
+        self.deleted_expanded.clear();
+        self.active_input = None;
+        self.measured_heights = vec![None; n];
+        self.highlighted = vec![None; n];
+        self.body_keys.clear();
+        self.commit_loading = false;
+        self.recompute_comment_counts();
+    }
+
+    /// Point the overlay at `scope`, closing the jump dropdown. If the
+    /// scope's hunks are cached, swap them in and report [`NavOutcome::Ready`];
+    /// otherwise mark it loading and report [`NavOutcome::NeedsScan`] so
+    /// the caller can spawn the lazy fetch. Commit scopes never carry
+    /// untracked files (a commit's diff is closed over its own changes),
+    /// so the untracked count is 0.
+    pub fn select_scope(&mut self, scope: DiffScope) -> NavOutcome {
+        self.scope = scope;
+        self.jump_open = false;
+        // Snapshot the cache to an owned value so the borrow ends before
+        // set_files takes &mut self.
+        let cached = self.cached_for(scope).map(|c| (c.files.clone(), c.scanner_ok));
+        if let Some((files, scanner_ok)) = cached {
+            self.set_files(files, scanner_ok, 0);
+            NavOutcome::Ready
+        } else {
+            self.set_files(Vec::new(), true, 0);
+            self.commit_loading = true;
+            NavOutcome::NeedsScan(scope)
+        }
+    }
+
+    /// Store a completed scan into the cache for `scope`, and (when it's
+    /// still the current scope) swap it into view. Called from the drain
+    /// pump when a lazy per-scope scan lands. A scan that arrives after
+    /// the user moved on still caches, so returning is instant.
+    pub fn install_scan(&mut self, scope: DiffScope, files: Vec<FileHunks>, scanner_ok: bool) {
+        let cached = CachedScan { files: files.clone(), scanner_ok };
+        match scope {
+            DiffScope::WholeDiff => self.whole_diff_cache = Some(cached),
+            DiffScope::Commit(i) => {
+                if let Some(slot) = self.commit_cache.get_mut(i) {
+                    *slot = Some(cached);
+                }
+            }
+        }
+        if self.scope == scope {
+            self.set_files(files, scanner_ok, 0);
+        }
+    }
+
+    /// Step to the previous / next commit, clamped at the ends. From the
+    /// whole-diff ("All changes") view both arrows re-enter the stepper
+    /// at the first commit. No-op (returns `None`) in whole-diff-only
+    /// mode or when already at the clamped boundary.
+    pub fn step_commit(&mut self, forward: bool) -> Option<NavOutcome> {
+        if self.commits.is_empty() {
+            return None;
+        }
+        let last = self.commits.len() - 1;
+        let next = match self.scope {
+            DiffScope::WholeDiff => 0,
+            DiffScope::Commit(i) => {
+                if forward {
+                    (i + 1).min(last)
+                } else {
+                    i.saturating_sub(1)
+                }
+            }
+        };
+        if self.scope == DiffScope::Commit(next) {
+            return None;
+        }
+        Some(self.select_scope(DiffScope::Commit(next)))
+    }
+
+    /// Number of jump-dropdown rows: "All changes" + one per commit.
+    pub fn jump_row_count(&self) -> usize {
+        self.commits.len() + 1
+    }
+
+    /// Scope a jump-dropdown row maps to (`0` = "All changes").
+    pub fn scope_for_jump_row(row: usize) -> DiffScope {
+        if row == 0 { DiffScope::WholeDiff } else { DiffScope::Commit(row - 1) }
+    }
+
+    /// Open the jump dropdown, seeding the highlight on the current scope.
+    pub fn open_jump(&mut self) {
+        self.jump_selected = match self.scope {
+            DiffScope::WholeDiff => 0,
+            DiffScope::Commit(i) => i + 1,
+        };
+        self.jump_open = true;
+    }
+
+    /// Move the dropdown highlight (clamped to the row range).
+    pub fn jump_move(&mut self, down: bool) {
+        let last = self.jump_row_count().saturating_sub(1);
+        self.jump_selected =
+            if down { (self.jump_selected + 1).min(last) } else { self.jump_selected.saturating_sub(1) };
+    }
+
+    /// Confirm the highlighted dropdown row: close the menu and navigate
+    /// to its scope.
+    pub fn jump_confirm(&mut self) -> NavOutcome {
+        self.select_scope(Self::scope_for_jump_row(self.jump_selected))
     }
 
     /// Drop every measured height so the next frame re-measures
@@ -718,6 +935,14 @@ impl DiffOverlayState {
             body_tail_scroll: 0,
             measured_heights: vec![None; file_count],
             highlighted: vec![None; file_count],
+            commits: Vec::new(),
+            branch: None,
+            scope: DiffScope::WholeDiff,
+            commit_cache: Vec::new(),
+            whole_diff_cache: None,
+            commit_loading: false,
+            jump_open: false,
+            jump_selected: 0,
         }
     }
 
@@ -748,6 +973,14 @@ impl DiffOverlayState {
             body_tail_scroll: 0,
             measured_heights: vec![None; file_count],
             highlighted: vec![None; file_count],
+            commits: Vec::new(),
+            branch: None,
+            scope: DiffScope::WholeDiff,
+            commit_cache: Vec::new(),
+            whole_diff_cache: None,
+            commit_loading: false,
+            jump_open: false,
+            jump_selected: 0,
         }
     }
 }
@@ -1030,12 +1263,14 @@ fn save_active_input(app: &mut App) {
     // the bundle stays compact and the agent gets precise
     // per-line context. Matches GitHub's inline-review markdown
     // (quote just the line under the `**Line N**` heading).
+    let commit = overlay.current_commit_sha();
     let comment = HunkComment {
         key,
         path: file.path.clone(),
         line: line_no,
         hunk_context: vec![diff_line.clone()],
         comment_text: text,
+        commit,
     };
     // Replace any existing comment at the same key (saving an
     // edited reopen).
@@ -1729,6 +1964,7 @@ mod tests {
             line: 7,
             hunk_context: vec![],
             comment_text: "needs unwrap fix".into(),
+            commit: None,
         });
         state.body_keys = vec![
             BodyRowKey::FileHeader { file_idx: 0 },
@@ -1761,6 +1997,7 @@ mod tests {
                     new_line: Some(12),
                 }],
                 comment_text: "use ? instead of unwrap_or_die".into(),
+                commit: None,
             },
             HunkComment {
                 key: LineKey { file_idx: 1, hunk_idx: 0, line_idx: 1 },
@@ -1773,6 +2010,7 @@ mod tests {
                     new_line: None,
                 }],
                 comment_text: "good, panic was unsafe".into(),
+                commit: None,
             },
             HunkComment {
                 key: LineKey { file_idx: 0, hunk_idx: 1, line_idx: 0 },
@@ -1780,6 +2018,7 @@ mod tests {
                 line: 30,
                 hunk_context: vec![],
                 comment_text: "missing rationale".into(),
+                commit: None,
             },
         ];
         let md = format_diff_comments("HEAD", "/tmp/repo", &comments);
@@ -1812,6 +2051,7 @@ mod tests {
             line: 1,
             hunk_context: vec![],
             comment_text: "x".into(),
+            commit: None,
         });
         state.comments.push(HunkComment {
             key: LineKey { file_idx: 0, hunk_idx: 1, line_idx: 0 },
@@ -1819,6 +2059,7 @@ mod tests {
             line: 2,
             hunk_context: vec![],
             comment_text: "y".into(),
+            commit: None,
         });
         state.comments.push(HunkComment {
             key: LineKey { file_idx: 1, hunk_idx: 0, line_idx: 0 },
@@ -1826,6 +2067,7 @@ mod tests {
             line: 1,
             hunk_context: vec![],
             comment_text: "z".into(),
+            commit: None,
         });
         state.recompute_comment_counts();
         assert_eq!(state.comment_counts, vec![2, 1]);
@@ -1860,6 +2102,7 @@ mod tests {
             line: 1,
             hunk_context: vec![],
             comment_text: "needs unwrap fix".into(),
+            commit: None,
         });
         app.diff_overlay = Some(state);
         set_active_view(&mut app, ActiveView::Diff);
@@ -1889,6 +2132,7 @@ mod tests {
             line: 1,
             hunk_context: vec![],
             comment_text: "I want to keep this".into(),
+            commit: None,
         });
         state.recompute_comment_counts();
         state.body_keys = vec![BodyRowKey::CommentChip(key)];
@@ -1932,6 +2176,7 @@ mod tests {
             line: 1,
             hunk_context: vec![],
             comment_text: "saved".into(),
+            commit: None,
         });
         state.recompute_comment_counts();
         // Body geometry: chip row at idx 0, hunk header at idx 1,
@@ -1968,6 +2213,7 @@ mod tests {
             line: 1,
             hunk_context: vec![],
             comment_text: "A".into(),
+            commit: None,
         });
         state.comments.push(HunkComment {
             key: key_b,
@@ -1975,6 +2221,7 @@ mod tests {
             line: 5,
             hunk_context: vec![],
             comment_text: "B".into(),
+            commit: None,
         });
         state.recompute_comment_counts();
         state.body_keys = vec![BodyRowKey::CommentChip(key_a), BodyRowKey::CommentChip(key_b)];
@@ -2000,6 +2247,7 @@ mod tests {
             line: 1,
             hunk_context: vec![],
             comment_text: "A".into(),
+            commit: None,
         });
         state.recompute_comment_counts();
         state.body_keys = vec![BodyRowKey::CommentChip(key_a)];
@@ -2033,6 +2281,7 @@ mod tests {
             line: 1,
             hunk_context: vec![],
             comment_text: "original text".into(),
+            commit: None,
         };
         let mut editor = TextArea::default();
         editor.insert_str("original text with user-typed edits");
@@ -2057,6 +2306,7 @@ mod tests {
             line: 1,
             hunk_context: vec![],
             comment_text: "exactly this".into(),
+            commit: None,
         };
         let mut editor = TextArea::default();
         editor.insert_str("exactly this");
@@ -2109,6 +2359,7 @@ mod tests {
             line: 1,
             hunk_context: vec![],
             comment_text: "soon-to-be-deleted".into(),
+            commit: None,
         };
         state.active_input = Some(ActiveCommentInput {
             key,
@@ -2141,6 +2392,7 @@ mod tests {
             line: 1,
             hunk_context: vec![],
             comment_text: "important review note".into(),
+            commit: None,
         };
         let mut editor = TextArea::default();
         editor.insert_str("important review note");
@@ -2187,6 +2439,7 @@ mod tests {
             line: 1,
             hunk_context: vec![],
             comment_text: "to be preserved".into(),
+            commit: None,
         };
         let mut editor = TextArea::default();
         editor.insert_str("to be preserved");
@@ -2428,5 +2681,258 @@ mod tests {
             resolve_default_target(&app),
             DefaultTarget::Clean { default_branch: Some("main".to_owned()) }
         );
+    }
+
+    // ---- commit mode: scope, navigation, comment scoping ----
+
+    fn commit_meta(sha: &str, subject: &str) -> CommitMeta {
+        CommitMeta { sha: sha.to_owned(), short_sha: sha.to_owned(), subject: subject.to_owned() }
+    }
+
+    fn one_file(path: &str, status: FileStatus) -> FileHunks {
+        FileHunks { path: path.to_owned(), status, hunks: vec![] }
+    }
+
+    /// Three-commit branch with every commit's hunks pre-cached (so
+    /// navigation is synchronous). Commit 0 → a.rs, 1 → b.rs, 2 → c.rs.
+    fn commit_mode_state() -> DiffOverlayState {
+        let c0 = vec![one_file("a.rs", FileStatus::Added)];
+        let c1 = vec![one_file("b.rs", FileStatus::Modified)];
+        let c2 = vec![one_file("c.rs", FileStatus::Modified)];
+        let mut state =
+            DiffOverlayState::new(PathBuf::from("/tmp/repo"), "main".to_owned(), c0.clone());
+        state.commits = vec![
+            commit_meta("aaa", "first"),
+            commit_meta("bbb", "second"),
+            commit_meta("ccc", "third"),
+        ];
+        state.branch = Some("feat".to_owned());
+        state.scope = DiffScope::Commit(0);
+        state.commit_cache = vec![
+            Some(CachedScan { files: c0, scanner_ok: true }),
+            Some(CachedScan { files: c1, scanner_ok: true }),
+            Some(CachedScan { files: c2, scanner_ok: true }),
+        ];
+        state.recompute_comment_counts();
+        state
+    }
+
+    #[test]
+    fn commit_mode_starts_on_first_commit_files() {
+        let state = commit_mode_state();
+        assert_eq!(state.scope, DiffScope::Commit(0));
+        assert_eq!(state.files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(), vec!["a.rs"]);
+        assert_eq!(state.current_commit_sha(), Some("aaa".to_owned()));
+    }
+
+    #[test]
+    fn step_commit_swaps_files_and_resets_scroll() {
+        let mut state = commit_mode_state();
+        state.doc_scroll = 42;
+        assert_eq!(state.step_commit(true), Some(NavOutcome::Ready), "next commit cached");
+        assert_eq!(state.scope, DiffScope::Commit(1));
+        assert_eq!(state.files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(), vec!["b.rs"]);
+        assert_eq!(state.doc_scroll, 0, "scroll resets on commit switch");
+    }
+
+    #[test]
+    fn step_commit_clamps_at_both_ends() {
+        let mut state = commit_mode_state();
+        assert_eq!(state.step_commit(false), None, "prev at first is a no-op");
+        assert_eq!(state.scope, DiffScope::Commit(0));
+        state.select_scope(DiffScope::Commit(2));
+        assert_eq!(state.step_commit(true), None, "next at last is a no-op");
+        assert_eq!(state.scope, DiffScope::Commit(2));
+    }
+
+    #[test]
+    fn step_commit_is_noop_in_whole_diff_only_mode() {
+        let mut state = sample_state();
+        assert_eq!(state.step_commit(true), None);
+        assert_eq!(state.scope, DiffScope::WholeDiff);
+    }
+
+    #[test]
+    fn comments_accumulate_across_commits_but_count_current_scope() {
+        let mut state = commit_mode_state();
+        state.comments.push(HunkComment {
+            key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
+            path: "a.rs".into(),
+            line: 1,
+            hunk_context: vec![],
+            comment_text: "on first".into(),
+            commit: Some("aaa".into()),
+        });
+        state.recompute_comment_counts();
+        assert_eq!(state.comment_counts, vec![1], "commit 0 shows its comment");
+        state.step_commit(true);
+        assert_eq!(state.scope, DiffScope::Commit(1));
+        assert_eq!(state.comments.len(), 1, "comment retained across navigation");
+        assert_eq!(state.comment_counts, vec![0], "commit 1 counts none of its own");
+        state.step_commit(false);
+        assert_eq!(state.comment_counts, vec![1], "back on commit 0 the comment counts again");
+    }
+
+    #[test]
+    fn scoped_comments_filters_by_current_commit() {
+        let mut state = commit_mode_state();
+        state.comments.push(HunkComment {
+            key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
+            path: "a.rs".into(),
+            line: 1,
+            hunk_context: vec![],
+            comment_text: "a".into(),
+            commit: Some("aaa".into()),
+        });
+        state.comments.push(HunkComment {
+            key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
+            path: "b.rs".into(),
+            line: 1,
+            hunk_context: vec![],
+            comment_text: "b".into(),
+            commit: Some("bbb".into()),
+        });
+        let scoped: Vec<&str> =
+            state.scoped_comments().iter().map(|c| c.comment_text.as_str()).collect();
+        assert_eq!(scoped, vec!["a"], "only the current commit's comment is in scope");
+    }
+
+    #[test]
+    fn select_uncached_commit_needs_scan_then_installs() {
+        let mut state = commit_mode_state();
+        state.commit_cache[2] = None;
+        assert_eq!(
+            state.select_scope(DiffScope::Commit(2)),
+            NavOutcome::NeedsScan(DiffScope::Commit(2)),
+        );
+        assert!(state.commit_loading, "loading while the scan is in flight");
+        assert!(state.files.is_empty(), "no files shown until the scan lands");
+        state.install_scan(DiffScope::Commit(2), vec![one_file("c.rs", FileStatus::Modified)], true);
+        assert!(!state.commit_loading, "loading cleared once installed");
+        assert_eq!(state.files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(), vec!["c.rs"]);
+    }
+
+    #[test]
+    fn install_scan_off_scope_caches_without_swapping() {
+        let mut state = commit_mode_state();
+        state.commit_cache[2] = None;
+        // Still on commit 0 when commit 2's scan lands.
+        state.install_scan(DiffScope::Commit(2), vec![one_file("c.rs", FileStatus::Modified)], true);
+        assert_eq!(state.scope, DiffScope::Commit(0), "off-scope result doesn't swap the view");
+        assert_eq!(state.files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(), vec!["a.rs"]);
+        assert_eq!(
+            state.select_scope(DiffScope::Commit(2)),
+            NavOutcome::Ready,
+            "but commit 2 is now cached, so a later visit is instant",
+        );
+    }
+
+    #[test]
+    fn jump_dropdown_rows_map_to_scopes() {
+        let state = commit_mode_state();
+        assert_eq!(state.jump_row_count(), 4, "All changes + 3 commits");
+        assert_eq!(DiffOverlayState::scope_for_jump_row(0), DiffScope::WholeDiff);
+        assert_eq!(DiffOverlayState::scope_for_jump_row(1), DiffScope::Commit(0));
+        assert_eq!(DiffOverlayState::scope_for_jump_row(3), DiffScope::Commit(2));
+    }
+
+    #[test]
+    fn open_jump_seeds_highlight_and_move_clamps() {
+        let mut state = commit_mode_state();
+        state.select_scope(DiffScope::Commit(1));
+        state.open_jump();
+        assert!(state.jump_open);
+        assert_eq!(state.jump_selected, 2, "commit 1 → row 2 (row 0 is All changes)");
+        state.jump_move(false);
+        assert_eq!(state.jump_selected, 1);
+        for _ in 0..5 {
+            state.jump_move(true);
+        }
+        assert_eq!(state.jump_selected, 3, "clamps at the last row");
+    }
+
+    #[test]
+    fn jump_confirm_all_changes_scans_then_installs() {
+        let mut state = commit_mode_state();
+        state.open_jump();
+        state.jump_selected = 0; // All changes, not cached yet
+        assert_eq!(state.jump_confirm(), NavOutcome::NeedsScan(DiffScope::WholeDiff));
+        assert!(state.commit_loading);
+        assert!(!state.jump_open, "confirm closes the dropdown");
+        state.install_scan(
+            DiffScope::WholeDiff,
+            vec![one_file("a.rs", FileStatus::Added), one_file("b.rs", FileStatus::Modified)],
+            true,
+        );
+        assert!(!state.commit_loading);
+        assert_eq!(state.files.len(), 2, "the whole-branch diff is now shown");
+        assert_eq!(state.current_commit_sha(), None, "whole-diff scope has no sha");
+    }
+
+    #[test]
+    fn save_stamps_current_commit_sha_in_commit_mode() {
+        use forge_workspace::env::git_diff::hunks::Hunk;
+        let mut app = App::test_default();
+        let file = FileHunks {
+            path: "a.rs".into(),
+            status: FileStatus::Modified,
+            hunks: vec![Hunk {
+                old_start: 1,
+                old_count: 1,
+                new_start: 1,
+                new_count: 1,
+                lines: vec![DiffLine {
+                    kind: DiffLineKind::Added,
+                    text: "x".into(),
+                    old_line: None,
+                    new_line: Some(1),
+                }],
+            }],
+        };
+        let mut state =
+            DiffOverlayState::new(PathBuf::from("/tmp"), "main".to_owned(), vec![file.clone()]);
+        state.commits = vec![commit_meta("aaa", "s")];
+        state.scope = DiffScope::Commit(0);
+        state.commit_cache = vec![Some(CachedScan { files: vec![file], scanner_ok: true })];
+        let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        let mut editor = TextArea::default();
+        editor.insert_str("note");
+        state.active_input = Some(ActiveCommentInput { key, editor, prior_comment: None });
+        app.diff_overlay = Some(state);
+        save_active_input(&mut app);
+        let o = app.diff_overlay.as_ref().expect("overlay");
+        assert_eq!(o.comments.len(), 1);
+        assert_eq!(o.comments[0].commit, Some("aaa".to_owned()), "commit sha stamped");
+    }
+
+    #[test]
+    fn save_stamps_no_commit_in_whole_diff_mode() {
+        let mut app = App::test_default();
+        let file = one_file("a.rs", FileStatus::Modified);
+        let mut file = file;
+        file.hunks = vec![forge_workspace::env::git_diff::hunks::Hunk {
+            old_start: 1,
+            old_count: 1,
+            new_start: 1,
+            new_count: 1,
+            lines: vec![DiffLine {
+                kind: DiffLineKind::Added,
+                text: "x".into(),
+                old_line: None,
+                new_line: Some(1),
+            }],
+        }];
+        let mut state =
+            DiffOverlayState::new(PathBuf::from("/tmp"), "HEAD".to_owned(), vec![file]);
+        // Whole-diff-only mode: no commits, scope stays WholeDiff.
+        let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        let mut editor = TextArea::default();
+        editor.insert_str("note");
+        state.active_input = Some(ActiveCommentInput { key, editor, prior_comment: None });
+        app.diff_overlay = Some(state);
+        save_active_input(&mut app);
+        let o = app.diff_overlay.as_ref().expect("overlay");
+        assert_eq!(o.comments.len(), 1);
+        assert_eq!(o.comments[0].commit, None, "whole-diff comments carry no commit");
     }
 }
