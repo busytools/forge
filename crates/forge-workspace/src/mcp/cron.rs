@@ -320,7 +320,9 @@ mod tests {
         *mock.create_result.lock() = Some(Ok(sample_entry("c1")));
         let tool = Create { facade: mock.clone(), caller_key: resolver() };
 
-        let out = tool.call(input(serde_json::json!({ "schedule": "0 9 * * *", "prompt": "stand-up" }))).await;
+        let out = tool
+            .call(input(serde_json::json!({ "schedule": "0 9 * * *", "prompt": "stand-up" })))
+            .await;
         assert!(!out.is_error, "valid create succeeds: {}", out.blocks[0].text);
         assert!(out.blocks[0].text.contains("c1"), "output carries the id");
 
@@ -336,7 +338,9 @@ mod tests {
         let tool = Create { facade: mock.clone(), caller_key: resolver() };
 
         let out = tool
-            .call(input(serde_json::json!({ "run_once_at": "2030-01-01T09:00:00Z", "prompt": "deploy" })))
+            .call(input(
+                serde_json::json!({ "run_once_at": "2030-01-01T09:00:00Z", "prompt": "deploy" }),
+            ))
             .await;
         assert!(!out.is_error, "valid rfc3339 accepted: {}", out.blocks[0].text);
         assert!(matches!(mock.create_calls.lock()[0].1, CronKind::Once(_)));
@@ -347,7 +351,9 @@ mod tests {
         let mock = Arc::new(MockCronFacade::new());
         let tool = Create { facade: mock.clone(), caller_key: resolver() };
 
-        let out = tool.call(input(serde_json::json!({ "run_once_at": "not a date", "prompt": "x" }))).await;
+        let out = tool
+            .call(input(serde_json::json!({ "run_once_at": "not a date", "prompt": "x" })))
+            .await;
         assert!(out.is_error);
         assert!(mock.create_calls.lock().is_empty(), "invalid input never reaches the facade");
     }
@@ -373,10 +379,12 @@ mod tests {
     #[tokio::test]
     async fn create_surfaces_invalid_expression_error() {
         let mock = Arc::new(MockCronFacade::new());
-        *mock.create_result.lock() = Some(Err(CronCreateError::InvalidExpression("bad pattern".to_owned())));
+        *mock.create_result.lock() =
+            Some(Err(CronCreateError::InvalidExpression("bad pattern".to_owned())));
         let tool = Create { facade: mock.clone(), caller_key: resolver() };
 
-        let out = tool.call(input(serde_json::json!({ "schedule": "nonsense", "prompt": "x" }))).await;
+        let out =
+            tool.call(input(serde_json::json!({ "schedule": "nonsense", "prompt": "x" }))).await;
         assert!(out.is_error);
         assert!(out.blocks[0].text.contains("bad pattern"), "facade error surfaced to the LLM");
     }

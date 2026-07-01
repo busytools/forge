@@ -99,8 +99,11 @@ mod tests {
 
     #[test]
     fn due_crons_returns_entries_at_or_before_now_in_order() {
-        let crons =
-            vec![recurring_entry("past", 100), recurring_entry("exact", 200), recurring_entry("future", 300)];
+        let crons = vec![
+            recurring_entry("past", 100),
+            recurring_entry("exact", 200),
+            recurring_entry("future", 300),
+        ];
         let due = due_crons(&crons, epoch(200));
         assert_eq!(due, vec![CronId::from("past"), CronId::from("exact")]);
     }
@@ -147,8 +150,7 @@ mod tests {
     #[test]
     fn next_fire_after_recurring_dispatches_to_parser() {
         let kind = CronKind::Recurring("30 3 * * *".to_owned());
-        let next =
-            next_fire_after_in_tz(&kind, at_utc(2024, 1, 1, 0, 0), &Utc).expect("has next");
+        let next = next_fire_after_in_tz(&kind, at_utc(2024, 1, 1, 0, 0), &Utc).expect("has next");
         assert_eq!(next, at_utc(2024, 1, 1, 3, 30));
     }
 

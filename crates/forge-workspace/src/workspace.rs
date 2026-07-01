@@ -2568,8 +2568,8 @@ impl Workspace {
     }
 
     /// Spawn the cron scheduler: a background task that wakes every
-    /// [`CRON_TICK_INTERVAL`], fires every due cron, and exits when the
-    /// workspace drops. Idempotent (a second call no-ops). Mirrors
+    /// `CRON_TICK_INTERVAL` (~60s), fires every due cron, and exits when
+    /// the workspace drops. Idempotent (a second call no-ops). Mirrors
     /// [`Workspace::start_usage_poller`]; started once at boot.
     pub fn start_cron_scheduler(self: &Arc<Self>) {
         if self.cron_scheduler_started.swap(true, std::sync::atomic::Ordering::AcqRel) {
@@ -4299,8 +4299,9 @@ mod tests {
             ],
         );
 
-        let ws =
-            Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new loads forge-cron.toml"));
+        let ws = Arc::new(
+            Workspace::new(dir.path().to_owned()).await.expect("new loads forge-cron.toml"),
+        );
         assert_eq!(ws.crons_for_project("forge").len(), 3, "boot loaded all three crons");
 
         // Boot catch-up: the one call main.rs makes at startup.
@@ -4330,7 +4331,11 @@ mod tests {
         let persisted = crate::cron_store::load_crons(dir.path());
         assert!(persisted.iter().all(|c| c.id != CronId::from("once")), "removal persisted");
         assert!(
-            persisted.iter().find(|c| c.id == CronId::from("rec")).expect("rec persisted").next_fire
+            persisted
+                .iter()
+                .find(|c| c.id == CronId::from("rec"))
+                .expect("rec persisted")
+                .next_fire
                 > now,
             "advance persisted",
         );

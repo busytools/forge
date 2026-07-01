@@ -4,10 +4,11 @@
 //! ([`crate::single_instance::acquire`], called from forge-tui's `main`
 //! before [`crate::Workspace::new`]) takes a non-blocking exclusive
 //! `flock` on a never-renamed `<config_dir>/forge.lock`. If another
-//! forge already holds it, boot refuses with [`AcquireError::AlreadyRunning`]
-//! - a clean stderr message + non-zero exit, NOT a panic. Otherwise the
-//! caller's PID is written and the lock is held for the process lifetime
-//! (flock auto-releases on exit/crash, so there is no stale-lock cleanup).
+//! forge already holds it, boot refuses with an
+//! [`AcquireError::AlreadyRunning`]: a clean stderr message + non-zero
+//! exit, not a panic. Otherwise the caller's PID is written and the lock
+//! is held for the process lifetime (flock auto-releases on exit/crash,
+//! so there is no stale-lock cleanup).
 //!
 //! The lock scopes to the config dir, so a second forge on the SAME
 //! forge.toml/state is blocked while a genuinely separate profile /
@@ -40,9 +41,9 @@ pub(crate) enum AcquireError {
 
 /// Acquire the per-config-dir single-instance lock.
 ///
-/// On success the returned `File` MUST be held for the process lifetime
-/// - dropping it (or process exit / crash) releases the flock, so there
-/// is no stale-lock cleanup. `Ok(None)` is the degraded path: the
+/// On success the returned `File` MUST be held for the process lifetime;
+/// dropping it (or process exit / crash) releases the flock, so there is
+/// no stale-lock cleanup. `Ok(None)` is the degraded path: the
 /// lockfile couldn't be opened or the filesystem rejected `flock`, so
 /// forge boots without the guarantee rather than refusing over an exotic
 /// FS (the local APFS/ext4 the user runs always supports flock). `Err`

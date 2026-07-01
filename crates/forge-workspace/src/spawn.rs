@@ -303,8 +303,8 @@ pub(crate) fn handle_deliver_peer_prompt(
 /// Deliver a due cron's prompt into its project's session as a plain
 /// user turn. If the project's lead is running, dispatch a
 /// `Command::Prompt` straight to it; otherwise buffer the prompt on the
-/// synthetic spawn-key's DomainSession and dispatch `Command::SpawnProject`
-/// - `SessionTask` drains it on Connected via `drain_pending_cron_prompts`.
+/// synthetic spawn-key's DomainSession and dispatch `Command::SpawnProject`;
+/// `SessionTask` drains it on Connected via `drain_pending_cron_prompts`.
 /// Mirrors [`handle_deliver_peer_prompt`] minus the peer-envelope wrapping
 /// (a cron prompt is an ordinary user turn, not a peer message).
 pub(crate) fn deliver_cron_prompt(workspace: &Arc<Workspace>, project_name: &str, text: String) {
@@ -323,11 +323,9 @@ pub(crate) fn deliver_cron_prompt(workspace: &Arc<Workspace>, project_name: &str
         });
 
     if let Some(target_key) = running_lead {
-        if let Err(err) = workspace.dispatch(Command::Prompt {
-            key: target_key,
-            text,
-            attachments: Vec::new(),
-        }) {
+        if let Err(err) =
+            workspace.dispatch(Command::Prompt { key: target_key, text, attachments: Vec::new() })
+        {
             tracing::warn!(
                 target: "forge_workspace::spawn",
                 project = %project_name,

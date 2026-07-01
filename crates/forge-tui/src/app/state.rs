@@ -279,7 +279,7 @@ pub struct App {
     pub active_session_key: Option<forge_workspace::SessionKey>,
     /// Snapshot of the active project's durable forge crons
     /// (`mcp__forge__cron`), refreshed on the ~1s ticker
-    /// ([`super::git_diff::apply_timer_tick`]) from
+    /// (`git_diff::apply_timer_tick`) from
     /// `Workspace::crons_for_project`. The Inspector SCHEDULES section
     /// reads this cache each render instead of hitting the workspace
     /// per frame (mirrors the git-diff snapshot pattern). Empty when
