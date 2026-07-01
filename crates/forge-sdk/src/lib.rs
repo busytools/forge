@@ -73,7 +73,7 @@ pub use hooks::{
     UserPromptSubmitHookSpecificOutput, UserPromptSubmitInput,
 };
 pub use options::{Options, OptionsBuilder, PermissionMode, SdkPluginConfig, SystemPromptKind};
-pub use paths::{claude_config_dir_from_env, projects_dir_for};
+pub use paths::{app_support_dir, claude_config_dir_from_env, projects_dir_for};
 pub use permissions::CanUseToolCallback;
 
 /// Convenient alias for `Result<T, forge_sdk::Error>`.
