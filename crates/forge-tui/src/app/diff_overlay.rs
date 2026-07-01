@@ -280,12 +280,31 @@ pub struct DiffOverlayEvent {
 
 /// Spawn the initial `/diff` scan and post a [`DiffOverlayEvent`] when
 /// it completes. Best-effort send - receiver going away (app shutdown)
-/// just drops the result. Wired to full commit-mode detection in a
-/// later step; today it scans the whole diff and opens whole-diff mode.
-pub fn spawn_fetch(cwd: PathBuf, target: String, seq: u64, tx: std_mpsc::Sender<DiffOverlayEvent>) {
+/// just drops the result. Scans the commit list first: when the target
+/// has commits ahead the overlay opens in commit mode on the first
+/// commit (its diff is scanned upfront; the rest lazily on navigation);
+/// otherwise it scans the whole diff and opens whole-diff mode - today's
+/// behavior. `branch` names the branch under review for the stepper.
+pub fn spawn_fetch(
+    cwd: PathBuf,
+    target: String,
+    branch: Option<String>,
+    seq: u64,
+    tx: std_mpsc::Sender<DiffOverlayEvent>,
+) {
     tokio::task::spawn_local(async move {
-        let ScanOutcome { files, scanner_ok, untracked_suppressed } =
-            forge_workspace::env::git_diff::hunks::scan(&cwd, &target).await;
+        let commits = forge_workspace::env::git_diff::hunks::scan_commits(&cwd, &target).await;
+        // Clone the first sha so `commits` isn't borrowed across the
+        // scan (it moves into the event below).
+        let first_sha = commits.first().map(|c| c.sha.clone());
+        let (files, scanner_ok, untracked_suppressed) = if let Some(sha) = first_sha {
+            let o = forge_workspace::env::git_diff::hunks::scan_commit(&cwd, &sha).await;
+            (o.files, o.scanner_ok, 0)
+        } else {
+            let ScanOutcome { files, scanner_ok, untracked_suppressed } =
+                forge_workspace::env::git_diff::hunks::scan(&cwd, &target).await;
+            (files, scanner_ok, untracked_suppressed)
+        };
         let _ = tx.send(DiffOverlayEvent {
             cwd,
             target,
@@ -293,7 +312,7 @@ pub fn spawn_fetch(cwd: PathBuf, target: String, seq: u64, tx: std_mpsc::Sender<
             scanner_ok,
             untracked_suppressed,
             seq,
-            kind: DiffScanKind::Initial { commits: Vec::new(), branch: None },
+            kind: DiffScanKind::Initial { commits, branch },
         });
     });
 }
@@ -431,13 +450,22 @@ pub fn open_with_target(app: &mut App, target: String) {
         return;
     }
     let cwd = resolve_active_diff_cwd(app, &cwd_raw);
+    // Branch under review for the stepper header, from the Inspector
+    // snapshot (best-effort; `None` on detached HEAD / no snapshot).
+    let branch = app
+        .active_session()
+        .and_then(|s| s.git_diff_snapshot.as_ref())
+        .and_then(|snap| match &snap.branch {
+            forge_primitives::git::GitBranch::Named(name) => Some(name.clone()),
+            _ => None,
+        });
     // Bump the seq before spawning so the new scan's events
     // outrank anything still in flight from an earlier /diff call.
     // Old events arriving on the channel after this bump will be
     // dropped by drain_events as superseded.
     app.diff_scan_seq = app.diff_scan_seq.wrapping_add(1);
     let seq = app.diff_scan_seq;
-    spawn_fetch(cwd, target, seq, app.diff_overlay_event_tx.clone());
+    spawn_fetch(cwd, target, branch, seq, app.diff_overlay_event_tx.clone());
 }
 
 /// Resolve the cwd a diff scan should run against for the active
@@ -3418,5 +3446,50 @@ mod tests {
         let effect = handle_left_click(&mut state, 5, 10, 160);
         assert!(effect.redraw);
         assert!(!state.jump_open, "a click off the control closes the menu");
+    }
+
+    // ---- enter mode: commit mode when the target has commits ahead ----
+
+    #[test]
+    fn new_initial_opens_commit_mode_when_commits_present() {
+        let event = DiffOverlayEvent {
+            cwd: PathBuf::from("/tmp"),
+            target: "main".into(),
+            files: vec![one_file("a.rs", FileStatus::Added)],
+            scanner_ok: true,
+            untracked_suppressed: 0,
+            seq: 1,
+            kind: DiffScanKind::Initial {
+                commits: vec![commit_meta("aaa", "first"), commit_meta("bbb", "second")],
+                branch: Some("feat".into()),
+            },
+        };
+        let state = DiffOverlayState::new_initial(event);
+        assert_eq!(state.scope, DiffScope::Commit(0), "commits ahead → open on the first commit");
+        assert_eq!(state.commits.len(), 2);
+        assert_eq!(state.branch.as_deref(), Some("feat"));
+        assert!(state.commit_cache[0].is_some(), "first commit's diff cached upfront");
+        assert!(state.commit_cache[1].is_none(), "later commits are scanned lazily");
+        assert!(state.whole_diff_cache.is_none());
+        assert_eq!(state.files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(), vec!["a.rs"]);
+    }
+
+    #[test]
+    fn new_initial_opens_whole_diff_when_no_commits() {
+        let event = DiffOverlayEvent {
+            cwd: PathBuf::from("/tmp"),
+            target: "HEAD".into(),
+            files: vec![one_file("a.rs", FileStatus::Modified)],
+            scanner_ok: true,
+            untracked_suppressed: 2,
+            seq: 1,
+            kind: DiffScanKind::Initial { commits: Vec::new(), branch: None },
+        };
+        let state = DiffOverlayState::new_initial(event);
+        assert_eq!(state.scope, DiffScope::WholeDiff, "no commits ahead → whole-diff mode");
+        assert!(state.commits.is_empty());
+        assert!(state.commit_cache.is_empty());
+        assert!(state.whole_diff_cache.is_some());
+        assert_eq!(state.untracked_suppressed, 2, "whole-diff keeps the untracked cap count");
     }
 }
