@@ -4470,9 +4470,10 @@ mod tests {
         let session_key = SessionKey::from_session_id("live-session");
         let synth_key = SessionKey::from_session_id("__spawn_forge__");
 
-        ws.domain_handles
-            .lock()
-            .insert(session_key.clone(), Arc::new(Mutex::new(DomainSession::new(session_key.clone(), None))));
+        ws.domain_handles.lock().insert(
+            session_key.clone(),
+            Arc::new(Mutex::new(DomainSession::new(session_key.clone(), None))),
+        );
         let synth = Arc::new(Mutex::new(DomainSession::new(synth_key.clone(), None)));
         synth.lock().pending_cron_prompts.push("reminder".to_owned());
         ws.domain_handles.lock().insert(synth_key.clone(), synth);
@@ -4487,7 +4488,10 @@ mod tests {
                     if key == &session_key && text == "reminder")),
             "the buffered cron prompt is dispatched into the live session, not dropped",
         );
-        assert!(!ws.domain_handles.lock().contains_key(&synth_key), "synth domain drained + removed");
+        assert!(
+            !ws.domain_handles.lock().contains_key(&synth_key),
+            "synth domain drained + removed"
+        );
     }
 
     #[test]
