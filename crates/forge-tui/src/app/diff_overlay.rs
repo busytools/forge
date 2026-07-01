@@ -886,9 +886,20 @@ impl DiffOverlayState {
     /// Store a completed scan into the cache for `scope`, and (when it's
     /// still the current scope) swap it into view. Called from the drain
     /// pump when a lazy per-scope scan lands. A scan that arrives after
-    /// the user moved on still caches, so returning is instant.
+    /// the user moved on still caches, so returning is instant. Clones
+    /// the files only when the scope is current (needed in both the
+    /// cache and the view); an off-scope result moves straight in.
     pub fn install_scan(&mut self, scope: DiffScope, files: Vec<FileHunks>, scanner_ok: bool) {
-        let cached = CachedScan { files: files.clone(), scanner_ok };
+        if self.scope == scope {
+            self.put_scope_cache(scope, CachedScan { files: files.clone(), scanner_ok });
+            self.set_files(files, scanner_ok, 0);
+        } else {
+            self.put_scope_cache(scope, CachedScan { files, scanner_ok });
+        }
+    }
+
+    /// Store `cached` in the slot for `scope`.
+    fn put_scope_cache(&mut self, scope: DiffScope, cached: CachedScan) {
         match scope {
             DiffScope::WholeDiff => self.whole_diff_cache = Some(cached),
             DiffScope::Commit(i) => {
@@ -896,9 +907,6 @@ impl DiffOverlayState {
                     *slot = Some(cached);
                 }
             }
-        }
-        if self.scope == scope {
-            self.set_files(files, scanner_ok, 0);
         }
     }
 
