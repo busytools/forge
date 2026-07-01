@@ -162,12 +162,16 @@ pub struct ScanOutcome {
 
 /// One commit in the review stepper's ordered list. `sha` is the full
 /// hash (used to scope the per-commit diff), `short_sha` the abbreviated
-/// form for display, `subject` the commit's first line.
+/// form for display, `subject` the commit's first line. `body` is the
+/// message beyond the subject, filled lazily by [`scan_commit_body`] when
+/// the stepper first lands on the commit (empty until then, and for a
+/// subject-only commit).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommitMeta {
     pub sha: String,
     pub short_sha: String,
     pub subject: String,
+    pub body: String,
 }
 
 /// Git's canonical empty-tree object (SHA-1). Diffing a parentless
@@ -201,7 +205,9 @@ pub async fn scan_commits(cwd: &Path, target: &str) -> Vec<CommitMeta> {
             if sha.is_empty() {
                 return None;
             }
-            Some(CommitMeta { sha, short_sha, subject })
+            // Body stays empty here; a multi-line body would break this
+            // line-per-commit parse. It is fetched lazily per commit.
+            Some(CommitMeta { sha, short_sha, subject, body: String::new() })
         })
         .collect()
 }

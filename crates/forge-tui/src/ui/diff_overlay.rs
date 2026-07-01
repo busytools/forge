@@ -125,15 +125,29 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     // 1. Offset table (measured-or-estimate), clamp the document
     //    scroll, find the file at the top of the viewport + the row
-    //    into it.
+    //    into it. In commit mode a message block leads the document, so
+    //    the file sub-document starts `message_rows` below the top.
     let Some(overlay) = app.diff_overlay.as_ref() else { return };
     let viewport_rows = u32::from(pane_area.height);
+    // The message block only renders when the body itself does (not
+    // during a scan / failure / empty tree). `commit_message_block_lines`
+    // returns empty outside commit mode, so `message_rows` is 0 in
+    // whole-diff and the math below reduces to the pre-enhancement path.
+    let renders_body = overlay.scanner_ok && !overlay.commit_loading && !overlay.files.is_empty();
+    let msg_lines = if renders_body {
+        commit_message_block_lines(overlay, pane_area.width)
+    } else {
+        Vec::new()
+    };
+    let message_rows = u32::try_from(msg_lines.len()).unwrap_or(u32::MAX);
     let offsets = overlay.doc_offsets();
-    let max_scroll = offsets.total.saturating_sub(viewport_rows);
+    let max_scroll = message_rows.saturating_add(offsets.total).saturating_sub(viewport_rows);
     let doc_scroll = overlay.doc_scroll.min(max_scroll);
-    let first_visible = offsets.file_at_row(doc_scroll);
+    let in_message_block = message_rows > 0 && doc_scroll < message_rows;
+    let file_scroll = doc_scroll.saturating_sub(message_rows);
+    let first_visible = offsets.file_at_row(file_scroll);
     let local_offset =
-        doc_scroll.saturating_sub(offsets.starts.get(first_visible).copied().unwrap_or(0));
+        file_scroll.saturating_sub(offsets.starts.get(first_visible).copied().unwrap_or(0));
 
     // 2. Populate the height + span caches for the window of files
     //    overlapping the viewport (lazy on entry), storing the clamped
@@ -143,20 +157,22 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         populate_window_cache(o, pane_area.width, viewport_rows, first_visible, local_offset);
     }
 
-    // 3. Build the visible body from the populated caches.
+    // 3. Build the visible body from the populated caches. While the
+    //    message block is (partially) on screen it leads the scroll with
+    //    no pinned header; once it scrolls off, the file header pins as
+    //    usual (and whole-diff always takes this second path).
     let Some(overlay) = app.diff_overlay.as_ref() else { return };
-    let ContinuousBody { lines, keys, tail_scroll } = build_continuous_body(
-        overlay,
-        pane_area.width,
-        pane_area.height,
-        first_visible,
-        local_offset,
-    );
+    let ContinuousBody { lines, keys, tail_scroll } = if in_message_block {
+        build_message_block_body(overlay, pane_area.width, pane_area.height, msg_lines, doc_scroll)
+    } else {
+        build_continuous_body(overlay, pane_area.width, pane_area.height, first_visible, local_offset)
+    };
+    let head_count = if in_message_block { 0 } else { 1usize.min(lines.len()) };
 
     // 4. Stash geometry + the hit-test scroll for the click handler.
     if let Some(o) = app.diff_overlay.as_mut() {
         o.body_keys = keys;
-        o.body_head_rows = 1;
+        o.body_head_rows = head_count;
         o.body_tail_scroll = tail_scroll;
         o.pane_origin_row = pane_area.y;
         o.pane_origin_col = pane_area.x;
@@ -170,7 +186,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         render_separator(frame, sep_area);
     }
     let Some(overlay) = app.diff_overlay.as_ref() else { return };
-    let head_count = 1.min(lines.len());
     let head_height = u16::try_from(head_count).unwrap_or(1);
     let (head, tail) = lines.split_at(head_count);
     let head_rect =
@@ -1047,6 +1062,71 @@ struct ContinuousBody {
     lines: Vec<Line<'static>>,
     keys: Vec<BodyRowKey>,
     tail_scroll: usize,
+}
+
+/// The commit-message block that leads the scrolling document in commit
+/// mode: a full-pane rule, the subject (bold), then the body (dim,
+/// soft-wrapped) each behind a RUST_ORANGE `│` rail. Empty in whole-diff
+/// scope (no block - the overlay stays byte-identical) or when the
+/// current commit can't be resolved. A subject-only commit yields just
+/// the rule + subject.
+fn commit_message_block_lines(overlay: &DiffOverlayState, pane_width: u16) -> Vec<Line<'static>> {
+    let DiffScope::Commit(i) = overlay.scope else { return Vec::new() };
+    let Some(commit) = overlay.commits.get(i) else { return Vec::new() };
+    let dim = Style::default().fg(theme::DIM);
+    let rail = Style::default().fg(theme::RUST_ORANGE);
+    let bold = Style::default().add_modifier(Modifier::BOLD);
+    // Content width after the leading "│ " rail (2 cols).
+    let content_width = usize::from(pane_width).saturating_sub(2).max(1);
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    lines.push(Line::from(Span::styled("\u{2500}".repeat(usize::from(pane_width)), dim)));
+    for row in wrap_chip_body(&commit.subject, content_width) {
+        lines.push(Line::from(vec![Span::styled("\u{2502} ", rail), Span::styled(row, bold)]));
+    }
+    let body = commit.body.trim();
+    if !body.is_empty() {
+        lines.push(Line::from(Span::styled("\u{2502}", rail)));
+        for row in wrap_chip_body(body, content_width) {
+            if row.is_empty() {
+                lines.push(Line::from(Span::styled("\u{2502}", rail)));
+            } else {
+                lines.push(Line::from(vec![Span::styled("\u{2502} ", rail), Span::styled(row, dim)]));
+            }
+        }
+    }
+    lines
+}
+
+/// Build the body when the commit-message block is (partially) visible at
+/// the top of the scroll - commit mode, scrolled above the first file.
+/// The visible message rows lead, then each file's header-and-body
+/// follows, all scrolling as one block (no pinned header, so the caller
+/// pins zero rows). `doc_scroll` is the row offset into the whole
+/// document (message block + files); `msg_lines` the full message block.
+fn build_message_block_body(
+    overlay: &DiffOverlayState,
+    pane_width: u16,
+    viewport_rows: u16,
+    msg_lines: Vec<Line<'static>>,
+    doc_scroll: u32,
+) -> ContinuousBody {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut keys: Vec<BodyRowKey> = Vec::new();
+    let skip = usize::try_from(doc_scroll).unwrap_or(usize::MAX);
+    for line in msg_lines.into_iter().skip(skip) {
+        lines.push(line);
+        keys.push(BodyRowKey::CommitMessage);
+    }
+    let comments_by_key = index_comments_by_key(&overlay.scoped_comments());
+    let needed = usize::from(viewport_rows);
+    let mut file_idx = 0;
+    while file_idx < overlay.files.len() && lines.len() <= needed {
+        // Every file's header scrolls here (none is pinned while the
+        // message block leads); the pin returns once it scrolls off.
+        push_file_body(overlay, file_idx, true, pane_width, &comments_by_key, &mut lines, &mut keys);
+        file_idx = file_idx.saturating_add(1);
+    }
+    ContinuousBody { lines, keys, tail_scroll: 0 }
 }
 
 /// Build the continuous body for the current viewport: the pinned
@@ -2155,11 +2235,13 @@ mod tests {
                 sha: "a".into(),
                 short_sha: "a3f9c1e".into(),
                 subject: "fix threshold".into(),
+                body: String::new(),
             },
             CommitMeta {
                 sha: "b".into(),
                 short_sha: "b90bbef".into(),
                 subject: "wire banner".into(),
+                body: String::new(),
             },
         ];
         state.scope = DiffScope::Commit(0);
@@ -2216,5 +2298,105 @@ mod tests {
         let w = usize::from(width);
         let row0: String = (0..w).map(|x| buffer.content[x].symbol()).collect();
         assert!(!row0.contains("COMMITS"), "whole-diff mode never shows the stepper");
+    }
+
+    // ---- commit-message block ----
+
+    fn commit_state_with_body(subject: &str, body: &str) -> DiffOverlayState {
+        use crate::app::diff_overlay::DiffScope;
+        use forge_workspace::env::git_diff::hunks::CommitMeta;
+        let mut state = DiffOverlayState::new(
+            std::path::PathBuf::from("/tmp"),
+            "main".to_owned(),
+            vec![FileHunks { path: "a.rs".into(), status: FileStatus::Modified, hunks: vec![] }],
+        );
+        state.commits = vec![CommitMeta {
+            sha: "a".into(),
+            short_sha: "a3f9c1e".into(),
+            subject: subject.to_owned(),
+            body: body.to_owned(),
+        }];
+        state.scope = DiffScope::Commit(0);
+        state
+    }
+
+    #[test]
+    fn commit_message_block_shows_subject_and_body() {
+        let state = commit_state_with_body("fix the threshold check", "why we split it\ninto its own fn");
+        let lines = commit_message_block_lines(&state, 80);
+        let text: String = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert!(text.contains("fix the threshold check"), "subject shown: {text}");
+        assert!(text.contains("why we split it"), "body first line: {text}");
+        assert!(text.contains("into its own fn"), "body second line: {text}");
+        assert!(text.contains('\u{2502}'), "rust-orange rail glyph present: {text}");
+    }
+
+    #[test]
+    fn commit_message_block_subject_only_has_rule_and_subject_only() {
+        let lines = commit_message_block_lines(&commit_state_with_body("just a subject", ""), 80);
+        assert_eq!(lines.len(), 2, "subject-only commit: rule + subject, no body rows");
+        assert!(line_text(&lines[1]).contains("just a subject"));
+    }
+
+    #[test]
+    fn commit_message_block_empty_in_whole_diff_scope() {
+        // No commits → whole-diff scope → no message block (byte-identical
+        // to the pre-enhancement overlay).
+        let state = DiffOverlayState::new(
+            std::path::PathBuf::from("/tmp"),
+            "HEAD".to_owned(),
+            vec![FileHunks { path: "a.rs".into(), status: FileStatus::Modified, hunks: vec![] }],
+        );
+        assert!(commit_message_block_lines(&state, 80).is_empty());
+    }
+
+    #[test]
+    fn commit_mode_renders_message_block_above_the_diff() {
+        use crate::app::diff_overlay::{CachedScan, DiffScope};
+        use forge_workspace::env::git_diff::hunks::{CommitMeta, DiffLine, Hunk};
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let file = FileHunks {
+            path: "rate_limit.rs".into(),
+            status: FileStatus::Modified,
+            hunks: vec![Hunk {
+                old_start: 65,
+                old_count: 1,
+                new_start: 65,
+                new_count: 2,
+                lines: vec![DiffLine {
+                    kind: DiffLineKind::Added,
+                    text: "fn is_near_threshold() {".into(),
+                    old_line: None,
+                    new_line: Some(66),
+                }],
+            }],
+        };
+        let mut state = DiffOverlayState::new(
+            std::path::PathBuf::from("/tmp"),
+            "main".to_owned(),
+            vec![file.clone()],
+        );
+        state.commits = vec![CommitMeta {
+            sha: "a".into(),
+            short_sha: "a3f9c1e".into(),
+            subject: "fix the threshold check".into(),
+            body: "split the near-threshold predicate".into(),
+        }];
+        state.scope = DiffScope::Commit(0);
+        state.commit_cache = vec![Some(CachedScan { files: vec![file], scanner_ok: true })];
+        let mut app = App::test_default();
+        app.diff_overlay = Some(state);
+
+        let (width, height) = (130u16, 20u16);
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|frame| render(frame, &mut app)).expect("draw");
+        let full: String =
+            terminal.backend().buffer().content.iter().map(ratatui::buffer::Cell::symbol).collect();
+        assert!(full.contains("fix the threshold check"), "subject renders above the diff");
+        assert!(full.contains("split the near-threshold predicate"), "body renders above the diff");
+        assert!(full.contains("is_near_threshold"), "the commit's diff still renders below it");
     }
 }

@@ -198,6 +198,9 @@ pub enum BodyRowKey {
     /// Multiple consecutive rows when the comment spans more than
     /// one visual line.
     InputRow(LineKey),
+    /// A row of the commit-message block shown above the diff in commit
+    /// mode (the leading rule, subject, or a body line). Non-interactive.
+    CommitMessage,
 }
 
 /// A saved per-line comment. `path` / `line` / `hunk_context` are
@@ -267,6 +270,9 @@ pub enum DiffScanKind {
 /// drain pump uses it to drop events from a superseded scan
 /// (rapid second `/diff` before the first finishes).
 /// `kind` distinguishes the initial open from a lazy per-scope scan.
+/// `commit_body` carries the scanned commit's message body (`Some` for a
+/// commit scope - the initial open's first commit, or a lazy per-commit
+/// scan; `None` for whole-diff, which has no single commit).
 #[derive(Debug)]
 pub struct DiffOverlayEvent {
     pub cwd: PathBuf,
@@ -276,6 +282,7 @@ pub struct DiffOverlayEvent {
     pub untracked_suppressed: usize,
     pub seq: u64,
     pub kind: DiffScanKind,
+    pub commit_body: Option<String>,
 }
 
 /// Spawn the initial `/diff` scan and post a [`DiffOverlayEvent`] when
@@ -297,13 +304,14 @@ pub fn spawn_fetch(
         // Clone the first sha so `commits` isn't borrowed across the
         // scan (it moves into the event below).
         let first_sha = commits.first().map(|c| c.sha.clone());
-        let (files, scanner_ok, untracked_suppressed) = if let Some(sha) = first_sha {
+        let (files, scanner_ok, untracked_suppressed, commit_body) = if let Some(sha) = first_sha {
             let o = forge_workspace::env::git_diff::hunks::scan_commit(&cwd, &sha).await;
-            (o.files, o.scanner_ok, 0)
+            let body = forge_workspace::env::git_diff::hunks::scan_commit_body(&cwd, &sha).await;
+            (o.files, o.scanner_ok, 0, Some(body))
         } else {
             let ScanOutcome { files, scanner_ok, untracked_suppressed } =
                 forge_workspace::env::git_diff::hunks::scan(&cwd, &target).await;
-            (files, scanner_ok, untracked_suppressed)
+            (files, scanner_ok, untracked_suppressed, None)
         };
         let _ = tx.send(DiffOverlayEvent {
             cwd,
@@ -313,6 +321,7 @@ pub fn spawn_fetch(
             untracked_suppressed,
             seq,
             kind: DiffScanKind::Initial { commits, branch },
+            commit_body,
         });
     });
 }
@@ -332,10 +341,15 @@ fn spawn_scope_fetch(
     tx: std_mpsc::Sender<DiffOverlayEvent>,
 ) {
     tokio::task::spawn_local(async move {
-        let ScanOutcome { files, scanner_ok, untracked_suppressed } = match sha {
-            Some(sha) => forge_workspace::env::git_diff::hunks::scan_commit(&cwd, &sha).await,
-            None => forge_workspace::env::git_diff::hunks::scan(&cwd, &target).await,
+        let (outcome, commit_body) = match &sha {
+            Some(sha) => {
+                let outcome = forge_workspace::env::git_diff::hunks::scan_commit(&cwd, sha).await;
+                let body = forge_workspace::env::git_diff::hunks::scan_commit_body(&cwd, sha).await;
+                (outcome, Some(body))
+            }
+            None => (forge_workspace::env::git_diff::hunks::scan(&cwd, &target).await, None),
         };
+        let ScanOutcome { files, scanner_ok, untracked_suppressed } = outcome;
         let _ = tx.send(DiffOverlayEvent {
             cwd,
             target,
@@ -344,6 +358,7 @@ fn spawn_scope_fetch(
             untracked_suppressed,
             seq,
             kind: DiffScanKind::Scope(scope),
+            commit_body,
         });
     });
 }
@@ -634,7 +649,7 @@ pub fn drain_events(app: &mut App) {
             // A lazy per-scope scan lands into the already-open overlay
             // (view == Diff). If it closed while the scan ran, drop it.
             if let Some(overlay) = app.diff_overlay.as_mut() {
-                overlay.install_scan(scope, event.files, event.scanner_ok);
+                overlay.install_scan(scope, event.files, event.scanner_ok, event.commit_body);
                 app.needs_redraw = true;
             } else {
                 tracing::debug!(
@@ -889,7 +904,20 @@ impl DiffOverlayState {
     /// the user moved on still caches, so returning is instant. Clones
     /// the files only when the scope is current (needed in both the
     /// cache and the view); an off-scope result moves straight in.
-    pub fn install_scan(&mut self, scope: DiffScope, files: Vec<FileHunks>, scanner_ok: bool) {
+    /// `commit_body` (when the scope is a commit) fills that commit's
+    /// message body for the message block above its diff.
+    pub fn install_scan(
+        &mut self,
+        scope: DiffScope,
+        files: Vec<FileHunks>,
+        scanner_ok: bool,
+        commit_body: Option<String>,
+    ) {
+        if let (DiffScope::Commit(i), Some(body)) = (scope, commit_body)
+            && let Some(commit) = self.commits.get_mut(i)
+        {
+            commit.body = body;
+        }
         if self.scope == scope {
             self.put_scope_cache(scope, CachedScan { files: files.clone(), scanner_ok });
             self.set_files(files, scanner_ok, 0);
@@ -1069,14 +1097,28 @@ impl DiffOverlayState {
     /// (its diff is `event.files`, cached at slot 0); otherwise
     /// whole-diff mode, exactly as before.
     fn new_initial(event: DiffOverlayEvent) -> Self {
-        let DiffOverlayEvent { cwd, target, files, scanner_ok, untracked_suppressed, seq: _, kind } =
-            event;
+        let DiffOverlayEvent {
+            cwd,
+            target,
+            files,
+            scanner_ok,
+            untracked_suppressed,
+            seq: _,
+            kind,
+            commit_body,
+        } = event;
         // drain_events only routes Initial events here; a Scope event
         // would be a bug, so fall back to whole-diff defensively.
-        let (commits, branch) = match kind {
+        let (mut commits, branch) = match kind {
             DiffScanKind::Initial { commits, branch } => (commits, branch),
             DiffScanKind::Scope(_) => (Vec::new(), None),
         };
+        // First commit's body arrives with its upfront-scanned diff.
+        if let Some(body) = commit_body
+            && let Some(first) = commits.first_mut()
+        {
+            first.body = body;
+        }
         let file_count = files.len();
         let (scope, commit_cache, whole_diff_cache) = if commits.is_empty() {
             (
@@ -1738,9 +1780,10 @@ fn handle_body_click(overlay: &mut DiffOverlayState, column: u16, row: u16) -> M
         BodyRowKey::FileHeader { file_idx } | BodyRowKey::DeletedCollapsed { file_idx } => {
             toggle_deleted_collapse(overlay, file_idx)
         }
-        BodyRowKey::EmptyState | BodyRowKey::HunkHeader { .. } | BodyRowKey::InputRow(_) => {
-            MouseEffect::default()
-        }
+        BodyRowKey::EmptyState
+        | BodyRowKey::HunkHeader { .. }
+        | BodyRowKey::InputRow(_)
+        | BodyRowKey::CommitMessage => MouseEffect::default(),
     }
 }
 
@@ -3116,7 +3159,12 @@ mod tests {
     // ---- commit mode: scope, navigation, comment scoping ----
 
     fn commit_meta(sha: &str, subject: &str) -> CommitMeta {
-        CommitMeta { sha: sha.to_owned(), short_sha: sha.to_owned(), subject: subject.to_owned() }
+        CommitMeta {
+            sha: sha.to_owned(),
+            short_sha: sha.to_owned(),
+            subject: subject.to_owned(),
+            body: String::new(),
+        }
     }
 
     fn one_file(path: &str, status: FileStatus) -> FileHunks {
@@ -3258,9 +3306,11 @@ mod tests {
             DiffScope::Commit(2),
             vec![one_file("c.rs", FileStatus::Modified)],
             true,
+            Some("body for the third commit".to_owned()),
         );
         assert!(!state.commit_loading, "loading cleared once installed");
         assert_eq!(state.files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(), vec!["c.rs"]);
+        assert_eq!(state.commits[2].body, "body for the third commit", "body filled on install");
     }
 
     #[test]
@@ -3272,7 +3322,9 @@ mod tests {
             DiffScope::Commit(2),
             vec![one_file("c.rs", FileStatus::Modified)],
             true,
+            Some("off-scope body".to_owned()),
         );
+        assert_eq!(state.commits[2].body, "off-scope body", "body filled even off-scope");
         assert_eq!(state.scope, DiffScope::Commit(0), "off-scope result doesn't swap the view");
         assert_eq!(state.files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(), vec!["a.rs"]);
         assert_eq!(
@@ -3318,6 +3370,7 @@ mod tests {
             DiffScope::WholeDiff,
             vec![one_file("a.rs", FileStatus::Added), one_file("b.rs", FileStatus::Modified)],
             true,
+            None,
         );
         assert!(!state.commit_loading);
         assert_eq!(state.files.len(), 2, "the whole-branch diff is now shown");
@@ -3503,11 +3556,13 @@ mod tests {
                 commits: vec![commit_meta("aaa", "first"), commit_meta("bbb", "second")],
                 branch: Some("feat".into()),
             },
+            commit_body: Some("the first commit's body".to_owned()),
         };
         let state = DiffOverlayState::new_initial(event);
         assert_eq!(state.scope, DiffScope::Commit(0), "commits ahead → open on the first commit");
         assert_eq!(state.commits.len(), 2);
         assert_eq!(state.branch.as_deref(), Some("feat"));
+        assert_eq!(state.commits[0].body, "the first commit's body", "first commit's body filled");
         assert!(state.commit_cache[0].is_some(), "first commit's diff cached upfront");
         assert!(state.commit_cache[1].is_none(), "later commits are scanned lazily");
         assert!(state.whole_diff_cache.is_none());
@@ -3524,6 +3579,7 @@ mod tests {
             untracked_suppressed: 2,
             seq: 1,
             kind: DiffScanKind::Initial { commits: Vec::new(), branch: None },
+            commit_body: None,
         };
         let state = DiffOverlayState::new_initial(event);
         assert_eq!(state.scope, DiffScope::WholeDiff, "no commits ahead → whole-diff mode");
