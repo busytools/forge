@@ -19,8 +19,6 @@
 use std::sync::Arc;
 use std::time::SystemTime;
 
-#[cfg(any(test, feature = "testing"))]
-use forge_sdk::mcp::server::McpServer;
 use forge_sdk::mcp::server::McpServerBuilder;
 use forge_sdk::mcp::tool::{Tool, ToolInput, ToolOutput, ToolOutputBlock};
 
@@ -44,14 +42,6 @@ pub(crate) fn add_tools(
     let list = List { facade: facade.clone(), caller_key: caller_key.clone() };
     let delete = Delete { facade, caller_key };
     builder.tool(create).tool(list).tool(delete)
-}
-
-/// Standalone `forge` server carrying only the cron tools - test helper
-/// for isolated cron-MCP coverage (production combines peers + workers +
-/// cron through `crate::mcp::build_forge_server`).
-#[cfg(any(test, feature = "testing"))]
-pub fn build_server(facade: Arc<dyn CronFacade>, caller_key: CallerKeyResolver) -> McpServer {
-    add_tools(McpServerBuilder::new("forge", env!("CARGO_PKG_VERSION")), facade, caller_key).build()
 }
 
 fn tool_error(text: String) -> ToolOutput {

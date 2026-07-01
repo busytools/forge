@@ -99,10 +99,14 @@ fn run() -> anyhow::Result<()> {
         // - the start helper no-ops a second call.
         workspace.start_kick_dispatcher();
 
-        // Start the durable-cron scheduler: wakes every ~60s, fires due
-        // crons into their project sessions (spawning them if asleep),
-        // and advances/removes each. Boot catch-up for crons that came
-        // due while forge was down runs on the first tick.
+        // Boot catch-up: one tick fires each overdue cron once, advancing
+        // past the missed slots (a cron missed while forge was down fires
+        // now, not once per skipped tick). Runs after Workspace::new so
+        // spawn-to-fire can spawn an asleep project's session.
+        workspace.fire_due_crons(std::time::SystemTime::now());
+
+        // Start the durable-cron scheduler: wakes every ~60s and fires
+        // crons as they come due, advancing/removing each.
         workspace.start_cron_scheduler();
 
         // Create the app (instant, no I/O). The TUI holds an

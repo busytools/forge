@@ -2554,8 +2554,10 @@ impl Workspace {
     /// Delivery routes through the Command bus (a session action); the
     /// advance is a direct state write - kept separate per the cron
     /// state-vs-delivery split. `now` is injected so tests are
-    /// deterministic.
-    pub(crate) fn fire_due_crons(self: &Arc<Self>, now: std::time::SystemTime) {
+    /// deterministic. Also the boot catch-up: calling this once at
+    /// startup fires every cron that came due while forge was down,
+    /// advancing each past its missed slots (catch-up-once).
+    pub fn fire_due_crons(self: &Arc<Self>, now: std::time::SystemTime) {
         let snapshot = self.all_crons_snapshot();
         let due = crate::mcp::cron::schedule::due_crons(&snapshot, now);
         for id in &due {
@@ -4251,6 +4253,96 @@ mod tests {
         assert!(due.next_fire > now, "the fired cron advanced past now");
         let later = crons.iter().find(|c| c.id == CronId::from("later")).expect("later present");
         assert_eq!(later.next_fire, far_future, "the not-yet-due cron is untouched");
+    }
+
+    #[tokio::test]
+    async fn boot_catch_up_fires_overdue_once_advances_persists_and_does_not_refire() {
+        use forge_primitives::cron::{CronEntry, CronId, CronKind};
+        let dir = make_workspace_dir();
+        let now = std::time::SystemTime::now();
+        let past = std::time::SystemTime::UNIX_EPOCH;
+        let far_future = now + std::time::Duration::from_secs(86_400);
+
+        // Seed forge-cron.toml (Workspace::new loads it) with an overdue
+        // recurring + overdue run-once + a not-yet-due one, all for the
+        // "forge" project make_workspace_dir wrote.
+        crate::cron_store::store_crons(
+            dir.path(),
+            &[
+                CronEntry {
+                    id: CronId::from("rec"),
+                    project_name: "forge".to_owned(),
+                    kind: CronKind::Recurring("*/5 * * * *".to_owned()),
+                    prompt: "morning".to_owned(),
+                    created_at: past,
+                    last_fire: None,
+                    next_fire: past,
+                },
+                CronEntry {
+                    id: CronId::from("once"),
+                    project_name: "forge".to_owned(),
+                    kind: CronKind::Once(past),
+                    prompt: "deploy".to_owned(),
+                    created_at: past,
+                    last_fire: None,
+                    next_fire: past,
+                },
+                CronEntry {
+                    id: CronId::from("future"),
+                    project_name: "forge".to_owned(),
+                    kind: CronKind::Recurring("*/5 * * * *".to_owned()),
+                    prompt: "later".to_owned(),
+                    created_at: past,
+                    last_fire: None,
+                    next_fire: far_future,
+                },
+            ],
+        );
+
+        let ws =
+            Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new loads forge-cron.toml"));
+        assert_eq!(ws.crons_for_project("forge").len(), 3, "boot loaded all three crons");
+
+        // Boot catch-up: the one call main.rs makes at startup.
+        ws.enable_test_dispatch_intercept();
+        ws.fire_due_crons(now);
+        let first = ws.drain_test_dispatch_buffer();
+        let spawns = first
+            .iter()
+            .filter(|c| {
+                matches!(c, crate::protocol::Command::SpawnProject { project_name, .. }
+                    if project_name == "forge")
+            })
+            .count();
+        assert_eq!(spawns, 2, "boot fires the two overdue crons, not the future one");
+
+        // Overdue recurring advanced past now + recorded last_fire; overdue
+        // run-once removed; future untouched.
+        let crons = ws.crons_for_project("forge");
+        assert!(crons.iter().all(|c| c.id != CronId::from("once")), "overdue run-once removed");
+        let rec = crons.iter().find(|c| c.id == CronId::from("rec")).expect("recurring present");
+        assert!(rec.next_fire > now, "overdue recurring advanced past now");
+        assert_eq!(rec.last_fire, Some(now), "the fired recurring recorded last_fire");
+        let fut = crons.iter().find(|c| c.id == CronId::from("future")).expect("future present");
+        assert_eq!(fut.next_fire, far_future, "the future cron is untouched");
+
+        // The advance persisted to disk - this is what stops a double-fire.
+        let persisted = crate::cron_store::load_crons(dir.path());
+        assert!(persisted.iter().all(|c| c.id != CronId::from("once")), "removal persisted");
+        assert!(
+            persisted.iter().find(|c| c.id == CronId::from("rec")).expect("rec persisted").next_fire
+                > now,
+            "advance persisted",
+        );
+
+        // The next tick does NOT re-fire: the advanced crons aren't due again.
+        ws.fire_due_crons(now);
+        let refires = ws
+            .drain_test_dispatch_buffer()
+            .iter()
+            .filter(|c| matches!(c, crate::protocol::Command::SpawnProject { .. }))
+            .count();
+        assert_eq!(refires, 0, "advanced crons are not due again; no double-fire");
     }
 
     fn make_workspace_dir() -> tempfile::TempDir {
