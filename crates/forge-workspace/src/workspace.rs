@@ -2595,12 +2595,39 @@ impl Workspace {
     /// startup fires every cron that came due while forge was down,
     /// advancing each past its missed slots (catch-up-once).
     pub fn fire_due_crons(self: &Arc<Self>, now: std::time::SystemTime) {
+        use crate::spawn::CronFireOutcome;
         let snapshot = self.all_crons_snapshot();
         let due = crate::mcp::cron::schedule::due_crons(&snapshot, now);
         for id in &due {
             let Some(cron) = snapshot.iter().find(|c| &c.id == id) else { continue };
-            crate::spawn::deliver_cron_prompt(self, &cron.project_name, cron.prompt.clone());
-            self.advance_or_remove_cron(id, now);
+            match crate::spawn::deliver_cron_prompt(self, &cron.project_name, cron.prompt.clone()) {
+                // Delivered (or spawn kicked off): advance a recurring to
+                // its next slot, remove a fired run-once.
+                CronFireOutcome::Delivered => self.advance_or_remove_cron(id, now),
+                // Project gone from forge.toml: remove the cron rather than
+                // advance a dead entry forever (a run-once would otherwise
+                // be silently consumed).
+                CronFireOutcome::TargetGone => {
+                    tracing::warn!(
+                        target: "forge_workspace::workspace",
+                        project = %cron.project_name,
+                        cron_id = %id,
+                        "cron target gone from forge.toml; removing the cron",
+                    );
+                    self.remove_cron(&cron.project_name, id);
+                }
+                // Command channel closed (shutting down): leave the cron
+                // due so the next boot catch-up re-fires it - don't consume
+                // a fire that never handed off.
+                CronFireOutcome::DispatchFailed => {
+                    tracing::warn!(
+                        target: "forge_workspace::workspace",
+                        project = %cron.project_name,
+                        cron_id = %id,
+                        "cron fire dispatch failed; leaving it due for the next boot",
+                    );
+                }
+            }
         }
     }
 
@@ -4435,6 +4462,36 @@ mod tests {
             "the buffered cron prompt is dispatched into the live session, not dropped",
         );
         assert!(!ws.domain_handles.lock().contains_key(&synth_key), "synth domain drained + removed");
+    }
+
+    #[test]
+    fn fire_due_crons_removes_a_cron_whose_project_is_gone() {
+        use forge_primitives::cron::{CronEntry, CronId, CronKind};
+        let (ws, _rx) = Workspace::testing_stub(); // no projects seeded
+        let now = std::time::SystemTime::now();
+
+        ws.push_cron(CronEntry {
+            id: CronId::from("orphan"),
+            project_name: "deleted-project".to_owned(),
+            kind: CronKind::Recurring("*/5 * * * *".to_owned()),
+            prompt: "p".to_owned(),
+            created_at: std::time::SystemTime::UNIX_EPOCH,
+            last_fire: None,
+            next_fire: std::time::SystemTime::UNIX_EPOCH, // overdue -> due now
+        });
+
+        ws.enable_test_dispatch_intercept();
+        ws.fire_due_crons(now);
+        let dispatched = ws.drain_test_dispatch_buffer();
+
+        assert!(
+            dispatched.iter().all(|c| !matches!(c, crate::protocol::Command::SpawnProject { .. })),
+            "a cron whose project is gone gets no spawn",
+        );
+        assert!(
+            ws.crons_for_project("deleted-project").is_empty(),
+            "an overdue cron whose project left forge.toml is removed, not advanced forever",
+        );
     }
 
     fn make_workspace_dir() -> tempfile::TempDir {

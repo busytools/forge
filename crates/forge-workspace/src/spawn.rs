@@ -300,6 +300,20 @@ pub(crate) fn handle_deliver_peer_prompt(
     }
 }
 
+/// Outcome of a cron fire's delivery, so `fire_due_crons` can decide the
+/// entry's fate rather than treating every hand-off as a success.
+pub(crate) enum CronFireOutcome {
+    /// Dispatched into a running session, or buffered + a spawn kicked off.
+    /// The caller advances/removes the cron as normal.
+    Delivered,
+    /// The cron's project is no longer in forge.toml. The caller removes
+    /// the entry instead of advancing a dead cron forever.
+    TargetGone,
+    /// The Command channel is closed (workspace shutting down). The caller
+    /// leaves the cron due so the next boot catch-up re-fires it.
+    DispatchFailed,
+}
+
 /// Deliver a due cron's prompt into its project's session as a plain
 /// user turn. If the project's lead is running, dispatch a
 /// `Command::Prompt` straight to it; otherwise buffer the prompt on the
@@ -307,7 +321,11 @@ pub(crate) fn handle_deliver_peer_prompt(
 /// `SessionTask` drains it on Connected via `drain_pending_cron_prompts`.
 /// Mirrors [`handle_deliver_peer_prompt`] minus the peer-envelope wrapping
 /// (a cron prompt is an ordinary user turn, not a peer message).
-pub(crate) fn deliver_cron_prompt(workspace: &Arc<Workspace>, project_name: &str, text: String) {
+pub(crate) fn deliver_cron_prompt(
+    workspace: &Arc<Workspace>,
+    project_name: &str,
+    text: String,
+) -> CronFireOutcome {
     // The project's running lead: the first open session that isn't a
     // live worker (workers land in `view.sessions` too; `live_workers`
     // is the authoritative worker registry to subtract - same rule as
@@ -323,28 +341,28 @@ pub(crate) fn deliver_cron_prompt(workspace: &Arc<Workspace>, project_name: &str
         });
 
     if let Some(target_key) = running_lead {
-        if let Err(err) =
-            workspace.dispatch(Command::Prompt { key: target_key, text, attachments: Vec::new() })
-        {
-            tracing::warn!(
-                target: "forge_workspace::spawn",
-                project = %project_name,
-                error = ?err,
-                "cron fire dispatch to running project failed"
-            );
-        }
-        return;
+        return match workspace.dispatch(Command::Prompt {
+            key: target_key,
+            text,
+            attachments: Vec::new(),
+        }) {
+            Ok(()) => CronFireOutcome::Delivered,
+            Err(err) => {
+                tracing::warn!(
+                    target: "forge_workspace::spawn",
+                    project = %project_name,
+                    error = ?err,
+                    "cron fire dispatch to running project failed"
+                );
+                CronFireOutcome::DispatchFailed
+            }
+        };
     }
 
     // Asleep: buffer the prompt on the synthetic spawn key and spawn the
     // project session (only if it's a real forge.toml project).
     if workspace.find_project_view_by_name(project_name).is_none() {
-        tracing::warn!(
-            target: "forge_workspace::spawn",
-            project = %project_name,
-            "cron fire target not in forge.toml; dropping"
-        );
-        return;
+        return CronFireOutcome::TargetGone;
     }
 
     let synth_key = SessionKey::from_session_id(format!("__spawn_{project_name}__"));
@@ -358,16 +376,20 @@ pub(crate) fn deliver_cron_prompt(workspace: &Arc<Workspace>, project_name: &str
         domain.lock().pending_cron_prompts.push(text);
     }
 
-    if let Err(err) = workspace.dispatch(Command::SpawnProject {
+    match workspace.dispatch(Command::SpawnProject {
         project_name: project_name.to_owned(),
         launch_settings: SessionLaunchSettings::default(),
     }) {
-        tracing::warn!(
-            target: "forge_workspace::spawn",
-            project = %project_name,
-            error = ?err,
-            "cron fire SpawnProject dispatch failed"
-        );
+        Ok(()) => CronFireOutcome::Delivered,
+        Err(err) => {
+            tracing::warn!(
+                target: "forge_workspace::spawn",
+                project = %project_name,
+                error = ?err,
+                "cron fire SpawnProject dispatch failed"
+            );
+            CronFireOutcome::DispatchFailed
+        }
     }
 }
 
