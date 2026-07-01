@@ -238,6 +238,23 @@ pub struct ActiveCommentInput {
     pub prior_comment: Option<HunkComment>,
 }
 
+/// What a completed scan event carries beyond its files: either the
+/// initial open (which builds a fresh overlay, with the commit stepper
+/// list when the target has commits ahead) or a lazily-scanned scope
+/// (a commit or "All changes") installed into an already-open overlay.
+#[derive(Debug)]
+pub enum DiffScanKind {
+    /// The overlay's initial open. `commits` empty ⇒ whole-diff mode
+    /// (`files` is the whole-branch diff); non-empty ⇒ commit mode
+    /// (`files` is the first commit's diff). `branch` names the branch
+    /// under review for the stepper header.
+    Initial { commits: Vec<CommitMeta>, branch: Option<String> },
+    /// A lazily-scanned scope, installed into the open overlay's cache
+    /// (and swapped into view if still current). `files` is that scope's
+    /// diff.
+    Scope(DiffScope),
+}
+
 /// Event shuttled from the spawned scan task back to the main loop.
 /// `cwd` and `target` are echoed back so the receiver can drop
 /// stale results when the user switched sessions or navigated away
@@ -249,6 +266,7 @@ pub struct ActiveCommentInput {
 /// `seq` is the monotonic counter captured at spawn time; the
 /// drain pump uses it to drop events from a superseded scan
 /// (rapid second `/diff` before the first finishes).
+/// `kind` distinguishes the initial open from a lazy per-scope scan.
 #[derive(Debug)]
 pub struct DiffOverlayEvent {
     pub cwd: PathBuf,
@@ -257,18 +275,57 @@ pub struct DiffOverlayEvent {
     pub scanner_ok: bool,
     pub untracked_suppressed: usize,
     pub seq: u64,
+    pub kind: DiffScanKind,
 }
 
-/// Spawn a tokio local task that awaits
-/// [`forge_workspace::Workspace::scan_git_diff_hunks`] and posts a
-/// [`DiffOverlayEvent`] when the scan completes. Best-effort send -
-/// receiver going away (app shutdown) just drops the result.
+/// Spawn the initial `/diff` scan and post a [`DiffOverlayEvent`] when
+/// it completes. Best-effort send - receiver going away (app shutdown)
+/// just drops the result. Wired to full commit-mode detection in a
+/// later step; today it scans the whole diff and opens whole-diff mode.
 pub fn spawn_fetch(cwd: PathBuf, target: String, seq: u64, tx: std_mpsc::Sender<DiffOverlayEvent>) {
     tokio::task::spawn_local(async move {
         let ScanOutcome { files, scanner_ok, untracked_suppressed } =
             forge_workspace::env::git_diff::hunks::scan(&cwd, &target).await;
-        let _ =
-            tx.send(DiffOverlayEvent { cwd, target, files, scanner_ok, untracked_suppressed, seq });
+        let _ = tx.send(DiffOverlayEvent {
+            cwd,
+            target,
+            files,
+            scanner_ok,
+            untracked_suppressed,
+            seq,
+            kind: DiffScanKind::Initial { commits: Vec::new(), branch: None },
+        });
+    });
+}
+
+/// Spawn a lazy scan for one scope (a commit's own diff, or the whole
+/// branch for "All changes") and post it back as a
+/// [`DiffScanKind::Scope`] event. `sha` is `Some` for a commit scope,
+/// `None` for whole-diff (which scans `target`). Reuses the current
+/// `seq` (no bump) so a scope scan spawned during navigation is dropped
+/// only if a fresh `/diff` supersedes the whole overlay.
+fn spawn_scope_fetch(
+    cwd: PathBuf,
+    target: String,
+    scope: DiffScope,
+    sha: Option<String>,
+    seq: u64,
+    tx: std_mpsc::Sender<DiffOverlayEvent>,
+) {
+    tokio::task::spawn_local(async move {
+        let ScanOutcome { files, scanner_ok, untracked_suppressed } = match sha {
+            Some(sha) => forge_workspace::env::git_diff::hunks::scan_commit(&cwd, &sha).await,
+            None => forge_workspace::env::git_diff::hunks::scan(&cwd, &target).await,
+        };
+        let _ = tx.send(DiffOverlayEvent {
+            cwd,
+            target,
+            files,
+            scanner_ok,
+            untracked_suppressed,
+            seq,
+            kind: DiffScanKind::Scope(scope),
+        });
     });
 }
 
@@ -505,36 +562,19 @@ pub fn drain_events(app: &mut App) {
             );
             continue;
         }
-        if app.active_view != ActiveView::Chat {
-            // Silent drop - the user explicitly navigated away, so
-            // a chat message would be surprising noise. DEBUG log
-            // remains for triage.
-            tracing::debug!(
-                target: crate::logging::targets::APP_SESSION,
-                event_name = "diff_overlay_drain_skipped_view",
-                message = "diff scan completed but active view changed; dropping result",
-                outcome = "skipped",
-                target_ref = %event.target,
-                active_view = ?app.active_view,
-            );
-            continue;
-        }
-        // Comparison must use the SAME resolved cwd that
-        // `open_with_target` passed to `spawn_fetch` - the event's
-        // `cwd` echoes whatever the scanner received. For worker
-        // sessions the scanner runs against the worktree fork
-        // (`<project_root>/.claude/worktrees/<label>`), not the raw
-        // `cwd_raw`, so comparing against `cwd_raw` would silently
-        // drop every worker event.
+        // Comparison must use the SAME resolved cwd that the scan spawn
+        // passed - the event's `cwd` echoes whatever the scanner
+        // received. For worker sessions the scanner runs against the
+        // worktree fork (`<project_root>/.claude/worktrees/<label>`),
+        // not the raw `cwd_raw`, so comparing against `cwd_raw` would
+        // silently drop every worker event.
         let active_cwd = app
             .active_session()
             .map(|s| s.cwd_raw.clone())
             .map(|raw| resolve_active_diff_cwd(app, &raw));
         if active_cwd.as_deref() != Some(event.cwd.as_path()) {
-            // Silent drop - pushing a chat message into the now-
-            // active (different) session about a scan for the OLD
-            // session would crosstalk. The user can rerun /diff
-            // explicitly if they meant the new session.
+            // Silent drop - a scan for the OLD session crosstalking into
+            // the now-active one would confuse. Rerun /diff explicitly.
             tracing::debug!(
                 target: crate::logging::targets::APP_SESSION,
                 event_name = "diff_overlay_drain_skipped_cwd",
@@ -545,8 +585,39 @@ pub fn drain_events(app: &mut App) {
             );
             continue;
         }
-        let state = DiffOverlayState::new_with_event(event);
-        open(app, state);
+        if matches!(event.kind, DiffScanKind::Initial { .. }) {
+            // Initial open: only land it while the user is still in chat
+            // (they'd be surprised to be yanked into the overlay after
+            // navigating away). Silent drop + DEBUG otherwise.
+            if app.active_view != ActiveView::Chat {
+                tracing::debug!(
+                    target: crate::logging::targets::APP_SESSION,
+                    event_name = "diff_overlay_drain_skipped_view",
+                    message = "diff scan completed but active view changed; dropping result",
+                    outcome = "skipped",
+                    target_ref = %event.target,
+                    active_view = ?app.active_view,
+                );
+                continue;
+            }
+            let state = DiffOverlayState::new_initial(event);
+            open(app, state);
+        } else if let DiffScanKind::Scope(scope) = event.kind {
+            // A lazy per-scope scan lands into the already-open overlay
+            // (view == Diff). If it closed while the scan ran, drop it.
+            if let Some(overlay) = app.diff_overlay.as_mut() {
+                overlay.install_scan(scope, event.files, event.scanner_ok);
+                app.needs_redraw = true;
+            } else {
+                tracing::debug!(
+                    target: crate::logging::targets::APP_SESSION,
+                    event_name = "diff_overlay_drain_skipped_closed",
+                    message = "per-scope scan completed but the overlay was closed; dropping",
+                    outcome = "skipped",
+                    target_ref = %event.target,
+                );
+            }
+        }
     }
 }
 
@@ -952,17 +1023,46 @@ impl DiffOverlayState {
         }
     }
 
-    /// Build state from a completed scan event, threading scanner
-    /// outcome flags through to the overlay so the renderer can
-    /// surface partial-failure and cap-overflow conditions.
-    fn new_with_event(event: DiffOverlayEvent) -> Self {
-        let file_count = event.files.len();
+    /// Build state from a completed initial-scan event, threading
+    /// scanner outcome flags through so the renderer can surface
+    /// partial-failure and cap-overflow conditions. When the event
+    /// carries a commit list, opens in commit mode on the first commit
+    /// (its diff is `event.files`, cached at slot 0); otherwise
+    /// whole-diff mode, exactly as before.
+    fn new_initial(event: DiffOverlayEvent) -> Self {
+        let DiffOverlayEvent {
+            cwd,
+            target,
+            files,
+            scanner_ok,
+            untracked_suppressed,
+            seq: _,
+            kind,
+        } = event;
+        // drain_events only routes Initial events here; a Scope event
+        // would be a bug, so fall back to whole-diff defensively.
+        let (commits, branch) = match kind {
+            DiffScanKind::Initial { commits, branch } => (commits, branch),
+            DiffScanKind::Scope(_) => (Vec::new(), None),
+        };
+        let file_count = files.len();
+        let (scope, commit_cache, whole_diff_cache) = if commits.is_empty() {
+            (
+                DiffScope::WholeDiff,
+                Vec::new(),
+                Some(CachedScan { files: files.clone(), scanner_ok }),
+            )
+        } else {
+            let mut cache = vec![None; commits.len()];
+            cache[0] = Some(CachedScan { files: files.clone(), scanner_ok });
+            (DiffScope::Commit(0), cache, None)
+        };
         Self {
-            cwd: event.cwd,
-            target: event.target,
-            files: event.files,
-            scanner_ok: event.scanner_ok,
-            untracked_suppressed: event.untracked_suppressed,
+            cwd,
+            target,
+            files,
+            scanner_ok,
+            untracked_suppressed,
             doc_scroll: 0,
             view_mode: DiffViewMode::default(),
             deleted_expanded: std::collections::HashSet::new(),
@@ -979,11 +1079,11 @@ impl DiffOverlayState {
             body_tail_scroll: 0,
             measured_heights: vec![None; file_count],
             highlighted: vec![None; file_count],
-            commits: Vec::new(),
-            branch: None,
-            scope: DiffScope::WholeDiff,
-            commit_cache: Vec::new(),
-            whole_diff_cache: None,
+            commits,
+            branch,
+            scope,
+            commit_cache,
+            whole_diff_cache,
             commit_loading: false,
             jump_open: false,
             jump_selected: 0,
@@ -1045,6 +1145,12 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
         }
         return;
     }
+    // Jump dropdown captures keys while open: move / confirm / close.
+    // Esc closes the menu (not the overlay).
+    if app.diff_overlay.as_ref().is_some_and(|o| o.jump_open) {
+        handle_jump_key(app, key);
+        return;
+    }
     match key.code {
         KeyCode::Esc => close_with_submit(app),
         KeyCode::Char('t') => toggle_view_mode(app),
@@ -1052,8 +1158,90 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
         KeyCode::Down => scroll_doc(app, true),
         KeyCode::PageUp => scroll_doc_page(app, false),
         KeyCode::PageDown => scroll_doc_page(app, true),
+        // Commit stepper: prev/next commit + open the jump dropdown. All
+        // no-ops in whole-diff-only mode (no commits), so they don't
+        // shadow anything there.
+        KeyCode::Char('[') | KeyCode::Left => step_commit(app, false),
+        KeyCode::Char(']') | KeyCode::Right => step_commit(app, true),
+        KeyCode::Char('j') => open_jump(app),
         _ => {}
     }
+}
+
+/// Route a key while the jump dropdown is open. `↑↓` move the
+/// highlight, `Enter` navigates to the highlighted scope, and `Esc`
+/// (or `j`) closes the menu without touching the overlay.
+fn handle_jump_key(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Up => {
+            if let Some(o) = app.diff_overlay.as_mut() {
+                o.jump_move(false);
+                app.needs_redraw = true;
+            }
+        }
+        KeyCode::Down => {
+            if let Some(o) = app.diff_overlay.as_mut() {
+                o.jump_move(true);
+                app.needs_redraw = true;
+            }
+        }
+        KeyCode::Enter => {
+            let outcome = app.diff_overlay.as_mut().map(DiffOverlayState::jump_confirm);
+            if let Some(outcome) = outcome {
+                after_nav(app, outcome);
+            }
+        }
+        KeyCode::Esc | KeyCode::Char('j') => {
+            if let Some(o) = app.diff_overlay.as_mut() {
+                o.jump_open = false;
+                app.needs_redraw = true;
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Step to the prev/next commit and spawn its scan if uncached.
+fn step_commit(app: &mut App, forward: bool) {
+    let outcome = app.diff_overlay.as_mut().and_then(|o| o.step_commit(forward));
+    if let Some(outcome) = outcome {
+        after_nav(app, outcome);
+    }
+}
+
+/// Open the jump dropdown (commit mode only).
+fn open_jump(app: &mut App) {
+    if let Some(o) = app.diff_overlay.as_mut()
+        && !o.commits.is_empty()
+    {
+        o.open_jump();
+        app.needs_redraw = true;
+    }
+}
+
+/// After a navigation, spawn the scope's scan when it wasn't cached, and
+/// request a redraw. The scan lands back through the overlay event
+/// channel (see [`spawn_scope_fetch`] / [`drain_events`]).
+fn after_nav(app: &mut App, outcome: NavOutcome) {
+    if let NavOutcome::NeedsScan(scope) = outcome {
+        spawn_scope_scan(app, scope);
+    }
+    app.needs_redraw = true;
+}
+
+/// Kick off the lazy scan for `scope` against the overlay's cwd/target,
+/// reusing the current scan seq (no bump - it's the same overlay
+/// session, not a fresh `/diff`).
+fn spawn_scope_scan(app: &mut App, scope: DiffScope) {
+    let Some(overlay) = app.diff_overlay.as_ref() else { return };
+    let cwd = overlay.cwd.clone();
+    let target = overlay.target.clone();
+    let sha = match scope {
+        DiffScope::WholeDiff => None,
+        DiffScope::Commit(i) => overlay.commits.get(i).map(|c| c.sha.clone()),
+    };
+    let seq = app.diff_scan_seq;
+    spawn_scope_fetch(cwd, target, scope, sha, seq, app.diff_overlay_event_tx.clone());
 }
 
 /// Flip the body layout (unified <-> split) and drop the measured
@@ -1403,6 +1591,24 @@ fn handle_left_click(
     row: u16,
     terminal_width: u16,
 ) -> MouseEffect {
+    // `⌄ jump` control on the stepper row → toggle the dropdown.
+    if let Some((jr, c0, c1)) = overlay.jump_hint_span
+        && row == jr
+        && column >= c0
+        && column < c1
+    {
+        if overlay.jump_open {
+            overlay.jump_open = false;
+        } else {
+            overlay.open_jump();
+        }
+        return MouseEffect { redraw: true };
+    }
+    // Any other click with the dropdown open closes it (click-away).
+    if overlay.jump_open {
+        overlay.jump_open = false;
+        return MouseEffect { redraw: true };
+    }
     let rail_width = rail_width_for(terminal_width);
     // Rail click: column < rail_width → rail row hit-test.
     if rail_width > 0 && column < rail_width {
@@ -2941,5 +3147,103 @@ mod tests {
         let o = app.diff_overlay.as_ref().expect("overlay");
         assert_eq!(o.comments.len(), 1);
         assert_eq!(o.comments[0].commit, None, "whole-diff comments carry no commit");
+    }
+
+    // ---- key + mouse: commit navigation and the jump dropdown ----
+    //
+    // These drive cached navigation only (Ready outcomes) - the
+    // NeedsScan → `spawn_local` glue needs a LocalSet runtime, and the
+    // NeedsScan branch itself is covered by the state tests above.
+
+    fn app_with_commit_overlay() -> App {
+        let mut app = App::test_default();
+        app.diff_overlay = Some(commit_mode_state());
+        set_active_view(&mut app, ActiveView::Diff);
+        app
+    }
+
+    fn overlay(app: &App) -> &DiffOverlayState {
+        app.diff_overlay.as_ref().expect("overlay")
+    }
+
+    #[test]
+    fn bracket_keys_step_commits() {
+        let mut app = app_with_commit_overlay();
+        handle_key(&mut app, KeyEvent::from(KeyCode::Char(']')));
+        assert_eq!(overlay(&app).scope, DiffScope::Commit(1));
+        handle_key(&mut app, KeyEvent::from(KeyCode::Char('[')));
+        assert_eq!(overlay(&app).scope, DiffScope::Commit(0));
+    }
+
+    #[test]
+    fn arrow_keys_step_commits() {
+        let mut app = app_with_commit_overlay();
+        handle_key(&mut app, KeyEvent::from(KeyCode::Right));
+        assert_eq!(overlay(&app).scope, DiffScope::Commit(1));
+        handle_key(&mut app, KeyEvent::from(KeyCode::Left));
+        assert_eq!(overlay(&app).scope, DiffScope::Commit(0));
+    }
+
+    #[test]
+    fn j_opens_jump_dropdown_seeded_on_current() {
+        let mut app = app_with_commit_overlay();
+        handle_key(&mut app, KeyEvent::from(KeyCode::Char('j')));
+        assert!(overlay(&app).jump_open);
+        assert_eq!(overlay(&app).jump_selected, 1, "scope Commit(0) → dropdown row 1");
+    }
+
+    #[test]
+    fn jump_dropdown_move_then_enter_navigates() {
+        let mut app = app_with_commit_overlay();
+        handle_key(&mut app, KeyEvent::from(KeyCode::Char('j')));
+        handle_key(&mut app, KeyEvent::from(KeyCode::Down));
+        assert_eq!(overlay(&app).jump_selected, 2);
+        handle_key(&mut app, KeyEvent::from(KeyCode::Enter));
+        assert!(!overlay(&app).jump_open, "confirm closes the menu");
+        assert_eq!(overlay(&app).scope, DiffScope::Commit(1), "navigates to the picked commit");
+    }
+
+    #[test]
+    fn jump_dropdown_esc_closes_menu_not_overlay() {
+        let mut app = app_with_commit_overlay();
+        handle_key(&mut app, KeyEvent::from(KeyCode::Char('j')));
+        handle_key(&mut app, KeyEvent::from(KeyCode::Esc));
+        assert!(!overlay(&app).jump_open, "menu closed");
+        assert!(app.diff_overlay.is_some(), "overlay stays open");
+        assert_eq!(app.active_view, ActiveView::Diff, "still in the diff view");
+    }
+
+    #[test]
+    fn bracket_and_j_are_noops_in_whole_diff_only_mode() {
+        let mut app = App::test_default();
+        app.diff_overlay = Some(sample_state());
+        set_active_view(&mut app, ActiveView::Diff);
+        handle_key(&mut app, KeyEvent::from(KeyCode::Char(']')));
+        handle_key(&mut app, KeyEvent::from(KeyCode::Char('j')));
+        assert_eq!(overlay(&app).scope, DiffScope::WholeDiff);
+        assert!(!overlay(&app).jump_open, "no dropdown without commits");
+        assert!(app.diff_overlay.is_some());
+    }
+
+    #[test]
+    fn click_on_jump_hint_toggles_dropdown() {
+        let mut state = commit_mode_state();
+        state.jump_hint_span = Some((1, 40, 46));
+        let effect = handle_left_click(&mut state, 42, 1, 160);
+        assert!(effect.redraw);
+        assert!(state.jump_open, "click on the ⌄ control opens the dropdown");
+        let effect = handle_left_click(&mut state, 42, 1, 160);
+        assert!(effect.redraw);
+        assert!(!state.jump_open, "a second click closes it");
+    }
+
+    #[test]
+    fn click_away_closes_open_dropdown() {
+        let mut state = commit_mode_state();
+        state.open_jump();
+        state.jump_hint_span = Some((1, 40, 46));
+        let effect = handle_left_click(&mut state, 5, 10, 160);
+        assert!(effect.redraw);
+        assert!(!state.jump_open, "a click off the control closes the menu");
     }
 }
