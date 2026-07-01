@@ -300,6 +300,79 @@ pub(crate) fn handle_deliver_peer_prompt(
     }
 }
 
+/// Deliver a due cron's prompt into its project's session as a plain
+/// user turn. If the project's lead is running, dispatch a
+/// `Command::Prompt` straight to it; otherwise buffer the prompt on the
+/// synthetic spawn-key's DomainSession and dispatch `Command::SpawnProject`
+/// - `SessionTask` drains it on Connected via `drain_pending_cron_prompts`.
+/// Mirrors [`handle_deliver_peer_prompt`] minus the peer-envelope wrapping
+/// (a cron prompt is an ordinary user turn, not a peer message).
+pub(crate) fn deliver_cron_prompt(workspace: &Arc<Workspace>, project_name: &str, text: String) {
+    // The project's running lead: the first open session that isn't a
+    // live worker (workers land in `view.sessions` too; `live_workers`
+    // is the authoritative worker registry to subtract - same rule as
+    // the peer path).
+    let running_lead =
+        workspace.list_projects().into_iter().find(|v| v.name == project_name).and_then(|v| {
+            let live_worker_keys: std::collections::HashSet<_> =
+                workspace.list_live_workers(&v.key).into_iter().map(|w| w.session_key).collect();
+            v.sessions
+                .into_iter()
+                .find(|s| s.is_open && !live_worker_keys.contains(&s.session))
+                .map(|s| s.session)
+        });
+
+    if let Some(target_key) = running_lead {
+        if let Err(err) = workspace.dispatch(Command::Prompt {
+            key: target_key,
+            text,
+            attachments: Vec::new(),
+        }) {
+            tracing::warn!(
+                target: "forge_workspace::spawn",
+                project = %project_name,
+                error = ?err,
+                "cron fire dispatch to running project failed"
+            );
+        }
+        return;
+    }
+
+    // Asleep: buffer the prompt on the synthetic spawn key and spawn the
+    // project session (only if it's a real forge.toml project).
+    if workspace.find_project_view_by_name(project_name).is_none() {
+        tracing::warn!(
+            target: "forge_workspace::spawn",
+            project = %project_name,
+            "cron fire target not in forge.toml; dropping"
+        );
+        return;
+    }
+
+    let synth_key = SessionKey::from_session_id(format!("__spawn_{project_name}__"));
+    {
+        let mut handles = workspace.domain_handles.lock();
+        let domain = handles
+            .entry(synth_key.clone())
+            .or_insert_with(|| Arc::new(Mutex::new(DomainSession::new(synth_key.clone(), None))))
+            .clone();
+        drop(handles);
+        domain.lock().pending_cron_prompts.push(text);
+    }
+
+    if let Err(err) = workspace.dispatch(Command::SpawnProject {
+        project_name: project_name.to_owned(),
+        launch_settings: SessionLaunchSettings::default(),
+    }) {
+        tracing::warn!(
+            target: "forge_workspace::spawn",
+            project = %project_name,
+            error = ?err,
+            "cron fire SpawnProject dispatch failed"
+        );
+    }
+}
+
 /// Stamp `current_inbound_hop = max(current, hop)` on the target's
 /// DomainSession. Used by handle_deliver_peer_prompt before
 /// dispatching Command::Prompt so the recipient's tools observe the

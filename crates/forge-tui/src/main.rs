@@ -99,6 +99,12 @@ fn run() -> anyhow::Result<()> {
         // - the start helper no-ops a second call.
         workspace.start_kick_dispatcher();
 
+        // Start the durable-cron scheduler: wakes every ~60s, fires due
+        // crons into their project sessions (spawning them if asleep),
+        // and advances/removes each. Boot catch-up for crons that came
+        // due while forge was down runs on the first tick.
+        workspace.start_cron_scheduler();
+
         // Create the app (instant, no I/O). The TUI holds an
         // `Arc<Workspace>` clone; main keeps the original so it
         // can drain the pool after the event loop returns.

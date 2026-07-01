@@ -35,6 +35,10 @@ use crate::views::{ProjectView, SessionView};
 /// naturally.
 const USAGE_POLL_INTERVAL: Duration = Duration::from_secs(60);
 
+/// How often the cron scheduler wakes to fire due crons. Minute
+/// granularity matches the cron-expression resolution.
+const CRON_TICK_INTERVAL: Duration = Duration::from_secs(60);
+
 /// Max attempts for `tag_session_with_retry` to find the worker's
 /// `<session_id>.jsonl` and append the tag row. claude CLI writes the
 /// file lazily on the first user turn - workers with an `initial_prompt`
@@ -194,6 +198,9 @@ pub struct Workspace {
     /// Set the first time [`Self::start_usage_poller`] runs. Subsequent
     /// calls early-return to avoid spawning duplicate poller tasks.
     usage_poller_started: std::sync::atomic::AtomicBool,
+    /// Guards against double-spawning the cron scheduler (mirrors
+    /// `usage_poller_started`). Started once at boot from the binary.
+    cron_scheduler_started: std::sync::atomic::AtomicBool,
     /// Sender half of the worker-kick channel (#259). Cloned via
     /// [`Self::enqueue_kick`] by `maybe_kick_worker_on_connected`
     /// (and any future kick site). The matching receiver lives in
@@ -474,6 +481,7 @@ impl Workspace {
             inflight_asks: Mutex::new(HashMap::new()),
             peer_stats: Mutex::new(HashMap::new()),
             usage_poller_started: std::sync::atomic::AtomicBool::new(false),
+            cron_scheduler_started: std::sync::atomic::AtomicBool::new(false),
             kick_dispatcher_tx,
             kick_dispatcher_rx_slot: Mutex::new(Some(kick_dispatcher_rx)),
             proxy: Some(proxy),
@@ -2504,6 +2512,88 @@ impl Workspace {
         self.crons.lock().iter().filter(|c| c.project_name == project_name).cloned().collect()
     }
 
+    /// A snapshot of every cron across all projects. Backs the
+    /// scheduler's per-tick due-check.
+    pub(crate) fn all_crons_snapshot(&self) -> Vec<forge_primitives::CronEntry> {
+        self.crons.lock().clone()
+    }
+
+    /// Advance a fired cron and persist: a recurring cron records
+    /// `last_fire` and moves `next_fire` to the next future slot (removed
+    /// if it somehow has none); a run-once is removed. A direct state
+    /// mutation - the fire's prompt delivery goes through the Command bus
+    /// separately.
+    pub(crate) fn advance_or_remove_cron(
+        &self,
+        id: &forge_primitives::CronId,
+        fired_at: std::time::SystemTime,
+    ) {
+        self.with_crons_mut(|crons| {
+            let Some(pos) = crons.iter().position(|c| &c.id == id) else { return };
+            match &crons[pos].kind {
+                forge_primitives::CronKind::Once(_) => {
+                    crons.remove(pos);
+                }
+                forge_primitives::CronKind::Recurring(_) => {
+                    match crate::mcp::cron::schedule::next_fire_after(&crons[pos].kind, fired_at) {
+                        Some(next) => {
+                            crons[pos].last_fire = Some(fired_at);
+                            crons[pos].next_fire = next;
+                        }
+                        None => {
+                            crons.remove(pos);
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    /// Fire every cron due at `now`: deliver each prompt into its project
+    /// session (spawning it if asleep) and advance/remove the entry.
+    /// Delivery routes through the Command bus (a session action); the
+    /// advance is a direct state write - kept separate per the cron
+    /// state-vs-delivery split. `now` is injected so tests are
+    /// deterministic.
+    pub(crate) fn fire_due_crons(self: &Arc<Self>, now: std::time::SystemTime) {
+        let snapshot = self.all_crons_snapshot();
+        let due = crate::mcp::cron::schedule::due_crons(&snapshot, now);
+        for id in &due {
+            let Some(cron) = snapshot.iter().find(|c| &c.id == id) else { continue };
+            crate::spawn::deliver_cron_prompt(self, &cron.project_name, cron.prompt.clone());
+            self.advance_or_remove_cron(id, now);
+        }
+    }
+
+    /// Spawn the cron scheduler: a background task that wakes every
+    /// [`CRON_TICK_INTERVAL`], fires every due cron, and exits when the
+    /// workspace drops. Idempotent (a second call no-ops). Mirrors
+    /// [`Workspace::start_usage_poller`]; started once at boot.
+    pub fn start_cron_scheduler(self: &Arc<Self>) {
+        if self.cron_scheduler_started.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            return;
+        }
+        let weak = Arc::downgrade(self);
+        let span = tracing::info_span!("cron_scheduler");
+        tokio::spawn(
+            async move {
+                let mut interval = tokio::time::interval_at(
+                    tokio::time::Instant::now() + CRON_TICK_INTERVAL,
+                    CRON_TICK_INTERVAL,
+                );
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    interval.tick().await;
+                    let Some(workspace) = weak.upgrade() else {
+                        return;
+                    };
+                    workspace.fire_due_crons(std::time::SystemTime::now());
+                }
+            }
+            .instrument(span),
+        );
+    }
+
     /// Snapshot every live worker's session_key across every project.
     /// Used by the TUI's `find_running_bucket_for_path` to exclude
     /// worker buckets from project-row click routing without depending
@@ -3701,6 +3791,7 @@ impl Workspace {
             inflight_asks: Mutex::new(HashMap::new()),
             peer_stats: Mutex::new(HashMap::new()),
             usage_poller_started: std::sync::atomic::AtomicBool::new(false),
+            cron_scheduler_started: std::sync::atomic::AtomicBool::new(false),
             kick_dispatcher_tx,
             kick_dispatcher_rx_slot: Mutex::new(Some(kick_dispatcher_rx)),
             // testing_stub skips Workspace::new and therefore the
@@ -4053,6 +4144,113 @@ mod tests {
         assert!(crate::cron_store::load_crons(dir.path()).is_empty(), "removal persisted");
 
         assert!(!ws.remove_cron("forge", &CronId::from("c1")), "removing a gone id reports false");
+    }
+
+    #[test]
+    fn advance_or_remove_cron_recurring_advances_run_once_removes() {
+        use forge_primitives::cron::{CronEntry, CronId, CronKind};
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        let fired = std::time::SystemTime::now();
+
+        ws.push_cron(CronEntry {
+            id: CronId::from("r"),
+            project_name: "forge".to_owned(),
+            kind: CronKind::Recurring("*/5 * * * *".to_owned()),
+            prompt: "p".to_owned(),
+            created_at: fired,
+            last_fire: None,
+            next_fire: std::time::SystemTime::UNIX_EPOCH,
+        });
+        ws.advance_or_remove_cron(&CronId::from("r"), fired);
+        let after = ws.crons_for_project("forge");
+        assert_eq!(after.len(), 1, "a recurring cron stays after firing");
+        assert!(after[0].next_fire > fired, "next_fire advanced to a future slot");
+        assert_eq!(after[0].last_fire, Some(fired), "last_fire recorded");
+
+        ws.push_cron(CronEntry {
+            id: CronId::from("o"),
+            project_name: "forge".to_owned(),
+            kind: CronKind::Once(std::time::SystemTime::UNIX_EPOCH),
+            prompt: "p".to_owned(),
+            created_at: fired,
+            last_fire: None,
+            next_fire: std::time::SystemTime::UNIX_EPOCH,
+        });
+        ws.advance_or_remove_cron(&CronId::from("o"), fired);
+        assert!(
+            ws.crons_for_project("forge").iter().all(|c| c.id != CronId::from("o")),
+            "a run-once is removed after firing",
+        );
+
+        // A missing id is a no-op, not a panic.
+        ws.advance_or_remove_cron(&CronId::from("ghost"), fired);
+    }
+
+    #[test]
+    fn fire_due_crons_spawns_asleep_project_buffers_prompt_and_skips_future() {
+        use forge_primitives::cron::{CronEntry, CronId, CronKind};
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project_with_team("forge", "/tmp/forge", &[]);
+
+        let now = std::time::SystemTime::now();
+        let past = std::time::SystemTime::UNIX_EPOCH;
+        let far_future = now + std::time::Duration::from_secs(86_400);
+
+        ws.push_cron(CronEntry {
+            id: CronId::from("due"),
+            project_name: "forge".to_owned(),
+            kind: CronKind::Recurring("*/5 * * * *".to_owned()),
+            prompt: "morning".to_owned(),
+            created_at: past,
+            last_fire: None,
+            next_fire: past,
+        });
+        ws.push_cron(CronEntry {
+            id: CronId::from("later"),
+            project_name: "forge".to_owned(),
+            kind: CronKind::Recurring("*/5 * * * *".to_owned()),
+            prompt: "later".to_owned(),
+            created_at: past,
+            last_fire: None,
+            next_fire: far_future,
+        });
+
+        ws.enable_test_dispatch_intercept();
+        ws.fire_due_crons(now);
+        let dispatched = ws.drain_test_dispatch_buffer();
+
+        // The asleep project got exactly one SpawnProject - for the due
+        // cron, not the future one.
+        let spawns = dispatched
+            .iter()
+            .filter(|c| {
+                matches!(c, crate::protocol::Command::SpawnProject { project_name, .. }
+                    if project_name == "forge")
+            })
+            .count();
+        assert_eq!(spawns, 1, "one spawn for the single due cron");
+
+        // The due cron's prompt is buffered on the synthetic spawn key for
+        // delivery once the session reaches Connected.
+        let synth = SessionKey::from_session_id("__spawn_forge__");
+        let buffered = ws
+            .domain_handles
+            .lock()
+            .get(&synth)
+            .expect("synth domain present")
+            .lock()
+            .pending_cron_prompts
+            .clone();
+        assert_eq!(buffered, vec!["morning".to_owned()], "the due cron's prompt was buffered");
+
+        // The due cron advanced past now; the future cron is untouched.
+        let crons = ws.crons_for_project("forge");
+        let due = crons.iter().find(|c| c.id == CronId::from("due")).expect("due present");
+        assert!(due.next_fire > now, "the fired cron advanced past now");
+        let later = crons.iter().find(|c| c.id == CronId::from("later")).expect("later present");
+        assert_eq!(later.next_fire, far_future, "the not-yet-due cron is untouched");
     }
 
     fn make_workspace_dir() -> tempfile::TempDir {
