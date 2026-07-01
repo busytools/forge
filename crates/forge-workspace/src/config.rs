@@ -218,9 +218,10 @@ fn read_config(config_dir: &Path) -> Result<(PathBuf, String), WorkspaceError> {
                 }),
             }
         }
-        Err(e) => {
-            Err(WorkspaceError::ConfigInvalid { path: preferred, message: format!("io error: {e}") })
-        }
+        Err(e) => Err(WorkspaceError::ConfigInvalid {
+            path: preferred,
+            message: format!("io error: {e}"),
+        }),
     }
 }
 

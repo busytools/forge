@@ -4412,9 +4412,8 @@ mod tests {
             ],
         );
 
-        let ws = Arc::new(
-            Workspace::new(dir.path().to_owned()).await.expect("new loads cron.toml"),
-        );
+        let ws =
+            Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new loads cron.toml"));
         assert_eq!(ws.crons_for_project("forge").len(), 3, "boot loaded all three crons");
 
         // Boot catch-up: the one call main.rs makes at startup.
