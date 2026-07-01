@@ -757,13 +757,7 @@ impl Workspace {
                     && spawn != &session_key
                     && let Some(buffered) = handles.remove(spawn)
                 {
-                    let mut placeholder = existing.lock();
-                    let mut src = buffered.lock();
-                    placeholder.pending_peer_prompts.append(&mut src.pending_peer_prompts);
-                    if let Some(hop) = src.current_inbound_hop {
-                        let current = placeholder.current_inbound_hop.unwrap_or(0);
-                        placeholder.current_inbound_hop = Some(current.max(hop));
-                    }
+                    Self::merge_spawn_buffer_into_placeholder(&existing, &buffered);
                 }
                 existing
             } else if let Some(spawn) = spawn_key.as_ref()
@@ -957,11 +951,11 @@ impl Workspace {
 
     /// When `get_agent_handle_with_spawn_key` hits the pool fast-path
     /// for a session that's already running, drain any
-    /// `pending_peer_prompts` buffered at the synthetic `spawn_key`
-    /// (e.g. `__spawn_<project>__`) into the live session via
-    /// `Command::Prompt`. Without this, peer asks aimed at a
-    /// running-but-pre-spawn-dispatched target strand at the synth
-    /// key forever - the regular Connected-time drain only fires
+    /// `pending_peer_prompts` AND `pending_cron_prompts` buffered at the
+    /// synthetic `spawn_key` (e.g. `__spawn_<project>__`) into the live
+    /// session via `Command::Prompt`. Without this, peer asks / cron fires
+    /// aimed at a running-but-pre-spawn-dispatched target strand at the
+    /// synth key forever - the regular Connected-time drain only fires
     /// when a fresh SessionTask boots.
     fn drain_spawn_key_buffer_into(
         self: &Arc<Self>,
@@ -974,11 +968,15 @@ impl Workspace {
         }
         let buffered_domain = self.domain_handles.lock().remove(spawn_key);
         let Some(buffered_domain) = buffered_domain else { return };
-        let (pending, incoming_hop) = {
+        let (pending, cron_pending, incoming_hop) = {
             let mut guard = buffered_domain.lock();
-            (std::mem::take(&mut guard.pending_peer_prompts), guard.current_inbound_hop)
+            (
+                std::mem::take(&mut guard.pending_peer_prompts),
+                std::mem::take(&mut guard.pending_cron_prompts),
+                guard.current_inbound_hop,
+            )
         };
-        if pending.is_empty() && incoming_hop.is_none() {
+        if pending.is_empty() && cron_pending.is_empty() && incoming_hop.is_none() {
             return;
         }
         // Stamp the inbound hop on the live session, taking max
@@ -1019,6 +1017,45 @@ impl Workspace {
                     "drain_spawn_key_buffer_into: dispatch failed; prompt dropped",
                 );
             }
+        }
+        // Same for plain cron prompts buffered at the synth key - a cron
+        // that fired while its project was mid-spawn (a placeholder
+        // already at session_key, Case 1) lands its prompt here. Plain
+        // user turns, no peer-envelope echo.
+        for text in cron_pending {
+            if let Err(err) = self.dispatch(crate::protocol::Command::Prompt {
+                key: session_key.clone(),
+                text,
+                attachments: Vec::new(),
+            }) {
+                tracing::warn!(
+                    target: "forge_workspace::workspace",
+                    key = %session_key.as_str(),
+                    error = ?err,
+                    "drain_spawn_key_buffer_into: cron dispatch failed; prompt dropped",
+                );
+            }
+        }
+    }
+
+    /// Merge a synthetic spawn-key DomainSession's buffered state into an
+    /// existing placeholder (Case 1 in `get_agent_handle_with_spawn_key`:
+    /// a peer ask or cron fire arrived while a pre-Connect placeholder
+    /// already sat at `session_key`). BOTH pending prompt buffers move -
+    /// missing the cron buffer here would evaporate a cron that fired
+    /// mid-spawn - and the inbound hop takes the max so concurrent asks
+    /// don't undershoot.
+    fn merge_spawn_buffer_into_placeholder(
+        placeholder: &Mutex<DomainSession>,
+        buffered: &Mutex<DomainSession>,
+    ) {
+        let mut placeholder = placeholder.lock();
+        let mut src = buffered.lock();
+        placeholder.pending_peer_prompts.append(&mut src.pending_peer_prompts);
+        placeholder.pending_cron_prompts.append(&mut src.pending_cron_prompts);
+        if let Some(hop) = src.current_inbound_hop {
+            let current = placeholder.current_inbound_hop.unwrap_or(0);
+            placeholder.current_inbound_hop = Some(current.max(hop));
         }
     }
 
@@ -4348,6 +4385,56 @@ mod tests {
             .filter(|c| matches!(c, crate::protocol::Command::SpawnProject { .. }))
             .count();
         assert_eq!(refires, 0, "advanced crons are not due again; no double-fire");
+    }
+
+    #[test]
+    fn merge_spawn_buffer_carries_the_cron_prompt_into_the_placeholder() {
+        // Case 1 in get_agent_handle_with_spawn_key: a cron fires while its
+        // project is mid-spawn (a pre-Connect placeholder already sits at
+        // session_key). The synth buffer must merge into the placeholder,
+        // not evaporate.
+        let placeholder = Mutex::new(DomainSession::new(SessionKey::from_session_id("real"), None));
+        let buffered =
+            Mutex::new(DomainSession::new(SessionKey::from_session_id("__spawn_forge__"), None));
+        buffered.lock().pending_cron_prompts.push("morning reminder".to_owned());
+
+        Workspace::merge_spawn_buffer_into_placeholder(&placeholder, &buffered);
+
+        assert_eq!(
+            placeholder.lock().pending_cron_prompts,
+            vec!["morning reminder".to_owned()],
+            "the cron prompt survives the placeholder merge",
+        );
+        assert!(buffered.lock().pending_cron_prompts.is_empty(), "moved out of the synth buffer");
+    }
+
+    #[test]
+    fn drain_spawn_key_buffer_delivers_a_buffered_cron_prompt() {
+        // Pool fast-path: the target is already running when a cron's
+        // SpawnProject arrives, so drain_spawn_key_buffer_into must
+        // re-dispatch the synth-key cron prompt into the live session.
+        let (ws, _rx) = Workspace::testing_stub();
+        let session_key = SessionKey::from_session_id("live-session");
+        let synth_key = SessionKey::from_session_id("__spawn_forge__");
+
+        ws.domain_handles
+            .lock()
+            .insert(session_key.clone(), Arc::new(Mutex::new(DomainSession::new(session_key.clone(), None))));
+        let synth = Arc::new(Mutex::new(DomainSession::new(synth_key.clone(), None)));
+        synth.lock().pending_cron_prompts.push("reminder".to_owned());
+        ws.domain_handles.lock().insert(synth_key.clone(), synth);
+
+        ws.enable_test_dispatch_intercept();
+        ws.drain_spawn_key_buffer_into(&session_key, Some(&synth_key));
+        let dispatched = ws.drain_test_dispatch_buffer();
+
+        assert!(
+            dispatched.iter().any(|c| matches!(c,
+                crate::protocol::Command::Prompt { key, text, .. }
+                    if key == &session_key && text == "reminder")),
+            "the buffered cron prompt is dispatched into the live session, not dropped",
+        );
+        assert!(!ws.domain_handles.lock().contains_key(&synth_key), "synth domain drained + removed");
     }
 
     fn make_workspace_dir() -> tempfile::TempDir {
