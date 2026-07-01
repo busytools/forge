@@ -685,6 +685,11 @@ pub struct DiffOverlayState {
     /// Highlighted row in the jump dropdown: `0` = "All changes",
     /// `1..=commits.len()` = `commits[idx - 1]`.
     pub jump_selected: usize,
+    /// Screen span of the `⌄ jump` stepper control - `(row, col_start,
+    /// col_end)` - stashed each render so the mouse handler can resolve
+    /// a click on it into "open the dropdown". `None` until the first
+    /// commit-mode render.
+    pub jump_hint_span: Option<(u16, u16, u16)>,
 }
 
 impl DiffOverlayState {
@@ -943,6 +948,7 @@ impl DiffOverlayState {
             commit_loading: false,
             jump_open: false,
             jump_selected: 0,
+            jump_hint_span: None,
         }
     }
 
@@ -981,6 +987,7 @@ impl DiffOverlayState {
             commit_loading: false,
             jump_open: false,
             jump_selected: 0,
+            jump_hint_span: None,
         }
     }
 }

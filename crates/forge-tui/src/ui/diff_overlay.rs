@@ -30,8 +30,8 @@ mod pairing;
 use forge_workspace::env::git_diff::hunks::{DiffLineKind, FileHunks, FileStatus, Hunk};
 
 use crate::app::diff_overlay::{
-    ActiveCommentInput, BodyRowKey, DiffViewMode, FileHighlight, HunkComment, LineKey, RailRowKey,
-    rail_width_for,
+    ActiveCommentInput, BodyRowKey, DiffScope, DiffViewMode, FileHighlight, HunkComment, LineKey,
+    RailRowKey, rail_width_for,
 };
 use pairing::{PairedDiffRow, pair_hunk_lines};
 use ratatui::Frame;
@@ -60,6 +60,12 @@ fn effective_view_mode(stored: DiffViewMode, pane_width: u16) -> DiffViewMode {
     if pane_width < MIN_WIDTH_FOR_SPLIT { DiffViewMode::Unified } else { stored }
 }
 
+/// Rows the commit stepper bar occupies at the top of the overlay when
+/// in commit mode (a title row + the position/controls row). Zero rows
+/// in whole-diff-only mode, where the overlay is byte-identical to
+/// before.
+const STEPPER_HEIGHT: u16 = 2;
+
 pub fn render(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
     app.cached_frame_area = area;
@@ -69,9 +75,21 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         return;
     }
 
-    // Reserve the bottom row for the key-hints bar.
-    let usable_height = area.height.saturating_sub(1);
-    let usable_area = Rect { x: area.x, y: area.y, width: area.width, height: usable_height };
+    // Reserve the top rows for the commit stepper (commit mode only)
+    // and the bottom row for the key-hints bar; the rail + body fill
+    // what's left.
+    let stepper_h: u16 = if app.diff_overlay.as_ref().is_some_and(|o| !o.commits.is_empty()) {
+        STEPPER_HEIGHT
+    } else {
+        0
+    };
+    let usable_height = area.height.saturating_sub(1).saturating_sub(stepper_h);
+    let usable_area = Rect {
+        x: area.x,
+        y: area.y.saturating_add(stepper_h),
+        width: area.width,
+        height: usable_height,
+    };
 
     // The jump rail shows at >= 120 cols (`rail_width_for`); below that
     // it hides and the continuous body takes the full width.
@@ -167,6 +185,20 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let tail_scroll_u16 = u16::try_from(tail_scroll).unwrap_or(u16::MAX);
     frame.render_widget(Paragraph::new(tail.to_vec()).scroll((tail_scroll_u16, 0)), tail_rect);
     render_footer(frame, area, overlay, effective_view_mode(overlay.view_mode, pane_area.width));
+
+    // Commit stepper on top (commit mode only), and the jump dropdown
+    // painted over the body when open. Both draw last so they sit above
+    // the rail / body. `as_mut` so the stepper can stash the `⌄ jump`
+    // click span for the mouse handler.
+    if stepper_h > 0 {
+        let stepper_area = Rect { x: area.x, y: area.y, width: area.width, height: stepper_h };
+        if let Some(o) = app.diff_overlay.as_mut() {
+            render_stepper(frame, stepper_area, o);
+            if o.jump_open {
+                render_jump_dropdown(frame, area, o);
+            }
+        }
+    }
 }
 
 fn render_missing_state(frame: &mut Frame, area: Rect) {
@@ -175,6 +207,219 @@ fn render_missing_state(frame: &mut Frame, area: Rect) {
             .style(Style::default().fg(theme::STATUS_ERROR)),
         area,
     );
+}
+
+/// Render the commit stepper bar (commit mode only): a title row naming
+/// the branch under review, then a controls row with the position, the
+/// current sha + subject, the `◀ ▶` arrows, the `⌄ jump` affordance, and
+/// the running pending-comment total. Stashes the `⌄ jump` screen span
+/// so the mouse handler can open the dropdown on a click.
+fn render_stepper(frame: &mut Frame, area: Rect, overlay: &mut DiffOverlayState) {
+    if area.height < STEPPER_HEIGHT || area.width == 0 {
+        overlay.jump_hint_span = None;
+        return;
+    }
+    let dim = Style::default().fg(theme::DIM);
+    let accent = Style::default().fg(theme::RUST_ORANGE);
+    let accent_bold = accent.add_modifier(Modifier::BOLD);
+    let bold = Style::default().add_modifier(Modifier::BOLD);
+
+    let n = overlay.commits.len();
+    let branch = overlay.branch.clone().unwrap_or_else(|| "HEAD".to_owned());
+    let title = Line::from(vec![
+        Span::raw("  "),
+        Span::styled("COMMITS", accent_bold),
+        Span::styled(" · ", dim),
+        Span::styled(branch, accent),
+        Span::styled(" vs ", dim),
+        Span::styled(overlay.target.clone(), accent),
+        Span::styled(format!(" · {n} commit{}", if n == 1 { "" } else { "s" }), dim),
+    ]);
+    frame.render_widget(
+        Paragraph::new(title),
+        Rect { x: area.x, y: area.y, width: area.width, height: 1 },
+    );
+
+    let total = overlay.comments.len();
+    let mut spans: Vec<Span<'static>> = vec![Span::raw("  ")];
+    match overlay.scope {
+        DiffScope::Commit(i) => {
+            let short = overlay.commits.get(i).map(|c| c.short_sha.clone()).unwrap_or_default();
+            let subject = overlay.commits.get(i).map(|c| c.subject.clone()).unwrap_or_default();
+            spans.push(Span::styled("\u{25c0} ", accent));
+            spans.push(Span::styled("[", dim));
+            spans.push(Span::styled(format!("{} / {n}", i + 1), bold));
+            spans.push(Span::styled("]  ", dim));
+            spans.push(Span::styled(short, Style::default().fg(theme::STATUS_WARNING)));
+            spans.push(Span::raw("  "));
+            spans.push(Span::styled(subject, bold));
+            spans.push(Span::styled("  \u{25b6}", accent));
+        }
+        DiffScope::WholeDiff => {
+            spans.push(Span::styled("All changes", bold));
+            spans.push(Span::styled(format!("  (whole branch vs {})", overlay.target), dim));
+        }
+    }
+    spans.push(Span::raw("   "));
+    let jump_start: usize = spans.iter().map(Span::width).sum();
+    let jump_label = "\u{2304} jump";
+    spans.push(Span::styled(jump_label, if overlay.jump_open { accent_bold } else { dim }));
+    let jump_end = jump_start + jump_label.width();
+    if total > 0 {
+        spans.push(Span::styled("   \u{b7}  ", dim));
+        spans.push(Span::styled(
+            format!("\u{25cf} {total} comment{} so far", if total == 1 { "" } else { "s" }),
+            accent,
+        ));
+    }
+    frame.render_widget(
+        Paragraph::new(Line::from(spans)),
+        Rect { x: area.x, y: area.y + 1, width: area.width, height: 1 },
+    );
+
+    let start = area.x.saturating_add(u16::try_from(jump_start).unwrap_or(u16::MAX));
+    let end = area.x.saturating_add(u16::try_from(jump_end).unwrap_or(u16::MAX));
+    overlay.jump_hint_span = Some((area.y + 1, start, end));
+}
+
+/// The right-aligned cluster for a jump-dropdown row: the `● N` comment
+/// badge and/or the `◂` current-scope marker.
+fn jump_row_marker(count: usize, current: bool) -> String {
+    match (count, current) {
+        (0, false) => String::new(),
+        (0, true) => "\u{25c2}".to_owned(),
+        (n, false) => format!("\u{25cf} {n}"),
+        (n, true) => format!("\u{25cf} {n} \u{25c2}"),
+    }
+}
+
+/// One commit row inside the jump dropdown: `k · <sha> <subject>` with a
+/// right-aligned `● N ◂` cluster, fitted to the box's inner width. The
+/// selected row renders in accent-bold; otherwise the index is dim, the
+/// sha yellow, and the subject default.
+fn jump_commit_line(
+    inner: usize,
+    index: usize,
+    short_sha: &str,
+    subject: &str,
+    count: usize,
+    current: bool,
+    selected: bool,
+) -> Line<'static> {
+    let dim = Style::default().fg(theme::DIM);
+    let accent = Style::default().fg(theme::RUST_ORANGE);
+    let accent_bold = accent.add_modifier(Modifier::BOLD);
+    let (idx_style, sha_style, subj_style) = if selected {
+        (accent, accent_bold, accent_bold)
+    } else {
+        (dim, Style::default().fg(theme::STATUS_WARNING), Style::default())
+    };
+    let index_label = format!("{index} \u{b7} ");
+    let right = jump_row_marker(count, current);
+    let right_w = right.width();
+    let fixed = index_label.width() + short_sha.width() + 1;
+    let gap = if right_w > 0 { 2 } else { 0 };
+    let subj_budget = inner.saturating_sub(fixed).saturating_sub(right_w).saturating_sub(gap).max(1);
+    let subject_fitted = fit_box_content(subject, subj_budget);
+    let used = fixed + subject_fitted.width() + right_w;
+    let pad = inner.saturating_sub(used);
+    let mut spans = vec![
+        Span::styled("\u{2502} ", dim),
+        Span::styled(index_label, idx_style),
+        Span::styled(short_sha.to_owned(), sha_style),
+        Span::raw(" "),
+        Span::styled(subject_fitted, subj_style),
+        Span::raw(" ".repeat(pad)),
+    ];
+    if !right.is_empty() {
+        spans.push(Span::styled(right, accent));
+    }
+    spans.push(Span::styled(" \u{2502}", dim));
+    Line::from(spans)
+}
+
+/// Render the jump dropdown over the body: `All changes` then the
+/// commits oldest-first, each with its `● N` comment count, the current
+/// scope marked `◂`, and the highlighted row in accent. Keyboard-driven
+/// (see [`crate::app::diff_overlay`]); painted below the stepper.
+fn render_jump_dropdown(frame: &mut Frame, area: Rect, overlay: &DiffOverlayState) {
+    let dim = Style::default().fg(theme::DIM);
+    let accent = Style::default().fg(theme::RUST_ORANGE);
+    let accent_bold = accent.add_modifier(Modifier::BOLD);
+
+    // Per-scope comment tallies for the menu badges.
+    let mut per_commit: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    let mut whole_count = 0usize;
+    for c in &overlay.comments {
+        match c.commit.as_deref() {
+            Some(sha) => *per_commit.entry(sha).or_insert(0) += 1,
+            None => whole_count += 1,
+        }
+    }
+
+    let indent: u16 = 8;
+    let box_width = area.width.saturating_sub(indent).saturating_sub(2).clamp(24, 64);
+    let bw = usize::from(box_width);
+    let inner = bw.saturating_sub(4);
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    lines.push(Line::from(Span::styled(format!("\u{250c}{}\u{2510}", "\u{2500}".repeat(bw.saturating_sub(2))), dim)));
+
+    // "All changes" row.
+    {
+        let selected = overlay.jump_selected == 0;
+        let current = overlay.scope == DiffScope::WholeDiff;
+        let base = "All changes";
+        let right = jump_row_marker(whole_count, current);
+        let right_w = right.width();
+        let gap = if right_w > 0 { 2 } else { 0 };
+        let hint_budget = inner.saturating_sub(base.width()).saturating_sub(right_w).saturating_sub(gap);
+        let hint = fit_box_content(" (whole branch, one diff)", hint_budget);
+        let used = base.width() + hint.width() + right_w;
+        let pad = inner.saturating_sub(used);
+        let mut spans = vec![
+            Span::styled("\u{2502} ", dim),
+            Span::styled(base, if selected { accent_bold } else { Style::default() }),
+            Span::styled(hint, dim),
+            Span::raw(" ".repeat(pad)),
+        ];
+        if !right.is_empty() {
+            spans.push(Span::styled(right, accent));
+        }
+        spans.push(Span::styled(" \u{2502}", dim));
+        lines.push(Line::from(spans));
+    }
+
+    // Divider.
+    lines.push(Line::from(vec![
+        Span::styled("\u{2502} ", dim),
+        Span::styled("\u{2500}".repeat(inner), dim),
+        Span::styled(" \u{2502}", dim),
+    ]));
+
+    for (k, commit) in overlay.commits.iter().enumerate() {
+        let count = per_commit.get(commit.sha.as_str()).copied().unwrap_or(0);
+        lines.push(jump_commit_line(
+            inner,
+            k + 1,
+            &commit.short_sha,
+            &commit.subject,
+            count,
+            overlay.scope == DiffScope::Commit(k),
+            overlay.jump_selected == k + 1,
+        ));
+    }
+
+    lines.push(Line::from(Span::styled(format!("\u{2514}{}\u{2518}", "\u{2500}".repeat(bw.saturating_sub(2))), dim)));
+
+    let max_h = area.height.saturating_sub(STEPPER_HEIGHT);
+    let height = u16::try_from(lines.len()).unwrap_or(u16::MAX).min(max_h);
+    if height == 0 {
+        return;
+    }
+    let rect =
+        Rect { x: area.x + indent, y: area.y + STEPPER_HEIGHT, width: box_width, height };
+    frame.render_widget(Paragraph::new(lines), rect);
 }
 
 /// Render the FILES rail as a box-drawing tree (mirroring the
@@ -513,7 +758,10 @@ fn render_footer(frame: &mut Frame, area: Rect, overlay: &DiffOverlayState, mode
     let orange = Style::default().fg(theme::RUST_ORANGE);
     let count = overlay.comments.len();
     let mut spans = vec![Span::raw("  ")];
-    if count > 0 {
+    // In commit mode the running total already lives in the stepper
+    // ("● N comments so far"), so the footer skips the redundant prefix
+    // (and reclaims the width for the extra commit-nav hints).
+    if count > 0 && overlay.commits.is_empty() {
         spans.push(Span::styled(
             format!("{count} comment{}", if count == 1 { "" } else { "s" }),
             orange,
@@ -527,15 +775,27 @@ fn render_footer(frame: &mut Frame, area: Rect, overlay: &DiffOverlayState, mode
         spans.push(Span::styled("Esc ", orange));
         spans.push(Span::styled("cancel input", dim));
     } else {
-        let close_label = if count > 0 { "save & close" } else { "close" };
-        let hints: [(&str, &str); 6] = [
-            ("\u{2191}\u{2193}", "scroll"),
-            ("PgUp/Dn", "page"),
-            ("t", "split/unified"),
-            ("click line", "comment"),
-            ("click file", "jump"),
-            ("Esc", close_label),
-        ];
+        let commit_mode = !overlay.commits.is_empty();
+        let esc_label = if count > 0 {
+            if commit_mode { "submit all" } else { "save & close" }
+        } else {
+            "close"
+        };
+        // Commit mode swaps the page / rail-jump hints for the commit
+        // navigation ones (matching the approved mockup); both still work.
+        let mut hints: Vec<(&str, &str)> = vec![("\u{2191}\u{2193}", "scroll")];
+        if commit_mode {
+            hints.push(("\u{25c0}\u{25b6} / [ ]", "prev/next commit"));
+            hints.push(("j", "jump"));
+        } else {
+            hints.push(("PgUp/Dn", "page"));
+        }
+        hints.push(("t", "split/unified"));
+        hints.push(("click line", "comment"));
+        if !commit_mode {
+            hints.push(("click file", "jump"));
+        }
+        hints.push(("Esc", esc_label));
         for (idx, (key, label)) in hints.iter().enumerate() {
             if idx > 0 {
                 spans.push(Span::styled("  ·  ", dim));
@@ -639,7 +899,7 @@ fn unified_content_width(pane_width: u16, gutter_width: usize) -> usize {
 /// or open editor anchored in the file. The file's highlight spans
 /// must be cached first (a collapsed deleted file needs none).
 fn file_height(overlay: &DiffOverlayState, file_idx: usize, pane_width: u16) -> u32 {
-    let comments_by_key = index_comments_by_key(&overlay.comments);
+    let comments_by_key = index_comments_by_key(&overlay.scoped_comments());
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut keys: Vec<BodyRowKey> = Vec::new();
     // include_header = false: the sticky header is the pinned row,
@@ -811,13 +1071,24 @@ fn build_continuous_body(
         keys.push(BodyRowKey::EmptyState);
         return ContinuousBody { lines, keys, tail_scroll: 0 };
     }
+    if overlay.commit_loading {
+        // A per-commit (or "All changes") scan is in flight - distinct
+        // from an empty diff so the user doesn't read "(no changes)"
+        // while the scan is still running.
+        lines.push(Line::from(Span::styled(
+            "  Loading commit diff...",
+            Style::default().fg(theme::DIM),
+        )));
+        keys.push(BodyRowKey::EmptyState);
+        return ContinuousBody { lines, keys, tail_scroll: 0 };
+    }
     if overlay.files.is_empty() {
         lines.push(Line::from(Span::styled("  (no changes)", Style::default().fg(theme::DIM))));
         keys.push(BodyRowKey::EmptyState);
         return ContinuousBody { lines, keys, tail_scroll: 0 };
     }
 
-    let comments_by_key = index_comments_by_key(&overlay.comments);
+    let comments_by_key = index_comments_by_key(&overlay.scoped_comments());
 
     // Pinned sticky header = the file owning the top of the viewport.
     let Some(header_file) = overlay.files.get(first_visible) else {
@@ -1132,15 +1403,15 @@ fn status_badge(status: FileStatus) -> (&'static str, Color) {
 
 /// Index `comments` by `LineKey` for O(1) chip lookup during row
 /// emission. Used only inside `build_pane_lines`.
-fn index_comments_by_key(
-    comments: &[HunkComment],
-) -> std::collections::HashMap<LineKey, &HunkComment> {
+fn index_comments_by_key<'a>(
+    comments: &[&'a HunkComment],
+) -> std::collections::HashMap<LineKey, &'a HunkComment> {
     let mut map = std::collections::HashMap::with_capacity(comments.len());
     for c in comments {
         // Last-write-wins on duplicate keys (which shouldn't happen -
         // saving a comment on a line that already has one replaces
         // the existing entry - but stay defensive).
-        map.insert(c.key, c);
+        map.insert(c.key, *c);
     }
     map
 }
@@ -1825,5 +2096,106 @@ mod tests {
         wide.view_mode = DiffViewMode::Split;
         ensure_file_cached(&mut wide, 0, 160);
         assert_eq!(wide.measured_heights[0], Some(3), "wide pane honors split");
+    }
+
+    // ---- commit stepper + jump dropdown rendering ----
+
+    fn line_text(line: &Line) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn jump_row_marker_covers_badge_and_current() {
+        assert_eq!(jump_row_marker(0, false), "");
+        assert_eq!(jump_row_marker(0, true), "\u{25c2}");
+        assert_eq!(jump_row_marker(3, false), "\u{25cf} 3");
+        assert_eq!(jump_row_marker(2, true), "\u{25cf} 2 \u{25c2}");
+    }
+
+    #[test]
+    fn jump_commit_line_shows_index_sha_subject_badge_marker() {
+        let line = jump_commit_line(60, 2, "a3f9c1e", "fix the threshold", 1, true, true);
+        let text = line_text(&line);
+        assert!(text.contains("2 \u{b7} "), "index prefix");
+        assert!(text.contains("a3f9c1e"), "short sha");
+        assert!(text.contains("fix the threshold"), "subject");
+        assert!(text.contains("\u{25cf} 1"), "comment badge");
+        assert!(text.contains("\u{25c2}"), "current-scope marker");
+    }
+
+    #[test]
+    fn jump_commit_line_truncates_long_subject() {
+        let line = jump_commit_line(24, 1, "abc1234", &"x".repeat(80), 0, false, false);
+        assert!(line_text(&line).contains("..."), "an over-long subject is fitted to the box");
+    }
+
+    #[test]
+    fn render_stepper_shows_branch_position_and_stashes_jump_span() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        use crate::app::diff_overlay::DiffScope;
+        use forge_workspace::env::git_diff::hunks::CommitMeta;
+
+        let mut state = DiffOverlayState::new(
+            std::path::PathBuf::from("/tmp"),
+            "main".to_owned(),
+            vec![FileHunks { path: "a.rs".into(), status: FileStatus::Modified, hunks: vec![] }],
+        );
+        state.branch = Some("feat/x".to_owned());
+        state.commits = vec![
+            CommitMeta { sha: "a".into(), short_sha: "a3f9c1e".into(), subject: "fix threshold".into() },
+            CommitMeta { sha: "b".into(), short_sha: "b90bbef".into(), subject: "wire banner".into() },
+        ];
+        state.scope = DiffScope::Commit(0);
+
+        let width = 100u16;
+        let backend = TestBackend::new(width, STEPPER_HEIGHT);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| {
+                let area = Rect { x: 0, y: 0, width, height: STEPPER_HEIGHT };
+                render_stepper(frame, area, &mut state);
+            })
+            .expect("draw");
+        let buffer = terminal.backend().buffer();
+        let w = usize::from(width);
+        let row0: String = (0..w).map(|x| buffer.content[x].symbol()).collect();
+        let row1: String = (0..w).map(|x| buffer.content[w + x].symbol()).collect();
+        assert!(row0.contains("COMMITS"), "title names the section");
+        assert!(row0.contains("feat/x"), "branch under review");
+        assert!(row0.contains("main"), "target");
+        assert!(row0.contains("2 commits"), "commit count");
+        assert!(row1.contains("1 / 2"), "position");
+        assert!(row1.contains("a3f9c1e"), "current commit's sha");
+        assert!(row1.contains("jump"), "jump affordance");
+        assert!(state.jump_hint_span.is_some(), "the jump click span is stashed for the mouse handler");
+    }
+
+    #[test]
+    fn whole_diff_mode_renders_no_stepper() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        // No commits → whole-diff-only mode: the top row is the overlay
+        // body/rail, never a COMMITS stepper (the additive guarantee).
+        let mut app = App::test_default();
+        let mut state = DiffOverlayState::new(
+            std::path::PathBuf::from("/tmp"),
+            "HEAD".to_owned(),
+            vec![FileHunks { path: "a.rs".into(), status: FileStatus::Modified, hunks: vec![] }],
+        );
+        state.scanner_ok = true;
+        assert!(state.commits.is_empty());
+        app.diff_overlay = Some(state);
+
+        let width = 130u16;
+        let height = 20u16;
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|frame| render(frame, &mut app)).expect("draw");
+        let buffer = terminal.backend().buffer();
+        let w = usize::from(width);
+        let row0: String = (0..w).map(|x| buffer.content[x].symbol()).collect();
+        assert!(!row0.contains("COMMITS"), "whole-diff mode never shows the stepper");
     }
 }
