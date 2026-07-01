@@ -1830,12 +1830,13 @@ pub(super) fn close_with_submit(app: &mut App) {
     // in practice - confusing for future maintainers.
     let snapshot = app.diff_overlay.as_mut().map(|o| {
         let comments = std::mem::take(&mut o.comments);
-        (comments, o.target.clone(), o.cwd.display().to_string())
+        (comments, o.target.clone(), o.cwd.display().to_string(), o.branch.clone(), o.commits.clone())
     });
-    if let Some((comments, target, cwd_display)) = snapshot
+    if let Some((comments, target, cwd_display, branch, commits)) = snapshot
         && !comments.is_empty()
     {
-        let markdown = format_diff_comments(&target, &cwd_display, &comments);
+        let markdown =
+            format_diff_comments(&target, branch.as_deref(), &cwd_display, &commits, &comments);
         super::input_submit::dispatch_diff_comment_bundle(app, markdown);
     }
     close(app);
@@ -1843,24 +1844,91 @@ pub(super) fn close_with_submit(app: &mut App) {
 
 /// Build the markdown bundle for a set of pending comments. Public
 /// for the Esc-submit path and the test suite.
+///
+/// Whole-diff bundle (no comment carries a commit) keeps today's shape
+/// exactly: `## Diff review (target \`<target>\`)` then per-file
+/// `### \`<path>\`` groups. When any comment is commit-scoped the bundle
+/// groups by commit instead: a `<branch> vs <target>` header with the
+/// comment/commit totals, then a `### Commit \`<sha>\` - <subject>`
+/// section per commit (in stepper order), with any whole-diff comments
+/// ("All changes" browsing) trailing under `### All changes`.
 pub(crate) fn format_diff_comments(
     target: &str,
+    branch: Option<&str>,
     cwd_display: &str,
+    commits: &[CommitMeta],
     comments: &[HunkComment],
 ) -> String {
     use std::fmt::Write as _;
     let mut out = String::new();
-    let _ = writeln!(out, "## Diff review (target `{target}`)");
+    let commit_scoped = comments.iter().any(|c| c.commit.is_some());
+    if !commit_scoped {
+        // Byte-identical to the pre-stepper bundle.
+        let _ = writeln!(out, "## Diff review (target `{target}`)");
+        out.push('\n');
+        write_repo_line(&mut out, cwd_display);
+        write_by_file(&mut out, comments.iter());
+        return out;
+    }
+
+    let total = comments.len();
+    let commit_hits =
+        commits.iter().filter(|c| comments.iter().any(|x| x.commit.as_deref() == Some(&c.sha))).count();
+    let header_lead = match branch {
+        Some(b) => format!("{b} vs {target}"),
+        None => target.to_owned(),
+    };
+    let _ = writeln!(
+        out,
+        "## Diff review ({header_lead}, {total} comment{} across {commit_hits} commit{})",
+        if total == 1 { "" } else { "s" },
+        if commit_hits == 1 { "" } else { "s" },
+    );
     out.push('\n');
+    write_repo_line(&mut out, cwd_display);
+
+    for commit in commits {
+        let mut scoped = comments.iter().filter(|c| c.commit.as_deref() == Some(&commit.sha)).peekable();
+        if scoped.peek().is_none() {
+            continue;
+        }
+        let _ = writeln!(out, "### Commit `{}` - {}", commit.short_sha, commit.subject);
+        out.push('\n');
+        for c in scoped {
+            let _ = writeln!(out, "**`{}` - line {}**", c.path, c.line);
+            out.push('\n');
+            write_anchor_and_text(&mut out, c);
+        }
+    }
+
+    // Any comments left on the whole-branch "All changes" view.
+    let mut whole = comments.iter().filter(|c| c.commit.is_none()).peekable();
+    if whole.peek().is_some() {
+        let _ = writeln!(out, "### All changes");
+        out.push('\n');
+        for c in whole {
+            let _ = writeln!(out, "**`{}` - line {}**", c.path, c.line);
+            out.push('\n');
+            write_anchor_and_text(&mut out, c);
+        }
+    }
+    out
+}
+
+/// Emit the ``Repo: `<cwd>` `` line (blank cwd suppresses it).
+fn write_repo_line(out: &mut String, cwd_display: &str) {
+    use std::fmt::Write as _;
     if !cwd_display.is_empty() {
         let _ = writeln!(out, "Repo: `{cwd_display}`");
         out.push('\n');
     }
-    // Group comments by file path while preserving the order the
-    // user added them (first appearance of a path wins for ordering).
-    // Use the entry API's vacant branch to populate `order` exactly
-    // once per file so we don't double-clone the path on every
-    // comment beyond the first.
+}
+
+/// Whole-diff bundle body: group comments by file path (first-seen
+/// order), `### \`<path>\`` then `**Line N**` + the quoted anchor per
+/// comment. This is the exact pre-stepper shape.
+fn write_by_file<'a>(out: &mut String, comments: impl Iterator<Item = &'a HunkComment>) {
+    use std::fmt::Write as _;
     let mut order: Vec<String> = Vec::new();
     let mut by_file: std::collections::HashMap<String, Vec<&HunkComment>> =
         std::collections::HashMap::new();
@@ -1879,21 +1947,27 @@ pub(crate) fn format_diff_comments(
         for c in by_file.get(path).into_iter().flatten() {
             let _ = writeln!(out, "**Line {}**", c.line);
             out.push('\n');
-            out.push_str("```diff\n");
-            for line in &c.hunk_context {
-                let marker = match line.kind {
-                    DiffLineKind::Added => '+',
-                    DiffLineKind::Removed => '-',
-                    DiffLineKind::Context => ' ',
-                };
-                let _ = writeln!(out, "{marker}{}", line.text);
-            }
-            out.push_str("```\n\n");
-            let _ = writeln!(out, "{}", c.comment_text.trim_end());
-            out.push('\n');
+            write_anchor_and_text(out, c);
         }
     }
-    out
+}
+
+/// Emit the quoted anchor-line ```diff block plus the comment text -
+/// the shared tail of both bundle shapes.
+fn write_anchor_and_text(out: &mut String, c: &HunkComment) {
+    use std::fmt::Write as _;
+    out.push_str("```diff\n");
+    for line in &c.hunk_context {
+        let marker = match line.kind {
+            DiffLineKind::Added => '+',
+            DiffLineKind::Removed => '-',
+            DiffLineKind::Context => ' ',
+        };
+        let _ = writeln!(out, "{marker}{}", line.text);
+    }
+    out.push_str("```\n\n");
+    let _ = writeln!(out, "{}", c.comment_text.trim_end());
+    out.push('\n');
 }
 
 #[cfg(test)]
@@ -2234,7 +2308,7 @@ mod tests {
                 commit: None,
             },
         ];
-        let md = format_diff_comments("HEAD", "/tmp/repo", &comments);
+        let md = format_diff_comments("HEAD", None, "/tmp/repo", &[], &comments);
         assert!(md.contains("## Diff review (target `HEAD`)"));
         assert!(md.contains("Repo: `/tmp/repo`"));
         // Same-file comments group under one `### `a.rs`` header.
@@ -2250,9 +2324,108 @@ mod tests {
 
     #[test]
     fn format_diff_comments_empty_input_still_includes_header() {
-        let md = format_diff_comments("main", "", &[]);
+        let md = format_diff_comments("main", None, "", &[], &[]);
         assert!(md.contains("## Diff review (target `main`)"));
         assert!(!md.contains("Repo: ``"), "blank cwd suppresses the Repo line");
+    }
+
+    #[test]
+    fn format_diff_comments_groups_by_commit_when_scoped() {
+        let commits = vec![
+            commit_meta("a3f9c1e", "fix the threshold check"),
+            commit_meta("e55f210", "wire the warning banner"),
+        ];
+        let comments = vec![
+            HunkComment {
+                key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
+                path: "app/rate_limit.rs".into(),
+                line: 66,
+                hunk_context: vec![DiffLine {
+                    kind: DiffLineKind::Added,
+                    text: "fn is_near_threshold() {".into(),
+                    old_line: None,
+                    new_line: Some(66),
+                }],
+                comment_text: "name it _without_overage".into(),
+                commit: Some("a3f9c1e".into()),
+            },
+            HunkComment {
+                key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
+                path: "ui/banner.rs".into(),
+                line: 12,
+                hunk_context: vec![DiffLine {
+                    kind: DiffLineKind::Added,
+                    text: "if snapshot.is_near_threshold() {".into(),
+                    old_line: None,
+                    new_line: Some(12),
+                }],
+                comment_text: "hoist this".into(),
+                commit: Some("e55f210".into()),
+            },
+        ];
+        let md = format_diff_comments("main", Some("worker/rate-limit"), "/repo", &commits, &comments);
+        assert!(
+            md.contains("## Diff review (worker/rate-limit vs main, 2 comments across 2 commits)"),
+            "grouped header names the branch, target, and totals; got:\n{md}",
+        );
+        assert!(md.contains("Repo: `/repo`"));
+        assert!(md.contains("### Commit `a3f9c1e` - fix the threshold check"));
+        assert!(md.contains("### Commit `e55f210` - wire the warning banner"));
+        assert!(md.contains("**`app/rate_limit.rs` - line 66**"), "per-comment path+line header");
+        assert!(md.contains("+fn is_near_threshold() {"), "quotes the anchor line");
+        assert!(md.contains("name it _without_overage"));
+        // Commit order follows the stepper (a3f9c1e before e55f210).
+        let first = md.find("a3f9c1e").expect("first commit");
+        let second = md.find("e55f210").expect("second commit");
+        assert!(first < second, "commits render oldest-first");
+        // No whole-diff header when everything is commit-scoped.
+        assert!(!md.contains("## Diff review (target"));
+        assert!(!md.contains("### All changes"));
+    }
+
+    #[test]
+    fn format_diff_comments_singular_counts() {
+        let commits = vec![commit_meta("a3f9c1e", "fix it")];
+        let comments = vec![HunkComment {
+            key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
+            path: "a.rs".into(),
+            line: 1,
+            hunk_context: vec![],
+            comment_text: "x".into(),
+            commit: Some("a3f9c1e".into()),
+        }];
+        let md = format_diff_comments("main", Some("feat"), "", &commits, &comments);
+        assert!(
+            md.contains("1 comment across 1 commit)"),
+            "singular comment/commit wording; got:\n{md}",
+        );
+    }
+
+    #[test]
+    fn format_diff_comments_trailing_all_changes_section() {
+        let commits = vec![commit_meta("a3f9c1e", "fix it")];
+        let comments = vec![
+            HunkComment {
+                key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
+                path: "a.rs".into(),
+                line: 1,
+                hunk_context: vec![],
+                comment_text: "on commit".into(),
+                commit: Some("a3f9c1e".into()),
+            },
+            HunkComment {
+                key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
+                path: "b.rs".into(),
+                line: 2,
+                hunk_context: vec![],
+                comment_text: "on whole diff".into(),
+                commit: None,
+            },
+        ];
+        let md = format_diff_comments("main", Some("feat"), "", &commits, &comments);
+        assert!(md.contains("### Commit `a3f9c1e`"), "commit-scoped comment groups by commit");
+        assert!(md.contains("### All changes"), "whole-diff comment trails under All changes");
+        assert!(md.contains("on whole diff"));
     }
 
     #[test]
