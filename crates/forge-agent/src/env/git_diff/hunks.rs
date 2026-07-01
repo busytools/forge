@@ -276,10 +276,8 @@ pub async fn scan(cwd: &Path, target: &str) -> ScanOutcome {
 
 /// Scan a pre-resolved diff range into per-file hunks. `ref_spec` is
 /// already the exact shape git receives - `HEAD`, `main...HEAD`,
-/// `<sha>^..<sha>`, an empty-tree range, etc. Shared by [`scan`] (which
-/// layers working-tree untracked handling on top) and [`scan_commit`].
-/// Never surfaces untracked files itself, so `untracked_suppressed` is
-/// always 0.
+/// `<sha>^..<sha>`, an empty-tree range, etc. Never surfaces untracked
+/// files, so `untracked_suppressed` is always 0.
 async fn scan_with_ref_spec(cwd: &Path, ref_spec: &str) -> ScanOutcome {
     let mut scanner_ok = true;
     let name_status = match run_git(cwd, &["diff", ref_spec, "--name-status"]).await {
