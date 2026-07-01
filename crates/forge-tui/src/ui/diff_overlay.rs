@@ -165,7 +165,13 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let ContinuousBody { lines, keys, tail_scroll } = if in_message_block {
         build_message_block_body(overlay, pane_area.width, pane_area.height, msg_lines, doc_scroll)
     } else {
-        build_continuous_body(overlay, pane_area.width, pane_area.height, first_visible, local_offset)
+        build_continuous_body(
+            overlay,
+            pane_area.width,
+            pane_area.height,
+            first_visible,
+            local_offset,
+        )
     };
     let head_count = if in_message_block { 0 } else { 1usize.min(lines.len()) };
 
@@ -1091,7 +1097,10 @@ fn commit_message_block_lines(overlay: &DiffOverlayState, pane_width: u16) -> Ve
             if row.is_empty() {
                 lines.push(Line::from(Span::styled("\u{2502}", rail)));
             } else {
-                lines.push(Line::from(vec![Span::styled("\u{2502} ", rail), Span::styled(row, dim)]));
+                lines.push(Line::from(vec![
+                    Span::styled("\u{2502} ", rail),
+                    Span::styled(row, dim),
+                ]));
             }
         }
     }
@@ -1124,7 +1133,15 @@ fn build_message_block_body(
     while file_idx < overlay.files.len() && lines.len() <= needed {
         // Every file's header scrolls here (none is pinned while the
         // message block leads); the pin returns once it scrolls off.
-        push_file_body(overlay, file_idx, true, pane_width, &comments_by_key, &mut lines, &mut keys);
+        push_file_body(
+            overlay,
+            file_idx,
+            true,
+            pane_width,
+            &comments_by_key,
+            &mut lines,
+            &mut keys,
+        );
         file_idx = file_idx.saturating_add(1);
     }
     ContinuousBody { lines, keys, tail_scroll: 0 }
@@ -2323,7 +2340,8 @@ mod tests {
 
     #[test]
     fn commit_message_block_shows_subject_and_body() {
-        let state = commit_state_with_body("fix the threshold check", "why we split it\ninto its own fn");
+        let state =
+            commit_state_with_body("fix the threshold check", "why we split it\ninto its own fn");
         let lines = commit_message_block_lines(&state, 80);
         let text: String = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
         assert!(text.contains("fix the threshold check"), "subject shown: {text}");

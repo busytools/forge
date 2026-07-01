@@ -1074,14 +1074,17 @@ diff --git a/x.rs b/x.rs
         init_commit_repo(&dir);
         write_file(&dir, "a.rs", "a\n");
         git(&dir, &["add", "-A"]);
-        git(&dir, &[
-            "commit",
-            "-q",
-            "-m",
-            "the subject line",
-            "-m",
-            "body line one\nbody line two\n\nbody line three",
-        ]);
+        git(
+            &dir,
+            &[
+                "commit",
+                "-q",
+                "-m",
+                "the subject line",
+                "-m",
+                "body line one\nbody line two\n\nbody line three",
+            ],
+        );
         let sha = git_capture(&dir, &["rev-parse", "HEAD"]);
         let body = scan_commit_body(dir.path(), &sha).await;
         // `%b` starts after the subject, so the subject never appears.
