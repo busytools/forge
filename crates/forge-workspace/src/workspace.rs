@@ -2578,7 +2578,22 @@ impl Workspace {
                             crons[pos].next_fire = next;
                         }
                         None => {
-                            crons.remove(pos);
+                            // A recurring expr that parses but never
+                            // matches (e.g. "0 0 30 2 *") - reachable via a
+                            // hand-edited forge-cron.toml. Don't silently
+                            // drop it (hard rule #13).
+                            let removed = crons.remove(pos);
+                            let expr = match &removed.kind {
+                                forge_primitives::CronKind::Recurring(e) => e.as_str(),
+                                forge_primitives::CronKind::Once(_) => "",
+                            };
+                            tracing::warn!(
+                                target: "forge_workspace::workspace",
+                                cron_id = %removed.id,
+                                project = %removed.project_name,
+                                expr = %expr,
+                                "recurring cron has no upcoming occurrence; removed it",
+                            );
                         }
                     }
                 }
@@ -4491,6 +4506,30 @@ mod tests {
         assert!(
             ws.crons_for_project("deleted-project").is_empty(),
             "an overdue cron whose project left forge.toml is removed, not advanced forever",
+        );
+    }
+
+    #[test]
+    fn advance_or_remove_cron_removes_never_occurring_recurring() {
+        use forge_primitives::cron::{CronEntry, CronId, CronKind};
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        // "0 0 30 2 *" (Feb 30) has no upcoming occurrence, so
+        // next_fire_after returns None and the entry is removed (with a
+        // warn) rather than left stuck at a stale next_fire.
+        ws.push_cron(CronEntry {
+            id: CronId::from("impossible"),
+            project_name: "forge".to_owned(),
+            kind: CronKind::Recurring("0 0 30 2 *".to_owned()),
+            prompt: "p".to_owned(),
+            created_at: std::time::SystemTime::UNIX_EPOCH,
+            last_fire: None,
+            next_fire: std::time::SystemTime::UNIX_EPOCH,
+        });
+        ws.advance_or_remove_cron(&CronId::from("impossible"), std::time::SystemTime::now());
+        assert!(
+            ws.crons_for_project("forge").is_empty(),
+            "a recurring cron with no upcoming occurrence is removed, not left stuck",
         );
     }
 
