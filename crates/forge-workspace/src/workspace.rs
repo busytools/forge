@@ -226,7 +226,8 @@ pub struct Workspace {
     /// subprocesses, so the absence is fine.
     proxy: Option<forge_agent::proxy::ProxyHandle>,
     /// Single-instance lock file held open for the process lifetime.
-    /// `Workspace::new` takes an exclusive flock on `<config_dir>/forge.lock`
+    /// `Workspace::new` takes an exclusive flock on a machine-local
+    /// lockfile keyed by the config dir (see [`crate::single_instance`])
     /// so a second forge on the same config dir refuses to start; the
     /// flock releases when this `File` drops (Workspace teardown / process
     /// exit / crash). Held purely for that side effect - never read.
@@ -410,7 +411,7 @@ impl Workspace {
                 return Err(WorkspaceError::AlreadyRunning { pid });
             }
         };
-        // The guard fell open (forge.lock unopenable or flock unsupported).
+        // The guard fell open (lockfile unopenable or flock unsupported).
         // forge still boots, but the cron store's single-writer assumption
         // no longer holds - surface it loudly rather than leaving it at the
         // module-internal warn `acquire` already logged.
