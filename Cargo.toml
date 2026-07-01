@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/forge-sdk", "crates/forge-primitives", "crates/forge-agent", "crates/forge-workspace", "crates/forge-tui", "crates/forge-test-harness"]
 
 [workspace.package]
-version = "0.18.0"
+version = "0.19.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/busytools/forge"
@@ -88,10 +88,10 @@ url = "2"
 memchr = "2"
 
 # Workspace-internal crates
-forge-primitives = { path = "crates/forge-primitives", version = "=0.18.0" }
-forge-sdk = { path = "crates/forge-sdk", version = "=0.18.0" }
-forge-agent = { path = "crates/forge-agent", version = "=0.18.0" }
-forge-workspace = { path = "crates/forge-workspace", version = "=0.18.0" }
+forge-primitives = { path = "crates/forge-primitives", version = "=0.19.0" }
+forge-sdk = { path = "crates/forge-sdk", version = "=0.19.0" }
+forge-agent = { path = "crates/forge-agent", version = "=0.19.0" }
+forge-workspace = { path = "crates/forge-workspace", version = "=0.19.0" }
 
 # Dev-only
 pretty_assertions = "1"
