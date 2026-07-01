@@ -23,8 +23,10 @@ use std::sync::Arc;
 use tempfile::tempdir;
 
 fn write_team_config(dir: &std::path::Path) {
+    let forge = dir.join("forge");
+    std::fs::create_dir_all(&forge).expect("forge/ dir");
     std::fs::write(
-        dir.join("forge.toml"),
+        forge.join("forge.toml"),
         r#"
 [[orgs]]
 name = "TestOrg"

@@ -35,7 +35,7 @@ where
 }
 
 /// Lenient deserialize for an optional persisted spinner key (the
-/// forge-state.toml sidecar override): an unknown/removed key maps to
+/// state.toml sidecar override): an unknown/removed key maps to
 /// `None` so the boot resolve order falls through to the config default
 /// rather than failing the whole state load.
 pub fn deserialize_lenient_opt<'de, D>(deserializer: D) -> Result<Option<SpinnerStyle>, D::Error>

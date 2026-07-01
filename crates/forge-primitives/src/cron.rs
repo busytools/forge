@@ -3,7 +3,7 @@
 //! A forge cron is a scheduled prompt that fires into a project's
 //! session and survives forge restarts. It lives in the
 //! `mcp__forge__cron__*` tool family alongside peers + workers. The
-//! list persists to `<config_dir>/forge-cron.toml` for restart
+//! list persists to `<config_dir>/forge/cron.toml` for restart
 //! durability; the single-instance boot guard makes one forge process
 //! per config dir the sole writer, so the in-process mutex (not the
 //! file) is the serialization point.

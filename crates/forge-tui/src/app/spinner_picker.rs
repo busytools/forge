@@ -4,7 +4,7 @@
 //! listing every [`SpinnerStyle`] animating live. Arrow keys preview
 //! the highlighted style across the whole UI by mutating
 //! `App::spinner_style`; `enter` commits the choice (persisted to the
-//! forge-state.toml sidecar via `Workspace::persist_spinner`); `esc`
+//! state.toml sidecar via `Workspace::persist_spinner`); `esc`
 //! restores the style that was active when the overlay opened.
 
 use crossterm::event::{KeyCode, KeyEvent};

@@ -354,14 +354,15 @@ mod tests {
     use std::fs;
     use tempfile::tempdir;
 
-    fn write_config(dir: &std::path::Path, contents: &str) {
-        fs::write(dir.join("forge.toml"), contents).expect("write forge.toml");
-    }
-
     /// Write `forge/forge.toml` (the production location).
-    fn write_config_in_forge(dir: &std::path::Path, contents: &str) {
+    fn write_config(dir: &std::path::Path, contents: &str) {
         let forge = ensure_forge_data_dir(dir).expect("forge/ dir");
         fs::write(forge.join("forge.toml"), contents).expect("write forge/forge.toml");
+    }
+
+    /// Write the legacy top-level `forge.toml` (fallback-path tests).
+    fn write_legacy_config(dir: &std::path::Path, contents: &str) {
+        fs::write(dir.join("forge.toml"), contents).expect("write forge.toml");
     }
 
     fn minimal_config() -> &'static str {
@@ -419,7 +420,7 @@ config_dir = "~/.claude-subspace"
     #[test]
     fn reads_forge_toml_from_forge_subfolder() {
         let dir = tempdir().expect("tempdir");
-        write_config_in_forge(dir.path(), minimal_config());
+        write_config(dir.path(), minimal_config());
         let config = load_from_dir(dir.path()).expect("loads from forge/");
         assert_eq!(config.default_project().name, "forge");
     }
@@ -428,7 +429,7 @@ config_dir = "~/.claude-subspace"
     fn falls_back_to_legacy_top_level_forge_toml() {
         let dir = tempdir().expect("tempdir");
         // Only the legacy top-level file exists (no forge/forge.toml).
-        write_config(dir.path(), minimal_config());
+        write_legacy_config(dir.path(), minimal_config());
         let config = load_from_dir(dir.path()).expect("loads via legacy fallback");
         assert_eq!(config.default_project().name, "forge");
     }
@@ -437,7 +438,7 @@ config_dir = "~/.claude-subspace"
     fn prefers_forge_subfolder_over_legacy_when_both_present() {
         let dir = tempdir().expect("tempdir");
         // Legacy top-level names project "legacy"; forge/ names "forge".
-        write_config(
+        write_legacy_config(
             dir.path(),
             r#"
 [[orgs]]
@@ -451,7 +452,7 @@ display_name = "Subspace"
 config_dir = "~/.claude-subspace"
 "#,
         );
-        write_config_in_forge(dir.path(), minimal_config());
+        write_config(dir.path(), minimal_config());
         let config = load_from_dir(dir.path()).expect("loads");
         assert_eq!(config.default_project().name, "forge", "forge/ wins over the legacy top-level");
     }
@@ -751,7 +752,8 @@ mod team_tests {
     use super::*;
 
     fn write_config(dir: &std::path::Path, contents: &str) {
-        std::fs::write(dir.join("forge.toml"), contents).expect("write forge.toml");
+        let forge = ensure_forge_data_dir(dir).expect("forge/ dir");
+        std::fs::write(forge.join("forge.toml"), contents).expect("write forge/forge.toml");
     }
 
     #[test]
