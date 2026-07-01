@@ -277,6 +277,14 @@ pub struct App {
     /// `None` only in the brief pre-Connect window where no session
     /// has landed in the map yet.
     pub active_session_key: Option<forge_workspace::SessionKey>,
+    /// Snapshot of the active project's durable forge crons
+    /// (`mcp__forge__cron`), refreshed on the ~1s ticker
+    /// (`git_diff::apply_timer_tick`) from
+    /// `Workspace::crons_for_project`. The Inspector SCHEDULES section
+    /// reads this cache each render instead of hitting the workspace
+    /// per frame (mirrors the git-diff snapshot pattern). Empty when
+    /// there's no active project or it has no crons.
+    pub forge_crons: Vec<forge_primitives::CronEntry>,
     /// Active help overlay view when `?` help is open.
     pub help_view: HelpView,
     /// Whether the help overlay is explicitly open.
@@ -1854,6 +1862,27 @@ impl App {
         self.schedules_mut().retain(|e| !e.is_expired(now));
     }
 
+    /// Recompute the active project's durable forge-cron snapshot from
+    /// the workspace, sorted soonest-first. Called on the ~1s ticker so
+    /// the Inspector reads a cheap cached `Vec` instead of resolving the
+    /// project + locking the workspace every render. Resolves the active
+    /// session to its project by session-key membership in
+    /// `list_projects` (empty when the active session isn't in a
+    /// project yet - e.g. a synthetic spawn bucket - or has no crons).
+    pub fn refresh_forge_crons(&mut self) {
+        let mut crons = match (self.workspace.as_ref(), self.active_session_key.as_ref()) {
+            (Some(ws), Some(key)) => ws
+                .list_projects()
+                .into_iter()
+                .find(|p| p.sessions.iter().any(|s| &s.session == key))
+                .map(|p| ws.crons_for_project(&p.name))
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        crons.sort_by_key(|c| c.next_fire);
+        self.forge_crons = crons;
+    }
+
     /// Insert / update a `MonitorEntry` based on a fresh
     /// `Monitor` tool_use. Idempotent: a matching `tool_use_id`
     /// refreshes the existing entry's input fields without touching
@@ -2893,6 +2922,7 @@ impl App {
             #[rustfmt::skip] #[cfg(feature = "testing")] test_dispatched_question_outcomes: std::cell::RefCell::new(Vec::new()),
             sessions,
             active_session_key: Some(pending_key),
+            forge_crons: Vec::new(),
             help_view: HelpView::Keys,
             help_open: false,
             help_dialog: dialog::DialogState::default(),

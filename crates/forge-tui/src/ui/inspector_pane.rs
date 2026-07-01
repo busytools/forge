@@ -1266,14 +1266,21 @@ const TASKS_MAX: usize = 5;
 /// entirely when `UiSession.monitors` is empty (auto-clears once
 /// every entry terminates) so the Inspector doesn't carry a stale
 /// "MONITORS" header with no rows.
-/// Render the Inspector SCHEDULES section: header + one row per
-/// pending `ScheduleWakeup` / `CronCreate`. The section hides
-/// entirely when no entries are present (the timer-tick prune is
-/// responsible for draining stale entries). Mirrors the MONITORS
-/// shape: header line, blank, per-entry rows with blank separators.
+/// Render the Inspector SCHEDULES section: header + one row per pending
+/// `ScheduleWakeup` / `CronCreate` (chat-parsed cloud routines) AND per
+/// durable forge cron (`mcp__forge__cron`, from the cached
+/// `app.forge_crons` snapshot). The section hides entirely when no
+/// entries are present. Mirrors the MONITORS shape: header line, blank,
+/// per-entry rows with blank separators.
 fn append_schedules_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
-    let schedules = app.schedules();
-    if schedules.is_empty() {
+    // Two sources share this section: the chat-parsed cloud routines
+    // (`ScheduleWakeup` / `CronCreate`, per-session) and the durable
+    // forge crons (`mcp__forge__cron`, sourced from the workspace via
+    // the cached `app.forge_crons` snapshot). Forge crons carry a
+    // concrete `next_fire`, so they render with a live countdown.
+    let mut entries: Vec<crate::app::ScheduleEntry> = app.schedules().to_vec();
+    entries.extend(app.forge_crons.iter().map(forge_cron_to_schedule_entry));
+    if entries.is_empty() {
         return;
     }
 
@@ -1285,12 +1292,32 @@ fn append_schedules_section(lines: &mut Vec<Line<'static>>, app: &App, width: u1
 
     let now = std::time::SystemTime::now();
     let inner_width = usize::from(width);
-    let last_idx = schedules.len().saturating_sub(1);
-    for (idx, entry) in schedules.iter().enumerate() {
+    let last_idx = entries.len().saturating_sub(1);
+    for (idx, entry) in entries.iter().enumerate() {
         append_schedule_row(lines, entry, now, inner_width);
         if idx < last_idx {
             lines.push(Line::default());
         }
+    }
+}
+
+/// Build a SCHEDULES row from a durable forge cron. Recurring crons show
+/// their expression; run-once crons show `once`. `fire_at` carries the
+/// concrete `next_fire` so [`append_schedule_row`] renders a live
+/// countdown, matching the wakeup rows.
+fn forge_cron_to_schedule_entry(cron: &forge_primitives::CronEntry) -> crate::app::ScheduleEntry {
+    use forge_primitives::cron::CronKind;
+    let (recurring, label) = match &cron.kind {
+        CronKind::Recurring(expr) => (true, expr.clone()),
+        CronKind::Once(_) => (false, "once".to_owned()),
+    };
+    crate::app::ScheduleEntry {
+        key: cron.id.as_str().to_owned(),
+        cron_id: Some(cron.id.as_str().to_owned()),
+        kind: crate::app::ScheduleKind::Cron { recurring, durable: true },
+        label,
+        fire_at: Some(cron.next_fire),
+        created_at: cron.created_at,
     }
 }
 
@@ -1307,21 +1334,23 @@ fn append_schedule_row(
 ) {
     use crate::app::ScheduleKind;
 
-    let (glyph, trailing) = match entry.kind {
-        // Alarm clock for wakeups.
-        ScheduleKind::Wakeup => {
-            let countdown = entry
-                .fire_at
-                .and_then(|t| t.duration_since(now).ok())
-                .map_or_else(|| "due".to_owned(), |d| format!("in {}", fmt_countdown(d)));
-            ("\u{23f0}", countdown)
-        }
-        // Circle-with-upper-left-quadrant glyph for crons; distinct
-        // from the chat-label hourglass so the section's row glyph
-        // doesn't double up with the chat-side tool label.
-        ScheduleKind::Cron { recurring, .. } => {
-            ("\u{25f4}", if recurring { "recurring".to_owned() } else { "one-shot".to_owned() })
-        }
+    // Alarm clock for wakeups; circle-with-upper-left-quadrant for crons
+    // (distinct from the chat-label hourglass so the row glyph doesn't
+    // double up with the chat-side tool label).
+    let glyph = match entry.kind {
+        ScheduleKind::Wakeup => "\u{23f0}",
+        ScheduleKind::Cron { .. } => "\u{25f4}",
+    };
+    // A concrete next-fire time renders as a live countdown (wakeups and
+    // durable forge crons); cloud crons carry no fire time, so they fall
+    // back to the recurrence label.
+    let trailing = match entry.fire_at.and_then(|t| t.duration_since(now).ok()) {
+        Some(d) => format!("in {}", fmt_countdown(d)),
+        None => match entry.kind {
+            ScheduleKind::Wakeup => "due".to_owned(),
+            ScheduleKind::Cron { recurring: true, .. } => "recurring".to_owned(),
+            ScheduleKind::Cron { recurring: false, .. } => "one-shot".to_owned(),
+        },
     };
     let header_chrome = usize::from(PANE_PAD)
         + 1                                                  // glyph cell
@@ -2005,6 +2034,69 @@ mod tests {
                 "tail".to_owned(),
             ]
         );
+    }
+
+    #[test]
+    fn forge_cron_to_schedule_entry_recurring_carries_expr_and_next_fire() {
+        use forge_primitives::cron::{CronEntry, CronId, CronKind};
+        use std::time::{Duration, SystemTime};
+        let created = SystemTime::UNIX_EPOCH + Duration::from_secs(1000);
+        let next = created + Duration::from_secs(300);
+        let cron = CronEntry {
+            id: CronId::from("c1"),
+            project_name: "forge".to_owned(),
+            kind: CronKind::Recurring("0 9 * * *".to_owned()),
+            prompt: "p".to_owned(),
+            created_at: created,
+            last_fire: None,
+            next_fire: next,
+        };
+        let entry = forge_cron_to_schedule_entry(&cron);
+        assert_eq!(entry.label, "0 9 * * *", "recurring cron shows its expression");
+        assert_eq!(entry.fire_at, Some(next), "next_fire carried for the countdown");
+        assert!(matches!(
+            entry.kind,
+            crate::app::ScheduleKind::Cron { recurring: true, durable: true }
+        ));
+        assert_eq!(entry.cron_id.as_deref(), Some("c1"));
+    }
+
+    #[test]
+    fn forge_cron_to_schedule_entry_run_once_labels_once() {
+        use forge_primitives::cron::{CronEntry, CronId, CronKind};
+        use std::time::{Duration, SystemTime};
+        let at = SystemTime::UNIX_EPOCH + Duration::from_secs(2000);
+        let cron = CronEntry {
+            id: CronId::from("o1"),
+            project_name: "forge".to_owned(),
+            kind: CronKind::Once(at),
+            prompt: "p".to_owned(),
+            created_at: SystemTime::UNIX_EPOCH,
+            last_fire: None,
+            next_fire: at,
+        };
+        let entry = forge_cron_to_schedule_entry(&cron);
+        assert_eq!(entry.label, "once", "run-once cron labels as `once`");
+        assert!(matches!(entry.kind, crate::app::ScheduleKind::Cron { recurring: false, .. }));
+    }
+
+    #[test]
+    fn forge_cron_row_renders_expr_and_live_countdown() {
+        use std::time::{Duration, SystemTime};
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1000);
+        let entry = crate::app::ScheduleEntry {
+            key: "c1".to_owned(),
+            cron_id: Some("c1".to_owned()),
+            kind: crate::app::ScheduleKind::Cron { recurring: true, durable: true },
+            label: "0 9 * * *".to_owned(),
+            fire_at: Some(now + Duration::from_secs(300)),
+            created_at: now,
+        };
+        let mut lines = Vec::new();
+        append_schedule_row(&mut lines, &entry, now, 60);
+        let text = line_text(&lines[0]);
+        assert!(text.contains("0 9 * * *"), "row shows the cron expression: {text}");
+        assert!(text.contains("in 5m"), "row shows a live next-fire countdown: {text}");
     }
 
     #[test]
