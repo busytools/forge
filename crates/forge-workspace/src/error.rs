@@ -81,4 +81,10 @@ pub enum WorkspaceError {
         "wire-classification rewriter proxy failed to start: {reason}. forge refuses to spawn sessions without a healthy proxy because the wire shape Anthropic sees determines billing tier"
     )]
     ProxyUnavailable { reason: String },
+
+    #[error(
+        "a forge instance is already running on this config dir{}",
+        pid.map_or(String::new(), |p| format!(" (PID {p})"))
+    )]
+    AlreadyRunning { pid: Option<u32> },
 }

@@ -722,7 +722,7 @@ chat continues here...
       <dt>color</dt><dd>section header (<code>SUBAGENTS</code>): <code>DIM</code> bold · root status_icon: <code>RUST_ORANGE</code> spinner (in-progress) / <span class="success">green</span> <code>✓</code> (completed) / red <code>✗</code> (failed/killed) · root kind-icon (<code>◇</code>): white bold · root label: white bold · tail kind-glyph + kind-label: white bold · tail title: <code>DIM</code> · terminal-root <code>· N tools</code> suffix: <code>DIM</code></dd>
     </dl>
 
-    <p id="inspector-schedules"><strong>SCHEDULES section</strong>: surfaces pending time-based schedules - <code>ScheduleWakeup</code> wakeups (the <code>/loop</code> dynamic-pacing re-arm) and <code>CronCreate</code> jobs - for the active session. Sits between SUBAGENTS and PROCESSES with its own DIM <code>─</code> separator. Two row kinds: a wakeup row (<code>⏰</code> alarm clock + reason + live <code>in &lt;countdown&gt;</code>) and a cron row (<code>◴</code> circle-with-upper-left-quadrant + raw cron expression + <code>recurring</code> / <code>one-shot</code> label).</p>
+    <p id="inspector-schedules"><strong>SCHEDULES section</strong>: surfaces pending time-based schedules for the active session, from three sources: <code>ScheduleWakeup</code> wakeups (the <code>/loop</code> dynamic-pacing re-arm) and <code>CronCreate</code> jobs (both chat-parsed cloud routines), plus durable <strong>forge crons</strong> (<code>mcp__forge__cron</code>, sourced from the workspace). Sits between SUBAGENTS and PROCESSES with its own DIM <code>─</code> separator. Row kinds: a wakeup row (<code>⏰</code> alarm clock + reason + live <code>in &lt;countdown&gt;</code>) and a cron row (<code>◴</code> circle-with-upper-left-quadrant + schedule + trailing badge). The trailing badge distinguishes the cron source: a forge cron carries a concrete <code>next_fire</code> so it shows a live <code>in &lt;countdown&gt;</code>; a cloud <code>CronCreate</code> cron (no forge-side next-fire) shows its <code>recurring</code> / <code>one-shot</code> label. A forge run-once cron shows <code>once</code> as its schedule label.</p>
     <p><strong>Auto-prune</strong>: passed wakeups (fire_at &lt; now) and 7-day-expired recurring crons drop on the next <code>~1s</code> tick (<code>App::prune_expired_schedules</code> from <code>git_diff::apply_timer_tick</code>). One-shot crons hang until an explicit <code>CronDelete</code> arrives. Wakeups re-arm on each <code>/loop</code> turn - a new <code>ScheduleWakeup</code> replaces the prior wakeup regardless of <code>tool_use_id</code>, so at most one wakeup entry survives in any session at a time.</p>
     <div class="term">
       <pre class="indent">
@@ -733,14 +733,15 @@ chat continues here...
 
   <span class="accent">  ⏰</span> <span class="bold">poll radarr queue</span>                <span class="dim">·  in 12m</span>
   <span class="accent">  ◴</span> <span class="bold">*/5 * * * *</span>                       <span class="dim">·  recurring</span>
+  <span class="accent">  ◴</span> <span class="bold">0 9 * * *</span>                         <span class="dim">·  in 5m</span>
 </pre>
     </div>
     <dl style="margin-left: 16px;">
-      <dt>code</dt><dd><code>crates/forge-tui/src/ui/inspector_pane.rs::append_schedules_section</code> (+ <code>append_schedule_row</code> + <code>fmt_countdown</code>) · state on <code>UiSession.schedules: Vec&lt;ScheduleEntry&gt;</code> populated by <code>handle_tool_call</code> arms for <code>ScheduleWakeup</code> / <code>CronCreate</code> / <code>CronDelete</code></dd>
+      <dt>code</dt><dd><code>crates/forge-tui/src/ui/inspector_pane.rs::append_schedules_section</code> (+ <code>append_schedule_row</code> + <code>fmt_countdown</code> + <code>forge_cron_to_schedule_entry</code>) · cloud state on <code>UiSession.schedules: Vec&lt;ScheduleEntry&gt;</code> populated by <code>handle_tool_call</code> arms for <code>ScheduleWakeup</code> / <code>CronCreate</code> / <code>CronDelete</code> · forge crons from the <code>App.forge_crons: Vec&lt;CronEntry&gt;</code> snapshot refreshed on the <code>~1s</code> tick by <code>App::refresh_forge_crons</code> (reads <code>Workspace::crons_for_project</code> for the active project)</dd>
       <dt>color</dt><dd>section header (<code>SCHEDULES</code>): <code>DIM</code> bold · wakeup glyph (<code>⏰</code>) + cron glyph (<code>◴</code>): <span class="accent">RUST_ORANGE</span> · label (reason / cron expression): white bold · trailing badge (<code>in 12m</code> / <code>recurring</code> / <code>one-shot</code>): <code>DIM</code> right-justified after the pad-spacer</dd>
-      <dt>data source</dt><dd><code>ScheduleWakeup.delaySeconds</code> + <code>reason</code> drive the wakeup row (<code>fire_at = now + delaySeconds</code>) · <code>CronCreate.cron</code> + <code>recurring</code> + <code>durable</code> drive the cron row (the result's job id is stamped onto the entry so a later <code>CronDelete</code> by job id finds it) · the <code>~1s</code> tick prunes via <code>App::prune_expired_schedules(now)</code></dd>
-      <dt>scope note</dt><dd>v1 cron rows show <code>recurring</code> / <code>one-shot</code> only - no computed next-fire countdown (needs a cron-expression parser; deferred). Only wakeups get a live countdown</dd>
-      <dt>retired path</dt><dd>The prior <code>Cron</code> row-kind in the PROCESSES section (wire-only registration rows that surfaced alongside live OS processes) is removed - SCHEDULES is the authoritative surface for both wakeups + crons</dd>
+      <dt>data source</dt><dd><code>ScheduleWakeup.delaySeconds</code> + <code>reason</code> drive the wakeup row (<code>fire_at = now + delaySeconds</code>) · <code>CronCreate.cron</code> + <code>recurring</code> + <code>durable</code> drive the cloud cron row (the result's job id is stamped onto the entry so a later <code>CronDelete</code> by job id finds it) · forge crons (<code>mcp__forge__cron</code>) come from <code>Workspace::crons_for_project(active project)</code> via the <code>App.forge_crons</code> snapshot; each <code>CronEntry.next_fire</code> drives its live countdown · the <code>~1s</code> tick prunes cloud entries via <code>App::prune_expired_schedules(now)</code> and refreshes the forge-cron snapshot via <code>App::refresh_forge_crons</code></dd>
+      <dt>scope note</dt><dd>Cloud <code>CronCreate</code> rows show <code>recurring</code> / <code>one-shot</code> only - forge doesn't parse the cloud cron's schedule, so no countdown. Forge crons (<code>mcp__forge__cron</code>) DO compute a next-fire countdown via the <code>croner</code> parser (evaluated in the host's LOCAL timezone), so they - like wakeups - render a live <code>in &lt;countdown&gt;</code></dd>
+      <dt>retired path</dt><dd>The prior <code>Cron</code> row-kind in the PROCESSES section (wire-only registration rows that surfaced alongside live OS processes) is removed - SCHEDULES is the authoritative surface for wakeups + cloud crons + forge crons</dd>
     </dl>
 
     <p>Empty TASKS state - when the active session has no todos, the GIT section renders without a TASKS separator below it. With a clean default branch + no diff to show:</p>
@@ -1546,10 +1547,25 @@ chat continues here...
           <td><code>target: string</code> · <code>prompt: string</code></td>
           <td>Returns immediately with a <code>correlation_id</code> (<code>q-XXXXXXXX</code>) and the ask transitions to in-flight. The reply lands as a synthetic user turn on the caller via the <code>[Reply ...]</code> envelope. A 30-min timer fires <code>SessionUpdate::PeerAskTimedOut</code> + a wrapped <code>[Ask ... timed out ...]</code> envelope to both caller and recipient when no reply lands. <code>HopLimitExceeded</code> and <code>UnknownTarget</code> return <code>is_error: true</code> synchronously; async failures (target spawn failed / channel closed / target connection died) fire <code>SessionUpdate::PeerAskFailed</code> + a wrapped <code>[Ask ... failed to deliver: ...]</code> envelope.</td>
         </tr>
+        <tr>
+          <td><code>cron__create</code></td>
+          <td><code>schedule: Option&lt;string&gt;</code> (5-field cron) · <code>run_once_at: Option&lt;string&gt;</code> (RFC3339) · <code>prompt: string</code></td>
+          <td>Register a durable cron for the caller's project (ANY-caller, like <code>workers__list</code>). Exactly one of <code>schedule</code> / <code>run_once_at</code>. Validates + computes <code>next_fire</code> in the host's LOCAL timezone, persists to <code>forge-cron.toml</code>, returns the cron id. On schedule the prompt fires into the project's session (spawning it if asleep); durable across restarts (catch-up-once on boot). See the <a href="#inspector-schedules">SCHEDULES section</a>.</td>
+        </tr>
+        <tr>
+          <td><code>cron__list</code></td>
+          <td>-</td>
+          <td>Returns the caller-project's crons (<code>{id, project, schedule, prompt, next_fire}</code>). Any-caller.</td>
+        </tr>
+        <tr>
+          <td><code>cron__delete</code></td>
+          <td><code>id: string</code></td>
+          <td>Delete a cron by id within the caller's project. Any-caller.</td>
+        </tr>
       </tbody>
     </table>
     <dl>
-      <dt>code</dt><dd><code>crates/forge-workspace/src/mcp/peers.rs</code> for the four Tool impls + <code>build_server</code> factory · <code>crates/forge-workspace/src/mcp/peers/facade.rs</code> for the <code>WorkspaceFacade</code> trait the tools call through · attached per-session via <code>crates/forge-agent/src/forge_sdk_worker.rs::build_options_with_callback</code></dd>
+      <dt>code</dt><dd><code>crates/forge-workspace/src/mcp/peers.rs</code> for the four peer Tool impls + <code>build_server</code> factory · <code>crates/forge-workspace/src/mcp/peers/facade.rs</code> for the <code>WorkspaceFacade</code> trait · <code>crates/forge-workspace/src/mcp/cron.rs</code> for the three cron Tool impls + <code>crates/forge-workspace/src/mcp/cron/facade.rs</code> (<code>CronFacade</code>) + <code>crates/forge-workspace/src/mcp/cron/schedule.rs</code> (parsing / next-fire) · all combined into one <code>forge</code> server by <code>mcp::build_forge_server</code>, attached per-session via <code>crates/forge-agent/src/forge_sdk_worker.rs::build_options_with_callback</code></dd>
       <dt>auto-approve</dt><dd><code>crates/forge-sdk/src/control_dispatch.rs</code> fast-paths <code>tool_name.starts_with("mcp__forge__")</code> to <code>PermissionDecision::allow()</code> before the standard permission policy</dd>
       <dt>hop limit</dt><dd>default 10 hops. <code>Workspace::deliver_peer_prompt</code> stamps <code>DomainSession.current_inbound_hop = max(current, wrapped.hop)</code> synchronously before dispatching <code>Command::Prompt</code>; <code>SessionTask</code> reads the value when building the next outbound wrapper and clears it on <code>Message::Result</code> (turn boundary)</dd>
     </dl>

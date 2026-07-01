@@ -273,6 +273,11 @@ impl SessionTask {
                     // the existing prompt-delivery path handles it
                     // uniformly with user-typed prompts.
                     self.drain_pending_peer_prompts();
+                    // Same for cron prompts buffered while the project was
+                    // asleep (spawn::deliver_cron_prompt on a due cron
+                    // whose session wasn't open). Plain user turns, so no
+                    // peer-envelope echo.
+                    self.drain_pending_cron_prompts();
                 }
                 // Fire worker re-tag for both first-Connected and
                 // post-/new Connected paths. #166: the previous
@@ -676,6 +681,34 @@ impl SessionTask {
                     key = %self.key.as_str(),
                     error = ?err,
                     "drain_pending_peer_prompts: dispatch failed; prompt dropped"
+                );
+            }
+        }
+    }
+
+    /// Drain `DomainSession.pending_cron_prompts` after the session's
+    /// first `Connected` event - the cron prompts buffered while the
+    /// project was asleep (a due cron whose session wasn't open spawned
+    /// it). Each is re-dispatched as a plain `Command::Prompt` against
+    /// `self.key`, landing as an ordinary user turn (no peer envelope).
+    /// No-op when there are no buffered prompts.
+    fn drain_pending_cron_prompts(&self) {
+        let pending: Vec<String> = std::mem::take(&mut self.domain.lock().pending_cron_prompts);
+        if pending.is_empty() {
+            return;
+        }
+        let Some(workspace) = self.workspace.upgrade() else { return };
+        for text in pending {
+            if let Err(err) = workspace.dispatch(crate::protocol::Command::Prompt {
+                key: self.key.clone(),
+                text,
+                attachments: Vec::new(),
+            }) {
+                tracing::warn!(
+                    target: "forge_workspace::session_task",
+                    key = %self.key.as_str(),
+                    error = ?err,
+                    "drain_pending_cron_prompts: dispatch failed; prompt dropped"
                 );
             }
         }

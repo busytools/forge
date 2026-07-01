@@ -46,6 +46,7 @@
 pub mod cloud;
 pub mod command;
 pub mod content;
+pub mod cron;
 pub mod error;
 pub mod git;
 pub mod git_diff;
@@ -73,6 +74,7 @@ pub mod workers;
 
 pub use command::AgentCommand;
 pub use content::ContentBlock;
+pub use cron::{CronEntry, CronId, CronKind};
 pub use error::AppError;
 pub use hooks::{
     BaseHookInput, HookContext, HookKind, HookSpecificOutput, NotificationHookSpecificOutput,

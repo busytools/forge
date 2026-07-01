@@ -35,6 +35,10 @@ use crate::views::{ProjectView, SessionView};
 /// naturally.
 const USAGE_POLL_INTERVAL: Duration = Duration::from_secs(60);
 
+/// How often the cron scheduler wakes to fire due crons. Minute
+/// granularity matches the cron-expression resolution.
+const CRON_TICK_INTERVAL: Duration = Duration::from_secs(60);
+
 /// Max attempts for `tag_session_with_retry` to find the worker's
 /// `<session_id>.jsonl` and append the tag row. claude CLI writes the
 /// file lazily on the first user turn - workers with an `initial_prompt`
@@ -194,6 +198,9 @@ pub struct Workspace {
     /// Set the first time [`Self::start_usage_poller`] runs. Subsequent
     /// calls early-return to avoid spawning duplicate poller tasks.
     usage_poller_started: std::sync::atomic::AtomicBool,
+    /// Guards against double-spawning the cron scheduler (mirrors
+    /// `usage_poller_started`). Started once at boot from the binary.
+    cron_scheduler_started: std::sync::atomic::AtomicBool,
     /// Sender half of the worker-kick channel (#259). Cloned via
     /// [`Self::enqueue_kick`] by `maybe_kick_worker_on_connected`
     /// (and any future kick site). The matching receiver lives in
@@ -218,6 +225,20 @@ pub struct Workspace {
     /// `new()` and therefore the proxy boot. Tests don't drive real
     /// subprocesses, so the absence is fine.
     proxy: Option<forge_agent::proxy::ProxyHandle>,
+    /// Single-instance lock file held open for the process lifetime.
+    /// `Workspace::new` takes an exclusive flock on `<config_dir>/forge.lock`
+    /// so a second forge on the same config dir refuses to start; the
+    /// flock releases when this `File` drops (Workspace teardown / process
+    /// exit / crash). Held purely for that side effect - never read.
+    /// `None` in `testing_stub` and on the degraded acquire path.
+    _single_instance_lock: Option<std::fs::File>,
+    /// Durable forge crons (`mcp__forge__cron`). In-memory working set,
+    /// loaded from `forge-cron.toml` at boot and persisted back after
+    /// every mutation - create/delete, the scheduler's fire-advance, and
+    /// boot catch-up - through the one [`Workspace::with_crons_mut`] path.
+    /// The single-instance guard makes this the only process touching the
+    /// file, so this mutex alone serialises writes.
+    crons: Mutex<Vec<forge_primitives::CronEntry>>,
     /// Per-project in-flight guard for the engineering-team Connected
     /// hook's catalog scan. Inserted synchronously when
     /// `spawn_team_for_lead_with_catalog_scan` starts; removed when
@@ -365,6 +386,35 @@ impl Workspace {
     pub async fn new(config_dir: PathBuf) -> Result<Self, WorkspaceError> {
         let mut config = load_from_dir(&config_dir)?;
 
+        // Single-instance guard: forge runs one process per config dir.
+        // Take it BEFORE the proxy boot so a doomed second instance
+        // refuses without binding proxy ports. The held File is stored
+        // on `Self` for the process lifetime; flock auto-releases on
+        // exit/crash. A second forge on the same config dir hard-fails
+        // here exactly like ProxyUnavailable does below.
+        let single_instance_lock = match crate::single_instance::acquire(&config_dir) {
+            Ok(lock) => lock,
+            Err(crate::single_instance::AcquireError::AlreadyRunning { pid }) => {
+                return Err(WorkspaceError::AlreadyRunning { pid });
+            }
+        };
+        // The guard fell open (forge.lock unopenable or flock unsupported).
+        // forge still boots, but the cron store's single-writer assumption
+        // no longer holds - surface it loudly rather than leaving it at the
+        // module-internal warn `acquire` already logged.
+        if single_instance_lock.is_none() {
+            tracing::error!(
+                target: "forge_workspace::workspace",
+                config_dir = %config_dir.display(),
+                "single-instance guard unavailable; on-disk state (crons, usage cache, settings) is NOT protected against a second forge on this config dir - check the dir is writable and on a flock-capable filesystem",
+            );
+        }
+
+        // Load durable forge crons into the in-memory working set. Boot
+        // catch-up for entries that came due while forge was down runs
+        // after construction, once the dispatch machinery is live.
+        let crons = crate::cron_store::load_crons(&config_dir);
+
         // Boot the wire-classification rewriter proxy BEFORE any
         // session can spawn. Hard-fail policy: if the proxy can't
         // bind / load its CA / build the TLS context, forge refuses
@@ -442,9 +492,12 @@ impl Workspace {
             inflight_asks: Mutex::new(HashMap::new()),
             peer_stats: Mutex::new(HashMap::new()),
             usage_poller_started: std::sync::atomic::AtomicBool::new(false),
+            cron_scheduler_started: std::sync::atomic::AtomicBool::new(false),
             kick_dispatcher_tx,
             kick_dispatcher_rx_slot: Mutex::new(Some(kick_dispatcher_rx)),
             proxy: Some(proxy),
+            _single_instance_lock: single_instance_lock,
+            crons: Mutex::new(crons),
             team_spawn_in_flight: Mutex::new(std::collections::HashSet::new()),
             #[cfg(any(test, feature = "testing"))]
             command_intercept: Mutex::new(None),
@@ -715,13 +768,7 @@ impl Workspace {
                     && spawn != &session_key
                     && let Some(buffered) = handles.remove(spawn)
                 {
-                    let mut placeholder = existing.lock();
-                    let mut src = buffered.lock();
-                    placeholder.pending_peer_prompts.append(&mut src.pending_peer_prompts);
-                    if let Some(hop) = src.current_inbound_hop {
-                        let current = placeholder.current_inbound_hop.unwrap_or(0);
-                        placeholder.current_inbound_hop = Some(current.max(hop));
-                    }
+                    Self::merge_spawn_buffer_into_placeholder(&existing, &buffered);
                 }
                 existing
             } else if let Some(spawn) = spawn_key.as_ref()
@@ -762,8 +809,15 @@ impl Workspace {
         let forge_server = {
             let workspace_facade = crate::mcp::peers::facade::ProdWorkspaceFacade::from_arc(self);
             let worker_facade = crate::mcp::workers::facade::ProdWorkerFacade::from_arc(self);
+            let cron_facade = crate::mcp::cron::facade::ProdCronFacade::from_arc(self);
             let resolver = crate::mcp::peers::facade::CallerKeyResolver::from_domain(&domain_arc);
-            crate::mcp::build_forge_server(workspace_facade, worker_facade, resolver, session_kind)
+            crate::mcp::build_forge_server(
+                workspace_facade,
+                worker_facade,
+                cron_facade,
+                resolver,
+                session_kind,
+            )
         };
 
         let handle = forge_agent::Agent::spawn(
@@ -908,11 +962,11 @@ impl Workspace {
 
     /// When `get_agent_handle_with_spawn_key` hits the pool fast-path
     /// for a session that's already running, drain any
-    /// `pending_peer_prompts` buffered at the synthetic `spawn_key`
-    /// (e.g. `__spawn_<project>__`) into the live session via
-    /// `Command::Prompt`. Without this, peer asks aimed at a
-    /// running-but-pre-spawn-dispatched target strand at the synth
-    /// key forever - the regular Connected-time drain only fires
+    /// `pending_peer_prompts` AND `pending_cron_prompts` buffered at the
+    /// synthetic `spawn_key` (e.g. `__spawn_<project>__`) into the live
+    /// session via `Command::Prompt`. Without this, peer asks / cron fires
+    /// aimed at a running-but-pre-spawn-dispatched target strand at the
+    /// synth key forever - the regular Connected-time drain only fires
     /// when a fresh SessionTask boots.
     fn drain_spawn_key_buffer_into(
         self: &Arc<Self>,
@@ -925,11 +979,15 @@ impl Workspace {
         }
         let buffered_domain = self.domain_handles.lock().remove(spawn_key);
         let Some(buffered_domain) = buffered_domain else { return };
-        let (pending, incoming_hop) = {
+        let (pending, cron_pending, incoming_hop) = {
             let mut guard = buffered_domain.lock();
-            (std::mem::take(&mut guard.pending_peer_prompts), guard.current_inbound_hop)
+            (
+                std::mem::take(&mut guard.pending_peer_prompts),
+                std::mem::take(&mut guard.pending_cron_prompts),
+                guard.current_inbound_hop,
+            )
         };
-        if pending.is_empty() && incoming_hop.is_none() {
+        if pending.is_empty() && cron_pending.is_empty() && incoming_hop.is_none() {
             return;
         }
         // Stamp the inbound hop on the live session, taking max
@@ -970,6 +1028,45 @@ impl Workspace {
                     "drain_spawn_key_buffer_into: dispatch failed; prompt dropped",
                 );
             }
+        }
+        // Same for plain cron prompts buffered at the synth key - a cron
+        // that fired while its project was mid-spawn (a placeholder
+        // already at session_key, Case 1) lands its prompt here. Plain
+        // user turns, no peer-envelope echo.
+        for text in cron_pending {
+            if let Err(err) = self.dispatch(crate::protocol::Command::Prompt {
+                key: session_key.clone(),
+                text,
+                attachments: Vec::new(),
+            }) {
+                tracing::warn!(
+                    target: "forge_workspace::workspace",
+                    key = %session_key.as_str(),
+                    error = ?err,
+                    "drain_spawn_key_buffer_into: cron dispatch failed; prompt dropped",
+                );
+            }
+        }
+    }
+
+    /// Merge a synthetic spawn-key DomainSession's buffered state into an
+    /// existing placeholder (Case 1 in `get_agent_handle_with_spawn_key`:
+    /// a peer ask or cron fire arrived while a pre-Connect placeholder
+    /// already sat at `session_key`). BOTH pending prompt buffers move -
+    /// missing the cron buffer here would evaporate a cron that fired
+    /// mid-spawn - and the inbound hop takes the max so concurrent asks
+    /// don't undershoot.
+    fn merge_spawn_buffer_into_placeholder(
+        placeholder: &Mutex<DomainSession>,
+        buffered: &Mutex<DomainSession>,
+    ) {
+        let mut placeholder = placeholder.lock();
+        let mut src = buffered.lock();
+        placeholder.pending_peer_prompts.append(&mut src.pending_peer_prompts);
+        placeholder.pending_cron_prompts.append(&mut src.pending_cron_prompts);
+        if let Some(hop) = src.current_inbound_hop {
+            let current = placeholder.current_inbound_hop.unwrap_or(0);
+            placeholder.current_inbound_hop = Some(current.max(hop));
         }
     }
 
@@ -2427,6 +2524,168 @@ impl Workspace {
         self.live_workers.lock().get(project_key).cloned().unwrap_or_default()
     }
 
+    /// Lock the durable cron list, apply `f`, and persist to
+    /// `forge-cron.toml`. Every cron-list mutation routes through here -
+    /// `cron__create` / `cron__delete`, the scheduler's fire-advance, and
+    /// boot catch-up - so the in-memory set and the file never diverge.
+    pub(crate) fn with_crons_mut<R>(
+        &self,
+        f: impl FnOnce(&mut Vec<forge_primitives::CronEntry>) -> R,
+    ) -> R {
+        let mut crons = self.crons.lock();
+        let result = f(&mut crons);
+        crate::cron_store::store_crons(&self.config_dir, &crons);
+        result
+    }
+
+    /// Append a cron and persist. Backs `cron__create`.
+    pub(crate) fn push_cron(&self, entry: forge_primitives::CronEntry) {
+        self.with_crons_mut(|crons| crons.push(entry));
+    }
+
+    /// Remove the cron `id` if it belongs to `project_name`, persist, and
+    /// report whether an entry was removed. Backs `cron__delete`, scoped
+    /// so a caller only deletes its own project's crons.
+    pub(crate) fn remove_cron(&self, project_name: &str, id: &forge_primitives::CronId) -> bool {
+        self.with_crons_mut(|crons| {
+            let before = crons.len();
+            crons.retain(|c| !(c.id == *id && c.project_name == project_name));
+            crons.len() != before
+        })
+    }
+
+    /// The crons registered for `project_name`. Backs `cron__list` and the
+    /// Inspector SCHEDULES snapshot.
+    pub fn crons_for_project(&self, project_name: &str) -> Vec<forge_primitives::CronEntry> {
+        self.crons.lock().iter().filter(|c| c.project_name == project_name).cloned().collect()
+    }
+
+    /// A snapshot of every cron across all projects. Backs the
+    /// scheduler's per-tick due-check.
+    pub(crate) fn all_crons_snapshot(&self) -> Vec<forge_primitives::CronEntry> {
+        self.crons.lock().clone()
+    }
+
+    /// Advance a fired cron and persist: a recurring cron records
+    /// `last_fire` and moves `next_fire` to the next future slot (removed
+    /// if it somehow has none); a run-once is removed. A direct state
+    /// mutation - the fire's prompt delivery goes through the Command bus
+    /// separately.
+    pub(crate) fn advance_or_remove_cron(
+        &self,
+        id: &forge_primitives::CronId,
+        fired_at: std::time::SystemTime,
+    ) {
+        self.with_crons_mut(|crons| {
+            let Some(pos) = crons.iter().position(|c| &c.id == id) else { return };
+            match &crons[pos].kind {
+                forge_primitives::CronKind::Once(_) => {
+                    crons.remove(pos);
+                }
+                forge_primitives::CronKind::Recurring(_) => {
+                    if let Some(next) =
+                        crate::mcp::cron::schedule::next_fire_after(&crons[pos].kind, fired_at)
+                    {
+                        crons[pos].last_fire = Some(fired_at);
+                        crons[pos].next_fire = next;
+                    } else {
+                        // A recurring expr that parses but never matches
+                        // (e.g. "0 0 30 2 *") - reachable via a hand-edited
+                        // forge-cron.toml. Don't silently drop it (hard
+                        // rule #13).
+                        let removed = crons.remove(pos);
+                        let expr = if let forge_primitives::CronKind::Recurring(e) = &removed.kind {
+                            e.as_str()
+                        } else {
+                            ""
+                        };
+                        tracing::warn!(
+                            target: "forge_workspace::workspace",
+                            cron_id = %removed.id,
+                            project = %removed.project_name,
+                            expr = %expr,
+                            "recurring cron has no upcoming occurrence; removed it",
+                        );
+                    }
+                }
+            }
+        });
+    }
+
+    /// Fire every cron due at `now`: deliver each prompt into its project
+    /// session (spawning it if asleep) and advance/remove the entry.
+    /// Delivery routes through the Command bus (a session action); the
+    /// advance is a direct state write - kept separate per the cron
+    /// state-vs-delivery split. `now` is injected so tests are
+    /// deterministic. Also the boot catch-up: calling this once at
+    /// startup fires every cron that came due while forge was down,
+    /// advancing each past its missed slots (catch-up-once).
+    pub fn fire_due_crons(self: &Arc<Self>, now: std::time::SystemTime) {
+        use crate::spawn::CronFireOutcome;
+        let snapshot = self.all_crons_snapshot();
+        let due = crate::mcp::cron::schedule::due_crons(&snapshot, now);
+        for id in &due {
+            let Some(cron) = snapshot.iter().find(|c| &c.id == id) else { continue };
+            match crate::spawn::deliver_cron_prompt(self, &cron.project_name, cron.prompt.clone()) {
+                // Delivered (or spawn kicked off): advance a recurring to
+                // its next slot, remove a fired run-once.
+                CronFireOutcome::Delivered => self.advance_or_remove_cron(id, now),
+                // Project gone from forge.toml: remove the cron rather than
+                // advance a dead entry forever (a run-once would otherwise
+                // be silently consumed).
+                CronFireOutcome::TargetGone => {
+                    tracing::warn!(
+                        target: "forge_workspace::workspace",
+                        project = %cron.project_name,
+                        cron_id = %id,
+                        "cron target gone from forge.toml; removing the cron",
+                    );
+                    self.remove_cron(&cron.project_name, id);
+                }
+                // Command channel closed (shutting down): leave the cron
+                // due so the next boot catch-up re-fires it - don't consume
+                // a fire that never handed off.
+                CronFireOutcome::DispatchFailed => {
+                    tracing::warn!(
+                        target: "forge_workspace::workspace",
+                        project = %cron.project_name,
+                        cron_id = %id,
+                        "cron fire dispatch failed; leaving it due for the next boot",
+                    );
+                }
+            }
+        }
+    }
+
+    /// Spawn the cron scheduler: a background task that wakes every
+    /// `CRON_TICK_INTERVAL` (~60s), fires every due cron, and exits when
+    /// the workspace drops. Idempotent (a second call no-ops). Mirrors
+    /// [`Workspace::start_usage_poller`]; started once at boot.
+    pub fn start_cron_scheduler(self: &Arc<Self>) {
+        if self.cron_scheduler_started.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            return;
+        }
+        let weak = Arc::downgrade(self);
+        let span = tracing::info_span!("cron_scheduler");
+        tokio::spawn(
+            async move {
+                let mut interval = tokio::time::interval_at(
+                    tokio::time::Instant::now() + CRON_TICK_INTERVAL,
+                    CRON_TICK_INTERVAL,
+                );
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    interval.tick().await;
+                    let Some(workspace) = weak.upgrade() else {
+                        return;
+                    };
+                    workspace.fire_due_crons(std::time::SystemTime::now());
+                }
+            }
+            .instrument(span),
+        );
+    }
+
     /// Snapshot every live worker's session_key across every project.
     /// Used by the TUI's `find_running_bucket_for_path` to exclude
     /// worker buckets from project-row click routing without depending
@@ -3624,11 +3883,14 @@ impl Workspace {
             inflight_asks: Mutex::new(HashMap::new()),
             peer_stats: Mutex::new(HashMap::new()),
             usage_poller_started: std::sync::atomic::AtomicBool::new(false),
+            cron_scheduler_started: std::sync::atomic::AtomicBool::new(false),
             kick_dispatcher_tx,
             kick_dispatcher_rx_slot: Mutex::new(Some(kick_dispatcher_rx)),
             // testing_stub skips Workspace::new and therefore the
             // proxy boot. Tests don't drive real subprocesses.
             proxy: None,
+            _single_instance_lock: None,
+            crons: Mutex::new(Vec::new()),
             team_spawn_in_flight: Mutex::new(std::collections::HashSet::new()),
             command_intercept: Mutex::new(None),
             test_extra_projects: Mutex::new(Vec::new()),
@@ -3938,6 +4200,352 @@ mod tests {
         // No catalog lead: fresh either way.
         assert_eq!(Workspace::apply_force_new_gate(None, false), None);
         assert_eq!(Workspace::apply_force_new_gate(None, true), None);
+    }
+
+    #[test]
+    fn cron_methods_push_list_remove_and_persist() {
+        use forge_primitives::cron::{CronEntry, CronId, CronKind};
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+
+        let entry = CronEntry {
+            id: CronId::from("c1"),
+            project_name: "forge".to_owned(),
+            kind: CronKind::Recurring("0 9 * * *".to_owned()),
+            prompt: "stand-up".to_owned(),
+            created_at: std::time::SystemTime::UNIX_EPOCH,
+            last_fire: None,
+            next_fire: std::time::SystemTime::UNIX_EPOCH,
+        };
+
+        ws.push_cron(entry.clone());
+        assert_eq!(ws.crons_for_project("forge"), vec![entry.clone()], "listed for its project");
+        assert!(ws.crons_for_project("other").is_empty(), "scoped by project name");
+        assert_eq!(
+            crate::cron_store::load_crons(dir.path()),
+            vec![entry.clone()],
+            "push persisted to forge-cron.toml",
+        );
+
+        // A different project cannot delete another project's cron.
+        assert!(!ws.remove_cron("other", &entry.id), "delete is scoped to the owning project");
+        assert_eq!(ws.crons_for_project("forge").len(), 1);
+
+        assert!(ws.remove_cron("forge", &entry.id), "the owning project removes it");
+        assert!(ws.crons_for_project("forge").is_empty());
+        assert!(crate::cron_store::load_crons(dir.path()).is_empty(), "removal persisted");
+
+        assert!(!ws.remove_cron("forge", &CronId::from("c1")), "removing a gone id reports false");
+    }
+
+    #[test]
+    fn advance_or_remove_cron_recurring_advances_run_once_removes() {
+        use forge_primitives::cron::{CronEntry, CronId, CronKind};
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        let fired = std::time::SystemTime::now();
+
+        ws.push_cron(CronEntry {
+            id: CronId::from("r"),
+            project_name: "forge".to_owned(),
+            kind: CronKind::Recurring("*/5 * * * *".to_owned()),
+            prompt: "p".to_owned(),
+            created_at: fired,
+            last_fire: None,
+            next_fire: std::time::SystemTime::UNIX_EPOCH,
+        });
+        ws.advance_or_remove_cron(&CronId::from("r"), fired);
+        let after = ws.crons_for_project("forge");
+        assert_eq!(after.len(), 1, "a recurring cron stays after firing");
+        assert!(after[0].next_fire > fired, "next_fire advanced to a future slot");
+        assert_eq!(after[0].last_fire, Some(fired), "last_fire recorded");
+
+        ws.push_cron(CronEntry {
+            id: CronId::from("o"),
+            project_name: "forge".to_owned(),
+            kind: CronKind::Once(std::time::SystemTime::UNIX_EPOCH),
+            prompt: "p".to_owned(),
+            created_at: fired,
+            last_fire: None,
+            next_fire: std::time::SystemTime::UNIX_EPOCH,
+        });
+        ws.advance_or_remove_cron(&CronId::from("o"), fired);
+        assert!(
+            ws.crons_for_project("forge").iter().all(|c| c.id != CronId::from("o")),
+            "a run-once is removed after firing",
+        );
+
+        // A missing id is a no-op, not a panic.
+        ws.advance_or_remove_cron(&CronId::from("ghost"), fired);
+    }
+
+    #[test]
+    fn fire_due_crons_spawns_asleep_project_buffers_prompt_and_skips_future() {
+        use forge_primitives::cron::{CronEntry, CronId, CronKind};
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project_with_team("forge", "/tmp/forge", &[]);
+
+        let now = std::time::SystemTime::now();
+        let past = std::time::SystemTime::UNIX_EPOCH;
+        let far_future = now + std::time::Duration::from_secs(86_400);
+
+        ws.push_cron(CronEntry {
+            id: CronId::from("due"),
+            project_name: "forge".to_owned(),
+            kind: CronKind::Recurring("*/5 * * * *".to_owned()),
+            prompt: "morning".to_owned(),
+            created_at: past,
+            last_fire: None,
+            next_fire: past,
+        });
+        ws.push_cron(CronEntry {
+            id: CronId::from("later"),
+            project_name: "forge".to_owned(),
+            kind: CronKind::Recurring("*/5 * * * *".to_owned()),
+            prompt: "later".to_owned(),
+            created_at: past,
+            last_fire: None,
+            next_fire: far_future,
+        });
+
+        ws.enable_test_dispatch_intercept();
+        ws.fire_due_crons(now);
+        let dispatched = ws.drain_test_dispatch_buffer();
+
+        // The asleep project got exactly one SpawnProject - for the due
+        // cron, not the future one.
+        let spawns = dispatched
+            .iter()
+            .filter(|c| {
+                matches!(c, crate::protocol::Command::SpawnProject { project_name, .. }
+                    if project_name == "forge")
+            })
+            .count();
+        assert_eq!(spawns, 1, "one spawn for the single due cron");
+
+        // The due cron's prompt is buffered on the synthetic spawn key for
+        // delivery once the session reaches Connected.
+        let synth = SessionKey::from_session_id("__spawn_forge__");
+        let buffered = ws
+            .domain_handles
+            .lock()
+            .get(&synth)
+            .expect("synth domain present")
+            .lock()
+            .pending_cron_prompts
+            .clone();
+        assert_eq!(buffered, vec!["morning".to_owned()], "the due cron's prompt was buffered");
+
+        // The due cron advanced past now; the future cron is untouched.
+        let crons = ws.crons_for_project("forge");
+        let due = crons.iter().find(|c| c.id == CronId::from("due")).expect("due present");
+        assert!(due.next_fire > now, "the fired cron advanced past now");
+        let later = crons.iter().find(|c| c.id == CronId::from("later")).expect("later present");
+        assert_eq!(later.next_fire, far_future, "the not-yet-due cron is untouched");
+    }
+
+    #[tokio::test]
+    async fn boot_catch_up_fires_overdue_once_advances_persists_and_does_not_refire() {
+        use forge_primitives::cron::{CronEntry, CronId, CronKind};
+        let dir = make_workspace_dir();
+        let now = std::time::SystemTime::now();
+        let past = std::time::SystemTime::UNIX_EPOCH;
+        let far_future = now + std::time::Duration::from_secs(86_400);
+
+        // Seed forge-cron.toml (Workspace::new loads it) with an overdue
+        // recurring + overdue run-once + a not-yet-due one, all for the
+        // "forge" project make_workspace_dir wrote.
+        crate::cron_store::store_crons(
+            dir.path(),
+            &[
+                CronEntry {
+                    id: CronId::from("rec"),
+                    project_name: "forge".to_owned(),
+                    kind: CronKind::Recurring("*/5 * * * *".to_owned()),
+                    prompt: "morning".to_owned(),
+                    created_at: past,
+                    last_fire: None,
+                    next_fire: past,
+                },
+                CronEntry {
+                    id: CronId::from("once"),
+                    project_name: "forge".to_owned(),
+                    kind: CronKind::Once(past),
+                    prompt: "deploy".to_owned(),
+                    created_at: past,
+                    last_fire: None,
+                    next_fire: past,
+                },
+                CronEntry {
+                    id: CronId::from("future"),
+                    project_name: "forge".to_owned(),
+                    kind: CronKind::Recurring("*/5 * * * *".to_owned()),
+                    prompt: "later".to_owned(),
+                    created_at: past,
+                    last_fire: None,
+                    next_fire: far_future,
+                },
+            ],
+        );
+
+        let ws = Arc::new(
+            Workspace::new(dir.path().to_owned()).await.expect("new loads forge-cron.toml"),
+        );
+        assert_eq!(ws.crons_for_project("forge").len(), 3, "boot loaded all three crons");
+
+        // Boot catch-up: the one call main.rs makes at startup.
+        ws.enable_test_dispatch_intercept();
+        ws.fire_due_crons(now);
+        let first = ws.drain_test_dispatch_buffer();
+        let spawns = first
+            .iter()
+            .filter(|c| {
+                matches!(c, crate::protocol::Command::SpawnProject { project_name, .. }
+                    if project_name == "forge")
+            })
+            .count();
+        assert_eq!(spawns, 2, "boot fires the two overdue crons, not the future one");
+
+        // Overdue recurring advanced past now + recorded last_fire; overdue
+        // run-once removed; future untouched.
+        let crons = ws.crons_for_project("forge");
+        assert!(crons.iter().all(|c| c.id != CronId::from("once")), "overdue run-once removed");
+        let rec = crons.iter().find(|c| c.id == CronId::from("rec")).expect("recurring present");
+        assert!(rec.next_fire > now, "overdue recurring advanced past now");
+        assert_eq!(rec.last_fire, Some(now), "the fired recurring recorded last_fire");
+        let fut = crons.iter().find(|c| c.id == CronId::from("future")).expect("future present");
+        assert_eq!(fut.next_fire, far_future, "the future cron is untouched");
+
+        // The advance persisted to disk - this is what stops a double-fire.
+        let persisted = crate::cron_store::load_crons(dir.path());
+        assert!(persisted.iter().all(|c| c.id != CronId::from("once")), "removal persisted");
+        assert!(
+            persisted
+                .iter()
+                .find(|c| c.id == CronId::from("rec"))
+                .expect("rec persisted")
+                .next_fire
+                > now,
+            "advance persisted",
+        );
+
+        // The next tick does NOT re-fire: the advanced crons aren't due again.
+        ws.fire_due_crons(now);
+        let refires = ws
+            .drain_test_dispatch_buffer()
+            .iter()
+            .filter(|c| matches!(c, crate::protocol::Command::SpawnProject { .. }))
+            .count();
+        assert_eq!(refires, 0, "advanced crons are not due again; no double-fire");
+    }
+
+    #[test]
+    fn merge_spawn_buffer_carries_the_cron_prompt_into_the_placeholder() {
+        // Case 1 in get_agent_handle_with_spawn_key: a cron fires while its
+        // project is mid-spawn (a pre-Connect placeholder already sits at
+        // session_key). The synth buffer must merge into the placeholder,
+        // not evaporate.
+        let placeholder = Mutex::new(DomainSession::new(SessionKey::from_session_id("real"), None));
+        let buffered =
+            Mutex::new(DomainSession::new(SessionKey::from_session_id("__spawn_forge__"), None));
+        buffered.lock().pending_cron_prompts.push("morning reminder".to_owned());
+
+        Workspace::merge_spawn_buffer_into_placeholder(&placeholder, &buffered);
+
+        assert_eq!(
+            placeholder.lock().pending_cron_prompts,
+            vec!["morning reminder".to_owned()],
+            "the cron prompt survives the placeholder merge",
+        );
+        assert!(buffered.lock().pending_cron_prompts.is_empty(), "moved out of the synth buffer");
+    }
+
+    #[test]
+    fn drain_spawn_key_buffer_delivers_a_buffered_cron_prompt() {
+        // Pool fast-path: the target is already running when a cron's
+        // SpawnProject arrives, so drain_spawn_key_buffer_into must
+        // re-dispatch the synth-key cron prompt into the live session.
+        let (ws, _rx) = Workspace::testing_stub();
+        let session_key = SessionKey::from_session_id("live-session");
+        let synth_key = SessionKey::from_session_id("__spawn_forge__");
+
+        ws.domain_handles.lock().insert(
+            session_key.clone(),
+            Arc::new(Mutex::new(DomainSession::new(session_key.clone(), None))),
+        );
+        let synth = Arc::new(Mutex::new(DomainSession::new(synth_key.clone(), None)));
+        synth.lock().pending_cron_prompts.push("reminder".to_owned());
+        ws.domain_handles.lock().insert(synth_key.clone(), synth);
+
+        ws.enable_test_dispatch_intercept();
+        ws.drain_spawn_key_buffer_into(&session_key, Some(&synth_key));
+        let dispatched = ws.drain_test_dispatch_buffer();
+
+        assert!(
+            dispatched.iter().any(|c| matches!(c,
+                crate::protocol::Command::Prompt { key, text, .. }
+                    if key == &session_key && text == "reminder")),
+            "the buffered cron prompt is dispatched into the live session, not dropped",
+        );
+        assert!(
+            !ws.domain_handles.lock().contains_key(&synth_key),
+            "synth domain drained + removed"
+        );
+    }
+
+    #[test]
+    fn fire_due_crons_removes_a_cron_whose_project_is_gone() {
+        use forge_primitives::cron::{CronEntry, CronId, CronKind};
+        let (ws, _rx) = Workspace::testing_stub(); // no projects seeded
+        let now = std::time::SystemTime::now();
+
+        ws.push_cron(CronEntry {
+            id: CronId::from("orphan"),
+            project_name: "deleted-project".to_owned(),
+            kind: CronKind::Recurring("*/5 * * * *".to_owned()),
+            prompt: "p".to_owned(),
+            created_at: std::time::SystemTime::UNIX_EPOCH,
+            last_fire: None,
+            next_fire: std::time::SystemTime::UNIX_EPOCH, // overdue -> due now
+        });
+
+        ws.enable_test_dispatch_intercept();
+        ws.fire_due_crons(now);
+        let dispatched = ws.drain_test_dispatch_buffer();
+
+        assert!(
+            dispatched.iter().all(|c| !matches!(c, crate::protocol::Command::SpawnProject { .. })),
+            "a cron whose project is gone gets no spawn",
+        );
+        assert!(
+            ws.crons_for_project("deleted-project").is_empty(),
+            "an overdue cron whose project left forge.toml is removed, not advanced forever",
+        );
+    }
+
+    #[test]
+    fn advance_or_remove_cron_removes_never_occurring_recurring() {
+        use forge_primitives::cron::{CronEntry, CronId, CronKind};
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        // "0 0 30 2 *" (Feb 30) has no upcoming occurrence, so
+        // next_fire_after returns None and the entry is removed (with a
+        // warn) rather than left stuck at a stale next_fire.
+        ws.push_cron(CronEntry {
+            id: CronId::from("impossible"),
+            project_name: "forge".to_owned(),
+            kind: CronKind::Recurring("0 0 30 2 *".to_owned()),
+            prompt: "p".to_owned(),
+            created_at: std::time::SystemTime::UNIX_EPOCH,
+            last_fire: None,
+            next_fire: std::time::SystemTime::UNIX_EPOCH,
+        });
+        ws.advance_or_remove_cron(&CronId::from("impossible"), std::time::SystemTime::now());
+        assert!(
+            ws.crons_for_project("forge").is_empty(),
+            "a recurring cron with no upcoming occurrence is removed, not left stuck",
+        );
     }
 
     fn make_workspace_dir() -> tempfile::TempDir {

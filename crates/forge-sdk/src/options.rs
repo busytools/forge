@@ -626,6 +626,10 @@ mod tests_options_build {
         assert!(pred("mcp__forge__workers__tell"));
         assert!(pred("mcp__forge__workers__ask"));
         assert!(pred("mcp__forge__workers__despawn"));
+        // Cron tools share the same namespace - one predicate covers them.
+        assert!(pred("mcp__forge__cron__create"));
+        assert!(pred("mcp__forge__cron__list"));
+        assert!(pred("mcp__forge__cron__delete"));
         assert!(pred("mcp__forge__"));
         // Sibling prefixes must NOT match (no partial-string fuzz).
         assert!(!pred("mcp__forgery__steal_secrets"));
