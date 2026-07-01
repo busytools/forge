@@ -1871,15 +1871,19 @@ pub(super) fn close_with_submit(app: &mut App) {
 }
 
 /// Build the markdown bundle for a set of pending comments. Public
-/// for the Esc-submit path and the test suite.
-///
-/// Whole-diff bundle (no comment carries a commit) keeps today's shape
-/// exactly: `## Diff review (target \`<target>\`)` then per-file
-/// `### \`<path>\`` groups. When any comment is commit-scoped the bundle
-/// groups by commit instead: a `<branch> vs <target>` header with the
-/// comment/commit totals, then a `### Commit \`<sha>\` - <subject>`
-/// section per commit (in stepper order), with any whole-diff comments
-/// ("All changes" browsing) trailing under `### All changes`.
+/// for the Esc-submit path and the test suite. The shape depends on
+/// whether ANY comment is commit-scoped:
+/// - None are (a pure whole-diff session): today's shape exactly -
+///   `## Diff review (target \`<target>\`)` then per-file
+///   `### \`<path>\`` groups. This is the only byte-identical path.
+/// - Some are (commit mode, including a mixed session that also left
+///   comments on "All changes"): the commit-grouped shape - a
+///   `<branch> vs <target>` header with the comment/commit totals, a
+///   `### Commit \`<sha>\` - <subject>` section per commit in stepper
+///   order, and any whole-diff comments trailing under `### All
+///   changes`. An All-changes comment made in a commit-mode session
+///   therefore renders grouped, not in the file-grouped whole-diff
+///   shape.
 pub(crate) fn format_diff_comments(
     target: &str,
     branch: Option<&str>,
