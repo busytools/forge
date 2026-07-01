@@ -398,6 +398,17 @@ impl Workspace {
                 return Err(WorkspaceError::AlreadyRunning { pid });
             }
         };
+        // The guard fell open (forge.lock unopenable or flock unsupported).
+        // forge still boots, but the cron store's single-writer assumption
+        // no longer holds - surface it loudly rather than leaving it at the
+        // module-internal warn `acquire` already logged.
+        if single_instance_lock.is_none() {
+            tracing::error!(
+                target: "forge_workspace::workspace",
+                config_dir = %config_dir.display(),
+                "single-instance guard unavailable; on-disk state (crons, usage cache, settings) is NOT protected against a second forge on this config dir - check the dir is writable and on a flock-capable filesystem",
+            );
+        }
 
         // Load durable forge crons into the in-memory working set. Boot
         // catch-up for entries that came due while forge was down runs
