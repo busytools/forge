@@ -422,10 +422,12 @@ mod tests {
     }
 
     #[test]
-    fn tool_names_render_under_the_forge_prefix() {
-        // The SDK auto-approve fast-path matches `mcp__forge__*`; these
-        // names render as `mcp__forge__cron__<x>` on the LLM side, so the
-        // one prefix check covers all three.
+    fn tool_names_are_the_cron_family() {
+        // Assert the base tool names only. Combined with the `forge`
+        // server name (proven in mcp::tests::build_forge_server_*) they
+        // render as `mcp__forge__cron__<x>` on the LLM side, which the SDK
+        // auto-approve fast-path covers via the `mcp__forge__` prefix
+        // (asserted in forge-sdk options.rs).
         let mock = MockCronFacade::new().into_arc();
         let resolver = resolver();
         let create = Create { facade: mock.clone(), caller_key: resolver.clone() };
