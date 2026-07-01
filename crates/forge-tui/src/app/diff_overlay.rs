@@ -1569,10 +1569,8 @@ pub(crate) fn handle_mouse(app: &mut App, mouse: MouseEvent) {
             MouseEventKind::Down(MouseButton::Left) => {
                 handle_left_click(overlay, mouse.column, mouse.row, terminal_width)
             }
-            // Trackpad horizontal swipes don't propagate from at least
-            // Ghostty / iTerm - they're swallowed by the terminal and
-            // never reach the SGR mouse stream. Left/Right arrow keys
-            // are the only working horizontal-scroll affordance.
+            // Drags, other buttons, and horizontal-wheel events have no
+            // binding in the overlay.
             _ => MouseEffect::default(),
         }
     } else {
