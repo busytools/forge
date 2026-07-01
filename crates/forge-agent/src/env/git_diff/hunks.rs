@@ -160,6 +160,76 @@ pub struct ScanOutcome {
     pub untracked_suppressed: usize,
 }
 
+/// One commit in the review stepper's ordered list. `sha` is the full
+/// hash (used to scope the per-commit diff), `short_sha` the abbreviated
+/// form for display, `subject` the commit's first line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommitMeta {
+    pub sha: String,
+    pub short_sha: String,
+    pub subject: String,
+}
+
+/// Git's canonical empty-tree object (SHA-1). Diffing a parentless
+/// root commit against it yields the commit's full contents as
+/// additions - `<sha>^` doesn't resolve for a root, so this stands in
+/// for the non-existent parent.
+const EMPTY_TREE_SHA: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+/// Field separator for the `git log` format below - the ASCII unit
+/// separator, which never appears in a commit subject.
+const LOG_FIELD_SEP: char = '\u{1f}';
+
+/// List the commits in `<target>..HEAD`, oldest first, for the diff
+/// overlay's commit stepper. Empty when the range has no commits
+/// (dirty-tree-only review, `/diff HEAD`, or `target` unresolvable).
+pub async fn scan_commits(cwd: &Path, target: &str) -> Vec<CommitMeta> {
+    let range = format!("{target}..HEAD");
+    let raw = match run_git(cwd, &["log", "--reverse", "--format=%H%x1f%h%x1f%s", &range]).await {
+        GitOutput::Ok(s) => s,
+        GitOutput::Empty | GitOutput::Failed | GitOutput::Oversize => return Vec::new(),
+    };
+    raw.lines()
+        .filter_map(|line| {
+            let mut parts = line.split(LOG_FIELD_SEP);
+            let sha = parts.next()?.to_owned();
+            let short_sha = parts.next()?.to_owned();
+            // Subject may be empty (a commit with a blank message); the
+            // sha/short_sha are the identifying fields, so only bail
+            // when those are missing.
+            let subject = parts.next().unwrap_or_default().to_owned();
+            if sha.is_empty() {
+                return None;
+            }
+            Some(CommitMeta { sha, short_sha, subject })
+        })
+        .collect()
+}
+
+/// Scan a single commit's own diff (`<sha>^..<sha>`, or against the
+/// empty tree for a parentless root commit) into per-file hunks. Never
+/// surfaces untracked files - a commit's diff is closed over its own
+/// changes.
+pub async fn scan_commit(cwd: &Path, sha: &str) -> ScanOutcome {
+    let ref_spec = commit_ref_spec(cwd, sha).await;
+    scan_with_ref_spec(cwd, &ref_spec).await
+}
+
+/// Resolve the two-endpoint `git diff` range for one commit. Uses
+/// `git rev-list --parents -n 1 <sha>` (always exits 0, so no spurious
+/// non-zero-exit WARN) to detect a parent: `<sha> <parent…>` means a
+/// normal commit (`<sha>^..<sha>`, first-parent for a merge), a lone
+/// `<sha>` means a root commit (diff against the empty tree).
+async fn commit_ref_spec(cwd: &Path, sha: &str) -> String {
+    match run_git(cwd, &["rev-list", "--parents", "-n", "1", sha]).await {
+        GitOutput::Ok(s) if s.split_whitespace().count() > 1 => format!("{sha}^..{sha}"),
+        GitOutput::Ok(_) => format!("{EMPTY_TREE_SHA}..{sha}"),
+        // Best-effort on any anomaly: the normal-commit spec, whose
+        // scan just reports scanner failure rather than panicking.
+        GitOutput::Empty | GitOutput::Failed | GitOutput::Oversize => format!("{sha}^..{sha}"),
+    }
+}
+
 /// Max in-flight `git diff -- <path>` subprocesses during a scan.
 /// macOS's default soft open-file limit is ~256 and every git child
 /// holds stdin/stdout/stderr pipes plus a handful of git internals
@@ -187,11 +257,30 @@ const MAX_INFLIGHT_FETCHES: usize = 16;
 /// "scan failed, check logs" rather than miscategorising the empty
 /// result as "no changes."
 pub async fn scan(cwd: &Path, target: &str) -> ScanOutcome {
-    let mut scanner_ok = true;
-    let mut untracked_suppressed: usize = 0;
-
     let ref_spec = diff_ref_spec(target);
-    let name_status = match run_git(cwd, &["diff", &ref_spec, "--name-status"]).await {
+    let mut outcome = scan_with_ref_spec(cwd, &ref_spec).await;
+
+    // Untracked only when the caller is asking for working-tree
+    // semantics. `/diff main` from a feature branch already includes
+    // committed-since-main + uncommitted via the ref-vs-worktree
+    // compare; untracked files don't belong to that comparison.
+    if target == "HEAD" {
+        let (untracked, untracked_ok, suppressed) = scan_untracked(cwd).await;
+        outcome.files.extend(untracked);
+        outcome.scanner_ok = outcome.scanner_ok && untracked_ok;
+        outcome.untracked_suppressed = suppressed;
+    }
+
+    outcome
+}
+
+/// Scan a pre-resolved diff range into per-file hunks. `ref_spec` is
+/// already the exact shape git receives - `HEAD`, `main...HEAD`,
+/// `<sha>^..<sha>`, an empty-tree range, etc. Never surfaces untracked
+/// files, so `untracked_suppressed` is always 0.
+async fn scan_with_ref_spec(cwd: &Path, ref_spec: &str) -> ScanOutcome {
+    let mut scanner_ok = true;
+    let name_status = match run_git(cwd, &["diff", ref_spec, "--name-status"]).await {
         GitOutput::Ok(s) => s,
         GitOutput::Empty => String::new(),
         GitOutput::Failed | GitOutput::Oversize => {
@@ -203,7 +292,7 @@ pub async fn scan(cwd: &Path, target: &str) -> ScanOutcome {
 
     if !files.is_empty() {
         // Per-file concurrent fetch with bounded concurrency. Each
-        // `git diff <target> --no-ext-diff -- <path>` subprocess
+        // `git diff <ref_spec> --no-ext-diff -- <path>` subprocess
         // holds stdio pipes for its lifetime; firing all N
         // simultaneously via `futures::future::join_all` blows the
         // process's open-file limit on real refactor branches
@@ -218,7 +307,7 @@ pub async fn scan(cwd: &Path, target: &str) -> ScanOutcome {
         // drops before the stream runs - we mutate `files[idx]`
         // inside the consume loop.
         let paths: Vec<String> = files.iter().map(|f| f.path.clone()).collect();
-        let ref_spec_for_fetch = ref_spec.clone();
+        let ref_spec_for_fetch = ref_spec.to_owned();
         let mut stream = futures::stream::iter(paths.into_iter().enumerate().map(|(idx, path)| {
             let ref_spec = ref_spec_for_fetch.clone();
             async move { (idx, fetch_file_hunks(cwd, &ref_spec, &path).await) }
@@ -234,18 +323,7 @@ pub async fn scan(cwd: &Path, target: &str) -> ScanOutcome {
         }
     }
 
-    // Untracked only when the caller is asking for working-tree
-    // semantics. `/diff main` from a feature branch already includes
-    // committed-since-main + uncommitted via the ref-vs-worktree
-    // compare; untracked files don't belong to that comparison.
-    if target == "HEAD" {
-        let (untracked, untracked_ok, suppressed) = scan_untracked(cwd).await;
-        files.extend(untracked);
-        scanner_ok = scanner_ok && untracked_ok;
-        untracked_suppressed = suppressed;
-    }
-
-    ScanOutcome { files, scanner_ok, untracked_suppressed }
+    ScanOutcome { files, scanner_ok, untracked_suppressed: 0 }
 }
 
 /// Per-file fetch result. `SubprocessFailed` propagates back to
@@ -864,5 +942,111 @@ diff --git a/x.rs b/x.rs
         // Commit SHAs benefit from three-dot the same way branches
         // do - diff vs merge-base, not vs the tip directly.
         assert_eq!(diff_ref_spec("abc1234"), "abc1234...HEAD");
+    }
+
+    // ---- commit-stepper scan (scan_commits / scan_commit) ----
+
+    // `git init -b` needs git >= 2.28; init without -b then point HEAD
+    // via symbolic-ref for portability (mirrors the parent module's
+    // helper).
+    fn git(dir: &tempfile::TempDir, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(args)
+            .output()
+            .expect("git");
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    fn git_capture(dir: &tempfile::TempDir, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(args)
+            .output()
+            .expect("git");
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).trim().to_owned()
+    }
+
+    fn init_commit_repo(dir: &tempfile::TempDir) {
+        git(dir, &["init", "-q"]);
+        git(dir, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+        git(dir, &["config", "user.email", "t@e.com"]);
+        git(dir, &["config", "user.name", "T"]);
+        git(dir, &["config", "commit.gpgsign", "false"]);
+    }
+
+    fn write_file(dir: &tempfile::TempDir, name: &str, contents: &str) {
+        std::fs::write(dir.path().join(name), contents).expect("write");
+    }
+
+    fn commit(dir: &tempfile::TempDir, msg: &str) {
+        git(dir, &["add", "-A"]);
+        git(dir, &["commit", "-q", "-m", msg]);
+    }
+
+    /// Build main+init then a `feat` branch with three commits, each
+    /// adding a distinct file. Shared by the stepper scan tests.
+    fn three_commit_branch(dir: &tempfile::TempDir) {
+        init_commit_repo(dir);
+        write_file(dir, "base.txt", "base\n");
+        commit(dir, "init");
+        git(dir, &["checkout", "-q", "-b", "feat"]);
+        write_file(dir, "a.rs", "a\n");
+        commit(dir, "first");
+        write_file(dir, "b.rs", "b\n");
+        commit(dir, "second");
+        write_file(dir, "c.rs", "c\n");
+        commit(dir, "third");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn scan_commits_lists_branch_commits_oldest_first() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        three_commit_branch(&dir);
+        let commits = scan_commits(dir.path(), "main").await;
+        let subjects: Vec<&str> = commits.iter().map(|c| c.subject.as_str()).collect();
+        assert_eq!(subjects, vec!["first", "second", "third"], "oldest-first");
+        assert!(commits.iter().all(|c| !c.sha.is_empty() && !c.short_sha.is_empty()));
+        assert!(commits[0].sha.starts_with(&commits[0].short_sha), "short sha prefixes full");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn scan_commits_empty_when_no_commits_ahead() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        init_commit_repo(&dir);
+        write_file(&dir, "base.txt", "base\n");
+        commit(&dir, "init");
+        // HEAD..HEAD is empty; a dirty-tree-only review has no stepper.
+        assert!(scan_commits(dir.path(), "HEAD").await.is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn scan_commit_scopes_to_that_commit_only() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        three_commit_branch(&dir);
+        let commits = scan_commits(dir.path(), "main").await;
+        assert_eq!(commits.len(), 3);
+        let middle = scan_commit(dir.path(), &commits[1].sha).await;
+        let paths: Vec<&str> = middle.files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(paths, vec!["b.rs"], "middle commit touches only b.rs");
+        assert!(middle.scanner_ok);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn scan_commit_root_commit_does_not_panic() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        init_commit_repo(&dir);
+        write_file(&dir, "README.md", "hello\n");
+        commit(&dir, "init");
+        let root = git_capture(&dir, &["rev-list", "--max-parents=0", "HEAD"]);
+        let outcome = scan_commit(dir.path(), &root).await;
+        // Parentless root: the empty-tree fallback surfaces its full
+        // contents as an added file rather than erroring on `<sha>^`.
+        let paths: Vec<&str> = outcome.files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(paths, vec!["README.md"]);
+        assert!(outcome.scanner_ok);
     }
 }
