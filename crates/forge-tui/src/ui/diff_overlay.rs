@@ -272,14 +272,15 @@ fn render_stepper(frame: &mut Frame, area: Rect, overlay: &mut DiffOverlayState)
             accent,
         ));
     }
+    let controls_y = area.y.saturating_add(1);
     frame.render_widget(
         Paragraph::new(Line::from(spans)),
-        Rect { x: area.x, y: area.y + 1, width: area.width, height: 1 },
+        Rect { x: area.x, y: controls_y, width: area.width, height: 1 },
     );
 
     let start = area.x.saturating_add(u16::try_from(jump_start).unwrap_or(u16::MAX));
     let end = area.x.saturating_add(u16::try_from(jump_end).unwrap_or(u16::MAX));
-    overlay.jump_hint_span = Some((area.y + 1, start, end));
+    overlay.jump_hint_span = Some((controls_y, start, end));
 }
 
 /// The right-aligned cluster for a jump-dropdown row: the `● N` comment
