@@ -2583,29 +2583,29 @@ impl Workspace {
                     crons.remove(pos);
                 }
                 forge_primitives::CronKind::Recurring(_) => {
-                    match crate::mcp::cron::schedule::next_fire_after(&crons[pos].kind, fired_at) {
-                        Some(next) => {
-                            crons[pos].last_fire = Some(fired_at);
-                            crons[pos].next_fire = next;
-                        }
-                        None => {
-                            // A recurring expr that parses but never
-                            // matches (e.g. "0 0 30 2 *") - reachable via a
-                            // hand-edited forge-cron.toml. Don't silently
-                            // drop it (hard rule #13).
-                            let removed = crons.remove(pos);
-                            let expr = match &removed.kind {
-                                forge_primitives::CronKind::Recurring(e) => e.as_str(),
-                                forge_primitives::CronKind::Once(_) => "",
-                            };
-                            tracing::warn!(
-                                target: "forge_workspace::workspace",
-                                cron_id = %removed.id,
-                                project = %removed.project_name,
-                                expr = %expr,
-                                "recurring cron has no upcoming occurrence; removed it",
-                            );
-                        }
+                    if let Some(next) =
+                        crate::mcp::cron::schedule::next_fire_after(&crons[pos].kind, fired_at)
+                    {
+                        crons[pos].last_fire = Some(fired_at);
+                        crons[pos].next_fire = next;
+                    } else {
+                        // A recurring expr that parses but never matches
+                        // (e.g. "0 0 30 2 *") - reachable via a hand-edited
+                        // forge-cron.toml. Don't silently drop it (hard
+                        // rule #13).
+                        let removed = crons.remove(pos);
+                        let expr = if let forge_primitives::CronKind::Recurring(e) = &removed.kind {
+                            e.as_str()
+                        } else {
+                            ""
+                        };
+                        tracing::warn!(
+                            target: "forge_workspace::workspace",
+                            cron_id = %removed.id,
+                            project = %removed.project_name,
+                            expr = %expr,
+                            "recurring cron has no upcoming occurrence; removed it",
+                        );
                     }
                 }
             }
