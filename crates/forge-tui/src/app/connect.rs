@@ -191,6 +191,7 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
         #[rustfmt::skip] #[cfg(feature = "testing")] test_dispatched_question_outcomes: std::cell::RefCell::new(Vec::new()),
         sessions,
         active_session_key: Some(pre_connect_key),
+        forge_crons: Vec::new(),
         help_view: HelpView::Keys,
         help_open: false,
         help_dialog: DialogState::default(),

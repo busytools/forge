@@ -115,7 +115,7 @@ impl CronFacade for ProdCronFacade {
 /// Records calls + returns preloaded results so the tool tests can assert
 /// the tool correctly parses args, resolves the caller, and surfaces
 /// facade results/errors - without a real workspace.
-#[cfg(any(test, feature = "testing"))]
+#[cfg(test)]
 #[derive(Default)]
 pub(crate) struct MockCronFacade {
     pub crons: parking_lot::Mutex<Vec<CronEntry>>,
@@ -125,7 +125,7 @@ pub(crate) struct MockCronFacade {
     pub delete_result: parking_lot::Mutex<Option<Result<bool, CronDeleteError>>>,
 }
 
-#[cfg(any(test, feature = "testing"))]
+#[cfg(test)]
 impl MockCronFacade {
     pub(crate) fn new() -> Self {
         Self::default()
@@ -135,7 +135,7 @@ impl MockCronFacade {
     }
 }
 
-#[cfg(any(test, feature = "testing"))]
+#[cfg(test)]
 impl CronFacade for MockCronFacade {
     fn create_cron(
         &self,

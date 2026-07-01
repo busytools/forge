@@ -218,6 +218,12 @@ fn apply_timer_tick(app: &mut App) {
     // is git-watchable (pre-Connect, synthetic spawn buckets).
     app.prune_expired_schedules(std::time::SystemTime::now());
 
+    // Refresh the active project's durable forge-cron snapshot on the
+    // same ~1s cadence so the Inspector SCHEDULES section reads a cached
+    // Vec rather than resolving the project + locking the workspace every
+    // render (the git-diff snapshot pattern).
+    app.refresh_forge_crons();
+
     let Some(active_key) = app.active_session_key.clone() else {
         return;
     };
