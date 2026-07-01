@@ -42,6 +42,14 @@ async fn new_loads_config_and_lists_projects() {
 }
 
 #[tokio::test]
+async fn new_creates_forge_data_dir() {
+    let dir = tempdir().expect("tempdir");
+    write_default_config(dir.path());
+    let _workspace = Workspace::new(dir.path().to_owned()).await.expect("new");
+    assert!(dir.path().join("forge").is_dir(), "Workspace::new creates the forge/ subfolder");
+}
+
+#[tokio::test]
 async fn new_returns_err_when_config_missing() {
     let dir = tempdir().expect("tempdir");
     let result = Workspace::new(dir.path().to_owned()).await;

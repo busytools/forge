@@ -386,6 +386,18 @@ impl Workspace {
     pub async fn new(config_dir: PathBuf) -> Result<Self, WorkspaceError> {
         let mut config = load_from_dir(&config_dir)?;
 
+        // Create forge's own config subfolder before anything writes into
+        // it (the lock, the cron + state stores all live under it). Hard-
+        // fail if it can't be created: forge can persist nothing without a
+        // writable config dir, so degrading is pointless - mirror the
+        // ProxyUnavailable hard-fail below.
+        crate::config::ensure_forge_data_dir(&config_dir).map_err(|source| {
+            WorkspaceError::DataDirUnavailable {
+                path: crate::config::forge_data_dir(&config_dir),
+                source,
+            }
+        })?;
+
         // Single-instance guard: forge runs one process per config dir.
         // Take it BEFORE the proxy boot so a doomed second instance
         // refuses without binding proxy ports. The held File is stored
@@ -457,7 +469,7 @@ impl Workspace {
 
         let mut accounts = AccountStateMap::new(&config.accounts);
 
-        // Seed account usage from the on-disk forge-state.toml so
+        // Seed account usage from the on-disk state.toml so
         // the launchpad picker has tier data immediately at cold
         // boot. Anthropic's /api/oauth/usage rate-limiter can stall
         // the first live probe for 30 s+; without seed data every
@@ -468,7 +480,7 @@ impl Workspace {
         let state = crate::account_cache::load(&config_dir);
         accounts.seed_from_cache(&state.account_usage);
 
-        // Resolve the active spinner: the forge-state.toml runtime
+        // Resolve the active spinner: the state.toml runtime
         // override (set via `/spinner`) wins over the hand-authored
         // forge.toml `[ui] spinner` default. Folding it into
         // `config.ui` here means `ui_settings()` returns the effective
@@ -3866,6 +3878,9 @@ impl Workspace {
     pub fn testing_stub_with_config_dir(
         config_dir: PathBuf,
     ) -> (Arc<Self>, mpsc::UnboundedReceiver<SessionUpdate>) {
+        // Mirror the boot-time `ensure_forge_data_dir`: stub-based tests
+        // that exercise the cron / state stores expect `forge/` present.
+        let _ = crate::config::ensure_forge_data_dir(&config_dir);
         let (update_tx, update_rx) = mpsc::unbounded_channel::<SessionUpdate>();
         let (kick_dispatcher_tx, kick_dispatcher_rx) = mpsc::unbounded_channel::<KickRequest>();
         let workspace = Self {
@@ -4550,6 +4565,9 @@ mod tests {
 
     fn make_workspace_dir() -> tempfile::TempDir {
         let dir = tempdir().expect("tempdir");
+        // Boot creates `forge/`; the cron seed below writes into it
+        // before `Workspace::new` runs, so create it here too.
+        crate::config::ensure_forge_data_dir(dir.path()).expect("forge/ dir");
         fs::write(
             dir.path().join("forge.toml"),
             r#"

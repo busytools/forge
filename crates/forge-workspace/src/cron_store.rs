@@ -1,4 +1,4 @@
-//! Durable forge-cron persistence: `<config_dir>/forge-cron.toml`.
+//! Durable forge-cron persistence: `<config_dir>/forge/cron.toml`.
 //!
 //! The `Workspace` holds the cron list in memory (`Mutex<Vec<CronEntry>>`)
 //! as the working source of truth; this module loads it at boot
@@ -19,7 +19,7 @@ use forge_primitives::cron::CronEntry;
 use serde::{Deserialize, Serialize};
 
 const CRON_SCHEMA_VERSION: u8 = 1;
-const CRON_FILE_RELATIVE_PATH: &str = "forge-cron.toml";
+const CRON_FILE_NAME: &str = "cron.toml";
 
 /// Versioned on-disk document. A `version` mismatch on read resets to
 /// empty so a future schema change degrades to "no crons loaded" rather
@@ -32,10 +32,10 @@ struct ForgeCronDoc {
 }
 
 fn cron_path(config_dir: &Path) -> PathBuf {
-    config_dir.join(CRON_FILE_RELATIVE_PATH)
+    crate::config::forge_data_dir(config_dir).join(CRON_FILE_NAME)
 }
 
-/// Read forge-cron.toml at boot. Returns an empty list on any failure
+/// Read cron.toml at boot. Returns an empty list on any failure
 /// (missing file, IO error, parse error, schema-version mismatch).
 pub(crate) fn load_crons(config_dir: &Path) -> Vec<CronEntry> {
     let path = cron_path(config_dir);
@@ -47,7 +47,7 @@ pub(crate) fn load_crons(config_dir: &Path) -> Vec<CronEntry> {
                 target: "forge_workspace::cron_store",
                 error = %e,
                 path = %path.display(),
-                "forge-cron.toml present but read failed; treating as empty",
+                "cron.toml present but read failed; treating as empty",
             );
             return Vec::new();
         }
@@ -59,7 +59,7 @@ pub(crate) fn load_crons(config_dir: &Path) -> Vec<CronEntry> {
                 target: "forge_workspace::cron_store",
                 error = %e,
                 path = %path.display(),
-                "forge-cron.toml parse failed; treating as empty",
+                "cron.toml parse failed; treating as empty",
             );
             return Vec::new();
         }
@@ -69,14 +69,14 @@ pub(crate) fn load_crons(config_dir: &Path) -> Vec<CronEntry> {
             target: "forge_workspace::cron_store",
             disk_version = parsed.version,
             expected_version = CRON_SCHEMA_VERSION,
-            "forge-cron.toml schema-version mismatch; ignoring on-disk entries",
+            "cron.toml schema-version mismatch; ignoring on-disk entries",
         );
         return Vec::new();
     }
     parsed.crons
 }
 
-/// Persist the current cron list to forge-cron.toml via tmp-file +
+/// Persist the current cron list to cron.toml via tmp-file +
 /// atomic rename: a crash between write and rename leaves the previous
 /// document intact rather than a partial file. Called under the
 /// workspace's `crons` mutex. Failures are non-fatal and logged at warn.
@@ -89,7 +89,7 @@ pub(crate) fn store_crons(config_dir: &Path, crons: &[CronEntry]) {
             tracing::warn!(
                 target: "forge_workspace::cron_store",
                 error = %e,
-                "forge-cron.toml serialise failed; skipping write",
+                "cron.toml serialise failed; skipping write",
             );
             return;
         }
@@ -100,7 +100,7 @@ pub(crate) fn store_crons(config_dir: &Path, crons: &[CronEntry]) {
             target: "forge_workspace::cron_store",
             error = %e,
             path = %tmp_path.display(),
-            "forge-cron.toml tmp write failed",
+            "cron.toml tmp write failed",
         );
         return;
     }
@@ -110,7 +110,7 @@ pub(crate) fn store_crons(config_dir: &Path, crons: &[CronEntry]) {
             error = %e,
             from = %tmp_path.display(),
             to = %path.display(),
-            "forge-cron.toml atomic rename failed",
+            "cron.toml atomic rename failed",
         );
         let _ = std::fs::remove_file(&tmp_path);
     }
@@ -122,6 +122,15 @@ mod tests {
     use forge_primitives::cron::{CronId, CronKind};
     use std::time::{Duration, SystemTime};
     use tempfile::tempdir;
+
+    /// A tempdir with `forge/` created, mirroring the boot-time
+    /// `ensure_forge_data_dir` that guarantees the subfolder exists
+    /// before any store writes into it.
+    fn tmp() -> tempfile::TempDir {
+        let d = tempdir().expect("tempdir");
+        crate::config::ensure_forge_data_dir(d.path()).expect("forge/ dir");
+        d
+    }
 
     fn epoch(secs: u64) -> SystemTime {
         SystemTime::UNIX_EPOCH + Duration::from_secs(secs)
@@ -152,14 +161,20 @@ mod tests {
     }
 
     #[test]
+    fn cron_path_is_under_forge_subfolder() {
+        let dir = tmp();
+        assert_eq!(cron_path(dir.path()), dir.path().join("forge").join("cron.toml"));
+    }
+
+    #[test]
     fn load_returns_empty_when_file_missing() {
-        let dir = tempdir().expect("tempdir");
+        let dir = tmp();
         assert!(load_crons(dir.path()).is_empty());
     }
 
     #[test]
     fn round_trip_recurring_and_once() {
-        let dir = tempdir().expect("tempdir");
+        let dir = tmp();
         let crons = vec![recurring("r-1"), once("o-1")];
         store_crons(dir.path(), &crons);
         assert_eq!(load_crons(dir.path()), crons, "both kinds survive a TOML round-trip");
@@ -167,21 +182,21 @@ mod tests {
 
     #[test]
     fn corrupt_toml_treated_as_empty() {
-        let dir = tempdir().expect("tempdir");
+        let dir = tmp();
         std::fs::write(cron_path(dir.path()), "not = toml = at all").expect("write");
         assert!(load_crons(dir.path()).is_empty(), "a corrupt file loads empty, no panic");
     }
 
     #[test]
     fn version_mismatch_treated_as_empty() {
-        let dir = tempdir().expect("tempdir");
+        let dir = tmp();
         std::fs::write(cron_path(dir.path()), "version = 9999\n").expect("write");
         assert!(load_crons(dir.path()).is_empty());
     }
 
     #[test]
     fn store_uses_atomic_rename_and_leaves_no_tmp_file() {
-        let dir = tempdir().expect("tempdir");
+        let dir = tmp();
         store_crons(dir.path(), &[recurring("r-1")]);
 
         let canonical = cron_path(dir.path());
@@ -194,7 +209,7 @@ mod tests {
 
     #[test]
     fn store_overwrites_existing_file() {
-        let dir = tempdir().expect("tempdir");
+        let dir = tmp();
         store_crons(dir.path(), &[recurring("r-1")]);
         store_crons(dir.path(), &[once("o-1")]);
 

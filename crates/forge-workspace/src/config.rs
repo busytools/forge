@@ -174,8 +174,23 @@ impl LoadedConfig {
     }
 }
 
-/// Load + validate `<config_dir>/forge.toml`. Returns the parsed
-/// orgs + projects with `~` expanded.
+/// The subdirectory holding every file forge itself owns (config,
+/// state, cron, lock), kept apart from claude's own top-level
+/// config-dir files. Pure path join; call [`ensure_forge_data_dir`]
+/// when the directory has to exist before writing into it.
+pub(crate) fn forge_data_dir(config_dir: &Path) -> PathBuf {
+    config_dir.join("forge")
+}
+
+/// [`forge_data_dir`] with a `create_dir_all`, returning the path.
+pub(crate) fn ensure_forge_data_dir(config_dir: &Path) -> std::io::Result<PathBuf> {
+    let dir = forge_data_dir(config_dir);
+    fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
+/// Load + validate `forge.toml`. Returns the parsed orgs + projects
+/// with `~` expanded.
 pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, WorkspaceError> {
     let path = config_dir.join("forge.toml");
 
@@ -333,6 +348,20 @@ auto_start = true
 display_name = "Subspace"
 config_dir = "~/.claude-subspace"
 "#
+    }
+
+    #[test]
+    fn forge_data_dir_is_the_forge_subfolder() {
+        let dir = tempdir().expect("tempdir");
+        assert_eq!(forge_data_dir(dir.path()), dir.path().join("forge"));
+    }
+
+    #[test]
+    fn ensure_forge_data_dir_creates_the_subfolder() {
+        let dir = tempdir().expect("tempdir");
+        let created = ensure_forge_data_dir(dir.path()).expect("create forge/");
+        assert_eq!(created, dir.path().join("forge"));
+        assert!(created.is_dir(), "forge/ exists after ensure");
     }
 
     #[test]
