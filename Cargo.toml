@@ -55,9 +55,14 @@ futures = "0.3.31"
 arboard = { version = "3.6.1", features = ["image-data"] }
 which = "8.0.2"
 rlimit = "0.10"
-# Cross-process advisory file lock (flock) guarding forge-cron.toml so
-# several forge panes sharing one config dir fire each cron exactly once.
+# Cross-process advisory file lock (flock) for the single-instance boot
+# guard: forge refuses a second instance on the same config dir.
 rustix = { version = "1", features = ["fs"] }
+# 5-field cron-expression parsing + next-fire computation. chrono is
+# croner's datetime dep; forge keeps it walled off inside the cron
+# schedule module's next-fire fn (SystemTime everywhere else).
+croner = "2"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
 # Wire-classification rewriter - MITM proxy stack that rewrites the 6
 # classification channels the `claude` CLI broadcasts (bootstrap qs,

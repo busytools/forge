@@ -45,6 +45,8 @@ parking_lot = { workspace = true }
 dirs = { workspace = true }
 uuid = { workspace = true }
 rustix = { workspace = true }
+croner = { workspace = true }
+chrono = { workspace = true }
 
 [dev-dependencies]
 forge-agent = { workspace = true, features = ["testing"] }

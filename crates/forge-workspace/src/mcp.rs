@@ -36,6 +36,7 @@ use crate::mcp::peers::facade::{CallerKeyResolver, WorkspaceFacade};
 use crate::mcp::workers::facade::WorkerFacade;
 
 pub(crate) mod caller_context;
+pub mod cron;
 pub mod peers;
 pub mod workers;
 
