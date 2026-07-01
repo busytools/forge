@@ -27,13 +27,16 @@
 //! the trace log at WARN level so a real issue can be diagnosed
 //! without breaking the rendering path.
 
-use std::path::Path;
-use std::time::Duration;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 use forge_primitives::git::{GitBranch, GitIssueRef, GitPrInfo};
 use forge_primitives::git_diff::{
     GitBranchAhead, GitDiffFile, GitDiffSnapshot, GitDiffStats, LayerState, RepoGate,
 };
+use parking_lot::Mutex;
 use serde::Deserialize;
 use tokio::process::Command;
 use tokio::time::timeout;
@@ -74,6 +77,92 @@ fn classify_rev_parse(output: GitOutput) -> Result<String, RepoGate> {
         GitOutput::Empty => Err(RepoGate::NotARepo),
         GitOutput::Failed | GitOutput::Oversize => Err(RepoGate::ScannerFailed),
     }
+}
+
+/// Minimum gap between background `git fetch` kicks for one repo. The
+/// scan piggybacks a fetch to keep origin/<default> fresh; this caps it
+/// so a burst of scans (session switches, the 1s ticker's 10s refresh)
+/// fetches at most once per window.
+const FETCH_THROTTLE: Duration = Duration::from_secs(240);
+
+/// Per-repo last-fetch timestamps, keyed by the scan `cwd`. Module-level
+/// because [`scan`] is a free function with no owning state; the ticker
+/// scans one active session at a time, so keying by scan cwd gives
+/// stable per-repo throttling. Mirrors the `OnceLock<Mutex<HashMap>>`
+/// pattern in `cloud::oauth_credentials`.
+static LAST_FETCH: OnceLock<Mutex<HashMap<PathBuf, Instant>>> = OnceLock::new();
+
+/// Whether a background fetch is due: no prior fetch, or the last one is
+/// at least `window` old. Pure so the throttle is unit-testable.
+fn should_fetch(last: Option<Instant>, now: Instant, window: Duration) -> bool {
+    match last {
+        None => true,
+        Some(last) => now.saturating_duration_since(last) >= window,
+    }
+}
+
+/// Claim a fetch slot for `key`: returns true (stamping `now`) when a
+/// fetch is due per [`should_fetch`], false when throttled. Stamp-on-
+/// claim so two racing scans can't both kick.
+fn claim_fetch_slot(key: &Path, now: Instant, window: Duration) -> bool {
+    let mut map = LAST_FETCH.get_or_init(|| Mutex::new(HashMap::new())).lock();
+    let due = should_fetch(map.get(key).copied(), now, window);
+    if due {
+        map.insert(key.to_path_buf(), now);
+    }
+    due
+}
+
+/// Kick a throttled, non-blocking `git fetch origin <default>` so the
+/// remote-tracking ref the branch-ahead diff compares against stays
+/// fresh. Only fires for a remote-tracking default (`origin/...`); a
+/// purely-local default has no remote to fetch. The scan never awaits
+/// it - this scan used the current origin/<default>; the fetch refreshes
+/// it for the NEXT scan. Failures (offline, auth, no remote) warn and
+/// are a no-op.
+fn kick_background_fetch(cwd: &Path, default_branch: Option<&str>) {
+    let Some(remote_branch) = default_branch.and_then(|d| d.strip_prefix("origin/")) else {
+        return;
+    };
+    if !claim_fetch_slot(cwd, Instant::now(), FETCH_THROTTLE) {
+        return;
+    }
+    let cwd = cwd.to_path_buf();
+    let remote_branch = remote_branch.to_owned();
+    tokio::spawn(async move {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(&cwd)
+            .args(["fetch", "origin", &remote_branch])
+            .kill_on_drop(true)
+            .output()
+            .await;
+        match output {
+            Ok(out) if out.status.success() => {}
+            Ok(out) => {
+                tracing::warn!(
+                    target: crate::logging::targets::ENV_GIT,
+                    cwd = %cwd.display(),
+                    event_name = "git_background_fetch_nonzero_exit",
+                    message = "background git fetch exited non-zero",
+                    outcome = "failure",
+                    exit_code = out.status.code().unwrap_or(-1),
+                    branch = %remote_branch,
+                );
+            }
+            Err(err) => {
+                tracing::warn!(
+                    target: crate::logging::targets::ENV_GIT,
+                    cwd = %cwd.display(),
+                    event_name = "git_background_fetch_failed",
+                    message = "background git fetch spawn/wait failed",
+                    outcome = "failure",
+                    error = %err,
+                    branch = %remote_branch,
+                );
+            }
+        }
+    });
 }
 
 /// Run the full scan sequence against `cwd` and return a snapshot.
@@ -117,6 +206,9 @@ pub async fn scan(cwd: &Path, prev: Option<&GitDiffSnapshot>) -> GitDiffSnapshot
     };
 
     let default_branch = resolve_default_branch(cwd).await;
+    // Keep origin/<default> fresh for the NEXT scan without blocking this
+    // one - throttled, non-blocking, failure-tolerant.
+    kick_background_fetch(cwd, default_branch.as_deref());
     // `default_branch` may be a remote-tracking ref (`origin/main`); the
     // on-default check compares plain branch names, so strip the
     // `origin/` prefix - a checked-out `main` must still read as the
@@ -1164,5 +1256,56 @@ mod tests {
             matches!(snap.branch_ahead, LayerState::Clean),
             "on `main` the branch-ahead layer stays empty even when ahead of origin/main",
         );
+    }
+
+    #[test]
+    fn should_fetch_gates_on_window() {
+        let window = Duration::from_secs(240);
+        let now = Instant::now();
+        assert!(should_fetch(None, now, window), "no prior fetch is due");
+        assert!(!should_fetch(Some(now), now, window), "a just-now fetch is throttled");
+        let stale = now
+            .checked_sub(window + Duration::from_secs(1))
+            .expect("monotonic clock is at least window+1s past boot");
+        assert!(should_fetch(Some(stale), now, window), "a stale prior fetch is due again");
+    }
+
+    #[test]
+    fn claim_fetch_slot_throttles_within_window() {
+        // Unique tempdir path so the module-level LAST_FETCH map can't
+        // collide with another test's key.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let key = dir.path();
+        let window = Duration::from_secs(240);
+        let t0 = Instant::now();
+        assert!(claim_fetch_slot(key, t0, window), "first claim is due");
+        assert!(!claim_fetch_slot(key, t0, window), "an immediate re-claim is throttled");
+        assert!(
+            claim_fetch_slot(key, t0 + window, window),
+            "a claim once the window elapses is due again",
+        );
+    }
+
+    /// A scan on an origin-tracking repo KICKS a throttled background
+    /// fetch (claims the slot) without awaiting it: the scan returns
+    /// with the current snapshot and the fetch refreshes origin for the
+    /// next scan. Observing the claimed slot proves the kick fired.
+    #[tokio::test(flavor = "current_thread")]
+    async fn scan_kicks_background_fetch_for_origin_tracking_default() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        init_repo(&dir, "main");
+        let run = |args: &[&str]| {
+            let out =
+                StdCommand::new("git").arg("-C").arg(dir.path()).args(args).output().expect("git");
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        write_file(&dir, "base.txt", "base\n");
+        commit_all(&dir, "base");
+        run(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        run(&["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]);
+
+        let _ = scan(dir.path(), None).await;
+        let kicked = LAST_FETCH.get().is_some_and(|m| m.lock().contains_key(dir.path()));
+        assert!(kicked, "a due scan on an origin-tracking repo claims (kicks) a background fetch");
     }
 }
