@@ -83,6 +83,16 @@ pub enum WorkspaceError {
     ProxyUnavailable { reason: String },
 
     #[error(
+        "failed to create the forge config directory at {}: {source}. forge cannot persist state, crons, or the single-instance lock without a writable config dir",
+        path.display()
+    )]
+    DataDirUnavailable {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error(
         "a forge instance is already running on this config dir{}",
         pid.map_or(String::new(), |p| format!(" (PID {p})"))
     )]

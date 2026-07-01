@@ -16,6 +16,14 @@ use std::sync::Arc;
 use forge_workspace::{SessionKey, SessionLaunchSettings, SessionTarget, Workspace};
 use tempfile::tempdir;
 
+/// Ensure `forge/` exists and return the production `forge/forge.toml`
+/// path, so tests write where forge reads (not the legacy fallback).
+fn forge_toml_path(config_dir: &std::path::Path) -> PathBuf {
+    let forge = config_dir.join("forge");
+    fs::create_dir_all(&forge).expect("forge/ dir");
+    forge.join("forge.toml")
+}
+
 #[tokio::test]
 async fn cold_cache_dual_spawns_rotate_across_allow_list() {
     // Round-robin cursor advances per pick - under a cold usage
@@ -25,7 +33,7 @@ async fn cold_cache_dual_spawns_rotate_across_allow_list() {
     // healthy accounts instead of always hammering the first.
     let dir = tempdir().expect("tempdir");
     fs::write(
-        dir.path().join("forge.toml"),
+        forge_toml_path(dir.path()),
         r#"
 [[orgs]]
 name = "Default"
@@ -75,7 +83,7 @@ config_dir = "/tmp/forge-test-gateway"
 async fn picker_display_name_reaches_bridge() {
     let dir = tempdir().expect("tempdir");
     fs::write(
-        dir.path().join("forge.toml"),
+        forge_toml_path(dir.path()),
         r#"
 [[orgs]]
 name = "Default"

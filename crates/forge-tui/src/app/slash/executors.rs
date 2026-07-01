@@ -454,7 +454,7 @@ fn handle_resume_submit(app: &mut App, args: &[&str]) -> bool {
 
 /// `/spinner` - no arg shows the current style + the valid keys;
 /// `/spinner <name>` sets the active style live across every surface
-/// and persists it as the forge-state.toml override (survives restart,
+/// and persists it as the state.toml override (survives restart,
 /// layered over the forge.toml `[ui] spinner` default). Works from chat
 /// and the launchpad - no active session required. The no-arg picker
 /// overlay lands in the follow-up task.

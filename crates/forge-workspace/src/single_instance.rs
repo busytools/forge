@@ -3,7 +3,7 @@
 //! forge guarantees one instance per config dir. The binary's startup
 //! ([`crate::single_instance::acquire`], called from forge-tui's `main`
 //! before [`crate::Workspace::new`]) takes a non-blocking exclusive
-//! `flock` on a never-renamed `<config_dir>/forge.lock`. If another
+//! `flock` on a never-renamed `<config_dir>/forge/forge.lock`. If another
 //! forge already holds it, boot refuses with an
 //! [`AcquireError::AlreadyRunning`]: a clean stderr message + non-zero
 //! exit, not a panic. Otherwise the caller's PID is written and the lock
@@ -17,7 +17,7 @@
 //! in-process mutex instead of cross-process locking.
 //!
 //! Why a dedicated lockfile rather than locking forge.toml /
-//! forge-state.toml directly: `flock` binds the open file description
+//! state.toml directly: `flock` binds the open file description
 //! (the inode), and those data files are rewritten via tmp + rename,
 //! which swaps a fresh inode in and silently breaks a lock held on the
 //! old one. `forge.lock` is only ever opened + flocked, never renamed.
@@ -28,7 +28,7 @@ use std::path::Path;
 
 use rustix::fs::{FlockOperation, flock};
 
-const LOCK_FILE_RELATIVE_PATH: &str = "forge.lock";
+const LOCK_FILE_NAME: &str = "forge.lock";
 
 /// Why [`acquire`] refused.
 #[derive(Debug)]
@@ -49,7 +49,7 @@ pub(crate) enum AcquireError {
 /// FS (the local APFS/ext4 the user runs always supports flock). `Err`
 /// means another forge instance already owns this config dir.
 pub(crate) fn acquire(config_dir: &Path) -> Result<Option<File>, AcquireError> {
-    let path = config_dir.join(LOCK_FILE_RELATIVE_PATH);
+    let path = crate::config::forge_data_dir(config_dir).join(LOCK_FILE_NAME);
     let mut file =
         match OpenOptions::new().create(true).read(true).write(true).truncate(false).open(&path) {
             Ok(f) => f,
@@ -109,14 +109,29 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    /// A tempdir with `forge/` created, mirroring the boot-time
+    /// `ensure_forge_data_dir` that runs before `acquire` opens the lock.
+    fn tmp() -> tempfile::TempDir {
+        let d = tempdir().expect("tempdir");
+        crate::config::ensure_forge_data_dir(d.path()).expect("forge/ dir");
+        d
+    }
+
+    #[test]
+    fn lock_lives_under_forge_subfolder() {
+        let dir = tmp();
+        let _lock = acquire(dir.path()).expect("acquire ok").expect("holds the lock");
+        assert!(dir.path().join("forge").join("forge.lock").is_file(), "lock is under forge/");
+    }
+
     #[test]
     fn acquire_succeeds_on_fresh_dir_and_records_pid() {
-        let dir = tempdir().expect("tempdir");
+        let dir = tmp();
         let lock = acquire(dir.path()).expect("acquire ok");
         assert!(lock.is_some(), "a fresh config dir acquires the lock");
 
-        let contents =
-            std::fs::read_to_string(dir.path().join(LOCK_FILE_RELATIVE_PATH)).expect("read lock");
+        let lock_path = crate::config::forge_data_dir(dir.path()).join(LOCK_FILE_NAME);
+        let contents = std::fs::read_to_string(lock_path).expect("read lock");
         assert_eq!(
             contents.trim().parse::<u32>().expect("pid parses"),
             std::process::id(),
@@ -126,7 +141,7 @@ mod tests {
 
     #[test]
     fn second_acquire_reports_already_running_with_pid() {
-        let dir = tempdir().expect("tempdir");
+        let dir = tmp();
         let _first = acquire(dir.path()).expect("first ok").expect("first holds the lock");
 
         match acquire(dir.path()) {
@@ -141,7 +156,7 @@ mod tests {
 
     #[test]
     fn lock_releases_on_drop_allowing_reacquire() {
-        let dir = tempdir().expect("tempdir");
+        let dir = tmp();
         {
             let _first = acquire(dir.path()).expect("first ok").expect("first holds the lock");
         }

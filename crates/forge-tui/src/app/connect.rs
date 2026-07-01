@@ -81,7 +81,7 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
     crate::app::cli_version::spawn_fetch(cli_version_event_tx.clone());
     crate::app::process_scanner::spawn_ticker(process_scan_event_tx.clone());
     // Kick off the 60 s background account-usage poller. Boot
-    // seeded from forge-state.toml in `Workspace::new`; `main`
+    // seeded from state.toml in `Workspace::new`; `main`
     // started per-account loading tasks via
     // `start_account_loading_tasks` (which subsumed the old single
     // initial probe in #246); the poller carries the refresh
@@ -383,10 +383,18 @@ mod tests {
     use crate::Cli;
     use std::sync::Arc;
 
+    /// Ensure `forge/` exists and return it, so tests write forge's
+    /// config + state where forge reads them (not the legacy fallback).
+    fn forge_dir(config_dir: &std::path::Path) -> std::path::PathBuf {
+        let forge = config_dir.join("forge");
+        std::fs::create_dir_all(&forge).expect("forge/ dir");
+        forge
+    }
+
     fn write_default_forge_toml(dir: &std::path::Path, project_path: &std::path::Path) {
         let project_path_str = project_path.to_string_lossy().replace('\\', "/");
         std::fs::write(
-            dir.join("forge.toml"),
+            forge_dir(dir).join("forge.toml"),
             format!(
                 "[[orgs]]\nname = \"Default\"\naccounts = [\"Stargate\"]\n\n[[orgs.projects]]\nname = \"forge-test\"\npath = \"{project_path_str}\"\nauto_start = true\n\n[[accounts]]\ndisplay_name = \"Stargate\"\nconfig_dir = \"~/.claude-stargate\"\n"
             ),
@@ -507,7 +515,7 @@ mod tests {
         let project_dir = tempfile::tempdir().expect("project tempdir");
         let project_path_str = project_dir.path().to_string_lossy().replace('\\', "/");
         std::fs::write(
-            config_dir.path().join("forge.toml"),
+            forge_dir(config_dir.path()).join("forge.toml"),
             format!(
                 "[[orgs]]\nname = \"Default\"\naccounts = [\"Stargate\"]\n\n[[orgs.projects]]\nname = \"forge-test\"\npath = \"{project_path_str}\"\nauto_start = true\n\n[[accounts]]\ndisplay_name = \"Stargate\"\nconfig_dir = \"~/.claude-stargate\"\n\n[ui]\nspinner = \"ember\"\n"
             ),
@@ -527,19 +535,19 @@ mod tests {
         let project_dir = tempfile::tempdir().expect("project tempdir");
         let project_path_str = project_dir.path().to_string_lossy().replace('\\', "/");
         std::fs::write(
-            config_dir.path().join("forge.toml"),
+            forge_dir(config_dir.path()).join("forge.toml"),
             format!(
                 "[[orgs]]\nname = \"Default\"\naccounts = [\"Stargate\"]\n\n[[orgs.projects]]\nname = \"forge-test\"\npath = \"{project_path_str}\"\nauto_start = true\n\n[[accounts]]\ndisplay_name = \"Stargate\"\nconfig_dir = \"~/.claude-stargate\"\n\n[ui]\nspinner = \"star\"\n"
             ),
         )
         .expect("write forge.toml");
-        // Runtime override in the forge-state.toml sidecar must win over
-        // the forge.toml [ui] default.
+        // Runtime override in the state.toml sidecar must win over the
+        // forge.toml [ui] default.
         std::fs::write(
-            config_dir.path().join("forge-state.toml"),
+            forge_dir(config_dir.path()).join("state.toml"),
             "version = 1\nspinner = \"ember\"\n",
         )
-        .expect("write forge-state.toml");
+        .expect("write state.toml");
         let workspace =
             forge_workspace::Workspace::new(config_dir.path().to_owned()).await.expect("workspace");
         let cli = cli_with(None);
@@ -548,7 +556,7 @@ mod tests {
         assert_eq!(
             app.spinner_style,
             forge_workspace::SpinnerStyle::Ember,
-            "forge-state.toml override must win over the forge.toml [ui] default",
+            "state.toml override must win over the forge.toml [ui] default",
         );
     }
 

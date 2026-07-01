@@ -233,7 +233,7 @@ pub struct Workspace {
     /// `None` in `testing_stub` and on the degraded acquire path.
     _single_instance_lock: Option<std::fs::File>,
     /// Durable forge crons (`mcp__forge__cron`). In-memory working set,
-    /// loaded from `forge-cron.toml` at boot and persisted back after
+    /// loaded from `cron.toml` at boot and persisted back after
     /// every mutation - create/delete, the scheduler's fire-advance, and
     /// boot catch-up - through the one [`Workspace::with_crons_mut`] path.
     /// The single-instance guard makes this the only process touching the
@@ -386,6 +386,18 @@ impl Workspace {
     pub async fn new(config_dir: PathBuf) -> Result<Self, WorkspaceError> {
         let mut config = load_from_dir(&config_dir)?;
 
+        // Create forge's own config subfolder before anything writes into
+        // it (the lock, the cron + state stores all live under it). Hard-
+        // fail if it can't be created: forge can persist nothing without a
+        // writable config dir, so degrading is pointless - mirror the
+        // ProxyUnavailable hard-fail below.
+        crate::config::ensure_forge_data_dir(&config_dir).map_err(|source| {
+            WorkspaceError::DataDirUnavailable {
+                path: crate::config::forge_data_dir(&config_dir),
+                source,
+            }
+        })?;
+
         // Single-instance guard: forge runs one process per config dir.
         // Take it BEFORE the proxy boot so a doomed second instance
         // refuses without binding proxy ports. The held File is stored
@@ -457,7 +469,7 @@ impl Workspace {
 
         let mut accounts = AccountStateMap::new(&config.accounts);
 
-        // Seed account usage from the on-disk forge-state.toml so
+        // Seed account usage from the on-disk state.toml so
         // the launchpad picker has tier data immediately at cold
         // boot. Anthropic's /api/oauth/usage rate-limiter can stall
         // the first live probe for 30 s+; without seed data every
@@ -468,7 +480,7 @@ impl Workspace {
         let state = crate::account_cache::load(&config_dir);
         accounts.seed_from_cache(&state.account_usage);
 
-        // Resolve the active spinner: the forge-state.toml runtime
+        // Resolve the active spinner: the state.toml runtime
         // override (set via `/spinner`) wins over the hand-authored
         // forge.toml `[ui] spinner` default. Folding it into
         // `config.ui` here means `ui_settings()` returns the effective
@@ -522,7 +534,7 @@ impl Workspace {
     /// Effective `[ui]` settings. All fields have defaults so callers
     /// can use the result without worrying about whether the section
     /// was present in the config file. `spinner` carries the resolved
-    /// active style: the `forge-state.toml` runtime override (set via
+    /// active style: the `state.toml` runtime override (set via
     /// `/spinner`) if present, else the forge.toml `[ui] spinner`
     /// default. Cheap clone - the struct is shallow.
     pub fn ui_settings(&self) -> crate::ui::UiSettings {
@@ -530,7 +542,7 @@ impl Workspace {
     }
 
     /// Persist `style` as the runtime spinner override in
-    /// `forge-state.toml` (the writable sidecar - never touches the
+    /// `state.toml` (the writable sidecar - never touches the
     /// hand-authored forge.toml). The next boot's `Workspace::new`
     /// layers it over the forge.toml `[ui] spinner` default. Called by
     /// the `/spinner` picker (enter-apply) and the direct
@@ -885,7 +897,7 @@ impl Workspace {
                     })
                     .ok_or_else(|| WorkspaceError::ProjectNotFound {
                         name: project_key.as_str().to_owned(),
-                        path: self.config_dir.join("forge.toml"),
+                        path: crate::config::forge_data_dir(&self.config_dir).join("forge.toml"),
                     })?;
                 let cwd = project.path.to_string_lossy().to_string();
                 handle.new_session(cwd, settings)?;
@@ -1654,7 +1666,7 @@ impl Workspace {
                 event_name = "account_cache_written",
                 accounts = account_count,
                 path = %crate::account_cache::state_path(&self.config_dir).display(),
-                "forge-state.toml updated after successful poll round",
+                "state.toml updated after successful poll round",
             );
         }
     }
@@ -1752,7 +1764,7 @@ impl Workspace {
         self.config.projects.iter().find(|project| project.name == name).ok_or_else(|| {
             WorkspaceError::ProjectNotFound {
                 name: name.to_owned(),
-                path: self.config_dir.join("forge.toml"),
+                path: crate::config::forge_data_dir(&self.config_dir).join("forge.toml"),
             }
         })
     }
@@ -2525,7 +2537,7 @@ impl Workspace {
     }
 
     /// Lock the durable cron list, apply `f`, and persist to
-    /// `forge-cron.toml`. Every cron-list mutation routes through here -
+    /// `cron.toml`. Every cron-list mutation routes through here -
     /// `cron__create` / `cron__delete`, the scheduler's fire-advance, and
     /// boot catch-up - so the in-memory set and the file never diverge.
     pub(crate) fn with_crons_mut<R>(
@@ -2591,7 +2603,7 @@ impl Workspace {
                     } else {
                         // A recurring expr that parses but never matches
                         // (e.g. "0 0 30 2 *") - reachable via a hand-edited
-                        // forge-cron.toml. Don't silently drop it (hard
+                        // cron.toml. Don't silently drop it (hard
                         // rule #13).
                         let removed = crons.remove(pos);
                         let expr = if let forge_primitives::CronKind::Recurring(e) = &removed.kind {
@@ -3866,6 +3878,9 @@ impl Workspace {
     pub fn testing_stub_with_config_dir(
         config_dir: PathBuf,
     ) -> (Arc<Self>, mpsc::UnboundedReceiver<SessionUpdate>) {
+        // Mirror the boot-time `ensure_forge_data_dir`: stub-based tests
+        // that exercise the cron / state stores expect `forge/` present.
+        let _ = crate::config::ensure_forge_data_dir(&config_dir);
         let (update_tx, update_rx) = mpsc::unbounded_channel::<SessionUpdate>();
         let (kick_dispatcher_tx, kick_dispatcher_rx) = mpsc::unbounded_channel::<KickRequest>();
         let workspace = Self {
@@ -4102,6 +4117,14 @@ async fn tag_session_with_retry(
     }))
 }
 
+/// Test helper: ensure `forge/` exists and return the production
+/// `forge/forge.toml` path, so tests write where forge reads (not the
+/// legacy top-level fallback).
+#[cfg(test)]
+fn forge_toml_path(config_dir: &std::path::Path) -> PathBuf {
+    crate::config::ensure_forge_data_dir(config_dir).expect("forge/ dir").join("forge.toml")
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod resolver_tests {
@@ -4224,7 +4247,7 @@ mod tests {
         assert_eq!(
             crate::cron_store::load_crons(dir.path()),
             vec![entry.clone()],
-            "push persisted to forge-cron.toml",
+            "push persisted to cron.toml",
         );
 
         // A different project cannot delete another project's cron.
@@ -4353,7 +4376,7 @@ mod tests {
         let past = std::time::SystemTime::UNIX_EPOCH;
         let far_future = now + std::time::Duration::from_secs(86_400);
 
-        // Seed forge-cron.toml (Workspace::new loads it) with an overdue
+        // Seed cron.toml (Workspace::new loads it) with an overdue
         // recurring + overdue run-once + a not-yet-due one, all for the
         // "forge" project make_workspace_dir wrote.
         crate::cron_store::store_crons(
@@ -4389,9 +4412,8 @@ mod tests {
             ],
         );
 
-        let ws = Arc::new(
-            Workspace::new(dir.path().to_owned()).await.expect("new loads forge-cron.toml"),
-        );
+        let ws =
+            Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new loads cron.toml"));
         assert_eq!(ws.crons_for_project("forge").len(), 3, "boot loaded all three crons");
 
         // Boot catch-up: the one call main.rs makes at startup.
@@ -4497,7 +4519,11 @@ mod tests {
     #[test]
     fn fire_due_crons_removes_a_cron_whose_project_is_gone() {
         use forge_primitives::cron::{CronEntry, CronId, CronKind};
-        let (ws, _rx) = Workspace::testing_stub(); // no projects seeded
+        // Unique config dir (still no projects seeded): push_cron below
+        // persists to disk, so avoid the no-arg stub's shared /tmp path,
+        // which would collide with other stub tests under parallelism.
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
         let now = std::time::SystemTime::now();
 
         ws.push_cron(CronEntry {
@@ -4551,7 +4577,7 @@ mod tests {
     fn make_workspace_dir() -> tempfile::TempDir {
         let dir = tempdir().expect("tempdir");
         fs::write(
-            dir.path().join("forge.toml"),
+            forge_toml_path(dir.path()),
             r#"
 [[orgs]]
 name = "Default"
@@ -4636,7 +4662,7 @@ config_dir = "~/.claude-stargate"
     async fn get_agent_handle_named_project_resolves() {
         let dir = tempdir().expect("tempdir");
         fs::write(
-            dir.path().join("forge.toml"),
+            forge_toml_path(dir.path()),
             r#"
 [[orgs]]
 name = "Default"
@@ -4675,7 +4701,7 @@ config_dir = "~/.claude-stargate"
     async fn get_agent_handle_named_unknown_errors() {
         let dir = tempdir().expect("tempdir");
         fs::write(
-            dir.path().join("forge.toml"),
+            forge_toml_path(dir.path()),
             r#"
 [[orgs]]
 name = "Default"
@@ -4709,7 +4735,7 @@ config_dir = "~/.claude-stargate"
     fn make_workspace_dir_with_two_accounts() -> tempfile::TempDir {
         let dir = tempdir().expect("tempdir");
         fs::write(
-            dir.path().join("forge.toml"),
+            forge_toml_path(dir.path()),
             r#"
 [[orgs]]
 name = "Default"
@@ -4788,7 +4814,7 @@ config_dir = "~/.claude-gateway"
         // `round_robin_restricted_pool_cycles_within_subset`).
         let dir = tempdir().expect("tempdir");
         fs::write(
-            dir.path().join("forge.toml"),
+            forge_toml_path(dir.path()),
             r#"
 [[orgs]]
 name = "Default"
@@ -5100,7 +5126,7 @@ config_dir = "~/.claude-profile3"
     fn forge_toml_with_two_projects() -> tempfile::TempDir {
         let dir = tempdir().expect("tempdir");
         fs::write(
-            dir.path().join("forge.toml"),
+            forge_toml_path(dir.path()),
             r#"
 [[orgs]]
 name = "Default"
@@ -5477,7 +5503,7 @@ mod release_session_cascade_tests {
     fn make_workspace_dir() -> tempfile::TempDir {
         let dir = tempdir().expect("tempdir");
         fs::write(
-            dir.path().join("forge.toml"),
+            forge_toml_path(dir.path()),
             r#"
 [[orgs]]
 name = "Default"
@@ -7230,7 +7256,7 @@ mod git_scan_cwd_tests {
     fn make_workspace_dir_246() -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(
-            dir.path().join("forge.toml"),
+            forge_toml_path(dir.path()),
             r#"
 [[orgs]]
 name = "Default"
@@ -7258,7 +7284,7 @@ config_dir = "~/.claude-stargate"
     fn make_workspace_dir_246_two_accounts() -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(
-            dir.path().join("forge.toml"),
+            forge_toml_path(dir.path()),
             r#"
 [[orgs]]
 name = "Default"

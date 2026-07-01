@@ -86,7 +86,7 @@ fn run() -> anyhow::Result<()> {
         // task drives its account from `Loading` through to a
         // terminal `Ready` or `Bailed`; the launchpad consults
         // `all_loaded()` across the map to decide when to un-dim the
-        // project rows. The on-disk forge-state.toml has already
+        // project rows. The on-disk state.toml has already
         // seeded the in-memory map at `Workspace::new`. The 60 s
         // poller starts after, run by `start_usage_poller` from
         // forge-tui's connect path.

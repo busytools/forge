@@ -47,10 +47,18 @@ forge runs **single-instance per config dir**: one `forge` process owns
 a given config dir (`$CLAUDE_CONFIG_DIR`, else `~/.claude`) and manages
 many `Workspace` sessions inside it. A second `forge` on the same config
 dir is refused at boot with the holder's PID - an exclusive `flock` on
-`<config_dir>/forge.lock`, released automatically on exit/crash; the
+`<config_dir>/forge/forge.lock`, released automatically on exit/crash; the
 `WorkspaceError::AlreadyRunning` hard-fail mirrors the proxy one. Genuinely
 separate profiles / config dirs still coexist. No daemon, no cross-process
 shared state.
+
+forge keeps its own files - `forge.toml`, `state.toml`, `cron.toml`,
+`forge.lock` - under a `<config_dir>/forge/` subfolder, away from claude's
+own config-dir files; `Workspace::new` creates it at boot and hard-fails if
+it can't. `forge.toml` (read-only for forge) and any pre-existing top-level
+`forge-state.toml` / `forge-cron.toml` are still read from the config-dir
+root as a non-destructive rollout fallback, but everything new is written
+under `forge/`.
 
 ## Crate placement guide (where does my new code go?)
 
