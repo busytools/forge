@@ -641,7 +641,14 @@ fn append_diff_layer(lines: &mut Vec<Line<'static>>, layer: &DiffDisplay<'_>, wi
 fn branch_row_for(snapshot: &GitDiffSnapshot) -> Option<(String, Color)> {
     match &snapshot.branch {
         GitBranch::Named(name) => {
-            let on_default = snapshot.default_branch.as_deref().is_some_and(|d| d == name.as_str());
+            // `default_branch` may be a remote-tracking ref (`origin/main`);
+            // compare the plain branch name so a checked-out `main` still
+            // reads as the default (DIM), not a feature branch.
+            let on_default = snapshot
+                .default_branch
+                .as_deref()
+                .map(|d| d.strip_prefix("origin/").unwrap_or(d))
+                .is_some_and(|d| d == name.as_str());
             let color = if on_default { theme::DIM } else { theme::RUST_ORANGE };
             Some((name.clone(), color))
         }
@@ -2194,6 +2201,18 @@ mod tests {
         let s = snap(GitBranch::Named("main".into()), None, true);
         let (_label, color) = branch_row_for(&s).expect("named branch should render a row");
         assert_eq!(color, theme::RUST_ORANGE);
+    }
+
+    #[test]
+    fn branch_row_on_main_with_origin_tracking_default_renders_dim() {
+        // The default now resolves to the remote-tracking ref
+        // `origin/main`; a checked-out `main` must still read as the
+        // default (DIM), so the on-default check strips the remote
+        // prefix before comparing to the branch name.
+        let s = snap(GitBranch::Named("main".into()), Some("origin/main"), true);
+        let (label, color) = branch_row_for(&s).expect("named branch should render a row");
+        assert_eq!(label, "main");
+        assert_eq!(color, theme::DIM);
     }
 
     #[test]

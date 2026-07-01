@@ -117,7 +117,14 @@ pub async fn scan(cwd: &Path, prev: Option<&GitDiffSnapshot>) -> GitDiffSnapshot
     };
 
     let default_branch = resolve_default_branch(cwd).await;
-    let on_default = default_branch.as_ref().is_some_and(|default| default == &raw_branch);
+    // `default_branch` may be a remote-tracking ref (`origin/main`); the
+    // on-default check compares plain branch names, so strip the
+    // `origin/` prefix - a checked-out `main` must still read as the
+    // default rather than a feature branch ahead of `origin/main`.
+    let on_default = default_branch
+        .as_deref()
+        .map(|d| d.strip_prefix("origin/").unwrap_or(d))
+        .is_some_and(|d| d == raw_branch);
     let dirty_probe = is_worktree_dirty(cwd).await;
 
     // Layer 1: uncommitted edits vs HEAD. The three legal states
@@ -244,36 +251,39 @@ async fn commit_count_in_range(cwd: &Path, base: &str, head: &str) -> Option<u32
     }
 }
 
-/// `git symbolic-ref --short refs/remotes/origin/HEAD` with `main`
-/// → `master` fallback. Returns `None` if no default can be
-/// resolved (no remote HEAD, no `main`, no `master`).
+/// Resolve the ref a feature branch's "ahead" diff compares against.
+/// Prefers the remote-tracking `origin/<default>` (via `origin/HEAD`,
+/// else `origin/main` / `origin/master`) so a locally-stale `main`
+/// can't fold already-merged commits into the diff; falls back to a
+/// purely-local `main` / `master` for a repo with no `origin` remote.
+/// The returned value IS the compare-ref - the `origin/` prefix carries
+/// the remote-vs-local decision, so callers wanting the plain branch
+/// name strip it. `None` when nothing resolves.
 async fn resolve_default_branch(cwd: &Path) -> Option<String> {
-    match run_git(cwd, &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]).await {
-        GitOutput::Ok(s) => {
-            // Output looks like `origin/main` - strip the remote
-            // prefix to leave just the branch name.
-            let trimmed = s.trim();
-            return Some(trimmed.strip_prefix("origin/").unwrap_or(trimmed).to_owned());
-        }
-        GitOutput::Empty | GitOutput::Failed | GitOutput::Oversize => {}
+    // `origin/HEAD` advertises the remote's default; `--short` yields
+    // e.g. `origin/main`. Keep the prefix - it's the remote-tracking
+    // ref we want to compare against (GitOutput::Ok is non-empty).
+    if let GitOutput::Ok(s) =
+        run_git(cwd, &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]).await
+    {
+        return Some(s.trim().to_owned());
     }
-    for candidate in ["main", "master"] {
+    // No `origin/HEAD`: try the conventional remote-tracking refs, then
+    // a purely-local `main` / `master` (a repo with no origin remote).
+    for candidate in ["origin/main", "origin/master", "main", "master"] {
         if let GitOutput::Ok(_) = run_git(cwd, &["rev-parse", "--verify", candidate]).await {
             return Some(candidate.to_owned());
         }
     }
-    // No `origin/HEAD`, no `main`, no `master`. A feature-branch
-    // diff has no meaningful base, so layer 2 collapses to
-    // `LayerState::Clean` - meaning the user sees branch + path
-    // with no diff stats even when the branch has commits relative
-    // to some other default (e.g. `develop`). Surfacing WARN here
-    // so the failure is grep-able when the user reports "the GIT
-    // section never shows my branch's diff".
+    // Nothing resolved. A feature-branch diff has no meaningful base,
+    // so layer 2 collapses to `LayerState::Clean`. WARN so it's grep-
+    // able when the user reports "the GIT section never shows my
+    // branch's diff".
     tracing::warn!(
         target: crate::logging::targets::ENV_GIT,
         cwd = %cwd.display(),
         event_name = "git_default_branch_unknown",
-        message = "default branch fallback exhausted (no origin/HEAD, main, or master)",
+        message = "default branch fallback exhausted (no origin/HEAD, origin/main, origin/master, main, or master)",
         outcome = "skipped",
     );
     None
@@ -1067,5 +1077,92 @@ mod tests {
         assert_eq!(classify_rev_parse(GitOutput::Empty), Err(RepoGate::NotARepo));
         assert_eq!(classify_rev_parse(GitOutput::Failed), Err(RepoGate::ScannerFailed));
         assert_eq!(classify_rev_parse(GitOutput::Oversize), Err(RepoGate::ScannerFailed));
+    }
+
+    /// A worker branch is cut from origin/main while local `main` lags
+    /// origin/main (the usual state when the user only pulls merged
+    /// PRs). The branch-ahead diff must compare against the remote-
+    /// tracking origin/main - showing only the branch's OWN commit -
+    /// not against a stale local main that would fold in already-merged
+    /// work. Exercised through a real linked worktree.
+    #[tokio::test(flavor = "current_thread")]
+    async fn scan_feature_branch_compares_against_origin_main_not_stale_local_main() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        init_repo(&dir, "main");
+        let run = |args: &[&str]| {
+            let out =
+                StdCommand::new("git").arg("-C").arg(dir.path()).args(args).output().expect("git");
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        write_file(&dir, "base.txt", "base\n");
+        commit_all(&dir, "X base");
+        // Y = a commit that lives on origin/main (already merged).
+        run(&["checkout", "-q", "-b", "upstream"]);
+        write_file(&dir, "merged.txt", "merged\n");
+        commit_all(&dir, "Y merged");
+        run(&["update-ref", "refs/remotes/origin/main", "upstream"]);
+        run(&["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]);
+        // Local main rewinds to X - it now lags origin/main by Y.
+        run(&["checkout", "-q", "main"]);
+        run(&["branch", "-D", "upstream"]);
+        // Worker worktree cut from origin/main (Y), plus its own commit Z.
+        std::fs::create_dir_all(dir.path().join(".claude/worktrees")).expect("mkdir");
+        let wt = dir.path().join(".claude/worktrees/w");
+        run(&["worktree", "add", "-q", wt.to_str().expect("utf8"), "-b", "feat/w", "origin/main"]);
+        let wt_run = |args: &[&str]| {
+            let out = StdCommand::new("git").arg("-C").arg(&wt).args(args).output().expect("git");
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        std::fs::write(wt.join("z.txt"), "z\n").expect("write z");
+        wt_run(&["add", "-A"]);
+        wt_run(&["commit", "-q", "-m", "Z own"]);
+
+        let snap = scan(&wt, None).await;
+        assert_eq!(
+            snap.default_branch.as_deref(),
+            Some("origin/main"),
+            "compares against the remote-tracking ref, not stripped local main",
+        );
+        let ahead =
+            snap.branch_ahead.as_populated().expect("branch-ahead populated for the worker branch");
+        assert_eq!(
+            ahead.commit_count, 1,
+            "only the branch's own commit vs origin/main, not the already-merged one",
+        );
+        assert_eq!(ahead.stats.total_files, 1);
+        assert_eq!(
+            ahead.stats.files[0].path, "z.txt",
+            "merged.txt (already on origin/main) is excluded from the branch-ahead diff",
+        );
+    }
+
+    /// On `main` with the default resolved to the remote-tracking ref
+    /// `origin/main`, the branch-ahead layer stays empty even when local
+    /// main is AHEAD of origin/main (unpushed commits): the on-default
+    /// check strips the remote prefix so a checked-out `main` reads as
+    /// the default branch rather than a feature branch.
+    #[tokio::test(flavor = "current_thread")]
+    async fn scan_on_local_main_ahead_of_origin_skips_branch_ahead() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        init_repo(&dir, "main");
+        let run = |args: &[&str]| {
+            let out =
+                StdCommand::new("git").arg("-C").arg(dir.path()).args(args).output().expect("git");
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        write_file(&dir, "base.txt", "base\n");
+        commit_all(&dir, "base");
+        run(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        run(&["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]);
+        // Local main advances past origin/main (unpushed commit).
+        write_file(&dir, "local.txt", "local\n");
+        commit_all(&dir, "unpushed");
+
+        let snap = scan(dir.path(), None).await;
+        assert_eq!(snap.default_branch.as_deref(), Some("origin/main"));
+        assert!(
+            matches!(snap.branch_ahead, LayerState::Clean),
+            "on `main` the branch-ahead layer stays empty even when ahead of origin/main",
+        );
     }
 }
