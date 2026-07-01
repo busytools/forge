@@ -230,6 +230,18 @@ async fn commit_ref_spec(cwd: &Path, sha: &str) -> String {
     }
 }
 
+/// Fetch a commit's message body - everything after the subject line,
+/// with the trailing newline trimmed. Empty for a subject-only commit.
+/// Kept out of [`scan_commits`] because a multi-line body would break
+/// its line-per-commit `git log` parse; the stepper fetches it lazily
+/// per commit alongside the hunks.
+pub async fn scan_commit_body(cwd: &Path, sha: &str) -> String {
+    match run_git(cwd, &["show", "-s", "--format=%b", sha]).await {
+        GitOutput::Ok(s) => s.trim_end().to_owned(),
+        GitOutput::Empty | GitOutput::Failed | GitOutput::Oversize => String::new(),
+    }
+}
+
 /// Max in-flight `git diff -- <path>` subprocesses during a scan.
 /// macOS's default soft open-file limit is ~256 and every git child
 /// holds stdin/stdout/stderr pipes plus a handful of git internals
@@ -1048,5 +1060,40 @@ diff --git a/x.rs b/x.rs
         let paths: Vec<&str> = outcome.files.iter().map(|f| f.path.as_str()).collect();
         assert_eq!(paths, vec!["README.md"]);
         assert!(outcome.scanner_ok);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn scan_commit_body_returns_full_multiline_body() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        init_commit_repo(&dir);
+        write_file(&dir, "a.rs", "a\n");
+        git(&dir, &["add", "-A"]);
+        git(&dir, &[
+            "commit",
+            "-q",
+            "-m",
+            "the subject line",
+            "-m",
+            "body line one\nbody line two\n\nbody line three",
+        ]);
+        let sha = git_capture(&dir, &["rev-parse", "HEAD"]);
+        let body = scan_commit_body(dir.path(), &sha).await;
+        // `%b` starts after the subject, so the subject never appears.
+        assert!(!body.contains("the subject line"), "body excludes the subject: {body:?}");
+        assert!(body.contains("body line one"));
+        assert!(body.contains("body line three"));
+        // The internal blank line between paragraphs survives.
+        assert!(body.lines().count() >= 4, "multi-line body preserved: {body:?}");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn scan_commit_body_empty_for_subject_only() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        init_commit_repo(&dir);
+        write_file(&dir, "a.rs", "a\n");
+        commit(&dir, "just a subject");
+        let sha = git_capture(&dir, &["rev-parse", "HEAD"]);
+        let body = scan_commit_body(dir.path(), &sha).await;
+        assert!(body.is_empty(), "a subject-only commit has an empty body, got {body:?}");
     }
 }
