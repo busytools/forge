@@ -18,8 +18,10 @@ use tempfile::tempdir;
 #[tokio::test(flavor = "current_thread")]
 async fn workspace_shutdown_drains_after_app_drop() {
     let dir = tempdir().expect("tempdir");
+    let forge = dir.path().join("forge");
+    fs::create_dir_all(&forge).expect("forge/ dir");
     fs::write(
-        dir.path().join("forge.toml"),
+        forge.join("forge.toml"),
         r#"
 [[orgs]]
 name = "Default"

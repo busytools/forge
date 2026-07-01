@@ -8,9 +8,17 @@ use std::sync::Arc;
 use forge_workspace::Workspace;
 use tempfile::tempdir;
 
+/// Ensure `forge/` exists and return the production `forge/forge.toml`
+/// path, so tests write where forge reads (not the legacy fallback).
+fn forge_toml_path(config_dir: &std::path::Path) -> std::path::PathBuf {
+    let forge = config_dir.join("forge");
+    fs::create_dir_all(&forge).expect("forge/ dir");
+    forge.join("forge.toml")
+}
+
 fn write_default_config(dir: &std::path::Path) {
     fs::write(
-        dir.join("forge.toml"),
+        forge_toml_path(dir),
         r#"
 [[orgs]]
 name = "Default"
@@ -39,6 +47,14 @@ async fn new_loads_config_and_lists_projects() {
     let project = &projects[0];
     // The `display_path` retains the `~` form from forge.toml.
     assert_eq!(project.display_path, "~/Projects/forge");
+}
+
+#[tokio::test]
+async fn new_creates_forge_data_dir() {
+    let dir = tempdir().expect("tempdir");
+    write_default_config(dir.path());
+    let _workspace = Workspace::new(dir.path().to_owned()).await.expect("new");
+    assert!(dir.path().join("forge").is_dir(), "Workspace::new creates the forge/ subfolder");
 }
 
 #[tokio::test]

@@ -11,10 +11,10 @@
 //! acceptable seed data - the 60 s background poller will refresh
 //! them in the background.
 //!
-//! Path: `<workspace_config_dir>/forge-state.toml`. Single TOML file
-//! that mirrors the `forge.toml` convention - config + state both
-//! live in the same directory under the same format. Schema versioned
-//! so future shape changes can invalidate cleanly.
+//! Path: `<config_dir>/forge/state.toml`. Single TOML file that mirrors
+//! the `forge.toml` convention - config + state both live in the
+//! `forge/` subfolder under the same format. Schema versioned so future
+//! shape changes can invalidate cleanly.
 //!
 //! Failures are non-fatal: missing file, corrupt TOML, IO errors all
 //! degrade to "no cache loaded; spawn paths see empty bars until the
@@ -27,7 +27,7 @@ use forge_primitives::usage::UsageSnapshot;
 use serde::{Deserialize, Serialize};
 
 const CACHE_SCHEMA_VERSION: u8 = 1;
-const STATE_FILE_RELATIVE_PATH: &str = "forge-state.toml";
+const STATE_FILE_NAME: &str = "state.toml";
 
 /// Per-account cache entry stored on disk.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,7 +39,7 @@ pub(crate) struct CachedAccountUsage {
 /// triggers a clean reset (treat as empty) so a future schema change
 /// degrades to a single cold boot rather than a corrupt-data panic.
 ///
-/// One file per workspace at `<config_dir>/forge-state.toml`. Layout:
+/// One file per workspace at `<config_dir>/forge/state.toml`. Layout:
 ///
 /// ```toml
 /// version = 1
@@ -83,29 +83,52 @@ impl ForgeState {
 
 /// Resolve the state file path for a workspace `config_dir`.
 pub(crate) fn state_path(config_dir: &Path) -> PathBuf {
-    config_dir.join(STATE_FILE_RELATIVE_PATH)
+    crate::config::forge_data_dir(config_dir).join(STATE_FILE_NAME)
 }
 
-/// Read the state file from disk. Returns an empty state on any
-/// failure (missing file, IO error, TOML parse error, schema-version
-/// mismatch). Logs the breadcrumb at debug for failure paths so a
+/// Legacy top-level state path, read as a non-destructive fallback until
+/// the file is moved under `forge/`. See [`load`].
+fn legacy_state_path(config_dir: &Path) -> PathBuf {
+    config_dir.join("forge-state.toml")
+}
+
+/// Read the state file from disk, preferring `forge/state.toml` and
+/// falling back to the legacy top-level `forge-state.toml` (with a
+/// warn). Returns an empty state on any failure (missing file, IO
+/// error, TOML parse error, schema-version mismatch). Logs the breadcrumb at debug for failure paths so a
 /// triaging user can see why their cold boot got no seed data,
 /// without polluting the default log level when the file simply
 /// doesn't exist yet.
 pub(crate) fn load(config_dir: &Path) -> ForgeState {
-    let path = state_path(config_dir);
+    let mut path = state_path(config_dir);
     let contents = match std::fs::read_to_string(&path) {
         Ok(s) => s,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            // First boot on this config_dir - entirely expected.
-            return ForgeState::empty();
+            // No forge/state.toml yet. Fall back to the legacy top-level
+            // file (a rollout aid on a Syncthing-synced config dir);
+            // writes always land under forge/ and the legacy copy is
+            // never removed here - that stays a manual post-rollout step.
+            let legacy = legacy_state_path(config_dir);
+            match std::fs::read_to_string(&legacy) {
+                Ok(s) => {
+                    tracing::warn!(
+                        target: "forge_workspace::account_cache",
+                        legacy = %legacy.display(),
+                        "state read from the legacy top-level forge-state.toml; it is written under forge/ from now on",
+                    );
+                    path = legacy;
+                    s
+                }
+                // No legacy file either - first boot on this config_dir.
+                Err(_) => return ForgeState::empty(),
+            }
         }
         Err(e) => {
             tracing::debug!(
                 target: "forge_workspace::account_cache",
                 error = %e,
                 path = %path.display(),
-                "forge-state.toml present but read failed; treating as empty",
+                "state.toml present but read failed; treating as empty",
             );
             return ForgeState::empty();
         }
@@ -117,7 +140,7 @@ pub(crate) fn load(config_dir: &Path) -> ForgeState {
                 target: "forge_workspace::account_cache",
                 error = %e,
                 path = %path.display(),
-                "forge-state.toml parse failed; treating as empty",
+                "state.toml parse failed; treating as empty",
             );
             return ForgeState::empty();
         }
@@ -127,14 +150,14 @@ pub(crate) fn load(config_dir: &Path) -> ForgeState {
             target: "forge_workspace::account_cache",
             disk_version = parsed.version,
             expected_version = CACHE_SCHEMA_VERSION,
-            "forge-state.toml schema-version mismatch; ignoring on-disk entries",
+            "state.toml schema-version mismatch; ignoring on-disk entries",
         );
         return ForgeState::empty();
     }
     parsed
 }
 
-/// Serializes the whole load-merge-write cycle for `forge-state.toml`.
+/// Serializes the whole load-merge-write cycle for `state.toml`.
 /// The background usage poller (a `spawn_blocking` thread) and the
 /// `/spinner` persist path run on different threads; without this lock
 /// their read+write pairs can interleave into a lost update - the
@@ -179,7 +202,7 @@ pub(crate) fn store_spinner(config_dir: &Path, spinner: Option<crate::ui::Spinne
     update_forge_state(config_dir, |state| state.spinner = spinner);
 }
 
-/// Serialise `state` to `<config_dir>/forge-state.toml` via atomic
+/// Serialise `state` to `<config_dir>/forge/state.toml` via atomic
 /// tmp-file + rename: a crash between write and rename leaves the
 /// previous state intact rather than a partial file. Failures are
 /// non-fatal and logged at warn.
@@ -191,7 +214,7 @@ fn write_state(config_dir: &Path, state: &ForgeState) {
             tracing::warn!(
                 target: "forge_workspace::account_cache",
                 error = %e,
-                "forge-state.toml serialise failed; skipping write",
+                "state.toml serialise failed; skipping write",
             );
             return;
         }
@@ -202,7 +225,7 @@ fn write_state(config_dir: &Path, state: &ForgeState) {
             target: "forge_workspace::account_cache",
             error = %e,
             path = %tmp_path.display(),
-            "forge-state.toml tmp write failed",
+            "state.toml tmp write failed",
         );
         return;
     }
@@ -212,7 +235,7 @@ fn write_state(config_dir: &Path, state: &ForgeState) {
             error = %e,
             from = %tmp_path.display(),
             to = %path.display(),
-            "forge-state.toml atomic rename failed",
+            "state.toml atomic rename failed",
         );
         // Best-effort: drop the tmp file so we don't leak.
         let _ = std::fs::remove_file(&tmp_path);
@@ -225,6 +248,15 @@ mod tests {
     use forge_primitives::usage::{UsageSnapshot, UsageSourceKind, UsageWindow};
     use std::time::{Duration, SystemTime};
     use tempfile::tempdir;
+
+    /// A tempdir with `forge/` created, mirroring the boot-time
+    /// `ensure_forge_data_dir` that guarantees the subfolder exists
+    /// before any store writes into it.
+    fn tmp() -> tempfile::TempDir {
+        let dir = tempdir().expect("tempdir");
+        crate::config::ensure_forge_data_dir(dir.path()).expect("forge/ dir");
+        dir
+    }
 
     fn fake_snapshot() -> UsageSnapshot {
         UsageSnapshot {
@@ -247,15 +279,60 @@ mod tests {
     }
 
     #[test]
+    fn state_path_is_under_forge_subfolder() {
+        let dir = tmp();
+        assert_eq!(state_path(dir.path()), dir.path().join("forge").join("state.toml"));
+    }
+
+    #[test]
     fn load_returns_empty_when_file_missing() {
-        let dir = tempdir().expect("tempdir");
+        let dir = tmp();
         let state = load(dir.path());
         assert!(state.account_usage.is_empty());
     }
 
     #[test]
+    fn load_falls_back_to_legacy_top_level_state() {
+        let dir = tmp();
+        // Only the legacy top-level file exists (no forge/state.toml).
+        std::fs::write(dir.path().join("forge-state.toml"), "version = 1\nspinner = \"ember\"\n")
+            .expect("write legacy state");
+        let loaded = load(dir.path());
+        assert_eq!(
+            loaded.spinner,
+            Some(crate::ui::SpinnerStyle::Ember),
+            "legacy top-level state read via fallback",
+        );
+    }
+
+    #[test]
+    fn prefers_forge_state_over_legacy() {
+        let dir = tmp();
+        std::fs::write(dir.path().join("forge-state.toml"), "version = 1\nspinner = \"ember\"\n")
+            .expect("write legacy state");
+        store_spinner(dir.path(), Some(crate::ui::SpinnerStyle::Star));
+        let loaded = load(dir.path());
+        assert_eq!(
+            loaded.spinner,
+            Some(crate::ui::SpinnerStyle::Star),
+            "forge/state.toml wins over the legacy top-level",
+        );
+    }
+
+    #[test]
+    fn store_does_not_write_legacy_top_level() {
+        let dir = tmp();
+        store_spinner(dir.path(), Some(crate::ui::SpinnerStyle::Ember));
+        assert!(state_path(dir.path()).exists(), "state written under forge/");
+        assert!(
+            !dir.path().join("forge-state.toml").exists(),
+            "store never creates the legacy top-level file",
+        );
+    }
+
+    #[test]
     fn round_trip_preserves_snapshot() {
-        let dir = tempdir().expect("tempdir");
+        let dir = tmp();
         let mut entries = std::collections::BTreeMap::new();
         entries.insert("Granite".to_owned(), fixture_entry());
         store(dir.path(), &entries);
@@ -268,7 +345,7 @@ mod tests {
 
     #[test]
     fn version_mismatch_treated_as_empty() {
-        let dir = tempdir().expect("tempdir");
+        let dir = tmp();
         let path = state_path(dir.path());
         std::fs::write(&path, "version = 9999\n").expect("write");
         let loaded = load(dir.path());
@@ -277,7 +354,7 @@ mod tests {
 
     #[test]
     fn corrupt_toml_treated_as_empty() {
-        let dir = tempdir().expect("tempdir");
+        let dir = tmp();
         let path = state_path(dir.path());
         std::fs::write(&path, "not = toml = at all").expect("write");
         let loaded = load(dir.path());
@@ -290,7 +367,7 @@ mod tests {
     /// behind after a successful write.
     #[test]
     fn store_uses_atomic_rename_and_leaves_no_tmp_file() {
-        let dir = tempdir().expect("tempdir");
+        let dir = tmp();
         let mut entries = std::collections::BTreeMap::new();
         entries.insert("Granite".to_owned(), fixture_entry());
         store(dir.path(), &entries);
@@ -306,7 +383,7 @@ mod tests {
     /// (atomic rename replaces in place; no append, no duplicate).
     #[test]
     fn store_overwrites_existing_file() {
-        let dir = tempdir().expect("tempdir");
+        let dir = tmp();
         let mut entries = std::collections::BTreeMap::new();
 
         entries.insert("Granite".to_owned(), fixture_entry());
@@ -325,7 +402,7 @@ mod tests {
 
     #[test]
     fn spinner_override_round_trips() {
-        let dir = tempdir().expect("tempdir");
+        let dir = tmp();
         store_spinner(dir.path(), Some(crate::ui::SpinnerStyle::Ember));
         let loaded = load(dir.path());
         assert_eq!(loaded.spinner, Some(crate::ui::SpinnerStyle::Ember));
@@ -333,7 +410,7 @@ mod tests {
 
     #[test]
     fn store_account_usage_preserves_spinner_override() {
-        let dir = tempdir().expect("tempdir");
+        let dir = tmp();
         store_spinner(dir.path(), Some(crate::ui::SpinnerStyle::Ember));
         let mut entries = std::collections::BTreeMap::new();
         entries.insert("Granite".to_owned(), fixture_entry());
@@ -349,7 +426,7 @@ mod tests {
 
     #[test]
     fn store_spinner_preserves_account_usage() {
-        let dir = tempdir().expect("tempdir");
+        let dir = tmp();
         let mut entries = std::collections::BTreeMap::new();
         entries.insert("Granite".to_owned(), fixture_entry());
         store(dir.path(), &entries);
@@ -362,7 +439,7 @@ mod tests {
     #[test]
     fn concurrent_usage_and_spinner_writes_do_not_lose_updates() {
         use std::thread;
-        let dir = tempdir().expect("tempdir");
+        let dir = tmp();
         // Seed both fields so each writer mutates one of two present fields.
         store_spinner(dir.path(), Some(crate::ui::SpinnerStyle::Ember));
         let mut seed = std::collections::BTreeMap::new();
@@ -404,7 +481,7 @@ mod tests {
 
     #[test]
     fn unknown_persisted_spinner_falls_back_without_dropping_usage() {
-        let dir = tempdir().expect("tempdir");
+        let dir = tmp();
         // Write a valid state (usage + a valid spinner), then corrupt the
         // spinner key on disk to a removed variant.
         let mut entries = std::collections::BTreeMap::new();

@@ -14,8 +14,10 @@ use forge_workspace::{SessionLaunchSettings, SessionTarget, Workspace, Workspace
 use tempfile::tempdir;
 
 fn write_default_config(dir: &std::path::Path) {
+    let forge = dir.join("forge");
+    fs::create_dir_all(&forge).expect("forge/ dir");
     fs::write(
-        dir.join("forge.toml"),
+        forge.join("forge.toml"),
         r#"
 [[orgs]]
 name = "Default"

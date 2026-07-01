@@ -174,20 +174,61 @@ impl LoadedConfig {
     }
 }
 
-/// Load + validate `<config_dir>/forge.toml`. Returns the parsed
-/// orgs + projects with `~` expanded.
-pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, WorkspaceError> {
-    let path = config_dir.join("forge.toml");
+/// The subdirectory holding every file forge itself owns (config,
+/// state, cron, lock), kept apart from claude's own top-level
+/// config-dir files. Pure path join; call [`ensure_forge_data_dir`]
+/// when the directory has to exist before writing into it.
+pub(crate) fn forge_data_dir(config_dir: &Path) -> PathBuf {
+    config_dir.join("forge")
+}
 
-    let raw = match fs::read_to_string(&path) {
-        Ok(s) => s,
+/// [`forge_data_dir`] with a `create_dir_all`, returning the path.
+pub(crate) fn ensure_forge_data_dir(config_dir: &Path) -> std::io::Result<PathBuf> {
+    let dir = forge_data_dir(config_dir);
+    fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
+/// Read forge.toml, preferring `forge/forge.toml` and falling back to
+/// the legacy top-level `forge.toml` (with a warn). forge never writes
+/// forge.toml, so the fallback lets a Syncthing-synced config dir stay
+/// readable until every machine is on this build and the file is moved
+/// under `forge/`. Returns the path read plus its raw contents.
+fn read_config(config_dir: &Path) -> Result<(PathBuf, String), WorkspaceError> {
+    let preferred = forge_data_dir(config_dir).join("forge.toml");
+    match fs::read_to_string(&preferred) {
+        Ok(raw) => Ok((preferred, raw)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Err(WorkspaceError::ConfigMissing { path });
+            let legacy = config_dir.join("forge.toml");
+            match fs::read_to_string(&legacy) {
+                Ok(raw) => {
+                    tracing::warn!(
+                        target: "forge_workspace::config",
+                        legacy = %legacy.display(),
+                        "forge.toml read from the legacy top-level path; move it under forge/ (the top-level fallback is a rollout aid)",
+                    );
+                    Ok((legacy, raw))
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    Err(WorkspaceError::ConfigMissing { path: preferred })
+                }
+                Err(e) => Err(WorkspaceError::ConfigInvalid {
+                    path: legacy,
+                    message: format!("io error: {e}"),
+                }),
+            }
         }
-        Err(e) => {
-            return Err(WorkspaceError::ConfigInvalid { path, message: format!("io error: {e}") });
-        }
-    };
+        Err(e) => Err(WorkspaceError::ConfigInvalid {
+            path: preferred,
+            message: format!("io error: {e}"),
+        }),
+    }
+}
+
+/// Load + validate `forge.toml`. Returns the parsed orgs + projects
+/// with `~` expanded.
+pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, WorkspaceError> {
+    let (path, raw) = read_config(config_dir)?;
 
     let parsed: ForgeToml = toml::from_str(&raw)
         .map_err(|source| WorkspaceError::ConfigParse { path: path.clone(), source })?;
@@ -314,7 +355,14 @@ mod tests {
     use std::fs;
     use tempfile::tempdir;
 
+    /// Write `forge/forge.toml` (the production location).
     fn write_config(dir: &std::path::Path, contents: &str) {
+        let forge = ensure_forge_data_dir(dir).expect("forge/ dir");
+        fs::write(forge.join("forge.toml"), contents).expect("write forge/forge.toml");
+    }
+
+    /// Write the legacy top-level `forge.toml` (fallback-path tests).
+    fn write_legacy_config(dir: &std::path::Path, contents: &str) {
         fs::write(dir.join("forge.toml"), contents).expect("write forge.toml");
     }
 
@@ -336,6 +384,20 @@ config_dir = "~/.claude-subspace"
     }
 
     #[test]
+    fn forge_data_dir_is_the_forge_subfolder() {
+        let dir = tempdir().expect("tempdir");
+        assert_eq!(forge_data_dir(dir.path()), dir.path().join("forge"));
+    }
+
+    #[test]
+    fn ensure_forge_data_dir_creates_the_subfolder() {
+        let dir = tempdir().expect("tempdir");
+        let created = ensure_forge_data_dir(dir.path()).expect("create forge/");
+        assert_eq!(created, dir.path().join("forge"));
+        assert!(created.is_dir(), "forge/ exists after ensure");
+    }
+
+    #[test]
     fn parses_minimal_config() {
         let dir = tempdir().expect("tempdir");
         write_config(dir.path(), minimal_config());
@@ -354,6 +416,46 @@ config_dir = "~/.claude-subspace"
         let dir = tempdir().expect("tempdir");
         let err = load_from_dir(dir.path()).expect_err("missing should error");
         assert!(matches!(err, WorkspaceError::ConfigMissing { .. }));
+    }
+
+    #[test]
+    fn reads_forge_toml_from_forge_subfolder() {
+        let dir = tempdir().expect("tempdir");
+        write_config(dir.path(), minimal_config());
+        let config = load_from_dir(dir.path()).expect("loads from forge/");
+        assert_eq!(config.default_project().name, "forge");
+    }
+
+    #[test]
+    fn falls_back_to_legacy_top_level_forge_toml() {
+        let dir = tempdir().expect("tempdir");
+        // Only the legacy top-level file exists (no forge/forge.toml).
+        write_legacy_config(dir.path(), minimal_config());
+        let config = load_from_dir(dir.path()).expect("loads via legacy fallback");
+        assert_eq!(config.default_project().name, "forge");
+    }
+
+    #[test]
+    fn prefers_forge_subfolder_over_legacy_when_both_present() {
+        let dir = tempdir().expect("tempdir");
+        // Legacy top-level names project "legacy"; forge/ names "forge".
+        write_legacy_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Subspace"]
+[[orgs.projects]]
+name = "legacy"
+path = "~/Projects/legacy"
+[[accounts]]
+display_name = "Subspace"
+config_dir = "~/.claude-subspace"
+"#,
+        );
+        write_config(dir.path(), minimal_config());
+        let config = load_from_dir(dir.path()).expect("loads");
+        assert_eq!(config.default_project().name, "forge", "forge/ wins over the legacy top-level");
     }
 
     #[test]
@@ -651,7 +753,8 @@ mod team_tests {
     use super::*;
 
     fn write_config(dir: &std::path::Path, contents: &str) {
-        std::fs::write(dir.join("forge.toml"), contents).expect("write forge.toml");
+        let forge = ensure_forge_data_dir(dir).expect("forge/ dir");
+        std::fs::write(forge.join("forge.toml"), contents).expect("write forge/forge.toml");
     }
 
     #[test]

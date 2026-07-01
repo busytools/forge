@@ -1039,9 +1039,15 @@ mod tests {
     use std::fs;
     use tempfile::tempdir;
 
+    /// Ensure `forge/` exists and return the production `forge/forge.toml`
+    /// path, so tests write where forge reads (not the legacy fallback).
+    fn forge_toml_path(config_dir: &std::path::Path) -> std::path::PathBuf {
+        crate::config::ensure_forge_data_dir(config_dir).expect("forge/ dir").join("forge.toml")
+    }
+
     fn write_forge_toml(dir: &std::path::Path) {
         fs::write(
-            dir.join("forge.toml"),
+            forge_toml_path(dir),
             r#"
 [[orgs]]
 name = "Default"
@@ -1217,7 +1223,7 @@ config_dir = "~/.claude-subspace"
     async fn handle_deliver_peer_prompt_sleeping_target_buffers_prompt() {
         let dir = tempdir().expect("tempdir");
         fs::write(
-            dir.path().join("forge.toml"),
+            forge_toml_path(dir.path()),
             r#"
 [[orgs]]
 name = "Default"
@@ -1278,7 +1284,7 @@ config_dir = "~/.claude-subspace"
     async fn tell_dispatch_does_not_bump_peer_stats() {
         let dir = tempdir().expect("tempdir");
         fs::write(
-            dir.path().join("forge.toml"),
+            forge_toml_path(dir.path()),
             r#"
 [[orgs]]
 name = "Default"
@@ -1502,7 +1508,7 @@ config_dir = "~/.claude-subspace"
         let config = tempdir().expect("config tempdir");
         let repo_path_str = repo.path().to_string_lossy().replace('\\', "/");
         std::fs::write(
-            config.path().join("forge.toml"),
+            forge_toml_path(config.path()),
             format!(
                 "[[orgs]]\nname = \"Default\"\naccounts = [\"Subspace\"]\n\n[[orgs.projects]]\nname = \"forge\"\npath = \"{repo_path_str}\"\n\n[[accounts]]\ndisplay_name = \"Subspace\"\nconfig_dir = \"~/.claude-subspace\"\n"
             ),
@@ -1642,7 +1648,7 @@ config_dir = "~/.claude-subspace"
         let project_root = tempdir().expect("project root");
         let project_path = project_root.path().to_string_lossy().into_owned();
         fs::write(
-            toml_dir.path().join("forge.toml"),
+            forge_toml_path(toml_dir.path()),
             format!(
                 r#"
 [[orgs]]
