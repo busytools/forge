@@ -86,19 +86,42 @@ pub(crate) fn state_path(config_dir: &Path) -> PathBuf {
     crate::config::forge_data_dir(config_dir).join(STATE_FILE_NAME)
 }
 
-/// Read the state file from disk. Returns an empty state on any
-/// failure (missing file, IO error, TOML parse error, schema-version
-/// mismatch). Logs the breadcrumb at debug for failure paths so a
+/// Legacy top-level state path, read as a non-destructive fallback until
+/// the file is moved under `forge/`. See [`load`].
+fn legacy_state_path(config_dir: &Path) -> PathBuf {
+    config_dir.join("forge-state.toml")
+}
+
+/// Read the state file from disk, preferring `forge/state.toml` and
+/// falling back to the legacy top-level `forge-state.toml` (with a
+/// warn). Returns an empty state on any failure (missing file, IO
+/// error, TOML parse error, schema-version mismatch). Logs the breadcrumb at debug for failure paths so a
 /// triaging user can see why their cold boot got no seed data,
 /// without polluting the default log level when the file simply
 /// doesn't exist yet.
 pub(crate) fn load(config_dir: &Path) -> ForgeState {
-    let path = state_path(config_dir);
+    let mut path = state_path(config_dir);
     let contents = match std::fs::read_to_string(&path) {
         Ok(s) => s,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            // First boot on this config_dir - entirely expected.
-            return ForgeState::empty();
+            // No forge/state.toml yet. Fall back to the legacy top-level
+            // file (a rollout aid on a Syncthing-synced config dir);
+            // writes always land under forge/ and the legacy copy is
+            // never removed here - that stays a manual post-rollout step.
+            let legacy = legacy_state_path(config_dir);
+            match std::fs::read_to_string(&legacy) {
+                Ok(s) => {
+                    tracing::warn!(
+                        target: "forge_workspace::account_cache",
+                        legacy = %legacy.display(),
+                        "state read from the legacy top-level forge-state.toml; it is written under forge/ from now on",
+                    );
+                    path = legacy;
+                    s
+                }
+                // No legacy file either - first boot on this config_dir.
+                Err(_) => return ForgeState::empty(),
+            }
         }
         Err(e) => {
             tracing::debug!(
@@ -266,6 +289,45 @@ mod tests {
         let dir = tmp();
         let state = load(dir.path());
         assert!(state.account_usage.is_empty());
+    }
+
+    #[test]
+    fn load_falls_back_to_legacy_top_level_state() {
+        let dir = tmp();
+        // Only the legacy top-level file exists (no forge/state.toml).
+        std::fs::write(dir.path().join("forge-state.toml"), "version = 1\nspinner = \"ember\"\n")
+            .expect("write legacy state");
+        let loaded = load(dir.path());
+        assert_eq!(
+            loaded.spinner,
+            Some(crate::ui::SpinnerStyle::Ember),
+            "legacy top-level state read via fallback",
+        );
+    }
+
+    #[test]
+    fn prefers_forge_state_over_legacy() {
+        let dir = tmp();
+        std::fs::write(dir.path().join("forge-state.toml"), "version = 1\nspinner = \"ember\"\n")
+            .expect("write legacy state");
+        store_spinner(dir.path(), Some(crate::ui::SpinnerStyle::Star));
+        let loaded = load(dir.path());
+        assert_eq!(
+            loaded.spinner,
+            Some(crate::ui::SpinnerStyle::Star),
+            "forge/state.toml wins over the legacy top-level",
+        );
+    }
+
+    #[test]
+    fn store_does_not_write_legacy_top_level() {
+        let dir = tmp();
+        store_spinner(dir.path(), Some(crate::ui::SpinnerStyle::Ember));
+        assert!(state_path(dir.path()).exists(), "state written under forge/");
+        assert!(
+            !dir.path().join("forge-state.toml").exists(),
+            "store never creates the legacy top-level file",
+        );
     }
 
     #[test]

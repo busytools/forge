@@ -35,13 +35,37 @@ fn cron_path(config_dir: &Path) -> PathBuf {
     crate::config::forge_data_dir(config_dir).join(CRON_FILE_NAME)
 }
 
-/// Read cron.toml at boot. Returns an empty list on any failure
-/// (missing file, IO error, parse error, schema-version mismatch).
+/// Legacy top-level cron path, read as a non-destructive fallback until
+/// the file is moved under `forge/`. See [`load_crons`].
+fn legacy_cron_path(config_dir: &Path) -> PathBuf {
+    config_dir.join("forge-cron.toml")
+}
+
+/// Read cron entries at boot, preferring `forge/cron.toml` and falling
+/// back to the legacy top-level `forge-cron.toml` (with a warn). Returns
+/// an empty list on any failure (missing file, IO error, parse error,
+/// schema-version mismatch). Writes always land under `forge/`; the
+/// legacy copy is never removed here - that stays a manual post-rollout
+/// step.
 pub(crate) fn load_crons(config_dir: &Path) -> Vec<CronEntry> {
-    let path = cron_path(config_dir);
+    let mut path = cron_path(config_dir);
     let contents = match std::fs::read_to_string(&path) {
         Ok(s) => s,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let legacy = legacy_cron_path(config_dir);
+            match std::fs::read_to_string(&legacy) {
+                Ok(s) => {
+                    tracing::warn!(
+                        target: "forge_workspace::cron_store",
+                        legacy = %legacy.display(),
+                        "crons read from the legacy top-level forge-cron.toml; written under forge/ from now on",
+                    );
+                    path = legacy;
+                    s
+                }
+                Err(_) => return Vec::new(),
+            }
+        }
         Err(e) => {
             tracing::warn!(
                 target: "forge_workspace::cron_store",
@@ -170,6 +194,42 @@ mod tests {
     fn load_returns_empty_when_file_missing() {
         let dir = tmp();
         assert!(load_crons(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn load_crons_falls_back_to_legacy_top_level() {
+        let dir = tmp();
+        let crons = vec![recurring("r-1")];
+        // Seed forge/cron.toml, then relocate to the legacy top-level
+        // path to simulate a pre-upgrade file (no forge/cron.toml).
+        store_crons(dir.path(), &crons);
+        std::fs::rename(cron_path(dir.path()), dir.path().join("forge-cron.toml"))
+            .expect("relocate to legacy");
+        assert!(!cron_path(dir.path()).exists());
+        assert_eq!(load_crons(dir.path()), crons, "legacy top-level cron read via fallback");
+    }
+
+    #[test]
+    fn prefers_forge_cron_over_legacy() {
+        let dir = tmp();
+        // Legacy has once("o-1"); forge/ has recurring("r-1"). forge/ wins.
+        store_crons(dir.path(), &[once("o-1")]);
+        std::fs::rename(cron_path(dir.path()), dir.path().join("forge-cron.toml")).expect("legacy");
+        store_crons(dir.path(), &[recurring("r-1")]);
+        let loaded = load_crons(dir.path());
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].id, CronId::from("r-1"), "forge/cron.toml wins over legacy");
+    }
+
+    #[test]
+    fn store_crons_does_not_write_legacy_top_level() {
+        let dir = tmp();
+        store_crons(dir.path(), &[recurring("r-1")]);
+        assert!(cron_path(dir.path()).exists(), "cron written under forge/");
+        assert!(
+            !dir.path().join("forge-cron.toml").exists(),
+            "store never creates the legacy top-level file",
+        );
     }
 
     #[test]
