@@ -784,6 +784,11 @@ pub struct DiffOverlayState {
     /// Which slice is currently shown. `WholeDiff` in whole-diff-only
     /// mode; starts at `Commit(0)` when opened in commit mode.
     pub scope: DiffScope,
+    /// The commit the `a` toggle jumped away from, so a second `a`
+    /// returns to it. `None` until the first commit→all-changes toggle
+    /// (a fresh open, or after reaching all-changes via the jump menu);
+    /// the return then falls back to the first commit.
+    pub last_commit: Option<usize>,
     /// Lazily-filled per-commit hunk caches, parallel to `commits`.
     /// `None` until the user first navigates to that commit (its scan
     /// runs on first visit). Length tracks `commits`.
@@ -963,6 +968,28 @@ impl DiffOverlayState {
         Some(self.select_scope(DiffScope::Commit(next)))
     }
 
+    /// Toggle between the current commit and the whole-branch ("All
+    /// changes") diff without opening the jump dropdown. From a commit it
+    /// remembers the index and switches to whole-diff; from whole-diff it
+    /// returns to the remembered commit (or the first commit when none is
+    /// remembered). No-op (`None`) in whole-diff-only mode.
+    pub fn toggle_all_changes(&mut self) -> Option<NavOutcome> {
+        if self.commits.is_empty() {
+            return None;
+        }
+        let target = match self.scope {
+            DiffScope::Commit(i) => {
+                self.last_commit = Some(i);
+                DiffScope::WholeDiff
+            }
+            DiffScope::WholeDiff => {
+                let i = self.last_commit.filter(|&i| i < self.commits.len()).unwrap_or(0);
+                DiffScope::Commit(i)
+            }
+        };
+        Some(self.select_scope(target))
+    }
+
     /// Number of jump-dropdown rows: "All changes" + one per commit.
     pub fn jump_row_count(&self) -> usize {
         self.commits.len() + 1
@@ -1081,6 +1108,7 @@ impl DiffOverlayState {
             commits: Vec::new(),
             branch: None,
             scope: DiffScope::WholeDiff,
+            last_commit: None,
             commit_cache: Vec::new(),
             whole_diff_cache: None,
             commit_loading: false,
@@ -1156,6 +1184,7 @@ impl DiffOverlayState {
             commits,
             branch,
             scope,
+            last_commit: None,
             commit_cache,
             whole_diff_cache,
             commit_loading: false,
@@ -1237,6 +1266,7 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
         // shadow anything there.
         KeyCode::Char('[') | KeyCode::Left => step_commit(app, false),
         KeyCode::Char(']') | KeyCode::Right => step_commit(app, true),
+        KeyCode::Char('a') => toggle_all_changes(app),
         KeyCode::Char('j') => open_jump(app),
         _ => {}
     }
@@ -1278,6 +1308,16 @@ fn handle_jump_key(app: &mut App, key: KeyEvent) {
 /// Step to the prev/next commit and spawn its scan if uncached.
 fn step_commit(app: &mut App, forward: bool) {
     let outcome = app.diff_overlay.as_mut().and_then(|o| o.step_commit(forward));
+    if let Some(outcome) = outcome {
+        after_nav(app, outcome);
+    }
+}
+
+/// Toggle between the current commit and the whole-branch diff (`a`),
+/// spawning the target scope's scan when it isn't cached. No-op in
+/// whole-diff-only mode.
+fn toggle_all_changes(app: &mut App) {
+    let outcome = app.diff_overlay.as_mut().and_then(DiffOverlayState::toggle_all_changes);
     if let Some(outcome) = outcome {
         after_nav(app, outcome);
     }
@@ -3247,6 +3287,41 @@ mod tests {
         assert_eq!(state.files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(), vec!["a.rs"]);
     }
 
+    fn cached_whole_diff() -> CachedScan {
+        CachedScan { files: vec![one_file("x.rs", FileStatus::Modified)], scanner_ok: true }
+    }
+
+    #[test]
+    fn toggle_all_changes_from_commit_remembers_and_returns() {
+        let mut state = commit_mode_state();
+        state.whole_diff_cache = Some(cached_whole_diff()); // synchronous toggle
+        state.select_scope(DiffScope::Commit(1));
+        assert_eq!(state.toggle_all_changes(), Some(NavOutcome::Ready));
+        assert_eq!(state.scope, DiffScope::WholeDiff, "toggling off a commit shows all changes");
+        assert_eq!(state.last_commit, Some(1), "the commit is remembered");
+        assert_eq!(state.toggle_all_changes(), Some(NavOutcome::Ready));
+        assert_eq!(state.scope, DiffScope::Commit(1), "toggling back returns to the same commit");
+    }
+
+    #[test]
+    fn toggle_all_changes_from_whole_diff_without_memory_goes_to_first_commit() {
+        let mut state = commit_mode_state();
+        state.whole_diff_cache = Some(cached_whole_diff());
+        // Reach whole-diff via the jump path (not `a`), so no commit is
+        // remembered - the toggle falls back to the first commit.
+        state.select_scope(DiffScope::WholeDiff);
+        assert_eq!(state.last_commit, None);
+        assert_eq!(state.toggle_all_changes(), Some(NavOutcome::Ready));
+        assert_eq!(state.scope, DiffScope::Commit(0), "no memory → first commit");
+    }
+
+    #[test]
+    fn toggle_all_changes_is_noop_in_whole_diff_only_mode() {
+        let mut state = sample_state();
+        assert_eq!(state.toggle_all_changes(), None);
+        assert_eq!(state.scope, DiffScope::WholeDiff);
+    }
+
     #[test]
     fn comments_accumulate_across_commits_but_count_current_scope() {
         let mut state = commit_mode_state();
@@ -3514,9 +3589,26 @@ mod tests {
         set_active_view(&mut app, ActiveView::Diff);
         handle_key(&mut app, KeyEvent::from(KeyCode::Char(']')));
         handle_key(&mut app, KeyEvent::from(KeyCode::Char('j')));
+        handle_key(&mut app, KeyEvent::from(KeyCode::Char('a')));
         assert_eq!(overlay(&app).scope, DiffScope::WholeDiff);
         assert!(!overlay(&app).jump_open, "no dropdown without commits");
         assert!(app.diff_overlay.is_some());
+    }
+
+    #[test]
+    fn a_key_toggles_between_commit_and_all_changes() {
+        let mut app = app_with_commit_overlay();
+        if let Some(o) = app.diff_overlay.as_mut() {
+            o.whole_diff_cache = Some(CachedScan {
+                files: vec![one_file("x.rs", FileStatus::Modified)],
+                scanner_ok: true,
+            });
+        }
+        handle_key(&mut app, KeyEvent::from(KeyCode::Char('a')));
+        assert_eq!(overlay(&app).scope, DiffScope::WholeDiff, "a from a commit → all changes");
+        assert_eq!(overlay(&app).last_commit, Some(0), "the commit is remembered");
+        handle_key(&mut app, KeyEvent::from(KeyCode::Char('a')));
+        assert_eq!(overlay(&app).scope, DiffScope::Commit(0), "a again → back to the commit");
     }
 
     #[test]

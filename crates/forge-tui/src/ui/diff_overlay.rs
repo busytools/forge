@@ -809,6 +809,7 @@ fn render_footer(frame: &mut Frame, area: Rect, overlay: &DiffOverlayState, mode
         let mut hints: Vec<(&str, &str)> = vec![("\u{2191}\u{2193}", "scroll")];
         if commit_mode {
             hints.push(("\u{25c0}\u{25b6} / [ ]", "prev/next commit"));
+            hints.push(("a", "all changes / back"));
             hints.push(("j", "jump"));
         } else {
             hints.push(("PgUp/Dn", "page"));
@@ -2398,5 +2399,6 @@ mod tests {
         assert!(full.contains("fix the threshold check"), "subject renders above the diff");
         assert!(full.contains("split the near-threshold predicate"), "body renders above the diff");
         assert!(full.contains("is_near_threshold"), "the commit's diff still renders below it");
+        assert!(full.contains("all changes / back"), "footer shows the `a` toggle hint");
     }
 }
