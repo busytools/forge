@@ -18,27 +18,15 @@ use hudsucker::rcgen::{
 
 use crate::Error;
 
-/// Resolve the directory where the CA cert + key live.
+/// Resolve the directory where the CA cert + key live, under forge's
+/// machine-local app-support base (`forge-tui/ca/`).
 ///
 /// # Errors
 ///
-/// Returns [`Error::Connection`] when neither `dirs::data_local_dir()`
-/// nor a reasonable fallback is available. Per the project's Hard
-/// Rule #15, we refuse to fall back to `std::env::current_dir()` -
-/// the proxy must behave identically regardless of launch directory.
+/// Propagates [`crate::paths::app_support_dir`]'s error when no
+/// data/cache/home dir resolves.
 pub fn ca_dir() -> Result<PathBuf, Error> {
-    if let Some(dir) = dirs::data_local_dir() {
-        return Ok(dir.join("forge-tui").join("ca"));
-    }
-    if let Some(dir) = dirs::cache_dir() {
-        return Ok(dir.join("forge-tui").join("ca"));
-    }
-    if let Some(home) = dirs::home_dir() {
-        return Ok(home.join(".forge-tui").join("ca"));
-    }
-    Err(Error::Connection {
-        reason: "no resolvable data/cache/home dir for rewriter CA path".into(),
-    })
+    Ok(crate::paths::app_support_dir()?.join("ca"))
 }
 
 /// Resolve the cert + key paths inside [`ca_dir`].
