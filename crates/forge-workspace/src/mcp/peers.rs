@@ -339,6 +339,18 @@ impl Tool for TellAgent {
         let (kind, reply_target_key) =
             classify_tell(&*self.facade, &args.target, in_reply_to_id.as_ref());
         let is_reply = matches!(kind, WrappedKind::Reply);
+        // Surface a degraded in_reply_to (classify_tell downgraded it
+        // to a plain Message on an unknown/stale id or target mismatch)
+        // in the tool result so the replier's LLM can retry.
+        let degraded_note = match (in_reply_to_id.as_ref(), &kind) {
+            (Some(id), WrappedKind::Message) => Some(format!(
+                "in_reply_to {id} did not match an open ask (it may be stale, \
+                 already answered, or timed out), so this was delivered as a \
+                 plain message rather than a reply. Re-check the correlation \
+                 id if you meant to reply."
+            )),
+            _ => None,
+        };
 
         let correlation_id = CorrelationId::new_tell();
         let wrapped = WrappedPrompt {
@@ -373,7 +385,7 @@ impl Tool for TellAgent {
             self.facade.bump_inflight_stats(&target_session_key, PeerStatsDelta::OutgoingMinus1);
         }
 
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "correlation_id": correlation_id.as_str(),
             "queued_at": chrono_rfc3339_now(),
             "target_status": match target_status {
@@ -381,6 +393,11 @@ impl Tool for TellAgent {
                 crate::mcp::peers::facade::TargetStatus::QueuedForSpawn => "queued_for_spawn",
             },
         });
+        if let Some(note) = degraded_note
+            && let Some(obj) = body.as_object_mut()
+        {
+            obj.insert("note".to_owned(), serde_json::Value::String(note));
+        }
         match serde_json::to_string_pretty(&body) {
             Ok(json) => ToolOutput::text(json),
             Err(err) => tool_error(format!("response serialization failed: {err}")),
@@ -601,6 +618,7 @@ impl Tool for AskAgent {
             caller: caller_key.clone(),
             caller_project: identity.name.clone(),
             target_project: args.target.clone(),
+            target_session: None,
         });
         self.facade.bump_inflight_stats(&caller_key, PeerStatsDelta::OutgoingPlus1);
         let target_status =
@@ -775,6 +793,7 @@ mod tests {
             caller: fake_key(caller_key_str),
             caller_project: caller_project.to_owned(),
             target_project: target_project.to_owned(),
+            target_session: None,
         }
     }
 
@@ -799,6 +818,7 @@ mod tests {
             serde_json::from_str(&output.blocks[0].text).expect("valid JSON");
         let id = parsed["correlation_id"].as_str().expect("correlation_id present");
         assert!(id.starts_with("t-"), "tell correlation ids prefix t-, got {id}");
+        assert!(parsed.get("note").is_none(), "unsolicited tell carries no degraded-reply note");
     }
 
     #[tokio::test]
@@ -871,6 +891,10 @@ mod tests {
             })
             .await;
         assert!(!output.is_error, "Reply should not error: {:?}", output.blocks);
+        // A cleanly-resolved reply is not degraded, so it carries no note.
+        let parsed: serde_json::Value =
+            serde_json::from_str(&output.blocks[0].text).expect("valid JSON");
+        assert!(parsed.get("note").is_none(), "a resolved reply carries no degraded note");
 
         // Inspect what got dispatched: the deliver call's WrappedPrompt
         // should carry WrappedKind::Reply.
@@ -906,6 +930,17 @@ mod tests {
             })
             .await;
         assert!(!output.is_error, "valid-shape unknown id degrades to Message, not error");
+        // A degraded reply must not be a bare success: the result
+        // carries a note so the replier's LLM learns its reply landed
+        // as a plain message and can retry with the right id.
+        let parsed: serde_json::Value =
+            serde_json::from_str(&output.blocks[0].text).expect("valid JSON");
+        let note = parsed["note"].as_str().expect("degraded reply carries a note");
+        assert!(note.contains("q-00000000"), "note names the unresolved id: {note}");
+        assert!(
+            note.contains("plain message") && note.contains("open ask"),
+            "note explains it landed as a plain message and the ask was not open: {note}",
+        );
     }
 
     #[tokio::test]

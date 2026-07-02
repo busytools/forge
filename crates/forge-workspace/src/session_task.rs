@@ -665,6 +665,7 @@ impl SessionTask {
                     &self.key,
                     crate::mcp::peers::facade::PeerStatsDelta::IncomingPlus1,
                 );
+                workspace.stamp_inflight_target(&wrapped.correlation_id, &self.key);
             }
             // Same typed peer-envelope echo the running-target
             // dispatch path does. Fire BEFORE the LLM-side dispatch

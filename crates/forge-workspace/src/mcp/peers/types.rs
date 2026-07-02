@@ -152,6 +152,10 @@ pub struct InflightAsk {
     pub caller: SessionKey,
     pub caller_project: String,
     pub target_project: String,
+    /// Session stamped with this ask's `IncomingPlus1` at delivery
+    /// (`None` until delivered) so expiry can clear the target's
+    /// incoming badge, not just the caller's outgoing.
+    pub target_session: Option<SessionKey>,
 }
 
 /// The complete content of an outgoing or inbound peer message.
