@@ -54,13 +54,19 @@ automatically on exit/crash; the `WorkspaceError::AlreadyRunning` hard-fail
 mirrors the proxy one. Genuinely separate profiles / config dirs still
 coexist. No daemon, no cross-process shared state.
 
-forge keeps its own files - `forge.toml`, `state.toml`, `cron.toml` - under
-a `<config_dir>/forge/` subfolder, away from claude's own config-dir files;
-`Workspace::new` creates it at boot and hard-fails if it can't. (The
-single-instance lock is the exception: it is machine-local, per above.) `forge.toml` (read-only for forge) and any pre-existing top-level
-`forge-state.toml` / `forge-cron.toml` are still read from the config-dir
-root as a non-destructive rollout fallback, but everything new is written
-under `forge/`.
+forge keeps `forge.toml` + `cron.toml` under a `<config_dir>/forge/`
+subfolder, away from claude's own config-dir files; `Workspace::new`
+creates it at boot and hard-fails if it can't. Runtime state is the
+exception: both the single-instance lock and `state.toml` (the
+account-usage cache + `/spinner` override) live machine-local under
+forge's app-support dir, keyed by the config dir - `state.toml` churns
+once a minute and the lock's inode must stay put, so neither can sit in
+the Syncthing-synced config dir. `forge.toml` (read-only for forge) and
+any pre-existing top-level `forge-cron.toml` are still read from the
+config-dir root as a non-destructive rollout fallback, and the pre-move
+synced `forge/state.toml` is read once as a machine-local migration
+seed; everything new is written under `forge/` (config) or app-support
+(runtime state).
 
 ## Crate placement guide (where does my new code go?)
 
