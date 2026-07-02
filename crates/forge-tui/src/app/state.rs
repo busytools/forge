@@ -1866,17 +1866,14 @@ impl App {
     /// the workspace, sorted soonest-first. Called on the ~1s ticker so
     /// the Inspector reads a cheap cached `Vec` instead of resolving the
     /// project + locking the workspace every render. Resolves the active
-    /// session to its project by session-key membership in
-    /// `list_projects` (empty when the active session isn't in a
-    /// project yet - e.g. a synthetic spawn bucket - or has no crons).
+    /// session to its project via `Workspace::crons_for_session` - the
+    /// same `caller_context` path the cron create + list flow uses, so a
+    /// live-worker session sees its project's crons too. Empty when the
+    /// session maps to no project (pre-Connect / synthetic spawn bucket)
+    /// or the project has no crons.
     pub fn refresh_forge_crons(&mut self) {
         let mut crons = match (self.workspace.as_ref(), self.active_session_key.as_ref()) {
-            (Some(ws), Some(key)) => ws
-                .list_projects()
-                .into_iter()
-                .find(|p| p.sessions.iter().any(|s| &s.session == key))
-                .map(|p| ws.crons_for_project(&p.name))
-                .unwrap_or_default(),
+            (Some(ws), Some(key)) => ws.crons_for_session(key),
             _ => Vec::new(),
         };
         crons.sort_by_key(|c| c.next_fire);
