@@ -1666,8 +1666,8 @@ impl Workspace {
                 target: "forge_workspace::account_cache",
                 event_name = "account_cache_written",
                 accounts = account_count,
-                path = %crate::account_cache::state_path(&self.config_dir).display(),
-                "state.toml updated after successful poll round",
+                path = ?crate::account_cache::state_path(&self.config_dir),
+                "state file updated after successful poll round",
             );
         }
     }

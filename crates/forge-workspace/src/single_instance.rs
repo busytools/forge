@@ -20,7 +20,7 @@
 //! Why there and not beside the other forge state in `<config_dir>/forge/`:
 //! `flock` binds the open file description (the inode), not the path, and
 //! rewriting a file by renaming a temp over it swaps the inode. forge's
-//! own data files (forge.toml / state.toml) are rewritten that way, so the
+//! own data files (forge.toml / cron.toml) are rewritten that way, so the
 //! lock must be a dedicated file that is only ever opened + flocked, never
 //! renamed; and the config dir is Syncthing-synced across the user's Macs,
 //! where Syncthing also applies incoming changes by rename - a lock synced
@@ -32,9 +32,7 @@
 //! is now unused and harmless (a fresh boot writes the machine-local lock
 //! instead), so there is no migration.
 
-use std::collections::hash_map::DefaultHasher;
 use std::fs::{File, OpenOptions};
-use std::hash::{Hash, Hasher};
 use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
 
@@ -58,10 +56,7 @@ pub(crate) enum AcquireError {
 /// path is canonicalised first (best-effort) so symlinked / trailing-slash
 /// variants resolve to one lock.
 fn lock_path(config_dir: &Path, app_support: &Path) -> PathBuf {
-    let canonical = config_dir.canonicalize().unwrap_or_else(|_| config_dir.to_path_buf());
-    let mut hasher = DefaultHasher::new();
-    canonical.hash(&mut hasher);
-    app_support.join(LOCK_DIR_NAME).join(format!("{:016x}.lock", hasher.finish()))
+    app_support.join(LOCK_DIR_NAME).join(format!("{}.lock", forge_sdk::config_dir_hash(config_dir)))
 }
 
 /// Acquire the per-config-dir single-instance lock.
