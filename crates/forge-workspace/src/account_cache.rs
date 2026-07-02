@@ -18,6 +18,10 @@
 //! the single-instance lock is machine-local). Schema versioned so
 //! future shape changes can invalidate cleanly.
 //!
+//! On the first boot after the move, [`load`] seeds the machine-local
+//! file from the pre-move synced `<config_dir>/forge/state.toml` (left
+//! in place) so the usage cache + `/spinner` pick carry over.
+//!
 //! Failures are non-fatal: an unresolved app-support dir, missing file,
 //! corrupt TOML, or IO error all degrade to "no cache loaded; spawn
 //! paths see empty bars until the poller succeeds." Tracing surfaces
@@ -104,6 +108,13 @@ fn state_path_in(config_dir: &Path, app_support: &Path) -> PathBuf {
         .join(format!("{}.toml", forge_sdk::config_dir_hash(config_dir)))
 }
 
+/// The pre-move synced state file (`<config_dir>/forge/state.toml`), read
+/// once as a migration seed the first time a config dir has no
+/// machine-local file. See [`load_in`].
+fn synced_state_path(config_dir: &Path) -> PathBuf {
+    crate::config::forge_data_dir(config_dir).join("state.toml")
+}
+
 /// Resolve forge's app-support base, warning (non-fatally) when it can't
 /// be found so the read/write paths degrade to no persistence rather
 /// than falling back to a launch-dir-derived path.
@@ -130,14 +141,17 @@ pub(crate) fn load(config_dir: &Path) -> ForgeState {
 }
 
 /// [`load`] against an explicit app-support base. Reads the machine-local
-/// `state/<hash>.toml`; a debug breadcrumb explains a failed read so a
-/// triaging user sees why a cold boot got no seed data, without noise
-/// when the file simply doesn't exist yet.
+/// `state/<hash>.toml`; when it is absent, seeds once from the pre-move
+/// synced `<config_dir>/forge/state.toml` (see [`migrate_synced_seed`]).
+/// A debug breadcrumb explains a failed read of an existing file, without
+/// noise when neither file exists yet.
 fn load_in(config_dir: &Path, app_support: &Path) -> ForgeState {
     let path = state_path_in(config_dir, app_support);
-    let contents = match std::fs::read_to_string(&path) {
-        Ok(s) => s,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return ForgeState::empty(),
+    match std::fs::read_to_string(&path) {
+        Ok(contents) => parse_state(&contents, &path),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            migrate_synced_seed(config_dir, &path)
+        }
         Err(e) => {
             tracing::debug!(
                 target: "forge_workspace::account_cache",
@@ -145,10 +159,36 @@ fn load_in(config_dir: &Path, app_support: &Path) -> ForgeState {
                 path = %path.display(),
                 "state file present but read failed; treating as empty",
             );
-            return ForgeState::empty();
+            ForgeState::empty()
         }
-    };
-    let parsed: ForgeState = match toml::from_str(&contents) {
+    }
+}
+
+/// Seed from the pre-move synced `<config_dir>/forge/state.toml` when the
+/// machine-local file is absent. Read-only: the synced file is left in
+/// place, and the next write lands machine-local so this runs at most
+/// once per config dir. Empty when there is no synced file.
+fn migrate_synced_seed(config_dir: &Path, machine_local: &Path) -> ForgeState {
+    let synced = synced_state_path(config_dir);
+    match std::fs::read_to_string(&synced) {
+        Ok(contents) => {
+            tracing::info!(
+                target: "forge_workspace::account_cache",
+                synced = %synced.display(),
+                machine_local = %machine_local.display(),
+                "seeding machine-local state from the synced forge/state.toml (one-time migration)",
+            );
+            parse_state(&contents, &synced)
+        }
+        Err(_) => ForgeState::empty(),
+    }
+}
+
+/// Parse + version-check a state document read from `path`, treating any
+/// problem as empty (a schema bump degrades to one cold boot, not a
+/// panic).
+fn parse_state(contents: &str, path: &Path) -> ForgeState {
+    let parsed: ForgeState = match toml::from_str(contents) {
         Ok(c) => c,
         Err(e) => {
             tracing::debug!(
@@ -331,6 +371,18 @@ mod tests {
 
     fn fixture_entry() -> CachedAccountUsage {
         CachedAccountUsage { snapshot: fake_snapshot() }
+    }
+
+    /// Write a pre-move synced `<config_dir>/forge/state.toml`, standing
+    /// in for what an older build left behind before the machine-local
+    /// move.
+    fn write_synced_state(config_dir: &Path, state: &ForgeState) {
+        let forge = crate::config::ensure_forge_data_dir(config_dir).expect("forge/ dir");
+        std::fs::write(
+            forge.join("state.toml"),
+            toml::to_string_pretty(state).expect("serialise synced state"),
+        )
+        .expect("write synced state");
     }
 
     #[test]
@@ -579,6 +631,73 @@ mod tests {
         assert!(
             loaded.account_usage.contains_key("Granite"),
             "a stale spinner key must not drop the account-usage cache",
+        );
+    }
+
+    #[test]
+    fn load_seeds_from_synced_state_when_machine_local_absent() {
+        let cfg = cfg();
+        let base = base();
+        let mut seed = ForgeState::empty();
+        seed.spinner = Some(crate::ui::SpinnerStyle::Ember);
+        seed.account_usage.insert("Granite".to_owned(), fixture_entry());
+        write_synced_state(cfg.path(), &seed);
+
+        assert!(!state_path_in(cfg.path(), base.path()).exists(), "no machine-local file yet");
+        let loaded = load_in(cfg.path(), base.path());
+        assert_eq!(
+            loaded.spinner,
+            Some(crate::ui::SpinnerStyle::Ember),
+            "the /spinner pick carries over from the synced seed",
+        );
+        assert!(
+            loaded.account_usage.contains_key("Granite"),
+            "the usage cache carries over from the synced seed",
+        );
+    }
+
+    #[test]
+    fn migration_leaves_the_synced_state_in_place() {
+        let cfg = cfg();
+        let base = base();
+        let mut seed = ForgeState::empty();
+        seed.spinner = Some(crate::ui::SpinnerStyle::Ember);
+        write_synced_state(cfg.path(), &seed);
+        let synced = crate::config::forge_data_dir(cfg.path()).join("state.toml");
+        let before = std::fs::read_to_string(&synced).expect("synced present");
+
+        let _ = load_in(cfg.path(), base.path());
+
+        assert!(synced.exists(), "the migration read must not delete the synced file");
+        assert_eq!(
+            std::fs::read_to_string(&synced).expect("still readable"),
+            before,
+            "the synced file is untouched by the migration read",
+        );
+    }
+
+    #[test]
+    fn write_after_migration_lands_machine_local_and_later_loads_ignore_synced() {
+        let cfg = cfg();
+        let base = base();
+        let mut seed = ForgeState::empty();
+        seed.spinner = Some(crate::ui::SpinnerStyle::Ember);
+        write_synced_state(cfg.path(), &seed);
+
+        // A store after the seed writes machine-local.
+        store_spinner_in(cfg.path(), base.path(), Some(crate::ui::SpinnerStyle::Star));
+        assert!(state_path_in(cfg.path(), base.path()).exists(), "write landed machine-local");
+
+        // Now that the machine-local file exists, the synced seed is
+        // never read again - change it and the load still returns the
+        // machine-local value.
+        let mut synced_changed = ForgeState::empty();
+        synced_changed.spinner = Some(crate::ui::SpinnerStyle::Sparkle);
+        write_synced_state(cfg.path(), &synced_changed);
+        assert_eq!(
+            load_in(cfg.path(), base.path()).spinner,
+            Some(crate::ui::SpinnerStyle::Star),
+            "machine-local wins; the synced file is no longer read",
         );
     }
 }
