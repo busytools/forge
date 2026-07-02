@@ -803,6 +803,7 @@ impl Tool for Ask {
             caller: caller_key.clone(),
             caller_project: caller_project_key,
             target_project: target_project_composite,
+            target_session: None,
         });
         // Bump the caller's outgoing counter. Mirrors peers__ask_agent
         // so the sidebar badge reflects "I have N asks awaiting reply"
@@ -1984,6 +1985,7 @@ mod tests {
                 caller,
                 caller_project: caller_project.to_owned(),
                 target_project: target_composite.to_owned(),
+                target_session: None,
             },
         );
         id

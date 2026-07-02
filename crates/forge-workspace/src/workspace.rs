@@ -1026,6 +1026,7 @@ impl Workspace {
                     session_key,
                     crate::mcp::peers::facade::PeerStatsDelta::IncomingPlus1,
                 );
+                self.stamp_inflight_target(&wrapped.correlation_id, session_key);
             }
             crate::spawn::push_peer_user_turn_into_chat(self, session_key, &wrapped);
             let text = wrapped.to_prose();
@@ -3673,6 +3674,16 @@ impl Workspace {
         true
     }
 
+    /// Stamp the session that received an ask's `IncomingPlus1` onto
+    /// its `InflightAsk`, paired with every Question delivery so a
+    /// later `expire_inflight_ask_failed` can clear that session's
+    /// incoming badge (no-op once the ask completes).
+    pub(crate) fn stamp_inflight_target(&self, id: &CorrelationId, target: &SessionKey) {
+        if let Some(ask) = self.inflight_asks.lock().get_mut(id) {
+            ask.target_session = Some(target.clone());
+        }
+    }
+
     /// Expire every in-flight ask whose target session is the one
     /// closing. Called when:
     /// - `AgentEvent::ConnectionFailed` arrives for a target's bridge
@@ -3751,6 +3762,15 @@ impl Workspace {
             &ask.caller,
             crate::mcp::peers::facade::PeerStatsDelta::OutgoingMinus1,
         );
+        // If the ask reached a target (its incoming was bumped at
+        // delivery), clear that side too - otherwise the target's `N↓`
+        // stays lit for an ask that will never be answered.
+        if let Some(target) = &ask.target_session {
+            facade.bump_inflight_stats(
+                target,
+                crate::mcp::peers::facade::PeerStatsDelta::IncomingMinus1,
+            );
+        }
 
         let target_org = self
             .list_projects()
@@ -5245,6 +5265,7 @@ config_dir = "~/.claude-subspace"
                 caller: caller.clone(),
                 caller_project: "forge".to_owned(),
                 target_project: "granite-backend".to_owned(),
+                target_session: None,
             },
         );
         assert!(workspace.inflight_asks.lock().contains_key(&id));
@@ -5280,6 +5301,7 @@ config_dir = "~/.claude-subspace"
                 caller: caller.clone(),
                 caller_project: "forge".to_owned(),
                 target_project: "granite-backend".to_owned(),
+                target_session: None,
             },
         );
 
@@ -5293,6 +5315,81 @@ config_dir = "~/.claude-subspace"
         }
         assert!(saw_stats, "PeerInflightStatsChanged fires for delivery_failed bump");
         assert!(!workspace.inflight_asks.lock().contains_key(&id));
+    }
+
+    /// A failed/expired ask must clear the TARGET's incoming badge, not
+    /// just the caller's outgoing. Pre-fix `expire_inflight_ask_failed`
+    /// only decremented the caller's outgoing, stranding the target's
+    /// `N↓`; the `target_session` stamp lets expiry clear both sides.
+    #[tokio::test]
+    async fn expire_inflight_ask_failed_clears_target_incoming() {
+        use crate::mcp::peers::types::{CorrelationId, InflightAsk, PeerFailureReason};
+        let dir = forge_toml_with_two_projects();
+        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+
+        let caller = SessionKey::from_str_for_test("asker");
+        let target = SessionKey::from_str_for_test("replier");
+        let id = CorrelationId::new_ask();
+        workspace.inflight_asks.lock().insert(
+            id.clone(),
+            InflightAsk {
+                correlation_id: id.clone(),
+                caller: caller.clone(),
+                caller_project: "forge".to_owned(),
+                target_project: "granite-backend".to_owned(),
+                target_session: Some(target.clone()),
+            },
+        );
+        // Mirror the runtime bumps: ask registered (caller outgoing +1),
+        // then delivered (target incoming +1).
+        {
+            let mut stats = workspace.peer_stats.lock();
+            stats.entry(caller.clone()).or_default().outgoing = 1;
+            stats.entry(target.clone()).or_default().incoming = 1;
+        }
+
+        workspace.expire_inflight_ask_failed(&id, PeerFailureReason::TargetConnectionFailed);
+
+        let stats = workspace.peer_stats.lock();
+        assert_eq!(stats.get(&caller).map(|s| s.outgoing), Some(0), "caller outgoing cleared");
+        assert_eq!(
+            stats.get(&caller).map(|s| s.delivery_failed),
+            Some(1),
+            "caller delivery_failed bumped",
+        );
+        assert_eq!(
+            stats.get(&target).map(|s| s.incoming),
+            Some(0),
+            "target incoming cleared on expiry (was stranded before the fix)",
+        );
+    }
+
+    /// `stamp_inflight_target` records which session received an ask's
+    /// `IncomingPlus1` so a later expiry can decrement that same key.
+    #[test]
+    fn stamp_inflight_target_records_target_session() {
+        use crate::mcp::peers::types::{CorrelationId, InflightAsk};
+        let (workspace, _rx) = Workspace::testing_stub();
+        let id = CorrelationId::new_ask();
+        let target = SessionKey::from_str_for_test("replier");
+        workspace.inflight_asks.lock().insert(
+            id.clone(),
+            InflightAsk {
+                correlation_id: id.clone(),
+                caller: SessionKey::from_str_for_test("asker"),
+                caller_project: "forge".to_owned(),
+                target_project: "granite-backend".to_owned(),
+                target_session: None,
+            },
+        );
+
+        workspace.stamp_inflight_target(&id, &target);
+
+        assert_eq!(
+            workspace.inflight_asks.lock().get(&id).and_then(|a| a.target_session.clone()),
+            Some(target),
+            "target_session stamped for a later expiry to clear",
+        );
     }
 
     /// Workspace::dispatch(Command::DeliverPeerPrompt) routes to the
@@ -5390,6 +5487,7 @@ config_dir = "~/.claude-subspace"
                     caller: caller_a.clone(),
                     caller_project: "forge".to_owned(),
                     target_project: "granite-backend".to_owned(),
+                    target_session: None,
                 },
             );
             asks.insert(
@@ -5399,6 +5497,7 @@ config_dir = "~/.claude-subspace"
                     caller: caller_b.clone(),
                     caller_project: "forge".to_owned(),
                     target_project: "granite-backend".to_owned(),
+                    target_session: None,
                 },
             );
             asks.insert(
@@ -5408,6 +5507,7 @@ config_dir = "~/.claude-subspace"
                     caller: caller_c.clone(),
                     caller_project: "granite-backend".to_owned(),
                     target_project: "forge".to_owned(),
+                    target_session: None,
                 },
             );
         }

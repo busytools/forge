@@ -601,6 +601,7 @@ impl Tool for AskAgent {
             caller: caller_key.clone(),
             caller_project: identity.name.clone(),
             target_project: args.target.clone(),
+            target_session: None,
         });
         self.facade.bump_inflight_stats(&caller_key, PeerStatsDelta::OutgoingPlus1);
         let target_status =
@@ -775,6 +776,7 @@ mod tests {
             caller: fake_key(caller_key_str),
             caller_project: caller_project.to_owned(),
             target_project: target_project.to_owned(),
+            target_session: None,
         }
     }
 
