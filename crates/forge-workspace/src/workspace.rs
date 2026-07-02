@@ -2573,6 +2573,17 @@ impl Workspace {
         self.crons.lock().iter().filter(|c| c.project_name == project_name).cloned().collect()
     }
 
+    /// The crons for the project the given session belongs to, resolved
+    /// via `caller_context` (matches a live worker, the lead, or any
+    /// catalog session) - the SAME resolution the cron create + list path
+    /// uses, so the Inspector shows exactly what a session's project owns.
+    /// Empty when the session maps to no project.
+    pub fn crons_for_session(&self, session: &SessionKey) -> Vec<forge_primitives::CronEntry> {
+        crate::mcp::caller_context::caller_context(self, session)
+            .map(|cx| self.crons_for_project(&cx.project_name))
+            .unwrap_or_default()
+    }
+
     /// A snapshot of every cron across all projects. Backs the
     /// scheduler's per-tick due-check.
     pub(crate) fn all_crons_snapshot(&self) -> Vec<forge_primitives::CronEntry> {
@@ -4260,6 +4271,69 @@ mod tests {
         assert!(crate::cron_store::load_crons(dir.path()).is_empty(), "removal persisted");
 
         assert!(!ws.remove_cron("forge", &CronId::from("c1")), "removing a gone id reports false");
+    }
+
+    #[test]
+    fn crons_for_session_resolves_worker_lead_and_unknown() {
+        use crate::mcp::workers::types::WorkerEntry;
+        use forge_primitives::WorkerLiveness;
+        use forge_primitives::cron::{CronEntry, CronId, CronKind};
+
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+
+        // A project visible via list_projects with a lead catalog session
+        // plus a live worker that is NOT in the catalog - the exact shape a
+        // worker-created cron sees.
+        let path = "/tmp/cron-session-proj";
+        ws.seed_test_project_with_team("cronproj", path, &[]);
+        ws.record_connected_session(path, "lead-uuid", Some("lead".to_owned()));
+        let key = ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(
+            Some(path),
+        ));
+        let worker = SessionKey::from_session_id("worker-uuid");
+        ws.insert_live_worker(
+            &key,
+            WorkerEntry {
+                label: "reviewer".into(),
+                charter: "review".into(),
+                session_key: worker.clone(),
+                status: WorkerLiveness::Running,
+                spawned_at: std::time::SystemTime::UNIX_EPOCH,
+                spawned_by_session_id: "lead-uuid".into(),
+                needs_tag: false,
+                is_git_repo_at_spawn: false,
+                diagnostic: None,
+                kick: None,
+            },
+        );
+
+        let entry = CronEntry {
+            id: CronId::from("c1"),
+            project_name: "cronproj".to_owned(),
+            kind: CronKind::Recurring("0 9 * * *".to_owned()),
+            prompt: "stand-up".to_owned(),
+            created_at: std::time::SystemTime::UNIX_EPOCH,
+            last_fire: None,
+            next_fire: std::time::SystemTime::UNIX_EPOCH,
+        };
+        ws.push_cron(entry.clone());
+
+        let lead = SessionKey::from_session_id("lead-uuid");
+        assert_eq!(
+            ws.crons_for_session(&lead),
+            vec![entry.clone()],
+            "lead resolves its project's crons",
+        );
+        assert_eq!(
+            ws.crons_for_session(&worker),
+            vec![entry.clone()],
+            "a live worker resolves its project's crons (the catalog-only walk missed this)",
+        );
+        assert!(
+            ws.crons_for_session(&SessionKey::from_session_id("ghost-uuid")).is_empty(),
+            "a session in no project has no crons",
+        );
     }
 
     #[test]
