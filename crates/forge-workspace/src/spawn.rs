@@ -223,6 +223,7 @@ pub(crate) fn handle_deliver_peer_prompt(
         if matches!(wrapped.kind, crate::mcp::peers::types::WrappedKind::Question) {
             let facade = crate::mcp::peers::facade::ProdWorkspaceFacade::from_arc(workspace);
             facade.bump_inflight_stats(&target_key, PeerStatsDelta::IncomingPlus1);
+            workspace.stamp_inflight_target(&wrapped.correlation_id, &target_key);
         }
 
         // Fire the typed peer-envelope echo BEFORE the LLM-side
@@ -951,6 +952,7 @@ pub(crate) fn handle_deliver_worker_prompt(
     if matches!(wrapped.kind, crate::mcp::peers::types::WrappedKind::Question) {
         let facade = crate::mcp::peers::facade::ProdWorkspaceFacade::from_arc(workspace);
         facade.bump_inflight_stats(&target_key, PeerStatsDelta::IncomingPlus1);
+        workspace.stamp_inflight_target(&wrapped.correlation_id, &target_key);
     }
 
     // Fire the typed peer-envelope echo BEFORE the LLM-side dispatch
@@ -1012,6 +1014,7 @@ pub(crate) fn handle_deliver_worker_prompt_to_lead(
     if matches!(wrapped.kind, crate::mcp::peers::types::WrappedKind::Question) {
         let facade = crate::mcp::peers::facade::ProdWorkspaceFacade::from_arc(workspace);
         facade.bump_inflight_stats(target_lead_key, PeerStatsDelta::IncomingPlus1);
+        workspace.stamp_inflight_target(&wrapped.correlation_id, target_lead_key);
     }
 
     let text = wrapped.to_prose();
@@ -1857,6 +1860,7 @@ config_dir = "~/.claude-subspace"
                 caller: SessionKey::from_session_id("lead-uuid"),
                 caller_project: project.as_str().to_owned(),
                 target_project: composite,
+                target_session: None,
             },
         );
         assert_eq!(workspace.inflight_asks.lock().len(), 1);

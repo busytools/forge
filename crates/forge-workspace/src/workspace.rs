@@ -1026,6 +1026,7 @@ impl Workspace {
                     session_key,
                     crate::mcp::peers::facade::PeerStatsDelta::IncomingPlus1,
                 );
+                self.stamp_inflight_target(&wrapped.correlation_id, session_key);
             }
             crate::spawn::push_peer_user_turn_into_chat(self, session_key, &wrapped);
             let text = wrapped.to_prose();
@@ -3670,7 +3671,44 @@ impl Workspace {
                 }
             }
         }
+        // Peer badges + open-ask keys follow the session across the
+        // rekey. peer_stats MERGES into any counts already at `to`
+        // (never clobbers or drops - erring toward keeping counts);
+        // open asks keyed on `from` (as caller or stamped target) are
+        // rewritten so replies + expiry hit the live key.
+        {
+            let mut stats = self.peer_stats.lock();
+            if let Some(from_stats) = stats.remove(from) {
+                let entry = stats.entry(to.clone()).or_default();
+                entry.outgoing = entry.outgoing.saturating_add(from_stats.outgoing);
+                entry.incoming = entry.incoming.saturating_add(from_stats.incoming);
+                entry.timed_out = entry.timed_out.saturating_add(from_stats.timed_out);
+                entry.delivery_failed =
+                    entry.delivery_failed.saturating_add(from_stats.delivery_failed);
+            }
+        }
+        {
+            let mut asks = self.inflight_asks.lock();
+            for ask in asks.values_mut() {
+                if ask.caller == *from {
+                    ask.caller = to.clone();
+                }
+                if ask.target_session.as_ref() == Some(from) {
+                    ask.target_session = Some(to.clone());
+                }
+            }
+        }
         true
+    }
+
+    /// Stamp the session that received an ask's `IncomingPlus1` onto
+    /// its `InflightAsk`, paired with every Question delivery so a
+    /// later `expire_inflight_ask_failed` can clear that session's
+    /// incoming badge (no-op once the ask completes).
+    pub(crate) fn stamp_inflight_target(&self, id: &CorrelationId, target: &SessionKey) {
+        if let Some(ask) = self.inflight_asks.lock().get_mut(id) {
+            ask.target_session = Some(target.clone());
+        }
     }
 
     /// Expire every in-flight ask whose target session is the one
@@ -3751,6 +3789,15 @@ impl Workspace {
             &ask.caller,
             crate::mcp::peers::facade::PeerStatsDelta::OutgoingMinus1,
         );
+        // If the ask reached a target (its incoming was bumped at
+        // delivery), clear that side too - otherwise the target's `N↓`
+        // stays lit for an ask that will never be answered.
+        if let Some(target) = &ask.target_session {
+            facade.bump_inflight_stats(
+                target,
+                crate::mcp::peers::facade::PeerStatsDelta::IncomingMinus1,
+            );
+        }
 
         let target_org = self
             .list_projects()
@@ -5140,6 +5187,91 @@ config_dir = "~/.claude-personal"
         assert!(workspace.domain_session_for(&to).is_none());
     }
 
+    /// A rekey must carry peer badges + open-ask keys to the new key:
+    /// `peer_stats` moves off `from`, and every `inflight_asks` entry
+    /// keyed on `from` (as caller or stamped target_session) is
+    /// rewritten to `to` so replies + expiry hit the live key.
+    #[test]
+    fn migrate_session_task_moves_peer_stats_and_open_ask_keys() {
+        use crate::mcp::peers::types::{CorrelationId, InflightAsk};
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        let from = SessionKey::from_str_for_test("synth-key");
+        let to = SessionKey::from_str_for_test("real-uuid");
+        let _cmd_rx = install_fake_session_task(&workspace, &from);
+
+        workspace.peer_stats.lock().entry(from.clone()).or_default().incoming = 1;
+
+        let as_caller = CorrelationId::new_ask();
+        let as_target = CorrelationId::new_ask();
+        {
+            let mut asks = workspace.inflight_asks.lock();
+            asks.insert(
+                as_caller.clone(),
+                InflightAsk {
+                    correlation_id: as_caller.clone(),
+                    caller: from.clone(),
+                    caller_project: "forge".to_owned(),
+                    target_project: "granite-backend".to_owned(),
+                    target_session: None,
+                },
+            );
+            asks.insert(
+                as_target.clone(),
+                InflightAsk {
+                    correlation_id: as_target.clone(),
+                    caller: SessionKey::from_str_for_test("someone-else"),
+                    caller_project: "granite-backend".to_owned(),
+                    target_project: "forge".to_owned(),
+                    target_session: Some(from.clone()),
+                },
+            );
+        }
+
+        assert!(workspace.migrate_session_task(&from, &to));
+
+        {
+            let stats = workspace.peer_stats.lock();
+            assert_eq!(stats.get(&to).map(|s| s.incoming), Some(1), "badge follows the session");
+            assert!(!stats.contains_key(&from), "stale key dropped");
+        }
+        {
+            let asks = workspace.inflight_asks.lock();
+            assert_eq!(
+                asks.get(&as_caller).map(|a| a.caller.clone()),
+                Some(to.clone()),
+                "caller rekeyed to the live session",
+            );
+            assert_eq!(
+                asks.get(&as_target).and_then(|a| a.target_session.clone()),
+                Some(to.clone()),
+                "target_session rekeyed to the live session",
+            );
+        }
+    }
+
+    /// When `to` already carries peer counts (a lingering resumed
+    /// UUID), migrate MERGES `from`'s counts in rather than clobbering
+    /// `to` or dropping `from` - erring toward keeping counts.
+    #[test]
+    fn migrate_session_task_merges_peer_stats_into_existing_to() {
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        let from = SessionKey::from_str_for_test("synth-key");
+        let to = SessionKey::from_str_for_test("real-uuid");
+        let _cmd_rx = install_fake_session_task(&workspace, &from);
+
+        {
+            let mut stats = workspace.peer_stats.lock();
+            stats.entry(from.clone()).or_default().outgoing = 2;
+            stats.entry(to.clone()).or_default().outgoing = 3;
+        }
+
+        assert!(workspace.migrate_session_task(&from, &to));
+
+        let stats = workspace.peer_stats.lock();
+        assert_eq!(stats.get(&to).map(|s| s.outgoing), Some(5), "counts merge, not clobber");
+        assert!(!stats.contains_key(&from), "stale key dropped after merge");
+    }
+
     /// `classify_oauth_usage_error` must distinguish HTTP 429 from
     /// auth-related failures so the TUI's bottom-panel hint reads
     /// `rate-limited` (the common case under multiple forge
@@ -5245,6 +5377,7 @@ config_dir = "~/.claude-subspace"
                 caller: caller.clone(),
                 caller_project: "forge".to_owned(),
                 target_project: "granite-backend".to_owned(),
+                target_session: None,
             },
         );
         assert!(workspace.inflight_asks.lock().contains_key(&id));
@@ -5280,6 +5413,7 @@ config_dir = "~/.claude-subspace"
                 caller: caller.clone(),
                 caller_project: "forge".to_owned(),
                 target_project: "granite-backend".to_owned(),
+                target_session: None,
             },
         );
 
@@ -5293,6 +5427,81 @@ config_dir = "~/.claude-subspace"
         }
         assert!(saw_stats, "PeerInflightStatsChanged fires for delivery_failed bump");
         assert!(!workspace.inflight_asks.lock().contains_key(&id));
+    }
+
+    /// A failed/expired ask must clear the TARGET's incoming badge, not
+    /// just the caller's outgoing. Pre-fix `expire_inflight_ask_failed`
+    /// only decremented the caller's outgoing, stranding the target's
+    /// `N↓`; the `target_session` stamp lets expiry clear both sides.
+    #[tokio::test]
+    async fn expire_inflight_ask_failed_clears_target_incoming() {
+        use crate::mcp::peers::types::{CorrelationId, InflightAsk, PeerFailureReason};
+        let dir = forge_toml_with_two_projects();
+        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+
+        let caller = SessionKey::from_str_for_test("asker");
+        let target = SessionKey::from_str_for_test("replier");
+        let id = CorrelationId::new_ask();
+        workspace.inflight_asks.lock().insert(
+            id.clone(),
+            InflightAsk {
+                correlation_id: id.clone(),
+                caller: caller.clone(),
+                caller_project: "forge".to_owned(),
+                target_project: "granite-backend".to_owned(),
+                target_session: Some(target.clone()),
+            },
+        );
+        // Mirror the runtime bumps: ask registered (caller outgoing +1),
+        // then delivered (target incoming +1).
+        {
+            let mut stats = workspace.peer_stats.lock();
+            stats.entry(caller.clone()).or_default().outgoing = 1;
+            stats.entry(target.clone()).or_default().incoming = 1;
+        }
+
+        workspace.expire_inflight_ask_failed(&id, PeerFailureReason::TargetConnectionFailed);
+
+        let stats = workspace.peer_stats.lock();
+        assert_eq!(stats.get(&caller).map(|s| s.outgoing), Some(0), "caller outgoing cleared");
+        assert_eq!(
+            stats.get(&caller).map(|s| s.delivery_failed),
+            Some(1),
+            "caller delivery_failed bumped",
+        );
+        assert_eq!(
+            stats.get(&target).map(|s| s.incoming),
+            Some(0),
+            "target incoming cleared on expiry (was stranded before the fix)",
+        );
+    }
+
+    /// `stamp_inflight_target` records which session received an ask's
+    /// `IncomingPlus1` so a later expiry can decrement that same key.
+    #[test]
+    fn stamp_inflight_target_records_target_session() {
+        use crate::mcp::peers::types::{CorrelationId, InflightAsk};
+        let (workspace, _rx) = Workspace::testing_stub();
+        let id = CorrelationId::new_ask();
+        let target = SessionKey::from_str_for_test("replier");
+        workspace.inflight_asks.lock().insert(
+            id.clone(),
+            InflightAsk {
+                correlation_id: id.clone(),
+                caller: SessionKey::from_str_for_test("asker"),
+                caller_project: "forge".to_owned(),
+                target_project: "granite-backend".to_owned(),
+                target_session: None,
+            },
+        );
+
+        workspace.stamp_inflight_target(&id, &target);
+
+        assert_eq!(
+            workspace.inflight_asks.lock().get(&id).and_then(|a| a.target_session.clone()),
+            Some(target),
+            "target_session stamped for a later expiry to clear",
+        );
     }
 
     /// Workspace::dispatch(Command::DeliverPeerPrompt) routes to the
@@ -5390,6 +5599,7 @@ config_dir = "~/.claude-subspace"
                     caller: caller_a.clone(),
                     caller_project: "forge".to_owned(),
                     target_project: "granite-backend".to_owned(),
+                    target_session: None,
                 },
             );
             asks.insert(
@@ -5399,6 +5609,7 @@ config_dir = "~/.claude-subspace"
                     caller: caller_b.clone(),
                     caller_project: "forge".to_owned(),
                     target_project: "granite-backend".to_owned(),
+                    target_session: None,
                 },
             );
             asks.insert(
@@ -5408,6 +5619,7 @@ config_dir = "~/.claude-subspace"
                     caller: caller_c.clone(),
                     caller_project: "granite-backend".to_owned(),
                     target_project: "forge".to_owned(),
+                    target_session: None,
                 },
             );
         }

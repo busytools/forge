@@ -675,6 +675,7 @@ mod tests {
             caller: fake_key("alpha"),
             caller_project: "alpha".to_owned(),
             target_project: "beta".to_owned(),
+            target_session: None,
         };
         mock.register_inflight_ask(ask.clone());
         let back = mock.resolve_correlation(&ask.correlation_id);

@@ -1540,12 +1540,12 @@ chat continues here...
         <tr>
           <td><code>peers__tell_agent</code></td>
           <td><code>target: string</code> · <code>message: string</code> · <code>in_reply_to: Option&lt;string&gt;</code></td>
-          <td>Fire-and-forget message. Returns immediately with the synthesised <code>correlation_id</code> (<code>t-XXXXXXXX</code>). When <code>in_reply_to</code> is set, the workspace looks up the matching ask: replies to a still-pending ask render as <code>Reply</code>; replies to a timed-out ask render as <code>LateReply</code>; replies whose target doesn't match (LLM hallucinated the wrong target) or whose id doesn't exist demote to <code>Message</code> with a warn log.</td>
+          <td>Fire-and-forget message. Returns immediately with the synthesised <code>correlation_id</code> (<code>t-XXXXXXXX</code>). When <code>in_reply_to</code> is set, the workspace looks up the matching ask: a reply to a still-open ask renders as <code>Reply</code> and closes the ask; a reply whose target doesn't match (LLM hallucinated the wrong target) or whose id doesn't exist (stale / already answered) demotes to <code>Message</code> with a warn log and a <code>note</code> in the tool result so the replier can retry with the right id.</td>
         </tr>
         <tr>
           <td><code>peers__ask_agent</code></td>
           <td><code>target: string</code> · <code>prompt: string</code></td>
-          <td>Returns immediately with a <code>correlation_id</code> (<code>q-XXXXXXXX</code>) and the ask transitions to in-flight. The reply lands as a synthetic user turn on the caller via the <code>[Reply ...]</code> envelope. A 30-min timer fires <code>SessionUpdate::PeerAskTimedOut</code> + a wrapped <code>[Ask ... timed out ...]</code> envelope to both caller and recipient when no reply lands. <code>HopLimitExceeded</code> and <code>UnknownTarget</code> return <code>is_error: true</code> synchronously; async failures (target spawn failed / channel closed / target connection died) fire <code>SessionUpdate::PeerAskFailed</code> + a wrapped <code>[Ask ... failed to deliver: ...]</code> envelope.</td>
+          <td>Returns immediately with a <code>correlation_id</code> (<code>q-XXXXXXXX</code>) and the ask transitions to in-flight. The reply lands as a synthetic user turn on the caller via the <code>[Reply ...]</code> envelope. The ask stays in-flight until a reply lands or the target is lost. <code>HopLimitExceeded</code> and <code>UnknownTarget</code> return <code>is_error: true</code> synchronously; async failures (target spawn failed / channel closed / target connection died) fire <code>SessionUpdate::PeerAskFailed</code> + a wrapped <code>[Ask ... failed to deliver: ...]</code> envelope.</td>
         </tr>
         <tr>
           <td><code>cron__create</code></td>
