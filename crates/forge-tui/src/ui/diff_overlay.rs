@@ -60,11 +60,16 @@ fn effective_view_mode(stored: DiffViewMode, pane_width: u16) -> DiffViewMode {
     if pane_width < MIN_WIDTH_FOR_SPLIT { DiffViewMode::Unified } else { stored }
 }
 
-/// Rows the commit stepper bar occupies at the top of the overlay when
-/// in commit mode (a title row + the position/controls row). Zero rows
-/// in whole-diff-only mode, where the overlay is byte-identical to
-/// before.
-const STEPPER_HEIGHT: u16 = 2;
+/// Named row offsets inside the commit stepper bar: the title on row 0,
+/// the movement/controls row on row 2, with blank spacers between and
+/// after so neither reads cramped against the diff.
+const STEPPER_TITLE_ROW: u16 = 0;
+const STEPPER_MOVE_ROW: u16 = 2;
+
+/// Total rows the commit stepper reserves at the top of the overlay in
+/// commit mode (title, gap, movement, gap-before-diff). Zero in
+/// whole-diff-only mode, where the overlay is byte-identical to before.
+const STEPPER_HEIGHT: u16 = 4;
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
@@ -256,9 +261,10 @@ fn render_stepper(frame: &mut Frame, area: Rect, overlay: &mut DiffOverlayState)
         Span::styled(overlay.target.clone(), accent),
         Span::styled(format!(" · {n} commit{}", if n == 1 { "" } else { "s" }), dim),
     ]);
+    let title_y = area.y.saturating_add(STEPPER_TITLE_ROW);
     frame.render_widget(
         Paragraph::new(title),
-        Rect { x: area.x, y: area.y, width: area.width, height: 1 },
+        Rect { x: area.x, y: title_y, width: area.width, height: 1 },
     );
 
     let total = overlay.comments.len();
@@ -293,7 +299,7 @@ fn render_stepper(frame: &mut Frame, area: Rect, overlay: &mut DiffOverlayState)
             accent,
         ));
     }
-    let controls_y = area.y.saturating_add(1);
+    let controls_y = area.y.saturating_add(STEPPER_MOVE_ROW);
     frame.render_widget(
         Paragraph::new(Line::from(spans)),
         Rect { x: area.x, y: controls_y, width: area.width, height: 1 },
@@ -442,12 +448,14 @@ fn render_jump_dropdown(frame: &mut Frame, area: Rect, overlay: &DiffOverlayStat
         dim,
     )));
 
-    let max_h = area.height.saturating_sub(STEPPER_HEIGHT);
+    // Under the movement row, not below the trailing gap - keeps the menu tied to `⌄ jump`.
+    let menu_top = STEPPER_MOVE_ROW.saturating_add(1);
+    let max_h = area.height.saturating_sub(menu_top);
     let height = u16::try_from(lines.len()).unwrap_or(u16::MAX).min(max_h);
     if height == 0 {
         return;
     }
-    let rect = Rect { x: area.x + indent, y: area.y + STEPPER_HEIGHT, width: box_width, height };
+    let rect = Rect { x: area.x + indent, y: area.y + menu_top, width: box_width, height };
     frame.render_widget(Paragraph::new(lines), rect);
 }
 
@@ -2211,6 +2219,13 @@ mod tests {
     }
 
     #[test]
+    fn stepper_geometry_reserves_four_rows() {
+        assert_eq!(STEPPER_TITLE_ROW, 0, "title on the first row");
+        assert_eq!(STEPPER_MOVE_ROW, 2, "movement row after a blank spacer");
+        assert_eq!(STEPPER_HEIGHT, 4, "title, gap, movement, gap-before-diff");
+    }
+
+    #[test]
     fn jump_row_marker_covers_badge_and_current() {
         assert_eq!(jump_row_marker(0, false), "");
         assert_eq!(jump_row_marker(0, true), "\u{25c2}");
@@ -2275,18 +2290,21 @@ mod tests {
             .expect("draw");
         let buffer = terminal.backend().buffer();
         let w = usize::from(width);
-        let row0: String = (0..w).map(|x| buffer.content[x].symbol()).collect();
-        let row1: String = (0..w).map(|x| buffer.content[w + x].symbol()).collect();
-        assert!(row0.contains("COMMITS"), "title names the section");
-        assert!(row0.contains("feat/x"), "branch under review");
-        assert!(row0.contains("main"), "target");
-        assert!(row0.contains("2 commits"), "commit count");
-        assert!(row1.contains("1 / 2"), "position");
-        assert!(row1.contains("a3f9c1e"), "current commit's sha");
-        assert!(row1.contains("jump"), "jump affordance");
-        assert!(
-            state.jump_hint_span.is_some(),
-            "the jump click span is stashed for the mouse handler"
+        let title_row: String = (0..w).map(|x| buffer.content[x].symbol()).collect();
+        let move_row: String = (0..w)
+            .map(|x| buffer.content[usize::from(STEPPER_MOVE_ROW) * w + x].symbol())
+            .collect();
+        assert!(title_row.contains("COMMITS"), "title names the section");
+        assert!(title_row.contains("feat/x"), "branch under review");
+        assert!(title_row.contains("main"), "target");
+        assert!(title_row.contains("2 commits"), "commit count");
+        assert!(move_row.contains("1 / 2"), "position");
+        assert!(move_row.contains("a3f9c1e"), "current commit's sha");
+        assert!(move_row.contains("jump"), "jump affordance");
+        assert_eq!(
+            state.jump_hint_span.map(|(r, _, _)| r),
+            Some(STEPPER_MOVE_ROW),
+            "the jump click span is stashed on the movement row",
         );
     }
 
@@ -2316,6 +2334,58 @@ mod tests {
         let w = usize::from(width);
         let row0: String = (0..w).map(|x| buffer.content[x].symbol()).collect();
         assert!(!row0.contains("COMMITS"), "whole-diff mode never shows the stepper");
+    }
+
+    #[test]
+    fn commit_stepper_spaces_title_movement_and_diff() {
+        use crate::app::diff_overlay::DiffScope;
+        use forge_workspace::env::git_diff::hunks::CommitMeta;
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        // Commit mode with the rail shown (>= 120 cols): the top chrome
+        // breathes - COMMITS title (row 0), blank (row 1), movement row
+        // (row 2), blank (row 3), then the FILES rail + diff (row 4).
+        let mut state = DiffOverlayState::new(
+            std::path::PathBuf::from("/tmp"),
+            "main".to_owned(),
+            vec![FileHunks { path: "a.rs".into(), status: FileStatus::Modified, hunks: vec![] }],
+        );
+        state.branch = Some("feat/x".to_owned());
+        state.commits = vec![CommitMeta {
+            sha: "a".into(),
+            short_sha: "a3f9c1e".into(),
+            subject: "fix threshold".into(),
+            body: String::new(),
+        }];
+        state.scope = DiffScope::Commit(0);
+        let mut app = App::test_default();
+        app.diff_overlay = Some(state);
+
+        let (width, height) = (130u16, 20u16);
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|frame| render(frame, &mut app)).expect("draw");
+        let buffer = terminal.backend().buffer();
+        let w = usize::from(width);
+        let row =
+            |r: usize| -> String { (0..w).map(|x| buffer.content[r * w + x].symbol()).collect() };
+
+        assert!(row(0).contains("COMMITS"), "title on row 0: {:?}", row(0));
+        assert!(row(1).trim().is_empty(), "blank spacer on row 1: {:?}", row(1));
+        assert!(
+            row(2).contains("a3f9c1e") && row(2).contains("jump"),
+            "movement row on row 2: {:?}",
+            row(2)
+        );
+        assert!(row(3).trim().is_empty(), "blank spacer on row 3: {:?}", row(3));
+        assert!(row(4).contains("FILES"), "FILES rail begins on row 4: {:?}", row(4));
+
+        assert_eq!(
+            app.diff_overlay.as_ref().and_then(|o| o.jump_hint_span).map(|(r, _, _)| r),
+            Some(2),
+            "the jump-hint click span sits on the movement row (row 2)",
+        );
     }
 
     // ---- commit-message block ----
