@@ -13,6 +13,8 @@
 //! data directory (`forge-tui/` under the platform app-support base),
 //! shared by the proxy CA, the logs, and the single-instance lock.
 
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
 use crate::Error;
@@ -64,6 +66,17 @@ pub fn app_support_dir() -> Result<PathBuf, Error> {
     })
 }
 
+/// Stable hex digest of `config_dir` that keys forge's machine-local
+/// per-config-dir files (the single-instance lock, the state cache).
+/// Canonicalised first (best-effort) so symlinked / trailing-slash
+/// variants map to one digest.
+pub fn config_dir_hash(config_dir: &Path) -> String {
+    let canonical = config_dir.canonicalize().unwrap_or_else(|_| config_dir.to_path_buf());
+    let mut hasher = DefaultHasher::new();
+    canonical.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
 /// Path to a config_dir's `projects/` subdirectory. Caller passes
 /// the resolved `config_dir` explicitly; this helper just performs
 /// the join so the layout convention lives in one place.
@@ -111,5 +124,22 @@ mod tests {
     fn app_support_dir_has_forge_tui_leaf() {
         let dir = app_support_dir().expect("resolves on a normal dev machine");
         assert_eq!(dir.file_name().and_then(|s| s.to_str()), Some("forge-tui"));
+    }
+
+    #[test]
+    fn config_dir_hash_is_deterministic_and_hex() {
+        let path = Path::new("/tmp/forge-config-dir-hash-fixture");
+        let first = config_dir_hash(path);
+        assert_eq!(first, config_dir_hash(path), "same config dir hashes identically");
+        assert_eq!(first.len(), 16, "digest is 16 hex chars");
+        assert!(first.chars().all(|c| c.is_ascii_hexdigit()), "digest is hex: {first}");
+    }
+
+    #[test]
+    fn config_dir_hash_differs_across_config_dirs() {
+        assert_ne!(
+            config_dir_hash(Path::new("/tmp/forge-config-dir-hash-a")),
+            config_dir_hash(Path::new("/tmp/forge-config-dir-hash-b")),
+        );
     }
 }
