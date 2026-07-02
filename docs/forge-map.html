@@ -1540,7 +1540,7 @@ chat continues here...
         <tr>
           <td><code>peers__tell_agent</code></td>
           <td><code>target: string</code> · <code>message: string</code> · <code>in_reply_to: Option&lt;string&gt;</code></td>
-          <td>Fire-and-forget message. Returns immediately with the synthesised <code>correlation_id</code> (<code>t-XXXXXXXX</code>). When <code>in_reply_to</code> is set, the workspace looks up the matching ask: replies to a still-pending ask render as <code>Reply</code>; replies to a timed-out ask render as <code>LateReply</code>; replies whose target doesn't match (LLM hallucinated the wrong target) or whose id doesn't exist demote to <code>Message</code> with a warn log.</td>
+          <td>Fire-and-forget message. Returns immediately with the synthesised <code>correlation_id</code> (<code>t-XXXXXXXX</code>). When <code>in_reply_to</code> is set, the workspace looks up the matching ask: replies to a still-pending ask render as <code>Reply</code>; replies to a timed-out ask render as <code>LateReply</code>; replies whose target doesn't match (LLM hallucinated the wrong target) or whose id doesn't exist demote to <code>Message</code> with a warn log and a <code>note</code> in the tool result so the replier can retry with the right id.</td>
         </tr>
         <tr>
           <td><code>peers__ask_agent</code></td>
