@@ -541,8 +541,9 @@ mod tests {
             ),
         )
         .expect("write forge.toml");
-        // Runtime override in the state.toml sidecar must win over the
-        // forge.toml [ui] default.
+        // The persisted state override must win over the forge.toml [ui]
+        // default. Seeded via the synced pre-move path since the live
+        // state file is machine-local (not injectable at Workspace::new).
         std::fs::write(
             forge_dir(config_dir.path()).join("state.toml"),
             "version = 1\nspinner = \"ember\"\n",
