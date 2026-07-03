@@ -149,7 +149,7 @@ fn next_backoff(current: Duration, healthy: bool) -> Duration {
 /// forward each message as [`GotifyEvent::Message`], and on drop/error
 /// emit [`GotifyEvent::Disconnected`] then retry with exponential backoff.
 /// The backoff resets to the floor only after a healthy session (one that
-/// stayed up past [`MIN_HEALTHY_UPTIME`]); a fast drop or failed dial keeps
+/// stayed up past `MIN_HEALTHY_UPTIME`); a fast drop or failed dial keeps
 /// it escalating. Exits when `shutdown` fires or the sender is dropped.
 pub async fn run(
     cfg: GotifyConfig,
