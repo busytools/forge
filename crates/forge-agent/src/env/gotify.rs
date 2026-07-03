@@ -19,10 +19,17 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 
 use crate::logging::targets::GOTIFY;
 
-/// Reconnect backoff: starts at 500ms, doubles per failure, caps at
-/// 30s, resets on a clean connect.
+/// Reconnect backoff: starts at 500ms, doubles per failed/short-lived
+/// connect, caps at 30s, and resets to the floor only after a connection
+/// proves healthy (see [`MIN_HEALTHY_UPTIME`]).
 const BACKOFF_START: Duration = Duration::from_millis(500);
 const BACKOFF_CAP: Duration = Duration::from_secs(30);
+
+/// Minimum time a connection must stay up to count as healthy. A session
+/// that drops sooner keeps the backoff escalating, so an accept-then-drop
+/// server (post-upgrade auth reject, an idle-conn-dropping proxy) can't
+/// spin at the 500ms floor.
+const MIN_HEALTHY_UPTIME: Duration = Duration::from_secs(5);
 
 /// Per-request timeout for the `/application` lookup - keep a slow or
 /// unreachable server from stalling subsystem start.
@@ -126,11 +133,19 @@ fn stream_url(cfg: &GotifyConfig) -> anyhow::Result<String> {
     Ok(format!("{ws_base}/stream?token={}", cfg.client_token))
 }
 
+/// Next reconnect delay after a session ended: reset to the floor when the
+/// connection proved healthy (stayed up past [`MIN_HEALTHY_UPTIME`]), else
+/// escalate (double, capped at [`BACKOFF_CAP`]).
+fn next_backoff(current: Duration, healthy: bool) -> Duration {
+    if healthy { BACKOFF_START } else { (current * 2).min(BACKOFF_CAP) }
+}
+
 /// Long-lived reconnect loop: connect (emit [`GotifyEvent::Connected`]),
 /// forward each message as [`GotifyEvent::Message`], and on drop/error
-/// emit [`GotifyEvent::Disconnected`] then retry with exponential
-/// backoff (reset on a clean connect). Exits when `shutdown` fires or
-/// the sender is dropped.
+/// emit [`GotifyEvent::Disconnected`] then retry with exponential backoff.
+/// The backoff resets to the floor only after a healthy session (one that
+/// stayed up past [`MIN_HEALTHY_UPTIME`]); a fast drop or failed dial keeps
+/// it escalating. Exits when `shutdown` fires or the sender is dropped.
 pub async fn run(
     cfg: GotifyConfig,
     tx: mpsc::Sender<GotifyEvent>,
@@ -138,9 +153,9 @@ pub async fn run(
 ) {
     let mut backoff = BACKOFF_START;
     loop {
-        match GotifyStream::connect(&cfg).await {
+        let healthy = match GotifyStream::connect(&cfg).await {
             Ok(mut stream) => {
-                backoff = BACKOFF_START;
+                let connected_at = tokio::time::Instant::now();
                 if tx.send(GotifyEvent::Connected).await.is_err() {
                     return;
                 }
@@ -158,17 +173,19 @@ pub async fn run(
                     }
                 }
                 let _ = tx.send(GotifyEvent::Disconnected).await;
+                connected_at.elapsed() >= MIN_HEALTHY_UPTIME
             }
             Err(error) => {
                 tracing::warn!(target: GOTIFY, %error, "Gotify connect failed; backing off");
                 let _ = tx.send(GotifyEvent::Disconnected).await;
+                false
             }
-        }
+        };
+        backoff = next_backoff(backoff, healthy);
         tokio::select! {
             _ = &mut shutdown => return,
             () = tokio::time::sleep(backoff) => {}
         }
-        backoff = (backoff * 2).min(BACKOFF_CAP);
     }
 }
 
@@ -182,6 +199,17 @@ mod tests {
         let msg = normalize(line).expect("parse sample message");
         assert_eq!(msg.appid, 3);
         assert_eq!(msg.priority, 5);
+    }
+
+    #[test]
+    fn next_backoff_resets_on_healthy_and_escalates_otherwise() {
+        // A healthy session resets the ladder to the floor from anywhere.
+        assert_eq!(next_backoff(BACKOFF_CAP, true), BACKOFF_START);
+        assert_eq!(next_backoff(Duration::from_secs(8), true), BACKOFF_START);
+        // An unhealthy/failed connect doubles, capped at BACKOFF_CAP.
+        assert_eq!(next_backoff(BACKOFF_START, false), BACKOFF_START * 2);
+        assert_eq!(next_backoff(Duration::from_secs(20), false), BACKOFF_CAP);
+        assert_eq!(next_backoff(BACKOFF_CAP, false), BACKOFF_CAP);
     }
 
     #[test]
