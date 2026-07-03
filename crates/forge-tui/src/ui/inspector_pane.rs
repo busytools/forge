@@ -2891,6 +2891,27 @@ mod tests {
         append_workflow_row(&mut wf_lines, &workflow, inner_width, '\u{280B}');
         all_rows.extend(wf_lines);
 
+        // GOTIFY row: a long app set + a role, forcing the name list to
+        // truncate against the same budget the badge is right-justified to.
+        let mut gotify_lines = Vec::new();
+        append_gotify_row(
+            &mut gotify_lines,
+            &forge_primitives::GotifySubscription {
+                id: uuid::Uuid::from_u128(9),
+                project: "p".to_owned(),
+                team_role: Some("steward".to_owned()),
+                applications: vec![
+                    "an-extra-long-application-name-alpha".to_owned(),
+                    "an-extra-long-application-name-beta".to_owned(),
+                    "gamma".to_owned(),
+                ],
+                min_priority: Some(9),
+                created_at: std::time::SystemTime::UNIX_EPOCH,
+            },
+            inner_width,
+        );
+        all_rows.extend(gotify_lines);
+
         for (i, line) in all_rows.iter().enumerate() {
             let w = rendered_width(line);
             assert!(
