@@ -52,8 +52,18 @@ fn read_all(db: &Db) -> anyhow::Result<Vec<GotifySubscription>> {
     };
     let mut out = Vec::new();
     for entry in table.iter()? {
-        let (_id, value) = entry?;
-        out.push(serde_json::from_slice(value.value()).context("deserialize subscription")?);
+        let (id, value) = entry?;
+        match serde_json::from_slice::<GotifySubscription>(value.value()) {
+            Ok(sub) => out.push(sub),
+            // One undecodable record (schema drift, a corrupt blob) must not
+            // wipe the rest of the durable set - skip it and warn.
+            Err(err) => tracing::warn!(
+                target: "forge_workspace::store::gotify",
+                id = %Uuid::from_bytes(id.value()),
+                error = %err,
+                "skipping Gotify subscription record that failed to decode",
+            ),
+        }
     }
     Ok(out)
 }
@@ -69,7 +79,7 @@ mod tests {
             id: Uuid::new_v4(),
             project: project.to_owned(),
             team_role: None,
-            application: None,
+            applications: vec![],
             min_priority: None,
             created_at: SystemTime::UNIX_EPOCH,
         }
@@ -92,5 +102,26 @@ mod tests {
         assert!(remove(&db, s1.id).expect("remove"), "an existing id removes to true");
         assert!(!remove(&db, s1.id).expect("remove again"), "an absent id removes to false");
         assert_eq!(list(&db).expect("list").len(), 1);
+    }
+
+    #[test]
+    fn corrupt_record_is_skipped_not_fatal() {
+        let dir = tempdir().expect("tempdir");
+        let db = Db::open(&dir.path().join("db.redb")).expect("open db");
+
+        let good = sub("p1");
+        insert(&db, &good).expect("insert good");
+
+        // A blob that isn't a valid subscription must not poison the load.
+        let txn = db.database().begin_write().expect("begin");
+        {
+            let mut table = txn.open_table(SUBS).expect("open table");
+            table.insert(&[0u8; 16], "not a subscription".as_bytes()).expect("insert corrupt");
+        }
+        txn.commit().expect("commit");
+
+        let all = list(&db).expect("list tolerates the corrupt blob");
+        assert_eq!(all.len(), 1, "the good record survives a corrupt sibling");
+        assert_eq!(all[0].id, good.id);
     }
 }
