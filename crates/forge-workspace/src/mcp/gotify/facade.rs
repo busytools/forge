@@ -28,12 +28,13 @@ pub(crate) enum GotifySubscribeError {
 /// mutations are direct state writes with no async handler to await.
 pub(crate) trait GotifyFacade: Send + Sync {
     /// Subscribe the caller's durable identity to the configured server,
-    /// optionally filtered by application name and/or minimum priority.
-    /// Persists when the identity is durable. Returns the new id.
+    /// optionally filtered by application names and/or minimum priority.
+    /// An empty `applications` matches any app. Persists when the identity
+    /// is durable. Returns the new id.
     fn subscribe(
         &self,
         caller: &SessionKey,
-        application: Option<String>,
+        applications: Vec<String>,
         min_priority: Option<u8>,
     ) -> Result<Uuid, GotifySubscribeError>;
 
@@ -61,7 +62,7 @@ impl GotifyFacade for ProdGotifyFacade {
     fn subscribe(
         &self,
         caller: &SessionKey,
-        application: Option<String>,
+        applications: Vec<String>,
         min_priority: Option<u8>,
     ) -> Result<Uuid, GotifySubscribeError> {
         let ws = self.workspace.upgrade().ok_or(GotifySubscribeError::UnknownCallerProject)?;
@@ -74,7 +75,7 @@ impl GotifyFacade for ProdGotifyFacade {
             id: Uuid::new_v4(),
             project,
             team_role,
-            application,
+            applications,
             min_priority,
             created_at: SystemTime::now(),
         };
@@ -137,9 +138,9 @@ fn subscriber_durability(worker_label: Option<&str>, team: &[String]) -> (Option
 /// Records calls + returns preloaded results so the tool tests can assert
 /// the tool correctly parses args, resolves the caller, and surfaces
 /// facade results/errors - without a real workspace.
-/// One recorded `subscribe` call: `(caller, application, min_priority)`.
+/// One recorded `subscribe` call: `(caller, applications, min_priority)`.
 #[cfg(test)]
-type SubscribeCall = (SessionKey, Option<String>, Option<u8>);
+type SubscribeCall = (SessionKey, Vec<String>, Option<u8>);
 
 #[cfg(test)]
 #[derive(Default)]
@@ -166,10 +167,10 @@ impl GotifyFacade for MockGotifyFacade {
     fn subscribe(
         &self,
         caller: &SessionKey,
-        application: Option<String>,
+        applications: Vec<String>,
         min_priority: Option<u8>,
     ) -> Result<Uuid, GotifySubscribeError> {
-        self.subscribe_calls.lock().push((caller.clone(), application, min_priority));
+        self.subscribe_calls.lock().push((caller.clone(), applications, min_priority));
         self.subscribe_result.lock().clone().unwrap_or_else(|| Ok(Uuid::nil()))
     }
 

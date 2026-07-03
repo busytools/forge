@@ -399,10 +399,10 @@ fn append_body(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
         append_schedules_section(lines, app, width);
     }
 
-    // GOTIFY sits between SCHEDULES and PROCESSES. Rendered only when a
-    // `[gotify]` server is configured; shows the stream status + the
-    // active project's inbound subscriptions.
-    if app.gotify_configured {
+    // GOTIFY sits between SCHEDULES and PROCESSES. Rendered only while the
+    // stream is connected and the active project has a subscription; shows
+    // the connection status + the project's inbound subscriptions.
+    if gotify_section_visible(app) {
         lines.push(Line::default());
         push_section_rule(lines, width);
         lines.push(Line::default());
@@ -1318,11 +1318,18 @@ fn append_schedules_section(lines: &mut Vec<Line<'static>>, app: &App, width: u1
     }
 }
 
-/// Render the Inspector GOTIFY section: a connection-status line plus one
-/// row per active subscription for the active project (from the cached
-/// `app.gotify_subs` snapshot). The caller gates this on
-/// `app.gotify_configured`, so it always emits at least the header +
-/// status line. Mirrors the SCHEDULES shape.
+/// The GOTIFY section shows only while the stream is connected AND the
+/// active project has at least one subscription; otherwise the whole
+/// section (header, status line, rows) is omitted.
+fn gotify_section_visible(app: &App) -> bool {
+    app.gotify_connected && !app.gotify_subs.is_empty()
+}
+
+/// Render the Inspector GOTIFY section: an `◈ connected` status line plus
+/// one labeled row per active subscription for the active project (from
+/// the cached `app.gotify_subs` snapshot). Only invoked when
+/// [`gotify_section_visible`] holds, so the stream is always connected and
+/// the subscription set is never empty. Mirrors the SCHEDULES shape.
 fn append_gotify_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
     lines.push(Line::from(Span::styled(
         " GOTIFY".to_owned(),
@@ -1330,23 +1337,15 @@ fn append_gotify_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) 
     )));
     lines.push(Line::default());
 
-    // Status line: filled-diamond glyph accented when connected, DIM when
-    // not, followed by the state text.
-    let (status, glyph_color) = if app.gotify_connected {
-        ("connected", theme::RUST_ORANGE)
-    } else {
-        ("disconnected", theme::DIM)
-    };
+    // Filled-diamond glyph in RUST_ORANGE; the visibility gate guarantees
+    // the stream is connected.
     lines.push(Line::from(vec![
         Span::raw(" ".repeat(usize::from(PANE_PAD))),
-        Span::styled("\u{25c8}".to_owned(), Style::default().fg(glyph_color)),
+        Span::styled("\u{25c8}".to_owned(), Style::default().fg(theme::RUST_ORANGE)),
         Span::raw(" ".to_owned()),
-        Span::styled(status.to_owned(), Style::default().fg(theme::DIM)),
+        Span::styled("connected".to_owned(), Style::default().fg(theme::DIM)),
     ]));
 
-    if app.gotify_subs.is_empty() {
-        return;
-    }
     lines.push(Line::default());
     let inner_width = usize::from(width);
     for sub in &app.gotify_subs {
@@ -1354,9 +1353,11 @@ fn append_gotify_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) 
     }
 }
 
-/// Render one GOTIFY subscription row: the application-name filter (or
-/// `any app`), with the target team-worker role appended when set, plus a
-/// right-justified priority-floor badge (`>=5` glyph or `any`). Mirrors
+/// Render one GOTIFY subscription row, labeled so the filter is
+/// unambiguous: `app: <names joined by ", ", or "any">` (with ` -> <role>`
+/// appended for a team-worker subscription), then a right-justified
+/// `priority: >=N` / `priority: any` badge. App names are bold; the
+/// `app:` / `priority:` captions and the role arrow are DIM. Mirrors
 /// [`append_schedule_row`]'s chrome accounting + pad-spacer, minus the
 /// leading glyph cell.
 fn append_gotify_row(
@@ -1364,28 +1365,44 @@ fn append_gotify_row(
     sub: &forge_primitives::GotifySubscription,
     inner_width: usize,
 ) {
-    let mut label = sub.application.clone().unwrap_or_else(|| "any app".to_owned());
-    if let Some(role) = &sub.team_role {
-        label = format!("{label} \u{2192} {role}");
-    }
+    let apps =
+        if sub.applications.is_empty() { "any".to_owned() } else { sub.applications.join(", ") };
     let trailing = match sub.min_priority {
-        Some(p) => format!("\u{2265}{p}"),
-        None => "any".to_owned(),
+        Some(p) => format!("priority: \u{2265}{p}"),
+        None => "priority: any".to_owned(),
     };
-    let header_chrome = usize::from(PANE_PAD)
-        + 3                                                  // " · " separator
-        + trailing.chars().count()                           // trailing badge
+    // The `app:` caption and the ` -> <role>` suffix (space + arrow +
+    // space + role) are fixed chrome around the truncatable name list.
+    let caption = "app: ";
+    let role_width = sub.team_role.as_ref().map_or(0, |role| 3 + role.chars().count());
+
+    let apps_chrome = usize::from(PANE_PAD)
+        + caption.chars().count()
+        + role_width
+        + trailing.chars().count()
         + usize::from(PANE_PAD); // 1-col right gutter
-    let header_budget = row_text_budget(inner_width, header_chrome);
-    let headline = truncate_or_pass(&label, header_budget);
-    let pad = header_budget.saturating_sub(headline.chars().count());
-    lines.push(Line::from(vec![
+    let apps_shown = truncate_or_pass(&apps, row_text_budget(inner_width, apps_chrome));
+
+    // Right-justify the priority badge at inner_width - PANE_PAD (the #281
+    // pad-spacer pattern SCHEDULES / WORKFLOWS share).
+    let content_chrome = usize::from(PANE_PAD) + trailing.chars().count() + usize::from(PANE_PAD);
+    let left_width = caption.chars().count() + apps_shown.chars().count() + role_width;
+    let pad = row_text_budget(inner_width, content_chrome).saturating_sub(left_width);
+
+    let mut spans = vec![
         Span::raw(" ".repeat(usize::from(PANE_PAD))),
-        Span::styled(headline, Style::default().add_modifier(Modifier::BOLD)),
-        Span::raw(" ".repeat(pad)),
-        Span::styled(" \u{00B7} ".to_owned(), Style::default().fg(theme::DIM)),
-        Span::styled(trailing, Style::default().fg(theme::DIM)),
-    ]));
+        Span::styled(caption.to_owned(), Style::default().fg(theme::DIM)),
+        Span::styled(apps_shown, Style::default().add_modifier(Modifier::BOLD)),
+    ];
+    if let Some(role) = &sub.team_role {
+        spans.push(Span::raw(" ".to_owned()));
+        spans.push(Span::styled("\u{2192}".to_owned(), Style::default().fg(theme::DIM)));
+        spans.push(Span::raw(" ".to_owned()));
+        spans.push(Span::styled(role.clone(), Style::default().add_modifier(Modifier::BOLD)));
+    }
+    spans.push(Span::raw(" ".repeat(pad)));
+    spans.push(Span::styled(trailing, Style::default().fg(theme::DIM)));
+    lines.push(Line::from(spans));
 }
 
 /// Build a SCHEDULES row from a durable forge cron. Recurring crons show
@@ -2874,6 +2891,27 @@ mod tests {
         append_workflow_row(&mut wf_lines, &workflow, inner_width, '\u{280B}');
         all_rows.extend(wf_lines);
 
+        // GOTIFY row: a long app set + a role, forcing the name list to
+        // truncate against the same budget the badge is right-justified to.
+        let mut gotify_lines = Vec::new();
+        append_gotify_row(
+            &mut gotify_lines,
+            &forge_primitives::GotifySubscription {
+                id: uuid::Uuid::from_u128(9),
+                project: "p".to_owned(),
+                team_role: Some("steward".to_owned()),
+                applications: vec![
+                    "an-extra-long-application-name-alpha".to_owned(),
+                    "an-extra-long-application-name-beta".to_owned(),
+                    "gamma".to_owned(),
+                ],
+                min_priority: Some(9),
+                created_at: std::time::SystemTime::UNIX_EPOCH,
+            },
+            inner_width,
+        );
+        all_rows.extend(gotify_lines);
+
         for (i, line) in all_rows.iter().enumerate() {
             let w = rendered_width(line);
             assert!(
@@ -3185,38 +3223,76 @@ mod tests {
     }
 
     #[test]
-    fn gotify_section_renders_status_line_and_subscription_row() {
+    fn gotify_section_renders_labeled_rows_including_a_multi_app_set() {
+        let row = |id: u128, applications: Vec<String>, team_role: Option<&str>, min_priority| {
+            forge_primitives::GotifySubscription {
+                id: uuid::Uuid::from_u128(id),
+                project: "web-api".to_owned(),
+                team_role: team_role.map(str::to_owned),
+                applications,
+                min_priority,
+                created_at: std::time::SystemTime::UNIX_EPOCH,
+            }
+        };
         let mut app = App::test_default();
-        app.gotify_configured = true;
         app.gotify_connected = true;
-        app.gotify_subs = vec![forge_primitives::GotifySubscription {
-            id: uuid::Uuid::from_u128(1),
-            project: "web-api".to_owned(),
-            team_role: None,
-            application: Some("alerts".to_owned()),
-            min_priority: Some(5),
-            created_at: std::time::SystemTime::UNIX_EPOCH,
-        }];
+        app.gotify_subs = vec![
+            row(1, vec!["alerts".to_owned()], None, Some(5)),
+            row(2, vec!["alerts".to_owned(), "backups".to_owned()], None, None),
+            row(3, vec!["backups".to_owned()], Some("steward"), Some(8)),
+        ];
 
         let mut lines = Vec::new();
         append_gotify_section(&mut lines, &app, 60);
         let joined = lines.iter().map(|l| line_text(l)).collect::<Vec<_>>().join("\n");
 
         assert!(joined.contains("GOTIFY"), "header present; got:\n{joined}");
-        assert!(joined.contains("connected"), "status line present; got:\n{joined}");
-        assert!(joined.contains("alerts"), "the application-filter row present; got:\n{joined}");
-        assert!(joined.contains("\u{2265}5"), "the priority-floor badge present; got:\n{joined}");
+        assert!(
+            joined.contains("\u{25c8} connected"),
+            "connected status line present; got:\n{joined}",
+        );
+        assert!(joined.contains("app: alerts"), "single-app labeled row present; got:\n{joined}");
+        assert!(
+            joined.contains("priority: \u{2265}5"),
+            "labeled priority floor present; got:\n{joined}",
+        );
+        assert!(
+            joined.contains("app: alerts, backups"),
+            "the multi-app set row present; got:\n{joined}",
+        );
+        assert!(joined.contains("priority: any"), "the any-priority label present; got:\n{joined}");
+        assert!(
+            joined.contains("\u{2192} steward"),
+            "a team-worker subscription renders its -> role target; got:\n{joined}",
+        );
     }
 
     #[test]
-    fn gotify_section_shows_disconnected_status() {
+    fn gotify_section_visible_only_when_connected_with_subs() {
+        let sub = || forge_primitives::GotifySubscription {
+            id: uuid::Uuid::from_u128(1),
+            project: "p".to_owned(),
+            team_role: None,
+            applications: vec![],
+            min_priority: None,
+            created_at: std::time::SystemTime::UNIX_EPOCH,
+        };
         let mut app = App::test_default();
-        app.gotify_configured = true;
-        app.gotify_connected = false;
 
-        let mut lines = Vec::new();
-        append_gotify_section(&mut lines, &app, 60);
-        let joined = lines.iter().map(|l| line_text(l)).collect::<Vec<_>>().join("\n");
-        assert!(joined.contains("disconnected"), "disconnected status shown; got:\n{joined}");
+        app.gotify_connected = false;
+        app.gotify_subs = vec![];
+        assert!(!gotify_section_visible(&app), "hidden when disconnected with no subscriptions");
+
+        app.gotify_connected = true;
+        app.gotify_subs = vec![];
+        assert!(!gotify_section_visible(&app), "hidden when connected but no subscriptions");
+
+        app.gotify_connected = false;
+        app.gotify_subs = vec![sub()];
+        assert!(!gotify_section_visible(&app), "hidden when subscribed but disconnected");
+
+        app.gotify_connected = true;
+        app.gotify_subs = vec![sub()];
+        assert!(gotify_section_visible(&app), "shown only when connected with a subscription");
     }
 }

@@ -285,14 +285,13 @@ pub struct App {
     /// per frame (mirrors the git-diff snapshot pattern). Empty when
     /// there's no active project or it has no crons.
     pub forge_crons: Vec<forge_primitives::CronEntry>,
-    /// Active project's Gotify subscriptions, connection status, and
-    /// whether a `[gotify]` server is configured. Refreshed on the ~1s
-    /// tick by [`App::refresh_gotify`]; the Inspector GOTIFY section
-    /// reads these caches each render (mirrors `forge_crons`). The
-    /// section renders only when `gotify_configured` is true.
+    /// Active project's Gotify subscriptions and stream connection
+    /// status. Refreshed on the ~1s tick by [`App::refresh_gotify`]; the
+    /// Inspector GOTIFY section reads these caches each render (mirrors
+    /// `forge_crons`). The section renders only while connected with at
+    /// least one subscription (see `gotify_section_visible`).
     pub gotify_subs: Vec<forge_primitives::GotifySubscription>,
     pub gotify_connected: bool,
-    pub gotify_configured: bool,
     /// Active help overlay view when `?` help is open.
     pub help_view: HelpView,
     /// Whether the help overlay is explicitly open.
@@ -1890,19 +1889,16 @@ impl App {
 
     /// Refresh the Gotify snapshot the Inspector GOTIFY section reads:
     /// the active project's subscriptions (resolved from the active tab's
-    /// UI-bucket `cwd_raw`, like `refresh_forge_crons`), plus the stream
-    /// connection status and whether a `[gotify]` server is configured.
-    /// Called on the ~1s ticker so the render reads cached fields instead
-    /// of locking the workspace each frame.
+    /// UI-bucket `cwd_raw`, like `refresh_forge_crons`) plus the stream
+    /// connection status. Called on the ~1s ticker so the render reads
+    /// cached fields instead of locking the workspace each frame.
     pub fn refresh_gotify(&mut self) {
         let cwd = self.cwd_raw();
         let Some(ws) = self.workspace.as_ref() else {
             self.gotify_subs = Vec::new();
             self.gotify_connected = false;
-            self.gotify_configured = false;
             return;
         };
-        self.gotify_configured = ws.gotify_configured();
         self.gotify_connected = ws.gotify_connected();
         self.gotify_subs = ws.gotify_subscriptions_for_project_path(&cwd);
     }
@@ -2949,7 +2945,6 @@ impl App {
             forge_crons: Vec::new(),
             gotify_subs: Vec::new(),
             gotify_connected: false,
-            gotify_configured: false,
             help_view: HelpView::Keys,
             help_open: false,
             help_dialog: dialog::DialogState::default(),

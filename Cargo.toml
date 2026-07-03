@@ -89,10 +89,12 @@ memchr = "2"
 
 # Gotify inbound integration: redb is the machine-local embedded store
 # for durable subscriptions; tokio-tungstenite streams the Gotify
-# server's notification WebSocket. rustls-tls-webpki-roots keeps the
-# TLS stack pure-rustls, matching reqwest and the wire proxy.
+# server's notification WebSocket. rustls-tls-native-roots trusts the OS
+# trust store so a Gotify behind an internal / local-CA cert (trusted by
+# the system, curl, and reqwest) connects; the Mozilla webpki bundle
+# would reject it.
 redb = "2.6"
-tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
+tokio-tungstenite = { version = "0.29", features = ["rustls-tls-native-roots"] }
 
 # Workspace-internal crates
 forge-primitives = { path = "crates/forge-primitives", version = "=0.20.0" }

@@ -194,7 +194,6 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
         forge_crons: Vec::new(),
         gotify_subs: Vec::new(),
         gotify_connected: false,
-        gotify_configured: false,
         help_view: HelpView::Keys,
         help_open: false,
         help_dialog: DialogState::default(),

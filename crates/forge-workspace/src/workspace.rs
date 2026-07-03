@@ -2863,12 +2863,6 @@ impl Workspace {
         *self.gotify_connected.lock()
     }
 
-    /// Whether a `[gotify]` server is configured. Gates the Inspector
-    /// GOTIFY section entirely.
-    pub fn gotify_configured(&self) -> bool {
-        self.gotify_config().is_some()
-    }
-
     /// Install a redb store into a test workspace so the durable-vs-
     /// ephemeral persistence path is exercisable without `Workspace::new`.
     #[cfg(any(test, feature = "test-helpers"))]
@@ -2879,22 +2873,26 @@ impl Workspace {
     /// Match `msg` against every active subscription and dispatch one
     /// `Command::DeliverGotifyMessage` per match. A subscription matches
     /// when its `min_priority` is `None` or `<=` the message priority AND
-    /// its `application` name is `None` or resolves (via the app index) to
-    /// the message's appid. Multiple matches fan out to every subscriber.
+    /// its `applications` set is empty or contains the message's app name
+    /// (resolved from the appid via the app index; an unresolved appid
+    /// never matches a non-empty filter). Multiple matches fan out to
+    /// every subscriber.
     pub fn route_gotify_message(self: &Arc<Self>, msg: &forge_primitives::GotifyMessage) {
         let subs = self.gotify_subs.lock().clone();
-        let app_name = self.gotify_app_name(msg.appid);
+        let resolved_name = self.gotify_app_name(msg.appid);
+        // Matching uses the resolved name only; the envelope falls back to
+        // the numeric id for display, so an unresolved appid can't match a
+        // filter that happens to list that number.
+        let display_name = resolved_name.clone().unwrap_or_else(|| msg.appid.to_string());
         for sub in subs {
             let priority_ok = sub.min_priority.is_none_or(|floor| msg.priority >= floor);
-            let app_ok = match &sub.application {
-                None => true,
-                Some(name) => self.gotify_app_index.lock().get(name) == Some(&msg.appid),
-            };
+            let app_ok = sub.applications.is_empty()
+                || resolved_name.as_ref().is_some_and(|name| sub.applications.contains(name));
             if !(priority_ok && app_ok) {
                 continue;
             }
             let envelope = format!(
-                "[Gotify - app '{app_name}', priority {}]\n{}\n{}",
+                "[Gotify - app '{display_name}', priority {}]\n{}\n{}",
                 msg.priority, msg.title, msg.message,
             );
             if let Err(err) = self.dispatch(Command::DeliverGotifyMessage {
@@ -2914,14 +2912,15 @@ impl Workspace {
         }
     }
 
-    /// The application name for `appid` via the reverse of the app index,
-    /// falling back to the numeric id when it isn't known.
-    fn gotify_app_name(&self, appid: u64) -> String {
+    /// The application NAME for `appid` via the reverse of the app index,
+    /// or `None` when the id isn't known (index not yet fetched, or a new
+    /// app the server added after the last refresh).
+    fn gotify_app_name(&self, appid: u64) -> Option<String> {
         self.gotify_app_index
             .lock()
             .iter()
             .find(|&(_, &id)| id == appid)
-            .map_or_else(|| appid.to_string(), |(name, _)| name.clone())
+            .map(|(name, _)| name.clone())
     }
 
     /// Start the Gotify subsystem when it's configured, has at least one
@@ -4751,7 +4750,7 @@ mod tests {
             id: uuid::Uuid::new_v4(),
             project: "p".to_owned(),
             team_role: team_role.map(str::to_owned),
-            application: None,
+            applications: vec![],
             min_priority: None,
             created_at: std::time::SystemTime::UNIX_EPOCH,
         };
@@ -4778,14 +4777,14 @@ mod tests {
 
     fn gotify_sub(
         project: &str,
-        application: Option<&str>,
+        applications: &[&str],
         min_priority: Option<u8>,
     ) -> forge_primitives::GotifySubscription {
         forge_primitives::GotifySubscription {
             id: uuid::Uuid::new_v4(),
             project: project.to_owned(),
             team_role: None,
-            application: application.map(str::to_owned),
+            applications: applications.iter().map(|s| (*s).to_owned()).collect(),
             min_priority,
             created_at: std::time::SystemTime::UNIX_EPOCH,
         }
@@ -4817,8 +4816,8 @@ mod tests {
     fn route_gotify_message_fans_out_to_all_matches() {
         let dir = tempdir().expect("tempdir");
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
-        ws.add_gotify_subscription(gotify_sub("p1", None, None), false);
-        ws.add_gotify_subscription(gotify_sub("p2", None, None), false);
+        ws.add_gotify_subscription(gotify_sub("p1", &[], None), false);
+        ws.add_gotify_subscription(gotify_sub("p2", &[], None), false);
 
         ws.enable_test_dispatch_intercept();
         ws.route_gotify_message(&gotify_msg(3, 5));
@@ -4838,8 +4837,8 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
         *ws.gotify_app_index.lock() = HashMap::from([("alerts".to_owned(), 3u64)]);
-        ws.add_gotify_subscription(gotify_sub("p", Some("alerts"), None), false);
-        ws.add_gotify_subscription(gotify_sub("p", None, Some(5)), false);
+        ws.add_gotify_subscription(gotify_sub("p", &["alerts"], None), false);
+        ws.add_gotify_subscription(gotify_sub("p", &[], Some(5)), false);
 
         ws.enable_test_dispatch_intercept();
 
@@ -4858,13 +4857,54 @@ mod tests {
     fn route_gotify_message_no_match_delivers_nothing() {
         let dir = tempdir().expect("tempdir");
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
-        ws.add_gotify_subscription(gotify_sub("p", None, Some(9)), false);
+        ws.add_gotify_subscription(gotify_sub("p", &[], Some(9)), false);
 
         ws.enable_test_dispatch_intercept();
         ws.route_gotify_message(&gotify_msg(3, 2));
         assert!(
             gotify_deliveries(&ws.drain_test_dispatch_buffer()).is_empty(),
             "a message below the priority floor delivers nothing",
+        );
+    }
+
+    #[test]
+    fn route_gotify_message_matches_any_app_in_the_set() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        *ws.gotify_app_index.lock() =
+            HashMap::from([("alerts".to_owned(), 3u64), ("backups".to_owned(), 7u64)]);
+        ws.add_gotify_subscription(gotify_sub("p", &["alerts", "backups"], None), false);
+
+        ws.enable_test_dispatch_intercept();
+
+        // A message from either listed app matches the set.
+        ws.route_gotify_message(&gotify_msg(3, 1));
+        assert_eq!(gotify_deliveries(&ws.drain_test_dispatch_buffer()).len(), 1, "alerts matches");
+        ws.route_gotify_message(&gotify_msg(7, 1));
+        assert_eq!(gotify_deliveries(&ws.drain_test_dispatch_buffer()).len(), 1, "backups matches");
+
+        // An app outside the set is skipped.
+        ws.route_gotify_message(&gotify_msg(9, 1));
+        assert!(
+            gotify_deliveries(&ws.drain_test_dispatch_buffer()).is_empty(),
+            "an app not in the set delivers nothing",
+        );
+    }
+
+    #[test]
+    fn route_gotify_message_unresolved_appid_does_not_match_numeric_filter() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        // The app index is empty, so appid 5 resolves to no name. A filter
+        // listing the numeric id as a string must NOT match on the
+        // display-only fallback.
+        ws.add_gotify_subscription(gotify_sub("p", &["5"], None), false);
+
+        ws.enable_test_dispatch_intercept();
+        ws.route_gotify_message(&gotify_msg(5, 1));
+        assert!(
+            gotify_deliveries(&ws.drain_test_dispatch_buffer()).is_empty(),
+            "an unresolved appid must not match a filter that lists its numeric id",
         );
     }
 
@@ -4997,7 +5037,7 @@ mod tests {
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
         let path = "/tmp/gotify-path-proj";
         ws.seed_test_project_with_team("gproj", path, &[]);
-        ws.add_gotify_subscription(gotify_sub("gproj", Some("alerts"), Some(5)), false);
+        ws.add_gotify_subscription(gotify_sub("gproj", &["alerts"], Some(5)), false);
 
         assert_eq!(
             ws.gotify_subscriptions_for_project_path(path).len(),
@@ -5018,7 +5058,6 @@ mod tests {
             ws.gotify_subscriptions_for_project_path("").is_empty(),
             "a blank cwd degrades to empty",
         );
-        assert!(!ws.gotify_configured(), "testing stub has no [gotify] block");
         assert!(!ws.gotify_connected(), "no stream running in the stub");
     }
 
