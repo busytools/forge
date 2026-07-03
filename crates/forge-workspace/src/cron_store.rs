@@ -240,6 +240,34 @@ mod tests {
         assert_eq!(load_crons(dir.path()), crons, "both kinds survive a TOML round-trip");
     }
 
+    /// A recurring cron whose prompt carries the multi-line + unicode
+    /// shape real prompts use (em-dash, currency, accents, backticks,
+    /// embedded newlines). Guards the TOML (de)serialize path against
+    /// realistic content, not just ASCII fixtures. The em-dash is
+    /// written as `\u{2014}` so it round-trips the real codepoint.
+    #[test]
+    fn round_trip_recurring_with_unicode_multiline_prompt() {
+        let dir = tmp();
+        let entry = CronEntry {
+            id: CronId::from("r-unicode"),
+            project_name: "web-api".to_owned(),
+            kind: CronKind::Recurring("0 9 * * *".to_owned()),
+            prompt: "Daily P&L \u{2014} summarise overnight fills.\n\
+                     Budget \u{20AC}1.2M / \u{00A5}180M; watch the café é edge.\n\
+                     Run `just report` then post `#trading`."
+                .to_owned(),
+            created_at: epoch(1_700_000_000),
+            last_fire: Some(epoch(1_700_050_000)),
+            next_fire: epoch(1_700_032_400),
+        };
+        store_crons(dir.path(), std::slice::from_ref(&entry));
+        assert_eq!(
+            load_crons(dir.path()),
+            vec![entry],
+            "a realistic multi-line unicode prompt survives the TOML round-trip intact",
+        );
+    }
+
     #[test]
     fn corrupt_toml_treated_as_empty() {
         let dir = tmp();

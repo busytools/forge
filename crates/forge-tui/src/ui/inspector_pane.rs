@@ -2107,6 +2107,30 @@ mod tests {
     }
 
     #[test]
+    fn schedules_section_renders_forge_cron_row_with_countdown() {
+        use forge_primitives::cron::{CronEntry, CronId, CronKind};
+        use std::time::{Duration, SystemTime};
+
+        let mut app = App::test_default();
+        app.forge_crons = vec![CronEntry {
+            id: CronId::from("c1"),
+            project_name: "cronproj".to_owned(),
+            kind: CronKind::Recurring("0 9 * * *".to_owned()),
+            prompt: "stand-up".to_owned(),
+            created_at: SystemTime::UNIX_EPOCH,
+            last_fire: None,
+            next_fire: SystemTime::now() + Duration::from_secs(3600),
+        }];
+
+        let mut lines = Vec::new();
+        append_schedules_section(&mut lines, &app, 60);
+        let text = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert!(text.contains("SCHEDULES"), "section header renders: {text}");
+        assert!(text.contains("0 9 * * *"), "forge cron row shows its expression: {text}");
+        assert!(text.contains("in "), "forge cron row shows a live countdown: {text}");
+    }
+
+    #[test]
     fn wrap_empty_returns_empty_vec() {
         assert!(wrap_text("", 10).is_empty());
         assert!(wrap_text("   ", 10).is_empty());
