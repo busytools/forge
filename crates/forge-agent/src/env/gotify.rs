@@ -31,6 +31,11 @@ const BACKOFF_CAP: Duration = Duration::from_secs(30);
 /// spin at the 500ms floor.
 const MIN_HEALTHY_UPTIME: Duration = Duration::from_secs(5);
 
+/// Dial timeout so a stuck `connect_async` (no OS-level deadline) can't
+/// hang the loop; the dial is also raced against shutdown so a signal is
+/// observed promptly rather than bounded by the OS TCP timeout.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+
 /// Per-request timeout for the `/application` lookup - keep a slow or
 /// unreachable server from stalling subsystem start.
 const APP_LOOKUP_TIMEOUT: Duration = Duration::from_secs(10);
@@ -153,8 +158,14 @@ pub async fn run(
 ) {
     let mut backoff = BACKOFF_START;
     loop {
-        let healthy = match GotifyStream::connect(&cfg).await {
-            Ok(mut stream) => {
+        // Race the dial against shutdown + a timeout so a stuck connect
+        // can neither outlive a shutdown signal nor hang the loop.
+        let dial = tokio::select! {
+            _ = &mut shutdown => return,
+            result = tokio::time::timeout(CONNECT_TIMEOUT, GotifyStream::connect(&cfg)) => result,
+        };
+        let healthy = match dial {
+            Ok(Ok(mut stream)) => {
                 let connected_at = tokio::time::Instant::now();
                 if tx.send(GotifyEvent::Connected).await.is_err() {
                     return;
@@ -175,8 +186,17 @@ pub async fn run(
                 let _ = tx.send(GotifyEvent::Disconnected).await;
                 connected_at.elapsed() >= MIN_HEALTHY_UPTIME
             }
-            Err(error) => {
+            Ok(Err(error)) => {
                 tracing::warn!(target: GOTIFY, %error, "Gotify connect failed; backing off");
+                let _ = tx.send(GotifyEvent::Disconnected).await;
+                false
+            }
+            Err(_) => {
+                tracing::warn!(
+                    target: GOTIFY,
+                    timeout_secs = CONNECT_TIMEOUT.as_secs(),
+                    "Gotify connect timed out; backing off",
+                );
                 let _ = tx.send(GotifyEvent::Disconnected).await;
                 false
             }
