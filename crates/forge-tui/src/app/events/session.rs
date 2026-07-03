@@ -493,6 +493,10 @@ pub(super) fn handle_session_replaced_event(
     // in `app.sessions` and needs to be removed; without the capture
     // we'd lose track of which key to drop.
     let prev_active_key = app.active_session_key.clone();
+    // The replacement bucket is minted blank, so grab the outgoing tab's
+    // project name to carry across the swap (same project, new UUID).
+    let carried_project =
+        prev_active_key.as_ref().and_then(|k| app.sessions.get(k)).and_then(|b| b.project.clone());
 
     *app.available_models_mut() = available_models;
     reset_for_new_session(app, session_id, current_model, mode, false);
@@ -507,6 +511,18 @@ pub(super) fn handle_session_replaced_event(
     // Pre-swap it would write to the now-abandoned outgoing bucket
     // and the new welcome card would render an empty path.
     apply_session_cwd(app, cwd);
+
+    // Restamp the tab's project identity onto the fresh bucket: prefer
+    // the carried name (robust when the resume cwd arrives empty), else
+    // resolve from the new bucket's cwd.
+    match carried_project {
+        Some(name) => {
+            if let Some(bucket) = app.sessions.get_mut(&session_key) {
+                bucket.project = Some(name);
+            }
+        }
+        None => stamp_bucket_project_from_cwd(app, &session_key, true),
+    }
     app.sync_welcome_snapshot();
     if !history_messages.is_empty() {
         load_resume_history(app, history_messages);
@@ -657,6 +673,24 @@ pub(super) fn apply_session_cwd(app: &mut App, cwd_raw: String) {
     }
 }
 
+/// Stamp the bucket for `key` with the forge.toml project name that
+/// owns its `cwd_raw`, resolved once via the workspace. `force`
+/// re-stamps even when a name is already set; otherwise only fills an
+/// empty slot so a name a preceding `Spawning` stamped survives. No-op
+/// when the cwd maps to no configured project - the slot is left as-is
+/// rather than cleared.
+fn stamp_bucket_project_from_cwd(app: &mut App, key: &SessionKey, force: bool) {
+    let cwd = app.sessions.get(key).map(|b| b.cwd_raw.clone()).unwrap_or_default();
+    let Some(name) = app.workspace.as_ref().and_then(|ws| ws.project_name_for_path(&cwd)) else {
+        return;
+    };
+    if let Some(bucket) = app.sessions.get_mut(key)
+        && (force || bucket.project.is_none())
+    {
+        bucket.project = Some(name);
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────
 // `SessionUpdate` reducers for the 11 session-lifecycle events.
 //
@@ -745,6 +779,11 @@ pub(super) fn apply_session_update_connected(
         history,
         was_active,
     );
+    // Resolve the tab's project identity from its (now-applied) cwd,
+    // unless a preceding `Spawning` already named it. The boot project
+    // and workers reach Connected without a Spawning, so this is where
+    // their SCHEDULES / GOTIFY scope gets stamped.
+    stamp_bucket_project_from_cwd(app, key, false);
 }
 
 /// Sentinel-pattern check: synthetic keys (`__conn_pending__`,
@@ -822,4 +861,74 @@ pub(super) fn apply_session_update_service_status(
 
 pub(super) fn apply_session_update_fatal_error(app: &mut App, error: AppError) {
     handle_fatal_error_event(app, error);
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod stamp_project_tests {
+    use super::stamp_bucket_project_from_cwd;
+    use crate::app::App;
+
+    /// The Connected stamp resolves the bucket's project from its cwd:
+    /// a project-root cwd and a worktree-worker cwd both land on the
+    /// parent project name. This is the boot-project / worker path that
+    /// reaches Connected without a naming `Spawning`.
+    #[test]
+    fn stamp_resolves_project_root_and_worktree_cwd() {
+        let mut app = App::test_default();
+        let ws = app.workspace.clone().expect("test workspace");
+        let path = "/tmp/stamp-proj";
+        ws.seed_test_project_with_team("stampproj", path, &[]);
+
+        let lead = forge_workspace::SessionKey::from_session_id("lead-uuid");
+        let mut bucket = crate::app::session::UiSession::new(lead.clone());
+        bucket.cwd_raw = path.to_owned();
+        app.sessions.insert(lead.clone(), bucket);
+        stamp_bucket_project_from_cwd(&mut app, &lead, false);
+        assert_eq!(
+            app.sessions.get(&lead).and_then(|b| b.project.clone()).as_deref(),
+            Some("stampproj"),
+            "a project-root cwd stamps the project name",
+        );
+
+        let worker = forge_workspace::SessionKey::from_session_id("worker-uuid");
+        let mut bucket = crate::app::session::UiSession::new(worker.clone());
+        bucket.cwd_raw = format!("{path}/.claude/worktrees/reviewer");
+        app.sessions.insert(worker.clone(), bucket);
+        stamp_bucket_project_from_cwd(&mut app, &worker, false);
+        assert_eq!(
+            app.sessions.get(&worker).and_then(|b| b.project.clone()).as_deref(),
+            Some("stampproj"),
+            "a worktree worker's cwd stamps its parent project name",
+        );
+    }
+
+    /// `force = false` leaves an already-stamped name intact (a Spawning
+    /// name survives Connect); `force = true` re-stamps (SessionReplaced).
+    #[test]
+    fn stamp_respects_force_flag() {
+        let mut app = App::test_default();
+        let ws = app.workspace.clone().expect("test workspace");
+        ws.seed_test_project_with_team("stampproj", "/tmp/stamp-force-proj", &[]);
+
+        let key = forge_workspace::SessionKey::from_session_id("k");
+        let mut bucket = crate::app::session::UiSession::new(key.clone());
+        bucket.cwd_raw = "/tmp/stamp-force-proj".to_owned();
+        bucket.project = Some("preset".to_owned());
+        app.sessions.insert(key.clone(), bucket);
+
+        stamp_bucket_project_from_cwd(&mut app, &key, false);
+        assert_eq!(
+            app.sessions.get(&key).and_then(|b| b.project.clone()).as_deref(),
+            Some("preset"),
+            "force = false keeps the preceding name",
+        );
+
+        stamp_bucket_project_from_cwd(&mut app, &key, true);
+        assert_eq!(
+            app.sessions.get(&key).and_then(|b| b.project.clone()).as_deref(),
+            Some("stampproj"),
+            "force = true re-stamps from the cwd",
+        );
+    }
 }

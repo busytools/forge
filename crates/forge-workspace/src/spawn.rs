@@ -568,7 +568,7 @@ pub(crate) fn handle_spawn_session(
         "spawn_session::Spawning",
         SessionUpdate::Spawning {
             key: synth_key.clone(),
-            project_name: display_name.clone(),
+            project_name: parent.name.clone(),
             cwd,
             display_name,
         },
