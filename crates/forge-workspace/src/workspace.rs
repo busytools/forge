@@ -4914,6 +4914,84 @@ mod tests {
     }
 
     #[test]
+    fn deliver_gotify_message_delivers_to_running_team_worker() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project_with_team("forge", "/tmp/gotify-team", &["reviewer".to_owned()]);
+        let view_key = ws
+            .list_projects()
+            .into_iter()
+            .find(|v| v.name == "forge")
+            .map(|v| v.key)
+            .expect("seeded project view");
+        let worker_key = SessionKey::from_session_id("worker-reviewer");
+        ws.insert_live_worker(
+            &view_key,
+            crate::mcp::workers::types::WorkerEntry {
+                label: "reviewer".to_owned(),
+                charter: "review".to_owned(),
+                session_key: worker_key.clone(),
+                status: forge_primitives::WorkerLiveness::Running,
+                spawned_at: std::time::SystemTime::UNIX_EPOCH,
+                spawned_by_session_id: "lead".to_owned(),
+                needs_tag: false,
+                is_git_repo_at_spawn: false,
+                diagnostic: None,
+                kick: None,
+            },
+        );
+
+        ws.enable_test_dispatch_intercept();
+        crate::spawn::deliver_gotify_message(&ws, "forge", Some("reviewer"), "env".to_owned());
+        let dispatched = ws.drain_test_dispatch_buffer();
+
+        assert!(
+            dispatched.iter().any(
+                |c| matches!(c, crate::protocol::Command::Prompt { key, .. } if key == &worker_key)
+            ),
+            "a running team worker receives the notification directly",
+        );
+        assert!(
+            dispatched.iter().all(|c| !matches!(c, crate::protocol::Command::SpawnProject { .. })),
+            "no project spawn when the target worker is already running",
+        );
+    }
+
+    #[test]
+    fn deliver_gotify_message_team_worker_asleep_falls_through_to_lead() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project_with_team("forge", "/tmp/gotify-team", &["reviewer".to_owned()]);
+
+        // No live worker of that role: the subscription falls through to
+        // lead delivery, which spawns the asleep project (the lead brings up
+        // its team) and buffers the envelope for the Connected drain.
+        ws.enable_test_dispatch_intercept();
+        crate::spawn::deliver_gotify_message(&ws, "forge", Some("reviewer"), "env".to_owned());
+        let dispatched = ws.drain_test_dispatch_buffer();
+
+        let spawns = dispatched
+            .iter()
+            .filter(|c| {
+                matches!(c, crate::protocol::Command::SpawnProject { project_name, .. }
+                    if project_name == "forge")
+            })
+            .count();
+        assert_eq!(spawns, 1, "an asleep team-worker subscription spawns the project lead");
+
+        let synth = SessionKey::from_session_id("__spawn_forge__");
+        let buffered = ws
+            .domain_handles
+            .lock()
+            .get(&synth)
+            .expect("synth domain present")
+            .lock()
+            .pending_gotify_prompts
+            .clone();
+        assert_eq!(buffered, vec!["env".to_owned()], "the envelope was buffered");
+    }
+
+    #[test]
     fn gotify_subscriptions_for_project_path_resolves_by_cwd_and_degrades() {
         let dir = tempdir().expect("tempdir");
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
