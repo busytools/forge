@@ -37,6 +37,7 @@ pub struct GotifyMessage {
 /// `min_priority` filter. Durable ones persist to redb; ephemeral
 /// ad-hoc-worker ones stay in memory only.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "GotifySubscriptionRepr")]
 pub struct GotifySubscription {
     pub id: uuid::Uuid,
     pub project: String,
@@ -48,6 +49,41 @@ pub struct GotifySubscription {
     /// Priority floor; `None` matches any priority.
     pub min_priority: Option<u8>,
     pub created_at: std::time::SystemTime,
+}
+
+/// Deserialization shape, tolerant of the v0.20.0 record that stored a
+/// single `application: Option<String>` and no `applications` key. A
+/// non-null legacy `application` folds forward into `applications`; a
+/// null or absent one leaves the empty match-any set. Serialization
+/// always emits the current `applications` shape (this is deser-only).
+#[derive(Deserialize)]
+struct GotifySubscriptionRepr {
+    id: uuid::Uuid,
+    project: String,
+    team_role: Option<String>,
+    #[serde(default)]
+    applications: Vec<String>,
+    #[serde(default)]
+    application: Option<String>,
+    min_priority: Option<u8>,
+    created_at: std::time::SystemTime,
+}
+
+impl From<GotifySubscriptionRepr> for GotifySubscription {
+    fn from(repr: GotifySubscriptionRepr) -> Self {
+        let mut applications = repr.applications;
+        if applications.is_empty() {
+            applications.extend(repr.application);
+        }
+        Self {
+            id: repr.id,
+            project: repr.project,
+            team_role: repr.team_role,
+            applications,
+            min_priority: repr.min_priority,
+            created_at: repr.created_at,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -73,5 +109,39 @@ mod tests {
         let msg: GotifyMessage = serde_json::from_str(line).expect("deserialize stream line");
         assert_eq!(msg.appid, 3);
         assert_eq!(msg.priority, 5);
+    }
+
+    #[test]
+    fn legacy_v0_20_0_record_migrates_forward() {
+        // v0.20.0 persisted `application: Option<String>` with no
+        // `applications` key. Build that shape from a current record so
+        // the SystemTime encoding stays whatever serde emits.
+        let base = GotifySubscription {
+            id: uuid::Uuid::from_u128(1),
+            project: "p".to_owned(),
+            team_role: None,
+            applications: vec![],
+            min_priority: Some(5),
+            created_at: SystemTime::UNIX_EPOCH,
+        };
+        let mut legacy = serde_json::to_value(&base).expect("serialize");
+        legacy.as_object_mut().expect("object").remove("applications");
+
+        legacy.as_object_mut().expect("object").insert("application".to_owned(), "alerts".into());
+        let named: GotifySubscription =
+            serde_json::from_value(legacy.clone()).expect("legacy named record");
+        assert_eq!(
+            named.applications,
+            vec!["alerts".to_owned()],
+            "a real old single-app filter folds forward",
+        );
+
+        legacy
+            .as_object_mut()
+            .expect("object")
+            .insert("application".to_owned(), serde_json::Value::Null);
+        let any: GotifySubscription =
+            serde_json::from_value(legacy).expect("legacy null-application record");
+        assert!(any.applications.is_empty(), "a null application becomes the match-any set");
     }
 }
