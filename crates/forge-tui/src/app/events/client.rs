@@ -349,7 +349,7 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
 fn apply_session_update_spawning(
     app: &mut App,
     key: SessionKey,
-    _project_name: &str,
+    project_name: &str,
     cwd: &str,
     display_name: &str,
 ) {
@@ -358,7 +358,20 @@ fn apply_session_update_spawning(
         app.switch_active_session(key);
         return;
     }
+    // Stamp the tab's forge.toml project NAME up front so the Inspector
+    // scopes SCHEDULES / GOTIFY correctly even during the Waking phase.
+    // The Spawning payload names the project directly for a project /
+    // session spawn; fall back to a cwd resolve so a stray key or
+    // display-path form still lands.
+    let project = app.workspace.as_ref().and_then(|ws| {
+        ws.list_projects()
+            .into_iter()
+            .find(|view| view.name == project_name)
+            .map(|view| view.name)
+            .or_else(|| ws.project_name_for_path(cwd))
+    });
     let mut bucket = crate::app::session::UiSession::new(key.clone());
+    bucket.project = project;
     bucket.cwd = shorten_cwd_display_path(cwd);
     cwd.clone_into(&mut bucket.cwd_raw);
     bucket.messages.push(crate::app::ChatMessage::new(

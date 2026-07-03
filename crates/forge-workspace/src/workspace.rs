@@ -2747,32 +2747,41 @@ impl Workspace {
         })
     }
 
-    /// The crons registered for `project_name`. Backs `cron__list`; the
-    /// Inspector's active-project snapshot reaches it via
-    /// [`Self::crons_for_project_path`].
+    /// The crons registered for `project_name`. Backs `cron__list` and
+    /// the Inspector SCHEDULES snapshot, which scopes by the active tab's
+    /// stamped project name.
     pub fn crons_for_project(&self, project_name: &str) -> Vec<forge_primitives::CronEntry> {
         self.crons.lock().iter().filter(|c| c.project_name == project_name).cloned().collect()
     }
 
-    /// The crons for the project that owns `cwd`, matched by the project
-    /// whose path is an ancestor-or-equal of `cwd` (component-aware,
-    /// longest wins). A worker in a `<project>/.claude/worktrees/<label>`
-    /// worktree resolves to its project, not just an exact project-root
-    /// cwd. Backs the Inspector SCHEDULES snapshot, which resolves the
-    /// active tab's project by cwd rather than session key (which can be a
-    /// synthetic pre-Connect placeholder mapping to no project). Empty when
-    /// `cwd` is blank or under no configured project.
-    pub fn crons_for_project_path(&self, cwd: &str) -> Vec<forge_primitives::CronEntry> {
+    /// The forge.toml project NAME that owns `cwd`, matched by the
+    /// project whose expanded path is an ancestor-or-equal of `cwd`
+    /// (component-aware, longest wins), so a worker in a
+    /// `<project>/.claude/worktrees/<label>` worktree resolves to its
+    /// parent project. `None` when `cwd` is blank or under no configured
+    /// project. The Inspector stamps this NAME onto a tab's UI bucket
+    /// once (at Connect), then scopes SCHEDULES / GOTIFY by name rather
+    /// than re-deriving the project every render tick from a stale cwd.
+    pub fn project_name_for_path(&self, cwd: &str) -> Option<String> {
         if cwd.is_empty() {
-            return Vec::new();
+            return None;
         }
-        let cwd = std::path::Path::new(cwd);
+        // Resolve symlinks when the path exists on disk; otherwise keep
+        // the ~-expanded lexical form so not-yet-created dirs and test
+        // paths still compare. Applied to both sides so a tilde-vs-
+        // expanded or symlinked form can't miss.
+        let normalize = |p: &std::path::Path| -> std::path::PathBuf {
+            std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
+        };
+        let cwd = normalize(&crate::config::expand_home(cwd));
         self.list_projects()
             .into_iter()
-            .filter(|view| cwd.starts_with(&view.path))
-            .max_by_key(|view| view.path.as_os_str().len())
-            .map(|view| self.crons_for_project(&view.name))
-            .unwrap_or_default()
+            .filter_map(|view| {
+                let view_path = normalize(&view.path);
+                cwd.starts_with(&view_path).then_some((view_path.as_os_str().len(), view.name))
+            })
+            .max_by_key(|(len, _)| *len)
+            .map(|(_, name)| name)
     }
 
     /// A snapshot of every cron across all projects. Backs the
@@ -2825,36 +2834,14 @@ impl Workspace {
         removed
     }
 
-    /// The active subscriptions for `project`. Backs `gotify__list`; the
-    /// Inspector snapshot reaches it via
-    /// [`Self::gotify_subscriptions_for_project_path`].
+    /// The active subscriptions for `project`. Backs `gotify__list` and
+    /// the Inspector GOTIFY snapshot, which scopes by the active tab's
+    /// stamped project name (mirroring [`Self::crons_for_project`]).
     pub fn gotify_subscriptions_for_project(
         &self,
         project: &str,
     ) -> Vec<forge_primitives::GotifySubscription> {
         self.gotify_subs.lock().iter().filter(|s| s.project == project).cloned().collect()
-    }
-
-    /// The subscriptions for the project that owns `cwd`, matched by the
-    /// project whose path is an ancestor-or-equal of `cwd` (component-
-    /// aware, longest wins) - identical resolution to
-    /// [`Self::crons_for_project_path`], so a worktree worker's cwd
-    /// resolves to its parent project. Backs the Inspector GOTIFY
-    /// snapshot. Empty when `cwd` is blank or under no configured project.
-    pub fn gotify_subscriptions_for_project_path(
-        &self,
-        cwd: &str,
-    ) -> Vec<forge_primitives::GotifySubscription> {
-        if cwd.is_empty() {
-            return Vec::new();
-        }
-        let cwd = std::path::Path::new(cwd);
-        self.list_projects()
-            .into_iter()
-            .filter(|view| cwd.starts_with(&view.path))
-            .max_by_key(|view| view.path.as_os_str().len())
-            .map(|view| self.gotify_subscriptions_for_project(&view.name))
-            .unwrap_or_default()
     }
 
     /// Whether the Gotify stream is currently connected. Backs the
@@ -4394,6 +4381,15 @@ impl Workspace {
     pub fn seed_test_cron(&self, entry: forge_primitives::CronEntry) {
         self.push_cron(entry);
     }
+
+    /// Register a Gotify subscription directly, bypassing the MCP
+    /// subscribe path. Cross-crate test access so forge-tui can exercise
+    /// the Inspector's `refresh_gotify` resolution, mirroring
+    /// [`Self::seed_test_cron`].
+    #[cfg(any(test, feature = "testing"))]
+    pub fn seed_test_gotify_subscription(&self, sub: forge_primitives::GotifySubscription) {
+        self.add_gotify_subscription(sub, false);
+    }
 }
 
 /// Discriminator for how a successful `apply_worker_tag_or_rollback`
@@ -4701,40 +4697,31 @@ mod tests {
     }
 
     #[test]
-    fn crons_for_project_path_resolves_by_cwd_and_degrades_cleanly() {
-        use forge_primitives::cron::{CronEntry, CronId, CronKind};
-
+    fn project_name_for_path_resolves_by_cwd_and_degrades_cleanly() {
         let dir = tempdir().expect("tempdir");
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
 
         let path = "/tmp/cron-project-path-proj";
         ws.seed_test_project_with_team("cronproj", path, &[]);
-        let entry = CronEntry {
-            id: CronId::from("c1"),
-            project_name: "cronproj".to_owned(),
-            kind: CronKind::Recurring("0 9 * * *".to_owned()),
-            prompt: "stand-up".to_owned(),
-            created_at: std::time::SystemTime::UNIX_EPOCH,
-            last_fire: None,
-            next_fire: std::time::SystemTime::UNIX_EPOCH,
-        };
-        ws.push_cron(entry.clone());
 
+        // The escalation guard for the one-time Connected stamp: a clean
+        // project-root cwd MUST resolve the name. If this ever returns
+        // None the prefix logic itself is broken, not the input cwd.
         assert_eq!(
-            ws.crons_for_project_path(path),
-            vec![entry.clone()],
-            "the project's own cwd resolves its crons",
+            ws.project_name_for_path(path).as_deref(),
+            Some("cronproj"),
+            "a clean project-root cwd resolves the project name",
         );
         assert_eq!(
-            ws.crons_for_project_path(&format!("{path}/.claude/worktrees/reviewer")),
-            vec![entry],
+            ws.project_name_for_path(&format!("{path}/.claude/worktrees/reviewer")).as_deref(),
+            Some("cronproj"),
             "a worktree worker's cwd resolves to its parent project",
         );
         assert!(
-            ws.crons_for_project_path("/tmp/no-such-configured-project").is_empty(),
-            "a cwd mapping to no configured project has no crons",
+            ws.project_name_for_path("/tmp/no-such-configured-project").is_none(),
+            "a cwd mapping to no configured project resolves to no name",
         );
-        assert!(ws.crons_for_project_path("").is_empty(), "a blank cwd degrades to empty");
+        assert!(ws.project_name_for_path("").is_none(), "a blank cwd resolves to no name");
     }
 
     #[test]
@@ -5029,36 +5016,6 @@ mod tests {
             .pending_gotify_prompts
             .clone();
         assert_eq!(buffered, vec!["env".to_owned()], "the envelope was buffered");
-    }
-
-    #[test]
-    fn gotify_subscriptions_for_project_path_resolves_by_cwd_and_degrades() {
-        let dir = tempdir().expect("tempdir");
-        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
-        let path = "/tmp/gotify-path-proj";
-        ws.seed_test_project_with_team("gproj", path, &[]);
-        ws.add_gotify_subscription(gotify_sub("gproj", &["alerts"], Some(5)), false);
-
-        assert_eq!(
-            ws.gotify_subscriptions_for_project_path(path).len(),
-            1,
-            "the project's own cwd resolves its subscriptions",
-        );
-        assert_eq!(
-            ws.gotify_subscriptions_for_project_path(&format!("{path}/.claude/worktrees/reviewer"))
-                .len(),
-            1,
-            "a worktree worker's cwd resolves to its parent project",
-        );
-        assert!(
-            ws.gotify_subscriptions_for_project_path("/tmp/no-such-project").is_empty(),
-            "a cwd mapping to no configured project has no subscriptions",
-        );
-        assert!(
-            ws.gotify_subscriptions_for_project_path("").is_empty(),
-            "a blank cwd degrades to empty",
-        );
-        assert!(!ws.gotify_connected(), "no stream running in the stub");
     }
 
     #[test]
