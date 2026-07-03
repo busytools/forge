@@ -33,7 +33,7 @@ pub struct GotifyMessage {
 }
 
 /// An active subscription: which project (and optional team-worker
-/// role) receives notifications matching the `application` +
+/// role) receives notifications matching the `applications` +
 /// `min_priority` filter. Durable ones persist to redb; ephemeral
 /// ad-hoc-worker ones stay in memory only.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -42,8 +42,9 @@ pub struct GotifySubscription {
     pub project: String,
     /// forge.toml team-worker role; `None` targets the project lead.
     pub team_role: Option<String>,
-    /// Gotify application NAME filter; `None` matches any application.
-    pub application: Option<String>,
+    /// Gotify application NAME filters; empty matches any application,
+    /// otherwise the message's app must be one of the listed names.
+    pub applications: Vec<String>,
     /// Priority floor; `None` matches any priority.
     pub min_priority: Option<u8>,
     pub created_at: std::time::SystemTime,
@@ -60,7 +61,7 @@ mod tests {
             id: uuid::Uuid::from_u128(0x1234_5678_9abc_def0_1234_5678_9abc_def0),
             project: "trader-cc".to_owned(),
             team_role: Some("analyst".to_owned()),
-            application: Some("alerts".to_owned()),
+            applications: vec!["alerts".to_owned()],
             min_priority: Some(5),
             created_at: SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000),
         };

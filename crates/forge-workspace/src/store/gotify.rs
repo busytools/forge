@@ -69,7 +69,7 @@ mod tests {
             id: Uuid::new_v4(),
             project: project.to_owned(),
             team_role: None,
-            application: None,
+            applications: vec![],
             min_priority: None,
             created_at: SystemTime::UNIX_EPOCH,
         }

@@ -2879,17 +2879,15 @@ impl Workspace {
     /// Match `msg` against every active subscription and dispatch one
     /// `Command::DeliverGotifyMessage` per match. A subscription matches
     /// when its `min_priority` is `None` or `<=` the message priority AND
-    /// its `application` name is `None` or resolves (via the app index) to
-    /// the message's appid. Multiple matches fan out to every subscriber.
+    /// its `applications` set is empty or contains the message's app name
+    /// (resolved from the appid via the app index). Multiple matches fan
+    /// out to every subscriber.
     pub fn route_gotify_message(self: &Arc<Self>, msg: &forge_primitives::GotifyMessage) {
         let subs = self.gotify_subs.lock().clone();
         let app_name = self.gotify_app_name(msg.appid);
         for sub in subs {
             let priority_ok = sub.min_priority.is_none_or(|floor| msg.priority >= floor);
-            let app_ok = match &sub.application {
-                None => true,
-                Some(name) => self.gotify_app_index.lock().get(name) == Some(&msg.appid),
-            };
+            let app_ok = sub.applications.is_empty() || sub.applications.contains(&app_name);
             if !(priority_ok && app_ok) {
                 continue;
             }
@@ -4751,7 +4749,7 @@ mod tests {
             id: uuid::Uuid::new_v4(),
             project: "p".to_owned(),
             team_role: team_role.map(str::to_owned),
-            application: None,
+            applications: vec![],
             min_priority: None,
             created_at: std::time::SystemTime::UNIX_EPOCH,
         };
@@ -4778,14 +4776,14 @@ mod tests {
 
     fn gotify_sub(
         project: &str,
-        application: Option<&str>,
+        applications: &[&str],
         min_priority: Option<u8>,
     ) -> forge_primitives::GotifySubscription {
         forge_primitives::GotifySubscription {
             id: uuid::Uuid::new_v4(),
             project: project.to_owned(),
             team_role: None,
-            application: application.map(str::to_owned),
+            applications: applications.iter().map(|s| (*s).to_owned()).collect(),
             min_priority,
             created_at: std::time::SystemTime::UNIX_EPOCH,
         }
@@ -4817,8 +4815,8 @@ mod tests {
     fn route_gotify_message_fans_out_to_all_matches() {
         let dir = tempdir().expect("tempdir");
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
-        ws.add_gotify_subscription(gotify_sub("p1", None, None), false);
-        ws.add_gotify_subscription(gotify_sub("p2", None, None), false);
+        ws.add_gotify_subscription(gotify_sub("p1", &[], None), false);
+        ws.add_gotify_subscription(gotify_sub("p2", &[], None), false);
 
         ws.enable_test_dispatch_intercept();
         ws.route_gotify_message(&gotify_msg(3, 5));
@@ -4838,8 +4836,8 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
         *ws.gotify_app_index.lock() = HashMap::from([("alerts".to_owned(), 3u64)]);
-        ws.add_gotify_subscription(gotify_sub("p", Some("alerts"), None), false);
-        ws.add_gotify_subscription(gotify_sub("p", None, Some(5)), false);
+        ws.add_gotify_subscription(gotify_sub("p", &["alerts"], None), false);
+        ws.add_gotify_subscription(gotify_sub("p", &[], Some(5)), false);
 
         ws.enable_test_dispatch_intercept();
 
@@ -4858,13 +4856,37 @@ mod tests {
     fn route_gotify_message_no_match_delivers_nothing() {
         let dir = tempdir().expect("tempdir");
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
-        ws.add_gotify_subscription(gotify_sub("p", None, Some(9)), false);
+        ws.add_gotify_subscription(gotify_sub("p", &[], Some(9)), false);
 
         ws.enable_test_dispatch_intercept();
         ws.route_gotify_message(&gotify_msg(3, 2));
         assert!(
             gotify_deliveries(&ws.drain_test_dispatch_buffer()).is_empty(),
             "a message below the priority floor delivers nothing",
+        );
+    }
+
+    #[test]
+    fn route_gotify_message_matches_any_app_in_the_set() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        *ws.gotify_app_index.lock() =
+            HashMap::from([("alerts".to_owned(), 3u64), ("backups".to_owned(), 7u64)]);
+        ws.add_gotify_subscription(gotify_sub("p", &["alerts", "backups"], None), false);
+
+        ws.enable_test_dispatch_intercept();
+
+        // A message from either listed app matches the set.
+        ws.route_gotify_message(&gotify_msg(3, 1));
+        assert_eq!(gotify_deliveries(&ws.drain_test_dispatch_buffer()).len(), 1, "alerts matches");
+        ws.route_gotify_message(&gotify_msg(7, 1));
+        assert_eq!(gotify_deliveries(&ws.drain_test_dispatch_buffer()).len(), 1, "backups matches");
+
+        // An app outside the set is skipped.
+        ws.route_gotify_message(&gotify_msg(9, 1));
+        assert!(
+            gotify_deliveries(&ws.drain_test_dispatch_buffer()).is_empty(),
+            "an app not in the set delivers nothing",
         );
     }
 
@@ -4997,7 +5019,7 @@ mod tests {
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
         let path = "/tmp/gotify-path-proj";
         ws.seed_test_project_with_team("gproj", path, &[]);
-        ws.add_gotify_subscription(gotify_sub("gproj", Some("alerts"), Some(5)), false);
+        ws.add_gotify_subscription(gotify_sub("gproj", &["alerts"], Some(5)), false);
 
         assert_eq!(
             ws.gotify_subscriptions_for_project_path(path).len(),

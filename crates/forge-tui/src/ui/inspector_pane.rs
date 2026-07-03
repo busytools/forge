@@ -1364,7 +1364,11 @@ fn append_gotify_row(
     sub: &forge_primitives::GotifySubscription,
     inner_width: usize,
 ) {
-    let mut label = sub.application.clone().unwrap_or_else(|| "any app".to_owned());
+    let mut label = if sub.applications.is_empty() {
+        "any app".to_owned()
+    } else {
+        sub.applications.join(", ")
+    };
     if let Some(role) = &sub.team_role {
         label = format!("{label} \u{2192} {role}");
     }
@@ -3193,7 +3197,7 @@ mod tests {
             id: uuid::Uuid::from_u128(1),
             project: "trader-cc".to_owned(),
             team_role: None,
-            application: Some("alerts".to_owned()),
+            applications: vec!["alerts".to_owned()],
             min_priority: Some(5),
             created_at: std::time::SystemTime::UNIX_EPOCH,
         }];

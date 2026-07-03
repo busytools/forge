@@ -45,7 +45,7 @@ fn sub_to_json(sub: &GotifySubscription) -> serde_json::Value {
         "id": sub.id.to_string(),
         "project": sub.project,
         "team_role": sub.team_role,
-        "application": sub.application,
+        "applications": sub.applications,
         "min_priority": sub.min_priority,
     })
 }
@@ -70,7 +70,7 @@ struct Subscribe {
 #[derive(serde::Deserialize)]
 struct SubscribeArgs {
     #[serde(default)]
-    application: Option<String>,
+    applications: Option<Vec<String>>,
     #[serde(default)]
     min_priority: Option<u8>,
 }
@@ -86,9 +86,10 @@ impl Tool for Subscribe {
     fn description(&self) -> &str {
         "Subscribe YOUR session to the configured Gotify server. When a matching notification \
          arrives it is delivered to you as a user turn (spawning your session if it's asleep). \
-         Optionally filter by `application` (the Gotify app NAME) and/or `min_priority` (only \
-         notifications at or above this priority). Both default to any. Returns the subscription \
-         id (use it with gotify__unsubscribe). Errors if no [gotify] server is configured. Any \
+         Optionally filter by `applications` (a set of Gotify app NAMEs; a notification matches \
+         when its app is any one of them) and/or `min_priority` (only notifications at or above \
+         this priority). Both default to any (omit or leave empty). Returns the subscription id \
+         (use it with gotify__unsubscribe). Errors if no [gotify] server is configured. Any \
          session in the project may subscribe."
     }
 
@@ -96,9 +97,11 @@ impl Tool for Subscribe {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "application": {
-                    "type": "string",
-                    "description": "Gotify application NAME to filter on. Omit to match any app.",
+                "applications": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Gotify application NAMEs to match; a notification from any \
+                                    one of them matches. Omit or leave empty to match any app.",
                 },
                 "min_priority": {
                     "type": "integer",
@@ -121,7 +124,7 @@ impl Tool for Subscribe {
             Ok(k) => k,
             Err(err) => return tool_error(err.to_string()),
         };
-        match self.facade.subscribe(&caller, args.application, args.min_priority) {
+        match self.facade.subscribe(&caller, args.applications.unwrap_or_default(), args.min_priority) {
             Ok(id) => ToolOutput::text(format!("subscribed to Gotify (id {id})")),
             Err(err) => tool_error(format_subscribe_error(&err)),
         }
@@ -143,8 +146,9 @@ impl Tool for List {
     #[allow(clippy::unnecessary_literal_bound)]
     fn description(&self) -> &str {
         "List YOUR project's active Gotify subscriptions. Returns a JSON array of {id, project, \
-         team_role, application, min_priority}. Use an id with gotify__unsubscribe. An empty array \
-         means no subscriptions. Takes no arguments. Any session in the project may call this."
+         team_role, applications, min_priority}. Use an id with gotify__unsubscribe. An empty \
+         array means no subscriptions. Takes no arguments. Any session in the project may call \
+         this."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -239,7 +243,7 @@ mod tests {
             id,
             project: project.to_owned(),
             team_role: None,
-            application: Some("alerts".to_owned()),
+            applications: vec!["alerts".to_owned()],
             min_priority: Some(5),
             created_at: SystemTime::UNIX_EPOCH,
         }
@@ -257,14 +261,14 @@ mod tests {
         let tool = Subscribe { facade: mock.clone(), caller_key: resolver() };
 
         let out = tool
-            .call(input(serde_json::json!({ "application": "alerts", "min_priority": 5 })))
+            .call(input(serde_json::json!({ "applications": ["alerts"], "min_priority": 5 })))
             .await;
         assert!(!out.is_error, "valid subscribe succeeds: {}", out.blocks[0].text);
         assert!(out.blocks[0].text.contains(&id.to_string()), "output carries the id");
 
         let calls = mock.subscribe_calls.lock();
         assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].1, Some("alerts".to_owned()));
+        assert_eq!(calls[0].1, vec!["alerts".to_owned()]);
         assert_eq!(calls[0].2, Some(5));
     }
 
