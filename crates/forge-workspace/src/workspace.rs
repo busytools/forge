@@ -2863,8 +2863,7 @@ impl Workspace {
         *self.gotify_connected.lock()
     }
 
-    /// Whether a `[gotify]` server is configured. Gates the Inspector
-    /// GOTIFY section entirely.
+    /// Whether a `[gotify]` server is configured in forge.toml.
     pub fn gotify_configured(&self) -> bool {
         self.gotify_config().is_some()
     }
