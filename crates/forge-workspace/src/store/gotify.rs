@@ -30,11 +30,6 @@ pub fn list(db: &Db) -> anyhow::Result<Vec<GotifySubscription>> {
     read_all(db)
 }
 
-/// Persisted subscriptions for a single project.
-pub fn list_for_project(db: &Db, project: &str) -> anyhow::Result<Vec<GotifySubscription>> {
-    Ok(read_all(db)?.into_iter().filter(|s| s.project == project).collect())
-}
-
 /// Delete a subscription by id. Returns whether a record existed.
 pub fn remove(db: &Db, id: Uuid) -> anyhow::Result<bool> {
     let txn = db.database().begin_write()?;
@@ -90,11 +85,9 @@ mod tests {
         insert(&db, &s1).expect("insert s1");
         insert(&db, &s2).expect("insert s2");
 
-        assert_eq!(list(&db).expect("list").len(), 2);
-
-        let for_p1 = list_for_project(&db, "p1").expect("list_for_project");
-        assert_eq!(for_p1.len(), 1);
-        assert_eq!(for_p1[0].id, s1.id);
+        let all = list(&db).expect("list");
+        assert_eq!(all.len(), 2);
+        assert!(all.iter().any(|s| s.id == s1.id) && all.iter().any(|s| s.id == s2.id));
 
         assert!(remove(&db, s1.id).expect("remove"), "an existing id removes to true");
         assert!(!remove(&db, s1.id).expect("remove again"), "an absent id removes to false");
