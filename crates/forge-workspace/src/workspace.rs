@@ -2803,12 +2803,47 @@ impl Workspace {
     }
 
     /// The active subscriptions for `project`. Backs `gotify__list`; the
-    /// Inspector snapshot reaches it via the by-cwd resolver.
+    /// Inspector snapshot reaches it via
+    /// [`Self::gotify_subscriptions_for_project_path`].
     pub fn gotify_subscriptions_for_project(
         &self,
         project: &str,
     ) -> Vec<forge_primitives::GotifySubscription> {
         self.gotify_subs.lock().iter().filter(|s| s.project == project).cloned().collect()
+    }
+
+    /// The subscriptions for the project that owns `cwd`, matched by the
+    /// project whose path is an ancestor-or-equal of `cwd` (component-
+    /// aware, longest wins) - identical resolution to
+    /// [`Self::crons_for_project_path`], so a worktree worker's cwd
+    /// resolves to its parent project. Backs the Inspector GOTIFY
+    /// snapshot. Empty when `cwd` is blank or under no configured project.
+    pub fn gotify_subscriptions_for_project_path(
+        &self,
+        cwd: &str,
+    ) -> Vec<forge_primitives::GotifySubscription> {
+        if cwd.is_empty() {
+            return Vec::new();
+        }
+        let cwd = std::path::Path::new(cwd);
+        self.list_projects()
+            .into_iter()
+            .filter(|view| cwd.starts_with(&view.path))
+            .max_by_key(|view| view.path.as_os_str().len())
+            .map(|view| self.gotify_subscriptions_for_project(&view.name))
+            .unwrap_or_default()
+    }
+
+    /// Whether the Gotify stream is currently connected. Backs the
+    /// Inspector GOTIFY status line.
+    pub fn gotify_connected(&self) -> bool {
+        *self.gotify_connected.lock()
+    }
+
+    /// Whether a `[gotify]` server is configured. Gates the Inspector
+    /// GOTIFY section entirely.
+    pub fn gotify_configured(&self) -> bool {
+        self.gotify_config().is_some()
     }
 
     /// Install a redb store into a test workspace so the durable-vs-
@@ -4853,6 +4888,37 @@ mod tests {
             dispatched.iter().all(|c| !matches!(c, crate::protocol::Command::SpawnProject { .. })),
             "a gone target is skipped without a spawn or panic",
         );
+    }
+
+    #[test]
+    fn gotify_subscriptions_for_project_path_resolves_by_cwd_and_degrades() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        let path = "/tmp/gotify-path-proj";
+        ws.seed_test_project_with_team("gproj", path, &[]);
+        ws.add_gotify_subscription(gotify_sub("gproj", Some("alerts"), Some(5)), false);
+
+        assert_eq!(
+            ws.gotify_subscriptions_for_project_path(path).len(),
+            1,
+            "the project's own cwd resolves its subscriptions",
+        );
+        assert_eq!(
+            ws.gotify_subscriptions_for_project_path(&format!("{path}/.claude/worktrees/reviewer"))
+                .len(),
+            1,
+            "a worktree worker's cwd resolves to its parent project",
+        );
+        assert!(
+            ws.gotify_subscriptions_for_project_path("/tmp/no-such-project").is_empty(),
+            "a cwd mapping to no configured project has no subscriptions",
+        );
+        assert!(
+            ws.gotify_subscriptions_for_project_path("").is_empty(),
+            "a blank cwd degrades to empty",
+        );
+        assert!(!ws.gotify_configured(), "testing stub has no [gotify] block");
+        assert!(!ws.gotify_connected(), "no stream running in the stub");
     }
 
     #[test]
