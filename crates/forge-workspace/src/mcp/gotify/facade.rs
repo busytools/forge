@@ -80,6 +80,7 @@ impl GotifyFacade for ProdGotifyFacade {
         };
         let id = sub.id;
         ws.add_gotify_subscription(sub, durable);
+        ws.start_gotify_subsystem();
         Ok(id)
     }
 
@@ -92,7 +93,9 @@ impl GotifyFacade for ProdGotifyFacade {
     fn unsubscribe(&self, caller: &SessionKey, id: Uuid) -> bool {
         let Some(ws) = self.workspace.upgrade() else { return false };
         let Some(cx) = caller_context(&ws, caller) else { return false };
-        ws.remove_gotify_subscription(&cx.project_name, id)
+        let removed = ws.remove_gotify_subscription(&cx.project_name, id);
+        ws.stop_gotify_subsystem_if_idle();
+        removed
     }
 }
 

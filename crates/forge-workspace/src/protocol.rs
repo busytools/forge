@@ -287,6 +287,21 @@ pub enum Command {
         target_lead_key: SessionKey,
         wrapped: WrappedPrompt,
     },
+    /// Deliver a matched Gotify notification into `project` as a plain
+    /// user turn (spawning the project if asleep, exactly like a cron
+    /// prompt). `team_role` targets a durable team worker when `Some`;
+    /// `None` targets the project lead. Dispatched by
+    /// `Workspace::route_gotify_message`, one per matching subscription;
+    /// handled by `spawn::deliver_gotify_message`. `appid` + `priority`
+    /// carry the source notification's numbers for tracing. App-level
+    /// command (`key()` returns `None`).
+    DeliverGotifyMessage {
+        project: String,
+        team_role: Option<String>,
+        envelope: String,
+        appid: u64,
+        priority: u8,
+    },
 }
 
 impl Command {
@@ -316,7 +331,8 @@ impl Command {
             | Self::CloseWorker { .. }
             | Self::DespawnWorker { .. }
             | Self::DeliverWorkerPrompt { .. }
-            | Self::DeliverWorkerPromptToLead { .. } => None,
+            | Self::DeliverWorkerPromptToLead { .. }
+            | Self::DeliverGotifyMessage { .. } => None,
         }
     }
 }
@@ -415,6 +431,12 @@ impl std::fmt::Debug for Command {
                 .debug_struct("DeliverWorkerPromptToLead")
                 .field("caller", caller)
                 .field("target_lead_key", target_lead_key)
+                .finish_non_exhaustive(),
+            Self::DeliverGotifyMessage { project, team_role, priority, .. } => f
+                .debug_struct("DeliverGotifyMessage")
+                .field("project", project)
+                .field("team_role", team_role)
+                .field("priority", priority)
                 .finish_non_exhaustive(),
         }
     }

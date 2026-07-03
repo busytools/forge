@@ -278,6 +278,9 @@ impl SessionTask {
                     // whose session wasn't open). Plain user turns, so no
                     // peer-envelope echo.
                     self.drain_pending_cron_prompts();
+                    // Same for Gotify notification envelopes buffered while
+                    // the project was asleep.
+                    self.drain_pending_gotify_prompts();
                 }
                 // Fire worker re-tag for both first-Connected and
                 // post-/new Connected paths. #166: the previous
@@ -714,6 +717,33 @@ impl SessionTask {
             }
         }
     }
+
+    /// Drain `DomainSession.pending_gotify_prompts` after the session's
+    /// first `Connected` event - Gotify notification envelopes buffered
+    /// while the project was asleep. Each is re-dispatched as a plain
+    /// `Command::Prompt`, landing as an ordinary user turn. Mirrors
+    /// [`Self::drain_pending_cron_prompts`]. No-op when the buffer is empty.
+    fn drain_pending_gotify_prompts(&self) {
+        let pending: Vec<String> = std::mem::take(&mut self.domain.lock().pending_gotify_prompts);
+        if pending.is_empty() {
+            return;
+        }
+        let Some(workspace) = self.workspace.upgrade() else { return };
+        for text in pending {
+            if let Err(err) = workspace.dispatch(crate::protocol::Command::Prompt {
+                key: self.key.clone(),
+                text,
+                attachments: Vec::new(),
+            }) {
+                tracing::warn!(
+                    target: "forge_workspace::session_task",
+                    key = %self.key.as_str(),
+                    error = ?err,
+                    "drain_pending_gotify_prompts: dispatch failed; prompt dropped"
+                );
+            }
+        }
+    }
 }
 
 /// Drop hook: on SessionTask exit (any reason - graceful close,
@@ -1085,7 +1115,8 @@ pub(crate) fn execute_command_via_handle(
         | Command::CloseWorker { .. }
         | Command::DespawnWorker { .. }
         | Command::DeliverWorkerPrompt { .. }
-        | Command::DeliverWorkerPromptToLead { .. }) => {
+        | Command::DeliverWorkerPromptToLead { .. }
+        | Command::DeliverGotifyMessage { .. }) => {
             tracing::warn!(
                 target: "forge_workspace::session_task",
                 key = %key.as_str(),
