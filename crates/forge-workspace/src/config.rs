@@ -17,6 +17,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use forge_primitives::GotifyConfig;
 use serde::Deserialize;
 
 use crate::error::WorkspaceError;
@@ -34,6 +35,11 @@ struct ForgeToml {
     /// section → all defaults.
     #[serde(default)]
     ui: UiSettings,
+    /// Optional `[gotify]` section - the inbound-notification server
+    /// connection. Absent section → `None` → the Gotify subsystem
+    /// stays dormant.
+    #[serde(default)]
+    gotify: Option<GotifyConfig>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -109,6 +115,9 @@ pub(crate) struct LoadedConfig {
     /// `[ui]` section knobs. All fields have defaults; absent
     /// section means every field is at its default.
     pub ui: UiSettings,
+    /// `[gotify]` server connection, or `None` when the section is
+    /// absent (Gotify disabled).
+    pub gotify: Option<GotifyConfig>,
 }
 
 #[derive(Debug, Clone)]
@@ -170,6 +179,7 @@ impl LoadedConfig {
             default_index: 0,
             accounts: Vec::new(),
             ui: UiSettings::default(),
+            gotify: None,
         }
     }
 }
@@ -337,7 +347,14 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
         alpha.iter().copied().find(|&i| projects[i].auto_start).unwrap_or_else(|| alpha[0])
     };
 
-    Ok(LoadedConfig { orgs, projects, default_index, accounts, ui: parsed.ui })
+    Ok(LoadedConfig {
+        orgs,
+        projects,
+        default_index,
+        accounts,
+        ui: parsed.ui,
+        gotify: parsed.gotify,
+    })
 }
 
 fn expand_home(path: &str) -> PathBuf {
@@ -381,6 +398,32 @@ auto_start = true
 display_name = "Subspace"
 config_dir = "~/.claude-subspace"
 "#
+    }
+
+    #[test]
+    fn parses_gotify_block() {
+        let dir = tempdir().expect("tempdir");
+        let raw = format!(
+            "{}\n[gotify]\nurl = \"https://g.example\"\nclient_token = \"Cabc\"\n",
+            minimal_config()
+        );
+        write_config(dir.path(), &raw);
+        let config = load_from_dir(dir.path()).expect("happy path");
+        assert_eq!(
+            config.gotify,
+            Some(forge_primitives::GotifyConfig {
+                url: "https://g.example".to_owned(),
+                client_token: "Cabc".to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    fn absent_gotify_block_is_none() {
+        let dir = tempdir().expect("tempdir");
+        write_config(dir.path(), minimal_config());
+        let config = load_from_dir(dir.path()).expect("happy path");
+        assert_eq!(config.gotify, None);
     }
 
     #[test]

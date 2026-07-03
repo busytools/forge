@@ -22,7 +22,7 @@ getrandom = "0.3"
 hex = "0.4"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 sha2 = "0.10"
-uuid = { version = "1", features = ["v4"] }
+uuid = { version = "1", features = ["v4", "serde"] }
 time = { version = "0.3", features = ["parsing", "formatting"] }
 unicode-normalization = "0.1"
 regex = "1"
@@ -86,6 +86,13 @@ http-body-util = "0.1"
 bytes = "1"
 url = "2"
 memchr = "2"
+
+# Gotify inbound integration: redb is the machine-local embedded store
+# for durable subscriptions; tokio-tungstenite streams the Gotify
+# server's notification WebSocket. rustls-tls-webpki-roots keeps the
+# TLS stack pure-rustls, matching reqwest and the wire proxy.
+redb = "2.6"
+tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
 
 # Workspace-internal crates
 forge-primitives = { path = "crates/forge-primitives", version = "=0.19.4" }

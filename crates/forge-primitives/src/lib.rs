@@ -50,6 +50,7 @@ pub mod cron;
 pub mod error;
 pub mod git;
 pub mod git_diff;
+pub mod gotify;
 pub mod hooks;
 pub mod ids;
 pub mod image;
@@ -76,6 +77,7 @@ pub use command::AgentCommand;
 pub use content::ContentBlock;
 pub use cron::{CronEntry, CronId, CronKind};
 pub use error::AppError;
+pub use gotify::{GotifyConfig, GotifyMessage, GotifySubscription};
 pub use hooks::{
     BaseHookInput, HookContext, HookKind, HookSpecificOutput, NotificationHookSpecificOutput,
     NotificationInput, PermissionRequestHookSpecificOutput, PermissionRequestInput,

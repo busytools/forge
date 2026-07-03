@@ -394,6 +394,116 @@ pub(crate) fn deliver_cron_prompt(
     }
 }
 
+/// Deliver a matched Gotify notification `envelope` into `project` as a
+/// plain user turn. When `team_role` names a running team worker, deliver
+/// straight to it; otherwise deliver to the project lead - dispatch a
+/// `Command::Prompt` if it's running, else buffer on the synthetic
+/// spawn-key's DomainSession and dispatch `Command::SpawnProject`
+/// (`SessionTask` drains it on Connected via `drain_pending_gotify_prompts`).
+/// Mirrors [`deliver_cron_prompt`]; a team-worker subscription whose worker
+/// is asleep falls through to lead delivery (spawning the project brings
+/// the team up). A project no longer in forge.toml is logged and skipped.
+pub(crate) fn deliver_gotify_message(
+    workspace: &Arc<Workspace>,
+    project: &str,
+    team_role: Option<&str>,
+    envelope: String,
+) {
+    // A team-worker subscription targets that worker when it's running.
+    if let Some(role) = team_role
+        && let Some(worker_key) = running_team_worker(workspace, project, role)
+    {
+        if let Err(err) = workspace.dispatch(Command::Prompt {
+            key: worker_key,
+            text: envelope,
+            attachments: Vec::new(),
+        }) {
+            tracing::warn!(
+                target: "forge_workspace::spawn",
+                project = %project,
+                role = %role,
+                error = ?err,
+                "gotify deliver to running team worker failed",
+            );
+        }
+        return;
+    }
+
+    let running_lead =
+        workspace.list_projects().into_iter().find(|v| v.name == project).and_then(|v| {
+            let live_worker_keys: std::collections::HashSet<_> =
+                workspace.list_live_workers(&v.key).into_iter().map(|w| w.session_key).collect();
+            v.sessions
+                .into_iter()
+                .find(|s| s.is_open && !live_worker_keys.contains(&s.session))
+                .map(|s| s.session)
+        });
+
+    if let Some(target_key) = running_lead {
+        if let Err(err) = workspace.dispatch(Command::Prompt {
+            key: target_key,
+            text: envelope,
+            attachments: Vec::new(),
+        }) {
+            tracing::warn!(
+                target: "forge_workspace::spawn",
+                project = %project,
+                error = ?err,
+                "gotify deliver to running project failed",
+            );
+        }
+        return;
+    }
+
+    // Asleep: buffer on the synthetic spawn key and spawn the project
+    // (only if it's a real forge.toml project).
+    if workspace.find_project_view_by_name(project).is_none() {
+        tracing::warn!(
+            target: "forge_workspace::spawn",
+            project = %project,
+            "gotify delivery target gone from forge.toml; skipping",
+        );
+        return;
+    }
+
+    let synth_key = SessionKey::from_session_id(format!("__spawn_{project}__"));
+    {
+        let mut handles = workspace.domain_handles.lock();
+        let domain = handles
+            .entry(synth_key.clone())
+            .or_insert_with(|| Arc::new(Mutex::new(DomainSession::new(synth_key.clone(), None))))
+            .clone();
+        drop(handles);
+        domain.lock().pending_gotify_prompts.push(envelope);
+    }
+
+    if let Err(err) = workspace.dispatch(Command::SpawnProject {
+        project_name: project.to_owned(),
+        launch_settings: SessionLaunchSettings::default(),
+    }) {
+        tracing::warn!(
+            target: "forge_workspace::spawn",
+            project = %project,
+            error = ?err,
+            "gotify fire SpawnProject dispatch failed",
+        );
+    }
+}
+
+/// The running team worker of role `label` in `project`, if any.
+fn running_team_worker(
+    workspace: &Arc<Workspace>,
+    project: &str,
+    label: &str,
+) -> Option<SessionKey> {
+    let view = workspace.list_projects().into_iter().find(|v| v.name == project)?;
+    workspace
+        .list_live_workers(&view.key)
+        .into_iter()
+        .find(|w| w.label == label)
+        .map(|w| w.session_key)
+}
+
 /// Stamp `current_inbound_hop = max(current, hop)` on the target's
 /// DomainSession. Used by handle_deliver_peer_prompt before
 /// dispatching Command::Prompt so the recipient's tools observe the

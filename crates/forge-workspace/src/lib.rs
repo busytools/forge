@@ -70,6 +70,7 @@ pub mod protocol;
 mod session_task;
 mod single_instance;
 mod spawn;
+pub mod store;
 mod target;
 pub mod team;
 pub mod ui;

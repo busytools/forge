@@ -50,6 +50,12 @@ pub struct DomainSession {
     /// `Command::Prompt` (a plain user turn, not a peer envelope). Empty
     /// in steady state.
     pub pending_cron_prompts: Vec<String>,
+    /// Gotify notification envelopes targeted at this session that
+    /// arrived while it was still spawning (pre-Connected). Same shape
+    /// and drain path as [`Self::pending_cron_prompts`] - a plain user
+    /// turn re-dispatched on `AgentEvent::Connected`. Empty in steady
+    /// state.
+    pub pending_gotify_prompts: Vec<String>,
     /// Hop count of the most-recent peer wrapper the LLM is currently
     /// processing. Stamped by `Workspace::deliver_peer_prompt` with
     /// `max(current.unwrap_or(0), wrapped.hop)` BEFORE dispatching
@@ -82,6 +88,7 @@ impl DomainSession {
             pending_interactions: HashMap::new(),
             pending_peer_prompts: Vec::new(),
             pending_cron_prompts: Vec::new(),
+            pending_gotify_prompts: Vec::new(),
             current_inbound_hop: None,
             spawned_force_new: false,
         }
@@ -96,6 +103,7 @@ impl std::fmt::Debug for DomainSession {
             .field("pending_interactions_count", &self.pending_interactions.len())
             .field("pending_peer_prompts_count", &self.pending_peer_prompts.len())
             .field("pending_cron_prompts_count", &self.pending_cron_prompts.len())
+            .field("pending_gotify_prompts_count", &self.pending_gotify_prompts.len())
             .field("current_inbound_hop", &self.current_inbound_hop)
             .finish_non_exhaustive()
     }

@@ -47,6 +47,7 @@ uuid = { workspace = true }
 rustix = { workspace = true }
 croner = { workspace = true }
 chrono = { workspace = true }
+redb = { workspace = true }
 
 [dev-dependencies]
 forge-agent = { workspace = true, features = ["testing"] }

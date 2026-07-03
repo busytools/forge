@@ -8,5 +8,6 @@
 pub mod cli_version;
 pub mod file_index;
 pub mod git_diff;
+pub mod gotify;
 pub mod processes;
 pub mod worktree;

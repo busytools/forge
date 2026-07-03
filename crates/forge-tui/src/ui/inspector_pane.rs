@@ -399,6 +399,16 @@ fn append_body(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
         append_schedules_section(lines, app, width);
     }
 
+    // GOTIFY sits between SCHEDULES and PROCESSES. Rendered only when a
+    // `[gotify]` server is configured; shows the stream status + the
+    // active project's inbound subscriptions.
+    if app.gotify_configured {
+        lines.push(Line::default());
+        push_section_rule(lines, width);
+        lines.push(Line::default());
+        append_gotify_section(lines, app, width);
+    }
+
     let processes = collect_active_processes(app);
     if !processes.is_empty() {
         lines.push(Line::default());
@@ -1306,6 +1316,76 @@ fn append_schedules_section(lines: &mut Vec<Line<'static>>, app: &App, width: u1
             lines.push(Line::default());
         }
     }
+}
+
+/// Render the Inspector GOTIFY section: a connection-status line plus one
+/// row per active subscription for the active project (from the cached
+/// `app.gotify_subs` snapshot). The caller gates this on
+/// `app.gotify_configured`, so it always emits at least the header +
+/// status line. Mirrors the SCHEDULES shape.
+fn append_gotify_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
+    lines.push(Line::from(Span::styled(
+        " GOTIFY".to_owned(),
+        Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::default());
+
+    // Status line: filled-diamond glyph accented when connected, DIM when
+    // not, followed by the state text.
+    let (status, glyph_color) = if app.gotify_connected {
+        ("connected", theme::RUST_ORANGE)
+    } else {
+        ("disconnected", theme::DIM)
+    };
+    lines.push(Line::from(vec![
+        Span::raw(" ".repeat(usize::from(PANE_PAD))),
+        Span::styled("\u{25c8}".to_owned(), Style::default().fg(glyph_color)),
+        Span::raw(" ".to_owned()),
+        Span::styled(status.to_owned(), Style::default().fg(theme::DIM)),
+    ]));
+
+    if app.gotify_subs.is_empty() {
+        return;
+    }
+    lines.push(Line::default());
+    let inner_width = usize::from(width);
+    for sub in &app.gotify_subs {
+        append_gotify_row(lines, sub, inner_width);
+    }
+}
+
+/// Render one GOTIFY subscription row: the application-name filter (or
+/// `any app`), with the target team-worker role appended when set, plus a
+/// right-justified priority-floor badge (`>=5` glyph or `any`). Mirrors
+/// [`append_schedule_row`]'s chrome accounting + pad-spacer, minus the
+/// leading glyph cell.
+fn append_gotify_row(
+    lines: &mut Vec<Line<'static>>,
+    sub: &forge_primitives::GotifySubscription,
+    inner_width: usize,
+) {
+    let mut label = sub.application.clone().unwrap_or_else(|| "any app".to_owned());
+    if let Some(role) = &sub.team_role {
+        label = format!("{label} \u{2192} {role}");
+    }
+    let trailing = match sub.min_priority {
+        Some(p) => format!("\u{2265}{p}"),
+        None => "any".to_owned(),
+    };
+    let header_chrome = usize::from(PANE_PAD)
+        + 3                                                  // " · " separator
+        + trailing.chars().count()                           // trailing badge
+        + usize::from(PANE_PAD); // 1-col right gutter
+    let header_budget = row_text_budget(inner_width, header_chrome);
+    let headline = truncate_or_pass(&label, header_budget);
+    let pad = header_budget.saturating_sub(headline.chars().count());
+    lines.push(Line::from(vec![
+        Span::raw(" ".repeat(usize::from(PANE_PAD))),
+        Span::styled(headline, Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw(" ".repeat(pad)),
+        Span::styled(" \u{00B7} ".to_owned(), Style::default().fg(theme::DIM)),
+        Span::styled(trailing, Style::default().fg(theme::DIM)),
+    ]));
 }
 
 /// Build a SCHEDULES row from a durable forge cron. Recurring crons show
@@ -3102,5 +3182,41 @@ mod tests {
             joined.contains("git scanner unhealthy"),
             "ScannerFailed must surface the unhealthy banner; got:\n{joined}"
         );
+    }
+
+    #[test]
+    fn gotify_section_renders_status_line_and_subscription_row() {
+        let mut app = App::test_default();
+        app.gotify_configured = true;
+        app.gotify_connected = true;
+        app.gotify_subs = vec![forge_primitives::GotifySubscription {
+            id: uuid::Uuid::from_u128(1),
+            project: "trader-cc".to_owned(),
+            team_role: None,
+            application: Some("alerts".to_owned()),
+            min_priority: Some(5),
+            created_at: std::time::SystemTime::UNIX_EPOCH,
+        }];
+
+        let mut lines = Vec::new();
+        append_gotify_section(&mut lines, &app, 60);
+        let joined = lines.iter().map(|l| line_text(l)).collect::<Vec<_>>().join("\n");
+
+        assert!(joined.contains("GOTIFY"), "header present; got:\n{joined}");
+        assert!(joined.contains("connected"), "status line present; got:\n{joined}");
+        assert!(joined.contains("alerts"), "the application-filter row present; got:\n{joined}");
+        assert!(joined.contains("\u{2265}5"), "the priority-floor badge present; got:\n{joined}");
+    }
+
+    #[test]
+    fn gotify_section_shows_disconnected_status() {
+        let mut app = App::test_default();
+        app.gotify_configured = true;
+        app.gotify_connected = false;
+
+        let mut lines = Vec::new();
+        append_gotify_section(&mut lines, &app, 60);
+        let joined = lines.iter().map(|l| line_text(l)).collect::<Vec<_>>().join("\n");
+        assert!(joined.contains("disconnected"), "disconnected status shown; got:\n{joined}");
     }
 }

@@ -240,6 +240,28 @@ pub struct Workspace {
     /// The single-instance guard makes this the only process touching the
     /// file, so this mutex alone serialises writes.
     crons: Mutex<Vec<forge_primitives::CronEntry>>,
+    /// Active Gotify subscriptions (`mcp__forge__gotify`). The set the
+    /// stream matches each inbound message against. Durable ones (lead /
+    /// team-worker) are also persisted to `gotify_db` and reloaded here
+    /// at boot; ephemeral ad-hoc-worker ones live only in memory.
+    gotify_subs: Mutex<Vec<forge_primitives::GotifySubscription>>,
+    /// Machine-local redb store backing the durable subscriptions.
+    /// `None` when the DB couldn't open (degrade to in-memory-only, no
+    /// persistence) or in `testing_stub`.
+    gotify_db: Mutex<Option<crate::store::Db>>,
+    /// Whether the Gotify stream is currently connected. Set by the
+    /// subsystem pump on `Connected` / `Disconnected`; read by the
+    /// Inspector's status line.
+    gotify_connected: Mutex<bool>,
+    /// Gotify application name -> numeric appid map, fetched from the
+    /// server's `/application` list on subsystem start and refreshed on
+    /// each reconnect. Resolves an `application` name filter to the appid
+    /// inbound messages carry, and the reverse lookup for the envelope.
+    gotify_app_index: Mutex<HashMap<String, u64>>,
+    /// Shutdown handle for the running Gotify subsystem. `Some` while the
+    /// stream task is live; dropping/sending stops it. `None` when idle
+    /// (no subscriptions) or unconfigured. Guards against double-starting.
+    gotify_subsystem: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
     /// Per-project in-flight guard for the engineering-team Connected
     /// hook's catalog scan. Inserted synchronously when
     /// `spawn_team_for_lead_with_catalog_scan` starts; removed when
@@ -296,6 +318,121 @@ pub fn resolve_lead_session(sessions: &[SDKSessionInfo]) -> Option<&SDKSessionIn
     };
     latest_with(|s| s.tag.as_deref() == Some(forge_primitives::FORGE_LEAD_TAG))
         .or_else(|| latest_with(|s| s.tag.is_none()))
+}
+
+/// Open the machine-local redb store at `<app-support>/db.redb`,
+/// creating the app-support dir first. Returns `None` (with a warn) when
+/// the app-support dir can't resolve or the DB can't open - forge then
+/// runs without durable Gotify subscriptions this session (hard rule
+/// #15: no cwd fallback).
+fn open_gotify_db() -> Option<crate::store::Db> {
+    let dir = match forge_sdk::app_support_dir() {
+        Ok(dir) => dir,
+        Err(error) => {
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                %error,
+                "app-support dir unresolved; Gotify subscriptions will not persist",
+            );
+            return None;
+        }
+    };
+    if let Err(error) = std::fs::create_dir_all(&dir) {
+        tracing::warn!(
+            target: "forge_workspace::workspace",
+            %error,
+            path = %dir.display(),
+            "creating the app-support dir failed; Gotify subscriptions will not persist",
+        );
+        return None;
+    }
+    match crate::store::Db::open(&dir.join("db.redb")) {
+        Ok(db) => Some(db),
+        Err(error) => {
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                %error,
+                "opening the redb store failed; Gotify subscriptions will not persist",
+            );
+            None
+        }
+    }
+}
+
+/// The Gotify subsystem pump: run the reconnecting stream task and
+/// translate its events into workspace state + message routing. Holds
+/// only a `Weak<Workspace>` (upgraded per event) so it never keeps the
+/// workspace alive; exits when `shutdown` fires or the stream task ends,
+/// dropping its own handle to the stream task so that exits too.
+async fn run_gotify_subsystem(
+    weak: std::sync::Weak<Workspace>,
+    cfg: forge_primitives::GotifyConfig,
+    mut shutdown: tokio::sync::oneshot::Receiver<()>,
+) {
+    use forge_agent::env::gotify::GotifyEvent;
+
+    let (tx, mut rx) = mpsc::channel::<GotifyEvent>(64);
+    // Dropping this handle at fn-end signals the stream task to exit.
+    let (_run_shutdown_tx, run_shutdown_rx) = tokio::sync::oneshot::channel();
+    tokio::spawn(forge_agent::env::gotify::run(cfg.clone(), tx, run_shutdown_rx));
+
+    loop {
+        tokio::select! {
+            _ = &mut shutdown => break,
+            event = rx.recv() => {
+                let Some(event) = event else { break };
+                match event {
+                    GotifyEvent::Connected => {
+                        // Refresh the app index off the pump so a slow (up to
+                        // the 10s lookup timeout) or failing /application can't
+                        // block shutdown or message routing.
+                        tokio::spawn(refresh_gotify_app_index(weak.clone(), cfg.clone()));
+                        if let Some(ws) = weak.upgrade() {
+                            *ws.gotify_connected.lock() = true;
+                        }
+                    }
+                    GotifyEvent::Disconnected => {
+                        if let Some(ws) = weak.upgrade() {
+                            *ws.gotify_connected.lock() = false;
+                        }
+                    }
+                    GotifyEvent::Message(msg) => {
+                        if let Some(ws) = weak.upgrade() {
+                            ws.route_gotify_message(&msg);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some(ws) = weak.upgrade() {
+        *ws.gotify_connected.lock() = false;
+    }
+}
+
+/// Fetch the Gotify `/application` list and store the name->appid map.
+/// Warns (never silently drops) on failure - an unresolved index would
+/// otherwise leave every application-name-filtered subscription silently
+/// matching nothing while the stream still reports connected.
+async fn refresh_gotify_app_index(
+    weak: std::sync::Weak<Workspace>,
+    cfg: forge_primitives::GotifyConfig,
+) {
+    match forge_agent::env::gotify::app_index(&cfg).await {
+        Ok(index) => {
+            if let Some(ws) = weak.upgrade() {
+                *ws.gotify_app_index.lock() = index;
+            }
+        }
+        Err(error) => {
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                %error,
+                "Gotify /application lookup failed; application-name filters will not match until the next reconnect",
+            );
+        }
+    }
 }
 
 /// Scan the catalog for `forge:worker:<label>` tagged sessions whose
@@ -428,6 +565,23 @@ impl Workspace {
         // after construction, once the dispatch machinery is live.
         let crons = crate::cron_store::load_crons(&config_dir);
 
+        // Open the machine-local redb store and load durable Gotify
+        // subscriptions. A failure to resolve the app-support dir or open
+        // the DB degrades to no-subscriptions this run (non-fatal, like
+        // the state cache) - no cwd fallback (hard rule #15).
+        let gotify_db = open_gotify_db();
+        let gotify_subs = match &gotify_db {
+            Some(db) => crate::store::gotify::list(db).unwrap_or_else(|error| {
+                tracing::warn!(
+                    target: "forge_workspace::workspace",
+                    %error,
+                    "loading durable Gotify subscriptions failed; starting with none",
+                );
+                Vec::new()
+            }),
+            None => Vec::new(),
+        };
+
         // Boot the wire-classification rewriter proxy BEFORE any
         // session can spawn. Hard-fail policy: if the proxy can't
         // bind / load its CA / build the TLS context, forge refuses
@@ -511,6 +665,11 @@ impl Workspace {
             proxy: Some(proxy),
             _single_instance_lock: single_instance_lock,
             crons: Mutex::new(crons),
+            gotify_subs: Mutex::new(gotify_subs),
+            gotify_db: Mutex::new(gotify_db),
+            gotify_connected: Mutex::new(false),
+            gotify_app_index: Mutex::new(HashMap::new()),
+            gotify_subsystem: Mutex::new(None),
             team_spawn_in_flight: Mutex::new(std::collections::HashSet::new()),
             #[cfg(any(test, feature = "testing"))]
             command_intercept: Mutex::new(None),
@@ -540,6 +699,14 @@ impl Workspace {
     /// default. Cheap clone - the struct is shallow.
     pub fn ui_settings(&self) -> crate::ui::UiSettings {
         self.config.ui.clone()
+    }
+
+    /// The `[gotify]` server connection from forge.toml, or `None`
+    /// when the section is absent. `None` keeps the Gotify subsystem
+    /// dormant and makes `gotify__subscribe` error. Read-only - forge
+    /// never writes forge.toml.
+    pub fn gotify_config(&self) -> Option<forge_primitives::GotifyConfig> {
+        self.config.gotify.clone()
     }
 
     /// Persist `style` as the runtime spinner override in
@@ -823,11 +990,13 @@ impl Workspace {
             let workspace_facade = crate::mcp::peers::facade::ProdWorkspaceFacade::from_arc(self);
             let worker_facade = crate::mcp::workers::facade::ProdWorkerFacade::from_arc(self);
             let cron_facade = crate::mcp::cron::facade::ProdCronFacade::from_arc(self);
+            let gotify_facade = crate::mcp::gotify::facade::ProdGotifyFacade::from_arc(self);
             let resolver = crate::mcp::peers::facade::CallerKeyResolver::from_domain(&domain_arc);
             crate::mcp::build_forge_server(
                 workspace_facade,
                 worker_facade,
                 cron_facade,
+                gotify_facade,
                 resolver,
                 session_kind,
             )
@@ -2143,6 +2312,16 @@ impl Workspace {
                         wrapped,
                     );
                 }
+                Command::DeliverGotifyMessage { project, team_role, envelope, appid, priority } => {
+                    let span = tracing::info_span!(
+                        "deliver_gotify_message",
+                        project = %project,
+                        appid,
+                        priority,
+                    );
+                    let _enter = span.enter();
+                    spawn::deliver_gotify_message(self, &project, team_role.as_deref(), envelope);
+                }
                 other => {
                     tracing::warn!(
                         target: "forge_workspace",
@@ -2600,6 +2779,183 @@ impl Workspace {
     /// scheduler's per-tick due-check.
     pub(crate) fn all_crons_snapshot(&self) -> Vec<forge_primitives::CronEntry> {
         self.crons.lock().clone()
+    }
+
+    /// Register a Gotify subscription in the active set. Durable ones
+    /// (lead / team-worker) also persist to the redb store; ephemeral
+    /// ad-hoc-worker ones stay in memory only and drop on restart.
+    pub(crate) fn add_gotify_subscription(
+        &self,
+        sub: forge_primitives::GotifySubscription,
+        durable: bool,
+    ) {
+        if durable
+            && let Some(db) = self.gotify_db.lock().as_ref()
+            && let Err(error) = crate::store::gotify::insert(db, &sub)
+        {
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                %error,
+                "persisting a Gotify subscription failed",
+            );
+        }
+        self.gotify_subs.lock().push(sub);
+    }
+
+    /// Remove the subscription `id` if it belongs to `project`, from both
+    /// the active set and (when present) the redb store. Returns whether
+    /// an entry was removed. Backs `gotify__unsubscribe`.
+    pub(crate) fn remove_gotify_subscription(&self, project: &str, id: uuid::Uuid) -> bool {
+        let removed = {
+            let mut subs = self.gotify_subs.lock();
+            let before = subs.len();
+            subs.retain(|s| !(s.id == id && s.project == project));
+            subs.len() != before
+        };
+        if removed
+            && let Some(db) = self.gotify_db.lock().as_ref()
+            && let Err(error) = crate::store::gotify::remove(db, id)
+        {
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                %error,
+                "removing a persisted Gotify subscription failed",
+            );
+        }
+        removed
+    }
+
+    /// The active subscriptions for `project`. Backs `gotify__list`; the
+    /// Inspector snapshot reaches it via
+    /// [`Self::gotify_subscriptions_for_project_path`].
+    pub fn gotify_subscriptions_for_project(
+        &self,
+        project: &str,
+    ) -> Vec<forge_primitives::GotifySubscription> {
+        self.gotify_subs.lock().iter().filter(|s| s.project == project).cloned().collect()
+    }
+
+    /// The subscriptions for the project that owns `cwd`, matched by the
+    /// project whose path is an ancestor-or-equal of `cwd` (component-
+    /// aware, longest wins) - identical resolution to
+    /// [`Self::crons_for_project_path`], so a worktree worker's cwd
+    /// resolves to its parent project. Backs the Inspector GOTIFY
+    /// snapshot. Empty when `cwd` is blank or under no configured project.
+    pub fn gotify_subscriptions_for_project_path(
+        &self,
+        cwd: &str,
+    ) -> Vec<forge_primitives::GotifySubscription> {
+        if cwd.is_empty() {
+            return Vec::new();
+        }
+        let cwd = std::path::Path::new(cwd);
+        self.list_projects()
+            .into_iter()
+            .filter(|view| cwd.starts_with(&view.path))
+            .max_by_key(|view| view.path.as_os_str().len())
+            .map(|view| self.gotify_subscriptions_for_project(&view.name))
+            .unwrap_or_default()
+    }
+
+    /// Whether the Gotify stream is currently connected. Backs the
+    /// Inspector GOTIFY status line.
+    pub fn gotify_connected(&self) -> bool {
+        *self.gotify_connected.lock()
+    }
+
+    /// Whether a `[gotify]` server is configured. Gates the Inspector
+    /// GOTIFY section entirely.
+    pub fn gotify_configured(&self) -> bool {
+        self.gotify_config().is_some()
+    }
+
+    /// Install a redb store into a test workspace so the durable-vs-
+    /// ephemeral persistence path is exercisable without `Workspace::new`.
+    #[cfg(any(test, feature = "test-helpers"))]
+    pub fn install_gotify_db_for_test(&self, db: crate::store::Db) {
+        *self.gotify_db.lock() = Some(db);
+    }
+
+    /// Match `msg` against every active subscription and dispatch one
+    /// `Command::DeliverGotifyMessage` per match. A subscription matches
+    /// when its `min_priority` is `None` or `<=` the message priority AND
+    /// its `application` name is `None` or resolves (via the app index) to
+    /// the message's appid. Multiple matches fan out to every subscriber.
+    pub fn route_gotify_message(self: &Arc<Self>, msg: &forge_primitives::GotifyMessage) {
+        let subs = self.gotify_subs.lock().clone();
+        let app_name = self.gotify_app_name(msg.appid);
+        for sub in subs {
+            let priority_ok = sub.min_priority.is_none_or(|floor| msg.priority >= floor);
+            let app_ok = match &sub.application {
+                None => true,
+                Some(name) => self.gotify_app_index.lock().get(name) == Some(&msg.appid),
+            };
+            if !(priority_ok && app_ok) {
+                continue;
+            }
+            let envelope = format!(
+                "[Gotify - app '{app_name}', priority {}]\n{}\n{}",
+                msg.priority, msg.title, msg.message,
+            );
+            if let Err(err) = self.dispatch(Command::DeliverGotifyMessage {
+                project: sub.project.clone(),
+                team_role: sub.team_role.clone(),
+                envelope,
+                appid: msg.appid,
+                priority: msg.priority,
+            }) {
+                tracing::warn!(
+                    target: "forge_workspace::workspace",
+                    project = %sub.project,
+                    error = ?err,
+                    "gotify DeliverGotifyMessage dispatch failed",
+                );
+            }
+        }
+    }
+
+    /// The application name for `appid` via the reverse of the app index,
+    /// falling back to the numeric id when it isn't known.
+    fn gotify_app_name(&self, appid: u64) -> String {
+        self.gotify_app_index
+            .lock()
+            .iter()
+            .find(|&(_, &id)| id == appid)
+            .map_or_else(|| appid.to_string(), |(name, _)| name.clone())
+    }
+
+    /// Start the Gotify subsystem when it's configured, has at least one
+    /// active subscription, and isn't already running. Idempotent. Spawns
+    /// the reconnecting stream task plus an event pump that updates
+    /// `gotify_connected`, refreshes the app index on each connect, and
+    /// routes matched messages. Called at boot and after a subscribe grows
+    /// the active set.
+    pub fn start_gotify_subsystem(self: &Arc<Self>) {
+        let Some(cfg) = self.gotify_config() else { return };
+        if self.gotify_subs.lock().is_empty() {
+            return;
+        }
+        let mut guard = self.gotify_subsystem.lock();
+        if guard.is_some() {
+            return;
+        }
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        *guard = Some(shutdown_tx);
+        drop(guard);
+        tokio::spawn(run_gotify_subsystem(Arc::downgrade(self), cfg, shutdown_rx));
+    }
+
+    /// Stop the Gotify subsystem once no subscriptions remain: signal the
+    /// stream task to exit and mark disconnected. No-op while any
+    /// subscription is active or the subsystem isn't running.
+    pub fn stop_gotify_subsystem_if_idle(&self) {
+        if !self.gotify_subs.lock().is_empty() {
+            return;
+        }
+        if let Some(shutdown_tx) = self.gotify_subsystem.lock().take() {
+            let _ = shutdown_tx.send(());
+            *self.gotify_connected.lock() = false;
+        }
     }
 
     /// Advance a fired cron and persist: a recurring cron records
@@ -3976,6 +4332,11 @@ impl Workspace {
             proxy: None,
             _single_instance_lock: None,
             crons: Mutex::new(Vec::new()),
+            gotify_subs: Mutex::new(Vec::new()),
+            gotify_db: Mutex::new(None),
+            gotify_connected: Mutex::new(false),
+            gotify_app_index: Mutex::new(HashMap::new()),
+            gotify_subsystem: Mutex::new(None),
             team_spawn_in_flight: Mutex::new(std::collections::HashSet::new()),
             command_intercept: Mutex::new(None),
             test_extra_projects: Mutex::new(Vec::new()),
@@ -4375,6 +4736,290 @@ mod tests {
             "a cwd mapping to no configured project has no crons",
         );
         assert!(ws.crons_for_project_path("").is_empty(), "a blank cwd degrades to empty");
+    }
+
+    #[test]
+    fn durable_gotify_subscription_persists_ephemeral_stays_in_memory() {
+        use forge_primitives::GotifySubscription;
+
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        let db = crate::store::Db::open(&dir.path().join("db.redb")).expect("open db");
+        ws.install_gotify_db_for_test(db);
+
+        let sub = |team_role: Option<&str>| GotifySubscription {
+            id: uuid::Uuid::new_v4(),
+            project: "p".to_owned(),
+            team_role: team_role.map(str::to_owned),
+            application: None,
+            min_priority: None,
+            created_at: std::time::SystemTime::UNIX_EPOCH,
+        };
+        let durable = sub(None);
+        let ephemeral = sub(Some("scratch"));
+        ws.add_gotify_subscription(durable.clone(), true);
+        ws.add_gotify_subscription(ephemeral, false);
+
+        assert_eq!(
+            ws.gotify_subscriptions_for_project("p").len(),
+            2,
+            "both live in the active in-memory set",
+        );
+        let persisted = || {
+            crate::store::gotify::list(ws.gotify_db.lock().as_ref().expect("db installed"))
+                .expect("list")
+        };
+        assert_eq!(persisted().len(), 1, "only the durable subscription hit redb");
+        assert_eq!(persisted()[0].id, durable.id);
+
+        assert!(ws.remove_gotify_subscription("p", durable.id), "durable id removes");
+        assert!(persisted().is_empty(), "removal cleared the persisted record");
+    }
+
+    fn gotify_sub(
+        project: &str,
+        application: Option<&str>,
+        min_priority: Option<u8>,
+    ) -> forge_primitives::GotifySubscription {
+        forge_primitives::GotifySubscription {
+            id: uuid::Uuid::new_v4(),
+            project: project.to_owned(),
+            team_role: None,
+            application: application.map(str::to_owned),
+            min_priority,
+            created_at: std::time::SystemTime::UNIX_EPOCH,
+        }
+    }
+
+    fn gotify_msg(appid: u64, priority: u8) -> forge_primitives::GotifyMessage {
+        forge_primitives::GotifyMessage {
+            id: 1,
+            appid,
+            title: "Alert".to_owned(),
+            message: "body".to_owned(),
+            priority,
+            date: "2026-07-03T00:00:00Z".to_owned(),
+        }
+    }
+
+    fn gotify_deliveries(cmds: &[crate::protocol::Command]) -> Vec<(String, String)> {
+        cmds.iter()
+            .filter_map(|c| match c {
+                crate::protocol::Command::DeliverGotifyMessage { project, envelope, .. } => {
+                    Some((project.clone(), envelope.clone()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn route_gotify_message_fans_out_to_all_matches() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.add_gotify_subscription(gotify_sub("p1", None, None), false);
+        ws.add_gotify_subscription(gotify_sub("p2", None, None), false);
+
+        ws.enable_test_dispatch_intercept();
+        ws.route_gotify_message(&gotify_msg(3, 5));
+        let deliveries = gotify_deliveries(&ws.drain_test_dispatch_buffer());
+
+        assert_eq!(deliveries.len(), 2, "both matching subscriptions deliver");
+        let projects: Vec<&str> = deliveries.iter().map(|(p, _)| p.as_str()).collect();
+        assert!(projects.contains(&"p1") && projects.contains(&"p2"), "one delivery per project");
+        assert!(
+            deliveries[0].1.contains("Alert") && deliveries[0].1.contains("body"),
+            "the envelope carries the title and message",
+        );
+    }
+
+    #[test]
+    fn route_gotify_message_respects_priority_and_application_filters() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        *ws.gotify_app_index.lock() = HashMap::from([("alerts".to_owned(), 3u64)]);
+        ws.add_gotify_subscription(gotify_sub("p", Some("alerts"), None), false);
+        ws.add_gotify_subscription(gotify_sub("p", None, Some(5)), false);
+
+        ws.enable_test_dispatch_intercept();
+
+        // appid 3 (alerts), priority 2: the app-filter sub matches; the
+        // priority-floor sub does not (2 < 5).
+        ws.route_gotify_message(&gotify_msg(3, 2));
+        assert_eq!(gotify_deliveries(&ws.drain_test_dispatch_buffer()).len(), 1);
+
+        // appid 9 (unknown app), priority 5: the priority-floor sub matches;
+        // the app-filter sub does not (9 != 3).
+        ws.route_gotify_message(&gotify_msg(9, 5));
+        assert_eq!(gotify_deliveries(&ws.drain_test_dispatch_buffer()).len(), 1);
+    }
+
+    #[test]
+    fn route_gotify_message_no_match_delivers_nothing() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.add_gotify_subscription(gotify_sub("p", None, Some(9)), false);
+
+        ws.enable_test_dispatch_intercept();
+        ws.route_gotify_message(&gotify_msg(3, 2));
+        assert!(
+            gotify_deliveries(&ws.drain_test_dispatch_buffer()).is_empty(),
+            "a message below the priority floor delivers nothing",
+        );
+    }
+
+    #[test]
+    fn deliver_gotify_message_spawns_asleep_project_and_buffers() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project_with_team("forge", "/tmp/gotify-forge", &[]);
+
+        ws.enable_test_dispatch_intercept();
+        crate::spawn::deliver_gotify_message(&ws, "forge", None, "hello envelope".to_owned());
+        let dispatched = ws.drain_test_dispatch_buffer();
+
+        let spawns = dispatched
+            .iter()
+            .filter(|c| {
+                matches!(c, crate::protocol::Command::SpawnProject { project_name, .. }
+                    if project_name == "forge")
+            })
+            .count();
+        assert_eq!(spawns, 1, "the asleep project got a spawn");
+
+        let synth = SessionKey::from_session_id("__spawn_forge__");
+        let buffered = ws
+            .domain_handles
+            .lock()
+            .get(&synth)
+            .expect("synth domain present")
+            .lock()
+            .pending_gotify_prompts
+            .clone();
+        assert_eq!(buffered, vec!["hello envelope".to_owned()], "the envelope was buffered");
+    }
+
+    #[test]
+    fn deliver_gotify_message_skips_gone_project() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        // No project seeded: "ghost" is not in forge.toml.
+        ws.enable_test_dispatch_intercept();
+        crate::spawn::deliver_gotify_message(&ws, "ghost", None, "x".to_owned());
+        let dispatched = ws.drain_test_dispatch_buffer();
+        assert!(
+            dispatched.iter().all(|c| !matches!(c, crate::protocol::Command::SpawnProject { .. })),
+            "a gone target is skipped without a spawn or panic",
+        );
+    }
+
+    #[test]
+    fn deliver_gotify_message_delivers_to_running_team_worker() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project_with_team("forge", "/tmp/gotify-team", &["reviewer".to_owned()]);
+        let view_key = ws
+            .list_projects()
+            .into_iter()
+            .find(|v| v.name == "forge")
+            .map(|v| v.key)
+            .expect("seeded project view");
+        let worker_key = SessionKey::from_session_id("worker-reviewer");
+        ws.insert_live_worker(
+            &view_key,
+            crate::mcp::workers::types::WorkerEntry {
+                label: "reviewer".to_owned(),
+                charter: "review".to_owned(),
+                session_key: worker_key.clone(),
+                status: forge_primitives::WorkerLiveness::Running,
+                spawned_at: std::time::SystemTime::UNIX_EPOCH,
+                spawned_by_session_id: "lead".to_owned(),
+                needs_tag: false,
+                is_git_repo_at_spawn: false,
+                diagnostic: None,
+                kick: None,
+            },
+        );
+
+        ws.enable_test_dispatch_intercept();
+        crate::spawn::deliver_gotify_message(&ws, "forge", Some("reviewer"), "env".to_owned());
+        let dispatched = ws.drain_test_dispatch_buffer();
+
+        assert!(
+            dispatched.iter().any(
+                |c| matches!(c, crate::protocol::Command::Prompt { key, .. } if key == &worker_key)
+            ),
+            "a running team worker receives the notification directly",
+        );
+        assert!(
+            dispatched.iter().all(|c| !matches!(c, crate::protocol::Command::SpawnProject { .. })),
+            "no project spawn when the target worker is already running",
+        );
+    }
+
+    #[test]
+    fn deliver_gotify_message_team_worker_asleep_falls_through_to_lead() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project_with_team("forge", "/tmp/gotify-team", &["reviewer".to_owned()]);
+
+        // No live worker of that role: the subscription falls through to
+        // lead delivery, which spawns the asleep project (the lead brings up
+        // its team) and buffers the envelope for the Connected drain.
+        ws.enable_test_dispatch_intercept();
+        crate::spawn::deliver_gotify_message(&ws, "forge", Some("reviewer"), "env".to_owned());
+        let dispatched = ws.drain_test_dispatch_buffer();
+
+        let spawns = dispatched
+            .iter()
+            .filter(|c| {
+                matches!(c, crate::protocol::Command::SpawnProject { project_name, .. }
+                    if project_name == "forge")
+            })
+            .count();
+        assert_eq!(spawns, 1, "an asleep team-worker subscription spawns the project lead");
+
+        let synth = SessionKey::from_session_id("__spawn_forge__");
+        let buffered = ws
+            .domain_handles
+            .lock()
+            .get(&synth)
+            .expect("synth domain present")
+            .lock()
+            .pending_gotify_prompts
+            .clone();
+        assert_eq!(buffered, vec!["env".to_owned()], "the envelope was buffered");
+    }
+
+    #[test]
+    fn gotify_subscriptions_for_project_path_resolves_by_cwd_and_degrades() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        let path = "/tmp/gotify-path-proj";
+        ws.seed_test_project_with_team("gproj", path, &[]);
+        ws.add_gotify_subscription(gotify_sub("gproj", Some("alerts"), Some(5)), false);
+
+        assert_eq!(
+            ws.gotify_subscriptions_for_project_path(path).len(),
+            1,
+            "the project's own cwd resolves its subscriptions",
+        );
+        assert_eq!(
+            ws.gotify_subscriptions_for_project_path(&format!("{path}/.claude/worktrees/reviewer"))
+                .len(),
+            1,
+            "a worktree worker's cwd resolves to its parent project",
+        );
+        assert!(
+            ws.gotify_subscriptions_for_project_path("/tmp/no-such-project").is_empty(),
+            "a cwd mapping to no configured project has no subscriptions",
+        );
+        assert!(
+            ws.gotify_subscriptions_for_project_path("").is_empty(),
+            "a blank cwd degrades to empty",
+        );
+        assert!(!ws.gotify_configured(), "testing stub has no [gotify] block");
+        assert!(!ws.gotify_connected(), "no stream running in the stub");
     }
 
     #[test]
