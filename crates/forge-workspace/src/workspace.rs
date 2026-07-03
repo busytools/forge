@@ -2575,21 +2575,23 @@ impl Workspace {
         self.crons.lock().iter().filter(|c| c.project_name == project_name).cloned().collect()
     }
 
-    /// The crons for the project that owns `cwd`, matched by the catalog's
-    /// project-key derivation. Backs the Inspector SCHEDULES snapshot: the
-    /// active tab resolves its project by cwd, not by session key (which can
-    /// be a synthetic pre-Connect placeholder that maps to no project).
-    /// Empty when `cwd` is blank or matches no configured project.
+    /// The crons for the project that owns `cwd`, matched by the project
+    /// whose path is an ancestor-or-equal of `cwd` (component-aware,
+    /// longest wins). A worker in a `<project>/.claude/worktrees/<label>`
+    /// worktree resolves to its project, not just an exact project-root
+    /// cwd. Backs the Inspector SCHEDULES snapshot, which resolves the
+    /// active tab's project by cwd rather than session key (which can be a
+    /// synthetic pre-Connect placeholder mapping to no project). Empty when
+    /// `cwd` is blank or under no configured project.
     pub fn crons_for_project_path(&self, cwd: &str) -> Vec<forge_primitives::CronEntry> {
         if cwd.is_empty() {
             return Vec::new();
         }
-        let key = ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(
-            Some(cwd),
-        ));
+        let cwd = std::path::Path::new(cwd);
         self.list_projects()
             .into_iter()
-            .find(|view| view.key == key)
+            .filter(|view| cwd.starts_with(&view.path))
+            .max_by_key(|view| view.path.as_os_str().len())
             .map(|view| self.crons_for_project(&view.name))
             .unwrap_or_default()
     }
@@ -4360,8 +4362,13 @@ mod tests {
 
         assert_eq!(
             ws.crons_for_project_path(path),
-            vec![entry],
+            vec![entry.clone()],
             "the project's own cwd resolves its crons",
+        );
+        assert_eq!(
+            ws.crons_for_project_path(&format!("{path}/.claude/worktrees/reviewer")),
+            vec![entry],
+            "a worktree worker's cwd resolves to its parent project",
         );
         assert!(
             ws.crons_for_project_path("/tmp/no-such-configured-project").is_empty(),

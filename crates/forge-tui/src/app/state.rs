@@ -3689,8 +3689,8 @@ mod tests {
     /// The Inspector resolves the active project by cwd, so it surfaces
     /// the project's crons no matter what the active key looks like - a
     /// real claude UUID (project lead), a worker session key, or a
-    /// synthetic spawn placeholder. Workers share the project's cwd, so
-    /// all three shapes carry the same `cwd_raw` and resolve identically.
+    /// synthetic spawn placeholder. These three all sit at the
+    /// project-root cwd; the worktree-worker cwd is covered separately.
     #[test]
     fn refresh_forge_crons_resolves_across_active_key_shapes() {
         use forge_primitives::cron::{CronEntry, CronId, CronKind};
@@ -3726,6 +3726,43 @@ mod tests {
                 "active key {key_str} resolves the project's crons via cwd",
             );
         }
+    }
+
+    /// A worker spawned into a git worktree carries the worktree path
+    /// (`<project>/.claude/worktrees/<label>`) as its `cwd_raw`, not the
+    /// project root. The Inspector still resolves the parent project's
+    /// crons via the path-prefix match.
+    #[test]
+    fn refresh_forge_crons_resolves_worktree_worker_via_parent_project() {
+        use forge_primitives::cron::{CronEntry, CronId, CronKind};
+
+        let mut app = App::test_default();
+        let ws = app.workspace.clone().expect("test workspace");
+        let path = "/tmp/cronproj-worktree";
+        ws.seed_test_project_with_team("cronproj", path, &[]);
+        let cron = CronEntry {
+            id: CronId::from("c1"),
+            project_name: "cronproj".to_owned(),
+            kind: CronKind::Recurring("0 9 * * *".to_owned()),
+            prompt: "stand-up".to_owned(),
+            created_at: std::time::SystemTime::UNIX_EPOCH,
+            last_fire: None,
+            next_fire: std::time::SystemTime::UNIX_EPOCH,
+        };
+        ws.seed_test_cron(cron.clone());
+
+        let key = forge_workspace::SessionKey::from_session_id("worktree-worker-uuid");
+        let mut bucket = crate::app::session::UiSession::new(key.clone());
+        bucket.cwd_raw = format!("{path}/.claude/worktrees/reviewer");
+        app.sessions.insert(key.clone(), bucket);
+        app.active_session_key = Some(key);
+
+        app.refresh_forge_crons();
+        assert_eq!(
+            app.forge_crons,
+            vec![cron],
+            "a worktree worker's Inspector resolves its parent project's crons",
+        );
     }
 
     #[test]
