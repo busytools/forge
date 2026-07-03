@@ -12,4 +12,5 @@ pub mod targets {
     pub const TOOLING: &str = "agent.tooling";
     pub const ENV_GIT: &str = "agent.env_git";
     pub const SETTINGS: &str = "agent.settings";
+    pub const GOTIFY: &str = "agent.gotify";
 }

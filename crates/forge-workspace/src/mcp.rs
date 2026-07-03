@@ -33,11 +33,13 @@ use std::sync::Arc;
 use forge_sdk::mcp::server::{McpServer, McpServerBuilder};
 
 use crate::mcp::cron::facade::CronFacade;
+use crate::mcp::gotify::facade::GotifyFacade;
 use crate::mcp::peers::facade::{CallerKeyResolver, WorkspaceFacade};
 use crate::mcp::workers::facade::WorkerFacade;
 
 pub(crate) mod caller_context;
 pub mod cron;
+pub mod gotify;
 pub mod peers;
 pub mod workers;
 
@@ -57,12 +59,13 @@ pub enum SessionKind {
 /// `forge` carrying the coordination tool groups appropriate for the
 /// calling session's [`SessionKind`]:
 ///
-/// - [`SessionKind::Lead`] → peers + workers + cron.
-/// - [`SessionKind::Worker`] → workers + cron (no cross-project peers).
+/// - [`SessionKind::Lead`] → peers + workers + cron + gotify.
+/// - [`SessionKind::Worker`] → workers + cron + gotify (no cross-project
+///   peers).
 ///
-/// `cron` is any-caller (every session manages its own project's
-/// crons), so it registers for both kinds - unlike `peers`, which is
-/// lead-only.
+/// `cron` and `gotify` are any-caller (every session manages its own
+/// project's crons + subscriptions), so they register for both kinds -
+/// unlike `peers`, which is lead-only.
 ///
 /// All submodules share the server name so the LLM sees a single
 /// namespace (`mcp__forge__<group>__*`) and the auto-approve fast-path
@@ -78,6 +81,7 @@ pub fn build_forge_server(
     workspace_facade: Arc<dyn WorkspaceFacade>,
     worker_facade: Arc<dyn WorkerFacade>,
     cron_facade: Arc<dyn CronFacade>,
+    gotify_facade: Arc<dyn GotifyFacade>,
     caller_key: CallerKeyResolver,
     kind: SessionKind,
 ) -> McpServer {
@@ -86,7 +90,8 @@ pub fn build_forge_server(
         builder = peers::add_tools(builder, workspace_facade, caller_key.clone());
     }
     builder = workers::add_tools(builder, worker_facade, caller_key.clone());
-    builder = cron::add_tools(builder, cron_facade, caller_key);
+    builder = cron::add_tools(builder, cron_facade, caller_key.clone());
+    builder = gotify::add_tools(builder, gotify_facade, caller_key);
     builder.build()
 }
 
@@ -95,6 +100,7 @@ mod tests {
     use super::*;
     use crate::SessionKey;
     use crate::mcp::cron::facade::MockCronFacade;
+    use crate::mcp::gotify::facade::MockGotifyFacade;
     use crate::mcp::peers::facade::MockWorkspaceFacade;
     use crate::mcp::workers::facade::MockWorkerFacade;
 
@@ -103,15 +109,17 @@ mod tests {
     }
 
     #[test]
-    fn build_forge_server_lead_registers_peers_workers_and_cron() {
+    fn build_forge_server_lead_registers_peers_workers_cron_and_gotify() {
         let workspace_facade = MockWorkspaceFacade::new().into_arc();
         let worker_facade = MockWorkerFacade::new().into_arc();
         let cron_facade = MockCronFacade::new().into_arc();
+        let gotify_facade = MockGotifyFacade::new().into_arc();
         let resolver = CallerKeyResolver::from_fixed(fake_key("test"));
         let server = build_forge_server(
             workspace_facade,
             worker_facade,
             cron_facade,
+            gotify_facade,
             resolver,
             SessionKind::Lead,
         );
@@ -128,6 +136,9 @@ mod tests {
             "cron__create",
             "cron__list",
             "cron__delete",
+            "gotify__subscribe",
+            "gotify__list",
+            "gotify__unsubscribe",
         ] {
             assert!(
                 debug.contains(expected),
@@ -141,21 +152,24 @@ mod tests {
     }
 
     #[test]
-    fn build_forge_server_worker_registers_workers_and_cron_but_not_peers() {
+    fn build_forge_server_worker_registers_workers_cron_and_gotify_but_not_peers() {
         let workspace_facade = MockWorkspaceFacade::new().into_arc();
         let worker_facade = MockWorkerFacade::new().into_arc();
         let cron_facade = MockCronFacade::new().into_arc();
+        let gotify_facade = MockGotifyFacade::new().into_arc();
         let resolver = CallerKeyResolver::from_fixed(fake_key("test"));
         let server = build_forge_server(
             workspace_facade,
             worker_facade,
             cron_facade,
+            gotify_facade,
             resolver,
             SessionKind::Worker,
         );
         let debug = format!("{server:?}");
-        // Workers see workers__* (talk to sibling workers) and cron__*
-        // (crons are any-caller - a worker may schedule for its project).
+        // Workers see workers__* (talk to sibling workers) and cron__* /
+        // gotify__* (both any-caller - a worker may schedule or subscribe
+        // for its project).
         for expected in [
             "workers__spawn",
             "workers__list",
@@ -164,6 +178,9 @@ mod tests {
             "cron__create",
             "cron__list",
             "cron__delete",
+            "gotify__subscribe",
+            "gotify__list",
+            "gotify__unsubscribe",
         ] {
             assert!(
                 debug.contains(expected),

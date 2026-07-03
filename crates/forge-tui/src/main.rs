@@ -109,6 +109,10 @@ fn run() -> anyhow::Result<()> {
         // crons as they come due, advancing/removing each.
         workspace.start_cron_scheduler();
 
+        // Start the Gotify subsystem when configured with at least one
+        // durable subscription loaded at boot; no-op otherwise.
+        workspace.start_gotify_subsystem();
+
         // Create the app (instant, no I/O). The TUI holds an
         // `Arc<Workspace>` clone; main keeps the original so it
         // can drain the pool after the event loop returns.

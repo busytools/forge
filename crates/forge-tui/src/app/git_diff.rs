@@ -224,6 +224,10 @@ fn apply_timer_tick(app: &mut App) {
     // render (the git-diff snapshot pattern).
     app.refresh_forge_crons();
 
+    // Same cadence for the Inspector GOTIFY section's snapshot (active
+    // project's subscriptions + stream connection status).
+    app.refresh_gotify();
+
     let Some(active_key) = app.active_session_key.clone() else {
         return;
     };
