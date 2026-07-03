@@ -57,6 +57,13 @@ pub struct UiSession {
     /// indexing, project-key derivation, and `claude --resume` re-spawn
     /// reconstruction.
     pub cwd_raw: String,
+    /// forge.toml project NAME this tab belongs to (equals
+    /// `CronEntry.project_name` / `ProjectView.name`), stamped once the
+    /// bucket resolves to a project and `None` pre-Connect. Scopes the
+    /// Inspector SCHEDULES + GOTIFY snapshots by name rather than
+    /// re-deriving the project from `cwd_raw` (fragile for empty /
+    /// synthetic / tilde / worktree cwd forms).
+    pub project: Option<String>,
     /// Monotonic session authority epoch - bumped on each session
     /// reset (`/new`, login, logout) so stale async view data can be
     /// ignored.
@@ -437,6 +444,7 @@ impl Default for UiSession {
             session_id: Option::default(),
             lifecycle_state: SessionLifecycleState::default(),
             cwd_raw: String::default(),
+            project: Option::default(),
             session_scope_epoch: u64::default(),
             turn_state: SessionTurnState::default(),
             account_info: Option::default(),
