@@ -1866,16 +1866,16 @@ impl App {
     /// the workspace, sorted soonest-first. Called on the ~1s ticker so
     /// the Inspector reads a cheap cached `Vec` instead of resolving the
     /// project + locking the workspace every render. Resolves the active
-    /// session to its project via `Workspace::crons_for_session` - the
-    /// same `caller_context` path the cron create + list flow uses, so a
-    /// live-worker session sees its project's crons too. Empty when the
-    /// session maps to no project (pre-Connect / synthetic spawn bucket)
-    /// or the project has no crons.
+    /// tab's project from its UI bucket's `cwd_raw` via
+    /// `Workspace::crons_for_project_path`, not the session key: the
+    /// active key can be a pre-Connect / synthetic spawn placeholder that
+    /// maps to no project, but the bucket always knows its project path.
+    /// Empty when the active bucket has no project-mapping cwd or the
+    /// project has no crons.
     pub fn refresh_forge_crons(&mut self) {
-        let mut crons = match (self.workspace.as_ref(), self.active_session_key.as_ref()) {
-            (Some(ws), Some(key)) => ws.crons_for_session(key),
-            _ => Vec::new(),
-        };
+        let cwd = self.cwd_raw();
+        let mut crons =
+            self.workspace.as_ref().map(|ws| ws.crons_for_project_path(&cwd)).unwrap_or_default();
         crons.sort_by_key(|c| c.next_fire);
         self.forge_crons = crons;
     }
@@ -3635,6 +3635,97 @@ mod tests {
         app.upsert_cron_from_tool_input("tu1", "*/5 * * * *", true, false, t0);
         app.upsert_cron_from_tool_input("tu1", "*/5 * * * *", true, false, t0);
         assert_eq!(app.schedules().len(), 1, "re-decoded same tool_use_id stays one entry");
+    }
+
+    /// The SCHEDULES display gap: the active tab's `active_session_key`
+    /// is a synthetic `__spawn_<name>__` placeholder that resolves to no
+    /// project, but its UI bucket knows the project via `cwd_raw`.
+    /// `refresh_forge_crons` resolves the project from the bucket cwd and
+    /// populates `forge_crons`; routing through the synthetic session key
+    /// (the pre-fix path) came back empty. It also degrades to empty when
+    /// the active bucket has no project-mapping cwd.
+    #[test]
+    fn refresh_forge_crons_resolves_active_project_via_bucket_cwd() {
+        use forge_primitives::cron::{CronEntry, CronId, CronKind};
+
+        let mut app = App::test_default();
+        let ws = app.workspace.clone().expect("test workspace");
+
+        let path = "/tmp/cronproj-inspector";
+        ws.seed_test_project_with_team("cronproj", path, &[]);
+        let cron = CronEntry {
+            id: CronId::from("c1"),
+            project_name: "cronproj".to_owned(),
+            kind: CronKind::Recurring("0 9 * * *".to_owned()),
+            prompt: "stand-up".to_owned(),
+            created_at: std::time::SystemTime::UNIX_EPOCH,
+            last_fire: None,
+            next_fire: std::time::SystemTime::UNIX_EPOCH,
+        };
+        ws.seed_test_cron(cron.clone());
+
+        // Active tab: a synthetic spawn key (resolves to no project) whose
+        // UI bucket carries the project's path in cwd_raw.
+        let synthetic = forge_workspace::SessionKey::from_session_id("__spawn_cronproj__");
+        let mut bucket = crate::app::session::UiSession::new(synthetic.clone());
+        bucket.cwd_raw = path.to_owned();
+        app.sessions.insert(synthetic.clone(), bucket);
+        app.active_session_key = Some(synthetic);
+
+        app.refresh_forge_crons();
+        assert_eq!(
+            app.forge_crons,
+            vec![cron],
+            "SCHEDULES resolves the active project from the bucket cwd, not the synthetic key",
+        );
+
+        // Degrade cleanly: an active bucket with no project-mapping cwd
+        // yields no crons rather than another project's.
+        app.set_cwd_raw("/tmp/unmapped-dir");
+        app.refresh_forge_crons();
+        assert!(app.forge_crons.is_empty(), "no project-mapping cwd yields empty SCHEDULES");
+    }
+
+    /// The Inspector resolves the active project by cwd, so it surfaces
+    /// the project's crons no matter what the active key looks like - a
+    /// real claude UUID (project lead), a worker session key, or a
+    /// synthetic spawn placeholder. Workers share the project's cwd, so
+    /// all three shapes carry the same `cwd_raw` and resolve identically.
+    #[test]
+    fn refresh_forge_crons_resolves_across_active_key_shapes() {
+        use forge_primitives::cron::{CronEntry, CronId, CronKind};
+
+        let path = "/tmp/cronproj-shapes";
+        let cron = CronEntry {
+            id: CronId::from("c1"),
+            project_name: "cronproj".to_owned(),
+            kind: CronKind::Recurring("0 9 * * *".to_owned()),
+            prompt: "stand-up".to_owned(),
+            created_at: std::time::SystemTime::UNIX_EPOCH,
+            last_fire: None,
+            next_fire: std::time::SystemTime::UNIX_EPOCH,
+        };
+
+        for key_str in ["11111111-2222-3333-4444-555555555555", "worker-uuid", "__spawn_cronproj__"]
+        {
+            let mut app = App::test_default();
+            let ws = app.workspace.clone().expect("test workspace");
+            ws.seed_test_project_with_team("cronproj", path, &[]);
+            ws.seed_test_cron(cron.clone());
+
+            let key = forge_workspace::SessionKey::from_session_id(key_str);
+            let mut bucket = crate::app::session::UiSession::new(key.clone());
+            bucket.cwd_raw = path.to_owned();
+            app.sessions.insert(key.clone(), bucket);
+            app.active_session_key = Some(key);
+
+            app.refresh_forge_crons();
+            assert_eq!(
+                app.forge_crons,
+                vec![cron.clone()],
+                "active key {key_str} resolves the project's crons via cwd",
+            );
+        }
     }
 
     #[test]
