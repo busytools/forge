@@ -2874,19 +2874,25 @@ impl Workspace {
     /// `Command::DeliverGotifyMessage` per match. A subscription matches
     /// when its `min_priority` is `None` or `<=` the message priority AND
     /// its `applications` set is empty or contains the message's app name
-    /// (resolved from the appid via the app index). Multiple matches fan
-    /// out to every subscriber.
+    /// (resolved from the appid via the app index; an unresolved appid
+    /// never matches a non-empty filter). Multiple matches fan out to
+    /// every subscriber.
     pub fn route_gotify_message(self: &Arc<Self>, msg: &forge_primitives::GotifyMessage) {
         let subs = self.gotify_subs.lock().clone();
-        let app_name = self.gotify_app_name(msg.appid);
+        let resolved_name = self.gotify_app_name(msg.appid);
+        // Matching uses the resolved name only; the envelope falls back to
+        // the numeric id for display, so an unresolved appid can't match a
+        // filter that happens to list that number.
+        let display_name = resolved_name.clone().unwrap_or_else(|| msg.appid.to_string());
         for sub in subs {
             let priority_ok = sub.min_priority.is_none_or(|floor| msg.priority >= floor);
-            let app_ok = sub.applications.is_empty() || sub.applications.contains(&app_name);
+            let app_ok = sub.applications.is_empty()
+                || resolved_name.as_ref().is_some_and(|name| sub.applications.contains(name));
             if !(priority_ok && app_ok) {
                 continue;
             }
             let envelope = format!(
-                "[Gotify - app '{app_name}', priority {}]\n{}\n{}",
+                "[Gotify - app '{display_name}', priority {}]\n{}\n{}",
                 msg.priority, msg.title, msg.message,
             );
             if let Err(err) = self.dispatch(Command::DeliverGotifyMessage {
@@ -2906,14 +2912,15 @@ impl Workspace {
         }
     }
 
-    /// The application name for `appid` via the reverse of the app index,
-    /// falling back to the numeric id when it isn't known.
-    fn gotify_app_name(&self, appid: u64) -> String {
+    /// The application NAME for `appid` via the reverse of the app index,
+    /// or `None` when the id isn't known (index not yet fetched, or a new
+    /// app the server added after the last refresh).
+    fn gotify_app_name(&self, appid: u64) -> Option<String> {
         self.gotify_app_index
             .lock()
             .iter()
             .find(|&(_, &id)| id == appid)
-            .map_or_else(|| appid.to_string(), |(name, _)| name.clone())
+            .map(|(name, _)| name.clone())
     }
 
     /// Start the Gotify subsystem when it's configured, has at least one
@@ -4881,6 +4888,23 @@ mod tests {
         assert!(
             gotify_deliveries(&ws.drain_test_dispatch_buffer()).is_empty(),
             "an app not in the set delivers nothing",
+        );
+    }
+
+    #[test]
+    fn route_gotify_message_unresolved_appid_does_not_match_numeric_filter() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        // The app index is empty, so appid 5 resolves to no name. A filter
+        // listing the numeric id as a string must NOT match on the
+        // display-only fallback.
+        ws.add_gotify_subscription(gotify_sub("p", &["5"], None), false);
+
+        ws.enable_test_dispatch_intercept();
+        ws.route_gotify_message(&gotify_msg(5, 1));
+        assert!(
+            gotify_deliveries(&ws.drain_test_dispatch_buffer()).is_empty(),
+            "an unresolved appid must not match a filter that lists its numeric id",
         );
     }
 
