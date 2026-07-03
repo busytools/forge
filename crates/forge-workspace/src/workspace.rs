@@ -2758,30 +2758,22 @@ impl Workspace {
     /// project whose expanded path is an ancestor-or-equal of `cwd`
     /// (component-aware, longest wins), so a worker in a
     /// `<project>/.claude/worktrees/<label>` worktree resolves to its
-    /// parent project. `None` when `cwd` is blank or under no configured
-    /// project. The Inspector stamps this NAME onto a tab's UI bucket
-    /// once (at Connect), then scopes SCHEDULES / GOTIFY by name rather
-    /// than re-deriving the project every render tick from a stale cwd.
+    /// parent project. `cwd` is `~`-expanded before the lexical match so
+    /// a tilde form can't miss the already-expanded `ProjectView.path`.
+    /// `None` when `cwd` is blank or under no configured project. The
+    /// Inspector stamps this NAME onto a tab's UI bucket once (at
+    /// Connect), then scopes SCHEDULES / GOTIFY by name rather than
+    /// re-deriving the project every render tick from a stale cwd.
     pub fn project_name_for_path(&self, cwd: &str) -> Option<String> {
         if cwd.is_empty() {
             return None;
         }
-        // Resolve symlinks when the path exists on disk; otherwise keep
-        // the ~-expanded lexical form so not-yet-created dirs and test
-        // paths still compare. Applied to both sides so a tilde-vs-
-        // expanded or symlinked form can't miss.
-        let normalize = |p: &std::path::Path| -> std::path::PathBuf {
-            std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
-        };
-        let cwd = normalize(&crate::config::expand_home(cwd));
+        let cwd = crate::config::expand_home(cwd);
         self.list_projects()
             .into_iter()
-            .filter_map(|view| {
-                let view_path = normalize(&view.path);
-                cwd.starts_with(&view_path).then_some((view_path.as_os_str().len(), view.name))
-            })
-            .max_by_key(|(len, _)| *len)
-            .map(|(_, name)| name)
+            .filter(|view| cwd.starts_with(&view.path))
+            .max_by_key(|view| view.path.as_os_str().len())
+            .map(|view| view.name)
     }
 
     /// A snapshot of every cron across all projects. Backs the
@@ -4722,6 +4714,33 @@ mod tests {
             "a cwd mapping to no configured project resolves to no name",
         );
         assert!(ws.project_name_for_path("").is_none(), "a blank cwd resolves to no name");
+    }
+
+    /// Regression guard for symmetric matching: the project root exists
+    /// on disk under a symlinked ancestor (`link` -> `real`, so the root
+    /// canonicalizes to a different path) while the queried worktree
+    /// subdir does NOT exist. A per-side canonicalize would resolve the
+    /// root but leave the absent subdir lexical, so the two would stop
+    /// sharing a prefix and the tab's SCHEDULES / GOTIFY would go blank.
+    /// Lexical matching keeps both sides in the same form.
+    #[test]
+    #[cfg(unix)]
+    fn project_name_for_path_resolves_absent_worktree_under_symlinked_root() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+
+        std::fs::create_dir_all(dir.path().join("real").join("proj")).expect("create real root");
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(dir.path().join("real"), &link).expect("symlink");
+        let root = link.join("proj");
+        ws.seed_test_project_with_team("symproj", &root.to_string_lossy(), &[]);
+
+        let absent_worktree = root.join(".claude").join("worktrees").join("reviewer");
+        assert_eq!(
+            ws.project_name_for_path(&absent_worktree.to_string_lossy()).as_deref(),
+            Some("symproj"),
+            "an absent worktree subdir under a symlinked-ancestor root resolves to its parent",
+        );
     }
 
     #[test]
