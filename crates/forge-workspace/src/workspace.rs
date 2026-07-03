@@ -240,6 +240,15 @@ pub struct Workspace {
     /// The single-instance guard makes this the only process touching the
     /// file, so this mutex alone serialises writes.
     crons: Mutex<Vec<forge_primitives::CronEntry>>,
+    /// Active Gotify subscriptions (`mcp__forge__gotify`). The set the
+    /// stream matches each inbound message against. Durable ones (lead /
+    /// team-worker) are also persisted to `gotify_db` and reloaded here
+    /// at boot; ephemeral ad-hoc-worker ones live only in memory.
+    gotify_subs: Mutex<Vec<forge_primitives::GotifySubscription>>,
+    /// Machine-local redb store backing the durable subscriptions.
+    /// `None` when the DB couldn't open (degrade to in-memory-only, no
+    /// persistence) or in `testing_stub`.
+    gotify_db: Mutex<Option<crate::store::Db>>,
     /// Per-project in-flight guard for the engineering-team Connected
     /// hook's catalog scan. Inserted synchronously when
     /// `spawn_team_for_lead_with_catalog_scan` starts; removed when
@@ -296,6 +305,45 @@ pub fn resolve_lead_session(sessions: &[SDKSessionInfo]) -> Option<&SDKSessionIn
     };
     latest_with(|s| s.tag.as_deref() == Some(forge_primitives::FORGE_LEAD_TAG))
         .or_else(|| latest_with(|s| s.tag.is_none()))
+}
+
+/// Open the machine-local redb store at `<app-support>/db.redb`,
+/// creating the app-support dir first. Returns `None` (with a warn) when
+/// the app-support dir can't resolve or the DB can't open - forge then
+/// runs without durable Gotify subscriptions this session (hard rule
+/// #15: no cwd fallback).
+fn open_gotify_db() -> Option<crate::store::Db> {
+    let dir = match forge_sdk::app_support_dir() {
+        Ok(dir) => dir,
+        Err(error) => {
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                %error,
+                "app-support dir unresolved; Gotify subscriptions will not persist",
+            );
+            return None;
+        }
+    };
+    if let Err(error) = std::fs::create_dir_all(&dir) {
+        tracing::warn!(
+            target: "forge_workspace::workspace",
+            %error,
+            path = %dir.display(),
+            "creating the app-support dir failed; Gotify subscriptions will not persist",
+        );
+        return None;
+    }
+    match crate::store::Db::open(&dir.join("db.redb")) {
+        Ok(db) => Some(db),
+        Err(error) => {
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                %error,
+                "opening the redb store failed; Gotify subscriptions will not persist",
+            );
+            None
+        }
+    }
 }
 
 /// Scan the catalog for `forge:worker:<label>` tagged sessions whose
@@ -428,6 +476,23 @@ impl Workspace {
         // after construction, once the dispatch machinery is live.
         let crons = crate::cron_store::load_crons(&config_dir);
 
+        // Open the machine-local redb store and load durable Gotify
+        // subscriptions. A failure to resolve the app-support dir or open
+        // the DB degrades to no-subscriptions this run (non-fatal, like
+        // the state cache) - no cwd fallback (hard rule #15).
+        let gotify_db = open_gotify_db();
+        let gotify_subs = match &gotify_db {
+            Some(db) => crate::store::gotify::list(db).unwrap_or_else(|error| {
+                tracing::warn!(
+                    target: "forge_workspace::workspace",
+                    %error,
+                    "loading durable Gotify subscriptions failed; starting with none",
+                );
+                Vec::new()
+            }),
+            None => Vec::new(),
+        };
+
         // Boot the wire-classification rewriter proxy BEFORE any
         // session can spawn. Hard-fail policy: if the proxy can't
         // bind / load its CA / build the TLS context, forge refuses
@@ -511,6 +576,8 @@ impl Workspace {
             proxy: Some(proxy),
             _single_instance_lock: single_instance_lock,
             crons: Mutex::new(crons),
+            gotify_subs: Mutex::new(gotify_subs),
+            gotify_db: Mutex::new(gotify_db),
             team_spawn_in_flight: Mutex::new(std::collections::HashSet::new()),
             #[cfg(any(test, feature = "testing"))]
             command_intercept: Mutex::new(None),
@@ -831,11 +898,13 @@ impl Workspace {
             let workspace_facade = crate::mcp::peers::facade::ProdWorkspaceFacade::from_arc(self);
             let worker_facade = crate::mcp::workers::facade::ProdWorkerFacade::from_arc(self);
             let cron_facade = crate::mcp::cron::facade::ProdCronFacade::from_arc(self);
+            let gotify_facade = crate::mcp::gotify::facade::ProdGotifyFacade::from_arc(self);
             let resolver = crate::mcp::peers::facade::CallerKeyResolver::from_domain(&domain_arc);
             crate::mcp::build_forge_server(
                 workspace_facade,
                 worker_facade,
                 cron_facade,
+                gotify_facade,
                 resolver,
                 session_kind,
             )
@@ -2610,6 +2679,66 @@ impl Workspace {
         self.crons.lock().clone()
     }
 
+    /// Register a Gotify subscription in the active set. Durable ones
+    /// (lead / team-worker) also persist to the redb store; ephemeral
+    /// ad-hoc-worker ones stay in memory only and drop on restart.
+    pub(crate) fn add_gotify_subscription(
+        &self,
+        sub: forge_primitives::GotifySubscription,
+        durable: bool,
+    ) {
+        if durable
+            && let Some(db) = self.gotify_db.lock().as_ref()
+            && let Err(error) = crate::store::gotify::insert(db, &sub)
+        {
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                %error,
+                "persisting a Gotify subscription failed",
+            );
+        }
+        self.gotify_subs.lock().push(sub);
+    }
+
+    /// Remove the subscription `id` if it belongs to `project`, from both
+    /// the active set and (when present) the redb store. Returns whether
+    /// an entry was removed. Backs `gotify__unsubscribe`.
+    pub(crate) fn remove_gotify_subscription(&self, project: &str, id: uuid::Uuid) -> bool {
+        let removed = {
+            let mut subs = self.gotify_subs.lock();
+            let before = subs.len();
+            subs.retain(|s| !(s.id == id && s.project == project));
+            subs.len() != before
+        };
+        if removed
+            && let Some(db) = self.gotify_db.lock().as_ref()
+            && let Err(error) = crate::store::gotify::remove(db, id)
+        {
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                %error,
+                "removing a persisted Gotify subscription failed",
+            );
+        }
+        removed
+    }
+
+    /// The active subscriptions for `project`. Backs `gotify__list`; the
+    /// Inspector snapshot reaches it via the by-cwd resolver.
+    pub fn gotify_subscriptions_for_project(
+        &self,
+        project: &str,
+    ) -> Vec<forge_primitives::GotifySubscription> {
+        self.gotify_subs.lock().iter().filter(|s| s.project == project).cloned().collect()
+    }
+
+    /// Install a redb store into a test workspace so the durable-vs-
+    /// ephemeral persistence path is exercisable without `Workspace::new`.
+    #[cfg(any(test, feature = "test-helpers"))]
+    pub fn install_gotify_db_for_test(&self, db: crate::store::Db) {
+        *self.gotify_db.lock() = Some(db);
+    }
+
     /// Advance a fired cron and persist: a recurring cron records
     /// `last_fire` and moves `next_fire` to the next future slot (removed
     /// if it somehow has none); a run-once is removed. A direct state
@@ -3984,6 +4113,8 @@ impl Workspace {
             proxy: None,
             _single_instance_lock: None,
             crons: Mutex::new(Vec::new()),
+            gotify_subs: Mutex::new(Vec::new()),
+            gotify_db: Mutex::new(None),
             team_spawn_in_flight: Mutex::new(std::collections::HashSet::new()),
             command_intercept: Mutex::new(None),
             test_extra_projects: Mutex::new(Vec::new()),
@@ -4383,6 +4514,44 @@ mod tests {
             "a cwd mapping to no configured project has no crons",
         );
         assert!(ws.crons_for_project_path("").is_empty(), "a blank cwd degrades to empty");
+    }
+
+    #[test]
+    fn durable_gotify_subscription_persists_ephemeral_stays_in_memory() {
+        use forge_primitives::GotifySubscription;
+
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        let db = crate::store::Db::open(&dir.path().join("db.redb")).expect("open db");
+        ws.install_gotify_db_for_test(db);
+
+        let sub = |team_role: Option<&str>| GotifySubscription {
+            id: uuid::Uuid::new_v4(),
+            project: "p".to_owned(),
+            team_role: team_role.map(str::to_owned),
+            application: None,
+            min_priority: None,
+            created_at: std::time::SystemTime::UNIX_EPOCH,
+        };
+        let durable = sub(None);
+        let ephemeral = sub(Some("scratch"));
+        ws.add_gotify_subscription(durable.clone(), true);
+        ws.add_gotify_subscription(ephemeral, false);
+
+        assert_eq!(
+            ws.gotify_subscriptions_for_project("p").len(),
+            2,
+            "both live in the active in-memory set",
+        );
+        let persisted = || {
+            crate::store::gotify::list(ws.gotify_db.lock().as_ref().expect("db installed"))
+                .expect("list")
+        };
+        assert_eq!(persisted().len(), 1, "only the durable subscription hit redb");
+        assert_eq!(persisted()[0].id, durable.id);
+
+        assert!(ws.remove_gotify_subscription("p", durable.id), "durable id removes");
+        assert!(persisted().is_empty(), "removal cleared the persisted record");
     }
 
     #[test]
