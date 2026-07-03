@@ -2863,11 +2863,6 @@ impl Workspace {
         *self.gotify_connected.lock()
     }
 
-    /// Whether a `[gotify]` server is configured in forge.toml.
-    pub fn gotify_configured(&self) -> bool {
-        self.gotify_config().is_some()
-    }
-
     /// Install a redb store into a test workspace so the durable-vs-
     /// ephemeral persistence path is exercisable without `Workspace::new`.
     #[cfg(any(test, feature = "test-helpers"))]
@@ -5039,7 +5034,6 @@ mod tests {
             ws.gotify_subscriptions_for_project_path("").is_empty(),
             "a blank cwd degrades to empty",
         );
-        assert!(!ws.gotify_configured(), "testing stub has no [gotify] block");
         assert!(!ws.gotify_connected(), "no stream running in the stub");
     }
 
