@@ -3203,11 +3203,11 @@ mod tests {
 
     #[test]
     fn gotify_section_renders_labeled_rows_including_a_multi_app_set() {
-        let row = |id: u128, applications: Vec<String>, min_priority: Option<u8>| {
+        let row = |id: u128, applications: Vec<String>, team_role: Option<&str>, min_priority| {
             forge_primitives::GotifySubscription {
                 id: uuid::Uuid::from_u128(id),
                 project: "trader-cc".to_owned(),
-                team_role: None,
+                team_role: team_role.map(str::to_owned),
                 applications,
                 min_priority,
                 created_at: std::time::SystemTime::UNIX_EPOCH,
@@ -3216,8 +3216,9 @@ mod tests {
         let mut app = App::test_default();
         app.gotify_connected = true;
         app.gotify_subs = vec![
-            row(1, vec!["alerts".to_owned()], Some(5)),
-            row(2, vec!["alerts".to_owned(), "backups".to_owned()], None),
+            row(1, vec!["alerts".to_owned()], None, Some(5)),
+            row(2, vec!["alerts".to_owned(), "backups".to_owned()], None, None),
+            row(3, vec!["backups".to_owned()], Some("steward"), Some(8)),
         ];
 
         let mut lines = Vec::new();
@@ -3239,6 +3240,10 @@ mod tests {
             "the multi-app set row present; got:\n{joined}",
         );
         assert!(joined.contains("priority: any"), "the any-priority label present; got:\n{joined}");
+        assert!(
+            joined.contains("\u{2192} steward"),
+            "a team-worker subscription renders its -> role target; got:\n{joined}",
+        );
     }
 
     #[test]
