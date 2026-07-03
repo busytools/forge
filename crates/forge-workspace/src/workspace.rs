@@ -542,6 +542,14 @@ impl Workspace {
         self.config.ui.clone()
     }
 
+    /// The `[gotify]` server connection from forge.toml, or `None`
+    /// when the section is absent. `None` keeps the Gotify subsystem
+    /// dormant and makes `gotify__subscribe` error. Read-only - forge
+    /// never writes forge.toml.
+    pub fn gotify_config(&self) -> Option<forge_primitives::GotifyConfig> {
+        self.config.gotify.clone()
+    }
+
     /// Persist `style` as the runtime spinner override in
     /// `state.toml` (the writable sidecar - never touches the
     /// hand-authored forge.toml). The next boot's `Workspace::new`
