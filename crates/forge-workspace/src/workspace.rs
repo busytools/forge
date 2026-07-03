@@ -364,30 +364,6 @@ fn open_gotify_db() -> Option<crate::store::Db> {
 /// only a `Weak<Workspace>` (upgraded per event) so it never keeps the
 /// workspace alive; exits when `shutdown` fires or the stream task ends,
 /// dropping its own handle to the stream task so that exits too.
-/// Fetch the Gotify `/application` list and store the name->appid map.
-/// Warns (never silently drops) on failure - an unresolved index would
-/// otherwise leave every application-name-filtered subscription silently
-/// matching nothing while the stream still reports connected.
-async fn refresh_gotify_app_index(
-    weak: std::sync::Weak<Workspace>,
-    cfg: forge_primitives::GotifyConfig,
-) {
-    match forge_agent::env::gotify::app_index(&cfg).await {
-        Ok(index) => {
-            if let Some(ws) = weak.upgrade() {
-                *ws.gotify_app_index.lock() = index;
-            }
-        }
-        Err(error) => {
-            tracing::warn!(
-                target: "forge_workspace::workspace",
-                %error,
-                "Gotify /application lookup failed; application-name filters will not match until the next reconnect",
-            );
-        }
-    }
-}
-
 async fn run_gotify_subsystem(
     weak: std::sync::Weak<Workspace>,
     cfg: forge_primitives::GotifyConfig,
@@ -432,6 +408,30 @@ async fn run_gotify_subsystem(
 
     if let Some(ws) = weak.upgrade() {
         *ws.gotify_connected.lock() = false;
+    }
+}
+
+/// Fetch the Gotify `/application` list and store the name->appid map.
+/// Warns (never silently drops) on failure - an unresolved index would
+/// otherwise leave every application-name-filtered subscription silently
+/// matching nothing while the stream still reports connected.
+async fn refresh_gotify_app_index(
+    weak: std::sync::Weak<Workspace>,
+    cfg: forge_primitives::GotifyConfig,
+) {
+    match forge_agent::env::gotify::app_index(&cfg).await {
+        Ok(index) => {
+            if let Some(ws) = weak.upgrade() {
+                *ws.gotify_app_index.lock() = index;
+            }
+        }
+        Err(error) => {
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                %error,
+                "Gotify /application lookup failed; application-name filters will not match until the next reconnect",
+            );
+        }
     }
 }
 
