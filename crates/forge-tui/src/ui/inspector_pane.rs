@@ -1425,17 +1425,19 @@ fn append_gotify_subscription(
     lines.push(priority);
 }
 
-/// Wrap a comma-joined app-name list to `max_chars` columns, breaking
-/// only at `, ` separators so no name is split. A name wider than
-/// `max_chars` still takes its own full line (never truncated). An
+/// Wrap a comma-joined app-name list to `max_width` display columns,
+/// breaking only at `, ` separators so no name is split. A name wider
+/// than `max_width` still takes its own full line (never truncated). An
 /// empty slice yields no lines.
-fn wrap_app_list(names: &[String], max_chars: usize) -> Vec<String> {
+fn wrap_app_list(names: &[String], max_width: usize) -> Vec<String> {
+    use unicode_width::UnicodeWidthStr;
+
     let mut lines: Vec<String> = Vec::new();
     let mut current = String::new();
     for name in names {
         if current.is_empty() {
             current.clone_from(name);
-        } else if current.chars().count() + 2 + name.chars().count() <= max_chars {
+        } else if current.width() + 2 + name.width() <= max_width {
             current.push_str(", ");
             current.push_str(name);
         } else {
