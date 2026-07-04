@@ -9,11 +9,11 @@ pub struct SessionLaunchSettings {
     pub settings: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_progress_summaries: Option<bool>,
-    /// Worker-session charter: when `Some`, appended to the system
-    /// prompt of the spawned `claude` subprocess via
-    /// `--append-system-prompt`. Set by `handle_spawn_worker` when
-    /// the workers MCP spawns a new child session; `None` for every
-    /// other spawn path (leads, resumes).
+    /// Charter appended to the spawned `claude` subprocess's system
+    /// prompt via `--append-system-prompt`. Set for worker spawns (the
+    /// LLM-supplied inline persona, via `handle_spawn_worker`) and for
+    /// lead spawns (the lead charter, via `apply_lead_charter`); `None`
+    /// only when the caller supplies none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub charter: Option<String>,
     /// Lead-session delegation catalog: when `Some`, appended to the
