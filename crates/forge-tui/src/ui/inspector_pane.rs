@@ -1427,9 +1427,10 @@ fn append_gotify_subscription(
 
 /// Wrap a comma-joined app-name list to `max_width` display columns,
 /// breaking only at `, ` separators so no name is split. A name wider
-/// than `max_width` still takes its own full line (never truncated). A
-/// wrapped (non-final) line keeps its trailing comma to signal the list
-/// continues. An empty slice yields no lines.
+/// than `max_width` still takes its own full line (never truncated). An
+/// in-budget wrapped line keeps its trailing comma as a continuation
+/// signal; an over-wide lone name flushes without one. An empty slice
+/// yields no lines.
 fn wrap_app_list(names: &[String], max_width: usize) -> Vec<String> {
     use unicode_width::UnicodeWidthStr;
 
@@ -1442,7 +1443,11 @@ fn wrap_app_list(names: &[String], max_width: usize) -> Vec<String> {
             current.push_str(", ");
             current.push_str(name);
         } else {
-            current.push(',');
+            // Continuation comma only on an in-budget line; an over-wide
+            // lone name flushes bare so the comma never eats the gutter.
+            if current.width() <= max_width {
+                current.push(',');
+            }
             lines.push(std::mem::take(&mut current));
             current.clone_from(name);
         }
@@ -3453,6 +3458,29 @@ mod tests {
         let mut app = App::test_default();
         app.gotify_connected = true;
         app.gotify_subs = vec![gotify_sub(1, None, &[long.as_str(), "bb", "c"], Some(5))];
+
+        let mut lines = Vec::new();
+        append_gotify_section(&mut lines, &app, inner_width);
+        for line in &lines {
+            let w = rendered_width(line);
+            assert!(
+                w < usize::from(inner_width),
+                "row consumed the right gutter ({w} >= {inner_width}): {}",
+                line_text(line),
+            );
+        }
+    }
+
+    #[test]
+    fn gotify_over_wide_app_name_drops_the_trailing_comma_at_the_gutter() {
+        // A name wider than the wrap budget (max_width = inner_width - 5)
+        // that is followed by another name must flush WITHOUT a trailing
+        // comma; the comma alone would push it past the 1-col gutter.
+        let inner_width: u16 = 40;
+        let over_wide = "a".repeat(36); // max_width + 1
+        let mut app = App::test_default();
+        app.gotify_connected = true;
+        app.gotify_subs = vec![gotify_sub(1, None, &[over_wide.as_str(), "tail"], None)];
 
         let mut lines = Vec::new();
         append_gotify_section(&mut lines, &app, inner_width);
