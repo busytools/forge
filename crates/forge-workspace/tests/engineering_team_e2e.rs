@@ -6,7 +6,7 @@
 //! Exercises the file-driven charters path end-to-end: forge.toml
 //! `team = [...]` parsing (validate_label), the per-label
 //! load_charter / load_initial_kick disk reads, the lead-charter
-//! stamping at `apply_lead_charter_if_team`, and the programmatic
+//! stamping at `apply_lead_charter`, and the programmatic
 //! Connected -> SpawnWorker dispatch.
 //!
 //! Uses `set_forge_team_root_for_test` to point the loader at a
