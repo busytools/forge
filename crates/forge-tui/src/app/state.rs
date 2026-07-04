@@ -3078,6 +3078,25 @@ impl App {
         self.bind_active_turn_assistant_to_tail();
     }
 
+    /// Drop a trailing empty assistant placeholder if the tail is one. A
+    /// prior turn-open (typed or delivered) may have pushed a placeholder
+    /// that never received tokens; stripping it before the next user
+    /// bubble keeps rapid-fire turns from stranding blank assistant
+    /// bubbles between them. Shared by the typed-submit and
+    /// delivered-prompt turn-open paths.
+    pub(crate) fn strip_trailing_empty_assistant_placeholder(&mut self) {
+        let Some(tail_idx) = self.messages().len().checked_sub(1) else {
+            return;
+        };
+        let tail_is_empty_asst = self
+            .messages()
+            .get(tail_idx)
+            .is_some_and(|msg| matches!(msg.role, MessageRole::Assistant) && msg.blocks.is_empty());
+        if tail_is_empty_asst {
+            let _ = self.remove_message_tracked(tail_idx);
+        }
+    }
+
     pub fn clear_active_turn_assistant(&mut self) {
         self.set_active_turn_assistant_message_idx(None);
     }

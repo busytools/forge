@@ -384,27 +384,35 @@ fn push_peer_envelope_user_turn_if_present(
         } else {
             ChatMessage::new_peer_envelope(MessageRole::User, blocks, None)
         };
-        // Arrival order: append at the tail so the reply never jumps
-        // above the in-flight assistant turn that holds the outbound send.
+        // Replay reconstructs the chat bubble only - no live turn
+        // ceremony. load_resume_history walks historical envelopes through
+        // this dispatcher and has no balancing Result to clear a Running
+        // flip or a freshly-opened placeholder (the stuck-spinner failure
+        // mode), matching handle_assistant's replay gate.
+        if app.replay_in_progress {
+            app.push_message_tracked(msg);
+            app.enforce_history_retention_tracked();
+            return;
+        }
+        // Live delivery mirrors input_submit::dispatch_prompt so a
+        // delivered turn behaves exactly like a typed one: drop any
+        // stranded empty placeholder (rapid back-to-back delivery, e.g. a
+        // Gotify flood, would otherwise leave a blank bubble between
+        // turns), append the user turn at the tail (arrival order - never
+        // above the in-flight send), open a fresh assistant placeholder +
+        // reparent the active-turn pointer onto it (spinner pins to the
+        // bottom, not a stale earlier assistant), and put the session to
+        // work so it reads as active rather than idle-then-burst.
+        app.strip_trailing_empty_assistant_placeholder();
         app.push_message_tracked(msg);
-        // Mirror input_submit::dispatch_prompt: open a fresh assistant
-        // placeholder at the tail + reparent the active-turn pointer onto
-        // it (so the spinner pins to the bottom like a typed turn, not a
-        // stale earlier assistant near the top), then flip status +
-        // lifecycle to running so the session reads as active rather than
-        // idle-then-burst. The replay gate matches handle_assistant -
-        // historical envelopes must not open a live turn on a resumed
-        // bucket (no balancing Result would clear it).
-        if !app.replay_in_progress {
-            app.push_active_turn_assistant_placeholder();
-            app.status = crate::app::AppStatus::Thinking;
-            if let Some(key) = app.active_session_key.clone() {
-                super::set_bucket_lifecycle_state(
-                    app,
-                    &key,
-                    crate::app::session::SessionLifecycleState::Running,
-                );
-            }
+        app.push_active_turn_assistant_placeholder();
+        app.status = crate::app::AppStatus::Thinking;
+        if let Some(key) = app.active_session_key.clone() {
+            super::set_bucket_lifecycle_state(
+                app,
+                &key,
+                crate::app::session::SessionLifecycleState::Running,
+            );
         }
         app.enforce_history_retention_tracked();
         return;
@@ -2519,6 +2527,40 @@ mod inbound_message_surfacing_tests {
         assert!(
             matches!(app.messages()[tail].role, MessageRole::Assistant)
                 && app.messages()[tail].blocks.is_empty(),
+        );
+    }
+
+    /// Rapid back-to-back delivery (a Gotify flood / burst of peer
+    /// replies): a second delivered turn arriving before the first
+    /// streamed any token must strip the first, now-stranded, empty
+    /// placeholder - so deliveries don't accumulate blank assistant
+    /// bubbles between them. Mirrors input_submit's rapid-submit strip.
+    #[test]
+    fn back_to_back_delivery_strips_stranded_empty_placeholder() {
+        let mut app = App::test_default();
+        idle_active_bucket(&mut app);
+        app.status = AppStatus::Ready;
+        app.clear_active_turn_assistant();
+
+        // First delivery opens [gotify1, placeholder1(empty)].
+        handle_user(&mut app, delivered_user_turn(GOTIFY_NOTE));
+        // Second delivery lands before any token streamed into placeholder1.
+        handle_user(&mut app, delivered_user_turn(PEER_REPLY));
+
+        // placeholder1 stripped -> [gotify1, reply2, placeholder2]; no
+        // blank bubble stranded between the two delivered turns.
+        assert_eq!(app.messages().len(), 3, "stranded empty placeholder stripped");
+        assert!(app.messages()[0].is_gotify_envelope, "first delivered turn");
+        assert!(app.messages()[1].is_peer_envelope, "second delivered turn, adjacent");
+        assert!(
+            matches!(app.messages()[2].role, MessageRole::Assistant)
+                && app.messages()[2].blocks.is_empty(),
+            "exactly one empty placeholder, at the tail",
+        );
+        assert_eq!(
+            app.active_turn_assistant_message_idx(),
+            Some(2),
+            "pointer on the surviving tail placeholder",
         );
     }
 }
