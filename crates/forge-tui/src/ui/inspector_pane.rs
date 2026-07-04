@@ -2975,7 +2975,7 @@ mod tests {
             &forge_primitives::GotifySubscription {
                 id: uuid::Uuid::from_u128(9),
                 project: "p".to_owned(),
-                team_role: Some("steward".to_owned()),
+                team_role: None,
                 applications: vec![
                     "an-extra-long-application-name-alpha".to_owned(),
                     "an-extra-long-application-name-beta".to_owned(),
