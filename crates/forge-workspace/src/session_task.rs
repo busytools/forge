@@ -1660,7 +1660,7 @@ mod team_hook_tests {
     use crate::Workspace;
     use crate::protocol::Command;
     use crate::target::ProjectKey;
-    use crate::team::set_forge_team_root_for_test;
+    use crate::team::{DEFAULT_LEAD_CHARTER, set_forge_team_root_for_test};
     use std::sync::OnceLock;
 
     fn synth_lead_key(project_name: &str) -> SessionKey {
@@ -1687,7 +1687,7 @@ mod team_hook_tests {
                 ),
                 (
                     "lead",
-                    include_str!("../../../docs/forge-team-defaults/lead/charter.md"),
+                    DEFAULT_LEAD_CHARTER,
                     include_str!("../../../docs/forge-team-defaults/lead/kick.md"),
                 ),
             ] {

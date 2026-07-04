@@ -74,6 +74,11 @@ impl Role {
 /// against it without pulling in `mcp::workers`.
 pub const LEAD_LABEL: &str = "lead";
 
+/// Bundled lead charter, compiled in as the fallback when
+/// `~/.claude/forge-team/lead/charter.md` is absent.
+pub const DEFAULT_LEAD_CHARTER: &str =
+    include_str!("../../../../docs/forge-team-defaults/lead/charter.md");
+
 /// Errors loading a role's charter or kick file from disk.
 #[derive(Debug)]
 pub enum CharterError {
@@ -234,6 +239,25 @@ pub fn load_charter(label: &str) -> Result<String, CharterError> {
             Err(CharterError::CharterNotFound { label: label.to_owned(), path })
         }
         Err(source) => Err(CharterError::ReadFailed { label: label.to_owned(), path, source }),
+    }
+}
+
+/// Load the lead charter, preferring the user override and falling
+/// back to [`DEFAULT_LEAD_CHARTER`] so a lead is always charter-backed.
+/// A missing override falls back silently; any other load failure is
+/// logged first so the cause stays diagnosable.
+pub fn load_lead_charter_or_default() -> String {
+    match load_charter(LEAD_LABEL) {
+        Ok(charter) => charter,
+        Err(CharterError::CharterNotFound { .. }) => DEFAULT_LEAD_CHARTER.to_owned(),
+        Err(e) => {
+            tracing::warn!(
+                target: "forge_workspace::team",
+                error = %e,
+                "could not load lead charter; using bundled default"
+            );
+            DEFAULT_LEAD_CHARTER.to_owned()
+        }
     }
 }
 
