@@ -244,8 +244,8 @@ pub fn load_charter(label: &str) -> Result<String, CharterError> {
 
 /// Load the lead charter, preferring the user override and falling
 /// back to [`DEFAULT_LEAD_CHARTER`] so a lead is always charter-backed.
-/// An absent override falls back silently; a present-but-unreadable one
-/// is logged first so the misconfiguration stays diagnosable.
+/// A missing override falls back silently; any other load failure is
+/// logged first so the cause stays diagnosable.
 pub fn load_lead_charter_or_default() -> String {
     match load_charter(LEAD_LABEL) {
         Ok(charter) => charter,
@@ -254,7 +254,7 @@ pub fn load_lead_charter_or_default() -> String {
             tracing::warn!(
                 target: "forge_workspace::team",
                 error = %e,
-                "lead charter present but unreadable; using bundled default"
+                "could not load lead charter; using bundled default"
             );
             DEFAULT_LEAD_CHARTER.to_owned()
         }
