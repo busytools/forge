@@ -392,7 +392,7 @@ fn append_body(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
     // explicit `CronDelete`. The MONITORS section is gone; Monitor
     // tool calls now render their live tail directly in chat (see
     // `ui::message::render_lifecycle_one_liner`'s `"Monitor"` arm).
-    if !app.schedules().is_empty() {
+    if !app.schedules().is_empty() || !app.forge_crons.is_empty() {
         lines.push(Line::default());
         push_section_rule(lines, width);
         lines.push(Line::default());
@@ -2225,6 +2225,35 @@ mod tests {
         assert!(text.contains("SCHEDULES"), "section header renders: {text}");
         assert!(text.contains("0 9 * * *"), "forge cron row shows its expression: {text}");
         assert!(text.contains("in "), "forge cron row shows a live countdown: {text}");
+    }
+
+    #[test]
+    fn append_body_draws_schedules_from_forge_crons_without_cloud_wakeups() {
+        use forge_primitives::cron::{CronEntry, CronId, CronKind};
+        use std::time::{Duration, SystemTime};
+
+        // Regression: the section gate must draw SCHEDULES from durable
+        // forge crons even when the cloud-wakeup list is empty.
+        let mut app = App::test_default();
+        app.forge_crons = vec![CronEntry {
+            id: CronId::from("c1"),
+            project_name: "cronproj".to_owned(),
+            kind: CronKind::Recurring("0 9 * * *".to_owned()),
+            prompt: "stand-up".to_owned(),
+            created_at: SystemTime::UNIX_EPOCH,
+            last_fire: None,
+            next_fire: SystemTime::now() + Duration::from_secs(3600),
+        }];
+        assert!(app.schedules().is_empty(), "precondition: no cloud wakeups");
+
+        let mut lines = Vec::new();
+        append_body(&mut lines, &app, 60);
+        let text = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert!(
+            text.contains("SCHEDULES"),
+            "durable crons render SCHEDULES even with no cloud wakeups: {text}"
+        );
+        assert!(text.contains("0 9 * * *"), "the cron row is present: {text}");
     }
 
     #[test]
