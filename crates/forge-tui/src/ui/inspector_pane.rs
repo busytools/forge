@@ -1427,8 +1427,9 @@ fn append_gotify_subscription(
 
 /// Wrap a comma-joined app-name list to `max_width` display columns,
 /// breaking only at `, ` separators so no name is split. A name wider
-/// than `max_width` still takes its own full line (never truncated). An
-/// empty slice yields no lines.
+/// than `max_width` still takes its own full line (never truncated). A
+/// wrapped (non-final) line keeps its trailing comma to signal the list
+/// continues. An empty slice yields no lines.
 fn wrap_app_list(names: &[String], max_width: usize) -> Vec<String> {
     use unicode_width::UnicodeWidthStr;
 
