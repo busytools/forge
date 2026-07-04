@@ -1395,10 +1395,13 @@ fn append_gotify_subscription(
     let app_indent = usize::from(PANE_PAD) + 2;
     let priority_indent = usize::from(PANE_PAD) + 4;
 
+    // Chrome reserves the 1-col right gutter plus 1 col for the
+    // trailing comma a wrapped line carries, so a flushed line never
+    // overruns the gutter.
     let pieces = if sub.applications.is_empty() {
         vec!["any".to_owned()]
     } else {
-        wrap_app_list(&sub.applications, row_text_budget(inner_width, app_indent + 1))
+        wrap_app_list(&sub.applications, row_text_budget(inner_width, app_indent + 2))
     };
     for piece in pieces {
         lines.push(Line::from(vec![
@@ -3436,6 +3439,28 @@ mod tests {
             joined.contains("priority >=3"),
             "the empty-filter subscription keeps its own priority floor; got:\n{joined}",
         );
+    }
+
+    #[test]
+    fn gotify_wrapped_app_line_reserves_the_trailing_comma_column() {
+        // A run that packs to the wrap budget then breaks: the trailing
+        // comma on the flushed line must not eat the 1-col right gutter.
+        let inner_width: u16 = 40;
+        let long = "a".repeat(32);
+        let mut app = App::test_default();
+        app.gotify_connected = true;
+        app.gotify_subs = vec![gotify_sub(1, None, &[long.as_str(), "bb", "c"], Some(5))];
+
+        let mut lines = Vec::new();
+        append_gotify_section(&mut lines, &app, inner_width);
+        for line in &lines {
+            let w = rendered_width(line);
+            assert!(
+                w < usize::from(inner_width),
+                "row consumed the right gutter ({w} >= {inner_width}): {}",
+                line_text(line),
+            );
+        }
     }
 
     #[test]
