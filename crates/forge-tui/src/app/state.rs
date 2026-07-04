@@ -3066,6 +3066,18 @@ impl App {
         }
     }
 
+    /// Open a fresh assistant turn: push an empty assistant placeholder
+    /// at the tail and bind the active-turn pointer onto it. Shared by
+    /// the typed-submit (`input_submit::dispatch_prompt`) and
+    /// delivered-prompt (`sdk_message::push_peer_envelope_user_turn_if_present`)
+    /// turn-open paths so the thinking spinner pins to the new tail
+    /// placeholder in both - the pointer is what `chat::msg_spinner`
+    /// reads to decide which message wears the spinner.
+    pub(crate) fn push_active_turn_assistant_placeholder(&mut self) {
+        self.push_message_tracked(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
+        self.bind_active_turn_assistant_to_tail();
+    }
+
     pub fn clear_active_turn_assistant(&mut self) {
         self.set_active_turn_assistant_message_idx(None);
     }

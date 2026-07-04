@@ -189,8 +189,7 @@ fn dispatch_prompt(app: &mut App, text: String) {
     // treatment too - that's the entire point of the new shape, so
     // claude's continuing tokens land below the new user bubble
     // instead of above it.
-    app.push_message_tracked(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
-    app.bind_active_turn_assistant_to_tail();
+    app.push_active_turn_assistant_placeholder();
     app.status = AppStatus::Thinking;
     if let Some(key) = app.active_session_key.clone() {
         crate::app::events::set_bucket_lifecycle_state(
