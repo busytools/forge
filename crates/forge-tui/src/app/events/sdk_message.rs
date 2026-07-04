@@ -370,13 +370,20 @@ fn push_peer_envelope_user_turn_if_present(
         let ContentBlock::Text { text } = block else {
             continue;
         };
-        if crate::ui::peer_block::detect_inbound(text).is_none() {
+        let Some(kind) = crate::ui::peer_block::detect_inbound(text) else {
             continue;
-        }
+        };
+        let is_gotify = matches!(kind, crate::ui::peer_block::PeerInboundKind::Gotify { .. });
         let blocks = vec![MessageBlock::Text(TextBlock::from_complete(text))];
-        // #143 item 2: cache the peer-envelope flag at push time so
-        // the chat renderer doesn't walk text blocks every frame.
-        let msg = ChatMessage::new_peer_envelope(MessageRole::User, blocks, None);
+        // #143 item 2: cache the envelope flag at push time so the chat
+        // renderer doesn't walk text blocks every frame. A Gotify
+        // notification stamps the distinct gotify flag (drives the
+        // `Gotify` role label); everything else is a peer envelope.
+        let msg = if is_gotify {
+            ChatMessage::new_gotify_envelope(MessageRole::User, blocks, None)
+        } else {
+            ChatMessage::new_peer_envelope(MessageRole::User, blocks, None)
+        };
         // When forge is mid-turn there's an empty assistant placeholder
         // at the tail (input_submit::dispatch_prompt pushed it before
         // the response stream started). A blind push appends the peer

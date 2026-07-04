@@ -559,7 +559,8 @@ fn is_messaging_block(block: &MessageBlock) -> bool {
     use crate::ui::peer_block;
     match block {
         MessageBlock::ToolCall(tc) if !tc.hidden => peer_block::detect_outbound(tc).is_some(),
-        MessageBlock::Text(text) => peer_block::detect_inbound(&text.text).is_some(),
+        MessageBlock::Text(text) => peer_block::detect_inbound(&text.text)
+            .is_some_and(|k| k.peer_sender_identity().is_some()),
         _ => false,
     }
 }
@@ -636,18 +637,11 @@ fn merge_messaging_groups(blocks: &[MessageBlock], tool_units: &[RenderUnit]) ->
                     }
                 }
                 MessageBlock::Text(text) => {
-                    if let Some(kind) = peer_block::detect_inbound(&text.text) {
-                        let from = match kind {
-                            PeerInboundKind::Question { from, .. }
-                            | PeerInboundKind::Message { from, .. }
-                            | PeerInboundKind::Reply { from, .. }
-                            | PeerInboundKind::LateReply { from, .. }
-                            | PeerInboundKind::RecipientExpired { from, .. } => from,
-                            PeerInboundKind::CallerTimeout { target, .. }
-                            | PeerInboundKind::DeliveryFailure { target, .. } => target,
-                            PeerInboundKind::WorkerSpawnFailed { label, .. } => label,
-                        };
-                        append_target(&mut segment_inbound_targets, &from);
+                    let kind = peer_block::detect_inbound(&text.text);
+                    if let Some(from) =
+                        kind.as_ref().and_then(PeerInboundKind::peer_sender_identity)
+                    {
+                        append_target(&mut segment_inbound_targets, from);
                         segment_count += 1;
                         if leader_id.is_none() {
                             leader_id = Some(GroupId::from_leader_id(format!(
@@ -814,18 +808,15 @@ fn classify_session_block(
             SessionBlockClass::Breaker
         }
         MessageBlock::Text(text) => {
-            if let Some(kind) = peer_block::detect_inbound(&text.text) {
-                let from = match kind {
-                    PeerInboundKind::Question { from, .. }
-                    | PeerInboundKind::Message { from, .. }
-                    | PeerInboundKind::Reply { from, .. }
-                    | PeerInboundKind::LateReply { from, .. }
-                    | PeerInboundKind::RecipientExpired { from, .. } => from,
-                    PeerInboundKind::CallerTimeout { target, .. }
-                    | PeerInboundKind::DeliveryFailure { target, .. } => target,
-                    PeerInboundKind::WorkerSpawnFailed { label, .. } => label,
-                };
-                return SessionBlockClass::Inbound { from };
+            // Gotify notifications parse as an inbound envelope but are
+            // external events, not agent traffic (`peer_sender_identity`
+            // returns None), so they fall through to the user-turn class
+            // and never merge into a peer group.
+            if let Some(from) = peer_block::detect_inbound(&text.text)
+                .as_ref()
+                .and_then(PeerInboundKind::peer_sender_identity)
+            {
+                return SessionBlockClass::Inbound { from: from.to_owned() };
             }
             if matches!(role, MessageRole::User) {
                 SessionBlockClass::UserTurnPassThrough

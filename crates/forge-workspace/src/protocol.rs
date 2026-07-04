@@ -292,15 +292,14 @@ pub enum Command {
     /// prompt). `team_role` targets a durable team worker when `Some`;
     /// `None` targets the project lead. Dispatched by
     /// `Workspace::route_gotify_message`, one per matching subscription;
-    /// handled by `spawn::deliver_gotify_message`. `appid` + `priority`
-    /// carry the source notification's numbers for tracing. App-level
-    /// command (`key()` returns `None`).
+    /// handled by `spawn::deliver_gotify_message`. `notification` carries
+    /// the resolved app name, title, message, and priority - its
+    /// `to_prose()` is the user-turn text, and the same struct drives the
+    /// chat-echo. App-level command (`key()` returns `None`).
     DeliverGotifyMessage {
         project: String,
         team_role: Option<String>,
-        envelope: String,
-        appid: u64,
-        priority: u8,
+        notification: crate::mcp::gotify::types::GotifyNotification,
     },
 }
 
@@ -432,11 +431,12 @@ impl std::fmt::Debug for Command {
                 .field("caller", caller)
                 .field("target_lead_key", target_lead_key)
                 .finish_non_exhaustive(),
-            Self::DeliverGotifyMessage { project, team_role, priority, .. } => f
+            Self::DeliverGotifyMessage { project, team_role, notification } => f
                 .debug_struct("DeliverGotifyMessage")
                 .field("project", project)
                 .field("team_role", team_role)
-                .field("priority", priority)
+                .field("app", &notification.app)
+                .field("priority", &notification.priority)
                 .finish_non_exhaustive(),
         }
     }
@@ -648,6 +648,15 @@ pub enum SessionUpdate {
         session_id: String,
         wrapped: crate::mcp::peers::types::WrappedPrompt,
     },
+    /// A matched Gotify notification arrived at session `session_id`.
+    /// Carries the typed `GotifyNotification` so the TUI reducer builds
+    /// the chat-side echo from real fields (mirrors PeerEnvelopeAppended).
+    /// The session's LLM receives the same prose via a separate
+    /// `Command::Prompt` - this update only drives the visible echo.
+    GotifyNotificationAppended {
+        session_id: String,
+        notification: crate::mcp::gotify::types::GotifyNotification,
+    },
     FatalError(AppError),
 }
 
@@ -681,7 +690,8 @@ impl SessionUpdate {
             | Self::OauthCredentialsSnapshot { session_id, .. }
             | Self::ContextUsageSnapshot { session_id, .. }
             | Self::McpSnapshot { session_id, .. }
-            | Self::PeerEnvelopeAppended { session_id, .. } => {
+            | Self::PeerEnvelopeAppended { session_id, .. }
+            | Self::GotifyNotificationAppended { session_id, .. } => {
                 Some(SessionKey::from_session_id(session_id.clone()))
             }
             Self::KeyRenamed { .. }
@@ -820,6 +830,12 @@ impl std::fmt::Debug for SessionUpdate {
                 .field("session_id", session_id)
                 .field("correlation_id", &wrapped.correlation_id)
                 .field("kind", &wrapped.kind)
+                .finish_non_exhaustive(),
+            Self::GotifyNotificationAppended { session_id, notification } => f
+                .debug_struct("GotifyNotificationAppended")
+                .field("session_id", session_id)
+                .field("app", &notification.app)
+                .field("priority", &notification.priority)
                 .finish_non_exhaustive(),
             Self::FatalError(err) => f.debug_struct("FatalError").field("error", err).finish(),
         }

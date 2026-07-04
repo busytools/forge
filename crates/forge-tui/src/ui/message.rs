@@ -1756,7 +1756,15 @@ fn role_label_line(msg: &ChatMessage) -> Line<'static> {
             // matching Assistant-side outbound label. Reserves the
             // "User" treatment for things actually typed by the
             // human at the prompt.
-            if is_peer_envelope_user_message(msg) {
+            if is_gotify_envelope_user_message(msg) {
+                // An external Gotify notification, not agent traffic - a
+                // distinct source label so it can't be mistaken for a
+                // message the forge agent itself sent.
+                Line::from(Span::styled(
+                    "Gotify",
+                    Style::default().fg(theme::GOTIFY).add_modifier(Modifier::BOLD),
+                ))
+            } else if is_peer_envelope_user_message(msg) {
                 Line::from(Span::styled(
                     "Forge",
                     Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
@@ -1800,6 +1808,15 @@ fn is_peer_envelope_user_message(msg: &ChatMessage) -> bool {
     msg.is_peer_envelope
 }
 
+/// True when this `MessageRole::User` carries a Gotify external
+/// notification (`[Gotify - app '...']`). Reads the cached
+/// `is_gotify_envelope` flag stamped at push time by the
+/// `GotifyNotificationAppended` path, mirroring
+/// [`is_peer_envelope_user_message`].
+fn is_gotify_envelope_user_message(msg: &ChatMessage) -> bool {
+    msg.is_gotify_envelope
+}
+
 /// Extract the `sender_org` tag from this message's peer envelope,
 /// if any. Drives the same-project envelope grouping at
 /// `compute_suppress_group_header` (chat-iteration level).
@@ -1825,7 +1842,14 @@ pub(crate) fn message_envelope_org(msg: &ChatMessage) -> Option<String> {
     match msg.role {
         MessageRole::User => msg.blocks.iter().find_map(|block| match block {
             MessageBlock::Text(text) => {
-                detect_inbound(&text.text).map(|kind| kind.org().to_owned())
+                // Peer/worker envelopes group by sender_org; a Gotify
+                // notification is an external event with no peer identity
+                // (peer_sender_identity None), so it never folds under a
+                // shared group header.
+                let kind = detect_inbound(&text.text);
+                kind.as_ref()
+                    .filter(|k| k.peer_sender_identity().is_some())
+                    .map(|k| k.org().to_owned())
             }
             _ => None,
         }),
@@ -1890,16 +1914,9 @@ fn message_envelope_sender(msg: &ChatMessage) -> Option<String> {
         return None;
     }
     msg.blocks.iter().find_map(|block| match block {
-        MessageBlock::Text(text) => detect_inbound(&text.text).map(|kind| match kind {
-            crate::ui::peer_block::PeerInboundKind::Question { from, .. }
-            | crate::ui::peer_block::PeerInboundKind::Message { from, .. }
-            | crate::ui::peer_block::PeerInboundKind::Reply { from, .. }
-            | crate::ui::peer_block::PeerInboundKind::LateReply { from, .. }
-            | crate::ui::peer_block::PeerInboundKind::RecipientExpired { from, .. } => from,
-            crate::ui::peer_block::PeerInboundKind::CallerTimeout { target, .. }
-            | crate::ui::peer_block::PeerInboundKind::DeliveryFailure { target, .. } => target,
-            crate::ui::peer_block::PeerInboundKind::WorkerSpawnFailed { label, .. } => label,
-        }),
+        MessageBlock::Text(text) => detect_inbound(&text.text)
+            .as_ref()
+            .and_then(|kind| kind.peer_sender_identity().map(str::to_owned)),
         _ => None,
     })
 }
@@ -4261,6 +4278,22 @@ mod tests {
             rendered.contains('\u{b7}'),
             "chip separator is the middle-dot \u{b7}: {rendered:?}"
         );
+    }
+
+    #[test]
+    fn gotify_envelope_role_label_renders_distinct_gotify_source() {
+        let msg = ChatMessage::new_gotify_envelope(MessageRole::User, vec![], None);
+        let rendered: String =
+            role_label_line(&msg).spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(rendered, "Gotify", "an external notification is never labeled Forge");
+    }
+
+    #[test]
+    fn peer_envelope_role_label_still_renders_forge() {
+        let msg = ChatMessage::new_peer_envelope(MessageRole::User, vec![], None);
+        let rendered: String =
+            role_label_line(&msg).spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(rendered, "Forge");
     }
 
     // ----------------------------------------------------------------

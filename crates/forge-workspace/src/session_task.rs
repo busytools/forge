@@ -730,20 +730,26 @@ impl SessionTask {
     }
 
     /// Drain `DomainSession.pending_gotify_prompts` after the session's
-    /// first `Connected` event - Gotify notification envelopes buffered
-    /// while the project was asleep. Each is re-dispatched as a plain
-    /// `Command::Prompt`, landing as an ordinary user turn. Mirrors
-    /// [`Self::drain_pending_cron_prompts`]. No-op when the buffer is empty.
+    /// first `Connected` event - Gotify notifications buffered while the
+    /// project was asleep. Each is echoed into chat as a notification
+    /// block and re-dispatched as a plain `Command::Prompt`, landing as an
+    /// ordinary user turn. Mirrors [`Self::drain_pending_cron_prompts`]
+    /// plus the peer chat-echo. No-op when the buffer is empty.
     fn drain_pending_gotify_prompts(&self) {
-        let pending: Vec<String> = std::mem::take(&mut self.domain.lock().pending_gotify_prompts);
+        let pending: Vec<crate::mcp::gotify::types::GotifyNotification> =
+            std::mem::take(&mut self.domain.lock().pending_gotify_prompts);
         if pending.is_empty() {
             return;
         }
         let Some(workspace) = self.workspace.upgrade() else { return };
-        for text in pending {
+        for notification in pending {
+            // Echo the notification block, then re-dispatch its prose as a
+            // plain user turn (mirrors the running-target path in
+            // spawn::deliver_gotify_message).
+            crate::spawn::push_gotify_notification_into_chat(&workspace, &self.key, &notification);
             if let Err(err) = workspace.dispatch(crate::protocol::Command::Prompt {
                 key: self.key.clone(),
-                text,
+                text: notification.to_prose(),
                 attachments: Vec::new(),
             }) {
                 tracing::warn!(
