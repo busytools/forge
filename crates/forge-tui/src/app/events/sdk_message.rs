@@ -384,29 +384,31 @@ fn push_peer_envelope_user_turn_if_present(
         } else {
             ChatMessage::new_peer_envelope(MessageRole::User, blocks, None)
         };
-        // When forge is mid-turn there's an empty assistant placeholder
-        // at the tail (input_submit::dispatch_prompt pushed it before
-        // the response stream started). A blind push appends the peer
-        // user-turn AFTER the placeholder, which sandwiches the chat
-        // visually: assistant placeholder up top, peer reply below,
-        // then the streamed response eventually fills the placeholder
-        // above the reply. Insert BEFORE the active placeholder so the
-        // chronology reads cleanly: [previous user] → [peer reply] →
-        // [assistant placeholder that will fill in].
-        let placeholder_idx = app.active_turn_assistant_message_idx();
-        match placeholder_idx {
-            Some(idx) if idx < app.messages().len() => {
-                app.insert_message_tracked(idx, msg);
-                // Re-bind the active turn pointer: the placeholder is
-                // now one slot further down because we inserted before
-                // it.
-                app.set_active_turn_assistant_message_idx(Some(idx + 1));
-            }
-            _ => {
-                app.push_message_tracked(msg);
+        // Arrival order: append at the tail. An earlier revision
+        // inserted the turn above the active-turn assistant placeholder,
+        // which visibly jumped a reply above the in-flight assistant
+        // turn that holds the outbound send. A tail push shifts no
+        // existing index, so the active-turn pointer stays valid.
+        app.push_message_tracked(msg);
+        app.enforce_history_retention_tracked();
+        // Put the session to work now, mirroring
+        // input_submit::dispatch_prompt. A delivered prompt otherwise
+        // surfaces no running indicator until the first streamed token,
+        // so the Projects-pane row + chat read as idle then suddenly
+        // burst the whole response. The replay gate matches
+        // handle_assistant: historical envelopes walked by
+        // load_resume_history must not flip a resumed bucket to Running
+        // (no balancing Result would clear it).
+        if !app.replay_in_progress {
+            app.status = crate::app::AppStatus::Thinking;
+            if let Some(key) = app.active_session_key.clone() {
+                super::set_bucket_lifecycle_state(
+                    app,
+                    &key,
+                    crate::app::session::SessionLifecycleState::Running,
+                );
             }
         }
-        app.enforce_history_retention_tracked();
         return;
     }
 }
@@ -2232,6 +2234,180 @@ mod thinking_tokens_clear_on_user_tests {
             app.latest_thinking_tokens(),
             Some(150),
             "tool-result echo must NOT clear the active turn's count",
+        );
+    }
+}
+
+#[cfg(test)]
+mod inbound_message_surfacing_tests {
+    //! Coverage for the two inbound-surfacing fixes:
+    //!
+    //! - Arrival order: a delivered peer / worker / gotify user turn
+    //!   appends at the TAIL, never inserted above an in-flight
+    //!   assistant turn (which is where the outbound send lives).
+    //! - Running indicator: a delivered prompt flips `status` to
+    //!   Thinking and the bucket lifecycle to Running the moment it
+    //!   lands, mirroring the local input-submit path, so the session
+    //!   reads as active while the agent works rather than idle-then-burst.
+    use super::handle_user;
+    use crate::app::session::SessionLifecycleState;
+    use crate::app::{App, AppStatus, ChatMessage, MessageBlock, MessageRole, TextBlock};
+    use forge_primitives::{ContentBlock, Message, UserEnvelope};
+
+    fn delivered_user_turn(text: &str) -> Message {
+        Message::User {
+            message: UserEnvelope {
+                role: "user".to_owned(),
+                content: vec![ContentBlock::Text { text: text.to_owned() }],
+            },
+            session_id: String::new(),
+            parent_tool_use_id: None,
+            uuid: None,
+            tool_use_result: None,
+        }
+    }
+
+    const PEER_REPLY: &str =
+        "[Reply id=q-1 from agent 'planner' (org 'Personal') to your earlier ask]\n\nDone.";
+    const GOTIFY_NOTE: &str =
+        "[Gotify - app 'Backups', priority 3]\nNightly backup\nAll volumes done";
+
+    fn last_text(app: &App) -> String {
+        app.messages()
+            .last()
+            .and_then(|m| {
+                m.blocks.iter().find_map(|b| match b {
+                    MessageBlock::Text(t) => Some(t.text.clone()),
+                    _ => None,
+                })
+            })
+            .unwrap_or_default()
+    }
+
+    fn idle_active_bucket(app: &mut App) {
+        if let Some(key) = app.active_session_key.clone()
+            && let Some(bucket) = app.sessions.get_mut(&key)
+        {
+            bucket.lifecycle_state = SessionLifecycleState::Idle;
+        }
+    }
+
+    fn active_lifecycle(app: &App) -> SessionLifecycleState {
+        let key = app.active_session_key.clone().expect("active key");
+        app.sessions.get(&key).expect("bucket").lifecycle_state
+    }
+
+    /// Bug A: a peer reply that arrives while an assistant turn is in
+    /// flight must APPEND at the tail, not be inserted above the
+    /// in-flight assistant (which carries the outbound send).
+    #[test]
+    fn peer_reply_appends_at_tail_not_above_in_flight_send() {
+        let mut app = App::test_default();
+        app.active_messages_mut().push(ChatMessage::new(
+            MessageRole::User,
+            vec![MessageBlock::Text(TextBlock::from_complete("orchestrate the workers"))],
+            None,
+        ));
+        // The assistant turn holding the outbound ask is still active.
+        app.active_messages_mut().push(ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::Text(TextBlock::from_complete("asking planner..."))],
+            None,
+        ));
+        app.set_active_turn_assistant_message_idx(Some(1));
+
+        handle_user(&mut app, delivered_user_turn(PEER_REPLY));
+
+        assert_eq!(app.messages().len(), 3, "user + assistant + appended reply");
+        assert!(
+            matches!(app.messages()[1].role, MessageRole::Assistant),
+            "the in-flight assistant send stays at idx 1 - the reply is NOT inserted above it",
+        );
+        assert!(
+            app.messages()[2].is_peer_envelope,
+            "the peer reply lands at the tail (idx 2) in arrival order",
+        );
+        assert!(last_text(&app).contains("Done."), "reply body appended at the tail");
+    }
+
+    /// Bug A extends to gotify: the external notification also appends
+    /// at the tail, never repositioned above an in-flight turn.
+    #[test]
+    fn gotify_notification_appends_at_tail_not_above_in_flight_turn() {
+        let mut app = App::test_default();
+        app.active_messages_mut().push(ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::Text(TextBlock::from_complete("mid response..."))],
+            None,
+        ));
+        app.set_active_turn_assistant_message_idx(Some(0));
+
+        handle_user(&mut app, delivered_user_turn(GOTIFY_NOTE));
+
+        assert_eq!(app.messages().len(), 2);
+        assert!(
+            matches!(app.messages()[0].role, MessageRole::Assistant),
+            "assistant turn stays at idx 0",
+        );
+        assert!(app.messages()[1].is_gotify_envelope, "gotify note appends at the tail");
+    }
+
+    /// Bug B: a delivered peer prompt flips the chat status to Thinking
+    /// and the bucket lifecycle to Running immediately, so the session
+    /// reads as active instead of idle-then-burst.
+    #[test]
+    fn delivered_peer_prompt_shows_running_indicator() {
+        let mut app = App::test_default();
+        idle_active_bucket(&mut app);
+        app.status = AppStatus::Ready;
+
+        handle_user(&mut app, delivered_user_turn(PEER_REPLY));
+
+        assert!(
+            matches!(app.status, AppStatus::Thinking),
+            "chat status flips to Thinking the moment the delivered prompt lands",
+        );
+        assert_eq!(
+            active_lifecycle(&app),
+            SessionLifecycleState::Running,
+            "the Projects-pane row spins while the agent works the delivered prompt",
+        );
+    }
+
+    /// Bug B for gotify: the same running indicator fires for a
+    /// delivered gotify notification.
+    #[test]
+    fn delivered_gotify_note_shows_running_indicator() {
+        let mut app = App::test_default();
+        idle_active_bucket(&mut app);
+        app.status = AppStatus::Ready;
+
+        handle_user(&mut app, delivered_user_turn(GOTIFY_NOTE));
+
+        assert!(matches!(app.status, AppStatus::Thinking));
+        assert_eq!(active_lifecycle(&app), SessionLifecycleState::Running);
+    }
+
+    /// Replay gate: walking on-disk history through this dispatcher must
+    /// NOT flip a resumed bucket to Running (no balancing Result would
+    /// arrive to flip it back - the stuck-spinner failure mode).
+    #[test]
+    fn replayed_peer_envelope_does_not_flip_running() {
+        let mut app = App::test_default();
+        idle_active_bucket(&mut app);
+        app.status = AppStatus::Ready;
+        app.replay_in_progress = true;
+
+        handle_user(&mut app, delivered_user_turn(PEER_REPLY));
+
+        assert_eq!(
+            active_lifecycle(&app),
+            SessionLifecycleState::Idle,
+            "replayed peer envelope must NOT flip lifecycle to Running",
+        );
+        assert!(
+            matches!(app.status, AppStatus::Ready),
+            "replayed peer envelope must NOT flip status to Thinking",
         );
     }
 }
