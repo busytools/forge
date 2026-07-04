@@ -1585,11 +1585,35 @@ impl App {
         self.active_bucket_mut().cwd_raw = value.into();
     }
 
-    /// The active tab's stamped forge.toml project name, if the bucket
-    /// has resolved to a project yet. Backs the Inspector SCHEDULES +
-    /// GOTIFY snapshots, which scope by project name.
+    /// The active tab's forge.toml project name, backing the Inspector
+    /// SCHEDULES + GOTIFY snapshots. Resolved through a robust chain so a
+    /// missing / lost per-bucket stamp can't blank the section while the
+    /// rest of the tab (GIT, PROCESSES, the pane highlight, the top bar)
+    /// renders the project fine:
+    ///   1. `resolve_active_project_view` on the active KEY - the exact
+    ///      resolver the projects pane + top bar use (catalog for a real
+    ///      UUID, name for a `__spawn_<name>__` sentinel). Independent of
+    ///      the stamp, so it resolves whenever the pane highlights the
+    ///      project.
+    ///   2. The per-bucket stamp (`UiSession.project`, set at Connect).
+    ///   3. `project_name_for_path(cwd_raw)` - resolve from the active
+    ///      bucket's cwd, the same value GIT/PROCESSES read successfully.
     pub fn active_project_name(&self) -> Option<String> {
-        self.active_session().and_then(|s| s.project.clone())
+        let active_key = self.active_session_key.as_ref()?;
+        if let Some(ws) = self.workspace.as_ref() {
+            let projects = ws.list_projects();
+            let refs: Vec<&forge_workspace::ProjectView> = projects.iter().collect();
+            if let Some(view) =
+                crate::ui::projects_pane::resolve_active_project_view(active_key, &refs)
+            {
+                return Some(view.name.clone());
+            }
+        }
+        if let Some(name) = self.active_session().and_then(|s| s.project.clone()) {
+            return Some(name);
+        }
+        let cwd = self.active_session().map(|s| s.cwd_raw.clone())?;
+        self.workspace.as_ref().and_then(|ws| ws.project_name_for_path(&cwd))
     }
 
     /// Active session's files-accessed counter.
@@ -3669,6 +3693,93 @@ mod tests {
         assert_eq!(app.schedules().len(), 1, "re-decoded same tool_use_id stays one entry");
     }
 
+    /// FIX (4th attempt): the reported bug state is an active web-api
+    /// tab where GIT / PROCESSES render and the projects pane + top bar
+    /// highlight web-api, yet SCHEDULES is blank - because the
+    /// per-bucket project STAMP is `None`. The fix resolves the active
+    /// project through the SAME `resolve_active_project_view` the pane +
+    /// top bar use (a catalog match on the real session UUID), so
+    /// SCHEDULES populates despite the missing stamp AND a blanked
+    /// cwd_raw. This isolates the primary chain link: neither the stamp
+    /// nor the cwd can resolve here, only the key/catalog resolver.
+    #[test]
+    fn refresh_forge_crons_resolves_via_pane_resolver_when_stamp_none() {
+        use forge_primitives::cron::{CronEntry, CronId, CronKind};
+
+        let mut app = App::test_default();
+        let ws = app.workspace.clone().expect("test workspace");
+        let path = "/Users/me/Projects/web-api";
+        ws.seed_test_project_with_team("web-api", path, &[]);
+        // Mirror production: record_connected_session stamps the on-disk
+        // catalog at Connect, which is exactly what resolve_active_project_view
+        // reads to highlight the active project in the pane + top bar.
+        let uuid = "acbd8a76-448b-4dda-bb01-dd930cdd261a";
+        ws.record_connected_session(path, uuid, None);
+        let cron = CronEntry {
+            id: CronId::from("c1"),
+            project_name: "web-api".to_owned(),
+            kind: CronKind::Recurring("18 9 * * 1-5".to_owned()),
+            prompt: "market open".to_owned(),
+            created_at: std::time::SystemTime::UNIX_EPOCH,
+            last_fire: None,
+            next_fire: std::time::SystemTime::UNIX_EPOCH,
+        };
+        ws.seed_test_cron(cron.clone());
+
+        // Active tab is the real web-api session, but the stamp is None
+        // AND cwd_raw is blank - only the catalog resolver can succeed.
+        let key = forge_workspace::SessionKey::from_session_id(uuid);
+        let mut bucket = crate::app::session::UiSession::new(key.clone());
+        bucket.project = None;
+        bucket.cwd_raw = String::new();
+        app.sessions.insert(key.clone(), bucket);
+        app.active_session_key = Some(key);
+
+        app.refresh_forge_crons();
+        assert_eq!(
+            app.active_project_name().as_deref(),
+            Some("web-api"),
+            "resolves via the pane/top-bar resolver despite a None stamp + blank cwd",
+        );
+        assert_eq!(app.forge_crons, vec![cron], "SCHEDULES populates via the robust chain");
+    }
+
+    /// Last-resort chain link: when the stamp is None AND the catalog has
+    /// no entry for the active UUID (resolve_active_project_view misses),
+    /// the active project still resolves from the bucket's cwd_raw - the
+    /// same value GIT/PROCESSES read successfully.
+    #[test]
+    fn refresh_forge_crons_falls_back_to_cwd_when_stamp_none_and_no_catalog() {
+        use forge_primitives::cron::{CronEntry, CronId, CronKind};
+
+        let mut app = App::test_default();
+        let ws = app.workspace.clone().expect("test workspace");
+        let path = "/Users/me/Projects/web-api";
+        ws.seed_test_project_with_team("web-api", path, &[]);
+        let cron = CronEntry {
+            id: CronId::from("c1"),
+            project_name: "web-api".to_owned(),
+            kind: CronKind::Recurring("18 9 * * 1-5".to_owned()),
+            prompt: "market open".to_owned(),
+            created_at: std::time::SystemTime::UNIX_EPOCH,
+            last_fire: None,
+            next_fire: std::time::SystemTime::UNIX_EPOCH,
+        };
+        ws.seed_test_cron(cron.clone());
+
+        // Real UUID NOT in the catalog + stamp None: only cwd_raw resolves.
+        let key = forge_workspace::SessionKey::from_session_id("uncatalogued-uuid");
+        let mut bucket = crate::app::session::UiSession::new(key.clone());
+        bucket.project = None;
+        bucket.cwd_raw = path.to_owned();
+        app.sessions.insert(key.clone(), bucket);
+        app.active_session_key = Some(key);
+
+        app.refresh_forge_crons();
+        assert_eq!(app.active_project_name().as_deref(), Some("web-api"));
+        assert_eq!(app.forge_crons, vec![cron], "SCHEDULES resolves via the cwd fallback");
+    }
+
     /// REPRODUCE (recurring SCHEDULES-blank bug, 3rd attempt): the
     /// Inspector scopes forge crons by the tab's stamped project NAME,
     /// never by re-deriving the project from `cwd_raw`. A bucket whose
@@ -3713,14 +3824,14 @@ mod tests {
         );
     }
 
-    /// The SCHEDULES display gap: the active tab's `active_session_key`
-    /// is a synthetic `__spawn_<name>__` placeholder that resolves to no
-    /// project, but its UI bucket carries the stamped project name.
-    /// `refresh_forge_crons` resolves the project from that name and
-    /// populates `forge_crons`; it degrades to empty when the active
-    /// bucket has no project stamped yet (pre-Connect).
+    /// A synthetic `__spawn_<name>__` active key resolves its project via
+    /// the same pane/top-bar resolver (by name), so SCHEDULES populates
+    /// even when the bucket carries no stamp. A truly-unresolvable active
+    /// bucket - no name match, not in the catalog, no stamp, cwd under no
+    /// project - still degrades cleanly to empty rather than surfacing
+    /// another project's crons.
     #[test]
-    fn refresh_forge_crons_resolves_active_project_via_bucket_cwd() {
+    fn refresh_forge_crons_resolves_synthetic_spawn_key_by_name() {
         use forge_primitives::cron::{CronEntry, CronId, CronKind};
 
         let mut app = App::test_default();
@@ -3738,26 +3849,32 @@ mod tests {
         };
         ws.seed_test_cron(cron.clone());
 
-        // Active tab: a synthetic spawn key (resolves to no project) whose
-        // UI bucket carries the stamped project name.
+        // Synthetic spawn key with NO stamp: resolves to cronproj by name.
         let synthetic = forge_workspace::SessionKey::from_session_id("__spawn_cronproj__");
         let mut bucket = crate::app::session::UiSession::new(synthetic.clone());
-        bucket.project = Some("cronproj".to_owned());
+        bucket.project = None;
         app.sessions.insert(synthetic.clone(), bucket);
-        app.active_session_key = Some(synthetic.clone());
+        app.active_session_key = Some(synthetic);
 
         app.refresh_forge_crons();
         assert_eq!(
             app.forge_crons,
             vec![cron],
-            "SCHEDULES resolves the active project from the stamped name, not the synthetic key",
+            "synthetic spawn key resolves the project by name, no stamp needed",
         );
 
-        // Degrade cleanly: an active bucket with no project stamped yet
-        // (pre-Connect) yields no crons rather than another project's.
-        app.sessions.get_mut(&synthetic).expect("bucket").project = None;
+        // Degrade cleanly: an active bucket that resolves via no link (not
+        // a known project name, not catalogued, no stamp, cwd under no
+        // project) yields empty rather than another project's crons.
+        let orphan = forge_workspace::SessionKey::from_session_id("orphan-uuid");
+        let mut orphan_bucket = crate::app::session::UiSession::new(orphan.clone());
+        orphan_bucket.project = None;
+        orphan_bucket.cwd_raw = "/tmp/unmapped-dir".to_owned();
+        app.sessions.insert(orphan.clone(), orphan_bucket);
+        app.active_session_key = Some(orphan);
+
         app.refresh_forge_crons();
-        assert!(app.forge_crons.is_empty(), "an unstamped bucket yields empty SCHEDULES");
+        assert!(app.forge_crons.is_empty(), "an unresolvable active bucket yields empty SCHEDULES");
     }
 
     /// The Inspector scopes SCHEDULES by the stamped project name, so it
