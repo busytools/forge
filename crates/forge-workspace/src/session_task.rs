@@ -97,6 +97,17 @@ impl SessionTask {
             key = %self.key.as_str(),
             "session task exiting (agent event channel closed)"
         );
+        // The agent-event / command channel closed - this session's
+        // subprocess is gone. Release it from the pool + command_senders
+        // so a later cron fire / projects-pane click sees it as
+        // not-running and re-spawns cleanly, instead of dispatching a
+        // `Command::Prompt` to the now-closed channel (which fails with
+        // `SessionClosed` and is silently dropped, quietly stopping
+        // durable crons for the project). Idempotent: a no-op when the
+        // workspace already released us (the command-channel-closed exit).
+        if let Some(workspace) = self.workspace.upgrade() {
+            workspace.release_session(&self.key);
+        }
     }
 
     /// Translate one `AgentEvent` into the matching `SessionUpdate`

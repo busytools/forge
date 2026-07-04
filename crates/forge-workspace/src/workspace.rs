@@ -5751,6 +5751,52 @@ config_dir = "~/.claude-profile3"
         cmd_rx
     }
 
+    /// A session's `SessionTask` exiting (agent event channel closed -
+    /// the subprocess died, e.g. after a cron turn) must RELEASE the
+    /// session from the pool + command_senders. Without this the entry
+    /// lingers as a dead-but-pooled zombie: the next cron fire's
+    /// `running_lead` check still finds it "open" and dispatches a
+    /// `Command::Prompt` to the closed channel, which fails with
+    /// `SessionClosed` and is silently dropped - so durable crons quietly
+    /// stop firing for that project.
+    #[tokio::test]
+    async fn session_task_exit_releases_dead_pooled_session() {
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        let key = SessionKey::from_str_for_test("lead-uuid");
+        // Register the session as a connected lead (pool + command_senders
+        // + domain_handles).
+        let command_rx = install_fake_session_task(&workspace, &key);
+        assert!(workspace.pool.lock().contains_key(&key), "precondition: session pooled");
+
+        // Build a SessionTask whose event channel is already dead (the
+        // testing-stub handle hands a receiver with no live sender), so
+        // `run()` takes the "agent event channel closed" exit path
+        // immediately - exactly the post-cron-turn subprocess exit.
+        let (task_handle, _task_commands_rx) = Workspace::testing_stub_handle();
+        let (update_tx, _task_update_rx) = mpsc::unbounded_channel::<SessionUpdate>();
+        let domain = workspace.domain_session_for(&key).expect("domain registered");
+        let task = crate::session_task::SessionTask {
+            key: key.clone(),
+            handle: Arc::new(task_handle),
+            command_rx,
+            domain,
+            update_tx,
+            spawn_key: None,
+            connected_once: true,
+            workspace: Arc::downgrade(&workspace),
+        };
+        task.run().await;
+
+        assert!(
+            !workspace.pool.lock().contains_key(&key),
+            "pool entry must be released when the SessionTask exits",
+        );
+        assert!(
+            !workspace.command_senders.lock().contains_key(&key),
+            "command sender must be released when the SessionTask exits",
+        );
+    }
+
     /// Direct unit test on `migrate_session_task`: each map (`pool`,
     /// `command_senders`, `domain_handles`) moves from `from` to `to`,
     /// and the migrated `DomainSession.key` field is rewritten.
