@@ -23,6 +23,7 @@
     --status-warn:  #d6c46a;
     --slash:        #c084dc;
     --subagent:     #88c0d8;
+    --gotify:       #4ec9c9;
     --success:      #82c76b;
     --code-bg:      #131722;
   }
@@ -225,6 +226,7 @@
   .error        { color: var(--status-error); }
   .slash        { color: var(--slash); }
   .subagent     { color: var(--subagent); }
+  .gotify       { color: var(--gotify); }
   .bold         { font-weight: 700; }
   .italic       { font-style: italic; }
   .user-band    { background: var(--user-msg-bg); display: inline-block; }
@@ -1502,6 +1504,35 @@ chat continues here...
   </div>
 </div>
 
+<div class="surface" id="gotify-block">
+  <div class="surface-head">
+    <h4>Gotify notification chat block - inbound external notifications</h4>
+    <div class="when">visible: every matched Gotify notification delivered into a subscribed session (project lead or a team worker), echoed as an inbound external-notification block above the turn it triggers</div>
+  </div>
+  <div class="surface-body">
+    <p>A matched notification is delivered as a user turn (every notification is its own turn) and echoed into the chat so the user sees what arrived. It reads unambiguously as an external notification, not agent traffic: a <span class="gotify">Gotify</span> source label (not <span class="accent">Forge</span>), the ◈ gotify glyph (<span class="gotify bold">&#x25C8;</span>, not <span class="accent">&#x25B6;</span>), and an <code>app 'X' - priority N</code> header. The body carries the notification title then message under the standard tree connectors (<code>&#x2502;&nbsp;&nbsp;</code> continuation, <code>&#x2514;&#x2500;</code> last).</p>
+    <div class="term">
+      <pre class="indent">
+   <span class="gotify bold">Gotify</span>
+
+     <span class="gotify bold">&#x25C8;</span> <span class="bold">app 'Backups'</span> <span class="dim">- priority</span> <span class="dim">3</span>
+     <span class="dim">&#x2502;&nbsp;&nbsp;Nightly backup complete</span>
+     <span class="dim">&#x2514;&#x2500; All volumes backed up (2.4 TB in 41m)</span>
+
+     <span class="gotify bold">&#x25C8;</span> <span class="bold">app 'Security-Watchdog'</span> <span class="dim">- priority</span> <span class="warning">8</span>
+     <span class="dim">&#x2502;&nbsp;&nbsp;Failed login attempt</span>
+     <span class="dim">&#x2514;&#x2500; 3 failed SSH logins from 10.0.0.5 in 60s</span></pre>
+    </div>
+    <p>The priority number renders in <span class="warning">warning</span> at or above 5, otherwise <span class="dim">dim</span> - a quick severity cue.</p>
+    <dl>
+      <dt>code</dt><dd><code>crates/forge-tui/src/ui/peer_block.rs::detect_inbound</code> parses the <code>[Gotify - app '...', priority N]</code> prefix into <code>PeerInboundKind::Gotify</code>; <code>render_inbound</code> routes it to <code>render_gotify_notification</code>. The <span class="gotify">Gotify</span> source label comes from <code>role_label_line</code> reading the cached <code>ChatMessage.is_gotify_envelope</code> flag (stamped at push time, mirroring the peer-envelope flag)</dd>
+      <dt>data source</dt><dd><code>SessionUpdate::GotifyNotificationAppended { session_id, notification }</code> emitted by <code>spawn::push_gotify_notification_into_chat</code> at each delivery site (running lead / running team worker) and on the Connected drain for a spawned-to-deliver notification. The reducer forges a synthetic user turn from <code>GotifyNotification::to_prose()</code> - the same prose the session's LLM receives via <code>Command::Prompt</code>, so the existing <code>detect_inbound</code> matcher recognises it</dd>
+      <dt>collapse / expand</dt><dd>body ellipsed to one line by default (<code>&#x2514;&#x2500; &lt;first 60 chars&gt;...</code>); click the row to expand the full body inline - same affordance as the peer block</dd>
+      <dt>distinct from peer</dt><dd>a Gotify notification is an external event, not agent traffic: it never merges into a peer messaging group (<code>PeerInboundKind::peer_sender_identity</code> returns <code>None</code> for it), keeps its own <span class="gotify">Gotify</span> source label, and carries the ◈ gotify glyph in place of <span class="accent">&#x25B6;</span></dd>
+    </dl>
+  </div>
+</div>
+
 <div class="surface">
   <div class="surface-head">
     <h4>Sidebar peer-activity badges (Projects pane)</h4>
@@ -2354,7 +2385,7 @@ this recomputes every render - hoist it into the snapshot instead
     <tr><td class="glyph">◍</td><td class="codepoint">U+25CD</td><td>TaskStop</td><td>circle with vertical fill - terminate a Monitor / Workflow / scheduled task (paired with TaskOutput / Monitor like KillBash with Bash)</td></tr>
     <tr><td class="glyph">⏲</td><td class="codepoint">U+23F2</td><td>ScheduleWakeup</td><td>timer-clock - schedule a one-shot wake-up at a future timestamp</td></tr>
     <tr><td class="glyph">*</td><td class="codepoint">U+002A</td><td>CronCreate · CronDelete · CronList</td><td>asterisk - Cron-family scheduled-recurring (cron-syntax mapping <code>* * * * *</code>; ASCII width-1 keeps the kind-icon column deterministic across terminals)</td></tr>
-    <tr><td class="glyph">◈</td><td class="codepoint">U+25C8</td><td>Inspector GOTIFY status glyph</td><td>white diamond containing black diamond - the Gotify stream connection status line, shown in <span class="accent">RUST_ORANGE</span> (the section renders only while connected); distinct from the ◇ Task / ◆ Workflow diamonds</td></tr>
+    <tr><td class="glyph">◈</td><td class="codepoint">U+25C8</td><td>Gotify glyph (Inspector status + <a href="#gotify-block">chat notification block</a>)</td><td>white diamond containing black diamond - the shared Gotify icon: the Inspector GOTIFY status line (<span class="accent">RUST_ORANGE</span>, shown only while connected) and the inbound notification chat-block kind-icon (<span class="gotify">GOTIFY</span> cyan); distinct from the ◇ Task / ◆ Workflow diamonds</td></tr>
     <tr><td class="glyph">✦</td><td class="codepoint">U+2726</td><td>Skill · Advisor</td><td>four-pointed star - meta capability (skill invocation); also the server-tool wire name <code>advisor</code>, which surfaces model-side counsel without a local handler</td></tr>
     <tr><td class="glyph">⌖</td><td class="codepoint">U+2316</td><td>ToolSearch (in-process and server-tool variants)</td><td>position-indicator - sibling of magnifier ⌕ for searching among available tools; same glyph used for the server-tool wire names <code>tool_search_tool_regex</code> and <code>tool_search_tool_bm25</code></td></tr>
     <tr><td class="glyph">▲</td><td class="codepoint">U+25B2</td><td>PushNotification</td><td>up-pointing triangle - outbound signal (push to user)</td></tr>

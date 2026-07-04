@@ -2312,15 +2312,20 @@ impl Workspace {
                         wrapped,
                     );
                 }
-                Command::DeliverGotifyMessage { project, team_role, envelope, appid, priority } => {
+                Command::DeliverGotifyMessage { project, team_role, notification } => {
                     let span = tracing::info_span!(
                         "deliver_gotify_message",
                         project = %project,
-                        appid,
-                        priority,
+                        app = %notification.app,
+                        priority = notification.priority,
                     );
                     let _enter = span.enter();
-                    spawn::deliver_gotify_message(self, &project, team_role.as_deref(), envelope);
+                    spawn::deliver_gotify_message(
+                        self,
+                        &project,
+                        team_role.as_deref(),
+                        notification,
+                    );
                 }
                 other => {
                     tracing::warn!(
@@ -2859,9 +2864,9 @@ impl Workspace {
     pub fn route_gotify_message(self: &Arc<Self>, msg: &forge_primitives::GotifyMessage) {
         let subs = self.gotify_subs.lock().clone();
         let resolved_name = self.gotify_app_name(msg.appid);
-        // Matching uses the resolved name only; the envelope falls back to
-        // the numeric id for display, so an unresolved appid can't match a
-        // filter that happens to list that number.
+        // Matching uses the resolved name only; the notification's `app`
+        // falls back to the numeric id for display, so an unresolved appid
+        // can't match a filter that happens to list that number.
         let display_name = resolved_name.clone().unwrap_or_else(|| msg.appid.to_string());
         for sub in subs {
             let priority_ok = sub.min_priority.is_none_or(|floor| msg.priority >= floor);
@@ -2870,16 +2875,16 @@ impl Workspace {
             if !(priority_ok && app_ok) {
                 continue;
             }
-            let envelope = format!(
-                "[Gotify - app '{display_name}', priority {}]\n{}\n{}",
-                msg.priority, msg.title, msg.message,
-            );
+            let notification = crate::mcp::gotify::types::GotifyNotification {
+                app: display_name.clone(),
+                title: msg.title.clone(),
+                message: msg.message.clone(),
+                priority: msg.priority,
+            };
             if let Err(err) = self.dispatch(Command::DeliverGotifyMessage {
                 project: sub.project.clone(),
                 team_role: sub.team_role.clone(),
-                envelope,
-                appid: msg.appid,
-                priority: msg.priority,
+                notification,
             }) {
                 tracing::warn!(
                     target: "forge_workspace::workspace",
@@ -4807,15 +4812,40 @@ mod tests {
         }
     }
 
+    fn gotify_notif(
+        app: &str,
+        title: &str,
+        message: &str,
+        priority: u8,
+    ) -> crate::GotifyNotification {
+        crate::GotifyNotification {
+            app: app.to_owned(),
+            title: title.to_owned(),
+            message: message.to_owned(),
+            priority,
+        }
+    }
+
     fn gotify_deliveries(cmds: &[crate::protocol::Command]) -> Vec<(String, String)> {
         cmds.iter()
             .filter_map(|c| match c {
-                crate::protocol::Command::DeliverGotifyMessage { project, envelope, .. } => {
-                    Some((project.clone(), envelope.clone()))
-                }
+                crate::protocol::Command::DeliverGotifyMessage {
+                    project, notification, ..
+                } => Some((project.clone(), notification.to_prose())),
                 _ => None,
             })
             .collect()
+    }
+
+    /// Drain every currently-queued `SessionUpdate` from the test rx.
+    fn drain_updates(
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::protocol::SessionUpdate>,
+    ) -> Vec<crate::protocol::SessionUpdate> {
+        let mut out = Vec::new();
+        while let Ok(u) = rx.try_recv() {
+            out.push(u);
+        }
+        out
     }
 
     #[test]
@@ -4920,8 +4950,9 @@ mod tests {
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
         ws.seed_test_project_with_team("forge", "/tmp/gotify-forge", &[]);
 
+        let notif = gotify_notif("forge", "Heads up", "hello envelope", 5);
         ws.enable_test_dispatch_intercept();
-        crate::spawn::deliver_gotify_message(&ws, "forge", None, "hello envelope".to_owned());
+        crate::spawn::deliver_gotify_message(&ws, "forge", None, notif.clone());
         let dispatched = ws.drain_test_dispatch_buffer();
 
         let spawns = dispatched
@@ -4942,7 +4973,7 @@ mod tests {
             .lock()
             .pending_gotify_prompts
             .clone();
-        assert_eq!(buffered, vec!["hello envelope".to_owned()], "the envelope was buffered");
+        assert_eq!(buffered, vec![notif], "the notification was buffered");
     }
 
     #[test]
@@ -4951,7 +4982,12 @@ mod tests {
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
         // No project seeded: "ghost" is not in forge.toml.
         ws.enable_test_dispatch_intercept();
-        crate::spawn::deliver_gotify_message(&ws, "ghost", None, "x".to_owned());
+        crate::spawn::deliver_gotify_message(
+            &ws,
+            "ghost",
+            None,
+            gotify_notif("ghost", "t", "x", 1),
+        );
         let dispatched = ws.drain_test_dispatch_buffer();
         assert!(
             dispatched.iter().all(|c| !matches!(c, crate::protocol::Command::SpawnProject { .. })),
@@ -4962,7 +4998,7 @@ mod tests {
     #[test]
     fn deliver_gotify_message_delivers_to_running_team_worker() {
         let dir = tempdir().expect("tempdir");
-        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        let (ws, mut rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
         ws.seed_test_project_with_team("forge", "/tmp/gotify-team", &["reviewer".to_owned()]);
         let view_key = ws
             .list_projects()
@@ -4987,8 +5023,9 @@ mod tests {
             },
         );
 
+        let notif = gotify_notif("Backups", "Nightly backup", "done", 5);
         ws.enable_test_dispatch_intercept();
-        crate::spawn::deliver_gotify_message(&ws, "forge", Some("reviewer"), "env".to_owned());
+        crate::spawn::deliver_gotify_message(&ws, "forge", Some("reviewer"), notif.clone());
         let dispatched = ws.drain_test_dispatch_buffer();
 
         assert!(
@@ -5001,6 +5038,15 @@ mod tests {
             dispatched.iter().all(|c| !matches!(c, crate::protocol::Command::SpawnProject { .. })),
             "no project spawn when the target worker is already running",
         );
+
+        // The delivery ALSO echoes the notification block into the worker's
+        // chat so the user sees what arrived (mirrors the peer echo).
+        let echoed = drain_updates(&mut rx).into_iter().any(|u| matches!(
+            u,
+            crate::protocol::SessionUpdate::GotifyNotificationAppended { session_id, notification }
+                if session_id == worker_key.as_str() && notification == notif
+        ));
+        assert!(echoed, "a running-target delivery emits a GotifyNotificationAppended echo");
     }
 
     #[test]
@@ -5012,8 +5058,9 @@ mod tests {
         // No live worker of that role: the subscription falls through to
         // lead delivery, which spawns the asleep project (the lead brings up
         // its team) and buffers the envelope for the Connected drain.
+        let notif = gotify_notif("Backups", "backup", "env", 5);
         ws.enable_test_dispatch_intercept();
-        crate::spawn::deliver_gotify_message(&ws, "forge", Some("reviewer"), "env".to_owned());
+        crate::spawn::deliver_gotify_message(&ws, "forge", Some("reviewer"), notif.clone());
         let dispatched = ws.drain_test_dispatch_buffer();
 
         let spawns = dispatched
@@ -5034,7 +5081,7 @@ mod tests {
             .lock()
             .pending_gotify_prompts
             .clone();
-        assert_eq!(buffered, vec!["env".to_owned()], "the envelope was buffered");
+        assert_eq!(buffered, vec![notif], "the notification was buffered");
     }
 
     #[test]

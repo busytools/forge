@@ -13,6 +13,7 @@ use forge_agent::AgentHandle;
 use forge_primitives::SessionId;
 
 use crate::SessionKey;
+use crate::mcp::gotify::types::GotifyNotification;
 use crate::mcp::peers::types::WrappedPrompt;
 use crate::protocol::PendingInteractionSlot;
 
@@ -50,12 +51,12 @@ pub struct DomainSession {
     /// `Command::Prompt` (a plain user turn, not a peer envelope). Empty
     /// in steady state.
     pub pending_cron_prompts: Vec<String>,
-    /// Gotify notification envelopes targeted at this session that
-    /// arrived while it was still spawning (pre-Connected). Same shape
-    /// and drain path as [`Self::pending_cron_prompts`] - a plain user
-    /// turn re-dispatched on `AgentEvent::Connected`. Empty in steady
-    /// state.
-    pub pending_gotify_prompts: Vec<String>,
+    /// Gotify notifications targeted at this session that arrived while
+    /// it was still spawning (pre-Connected). Same drain path as
+    /// [`Self::pending_cron_prompts`], but typed - `SessionTask` emits a
+    /// chat echo and re-dispatches each as a plain user turn on
+    /// `AgentEvent::Connected`. Empty in steady state.
+    pub pending_gotify_prompts: Vec<GotifyNotification>,
     /// Hop count of the most-recent peer wrapper the LLM is currently
     /// processing. Stamped by `Workspace::deliver_peer_prompt` with
     /// `max(current.unwrap_or(0), wrapped.hop)` BEFORE dispatching

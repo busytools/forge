@@ -7,10 +7,12 @@
 //!    into user-turn text (e.g. `[Question id=q-... hop=1/10 from
 //!    agent 'forge' (org 'Personal') - reply with tell_agent
 //!    in_reply_to=q-...]\n\n<body>`) and render a styled block in
-//!    place of the default user-message bubble. Catches all eight
-//!    kinds the workspace produces (`Question`, `Message`, `Reply`,
-//!    `LateReply`, caller-side `CallerTimeout`, recipient-side
-//!    `RecipientExpired`, `DeliveryFailure`, `WorkerSpawnFailed`).
+//!    place of the default user-message bubble. Catches the eight
+//!    peer/worker kinds the workspace produces (`Question`, `Message`,
+//!    `Reply`, `LateReply`, caller-side `CallerTimeout`, recipient-side
+//!    `RecipientExpired`, `DeliveryFailure`, `WorkerSpawnFailed`) plus
+//!    the inbound `Gotify` external-notification block, which renders
+//!    with distinct chrome (the ◈ gotify glyph + a `Gotify` source label).
 //!
 //! 2. **Outbound rendering**. Replace the default tool_use card for
 //!    `mcp__forge__peers__ask_agent` / `peers__tell_agent` /
@@ -93,6 +95,17 @@ pub(crate) enum PeerInboundKind {
         label: String,
         reason: String,
     },
+    /// `[Gotify - app 'X', priority N]\n<title>\n<message>` - an inbound
+    /// external Gotify notification delivered as a user turn. Rendered
+    /// with distinct chrome (the ◈ gotify glyph, `Gotify` source label) so it
+    /// reads as an external event, not agent traffic. Never groups with
+    /// peer envelopes (see [`PeerInboundKind::peer_sender_identity`]).
+    Gotify {
+        app: String,
+        title: String,
+        message: String,
+        priority: u8,
+    },
 }
 
 impl PeerInboundKind {
@@ -112,7 +125,27 @@ impl PeerInboundKind {
             | Self::CallerTimeout { org, .. }
             | Self::RecipientExpired { org, .. }
             | Self::DeliveryFailure { org, .. } => org,
-            Self::WorkerSpawnFailed { .. } => "",
+            Self::WorkerSpawnFailed { .. } | Self::Gotify { .. } => "",
+        }
+    }
+
+    /// The peer/worker sender identity used for envelope grouping (the
+    /// `from` / `target` / `label` name). `None` for the `Gotify`
+    /// external-notification variant, which is not agent traffic and must
+    /// never merge into a peer messaging group - the grouping predicates
+    /// key off `Some(..)` here.
+    pub(crate) fn peer_sender_identity(&self) -> Option<&str> {
+        match self {
+            Self::Question { from, .. }
+            | Self::Message { from, .. }
+            | Self::Reply { from, .. }
+            | Self::LateReply { from, .. }
+            | Self::RecipientExpired { from, .. } => Some(from),
+            Self::CallerTimeout { target, .. } | Self::DeliveryFailure { target, .. } => {
+                Some(target)
+            }
+            Self::WorkerSpawnFailed { label, .. } => Some(label),
+            Self::Gotify { .. } => None,
         }
     }
 }
@@ -227,6 +260,19 @@ pub(crate) fn detect_inbound(text: &str) -> Option<PeerInboundKind> {
         });
     }
 
+    if let Some(rest) = header.strip_prefix("Gotify - app '") {
+        let (app, priority_str) = take_until(rest, "', priority ")?;
+        let priority: u8 = priority_str.parse().ok()?;
+        // The Gotify prose places the body one newline after `]` (title on
+        // its own line, then the message) - not the peer `]\n\n` shape.
+        let raw_body = after_bracket.strip_prefix('\n').unwrap_or(after_bracket);
+        let (title, message) = match raw_body.split_once('\n') {
+            Some((t, m)) => (t.to_owned(), m.to_owned()),
+            None => (raw_body.to_owned(), String::new()),
+        };
+        return Some(PeerInboundKind::Gotify { app: app.to_owned(), title, message, priority });
+    }
+
     None
 }
 
@@ -322,6 +368,9 @@ pub(crate) fn render_inbound(
         PeerInboundKind::WorkerSpawnFailed { label, reason } => {
             render_worker_spawn_failed(label, reason)
         }
+        PeerInboundKind::Gotify { app, title, message, priority } => {
+            render_gotify_notification(app, *priority, title, message, suppress_header, collapsed)
+        }
     }
 }
 
@@ -351,6 +400,16 @@ const OUTBOUND_GLYPH: &str = "\u{2934}";
 /// DeliveryFailure). U+2935 CURVED ARROW POINTING RIGHTWARDS AND
 /// CURVING DOWNWARDS.
 const INBOUND_GLYPH: &str = "\u{2935}";
+
+/// Kind-icon for an inbound Gotify notification. U+25C8 - the shared
+/// gotify glyph (also the Inspector GOTIFY status line), so gotify reads
+/// with one icon everywhere; distinct from the `ROW_GLYPH` peer / worker
+/// rows use. Monochrome + width-1, matching the codebase glyph convention.
+const GOTIFY_GLYPH: &str = "\u{25C8}";
+
+/// A Gotify priority at or above this renders in `STATUS_WARNING` (a
+/// severity cue); below it stays `DIM`. Gotify priorities run 0-10.
+const GOTIFY_ELEVATED_PRIORITY: u8 = 5;
 
 /// Unified renderer for the new chat-block shape:
 ///
@@ -430,6 +489,48 @@ fn render_worker_spawn_failed(label: &str, reason: &str) -> Vec<Line<'static>> {
     ));
     lines.push(header);
     push_tree_body_lines(&mut lines, reason);
+    lines
+}
+
+/// Render an inbound Gotify notification block. Distinct chrome from the
+/// peer rows: the ◈ gotify glyph + `app 'X' - priority N` header (priority
+/// in `STATUS_WARNING` at or above [`GOTIFY_ELEVATED_PRIORITY`], else
+/// `DIM`), body = title then message under the standard tree connectors.
+/// `suppress_header` drops the header line (streak follower); Gotify
+/// turns stand alone in practice, so it's normally rendered in full.
+fn render_gotify_notification(
+    app: &str,
+    priority: u8,
+    title: &str,
+    message: &str,
+    suppress_header: bool,
+    collapsed: bool,
+) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    if !suppress_header {
+        let priority_style = if priority >= GOTIFY_ELEVATED_PRIORITY {
+            Style::default().fg(theme::STATUS_WARNING)
+        } else {
+            Style::default().fg(theme::DIM)
+        };
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                GOTIFY_GLYPH.to_owned(),
+                Style::default().fg(theme::GOTIFY).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" "),
+            Span::styled(format!("app '{app}'"), Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled(" - priority ".to_owned(), Style::default().fg(theme::DIM)),
+            Span::styled(format!("{priority}"), priority_style),
+        ]));
+    }
+    let body = if message.is_empty() { title.to_owned() } else { format!("{title}\n{message}") };
+    if collapsed {
+        push_collapsed_summary(&mut lines, &body);
+    } else {
+        push_tree_body_lines(&mut lines, &body);
+    }
     lines
 }
 
@@ -922,6 +1023,116 @@ mod tests {
         assert!(s[0].contains("\u{2717}"), "✗ glyph: {:?}", s[0]);
         assert!(s[0].contains("Worker 'planner' spawn failed"));
         assert!(s.last().unwrap().contains("git not found"));
+    }
+
+    #[test]
+    fn detect_gotify_inbound_parses_fields() {
+        let text = "[Gotify - app 'Backups', priority 3]\nNightly backup\nAll volumes done";
+        match detect_inbound(text).expect("gotify") {
+            PeerInboundKind::Gotify { app, title, message, priority } => {
+                assert_eq!(app, "Backups");
+                assert_eq!(title, "Nightly backup");
+                assert_eq!(message, "All volumes done");
+                assert_eq!(priority, 3);
+            }
+            other => panic!("expected Gotify, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn detect_gotify_inbound_preserves_multiline_message() {
+        let text = "[Gotify - app 'CI', priority 8]\nBuild failed\nstep 1 ok\nstep 2 failed";
+        match detect_inbound(text).expect("gotify") {
+            PeerInboundKind::Gotify { title, message, priority, .. } => {
+                assert_eq!(title, "Build failed");
+                assert_eq!(message, "step 1 ok\nstep 2 failed");
+                assert_eq!(priority, 8);
+            }
+            other => panic!("expected Gotify, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn detect_gotify_inbound_rejects_non_numeric_priority() {
+        // A malformed priority falls through to plain-text rendering
+        // rather than mis-parsing.
+        assert!(detect_inbound("[Gotify - app 'X', priority high]\nt\nm").is_none());
+    }
+
+    #[test]
+    fn gotify_has_no_peer_sender_identity() {
+        // Grouping keys off peer_sender_identity; Gotify returns None so
+        // it never merges into a peer messaging group.
+        let kind = PeerInboundKind::Gotify {
+            app: "Backups".into(),
+            title: "t".into(),
+            message: "m".into(),
+            priority: 5,
+        };
+        assert_eq!(kind.peer_sender_identity(), None);
+    }
+
+    #[test]
+    fn render_gotify_notification_full_shape() {
+        let kind = PeerInboundKind::Gotify {
+            app: "Backups".into(),
+            title: "Nightly backup".into(),
+            message: "All volumes done".into(),
+            priority: 3,
+        };
+        let s = render_lines_to_strings(&render_inbound(&kind, false, false));
+        assert!(s[0].contains('\u{25C8}'), "gotify glyph in header: {:?}", s[0]);
+        assert!(s[0].contains("app 'Backups'"), "app in header: {:?}", s[0]);
+        assert!(s[0].contains("priority 3"), "priority in header: {:?}", s[0]);
+        assert!(!s[0].contains('\u{25B6}'), "no peer row glyph: {:?}", s[0]);
+        assert!(s.iter().any(|l| l.contains("Nightly backup")), "title in body: {s:?}");
+        assert!(s.iter().any(|l| l.contains("All volumes done")), "message in body: {s:?}");
+    }
+
+    #[test]
+    fn render_gotify_high_priority_uses_warning_color() {
+        let kind = PeerInboundKind::Gotify {
+            app: "Sec".into(),
+            title: "Alert".into(),
+            message: "bad".into(),
+            priority: 8,
+        };
+        let lines = render_inbound(&kind, false, false);
+        let priority_span =
+            lines[0].spans.iter().find(|sp| sp.content.contains('8')).expect("priority span");
+        assert_eq!(priority_span.style.fg, Some(theme::STATUS_WARNING));
+    }
+
+    #[test]
+    fn render_gotify_low_priority_uses_dim_color() {
+        let kind = PeerInboundKind::Gotify {
+            app: "Backups".into(),
+            title: "ok".into(),
+            message: "done".into(),
+            priority: 2,
+        };
+        let lines = render_inbound(&kind, false, false);
+        let priority_span =
+            lines[0].spans.iter().find(|sp| sp.content.contains('2')).expect("priority span");
+        assert_eq!(priority_span.style.fg, Some(theme::DIM));
+    }
+
+    #[test]
+    fn render_gotify_collapsed_shows_title_summary_only() {
+        let kind = PeerInboundKind::Gotify {
+            app: "Backups".into(),
+            title: "Nightly backup".into(),
+            message: "All volumes done".into(),
+            priority: 3,
+        };
+        let s = render_lines_to_strings(&render_inbound(&kind, false, true));
+        assert!(s[0].contains('\u{25C8}'), "header still renders when collapsed: {:?}", s[0]);
+        assert!(s.iter().any(|l| l.contains("Nightly backup")), "title in summary: {s:?}");
+        assert!(s.iter().any(|l| l.contains("click or ctrl+x to expand")));
+        assert!(
+            !s.iter().any(|l| l.contains("All volumes done")),
+            "message hidden collapsed: {s:?}"
+        );
     }
 
     fn make_tc(sdk_tool_name: &str, raw_input: serde_json::Value) -> crate::app::ToolCallInfo {

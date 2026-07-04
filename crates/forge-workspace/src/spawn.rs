@@ -17,6 +17,7 @@ use forge_agent::client::SessionLaunchSettings;
 use parking_lot::Mutex;
 
 use crate::domain_session::DomainSession;
+use crate::mcp::gotify::types::GotifyNotification;
 use crate::mcp::peers::facade::PeerStatsDelta;
 use crate::mcp::peers::types::WrappedPrompt;
 use crate::protocol::{Command, SessionUpdate, WorkerSpawnReply, WorkerStatusAction};
@@ -394,28 +395,34 @@ pub(crate) fn deliver_cron_prompt(
     }
 }
 
-/// Deliver a matched Gotify notification `envelope` into `project` as a
-/// plain user turn. When `team_role` names a running team worker, deliver
-/// straight to it; otherwise deliver to the project lead - dispatch a
+/// Deliver a matched Gotify `notification` into `project` as a plain user
+/// turn AND echo it into the target's chat as a notification block. When
+/// `team_role` names a running team worker, deliver straight to it;
+/// otherwise deliver to the project lead - echo + dispatch a
 /// `Command::Prompt` if it's running, else buffer on the synthetic
 /// spawn-key's DomainSession and dispatch `Command::SpawnProject`
-/// (`SessionTask` drains it on Connected via `drain_pending_gotify_prompts`).
-/// Mirrors [`deliver_cron_prompt`]; a team-worker subscription whose worker
-/// is asleep falls through to lead delivery (spawning the project brings
-/// the team up). A project no longer in forge.toml is logged and skipped.
+/// (`SessionTask` drains + echoes on Connected via
+/// `drain_pending_gotify_prompts`). Mirrors [`deliver_cron_prompt`] plus
+/// the peer chat-echo; a team-worker subscription whose worker is asleep
+/// falls through to lead delivery (spawning the project brings the team
+/// up). A project no longer in forge.toml is logged and skipped.
 pub(crate) fn deliver_gotify_message(
     workspace: &Arc<Workspace>,
     project: &str,
     team_role: Option<&str>,
-    envelope: String,
+    notification: GotifyNotification,
 ) {
     // A team-worker subscription targets that worker when it's running.
     if let Some(role) = team_role
         && let Some(worker_key) = running_team_worker(workspace, project, role)
     {
+        // Echo the notification block BEFORE the LLM-side dispatch so it
+        // renders in order regardless of which event the TUI reducer drains
+        // first (mirrors handle_deliver_peer_prompt).
+        push_gotify_notification_into_chat(workspace, &worker_key, &notification);
         if let Err(err) = workspace.dispatch(Command::Prompt {
             key: worker_key,
-            text: envelope,
+            text: notification.to_prose(),
             attachments: Vec::new(),
         }) {
             tracing::warn!(
@@ -440,9 +447,10 @@ pub(crate) fn deliver_gotify_message(
         });
 
     if let Some(target_key) = running_lead {
+        push_gotify_notification_into_chat(workspace, &target_key, &notification);
         if let Err(err) = workspace.dispatch(Command::Prompt {
             key: target_key,
-            text: envelope,
+            text: notification.to_prose(),
             attachments: Vec::new(),
         }) {
             tracing::warn!(
@@ -474,7 +482,7 @@ pub(crate) fn deliver_gotify_message(
             .or_insert_with(|| Arc::new(Mutex::new(DomainSession::new(synth_key.clone(), None))))
             .clone();
         drop(handles);
-        domain.lock().pending_gotify_prompts.push(envelope);
+        domain.lock().pending_gotify_prompts.push(notification);
     }
 
     if let Err(err) = workspace.dispatch(Command::SpawnProject {
@@ -537,6 +545,22 @@ pub(crate) fn push_peer_user_turn_into_chat(
     let _ = workspace.update_sender().send(SessionUpdate::PeerEnvelopeAppended {
         session_id: target_key.as_str().to_owned(),
         wrapped: wrapped.clone(),
+    });
+}
+
+/// Emit a typed `GotifyNotificationAppended` so the target session's TUI
+/// chat buffer shows the inbound notification block. Mirrors
+/// [`push_peer_user_turn_into_chat`] - the target's `claude` subprocess
+/// still receives the prose via a separate `Command::Prompt` dispatch;
+/// this only drives the visible chat echo.
+pub(crate) fn push_gotify_notification_into_chat(
+    workspace: &Workspace,
+    target_key: &SessionKey,
+    notification: &GotifyNotification,
+) {
+    let _ = workspace.update_sender().send(SessionUpdate::GotifyNotificationAppended {
+        session_id: target_key.as_str().to_owned(),
+        notification: notification.clone(),
     });
 }
 

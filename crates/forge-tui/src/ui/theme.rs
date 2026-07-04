@@ -23,6 +23,11 @@ pub const STATUS_WARNING: Color = Color::Yellow;
 pub const SLASH_COMMAND: Color = Color::LightMagenta;
 pub const SUBAGENT_TOKEN: Color = Color::LightBlue;
 
+// Gotify external-notification accent - the ◈ gotify glyph + the `Gotify`
+// source label in the chat notification block. Cyan, distinct from
+// RUST_ORANGE (peer / agent traffic).
+pub const GOTIFY: Color = Color::Rgb(78, 201, 201);
+
 // Diff row background tints - GitHub dark-mode added / removed surface.
 // Single source of truth shared by the /diff overlay and the
 // Edit-tool inline diff renderer.

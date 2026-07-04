@@ -21,6 +21,7 @@ use crate::mcp::gotify::facade::{GotifyFacade, GotifySubscribeError};
 use crate::mcp::peers::facade::CallerKeyResolver;
 
 pub(crate) mod facade;
+pub mod types;
 
 /// Attach the three Gotify-coordination tools to an existing
 /// [`McpServerBuilder`]. Called for BOTH lead and worker sessions

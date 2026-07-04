@@ -22,6 +22,12 @@ pub struct ChatMessage {
     /// message whose first text block starts with a recognised
     /// bracket prefix (`[Question id=...]` / `[Message id=...]` / etc.).
     pub is_peer_envelope: bool,
+    /// Companion to [`Self::is_peer_envelope`] for the Gotify external-
+    /// notification variant (`[Gotify - app '...']`). Stamped at push
+    /// time by the `GotifyNotificationAppended` path so the role label
+    /// renders a distinct `Gotify` source (not the peer `Forge`) without
+    /// a per-frame `detect_inbound` walk.
+    pub is_gotify_envelope: bool,
     /// #273: stop_hook_summary chip hit-test - wrapped-row offset
     /// inside this message of the clickable chip line(s). `0` when
     /// no chip is rendered. Stamped by `append_stop_hook_summary`.
@@ -45,6 +51,7 @@ impl ChatMessage {
             usage,
             render_cache: MessageRenderCache::default(),
             is_peer_envelope: false,
+            is_gotify_envelope: false,
             stop_hook_summary_y_in_msg: 0,
             stop_hook_summary_height: 0,
             turn_duration_ms: None,
@@ -67,6 +74,28 @@ impl ChatMessage {
             usage,
             render_cache: MessageRenderCache::default(),
             is_peer_envelope: true,
+            is_gotify_envelope: false,
+            stop_hook_summary_y_in_msg: 0,
+            stop_hook_summary_height: 0,
+            turn_duration_ms: None,
+        }
+    }
+
+    /// Variant of `new` for a Gotify external notification, pre-stamping
+    /// [`Self::is_gotify_envelope`]. Used by the `GotifyNotificationAppended`
+    /// path so the role label renders the distinct `Gotify` source.
+    pub fn new_gotify_envelope(
+        role: MessageRole,
+        blocks: Vec<MessageBlock>,
+        usage: Option<MessageUsage>,
+    ) -> Self {
+        Self {
+            role,
+            blocks,
+            usage,
+            render_cache: MessageRenderCache::default(),
+            is_peer_envelope: false,
+            is_gotify_envelope: true,
             stop_hook_summary_y_in_msg: 0,
             stop_hook_summary_height: 0,
             turn_duration_ms: None,

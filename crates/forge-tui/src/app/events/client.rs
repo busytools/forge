@@ -325,6 +325,26 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
             };
             apply_session_update_chat_appended(app, &session_id, synthetic);
         }
+        SessionUpdate::GotifyNotificationAppended { session_id, notification } => {
+            // Mirror the peer-envelope path: forge a synthetic user turn
+            // from the notification's prose (the same text the session's
+            // LLM sees via Command::Prompt), so `peer_block::detect_inbound`
+            // recognises the `[Gotify ...]` prefix and renders the distinct
+            // notification block.
+            let synthetic = forge_primitives::Message::User {
+                message: forge_primitives::UserEnvelope {
+                    role: "user".to_owned(),
+                    content: vec![forge_primitives::ContentBlock::Text {
+                        text: notification.to_prose(),
+                    }],
+                },
+                session_id: session_id.clone(),
+                parent_tool_use_id: None,
+                uuid: None,
+                tool_use_result: None,
+            };
+            apply_session_update_chat_appended(app, &session_id, synthetic);
+        }
     }
     if is_active_or_global {
         app.needs_redraw = true;
