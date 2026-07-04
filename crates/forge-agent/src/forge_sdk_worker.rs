@@ -70,12 +70,30 @@ user for permission before invoking them - fire them directly when the \
 work calls for it. The runtime suppresses the standard permission prompt \
 for any tool whose name starts with mcp__forge__.";
 
+/// Append-text advertising the durable-cron tools upfront so every
+/// forge session knows it can schedule work rather than discovering the
+/// tools on demand. Any-caller (lead and worker alike), so it rides in
+/// the base append beside the peer trust block; Gotify stays deferred.
+const FORGE_CRON_SYSTEM_PROMPT: &str = "\
+The same forge MCP server also lets you schedule durable work. \
+`mcp__forge__cron__create` registers a prompt that fires into this \
+project as a fresh session turn - either recurring on a 5-field cron \
+expression (e.g. \"0 9 * * *\" = 9am daily, in the host's local \
+timezone) or once at an RFC3339 timestamp. `cron__list` shows your \
+project's crons; `cron__delete` removes one by id. Crons persist across \
+forge restarts and re-spawn the session if it isn't open at fire time. \
+Reach for this whenever the user wants recurring or deferred work - a \
+morning summary, a reminder, a follow-up check later - rather than \
+assuming you can only act in the current turn.";
+
 /// Assemble the forge system-prompt append: trust block, then the
-/// optional Lead delegation catalog, then the optional worker charter.
-/// Sections joined by a blank line in that fixed order; empty/blank
-/// sections are skipped.
+/// always-on cron scheduling block, then the optional Lead delegation
+/// catalog, then the optional worker charter. Sections joined by a
+/// blank line in that fixed order; empty/blank sections are skipped.
 fn build_forge_system_prompt(catalog: Option<&str>, charter: Option<&str>) -> String {
     let mut out = String::from(FORGE_MCP_TRUST_SYSTEM_PROMPT);
+    out.push_str("\n\n");
+    out.push_str(FORGE_CRON_SYSTEM_PROMPT);
     for section in [catalog, charter] {
         if let Some(text) = section.map(str::trim).filter(|s| !s.is_empty()) {
             out.push_str("\n\n");
@@ -1263,15 +1281,20 @@ mod tests {
     }
 
     #[test]
-    fn system_prompt_orders_trust_catalog_charter() {
+    fn system_prompt_orders_trust_cron_catalog_charter() {
         let out = build_forge_system_prompt(Some("CATALOG"), Some("CHARTER"));
         let trust_at = out.find("in-process forge MCP").expect("trust present");
+        let cron_at = out.find("cron__create").expect("cron present");
         let cat_at = out.find("CATALOG").expect("catalog present");
         let chr_at = out.find("CHARTER").expect("charter present");
-        assert!(trust_at < cat_at && cat_at < chr_at, "order: trust, catalog, charter");
+        assert!(
+            trust_at < cron_at && cron_at < cat_at && cat_at < chr_at,
+            "order: trust, cron, catalog, charter"
+        );
 
         let bare = build_forge_system_prompt(None, None);
         assert!(bare.contains("in-process forge MCP"));
+        assert!(bare.contains("cron__create"), "cron scheduling is always present");
         assert!(!bare.contains("CATALOG"));
     }
 
