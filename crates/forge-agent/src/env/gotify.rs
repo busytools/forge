@@ -36,9 +36,15 @@ const MIN_HEALTHY_UPTIME: Duration = Duration::from_secs(5);
 /// observed promptly rather than bounded by the OS TCP timeout.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// Per-request timeout for the `/application` lookup - keep a slow or
-/// unreachable server from stalling subsystem start.
-const APP_LOOKUP_TIMEOUT: Duration = Duration::from_secs(10);
+/// Per-request timeout for the read-only REST lookups (`/application`,
+/// `/message`) - keep a slow or unreachable server from stalling
+/// subsystem start or a tool call.
+const REST_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Newest `/message` window pulled before client-side app + priority
+/// filtering. Gotify's `/message` filters by neither, so we fetch the
+/// newest page and narrow locally; 200 is its per-request maximum.
+const RECENT_FETCH_WINDOW: u32 = 200;
 
 /// Connection-lifecycle + message events from the stream task to the
 /// workspace subsystem.
@@ -57,16 +63,40 @@ struct GotifyApp {
     name: String,
 }
 
-/// Fetch the server's application list and fold it into a name->appid
-/// map. Inbound stream messages carry the numeric appid, so the map
-/// resolves an `application` name filter to the id to match against.
-pub async fn app_index(cfg: &GotifyConfig) -> anyhow::Result<HashMap<String, u64>> {
-    let client =
-        crate::http_trust::with_extra_roots(reqwest::Client::builder().timeout(APP_LOOKUP_TIMEOUT))
-            .build()
-            .context("build Gotify http client")?;
+/// Gotify's `GET /message` paged response. Only the newest page of
+/// `messages` is consumed; the `paging` cursor is ignored - a catch-up
+/// read wants the newest N, not the full history.
+#[derive(Debug, Deserialize)]
+struct GotifyMessages {
+    messages: Vec<GotifyMessage>,
+}
+
+/// One catch-up notification from `GET /message`, resolved for a
+/// `gotify__recent` reply: the application display name (from the appid,
+/// or the id as a string when the app index hasn't seen it), title,
+/// message body, priority, and the server's verbatim RFC3339 timestamp.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GotifyRecent {
+    pub app: String,
+    pub title: String,
+    pub message: String,
+    pub priority: u8,
+    pub date: String,
+}
+
+/// A reqwest client for the read-only REST lookups, carrying the shared
+/// native-roots trust extension every forge HTTPS site uses.
+fn rest_client() -> anyhow::Result<reqwest::Client> {
+    crate::http_trust::with_extra_roots(reqwest::Client::builder().timeout(REST_TIMEOUT))
+        .build()
+        .context("build Gotify http client")
+}
+
+/// GET the server's application list. Shared by the name->id index, the
+/// `gotify__apps` name list, and `gotify__recent`'s appid->name resolution.
+async fn fetch_apps(cfg: &GotifyConfig) -> anyhow::Result<Vec<GotifyApp>> {
     let url = format!("{}/application", cfg.url.trim_end_matches('/'));
-    let apps: Vec<GotifyApp> = client
+    rest_client()?
         .get(url)
         .header("X-Gotify-Key", &cfg.client_token)
         .send()
@@ -76,12 +106,99 @@ pub async fn app_index(cfg: &GotifyConfig) -> anyhow::Result<HashMap<String, u64
         .context("/application returned an error status")?
         .json()
         .await
-        .context("parse /application body")?;
-    Ok(build_app_index(apps))
+        .context("parse /application body")
+}
+
+/// Fetch the server's application list and fold it into a name->appid
+/// map. Inbound stream messages carry the numeric appid, so the map
+/// resolves an `application` name filter to the id to match against.
+pub async fn app_index(cfg: &GotifyConfig) -> anyhow::Result<HashMap<String, u64>> {
+    Ok(build_app_index(fetch_apps(cfg).await?))
 }
 
 fn build_app_index(apps: Vec<GotifyApp>) -> HashMap<String, u64> {
     apps.into_iter().map(|app| (app.name, app.id)).collect()
+}
+
+/// The server's application NAMEs (from `GET /application`), in the order
+/// the server returns them. Backs `gotify__apps` so a session can
+/// self-discover which apps it may subscribe to.
+pub async fn app_names(cfg: &GotifyConfig) -> anyhow::Result<Vec<String>> {
+    Ok(build_app_names(fetch_apps(cfg).await?))
+}
+
+fn build_app_names(apps: Vec<GotifyApp>) -> Vec<String> {
+    apps.into_iter().map(|app| app.name).collect()
+}
+
+fn build_id_index(apps: Vec<GotifyApp>) -> HashMap<u64, String> {
+    apps.into_iter().map(|app| (app.id, app.name)).collect()
+}
+
+/// The most recent notifications, newest first, filtered by application
+/// NAME (empty = any) and `min_priority` (`None` = any), capped at `limit`.
+/// Fetches the newest `/message` window plus `/application` (for appid->
+/// name), then narrows locally - Gotify's `/message` filters by neither.
+pub async fn recent_messages(
+    cfg: &GotifyConfig,
+    applications: &[String],
+    min_priority: Option<u8>,
+    limit: usize,
+) -> anyhow::Result<Vec<GotifyRecent>> {
+    let messages = fetch_messages(cfg, RECENT_FETCH_WINDOW).await?;
+    let id_index = build_id_index(fetch_apps(cfg).await?);
+    Ok(filter_recent(messages, &id_index, applications, min_priority, limit))
+}
+
+async fn fetch_messages(cfg: &GotifyConfig, limit: u32) -> anyhow::Result<Vec<GotifyMessage>> {
+    let url = format!("{}/message?limit={limit}", cfg.url.trim_end_matches('/'));
+    let page: GotifyMessages = rest_client()?
+        .get(url)
+        .header("X-Gotify-Key", &cfg.client_token)
+        .send()
+        .await
+        .context("GET /message")?
+        .error_for_status()
+        .context("/message returned an error status")?
+        .json()
+        .await
+        .context("parse /message body")?;
+    Ok(page.messages)
+}
+
+/// Resolve appid->name, filter by app + priority, sort newest-first (by
+/// monotonic id), and truncate to `limit`. App matching mirrors
+/// `Workspace::route_gotify_message`: an unresolved appid never matches a
+/// non-empty name filter (its numeric display string can't sneak past),
+/// though its display `app` still falls back to that id string.
+fn filter_recent(
+    mut messages: Vec<GotifyMessage>,
+    id_index: &HashMap<u64, String>,
+    applications: &[String],
+    min_priority: Option<u8>,
+    limit: usize,
+) -> Vec<GotifyRecent> {
+    messages.sort_unstable_by_key(|m| std::cmp::Reverse(m.id));
+    messages
+        .into_iter()
+        .filter_map(|msg| {
+            let resolved = id_index.get(&msg.appid);
+            let priority_ok = min_priority.is_none_or(|floor| msg.priority >= floor);
+            let app_ok =
+                applications.is_empty() || resolved.is_some_and(|name| applications.contains(name));
+            if !(priority_ok && app_ok) {
+                return None;
+            }
+            Some(GotifyRecent {
+                app: resolved.cloned().unwrap_or_else(|| msg.appid.to_string()),
+                title: msg.title,
+                message: msg.message,
+                priority: msg.priority,
+                date: msg.date,
+            })
+        })
+        .take(limit)
+        .collect()
 }
 
 /// Parse a raw stream Text frame into a typed [`GotifyMessage`].
@@ -238,5 +355,66 @@ mod tests {
         let apps: Vec<GotifyApp> = serde_json::from_str(body).expect("parse application list");
         let index = build_app_index(apps);
         assert_eq!(index.get("trader-cc"), Some(&3));
+    }
+
+    #[test]
+    fn app_names_extracts_names_in_server_order() {
+        let apps = vec![
+            GotifyApp { id: 3, name: "trader-cc".to_owned() },
+            GotifyApp { id: 1, name: "Backups".to_owned() },
+        ];
+        assert_eq!(build_app_names(apps), vec!["trader-cc".to_owned(), "Backups".to_owned()]);
+    }
+
+    #[test]
+    fn message_page_parses_ignoring_extras_and_paging() {
+        let body = r#"{"messages":[{"id":25,"appid":1,"title":"t","message":"m","priority":4,"date":"2026-07-04T09:18:00Z","extras":{"x":1}}],"paging":{"size":1,"limit":100,"since":25}}"#;
+        let page: GotifyMessages = serde_json::from_str(body).expect("parse /message page");
+        assert_eq!(page.messages.len(), 1);
+        assert_eq!(page.messages[0].appid, 1);
+    }
+
+    fn msg(id: u64, appid: u64, priority: u8) -> GotifyMessage {
+        GotifyMessage {
+            id,
+            appid,
+            title: format!("t{id}"),
+            message: format!("m{id}"),
+            priority,
+            date: format!("2026-07-04T{id:02}:00:00Z"),
+        }
+    }
+
+    #[test]
+    fn filter_recent_orders_newest_first_and_truncates_to_limit() {
+        let index = HashMap::from([(1u64, "CI".to_owned())]);
+        // Deliberately out of order; filter_recent must sort newest-first.
+        let out =
+            filter_recent(vec![msg(1, 1, 5), msg(3, 1, 5), msg(2, 1, 5)], &index, &[], None, 2);
+        assert_eq!(out.len(), 2, "truncated to the limit");
+        assert_eq!(out[0].title, "t3", "highest id (newest) first");
+        assert_eq!(out[1].title, "t2");
+    }
+
+    #[test]
+    fn filter_recent_applies_app_name_and_priority_filters() {
+        let index = HashMap::from([(1u64, "CI".to_owned()), (2u64, "Backups".to_owned())]);
+        let msgs = vec![msg(10, 1, 8), msg(9, 2, 8), msg(8, 1, 2)];
+        let out = filter_recent(msgs, &index, &["CI".to_owned()], Some(5), 20);
+        assert_eq!(out.len(), 1, "only CI at priority >= 5 survives");
+        assert_eq!(out[0].app, "CI");
+        assert_eq!(out[0].priority, 8);
+    }
+
+    #[test]
+    fn filter_recent_unresolved_appid_shows_id_but_never_matches_a_named_filter() {
+        // appid 7 isn't in the index: its display `app` falls back to "7",
+        // but a filter naming "7" must NOT match it - mirrors the
+        // resolved-name-only matching in Workspace::route_gotify_message.
+        let index = HashMap::from([(1u64, "CI".to_owned())]);
+        let unfiltered = filter_recent(vec![msg(5, 7, 9)], &index, &[], None, 20);
+        assert_eq!(unfiltered[0].app, "7", "unresolved appid displays as its id string");
+        let named = filter_recent(vec![msg(5, 7, 9)], &index, &["7".to_owned()], None, 20);
+        assert!(named.is_empty(), "a numeric-string filter can't match an unresolved appid");
     }
 }
