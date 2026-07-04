@@ -2041,4 +2041,21 @@ mod team_charter_tests {
         set_forge_team_root_for_test(prior);
         assert_eq!(settings.charter.as_deref(), Some(DEFAULT_LEAD_CHARTER));
     }
+
+    /// A present-but-unreadable override (invalid UTF-8 makes the read
+    /// fail) still falls back to the bundled default.
+    #[test]
+    fn unreadable_user_charter_falls_back_to_bundled_default() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let lead = tmp.path().join("lead");
+        std::fs::create_dir_all(&lead).expect("lead dir");
+        std::fs::write(lead.join("charter.md"), [0xff, 0xfe, 0xfd]).expect("charter");
+        let prior = set_forge_team_root_for_test(Some(tmp.path().to_owned()));
+
+        let mut settings = SessionLaunchSettings::default();
+        apply_lead_charter(&mut settings);
+
+        set_forge_team_root_for_test(prior);
+        assert_eq!(settings.charter.as_deref(), Some(DEFAULT_LEAD_CHARTER));
+    }
 }

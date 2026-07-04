@@ -244,8 +244,21 @@ pub fn load_charter(label: &str) -> Result<String, CharterError> {
 
 /// Load the lead charter, preferring the user override and falling
 /// back to [`DEFAULT_LEAD_CHARTER`] so a lead is always charter-backed.
+/// An absent override falls back silently; a present-but-unreadable one
+/// is logged first so the misconfiguration stays diagnosable.
 pub fn load_lead_charter_or_default() -> String {
-    load_charter(LEAD_LABEL).unwrap_or_else(|_| DEFAULT_LEAD_CHARTER.to_owned())
+    match load_charter(LEAD_LABEL) {
+        Ok(charter) => charter,
+        Err(CharterError::CharterNotFound { .. }) => DEFAULT_LEAD_CHARTER.to_owned(),
+        Err(e) => {
+            tracing::warn!(
+                target: "forge_workspace::team",
+                error = %e,
+                "lead charter present but unreadable; using bundled default"
+            );
+            DEFAULT_LEAD_CHARTER.to_owned()
+        }
+    }
 }
 
 /// Load `<label>/kick.md` from the forge-team root.
