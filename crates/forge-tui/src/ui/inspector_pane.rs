@@ -3466,6 +3466,51 @@ mod tests {
     }
 
     #[test]
+    fn gotify_worker_roles_render_in_first_seen_order() {
+        let mut app = App::test_default();
+        app.gotify_connected = true;
+        // steward precedes analyst in the vec; group order follows
+        // first-seen, not alphabetical (analyst would sort first).
+        app.gotify_subs = vec![
+            gotify_sub(1, Some("steward"), &["Alerts"], None),
+            gotify_sub(2, Some("analyst"), &["Deploys"], None),
+        ];
+
+        let mut lines = Vec::new();
+        append_gotify_section(&mut lines, &app, 60);
+        let texts = lines.iter().map(|l| line_text(l)).collect::<Vec<_>>();
+        let joined = texts.join("\n");
+
+        let steward_at = texts.iter().position(|t| t.trim() == "steward").expect("steward header");
+        let analyst_at = texts.iter().position(|t| t.trim() == "analyst").expect("analyst header");
+        assert!(
+            steward_at < analyst_at,
+            "worker roles render in first-seen (not alphabetical) order; got:\n{joined}",
+        );
+    }
+
+    #[test]
+    fn gotify_workers_only_opens_with_worker_group_and_no_lead_header() {
+        let mut app = App::test_default();
+        app.gotify_connected = true;
+        app.gotify_subs = vec![gotify_sub(1, Some("steward"), &["Alerts"], None)];
+
+        let mut lines = Vec::new();
+        append_gotify_section(&mut lines, &app, 60);
+        let texts = lines.iter().map(|l| line_text(l)).collect::<Vec<_>>();
+        let joined = texts.join("\n");
+
+        assert!(
+            texts.iter().any(|t| t.trim() == "steward"),
+            "the worker group header renders; got:\n{joined}",
+        );
+        assert!(
+            !texts.iter().any(|t| t.trim() == "lead"),
+            "no lead header when there is no lead subscription; got:\n{joined}",
+        );
+    }
+
+    #[test]
     fn gotify_section_visible_only_when_connected_with_subs() {
         let sub = || forge_primitives::GotifySubscription {
             id: uuid::Uuid::from_u128(1),
