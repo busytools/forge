@@ -746,7 +746,7 @@ chat continues here...
       <dt>retired path</dt><dd>The prior <code>Cron</code> row-kind in the PROCESSES section (wire-only registration rows that surfaced alongside live OS processes) is removed - SCHEDULES is the authoritative surface for wakeups + cloud crons + forge crons</dd>
     </dl>
 
-    <p id="inspector-gotify"><strong>GOTIFY section</strong>: surfaces the active project's inbound Gotify subscriptions (<code>mcp__forge__gotify</code>, sourced from the workspace) plus the stream's live connection status. Renders only while the stream is <strong>connected</strong> and the active project has <strong>at least one subscription</strong> - otherwise the whole section (header, status line, rows) is hidden; when shown it sits between SCHEDULES and PROCESSES with its own DIM <code>─</code> separator. A <code>◈ connected</code> status line leads, then one labeled row per subscription: <code>app:</code> and the matched app names (<code>any</code> when the filter is empty, otherwise the names joined by <code>, </code>), then a right-justified <code>priority: ≥N</code> (or <code>priority: any</code>) badge; a team-worker subscription appends <code>→ &lt;role&gt;</code> after the app names.</p>
+    <p id="inspector-gotify"><strong>GOTIFY section</strong>: surfaces the active project's inbound Gotify subscriptions (<code>mcp__forge__gotify</code>, sourced from the workspace) plus the stream's live connection status. Renders only while the stream is <strong>connected</strong> and the active project has <strong>at least one subscription</strong> - otherwise the whole section (header, status line, groups) is hidden; when shown it sits between SCHEDULES and PROCESSES with its own DIM <code>─</code> separator. A <code>◈ connected</code> status line leads, then the subscriptions grouped by <strong>owner</strong>. Each owner is a DIM header: the project lead first (labeled <code>lead</code>), then each team-worker role in first-seen order, with a blank line between groups. Under an owner sits one entry per subscription (subscriptions are never merged): the full app list in white bold, listing every matched app name comma-joined and wrapped to the pane width so no name is truncated (<code>any</code> when the filter is empty), and beneath it a DIM <code>priority &gt;=N</code> (or <code>priority any</code>) line indented one step deeper.</p>
     <div class="term">
       <pre class="indent">
   <span class="accent-bold">INSPECTOR</span>
@@ -756,15 +756,21 @@ chat continues here...
 
   <span class="accent">  ◈</span> <span class="dim">connected</span>
 
-  <span class="dim">  app:</span> <span class="bold">any</span>                    <span class="dim">priority: any</span>
-  <span class="dim">  app:</span> <span class="bold">alerts</span>                 <span class="dim">priority: ≥5</span>
-  <span class="dim">  app:</span> <span class="bold">backups</span> <span class="dim">→</span> <span class="bold">steward</span>      <span class="dim">priority: ≥8</span>
+    <span class="dim">lead</span>
+      <span class="bold">Beszel, Host, Backups, Security, Media</span>
+        <span class="dim">priority</span> <span>&gt;=5</span>
+      <span class="bold">Alerts, Deploys</span>
+        <span class="dim">priority any</span>
+
+    <span class="dim">steward</span>
+      <span class="bold">Entertainment</span>
+        <span class="dim">priority any</span>
 </pre>
     </div>
     <dl style="margin-left: 16px;">
       <dt>code</dt><dd><code>crates/forge-tui/src/ui/inspector_pane.rs::append_gotify_section</code>, gated by <code>gotify_section_visible(app) = gotify_connected &amp;&amp; !gotify_subs.is_empty()</code> · snapshot on <code>App.gotify_subs: Vec&lt;GotifySubscription&gt;</code> + <code>App.gotify_connected: bool</code>, refreshed on the <code>~1s</code> tick by <code>App::refresh_gotify</code> (reads <code>Workspace::gotify_subscriptions_for_project</code> by the active tab's stamped project NAME on <code>UiSession.project</code>, like SCHEDULES)</dd>
-      <dt>color</dt><dd>section header (<code>GOTIFY</code>): <code>DIM</code> bold · status glyph (<code>◈</code>): <span class="accent">RUST_ORANGE</span> (only rendered while connected) · app names: white bold · the <code>app:</code> / <code>priority:</code> captions and the <code>→ &lt;role&gt;</code> arrow: <code>DIM</code> · priority badge (<code>≥5</code> / <code>any</code>): <code>DIM</code>, right-justified after the pad-spacer</dd>
-      <dt>data source</dt><dd><code>Workspace::gotify_subscriptions_for_project(stamped UiSession.project name)</code> drives the rows · <code>Workspace::gotify_connected()</code> drives the status line and, with a non-empty subscription set, gates the whole section (set by the subsystem pump on <code>Connected</code> / <code>Disconnected</code>)</dd>
+      <dt>color</dt><dd>section header (<code>GOTIFY</code>): <code>DIM</code> bold · status glyph (<code>◈</code>): <span class="accent">RUST_ORANGE</span> (only rendered while connected) · owner header (<code>lead</code> / role): <code>DIM</code> · app names: white bold · the <code>priority</code> caption and the <code>any</code> word: <code>DIM</code> · the <code>&gt;=N</code> floor: white (brighter than the caption)</dd>
+      <dt>data source</dt><dd><code>Workspace::gotify_subscriptions_for_project(stamped UiSession.project name)</code> drives the grouped subscription entries (bucketed by <code>team_role</code>, lead first) · <code>Workspace::gotify_connected()</code> drives the status line and, with a non-empty subscription set, gates the whole section (set by the subsystem pump on <code>Connected</code> / <code>Disconnected</code>)</dd>
     </dl>
 
     <p>Empty TASKS state - when the active session has no todos, the GIT section renders without a TASKS separator below it. With a clean default branch + no diff to show:</p>
