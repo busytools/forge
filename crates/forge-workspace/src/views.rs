@@ -37,12 +37,11 @@ pub struct ProjectView {
     /// as the row's account hint via [`Self::primary_account_hint`].
     pub accounts: Vec<String>,
     /// Engineering-team role labels configured for this project via
-    /// the `team = [...]` field in `forge.toml`. Empty means no team;
-    /// when non-empty the project's lead session stamps the lead
-    /// charter (from `~/.claude/forge-team/lead/charter.md`) and
-    /// auto-spawns one worker per label on `Connected`. Each label
-    /// resolves to a charter + kick file under `~/.claude/forge-team/
-    /// <label>/`. See `crate::team::Role`.
+    /// the `team = [...]` field in `forge.toml`. Drives the auto-spawn
+    /// roster: one worker per label on the lead's `Connected`, each
+    /// label resolving to a charter + kick file under
+    /// `~/.claude/forge-team/<label>/`. Empty means no roster; the lead
+    /// charter is independent of this list. See `crate::team::Role`.
     pub team: Vec<String>,
     pub sessions: Vec<SessionView>,
 }
