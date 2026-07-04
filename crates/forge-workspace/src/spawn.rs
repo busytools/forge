@@ -551,7 +551,7 @@ pub(crate) fn push_gotify_notification_into_chat(
 pub(crate) fn handle_spawn_session(
     workspace: &Arc<Workspace>,
     session_id: &str,
-    mut launch_settings: SessionLaunchSettings,
+    launch_settings: SessionLaunchSettings,
 ) {
     let synth_key = SessionKey::from_session_id(format!("__resume_{session_id}__"));
 
@@ -566,7 +566,10 @@ pub(crate) fn handle_spawn_session(
         return;
     };
 
-    apply_lead_charter(&mut launch_settings);
+    // Resume path stamps no lead charter: the drilldown resume that
+    // would dispatch SpawnSession lists worker rows too, so wiring it
+    // needs lead-vs-worker awareness first or a resumed worker gets
+    // branded a lead. Fresh leads get the charter on their spawn paths.
 
     let cwd = parent.path.to_string_lossy().to_string();
     let display_name = parent.display_path.clone();
