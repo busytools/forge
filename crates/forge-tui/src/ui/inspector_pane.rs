@@ -1325,11 +1325,13 @@ fn gotify_section_visible(app: &App) -> bool {
     app.gotify_connected && !app.gotify_subs.is_empty()
 }
 
-/// Render the Inspector GOTIFY section: an `◈ connected` status line plus
-/// one labeled row per active subscription for the active project (from
-/// the cached `app.gotify_subs` snapshot). Only invoked when
-/// [`gotify_section_visible`] holds, so the stream is always connected and
-/// the subscription set is never empty. Mirrors the SCHEDULES shape.
+/// Render the Inspector GOTIFY section: an `◈ connected` status line
+/// then the active project's subscriptions grouped by owner. Owner is
+/// the subscription's `team_role`: `None` renders as the `lead` group
+/// (first), `Some(role)` as that worker role in first-seen order. Each
+/// owner is a DIM header with a blank line between groups. Only invoked
+/// when [`gotify_section_visible`] holds, so the stream is always
+/// connected and the subscription set is never empty.
 fn append_gotify_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
     lines.push(Line::from(Span::styled(
         " GOTIFY".to_owned(),
@@ -1346,63 +1348,103 @@ fn append_gotify_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) 
         Span::styled("connected".to_owned(), Style::default().fg(theme::DIM)),
     ]));
 
-    lines.push(Line::default());
     let inner_width = usize::from(width);
+
+    // Owners in stable order: lead (team_role None) first, then each
+    // worker role in first-seen order.
+    let mut owners: Vec<Option<&str>> = Vec::new();
+    if app.gotify_subs.iter().any(|s| s.team_role.is_none()) {
+        owners.push(None);
+    }
     for sub in &app.gotify_subs {
-        append_gotify_row(lines, sub, inner_width);
+        if let Some(role) = sub.team_role.as_deref()
+            && !owners.contains(&Some(role))
+        {
+            owners.push(Some(role));
+        }
+    }
+
+    let owner_budget = row_text_budget(inner_width, usize::from(PANE_PAD) + 1);
+    for owner in owners {
+        lines.push(Line::default());
+        lines.push(Line::from(vec![
+            Span::raw(" ".repeat(usize::from(PANE_PAD))),
+            Span::styled(
+                truncate_or_pass(owner.unwrap_or("lead"), owner_budget),
+                Style::default().fg(theme::DIM),
+            ),
+        ]));
+        for sub in app.gotify_subs.iter().filter(|s| s.team_role.as_deref() == owner) {
+            append_gotify_subscription(lines, sub, inner_width);
+        }
     }
 }
 
-/// Render one GOTIFY subscription row, labeled so the filter is
-/// unambiguous: `app: <names joined by ", ", or "any">` (with ` -> <role>`
-/// appended for a team-worker subscription), then a right-justified
-/// `priority: >=N` / `priority: any` badge. App names are bold; the
-/// `app:` / `priority:` captions and the role arrow are DIM. Mirrors
-/// [`append_schedule_row`]'s chrome accounting + pad-spacer, minus the
-/// leading glyph cell.
-fn append_gotify_row(
+/// Render one GOTIFY subscription entry under its owner header: the
+/// full app list in white bold (comma-joined, wrapped to the pane so
+/// every name stays visible; `any` when the filter is empty), then a
+/// DIM `priority >=N` / `priority any` line one step deeper. The `>=N`
+/// floor renders in the default foreground, brighter than the DIM
+/// caption. Subscriptions are never merged, so each keeps its own app
+/// list + priority.
+fn append_gotify_subscription(
     lines: &mut Vec<Line<'static>>,
     sub: &forge_primitives::GotifySubscription,
     inner_width: usize,
 ) {
-    let apps =
-        if sub.applications.is_empty() { "any".to_owned() } else { sub.applications.join(", ") };
-    let trailing = match sub.min_priority {
-        Some(p) => format!("priority: \u{2265}{p}"),
-        None => "priority: any".to_owned(),
+    let app_indent = usize::from(PANE_PAD) + 2;
+    let priority_indent = usize::from(PANE_PAD) + 4;
+
+    let pieces = if sub.applications.is_empty() {
+        vec!["any".to_owned()]
+    } else {
+        wrap_app_list(&sub.applications, row_text_budget(inner_width, app_indent + 1))
     };
-    // The `app:` caption and the ` -> <role>` suffix (space + arrow +
-    // space + role) are fixed chrome around the truncatable name list.
-    let caption = "app: ";
-    let role_width = sub.team_role.as_ref().map_or(0, |role| 3 + role.chars().count());
-
-    let apps_chrome = usize::from(PANE_PAD)
-        + caption.chars().count()
-        + role_width
-        + trailing.chars().count()
-        + usize::from(PANE_PAD); // 1-col right gutter
-    let apps_shown = truncate_or_pass(&apps, row_text_budget(inner_width, apps_chrome));
-
-    // Right-justify the priority badge at inner_width - PANE_PAD (the #281
-    // pad-spacer pattern SCHEDULES / WORKFLOWS share).
-    let content_chrome = usize::from(PANE_PAD) + trailing.chars().count() + usize::from(PANE_PAD);
-    let left_width = caption.chars().count() + apps_shown.chars().count() + role_width;
-    let pad = row_text_budget(inner_width, content_chrome).saturating_sub(left_width);
-
-    let mut spans = vec![
-        Span::raw(" ".repeat(usize::from(PANE_PAD))),
-        Span::styled(caption.to_owned(), Style::default().fg(theme::DIM)),
-        Span::styled(apps_shown, Style::default().add_modifier(Modifier::BOLD)),
-    ];
-    if let Some(role) = &sub.team_role {
-        spans.push(Span::raw(" ".to_owned()));
-        spans.push(Span::styled("\u{2192}".to_owned(), Style::default().fg(theme::DIM)));
-        spans.push(Span::raw(" ".to_owned()));
-        spans.push(Span::styled(role.clone(), Style::default().add_modifier(Modifier::BOLD)));
+    for piece in pieces {
+        lines.push(Line::from(vec![
+            Span::raw(" ".repeat(app_indent)),
+            Span::styled(piece, Style::default().add_modifier(Modifier::BOLD)),
+        ]));
     }
-    spans.push(Span::raw(" ".repeat(pad)));
-    spans.push(Span::styled(trailing, Style::default().fg(theme::DIM)));
-    lines.push(Line::from(spans));
+
+    let indent = Span::raw(" ".repeat(priority_indent));
+    let priority = match sub.min_priority {
+        Some(p) => Line::from(vec![
+            indent,
+            Span::styled("priority ".to_owned(), Style::default().fg(theme::DIM)),
+            Span::raw(format!(">={p}")),
+        ]),
+        None => Line::from(vec![
+            indent,
+            Span::styled("priority any".to_owned(), Style::default().fg(theme::DIM)),
+        ]),
+    };
+    lines.push(priority);
+}
+
+/// Wrap a comma-joined app-name list to `max_chars` columns, breaking
+/// only at `, ` separators so no name is split. A name wider than
+/// `max_chars` still takes its own full line (never truncated). An
+/// empty slice yields no lines.
+fn wrap_app_list(names: &[String], max_chars: usize) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    let mut current = String::new();
+    for name in names {
+        if current.is_empty() {
+            current.clone_from(name);
+        } else if current.chars().count() + 2 + name.chars().count() <= max_chars {
+            current.push_str(", ");
+            current.push_str(name);
+        } else {
+            current.push(',');
+            lines.push(std::mem::take(&mut current));
+            current.clone_from(name);
+        }
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    lines
 }
 
 /// Build a SCHEDULES row from a durable forge cron. Recurring crons show
@@ -2920,10 +2962,10 @@ mod tests {
         append_workflow_row(&mut wf_lines, &workflow, inner_width, '\u{280B}');
         all_rows.extend(wf_lines);
 
-        // GOTIFY row: a long app set + a role, forcing the name list to
-        // truncate against the same budget the badge is right-justified to.
+        // GOTIFY subscription: a long app set forcing the comma-joined
+        // list to wrap, each wrapped line within the gutter budget.
         let mut gotify_lines = Vec::new();
-        append_gotify_row(
+        append_gotify_subscription(
             &mut gotify_lines,
             &forge_primitives::GotifySubscription {
                 id: uuid::Uuid::from_u128(9),
@@ -3251,48 +3293,148 @@ mod tests {
         );
     }
 
+    fn gotify_sub(
+        id: u128,
+        team_role: Option<&str>,
+        apps: &[&str],
+        min_priority: Option<u8>,
+    ) -> forge_primitives::GotifySubscription {
+        forge_primitives::GotifySubscription {
+            id: uuid::Uuid::from_u128(id),
+            project: "p".to_owned(),
+            team_role: team_role.map(str::to_owned),
+            applications: apps.iter().map(|s| (*s).to_owned()).collect(),
+            min_priority,
+            created_at: std::time::SystemTime::UNIX_EPOCH,
+        }
+    }
+
     #[test]
-    fn gotify_section_renders_labeled_rows_including_a_multi_app_set() {
-        let row = |id: u128, applications: Vec<String>, team_role: Option<&str>, min_priority| {
-            forge_primitives::GotifySubscription {
-                id: uuid::Uuid::from_u128(id),
-                project: "trader-cc".to_owned(),
-                team_role: team_role.map(str::to_owned),
-                applications,
-                min_priority,
-                created_at: std::time::SystemTime::UNIX_EPOCH,
-            }
-        };
+    fn gotify_section_groups_by_owner_lead_first_without_row_arrow() {
         let mut app = App::test_default();
         app.gotify_connected = true;
+        // Worker sub listed before the lead sub; the lead group still
+        // renders first.
         app.gotify_subs = vec![
-            row(1, vec!["alerts".to_owned()], None, Some(5)),
-            row(2, vec!["alerts".to_owned(), "backups".to_owned()], None, None),
-            row(3, vec!["backups".to_owned()], Some("steward"), Some(8)),
+            gotify_sub(1, Some("steward"), &["Entertainment"], None),
+            gotify_sub(2, None, &["Alerts"], Some(5)),
         ];
 
         let mut lines = Vec::new();
         append_gotify_section(&mut lines, &app, 60);
-        let joined = lines.iter().map(|l| line_text(l)).collect::<Vec<_>>().join("\n");
+        let texts = lines.iter().map(|l| line_text(l)).collect::<Vec<_>>();
+        let joined = texts.join("\n");
 
-        assert!(joined.contains("GOTIFY"), "header present; got:\n{joined}");
+        let lead_at = texts.iter().position(|t| t.trim() == "lead");
+        let steward_at = texts.iter().position(|t| t.trim() == "steward");
+        assert!(lead_at.is_some(), "lead owner header present; got:\n{joined}");
+        assert!(steward_at.is_some(), "worker owner header present; got:\n{joined}");
         assert!(
-            joined.contains("\u{25c8} connected"),
-            "connected status line present; got:\n{joined}",
-        );
-        assert!(joined.contains("app: alerts"), "single-app labeled row present; got:\n{joined}");
-        assert!(
-            joined.contains("priority: \u{2265}5"),
-            "labeled priority floor present; got:\n{joined}",
+            lead_at < steward_at,
+            "the lead group renders before the worker group; got:\n{joined}",
         );
         assert!(
-            joined.contains("app: alerts, backups"),
-            "the multi-app set row present; got:\n{joined}",
+            !joined.contains('\u{2192}'),
+            "the per-row role arrow is dropped (owner header replaces it); got:\n{joined}",
         );
-        assert!(joined.contains("priority: any"), "the any-priority label present; got:\n{joined}");
+        assert!(!joined.contains("app:"), "the old app: caption is dropped; got:\n{joined}");
+    }
+
+    #[test]
+    fn gotify_multi_app_subscription_wraps_and_keeps_every_name() {
+        let apps = [
+            "Beszel",
+            "Host",
+            "Backups",
+            "Security",
+            "Media",
+            "Alerts",
+            "Deploys",
+            "Entertainment",
+        ];
+        let mut app = App::test_default();
+        app.gotify_connected = true;
+        app.gotify_subs = vec![gotify_sub(1, None, &apps, Some(5))];
+
+        let mut lines = Vec::new();
+        // A narrow pane forces the comma-joined list to wrap.
+        append_gotify_section(&mut lines, &app, 28);
+        let texts = lines.iter().map(|l| line_text(l)).collect::<Vec<_>>();
+        let joined = texts.join("\n");
+
+        for name in apps {
+            assert!(
+                joined.contains(name),
+                "app name {name} stays visible (never dropped); got:\n{joined}",
+            );
+        }
+
+        let app_lines =
+            texts.iter().filter(|t| apps.iter().any(|n| t.contains(*n))).collect::<Vec<_>>();
+        assert!(app_lines.len() >= 2, "a long app list wraps across >=2 lines; got:\n{joined}");
+        // Hang-indent: every wrapped app line shares the first line's
+        // left indent (aligns under the first app name).
+        let indents = app_lines.iter().map(|t| t.len() - t.trim_start().len()).collect::<Vec<_>>();
         assert!(
-            joined.contains("\u{2192} steward"),
-            "a team-worker subscription renders its -> role target; got:\n{joined}",
+            indents.windows(2).all(|w| w[0] == w[1]),
+            "wrapped app lines hang-indent-align; got indents {indents:?} in:\n{joined}",
+        );
+    }
+
+    #[test]
+    fn gotify_priority_line_renders_under_each_subscription() {
+        let mut app = App::test_default();
+        app.gotify_connected = true;
+        app.gotify_subs = vec![
+            gotify_sub(1, None, &["Alerts"], Some(5)),
+            gotify_sub(2, None, &["Deploys"], None),
+        ];
+
+        let mut lines = Vec::new();
+        append_gotify_section(&mut lines, &app, 60);
+        let texts = lines.iter().map(|l| line_text(l)).collect::<Vec<_>>();
+        let joined = texts.join("\n");
+
+        let alerts_at = texts.iter().position(|t| t.contains("Alerts")).expect("alerts app line");
+        let floor_at =
+            texts.iter().position(|t| t.contains("priority >=5")).expect("priority floor line");
+        let deploys_at =
+            texts.iter().position(|t| t.contains("Deploys")).expect("deploys app line");
+        let any_at =
+            texts.iter().position(|t| t.contains("priority any")).expect("priority any line");
+
+        assert_eq!(
+            floor_at,
+            alerts_at + 1,
+            "priority >=N sits directly under its own app list; got:\n{joined}",
+        );
+        assert_eq!(
+            any_at,
+            deploys_at + 1,
+            "priority any sits directly under its own app list; got:\n{joined}",
+        );
+    }
+
+    #[test]
+    fn gotify_single_app_and_empty_filter_render() {
+        let mut app = App::test_default();
+        app.gotify_connected = true;
+        app.gotify_subs =
+            vec![gotify_sub(1, None, &["Entertainment"], None), gotify_sub(2, None, &[], Some(3))];
+
+        let mut lines = Vec::new();
+        append_gotify_section(&mut lines, &app, 60);
+        let texts = lines.iter().map(|l| line_text(l)).collect::<Vec<_>>();
+        let joined = texts.join("\n");
+
+        assert!(joined.contains("Entertainment"), "the single named app renders; got:\n{joined}");
+        assert!(
+            texts.iter().any(|t| t.trim() == "any"),
+            "an empty filter renders the `any` app line; got:\n{joined}",
+        );
+        assert!(
+            joined.contains("priority >=3"),
+            "the empty-filter subscription keeps its own priority floor; got:\n{joined}",
         );
     }
 
