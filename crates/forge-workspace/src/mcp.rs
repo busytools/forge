@@ -139,6 +139,8 @@ mod tests {
             "gotify__subscribe",
             "gotify__list",
             "gotify__unsubscribe",
+            "gotify__apps",
+            "gotify__recent",
         ] {
             assert!(
                 debug.contains(expected),
@@ -181,6 +183,8 @@ mod tests {
             "gotify__subscribe",
             "gotify__list",
             "gotify__unsubscribe",
+            "gotify__apps",
+            "gotify__recent",
         ] {
             assert!(
                 debug.contains(expected),

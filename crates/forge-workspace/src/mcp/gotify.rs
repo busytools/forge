@@ -1,10 +1,13 @@
-//! Gotify MCP - subscribe to external notifications (`mcp__forge__gotify__*`).
+//! Gotify MCP - subscribe to + read from external notifications
+//! (`mcp__forge__gotify__*`).
 //!
 //! A forge session subscribes the configured Gotify server; matching
 //! notifications deliver into the session as a user-turn, spawning it if
-//! asleep. The tools (`gotify__subscribe` / `gotify__list` /
-//! `gotify__unsubscribe`) are ANY-CALLER, scoped to the caller's own
-//! project - mirroring the cron family, not the lead-only peers tools.
+//! asleep. `gotify__subscribe` / `gotify__list` / `gotify__unsubscribe`
+//! manage the caller's project subscriptions; `gotify__apps` /
+//! `gotify__recent` are read-only server queries (application names,
+//! recent-notification catch-up). All are ANY-CALLER - mirroring the cron
+//! family, not the lead-only peers tools.
 //!
 //! - [`facade`] - the `GotifyFacade` seam (prod over `Weak<Workspace>` +
 //!   a mock for tool tests).
@@ -14,18 +17,20 @@ use std::sync::Arc;
 use forge_sdk::mcp::server::McpServerBuilder;
 use forge_sdk::mcp::tool::{Tool, ToolInput, ToolOutput, ToolOutputBlock};
 
+use forge_agent::env::gotify::GotifyRecent;
 use forge_primitives::GotifySubscription;
 use uuid::Uuid;
 
-use crate::mcp::gotify::facade::{GotifyFacade, GotifySubscribeError};
+use crate::mcp::gotify::facade::{GotifyFacade, GotifyReadError, GotifySubscribeError};
 use crate::mcp::peers::facade::CallerKeyResolver;
 
 pub(crate) mod facade;
 pub mod types;
 
-/// Attach the three Gotify-coordination tools to an existing
-/// [`McpServerBuilder`]. Called for BOTH lead and worker sessions
-/// (any-caller), so `build_forge_server` invokes this unconditionally.
+/// Attach the five Gotify tools to an existing [`McpServerBuilder`].
+/// Called for BOTH lead and worker sessions (any-caller), so
+/// `build_forge_server` invokes this unconditionally. `apps` / `recent`
+/// are server-global reads and don't take the caller key.
 pub(crate) fn add_tools(
     builder: McpServerBuilder,
     facade: Arc<dyn GotifyFacade>,
@@ -33,8 +38,10 @@ pub(crate) fn add_tools(
 ) -> McpServerBuilder {
     let subscribe = Subscribe { facade: facade.clone(), caller_key: caller_key.clone() };
     let list = List { facade: facade.clone(), caller_key: caller_key.clone() };
+    let apps = Apps { facade: facade.clone() };
+    let recent = Recent { facade: facade.clone() };
     let unsubscribe = Unsubscribe { facade, caller_key };
-    builder.tool(subscribe).tool(list).tool(unsubscribe)
+    builder.tool(subscribe).tool(list).tool(unsubscribe).tool(apps).tool(recent)
 }
 
 fn tool_error(text: String) -> ToolOutput {
@@ -61,6 +68,28 @@ fn format_subscribe_error(err: &GotifySubscribeError) -> String {
                 .to_owned()
         }
     }
+}
+
+/// Default notification count for `gotify__recent` when `limit` is omitted.
+const DEFAULT_RECENT_LIMIT: usize = 20;
+
+fn format_read_error(err: &GotifyReadError) -> String {
+    match err {
+        GotifyReadError::NotConfigured => {
+            "no Gotify server configured in forge.toml [gotify]".to_owned()
+        }
+        GotifyReadError::Fetch(msg) => format!("Gotify request failed: {msg}"),
+    }
+}
+
+fn recent_to_json(n: &GotifyRecent) -> serde_json::Value {
+    serde_json::json!({
+        "app": n.app,
+        "title": n.title,
+        "message": n.message,
+        "priority": n.priority,
+        "date": n.date,
+    })
 }
 
 struct Subscribe {
@@ -232,6 +261,125 @@ impl Tool for Unsubscribe {
     }
 }
 
+struct Apps {
+    facade: Arc<dyn GotifyFacade>,
+}
+
+#[async_trait::async_trait]
+impl Tool for Apps {
+    #[allow(clippy::unnecessary_literal_bound)]
+    fn name(&self) -> &str {
+        "gotify__apps"
+    }
+
+    #[allow(clippy::unnecessary_literal_bound)]
+    fn description(&self) -> &str {
+        "List the application NAMEs on the configured Gotify server. Use these names to filter \
+         gotify__subscribe / gotify__recent by app. Returns a JSON array of strings. Takes no \
+         arguments. Errors if no [gotify] server is configured."
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {},
+            "additionalProperties": false,
+        })
+    }
+
+    async fn call(&self, _input: ToolInput) -> ToolOutput {
+        match self.facade.apps().await {
+            Ok(names) => match serde_json::to_string_pretty(&names) {
+                Ok(json) => ToolOutput::text(json),
+                Err(err) => tool_error(format!("application-list serialization failed: {err}")),
+            },
+            Err(err) => tool_error(format_read_error(&err)),
+        }
+    }
+}
+
+struct Recent {
+    facade: Arc<dyn GotifyFacade>,
+}
+
+#[derive(serde::Deserialize)]
+struct RecentArgs {
+    #[serde(default)]
+    applications: Option<Vec<String>>,
+    #[serde(default)]
+    min_priority: Option<u8>,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+#[async_trait::async_trait]
+impl Tool for Recent {
+    #[allow(clippy::unnecessary_literal_bound)]
+    fn name(&self) -> &str {
+        "gotify__recent"
+    }
+
+    #[allow(clippy::unnecessary_literal_bound)]
+    fn description(&self) -> &str {
+        "Fetch the most recent notifications from the configured Gotify server, newest first - a \
+         catch-up for a session that was asleep or just woke. Optionally filter by `applications` \
+         (a set of Gotify app NAMEs, from gotify__apps) and/or `min_priority` (at or above), and \
+         cap the count with `limit` (default 20). Returns a JSON array of {app, title, message, \
+         priority, date}. Errors if no [gotify] server is configured."
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "applications": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Gotify application NAMEs to include; a notification from any \
+                                    one of them matches. Omit or leave empty to include any app.",
+                },
+                "min_priority": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 255,
+                    "description": "Only include notifications at or above this priority. Omit \
+                                    to include any priority.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Maximum number of notifications to return (default 20).",
+                },
+            },
+            "additionalProperties": false,
+        })
+    }
+
+    async fn call(&self, input: ToolInput) -> ToolOutput {
+        let args: RecentArgs = match serde_json::from_value(input.value) {
+            Ok(a) => a,
+            Err(err) => return tool_error(format!("invalid arguments: {err}")),
+        };
+        let limit = args.limit.unwrap_or(DEFAULT_RECENT_LIMIT);
+        match self
+            .facade
+            .recent(args.applications.unwrap_or_default(), args.min_priority, limit)
+            .await
+        {
+            Ok(items) => {
+                let arr: Vec<serde_json::Value> = items.iter().map(recent_to_json).collect();
+                match serde_json::to_string_pretty(&serde_json::Value::Array(arr)) {
+                    Ok(json) => ToolOutput::text(json),
+                    Err(err) => {
+                        tool_error(format!("recent-notifications serialization failed: {err}"))
+                    }
+                }
+            }
+            Err(err) => tool_error(format_read_error(&err)),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -342,15 +490,110 @@ mod tests {
         assert!(mock.unsubscribe_calls.lock().is_empty(), "a bad id never reaches the facade");
     }
 
+    fn recent(app: &str, title: &str, priority: u8) -> GotifyRecent {
+        GotifyRecent {
+            app: app.to_owned(),
+            title: title.to_owned(),
+            message: "body".to_owned(),
+            priority,
+            date: "2026-07-04T09:18:00Z".to_owned(),
+        }
+    }
+
+    #[tokio::test]
+    async fn apps_returns_names_from_facade() {
+        let mock = Arc::new(MockGotifyFacade::new());
+        *mock.apps_result.lock() = Some(Ok(vec!["Backups".to_owned(), "CI".to_owned()]));
+        let tool = Apps { facade: mock.clone() };
+
+        let out = tool.call(input(serde_json::json!({}))).await;
+        assert!(!out.is_error, "apps succeeds: {}", out.blocks[0].text);
+        assert!(
+            out.blocks[0].text.contains("Backups") && out.blocks[0].text.contains("CI"),
+            "both app names appear: {}",
+            out.blocks[0].text,
+        );
+    }
+
+    #[tokio::test]
+    async fn apps_surfaces_not_configured_error() {
+        let mock = Arc::new(MockGotifyFacade::new());
+        *mock.apps_result.lock() = Some(Err(GotifyReadError::NotConfigured));
+        let tool = Apps { facade: mock.clone() };
+
+        let out = tool.call(input(serde_json::json!({}))).await;
+        assert!(out.is_error);
+        assert!(
+            out.blocks[0].text.contains("no Gotify server configured in forge.toml [gotify]"),
+            "unconfigured error surfaced: {}",
+            out.blocks[0].text,
+        );
+    }
+
+    #[tokio::test]
+    async fn recent_serializes_notifications_and_defaults_the_limit() {
+        let mock = Arc::new(MockGotifyFacade::new());
+        *mock.recent_result.lock() = Some(Ok(vec![recent("CI", "build failed", 8)]));
+        let tool = Recent { facade: mock.clone() };
+
+        let out = tool.call(input(serde_json::json!({}))).await;
+        assert!(!out.is_error, "recent succeeds: {}", out.blocks[0].text);
+        assert!(
+            out.blocks[0].text.contains("CI") && out.blocks[0].text.contains("build failed"),
+            "notification fields serialized: {}",
+            out.blocks[0].text,
+        );
+        let calls = mock.recent_calls.lock();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].2, 20, "an omitted limit defaults to 20");
+    }
+
+    #[tokio::test]
+    async fn recent_passes_explicit_filters_and_limit_to_facade() {
+        let mock = Arc::new(MockGotifyFacade::new());
+        *mock.recent_result.lock() = Some(Ok(vec![]));
+        let tool = Recent { facade: mock.clone() };
+
+        let out = tool
+            .call(input(
+                serde_json::json!({ "applications": ["CI"], "min_priority": 5, "limit": 3 }),
+            ))
+            .await;
+        assert!(!out.is_error);
+        let calls = mock.recent_calls.lock();
+        assert_eq!(calls[0].0, vec!["CI".to_owned()]);
+        assert_eq!(calls[0].1, Some(5));
+        assert_eq!(calls[0].2, 3);
+    }
+
+    #[tokio::test]
+    async fn recent_surfaces_fetch_error() {
+        let mock = Arc::new(MockGotifyFacade::new());
+        *mock.recent_result.lock() = Some(Err(GotifyReadError::Fetch("boom".to_owned())));
+        let tool = Recent { facade: mock.clone() };
+
+        let out = tool.call(input(serde_json::json!({}))).await;
+        assert!(out.is_error);
+        assert!(
+            out.blocks[0].text.contains("boom"),
+            "fetch failure surfaced to the LLM: {}",
+            out.blocks[0].text,
+        );
+    }
+
     #[test]
     fn tool_names_are_the_gotify_family() {
         let mock = MockGotifyFacade::new().into_arc();
         let resolver = resolver();
         let subscribe = Subscribe { facade: mock.clone(), caller_key: resolver.clone() };
         let list = List { facade: mock.clone(), caller_key: resolver.clone() };
-        let unsubscribe = Unsubscribe { facade: mock, caller_key: resolver };
+        let unsubscribe = Unsubscribe { facade: mock.clone(), caller_key: resolver };
+        let apps = Apps { facade: mock.clone() };
+        let recent = Recent { facade: mock };
         assert_eq!(subscribe.name(), "gotify__subscribe");
         assert_eq!(list.name(), "gotify__list");
         assert_eq!(unsubscribe.name(), "gotify__unsubscribe");
+        assert_eq!(apps.name(), "gotify__apps");
+        assert_eq!(recent.name(), "gotify__recent");
     }
 }
