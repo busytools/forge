@@ -242,13 +242,15 @@ pub struct Workspace {
     crons: Mutex<Vec<forge_primitives::CronEntry>>,
     /// Active Gotify subscriptions (`mcp__forge__gotify`). The set the
     /// stream matches each inbound message against. Durable ones (lead /
-    /// team-worker) are also persisted to `gotify_db` and reloaded here
+    /// team-worker) are also persisted to `db` and reloaded here
     /// at boot; ephemeral ad-hoc-worker ones live only in memory.
     gotify_subs: Mutex<Vec<forge_primitives::GotifySubscription>>,
-    /// Machine-local redb store backing the durable subscriptions.
-    /// `None` when the DB couldn't open (degrade to in-memory-only, no
-    /// persistence) or in `testing_stub`.
-    gotify_db: Mutex<Option<crate::store::Db>>,
+    /// Machine-local redb store. Backs durable Gotify subscriptions
+    /// ([`crate::store::gotify`]) and persisted dynamic workers
+    /// ([`crate::store::dynamic_workers`]). `None` when the DB couldn't
+    /// open (degrade to in-memory-only, no persistence) or in
+    /// `testing_stub`.
+    db: Mutex<Option<crate::store::Db>>,
     /// Whether the Gotify stream is currently connected. Set by the
     /// subsystem pump on `Connected` / `Disconnected`; read by the
     /// Inspector's status line.
@@ -323,9 +325,9 @@ pub fn resolve_lead_session(sessions: &[SDKSessionInfo]) -> Option<&SDKSessionIn
 /// Open the machine-local redb store at `<app-support>/db.redb`,
 /// creating the app-support dir first. Returns `None` (with a warn) when
 /// the app-support dir can't resolve or the DB can't open - forge then
-/// runs without durable Gotify subscriptions this session (hard rule
-/// #15: no cwd fallback).
-fn open_gotify_db() -> Option<crate::store::Db> {
+/// runs without durable Gotify subscriptions or dynamic workers this
+/// session (hard rule #15: no cwd fallback).
+fn open_db() -> Option<crate::store::Db> {
     let dir = match forge_sdk::app_support_dir() {
         Ok(dir) => dir,
         Err(error) => {
@@ -569,8 +571,8 @@ impl Workspace {
         // subscriptions. A failure to resolve the app-support dir or open
         // the DB degrades to no-subscriptions this run (non-fatal, like
         // the state cache) - no cwd fallback (hard rule #15).
-        let gotify_db = open_gotify_db();
-        let gotify_subs = match &gotify_db {
+        let db = open_db();
+        let gotify_subs = match &db {
             Some(db) => crate::store::gotify::list(db).unwrap_or_else(|error| {
                 tracing::warn!(
                     target: "forge_workspace::workspace",
@@ -666,7 +668,7 @@ impl Workspace {
             _single_instance_lock: single_instance_lock,
             crons: Mutex::new(crons),
             gotify_subs: Mutex::new(gotify_subs),
-            gotify_db: Mutex::new(gotify_db),
+            db: Mutex::new(db),
             gotify_connected: Mutex::new(false),
             gotify_app_index: Mutex::new(HashMap::new()),
             gotify_subsystem: Mutex::new(None),
@@ -2836,7 +2838,7 @@ impl Workspace {
         durable: bool,
     ) {
         if durable
-            && let Some(db) = self.gotify_db.lock().as_ref()
+            && let Some(db) = self.db.lock().as_ref()
             && let Err(error) = crate::store::gotify::insert(db, &sub)
         {
             tracing::warn!(
@@ -2859,7 +2861,7 @@ impl Workspace {
             subs.len() != before
         };
         if removed
-            && let Some(db) = self.gotify_db.lock().as_ref()
+            && let Some(db) = self.db.lock().as_ref()
             && let Err(error) = crate::store::gotify::remove(db, id)
         {
             tracing::warn!(
@@ -2887,11 +2889,51 @@ impl Workspace {
         *self.gotify_connected.lock()
     }
 
+    /// Persist a dynamic (LLM-spawned) worker's re-spawn args to the redb
+    /// store so a forge restart can bring it back. No-op when the DB
+    /// isn't open. Called only from the MCP `workers__spawn` path -
+    /// boot/reconnect re-spawns must NOT persist.
+    pub(crate) fn persist_dynamic_worker(
+        &self,
+        worker: &crate::store::dynamic_workers::DynamicWorker,
+    ) {
+        if let Some(db) = self.db.lock().as_ref()
+            && let Err(error) = crate::store::dynamic_workers::insert(db, worker)
+        {
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                %error,
+                project = %worker.project_key,
+                label = %worker.label,
+                "persisting a dynamic worker failed",
+            );
+        }
+    }
+
+    /// Delete a dynamic worker's persisted row so it never re-spawns.
+    /// Keyed by `(project_key, label)`; a no-op for static workers (they
+    /// have no row) and when the DB isn't open. Called from
+    /// `spawn::teardown_worker`, the shared close/despawn routine.
+    pub(crate) fn delete_dynamic_worker(&self, project_key: &ProjectKey, label: &str) {
+        if let Some(db) = self.db.lock().as_ref()
+            && let Err(error) =
+                crate::store::dynamic_workers::delete(db, project_key.as_str(), label)
+        {
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                %error,
+                project = %project_key.as_str(),
+                label = %label,
+                "deleting a persisted dynamic worker failed",
+            );
+        }
+    }
+
     /// Install a redb store into a test workspace so the durable-vs-
     /// ephemeral persistence path is exercisable without `Workspace::new`.
     #[cfg(any(test, feature = "test-helpers"))]
-    pub fn install_gotify_db_for_test(&self, db: crate::store::Db) {
-        *self.gotify_db.lock() = Some(db);
+    pub fn install_db_for_test(&self, db: crate::store::Db) {
+        *self.db.lock() = Some(db);
     }
 
     /// Match `msg` against every active subscription and dispatch one
@@ -4356,7 +4398,7 @@ impl Workspace {
             _single_instance_lock: None,
             crons: Mutex::new(Vec::new()),
             gotify_subs: Mutex::new(Vec::new()),
-            gotify_db: Mutex::new(None),
+            db: Mutex::new(None),
             gotify_connected: Mutex::new(false),
             gotify_app_index: Mutex::new(HashMap::new()),
             gotify_subsystem: Mutex::new(None),
@@ -4795,7 +4837,7 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
         let db = crate::store::Db::open(&dir.path().join("db.redb")).expect("open db");
-        ws.install_gotify_db_for_test(db);
+        ws.install_db_for_test(db);
 
         let sub = |team_role: Option<&str>| GotifySubscription {
             id: uuid::Uuid::new_v4(),
@@ -4816,14 +4858,101 @@ mod tests {
             "both live in the active in-memory set",
         );
         let persisted = || {
-            crate::store::gotify::list(ws.gotify_db.lock().as_ref().expect("db installed"))
-                .expect("list")
+            crate::store::gotify::list(ws.db.lock().as_ref().expect("db installed")).expect("list")
         };
         assert_eq!(persisted().len(), 1, "only the durable subscription hit redb");
         assert_eq!(persisted()[0].id, durable.id);
 
         assert!(ws.remove_gotify_subscription("p", durable.id), "durable id removes");
         assert!(persisted().is_empty(), "removal cleared the persisted record");
+    }
+
+    fn dynamic_worker_row(
+        project: &str,
+        label: &str,
+    ) -> crate::store::dynamic_workers::DynamicWorker {
+        crate::store::dynamic_workers::DynamicWorker {
+            project_key: project.to_owned(),
+            label: label.to_owned(),
+            charter: format!("charter for {label}"),
+            kick: Some(format!("kick for {label}")),
+            spawned_by_session_id: "lead-uuid".to_owned(),
+        }
+    }
+
+    fn live_worker_entry(label: &str, key: &str) -> crate::mcp::workers::types::WorkerEntry {
+        crate::mcp::workers::types::WorkerEntry {
+            label: label.to_owned(),
+            charter: "c".to_owned(),
+            session_key: SessionKey::from_session_id(key),
+            status: forge_primitives::WorkerLiveness::Running,
+            spawned_at: std::time::SystemTime::UNIX_EPOCH,
+            spawned_by_session_id: "lead-uuid".to_owned(),
+            needs_tag: false,
+            is_git_repo_at_spawn: false,
+            diagnostic: None,
+            kick: None,
+        }
+    }
+
+    /// The Projects-pane close (`handle_close_worker` -> `teardown_worker`)
+    /// deletes the persisted dynamic-worker row so it never re-spawns,
+    /// scoped to the closed label - siblings survive.
+    #[tokio::test]
+    async fn projects_pane_close_deletes_persisted_dynamic_worker_row() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let dir = tempdir().expect("tempdir");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        let project = ProjectKey::new("forge");
+
+        ws.persist_dynamic_worker(&dynamic_worker_row("forge", "reviewer"));
+        ws.persist_dynamic_worker(&dynamic_worker_row("forge", "tester"));
+        ws.insert_live_worker(&project, live_worker_entry("reviewer", "worker-1"));
+        ws.insert_live_worker(&project, live_worker_entry("tester", "worker-2"));
+
+        crate::spawn::handle_close_worker(&ws, &project, "reviewer");
+
+        let rows = {
+            let guard = ws.db.lock();
+            crate::store::dynamic_workers::list_for_project(
+                guard.as_ref().expect("db installed"),
+                "forge",
+            )
+            .expect("list")
+        };
+        let labels: Vec<&str> = rows.iter().map(|w| w.label.as_str()).collect();
+        assert_eq!(labels, vec!["tester"], "close deletes only the closed worker's row");
+    }
+
+    /// The `workers__despawn` path (`handle_despawn_worker` ->
+    /// `teardown_worker`) deletes the persisted dynamic-worker row too.
+    #[tokio::test]
+    async fn mcp_despawn_deletes_persisted_dynamic_worker_row() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let dir = tempdir().expect("tempdir");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        let project = ProjectKey::new("forge");
+
+        ws.persist_dynamic_worker(&dynamic_worker_row("forge", "reviewer"));
+        ws.insert_live_worker(&project, live_worker_entry("reviewer", "worker-1"));
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        crate::spawn::handle_despawn_worker(&ws, &project, "reviewer", false, tx);
+        assert!(matches!(rx.await, Ok(crate::protocol::DespawnResult::Despawned { .. })));
+
+        let rows = {
+            let guard = ws.db.lock();
+            crate::store::dynamic_workers::list_for_project(
+                guard.as_ref().expect("db installed"),
+                "forge",
+            )
+            .expect("list")
+        };
+        assert!(rows.is_empty(), "despawn deletes the persisted dynamic-worker row");
     }
 
     fn gotify_sub(

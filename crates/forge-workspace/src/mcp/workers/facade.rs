@@ -478,12 +478,26 @@ impl WorkerFacade for ProdWorkerFacade {
                 }
             }
         };
+        // Row to persist on success. Captured before the values move
+        // into the Command so a forge restart can re-spawn this dynamic
+        // worker (resolved charter/kick, no session_id - resume is
+        // recovered from the catalog tag). This is the ONLY MCP-spawn
+        // site; boot/reconnect re-spawns dispatch SpawnWorker directly
+        // and must not persist.
+        let spawned_by_session_id = caller.as_str().to_owned();
+        let persisted = crate::store::dynamic_workers::DynamicWorker {
+            project_key: cp.project_key.as_str().to_owned(),
+            label: label.clone(),
+            charter: charter.clone(),
+            kick: kick.clone(),
+            spawned_by_session_id: spawned_by_session_id.clone(),
+        };
         let (tx, rx) = tokio::sync::oneshot::channel();
         let cmd = Command::SpawnWorker {
             project_key: cp.project_key,
             label,
             charter,
-            spawned_by_session_id: caller.as_str().to_owned(),
+            spawned_by_session_id,
             // MCP-driven spawn is always a fresh session - the LLM
             // explicitly requested a NEW worker. Resume is for the
             // engineering-team Connected hook only.
@@ -497,7 +511,10 @@ impl WorkerFacade for ProdWorkerFacade {
             });
         }
         match rx.await {
-            Ok(Ok(reply)) => Ok(reply),
+            Ok(Ok(reply)) => {
+                ws.persist_dynamic_worker(&persisted);
+                Ok(reply)
+            }
             Ok(Err(message)) => Err(classify_worker_spawn_failure(&message, is_git_repo_at_spawn)),
             Err(_) => Err(WorkerSpawnError::DispatchFailed {
                 message: "spawn handler dropped reply channel".into(),

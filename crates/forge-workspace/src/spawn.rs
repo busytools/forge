@@ -899,6 +899,12 @@ pub(crate) fn teardown_worker(
     label: &str,
 ) -> Option<crate::mcp::workers::types::WorkerEntry> {
     let entry = workspace.remove_latest_worker(project_key, label)?;
+    // Both entry points into this routine (the Projects-pane close and
+    // the `workers__despawn` MCP tool) delete the persisted dynamic-
+    // worker row so it never re-spawns. A no-op for static workers (no
+    // row). Cancel and the lead-close cascade go through other paths and
+    // deliberately leave the row intact.
+    workspace.delete_dynamic_worker(project_key, label);
     let status = entry.to_status();
     let is_git_repo_at_spawn = entry.is_git_repo_at_spawn;
     // MUST call the non-cascading `release_session` primitive (NOT
