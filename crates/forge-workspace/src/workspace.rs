@@ -3236,15 +3236,41 @@ impl Workspace {
     }
 
     /// Insert a worker entry into `live_workers[project_key]`.
-    /// MCP-driven spawns dedup on label (`workers__spawn` refuses a
-    /// second live worker per label per project); `remove_latest_worker`
-    /// resolves the single live match.
+    /// `remove_latest_worker` resolves the single live match. The
+    /// one-live-worker-per-label invariant is enforced by
+    /// [`Self::insert_live_worker_if_label_absent`]; this raw push is for
+    /// callers (tests, re-tag) that already own that guarantee.
     pub fn insert_live_worker(
         &self,
         project_key: &ProjectKey,
         entry: crate::mcp::workers::types::WorkerEntry,
     ) {
         self.live_workers.lock().entry(project_key.clone()).or_default().push(entry);
+    }
+
+    /// Insert `entry` only if no live (non-`Failed`) worker already holds
+    /// its label in `project_key`. Holds `live_workers.lock()` across the
+    /// label-check AND the push, so two genuinely-concurrent SpawnWorker
+    /// dispatches for the same label (a reconnect re-spawn racing a manual
+    /// `workers__spawn`, say) can't both pass a check-then-insert window
+    /// and fork two subprocesses onto one worktree. Returns `Ok(())` on
+    /// insert, or `Err(session_key)` naming the live worker that already
+    /// holds the label. This is the sole enforcement point for the
+    /// at-most-one-live-worker-per-label invariant.
+    pub fn insert_live_worker_if_label_absent(
+        &self,
+        project_key: &ProjectKey,
+        entry: crate::mcp::workers::types::WorkerEntry,
+    ) -> Result<(), SessionKey> {
+        let mut workers = self.live_workers.lock();
+        let entries = workers.entry(project_key.clone()).or_default();
+        if let Some(existing) =
+            crate::mcp::workers::types::live_worker_with_label(entries, &entry.label)
+        {
+            return Err(existing.session_key.clone());
+        }
+        entries.push(entry);
+        Ok(())
     }
 
     /// Remove the latest-spawned worker matching `label` from
@@ -6803,6 +6829,42 @@ mod workers_state_tests {
         let (ws, _rx) = Workspace::testing_stub();
         let project = ProjectKey::new("forge");
         assert!(ws.remove_latest_worker(&project, "missing").is_none());
+    }
+
+    /// The atomic guard rejects a second insert for a live label (holding
+    /// the lock across the check + push closes the concurrent-dispatch
+    /// TOCTOU) and hands back the existing worker.
+    #[test]
+    fn insert_if_label_absent_rejects_duplicate_label() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let project = ProjectKey::new("forge");
+        assert!(
+            ws.insert_live_worker_if_label_absent(&project, fake_entry("reviewer", "first"))
+                .is_ok(),
+            "the first insert for a label wins",
+        );
+        let existing = ws
+            .insert_live_worker_if_label_absent(&project, fake_entry("reviewer", "second"))
+            .expect_err("a second live worker for the same label is rejected");
+        assert_eq!(existing.as_str(), "first", "the live holder is returned");
+        assert_eq!(ws.list_live_workers(&project).len(), 1, "no duplicate is inserted");
+    }
+
+    /// A `Failed` entry does not hold its label - the atomic guard lets
+    /// its label be re-spawned (parity with `live_worker_with_label`).
+    #[test]
+    fn insert_if_label_absent_allows_reinsert_over_failed() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let project = ProjectKey::new("forge");
+        let mut failed = fake_entry("reviewer", "dead");
+        failed.status = WorkerLiveness::Failed;
+        ws.insert_live_worker(&project, failed);
+        assert!(
+            ws.insert_live_worker_if_label_absent(&project, fake_entry("reviewer", "fresh"))
+                .is_ok(),
+            "a Failed entry does not block a re-spawn of its label",
+        );
+        assert_eq!(ws.list_live_workers(&project).len(), 2);
     }
 
     #[test]
