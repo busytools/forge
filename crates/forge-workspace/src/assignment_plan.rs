@@ -74,10 +74,10 @@ pub struct ProjectInput {
     /// Empty/missing -> defaults to all ready accounts at compute
     /// time.
     pub accounts: Vec<String>,
-    /// Engineering-team labels from `team = [...]`. Lead is implicit
-    /// at session_n=0; team[0] is session_n=1, team[1] is
-    /// session_n=2, etc.
-    pub team: Vec<String>,
+    /// Static-worker labels from `static_workers = [...]`. Lead is
+    /// implicit at session_n=0; static_workers[0] is session_n=1,
+    /// static_workers[1] is session_n=2, etc.
+    pub static_workers: Vec<String>,
 }
 
 impl AssignmentPlan {
@@ -231,11 +231,11 @@ pub fn compute_plan(
 
         let offset = project_idx % pool.len();
 
-        // Lead session is session_n=0; team workers follow in order
+        // Lead session is session_n=0; static workers follow in order
         // as session_n=1, 2, ....
-        let mut sessions = Vec::with_capacity(1 + project.team.len());
+        let mut sessions = Vec::with_capacity(1 + project.static_workers.len());
         sessions.push("lead".to_owned());
-        for label in &project.team {
+        for label in &project.static_workers {
             sessions.push(label.clone());
         }
 
@@ -266,11 +266,11 @@ mod tests {
         ProjectKey::new(name)
     }
 
-    fn project(key: &str, accounts: &[&str], team: &[&str]) -> ProjectInput {
+    fn project(key: &str, accounts: &[&str], static_workers: &[&str]) -> ProjectInput {
         ProjectInput {
             key: pk(key),
             accounts: accounts.iter().map(|s| (*s).to_owned()).collect(),
-            team: team.iter().map(|s| (*s).to_owned()).collect(),
+            static_workers: static_workers.iter().map(|s| (*s).to_owned()).collect(),
         }
     }
 

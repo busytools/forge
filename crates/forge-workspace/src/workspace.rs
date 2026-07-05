@@ -283,7 +283,7 @@ pub struct Workspace {
     #[cfg(any(test, feature = "testing"))]
     command_intercept: Mutex<Option<Vec<Command>>>,
     /// Test-only project overlay. Entries appended via
-    /// `seed_test_project_with_team` are searched first in
+    /// `seed_test_project_with_static_workers` are searched first in
     /// `find_project_view_by_name` so tests can drive the
     /// Connected-hook team-spawn trigger without writing a
     /// real `forge.toml`. Empty in production.
@@ -747,7 +747,7 @@ impl Workspace {
         // `ui::render` under projects with ~14 entries.
         let catalog = self.catalog.lock();
         // Iterate config.projects, with the test-only overlay appended
-        // so unit tests can seed projects via `seed_test_project_with_team`
+        // so unit tests can seed projects via `seed_test_project_with_static_workers`
         // and exercise paths that read `list_projects` (matches the
         // `project_root_for_key` / `find_project_view_by_name` overlay
         // pattern).
@@ -797,7 +797,7 @@ impl Workspace {
                 path: project.path.clone(),
                 display_path: project.display_path.clone(),
                 accounts: project.accounts.clone(),
-                team: project.team.clone(),
+                static_workers: project.static_workers.clone(),
                 sessions,
             });
         }
@@ -1544,7 +1544,7 @@ impl Workspace {
                     )),
                 ),
                 accounts: p.accounts.clone(),
-                team: p.team.clone(),
+                static_workers: p.static_workers.clone(),
             })
             .collect();
 
@@ -2453,7 +2453,7 @@ impl Workspace {
     /// Load every label's charter + initial kick (file-driven loader)
     /// before spawning. Returns the loaded set, skipping (with a warn
     /// log) any label whose files are missing - so a single bad label
-    /// in `team = [...]` doesn't block the rest of the team.
+    /// in `static_workers = [...]` doesn't block the rest of the roster.
     fn load_team_roles(
         team: &[String],
         namespace: &str,
@@ -4438,9 +4438,14 @@ impl Workspace {
 
     /// Append a synthetic project to the test overlay searched first
     /// by `find_project_view_by_name`. Used by engineering-team tests
-    /// to drive the Connected-hook team-spawn trigger without
+    /// to drive the Connected-hook worker-spawn trigger without
     /// writing a real `forge.toml`. Test-only.
-    pub fn seed_test_project_with_team(&self, name: &str, path: &str, team: &[String]) {
+    pub fn seed_test_project_with_static_workers(
+        &self,
+        name: &str,
+        path: &str,
+        static_workers: &[String],
+    ) {
         self.test_extra_projects.lock().push(crate::config::LoadedProject {
             name: name.to_owned(),
             path: std::path::PathBuf::from(path),
@@ -4448,7 +4453,7 @@ impl Workspace {
             org: "TestOrg".to_owned(),
             accounts: vec!["acct-a".to_owned()],
             auto_start: false,
-            team: team.to_vec(),
+            static_workers: static_workers.to_vec(),
         });
     }
 
@@ -4781,7 +4786,7 @@ mod tests {
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
 
         let path = "/tmp/cron-project-path-proj";
-        ws.seed_test_project_with_team("cronproj", path, &[]);
+        ws.seed_test_project_with_static_workers("cronproj", path, &[]);
 
         // The escalation guard for the one-time Connected stamp: a clean
         // project-root cwd MUST resolve the name. If this ever returns
@@ -4820,7 +4825,7 @@ mod tests {
         let link = dir.path().join("link");
         std::os::unix::fs::symlink(dir.path().join("real"), &link).expect("symlink");
         let root = link.join("proj");
-        ws.seed_test_project_with_team("symproj", &root.to_string_lossy(), &[]);
+        ws.seed_test_project_with_static_workers("symproj", &root.to_string_lossy(), &[]);
 
         let absent_worktree = root.join(".claude").join("worktrees").join("reviewer");
         assert_eq!(
@@ -5117,7 +5122,7 @@ mod tests {
     fn deliver_gotify_message_spawns_asleep_project_and_buffers() {
         let dir = tempdir().expect("tempdir");
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
-        ws.seed_test_project_with_team("forge", "/tmp/gotify-forge", &[]);
+        ws.seed_test_project_with_static_workers("forge", "/tmp/gotify-forge", &[]);
 
         let notif = gotify_notif("forge", "Heads up", "hello envelope", 5);
         ws.enable_test_dispatch_intercept();
@@ -5168,7 +5173,11 @@ mod tests {
     fn deliver_gotify_message_delivers_to_running_team_worker() {
         let dir = tempdir().expect("tempdir");
         let (ws, mut rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
-        ws.seed_test_project_with_team("forge", "/tmp/gotify-team", &["reviewer".to_owned()]);
+        ws.seed_test_project_with_static_workers(
+            "forge",
+            "/tmp/gotify-team",
+            &["reviewer".to_owned()],
+        );
         let view_key = ws
             .list_projects()
             .into_iter()
@@ -5222,7 +5231,11 @@ mod tests {
     fn deliver_gotify_message_team_worker_asleep_falls_through_to_lead() {
         let dir = tempdir().expect("tempdir");
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
-        ws.seed_test_project_with_team("forge", "/tmp/gotify-team", &["reviewer".to_owned()]);
+        ws.seed_test_project_with_static_workers(
+            "forge",
+            "/tmp/gotify-team",
+            &["reviewer".to_owned()],
+        );
 
         // No live worker of that role: the subscription falls through to
         // lead delivery, which spawns the asleep project (the lead brings up
@@ -5299,7 +5312,7 @@ mod tests {
         use forge_primitives::cron::{CronEntry, CronId, CronKind};
         let dir = tempdir().expect("tempdir");
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
-        ws.seed_test_project_with_team("forge", "/tmp/forge", &[]);
+        ws.seed_test_project_with_static_workers("forge", "/tmp/forge", &[]);
 
         let now = std::time::SystemTime::now();
         let past = std::time::SystemTime::UNIX_EPOCH;
@@ -5484,7 +5497,7 @@ mod tests {
     fn deliver_cron_prompt_to_running_lead_emits_cron_prompt_appended() {
         let dir = tempdir().expect("tempdir");
         let (ws, mut rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
-        ws.seed_test_project_with_team("cronlead", "/tmp/cron-lead", &[]);
+        ws.seed_test_project_with_static_workers("cronlead", "/tmp/cron-lead", &[]);
         // Seed the catalog + pool so the project has a running (open) lead:
         // list_projects derives `is_open` from pool membership.
         let cwd = project_expanded_path(&ws, "cronlead");
@@ -8315,7 +8328,7 @@ mod git_scan_cwd_tests {
         worker_session: &str,
         is_git: bool,
     ) -> (std::path::PathBuf, SessionKey) {
-        ws.seed_test_project_with_team(project_name, project_root, &[]);
+        ws.seed_test_project_with_static_workers(project_name, project_root, &[]);
         let project_key = ProjectKey::new(
             forge_agent::userdata::catalog::scan::project_key_for_directory(Some(project_root)),
         );
@@ -8378,7 +8391,7 @@ mod git_scan_cwd_tests {
         // raw cwd survives unchanged. No `live_workers` entry exists
         // for the lead.
         let (ws, _rx) = Workspace::testing_stub();
-        ws.seed_test_project_with_team("forge", "/tmp/test-forge-lead", &[]);
+        ws.seed_test_project_with_static_workers("forge", "/tmp/test-forge-lead", &[]);
         let lead_key = SessionKey::from_session_id("lead-uuid");
         let lead_cwd = std::path::PathBuf::from("/tmp/test-forge-lead");
         let resolved = ws.git_scan_cwd_for_session(&lead_key, &lead_cwd);

@@ -685,19 +685,19 @@ const WORKER_NAME_WIDTH: usize = 11;
 /// 13 = 1 space + 12 (CHIP_MAX_WIDTH in `account_chip_spans`).
 const CHIP_COLUMN_WIDTH: usize = 13;
 
-/// Append one row per declared team worker (from forge.toml's
-/// `team = [...]` for this project) directly below the project's
-/// row. Each row shows the worker label + its assigned-account chip
-/// from the AssignmentPlan, so the user can see the per-session
+/// Append one row per declared static worker (from forge.toml's
+/// `static_workers = [...]` for this project) directly below the
+/// project's row. Each row shows the worker label + its assigned-account
+/// chip from the AssignmentPlan, so the user can see the per-session
 /// account mapping before clicking the project. Workers are
 /// info-only on the launchpad - clicks land on the project lead
 /// row; the worker rows are not selectable.
 fn push_worker_rows(lines: &mut Vec<Line<'static>>, project: &ProjectView, app: &App) {
-    if project.team.is_empty() {
+    if project.static_workers.is_empty() {
         return;
     }
     let dim = Style::default().fg(theme::DIM);
-    let workers = &project.team;
+    let workers = &project.static_workers;
     let count = workers.len();
     for (idx, label) in workers.iter().enumerate() {
         let is_last = idx + 1 == count;

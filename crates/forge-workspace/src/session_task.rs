@@ -826,7 +826,7 @@ fn maybe_spawn_team_on_connected(
     let Some(project) = workspace.find_project_view_by_name(&project_name) else {
         return;
     };
-    if project.team.is_empty() {
+    if project.static_workers.is_empty() {
         return;
     }
     let project_key = crate::target::ProjectKey::new(
@@ -849,7 +849,7 @@ fn maybe_spawn_team_on_connected(
         project_key,
         project.path.clone(),
         project.name.clone(),
-        project.team.clone(),
+        project.static_workers.clone(),
         force_new,
     );
 }
@@ -1797,7 +1797,11 @@ mod team_hook_tests {
         ensure_test_charter_root();
         let (workspace, _update_rx) = Workspace::testing_stub();
         workspace.enable_test_dispatch_intercept();
-        workspace.seed_test_project_with_team("proj-x", "/tmp/proj-x", &["implementer".to_owned()]);
+        workspace.seed_test_project_with_static_workers(
+            "proj-x",
+            "/tmp/proj-x",
+            &["implementer".to_owned()],
+        );
 
         on_connected_for_test(&workspace, &synth_lead_key("proj-x"), "lead-uuid");
 
@@ -1813,7 +1817,7 @@ mod team_hook_tests {
     fn lead_connected_without_team_does_nothing() {
         let (workspace, _update_rx) = Workspace::testing_stub();
         workspace.enable_test_dispatch_intercept();
-        workspace.seed_test_project_with_team("proj-y", "/tmp/proj-y", &[]);
+        workspace.seed_test_project_with_static_workers("proj-y", "/tmp/proj-y", &[]);
 
         on_connected_for_test(&workspace, &synth_lead_key("proj-y"), "lead-uuid");
 
@@ -1827,7 +1831,11 @@ mod team_hook_tests {
     fn worker_connected_does_not_trigger_team_spawn() {
         let (workspace, _update_rx) = Workspace::testing_stub();
         workspace.enable_test_dispatch_intercept();
-        workspace.seed_test_project_with_team("proj-z", "/tmp/proj-z", &["planner".to_owned()]);
+        workspace.seed_test_project_with_static_workers(
+            "proj-z",
+            "/tmp/proj-z",
+            &["planner".to_owned()],
+        );
 
         let worker_synth = SessionKey::from_session_id("__spawn_worker_proj-z_planner_abc__");
         on_connected_for_test(&workspace, &worker_synth, "worker-uuid");
@@ -1845,7 +1853,11 @@ mod team_hook_tests {
         ensure_test_charter_root();
         let (workspace, _update_rx) = Workspace::testing_stub();
         workspace.enable_test_dispatch_intercept();
-        workspace.seed_test_project_with_team("proj-x", "/tmp/proj-x", &["implementer".to_owned()]);
+        workspace.seed_test_project_with_static_workers(
+            "proj-x",
+            "/tmp/proj-x",
+            &["implementer".to_owned()],
+        );
 
         let lead_synth = synth_lead_key("proj-x");
 
@@ -1948,7 +1960,7 @@ mod team_hook_tests {
         let (workspace, _update_rx) = Workspace::testing_stub();
         workspace.enable_test_dispatch_intercept();
         workspace.start_kick_dispatcher();
-        workspace.seed_test_project_with_team(
+        workspace.seed_test_project_with_static_workers(
             "hub-modules",
             "/tmp/hub-modules",
             &["steward".to_owned()],
@@ -1991,7 +2003,7 @@ mod team_hook_tests {
         label: &str,
         kick: Option<String>,
     ) -> SessionKey {
-        workspace.seed_test_project_with_team("forge", "/tmp/forge", &[]);
+        workspace.seed_test_project_with_static_workers("forge", "/tmp/forge", &[]);
         let project_key = workspace
             .list_projects()
             .into_iter()
@@ -2098,7 +2110,7 @@ mod team_hook_tests {
         // Empty team so the spawn-team path doesn't fire either; we
         // want to assert PURELY on the kick path being suppressed
         // for leads.
-        workspace.seed_test_project_with_team("proj-x", "/tmp/proj-x", &[]);
+        workspace.seed_test_project_with_static_workers("proj-x", "/tmp/proj-x", &[]);
 
         on_connected_for_test(&workspace, &synth_lead_key("proj-x"), "lead-uuid");
 

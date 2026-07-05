@@ -170,24 +170,27 @@ fn resolve_identity(ws: &Workspace, caller: &SessionKey) -> Option<(String, Opti
             .find(|w| w.session_key == *caller)
             .map(|w| w.label)
     };
-    let team = ws
+    let static_workers = ws
         .list_projects()
         .into_iter()
         .find(|v| v.key == cx.project_key)
-        .map(|v| v.team)
+        .map(|v| v.static_workers)
         .unwrap_or_default();
-    let (team_role, durable) = subscriber_durability(worker_label.as_deref(), &team);
+    let (team_role, durable) = subscriber_durability(worker_label.as_deref(), &static_workers);
     Some((cx.project_name, team_role, durable))
 }
 
 /// `(team_role, durable)` given the caller's worker label (`None` = the
-/// lead or a plain catalog session) and the project's forge.toml team
-/// labels. A lead is durable and targets itself; a worker is durable
-/// only when its label is a configured team role.
-fn subscriber_durability(worker_label: Option<&str>, team: &[String]) -> (Option<String>, bool) {
+/// lead or a plain catalog session) and the project's forge.toml
+/// static-worker labels. A lead is durable and targets itself; a worker
+/// is durable only when its label is a configured static worker.
+fn subscriber_durability(
+    worker_label: Option<&str>,
+    static_workers: &[String],
+) -> (Option<String>, bool) {
     match worker_label {
         None => (None, true),
-        Some(label) => (Some(label.to_owned()), team.iter().any(|t| t == label)),
+        Some(label) => (Some(label.to_owned()), static_workers.iter().any(|t| t == label)),
     }
 }
 

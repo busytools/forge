@@ -852,8 +852,8 @@ impl Tool for Ask {
 /// `workers__create_role` - lead-only. Writes charter + initial-kick
 /// (and, optionally, resume-kick) files for a new role under
 /// `~/.claude/forge-team/<label>/`. The next forge restart can then
-/// include `<label>` in `forge.toml`'s `team = [...]` to spawn workers
-/// with this charter.
+/// include `<label>` in `forge.toml`'s `static_workers = [...]` to spawn
+/// workers with this charter.
 ///
 /// Arguments:
 /// - `label` (string, required) - the role label, may contain `/` for
@@ -918,8 +918,8 @@ impl Tool for CreateRole {
          `hub-modules/researcher` writes to \
          `~/.claude/forge-team/hub-modules/researcher/charter.md`). \
          After creation, add the label to `forge.toml`'s \
-         `team = [...]` and restart forge to spawn workers with this \
-         charter. Refuses by default if any target file already \
+         `static_workers = [...]` and restart forge to spawn workers with \
+         this charter. Refuses by default if any target file already \
          exists; pass `overwrite=true` to replace. The overwrite \
          scope is limited to the files the call writes: when \
          `resume_kick` is omitted, an existing `resume-kick.md` is \
