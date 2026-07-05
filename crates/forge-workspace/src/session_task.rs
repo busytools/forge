@@ -2132,7 +2132,6 @@ mod team_hook_tests {
             label: "scratch".to_owned(),
             charter: "do the thing".to_owned(),
             kick: Some("original kick".to_owned()),
-            spawned_by_session_id: "old-lead".to_owned(),
         });
         workspace.insert_live_worker(
             &project_key,

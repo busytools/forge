@@ -18,14 +18,15 @@ const DYNAMIC_WORKERS: TableDefinition<(&str, &str), &[u8]> =
 
 /// A persisted dynamic worker's re-spawn args. `charter` and `kick` are
 /// the resolved values from the originating `workers__spawn` (inline or
-/// role-file-loaded), so re-spawn is self-contained.
+/// role-file-loaded), so re-spawn is self-contained. The spawning lead's
+/// session_id is deliberately absent: a re-spawn re-parents to whatever
+/// lead is current on reconnect, so the original is never read back.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DynamicWorker {
     pub project_key: String,
     pub label: String,
     pub charter: String,
     pub kick: Option<String>,
-    pub spawned_by_session_id: String,
 }
 
 /// Persist a dynamic worker, replacing any prior record with the same
@@ -92,7 +93,6 @@ mod tests {
             label: label.to_owned(),
             charter: format!("charter for {label}"),
             kick: Some(format!("kick for {label}")),
-            spawned_by_session_id: "lead-uuid".to_owned(),
         }
     }
 

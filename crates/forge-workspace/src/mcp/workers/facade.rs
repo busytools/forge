@@ -484,20 +484,18 @@ impl WorkerFacade for ProdWorkerFacade {
         // recovered from the catalog tag). This is the ONLY MCP-spawn
         // site; boot/reconnect re-spawns dispatch SpawnWorker directly
         // and must not persist.
-        let spawned_by_session_id = caller.as_str().to_owned();
         let persisted = crate::store::dynamic_workers::DynamicWorker {
             project_key: cp.project_key.as_str().to_owned(),
             label: label.clone(),
             charter: charter.clone(),
             kick: kick.clone(),
-            spawned_by_session_id: spawned_by_session_id.clone(),
         };
         let (tx, rx) = tokio::sync::oneshot::channel();
         let cmd = Command::SpawnWorker {
             project_key: cp.project_key,
             label,
             charter,
-            spawned_by_session_id,
+            spawned_by_session_id: caller.as_str().to_owned(),
             // MCP-driven spawn is always a fresh session - the LLM
             // explicitly requested a NEW worker. Resume is for the
             // engineering-team Connected hook only.

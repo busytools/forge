@@ -4959,7 +4959,6 @@ mod tests {
             label: label.to_owned(),
             charter: format!("charter for {label}"),
             kick: Some(format!("kick for {label}")),
-            spawned_by_session_id: "lead-uuid".to_owned(),
         }
     }
 
@@ -7791,7 +7790,6 @@ mod team_spawn_tests {
             label: label.to_owned(),
             charter: format!("dynamic charter for {label}"),
             kick: kick.map(str::to_owned),
-            spawned_by_session_id: "old-lead".to_owned(),
         }
     }
 
@@ -7876,7 +7874,6 @@ mod team_spawn_tests {
             label: "scratch".to_owned(),
             charter: "resume the scratch task".to_owned(),
             kick: Some("go".to_owned()),
-            spawned_by_session_id: "old-lead".to_owned(),
         });
         workspace.enable_test_dispatch_intercept();
 
@@ -7916,7 +7913,6 @@ mod team_spawn_tests {
             label: "scratch".to_owned(),
             charter: "c".to_owned(),
             kick: None,
-            spawned_by_session_id: "old-lead".to_owned(),
         });
         workspace.delete_dynamic_worker(&project_key, "scratch");
         workspace.enable_test_dispatch_intercept();
