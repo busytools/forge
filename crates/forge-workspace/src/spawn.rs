@@ -298,12 +298,13 @@ pub(crate) enum CronFireOutcome {
 }
 
 /// Deliver a due cron's prompt into its project's session as a plain
-/// user turn. If the project's lead is running, dispatch a
-/// `Command::Prompt` straight to it; otherwise buffer the prompt on the
-/// synthetic spawn-key's DomainSession and dispatch `Command::SpawnProject`;
-/// `SessionTask` drains it on Connected via `drain_pending_cron_prompts`.
-/// Mirrors [`handle_deliver_peer_prompt`] minus the peer-envelope wrapping
-/// (a cron prompt is an ordinary user turn, not a peer message).
+/// user turn AND echo it into the target's chat as a cron block. If the
+/// project's lead is running, echo + dispatch a `Command::Prompt` straight
+/// to it; otherwise buffer the prompt on the synthetic spawn-key's
+/// DomainSession and dispatch `Command::SpawnProject`; `SessionTask`
+/// drains + echoes it on Connected via `drain_pending_cron_prompts`. The
+/// chat echo carries the raw prompt; the display-only `[Cron]` wrapper is
+/// added TUI-side, so the subprocess still receives the bare prompt.
 pub(crate) fn deliver_cron_prompt(
     workspace: &Arc<Workspace>,
     project_name: &str,
@@ -324,6 +325,10 @@ pub(crate) fn deliver_cron_prompt(
         });
 
     if let Some(target_key) = running_lead {
+        // Echo the cron block BEFORE the LLM-side dispatch so it renders
+        // in order regardless of which event the TUI reducer drains first
+        // (mirrors deliver_gotify_message).
+        push_cron_prompt_into_chat(workspace, &target_key, &text);
         return match workspace.dispatch(Command::Prompt {
             key: target_key,
             text,
@@ -542,6 +547,22 @@ pub(crate) fn push_gotify_notification_into_chat(
     let _ = workspace.update_sender().send(SessionUpdate::GotifyNotificationAppended {
         session_id: target_key.as_str().to_owned(),
         notification: notification.clone(),
+    });
+}
+
+/// Emit a typed `CronPromptAppended` so the target session's TUI chat
+/// buffer shows a cron block for the fired prompt. Mirrors
+/// [`push_gotify_notification_into_chat`] - the target's `claude`
+/// subprocess still receives the raw prompt via a separate
+/// `Command::Prompt`; this only drives the visible chat echo.
+pub(crate) fn push_cron_prompt_into_chat(
+    workspace: &Workspace,
+    target_key: &SessionKey,
+    text: &str,
+) {
+    let _ = workspace.update_sender().send(SessionUpdate::CronPromptAppended {
+        session_id: target_key.as_str().to_owned(),
+        text: text.to_owned(),
     });
 }
 

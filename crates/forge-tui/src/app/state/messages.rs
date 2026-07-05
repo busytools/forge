@@ -28,6 +28,10 @@ pub struct ChatMessage {
     /// renders a distinct `Gotify` source (not the peer `Forge`) without
     /// a per-frame `detect_inbound` walk.
     pub is_gotify_envelope: bool,
+    /// Companion flag for a fired-cron turn (`[Cron]`). Stamped at push
+    /// time by the `CronPromptAppended` path so the role label renders a
+    /// distinct `Cron` source, not the peer `Forge`.
+    pub is_cron_envelope: bool,
     /// #273: stop_hook_summary chip hit-test - wrapped-row offset
     /// inside this message of the clickable chip line(s). `0` when
     /// no chip is rendered. Stamped by `append_stop_hook_summary`.
@@ -52,6 +56,7 @@ impl ChatMessage {
             render_cache: MessageRenderCache::default(),
             is_peer_envelope: false,
             is_gotify_envelope: false,
+            is_cron_envelope: false,
             stop_hook_summary_y_in_msg: 0,
             stop_hook_summary_height: 0,
             turn_duration_ms: None,
@@ -75,6 +80,7 @@ impl ChatMessage {
             render_cache: MessageRenderCache::default(),
             is_peer_envelope: true,
             is_gotify_envelope: false,
+            is_cron_envelope: false,
             stop_hook_summary_y_in_msg: 0,
             stop_hook_summary_height: 0,
             turn_duration_ms: None,
@@ -96,6 +102,29 @@ impl ChatMessage {
             render_cache: MessageRenderCache::default(),
             is_peer_envelope: false,
             is_gotify_envelope: true,
+            is_cron_envelope: false,
+            stop_hook_summary_y_in_msg: 0,
+            stop_hook_summary_height: 0,
+            turn_duration_ms: None,
+        }
+    }
+
+    /// Variant of `new` for a fired-cron turn, pre-stamping
+    /// [`Self::is_cron_envelope`]. Used by the `CronPromptAppended` path
+    /// so the role label renders the distinct `Cron` source.
+    pub fn new_cron_envelope(
+        role: MessageRole,
+        blocks: Vec<MessageBlock>,
+        usage: Option<MessageUsage>,
+    ) -> Self {
+        Self {
+            role,
+            blocks,
+            usage,
+            render_cache: MessageRenderCache::default(),
+            is_peer_envelope: false,
+            is_gotify_envelope: false,
+            is_cron_envelope: true,
             stop_hook_summary_y_in_msg: 0,
             stop_hook_summary_height: 0,
             turn_duration_ms: None,

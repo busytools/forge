@@ -345,6 +345,27 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
             };
             apply_session_update_chat_appended(app, &session_id, synthetic);
         }
+        SessionUpdate::CronPromptAppended { session_id, text } => {
+            // Mirror the gotify path: forge a synthetic user turn wrapping
+            // the fired prompt in a display-only `[Cron]` prefix so
+            // `peer_block::detect_inbound` recognises it and renders the
+            // distinct cron block (+ inherits the #383 delivered-turn
+            // spinner). The subprocess receives the raw prompt via a
+            // separate Command::Prompt, so the bracket never reaches the LLM.
+            let synthetic = forge_primitives::Message::User {
+                message: forge_primitives::UserEnvelope {
+                    role: "user".to_owned(),
+                    content: vec![forge_primitives::ContentBlock::Text {
+                        text: format!("[Cron]\n\n{text}"),
+                    }],
+                },
+                session_id: session_id.clone(),
+                parent_tool_use_id: None,
+                uuid: None,
+                tool_use_result: None,
+            };
+            apply_session_update_chat_appended(app, &session_id, synthetic);
+        }
     }
     if is_active_or_global {
         app.needs_redraw = true;
@@ -1191,6 +1212,69 @@ mod tests {
         assert_eq!(a_info.email.as_deref(), Some("a@example.com"));
         assert!(bucket_account_info_for(&app, &key_b).is_none());
         assert!(app.needs_redraw);
+    }
+
+    /// The `CronPromptAppended` reducer surfaces a fired cron: a distinct
+    /// cron block (a User turn carrying the fired prompt, flagged
+    /// `is_cron_envelope`) AND the #383 delivered-turn spinner - a fresh
+    /// tail assistant placeholder with the active-turn pointer reparented
+    /// onto it, chat status Thinking, bucket lifecycle Running.
+    /// Reproduce-first: the pre-implementation stub reducer does none of it.
+    #[test]
+    fn cron_prompt_appended_appends_cron_block_and_opens_spinner() {
+        use crate::app::session::SessionLifecycleState;
+        use crate::app::{AppStatus, MessageBlock, MessageRole};
+
+        let mut app = App::test_default();
+        let (key_a, _key_b) = seed_two_sessions(&mut app);
+        // Model an idle, ready active session (a prior turn completed).
+        app.status = AppStatus::Ready;
+        if let Some(b) = app.sessions.get_mut(&key_a) {
+            b.lifecycle_state = SessionLifecycleState::Idle;
+        }
+        app.clear_active_turn_assistant();
+
+        apply_session_update(
+            &mut app,
+            SessionUpdate::CronPromptAppended {
+                session_id: key_a.as_str().to_owned(),
+                text: "run the morning summary".to_owned(),
+            },
+        );
+
+        // A cron block landed: a User turn carrying the fired prompt,
+        // flagged as a cron envelope (drives the distinct `Cron` label).
+        let cron_msg = app
+            .messages()
+            .iter()
+            .find(|m| matches!(m.role, MessageRole::User) && m.is_cron_envelope)
+            .expect("a cron-envelope user turn was appended");
+        assert!(
+            cron_msg.blocks.iter().any(|b| matches!(
+                b, MessageBlock::Text(t) if t.text.contains("run the morning summary")
+            )),
+            "the cron block carries the fired prompt text",
+        );
+
+        // The delivered-turn spinner opens: a fresh empty assistant
+        // placeholder at the tail with the active-turn pointer bound to it.
+        let tail = app.messages().len() - 1;
+        assert!(
+            matches!(app.messages()[tail].role, MessageRole::Assistant)
+                && app.messages()[tail].blocks.is_empty(),
+            "a fresh empty assistant placeholder opens at the tail for the spinner",
+        );
+        assert_eq!(
+            app.active_turn_assistant_message_idx(),
+            Some(tail),
+            "pointer targets the tail placeholder so the spinner pins to the bottom",
+        );
+        assert!(matches!(app.status, AppStatus::Thinking), "chat status flips to Thinking");
+        assert_eq!(
+            app.sessions.get(&key_a).expect("bucket").lifecycle_state,
+            SessionLifecycleState::Running,
+            "the Projects-pane row spins while the agent works the cron prompt",
+        );
     }
 
     /// Single-session focused twin of

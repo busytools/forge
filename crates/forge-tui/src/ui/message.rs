@@ -1764,6 +1764,13 @@ fn role_label_line(msg: &ChatMessage) -> Line<'static> {
                     "Gotify",
                     Style::default().fg(theme::GOTIFY).add_modifier(Modifier::BOLD),
                 ))
+            } else if is_cron_envelope_user_message(msg) {
+                // A fired cron - a scheduled internal event, distinct from
+                // typed input and from peer traffic.
+                Line::from(Span::styled(
+                    "Cron",
+                    Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
+                ))
             } else if is_peer_envelope_user_message(msg) {
                 Line::from(Span::styled(
                     "Forge",
@@ -1815,6 +1822,13 @@ fn is_peer_envelope_user_message(msg: &ChatMessage) -> bool {
 /// [`is_peer_envelope_user_message`].
 fn is_gotify_envelope_user_message(msg: &ChatMessage) -> bool {
     msg.is_gotify_envelope
+}
+
+/// True when this `MessageRole::User` carries a fired cron (`[Cron]`).
+/// Reads the cached `is_cron_envelope` flag stamped at push time by the
+/// `CronPromptAppended` path, mirroring [`is_gotify_envelope_user_message`].
+fn is_cron_envelope_user_message(msg: &ChatMessage) -> bool {
+    msg.is_cron_envelope
 }
 
 /// Extract the `sender_org` tag from this message's peer envelope,

@@ -704,9 +704,11 @@ impl SessionTask {
     /// Drain `DomainSession.pending_cron_prompts` after the session's
     /// first `Connected` event - the cron prompts buffered while the
     /// project was asleep (a due cron whose session wasn't open spawned
-    /// it). Each is re-dispatched as a plain `Command::Prompt` against
-    /// `self.key`, landing as an ordinary user turn (no peer envelope).
-    /// No-op when there are no buffered prompts.
+    /// it). Each is echoed into chat as a cron block and re-dispatched as
+    /// a plain `Command::Prompt` against `self.key`, so an asleep-fired
+    /// cron shows its block once the session connects (mirrors
+    /// [`Self::drain_pending_gotify_prompts`]). No-op when the buffer is
+    /// empty.
     fn drain_pending_cron_prompts(&self) {
         let pending: Vec<String> = std::mem::take(&mut self.domain.lock().pending_cron_prompts);
         if pending.is_empty() {
@@ -714,6 +716,10 @@ impl SessionTask {
         }
         let Some(workspace) = self.workspace.upgrade() else { return };
         for text in pending {
+            // Echo the cron block, then re-dispatch the raw prompt as a
+            // plain user turn (mirrors the running-lead path in
+            // spawn::deliver_cron_prompt).
+            crate::spawn::push_cron_prompt_into_chat(&workspace, &self.key, &text);
             if let Err(err) = workspace.dispatch(crate::protocol::Command::Prompt {
                 key: self.key.clone(),
                 text,
@@ -1542,6 +1548,85 @@ mod tests {
         assert!(
             domain.lock().pending_peer_prompts.is_empty(),
             "pending_peer_prompts is drained after first-Connected"
+        );
+    }
+
+    /// First-Connected drains `DomainSession.pending_cron_prompts`: each
+    /// buffered prompt dispatches a plain `Command::Prompt` AND echoes a
+    /// `CronPromptAppended` so an asleep-fired cron shows its block once the
+    /// session connects (mirrors the gotify drain echo). Reproduce-first:
+    /// the echo is absent until the drain calls `push_cron_prompt_into_chat`.
+    #[tokio::test]
+    async fn first_connected_drains_pending_cron_prompts_and_echoes_block() {
+        let (workspace, mut update_rx) = crate::Workspace::testing_stub();
+
+        let session_key = SessionKey::from_session_id("cron-drain-uuid");
+        let domain =
+            Arc::new(parking_lot::Mutex::new(DomainSession::new(session_key.clone(), None)));
+        domain.lock().pending_cron_prompts.push("morning reminder".to_owned());
+
+        let (handle, _agent_cmd_rx) = Agent::testing_stub();
+        let (_cmd_tx, command_rx) =
+            tokio::sync::mpsc::unbounded_channel::<crate::protocol::Command>();
+        let update_tx = workspace.update_sender();
+        let mut task = SessionTask {
+            key: session_key.clone(),
+            handle: Arc::new(handle),
+            command_rx,
+            domain: Arc::clone(&domain),
+            update_tx,
+            spawn_key: None,
+            connected_once: false,
+            workspace: Arc::downgrade(&workspace),
+        };
+
+        workspace.enable_test_dispatch_intercept();
+        task.translate_event(AgentEvent::Connected {
+            session_id: session_key.as_str().to_owned(),
+            cwd: "/tmp/cron-drain".to_owned(),
+            current_model: forge_primitives::CurrentModel {
+                resolved_id: "claude".to_owned(),
+                display_name_short: "claude".to_owned(),
+                display_name_long: "claude".to_owned(),
+                requested_id: None,
+                catalog_id: None,
+                supports_effort: false,
+                supported_effort_levels: Vec::new(),
+                supports_fast_mode: None,
+                supports_auto_mode: None,
+                supports_adaptive_thinking: None,
+                is_authoritative: true,
+            },
+            available_models: Vec::new(),
+            mode: None,
+            history_updates: None,
+        });
+
+        // The buffered cron prompt is dispatched as a plain user turn.
+        let buffered = workspace.drain_test_dispatch_buffer();
+        assert!(
+            buffered.iter().any(|c| matches!(
+                c, crate::protocol::Command::Prompt { text, .. } if text == "morning reminder"
+            )),
+            "the buffered cron prompt is dispatched on first-Connected",
+        );
+
+        // AND an echo lands so the drained prompt shows a cron block.
+        let mut echoed = false;
+        while let Ok(u) = update_rx.try_recv() {
+            if matches!(
+                u,
+                SessionUpdate::CronPromptAppended { session_id, text }
+                    if session_id == session_key.as_str() && text == "morning reminder"
+            ) {
+                echoed = true;
+            }
+        }
+        assert!(echoed, "an asleep-fired cron echoes a CronPromptAppended on drain");
+
+        assert!(
+            domain.lock().pending_cron_prompts.is_empty(),
+            "pending_cron_prompts is drained after first-Connected",
         );
     }
 

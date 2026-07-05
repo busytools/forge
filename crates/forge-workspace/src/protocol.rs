@@ -657,6 +657,15 @@ pub enum SessionUpdate {
         session_id: String,
         notification: crate::mcp::gotify::types::GotifyNotification,
     },
+    /// A due cron fired into session `session_id`. Carries the fired
+    /// prompt text so the TUI reducer builds the chat-side echo (mirrors
+    /// GotifyNotificationAppended). The session's LLM receives the same
+    /// text via a separate `Command::Prompt` - this update only drives
+    /// the visible echo.
+    CronPromptAppended {
+        session_id: String,
+        text: String,
+    },
     FatalError(AppError),
 }
 
@@ -691,7 +700,8 @@ impl SessionUpdate {
             | Self::ContextUsageSnapshot { session_id, .. }
             | Self::McpSnapshot { session_id, .. }
             | Self::PeerEnvelopeAppended { session_id, .. }
-            | Self::GotifyNotificationAppended { session_id, .. } => {
+            | Self::GotifyNotificationAppended { session_id, .. }
+            | Self::CronPromptAppended { session_id, .. } => {
                 Some(SessionKey::from_session_id(session_id.clone()))
             }
             Self::KeyRenamed { .. }
@@ -837,6 +847,11 @@ impl std::fmt::Debug for SessionUpdate {
                 .field("app", &notification.app)
                 .field("priority", &notification.priority)
                 .finish_non_exhaustive(),
+            Self::CronPromptAppended { session_id, text } => f
+                .debug_struct("CronPromptAppended")
+                .field("session_id", session_id)
+                .field("text", text)
+                .finish(),
             Self::FatalError(err) => f.debug_struct("FatalError").field("error", err).finish(),
         }
     }
