@@ -66,17 +66,24 @@ pub fn list_for_project(db: &Db, project_key: &str) -> anyhow::Result<Vec<Dynami
     };
     let mut out = Vec::new();
     for entry in table.iter()? {
-        let (_key, value) = entry?;
+        let (key, value) = entry?;
         match serde_json::from_slice::<DynamicWorker>(value.value()) {
             Ok(worker) if worker.project_key == project_key => out.push(worker),
             Ok(_) => {}
             // One undecodable record (schema drift, a corrupt blob) must not
-            // wipe the rest of the durable set - skip it and warn.
-            Err(err) => tracing::warn!(
-                target: "forge_workspace::store::dynamic_workers",
-                error = %err,
-                "skipping dynamic worker record that failed to decode",
-            ),
+            // wipe the rest of the durable set - skip it and warn. The key
+            // stays readable even when the value doesn't, so name which
+            // worker lost durability.
+            Err(err) => {
+                let (row_project, row_label) = key.value();
+                tracing::warn!(
+                    target: "forge_workspace::store::dynamic_workers",
+                    project = %row_project,
+                    label = %row_label,
+                    error = %err,
+                    "skipping dynamic worker record that failed to decode",
+                );
+            }
         }
     }
     Ok(out)
