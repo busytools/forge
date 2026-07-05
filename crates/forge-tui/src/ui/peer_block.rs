@@ -106,6 +106,14 @@ pub(crate) enum PeerInboundKind {
         message: String,
         priority: u8,
     },
+    /// `[Cron]\n\n<prompt>` - a durable cron that fired into this session,
+    /// delivered as a user turn. Rendered with the ◴ cron glyph + a `Cron`
+    /// source label so it reads as a scheduled internal event, not agent
+    /// traffic. Never groups with peer envelopes (see
+    /// [`PeerInboundKind::peer_sender_identity`]).
+    Cron {
+        prompt: String,
+    },
 }
 
 impl PeerInboundKind {
@@ -125,7 +133,7 @@ impl PeerInboundKind {
             | Self::CallerTimeout { org, .. }
             | Self::RecipientExpired { org, .. }
             | Self::DeliveryFailure { org, .. } => org,
-            Self::WorkerSpawnFailed { .. } | Self::Gotify { .. } => "",
+            Self::WorkerSpawnFailed { .. } | Self::Gotify { .. } | Self::Cron { .. } => "",
         }
     }
 
@@ -145,7 +153,7 @@ impl PeerInboundKind {
                 Some(target)
             }
             Self::WorkerSpawnFailed { label, .. } => Some(label),
-            Self::Gotify { .. } => None,
+            Self::Gotify { .. } | Self::Cron { .. } => None,
         }
     }
 }
@@ -273,6 +281,12 @@ pub(crate) fn detect_inbound(text: &str) -> Option<PeerInboundKind> {
         return Some(PeerInboundKind::Gotify { app: app.to_owned(), title, message, priority });
     }
 
+    if header == "Cron" {
+        // Display-only wrapper the CronPromptAppended reducer forges around
+        // the fired prompt; `body` is the raw prompt after `]\n\n`.
+        return Some(PeerInboundKind::Cron { prompt: body });
+    }
+
     None
 }
 
@@ -371,6 +385,7 @@ pub(crate) fn render_inbound(
         PeerInboundKind::Gotify { app, title, message, priority } => {
             render_gotify_notification(app, *priority, title, message, suppress_header, collapsed)
         }
+        PeerInboundKind::Cron { prompt } => render_cron_prompt(prompt, suppress_header, collapsed),
     }
 }
 
@@ -406,6 +421,11 @@ const INBOUND_GLYPH: &str = "\u{2935}";
 /// with one icon everywhere; distinct from the `ROW_GLYPH` peer / worker
 /// rows use. Monochrome + width-1, matching the codebase glyph convention.
 const GOTIFY_GLYPH: &str = "\u{25C8}";
+
+/// Kind-icon for a fired-cron block. U+25F4 CIRCLE WITH UPPER LEFT
+/// QUADRANT - the same glyph the Inspector SCHEDULES section uses for a
+/// cron, so cron reads with one icon everywhere.
+const CRON_GLYPH: &str = "\u{25f4}";
 
 /// A Gotify priority at or above this renders in `STATUS_WARNING` (a
 /// severity cue); below it stays `DIM`. Gotify priorities run 0-10.
@@ -530,6 +550,32 @@ fn render_gotify_notification(
         push_collapsed_summary(&mut lines, &body);
     } else {
         push_tree_body_lines(&mut lines, &body);
+    }
+    lines
+}
+
+/// Render a fired-cron block. Distinct chrome from peer rows: the ◴ cron
+/// glyph + a `Cron` source label (the SCHEDULES-section cron glyph), body =
+/// the fired prompt under the standard tree connectors. `suppress_header`
+/// drops the header line (streak follower); cron turns stand alone in
+/// practice, so it's normally rendered in full.
+fn render_cron_prompt(prompt: &str, suppress_header: bool, collapsed: bool) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    if !suppress_header {
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                CRON_GLYPH.to_owned(),
+                Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" "),
+            Span::styled("Cron", Style::default().add_modifier(Modifier::BOLD)),
+        ]));
+    }
+    if collapsed {
+        push_collapsed_summary(&mut lines, prompt);
+    } else {
+        push_tree_body_lines(&mut lines, prompt);
     }
     lines
 }
@@ -1069,6 +1115,44 @@ mod tests {
             message: "m".into(),
             priority: 5,
         };
+        assert_eq!(kind.peer_sender_identity(), None);
+    }
+
+    #[test]
+    fn detect_cron_inbound_parses_prompt_body() {
+        let text = "[Cron]\n\nrun the morning summary";
+        match detect_inbound(text).expect("cron") {
+            PeerInboundKind::Cron { prompt } => assert_eq!(prompt, "run the morning summary"),
+            other => panic!("expected Cron, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn detect_cron_inbound_preserves_multiline_prompt() {
+        let text = "[Cron]\n\npost the EOD report\ninclude the realized PnL";
+        match detect_inbound(text).expect("cron") {
+            PeerInboundKind::Cron { prompt } => {
+                assert_eq!(prompt, "post the EOD report\ninclude the realized PnL");
+            }
+            other => panic!("expected Cron, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn render_cron_inbound_uses_cron_glyph_and_label() {
+        let kind = PeerInboundKind::Cron { prompt: "deploy the release".into() };
+        let lines = render_inbound(&kind, false, false);
+        let s = render_lines_to_strings(&lines);
+        assert!(s[0].contains('\u{25f4}'), "◴ cron glyph: {:?}", s[0]);
+        assert!(s[0].contains("Cron"), "Cron label: {:?}", s[0]);
+        assert!(s.last().unwrap().contains("deploy the release"), "prompt body: {:?}", s.last());
+    }
+
+    #[test]
+    fn cron_has_no_peer_sender_identity() {
+        // Grouping keys off peer_sender_identity; Cron returns None so it
+        // never merges into a peer messaging group (mirrors Gotify).
+        let kind = PeerInboundKind::Cron { prompt: "x".into() };
         assert_eq!(kind.peer_sender_identity(), None);
     }
 

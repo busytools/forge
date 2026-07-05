@@ -5306,6 +5306,55 @@ mod tests {
         assert!(buffered.lock().pending_cron_prompts.is_empty(), "moved out of the synth buffer");
     }
 
+    /// A cron fired into a running lead delivers the raw prompt as a plain
+    /// user turn AND echoes a `CronPromptAppended` so the chat shows a cron
+    /// block (mirrors the gotify running-target echo). Reproduce-first: the
+    /// echo is absent until `deliver_cron_prompt` calls
+    /// `push_cron_prompt_into_chat`.
+    #[test]
+    fn deliver_cron_prompt_to_running_lead_emits_cron_prompt_appended() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, mut rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project_with_team("cronlead", "/tmp/cron-lead", &[]);
+        // Seed the catalog + pool so the project has a running (open) lead:
+        // list_projects derives `is_open` from pool membership.
+        let cwd = project_expanded_path(&ws, "cronlead");
+        ws.record_connected_session(&cwd, "lead-uuid", None);
+        let lead_key = SessionKey::from_session_id("lead-uuid");
+        let (handle, _agent_rx) = Workspace::testing_stub_handle();
+        ws.pool.lock().insert(
+            lead_key.clone(),
+            PooledAgent {
+                handle: Arc::new(handle),
+                #[cfg(test)]
+                account: AccountKey("test".to_owned()),
+            },
+        );
+
+        ws.enable_test_dispatch_intercept();
+        let outcome = crate::spawn::deliver_cron_prompt(&ws, "cronlead", "morning".to_owned());
+        assert!(matches!(outcome, crate::spawn::CronFireOutcome::Delivered));
+
+        // The running lead receives the raw cron prompt as a plain user turn.
+        let dispatched = ws.drain_test_dispatch_buffer();
+        assert!(
+            dispatched.iter().any(|c| matches!(
+                c, Command::Prompt { key, text, .. } if key == &lead_key && text == "morning"
+            )),
+            "the running lead receives the fired cron prompt verbatim",
+        );
+
+        // AND the delivery echoes a CronPromptAppended so the chat shows a block.
+        let echoed = drain_updates(&mut rx).into_iter().any(|u| {
+            matches!(
+                u,
+                SessionUpdate::CronPromptAppended { session_id, text }
+                    if session_id == lead_key.as_str() && text == "morning"
+            )
+        });
+        assert!(echoed, "a running-lead cron fire emits a CronPromptAppended echo");
+    }
+
     #[test]
     fn drain_spawn_key_buffer_delivers_a_buffered_cron_prompt() {
         // Pool fast-path: the target is already running when a cron's

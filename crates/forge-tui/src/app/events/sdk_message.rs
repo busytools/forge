@@ -373,16 +373,19 @@ fn push_peer_envelope_user_turn_if_present(
         let Some(kind) = crate::ui::peer_block::detect_inbound(text) else {
             continue;
         };
-        let is_gotify = matches!(kind, crate::ui::peer_block::PeerInboundKind::Gotify { .. });
         let blocks = vec![MessageBlock::Text(TextBlock::from_complete(text))];
         // #143 item 2: cache the envelope flag at push time so the chat
-        // renderer doesn't walk text blocks every frame. A Gotify
-        // notification stamps the distinct gotify flag (drives the
-        // `Gotify` role label); everything else is a peer envelope.
-        let msg = if is_gotify {
-            ChatMessage::new_gotify_envelope(MessageRole::User, blocks, None)
-        } else {
-            ChatMessage::new_peer_envelope(MessageRole::User, blocks, None)
+        // renderer doesn't walk text blocks every frame. Gotify + cron each
+        // stamp a distinct flag (drives their distinct role label); every
+        // other envelope shape is a peer envelope.
+        let msg = match kind {
+            crate::ui::peer_block::PeerInboundKind::Gotify { .. } => {
+                ChatMessage::new_gotify_envelope(MessageRole::User, blocks, None)
+            }
+            crate::ui::peer_block::PeerInboundKind::Cron { .. } => {
+                ChatMessage::new_cron_envelope(MessageRole::User, blocks, None)
+            }
+            _ => ChatMessage::new_peer_envelope(MessageRole::User, blocks, None),
         };
         // Replay reconstructs the chat bubble only - no live turn
         // ceremony. load_resume_history walks historical envelopes through
