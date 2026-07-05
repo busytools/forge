@@ -539,7 +539,7 @@ impl AccountStateMap {
         // cursor cycle comes up.
         let usable: Vec<&AccountKey> = candidates
             .iter()
-            .filter(|(_, u, e, l)| tier_of(*u, *e) == 0 && *l != LoadingState::Bailed)
+            .filter(|(k, _, _, _)| self.is_account_usable(k))
             .map(|(k, _, _, _)| *k)
             .collect();
         let picked = if usable.is_empty() {
