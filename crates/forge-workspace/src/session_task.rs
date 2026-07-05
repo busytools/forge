@@ -285,9 +285,9 @@ impl SessionTask {
                     // uniformly with user-typed prompts.
                     self.drain_pending_peer_prompts();
                     // Same for cron prompts buffered while the project was
-                    // asleep (spawn::deliver_cron_prompt on a due cron
-                    // whose session wasn't open). Plain user turns, so no
-                    // peer-envelope echo.
+                    // asleep (spawn::deliver_cron_prompt on a due cron whose
+                    // session wasn't open): each echoes a cron block then
+                    // re-dispatches.
                     self.drain_pending_cron_prompts();
                     // Same for Gotify notification envelopes buffered while
                     // the project was asleep.
