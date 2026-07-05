@@ -806,14 +806,15 @@ fn parse_project_lead_synth_key(key: &SessionKey) -> Option<String> {
     Some(inner.to_owned())
 }
 
-/// Shared engineering-team Connected hook: if `spawn_key` is a
-/// project-lead synth key, the project has a team configured, and
-/// no live workers exist for it yet, dispatch one `SpawnWorker`
-/// per configured role. Called from `SessionTask::translate_event`
-/// (production) and `on_connected_for_test` (tests). Idempotent;
-/// safe to call multiple times for the same session - the
-/// `live_workers.is_empty()` gate guards against double-spawn on
-/// `/new` reconnects or transient retries.
+/// Shared worker Connected hook: if `spawn_key` is a project-lead synth
+/// key and no live workers exist for the project yet, (re-)spawn its
+/// workers - one `SpawnWorker` per configured static role plus one per
+/// persisted dynamic worker. Called from `SessionTask::translate_event`
+/// (production) and `on_connected_for_test` (tests). Idempotent; safe to
+/// call multiple times for the same session - the `live_workers.is_empty()`
+/// gate guards against double-spawn on `/new` reconnects or transient
+/// retries, and `spawn_team_for_lead_with_catalog_scan` no-ops when the
+/// project has neither static nor dynamic workers.
 fn maybe_spawn_team_on_connected(
     workspace: &Arc<crate::Workspace>,
     spawn_key: &SessionKey,
@@ -826,9 +827,6 @@ fn maybe_spawn_team_on_connected(
     let Some(project) = workspace.find_project_view_by_name(&project_name) else {
         return;
     };
-    if project.static_workers.is_empty() {
-        return;
-    }
     let project_key = crate::target::ProjectKey::new(
         forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
             &project.path.to_string_lossy(),
@@ -838,11 +836,11 @@ fn maybe_spawn_team_on_connected(
         return;
     }
     // Scan the project's catalog for previously-spawned worker
-    // sessions (tagged `forge:worker:<label>`) so each role resumes
+    // sessions (tagged `forge:worker:<label>`) so each worker resumes
     // its existing session instead of starting fresh. The scan is
     // async (filesystem I/O); workspace claims a per-project
     // in-flight guard synchronously so a fast double-Connected
-    // can't slip a second team-spawn through. The guard is
+    // can't slip a second worker-spawn through. The guard is
     // released after the SpawnWorker commands are dispatched.
     workspace.spawn_team_for_lead_with_catalog_scan(
         real_session_id.to_owned(),
@@ -887,6 +885,24 @@ fn parse_worker_synth_key(key: &SessionKey) -> Option<(String, String)> {
 /// initial kick.
 fn is_resume_worker_synth_key(key: &SessionKey) -> bool {
     key.as_str().starts_with("__resume_worker_")
+}
+
+/// Forge-supplied resume-kick for a dynamic worker on restart. Dynamic
+/// (LLM-spawned) workers have no `resume-kick.md`, so forge delivers this
+/// constant when re-spawning one that resumes prior history - telling it
+/// to continue rather than start the task over.
+const DYNAMIC_WORKER_RESTART_NOTE: &str = "This session was restarted by forge. Your prior conversation and progress are in the history above. Continue where you left off; do not restart the task.";
+
+/// The restart note for a resuming dynamic worker, or `None` for a static
+/// one (which has no DB row and uses its `resume-kick.md` / initial-kick
+/// instead). Keeps the DB lookup out of the resume-kick match arm.
+fn resume_note_for_dynamic_worker(
+    workspace: &Arc<crate::Workspace>,
+    project_key: &str,
+    label: &str,
+) -> Option<String> {
+    let project_key = crate::target::ProjectKey::new(project_key.to_owned());
+    workspace.is_dynamic_worker(&project_key, label).then(|| DYNAMIC_WORKER_RESTART_NOTE.to_owned())
 }
 
 /// Shared engineering-team worker-kick hook: if `spawn_key` is a
@@ -963,7 +979,11 @@ fn maybe_kick_worker_on_connected(
     let kick_text = if is_resume {
         match crate::team::load_resume_kick(&resolved) {
             Ok(Some(text)) => Some(text),
-            Ok(None) => None,
+            // No resume-kick.md. A persisted dynamic worker has no file,
+            // so forge supplies its constant restart note; a static
+            // worker falls through to the initial-kick + past-progress
+            // guard below.
+            Ok(None) => resume_note_for_dynamic_worker(workspace, &project_key, &label),
             Err(err) => {
                 tracing::warn!(
                     target: "forge_workspace::team",
@@ -2080,6 +2100,75 @@ mod team_hook_tests {
         let prompts: Vec<&Command> =
             dispatched.iter().filter(|c| matches!(c, Command::Prompt { .. })).collect();
         assert!(prompts.is_empty(), "no kick without an inline kick or a kick.md");
+    }
+
+    /// A resumed dynamic worker (persisted row, no `resume-kick.md`) gets
+    /// the forge restart note as its first turn, so it continues rather
+    /// than restarting. The re-spawn dispatches `kick: None`, so the
+    /// inline-kick branch is skipped and the resume-kick resolution
+    /// supplies the constant.
+    #[tokio::test(start_paused = true)]
+    async fn dynamic_worker_resume_delivers_restart_note() {
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        let dir = tempfile::tempdir().expect("tempdir");
+        workspace.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        workspace.enable_test_dispatch_intercept();
+        workspace.start_kick_dispatcher();
+
+        workspace.seed_test_project_with_static_workers("forge", "/tmp/forge", &[]);
+        let project_key = workspace
+            .list_projects()
+            .into_iter()
+            .find(|v| v.name == "forge")
+            .expect("seeded project present")
+            .key;
+
+        // Persisted row marks the worker as dynamic; the live entry
+        // carries kick=None (the resume re-spawn's dispatch shape).
+        workspace.persist_dynamic_worker(&crate::store::dynamic_workers::DynamicWorker {
+            project_key: project_key.as_str().to_owned(),
+            label: "scratch".to_owned(),
+            charter: "do the thing".to_owned(),
+            kick: Some("original kick".to_owned()),
+            spawned_by_session_id: "old-lead".to_owned(),
+        });
+        workspace.insert_live_worker(
+            &project_key,
+            crate::mcp::workers::types::WorkerEntry {
+                label: "scratch".to_owned(),
+                charter: "do the thing".to_owned(),
+                session_key: SessionKey::from_session_id("worker-uuid"),
+                status: forge_primitives::WorkerLiveness::Running,
+                spawned_at: std::time::SystemTime::UNIX_EPOCH,
+                spawned_by_session_id: "new-lead".into(),
+                needs_tag: false,
+                is_git_repo_at_spawn: false,
+                diagnostic: None,
+                kick: None,
+            },
+        );
+
+        let synth = SessionKey::from_session_id(format!(
+            "__resume_worker_{}_scratch_abc__",
+            project_key.as_str()
+        ));
+        on_connected_for_test(&workspace, &synth, "worker-uuid");
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+
+        let dispatched = workspace.drain_test_dispatch_buffer();
+        let prompts: Vec<&Command> =
+            dispatched.iter().filter(|c| matches!(c, Command::Prompt { .. })).collect();
+        assert_eq!(prompts.len(), 1, "a resumed dynamic worker gets exactly one restart note");
+        if let Command::Prompt { key, text, .. } = prompts[0] {
+            assert_eq!(key.as_str(), "worker-uuid");
+            assert_eq!(
+                text, DYNAMIC_WORKER_RESTART_NOTE,
+                "resume delivers the forge restart note, not the original kick",
+            );
+        }
     }
 
     /// Worker Connected with a label NOT matching a built-in role
