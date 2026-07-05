@@ -1503,9 +1503,14 @@ fn build_message_render_signature(
     spinner.show_thinking.hash(&mut hasher);
     spinner.show_compacting.hash(&mut hasher);
     // Item 3's idle suppression and the running-subagents line both key off
-    // these; fold them so a flip invalidates the cached layout.
+    // these; fold them (line content included) so a flip invalidates the
+    // cached layout.
     spinner.is_active_turn_assistant.hash(&mut hasher);
-    spinner.running_subagents.is_some().hash(&mut hasher);
+    spinner
+        .running_subagents
+        .as_ref()
+        .map(|running| (running.count, running.primary_label.as_deref()))
+        .hash(&mut hasher);
     let assistant_frame = if message_has_frame_dependent_assistant_lines(msg, spinner) {
         Some(spinner.glyph)
     } else {
@@ -4439,6 +4444,47 @@ mod tests {
         assert!(
             rendered.iter().any(|l| l.contains("subagent")),
             "cache rebuilds on the subagent flip instead of the stale empty render; got {rendered:?}",
+        );
+    }
+
+    /// The signature folds the subagent line CONTENT: a count/label change
+    /// on an empty active assistant must rebuild, not serve the stale line.
+    #[test]
+    fn subagent_count_change_invalidates_empty_assistant_render_cache() {
+        let mut msg = ChatMessage::new(MessageRole::Assistant, vec![], None);
+
+        let one = SpinnerState {
+            is_active_turn_assistant: true,
+            running_subagents: Some(RunningSubagentsLine {
+                count: 1,
+                primary_label: Some("Explore".to_owned()),
+            }),
+            ..idle_spinner()
+        };
+        let mut lines_a = Vec::new();
+        render_message(
+            &mut msg,
+            &one,
+            MessageRenderContext::new(None, 120, 0, default_options()),
+            &mut lines_a,
+        );
+
+        let many = SpinnerState {
+            is_active_turn_assistant: true,
+            running_subagents: Some(RunningSubagentsLine { count: 3, primary_label: None }),
+            ..idle_spinner()
+        };
+        let mut lines_b = Vec::new();
+        render_message(
+            &mut msg,
+            &many,
+            MessageRenderContext::new(None, 120, 0, default_options()),
+            &mut lines_b,
+        );
+        let rendered = render_lines_to_strings(&lines_b);
+        assert!(
+            rendered.iter().any(|l| l.contains("3 subagents")),
+            "cache rebuilds on the count change instead of serving the stale line; got {rendered:?}",
         );
     }
 
