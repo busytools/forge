@@ -6,7 +6,7 @@
 
 use std::sync::{Arc, Weak};
 
-use forge_primitives::{WorkerLiveness, WorkerStatus};
+use forge_primitives::WorkerStatus;
 
 use crate::SessionKey;
 use crate::mcp::peers::facade::PeerStatsDelta;
@@ -98,9 +98,6 @@ pub enum WorkerSpawnError {
     /// charter (neither a project-local `<namespace>/<label>` nor a
     /// global `<label>`).
     CharterFileMissing { label: String },
-    /// A live worker already carries this label in the caller's
-    /// project. Spawn refused; message the existing one instead.
-    AlreadyRunning { label: String, session_id: String },
 }
 
 /// Synchronous outcome of `despawn_worker` - the success-shaped half
@@ -342,14 +339,6 @@ pub(super) fn validate_worker_spawn(is_lead: bool, label: &str) -> Result<(), Wo
     Ok(())
 }
 
-/// First non-`Failed` worker carrying `label`, if any. The one-live-
-/// worker-per-label dedup guard: a `Spawning`/`Running` worker already
-/// holds the label so a re-spawn is refused, while a `Failed` entry is
-/// ignored (its label may be re-spawned).
-fn live_worker_with_label<'a>(entries: &'a [WorkerEntry], label: &str) -> Option<&'a WorkerEntry> {
-    entries.iter().find(|w| w.label == label && !matches!(w.status, WorkerLiveness::Failed))
-}
-
 /// Identity classification shared by the production and mock
 /// `caller_identity` impls so the lead / labeled-worker / detached
 /// mapping is exercised against the real rules. The caller resolves
@@ -449,16 +438,11 @@ impl WorkerFacade for ProdWorkerFacade {
         };
         let is_git_repo_at_spawn = forge_agent::env::worktree::is_git_repo(&view.path);
         let namespace = view.name;
-        // One live worker per (project, label): refuse a second spawn
-        // for a label already held by a live worker. The lead messages
-        // the existing one instead of forking a duplicate.
-        let live = ws.list_live_workers(&cp.project_key);
-        if let Some(existing) = live_worker_with_label(&live, &label) {
-            return Err(WorkerSpawnError::AlreadyRunning {
-                label,
-                session_id: existing.session_key.as_str().to_owned(),
-            });
-        }
+        // The one-live-worker-per-label guard lives in the shared
+        // `handle_spawn_worker` core (so static/dynamic/health-check
+        // dispatches are deduped too); a duplicate MCP spawn surfaces
+        // from there as a dispatch error.
+        //
         // `Some(non-empty)` is an ad-hoc inline mission. `None` resolves
         // the bare label project-first-then-global and loads that
         // charter; resolution IS the scope check (a project only ever
@@ -1060,14 +1044,20 @@ mod mock_tests {
         };
         // Running / Spawning workers hold the label -> dedup blocks re-spawn.
         let running = vec![entry("implementer", WorkerLiveness::Running)];
-        assert!(live_worker_with_label(&running, "implementer").is_some());
+        assert!(
+            crate::mcp::workers::types::live_worker_with_label(&running, "implementer").is_some()
+        );
         let spawning = vec![entry("implementer", WorkerLiveness::Spawning)];
-        assert!(live_worker_with_label(&spawning, "implementer").is_some());
+        assert!(
+            crate::mcp::workers::types::live_worker_with_label(&spawning, "implementer").is_some()
+        );
         // A Failed entry is ignored -> its label can be re-spawned.
         let failed = vec![entry("implementer", WorkerLiveness::Failed)];
-        assert!(live_worker_with_label(&failed, "implementer").is_none());
+        assert!(
+            crate::mcp::workers::types::live_worker_with_label(&failed, "implementer").is_none()
+        );
         // No matching label.
-        assert!(live_worker_with_label(&running, "tester").is_none());
+        assert!(crate::mcp::workers::types::live_worker_with_label(&running, "tester").is_none());
     }
 
     #[test]

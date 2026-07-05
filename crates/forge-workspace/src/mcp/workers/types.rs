@@ -86,6 +86,19 @@ impl WorkerEntry {
     }
 }
 
+/// First non-`Failed` worker carrying `label`, if any. The one-live-
+/// worker-per-label guard: a `Spawning`/`Running` worker already holds
+/// the label so another spawn for it is a duplicate, while a `Failed`
+/// entry is ignored (its label may be re-spawned). Enforced at the
+/// shared `handle_spawn_worker` core so no dispatch source can
+/// double-insert a label.
+pub(crate) fn live_worker_with_label<'a>(
+    entries: &'a [WorkerEntry],
+    label: &str,
+) -> Option<&'a WorkerEntry> {
+    entries.iter().find(|w| w.label == label && !matches!(w.status, WorkerLiveness::Failed))
+}
+
 #[cfg(test)]
 mod is_git_repo_at_spawn_tests {
     use super::*;
