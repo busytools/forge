@@ -3083,8 +3083,10 @@ impl App {
     /// only on the message at `active_turn_assistant_idx()`, which a resume
     /// with an in-flight turn or a runtime-state status flip can leave
     /// unbound mid-turn - the spinner then vanishes while the Projects pane
-    /// still shows the session running. Opens a tail placeholder when the
-    /// tail is not already an assistant.
+    /// still shows the session running. Bind only onto a tail assistant
+    /// still in flight (no `turn_duration_ms`); a completed prior turn
+    /// would glue the next turn's stream into it, so open a fresh
+    /// placeholder instead.
     pub(crate) fn ensure_running_turn_spinner_anchor(&mut self) {
         if !matches!(self.status, AppStatus::Thinking | AppStatus::Running) {
             return;
@@ -3092,7 +3094,10 @@ impl App {
         if self.active_turn_assistant_idx().is_some() {
             return;
         }
-        if self.messages().last().is_some_and(|msg| matches!(msg.role, MessageRole::Assistant)) {
+        let tail_in_flight = self.messages().last().is_some_and(|msg| {
+            matches!(msg.role, MessageRole::Assistant) && msg.turn_duration_ms.is_none()
+        });
+        if tail_in_flight {
             self.bind_active_turn_assistant_to_tail();
         } else {
             self.push_active_turn_assistant_placeholder();
