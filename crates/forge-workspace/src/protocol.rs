@@ -847,11 +847,10 @@ impl std::fmt::Debug for SessionUpdate {
                 .field("app", &notification.app)
                 .field("priority", &notification.priority)
                 .finish_non_exhaustive(),
-            Self::CronPromptAppended { session_id, text } => f
+            Self::CronPromptAppended { session_id, .. } => f
                 .debug_struct("CronPromptAppended")
                 .field("session_id", session_id)
-                .field("text", text)
-                .finish(),
+                .finish_non_exhaustive(),
             Self::FatalError(err) => f.debug_struct("FatalError").field("error", err).finish(),
         }
     }
