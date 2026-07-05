@@ -384,31 +384,32 @@ fn push_peer_envelope_user_turn_if_present(
         } else {
             ChatMessage::new_peer_envelope(MessageRole::User, blocks, None)
         };
-        // Arrival order: append at the tail. An earlier revision
-        // inserted the turn above the active-turn assistant placeholder,
-        // which visibly jumped a reply above the in-flight assistant
-        // turn that holds the outbound send. A tail push shifts no
-        // existing index, so the active-turn pointer stays valid.
-        app.push_message_tracked(msg);
-        app.enforce_history_retention_tracked();
-        // Put the session to work now, mirroring
-        // input_submit::dispatch_prompt. A delivered prompt otherwise
-        // surfaces no running indicator until the first streamed token,
-        // so the Projects-pane row + chat read as idle then suddenly
-        // burst the whole response. The replay gate matches
-        // handle_assistant: historical envelopes walked by
-        // load_resume_history must not flip a resumed bucket to Running
-        // (no balancing Result would clear it).
-        if !app.replay_in_progress {
-            app.status = crate::app::AppStatus::Thinking;
-            if let Some(key) = app.active_session_key.clone() {
-                super::set_bucket_lifecycle_state(
-                    app,
-                    &key,
-                    crate::app::session::SessionLifecycleState::Running,
-                );
-            }
+        // Replay reconstructs the chat bubble only - no live turn
+        // ceremony. load_resume_history walks historical envelopes through
+        // this dispatcher and has no balancing Result to clear a Running
+        // flip or a freshly-opened placeholder (the stuck-spinner failure
+        // mode), matching handle_assistant's replay gate.
+        if app.replay_in_progress {
+            app.push_message_tracked(msg);
+            app.enforce_history_retention_tracked();
+            return;
         }
+        // Shares dispatch_prompt's turn-open (strip a stranded placeholder,
+        // append the user turn, open a fresh tail placeholder + reparent
+        // the spinner) but deliberately skips its auto-scroll, so a
+        // delivered turn does not yank a scrolled-up reader.
+        app.strip_trailing_empty_assistant_placeholder();
+        app.push_message_tracked(msg);
+        app.push_active_turn_assistant_placeholder();
+        app.status = crate::app::AppStatus::Thinking;
+        if let Some(key) = app.active_session_key.clone() {
+            super::set_bucket_lifecycle_state(
+                app,
+                &key,
+                crate::app::session::SessionLifecycleState::Running,
+            );
+        }
+        app.enforce_history_retention_tracked();
         return;
     }
 }
@@ -2272,14 +2273,12 @@ mod inbound_message_surfacing_tests {
     const GOTIFY_NOTE: &str =
         "[Gotify - app 'Backups', priority 3]\nNightly backup\nAll volumes done";
 
-    fn last_text(app: &App) -> String {
-        app.messages()
-            .last()
-            .and_then(|m| {
-                m.blocks.iter().find_map(|b| match b {
-                    MessageBlock::Text(t) => Some(t.text.clone()),
-                    _ => None,
-                })
+    fn block_text(msg: &ChatMessage) -> String {
+        msg.blocks
+            .iter()
+            .find_map(|b| match b {
+                MessageBlock::Text(t) => Some(t.text.clone()),
+                _ => None,
             })
             .unwrap_or_default()
     }
@@ -2318,16 +2317,27 @@ mod inbound_message_surfacing_tests {
 
         handle_user(&mut app, delivered_user_turn(PEER_REPLY));
 
-        assert_eq!(app.messages().len(), 3, "user + assistant + appended reply");
+        // user(0), in-flight asst(1), reply(2), fresh placeholder(3).
+        assert_eq!(app.messages().len(), 4, "user + in-flight asst + reply + fresh placeholder");
         assert!(
             matches!(app.messages()[1].role, MessageRole::Assistant),
             "the in-flight assistant send stays at idx 1 - the reply is NOT inserted above it",
         );
         assert!(
             app.messages()[2].is_peer_envelope,
-            "the peer reply lands at the tail (idx 2) in arrival order",
+            "the peer reply lands below the in-flight send (idx 2) in arrival order",
         );
-        assert!(last_text(&app).contains("Done."), "reply body appended at the tail");
+        assert!(block_text(&app.messages()[2]).contains("Done."), "reply body on the peer turn");
+        assert!(
+            matches!(app.messages()[3].role, MessageRole::Assistant)
+                && app.messages()[3].blocks.is_empty(),
+            "a fresh empty assistant placeholder opens at the tail for the spinner",
+        );
+        assert_eq!(
+            app.active_turn_assistant_message_idx(),
+            Some(3),
+            "pointer reparents onto the tail placeholder (spinner pins to the bottom)",
+        );
     }
 
     /// Bug A extends to gotify: the external notification also appends
@@ -2344,12 +2354,22 @@ mod inbound_message_surfacing_tests {
 
         handle_user(&mut app, delivered_user_turn(GOTIFY_NOTE));
 
-        assert_eq!(app.messages().len(), 2);
+        // in-flight asst(0), gotify note(1), fresh placeholder(2).
+        assert_eq!(app.messages().len(), 3, "in-flight asst + gotify note + fresh placeholder");
         assert!(
             matches!(app.messages()[0].role, MessageRole::Assistant),
             "assistant turn stays at idx 0",
         );
-        assert!(app.messages()[1].is_gotify_envelope, "gotify note appends at the tail");
+        assert!(
+            app.messages()[1].is_gotify_envelope,
+            "gotify note appends below the in-flight turn (idx 1) in arrival order",
+        );
+        assert!(
+            matches!(app.messages()[2].role, MessageRole::Assistant)
+                && app.messages()[2].blocks.is_empty(),
+            "a fresh empty assistant placeholder opens at the tail for the spinner",
+        );
+        assert_eq!(app.active_turn_assistant_message_idx(), Some(2));
     }
 
     /// Bug B: a delivered peer prompt flips the chat status to Thinking
@@ -2408,6 +2428,134 @@ mod inbound_message_surfacing_tests {
         assert!(
             matches!(app.status, AppStatus::Ready),
             "replayed peer envelope must NOT flip status to Thinking",
+        );
+    }
+
+    /// Spinner position: a delivered prompt landing on an idle session
+    /// (prior turn completed -> pointer cleared) must open a fresh
+    /// assistant placeholder at the tail and bind the active-turn
+    /// pointer onto it, so the thinking spinner pins to the bottom
+    /// (above the input) exactly like a typed turn - not on the stale
+    /// prior reply near the top.
+    #[test]
+    fn delivered_peer_prompt_opens_tail_placeholder_and_binds_spinner() {
+        let mut app = App::test_default();
+        idle_active_bucket(&mut app);
+        app.status = AppStatus::Ready;
+        app.active_messages_mut().push(ChatMessage::new(
+            MessageRole::User,
+            vec![MessageBlock::Text(TextBlock::from_complete("prior prompt"))],
+            None,
+        ));
+        app.active_messages_mut().push(ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::Text(TextBlock::from_complete("prior reply"))],
+            None,
+        ));
+        // TurnComplete clears the pointer (turn.rs); model that idle state.
+        app.clear_active_turn_assistant();
+
+        handle_user(&mut app, delivered_user_turn(PEER_REPLY));
+
+        let tail = app.messages().len() - 1;
+        assert!(
+            matches!(app.messages()[tail].role, MessageRole::Assistant)
+                && app.messages()[tail].blocks.is_empty(),
+            "delivered turn opens a fresh empty assistant placeholder at the tail",
+        );
+        assert_eq!(
+            app.active_turn_assistant_message_idx(),
+            Some(tail),
+            "pointer targets the tail placeholder so the spinner pins to the \
+             bottom, not the stale prior reply",
+        );
+    }
+
+    /// Spinner position, gotify variant: an idle-delivered gotify note
+    /// opens the same tail placeholder + pointer binding.
+    #[test]
+    fn delivered_gotify_note_opens_tail_placeholder_and_binds_spinner() {
+        let mut app = App::test_default();
+        idle_active_bucket(&mut app);
+        app.status = AppStatus::Ready;
+        app.clear_active_turn_assistant();
+
+        handle_user(&mut app, delivered_user_turn(GOTIFY_NOTE));
+
+        let tail = app.messages().len() - 1;
+        assert!(
+            matches!(app.messages()[tail].role, MessageRole::Assistant)
+                && app.messages()[tail].blocks.is_empty(),
+            "gotify delivery opens a fresh empty assistant placeholder at the tail",
+        );
+        assert_eq!(app.active_turn_assistant_message_idx(), Some(tail));
+    }
+
+    /// Spinner position, mid-turn "stale index" case: a delivered prompt
+    /// arriving while an assistant turn is in flight repoints the pointer
+    /// OFF the in-flight assistant onto a fresh tail placeholder (mirrors
+    /// input_submit's mid-turn reparent), so the spinner follows the new
+    /// turn to the bottom instead of pinning to the in-flight send.
+    #[test]
+    fn delivered_prompt_reparents_spinner_off_in_flight_assistant() {
+        let mut app = App::test_default();
+        app.active_messages_mut().push(ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::Text(TextBlock::from_complete("asking planner..."))],
+            None,
+        ));
+        app.set_active_turn_assistant_message_idx(Some(0));
+
+        handle_user(&mut app, delivered_user_turn(PEER_REPLY));
+
+        let tail = app.messages().len() - 1;
+        assert_ne!(
+            app.active_turn_assistant_message_idx(),
+            Some(0),
+            "pointer no longer bound to the stale in-flight assistant",
+        );
+        assert_eq!(
+            app.active_turn_assistant_message_idx(),
+            Some(tail),
+            "pointer reparented onto the fresh tail placeholder",
+        );
+        assert!(
+            matches!(app.messages()[tail].role, MessageRole::Assistant)
+                && app.messages()[tail].blocks.is_empty(),
+        );
+    }
+
+    /// Rapid back-to-back delivery (a Gotify flood / burst of peer
+    /// replies): a second delivered turn arriving before the first
+    /// streamed any token must strip the first, now-stranded, empty
+    /// placeholder - so deliveries don't accumulate blank assistant
+    /// bubbles between them. Mirrors input_submit's rapid-submit strip.
+    #[test]
+    fn back_to_back_delivery_strips_stranded_empty_placeholder() {
+        let mut app = App::test_default();
+        idle_active_bucket(&mut app);
+        app.status = AppStatus::Ready;
+        app.clear_active_turn_assistant();
+
+        // First delivery opens [gotify1, placeholder1(empty)].
+        handle_user(&mut app, delivered_user_turn(GOTIFY_NOTE));
+        // Second delivery lands before any token streamed into placeholder1.
+        handle_user(&mut app, delivered_user_turn(PEER_REPLY));
+
+        // placeholder1 stripped -> [gotify1, reply2, placeholder2]; no
+        // blank bubble stranded between the two delivered turns.
+        assert_eq!(app.messages().len(), 3, "stranded empty placeholder stripped");
+        assert!(app.messages()[0].is_gotify_envelope, "first delivered turn");
+        assert!(app.messages()[1].is_peer_envelope, "second delivered turn, adjacent");
+        assert!(
+            matches!(app.messages()[2].role, MessageRole::Assistant)
+                && app.messages()[2].blocks.is_empty(),
+            "exactly one empty placeholder, at the tail",
+        );
+        assert_eq!(
+            app.active_turn_assistant_message_idx(),
+            Some(2),
+            "pointer on the surviving tail placeholder",
         );
     }
 }
