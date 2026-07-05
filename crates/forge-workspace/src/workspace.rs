@@ -8686,6 +8686,60 @@ config_dir = "~/.claude-beta"
     }
 
     #[tokio::test]
+    async fn extend_plan_for_adhoc_worker_preserves_pinned_account_gone_unusable() {
+        // A re-spawn under an existing label keeps its original account
+        // (wire identity) via the idempotent early-return, even after
+        // that account goes rate-limited while others stay usable. The
+        // re-check must NOT re-home the pin, but extend_plan still
+        // surfaces the now-unusable state by returning the account.
+        let dir = make_workspace_dir_246_two_accounts();
+        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        {
+            let mut accounts = workspace.account_states().lock();
+            accounts.set_usage(&AccountKey("Alpha".to_owned()), usage_at(10.0));
+            accounts.set_usage(&AccountKey("Beta".to_owned()), usage_at(10.0));
+        }
+        workspace.recompute_plan_if_ready();
+        let project_key =
+            ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+                workspace.config.projects[0].path.to_string_lossy().as_ref(),
+            )));
+        // First spawn pins "reviewer" to the usable Beta (adhoc slot 1).
+        let first = workspace.extend_plan_for_adhoc_worker(&project_key, "reviewer");
+        assert!(first.is_none(), "initial pin onto a usable account returns None");
+        {
+            let plan = workspace.assignment_plan.lock();
+            let plan = plan.as_ref().expect("populated");
+            assert_eq!(
+                plan.lookup(&project_key, &"reviewer".to_owned()),
+                Some(&AccountKey("Beta".to_owned())),
+            );
+        }
+
+        // Beta goes rate-limited; Alpha is still usable.
+        workspace
+            .account_states()
+            .lock()
+            .set_usage(&AccountKey("Beta".to_owned()), usage_at(100.0));
+
+        // Re-spawn the same label: the pin is preserved (not re-homed
+        // onto Alpha) and the now-unusable state is surfaced.
+        let second = workspace.extend_plan_for_adhoc_worker(&project_key, "reviewer");
+        assert_eq!(
+            second,
+            Some(AccountKey("Beta".to_owned())),
+            "re-spawn keeps the pinned account and surfaces its unusable state",
+        );
+        let plan = workspace.assignment_plan.lock();
+        let plan = plan.as_ref().expect("populated");
+        assert_eq!(
+            plan.lookup(&project_key, &"reviewer".to_owned()),
+            Some(&AccountKey("Beta".to_owned())),
+            "pinned account is never re-homed to a usable one",
+        );
+    }
+
+    #[tokio::test]
     async fn session_chip_for_returns_none_when_plan_unpopulated() {
         let dir = make_workspace_dir_246();
         let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
