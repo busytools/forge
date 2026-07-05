@@ -3518,6 +3518,16 @@ impl Workspace {
             // (the worker never existed; the user-visible signal is
             // the typed notice routed to the lead, not the worker row).
             self.remove_worker_by_session_key(session_key);
+            // A dynamic worker persisted its row on the optimistic spawn
+            // reply, before this async failure. A worktree-creation
+            // failure is a hard removal (the worker never started), so
+            // delete the row too - otherwise it zombie-re-spawns every
+            // restart despite a visibly-failed spawn. No-op for static
+            // workers (no row). The transition-to-Failed path below
+            // deliberately keeps the row: a Failed-but-visible worker
+            // wasn't despawned, so it should re-spawn to recover or
+            // re-fail visibly.
+            self.delete_dynamic_worker(&project_key, &entry.label);
             // Notice goes to the lead session that spawned this
             // worker. Use the workspace's update channel + a fresh
             // Command::Prompt so the lead's claude subprocess sees
@@ -8377,6 +8387,91 @@ mod async_worker_spawn_failure_tests {
         // new dispatch.
         assert!(!workspace.handle_async_worker_spawn_failure(&session_key, worktree_msg));
         assert!(workspace.drain_test_dispatch_buffer().is_empty());
+    }
+
+    fn install_db(workspace: &Arc<Workspace>) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        workspace
+            .install_db_for_test(crate::store::Db::open(&dir.path().join("db.redb")).expect("db"));
+        dir
+    }
+
+    fn persisted_labels(workspace: &Arc<Workspace>, project: &str) -> Vec<String> {
+        let guard = workspace.db.lock();
+        crate::store::dynamic_workers::list_for_project(guard.as_ref().expect("db"), project)
+            .expect("list")
+            .into_iter()
+            .map(|w| w.label)
+            .collect()
+    }
+
+    /// #2: a worktree-creation failure is a hard removal (the worker
+    /// never started), so it deletes the persisted dynamic-worker row -
+    /// otherwise the row zombie-re-spawns every restart despite a
+    /// visibly-failed spawn.
+    #[tokio::test]
+    async fn worktree_failure_deletes_persisted_dynamic_worker_row() {
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        let _dir = install_db(&workspace);
+        workspace.enable_test_dispatch_intercept();
+
+        let project_key = ProjectKey::new("proj-x");
+        let synth_key = "__spawn_worker_proj-x_reviewer_abc__";
+        let lead_id = "lead-uuid";
+        workspace.persist_dynamic_worker(&crate::store::dynamic_workers::DynamicWorker {
+            project_key: "proj-x".to_owned(),
+            label: "reviewer".to_owned(),
+            charter: "c".to_owned(),
+            kick: None,
+        });
+        workspace
+            .insert_live_worker(&project_key, fake_worker("reviewer", synth_key, lead_id, true));
+        install_lead_in_pool(&workspace, lead_id);
+
+        let session_key = SessionKey::from_session_id(synth_key);
+        let worktree_msg = "fatal: 'reviewer' is already used by worktree at /a";
+        assert!(workspace.handle_async_worker_spawn_failure(&session_key, worktree_msg));
+
+        assert!(
+            persisted_labels(&workspace, "proj-x").is_empty(),
+            "worktree-failure hard removal deletes the persisted row",
+        );
+    }
+
+    /// #2: a non-worktree failure transitions the worker to Failed
+    /// (visible) and KEEPS its row, so it re-spawns on the next restart
+    /// to recover or re-fail visibly.
+    #[tokio::test]
+    async fn transition_to_failed_keeps_persisted_dynamic_worker_row() {
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        let _dir = install_db(&workspace);
+
+        let project_key = ProjectKey::new("proj-x");
+        let synth_key = "__spawn_worker_proj-x_reviewer_abc__";
+        workspace.persist_dynamic_worker(&crate::store::dynamic_workers::DynamicWorker {
+            project_key: "proj-x".to_owned(),
+            label: "reviewer".to_owned(),
+            charter: "c".to_owned(),
+            kick: None,
+        });
+        // Non-git worker + a generic message classifies as DispatchFailed,
+        // driving the transition-to-Failed (visible) path.
+        workspace.insert_live_worker(
+            &project_key,
+            fake_worker("reviewer", synth_key, "lead-uuid", false),
+        );
+
+        let session_key = SessionKey::from_session_id(synth_key);
+        assert!(
+            workspace
+                .handle_async_worker_spawn_failure(&session_key, "subprocess exited with code 2")
+        );
+
+        assert_eq!(
+            persisted_labels(&workspace, "proj-x"),
+            vec!["reviewer".to_owned()],
+            "a Failed-but-visible worker keeps its row for re-spawn",
+        );
     }
 
     /// #245 Layer C test gap 12 + 11: direct unit coverage for
