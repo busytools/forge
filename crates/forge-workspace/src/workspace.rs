@@ -1450,10 +1450,11 @@ impl Workspace {
         label: &str,
     ) -> Option<AccountKey> {
         // Snapshot per-account usability under the accounts lock, then
-        // release it before taking the plan lock - the codebase never
-        // holds both simultaneously (see `session_chip_for` /
-        // `plan_assignment`). The snapshot doubles as the rotation
-        // predicate and the warn-surface check below.
+        // release it before taking the plan lock: no path holds both
+        // locks at once (each site drops the first guard before taking
+        // the second), so the two orders can't form a cycle. The
+        // snapshot doubles as the rotation predicate and the
+        // warn-surface check below.
         let usable: std::collections::HashSet<AccountKey> = {
             let accounts = self.accounts.lock();
             accounts
