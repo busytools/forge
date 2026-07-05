@@ -1502,6 +1502,10 @@ fn build_message_render_signature(
     spinner.show_empty_thinking.hash(&mut hasher);
     spinner.show_thinking.hash(&mut hasher);
     spinner.show_compacting.hash(&mut hasher);
+    // Item 3's idle suppression and the running-subagents line both key off
+    // these; fold them so a flip invalidates the cached layout.
+    spinner.is_active_turn_assistant.hash(&mut hasher);
+    spinner.running_subagents.is_some().hash(&mut hasher);
     let assistant_frame = if message_has_frame_dependent_assistant_lines(msg, spinner) {
         Some(spinner.glyph)
     } else {
@@ -4396,6 +4400,45 @@ mod tests {
         assert!(
             !lines.is_empty(),
             "an actively-thinking empty placeholder still shows the spinner"
+        );
+    }
+
+    /// The render-cache signature must fold running_subagents +
+    /// is_active_turn_assistant: an empty assistant suppressed while idle
+    /// must rebuild (not return the stale empty layout) when it flips into
+    /// an active turn with a running subagent.
+    #[test]
+    fn subagent_flip_invalidates_empty_assistant_render_cache() {
+        let mut msg = ChatMessage::new(MessageRole::Assistant, vec![], None);
+
+        let mut lines_a = Vec::new();
+        render_message(
+            &mut msg,
+            &idle_spinner(),
+            MessageRenderContext::new(None, 120, 0, default_options()),
+            &mut lines_a,
+        );
+        assert!(lines_a.is_empty(), "idle empty placeholder is suppressed");
+
+        let active_with_subagent = SpinnerState {
+            is_active_turn_assistant: true,
+            running_subagents: Some(RunningSubagentsLine {
+                count: 1,
+                primary_label: Some("Explore".to_owned()),
+            }),
+            ..idle_spinner()
+        };
+        let mut lines_b = Vec::new();
+        render_message(
+            &mut msg,
+            &active_with_subagent,
+            MessageRenderContext::new(None, 120, 0, default_options()),
+            &mut lines_b,
+        );
+        let rendered = render_lines_to_strings(&lines_b);
+        assert!(
+            rendered.iter().any(|l| l.contains("subagent")),
+            "cache rebuilds on the subagent flip instead of the stale empty render; got {rendered:?}",
         );
     }
 
