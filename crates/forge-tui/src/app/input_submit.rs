@@ -159,15 +159,7 @@ fn dispatch_prompt(app: &mut App, text: String) {
     // fill), drop it before appending. Without this, rapid mid-turn
     // submits accumulate visible empty asst bubbles between user
     // messages.
-    if let Some(tail_idx) = app.messages().len().checked_sub(1) {
-        let tail_is_empty_asst = app
-            .messages()
-            .get(tail_idx)
-            .is_some_and(|msg| matches!(msg.role, MessageRole::Assistant) && msg.blocks.is_empty());
-        if tail_is_empty_asst {
-            let _ = app.remove_message_tracked(tail_idx);
-        }
-    }
+    app.strip_trailing_empty_assistant_placeholder();
 
     // A submit overrides any in-flight cancel intent - the new prompt
     // IS the user's next move, so the "Cancelling current turn..."
@@ -189,8 +181,7 @@ fn dispatch_prompt(app: &mut App, text: String) {
     // treatment too - that's the entire point of the new shape, so
     // claude's continuing tokens land below the new user bubble
     // instead of above it.
-    app.push_message_tracked(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
-    app.bind_active_turn_assistant_to_tail();
+    app.push_active_turn_assistant_placeholder();
     app.status = AppStatus::Thinking;
     if let Some(key) = app.active_session_key.clone() {
         crate::app::events::set_bucket_lifecycle_state(
