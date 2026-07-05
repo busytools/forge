@@ -410,6 +410,16 @@ impl AccountStateMap {
         self.by_key.get(key).and_then(|s| s.usage.as_ref()).is_some_and(is_rate_limited)
     }
 
+    /// `true` when `key` is currently pickable for a fresh assignment:
+    /// tier-0 (not at the usage cap, not probe-blocked by a
+    /// 429/expired/unauthorized) and not `Bailed`. Single source of
+    /// truth for the usable filter shared by `pick_for_project` and the
+    /// ad-hoc assignment guard.
+    pub fn is_account_usable(&self, key: &AccountKey) -> bool {
+        tier_of(self.usage(key), self.usage_error(key)) == 0
+            && self.loading_state(key) != LoadingState::Bailed
+    }
+
     /// Snapshot the current `LoadingState` for `key`. Returns
     /// `LoadingState::Loading` by default for unknown keys
     /// (defensive - the launchpad's render path may briefly hold an
@@ -529,7 +539,7 @@ impl AccountStateMap {
         // cursor cycle comes up.
         let usable: Vec<&AccountKey> = candidates
             .iter()
-            .filter(|(_, u, e, l)| tier_of(*u, *e) == 0 && *l != LoadingState::Bailed)
+            .filter(|(k, _, _, _)| self.is_account_usable(k))
             .map(|(k, _, _, _)| *k)
             .collect();
         let picked = if usable.is_empty() {
@@ -717,6 +727,56 @@ mod tests {
             seven_day_sonnet: None,
             extra_usage: None,
         }
+    }
+
+    #[test]
+    fn is_account_usable_covers_tier_and_loading_table() {
+        let mut map = AccountStateMap::new(&[
+            make_account("ready-low"),
+            make_account("saturated"),
+            make_account("probe-rate-limited"),
+            make_account("probe-expired"),
+            make_account("probe-unauthorized"),
+            make_account("bailed"),
+            make_account("refreshing"),
+        ]);
+
+        // tier-0 + Ready -> usable.
+        map.set_usage(&AccountKey("ready-low".to_owned()), snapshot(Some(10.0), Some(20.0)));
+        // Saturated usage (100%) -> unusable even though loading is Ready.
+        map.set_usage(&AccountKey("saturated".to_owned()), snapshot(Some(100.0), None));
+        // Probe errors -> unusable. RateLimited leaves loading alone;
+        // Expired / Unauthorized also flip loading to Bailed.
+        map.set_last_error(
+            &AccountKey("probe-rate-limited".to_owned()),
+            UsageFetchStatus::RateLimited,
+            None,
+        );
+        map.set_last_error(
+            &AccountKey("probe-expired".to_owned()),
+            UsageFetchStatus::Expired,
+            None,
+        );
+        map.set_last_error(
+            &AccountKey("probe-unauthorized".to_owned()),
+            UsageFetchStatus::Unauthorized,
+            None,
+        );
+        // Bailed with clear usage + no last_error -> unusable purely on
+        // the loading axis (set_loading(Bailed) clears usage, so tier is 0).
+        map.set_loading(&AccountKey("bailed".to_owned()), LoadingState::Bailed);
+        // Refreshing with clear tier-0 usage -> usable; only Bailed is
+        // excluded on the loading axis, not Refreshing.
+        map.set_usage(&AccountKey("refreshing".to_owned()), snapshot(Some(10.0), Some(20.0)));
+        map.set_loading(&AccountKey("refreshing".to_owned()), LoadingState::Refreshing);
+
+        assert!(map.is_account_usable(&AccountKey("ready-low".to_owned())));
+        assert!(!map.is_account_usable(&AccountKey("saturated".to_owned())));
+        assert!(!map.is_account_usable(&AccountKey("probe-rate-limited".to_owned())));
+        assert!(!map.is_account_usable(&AccountKey("probe-expired".to_owned())));
+        assert!(!map.is_account_usable(&AccountKey("probe-unauthorized".to_owned())));
+        assert!(!map.is_account_usable(&AccountKey("bailed".to_owned())));
+        assert!(map.is_account_usable(&AccountKey("refreshing".to_owned())));
     }
 
     #[test]

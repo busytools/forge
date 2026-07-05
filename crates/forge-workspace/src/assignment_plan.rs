@@ -143,14 +143,25 @@ impl AssignmentPlan {
     /// (owned clone - the borrow checker can't reconcile re-fetching
     /// from `&mut self`'s post-insert state), or `None` when the
     /// project is unknown or its pool is empty.
+    ///
+    /// `is_usable` re-checks live account state at spawn time: unlike
+    /// the boot-time pool (frozen when accounts first went `Ready`), a
+    /// mid-session account may have since hit its usage cap. When the
+    /// round-robin slot lands on an unusable account the assignment
+    /// walks forward to the next usable one; if the whole pool is
+    /// unusable it falls back to the round-robin pick so a spawn never
+    /// silently refuses (the user sees the subprocess's own 429),
+    /// matching `pick_for_project`'s fallback.
     pub fn assign_adhoc_worker(
         &mut self,
         project: &ProjectKey,
         label: &SessionLabel,
+        is_usable: impl Fn(&AccountKey) -> bool,
     ) -> Option<AccountKey> {
         // Check existing assignment first - adhoc workers may be
         // re-spawned under the same label; preserve the original
-        // assignment to keep wire identity stable.
+        // assignment to keep wire identity stable. The re-check applies
+        // only to a fresh assignment, never re-homing a running worker.
         if let Some(account) = self.assignments.get(&(project.clone(), label.clone())) {
             return Some(account.clone());
         }
@@ -161,7 +172,12 @@ impl AssignmentPlan {
         }
         let session_n = slot.next_session_n;
         slot.next_session_n += 1;
-        let pool_idx = (slot.offset + session_n) % slot.pool.len();
+        let len = slot.pool.len();
+        let base = (slot.offset + session_n) % len;
+        let pool_idx = (0..len)
+            .map(|step| (base + step) % len)
+            .find(|&idx| is_usable(&slot.pool[idx]))
+            .unwrap_or(base);
         let account = slot.pool[pool_idx].clone();
         self.assignments.insert((project.clone(), label.clone()), account.clone());
         Some(account)
@@ -403,7 +419,7 @@ mod tests {
 
         // Pool = [a, b, c], offset = 0, next_session_n = 2.
         // Adhoc session_n=2, slot=(0+2)%3=2 -> c.
-        let assigned = plan.assign_adhoc_worker(&pk("p"), &"adhoc".into());
+        let assigned = plan.assign_adhoc_worker(&pk("p"), &"adhoc".into(), |_| true);
         assert_eq!(assigned, Some(ak("c")));
         assert_eq!(plan.lookup(&pk("p"), &"adhoc".into()), Some(&ak("c")));
     }
@@ -419,10 +435,50 @@ mod tests {
 
         let picks: Vec<AccountKey> = (0..4)
             .map(|n| {
-                plan.assign_adhoc_worker(&pk("p"), &format!("adhoc-{n}")).expect("pool non-empty")
+                plan.assign_adhoc_worker(&pk("p"), &format!("adhoc-{n}"), |_| true)
+                    .expect("pool non-empty")
             })
             .collect();
         assert_eq!(picks, vec![ak("c"), ak("a"), ak("b"), ak("c")]);
+    }
+
+    #[test]
+    fn assign_adhoc_worker_rotates_past_rate_limited_account() {
+        // Pool [a, b, c], offset 0. Boot assigned only the lead
+        // (session_n=0 -> a), so the first adhoc is session_n=1 and the
+        // raw round-robin slot is (0 + 1) % 3 = 1 -> b. With b
+        // rate-limited, the assignment must walk forward to the next
+        // usable account (c) instead of silently landing on b.
+        let accounts = vec![ak("a"), ak("b"), ak("c")];
+        let projects = vec![project("p", &["a", "b", "c"], &[])];
+        let mut plan = compute_plan(&accounts, &[], &projects);
+
+        let assigned = plan.assign_adhoc_worker(&pk("p"), &"adhoc".into(), |k| k != &ak("b"));
+        assert_eq!(
+            assigned,
+            Some(ak("c")),
+            "adhoc worker must rotate off the rate-limited slot to the next usable account",
+        );
+        assert_eq!(plan.lookup(&pk("p"), &"adhoc".into()), Some(&ak("c")));
+    }
+
+    #[test]
+    fn assign_adhoc_worker_falls_back_when_all_accounts_unusable() {
+        // Same pool; the raw slot lands on b. When EVERY candidate is
+        // unusable the assignment must still return an account (the raw
+        // round-robin pick) rather than None, so the spawn proceeds and
+        // the user sees the subprocess's own 429 instead of forge
+        // silently refusing - matching pick_for_project's fallback.
+        let accounts = vec![ak("a"), ak("b"), ak("c")];
+        let projects = vec![project("p", &["a", "b", "c"], &[])];
+        let mut plan = compute_plan(&accounts, &[], &projects);
+
+        let assigned = plan.assign_adhoc_worker(&pk("p"), &"adhoc".into(), |_| false);
+        assert_eq!(
+            assigned,
+            Some(ak("b")),
+            "all-unusable pool must still assign (the raw round-robin pick), never None",
+        );
     }
 
     #[test]
@@ -433,8 +489,8 @@ mod tests {
         let projects = vec![project("p", &["a", "b"], &[])];
         let mut plan = compute_plan(&accounts, &[], &projects);
 
-        let first = plan.assign_adhoc_worker(&pk("p"), &"reviewer".into());
-        let second = plan.assign_adhoc_worker(&pk("p"), &"reviewer".into());
+        let first = plan.assign_adhoc_worker(&pk("p"), &"reviewer".into(), |_| true);
+        let second = plan.assign_adhoc_worker(&pk("p"), &"reviewer".into(), |_| true);
         assert_eq!(first, second);
     }
 
@@ -443,14 +499,14 @@ mod tests {
         let accounts = vec![ak("a")];
         let projects = vec![project("p", &["bailed"], &[])];
         let mut plan = compute_plan(&accounts, &[], &projects);
-        assert_eq!(plan.assign_adhoc_worker(&pk("p"), &"any".into()), None);
+        assert_eq!(plan.assign_adhoc_worker(&pk("p"), &"any".into(), |_| true), None);
     }
 
     #[test]
     fn assign_adhoc_worker_returns_none_for_unknown_project() {
         let plan_input_projects: Vec<ProjectInput> = Vec::new();
         let mut plan = compute_plan(&[ak("a")], &[], &plan_input_projects);
-        assert_eq!(plan.assign_adhoc_worker(&pk("absent"), &"x".into()), None);
+        assert_eq!(plan.assign_adhoc_worker(&pk("absent"), &"x".into(), |_| true), None);
     }
 
     #[test]
@@ -509,7 +565,7 @@ mod tests {
 
         // The next adhoc worker (session_n = 1 - boot only assigned
         // lead at session_n = 0) lands on pool[1] = b.
-        let assigned = plan.assign_adhoc_worker(&pk("p"), &"w1".into());
+        let assigned = plan.assign_adhoc_worker(&pk("p"), &"w1".into(), |_| true);
         assert_eq!(
             assigned,
             Some(ak("b")),
@@ -524,15 +580,15 @@ mod tests {
         let accounts = vec![ak("a"), ak("b"), ak("c")];
         let projects = vec![project("p", &["a", "b", "c"], &[])];
         let mut plan = compute_plan(&accounts, &[], &projects);
-        let _ = plan.assign_adhoc_worker(&pk("p"), &"w1".into()); // slot 1 -> b
-        let _ = plan.assign_adhoc_worker(&pk("p"), &"w2".into()); // slot 2 -> c
+        let _ = plan.assign_adhoc_worker(&pk("p"), &"w1".into(), |_| true); // slot 1 -> b
+        let _ = plan.assign_adhoc_worker(&pk("p"), &"w2".into(), |_| true); // slot 2 -> c
 
         // Re-compute against the same ready set (e.g., a Bailed
         // account elsewhere recovered without affecting this
         // project's pool). The frozen overlay must keep counter at 3.
         let fresh = compute_plan(&accounts, &[], &projects);
         plan.merge_frozen(fresh);
-        let assigned = plan.assign_adhoc_worker(&pk("p"), &"w3".into()); // slot 3 mod 3 = 0 -> a
+        let assigned = plan.assign_adhoc_worker(&pk("p"), &"w3".into(), |_| true); // slot 3 mod 3 = 0 -> a
         assert_eq!(assigned, Some(ak("a")));
     }
 }
