@@ -112,27 +112,72 @@ async fn probe_installed() -> Option<String> {
     }
 }
 
-/// GET npm's `/latest` dist-tag for the `@anthropic-ai/claude-code`
-/// package, parse the JSON `version` field, return `MAJOR.MINOR.PATCH`.
-/// Same WARN-and-`None` failure shape as the local probe.
+/// Result of one npm-registry attempt. The type exists for the retry
+/// decision: `Unreachable` never touched the server (retry direct),
+/// `Unusable` reached it but the response was no good (retry won't
+/// help).
+enum ProbeOutcome {
+    /// Parsed a version token from the response.
+    Version(String),
+    /// Connect / send error - the registry was never reached.
+    Unreachable,
+    /// Reached the registry, but the response was non-success, bad
+    /// JSON, or missing the `version` field.
+    Unusable,
+}
+
+/// GET npm's `/latest` dist-tag and return the newest published
+/// `@anthropic-ai/claude-code` version as `MAJOR.MINOR.PATCH`.
+///
+/// The first attempt honours the ambient proxy env; if it can't reach
+/// the registry (e.g. an exported `HTTPS_PROXY` pointing at a stopped
+/// mitmproxy) it retries once via `.no_proxy()` so the non-sensitive
+/// version check still lands over a direct connection. WARN-and-`None`
+/// on any terminal failure.
 async fn probe_latest() -> Option<String> {
-    let client = match crate::http_trust::with_extra_roots(
-        reqwest::Client::builder().timeout(PROBE_TIMEOUT),
-    )
-    .build()
-    {
-        Ok(client) => client,
+    let client = build_probe_client(false)?;
+    match attempt_latest(&client, false).await {
+        ProbeOutcome::Version(v) => return Some(v),
+        ProbeOutcome::Unusable => return None,
+        ProbeOutcome::Unreachable => {}
+    }
+    let direct = build_probe_client(true)?;
+    match attempt_latest(&direct, true).await {
+        ProbeOutcome::Version(v) => Some(v),
+        _ => None,
+    }
+}
+
+/// Build the reqwest client for a single npm probe. `direct` adds
+/// `.no_proxy()` so the request bypasses any ambient proxy env and
+/// connects straight to the registry; both variants keep
+/// `with_extra_roots` so a corporate / mitmproxy CA still validates.
+fn build_probe_client(direct: bool) -> Option<reqwest::Client> {
+    let mut builder =
+        crate::http_trust::with_extra_roots(reqwest::Client::builder().timeout(PROBE_TIMEOUT));
+    if direct {
+        builder = builder.no_proxy();
+    }
+    match builder.build() {
+        Ok(client) => Some(client),
         Err(err) => {
             tracing::warn!(
                 target: crate::logging::targets::ENV_GIT,
                 event_name = "cli_release_client_build_failed",
                 message = "reqwest client build failed",
                 outcome = "failure",
+                direct,
                 error = %err,
             );
-            return None;
+            None
         }
-    };
+    }
+}
+
+/// Run one GET against the npm registry with the given client,
+/// classifying the result so the caller can decide whether a direct
+/// retry is worthwhile.
+async fn attempt_latest(client: &reqwest::Client, direct: bool) -> ProbeOutcome {
     let resp = match client.get(NPM_LATEST_URL).send().await {
         Ok(resp) => resp,
         Err(err) => {
@@ -141,9 +186,10 @@ async fn probe_latest() -> Option<String> {
                 event_name = "cli_release_fetch_failed",
                 message = "npm registry GET failed",
                 outcome = "failure",
+                direct,
                 error = %err,
             );
-            return None;
+            return ProbeOutcome::Unreachable;
         }
     };
     if !resp.status().is_success() {
@@ -152,9 +198,10 @@ async fn probe_latest() -> Option<String> {
             event_name = "cli_release_non_success",
             message = "npm registry returned non-success",
             outcome = "failure",
+            direct,
             status = %resp.status(),
         );
-        return None;
+        return ProbeOutcome::Unusable;
     }
     let body: serde_json::Value = match resp.json().await {
         Ok(v) => v,
@@ -164,11 +211,21 @@ async fn probe_latest() -> Option<String> {
                 event_name = "cli_release_parse_failed",
                 message = "npm registry JSON parse failed",
                 outcome = "failure",
+                direct,
                 error = %err,
             );
-            return None;
+            return ProbeOutcome::Unusable;
         }
     };
+    match parse_latest_version(&body) {
+        Some(version) => ProbeOutcome::Version(version),
+        None => ProbeOutcome::Unusable,
+    }
+}
+
+/// Pull the `MAJOR.MINOR.PATCH` token from an npm `/latest` dist-tag
+/// response body's `version` field.
+fn parse_latest_version(body: &serde_json::Value) -> Option<String> {
     let version = body.get("version").and_then(|v| v.as_str())?;
     extract_semver_token(version).map(str::to_owned)
 }
@@ -287,5 +344,20 @@ mod tests {
         assert!(!info.has_update());
         let info = CliVersionInfo { installed: Some("2.0.45".into()), latest: None };
         assert!(!info.has_update());
+    }
+
+    #[test]
+    fn parse_latest_version_reads_npm_version_field() {
+        let body = serde_json::json!({
+            "name": "@anthropic-ai/claude-code",
+            "version": "2.1.201",
+        });
+        assert_eq!(parse_latest_version(&body), Some("2.1.201".to_owned()));
+    }
+
+    #[test]
+    fn parse_latest_version_none_when_field_missing() {
+        let body = serde_json::json!({ "name": "@anthropic-ai/claude-code" });
+        assert!(parse_latest_version(&body).is_none());
     }
 }
