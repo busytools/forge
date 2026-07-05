@@ -730,6 +730,56 @@ mod tests {
     }
 
     #[test]
+    fn is_account_usable_covers_tier_and_loading_table() {
+        let mut map = AccountStateMap::new(&[
+            make_account("ready-low"),
+            make_account("saturated"),
+            make_account("probe-rate-limited"),
+            make_account("probe-expired"),
+            make_account("probe-unauthorized"),
+            make_account("bailed"),
+            make_account("refreshing"),
+        ]);
+
+        // tier-0 + Ready -> usable.
+        map.set_usage(&AccountKey("ready-low".to_owned()), snapshot(Some(10.0), Some(20.0)));
+        // Saturated usage (100%) -> unusable even though loading is Ready.
+        map.set_usage(&AccountKey("saturated".to_owned()), snapshot(Some(100.0), None));
+        // Probe errors -> unusable. RateLimited leaves loading alone;
+        // Expired / Unauthorized also flip loading to Bailed.
+        map.set_last_error(
+            &AccountKey("probe-rate-limited".to_owned()),
+            UsageFetchStatus::RateLimited,
+            None,
+        );
+        map.set_last_error(
+            &AccountKey("probe-expired".to_owned()),
+            UsageFetchStatus::Expired,
+            None,
+        );
+        map.set_last_error(
+            &AccountKey("probe-unauthorized".to_owned()),
+            UsageFetchStatus::Unauthorized,
+            None,
+        );
+        // Bailed with clear usage + no last_error -> unusable purely on
+        // the loading axis (set_loading(Bailed) clears usage, so tier is 0).
+        map.set_loading(&AccountKey("bailed".to_owned()), LoadingState::Bailed);
+        // Refreshing with clear tier-0 usage -> usable; only Bailed is
+        // excluded on the loading axis, not Refreshing.
+        map.set_usage(&AccountKey("refreshing".to_owned()), snapshot(Some(10.0), Some(20.0)));
+        map.set_loading(&AccountKey("refreshing".to_owned()), LoadingState::Refreshing);
+
+        assert!(map.is_account_usable(&AccountKey("ready-low".to_owned())));
+        assert!(!map.is_account_usable(&AccountKey("saturated".to_owned())));
+        assert!(!map.is_account_usable(&AccountKey("probe-rate-limited".to_owned())));
+        assert!(!map.is_account_usable(&AccountKey("probe-expired".to_owned())));
+        assert!(!map.is_account_usable(&AccountKey("probe-unauthorized".to_owned())));
+        assert!(!map.is_account_usable(&AccountKey("bailed".to_owned())));
+        assert!(map.is_account_usable(&AccountKey("refreshing".to_owned())));
+    }
+
+    #[test]
     fn priority_order_picks_first_in_pin_when_both_available() {
         // Subspace: 5h=80%
         // Granite:  5h=10%
