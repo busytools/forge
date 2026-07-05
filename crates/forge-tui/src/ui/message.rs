@@ -288,13 +288,9 @@ pub(crate) fn render_message(
     render_cached_message(cache.segments(), out);
 }
 
-/// True when an empty-blocks Assistant/System message would render only
-/// its bare "Forge"/"Info" role label. An idle turn can strand such a
-/// placeholder at the tail (a resume, a runtime-state idle flip, or a
-/// turn that opened a placeholder and streamed nothing); rendering just a
-/// label with no body reads as a broken empty bubble. The thinking /
-/// compacting / subagent / stop-hook indicators each give the placeholder
-/// a visible body, so suppression is gated to when none of them apply.
+/// True when an empty-blocks Assistant/System message would render only a
+/// bare "Forge"/"Info" role label - a stranded idle placeholder that reads
+/// as a broken empty bubble, so the caller suppresses it.
 fn renders_bare_role_label_only(
     msg: &ChatMessage,
     spinner: &SpinnerState,

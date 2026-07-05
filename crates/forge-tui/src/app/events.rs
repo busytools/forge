@@ -325,15 +325,9 @@ pub(super) fn handle_settings_parse_error(
     push_system_message_with_severity(app, Some(SystemSeverity::Error), &rendered);
 }
 
-/// Insert a standalone System message for the active session, anchored
-/// ABOVE the in-flight assistant placeholder while a turn is running so it
-/// sits at the moment it happened (mirrors how a rate-limit warning flows
-/// inline) instead of stranding at the tail below the turn; tail
-/// otherwise. `insert_message_tracked` shifts the turn pointer / notice /
-/// hook refs so the spinner stays on the placeholder and streaming lands
-/// there. Gated on a running turn: a turn-END message (error/completion)
-/// reaches here with the pointer still bound but belongs at the tail,
-/// after the turn's partial output.
+/// Insert a System message for the active session above the in-flight
+/// placeholder while a turn is running, tail otherwise, so a mid-turn
+/// notice flows inline instead of stranding below the turn.
 fn insert_active_system_message(app: &mut App, severity: Option<SystemSeverity>, message: &str) {
     let msg = ChatMessage::new(
         MessageRole::System(severity),

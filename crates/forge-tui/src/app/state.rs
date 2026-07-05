@@ -3078,15 +3078,10 @@ impl App {
         self.bind_active_turn_assistant_to_tail();
     }
 
-    /// Re-anchor the thinking-spinner pointer onto the tail assistant
-    /// while a turn is in flight. `chat::msg_spinner` renders the spinner
-    /// only on the message at `active_turn_assistant_idx()`, which a resume
-    /// with an in-flight turn or a runtime-state status flip can leave
-    /// unbound mid-turn - the spinner then vanishes while the Projects pane
-    /// still shows the session running. Bind only onto a tail assistant
-    /// still in flight (no `turn_duration_ms`); a completed prior turn
-    /// would glue the next turn's stream into it, so open a fresh
-    /// placeholder instead.
+    /// Keep the thinking spinner anchored while a turn is running: bind
+    /// onto a tail assistant still in flight (no `turn_duration_ms`), else
+    /// open a fresh placeholder - reusing a completed bubble would glue the
+    /// next turn's stream into it.
     pub(crate) fn ensure_running_turn_spinner_anchor(&mut self) {
         if !matches!(self.status, AppStatus::Thinking | AppStatus::Running) {
             return;
