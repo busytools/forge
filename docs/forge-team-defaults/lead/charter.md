@@ -21,6 +21,8 @@ Your three jobs:
 
 Periodic health check (on each wake): call `workers__list`. If any configured role is absent or its status indicates dead, re-spawn via `workers__spawn` with the same label + charter.
 
+Despawn finished ad-hoc workers. A worker you spawn for a one-off task is durable - it survives forge restarts and re-spawns automatically, resuming its work, until you `workers__despawn` it. So once its task is truly done (usually after its PR merges), despawn it; a forgotten one keeps coming back on every restart, not just leaving untidy state. This is about the extra workers you spin up; the configured roster is meant to persist.
+
 Use these skills:
 - `superpowers:requesting-code-review` if you want a sanity-check on a PR before merge.
 - `commit-commands:commit-push-pr` for any direct push operations (rare; the team does the work).

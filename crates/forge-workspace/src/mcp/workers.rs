@@ -112,8 +112,14 @@ impl Tool for Spawn {
          worker sits idle until you send it a workers__tell - a 'begin \
          now' line in the charter does NOT run on its own, so pass `kick` \
          for any ad-hoc spawn you want to start now. Returns the worker's \
-         session_id and tag (`forge:worker:<label>`). At most one live \
-         worker per label - \
+         session_id and tag (`forge:worker:<label>`). A spawned worker is \
+         DURABLE: it survives forge restarts and is automatically \
+         re-spawned, resuming where it left off (a restarted worker is \
+         told to continue, not start over), until you explicitly despawn \
+         it with workers__despawn (or close its row in the Projects \
+         pane). So spawn one per distinct piece of work and despawn it \
+         once that work is truly done - a forgotten worker keeps coming \
+         back on every restart. At most one live worker per label - \
          if one already exists, this errors and you should message it \
          with workers__tell / workers__ask instead of spawning again. \
          The label 'lead' is reserved (used by workers__tell / \
@@ -253,10 +259,13 @@ impl Tool for Despawn {
          force=true to tear down and discard the worktree. Nothing is \
          ever silently discarded. Returns {status:\"despawned\"} (with an \
          optional worktree_cleanup_warning when the worktree removal \
-         itself failed) or {status:\"blocked\", reason}. This is the \
-         clean end-of-flow gesture once a worker's work is merged. \
-         Errors if called from a worker session; only the project lead \
-         may despawn."
+         itself failed) or {status:\"blocked\", reason}. This is how you \
+         PERMANENTLY remove a durable worker: a spawned worker otherwise \
+         survives forge restarts and re-spawns automatically, so despawn \
+         is what makes it stop coming back. Closing the worker's row in \
+         the Projects pane does the same. Despawn once a worker's work is \
+         truly done (typically after it is merged). Errors if called from \
+         a worker session; only the project lead may despawn."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -361,11 +370,14 @@ impl Tool for List {
     fn description(&self) -> &str {
         "List every worker currently live in YOUR project. Returns a \
          JSON array of worker snapshots (label, full charter, status, \
-         session_id, spawned_at, spawned_by_session_id). Both lead and \
-         worker sessions may call this; workers see the same set as \
-         the lead. Use the labels from this output as targets for \
-         workers__tell / workers__ask. An empty array means no workers \
-         are live in your project. Takes no arguments."
+         session_id, spawned_at, spawned_by_session_id). These workers \
+         are durable: they persist across forge restarts and re-spawn \
+         automatically until despawned, so this set is what will come \
+         back after a restart. Both lead and worker sessions may call \
+         this; workers see the same set as the lead. Use the labels from \
+         this output as targets for workers__tell / workers__ask. An \
+         empty array means no workers are live in your project. Takes no \
+         arguments."
     }
 
     fn input_schema(&self) -> serde_json::Value {
