@@ -288,12 +288,42 @@ pub(crate) fn render_message(
     render_cached_message(cache.segments(), out);
 }
 
+/// True when an empty-blocks Assistant/System message would render only
+/// its bare "Forge"/"Info" role label. An idle turn can strand such a
+/// placeholder at the tail (a resume, a runtime-state idle flip, or a
+/// turn that opened a placeholder and streamed nothing); rendering just a
+/// label with no body reads as a broken empty bubble. The thinking /
+/// compacting / subagent / stop-hook indicators each give the placeholder
+/// a visible body, so suppression is gated to when none of them apply.
+fn renders_bare_role_label_only(
+    msg: &ChatMessage,
+    spinner: &SpinnerState,
+    render_context: &MessageRenderContext<'_>,
+) -> bool {
+    if !msg.blocks.is_empty()
+        || !matches!(msg.role, MessageRole::Assistant | MessageRole::System(_))
+    {
+        return false;
+    }
+    if spinner.show_empty_thinking
+        || spinner.show_compacting
+        || spinner.show_thinking
+        || (spinner.running_subagents.is_some() && spinner.is_active_turn_assistant)
+    {
+        return false;
+    }
+    render_context.options.stop_hook_summary_actions == 0
+}
+
 fn build_message_layout(
     msg: &mut ChatMessage,
     spinner: &SpinnerState,
     render_context: MessageRenderContext<'_>,
 ) -> MessageLayout {
     let mut layout = MessageLayout::new();
+    if renders_bare_role_label_only(msg, spinner, &render_context) {
+        return layout;
+    }
     if !render_context.options.suppress_group_header {
         layout.push_wrapped_line(role_label_line(msg), render_context.width);
     }
@@ -4308,6 +4338,69 @@ mod tests {
         let rendered: String =
             role_label_line(&msg).spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(rendered, "Forge");
+    }
+
+    /// #383 follow-up (empty trailing bubble): an idle assistant with no
+    /// blocks would otherwise render only a bare "Forge" role label with
+    /// no body. Suppress it - an idle empty placeholder renders nothing.
+    #[test]
+    fn empty_idle_assistant_placeholder_renders_nothing() {
+        let mut msg = ChatMessage::new(MessageRole::Assistant, vec![], None);
+        let mut lines = Vec::new();
+        render_message(
+            &mut msg,
+            &idle_spinner(),
+            MessageRenderContext::new(None, 120, 0, default_options()),
+            &mut lines,
+        );
+        assert!(
+            lines.is_empty(),
+            "idle empty assistant placeholder renders nothing; got {:?}",
+            render_lines_to_strings(&lines),
+        );
+    }
+
+    /// The "Info" analog: an idle System message with no blocks must not
+    /// render a bare "Info" label either.
+    #[test]
+    fn empty_idle_system_placeholder_renders_nothing() {
+        let mut msg =
+            ChatMessage::new(MessageRole::System(Some(SystemSeverity::Info)), vec![], None);
+        let mut lines = Vec::new();
+        render_message(
+            &mut msg,
+            &idle_spinner(),
+            MessageRenderContext::new(None, 120, 0, default_options()),
+            &mut lines,
+        );
+        assert!(
+            lines.is_empty(),
+            "idle empty Info placeholder renders nothing; got {:?}",
+            render_lines_to_strings(&lines),
+        );
+    }
+
+    /// Suppression is idle-only: an actively-thinking empty placeholder is
+    /// also empty-blocks but MUST still render its spinner.
+    #[test]
+    fn empty_thinking_placeholder_still_renders_spinner() {
+        let spinner = SpinnerState {
+            show_empty_thinking: true,
+            is_active_turn_assistant: true,
+            ..idle_spinner()
+        };
+        let mut msg = ChatMessage::new(MessageRole::Assistant, vec![], None);
+        let mut lines = Vec::new();
+        render_message(
+            &mut msg,
+            &spinner,
+            MessageRenderContext::new(None, 120, 0, default_options()),
+            &mut lines,
+        );
+        assert!(
+            !lines.is_empty(),
+            "an actively-thinking empty placeholder still shows the spinner"
+        );
     }
 
     // ----------------------------------------------------------------
