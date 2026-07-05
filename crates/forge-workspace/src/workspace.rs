@@ -1439,12 +1439,52 @@ impl Workspace {
     /// plan-driven rotation as boot-time team members. No-op when
     /// the plan isn't populated yet (boot still in flight) - the
     /// fallback `pick_for_project` path takes over in that case.
-    pub(crate) fn extend_plan_for_adhoc_worker(&self, project_key: &ProjectKey, label: &str) {
-        let mut plan_guard = self.assignment_plan.lock();
-        let Some(plan) = plan_guard.as_mut() else {
-            return;
+    /// Returns `Some(account)` when the assigned account is itself
+    /// currently unusable (a fresh assignment that fell back onto a
+    /// fully saturated pool, or a re-spawn pinned to a since-unusable
+    /// account), for the caller to surface at spawn; `None` on a usable
+    /// assignment or a no-op.
+    pub(crate) fn extend_plan_for_adhoc_worker(
+        &self,
+        project_key: &ProjectKey,
+        label: &str,
+    ) -> Option<AccountKey> {
+        // Snapshot per-account usability under the accounts lock, then
+        // release it before taking the plan lock: no path holds both
+        // locks at once (each site drops the first guard before taking
+        // the second), so the two orders can't form a cycle. The
+        // snapshot doubles as the rotation predicate and the
+        // warn-surface check below.
+        let usable: std::collections::HashSet<AccountKey> = {
+            let accounts = self.accounts.lock();
+            accounts
+                .ordered_keys
+                .iter()
+                .filter(|k| accounts.is_account_usable(k))
+                .cloned()
+                .collect()
         };
-        plan.assign_adhoc_worker(project_key, &label.to_owned());
+
+        let assigned = {
+            let mut plan_guard = self.assignment_plan.lock();
+            let plan = plan_guard.as_mut()?;
+            plan.assign_adhoc_worker(project_key, &label.to_owned(), |k| usable.contains(k))
+        }?;
+
+        // The assigned account is currently unusable: either the fresh
+        // rotation found the whole pool saturated, or a re-spawn is
+        // pinned to an account that has since gone unusable. Warn and
+        // return it so the caller surfaces the state at spawn.
+        if usable.contains(&assigned) {
+            return None;
+        }
+        tracing::warn!(
+            target: "forge_workspace::account",
+            label,
+            account = %assigned.0,
+            "adhoc worker assigned to a rate-limited or bailed account",
+        );
+        Some(assigned)
     }
 
     /// Recompute the `AssignmentPlan` from the current ready-account
@@ -8556,12 +8596,149 @@ config_dir = "~/.claude-beta"
             ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
                 workspace.config.projects[0].path.to_string_lossy().as_ref(),
             )));
-        workspace.extend_plan_for_adhoc_worker(&project_key, "reviewer");
+        let assigned = workspace.extend_plan_for_adhoc_worker(&project_key, "reviewer");
+        assert!(
+            assigned.is_none(),
+            "assigning to a usable account returns None (nothing to surface)",
+        );
         let plan = workspace.assignment_plan.lock();
         let plan = plan.as_ref().expect("populated");
         assert!(
             plan.lookup(&project_key, &"reviewer".to_owned()).is_some(),
             "extend_plan_for_adhoc_worker adds the adhoc label to the plan",
+        );
+    }
+
+    fn usage_at(five_hour_util: f64) -> forge_primitives::usage::UsageSnapshot {
+        forge_primitives::usage::UsageSnapshot {
+            source: forge_primitives::usage::UsageSourceKind::Oauth,
+            fetched_at: std::time::SystemTime::UNIX_EPOCH,
+            five_hour: Some(forge_primitives::usage::UsageWindow {
+                utilization: five_hour_util,
+                resets_at: Some(
+                    std::time::SystemTime::now() + std::time::Duration::from_secs(3600),
+                ),
+                reset_description: None,
+            }),
+            seven_day: None,
+            seven_day_opus: None,
+            seven_day_sonnet: None,
+            extra_usage: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn extend_plan_for_adhoc_worker_returns_saturated_account_when_pool_all_saturated() {
+        // The lone allowed account is at 100% utilization, so the plan
+        // pool falls back to it (nothing else exists) and the adhoc
+        // rotation has no usable slot to move to. extend_plan returns
+        // the saturated account it landed on so the spawn path can
+        // surface the rate-limited state.
+        let dir = make_workspace_dir_246();
+        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        workspace
+            .account_states()
+            .lock()
+            .set_usage(&AccountKey("Subspace".to_owned()), usage_at(100.0));
+        workspace.recompute_plan_if_ready();
+        let project_key =
+            ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+                workspace.config.projects[0].path.to_string_lossy().as_ref(),
+            )));
+        let assigned = workspace.extend_plan_for_adhoc_worker(&project_key, "reviewer");
+        assert_eq!(
+            assigned,
+            Some(AccountKey("Subspace".to_owned())),
+            "all-saturated pool surfaces the assigned rate-limited account",
+        );
+    }
+
+    #[tokio::test]
+    async fn extend_plan_for_adhoc_worker_rotates_onto_usable_account() {
+        // Both accounts are usable at compute time, so the plan freezes
+        // the pool as [Alpha, Beta] and the first adhoc slot resolves to
+        // Beta. Beta then hits its cap AFTER the freeze. The rotation
+        // must walk off the now-saturated slot onto the still-usable
+        // Alpha and return None (a usable assignment, nothing to surface).
+        let dir = make_workspace_dir_246_two_accounts();
+        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        {
+            let mut accounts = workspace.account_states().lock();
+            accounts.set_usage(&AccountKey("Alpha".to_owned()), usage_at(10.0));
+            accounts.set_usage(&AccountKey("Beta".to_owned()), usage_at(10.0));
+        }
+        workspace.recompute_plan_if_ready();
+        // Beta saturates after the pool was frozen.
+        workspace
+            .account_states()
+            .lock()
+            .set_usage(&AccountKey("Beta".to_owned()), usage_at(100.0));
+        let project_key =
+            ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+                workspace.config.projects[0].path.to_string_lossy().as_ref(),
+            )));
+        let assigned = workspace.extend_plan_for_adhoc_worker(&project_key, "reviewer");
+        assert!(assigned.is_none(), "rotating onto a usable account returns None");
+        let plan = workspace.assignment_plan.lock();
+        let plan = plan.as_ref().expect("populated");
+        assert_eq!(
+            plan.lookup(&project_key, &"reviewer".to_owned()),
+            Some(&AccountKey("Alpha".to_owned())),
+            "adhoc worker rotates off the saturated Beta onto the usable Alpha",
+        );
+    }
+
+    #[tokio::test]
+    async fn extend_plan_for_adhoc_worker_preserves_pinned_account_gone_unusable() {
+        // A re-spawn under an existing label keeps its original account
+        // (wire identity) via the idempotent early-return, even after
+        // that account goes rate-limited while others stay usable. The
+        // re-check must NOT re-home the pin, but extend_plan still
+        // surfaces the now-unusable state by returning the account.
+        let dir = make_workspace_dir_246_two_accounts();
+        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        {
+            let mut accounts = workspace.account_states().lock();
+            accounts.set_usage(&AccountKey("Alpha".to_owned()), usage_at(10.0));
+            accounts.set_usage(&AccountKey("Beta".to_owned()), usage_at(10.0));
+        }
+        workspace.recompute_plan_if_ready();
+        let project_key =
+            ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+                workspace.config.projects[0].path.to_string_lossy().as_ref(),
+            )));
+        // First spawn pins "reviewer" to the usable Beta (adhoc slot 1).
+        let first = workspace.extend_plan_for_adhoc_worker(&project_key, "reviewer");
+        assert!(first.is_none(), "initial pin onto a usable account returns None");
+        {
+            let plan = workspace.assignment_plan.lock();
+            let plan = plan.as_ref().expect("populated");
+            assert_eq!(
+                plan.lookup(&project_key, &"reviewer".to_owned()),
+                Some(&AccountKey("Beta".to_owned())),
+            );
+        }
+
+        // Beta goes rate-limited; Alpha is still usable.
+        workspace
+            .account_states()
+            .lock()
+            .set_usage(&AccountKey("Beta".to_owned()), usage_at(100.0));
+
+        // Re-spawn the same label: the pin is preserved (not re-homed
+        // onto Alpha) and the now-unusable state is surfaced.
+        let second = workspace.extend_plan_for_adhoc_worker(&project_key, "reviewer");
+        assert_eq!(
+            second,
+            Some(AccountKey("Beta".to_owned())),
+            "re-spawn keeps the pinned account and surfaces its unusable state",
+        );
+        let plan = workspace.assignment_plan.lock();
+        let plan = plan.as_ref().expect("populated");
+        assert_eq!(
+            plan.lookup(&project_key, &"reviewer".to_owned()),
+            Some(&AccountKey("Beta".to_owned())),
+            "pinned account is never re-homed to a usable one",
         );
     }
 

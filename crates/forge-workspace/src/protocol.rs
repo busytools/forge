@@ -76,6 +76,13 @@ impl std::fmt::Debug for PendingInteractionSlot {
 pub struct WorkerSpawnReply {
     pub session_id: String,
     pub tag: String,
+    /// Set to the assigned account name when that account is itself
+    /// currently rate-limited or bailed (a fresh assignment that fell
+    /// back onto a fully saturated pool, or a re-spawn pinned to a
+    /// since-unusable account). The spawn tool surfaces it as a
+    /// `notice` so the lead sees the situation at spawn instead of only
+    /// discovering it when the worker stalls.
+    pub rate_limited_account: Option<String>,
 }
 
 /// Outcome of a [`Command::DespawnWorker`], sent back to the calling
@@ -879,7 +886,11 @@ mod workers_command_tests {
 
     #[test]
     fn worker_spawn_reply_constructs() {
-        let r = WorkerSpawnReply { session_id: "abc".into(), tag: "forge:worker:reviewer".into() };
+        let r = WorkerSpawnReply {
+            session_id: "abc".into(),
+            tag: "forge:worker:reviewer".into(),
+            rate_limited_account: None,
+        };
         assert_eq!(r.tag, "forge:worker:reviewer");
     }
 

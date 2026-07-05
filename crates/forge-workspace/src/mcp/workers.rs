@@ -157,10 +157,15 @@ impl Tool for Spawn {
         };
         match self.facade.spawn_worker(&caller_key, args.label, args.charter, args.kick).await {
             Ok(reply) => {
-                let body = serde_json::json!({
+                let mut body = serde_json::json!({
                     "session_id": reply.session_id,
                     "tag": reply.tag,
                 });
+                if let Some(account) = &reply.rate_limited_account {
+                    body["notice"] = serde_json::Value::String(format!(
+                        "assigned account '{account}' is currently rate-limited or bailed. The worker spawns anyway but may hit a 429 right away; free up an account or wait for a reset."
+                    ));
+                }
                 match serde_json::to_string_pretty(&body) {
                     Ok(json) => ToolOutput::text(json),
                     Err(err) => tool_error(format!("response serialization failed: {err}")),
@@ -1146,6 +1151,7 @@ mod tests {
         *mock.spawn_reply.lock() = Some(Ok(WorkerSpawnReply {
             session_id: "new-uuid".into(),
             tag: "forge:worker:reviewer".into(),
+            rate_limited_account: None,
         }));
         let facade = mock.into_arc();
         let tool =
@@ -1269,6 +1275,7 @@ mod tests {
         *mock.spawn_reply.lock() = Some(Ok(WorkerSpawnReply {
             session_id: "u".into(),
             tag: "forge:worker:reviewer".into(),
+            rate_limited_account: None,
         }));
         let facade: Arc<dyn WorkerFacade> = mock.clone();
         let tool = Spawn { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
@@ -1295,8 +1302,11 @@ mod tests {
         let mock = Arc::new(MockWorkerFacade::new());
         let caller = fake_key("lead-key");
         mock.callers.lock().insert(caller.clone(), lead_caller("forge"));
-        *mock.spawn_reply.lock() =
-            Some(Ok(WorkerSpawnReply { session_id: "u".into(), tag: "t".into() }));
+        *mock.spawn_reply.lock() = Some(Ok(WorkerSpawnReply {
+            session_id: "u".into(),
+            tag: "t".into(),
+            rate_limited_account: None,
+        }));
         let facade: Arc<dyn WorkerFacade> = mock.clone();
         let tool = Spawn { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
         let output = tool
@@ -1306,6 +1316,56 @@ mod tests {
             .await;
         assert!(!output.is_error);
         assert_eq!(mock.spawn_calls.lock()[0].3, None, "absent kick is None");
+    }
+
+    #[tokio::test]
+    async fn spawn_surfaces_rate_limited_account_as_notice() {
+        // When the adhoc assignment fell back onto a rate-limited
+        // account, the spawn tool result carries a `notice` naming it so
+        // the lead sees the situation at spawn.
+        let mock = Arc::new(MockWorkerFacade::new());
+        let caller = fake_key("lead-key");
+        mock.callers.lock().insert(caller.clone(), lead_caller("forge"));
+        *mock.spawn_reply.lock() = Some(Ok(WorkerSpawnReply {
+            session_id: "u".into(),
+            tag: "forge:worker:reviewer".into(),
+            rate_limited_account: Some("granite".into()),
+        }));
+        let facade: Arc<dyn WorkerFacade> = mock.clone();
+        let tool = Spawn { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({ "label": "reviewer", "charter": "Review." }),
+            })
+            .await;
+        assert!(!output.is_error);
+        let body: serde_json::Value =
+            serde_json::from_str(&output.blocks[0].text).expect("valid json body");
+        let notice = body["notice"].as_str().expect("notice present when rate-limited");
+        assert!(notice.contains("granite"), "notice names the rate-limited account: {notice}");
+    }
+
+    #[tokio::test]
+    async fn spawn_omits_notice_when_account_usable() {
+        let mock = Arc::new(MockWorkerFacade::new());
+        let caller = fake_key("lead-key");
+        mock.callers.lock().insert(caller.clone(), lead_caller("forge"));
+        *mock.spawn_reply.lock() = Some(Ok(WorkerSpawnReply {
+            session_id: "u".into(),
+            tag: "forge:worker:reviewer".into(),
+            rate_limited_account: None,
+        }));
+        let facade: Arc<dyn WorkerFacade> = mock.clone();
+        let tool = Spawn { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({ "label": "reviewer", "charter": "Review." }),
+            })
+            .await;
+        assert!(!output.is_error);
+        let body: serde_json::Value =
+            serde_json::from_str(&output.blocks[0].text).expect("valid json body");
+        assert!(body.get("notice").is_none(), "no notice when the account is usable");
     }
 
     #[test]

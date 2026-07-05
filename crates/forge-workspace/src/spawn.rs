@@ -795,7 +795,7 @@ pub(crate) fn handle_spawn_worker(
     // No-op when the plan isn't populated yet (boot still in
     // flight); the fallback round-robin in
     // get_agent_handle_with_spawn_key takes over in that case.
-    workspace.extend_plan_for_adhoc_worker(&project_key, label);
+    let rate_limited_account = workspace.extend_plan_for_adhoc_worker(&project_key, label);
     try_emit(
         workspace,
         "spawn_worker::WorkerStatusChanged::Added",
@@ -846,8 +846,11 @@ pub(crate) fn handle_spawn_worker(
             // The LLM addresses subsequent calls by label; the
             // session_id field is informational. Real session UUID
             // lands on Connected via the rekey machinery.
-            let _ = return_to
-                .send(Ok(WorkerSpawnReply { session_id: synth_key.as_str().to_owned(), tag }));
+            let _ = return_to.send(Ok(WorkerSpawnReply {
+                session_id: synth_key.as_str().to_owned(),
+                tag,
+                rate_limited_account: rate_limited_account.map(|k| k.0),
+            }));
         }
         Err(err) => {
             tracing::error!(
