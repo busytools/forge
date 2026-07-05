@@ -4328,11 +4328,11 @@ mod tests {
     #[test]
     fn runtime_state_running_without_pointer_is_reanchored_by_guard() {
         let mut app = make_test_app();
-        // Reconstructed in-flight turn (what load_resume_history leaves),
-        // with the pointer cleared as that path does at the end of replay.
+        // Resumed prior turn (what load_resume_history leaves), with the
+        // pointer cleared as that path does at the end of replay.
         app.active_messages_mut().push(user_msg("resumed prompt"));
         app.active_messages_mut()
-            .push(assistant_msg(vec![MessageBlock::Text(TextBlock::from_complete("mid-flight"))]));
+            .push(assistant_msg(vec![MessageBlock::Text(TextBlock::from_complete("prior turn"))]));
         app.clear_active_turn_assistant();
 
         send_msg(
@@ -4350,17 +4350,19 @@ mod tests {
         assert_eq!(app.active_turn_assistant_idx(), Some(app.messages().len() - 1));
     }
 
-    /// A running frame arriving with the pointer None and a COMPLETED
-    /// prior-turn bubble at the tail must not reuse that bubble - otherwise
-    /// the next turn's first token glues onto the finished turn.
+    /// Round-2 regression: replay persists no Result records, so a
+    /// resumed-completed assistant has `turn_duration_ms` None. A running
+    /// frame with the pointer None must NOT reuse that content-bearing tail
+    /// (the next token would glue onto the finished turn) - it opens a fresh
+    /// placeholder, and the stream lands there, leaving the historical
+    /// bubble untouched.
     #[test]
-    fn running_anchor_does_not_glue_next_turn_into_completed_tail() {
+    fn running_anchor_pushes_fresh_for_resumed_completed_tail() {
         let mut app = make_test_app();
         app.active_messages_mut().push(user_msg("q1"));
-        let mut done =
-            assistant_msg(vec![MessageBlock::Text(TextBlock::from_complete("prior answer"))]);
-        done.turn_duration_ms = Some(1200);
-        app.active_messages_mut().push(done);
+        app.active_messages_mut().push(assistant_msg(vec![MessageBlock::Text(
+            TextBlock::from_complete("prior answer"),
+        )]));
         app.clear_active_turn_assistant();
         app.status = AppStatus::Running;
         let completed_idx = app.messages().len() - 1;
@@ -4368,7 +4370,11 @@ mod tests {
         app.ensure_running_turn_spinner_anchor();
 
         let anchor = app.active_turn_assistant_idx().expect("anchor bound");
-        assert_ne!(anchor, completed_idx, "must not reuse the completed prior-turn bubble");
+        assert_ne!(anchor, completed_idx, "must not reuse the resumed-completed bubble");
+        assert!(
+            anchor > completed_idx && app.messages()[anchor].blocks.is_empty(),
+            "opened a fresh placeholder past the completed bubble",
+        );
 
         super::streaming::handle_agent_message_chunk(
             &mut app,
@@ -4379,54 +4385,14 @@ mod tests {
         assert_eq!(
             app.messages()[completed_idx].blocks.len(),
             1,
-            "completed bubble is untouched by the next turn's stream",
+            "historical bubble untouched by the next turn's stream",
         );
         let owner = app.active_turn_assistant_idx().expect("bound");
-        assert_ne!(owner, completed_idx);
         assert!(
             app.messages()[owner]
                 .blocks
                 .iter()
                 .any(|b| matches!(b, MessageBlock::Text(t) if t.text.contains("new turn"))),
-        );
-    }
-
-    /// A resumed in-flight turn (partial content, no `turn_duration_ms`
-    /// because it never completed on the wire) still anchors onto its tail
-    /// bubble so the continuation streams into it, not a split bubble.
-    #[test]
-    fn running_anchor_continues_resumed_in_flight_tail() {
-        let mut app = make_test_app();
-        app.active_messages_mut().push(user_msg("q"));
-        app.active_messages_mut()
-            .push(assistant_msg(vec![MessageBlock::Text(TextBlock::from_complete("partial "))]));
-        app.clear_active_turn_assistant();
-        app.status = AppStatus::Running;
-        let in_flight_idx = app.messages().len() - 1;
-
-        app.ensure_running_turn_spinner_anchor();
-        assert_eq!(
-            app.active_turn_assistant_idx(),
-            Some(in_flight_idx),
-            "binds onto the in-flight tail to continue it",
-        );
-
-        super::streaming::handle_agent_message_chunk(
-            &mut app,
-            model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new(
-                "continued".to_owned(),
-            ))),
-        );
-        assert_eq!(
-            app.messages().len(),
-            in_flight_idx + 1,
-            "no new bubble; the resumed turn continued in place",
-        );
-        assert!(
-            app.messages()[in_flight_idx]
-                .blocks
-                .iter()
-                .any(|b| matches!(b, MessageBlock::Text(t) if t.text.contains("continued"))),
         );
     }
 

@@ -1284,18 +1284,16 @@ mod tests {
         assert!(spinner.show_thinking, "thinking remains independent of the subagent surface");
     }
 
-    /// #383 follow-up (pointer desync): the thinking spinner only
-    /// renders on the message at `active_turn_assistant_idx()`. A resume
-    /// with an in-flight turn clears that pointer, and the runtime-state
-    /// signal flips status to Running without re-binding it - so the
-    /// Projects pane shows the session running while the chat shows no
-    /// spinner at all. The render pass must re-anchor onto the tail
-    /// assistant so the spinner reappears.
+    /// #383 follow-up (pointer desync): the thinking spinner renders only
+    /// on the message at `active_turn_assistant_idx()`, which a resume or a
+    /// runtime-state status flip can leave unbound mid-turn. When an empty
+    /// in-flight placeholder sits at the tail, the render pass re-binds onto
+    /// it so the spinner reappears.
     #[test]
-    fn running_turn_without_pointer_reanchors_spinner_to_tail() {
+    fn running_turn_binds_empty_in_flight_placeholder() {
         let mut app = App::test_default();
-        app.active_messages_mut().push(user_message("resumed prompt"));
-        app.active_messages_mut().push(assistant_text_message("mid-flight reply"));
+        app.active_messages_mut().push(user_message("prompt"));
+        app.push_active_turn_assistant_placeholder();
         app.clear_active_turn_assistant();
         app.status = AppStatus::Running;
         let tail = app.messages().len() - 1;
@@ -1312,12 +1310,37 @@ mod tests {
         assert_eq!(
             app.active_turn_assistant_idx(),
             Some(tail),
-            "pointer re-anchored to the tail assistant while running",
+            "re-binds onto the empty in-flight placeholder while running",
         );
         let spinner =
             super::msg_spinner(&base, tail, app.active_turn_assistant_idx(), &app.messages()[tail]);
-        assert!(spinner.is_active_turn_assistant, "tail assistant wears the spinner");
-        assert!(spinner.show_thinking, "spinner is visibly thinking");
+        assert!(spinner.is_active_turn_assistant, "placeholder wears the spinner");
+        assert!(spinner.show_empty_thinking, "spinner is visibly thinking");
+    }
+
+    /// A content-bearing tail is a completed turn (a resumed-completed
+    /// assistant or a finished live turn). The render pass opens a FRESH
+    /// placeholder for the spinner rather than re-binding onto it, so the
+    /// next turn's stream cannot glue onto the finished bubble.
+    #[test]
+    fn running_turn_with_completed_tail_opens_fresh_placeholder() {
+        let mut app = App::test_default();
+        app.active_messages_mut().push(user_message("q"));
+        app.active_messages_mut().push(assistant_text_message("prior answer"));
+        app.clear_active_turn_assistant();
+        app.status = AppStatus::Running;
+        let completed = app.messages().len() - 1;
+
+        let base = super::build_base_spinner(&app);
+        let _ = app.active_viewport_mut().on_frame(80, 24);
+        update_visual_heights(&mut app, &base, 80, 24);
+
+        let anchor = app.active_turn_assistant_idx().expect("anchor bound");
+        assert_ne!(anchor, completed, "did not re-bind onto the completed bubble");
+        assert!(
+            anchor > completed && app.messages()[anchor].blocks.is_empty(),
+            "opened a fresh placeholder past the completed bubble",
+        );
     }
 
     /// Degenerate desync case: status is Thinking/Running but the tail is

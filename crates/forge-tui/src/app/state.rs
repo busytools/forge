@@ -3078,10 +3078,9 @@ impl App {
         self.bind_active_turn_assistant_to_tail();
     }
 
-    /// Keep the thinking spinner anchored while a turn is running: bind
-    /// onto a tail assistant still in flight (no `turn_duration_ms`), else
-    /// open a fresh placeholder - reusing a completed bubble would glue the
-    /// next turn's stream into it.
+    /// Keep the thinking spinner anchored while a turn is running: bind onto
+    /// an empty assistant tail (a genuine in-flight placeholder), else open a
+    /// fresh placeholder.
     pub(crate) fn ensure_running_turn_spinner_anchor(&mut self) {
         if !matches!(self.status, AppStatus::Thinking | AppStatus::Running) {
             return;
@@ -3089,10 +3088,11 @@ impl App {
         if self.active_turn_assistant_idx().is_some() {
             return;
         }
-        let tail_in_flight = self.messages().last().is_some_and(|msg| {
-            matches!(msg.role, MessageRole::Assistant) && msg.turn_duration_ms.is_none()
-        });
-        if tail_in_flight {
+        let tail_is_empty_assistant = self
+            .messages()
+            .last()
+            .is_some_and(|msg| matches!(msg.role, MessageRole::Assistant) && msg.blocks.is_empty());
+        if tail_is_empty_assistant {
             self.bind_active_turn_assistant_to_tail();
         } else {
             self.push_active_turn_assistant_placeholder();
