@@ -1468,11 +1468,10 @@ impl Workspace {
             plan.assign_adhoc_worker(project_key, &label.to_owned(), |k| usable.contains(k))
         }?;
 
-        // The rotation only lands on an unusable account when every
-        // candidate in the project pool is saturated or bailed. Warn
-        // and return it so the caller surfaces the situation in the
-        // spawn tool result - otherwise the lead is left wondering why
-        // the worker makes no progress.
+        // The assigned account is currently unusable: either the fresh
+        // rotation found the whole pool saturated, or a re-spawn is
+        // pinned to an account that has since gone unusable. Warn and
+        // return it so the caller surfaces the state at spawn.
         if usable.contains(&assigned) {
             return None;
         }
@@ -1480,7 +1479,7 @@ impl Workspace {
             target: "forge_workspace::account",
             label,
             account = %assigned.0,
-            "adhoc worker assigned to a rate-limited account: every candidate in the project pool is currently saturated or bailed",
+            "adhoc worker assigned to a rate-limited or bailed account",
         );
         Some(assigned)
     }
