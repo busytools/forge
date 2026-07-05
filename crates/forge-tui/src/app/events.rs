@@ -325,17 +325,39 @@ pub(super) fn handle_settings_parse_error(
     push_system_message_with_severity(app, Some(SystemSeverity::Error), &rendered);
 }
 
+/// Insert a standalone System message for the active session, anchored
+/// ABOVE the in-flight assistant placeholder while a turn is running so it
+/// sits at the moment it happened (mirrors how a rate-limit warning flows
+/// inline) instead of stranding at the tail below the turn; tail
+/// otherwise. `insert_message_tracked` shifts the turn pointer / notice /
+/// hook refs so the spinner stays on the placeholder and streaming lands
+/// there. Gated on a running turn: a turn-END message (error/completion)
+/// reaches here with the pointer still bound but belongs at the tail,
+/// after the turn's partial output.
+fn insert_active_system_message(app: &mut App, severity: Option<SystemSeverity>, message: &str) {
+    let msg = ChatMessage::new(
+        MessageRole::System(severity),
+        vec![MessageBlock::Text(TextBlock::from_complete(message))],
+        None,
+    );
+    let anchor = if matches!(app.status, AppStatus::Thinking | AppStatus::Running) {
+        app.active_turn_assistant_idx()
+    } else {
+        None
+    };
+    match anchor {
+        Some(owner_idx) => app.insert_message_tracked(owner_idx, msg),
+        None => app.push_message_tracked(msg),
+    }
+    app.enforce_history_retention_tracked();
+}
+
 pub(crate) fn push_system_message_with_severity(
     app: &mut App,
     severity: Option<SystemSeverity>,
     message: &str,
 ) {
-    app.push_message_tracked(ChatMessage::new(
-        MessageRole::System(severity),
-        vec![MessageBlock::Text(TextBlock::from_complete(message))],
-        None,
-    ));
-    app.enforce_history_retention_tracked();
+    insert_active_system_message(app, severity, message);
     app.active_viewport_mut().engage_auto_scroll();
 }
 
@@ -349,6 +371,15 @@ pub(crate) fn push_system_message_to_session(
     severity: Option<SystemSeverity>,
     message: &str,
 ) {
+    // When the toast targets the session the user is watching, anchor it
+    // inline above any in-flight turn - but keep the no-auto-scroll
+    // contract so a background-originated toast can't yank a scrolled-up
+    // reader.
+    if app.active_session_key.as_ref() == Some(key) {
+        insert_active_system_message(app, severity, message);
+        app.needs_redraw = true;
+        return;
+    }
     if let Some(session) = app.sessions.get_mut(key) {
         session.messages.push(ChatMessage::new(
             MessageRole::System(severity),
@@ -4190,6 +4221,75 @@ mod tests {
             system_message("session_state_changed", serde_json::json!({"state": "idle"})),
         );
         assert!(matches!(app.status, AppStatus::Error));
+    }
+
+    /// Item 2: a System(Info) notice arriving mid-turn anchors ABOVE the
+    /// active assistant placeholder (like a rate-limit warning flows
+    /// inline) instead of stranding at the tail below the in-flight turn.
+    /// The turn pointer shifts with the placeholder so the spinner stays
+    /// on it and the response still streams there.
+    #[test]
+    fn info_notice_mid_turn_anchors_above_active_placeholder() {
+        let mut app = make_test_app();
+        app.active_messages_mut().push(user_msg("orchestrate workers"));
+        app.push_active_turn_assistant_placeholder();
+        app.status = AppStatus::Running;
+        let placeholder_idx = app.active_turn_assistant_idx().expect("active turn");
+
+        push_system_message_with_severity(&mut app, Some(SystemSeverity::Info), "Worker closed");
+
+        assert!(
+            matches!(
+                app.messages()[placeholder_idx].role,
+                MessageRole::System(Some(SystemSeverity::Info))
+            ),
+            "Info notice anchors above the active placeholder, not at the tail",
+        );
+        let shifted = app.active_turn_assistant_idx().expect("pointer still bound");
+        assert_eq!(shifted, placeholder_idx + 1, "pointer follows the shifted placeholder");
+        assert!(
+            matches!(app.messages()[shifted].role, MessageRole::Assistant)
+                && app.messages()[shifted].blocks.is_empty(),
+            "placeholder intact below the notice",
+        );
+
+        super::streaming::handle_agent_message_chunk(
+            &mut app,
+            model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new(
+                "streaming reply".to_owned(),
+            ))),
+        );
+        let owner = app.active_turn_assistant_idx().expect("still bound");
+        assert_eq!(owner, placeholder_idx + 1, "streaming lands on the placeholder");
+        assert!(
+            app.messages()[owner]
+                .blocks
+                .iter()
+                .any(|b| matches!(b, MessageBlock::Text(t) if t.text.contains("streaming reply"))),
+            "response streamed into the placeholder below the notice",
+        );
+    }
+
+    /// Item 2 idle path unchanged: with no active turn the Info notice
+    /// appends at the tail (that IS the point in history where it happened).
+    #[test]
+    fn info_notice_when_idle_appends_at_tail() {
+        let mut app = make_test_app();
+        app.active_messages_mut().push(user_msg("hi"));
+        app.active_messages_mut()
+            .push(assistant_msg(vec![MessageBlock::Text(TextBlock::from_complete("done"))]));
+        app.clear_active_turn_assistant();
+        app.status = AppStatus::Ready;
+        let before_len = app.messages().len();
+
+        push_system_message_with_severity(&mut app, Some(SystemSeverity::Info), "Worker closed");
+
+        let tail = app.messages().len() - 1;
+        assert_eq!(tail, before_len, "idle Info appends at the tail");
+        assert!(matches!(
+            app.messages()[tail].role,
+            MessageRole::System(Some(SystemSeverity::Info))
+        ));
     }
 
     /// Root cause of the thinking-pointer desync (#383 follow-up): the
