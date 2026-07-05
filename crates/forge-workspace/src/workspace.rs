@@ -2975,12 +2975,15 @@ impl Workspace {
             && let Err(error) =
                 crate::store::dynamic_workers::delete(db, project_key.as_str(), label)
         {
-            tracing::warn!(
+            // This is the last spot in the durability lifecycle that can
+            // silently leave a zombie row (a despawned worker that
+            // re-spawns on restart), so match persist's error! severity.
+            tracing::error!(
                 target: "forge_workspace::workspace",
                 %error,
                 project = %project_key.as_str(),
                 label = %label,
-                "deleting a persisted dynamic worker failed",
+                "deleting a persisted dynamic worker failed; it may re-spawn on restart",
             );
         }
     }
