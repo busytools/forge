@@ -102,8 +102,13 @@ pub fn render_catalog(roles: &[RoleSummary]) -> String {
          automatically; talk to it with workers__tell / workers__ask; \
          list live workers with workers__list. At most one live worker \
          exists per label - if it already exists, message it instead of \
-         spawning again. Default to doing the work yourself; delegate \
-         only substantial or parallelizable work.",
+         spawning again. Spawned workers are durable: they survive forge \
+         restarts and re-spawn automatically, resuming where they left \
+         off, until you explicitly despawn them with workers__despawn (or \
+         close their row in the Projects pane). Despawn a worker once its \
+         work is truly done, otherwise it keeps coming back on every \
+         restart. Default to doing the work yourself; delegate only \
+         substantial or parallelizable work.",
     );
     if !roles.is_empty() {
         s.push_str("\n\nRoles you can spawn here:");

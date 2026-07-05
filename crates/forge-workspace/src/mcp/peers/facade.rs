@@ -879,7 +879,7 @@ mod lead_resolution_tests {
     #[test]
     fn whoami_resolves_worker_caller_to_project_peer_identity() {
         let (ws, _rx) = Workspace::testing_stub();
-        ws.seed_test_project_with_team("myproj", "/tmp/myproj", &[]);
+        ws.seed_test_project_with_static_workers("myproj", "/tmp/myproj", &[]);
         ws.record_connected_session("/tmp/myproj", "lead-uuid", None);
         let pk = crate::ProjectKey::new(
             forge_agent::userdata::catalog::scan::project_key_for_directory(Some("/tmp/myproj")),

@@ -3025,7 +3025,7 @@ mod tests {
         // the project_root rather than `cwd_raw`, so a worker entry
         // without a matching project would now fall back to cwd_raw.
         let project_root = "/tmp/project";
-        workspace.seed_test_project_with_team("forge", project_root, &[]);
+        workspace.seed_test_project_with_static_workers("forge", project_root, &[]);
         let project_key = ProjectKey::new_for_test(
             forge_workspace::userdata::catalog::scan::project_key_for_directory(Some(project_root)),
         );

@@ -36,13 +36,13 @@ pub struct ProjectView {
     /// loader enforces). The launchpad picker reads the first entry
     /// as the row's account hint via [`Self::primary_account_hint`].
     pub accounts: Vec<String>,
-    /// Engineering-team role labels configured for this project via
-    /// the `team = [...]` field in `forge.toml`. Drives the auto-spawn
-    /// roster: one worker per label on the lead's `Connected`, each
-    /// label resolving to a charter + kick file under
+    /// Static-worker role labels configured for this project via the
+    /// `static_workers = [...]` field in `forge.toml`. Drives the
+    /// auto-spawn roster: one worker per label on the lead's
+    /// `Connected`, each label resolving to a charter + kick file under
     /// `~/.claude/forge-team/<label>/`. Empty means no roster; the lead
     /// charter is independent of this list. See `crate::team::Role`.
-    pub team: Vec<String>,
+    pub static_workers: Vec<String>,
     pub sessions: Vec<SessionView>,
 }
 
@@ -79,7 +79,7 @@ impl ProjectView {
             path: PathBuf::from(&display_path),
             display_path,
             accounts: Vec::new(),
-            team: Vec::new(),
+            static_workers: Vec::new(),
             sessions,
         }
     }
@@ -104,7 +104,7 @@ impl ProjectView {
             path: PathBuf::from(&display_path),
             display_path,
             accounts,
-            team: Vec::new(),
+            static_workers: Vec::new(),
             sessions,
         }
     }
@@ -151,7 +151,7 @@ mod tests {
             path: PathBuf::from("/tmp/forge"),
             display_path: "~/Projects/forge".to_owned(),
             accounts: vec!["Personal".to_owned(), "Gateway".to_owned()],
-            team: Vec::new(),
+            static_workers: Vec::new(),
             sessions: Vec::new(),
         };
         assert_eq!(view.primary_account_hint(), "personal");
@@ -166,7 +166,7 @@ mod tests {
             path: PathBuf::from("/tmp/forge"),
             display_path: "~/Projects/forge".to_owned(),
             accounts: Vec::new(),
-            team: Vec::new(),
+            static_workers: Vec::new(),
             sessions: Vec::new(),
         };
         assert_eq!(view.primary_account_hint(), "unknown");

@@ -112,8 +112,14 @@ impl Tool for Spawn {
          worker sits idle until you send it a workers__tell - a 'begin \
          now' line in the charter does NOT run on its own, so pass `kick` \
          for any ad-hoc spawn you want to start now. Returns the worker's \
-         session_id and tag (`forge:worker:<label>`). At most one live \
-         worker per label - \
+         session_id and tag (`forge:worker:<label>`). A spawned worker is \
+         DURABLE: it survives forge restarts and is automatically \
+         re-spawned, resuming where it left off (a restarted worker is \
+         told to continue, not start over), until you explicitly despawn \
+         it with workers__despawn (or close its row in the Projects \
+         pane). So spawn one per distinct piece of work and despawn it \
+         once that work is truly done - a forgotten worker keeps coming \
+         back on every restart. At most one live worker per label - \
          if one already exists, this errors and you should message it \
          with workers__tell / workers__ask instead of spawning again. \
          The label 'lead' is reserved (used by workers__tell / \
@@ -166,6 +172,9 @@ impl Tool for Spawn {
                         "assigned account '{account}' is currently rate-limited or bailed. The worker spawns anyway but may hit a 429 right away; free up an account or wait for a reset."
                     ));
                 }
+                if let Some(warning) = &reply.durability_warning {
+                    body["durability_warning"] = serde_json::Value::String(warning.clone());
+                }
                 match serde_json::to_string_pretty(&body) {
                     Ok(json) => ToolOutput::text(json),
                     Err(err) => tool_error(format!("response serialization failed: {err}")),
@@ -204,9 +213,6 @@ fn format_spawn_error(err: &WorkerSpawnError) -> String {
         }
         WorkerSpawnError::CharterFileMissing { label } => format!(
             "role '{label}' resolves to no charter from this project (looked under ~/.claude/forge-team/<project>/{label}/ then ~/.claude/forge-team/{label}/). Pass an inline charter, or create the role with workers__create_role."
-        ),
-        WorkerSpawnError::AlreadyRunning { label, session_id } => format!(
-            "a worker labeled '{label}' is already running (session {session_id}). Message it with workers__tell / workers__ask, or close it first - only one live worker per label is allowed."
         ),
     }
 }
@@ -253,10 +259,13 @@ impl Tool for Despawn {
          force=true to tear down and discard the worktree. Nothing is \
          ever silently discarded. Returns {status:\"despawned\"} (with an \
          optional worktree_cleanup_warning when the worktree removal \
-         itself failed) or {status:\"blocked\", reason}. This is the \
-         clean end-of-flow gesture once a worker's work is merged. \
-         Errors if called from a worker session; only the project lead \
-         may despawn."
+         itself failed) or {status:\"blocked\", reason}. This is how you \
+         PERMANENTLY remove a durable worker: a spawned worker otherwise \
+         survives forge restarts and re-spawns automatically, so despawn \
+         is what makes it stop coming back. Closing the worker's row in \
+         the Projects pane does the same. Despawn once a worker's work is \
+         truly done (typically after it is merged). Errors if called from \
+         a worker session; only the project lead may despawn."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -361,11 +370,14 @@ impl Tool for List {
     fn description(&self) -> &str {
         "List every worker currently live in YOUR project. Returns a \
          JSON array of worker snapshots (label, full charter, status, \
-         session_id, spawned_at, spawned_by_session_id). Both lead and \
-         worker sessions may call this; workers see the same set as \
-         the lead. Use the labels from this output as targets for \
-         workers__tell / workers__ask. An empty array means no workers \
-         are live in your project. Takes no arguments."
+         session_id, spawned_at, spawned_by_session_id). These workers \
+         are durable: they persist across forge restarts and re-spawn \
+         automatically until despawned, so this set is what will come \
+         back after a restart. Both lead and worker sessions may call \
+         this; workers see the same set as the lead. Use the labels from \
+         this output as targets for workers__tell / workers__ask. An \
+         empty array means no workers are live in your project. Takes no \
+         arguments."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -852,8 +864,8 @@ impl Tool for Ask {
 /// `workers__create_role` - lead-only. Writes charter + initial-kick
 /// (and, optionally, resume-kick) files for a new role under
 /// `~/.claude/forge-team/<label>/`. The next forge restart can then
-/// include `<label>` in `forge.toml`'s `team = [...]` to spawn workers
-/// with this charter.
+/// include `<label>` in `forge.toml`'s `static_workers = [...]` to spawn
+/// workers with this charter.
 ///
 /// Arguments:
 /// - `label` (string, required) - the role label, may contain `/` for
@@ -918,8 +930,8 @@ impl Tool for CreateRole {
          `data-modules/researcher` writes to \
          `~/.claude/forge-team/data-modules/researcher/charter.md`). \
          After creation, add the label to `forge.toml`'s \
-         `team = [...]` and restart forge to spawn workers with this \
-         charter. Refuses by default if any target file already \
+         `static_workers = [...]` and restart forge to spawn workers with \
+         this charter. Refuses by default if any target file already \
          exists; pass `overwrite=true` to replace. The overwrite \
          scope is limited to the files the call writes: when \
          `resume_kick` is omitted, an existing `resume-kick.md` is \
@@ -1152,6 +1164,7 @@ mod tests {
             session_id: "new-uuid".into(),
             tag: "forge:worker:reviewer".into(),
             rate_limited_account: None,
+            durability_warning: None,
         }));
         let facade = mock.into_arc();
         let tool =
@@ -1276,6 +1289,7 @@ mod tests {
             session_id: "u".into(),
             tag: "forge:worker:reviewer".into(),
             rate_limited_account: None,
+            durability_warning: None,
         }));
         let facade: Arc<dyn WorkerFacade> = mock.clone();
         let tool = Spawn { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
@@ -1306,6 +1320,7 @@ mod tests {
             session_id: "u".into(),
             tag: "t".into(),
             rate_limited_account: None,
+            durability_warning: None,
         }));
         let facade: Arc<dyn WorkerFacade> = mock.clone();
         let tool = Spawn { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
@@ -1330,6 +1345,7 @@ mod tests {
             session_id: "u".into(),
             tag: "forge:worker:reviewer".into(),
             rate_limited_account: Some("gateway".into()),
+            durability_warning: None,
         }));
         let facade: Arc<dyn WorkerFacade> = mock.clone();
         let tool = Spawn { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
@@ -1346,6 +1362,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn spawn_surfaces_durability_warning_when_persist_failed() {
+        // A failed durability persist (store down / write error) still
+        // spawns the worker, but the tool result carries a
+        // durability_warning so the lead knows it won't survive a restart.
+        let mock = Arc::new(MockWorkerFacade::new());
+        let caller = fake_key("lead-key");
+        mock.callers.lock().insert(caller.clone(), lead_caller("forge"));
+        *mock.spawn_reply.lock() = Some(Ok(WorkerSpawnReply {
+            session_id: "u".into(),
+            tag: "forge:worker:reviewer".into(),
+            rate_limited_account: None,
+            durability_warning: Some(
+                "spawned, but persisting this worker for durability failed".into(),
+            ),
+        }));
+        let facade: Arc<dyn WorkerFacade> = mock.clone();
+        let tool = Spawn { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({ "label": "reviewer", "charter": "Review." }),
+            })
+            .await;
+        assert!(!output.is_error, "a persist failure does not fail the spawn");
+        let body: serde_json::Value =
+            serde_json::from_str(&output.blocks[0].text).expect("valid json body");
+        let warning = body["durability_warning"]
+            .as_str()
+            .expect("durability_warning present on persist fail");
+        assert!(warning.contains("durability"), "warning explains the durability gap: {warning}");
+    }
+
+    #[tokio::test]
+    async fn spawn_omits_durability_warning_on_success() {
+        let mock = Arc::new(MockWorkerFacade::new());
+        let caller = fake_key("lead-key");
+        mock.callers.lock().insert(caller.clone(), lead_caller("forge"));
+        *mock.spawn_reply.lock() = Some(Ok(WorkerSpawnReply {
+            session_id: "u".into(),
+            tag: "forge:worker:reviewer".into(),
+            rate_limited_account: None,
+            durability_warning: None,
+        }));
+        let facade: Arc<dyn WorkerFacade> = mock.clone();
+        let tool = Spawn { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({ "label": "reviewer", "charter": "Review." }),
+            })
+            .await;
+        assert!(!output.is_error);
+        let body: serde_json::Value =
+            serde_json::from_str(&output.blocks[0].text).expect("valid json body");
+        assert!(body.get("durability_warning").is_none(), "no warning when persistence succeeds");
+    }
+
+    #[tokio::test]
     async fn spawn_omits_notice_when_account_usable() {
         let mock = Arc::new(MockWorkerFacade::new());
         let caller = fake_key("lead-key");
@@ -1354,6 +1426,7 @@ mod tests {
             session_id: "u".into(),
             tag: "forge:worker:reviewer".into(),
             rate_limited_account: None,
+            durability_warning: None,
         }));
         let facade: Arc<dyn WorkerFacade> = mock.clone();
         let tool = Spawn { facade, caller_key: CallerKeyResolver::from_fixed(caller) };

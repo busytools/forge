@@ -70,8 +70,8 @@ impl Role {
 
 /// Reserved label addressing the caller's own lead - see the workers
 /// MCP server. Kept here so charter validation in
-/// `forge-workspace::config` can sanity-check `team = [...]` entries
-/// against it without pulling in `mcp::workers`.
+/// `forge-workspace::config` can sanity-check `static_workers = [...]`
+/// entries against it without pulling in `mcp::workers`.
 pub const LEAD_LABEL: &str = "lead";
 
 /// Bundled lead charter, compiled in as the fallback when

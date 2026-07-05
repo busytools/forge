@@ -734,10 +734,11 @@ pub(crate) fn handle_spawn_worker(
     kick: Option<String>,
     return_to: tokio::sync::oneshot::Sender<Result<WorkerSpawnReply, String>>,
 ) {
-    // Verify the project exists before claiming a synth key. Probe
-    // its filesystem path for git-repo-ness exactly once here and
-    // feed the result into both the WorkerEntry flag and the
-    // `--worktree` extra-arg threading below.
+    // Verify the project exists before claiming a synth key. Probe its
+    // filesystem path for git-repo-ness exactly once here - a blocking FS
+    // call, deliberately BEFORE the live_workers critical section below so
+    // it never widens the dedup window - and feed the result into both the
+    // WorkerEntry flag and the `--worktree` extra-arg threading below.
     let projects = workspace.list_projects();
     let Some(view) = projects.iter().find(|v| v.key == project_key) else {
         let _ = return_to.send(Err(format!("project not found: {}", project_key.as_str())));
@@ -789,7 +790,26 @@ pub(crate) fn handle_spawn_worker(
         diagnostic: None,
         kick,
     };
-    workspace.insert_live_worker(&project_key, entry.clone());
+    // At-most-one-live-worker-per-label, enforced atomically at this
+    // shared core so no dispatch source (config static roster, dynamic DB
+    // re-spawn, MCP workers__spawn, charter health-check) - even two
+    // genuinely-concurrent dispatches for the same label - can double-
+    // insert and fork two subprocesses onto one worktree.
+    if let Err(existing) = workspace.insert_live_worker_if_label_absent(&project_key, entry.clone())
+    {
+        let existing_session = existing.as_str().to_owned();
+        tracing::debug!(
+            target: "forge_workspace::spawn",
+            project = %project_key.as_str(),
+            label = %label,
+            %existing_session,
+            "spawn_worker: label already live; skipping duplicate spawn",
+        );
+        let _ = return_to.send(Err(format!(
+            "a worker labeled '{label}' is already live (session {existing_session}); message it with workers__tell / workers__ask or close it first (one live worker per label)"
+        )));
+        return;
+    }
     // Extend the assignment plan so this adhoc worker's account is
     // picked from the same rotation as the boot-time team members.
     // No-op when the plan isn't populated yet (boot still in
@@ -850,6 +870,9 @@ pub(crate) fn handle_spawn_worker(
                 session_id: synth_key.as_str().to_owned(),
                 tag,
                 rate_limited_account: rate_limited_account.map(|k| k.0),
+                // The MCP facade fills this after its post-reply persist;
+                // the re-spawn paths never persist, so it stays None.
+                durability_warning: None,
             }));
         }
         Err(err) => {
@@ -899,6 +922,12 @@ pub(crate) fn teardown_worker(
     label: &str,
 ) -> Option<crate::mcp::workers::types::WorkerEntry> {
     let entry = workspace.remove_latest_worker(project_key, label)?;
+    // Both entry points into this routine (the Projects-pane close and
+    // the `workers__despawn` MCP tool) delete the persisted dynamic-
+    // worker row so it never re-spawns. A no-op for static workers (no
+    // row). Cancel and the lead-close cascade go through other paths and
+    // deliberately leave the row intact.
+    workspace.delete_dynamic_worker(project_key, label);
     let status = entry.to_status();
     let is_git_repo_at_spawn = entry.is_git_repo_at_spawn;
     // MUST call the non-cascading `release_session` primitive (NOT
@@ -1497,6 +1526,48 @@ config_dir = "~/.claude-stargate"
             diagnostic: None,
             kick: None,
         }
+    }
+
+    /// #1: the at-most-one-live-per-label guard lives in the shared
+    /// `handle_spawn_worker` core, so a second dispatch for an
+    /// already-live label (e.g. the same label in both config
+    /// `static_workers` and the persisted dynamic set on reconnect)
+    /// inserts no duplicate entry and never reaches the subprocess spawn.
+    #[tokio::test]
+    async fn handle_spawn_worker_dedups_already_live_label() {
+        let (workspace, _rx) = Workspace::testing_stub();
+        workspace.seed_test_project_with_static_workers("forge", "/tmp/forge", &[]);
+        let project = workspace
+            .list_projects()
+            .into_iter()
+            .find(|v| v.name == "forge")
+            .expect("seeded project present")
+            .key;
+        // Simulate the first (e.g. static) reviewer already live.
+        workspace.insert_live_worker(&project, fake_worker_entry("reviewer", "reviewer-1"));
+
+        // A second dispatch for the same label (e.g. the dynamic reviewer)
+        // hits the guard before any insert or spawn.
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_spawn_worker(
+            &workspace,
+            project.clone(),
+            "reviewer",
+            "charter".to_owned(),
+            "lead".to_owned(),
+            None,
+            None,
+            tx,
+        );
+
+        assert_eq!(
+            workspace.list_live_workers(&project).len(),
+            1,
+            "the duplicate spawn must not add a second live worker",
+        );
+        let reply = rx.await.expect("reply channel");
+        let err = reply.expect_err("a duplicate spawn replies an error");
+        assert!(err.contains("already live"), "error names the collision: {err}");
     }
 
     /// `handle_close_worker` removes the worker entry, releases the

@@ -1,10 +1,10 @@
-//! End-to-end: forge.toml with `team = [...]` parses, project lead
-//! Connected programmatically dispatches one `Command::SpawnWorker`
+//! End-to-end: forge.toml with `static_workers = [...]` parses, project
+//! lead Connected programmatically dispatches one `Command::SpawnWorker`
 //! per configured label, where each label's charter + initial kick is
 //! loaded from `~/.claude/forge-team/<label>/{charter,kick}.md`.
 //!
 //! Exercises the file-driven charters path end-to-end: forge.toml
-//! `team = [...]` parsing (validate_label), the per-label
+//! `static_workers = [...]` parsing (validate_label), the per-label
 //! load_charter / load_initial_kick disk reads, the lead-charter
 //! stamping at `apply_lead_charter`, and the programmatic
 //! Connected -> SpawnWorker dispatch.
@@ -34,7 +34,7 @@ accounts = ["acct-a"]
 [[orgs.projects]]
 name = "demo"
 path = "/tmp/demo"
-team = ["planner", "implementer", "reviewer"]
+static_workers = ["planner", "implementer", "reviewer"]
 
 [[accounts]]
 display_name = "acct-a"
@@ -72,12 +72,12 @@ async fn config_load_through_team_dispatch() {
 
     let result = {
         // Boot a real Workspace from the on-disk forge.toml - this
-        // drives the full parse path through `LoadedProject::team`.
+        // drives the full parse path through `LoadedProject::static_workers`.
         let workspace =
             Arc::new(Workspace::new(tmp.path().to_owned()).await.expect("workspace boot"));
 
-        // Verify the project loaded and carries the team list in the
-        // public `ProjectView` as string labels (post #220 the team
+        // Verify the project loaded and carries the static_workers list
+        // in the public `ProjectView` as string labels (post #220 the
         // field is `Vec<String>` rather than `Vec<Role>`).
         let projects = workspace.list_projects();
         let demo = projects
@@ -85,9 +85,9 @@ async fn config_load_through_team_dispatch() {
             .find(|p| p.name == "demo")
             .expect("demo project visible via list_projects");
         assert_eq!(
-            demo.team,
+            demo.static_workers,
             vec!["planner".to_owned(), "implementer".to_owned(), "reviewer".to_owned()],
-            "team list parsed in declaration order"
+            "static_workers list parsed in declaration order"
         );
 
         workspace.enable_test_dispatch_intercept();
@@ -131,7 +131,7 @@ async fn config_load_through_team_dispatch() {
         assert_eq!(
             labels,
             vec!["planner".to_owned(), "implementer".to_owned(), "reviewer".to_owned()],
-            "dispatch order matches team = [...] order in forge.toml"
+            "dispatch order matches static_workers = [...] order in forge.toml"
         );
         Ok::<(), &'static str>(())
     };

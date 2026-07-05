@@ -3761,7 +3761,7 @@ mod tests {
         let mut app = App::test_default();
         let ws = app.workspace.clone().expect("test workspace");
         let path = "/Users/me/Projects/web-api";
-        ws.seed_test_project_with_team("web-api", path, &[]);
+        ws.seed_test_project_with_static_workers("web-api", path, &[]);
         // Mirror production: record_connected_session stamps the on-disk
         // catalog at Connect, which is exactly what resolve_active_project_view
         // reads to highlight the active project in the pane + top bar.
@@ -3807,7 +3807,7 @@ mod tests {
         let mut app = App::test_default();
         let ws = app.workspace.clone().expect("test workspace");
         let path = "/Users/me/Projects/web-api";
-        ws.seed_test_project_with_team("web-api", path, &[]);
+        ws.seed_test_project_with_static_workers("web-api", path, &[]);
         let cron = CronEntry {
             id: CronId::from("c1"),
             project_name: "web-api".to_owned(),
@@ -3849,7 +3849,7 @@ mod tests {
 
         // Project path is stored expanded; the bucket cwd is a tilde
         // form that cannot prefix-match it.
-        ws.seed_test_project_with_team("web-api", "/Users/me/Projects/web-api", &[]);
+        ws.seed_test_project_with_static_workers("web-api", "/Users/me/Projects/web-api", &[]);
         let cron = CronEntry {
             id: CronId::from("c1"),
             project_name: "web-api".to_owned(),
@@ -3889,7 +3889,7 @@ mod tests {
         let mut app = App::test_default();
         let ws = app.workspace.clone().expect("test workspace");
 
-        ws.seed_test_project_with_team("cronproj", "/tmp/cronproj-inspector", &[]);
+        ws.seed_test_project_with_static_workers("cronproj", "/tmp/cronproj-inspector", &[]);
         let cron = CronEntry {
             id: CronId::from("c1"),
             project_name: "cronproj".to_owned(),
@@ -3952,7 +3952,7 @@ mod tests {
         {
             let mut app = App::test_default();
             let ws = app.workspace.clone().expect("test workspace");
-            ws.seed_test_project_with_team("cronproj", "/tmp/cronproj-shapes", &[]);
+            ws.seed_test_project_with_static_workers("cronproj", "/tmp/cronproj-shapes", &[]);
             ws.seed_test_cron(cron.clone());
 
             let key = forge_workspace::SessionKey::from_session_id(key_str);
@@ -3981,7 +3981,7 @@ mod tests {
         let mut app = App::test_default();
         let ws = app.workspace.clone().expect("test workspace");
         let path = "/tmp/cronproj-worktree";
-        ws.seed_test_project_with_team("cronproj", path, &[]);
+        ws.seed_test_project_with_static_workers("cronproj", path, &[]);
         let cron = CronEntry {
             id: CronId::from("c1"),
             project_name: "cronproj".to_owned(),
@@ -4017,7 +4017,7 @@ mod tests {
         let mut app = App::test_default();
         let ws = app.workspace.clone().expect("test workspace");
         let path = "/tmp/gotify-inspector-proj";
-        ws.seed_test_project_with_team("gproj", path, &[]);
+        ws.seed_test_project_with_static_workers("gproj", path, &[]);
         ws.seed_test_gotify_subscription(forge_primitives::GotifySubscription {
             id: uuid::Uuid::new_v4(),
             project: "gproj".to_owned(),
