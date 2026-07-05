@@ -394,15 +394,10 @@ fn push_peer_envelope_user_turn_if_present(
             app.enforce_history_retention_tracked();
             return;
         }
-        // Live delivery mirrors input_submit::dispatch_prompt so a
-        // delivered turn behaves exactly like a typed one: drop any
-        // stranded empty placeholder (rapid back-to-back delivery, e.g. a
-        // Gotify flood, would otherwise leave a blank bubble between
-        // turns), append the user turn at the tail (arrival order - never
-        // above the in-flight send), open a fresh assistant placeholder +
-        // reparent the active-turn pointer onto it (spinner pins to the
-        // bottom, not a stale earlier assistant), and put the session to
-        // work so it reads as active rather than idle-then-burst.
+        // Shares dispatch_prompt's turn-open (strip a stranded placeholder,
+        // append the user turn, open a fresh tail placeholder + reparent
+        // the spinner) but deliberately skips its auto-scroll, so a
+        // delivered turn does not yank a scrolled-up reader.
         app.strip_trailing_empty_assistant_placeholder();
         app.push_message_tracked(msg);
         app.push_active_turn_assistant_placeholder();
