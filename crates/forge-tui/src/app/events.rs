@@ -4192,6 +4192,37 @@ mod tests {
         assert!(matches!(app.status, AppStatus::Error));
     }
 
+    /// Root cause of the thinking-pointer desync (#383 follow-up): the
+    /// runtime-state signal flips status to Running - the same family the
+    /// Projects pane reads - but never binds the chat's active-turn
+    /// pointer. After a resume clears that pointer, the spinner has
+    /// nothing to sit on though the session runs. The render guard
+    /// re-anchors it.
+    #[test]
+    fn runtime_state_running_without_pointer_is_reanchored_by_guard() {
+        let mut app = make_test_app();
+        // Reconstructed in-flight turn (what load_resume_history leaves),
+        // with the pointer cleared as that path does at the end of replay.
+        app.active_messages_mut().push(user_msg("resumed prompt"));
+        app.active_messages_mut()
+            .push(assistant_msg(vec![MessageBlock::Text(TextBlock::from_complete("mid-flight"))]));
+        app.clear_active_turn_assistant();
+
+        send_msg(
+            &mut app,
+            system_message("session_state_changed", serde_json::json!({"state": "running"})),
+        );
+
+        assert!(matches!(app.status, AppStatus::Running));
+        assert!(
+            app.active_turn_assistant_idx().is_none(),
+            "the runtime-state handler flips status without binding the pointer",
+        );
+
+        app.ensure_running_turn_spinner_anchor();
+        assert_eq!(app.active_turn_assistant_idx(), Some(app.messages().len() - 1));
+    }
+
     #[test]
     fn settings_parse_error_surfaces_system_error_message() {
         let mut app = make_test_app();

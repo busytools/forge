@@ -133,6 +133,7 @@ fn update_visual_heights(
     width: u16,
     viewport_height: usize,
 ) -> HeightUpdateStats {
+    app.ensure_running_turn_spinner_anchor();
     let msg_count = app.messages().len();
     let _t = app.perf.as_ref().map(|p| p.start_with("chat::update_heights", "msgs", msg_count));
     app.active_viewport_mut().sync_message_count(msg_count);
@@ -1281,6 +1282,66 @@ mod tests {
         let spinner = super::build_base_spinner(&app);
         assert!(spinner.running_subagents.is_none());
         assert!(spinner.show_thinking, "thinking remains independent of the subagent surface");
+    }
+
+    /// #383 follow-up (pointer desync): the thinking spinner only
+    /// renders on the message at `active_turn_assistant_idx()`. A resume
+    /// with an in-flight turn clears that pointer, and the runtime-state
+    /// signal flips status to Running without re-binding it - so the
+    /// Projects pane shows the session running while the chat shows no
+    /// spinner at all. The render pass must re-anchor onto the tail
+    /// assistant so the spinner reappears.
+    #[test]
+    fn running_turn_without_pointer_reanchors_spinner_to_tail() {
+        let mut app = App::test_default();
+        app.active_messages_mut().push(user_message("resumed prompt"));
+        app.active_messages_mut().push(assistant_text_message("mid-flight reply"));
+        app.clear_active_turn_assistant();
+        app.status = AppStatus::Running;
+        let tail = app.messages().len() - 1;
+
+        assert!(
+            app.active_turn_assistant_idx().is_none(),
+            "reproduces the desync: running turn with no bound assistant",
+        );
+
+        let base = super::build_base_spinner(&app);
+        let _ = app.active_viewport_mut().on_frame(80, 24);
+        update_visual_heights(&mut app, &base, 80, 24);
+
+        assert_eq!(
+            app.active_turn_assistant_idx(),
+            Some(tail),
+            "pointer re-anchored to the tail assistant while running",
+        );
+        let spinner =
+            super::msg_spinner(&base, tail, app.active_turn_assistant_idx(), &app.messages()[tail]);
+        assert!(spinner.is_active_turn_assistant, "tail assistant wears the spinner");
+        assert!(spinner.show_thinking, "spinner is visibly thinking");
+    }
+
+    /// Degenerate desync case: status is Thinking/Running but the tail is
+    /// not an assistant (e.g. a delivered prompt landed with no response
+    /// streamed yet). The render pass opens a tail placeholder so the
+    /// spinner has an anchor instead of vanishing.
+    #[test]
+    fn running_turn_with_non_assistant_tail_opens_placeholder() {
+        let mut app = App::test_default();
+        app.active_messages_mut().push(user_message("delivered prompt"));
+        app.clear_active_turn_assistant();
+        app.status = AppStatus::Thinking;
+
+        let base = super::build_base_spinner(&app);
+        let _ = app.active_viewport_mut().on_frame(80, 24);
+        update_visual_heights(&mut app, &base, 80, 24);
+
+        let tail = app.messages().len() - 1;
+        assert!(
+            matches!(app.messages()[tail].role, MessageRole::Assistant)
+                && app.messages()[tail].blocks.is_empty(),
+            "a tail placeholder was opened so the spinner has an anchor",
+        );
+        assert_eq!(app.active_turn_assistant_idx(), Some(tail));
     }
 
     /// The bug this PR closes: an off-screen `MessageChanged`
