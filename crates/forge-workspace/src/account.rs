@@ -410,6 +410,16 @@ impl AccountStateMap {
         self.by_key.get(key).and_then(|s| s.usage.as_ref()).is_some_and(is_rate_limited)
     }
 
+    /// `true` when `key` is currently pickable for a fresh assignment:
+    /// tier-0 (not at the usage cap, not probe-blocked by a
+    /// 429/expired/unauthorized) and not `Bailed`. Single source of
+    /// truth for the usable filter shared by `pick_for_project` and the
+    /// ad-hoc assignment guard.
+    pub fn is_account_usable(&self, key: &AccountKey) -> bool {
+        tier_of(self.usage(key), self.usage_error(key)) == 0
+            && self.loading_state(key) != LoadingState::Bailed
+    }
+
     /// Snapshot the current `LoadingState` for `key`. Returns
     /// `LoadingState::Loading` by default for unknown keys
     /// (defensive - the launchpad's render path may briefly hold an

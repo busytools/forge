@@ -1439,12 +1439,50 @@ impl Workspace {
     /// plan-driven rotation as boot-time team members. No-op when
     /// the plan isn't populated yet (boot still in flight) - the
     /// fallback `pick_for_project` path takes over in that case.
-    pub(crate) fn extend_plan_for_adhoc_worker(&self, project_key: &ProjectKey, label: &str) {
-        let mut plan_guard = self.assignment_plan.lock();
-        let Some(plan) = plan_guard.as_mut() else {
-            return;
+    /// Returns `Some(account)` only when the rotation had to land on a
+    /// rate-limited account (whole pool saturated), for the caller to
+    /// surface at spawn; `None` on a usable assignment or a no-op.
+    pub(crate) fn extend_plan_for_adhoc_worker(
+        &self,
+        project_key: &ProjectKey,
+        label: &str,
+    ) -> Option<AccountKey> {
+        // Snapshot per-account usability under the accounts lock, then
+        // release it before taking the plan lock - the codebase never
+        // holds both simultaneously (see `session_chip_for` /
+        // `plan_assignment`). The snapshot doubles as the rotation
+        // predicate and the warn-surface check below.
+        let usable: std::collections::HashSet<AccountKey> = {
+            let accounts = self.accounts.lock();
+            accounts
+                .ordered_keys
+                .iter()
+                .filter(|k| accounts.is_account_usable(k))
+                .cloned()
+                .collect()
         };
-        plan.assign_adhoc_worker(project_key, &label.to_owned());
+
+        let assigned = {
+            let mut plan_guard = self.assignment_plan.lock();
+            let plan = plan_guard.as_mut()?;
+            plan.assign_adhoc_worker(project_key, &label.to_owned(), |k| usable.contains(k))
+        }?;
+
+        // The rotation only lands on an unusable account when every
+        // candidate in the project pool is saturated or bailed. Warn
+        // and return it so the caller surfaces the situation in the
+        // spawn tool result - otherwise the lead is left wondering why
+        // the worker makes no progress.
+        if usable.contains(&assigned) {
+            return None;
+        }
+        tracing::warn!(
+            target: "forge_workspace::account",
+            label,
+            account = %assigned.0,
+            "adhoc worker assigned to a rate-limited account: every candidate in the project pool is currently saturated or bailed",
+        );
+        Some(assigned)
     }
 
     /// Recompute the `AssignmentPlan` from the current ready-account
