@@ -68,6 +68,12 @@ const WORKER_TAG_RETRY_DELAY: Duration = Duration::from_millis(100);
 /// the cohort, vs ~1 s pre-#259 with most kicks rejected.
 const KICK_DISPATCH_INTERVAL: Duration = Duration::from_millis(750);
 
+/// Forge-supplied resume kick for a dynamic worker on restart. Dynamic
+/// (LLM-spawned) workers have no `resume-kick.md`, so on a resuming
+/// re-spawn forge delivers this constant as the worker's first turn -
+/// telling it to continue rather than start the task over.
+const DYNAMIC_WORKER_RESTART_NOTE: &str = "This session was restarted by forge. Your prior conversation and progress are in the history above. Continue where you left off; do not restart the task.";
+
 /// One enqueue onto the workspace-level worker-kick channel
 /// (#259). Built by `maybe_kick_worker_on_connected` (and any
 /// future kick site); drained by the workspace's
@@ -242,13 +248,15 @@ pub struct Workspace {
     crons: Mutex<Vec<forge_primitives::CronEntry>>,
     /// Active Gotify subscriptions (`mcp__forge__gotify`). The set the
     /// stream matches each inbound message against. Durable ones (lead /
-    /// team-worker) are also persisted to `gotify_db` and reloaded here
+    /// team-worker) are also persisted to `db` and reloaded here
     /// at boot; ephemeral ad-hoc-worker ones live only in memory.
     gotify_subs: Mutex<Vec<forge_primitives::GotifySubscription>>,
-    /// Machine-local redb store backing the durable subscriptions.
-    /// `None` when the DB couldn't open (degrade to in-memory-only, no
-    /// persistence) or in `testing_stub`.
-    gotify_db: Mutex<Option<crate::store::Db>>,
+    /// Machine-local redb store. Backs durable Gotify subscriptions
+    /// ([`crate::store::gotify`]) and persisted dynamic workers
+    /// ([`crate::store::dynamic_workers`]). `None` when the DB couldn't
+    /// open (degrade to in-memory-only, no persistence) or in
+    /// `testing_stub`.
+    db: Mutex<Option<crate::store::Db>>,
     /// Whether the Gotify stream is currently connected. Set by the
     /// subsystem pump on `Connected` / `Disconnected`; read by the
     /// Inspector's status line.
@@ -281,7 +289,7 @@ pub struct Workspace {
     #[cfg(any(test, feature = "testing"))]
     command_intercept: Mutex<Option<Vec<Command>>>,
     /// Test-only project overlay. Entries appended via
-    /// `seed_test_project_with_team` are searched first in
+    /// `seed_test_project_with_static_workers` are searched first in
     /// `find_project_view_by_name` so tests can drive the
     /// Connected-hook team-spawn trigger without writing a
     /// real `forge.toml`. Empty in production.
@@ -323,9 +331,9 @@ pub fn resolve_lead_session(sessions: &[SDKSessionInfo]) -> Option<&SDKSessionIn
 /// Open the machine-local redb store at `<app-support>/db.redb`,
 /// creating the app-support dir first. Returns `None` (with a warn) when
 /// the app-support dir can't resolve or the DB can't open - forge then
-/// runs without durable Gotify subscriptions this session (hard rule
-/// #15: no cwd fallback).
-fn open_gotify_db() -> Option<crate::store::Db> {
+/// runs without durable Gotify subscriptions or dynamic workers this
+/// session (hard rule #15: no cwd fallback).
+fn open_db() -> Option<crate::store::Db> {
     let dir = match forge_sdk::app_support_dir() {
         Ok(dir) => dir,
         Err(error) => {
@@ -569,8 +577,8 @@ impl Workspace {
         // subscriptions. A failure to resolve the app-support dir or open
         // the DB degrades to no-subscriptions this run (non-fatal, like
         // the state cache) - no cwd fallback (hard rule #15).
-        let gotify_db = open_gotify_db();
-        let gotify_subs = match &gotify_db {
+        let db = open_db();
+        let gotify_subs = match &db {
             Some(db) => crate::store::gotify::list(db).unwrap_or_else(|error| {
                 tracing::warn!(
                     target: "forge_workspace::workspace",
@@ -666,7 +674,7 @@ impl Workspace {
             _single_instance_lock: single_instance_lock,
             crons: Mutex::new(crons),
             gotify_subs: Mutex::new(gotify_subs),
-            gotify_db: Mutex::new(gotify_db),
+            db: Mutex::new(db),
             gotify_connected: Mutex::new(false),
             gotify_app_index: Mutex::new(HashMap::new()),
             gotify_subsystem: Mutex::new(None),
@@ -745,7 +753,7 @@ impl Workspace {
         // `ui::render` under projects with ~14 entries.
         let catalog = self.catalog.lock();
         // Iterate config.projects, with the test-only overlay appended
-        // so unit tests can seed projects via `seed_test_project_with_team`
+        // so unit tests can seed projects via `seed_test_project_with_static_workers`
         // and exercise paths that read `list_projects` (matches the
         // `project_root_for_key` / `find_project_view_by_name` overlay
         // pattern).
@@ -795,7 +803,7 @@ impl Workspace {
                 path: project.path.clone(),
                 display_path: project.display_path.clone(),
                 accounts: project.accounts.clone(),
-                team: project.team.clone(),
+                static_workers: project.static_workers.clone(),
                 sessions,
             });
         }
@@ -1542,7 +1550,7 @@ impl Workspace {
                     )),
                 ),
                 accounts: p.accounts.clone(),
-                team: p.team.clone(),
+                static_workers: p.static_workers.clone(),
             })
             .collect();
 
@@ -2435,6 +2443,55 @@ impl Workspace {
         }
     }
 
+    /// Re-spawn this project's persisted dynamic (LLM-spawned) workers on
+    /// lead reconnect. Folded into the same catalog-scan trigger as the
+    /// static roster and sharing its `resume_map`, so every downstream
+    /// mechanic (resume-by-label, `resume_existing`, the past-progress
+    /// guard) is identical. Charter + kick come from the DB row rather
+    /// than files.
+    ///
+    /// Since this holds the dynamic set, it decides the kick directly:
+    /// a resume gets the forge restart note (dynamic workers have no
+    /// `resume-kick.md`), telling it to continue rather than restart; a
+    /// fresh re-spawn (never prompted, so no catalog tag) re-delivers the
+    /// stored kick. Both flow through `maybe_kick_worker_on_connected`'s
+    /// inline-kick path, so that hook needs no per-worker store lookup.
+    pub(crate) fn spawn_dynamic_workers_for_lead(
+        self: &Arc<Self>,
+        lead_session_id: &str,
+        project_key: &crate::target::ProjectKey,
+        dynamic: &[crate::store::dynamic_workers::DynamicWorker],
+        resume_map: &std::collections::HashMap<String, String>,
+    ) {
+        for worker in dynamic {
+            let resume_existing = resume_map.get(&worker.label).cloned();
+            let kick = if resume_existing.is_some() {
+                Some(DYNAMIC_WORKER_RESTART_NOTE.to_owned())
+            } else {
+                worker.kick.clone()
+            };
+            let (tx, _rx) = tokio::sync::oneshot::channel();
+            let cmd = crate::protocol::Command::SpawnWorker {
+                project_key: project_key.clone(),
+                label: worker.label.clone(),
+                charter: worker.charter.clone(),
+                spawned_by_session_id: lead_session_id.to_owned(),
+                resume_existing,
+                kick,
+                return_to: tx,
+            };
+            if let Err(err) = self.dispatch(cmd) {
+                tracing::error!(
+                    target: "forge_workspace::team",
+                    project = %project_key.as_str(),
+                    label = %worker.label,
+                    error = ?err,
+                    "spawn_dynamic_workers_for_lead: dispatch failed for label"
+                );
+            }
+        }
+    }
+
     /// Engineering-team Connected-hook entry point. Synchronously
     /// claims a per-project in-flight guard, then spawns an async
     /// task that scans the catalog for `forge:worker:<label>` tagged
@@ -2451,7 +2508,7 @@ impl Workspace {
     /// Load every label's charter + initial kick (file-driven loader)
     /// before spawning. Returns the loaded set, skipping (with a warn
     /// log) any label whose files are missing - so a single bad label
-    /// in `team = [...]` doesn't block the rest of the team.
+    /// in `static_workers = [...]` doesn't block the rest of the roster.
     fn load_team_roles(
         team: &[String],
         namespace: &str,
@@ -2481,31 +2538,32 @@ impl Workspace {
         project_key: crate::target::ProjectKey,
         project_dir: PathBuf,
         namespace: String,
-        team: Vec<String>,
+        static_workers: Vec<String>,
         force_new: bool,
     ) {
-        if team.is_empty() {
+        // Persisted dynamic workers re-spawn alongside the config roster
+        // through the same resume-map trigger; charter/kick come from
+        // their DB row rather than files.
+        let dynamic = self.dynamic_workers_for_project(&project_key);
+        if static_workers.is_empty() && dynamic.is_empty() {
             return;
         }
         if !self.try_claim_team_spawn(&project_key) {
             tracing::debug!(
                 target: "forge_workspace::team",
                 project = %project_key.as_str(),
-                "team-spawn already in flight; skipping duplicate Connected fire",
+                "worker-spawn already in flight; skipping duplicate Connected fire",
             );
             return;
         }
         // `--new`: the lead came up fresh, so its workers do too. Skip
-        // the catalog resume scan entirely and spawn every role fresh
+        // the catalog resume scan entirely and spawn every worker fresh
         // (an empty resume map => `resume_existing = None` for all).
         if force_new {
-            let loaded = Self::load_team_roles(&team, &namespace, &project_key);
-            self.spawn_team_for_lead_with_resume(
-                &lead_session_id,
-                &project_key,
-                &loaded,
-                &std::collections::HashMap::new(),
-            );
+            let loaded = Self::load_team_roles(&static_workers, &namespace, &project_key);
+            let empty = std::collections::HashMap::new();
+            self.spawn_team_for_lead_with_resume(&lead_session_id, &project_key, &loaded, &empty);
+            self.spawn_dynamic_workers_for_lead(&lead_session_id, &project_key, &dynamic, &empty);
             self.release_team_spawn(&project_key);
             return;
         }
@@ -2515,22 +2573,19 @@ impl Workspace {
         // I/O. When invoked outside a runtime (the sync `#[test]`
         // fixtures in `team_hook_tests`), fall back to a synchronous
         // dispatch with an empty resume map: those tests exercise
-        // the role-fanout shape, not the resume mechanic. Tests that
+        // the worker-fanout shape, not the resume mechanic. Tests that
         // need the resume path opt into `#[tokio::test]` + fixture
         // JSONLs explicitly.
         let Ok(handle) = tokio::runtime::Handle::try_current() else {
             tracing::debug!(
                 target: "forge_workspace::team",
                 project = %project_key.as_str(),
-                "no tokio runtime in scope; falling back to sync team-spawn (test path)",
+                "no tokio runtime in scope; falling back to sync worker-spawn (test path)",
             );
-            let loaded = Self::load_team_roles(&team, &namespace, &project_key);
-            self.spawn_team_for_lead_with_resume(
-                &lead_session_id,
-                &project_key,
-                &loaded,
-                &std::collections::HashMap::new(),
-            );
+            let loaded = Self::load_team_roles(&static_workers, &namespace, &project_key);
+            let empty = std::collections::HashMap::new();
+            self.spawn_team_for_lead_with_resume(&lead_session_id, &project_key, &loaded, &empty);
+            self.spawn_dynamic_workers_for_lead(&lead_session_id, &project_key, &dynamic, &empty);
             self.release_team_spawn(&project_key);
             return;
         };
@@ -2544,20 +2599,27 @@ impl Workspace {
         };
         handle.spawn(async move {
             let resume_map = scan_worker_resume_map(&config_dirs, &project_dir).await;
-            let loaded = Self::load_team_roles(&team, &namespace, &project_key);
+            let loaded = Self::load_team_roles(&static_workers, &namespace, &project_key);
             tracing::info!(
                 target: "forge_workspace::team",
                 project = %project_key.as_str(),
                 lead_session_id = %lead_session_id,
                 resume_count = resume_map.len(),
                 fresh_count = loaded.len().saturating_sub(resume_map.len()),
-                missing_count = team.len().saturating_sub(loaded.len()),
-                "team-spawn catalog scan complete; dispatching SpawnWorker per label",
+                missing_count = static_workers.len().saturating_sub(loaded.len()),
+                dynamic_count = dynamic.len(),
+                "worker-spawn catalog scan complete; dispatching SpawnWorker per label",
             );
             workspace.spawn_team_for_lead_with_resume(
                 &lead_session_id,
                 &project_key,
                 &loaded,
+                &resume_map,
+            );
+            workspace.spawn_dynamic_workers_for_lead(
+                &lead_session_id,
+                &project_key,
+                &dynamic,
                 &resume_map,
             );
             workspace.release_team_spawn(&project_key);
@@ -2836,7 +2898,7 @@ impl Workspace {
         durable: bool,
     ) {
         if durable
-            && let Some(db) = self.gotify_db.lock().as_ref()
+            && let Some(db) = self.db.lock().as_ref()
             && let Err(error) = crate::store::gotify::insert(db, &sub)
         {
             tracing::warn!(
@@ -2859,7 +2921,7 @@ impl Workspace {
             subs.len() != before
         };
         if removed
-            && let Some(db) = self.gotify_db.lock().as_ref()
+            && let Some(db) = self.db.lock().as_ref()
             && let Err(error) = crate::store::gotify::remove(db, id)
         {
             tracing::warn!(
@@ -2887,11 +2949,74 @@ impl Workspace {
         *self.gotify_connected.lock()
     }
 
+    /// Persist a dynamic (LLM-spawned) worker's re-spawn args to the redb
+    /// store so a forge restart can bring it back. Called only from the
+    /// MCP `workers__spawn` path - boot/reconnect re-spawns must NOT
+    /// persist. Returns `Err` when durability could not be achieved (the
+    /// store isn't open, or the write failed) so the caller can warn the
+    /// lead that this worker won't survive a restart.
+    pub(crate) fn persist_dynamic_worker(
+        &self,
+        worker: &crate::store::dynamic_workers::DynamicWorker,
+    ) -> anyhow::Result<()> {
+        let guard = self.db.lock();
+        let Some(db) = guard.as_ref() else {
+            anyhow::bail!("the dynamic-worker store is unavailable this session");
+        };
+        crate::store::dynamic_workers::insert(db, worker)
+    }
+
+    /// Delete a dynamic worker's persisted row so it never re-spawns.
+    /// Keyed by `(project_key, label)`; a no-op for static workers (they
+    /// have no row) and when the DB isn't open. Called from
+    /// `spawn::teardown_worker`, the shared close/despawn routine.
+    pub(crate) fn delete_dynamic_worker(&self, project_key: &ProjectKey, label: &str) {
+        if let Some(db) = self.db.lock().as_ref()
+            && let Err(error) =
+                crate::store::dynamic_workers::delete(db, project_key.as_str(), label)
+        {
+            // This is the last spot in the durability lifecycle that can
+            // silently leave a zombie row (a despawned worker that
+            // re-spawns on restart), so match persist's error! severity.
+            tracing::error!(
+                target: "forge_workspace::workspace",
+                %error,
+                project = %project_key.as_str(),
+                label = %label,
+                "deleting a persisted dynamic worker failed; it may re-spawn on restart",
+            );
+        }
+    }
+
+    /// Every persisted dynamic worker for `project_key`. Empty when the
+    /// DB isn't open or the read fails. Backs the lead-reconnect re-spawn
+    /// merge and the resume restart-note detection.
+    pub(crate) fn dynamic_workers_for_project(
+        &self,
+        project_key: &ProjectKey,
+    ) -> Vec<crate::store::dynamic_workers::DynamicWorker> {
+        let guard = self.db.lock();
+        let Some(db) = guard.as_ref() else {
+            return Vec::new();
+        };
+        crate::store::dynamic_workers::list_for_project(db, project_key.as_str()).unwrap_or_else(
+            |error| {
+                tracing::warn!(
+                    target: "forge_workspace::workspace",
+                    %error,
+                    project = %project_key.as_str(),
+                    "listing persisted dynamic workers failed",
+                );
+                Vec::new()
+            },
+        )
+    }
+
     /// Install a redb store into a test workspace so the durable-vs-
     /// ephemeral persistence path is exercisable without `Workspace::new`.
     #[cfg(any(test, feature = "test-helpers"))]
-    pub fn install_gotify_db_for_test(&self, db: crate::store::Db) {
-        *self.gotify_db.lock() = Some(db);
+    pub fn install_db_for_test(&self, db: crate::store::Db) {
+        *self.db.lock() = Some(db);
     }
 
     /// Match `msg` against every active subscription and dispatch one
@@ -3114,15 +3239,41 @@ impl Workspace {
     }
 
     /// Insert a worker entry into `live_workers[project_key]`.
-    /// MCP-driven spawns dedup on label (`workers__spawn` refuses a
-    /// second live worker per label per project); `remove_latest_worker`
-    /// resolves the single live match.
+    /// `remove_latest_worker` resolves the single live match. The
+    /// one-live-worker-per-label invariant is enforced by
+    /// [`Self::insert_live_worker_if_label_absent`]; this raw push is for
+    /// callers (tests, re-tag) that already own that guarantee.
     pub fn insert_live_worker(
         &self,
         project_key: &ProjectKey,
         entry: crate::mcp::workers::types::WorkerEntry,
     ) {
         self.live_workers.lock().entry(project_key.clone()).or_default().push(entry);
+    }
+
+    /// Insert `entry` only if no live (non-`Failed`) worker already holds
+    /// its label in `project_key`. Holds `live_workers.lock()` across the
+    /// label-check AND the push, so two genuinely-concurrent SpawnWorker
+    /// dispatches for the same label (a reconnect re-spawn racing a manual
+    /// `workers__spawn`, say) can't both pass a check-then-insert window
+    /// and fork two subprocesses onto one worktree. Returns `Ok(())` on
+    /// insert, or `Err(session_key)` naming the live worker that already
+    /// holds the label. This is the sole enforcement point for the
+    /// at-most-one-live-worker-per-label invariant.
+    pub fn insert_live_worker_if_label_absent(
+        &self,
+        project_key: &ProjectKey,
+        entry: crate::mcp::workers::types::WorkerEntry,
+    ) -> Result<(), SessionKey> {
+        let mut workers = self.live_workers.lock();
+        let entries = workers.entry(project_key.clone()).or_default();
+        if let Some(existing) =
+            crate::mcp::workers::types::live_worker_with_label(entries, &entry.label)
+        {
+            return Err(existing.session_key.clone());
+        }
+        entries.push(entry);
+        Ok(())
     }
 
     /// Remove the latest-spawned worker matching `label` from
@@ -3398,6 +3549,16 @@ impl Workspace {
             // (the worker never existed; the user-visible signal is
             // the typed notice routed to the lead, not the worker row).
             self.remove_worker_by_session_key(session_key);
+            // A dynamic worker persisted its row on the optimistic spawn
+            // reply, before this async failure. A worktree-creation
+            // failure is a hard removal (the worker never started), so
+            // delete the row too - otherwise it zombie-re-spawns every
+            // restart despite a visibly-failed spawn. No-op for static
+            // workers (no row). The transition-to-Failed path below
+            // deliberately keeps the row: a Failed-but-visible worker
+            // wasn't despawned, so it should re-spawn to recover or
+            // re-fail visibly.
+            self.delete_dynamic_worker(&project_key, &entry.label);
             // Notice goes to the lead session that spawned this
             // worker. Use the workspace's update channel + a fresh
             // Command::Prompt so the lead's claude subprocess sees
@@ -4356,7 +4517,7 @@ impl Workspace {
             _single_instance_lock: None,
             crons: Mutex::new(Vec::new()),
             gotify_subs: Mutex::new(Vec::new()),
-            gotify_db: Mutex::new(None),
+            db: Mutex::new(None),
             gotify_connected: Mutex::new(false),
             gotify_app_index: Mutex::new(HashMap::new()),
             gotify_subsystem: Mutex::new(None),
@@ -4396,9 +4557,14 @@ impl Workspace {
 
     /// Append a synthetic project to the test overlay searched first
     /// by `find_project_view_by_name`. Used by engineering-team tests
-    /// to drive the Connected-hook team-spawn trigger without
+    /// to drive the Connected-hook worker-spawn trigger without
     /// writing a real `forge.toml`. Test-only.
-    pub fn seed_test_project_with_team(&self, name: &str, path: &str, team: &[String]) {
+    pub fn seed_test_project_with_static_workers(
+        &self,
+        name: &str,
+        path: &str,
+        static_workers: &[String],
+    ) {
         self.test_extra_projects.lock().push(crate::config::LoadedProject {
             name: name.to_owned(),
             path: std::path::PathBuf::from(path),
@@ -4406,7 +4572,7 @@ impl Workspace {
             org: "TestOrg".to_owned(),
             accounts: vec!["acct-a".to_owned()],
             auto_start: false,
-            team: team.to_vec(),
+            static_workers: static_workers.to_vec(),
         });
     }
 
@@ -4739,7 +4905,7 @@ mod tests {
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
 
         let path = "/tmp/cron-project-path-proj";
-        ws.seed_test_project_with_team("cronproj", path, &[]);
+        ws.seed_test_project_with_static_workers("cronproj", path, &[]);
 
         // The escalation guard for the one-time Connected stamp: a clean
         // project-root cwd MUST resolve the name. If this ever returns
@@ -4778,7 +4944,7 @@ mod tests {
         let link = dir.path().join("link");
         std::os::unix::fs::symlink(dir.path().join("real"), &link).expect("symlink");
         let root = link.join("proj");
-        ws.seed_test_project_with_team("symproj", &root.to_string_lossy(), &[]);
+        ws.seed_test_project_with_static_workers("symproj", &root.to_string_lossy(), &[]);
 
         let absent_worktree = root.join(".claude").join("worktrees").join("reviewer");
         assert_eq!(
@@ -4795,7 +4961,7 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
         let db = crate::store::Db::open(&dir.path().join("db.redb")).expect("open db");
-        ws.install_gotify_db_for_test(db);
+        ws.install_db_for_test(db);
 
         let sub = |team_role: Option<&str>| GotifySubscription {
             id: uuid::Uuid::new_v4(),
@@ -4816,14 +4982,114 @@ mod tests {
             "both live in the active in-memory set",
         );
         let persisted = || {
-            crate::store::gotify::list(ws.gotify_db.lock().as_ref().expect("db installed"))
-                .expect("list")
+            crate::store::gotify::list(ws.db.lock().as_ref().expect("db installed")).expect("list")
         };
         assert_eq!(persisted().len(), 1, "only the durable subscription hit redb");
         assert_eq!(persisted()[0].id, durable.id);
 
         assert!(ws.remove_gotify_subscription("p", durable.id), "durable id removes");
         assert!(persisted().is_empty(), "removal cleared the persisted record");
+    }
+
+    fn dynamic_worker_row(
+        project: &str,
+        label: &str,
+    ) -> crate::store::dynamic_workers::DynamicWorker {
+        crate::store::dynamic_workers::DynamicWorker {
+            project_key: project.to_owned(),
+            label: label.to_owned(),
+            charter: format!("charter for {label}"),
+            kick: Some(format!("kick for {label}")),
+        }
+    }
+
+    fn live_worker_entry(label: &str, key: &str) -> crate::mcp::workers::types::WorkerEntry {
+        crate::mcp::workers::types::WorkerEntry {
+            label: label.to_owned(),
+            charter: "c".to_owned(),
+            session_key: SessionKey::from_session_id(key),
+            status: forge_primitives::WorkerLiveness::Running,
+            spawned_at: std::time::SystemTime::UNIX_EPOCH,
+            spawned_by_session_id: "lead-uuid".to_owned(),
+            needs_tag: false,
+            is_git_repo_at_spawn: false,
+            diagnostic: None,
+            kick: None,
+        }
+    }
+
+    /// The Projects-pane close (`handle_close_worker` -> `teardown_worker`)
+    /// deletes the persisted dynamic-worker row so it never re-spawns,
+    /// scoped to the closed label - siblings survive.
+    #[tokio::test]
+    async fn projects_pane_close_deletes_persisted_dynamic_worker_row() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let dir = tempdir().expect("tempdir");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        let project = ProjectKey::new("forge");
+
+        let _ = ws.persist_dynamic_worker(&dynamic_worker_row("forge", "reviewer"));
+        let _ = ws.persist_dynamic_worker(&dynamic_worker_row("forge", "tester"));
+        ws.insert_live_worker(&project, live_worker_entry("reviewer", "worker-1"));
+        ws.insert_live_worker(&project, live_worker_entry("tester", "worker-2"));
+
+        crate::spawn::handle_close_worker(&ws, &project, "reviewer");
+
+        let rows = {
+            let guard = ws.db.lock();
+            crate::store::dynamic_workers::list_for_project(
+                guard.as_ref().expect("db installed"),
+                "forge",
+            )
+            .expect("list")
+        };
+        let labels: Vec<&str> = rows.iter().map(|w| w.label.as_str()).collect();
+        assert_eq!(labels, vec!["tester"], "close deletes only the closed worker's row");
+    }
+
+    /// The `workers__despawn` path (`handle_despawn_worker` ->
+    /// `teardown_worker`) deletes the persisted dynamic-worker row too.
+    #[tokio::test]
+    async fn mcp_despawn_deletes_persisted_dynamic_worker_row() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let dir = tempdir().expect("tempdir");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        let project = ProjectKey::new("forge");
+
+        let _ = ws.persist_dynamic_worker(&dynamic_worker_row("forge", "reviewer"));
+        ws.insert_live_worker(&project, live_worker_entry("reviewer", "worker-1"));
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        crate::spawn::handle_despawn_worker(&ws, &project, "reviewer", false, tx);
+        assert!(matches!(rx.await, Ok(crate::protocol::DespawnResult::Despawned { .. })));
+
+        let rows = {
+            let guard = ws.db.lock();
+            crate::store::dynamic_workers::list_for_project(
+                guard.as_ref().expect("db installed"),
+                "forge",
+            )
+            .expect("list")
+        };
+        assert!(rows.is_empty(), "despawn deletes the persisted dynamic-worker row");
+    }
+
+    /// #3: persisting reports failure (rather than swallowing it) when
+    /// the store is unavailable, so the MCP spawn path can warn the lead
+    /// that the worker won't survive a restart.
+    #[test]
+    fn persist_dynamic_worker_errors_when_store_unavailable() {
+        let (ws, _rx) = Workspace::testing_stub();
+        // No install_db_for_test: the store is closed for this session.
+        let result = ws.persist_dynamic_worker(&dynamic_worker_row("forge", "reviewer"));
+        assert!(
+            result.is_err(),
+            "a closed store surfaces a durability failure, not a silent no-op"
+        );
     }
 
     fn gotify_sub(
@@ -4988,7 +5254,7 @@ mod tests {
     fn deliver_gotify_message_spawns_asleep_project_and_buffers() {
         let dir = tempdir().expect("tempdir");
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
-        ws.seed_test_project_with_team("forge", "/tmp/gotify-forge", &[]);
+        ws.seed_test_project_with_static_workers("forge", "/tmp/gotify-forge", &[]);
 
         let notif = gotify_notif("forge", "Heads up", "hello envelope", 5);
         ws.enable_test_dispatch_intercept();
@@ -5039,7 +5305,11 @@ mod tests {
     fn deliver_gotify_message_delivers_to_running_team_worker() {
         let dir = tempdir().expect("tempdir");
         let (ws, mut rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
-        ws.seed_test_project_with_team("forge", "/tmp/gotify-team", &["reviewer".to_owned()]);
+        ws.seed_test_project_with_static_workers(
+            "forge",
+            "/tmp/gotify-team",
+            &["reviewer".to_owned()],
+        );
         let view_key = ws
             .list_projects()
             .into_iter()
@@ -5093,7 +5363,11 @@ mod tests {
     fn deliver_gotify_message_team_worker_asleep_falls_through_to_lead() {
         let dir = tempdir().expect("tempdir");
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
-        ws.seed_test_project_with_team("forge", "/tmp/gotify-team", &["reviewer".to_owned()]);
+        ws.seed_test_project_with_static_workers(
+            "forge",
+            "/tmp/gotify-team",
+            &["reviewer".to_owned()],
+        );
 
         // No live worker of that role: the subscription falls through to
         // lead delivery, which spawns the asleep project (the lead brings up
@@ -5170,7 +5444,7 @@ mod tests {
         use forge_primitives::cron::{CronEntry, CronId, CronKind};
         let dir = tempdir().expect("tempdir");
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
-        ws.seed_test_project_with_team("forge", "/tmp/forge", &[]);
+        ws.seed_test_project_with_static_workers("forge", "/tmp/forge", &[]);
 
         let now = std::time::SystemTime::now();
         let past = std::time::SystemTime::UNIX_EPOCH;
@@ -5355,7 +5629,7 @@ mod tests {
     fn deliver_cron_prompt_to_running_lead_emits_cron_prompt_appended() {
         let dir = tempdir().expect("tempdir");
         let (ws, mut rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
-        ws.seed_test_project_with_team("cronlead", "/tmp/cron-lead", &[]);
+        ws.seed_test_project_with_static_workers("cronlead", "/tmp/cron-lead", &[]);
         // Seed the catalog + pool so the project has a running (open) lead:
         // list_projects derives `is_open` from pool membership.
         let cwd = project_expanded_path(&ws, "cronlead");
@@ -6560,6 +6834,42 @@ mod workers_state_tests {
         assert!(ws.remove_latest_worker(&project, "missing").is_none());
     }
 
+    /// The atomic guard rejects a second insert for a live label (holding
+    /// the lock across the check + push closes the concurrent-dispatch
+    /// TOCTOU) and hands back the existing worker.
+    #[test]
+    fn insert_if_label_absent_rejects_duplicate_label() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let project = ProjectKey::new("forge");
+        assert!(
+            ws.insert_live_worker_if_label_absent(&project, fake_entry("reviewer", "first"))
+                .is_ok(),
+            "the first insert for a label wins",
+        );
+        let existing = ws
+            .insert_live_worker_if_label_absent(&project, fake_entry("reviewer", "second"))
+            .expect_err("a second live worker for the same label is rejected");
+        assert_eq!(existing.as_str(), "first", "the live holder is returned");
+        assert_eq!(ws.list_live_workers(&project).len(), 1, "no duplicate is inserted");
+    }
+
+    /// A `Failed` entry does not hold its label - the atomic guard lets
+    /// its label be re-spawned (parity with `live_worker_with_label`).
+    #[test]
+    fn insert_if_label_absent_allows_reinsert_over_failed() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let project = ProjectKey::new("forge");
+        let mut failed = fake_entry("reviewer", "dead");
+        failed.status = WorkerLiveness::Failed;
+        ws.insert_live_worker(&project, failed);
+        assert!(
+            ws.insert_live_worker_if_label_absent(&project, fake_entry("reviewer", "fresh"))
+                .is_ok(),
+            "a Failed entry does not block a re-spawn of its label",
+        );
+        assert_eq!(ws.list_live_workers(&project).len(), 2);
+    }
+
     #[test]
     fn drain_for_project_clears_and_returns_all() {
         let (ws, _rx) = Workspace::testing_stub();
@@ -7564,6 +7874,156 @@ mod team_spawn_tests {
         assert_eq!(planner_resume, Some("planner-uuid".to_owned()));
         assert!(reviewer_resume.is_none(), "reviewer not in map → fresh-spawn");
     }
+
+    fn dyn_worker(label: &str, kick: Option<&str>) -> crate::store::dynamic_workers::DynamicWorker {
+        crate::store::dynamic_workers::DynamicWorker {
+            project_key: "proj-x".to_owned(),
+            label: label.to_owned(),
+            charter: format!("dynamic charter for {label}"),
+            kick: kick.map(str::to_owned),
+        }
+    }
+
+    /// Dynamic re-spawn mirrors the static resume mechanic: a worker with
+    /// a catalog-tag match resumes and takes the forge restart note as its
+    /// kick; one without re-delivers its stored kick.
+    #[test]
+    fn spawn_dynamic_workers_for_lead_resumes_or_redelivers_kick() {
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        workspace.enable_test_dispatch_intercept();
+        let project_key = ProjectKey::new("proj-x");
+        let dynamic = vec![
+            dyn_worker("reviewer", Some("original kick")),
+            dyn_worker("scratch", Some("start scratch")),
+            dyn_worker("idle", None),
+        ];
+        let mut resume_map = std::collections::HashMap::new();
+        resume_map.insert("reviewer".to_owned(), "reviewer-uuid".to_owned());
+
+        workspace.spawn_dynamic_workers_for_lead("new-lead", &project_key, &dynamic, &resume_map);
+
+        let dispatched = workspace.drain_test_dispatch_buffer();
+        assert_eq!(dispatched.len(), 3, "one SpawnWorker per persisted dynamic worker");
+        for cmd in dispatched {
+            let Command::SpawnWorker {
+                label,
+                charter,
+                resume_existing,
+                kick,
+                spawned_by_session_id,
+                project_key: pk,
+                ..
+            } = cmd
+            else {
+                panic!("expected SpawnWorker");
+            };
+            assert_eq!(spawned_by_session_id, "new-lead", "re-parented to the current lead");
+            assert_eq!(pk, project_key);
+            assert_eq!(charter, format!("dynamic charter for {label}"), "charter from the DB row");
+            match label.as_str() {
+                "reviewer" => {
+                    assert_eq!(
+                        resume_existing.as_deref(),
+                        Some("reviewer-uuid"),
+                        "tag match resumes"
+                    );
+                    assert_eq!(
+                        kick.as_deref(),
+                        Some(DYNAMIC_WORKER_RESTART_NOTE),
+                        "resume delivers the forge restart note, not the stored kick",
+                    );
+                }
+                "scratch" => {
+                    assert!(resume_existing.is_none(), "no tag -> fresh");
+                    assert_eq!(
+                        kick.as_deref(),
+                        Some("start scratch"),
+                        "fresh re-delivers the stored kick"
+                    );
+                }
+                "idle" => {
+                    assert!(resume_existing.is_none());
+                    assert!(kick.is_none(), "fresh with no stored kick stays kickless");
+                }
+                other => panic!("unexpected label {other}"),
+            }
+        }
+    }
+
+    /// A project with an EMPTY static roster but a persisted dynamic
+    /// worker still re-spawns it on lead reconnect (the empty-team early
+    /// return must not skip the DB set).
+    #[test]
+    fn catalog_scan_respawns_dynamic_worker_without_static_roster() {
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        let dir = tempfile::tempdir().expect("tempdir");
+        workspace.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        let project_key = ProjectKey::new("hub-modules");
+        let _ = workspace.persist_dynamic_worker(&crate::store::dynamic_workers::DynamicWorker {
+            project_key: "hub-modules".to_owned(),
+            label: "scratch".to_owned(),
+            charter: "resume the scratch task".to_owned(),
+            kick: Some("go".to_owned()),
+        });
+        workspace.enable_test_dispatch_intercept();
+
+        // No tokio runtime in a plain #[test] -> the sync fallback path
+        // dispatches with an empty resume map.
+        workspace.spawn_team_for_lead_with_catalog_scan(
+            "lead-uuid".to_owned(),
+            project_key,
+            std::path::PathBuf::from("/tmp/hub-modules"),
+            "hub-modules".to_owned(),
+            Vec::new(),
+            false,
+        );
+
+        let dispatched = workspace.drain_test_dispatch_buffer();
+        let spawns: Vec<&Command> =
+            dispatched.iter().filter(|c| matches!(c, Command::SpawnWorker { .. })).collect();
+        assert_eq!(spawns.len(), 1, "the persisted dynamic worker re-spawns with no static roster");
+        if let Command::SpawnWorker { label, charter, .. } = spawns[0] {
+            assert_eq!(label, "scratch");
+            assert_eq!(charter, "resume the scratch task", "charter comes from the DB row");
+        }
+    }
+
+    /// A dynamic worker whose row was deleted (despawn / close) does NOT
+    /// re-spawn on the next lead reconnect.
+    #[test]
+    fn catalog_scan_skips_deleted_dynamic_worker() {
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        let dir = tempfile::tempdir().expect("tempdir");
+        workspace.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        let project_key = ProjectKey::new("hub-modules");
+        let _ = workspace.persist_dynamic_worker(&crate::store::dynamic_workers::DynamicWorker {
+            project_key: "hub-modules".to_owned(),
+            label: "scratch".to_owned(),
+            charter: "c".to_owned(),
+            kick: None,
+        });
+        workspace.delete_dynamic_worker(&project_key, "scratch");
+        workspace.enable_test_dispatch_intercept();
+
+        workspace.spawn_team_for_lead_with_catalog_scan(
+            "lead-uuid".to_owned(),
+            project_key,
+            std::path::PathBuf::from("/tmp/hub-modules"),
+            "hub-modules".to_owned(),
+            Vec::new(),
+            false,
+        );
+
+        let dispatched = workspace.drain_test_dispatch_buffer();
+        assert!(
+            dispatched.iter().all(|c| !matches!(c, Command::SpawnWorker { .. })),
+            "a deleted dynamic worker must not re-spawn",
+        );
+    }
 }
 
 #[cfg(test)]
@@ -8011,6 +8471,91 @@ mod async_worker_spawn_failure_tests {
         assert!(workspace.drain_test_dispatch_buffer().is_empty());
     }
 
+    fn install_db(workspace: &Arc<Workspace>) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        workspace
+            .install_db_for_test(crate::store::Db::open(&dir.path().join("db.redb")).expect("db"));
+        dir
+    }
+
+    fn persisted_labels(workspace: &Arc<Workspace>, project: &str) -> Vec<String> {
+        let guard = workspace.db.lock();
+        crate::store::dynamic_workers::list_for_project(guard.as_ref().expect("db"), project)
+            .expect("list")
+            .into_iter()
+            .map(|w| w.label)
+            .collect()
+    }
+
+    /// #2: a worktree-creation failure is a hard removal (the worker
+    /// never started), so it deletes the persisted dynamic-worker row -
+    /// otherwise the row zombie-re-spawns every restart despite a
+    /// visibly-failed spawn.
+    #[tokio::test]
+    async fn worktree_failure_deletes_persisted_dynamic_worker_row() {
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        let _dir = install_db(&workspace);
+        workspace.enable_test_dispatch_intercept();
+
+        let project_key = ProjectKey::new("proj-x");
+        let synth_key = "__spawn_worker_proj-x_reviewer_abc__";
+        let lead_id = "lead-uuid";
+        let _ = workspace.persist_dynamic_worker(&crate::store::dynamic_workers::DynamicWorker {
+            project_key: "proj-x".to_owned(),
+            label: "reviewer".to_owned(),
+            charter: "c".to_owned(),
+            kick: None,
+        });
+        workspace
+            .insert_live_worker(&project_key, fake_worker("reviewer", synth_key, lead_id, true));
+        install_lead_in_pool(&workspace, lead_id);
+
+        let session_key = SessionKey::from_session_id(synth_key);
+        let worktree_msg = "fatal: 'reviewer' is already used by worktree at /a";
+        assert!(workspace.handle_async_worker_spawn_failure(&session_key, worktree_msg));
+
+        assert!(
+            persisted_labels(&workspace, "proj-x").is_empty(),
+            "worktree-failure hard removal deletes the persisted row",
+        );
+    }
+
+    /// #2: a non-worktree failure transitions the worker to Failed
+    /// (visible) and KEEPS its row, so it re-spawns on the next restart
+    /// to recover or re-fail visibly.
+    #[tokio::test]
+    async fn transition_to_failed_keeps_persisted_dynamic_worker_row() {
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        let _dir = install_db(&workspace);
+
+        let project_key = ProjectKey::new("proj-x");
+        let synth_key = "__spawn_worker_proj-x_reviewer_abc__";
+        let _ = workspace.persist_dynamic_worker(&crate::store::dynamic_workers::DynamicWorker {
+            project_key: "proj-x".to_owned(),
+            label: "reviewer".to_owned(),
+            charter: "c".to_owned(),
+            kick: None,
+        });
+        // Non-git worker + a generic message classifies as DispatchFailed,
+        // driving the transition-to-Failed (visible) path.
+        workspace.insert_live_worker(
+            &project_key,
+            fake_worker("reviewer", synth_key, "lead-uuid", false),
+        );
+
+        let session_key = SessionKey::from_session_id(synth_key);
+        assert!(
+            workspace
+                .handle_async_worker_spawn_failure(&session_key, "subprocess exited with code 2")
+        );
+
+        assert_eq!(
+            persisted_labels(&workspace, "proj-x"),
+            vec!["reviewer".to_owned()],
+            "a Failed-but-visible worker keeps its row for re-spawn",
+        );
+    }
+
     /// #245 Layer C test gap 12 + 11: direct unit coverage for
     /// [`transition_worker_to_failed`].
     ///
@@ -8186,7 +8731,7 @@ mod git_scan_cwd_tests {
         worker_session: &str,
         is_git: bool,
     ) -> (std::path::PathBuf, SessionKey) {
-        ws.seed_test_project_with_team(project_name, project_root, &[]);
+        ws.seed_test_project_with_static_workers(project_name, project_root, &[]);
         let project_key = ProjectKey::new(
             forge_agent::userdata::catalog::scan::project_key_for_directory(Some(project_root)),
         );
@@ -8249,7 +8794,7 @@ mod git_scan_cwd_tests {
         // raw cwd survives unchanged. No `live_workers` entry exists
         // for the lead.
         let (ws, _rx) = Workspace::testing_stub();
-        ws.seed_test_project_with_team("forge", "/tmp/test-forge-lead", &[]);
+        ws.seed_test_project_with_static_workers("forge", "/tmp/test-forge-lead", &[]);
         let lead_key = SessionKey::from_session_id("lead-uuid");
         let lead_cwd = std::path::PathBuf::from("/tmp/test-forge-lead");
         let resolved = ws.git_scan_cwd_for_session(&lead_key, &lead_cwd);

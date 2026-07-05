@@ -62,13 +62,13 @@ struct ProjectEntry {
     /// which one becomes the focused tab. Defaults to `false`.
     #[serde(default)]
     auto_start: bool,
-    /// Built-in engineering-team roles to auto-spawn alongside this
-    /// project's lead. Each entry must match a known role name
-    /// (planner / implementer / reviewer / debugger / tester);
-    /// unknown names error at config load. Empty / missing means
-    /// no team.
+    /// Static (config-defined) worker role labels to auto-spawn
+    /// alongside this project's lead, each resolving to a charter + kick
+    /// under `~/.claude/forge-team/<label>/`. Dynamic (LLM-spawned)
+    /// workers are separate and persisted to the redb store, not listed
+    /// here. Empty / missing means no static workers.
     #[serde(default)]
-    team: Vec<String>,
+    static_workers: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -147,12 +147,12 @@ pub(crate) struct LoadedProject {
     /// `true` when the project should spawn automatically at forge
     /// launch.
     pub auto_start: bool,
-    /// Validated team labels for this project (format only -
+    /// Validated static-worker labels for this project (format only -
     /// existence of the per-label charter files at
     /// `~/.claude/forge-team/<label>/{charter,kick}.md` is checked
-    /// lazily at spawn time, not here). Empty means no team. See
-    /// `crate::team::Role` + `crate::team::validate_label`.
-    pub team: Vec<String>,
+    /// lazily at spawn time, not here). Empty means no static workers.
+    /// See `crate::team::Role` + `crate::team::validate_label`.
+    pub static_workers: Vec<String>,
 }
 
 impl LoadedConfig {
@@ -297,26 +297,27 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
             if !seen_project_names.insert(project_entry.name.clone()) {
                 return Err(WorkspaceError::DuplicateProject { path, name: project_entry.name });
             }
-            let mut team_labels: Vec<String> = Vec::with_capacity(project_entry.team.len());
+            let mut static_worker_labels: Vec<String> =
+                Vec::with_capacity(project_entry.static_workers.len());
             let mut seen_labels: std::collections::HashSet<String> =
                 std::collections::HashSet::new();
-            for raw_label in &project_entry.team {
+            for raw_label in &project_entry.static_workers {
                 let label = raw_label.trim().to_owned();
                 if let Err(label_err) = crate::team::validate_label(&label) {
-                    return Err(WorkspaceError::UnknownTeamRole {
+                    return Err(WorkspaceError::UnknownStaticWorker {
                         path: path.clone(),
                         project_name: project_entry.name.clone(),
                         role: format!("{raw_label} ({label_err})"),
                     });
                 }
                 if !seen_labels.insert(label.clone()) {
-                    return Err(WorkspaceError::DuplicateTeamRole {
+                    return Err(WorkspaceError::DuplicateStaticWorker {
                         path: path.clone(),
                         project_name: project_entry.name.clone(),
                         role: raw_label.clone(),
                     });
                 }
-                team_labels.push(label);
+                static_worker_labels.push(label);
             }
             projects.push(LoadedProject {
                 name: project_entry.name,
@@ -325,7 +326,7 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
                 org: org_entry.name.clone(),
                 accounts: org_entry.accounts.clone(),
                 auto_start: project_entry.auto_start,
-                team: team_labels,
+                static_workers: static_worker_labels,
             });
         }
         orgs.push(LoadedOrg { name: org_entry.name, accounts: org_entry.accounts });
@@ -792,7 +793,7 @@ config_dir = "~/.claude-other"
 }
 
 #[cfg(test)]
-mod team_tests {
+mod static_worker_tests {
     use super::*;
 
     fn write_config(dir: &std::path::Path, contents: &str) {
@@ -801,7 +802,7 @@ mod team_tests {
     }
 
     #[test]
-    fn project_without_team_field_loads_empty_team() {
+    fn project_without_static_workers_field_loads_empty() {
         let tmp = tempfile::tempdir().expect("tempdir");
         write_config(
             tmp.path(),
@@ -820,11 +821,11 @@ config_dir = "/tmp/acct-a"
         );
         let cfg = load_from_dir(tmp.path()).expect("load ok");
         let p = cfg.projects.iter().find(|p| p.name == "p1").expect("p1 present");
-        assert!(p.team.is_empty(), "missing team field -> empty team");
+        assert!(p.static_workers.is_empty(), "missing static_workers field -> empty");
     }
 
     #[test]
-    fn project_with_team_field_parses_roles() {
+    fn project_with_static_workers_field_parses_labels() {
         let tmp = tempfile::tempdir().expect("tempdir");
         write_config(
             tmp.path(),
@@ -835,7 +836,7 @@ accounts = ["acct-a"]
 [[orgs.projects]]
 name = "p1"
 path = "/tmp/p1"
-team = ["planner", "implementer", "reviewer", "debugger", "tester"]
+static_workers = ["planner", "implementer", "reviewer", "debugger", "tester"]
 
 [[accounts]]
 display_name = "acct-a"
@@ -845,7 +846,7 @@ config_dir = "/tmp/acct-a"
         let cfg = load_from_dir(tmp.path()).expect("load ok");
         let p = cfg.projects.iter().find(|p| p.name == "p1").expect("p1 present");
         assert_eq!(
-            p.team,
+            p.static_workers,
             vec![
                 "planner".to_owned(),
                 "implementer".to_owned(),
@@ -857,7 +858,7 @@ config_dir = "/tmp/acct-a"
     }
 
     #[test]
-    fn project_with_partial_team_only_enables_listed_roles() {
+    fn project_with_partial_static_workers_only_enables_listed() {
         let tmp = tempfile::tempdir().expect("tempdir");
         write_config(
             tmp.path(),
@@ -868,7 +869,7 @@ accounts = ["acct-a"]
 [[orgs.projects]]
 name = "p1"
 path = "/tmp/p1"
-team = ["reviewer", "planner"]
+static_workers = ["reviewer", "planner"]
 
 [[accounts]]
 display_name = "acct-a"
@@ -877,14 +878,14 @@ config_dir = "/tmp/acct-a"
         );
         let cfg = load_from_dir(tmp.path()).expect("load ok");
         let p = cfg.projects.iter().find(|p| p.name == "p1").expect("p1 present");
-        assert_eq!(p.team, vec!["reviewer".to_owned(), "planner".to_owned()]);
+        assert_eq!(p.static_workers, vec!["reviewer".to_owned(), "planner".to_owned()]);
     }
 
     #[test]
     fn arbitrary_role_label_accepted_existence_checked_lazily_at_spawn() {
-        // Post-#220 the team field is an open set: any well-formed
-        // label is accepted at config-load. The disk-side existence
-        // check fires when a worker actually spawns.
+        // Post-#220 the static_workers field is an open set: any
+        // well-formed label is accepted at config-load. The disk-side
+        // existence check fires when a worker actually spawns.
         let tmp = tempfile::tempdir().expect("tempdir");
         write_config(
             tmp.path(),
@@ -895,7 +896,7 @@ accounts = ["acct-a"]
 [[orgs.projects]]
 name = "p1"
 path = "/tmp/p1"
-team = ["planner", "researcher", "hub-modules/custom"]
+static_workers = ["planner", "researcher", "hub-modules/custom"]
 
 [[accounts]]
 display_name = "acct-a"
@@ -905,7 +906,7 @@ config_dir = "/tmp/acct-a"
         let cfg = load_from_dir(tmp.path()).expect("open-set labels load ok");
         let p = cfg.projects.iter().find(|p| p.name == "p1").expect("p1 present");
         assert_eq!(
-            p.team,
+            p.static_workers,
             vec!["planner".to_owned(), "researcher".to_owned(), "hub-modules/custom".to_owned(),]
         );
     }
@@ -924,7 +925,7 @@ accounts = ["acct-a"]
 [[orgs.projects]]
 name = "p1"
 path = "/tmp/p1"
-team = ["planner", "../escape"]
+static_workers = ["planner", "../escape"]
 
 [[accounts]]
 display_name = "acct-a"
@@ -938,9 +939,9 @@ config_dir = "/tmp/acct-a"
     }
 
     #[test]
-    fn duplicate_role_in_team_rejects() {
-        // v1 supports only one instance per role per project. Duplicate
-        // entries reject loud rather than silently dedup.
+    fn duplicate_label_in_static_workers_rejects() {
+        // Only one instance per label per project. Duplicate entries
+        // reject loud rather than silently dedup.
         let tmp = tempfile::tempdir().expect("tempdir");
         write_config(
             tmp.path(),
@@ -951,7 +952,7 @@ accounts = ["acct-a"]
 [[orgs.projects]]
 name = "p1"
 path = "/tmp/p1"
-team = ["planner", "planner"]
+static_workers = ["planner", "planner"]
 
 [[accounts]]
 display_name = "acct-a"

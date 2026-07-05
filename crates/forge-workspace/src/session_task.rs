@@ -806,14 +806,15 @@ fn parse_project_lead_synth_key(key: &SessionKey) -> Option<String> {
     Some(inner.to_owned())
 }
 
-/// Shared engineering-team Connected hook: if `spawn_key` is a
-/// project-lead synth key, the project has a team configured, and
-/// no live workers exist for it yet, dispatch one `SpawnWorker`
-/// per configured role. Called from `SessionTask::translate_event`
-/// (production) and `on_connected_for_test` (tests). Idempotent;
-/// safe to call multiple times for the same session - the
-/// `live_workers.is_empty()` gate guards against double-spawn on
-/// `/new` reconnects or transient retries.
+/// Shared worker Connected hook: if `spawn_key` is a project-lead synth
+/// key and no live workers exist for the project yet, (re-)spawn its
+/// workers - one `SpawnWorker` per configured static role plus one per
+/// persisted dynamic worker. Called from `SessionTask::translate_event`
+/// (production) and `on_connected_for_test` (tests). Idempotent; safe to
+/// call multiple times for the same session - the `live_workers.is_empty()`
+/// gate guards against double-spawn on `/new` reconnects or transient
+/// retries, and `spawn_team_for_lead_with_catalog_scan` no-ops when the
+/// project has neither static nor dynamic workers.
 fn maybe_spawn_team_on_connected(
     workspace: &Arc<crate::Workspace>,
     spawn_key: &SessionKey,
@@ -826,9 +827,6 @@ fn maybe_spawn_team_on_connected(
     let Some(project) = workspace.find_project_view_by_name(&project_name) else {
         return;
     };
-    if project.team.is_empty() {
-        return;
-    }
     let project_key = crate::target::ProjectKey::new(
         forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
             &project.path.to_string_lossy(),
@@ -838,18 +836,18 @@ fn maybe_spawn_team_on_connected(
         return;
     }
     // Scan the project's catalog for previously-spawned worker
-    // sessions (tagged `forge:worker:<label>`) so each role resumes
+    // sessions (tagged `forge:worker:<label>`) so each worker resumes
     // its existing session instead of starting fresh. The scan is
     // async (filesystem I/O); workspace claims a per-project
     // in-flight guard synchronously so a fast double-Connected
-    // can't slip a second team-spawn through. The guard is
+    // can't slip a second worker-spawn through. The guard is
     // released after the SpawnWorker commands are dispatched.
     workspace.spawn_team_for_lead_with_catalog_scan(
         real_session_id.to_owned(),
         project_key,
         project.path.clone(),
         project.name.clone(),
-        project.team.clone(),
+        project.static_workers.clone(),
         force_new,
     );
 }
@@ -1797,7 +1795,11 @@ mod team_hook_tests {
         ensure_test_charter_root();
         let (workspace, _update_rx) = Workspace::testing_stub();
         workspace.enable_test_dispatch_intercept();
-        workspace.seed_test_project_with_team("proj-x", "/tmp/proj-x", &["implementer".to_owned()]);
+        workspace.seed_test_project_with_static_workers(
+            "proj-x",
+            "/tmp/proj-x",
+            &["implementer".to_owned()],
+        );
 
         on_connected_for_test(&workspace, &synth_lead_key("proj-x"), "lead-uuid");
 
@@ -1813,7 +1815,7 @@ mod team_hook_tests {
     fn lead_connected_without_team_does_nothing() {
         let (workspace, _update_rx) = Workspace::testing_stub();
         workspace.enable_test_dispatch_intercept();
-        workspace.seed_test_project_with_team("proj-y", "/tmp/proj-y", &[]);
+        workspace.seed_test_project_with_static_workers("proj-y", "/tmp/proj-y", &[]);
 
         on_connected_for_test(&workspace, &synth_lead_key("proj-y"), "lead-uuid");
 
@@ -1827,7 +1829,11 @@ mod team_hook_tests {
     fn worker_connected_does_not_trigger_team_spawn() {
         let (workspace, _update_rx) = Workspace::testing_stub();
         workspace.enable_test_dispatch_intercept();
-        workspace.seed_test_project_with_team("proj-z", "/tmp/proj-z", &["planner".to_owned()]);
+        workspace.seed_test_project_with_static_workers(
+            "proj-z",
+            "/tmp/proj-z",
+            &["planner".to_owned()],
+        );
 
         let worker_synth = SessionKey::from_session_id("__spawn_worker_proj-z_planner_abc__");
         on_connected_for_test(&workspace, &worker_synth, "worker-uuid");
@@ -1845,7 +1851,11 @@ mod team_hook_tests {
         ensure_test_charter_root();
         let (workspace, _update_rx) = Workspace::testing_stub();
         workspace.enable_test_dispatch_intercept();
-        workspace.seed_test_project_with_team("proj-x", "/tmp/proj-x", &["implementer".to_owned()]);
+        workspace.seed_test_project_with_static_workers(
+            "proj-x",
+            "/tmp/proj-x",
+            &["implementer".to_owned()],
+        );
 
         let lead_synth = synth_lead_key("proj-x");
 
@@ -1948,7 +1958,7 @@ mod team_hook_tests {
         let (workspace, _update_rx) = Workspace::testing_stub();
         workspace.enable_test_dispatch_intercept();
         workspace.start_kick_dispatcher();
-        workspace.seed_test_project_with_team(
+        workspace.seed_test_project_with_static_workers(
             "hub-modules",
             "/tmp/hub-modules",
             &["steward".to_owned()],
@@ -1991,7 +2001,7 @@ mod team_hook_tests {
         label: &str,
         kick: Option<String>,
     ) -> SessionKey {
-        workspace.seed_test_project_with_team("forge", "/tmp/forge", &[]);
+        workspace.seed_test_project_with_static_workers("forge", "/tmp/forge", &[]);
         let project_key = workspace
             .list_projects()
             .into_iter()
@@ -2098,7 +2108,7 @@ mod team_hook_tests {
         // Empty team so the spawn-team path doesn't fire either; we
         // want to assert PURELY on the kick path being suppressed
         // for leads.
-        workspace.seed_test_project_with_team("proj-x", "/tmp/proj-x", &[]);
+        workspace.seed_test_project_with_static_workers("proj-x", "/tmp/proj-x", &[]);
 
         on_connected_for_test(&workspace, &synth_lead_key("proj-x"), "lead-uuid");
 

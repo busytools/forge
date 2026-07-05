@@ -14,6 +14,7 @@ use std::path::Path;
 
 use anyhow::Context;
 
+pub mod dynamic_workers;
 pub mod gotify;
 
 /// Handle to the machine-local redb database.
