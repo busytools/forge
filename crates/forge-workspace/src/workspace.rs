@@ -68,6 +68,12 @@ const WORKER_TAG_RETRY_DELAY: Duration = Duration::from_millis(100);
 /// the cohort, vs ~1 s pre-#259 with most kicks rejected.
 const KICK_DISPATCH_INTERVAL: Duration = Duration::from_millis(750);
 
+/// Forge-supplied resume kick for a dynamic worker on restart. Dynamic
+/// (LLM-spawned) workers have no `resume-kick.md`, so on a resuming
+/// re-spawn forge delivers this constant as the worker's first turn -
+/// telling it to continue rather than start the task over.
+const DYNAMIC_WORKER_RESTART_NOTE: &str = "This session was restarted by forge. Your prior conversation and progress are in the history above. Continue where you left off; do not restart the task.";
+
 /// One enqueue onto the workspace-level worker-kick channel
 /// (#259). Built by `maybe_kick_worker_on_connected` (and any
 /// future kick site); drained by the workspace's
@@ -2442,10 +2448,14 @@ impl Workspace {
     /// static roster and sharing its `resume_map`, so every downstream
     /// mechanic (resume-by-label, `resume_existing`, the past-progress
     /// guard) is identical. Charter + kick come from the DB row rather
-    /// than files. A resume delivers the forge restart note (via
-    /// `maybe_kick_worker_on_connected`), so it dispatches `kick: None`;
-    /// a fresh re-spawn (never prompted, so no catalog tag) re-delivers
-    /// the stored kick.
+    /// than files.
+    ///
+    /// Since this holds the dynamic set, it decides the kick directly:
+    /// a resume gets the forge restart note (dynamic workers have no
+    /// `resume-kick.md`), telling it to continue rather than restart; a
+    /// fresh re-spawn (never prompted, so no catalog tag) re-delivers the
+    /// stored kick. Both flow through `maybe_kick_worker_on_connected`'s
+    /// inline-kick path, so that hook needs no per-worker store lookup.
     pub(crate) fn spawn_dynamic_workers_for_lead(
         self: &Arc<Self>,
         lead_session_id: &str,
@@ -2455,7 +2465,11 @@ impl Workspace {
     ) {
         for worker in dynamic {
             let resume_existing = resume_map.get(&worker.label).cloned();
-            let kick = if resume_existing.is_some() { None } else { worker.kick.clone() };
+            let kick = if resume_existing.is_some() {
+                Some(DYNAMIC_WORKER_RESTART_NOTE.to_owned())
+            } else {
+                worker.kick.clone()
+            };
             let (tx, _rx) = tokio::sync::oneshot::channel();
             let cmd = crate::protocol::Command::SpawnWorker {
                 project_key: project_key.clone(),
@@ -2993,14 +3007,6 @@ impl Workspace {
                 Vec::new()
             },
         )
-    }
-
-    /// True when `label` names a persisted dynamic worker in
-    /// `project_key`. Distinguishes a resumed dynamic worker (which gets
-    /// the forge restart note) from a static one (which uses its
-    /// `resume-kick.md`).
-    pub(crate) fn is_dynamic_worker(&self, project_key: &ProjectKey, label: &str) -> bool {
-        self.dynamic_workers_for_project(project_key).iter().any(|w| w.label == label)
     }
 
     /// Install a redb store into a test workspace so the durable-vs-
@@ -7856,9 +7862,10 @@ mod team_spawn_tests {
                         Some("reviewer-uuid"),
                         "tag match resumes"
                     );
-                    assert!(
-                        kick.is_none(),
-                        "resume defers to the restart note, not the stored kick"
+                    assert_eq!(
+                        kick.as_deref(),
+                        Some(DYNAMIC_WORKER_RESTART_NOTE),
+                        "resume delivers the forge restart note, not the stored kick",
                     );
                 }
                 "scratch" => {
