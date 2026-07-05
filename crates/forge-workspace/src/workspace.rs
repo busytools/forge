@@ -7885,8 +7885,8 @@ mod team_spawn_tests {
     }
 
     /// Dynamic re-spawn mirrors the static resume mechanic: a worker with
-    /// a catalog-tag match resumes (and defers its kick to the restart
-    /// note, so `kick: None`); one without re-delivers its stored kick.
+    /// a catalog-tag match resumes and takes the forge restart note as its
+    /// kick; one without re-delivers its stored kick.
     #[test]
     fn spawn_dynamic_workers_for_lead_resumes_or_redelivers_kick() {
         let (workspace, _update_rx) = Workspace::testing_stub();
