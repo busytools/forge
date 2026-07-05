@@ -83,6 +83,12 @@ pub struct WorkerSpawnReply {
     /// `notice` so the lead sees the situation at spawn instead of only
     /// discovering it when the worker stalls.
     pub rate_limited_account: Option<String>,
+    /// Set when persisting the worker's durable row failed (the store
+    /// couldn't open, or the write errored). The worker still spawns, but
+    /// it won't survive a forge restart. The spawn tool surfaces it as a
+    /// warning so the lead knows the "durable" promise didn't hold for
+    /// this one. Mirrors `worktree_cleanup_warning` on despawn.
+    pub durability_warning: Option<String>,
 }
 
 /// Outcome of a [`Command::DespawnWorker`], sent back to the calling
@@ -890,6 +896,7 @@ mod workers_command_tests {
             session_id: "abc".into(),
             tag: "forge:worker:reviewer".into(),
             rate_limited_account: None,
+            durability_warning: None,
         };
         assert_eq!(r.tag, "forge:worker:reviewer");
     }

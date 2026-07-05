@@ -45,6 +45,7 @@ async fn worker_to_worker_tell_scenario() {
         session_id: "beta-session-uuid-stub".into(),
         tag: forge_primitives::worker_tag("beta"),
         rate_limited_account: None,
+        durability_warning: None,
     }));
     // Pre-seed the worker pool so workers__tell finds a live target
     // by label. The spawn call captures the request but does not

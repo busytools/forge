@@ -2127,7 +2127,7 @@ mod team_hook_tests {
 
         // Persisted row marks the worker as dynamic; the live entry
         // carries kick=None (the resume re-spawn's dispatch shape).
-        workspace.persist_dynamic_worker(&crate::store::dynamic_workers::DynamicWorker {
+        let _ = workspace.persist_dynamic_worker(&crate::store::dynamic_workers::DynamicWorker {
             project_key: project_key.as_str().to_owned(),
             label: "scratch".to_owned(),
             charter: "do the thing".to_owned(),

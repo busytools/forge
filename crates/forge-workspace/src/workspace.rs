@@ -2936,24 +2936,20 @@ impl Workspace {
     }
 
     /// Persist a dynamic (LLM-spawned) worker's re-spawn args to the redb
-    /// store so a forge restart can bring it back. No-op when the DB
-    /// isn't open. Called only from the MCP `workers__spawn` path -
-    /// boot/reconnect re-spawns must NOT persist.
+    /// store so a forge restart can bring it back. Called only from the
+    /// MCP `workers__spawn` path - boot/reconnect re-spawns must NOT
+    /// persist. Returns `Err` when durability could not be achieved (the
+    /// store isn't open, or the write failed) so the caller can warn the
+    /// lead that this worker won't survive a restart.
     pub(crate) fn persist_dynamic_worker(
         &self,
         worker: &crate::store::dynamic_workers::DynamicWorker,
-    ) {
-        if let Some(db) = self.db.lock().as_ref()
-            && let Err(error) = crate::store::dynamic_workers::insert(db, worker)
-        {
-            tracing::warn!(
-                target: "forge_workspace::workspace",
-                %error,
-                project = %worker.project_key,
-                label = %worker.label,
-                "persisting a dynamic worker failed",
-            );
-        }
+    ) -> anyhow::Result<()> {
+        let guard = self.db.lock();
+        let Some(db) = guard.as_ref() else {
+            anyhow::bail!("the dynamic-worker store is unavailable this session");
+        };
+        crate::store::dynamic_workers::insert(db, worker)
     }
 
     /// Delete a dynamic worker's persisted row so it never re-spawns.
@@ -4999,8 +4995,8 @@ mod tests {
         );
         let project = ProjectKey::new("forge");
 
-        ws.persist_dynamic_worker(&dynamic_worker_row("forge", "reviewer"));
-        ws.persist_dynamic_worker(&dynamic_worker_row("forge", "tester"));
+        let _ = ws.persist_dynamic_worker(&dynamic_worker_row("forge", "reviewer"));
+        let _ = ws.persist_dynamic_worker(&dynamic_worker_row("forge", "tester"));
         ws.insert_live_worker(&project, live_worker_entry("reviewer", "worker-1"));
         ws.insert_live_worker(&project, live_worker_entry("tester", "worker-2"));
 
@@ -5029,7 +5025,7 @@ mod tests {
         );
         let project = ProjectKey::new("forge");
 
-        ws.persist_dynamic_worker(&dynamic_worker_row("forge", "reviewer"));
+        let _ = ws.persist_dynamic_worker(&dynamic_worker_row("forge", "reviewer"));
         ws.insert_live_worker(&project, live_worker_entry("reviewer", "worker-1"));
 
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -5045,6 +5041,20 @@ mod tests {
             .expect("list")
         };
         assert!(rows.is_empty(), "despawn deletes the persisted dynamic-worker row");
+    }
+
+    /// #3: persisting reports failure (rather than swallowing it) when
+    /// the store is unavailable, so the MCP spawn path can warn the lead
+    /// that the worker won't survive a restart.
+    #[test]
+    fn persist_dynamic_worker_errors_when_store_unavailable() {
+        let (ws, _rx) = Workspace::testing_stub();
+        // No install_db_for_test: the store is closed for this session.
+        let result = ws.persist_dynamic_worker(&dynamic_worker_row("forge", "reviewer"));
+        assert!(
+            result.is_err(),
+            "a closed store surfaces a durability failure, not a silent no-op"
+        );
     }
 
     fn gotify_sub(
@@ -7879,7 +7889,7 @@ mod team_spawn_tests {
             crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
         let project_key = ProjectKey::new("hub-modules");
-        workspace.persist_dynamic_worker(&crate::store::dynamic_workers::DynamicWorker {
+        let _ = workspace.persist_dynamic_worker(&crate::store::dynamic_workers::DynamicWorker {
             project_key: "hub-modules".to_owned(),
             label: "scratch".to_owned(),
             charter: "resume the scratch task".to_owned(),
@@ -7918,7 +7928,7 @@ mod team_spawn_tests {
             crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
         let project_key = ProjectKey::new("hub-modules");
-        workspace.persist_dynamic_worker(&crate::store::dynamic_workers::DynamicWorker {
+        let _ = workspace.persist_dynamic_worker(&crate::store::dynamic_workers::DynamicWorker {
             project_key: "hub-modules".to_owned(),
             label: "scratch".to_owned(),
             charter: "c".to_owned(),
@@ -8418,7 +8428,7 @@ mod async_worker_spawn_failure_tests {
         let project_key = ProjectKey::new("proj-x");
         let synth_key = "__spawn_worker_proj-x_reviewer_abc__";
         let lead_id = "lead-uuid";
-        workspace.persist_dynamic_worker(&crate::store::dynamic_workers::DynamicWorker {
+        let _ = workspace.persist_dynamic_worker(&crate::store::dynamic_workers::DynamicWorker {
             project_key: "proj-x".to_owned(),
             label: "reviewer".to_owned(),
             charter: "c".to_owned(),
@@ -8448,7 +8458,7 @@ mod async_worker_spawn_failure_tests {
 
         let project_key = ProjectKey::new("proj-x");
         let synth_key = "__spawn_worker_proj-x_reviewer_abc__";
-        workspace.persist_dynamic_worker(&crate::store::dynamic_workers::DynamicWorker {
+        let _ = workspace.persist_dynamic_worker(&crate::store::dynamic_workers::DynamicWorker {
             project_key: "proj-x".to_owned(),
             label: "reviewer".to_owned(),
             charter: "c".to_owned(),

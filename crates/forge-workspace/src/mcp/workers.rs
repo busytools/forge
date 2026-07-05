@@ -172,6 +172,9 @@ impl Tool for Spawn {
                         "assigned account '{account}' is currently rate-limited or bailed. The worker spawns anyway but may hit a 429 right away; free up an account or wait for a reset."
                     ));
                 }
+                if let Some(warning) = &reply.durability_warning {
+                    body["durability_warning"] = serde_json::Value::String(warning.clone());
+                }
                 match serde_json::to_string_pretty(&body) {
                     Ok(json) => ToolOutput::text(json),
                     Err(err) => tool_error(format!("response serialization failed: {err}")),
@@ -1161,6 +1164,7 @@ mod tests {
             session_id: "new-uuid".into(),
             tag: "forge:worker:reviewer".into(),
             rate_limited_account: None,
+            durability_warning: None,
         }));
         let facade = mock.into_arc();
         let tool =
@@ -1285,6 +1289,7 @@ mod tests {
             session_id: "u".into(),
             tag: "forge:worker:reviewer".into(),
             rate_limited_account: None,
+            durability_warning: None,
         }));
         let facade: Arc<dyn WorkerFacade> = mock.clone();
         let tool = Spawn { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
@@ -1315,6 +1320,7 @@ mod tests {
             session_id: "u".into(),
             tag: "t".into(),
             rate_limited_account: None,
+            durability_warning: None,
         }));
         let facade: Arc<dyn WorkerFacade> = mock.clone();
         let tool = Spawn { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
@@ -1339,6 +1345,7 @@ mod tests {
             session_id: "u".into(),
             tag: "forge:worker:reviewer".into(),
             rate_limited_account: Some("granite".into()),
+            durability_warning: None,
         }));
         let facade: Arc<dyn WorkerFacade> = mock.clone();
         let tool = Spawn { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
@@ -1355,6 +1362,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn spawn_surfaces_durability_warning_when_persist_failed() {
+        // A failed durability persist (store down / write error) still
+        // spawns the worker, but the tool result carries a
+        // durability_warning so the lead knows it won't survive a restart.
+        let mock = Arc::new(MockWorkerFacade::new());
+        let caller = fake_key("lead-key");
+        mock.callers.lock().insert(caller.clone(), lead_caller("forge"));
+        *mock.spawn_reply.lock() = Some(Ok(WorkerSpawnReply {
+            session_id: "u".into(),
+            tag: "forge:worker:reviewer".into(),
+            rate_limited_account: None,
+            durability_warning: Some(
+                "spawned, but persisting this worker for durability failed".into(),
+            ),
+        }));
+        let facade: Arc<dyn WorkerFacade> = mock.clone();
+        let tool = Spawn { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({ "label": "reviewer", "charter": "Review." }),
+            })
+            .await;
+        assert!(!output.is_error, "a persist failure does not fail the spawn");
+        let body: serde_json::Value =
+            serde_json::from_str(&output.blocks[0].text).expect("valid json body");
+        let warning = body["durability_warning"]
+            .as_str()
+            .expect("durability_warning present on persist fail");
+        assert!(warning.contains("durability"), "warning explains the durability gap: {warning}");
+    }
+
+    #[tokio::test]
+    async fn spawn_omits_durability_warning_on_success() {
+        let mock = Arc::new(MockWorkerFacade::new());
+        let caller = fake_key("lead-key");
+        mock.callers.lock().insert(caller.clone(), lead_caller("forge"));
+        *mock.spawn_reply.lock() = Some(Ok(WorkerSpawnReply {
+            session_id: "u".into(),
+            tag: "forge:worker:reviewer".into(),
+            rate_limited_account: None,
+            durability_warning: None,
+        }));
+        let facade: Arc<dyn WorkerFacade> = mock.clone();
+        let tool = Spawn { facade, caller_key: CallerKeyResolver::from_fixed(caller) };
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({ "label": "reviewer", "charter": "Review." }),
+            })
+            .await;
+        assert!(!output.is_error);
+        let body: serde_json::Value =
+            serde_json::from_str(&output.blocks[0].text).expect("valid json body");
+        assert!(body.get("durability_warning").is_none(), "no warning when persistence succeeds");
+    }
+
+    #[tokio::test]
     async fn spawn_omits_notice_when_account_usable() {
         let mock = Arc::new(MockWorkerFacade::new());
         let caller = fake_key("lead-key");
@@ -1363,6 +1426,7 @@ mod tests {
             session_id: "u".into(),
             tag: "forge:worker:reviewer".into(),
             rate_limited_account: None,
+            durability_warning: None,
         }));
         let facade: Arc<dyn WorkerFacade> = mock.clone();
         let tool = Spawn { facade, caller_key: CallerKeyResolver::from_fixed(caller) };

@@ -876,6 +876,9 @@ pub(crate) fn handle_spawn_worker(
                 session_id: synth_key.as_str().to_owned(),
                 tag,
                 rate_limited_account: rate_limited_account.map(|k| k.0),
+                // The MCP facade fills this after its post-reply persist;
+                // the re-spawn paths never persist, so it stays None.
+                durability_warning: None,
             }));
         }
         Err(err) => {

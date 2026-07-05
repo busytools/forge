@@ -493,8 +493,23 @@ impl WorkerFacade for ProdWorkerFacade {
             });
         }
         match rx.await {
-            Ok(Ok(reply)) => {
-                ws.persist_dynamic_worker(&persisted);
+            Ok(Ok(mut reply)) => {
+                // Persist is best-effort: the worker already spawned. A
+                // failure means it won't survive a restart, so surface it
+                // to the lead instead of silently breaking the durability
+                // promise the tool advertises.
+                if let Err(err) = ws.persist_dynamic_worker(&persisted) {
+                    tracing::error!(
+                        target: "forge_workspace::mcp::workers",
+                        %err,
+                        project = %persisted.project_key,
+                        label = %persisted.label,
+                        "persisting the dynamic worker failed; it will not survive a forge restart",
+                    );
+                    reply.durability_warning = Some(format!(
+                        "spawned, but persisting this worker for durability failed ({err}); it will not survive a forge restart"
+                    ));
+                }
                 Ok(reply)
             }
             Ok(Err(message)) => Err(classify_worker_spawn_failure(&message, is_git_repo_at_spawn)),
@@ -962,6 +977,7 @@ mod mock_tests {
             session_id: "new-uuid".into(),
             tag: "forge:worker:reviewer".into(),
             rate_limited_account: None,
+            durability_warning: None,
         }));
         let res = mock
             .spawn_worker(
