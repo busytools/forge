@@ -163,7 +163,7 @@ impl Tool for Spawn {
                 });
                 if let Some(account) = &reply.rate_limited_account {
                     body["notice"] = serde_json::Value::String(format!(
-                        "assigned account '{account}' is currently rate-limited - every account in this project's pool is saturated or bailed. The worker spawns anyway but may hit a 429 right away; free up an account or wait for a reset."
+                        "assigned account '{account}' is currently rate-limited or bailed. The worker spawns anyway but may hit a 429 right away; free up an account or wait for a reset."
                     ));
                 }
                 match serde_json::to_string_pretty(&body) {
