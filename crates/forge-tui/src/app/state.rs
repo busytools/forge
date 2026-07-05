@@ -3078,6 +3078,27 @@ impl App {
         self.bind_active_turn_assistant_to_tail();
     }
 
+    /// Keep the thinking spinner anchored while a turn is running: bind onto
+    /// an empty assistant tail (a genuine in-flight placeholder), else open a
+    /// fresh placeholder.
+    pub(crate) fn ensure_running_turn_spinner_anchor(&mut self) {
+        if !matches!(self.status, AppStatus::Thinking | AppStatus::Running) {
+            return;
+        }
+        if self.active_turn_assistant_idx().is_some() {
+            return;
+        }
+        let tail_is_empty_assistant = self
+            .messages()
+            .last()
+            .is_some_and(|msg| matches!(msg.role, MessageRole::Assistant) && msg.blocks.is_empty());
+        if tail_is_empty_assistant {
+            self.bind_active_turn_assistant_to_tail();
+        } else {
+            self.push_active_turn_assistant_placeholder();
+        }
+    }
+
     /// Drop a trailing empty assistant placeholder if the tail is one. A
     /// prior turn-open (typed or delivered) may have pushed a placeholder
     /// that never received tokens; stripping it before the next user
