@@ -289,8 +289,7 @@ pub(crate) fn render_message(
 }
 
 /// True when an empty-blocks Assistant/System message would render only a
-/// bare "Forge"/"Info" role label - a stranded idle placeholder that reads
-/// as a broken empty bubble, so the caller suppresses it.
+/// bare "Forge"/"Info" role label with no body.
 fn renders_bare_role_label_only(
     msg: &ChatMessage,
     spinner: &SpinnerState,

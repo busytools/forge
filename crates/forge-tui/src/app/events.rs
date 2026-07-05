@@ -326,8 +326,7 @@ pub(super) fn handle_settings_parse_error(
 }
 
 /// Insert a System message for the active session above the in-flight
-/// placeholder while a turn is running, tail otherwise, so a mid-turn
-/// notice flows inline instead of stranding below the turn.
+/// placeholder while a turn is running, at the tail otherwise.
 fn insert_active_system_message(app: &mut App, severity: Option<SystemSeverity>, message: &str) {
     let msg = ChatMessage::new(
         MessageRole::System(severity),
