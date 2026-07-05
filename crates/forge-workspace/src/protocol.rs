@@ -76,11 +76,12 @@ impl std::fmt::Debug for PendingInteractionSlot {
 pub struct WorkerSpawnReply {
     pub session_id: String,
     pub tag: String,
-    /// Set to the assigned account name when the adhoc rotation had to
-    /// fall back onto a currently rate-limited/bailed account because
-    /// every candidate in the project's pool was saturated. The spawn
-    /// tool surfaces it as a `notice` so the lead sees the situation at
-    /// spawn instead of only discovering it when the worker stalls.
+    /// Set to the assigned account name when that account is itself
+    /// currently rate-limited or bailed (a fresh assignment that fell
+    /// back onto a fully saturated pool, or a re-spawn pinned to a
+    /// since-unusable account). The spawn tool surfaces it as a
+    /// `notice` so the lead sees the situation at spawn instead of only
+    /// discovering it when the worker stalls.
     pub rate_limited_account: Option<String>,
 }
 

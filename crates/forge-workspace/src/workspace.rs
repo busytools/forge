@@ -1439,9 +1439,11 @@ impl Workspace {
     /// plan-driven rotation as boot-time team members. No-op when
     /// the plan isn't populated yet (boot still in flight) - the
     /// fallback `pick_for_project` path takes over in that case.
-    /// Returns `Some(account)` only when the rotation had to land on a
-    /// rate-limited account (whole pool saturated), for the caller to
-    /// surface at spawn; `None` on a usable assignment or a no-op.
+    /// Returns `Some(account)` when the assigned account is itself
+    /// currently unusable (a fresh assignment that fell back onto a
+    /// fully saturated pool, or a re-spawn pinned to a since-unusable
+    /// account), for the caller to surface at spawn; `None` on a usable
+    /// assignment or a no-op.
     pub(crate) fn extend_plan_for_adhoc_worker(
         &self,
         project_key: &ProjectKey,
