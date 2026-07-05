@@ -288,12 +288,37 @@ pub(crate) fn render_message(
     render_cached_message(cache.segments(), out);
 }
 
+/// True when an empty-blocks Assistant/System message would render only a
+/// bare "Forge"/"Info" role label with no body.
+fn renders_bare_role_label_only(
+    msg: &ChatMessage,
+    spinner: &SpinnerState,
+    render_context: &MessageRenderContext<'_>,
+) -> bool {
+    if !msg.blocks.is_empty()
+        || !matches!(msg.role, MessageRole::Assistant | MessageRole::System(_))
+    {
+        return false;
+    }
+    if spinner.show_empty_thinking
+        || spinner.show_compacting
+        || spinner.show_thinking
+        || (spinner.running_subagents.is_some() && spinner.is_active_turn_assistant)
+    {
+        return false;
+    }
+    render_context.options.stop_hook_summary_actions == 0
+}
+
 fn build_message_layout(
     msg: &mut ChatMessage,
     spinner: &SpinnerState,
     render_context: MessageRenderContext<'_>,
 ) -> MessageLayout {
     let mut layout = MessageLayout::new();
+    if renders_bare_role_label_only(msg, spinner, &render_context) {
+        return layout;
+    }
     if !render_context.options.suppress_group_header {
         layout.push_wrapped_line(role_label_line(msg), render_context.width);
     }
@@ -1476,6 +1501,15 @@ fn build_message_render_signature(
     spinner.show_empty_thinking.hash(&mut hasher);
     spinner.show_thinking.hash(&mut hasher);
     spinner.show_compacting.hash(&mut hasher);
+    // Item 3's idle suppression and the running-subagents line both key off
+    // these; fold them (line content included) so a flip invalidates the
+    // cached layout.
+    spinner.is_active_turn_assistant.hash(&mut hasher);
+    spinner
+        .running_subagents
+        .as_ref()
+        .map(|running| (running.count, running.primary_label.as_deref()))
+        .hash(&mut hasher);
     let assistant_frame = if message_has_frame_dependent_assistant_lines(msg, spinner) {
         Some(spinner.glyph)
     } else {
@@ -4308,6 +4342,149 @@ mod tests {
         let rendered: String =
             role_label_line(&msg).spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(rendered, "Forge");
+    }
+
+    /// #383 follow-up (empty trailing bubble): an idle assistant with no
+    /// blocks would otherwise render only a bare "Forge" role label with
+    /// no body. Suppress it - an idle empty placeholder renders nothing.
+    #[test]
+    fn empty_idle_assistant_placeholder_renders_nothing() {
+        let mut msg = ChatMessage::new(MessageRole::Assistant, vec![], None);
+        let mut lines = Vec::new();
+        render_message(
+            &mut msg,
+            &idle_spinner(),
+            MessageRenderContext::new(None, 120, 0, default_options()),
+            &mut lines,
+        );
+        assert!(
+            lines.is_empty(),
+            "idle empty assistant placeholder renders nothing; got {:?}",
+            render_lines_to_strings(&lines),
+        );
+    }
+
+    /// The "Info" analog: an idle System message with no blocks must not
+    /// render a bare "Info" label either.
+    #[test]
+    fn empty_idle_system_placeholder_renders_nothing() {
+        let mut msg =
+            ChatMessage::new(MessageRole::System(Some(SystemSeverity::Info)), vec![], None);
+        let mut lines = Vec::new();
+        render_message(
+            &mut msg,
+            &idle_spinner(),
+            MessageRenderContext::new(None, 120, 0, default_options()),
+            &mut lines,
+        );
+        assert!(
+            lines.is_empty(),
+            "idle empty Info placeholder renders nothing; got {:?}",
+            render_lines_to_strings(&lines),
+        );
+    }
+
+    /// Suppression is idle-only: an actively-thinking empty placeholder is
+    /// also empty-blocks but MUST still render its spinner.
+    #[test]
+    fn empty_thinking_placeholder_still_renders_spinner() {
+        let spinner = SpinnerState {
+            show_empty_thinking: true,
+            is_active_turn_assistant: true,
+            ..idle_spinner()
+        };
+        let mut msg = ChatMessage::new(MessageRole::Assistant, vec![], None);
+        let mut lines = Vec::new();
+        render_message(
+            &mut msg,
+            &spinner,
+            MessageRenderContext::new(None, 120, 0, default_options()),
+            &mut lines,
+        );
+        assert!(
+            !lines.is_empty(),
+            "an actively-thinking empty placeholder still shows the spinner"
+        );
+    }
+
+    /// The render-cache signature must fold running_subagents +
+    /// is_active_turn_assistant: an empty assistant suppressed while idle
+    /// must rebuild (not return the stale empty layout) when it flips into
+    /// an active turn with a running subagent.
+    #[test]
+    fn subagent_flip_invalidates_empty_assistant_render_cache() {
+        let mut msg = ChatMessage::new(MessageRole::Assistant, vec![], None);
+
+        let mut lines_a = Vec::new();
+        render_message(
+            &mut msg,
+            &idle_spinner(),
+            MessageRenderContext::new(None, 120, 0, default_options()),
+            &mut lines_a,
+        );
+        assert!(lines_a.is_empty(), "idle empty placeholder is suppressed");
+
+        let active_with_subagent = SpinnerState {
+            is_active_turn_assistant: true,
+            running_subagents: Some(RunningSubagentsLine {
+                count: 1,
+                primary_label: Some("Explore".to_owned()),
+            }),
+            ..idle_spinner()
+        };
+        let mut lines_b = Vec::new();
+        render_message(
+            &mut msg,
+            &active_with_subagent,
+            MessageRenderContext::new(None, 120, 0, default_options()),
+            &mut lines_b,
+        );
+        let rendered = render_lines_to_strings(&lines_b);
+        assert!(
+            rendered.iter().any(|l| l.contains("subagent")),
+            "cache rebuilds on the subagent flip instead of the stale empty render; got {rendered:?}",
+        );
+    }
+
+    /// The signature folds the subagent line CONTENT: a count/label change
+    /// on an empty active assistant must rebuild, not serve the stale line.
+    #[test]
+    fn subagent_count_change_invalidates_empty_assistant_render_cache() {
+        let mut msg = ChatMessage::new(MessageRole::Assistant, vec![], None);
+
+        let one = SpinnerState {
+            is_active_turn_assistant: true,
+            running_subagents: Some(RunningSubagentsLine {
+                count: 1,
+                primary_label: Some("Explore".to_owned()),
+            }),
+            ..idle_spinner()
+        };
+        let mut lines_a = Vec::new();
+        render_message(
+            &mut msg,
+            &one,
+            MessageRenderContext::new(None, 120, 0, default_options()),
+            &mut lines_a,
+        );
+
+        let many = SpinnerState {
+            is_active_turn_assistant: true,
+            running_subagents: Some(RunningSubagentsLine { count: 3, primary_label: None }),
+            ..idle_spinner()
+        };
+        let mut lines_b = Vec::new();
+        render_message(
+            &mut msg,
+            &many,
+            MessageRenderContext::new(None, 120, 0, default_options()),
+            &mut lines_b,
+        );
+        let rendered = render_lines_to_strings(&lines_b);
+        assert!(
+            rendered.iter().any(|l| l.contains("3 subagents")),
+            "cache rebuilds on the count change instead of serving the stale line; got {rendered:?}",
+        );
     }
 
     // ----------------------------------------------------------------

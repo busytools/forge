@@ -1125,6 +1125,7 @@ chat continues here...
   </div>
   <div class="surface-body">
     <p>Banner is the literal severity word "<strong>Info</strong>" / "<strong>Warning</strong>" / "<strong>Error</strong>" in bold, colored by severity (Info=DIM, Warning=STATUS_WARNING, Error=STATUS_ERROR). Body lines are tinted with the same color via <code>tint_lines</code> after markdown rendering. Hard wraps at the terminal width.</p>
+    <p><strong>Placement:</strong> anchored to where the event happened. While a turn is in flight (status Thinking / Running) the notice inserts just above the active assistant placeholder, so a mid-turn notice (e.g. a worker-closed toast) flows inline and scrolls up with the conversation instead of stranding at the bottom below the still-streaming turn - the turn pointer shifts with the placeholder so the spinner stays put and the response keeps streaming there. When idle, or at turn end (an error / completion message), it appends at the tail. A rate-limit warning reaches the same inline position through the turn-notice path.</p>
     <div class="term">
       <pre class="indent">
   <span class="warning bold">Warning</span>
@@ -1138,6 +1139,7 @@ chat continues here...
     </div>
     <dl>
       <dt>code</dt><dd><code>crates/forge-tui/src/ui/message.rs::system_role_label_line</code> + <code>notice_block_layout</code> + <code>tint_lines</code></dd>
+      <dt>placement</dt><dd><code>crates/forge-tui/src/app/events.rs::insert_active_system_message</code> anchors above the in-flight assistant while running (via <code>insert_message_tracked</code>), tail otherwise</dd>
       <dt>severities</dt><dd><code>SystemSeverity::Info</code> → <code>theme::DIM</code> · <code>Warning</code> → <code>theme::STATUS_WARNING</code> · <code>Error</code> → <code>theme::STATUS_ERROR</code></dd>
     </dl>
   </div>
