@@ -4286,6 +4286,39 @@ mod tests {
         ));
     }
 
+    /// The worker-closed toast path (push_system_message_to_session with
+    /// the ACTIVE key) anchors above the in-flight placeholder like the
+    /// active push, but must NOT engage auto-scroll - its no-yank contract.
+    #[test]
+    fn worker_closed_toast_to_active_session_anchors_without_autoscroll() {
+        let mut app = make_test_app();
+        app.active_messages_mut().push(user_msg("orchestrate"));
+        app.push_active_turn_assistant_placeholder();
+        app.status = AppStatus::Running;
+        let placeholder_idx = app.active_turn_assistant_idx().expect("active turn");
+        app.active_viewport_mut().auto_scroll = false;
+
+        let key = active_session_key(&app);
+        push_system_message_to_session(&mut app, &key, Some(SystemSeverity::Info), "Worker closed");
+
+        assert!(
+            matches!(
+                app.messages()[placeholder_idx].role,
+                MessageRole::System(Some(SystemSeverity::Info))
+            ),
+            "toast anchors above the active placeholder",
+        );
+        assert_eq!(
+            app.active_turn_assistant_idx(),
+            Some(placeholder_idx + 1),
+            "pointer shifted with the placeholder",
+        );
+        assert!(
+            !app.active_viewport_mut().auto_scroll,
+            "no auto-scroll: the toast must not yank a scrolled-up reader",
+        );
+    }
+
     /// Root cause of the thinking-pointer desync (#383 follow-up): the
     /// runtime-state signal flips status to Running - the same family the
     /// Projects pane reads - but never binds the chat's active-turn
