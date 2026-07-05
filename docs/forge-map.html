@@ -1541,6 +1541,35 @@ chat continues here...
   </div>
 </div>
 
+<div class="surface" id="cron-block">
+  <div class="surface-head">
+    <h4>Cron chat block - fired scheduled prompts</h4>
+    <div class="when">visible: every durable cron that fires into a session (the project lead, or the session spawned to receive it), echoed as a cron block at the tail, ahead of the response it triggers</div>
+  </div>
+  <div class="surface-body">
+    <p>A due cron is delivered as a user turn (the session's LLM receives the raw prompt) and echoed into the chat so the user sees what fired instead of the agent bursting into a response from nowhere. It reads as an internal scheduled event, not typed input: a <span class="accent">Cron</span> source label (not <span class="accent">Forge</span>), the ◴ cron glyph (<span class="accent bold">&#x25F4;</span>, the same glyph the <a href="#inspector-pane">SCHEDULES</a> section uses, not <span class="accent">&#x25B6;</span>), and the fired prompt under the standard tree connectors (<code>&#x2502;&nbsp;&nbsp;</code> continuation, <code>&#x2514;&#x2500;</code> last).</p>
+    <div class="term">
+      <pre class="indent">
+   <span class="accent bold">Cron</span>
+
+     <span class="accent bold">&#x25F4;</span> <span class="bold">Cron</span>
+     <span class="dim">&#x2514;&#x2500; run the morning market summary</span>
+
+     <span class="accent bold">&#x25F4;</span> <span class="bold">Cron</span>
+     <span class="dim">&#x2502;&nbsp;&nbsp;post the EOD report to #trading</span>
+     <span class="dim">&#x2514;&#x2500; include the day's realized PnL</span></pre>
+    </div>
+    <p>The <code>[Cron]</code> wrapper is display-only: it exists solely to drive the visible block and inherit the delivered-turn spinner. The subprocess receives the raw prompt via <code>Command::Prompt</code>, so the bracket never reaches the LLM.</p>
+    <dl>
+      <dt>code</dt><dd><code>crates/forge-tui/src/ui/peer_block.rs::detect_inbound</code> parses the <code>[Cron]</code> prefix into <code>PeerInboundKind::Cron</code>; <code>render_inbound</code> routes it to <code>render_cron_prompt</code> (the ◴ glyph in <code>RUST_ORANGE</code>). The <span class="accent">Cron</span> source label comes from <code>role_label_line</code> reading the cached <code>ChatMessage.is_cron_envelope</code> flag (stamped at push time, mirroring the peer / gotify envelope flags)</dd>
+      <dt>data source</dt><dd><code>SessionUpdate::CronPromptAppended { session_id, text }</code> emitted by <code>spawn::push_cron_prompt_into_chat</code> at the running-lead delivery site and on the Connected drain for a cron fired into an asleep project. The reducer forges a synthetic user turn wrapping the fired prompt in the display-only <code>[Cron]</code> prefix, so the existing <code>detect_inbound</code> matcher recognises it</dd>
+      <dt>collapse / expand</dt><dd>body ellipsed to one line by default (<code>&#x2514;&#x2500; &lt;first 60 chars&gt;...</code>); click the row to expand the full prompt inline - same affordance as the peer / gotify blocks</dd>
+      <dt>distinct from peer</dt><dd>a fired cron is a scheduled internal event, not agent traffic: it never merges into a peer messaging group (<code>PeerInboundKind::peer_sender_identity</code> returns <code>None</code> for it), keeps its own <span class="accent">Cron</span> source label, and carries the ◴ cron glyph in place of <span class="accent">&#x25B6;</span></dd>
+      <dt>arrival order + running state</dt><dd>appends at the tail in arrival order, opens a fresh assistant placeholder at the tail so the thinking spinner pins to the bottom above the input, and flips the session to a running state on delivery - the same <code>push_peer_envelope_user_turn_if_present</code> path the <a href="#peer-block">peer</a> / <a href="#gotify-block">gotify</a> blocks use</dd>
+    </dl>
+  </div>
+</div>
+
 <div class="surface">
   <div class="surface-head">
     <h4>Sidebar peer-activity badges (Projects pane)</h4>
