@@ -604,6 +604,11 @@ impl SessionTask {
     /// Send `update` to the workspace fan-in; log on send failure so a
     /// closed-channel regression leaves a trail rather than silently
     /// dropping events.
+    // TODO(ved): gate emits on a per-task session epoch so a superseded
+    // task (its session re-spawned under the same key by an `/account`
+    // switch) can't emit a stale update onto the successor's bucket
+    // during its brief post-supersession drain. Low-risk today: the
+    // switch is idle-gated and the re-spawn keeps the same session_id.
     fn emit(&self, update: SessionUpdate) {
         if self.update_tx.send(update).is_err() {
             tracing::warn!(
