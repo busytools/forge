@@ -157,6 +157,7 @@ pub mod userdata {
     pub use forge_agent::userdata::*;
 }
 pub use forge_primitives::permission::PermissionMode;
+pub use forge_primitives::runtime::RuntimeSessionState;
 
 // Test-only re-exports. The smoke-test suite at
 // `crates/forge-tui/tests/forge_sdk_smoke.rs` needs `Agent::spawn`

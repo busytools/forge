@@ -286,6 +286,13 @@ pub(super) fn handle_runtime_session_state_update(
     state: model::RuntimeSessionState,
 ) {
     app.set_runtime_session_state(Some(state));
+    // A turn just started under an open `/account` picker: close it -
+    // you can't switch accounts mid-turn (the commit-recheck and the
+    // workspace backstop also guard this; closing proactively is
+    // clearer than letting Enter bounce off the notice).
+    if app.account_picker.is_some() && state != model::RuntimeSessionState::Idle {
+        crate::app::account_picker::close(app);
+    }
     match state {
         model::RuntimeSessionState::Running => {
             if matches!(app.status, AppStatus::Ready | AppStatus::Thinking | AppStatus::Running)

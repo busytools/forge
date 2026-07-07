@@ -1170,9 +1170,25 @@ fn warn_no_session(key: &SessionKey, command: &'static str) {
 /// `SessionUpdate` envelopes the task emits.
 pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEvent) {
     // Always overwrite so /new / /login / /logout don't leave the
-    // mirror stale on the second-Connected emission.
+    // mirror stale on the second-Connected emission. A fresh identity
+    // has no turn in flight yet, so clear the runtime mirror too.
     if let AgentEvent::Connected { session_id, .. } = event {
         domain.session_id = Some(SessionId::new(session_id.clone()));
+        domain.runtime_state = None;
+    }
+    // Mirror runtime liveness from `session_state_changed` so the
+    // account-switch backstop (`handle_switch_account`) sees an
+    // in-flight turn authoritatively, independent of the TUI gate.
+    if let AgentEvent::SdkMessage {
+        msg: forge_primitives::Message::System { subtype, data, .. },
+        ..
+    } = event
+        && subtype == "session_state_changed"
+        && let Some(state) = data.get("state").and_then(|v| {
+            serde_json::from_value::<forge_primitives::RuntimeSessionState>(v.clone()).ok()
+        })
+    {
+        domain.runtime_state = Some(state);
     }
 }
 

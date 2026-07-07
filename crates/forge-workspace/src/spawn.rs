@@ -649,8 +649,10 @@ pub(crate) fn handle_spawn_session(
 /// The forced-account re-spawn seeds `connected_once = true`, so its
 /// first `Connected` emits `SessionReplaced`: the chat resets, then the
 /// `--resume` backfill re-seeds the same conversation and the new
-/// account's `ForgeAccountIdentity` refreshes the label. Idle-gated by
-/// the TUI executor; a no-op when the account name is unknown.
+/// account's `ForgeAccountIdentity` refreshes the label. Refuses with
+/// a notice (and no teardown) when a turn is in flight - the
+/// authoritative backstop for the TUI idle-gate; a no-op when the
+/// account name is unknown.
 pub(crate) fn handle_switch_account(
     workspace: &Arc<Workspace>,
     key: SessionKey,
@@ -666,6 +668,32 @@ pub(crate) fn handle_switch_account(
         );
         return;
     };
+
+    // Authoritative idle backstop: refuse the switch while a turn is in
+    // flight, independent of the TUI idle-gate. A delivered peer / cron
+    // / gotify prompt can start a turn between picker-open and Enter, and
+    // tearing that turn down would silently drop pending interactions and
+    // strand inflight peer asks. Surface a notice; do NOT tear down.
+    let turn_in_flight = workspace.domain_session_for(&key).is_some_and(|domain| {
+        matches!(
+            domain.lock().runtime_state,
+            Some(
+                forge_primitives::RuntimeSessionState::Running
+                    | forge_primitives::RuntimeSessionState::RequiresAction
+            )
+        )
+    });
+    if turn_in_flight {
+        try_emit(
+            workspace,
+            "switch_account::busy",
+            SessionUpdate::SlashCommandError {
+                key,
+                message: "Finish or cancel the current turn before switching accounts.".to_owned(),
+            },
+        );
+        return;
+    }
 
     // Tear down the current account's subprocess so the re-spawn does
     // not hit the pool fast-path and return the existing handle. The

@@ -53,7 +53,7 @@ pub(crate) fn open(app: &mut App, rows: Vec<AccountRow>) {
     app.needs_redraw = true;
 }
 
-fn close(app: &mut App) {
+pub(crate) fn close(app: &mut App) {
     app.account_picker = None;
     app.needs_redraw = true;
 }
@@ -104,6 +104,18 @@ fn commit(app: &mut App) {
     }
     let account = selected.display_name.clone();
     close(app);
+
+    // Re-check idle at commit time: a delivered peer / cron / gotify
+    // prompt may have started a turn while the picker was open. The
+    // workspace has an authoritative backstop too, but bailing here
+    // avoids the round-trip and surfaces the same notice.
+    if app.runtime_session_state() != Some(crate::agent::model::RuntimeSessionState::Idle) {
+        super::slash::push_system_message(
+            app,
+            "Finish or cancel the current turn before switching accounts.",
+        );
+        return;
+    }
 
     let launch_settings = crate::app::connect::session_launch_settings_for_resume(app);
     let _ = app.dispatch_command(|key| forge_workspace::Command::SwitchAccount {
@@ -190,5 +202,48 @@ mod tests {
             app.account_picker.is_none(),
             "picking the current account closes without a switch"
         );
+    }
+
+    fn last_message_text(app: &App) -> String {
+        app.messages()
+            .last()
+            .map(|m| {
+                m.blocks
+                    .iter()
+                    .filter_map(|b| match b {
+                        crate::app::MessageBlock::Text(t) => Some(t.markdown.full_text()),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn commit_while_running_bails_with_notice_and_no_switch() {
+        let mut app = App::test_default();
+        open(&mut app, vec![row("A", true), row("B", false)]);
+        // Move the highlight off the current account so Enter would
+        // otherwise dispatch a switch.
+        handle_key(&mut app, key(KeyCode::Down));
+        // A turn started (delivered prompt) while the picker was open.
+        app.set_runtime_session_state(Some(crate::agent::model::RuntimeSessionState::Running));
+
+        assert!(handle_key(&mut app, key(KeyCode::Enter)));
+        assert!(app.account_picker.is_none(), "commit closes the picker");
+        let text = last_message_text(&app);
+        assert!(text.contains("Finish or cancel"), "commit surfaces the idle notice; got: {text}");
+    }
+
+    #[test]
+    fn running_update_auto_closes_open_picker() {
+        let mut app = App::test_default();
+        open(&mut app, vec![row("A", true), row("B", false)]);
+        assert!(app.account_picker.is_some());
+        crate::app::events::handle_runtime_session_state_update(
+            &mut app,
+            crate::agent::model::RuntimeSessionState::Running,
+        );
+        assert!(app.account_picker.is_none(), "a Running update closes the open picker");
     }
 }

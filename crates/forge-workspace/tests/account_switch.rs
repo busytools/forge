@@ -1,8 +1,9 @@
-//! `/account` mid-session switch integration test - verifies
+//! `/account` mid-session switch integration tests. Verify that
 //! `Command::SwitchAccount` re-spawns the SAME session key under the
-//! picked account's `config_dir`, forcing the account rather than
-//! letting the round-robin picker choose. Mirrors `workspace_handles`:
-//! asserts at the `AgentHandle`/bridge `config_dir` boundary, no real
+//! picked account's `config_dir` (forcing the account, not letting the
+//! round-robin picker choose), and that the server-side backstop
+//! refuses a switch while a turn is in flight. Mirror `workspace_handles`:
+//! assert at the `AgentHandle`/bridge `config_dir` boundary, no real
 //! `claude` conversation required.
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
@@ -11,24 +12,20 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use forge_workspace::{Command, SessionKey, SessionLaunchSettings, SessionTarget, Workspace};
+use forge_workspace::{
+    Command, RuntimeSessionState, SessionKey, SessionLaunchSettings, SessionTarget, SessionUpdate,
+    Workspace,
+};
 use tempfile::tempdir;
 
-fn forge_toml_path(config_dir: &std::path::Path) -> PathBuf {
-    let forge = config_dir.join("forge");
+/// Write a three-account (`Aacct` / `Bacct` / `Cacct`) forge.toml into
+/// `config_dir` and return the workspace. Cold-cache picks rotate in
+/// definition order: cursor=0 -> Aacct, cursor=1 -> Bacct, ...
+async fn three_account_workspace(dir: &std::path::Path) -> Arc<Workspace> {
+    let forge = dir.join("forge");
     fs::create_dir_all(&forge).expect("forge/ dir");
-    forge.join("forge.toml")
-}
-
-#[tokio::test]
-async fn switch_account_respawns_same_session_under_forced_config_dir() {
-    // Three accounts. A cold-cache initial spawn takes cursor=0 (Aacct);
-    // an UNforced re-spawn would advance the round-robin to cursor=1
-    // (Bacct). The switch targets Cacct, so landing on Cacct's
-    // config_dir proves the account was FORCED, not merely rotated to.
-    let dir = tempdir().expect("tempdir");
     fs::write(
-        forge_toml_path(dir.path()),
+        forge.join("forge.toml"),
         r#"
 [[orgs]]
 name = "Default"
@@ -53,8 +50,17 @@ config_dir = "/tmp/forge-switch-c"
 "#,
     )
     .expect("write forge.toml");
+    Arc::new(Workspace::new(dir.to_owned()).await.expect("new"))
+}
 
-    let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+#[tokio::test]
+async fn switch_account_respawns_same_session_under_forced_config_dir() {
+    // Three accounts. A cold-cache initial spawn takes cursor=0 (Aacct);
+    // an UNforced re-spawn would advance the round-robin to cursor=1
+    // (Bacct). The switch targets Cacct, so landing on Cacct's
+    // config_dir proves the account was FORCED, not merely rotated to.
+    let dir = tempdir().expect("tempdir");
+    let workspace = three_account_workspace(dir.path()).await;
 
     // Initial spawn: cold cache -> first usable in the pin (Aacct).
     let key = SessionKey::from_str_for_test("switch-target");
@@ -86,4 +92,51 @@ config_dir = "/tmp/forge-switch-c"
         workspace.has_agent_for(&key),
         "the re-spawned session keeps its live agent under the same key",
     );
+}
+
+#[tokio::test]
+async fn switch_account_refused_while_a_turn_is_in_flight() {
+    // The authoritative backstop: a delivered peer / cron / gotify prompt
+    // can start a turn between picker-open and Enter. handle_switch_account
+    // must refuse (notice, no teardown) rather than tear down the live turn.
+    let dir = tempdir().expect("tempdir");
+    let workspace = three_account_workspace(dir.path()).await;
+    let mut updates = workspace.subscribe().expect("subscribe");
+
+    let key = SessionKey::from_str_for_test("switch-busy");
+    workspace
+        .get_agent_handle(SessionTarget::Session(key.clone()), SessionLaunchSettings::default())
+        .expect("initial spawn");
+    assert_eq!(workspace.config_dir_for(&key), Some(PathBuf::from("/tmp/forge-switch-a")));
+
+    // A turn is now in flight for this session.
+    workspace.domain_session_for(&key).expect("domain").lock().runtime_state =
+        Some(RuntimeSessionState::Running);
+
+    workspace
+        .dispatch(Command::SwitchAccount {
+            key: key.clone(),
+            account_display_name: "Cacct".to_owned(),
+            launch_settings: SessionLaunchSettings::default(),
+        })
+        .expect("dispatch switch");
+
+    // Refused: the session stays on account A and keeps its live agent.
+    assert_eq!(
+        workspace.config_dir_for(&key),
+        Some(PathBuf::from("/tmp/forge-switch-a")),
+        "a busy session is NOT switched",
+    );
+    assert!(workspace.has_agent_for(&key), "the in-flight session is NOT torn down");
+
+    // The idle notice was surfaced.
+    let mut saw_notice = false;
+    while let Ok(update) = updates.try_recv() {
+        if let SessionUpdate::SlashCommandError { message, .. } = update
+            && message.contains("Finish or cancel")
+        {
+            saw_notice = true;
+        }
+    }
+    assert!(saw_notice, "a busy switch surfaces the idle notice");
 }
