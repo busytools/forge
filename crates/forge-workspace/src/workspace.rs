@@ -684,7 +684,7 @@ impl Workspace {
         // over the hand-authored forge.toml `[ui] spinner` default.
         // Folding it into `config.ui` here means `ui_settings()` returns
         // the effective style.
-        config.ui.spinner = state.spinner.unwrap_or(config.ui.spinner);
+        config.ui.spinner = crate::ui::resolve_spinner(state.spinner, config.ui.spinner);
 
         let (update_tx, update_rx) = mpsc::unbounded_channel::<SessionUpdate>();
         let (kick_dispatcher_tx, kick_dispatcher_rx) = mpsc::unbounded_channel::<KickRequest>();
