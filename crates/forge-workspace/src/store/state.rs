@@ -8,6 +8,7 @@
 //! preference. Values are serde-json; no field schema on disk.
 
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use anyhow::Context;
 use redb::{ReadableTable, TableDefinition};
@@ -118,6 +119,100 @@ pub fn replace_account_usage(
     Ok(())
 }
 
+/// One-time seed marker. A dedicated single-purpose table so the whole
+/// migration path is excised in one place when the state seed is removed.
+const STATE_MIGRATION: TableDefinition<&str, &[u8]> = TableDefinition::new("state_migration");
+
+/// Seed the store once from the machine-local `state.toml`, then remove
+/// that file. An absent `state.toml` migrates nothing and leaves the
+/// marker unset. Self-contained for removal once every machine has
+/// migrated.
+pub fn seed_state_from_toml_once(db: &Db, config_dir: &Path) -> anyhow::Result<()> {
+    let Some(app_support) = crate::account_cache::resolve_app_support() else {
+        return Ok(());
+    };
+    seed_state_from_toml_once_in(db, config_dir, &app_support)
+}
+
+pub(crate) fn seed_state_from_toml_once_in(
+    db: &Db,
+    config_dir: &Path,
+    app_support: &Path,
+) -> anyhow::Result<()> {
+    if seeded(db)? {
+        return Ok(());
+    }
+    let path = crate::account_cache::state_path_in(config_dir, app_support);
+    let contents = match std::fs::read_to_string(&path) {
+        Ok(contents) => contents,
+        // No machine-local state.toml to migrate; leave the marker unset.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            tracing::warn!(
+                target: "forge_workspace::store::state",
+                %error,
+                path = %path.display(),
+                "reading state.toml failed; nothing to migrate this run",
+            );
+            return Ok(());
+        }
+    };
+    write_seed(db, &crate::account_cache::parse_state(&contents, &path))?;
+    if let Err(error) = std::fs::remove_file(&path)
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::warn!(
+            target: "forge_workspace::store::state",
+            %error,
+            path = %path.display(),
+            "deleting the migrated state.toml failed; the marker still prevents a re-seed",
+        );
+    }
+    Ok(())
+}
+
+/// Write the seeded spinner + account usage and set the marker in one
+/// write txn so a crash mid-seed can't leave a partial migration.
+fn write_seed(db: &Db, state: &crate::account_cache::ForgeState) -> anyhow::Result<()> {
+    let txn = db.database().begin_write()?;
+    {
+        if let Some(style) = state.spinner {
+            let mut table = txn.open_table(SETTINGS)?;
+            let value = serde_json::to_vec(&style).context("serialize spinner")?;
+            table.insert("spinner", value.as_slice())?;
+        }
+        {
+            let mut table = txn.open_table(ACCOUNT_USAGE)?;
+            for (name, entry) in &state.account_usage {
+                let value = serde_json::to_vec(entry).context("serialize account usage")?;
+                table.insert(name.as_str(), value.as_slice())?;
+            }
+        }
+        mark_seeded(&txn)?;
+    }
+    txn.commit()?;
+    Ok(())
+}
+
+/// Whether the one-time state.toml seed has already run on this machine.
+fn seeded(db: &Db) -> anyhow::Result<bool> {
+    let txn = db.database().begin_read()?;
+    let table = match txn.open_table(STATE_MIGRATION) {
+        Ok(t) => t,
+        Err(redb::TableError::TableDoesNotExist(_)) => return Ok(false),
+        Err(e) => return Err(e.into()),
+    };
+    Ok(table.get("seeded")?.is_some())
+}
+
+/// Set the one-time seed marker within `txn` so the seed data and the
+/// marker commit atomically.
+fn mark_seeded(txn: &redb::WriteTransaction) -> anyhow::Result<()> {
+    let mut table = txn.open_table(STATE_MIGRATION)?;
+    table.insert("seeded", [1u8].as_slice())?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -155,7 +250,11 @@ mod tests {
         assert_eq!(spinner(&db).expect("read fresh"), None, "a fresh store has no override");
 
         set_spinner(&db, Some(SpinnerStyle::Ember)).expect("set");
-        assert_eq!(spinner(&db).expect("read"), Some(SpinnerStyle::Ember), "the override round-trips");
+        assert_eq!(
+            spinner(&db).expect("read"),
+            Some(SpinnerStyle::Ember),
+            "the override round-trips"
+        );
 
         set_spinner(&db, None).expect("clear");
         assert_eq!(spinner(&db).expect("read after clear"), None, "None clears the override");
@@ -171,7 +270,10 @@ mod tests {
         let loaded = account_usage(&db).expect("read");
         assert_eq!(loaded.len(), 2);
         assert_eq!(
-            loaded.get("Granite").and_then(|e| e.snapshot.five_hour.as_ref()).map(|w| w.utilization),
+            loaded
+                .get("Granite")
+                .and_then(|e| e.snapshot.five_hour.as_ref())
+                .map(|w| w.utilization),
             Some(42.0),
         );
 
@@ -181,7 +283,10 @@ mod tests {
         assert_eq!(loaded.len(), 1, "replace mirrors exactly the new map");
         assert!(!loaded.contains_key("Subspace"), "the dropped account is gone");
         assert_eq!(
-            loaded.get("Granite").and_then(|e| e.snapshot.five_hour.as_ref()).map(|w| w.utilization),
+            loaded
+                .get("Granite")
+                .and_then(|e| e.snapshot.five_hour.as_ref())
+                .map(|w| w.utilization),
             Some(99.0),
             "the surviving account's snapshot is the new value",
         );
@@ -237,10 +342,109 @@ mod tests {
             replace_account_usage(&db, &usage_map(&[("Granite", 42.0)])).expect("write usage");
         }
         let db = Db::open(&path).expect("reopen db");
-        assert_eq!(spinner(&db).expect("read"), Some(SpinnerStyle::Star), "spinner survives restart");
+        assert_eq!(
+            spinner(&db).expect("read"),
+            Some(SpinnerStyle::Star),
+            "spinner survives restart"
+        );
         assert!(
             account_usage(&db).expect("read").contains_key("Granite"),
             "the usage cache survives restart",
         );
+    }
+
+    /// Build a machine-local state.toml fixture with the given fields.
+    fn write_state_toml(
+        config_dir: &Path,
+        app_support: &Path,
+        spinner: Option<SpinnerStyle>,
+        usage: &[(&str, f64)],
+    ) {
+        let mut state = crate::account_cache::ForgeState::empty();
+        state.spinner = spinner;
+        for (name, util) in usage {
+            state.account_usage.insert((*name).to_owned(), usage_entry(*util));
+        }
+        crate::account_cache::write_machine_local_state_in(config_dir, app_support, &state);
+    }
+
+    #[test]
+    fn seed_migrates_state_toml_and_marks() {
+        let cfg = tempdir().expect("cfg");
+        let base = tempdir().expect("base");
+        let db = Db::open(&base.path().join("db.redb")).expect("open db");
+        write_state_toml(cfg.path(), base.path(), Some(SpinnerStyle::Ember), &[("Granite", 42.0)]);
+
+        assert!(!seeded(&db).expect("marker"), "unseeded before the first run");
+        seed_state_from_toml_once_in(&db, cfg.path(), base.path()).expect("seed");
+
+        assert_eq!(
+            spinner(&db).expect("spinner"),
+            Some(SpinnerStyle::Ember),
+            "the spinner migrated"
+        );
+        assert!(
+            account_usage(&db).expect("usage").contains_key("Granite"),
+            "the usage cache migrated"
+        );
+        assert!(seeded(&db).expect("marker"), "the marker is set after seeding");
+        assert!(
+            !crate::account_cache::state_path_in(cfg.path(), base.path()).exists(),
+            "the migrated state.toml is removed",
+        );
+    }
+
+    #[test]
+    fn marker_prevents_reseed_after_state_toml_changes() {
+        let cfg = tempdir().expect("cfg");
+        let base = tempdir().expect("base");
+        let db = Db::open(&base.path().join("db.redb")).expect("open db");
+        write_state_toml(cfg.path(), base.path(), Some(SpinnerStyle::Ember), &[]);
+        seed_state_from_toml_once_in(&db, cfg.path(), base.path()).expect("first seed");
+        assert_eq!(spinner(&db).expect("spinner"), Some(SpinnerStyle::Ember));
+
+        // The user later changes the spinner, so the store holds their
+        // pick. A stale state.toml with the old value re-appears; the
+        // marker must stop a re-seed from reverting the store.
+        write_state_toml(cfg.path(), base.path(), Some(SpinnerStyle::Star), &[]);
+        seed_state_from_toml_once_in(&db, cfg.path(), base.path()).expect("second seed is a no-op");
+
+        assert_eq!(
+            spinner(&db).expect("spinner"),
+            Some(SpinnerStyle::Ember),
+            "the marker guards: a re-seed never reverts a post-migration spinner",
+        );
+    }
+
+    #[test]
+    fn seed_with_no_state_toml_is_a_no_op_and_leaves_marker_unset() {
+        let cfg = tempdir().expect("cfg");
+        let base = tempdir().expect("base");
+        let db = Db::open(&base.path().join("db.redb")).expect("open db");
+
+        seed_state_from_toml_once_in(&db, cfg.path(), base.path()).expect("seed");
+        assert_eq!(spinner(&db).expect("spinner"), None, "nothing migrated");
+        assert!(account_usage(&db).expect("usage").is_empty(), "nothing migrated");
+        assert!(
+            !seeded(&db).expect("marker"),
+            "a missing state.toml leaves the marker unset so a later downgrade era can still seed",
+        );
+    }
+
+    #[test]
+    fn seed_migrates_present_fields_only() {
+        let cfg = tempdir().expect("cfg");
+        let base = tempdir().expect("base");
+        let db = Db::open(&base.path().join("db.redb")).expect("open db");
+        // account_usage present, spinner field absent.
+        write_state_toml(cfg.path(), base.path(), None, &[("Granite", 42.0)]);
+
+        seed_state_from_toml_once_in(&db, cfg.path(), base.path()).expect("seed");
+        assert_eq!(spinner(&db).expect("spinner"), None, "an absent spinner seeds no override");
+        assert!(
+            account_usage(&db).expect("usage").contains_key("Granite"),
+            "the present usage seeds"
+        );
+        assert!(seeded(&db).expect("marker"), "a present file marks even with a field absent");
     }
 }

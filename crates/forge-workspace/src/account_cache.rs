@@ -83,7 +83,7 @@ pub(crate) struct ForgeState {
 }
 
 impl ForgeState {
-    fn empty() -> Self {
+    pub(crate) fn empty() -> Self {
         Self {
             version: CACHE_SCHEMA_VERSION,
             spinner: None,
@@ -103,7 +103,7 @@ pub(crate) fn state_path(config_dir: &Path) -> Option<PathBuf> {
 /// `<app_support>/state/<config-dir-hash>.toml`. The hash is shared with
 /// the single-instance lock so both machine-local files key off the
 /// config dir identically. Split out as a test seam.
-fn state_path_in(config_dir: &Path, app_support: &Path) -> PathBuf {
+pub(crate) fn state_path_in(config_dir: &Path, app_support: &Path) -> PathBuf {
     app_support
         .join(STATE_DIR_NAME)
         .join(format!("{}.toml", forge_sdk::config_dir_hash(config_dir)))
@@ -119,7 +119,7 @@ fn synced_state_path(config_dir: &Path) -> PathBuf {
 /// Resolve forge's app-support base, warning (non-fatally) when it can't
 /// be found so the read/write paths degrade to no persistence rather
 /// than falling back to a launch-dir-derived path.
-fn resolve_app_support() -> Option<PathBuf> {
+pub(crate) fn resolve_app_support() -> Option<PathBuf> {
     match forge_sdk::app_support_dir() {
         Ok(dir) => Some(dir),
         Err(e) => {
@@ -188,7 +188,7 @@ fn migrate_synced_seed(config_dir: &Path, machine_local: &Path) -> ForgeState {
 /// Parse + version-check a state document read from `path`, treating any
 /// problem as empty (a schema bump degrades to one cold boot, not a
 /// panic).
-fn parse_state(contents: &str, path: &Path) -> ForgeState {
+pub(crate) fn parse_state(contents: &str, path: &Path) -> ForgeState {
     let parsed: ForgeState = match toml::from_str(contents) {
         Ok(c) => c,
         Err(e) => {
@@ -211,6 +211,23 @@ fn parse_state(contents: &str, path: &Path) -> ForgeState {
         return ForgeState::empty();
     }
     parsed
+}
+
+/// Write a machine-local `state.toml` fixture for the seed-migration
+/// tests. Production no longer writes state.toml (the redb store is the
+/// writer); this only builds the file the one-time seed reads.
+#[cfg(test)]
+pub(crate) fn write_machine_local_state_in(
+    config_dir: &Path,
+    app_support: &Path,
+    state: &ForgeState,
+) {
+    let path = state_path_in(config_dir, app_support);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).expect("create state dir");
+    }
+    std::fs::write(&path, toml::to_string_pretty(state).expect("serialize state"))
+        .expect("write state fixture");
 }
 
 /// Serializes the whole load-merge-write cycle for the state file.
