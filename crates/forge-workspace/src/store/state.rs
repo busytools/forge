@@ -145,7 +145,9 @@ pub(crate) fn seed_state_from_toml_once_in(
     let path = crate::account_cache::state_path_in(config_dir, app_support);
     let contents = match std::fs::read_to_string(&path) {
         Ok(contents) => contents,
-        // No machine-local state.toml to migrate; leave the marker unset.
+        // Return WITHOUT marking. A tempdir Workspace::new test shares the
+        // real global db.redb (#392); marking on an absent file would set
+        // the real marker and skip the machine's one-time migration.
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => {
             tracing::warn!(
