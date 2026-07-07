@@ -161,7 +161,10 @@ impl GotifyFacade for ProdGotifyFacade {
 /// true for the lead or a worker whose label lives in a durable store
 /// (forge.toml `static_workers` or the `dynamic_workers` table), false
 /// for a worker in neither.
-fn resolve_identity(ws: &Workspace, caller: &SessionKey) -> Option<(String, Option<String>, bool)> {
+pub(crate) fn resolve_identity(
+    ws: &Workspace,
+    caller: &SessionKey,
+) -> Option<(String, Option<String>, bool)> {
     let cx = caller_context(ws, caller)?;
     let worker_label = if cx.is_lead {
         None

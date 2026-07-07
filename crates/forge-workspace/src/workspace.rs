@@ -5502,6 +5502,60 @@ mod tests {
         assert!(persisted.iter().any(|s| s.id == lead_sub.id), "the lead sub is still persisted");
     }
 
+    /// The seam the bug lived in: `resolve_identity` gathers the caller's
+    /// dynamic-worker labels from the table and marks a table-backed
+    /// worker durable, so its sub persists through the subscribe path even
+    /// though the worker is neither a static worker nor the lead.
+    #[test]
+    fn resolve_identity_persists_a_table_backed_dynamic_workers_sub() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let dir = tempdir().expect("tempdir");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        ws.seed_test_project_with_static_workers("forge", "/tmp/gotify-durability-seam", &[]);
+        let view_key = ws
+            .list_projects()
+            .into_iter()
+            .find(|v| v.name == "forge")
+            .map(|v| v.key)
+            .expect("seeded project view");
+
+        // "scratch" is neither a static worker nor the lead: durability
+        // must come solely from its dynamic_workers row.
+        let _ = ws.persist_dynamic_worker(&dynamic_worker_row(view_key.as_str(), "scratch"));
+        let caller = SessionKey::from_session_id("scratch-session");
+        ws.insert_live_worker(&view_key, live_worker_entry("scratch", "scratch-session"));
+
+        let (name, team_role, durable) = crate::mcp::gotify::facade::resolve_identity(&ws, &caller)
+            .expect("the worker caller resolves to its project");
+        assert_eq!(
+            (name.as_str(), team_role.as_deref(), durable),
+            ("forge", Some("scratch"), true),
+            "a table-backed dynamic worker resolves as a durable subscriber",
+        );
+
+        // The durable identity persists through the subscribe path's write.
+        let sub = forge_primitives::GotifySubscription {
+            id: uuid::Uuid::new_v4(),
+            project: name,
+            team_role,
+            applications: vec![],
+            min_priority: None,
+            created_at: std::time::SystemTime::UNIX_EPOCH,
+        };
+        let sub_id = sub.id;
+        ws.add_gotify_subscription(sub, durable);
+        let persisted = {
+            let guard = ws.db.lock();
+            crate::store::gotify::list(guard.as_ref().expect("db installed")).expect("list")
+        };
+        assert!(
+            persisted.iter().any(|s| s.id == sub_id),
+            "the table-backed worker's sub is persisted to redb",
+        );
+    }
+
     /// #3: persisting reports failure (rather than swallowing it) when
     /// the store is unavailable, so the MCP spawn path can warn the lead
     /// that the worker won't survive a restart.
