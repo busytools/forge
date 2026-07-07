@@ -1,88 +1,65 @@
-//! Persistent on-disk cache for account usage snapshots.
+//! Persistent forge state: the `/spinner` override + the per-account
+//! usage cache.
 //!
-//! Solves the cold-boot problem: Anthropic's `/api/oauth/usage`
-//! endpoint rate-limits aggressively on per-IP burst probes - the
-//! first forge launch routinely waits 30 s+ before the warm probe
-//! gets through, during which the launchpad and bottom panel show
-//! empty bars and the picker ties at tier 0 (unknown-fresh). The
-//! cache breaks that loop: every successful poll writes the snapshot
-//! to disk, and the next boot reads it back into the in-memory
-//! `AccountStateMap` before any spawn fires. Stale snapshots are
-//! acceptable seed data - the 60 s background poller will refresh
-//! them in the background.
+//! Both live in the machine-local redb store ([`crate::store::state`]).
+//! [`load`] / [`store`] / [`store_spinner`] are thin wrappers over that
+//! tenant; [`ForgeState`] / [`CachedAccountUsage`] are the in-memory +
+//! serde shapes, still used to parse the legacy `state.toml` the one-time
+//! seed migrates.
 //!
-//! Path: machine-local under [`forge_sdk::app_support_dir`] at
-//! `state/<config-dir-hash>.toml`, keyed by config dir and never
-//! Syncthing-synced - the poller rewrites it once a minute, which would
-//! otherwise fork a sync conflict on every idle Mac (the same reason
-//! the single-instance lock is machine-local). Schema versioned so
-//! future shape changes can invalidate cleanly.
+//! The usage cache solves the cold-boot problem: Anthropic's
+//! `/api/oauth/usage` endpoint rate-limits aggressively on per-IP burst
+//! probes, so the first launch can wait 30 s+ before the warm probe gets
+//! through - during which the launchpad picker ties at tier 0. The cache
+//! seeds the in-memory `AccountStateMap` with the last known values until
+//! the 60 s poller refreshes them. The spinner override is a user
+//! preference with no such fallback.
 //!
-//! On the first boot after the move, [`load`] seeds the machine-local
-//! file from the pre-move synced `<config_dir>/forge/state.toml` (left
-//! in place) so the usage cache + `/spinner` pick carry over.
-//!
-//! Failures are non-fatal: an unresolved app-support dir, missing file,
-//! corrupt TOML, or IO error all degrade to "no cache loaded; spawn
-//! paths see empty bars until the poller succeeds." Tracing surfaces
-//! the breadcrumb at debug level.
+//! Failures are non-fatal: a closed store degrades to "no cache; spawn
+//! paths see empty bars until the poller succeeds."
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 
 use forge_primitives::usage::UsageSnapshot;
 use serde::{Deserialize, Serialize};
 
 const CACHE_SCHEMA_VERSION: u8 = 1;
 
-/// Subdirectory of the app-support base that holds the per-config-dir
-/// state files.
+/// Subdirectory of the app-support base that held the legacy per-config-
+/// dir state files the one-time seed reads.
 const STATE_DIR_NAME: &str = "state";
 
-/// Per-account cache entry stored on disk.
+/// Per-account cache entry. The value type of the redb `account_usage`
+/// table; reachable only in-crate since `account_cache` is a private mod.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct CachedAccountUsage {
+pub struct CachedAccountUsage {
     pub snapshot: UsageSnapshot,
 }
 
-/// Versioned on-disk state document. `version` mismatch on read
-/// triggers a clean reset (treat as empty) so a future schema change
-/// degrades to a single cold boot rather than a corrupt-data panic.
-///
-/// One file per config dir at `<app_support>/state/<hash>.toml`. Layout:
-///
-/// ```toml
-/// version = 1
-///
-/// [account_usage.Gateway.snapshot]
-/// source = "Oauth"
-/// fetched_at = { secs_since_epoch = 1779356400, nanos_since_epoch = 0 }
-/// # ...
-/// ```
-///
-/// Section name `account_usage` is namespaced so future state
-/// (window layout, recent project list, …) can be added alongside
-/// without bumping the schema version.
+/// In-memory forge state, and the serde shape of the legacy `state.toml`
+/// the one-time seed migrates. `version` mismatch on parse resets to
+/// empty so a schema change degrades to a single cold boot rather than a
+/// corrupt-data panic.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub(crate) struct ForgeState {
     version: u8,
-    /// Runtime spinner-style override set via `/spinner` (the picker or
-    /// the direct `<name>` path). `None` means no override - the active
-    /// style falls back to forge.toml's `[ui] spinner` default.
+    /// Runtime spinner-style override set via `/spinner`. `None` means no
+    /// override - the active style falls back to forge.toml's `[ui]
+    /// spinner` default.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
         deserialize_with = "crate::ui::deserialize_lenient_opt"
     )]
     pub spinner: Option<crate::ui::SpinnerStyle>,
-    /// Account display name → cached snapshot. `BTreeMap` so the
-    /// TOML serialisation is deterministic for diffing.
+    /// Account display name to cached snapshot. `BTreeMap` for a
+    /// deterministic serialisation.
     #[serde(default)]
     pub account_usage: std::collections::BTreeMap<String, CachedAccountUsage>,
 }
 
 impl ForgeState {
-    fn empty() -> Self {
+    pub(crate) fn empty() -> Self {
         Self {
             version: CACHE_SCHEMA_VERSION,
             spinner: None,
@@ -91,103 +68,100 @@ impl ForgeState {
     }
 }
 
-/// Machine-local state path for `config_dir`, or `None` when forge's
-/// app-support base can't be resolved. Diagnostic-only (the poller logs
-/// the written path); the read/write paths resolve the base themselves.
-pub(crate) fn state_path(config_dir: &Path) -> Option<PathBuf> {
-    forge_sdk::app_support_dir().ok().map(|base| state_path_in(config_dir, &base))
+/// Read the persisted forge state from the store, seeding once from the
+/// legacy `state.toml`. Each read degrades to its empty default with a
+/// warn rather than failing the boot.
+pub(crate) fn load(db: &crate::store::Db, config_dir: &Path) -> ForgeState {
+    if let Err(error) = crate::store::state::seed_state_from_toml_once(db, config_dir) {
+        tracing::warn!(
+            target: "forge_workspace::account_cache",
+            %error,
+            "seeding state from state.toml into the store failed",
+        );
+    }
+    ForgeState {
+        version: CACHE_SCHEMA_VERSION,
+        spinner: crate::store::state::spinner(db).unwrap_or_else(|error| {
+            tracing::warn!(
+                target: "forge_workspace::account_cache",
+                %error,
+                "reading the spinner override from the store failed",
+            );
+            None
+        }),
+        account_usage: crate::store::state::account_usage(db).unwrap_or_else(|error| {
+            tracing::warn!(
+                target: "forge_workspace::account_cache",
+                %error,
+                "reading the account-usage cache from the store failed",
+            );
+            std::collections::BTreeMap::new()
+        }),
+    }
 }
 
-/// [`state_path`] against an explicit app-support base:
+/// Persist the in-memory account-usage snapshots, replacing the prior
+/// set. Backs the 60 s poller. Non-fatal + logged on failure.
+pub(crate) fn store(
+    db: &crate::store::Db,
+    entries: &std::collections::BTreeMap<String, CachedAccountUsage>,
+) {
+    if let Err(error) = crate::store::state::replace_account_usage(db, entries) {
+        tracing::warn!(
+            target: "forge_workspace::account_cache",
+            %error,
+            "persisting account usage to the store failed",
+        );
+    }
+}
+
+/// Persist the runtime spinner override (set via `/spinner`). `None`
+/// clears it so the active style falls back to the forge.toml `[ui]
+/// spinner` default. Non-fatal + logged on failure.
+pub(crate) fn store_spinner(db: &crate::store::Db, spinner: Option<crate::ui::SpinnerStyle>) {
+    if let Err(error) = crate::store::state::set_spinner(db, spinner) {
+        tracing::warn!(
+            target: "forge_workspace::account_cache",
+            %error,
+            "persisting the spinner override to the store failed",
+        );
+    }
+}
+
+// The rest of this module is the legacy `state.toml` seam: the path,
+// parse, and app-support resolution the one-time redb seed reads through.
+// It is removed wholesale once every machine has migrated.
+
+/// The legacy machine-local state path:
 /// `<app_support>/state/<config-dir-hash>.toml`. The hash is shared with
 /// the single-instance lock so both machine-local files key off the
-/// config dir identically. Split out as a test seam.
-fn state_path_in(config_dir: &Path, app_support: &Path) -> PathBuf {
+/// config dir identically.
+pub(crate) fn state_path_in(config_dir: &Path, app_support: &Path) -> PathBuf {
     app_support
         .join(STATE_DIR_NAME)
         .join(format!("{}.toml", forge_sdk::config_dir_hash(config_dir)))
 }
 
-/// The pre-move synced state file (`<config_dir>/forge/state.toml`), read
-/// once as a migration seed the first time a config dir has no
-/// machine-local file. See [`load_in`].
-fn synced_state_path(config_dir: &Path) -> PathBuf {
-    crate::config::forge_data_dir(config_dir).join("state.toml")
-}
-
 /// Resolve forge's app-support base, warning (non-fatally) when it can't
-/// be found so the read/write paths degrade to no persistence rather
-/// than falling back to a launch-dir-derived path.
-fn resolve_app_support() -> Option<PathBuf> {
+/// be found so the seed degrades to "nothing to migrate" rather than
+/// falling back to a launch-dir-derived path.
+pub(crate) fn resolve_app_support() -> Option<PathBuf> {
     match forge_sdk::app_support_dir() {
         Ok(dir) => Some(dir),
         Err(e) => {
             tracing::warn!(
                 target: "forge_workspace::account_cache",
                 error = %e,
-                "app-support dir unresolved; state persistence unavailable this run",
+                "app-support dir unresolved; legacy state.toml unreadable this run",
             );
             None
         }
     }
 }
 
-/// Read the persisted state for `config_dir`. Empty on any failure
-/// (unresolved app-support dir, missing file, IO error, TOML parse
-/// error, schema-version mismatch) - the caller sees empty bars until
-/// the poller succeeds.
-pub(crate) fn load(config_dir: &Path) -> ForgeState {
-    resolve_app_support().map_or_else(ForgeState::empty, |base| load_in(config_dir, &base))
-}
-
-/// [`load`] against an explicit app-support base. Reads the machine-local
-/// `state/<hash>.toml`; when it is absent, seeds once from the pre-move
-/// synced `<config_dir>/forge/state.toml` (see [`migrate_synced_seed`]).
-/// A debug breadcrumb explains a failed read of an existing file, without
-/// noise when neither file exists yet.
-fn load_in(config_dir: &Path, app_support: &Path) -> ForgeState {
-    let path = state_path_in(config_dir, app_support);
-    match std::fs::read_to_string(&path) {
-        Ok(contents) => parse_state(&contents, &path),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            migrate_synced_seed(config_dir, &path)
-        }
-        Err(e) => {
-            tracing::debug!(
-                target: "forge_workspace::account_cache",
-                error = %e,
-                path = %path.display(),
-                "state file present but read failed; treating as empty",
-            );
-            ForgeState::empty()
-        }
-    }
-}
-
-/// Seed from the pre-move synced `<config_dir>/forge/state.toml` when the
-/// machine-local file is absent. Read-only: the synced file is left in
-/// place, and the next write lands machine-local so this runs at most
-/// once per config dir. Empty when there is no synced file.
-fn migrate_synced_seed(config_dir: &Path, machine_local: &Path) -> ForgeState {
-    let synced = synced_state_path(config_dir);
-    match std::fs::read_to_string(&synced) {
-        Ok(contents) => {
-            tracing::info!(
-                target: "forge_workspace::account_cache",
-                synced = %synced.display(),
-                machine_local = %machine_local.display(),
-                "seeding machine-local state from the synced forge/state.toml (one-time migration)",
-            );
-            parse_state(&contents, &synced)
-        }
-        Err(_) => ForgeState::empty(),
-    }
-}
-
-/// Parse + version-check a state document read from `path`, treating any
-/// problem as empty (a schema bump degrades to one cold boot, not a
-/// panic).
-fn parse_state(contents: &str, path: &Path) -> ForgeState {
+/// Parse + version-check a legacy `state.toml`, treating any problem as
+/// empty (a schema bump degrades to one cold boot, not a panic).
+pub(crate) fn parse_state(contents: &str, path: &Path) -> ForgeState {
     let parsed: ForgeState = match toml::from_str(contents) {
         Ok(c) => c,
         Err(e) => {
@@ -212,125 +186,21 @@ fn parse_state(contents: &str, path: &Path) -> ForgeState {
     parsed
 }
 
-/// Serializes the whole load-merge-write cycle for the state file.
-/// The background usage poller (a `spawn_blocking` thread) and the
-/// `/spinner` persist path run on different threads; without this lock
-/// their read+write pairs can interleave into a lost update - the
-/// poller's stale snapshot reverts a just-applied spinner pick, which
-/// (unlike the usage case) never self-heals until the user re-picks.
-/// Process-global: forge is single-process and these writes are rare,
-/// so the contention is negligible. Holding it across the file I/O
-/// also removes the shared `.toml.tmp` write race between the writers.
-static STATE_WRITE_LOCK: Mutex<()> = Mutex::new(());
-
-/// Persist the in-memory account-usage snapshots. Load-merge-write
-/// (under the shared lock) so the write preserves any other on-disk
-/// state (the spinner override) and can't be lost to a concurrent
-/// spinner write. No-op (with a warn) when the app-support base can't
-/// be resolved; failures are otherwise non-fatal + logged.
-pub(crate) fn store(
-    config_dir: &Path,
-    entries: &std::collections::BTreeMap<String, CachedAccountUsage>,
-) {
-    if let Some(base) = resolve_app_support() {
-        store_in(config_dir, &base, entries);
-    }
-}
-
-fn store_in(
+/// Write a machine-local `state.toml` fixture for the seed-migration
+/// tests. Production no longer writes state.toml (the redb store is the
+/// writer); this only builds the file the one-time seed reads.
+#[cfg(test)]
+pub(crate) fn write_machine_local_state_in(
     config_dir: &Path,
     app_support: &Path,
-    entries: &std::collections::BTreeMap<String, CachedAccountUsage>,
+    state: &ForgeState,
 ) {
-    update_forge_state_in(config_dir, app_support, |state| state.account_usage = entries.clone());
-}
-
-/// Persist the runtime spinner-style override (set via `/spinner`),
-/// preserving the account-usage cache via the same locked load-merge-
-/// write path. `None` clears the override so the active style falls back
-/// to the forge.toml `[ui] spinner` default on the next boot. No-op
-/// (with a warn) when the app-support base can't be resolved.
-pub(crate) fn store_spinner(config_dir: &Path, spinner: Option<crate::ui::SpinnerStyle>) {
-    if let Some(base) = resolve_app_support() {
-        store_spinner_in(config_dir, &base, spinner);
-    }
-}
-
-fn store_spinner_in(
-    config_dir: &Path,
-    app_support: &Path,
-    spinner: Option<crate::ui::SpinnerStyle>,
-) {
-    update_forge_state_in(config_dir, app_support, |state| state.spinner = spinner);
-}
-
-/// Load the current state, apply `mutate`, and write it back - the whole
-/// cycle under [`STATE_WRITE_LOCK`] so concurrent writers serialize
-/// instead of clobbering each other. The single write path both
-/// [`store`] and [`store_spinner`] route through.
-fn update_forge_state_in(
-    config_dir: &Path,
-    app_support: &Path,
-    mutate: impl FnOnce(&mut ForgeState),
-) {
-    // Poisoning is irrelevant for a `()` guard - recover it and proceed
-    // so a panic in one writer doesn't wedge every later write.
-    let _guard = STATE_WRITE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let mut state = load_in(config_dir, app_support);
-    mutate(&mut state);
-    write_state_in(config_dir, app_support, &state);
-}
-
-/// Serialise `state` to its machine-local `state/<hash>.toml` via atomic
-/// tmp-file + rename: a crash between write and rename leaves the
-/// previous state intact rather than a partial file. Creates the
-/// `state/` dir on first write. Failures are non-fatal and logged at
-/// warn.
-fn write_state_in(config_dir: &Path, app_support: &Path, state: &ForgeState) {
     let path = state_path_in(config_dir, app_support);
-    if let Some(parent) = path.parent()
-        && let Err(e) = std::fs::create_dir_all(parent)
-    {
-        tracing::warn!(
-            target: "forge_workspace::account_cache",
-            error = %e,
-            path = %parent.display(),
-            "state dir create failed; skipping write",
-        );
-        return;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).expect("create state dir");
     }
-    let serialised = match toml::to_string_pretty(state) {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::warn!(
-                target: "forge_workspace::account_cache",
-                error = %e,
-                "state serialise failed; skipping write",
-            );
-            return;
-        }
-    };
-    let tmp_path = path.with_extension("toml.tmp");
-    if let Err(e) = std::fs::write(&tmp_path, &serialised) {
-        tracing::warn!(
-            target: "forge_workspace::account_cache",
-            error = %e,
-            path = %tmp_path.display(),
-            "state tmp write failed",
-        );
-        return;
-    }
-    if let Err(e) = std::fs::rename(&tmp_path, &path) {
-        tracing::warn!(
-            target: "forge_workspace::account_cache",
-            error = %e,
-            from = %tmp_path.display(),
-            to = %path.display(),
-            "state atomic rename failed",
-        );
-        // Best-effort: drop the tmp file so we don't leak.
-        let _ = std::fs::remove_file(&tmp_path);
-    }
+    std::fs::write(&path, toml::to_string_pretty(state).expect("serialize state"))
+        .expect("write state fixture");
 }
 
 #[cfg(test)]
@@ -340,49 +210,30 @@ mod tests {
     use std::time::{Duration, SystemTime};
     use tempfile::tempdir;
 
-    /// A config-dir tempdir. state.toml is machine-local now, but the
-    /// config dir still keys the machine-local filename via
-    /// `config_dir_hash` (which canonicalises it, so it must exist).
     fn cfg() -> tempfile::TempDir {
         tempdir().expect("cfg tempdir")
     }
 
-    /// A machine-local app-support base, standing in for
-    /// `forge_sdk::app_support_dir()` so tests never touch the real one.
     fn base() -> tempfile::TempDir {
         tempdir().expect("base tempdir")
     }
 
-    fn fake_snapshot() -> UsageSnapshot {
-        UsageSnapshot {
-            source: UsageSourceKind::Oauth,
-            fetched_at: SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000),
-            five_hour: Some(UsageWindow {
-                utilization: 42.0,
-                resets_at: None,
-                reset_description: None,
-            }),
-            seven_day: None,
-            seven_day_opus: None,
-            seven_day_sonnet: None,
-            extra_usage: None,
-        }
-    }
-
     fn fixture_entry() -> CachedAccountUsage {
-        CachedAccountUsage { snapshot: fake_snapshot() }
-    }
-
-    /// Write a pre-move synced `<config_dir>/forge/state.toml`, standing
-    /// in for what an older build left behind before the machine-local
-    /// move.
-    fn write_synced_state(config_dir: &Path, state: &ForgeState) {
-        let forge = crate::config::ensure_forge_data_dir(config_dir).expect("forge/ dir");
-        std::fs::write(
-            forge.join("state.toml"),
-            toml::to_string_pretty(state).expect("serialise synced state"),
-        )
-        .expect("write synced state");
+        CachedAccountUsage {
+            snapshot: UsageSnapshot {
+                source: UsageSourceKind::Oauth,
+                fetched_at: SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000),
+                five_hour: Some(UsageWindow {
+                    utilization: 42.0,
+                    resets_at: None,
+                    reset_description: None,
+                }),
+                seven_day: None,
+                seven_day_opus: None,
+                seven_day_sonnet: None,
+                extra_usage: None,
+            },
+        }
     }
 
     #[test]
@@ -427,277 +278,40 @@ mod tests {
     }
 
     #[test]
-    fn store_writes_machine_local_not_under_config_dir() {
-        let cfg = cfg();
-        let base = base();
-        store_spinner_in(cfg.path(), base.path(), Some(crate::ui::SpinnerStyle::Ember));
-        assert!(state_path_in(cfg.path(), base.path()).exists(), "state written machine-local");
-        assert!(
-            !cfg.path().join("forge").join("state.toml").exists(),
-            "nothing written under the synced <config_dir>/forge/",
-        );
+    fn version_mismatch_parses_to_empty() {
+        let parsed = parse_state("version = 9999\n", Path::new("state.toml"));
+        assert!(parsed.account_usage.is_empty(), "a schema bump degrades to empty");
+        assert_eq!(parsed.spinner, None);
     }
 
     #[test]
-    fn store_creates_the_machine_local_state_dir() {
-        let cfg = cfg();
-        let base = base();
-        assert!(!base.path().join("state").exists(), "no state/ subdir before the first write");
-        store_spinner_in(cfg.path(), base.path(), Some(crate::ui::SpinnerStyle::Ember));
-        assert!(base.path().join("state").is_dir(), "state/ created on first write");
+    fn corrupt_toml_parses_to_empty() {
+        let parsed = parse_state("not = toml = at all", Path::new("state.toml"));
+        assert!(parsed.account_usage.is_empty(), "a corrupt file degrades to empty, no panic");
     }
 
     #[test]
-    fn load_returns_empty_when_file_missing() {
+    fn store_and_load_round_trip_through_redb() {
         let cfg = cfg();
-        let base = base();
-        assert!(load_in(cfg.path(), base.path()).account_usage.is_empty());
-    }
-
-    #[test]
-    fn round_trip_preserves_snapshot() {
-        let cfg = cfg();
-        let base = base();
+        let db = crate::store::Db::open(&cfg.path().join("db.redb")).expect("open db");
+        // The config-dir tempdir is unique, so the load-time seed finds no
+        // legacy state.toml under the real app-support dir and no-ops.
+        store_spinner(&db, Some(crate::ui::SpinnerStyle::Ember));
         let mut entries = std::collections::BTreeMap::new();
         entries.insert("Gateway".to_owned(), fixture_entry());
-        store_in(cfg.path(), base.path(), &entries);
+        store(&db, &entries);
 
-        let loaded = load_in(cfg.path(), base.path());
-        assert_eq!(loaded.account_usage.len(), 1);
-        let entry = loaded.account_usage.get("Gateway").expect("gateway");
-        assert_eq!(entry.snapshot.five_hour.as_ref().map(|w| w.utilization), Some(42.0));
+        let loaded = load(&db, cfg.path());
+        assert_eq!(loaded.spinner, Some(crate::ui::SpinnerStyle::Ember), "the spinner reloads");
+        assert!(loaded.account_usage.contains_key("Gateway"), "the usage cache reloads");
     }
 
     #[test]
-    fn version_mismatch_treated_as_empty() {
+    fn store_spinner_none_clears_the_override() {
         let cfg = cfg();
-        let base = base();
-        let path = state_path_in(cfg.path(), base.path());
-        std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir state");
-        std::fs::write(&path, "version = 9999\n").expect("write");
-        assert!(load_in(cfg.path(), base.path()).account_usage.is_empty());
-    }
-
-    #[test]
-    fn corrupt_toml_treated_as_empty() {
-        let cfg = cfg();
-        let base = base();
-        let path = state_path_in(cfg.path(), base.path());
-        std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir state");
-        std::fs::write(&path, "not = toml = at all").expect("write");
-        assert!(load_in(cfg.path(), base.path()).account_usage.is_empty());
-    }
-
-    /// I3 - `store` uses tmp-file + atomic rename so a crash between
-    /// write and rename leaves the previous on-disk state intact rather
-    /// than a partial file. Verify the tmp suffix isn't left behind.
-    #[test]
-    fn store_uses_atomic_rename_and_leaves_no_tmp_file() {
-        let cfg = cfg();
-        let base = base();
-        let mut entries = std::collections::BTreeMap::new();
-        entries.insert("Gateway".to_owned(), fixture_entry());
-        store_in(cfg.path(), base.path(), &entries);
-
-        let canonical = state_path_in(cfg.path(), base.path());
-        assert!(canonical.exists(), "canonical state file present");
-        let tmp = canonical.with_extension("toml.tmp");
-        assert!(!tmp.exists(), "tmp suffix file cleaned up after atomic rename");
-    }
-
-    /// I3 - repeated `store` calls overwrite the previous file cleanly
-    /// (atomic rename replaces in place; no append, no duplicate).
-    #[test]
-    fn store_overwrites_existing_file() {
-        let cfg = cfg();
-        let base = base();
-        let mut entries = std::collections::BTreeMap::new();
-        entries.insert("Gateway".to_owned(), fixture_entry());
-        store_in(cfg.path(), base.path(), &entries);
-
-        entries.clear();
-        entries.insert("Stargate".to_owned(), fixture_entry());
-        store_in(cfg.path(), base.path(), &entries);
-        let after = std::fs::read_to_string(state_path_in(cfg.path(), base.path())).expect("read2");
-
-        assert!(after.contains("Stargate"), "new entry present");
-        assert!(!after.contains("Gateway"), "old entry replaced");
-    }
-
-    #[test]
-    fn spinner_override_round_trips() {
-        let cfg = cfg();
-        let base = base();
-        store_spinner_in(cfg.path(), base.path(), Some(crate::ui::SpinnerStyle::Ember));
-        assert_eq!(load_in(cfg.path(), base.path()).spinner, Some(crate::ui::SpinnerStyle::Ember));
-    }
-
-    #[test]
-    fn store_account_usage_preserves_spinner_override() {
-        let cfg = cfg();
-        let base = base();
-        store_spinner_in(cfg.path(), base.path(), Some(crate::ui::SpinnerStyle::Ember));
-        let mut entries = std::collections::BTreeMap::new();
-        entries.insert("Gateway".to_owned(), fixture_entry());
-        store_in(cfg.path(), base.path(), &entries);
-        let loaded = load_in(cfg.path(), base.path());
-        assert_eq!(
-            loaded.spinner,
-            Some(crate::ui::SpinnerStyle::Ember),
-            "an account-usage write must not wipe the spinner override",
-        );
-        assert_eq!(loaded.account_usage.len(), 1);
-    }
-
-    #[test]
-    fn store_spinner_preserves_account_usage() {
-        let cfg = cfg();
-        let base = base();
-        let mut entries = std::collections::BTreeMap::new();
-        entries.insert("Gateway".to_owned(), fixture_entry());
-        store_in(cfg.path(), base.path(), &entries);
-        store_spinner_in(cfg.path(), base.path(), Some(crate::ui::SpinnerStyle::Star));
-        let loaded = load_in(cfg.path(), base.path());
-        assert_eq!(loaded.account_usage.len(), 1, "a spinner write must not wipe account usage");
-        assert_eq!(loaded.spinner, Some(crate::ui::SpinnerStyle::Star));
-    }
-
-    #[test]
-    fn concurrent_usage_and_spinner_writes_do_not_lose_updates() {
-        use std::thread;
-        let cfg = cfg();
-        let base = base();
-        // Seed both fields so each writer mutates one of two present fields.
-        store_spinner_in(cfg.path(), base.path(), Some(crate::ui::SpinnerStyle::Ember));
-        let mut seed = std::collections::BTreeMap::new();
-        seed.insert("Gateway".to_owned(), fixture_entry());
-        store_in(cfg.path(), base.path(), &seed);
-
-        // Hammer both writers concurrently. Under STATE_WRITE_LOCK each
-        // load-merge-write is atomic, so the last write of EACH field
-        // survives; without the lock one writer's stale snapshot would
-        // revert the other's value (the lost update this guards).
-        let c1 = cfg.path().to_path_buf();
-        let b1 = base.path().to_path_buf();
-        let h1 = thread::spawn(move || {
-            for _ in 0..200 {
-                store_spinner_in(&c1, &b1, Some(crate::ui::SpinnerStyle::BarsV));
-            }
-        });
-        let c2 = cfg.path().to_path_buf();
-        let b2 = base.path().to_path_buf();
-        let h2 = thread::spawn(move || {
-            let mut usage = std::collections::BTreeMap::new();
-            usage.insert("Stargate".to_owned(), fixture_entry());
-            for _ in 0..200 {
-                store_in(&c2, &b2, &usage);
-            }
-        });
-        h1.join().expect("spinner writer thread");
-        h2.join().expect("usage writer thread");
-
-        let loaded = load_in(cfg.path(), base.path());
-        assert_eq!(
-            loaded.spinner,
-            Some(crate::ui::SpinnerStyle::BarsV),
-            "spinner writer's final value must survive concurrent usage writes",
-        );
-        assert!(
-            loaded.account_usage.contains_key("Stargate"),
-            "usage writer's final value must survive concurrent spinner writes",
-        );
-    }
-
-    #[test]
-    fn unknown_persisted_spinner_falls_back_without_dropping_usage() {
-        let cfg = cfg();
-        let base = base();
-        // Write a valid state (usage + a valid spinner), then corrupt the
-        // spinner key on disk to a removed variant.
-        let mut entries = std::collections::BTreeMap::new();
-        entries.insert("Gateway".to_owned(), fixture_entry());
-        store_in(cfg.path(), base.path(), &entries);
-        store_spinner_in(cfg.path(), base.path(), Some(crate::ui::SpinnerStyle::Ember));
-        let path = state_path_in(cfg.path(), base.path());
-        let contents = std::fs::read_to_string(&path).expect("read state");
-        let mutated = contents.replace("spinner = \"ember\"", "spinner = \"forge_dot\"");
-        assert_ne!(contents, mutated, "the spinner key should have been present to mutate");
-        std::fs::write(&path, mutated).expect("write mutated state");
-
-        // The stale key must NOT fail the whole load (which would also
-        // drop the account-usage cache); it resolves to None.
-        let loaded = load_in(cfg.path(), base.path());
-        assert_eq!(loaded.spinner, None, "an unknown persisted spinner key resolves to None");
-        assert!(
-            loaded.account_usage.contains_key("Gateway"),
-            "a stale spinner key must not drop the account-usage cache",
-        );
-    }
-
-    #[test]
-    fn load_seeds_from_synced_state_when_machine_local_absent() {
-        let cfg = cfg();
-        let base = base();
-        let mut seed = ForgeState::empty();
-        seed.spinner = Some(crate::ui::SpinnerStyle::Ember);
-        seed.account_usage.insert("Gateway".to_owned(), fixture_entry());
-        write_synced_state(cfg.path(), &seed);
-
-        assert!(!state_path_in(cfg.path(), base.path()).exists(), "no machine-local file yet");
-        let loaded = load_in(cfg.path(), base.path());
-        assert_eq!(
-            loaded.spinner,
-            Some(crate::ui::SpinnerStyle::Ember),
-            "the /spinner pick carries over from the synced seed",
-        );
-        assert!(
-            loaded.account_usage.contains_key("Gateway"),
-            "the usage cache carries over from the synced seed",
-        );
-    }
-
-    #[test]
-    fn migration_leaves_the_synced_state_in_place() {
-        let cfg = cfg();
-        let base = base();
-        let mut seed = ForgeState::empty();
-        seed.spinner = Some(crate::ui::SpinnerStyle::Ember);
-        write_synced_state(cfg.path(), &seed);
-        let synced = crate::config::forge_data_dir(cfg.path()).join("state.toml");
-        let before = std::fs::read_to_string(&synced).expect("synced present");
-
-        let _ = load_in(cfg.path(), base.path());
-
-        assert!(synced.exists(), "the migration read must not delete the synced file");
-        assert_eq!(
-            std::fs::read_to_string(&synced).expect("still readable"),
-            before,
-            "the synced file is untouched by the migration read",
-        );
-    }
-
-    #[test]
-    fn write_after_migration_lands_machine_local_and_later_loads_ignore_synced() {
-        let cfg = cfg();
-        let base = base();
-        let mut seed = ForgeState::empty();
-        seed.spinner = Some(crate::ui::SpinnerStyle::Ember);
-        write_synced_state(cfg.path(), &seed);
-
-        // A store after the seed writes machine-local.
-        store_spinner_in(cfg.path(), base.path(), Some(crate::ui::SpinnerStyle::Star));
-        assert!(state_path_in(cfg.path(), base.path()).exists(), "write landed machine-local");
-
-        // Now that the machine-local file exists, the synced seed is
-        // never read again - change it and the load still returns the
-        // machine-local value.
-        let mut synced_changed = ForgeState::empty();
-        synced_changed.spinner = Some(crate::ui::SpinnerStyle::Sparkle);
-        write_synced_state(cfg.path(), &synced_changed);
-        assert_eq!(
-            load_in(cfg.path(), base.path()).spinner,
-            Some(crate::ui::SpinnerStyle::Star),
-            "machine-local wins; the synced file is no longer read",
-        );
+        let db = crate::store::Db::open(&cfg.path().join("db.redb")).expect("open db");
+        store_spinner(&db, Some(crate::ui::SpinnerStyle::Ember));
+        store_spinner(&db, None);
+        assert_eq!(load(&db, cfg.path()).spinner, None, "None clears the persisted override");
     }
 }

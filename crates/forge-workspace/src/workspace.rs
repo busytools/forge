@@ -598,12 +598,18 @@ impl Workspace {
         // (non-fatal, like the state cache) - no cwd fallback (hard rule #15).
         let db = open_db();
 
-        // Load durable forge crons into the in-memory working set, seeding
-        // once from the synced cron.toml on this machine's first run. Boot
+        // Load durable forge crons into the in-memory working set. Boot
         // catch-up for entries that came due while forge was down runs after
         // construction, once the dispatch machinery is live.
         let crons = match &db {
-            Some(db) => crate::store::cron::seed_crons_from_toml_once(db, &config_dir),
+            Some(db) => crate::store::cron::list(db).unwrap_or_else(|error| {
+                tracing::warn!(
+                    target: "forge_workspace::workspace",
+                    %error,
+                    "loading durable crons failed; starting with none this run",
+                );
+                Vec::new()
+            }),
             None => Vec::new(),
         };
         let gotify_subs = match &db {
@@ -660,23 +666,25 @@ impl Workspace {
 
         let mut accounts = AccountStateMap::new(&config.accounts);
 
-        // Seed account usage from the on-disk state.toml so
-        // the launchpad picker has tier data immediately at cold
-        // boot. Anthropic's /api/oauth/usage rate-limiter can stall
-        // the first live probe for 30 s+; without seed data every
-        // account ties at tier 0 (unknown-fresh) during that window.
-        // The 60 s background poller refreshes these snapshots in
-        // the background - the cache is purely "last known value"
-        // seed.
-        let state = crate::account_cache::load(&config_dir);
+        // Seed account usage from the machine-local store so the
+        // launchpad picker has tier data immediately at cold boot.
+        // Anthropic's /api/oauth/usage rate-limiter can stall the first
+        // live probe for 30 s+; without seed data every account ties at
+        // tier 0 (unknown-fresh) during that window. The 60 s background
+        // poller refreshes these snapshots - the cache is purely "last
+        // known value" seed. On this machine's first run the store seeds
+        // once from the legacy state.toml.
+        let state = match &db {
+            Some(db) => crate::account_cache::load(db, &config_dir),
+            None => crate::account_cache::ForgeState::empty(),
+        };
         accounts.seed_from_cache(&state.account_usage);
 
-        // Resolve the active spinner: the state.toml runtime
-        // override (set via `/spinner`) wins over the hand-authored
-        // forge.toml `[ui] spinner` default. Folding it into
-        // `config.ui` here means `ui_settings()` returns the effective
-        // style, so the boot seed needs no separate lookup.
-        config.ui.spinner = state.spinner.unwrap_or(config.ui.spinner);
+        // The store's runtime spinner override (set via `/spinner`) wins
+        // over the hand-authored forge.toml `[ui] spinner` default.
+        // Folding it into `config.ui` here means `ui_settings()` returns
+        // the effective style.
+        config.ui.spinner = crate::ui::resolve_spinner(state.spinner, config.ui.spinner);
 
         let (update_tx, update_rx) = mpsc::unbounded_channel::<SessionUpdate>();
         let (kick_dispatcher_tx, kick_dispatcher_rx) = mpsc::unbounded_channel::<KickRequest>();
@@ -731,9 +739,9 @@ impl Workspace {
     /// Effective `[ui]` settings. All fields have defaults so callers
     /// can use the result without worrying about whether the section
     /// was present in the config file. `spinner` carries the resolved
-    /// active style: the `state.toml` runtime override (set via
-    /// `/spinner`) if present, else the forge.toml `[ui] spinner`
-    /// default. Cheap clone - the struct is shallow.
+    /// active style: the store's runtime override (set via `/spinner`)
+    /// if present, else the forge.toml `[ui] spinner` default. Cheap
+    /// clone - the struct is shallow.
     pub fn ui_settings(&self) -> crate::ui::UiSettings {
         self.config.ui.clone()
     }
@@ -746,16 +754,22 @@ impl Workspace {
         self.config.gotify.clone()
     }
 
-    /// Persist `style` as the runtime spinner override in
-    /// `state.toml` (the writable sidecar - never touches the
-    /// hand-authored forge.toml). The next boot's `Workspace::new`
-    /// layers it over the forge.toml `[ui] spinner` default. Called by
-    /// the `/spinner` picker (enter-apply) and the direct
-    /// `/spinner <name>` path; the in-session active style lives on
-    /// the TUI's `App::spinner_style`, so this write only affects
-    /// subsequent launches.
+    /// Persist `style` as the runtime spinner override in the machine-
+    /// local store (never touches the hand-authored forge.toml). The next
+    /// boot's `Workspace::new` layers it over the forge.toml `[ui]
+    /// spinner` default. Called by the `/spinner` picker (enter-apply) and
+    /// the direct `/spinner <name>` path; the in-session active style
+    /// lives on the TUI's `App::spinner_style`, so this write only affects
+    /// subsequent launches. A no-op with a warn when the store is closed.
     pub fn persist_spinner(&self, style: crate::ui::SpinnerStyle) {
-        crate::account_cache::store_spinner(&self.config_dir, Some(style));
+        if let Some(db) = self.db.lock().as_ref() {
+            crate::account_cache::store_spinner(db, Some(style));
+        } else {
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                "store unavailable; the /spinner override will not persist across restart",
+            );
+        }
     }
 
     /// Return the names of all projects that should spawn at forge
@@ -1885,28 +1899,17 @@ impl Workspace {
         if any_success {
             let snapshots = self.accounts.lock().snapshots_for_cache();
             let account_count = snapshots.len();
-            let config_dir = self.config_dir.clone();
-            // toml::to_string_pretty + std::fs::write/rename are sync;
-            // hop to spawn_blocking so a slow disk doesn't park a tokio
-            // worker (file is tiny so latency is sub-ms on a healthy
-            // disk, but the pattern is wrong otherwise).
-            let join = tokio::task::spawn_blocking(move || {
-                crate::account_cache::store(&config_dir, &snapshots);
-            })
-            .await;
-            if let Err(err) = join {
-                tracing::warn!(
-                    target: "forge_workspace::account_cache",
-                    error = %err,
-                    "account_cache::store spawn_blocking task panicked",
-                );
+            // A redb write is a small mmap'd transaction, not the old
+            // load-merge-write of a TOML file, so it runs inline on the
+            // held store handle like the cron + gotify writes do.
+            if let Some(db) = self.db.lock().as_ref() {
+                crate::account_cache::store(db, &snapshots);
             }
             tracing::info!(
                 target: "forge_workspace::account_cache",
                 event_name = "account_cache_written",
                 accounts = account_count,
-                path = ?crate::account_cache::state_path(&self.config_dir),
-                "state file updated after successful poll round",
+                "usage cache updated in the store after a successful poll round",
             );
         }
     }
@@ -5324,6 +5327,47 @@ mod tests {
         // No catalog lead: fresh either way.
         assert_eq!(Workspace::apply_force_new_gate(None, false), None);
         assert_eq!(Workspace::apply_force_new_gate(None, true), None);
+    }
+
+    #[test]
+    fn persist_spinner_writes_the_redb_override() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+
+        ws.persist_spinner(crate::ui::SpinnerStyle::Ember);
+
+        let guard = ws.db.lock();
+        let db = guard.as_ref().expect("db installed");
+        assert_eq!(
+            crate::store::state::spinner(db).expect("read spinner"),
+            Some(crate::ui::SpinnerStyle::Ember),
+            "persist_spinner writes the override into the store",
+        );
+    }
+
+    #[test]
+    fn boot_load_reads_the_redb_spinner_override() {
+        // Stands in for the removed connect.rs override test: a persisted
+        // redb spinner override is what account_cache::load returns, so
+        // the boot fold layers it over the forge.toml default. Kept off
+        // the real machine db (issue #392) via a tempdir store + config dir.
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+
+        let guard = ws.db.lock();
+        let db = guard.as_ref().expect("db installed");
+        crate::store::state::set_spinner(db, Some(crate::ui::SpinnerStyle::Ember)).expect("set");
+        assert_eq!(
+            crate::account_cache::load(db, &ws.config_dir).spinner,
+            Some(crate::ui::SpinnerStyle::Ember),
+            "load returns the persisted redb override, which the boot fold wins with",
+        );
     }
 
     #[test]

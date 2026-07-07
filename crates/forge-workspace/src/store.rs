@@ -6,9 +6,10 @@
 //! same path fails here rather than corrupting.
 //!
 //! This wrapper is deliberately general - open plus the raw handle.
-//! Table logic lives per-tenant in the submodules; Gotify subscriptions
-//! ([`gotify`]) are the first tenant, and the future state migration
-//! adds more tables to the same file.
+//! Table logic lives per-tenant in the submodules: Gotify subscriptions
+//! ([`gotify`]), durable crons ([`cron`]), dynamic workers
+//! ([`dynamic_workers`]), and forge state ([`state`], the spinner
+//! override + usage cache).
 
 use std::path::Path;
 
@@ -17,6 +18,7 @@ use anyhow::Context;
 pub mod cron;
 pub mod dynamic_workers;
 pub mod gotify;
+pub mod state;
 
 /// Handle to the machine-local redb database.
 pub struct Db {

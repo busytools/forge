@@ -34,16 +34,26 @@ where
     Ok(SpinnerStyle::from_key(&key).unwrap_or_default())
 }
 
-/// Lenient deserialize for an optional persisted spinner key (the
-/// state.toml sidecar override): an unknown/removed key maps to
-/// `None` so the boot resolve order falls through to the config default
-/// rather than failing the whole state load.
+/// Lenient deserialize for an optional persisted spinner key (the legacy
+/// `state.toml` spinner field, read by the one-time redb seed): an
+/// unknown/removed key maps to `None` so the resolve order falls through
+/// to the config default rather than failing the whole state load.
 pub fn deserialize_lenient_opt<'de, D>(deserializer: D) -> Result<Option<SpinnerStyle>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
     let opt = Option::<String>::deserialize(deserializer)?;
     Ok(opt.and_then(|key| SpinnerStyle::from_key(&key)))
+}
+
+/// Resolve the effective spinner: a persisted `/spinner` override wins
+/// over the forge.toml `[ui] spinner` default. The single precedence
+/// point, so a boot-time edit can't silently drop the user's pick.
+pub(crate) fn resolve_spinner(
+    override_: Option<SpinnerStyle>,
+    default_: SpinnerStyle,
+) -> SpinnerStyle {
+    override_.unwrap_or(default_)
 }
 
 /// A spinner glyph cycle. Each variant carries a `frames()` accessor
@@ -139,6 +149,24 @@ impl SpinnerStyle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolve_spinner_override_wins_over_default() {
+        assert_eq!(
+            resolve_spinner(Some(SpinnerStyle::Ember), SpinnerStyle::Star),
+            SpinnerStyle::Ember,
+            "a persisted override beats the forge.toml default",
+        );
+    }
+
+    #[test]
+    fn resolve_spinner_falls_back_to_default_when_no_override() {
+        assert_eq!(
+            resolve_spinner(None, SpinnerStyle::Star),
+            SpinnerStyle::Star,
+            "no override falls through to the forge.toml default",
+        );
+    }
 
     #[test]
     fn default_spinner_is_braille() {
