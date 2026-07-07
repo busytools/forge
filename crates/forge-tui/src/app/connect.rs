@@ -81,7 +81,7 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
     crate::app::cli_version::spawn_fetch(cli_version_event_tx.clone());
     crate::app::process_scanner::spawn_ticker(process_scan_event_tx.clone());
     // Kick off the 60 s background account-usage poller. Boot
-    // seeded from state.toml in `Workspace::new`; `main`
+    // seeded from the redb store in `Workspace::new`; `main`
     // started per-account loading tasks via
     // `start_account_loading_tasks` (which subsumed the old single
     // initial probe in #246); the poller carries the refresh

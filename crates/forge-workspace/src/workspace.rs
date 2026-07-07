@@ -739,9 +739,9 @@ impl Workspace {
     /// Effective `[ui]` settings. All fields have defaults so callers
     /// can use the result without worrying about whether the section
     /// was present in the config file. `spinner` carries the resolved
-    /// active style: the `state.toml` runtime override (set via
-    /// `/spinner`) if present, else the forge.toml `[ui] spinner`
-    /// default. Cheap clone - the struct is shallow.
+    /// active style: the store's runtime override (set via `/spinner`)
+    /// if present, else the forge.toml `[ui] spinner` default. Cheap
+    /// clone - the struct is shallow.
     pub fn ui_settings(&self) -> crate::ui::UiSettings {
         self.config.ui.clone()
     }

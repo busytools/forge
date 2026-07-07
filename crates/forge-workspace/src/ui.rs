@@ -34,10 +34,10 @@ where
     Ok(SpinnerStyle::from_key(&key).unwrap_or_default())
 }
 
-/// Lenient deserialize for an optional persisted spinner key (the
-/// state.toml sidecar override): an unknown/removed key maps to
-/// `None` so the boot resolve order falls through to the config default
-/// rather than failing the whole state load.
+/// Lenient deserialize for an optional persisted spinner key (the legacy
+/// `state.toml` spinner field, read by the one-time redb seed): an
+/// unknown/removed key maps to `None` so the resolve order falls through
+/// to the config default rather than failing the whole state load.
 pub fn deserialize_lenient_opt<'de, D>(deserializer: D) -> Result<Option<SpinnerStyle>, D::Error>
 where
     D: serde::Deserializer<'de>,
