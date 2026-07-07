@@ -6577,13 +6577,8 @@ mod tests {
         // deleted as owner-gone.
         let (ws, _rx) = Workspace::testing_stub();
         ws.seed_test_project_with_static_workers("proj", "/tmp/wc-unknown", &[]);
-        let outcome = crate::spawn::deliver_cron_prompt(
-            &ws,
-            "proj",
-            Some("scratch"),
-            "x".to_owned(),
-            false,
-        );
+        let outcome =
+            crate::spawn::deliver_cron_prompt(&ws, "proj", Some("scratch"), "x".to_owned(), false);
         assert!(
             matches!(outcome, crate::spawn::CronFireOutcome::DispatchFailed),
             "a failed owner check leaves the cron for the next tick, not TargetGone",

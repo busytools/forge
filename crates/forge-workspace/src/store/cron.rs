@@ -1,7 +1,7 @@
 //! Durable forge-cron persistence on the redb `crons` table.
 //!
 //! The whole [`CronEntry`] record is stored as serde-json keyed by its
-//! [`CronId`] string - no field schema on disk, so a v1->v2 type change
+//! `CronId` string - no field schema on disk, so a v1->v2 type change
 //! needs no table migration. Machine-local: crons are per-machine, not
 //! synced across the user's Macs.
 

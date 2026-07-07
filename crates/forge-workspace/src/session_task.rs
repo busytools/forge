@@ -1679,7 +1679,8 @@ mod tests {
     async fn worker_first_connected_drains_its_own_bucket_with_missed_marker() {
         let (workspace, _rx) = crate::Workspace::testing_stub();
         workspace.seed_test_project_with_static_workers("wdp", "/tmp/wdp", &[]);
-        let key = workspace.list_projects().into_iter().find(|v| v.name == "wdp").expect("view").key;
+        let key =
+            workspace.list_projects().into_iter().find(|v| v.name == "wdp").expect("view").key;
         workspace.insert_live_worker(&key, cron_worker_entry("reviewer", "worker-drain-uuid"));
 
         // A missed cron for the worker + an on-time lead cron for the project.
