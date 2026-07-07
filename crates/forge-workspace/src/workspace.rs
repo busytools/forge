@@ -1467,6 +1467,10 @@ impl Workspace {
             SessionTarget::Session(key) => {
                 let cwd = self.session_cwd_for(key)?;
                 let cwd_path = std::path::PathBuf::from(&cwd);
+                // A worktree cwd misses this exact match and yields None,
+                // degrading account selection to the worktree-aware
+                // project_accounts_for fallback. Routing resumed worktree
+                // workers through the plan here is a separate follow-up.
                 self.config
                     .projects
                     .iter()
@@ -2048,6 +2052,10 @@ impl Workspace {
                 });
                 matched.unwrap_or_else(|| self.config.default_project().accounts.clone())
             }
+            // A fresh worker spawn's project_key is always the parent
+            // project's (the worktree is created post-spawn via
+            // --worktree; resume takes the Session branch), so this exact
+            // key match resolves correctly.
             SessionTarget::FreshInProject { project_key, .. } => self
                 .config
                 .projects
