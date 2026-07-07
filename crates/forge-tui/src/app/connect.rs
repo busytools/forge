@@ -81,7 +81,7 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
     crate::app::cli_version::spawn_fetch(cli_version_event_tx.clone());
     crate::app::process_scanner::spawn_ticker(process_scan_event_tx.clone());
     // Kick off the 60 s background account-usage poller. Boot
-    // seeded from state.toml in `Workspace::new`; `main`
+    // seeded from the redb store in `Workspace::new`; `main`
     // started per-account loading tasks via
     // `start_account_loading_tasks` (which subsumed the old single
     // initial probe in #246); the poller carries the refresh
@@ -530,38 +530,6 @@ mod tests {
         let local = tokio::task::LocalSet::new();
         let app = local.run_until(async { super::create_app(&cli, Arc::new(workspace)) }).await;
         assert_eq!(app.spinner_style, forge_workspace::SpinnerStyle::Ember);
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn create_app_spinner_override_wins_over_forge_toml_default() {
-        let config_dir = tempfile::tempdir().expect("tempdir");
-        let project_dir = tempfile::tempdir().expect("project tempdir");
-        let project_path_str = project_dir.path().to_string_lossy().replace('\\', "/");
-        std::fs::write(
-            forge_dir(config_dir.path()).join("forge.toml"),
-            format!(
-                "[[orgs]]\nname = \"Default\"\naccounts = [\"Subspace\"]\n\n[[orgs.projects]]\nname = \"forge-test\"\npath = \"{project_path_str}\"\nauto_start = true\n\n[[accounts]]\ndisplay_name = \"Subspace\"\nconfig_dir = \"~/.claude-subspace\"\n\n[ui]\nspinner = \"star\"\n"
-            ),
-        )
-        .expect("write forge.toml");
-        // The persisted state override must win over the forge.toml [ui]
-        // default. Seeded via the synced pre-move path since the live
-        // state file is machine-local (not injectable at Workspace::new).
-        std::fs::write(
-            forge_dir(config_dir.path()).join("state.toml"),
-            "version = 1\nspinner = \"ember\"\n",
-        )
-        .expect("write state.toml");
-        let workspace =
-            forge_workspace::Workspace::new(config_dir.path().to_owned()).await.expect("workspace");
-        let cli = cli_with(None);
-        let local = tokio::task::LocalSet::new();
-        let app = local.run_until(async { super::create_app(&cli, Arc::new(workspace)) }).await;
-        assert_eq!(
-            app.spinner_style,
-            forge_workspace::SpinnerStyle::Ember,
-            "state.toml override must win over the forge.toml [ui] default",
-        );
     }
 
     #[test]
