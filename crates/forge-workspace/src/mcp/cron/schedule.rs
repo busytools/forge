@@ -94,6 +94,7 @@ mod tests {
             created_at: epoch(0),
             last_fire: None,
             next_fire: epoch(next_fire),
+            team_role: None,
         }
     }
 

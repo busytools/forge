@@ -307,6 +307,7 @@ mod tests {
             created_at: SystemTime::UNIX_EPOCH,
             last_fire: None,
             next_fire: SystemTime::UNIX_EPOCH,
+            team_role: None,
         }
     }
 
