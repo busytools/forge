@@ -118,11 +118,18 @@ fn commit(app: &mut App) {
     }
 
     let launch_settings = crate::app::connect::session_launch_settings_for_resume(app);
-    let _ = app.dispatch_command(|key| forge_workspace::Command::SwitchAccount {
+    if let Err(err) = app.dispatch_command(|key| forge_workspace::Command::SwitchAccount {
         key,
         account_display_name: account,
         launch_settings,
-    });
+    }) {
+        tracing::warn!(
+            target: "forge_tui::account_picker",
+            error = %err,
+            "failed to dispatch account switch",
+        );
+        super::slash::push_system_message(app, "Couldn't switch accounts - please try again.");
+    }
 }
 
 #[cfg(test)]
