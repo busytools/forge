@@ -5561,6 +5561,64 @@ mod tests {
         );
     }
 
+    /// A `ProjectKey` that matches no project resolves to no name, so the
+    /// removal is a safe no-op that leaves every sub intact.
+    #[test]
+    fn remove_gotify_subscriptions_for_worker_unknown_project_is_a_no_op() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let dir = tempdir().expect("tempdir");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        ws.seed_test_project_with_static_workers("forge", "/tmp/gotify-durability-noop", &[]);
+
+        let mut scratch_sub = gotify_sub("forge", &[], None);
+        scratch_sub.team_role = Some("scratch".to_owned());
+        ws.add_gotify_subscription(scratch_sub.clone(), true);
+
+        ws.remove_gotify_subscriptions_for_worker(&ProjectKey::new("ghost"), "scratch");
+
+        assert!(
+            ws.gotify_subscriptions_for_project("forge").iter().any(|s| s.id == scratch_sub.id),
+            "an unknown project key leaves the in-memory subs intact",
+        );
+        let persisted = {
+            let guard = ws.db.lock();
+            crate::store::gotify::list(guard.as_ref().expect("db installed")).expect("list")
+        };
+        assert!(
+            persisted.iter().any(|s| s.id == scratch_sub.id),
+            "and leaves the persisted subs intact",
+        );
+    }
+
+    /// With no store installed the removal still scrubs the in-memory set;
+    /// the redb delete is simply skipped (mirrors
+    /// `persist_dynamic_worker_errors_when_store_unavailable`).
+    #[test]
+    fn remove_gotify_subscriptions_for_worker_scrubs_memory_without_a_db() {
+        let (ws, _rx) = Workspace::testing_stub();
+        // No install_db_for_test: the store is closed for this session.
+        ws.seed_test_project_with_static_workers("forge", "/tmp/gotify-durability-nodb", &[]);
+        let view_key = ws
+            .list_projects()
+            .into_iter()
+            .find(|v| v.name == "forge")
+            .map(|v| v.key)
+            .expect("seeded project view");
+
+        let mut scratch_sub = gotify_sub("forge", &[], None);
+        scratch_sub.team_role = Some("scratch".to_owned());
+        ws.add_gotify_subscription(scratch_sub.clone(), true);
+
+        ws.remove_gotify_subscriptions_for_worker(&view_key, "scratch");
+
+        assert!(
+            ws.gotify_subscriptions_for_project("forge").iter().all(|s| s.id != scratch_sub.id),
+            "the in-memory sub is scrubbed even with no store installed",
+        );
+    }
+
     /// #3: persisting reports failure (rather than swallowing it) when
     /// the store is unavailable, so the MCP spawn path can warn the lead
     /// that the worker won't survive a restart.
