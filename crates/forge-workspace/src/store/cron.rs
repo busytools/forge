@@ -118,7 +118,14 @@ pub fn seed_crons_from_toml_once(db: &Db, config_dir: &std::path::Path) -> Vec<C
             );
         }
     }
-    list(db).unwrap_or_default()
+    list(db).unwrap_or_else(|error| {
+        tracing::warn!(
+            target: "forge_workspace::store::cron",
+            %error,
+            "loading durable crons failed; starting with none this run",
+        );
+        Vec::new()
+    })
 }
 
 /// Whether the one-time cron.toml seed has already run on this machine.
