@@ -105,6 +105,32 @@ mod tests {
     }
 
     #[test]
+    fn dynamic_worker_subscription_survives_db_reopen() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("db.redb");
+
+        let mut worker_sub = sub("forge");
+        worker_sub.team_role = Some("scratch".to_owned());
+        let id = worker_sub.id;
+        {
+            let db = Db::open(&path).expect("open db");
+            insert(&db, &worker_sub).expect("insert");
+        }
+
+        // Reopen the store the way a forge restart does; the boot path in
+        // workspace.rs rebuilds the active set from `list`.
+        let db = Db::open(&path).expect("reopen db");
+        let restored = list(&db).expect("list after reopen");
+        assert_eq!(restored.len(), 1);
+        assert_eq!(restored[0].id, id);
+        assert_eq!(
+            restored[0].team_role.as_deref(),
+            Some("scratch"),
+            "a dynamic worker's durable sub survives a restart with its label intact",
+        );
+    }
+
+    #[test]
     fn corrupt_record_is_skipped_not_fatal() {
         let dir = tempdir().expect("tempdir");
         let db = Db::open(&dir.path().join("db.redb")).expect("open db");
