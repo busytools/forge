@@ -598,12 +598,18 @@ impl Workspace {
         // (non-fatal, like the state cache) - no cwd fallback (hard rule #15).
         let db = open_db();
 
-        // Load durable forge crons into the in-memory working set, seeding
-        // once from the synced cron.toml on this machine's first run. Boot
+        // Load durable forge crons into the in-memory working set. Boot
         // catch-up for entries that came due while forge was down runs after
         // construction, once the dispatch machinery is live.
         let crons = match &db {
-            Some(db) => crate::store::cron::seed_crons_from_toml_once(db, &config_dir),
+            Some(db) => crate::store::cron::list(db).unwrap_or_else(|error| {
+                tracing::warn!(
+                    target: "forge_workspace::workspace",
+                    %error,
+                    "loading durable crons failed; starting with none this run",
+                );
+                Vec::new()
+            }),
             None => Vec::new(),
         };
         let gotify_subs = match &db {

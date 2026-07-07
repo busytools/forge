@@ -1,8 +1,9 @@
 //! Cron MCP - durable scheduled prompts (`mcp__forge__cron__*`).
 //!
 //! A forge cron fires a prompt into a project's session on a schedule
-//! and survives forge restarts (persisted to `forge/cron.toml`; see
-//! [`crate::cron_store`]). Unlike the cloud routines (`create_trigger` /
+//! and survives forge restarts (persisted to the machine-local redb
+//! store; see [`crate::store::cron`]). Unlike the cloud routines
+//! (`create_trigger` /
 //! `CronCreate`), which fire into cloud-hosted sessions, these durably
 //! target the local forge process.
 //!
