@@ -1033,6 +1033,8 @@ pub(crate) fn teardown_worker(
     // row). Cancel and the lead-close cascade go through other paths and
     // deliberately leave the row intact.
     workspace.delete_dynamic_worker(project_key, label);
+    // The worker's durable Gotify subs are dropped with its durable row.
+    workspace.remove_gotify_subscriptions_for_worker(project_key, label);
     let status = entry.to_status();
     let is_git_repo_at_spawn = entry.is_git_repo_at_spawn;
     // MUST call the non-cascading `release_session` primitive (NOT
