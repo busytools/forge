@@ -14,6 +14,7 @@ use std::path::Path;
 
 use anyhow::Context;
 
+pub mod cron;
 pub mod dynamic_workers;
 pub mod gotify;
 
