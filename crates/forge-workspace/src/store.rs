@@ -17,6 +17,7 @@ use anyhow::Context;
 pub mod cron;
 pub mod dynamic_workers;
 pub mod gotify;
+pub mod state;
 
 /// Handle to the machine-local redb database.
 pub struct Db {

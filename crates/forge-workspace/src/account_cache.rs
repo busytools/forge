@@ -39,9 +39,10 @@ const CACHE_SCHEMA_VERSION: u8 = 1;
 /// state files.
 const STATE_DIR_NAME: &str = "state";
 
-/// Per-account cache entry stored on disk.
+/// Per-account cache entry. The value type of the redb `account_usage`
+/// table; reachable only in-crate since `account_cache` is a private mod.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct CachedAccountUsage {
+pub struct CachedAccountUsage {
     pub snapshot: UsageSnapshot,
 }
 
