@@ -2293,13 +2293,9 @@ impl Workspace {
             let key = key.clone();
             let senders = self.command_senders.lock();
             if let Some(sender) = senders.get(&key) {
-                // Synchronous turn-commit marker: stamp `turn_pending`
-                // only on the routed path - before the CLI echoes
-                // `session_state_changed` - so set + route are decided
-                // together and the `/account` backstop can't race a
-                // just-delivered prompt whose `Running` state hasn't
-                // mirrored yet. Cleared on the turn boundary / next
-                // Connected.
+                // Stamp turn_pending only on the routed path (set + route
+                // together) so the /account backstop can't race a Prompt
+                // whose wire-lagged `Running` echo hasn't landed yet.
                 if matches!(cmd, Command::Prompt { .. })
                     && let Some(domain) = self.domain_session_for(&key)
                 {
