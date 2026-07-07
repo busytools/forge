@@ -47,6 +47,9 @@ pub(crate) struct PendingCron {
     pub missed: bool,
 }
 
+/// Cron prompts buffered for asleep owners, keyed by `(project, team_role)`.
+type PendingCronMap = HashMap<(String, Option<String>), Vec<PendingCron>>;
+
 /// Max attempts for `tag_session_with_retry` to find the worker's
 /// `<session_id>.jsonl` and append the tag row. claude CLI writes the
 /// file lazily on the first user turn - workers with an `initial_prompt`
@@ -259,7 +262,7 @@ pub struct Workspace {
     /// is asleep pushes here and dispatches `Command::SpawnProject`; the
     /// owner's session drains its own bucket on first `Connected`. One
     /// mechanism for lead and worker owners alike.
-    pending_cron_by_owner: Mutex<HashMap<(String, Option<String>), Vec<PendingCron>>>,
+    pending_cron_by_owner: Mutex<PendingCronMap>,
     /// Active Gotify subscriptions (`mcp__forge__gotify`). The set the
     /// stream matches each inbound message against. Durable ones (lead /
     /// team-worker) are also persisted to `db` and reloaded here
@@ -5300,8 +5303,9 @@ mod tests {
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
         let db = crate::store::Db::open(&dir.path().join("db.redb")).expect("open db");
         ws.install_db_for_test(db);
-        let persisted =
-            || crate::store::cron::list(ws.db.lock().as_ref().expect("db installed")).expect("list");
+        let persisted = || {
+            crate::store::cron::list(ws.db.lock().as_ref().expect("db installed")).expect("list")
+        };
 
         let entry = CronEntry {
             id: CronId::from("c1"),
@@ -5610,7 +5614,11 @@ mod tests {
         assert!(persisted.iter().any(|s| s.id == lead_sub.id), "the lead sub is still persisted");
     }
 
-    fn worker_cron(id: &str, project: &str, team_role: Option<&str>) -> forge_primitives::CronEntry {
+    fn worker_cron(
+        id: &str,
+        project: &str,
+        team_role: Option<&str>,
+    ) -> forge_primitives::CronEntry {
         forge_primitives::CronEntry {
             id: forge_primitives::CronId::from(id),
             project_name: project.to_owned(),
@@ -5655,7 +5663,10 @@ mod tests {
         crate::spawn::teardown_worker(&ws, &view_key, "scratch");
 
         let crons = ws.crons_for_project("forge");
-        assert!(crons.iter().all(|c| c.id != scratch_cron.id), "the dynamic worker's cron is dropped");
+        assert!(
+            crons.iter().all(|c| c.id != scratch_cron.id),
+            "the dynamic worker's cron is dropped"
+        );
         assert!(crons.iter().any(|c| c.id == lead_cron.id), "the lead cron survives");
         assert!(crons.iter().any(|c| c.id == sibling_cron.id), "a sibling worker's cron survives");
         let persisted_crons = {
@@ -5666,7 +5677,10 @@ mod tests {
             persisted_crons.iter().all(|c| c.id != scratch_cron.id),
             "the cron is dropped from the store too",
         );
-        assert!(persisted_crons.iter().any(|c| c.id == lead_cron.id), "the lead cron is still stored");
+        assert!(
+            persisted_crons.iter().any(|c| c.id == lead_cron.id),
+            "the lead cron is still stored"
+        );
 
         let subs = ws.gotify_subscriptions_for_project("forge");
         assert!(subs.iter().all(|s| s.id != scratch_sub.id), "the dynamic worker's sub is dropped");
@@ -6441,7 +6455,11 @@ mod tests {
     fn deliver_asleep_static_worker_cron_buffers_and_wakes_the_project() {
         let (ws, _rx) = Workspace::testing_stub();
         // "reviewer" is a static worker, so the owner exists even while asleep.
-        ws.seed_test_project_with_static_workers("proj", "/tmp/wc-static", &["reviewer".to_owned()]);
+        ws.seed_test_project_with_static_workers(
+            "proj",
+            "/tmp/wc-static",
+            &["reviewer".to_owned()],
+        );
 
         ws.enable_test_dispatch_intercept();
         let outcome = crate::spawn::deliver_cron_prompt(

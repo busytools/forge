@@ -383,17 +383,14 @@ fn live_cron_owner(
     team_role: Option<&str>,
 ) -> Option<SessionKey> {
     let live = workspace.list_live_workers(&view.key);
-    match team_role {
-        Some(label) => live.into_iter().find(|w| w.label == label).map(|w| w.session_key),
-        None => {
-            let live_keys: std::collections::HashSet<_> =
-                live.into_iter().map(|w| w.session_key).collect();
-            view.sessions
-                .iter()
-                .find(|s| s.is_open && !live_keys.contains(&s.session))
-                .map(|s| s.session.clone())
-        }
+    if let Some(label) = team_role {
+        return live.into_iter().find(|w| w.label == label).map(|w| w.session_key);
     }
+    let live_keys: std::collections::HashSet<_> = live.into_iter().map(|w| w.session_key).collect();
+    view.sessions
+        .iter()
+        .find(|s| s.is_open && !live_keys.contains(&s.session))
+        .map(|s| s.session.clone())
 }
 
 /// Whether a cron's owner still exists to be woken: the lead exists

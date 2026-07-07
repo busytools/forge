@@ -207,7 +207,12 @@ mod prod_facade_tests {
         ws.record_connected_session("/tmp/b2-myproj", "lead-uuid", None);
         ws.insert_live_worker(&key, worker_entry("reviewer", "worker-uuid"));
         let facade = ProdCronFacade::from_arc(&ws);
-        (ws, facade, SessionKey::from_session_id("lead-uuid"), SessionKey::from_session_id("worker-uuid"))
+        (
+            ws,
+            facade,
+            SessionKey::from_session_id("lead-uuid"),
+            SessionKey::from_session_id("worker-uuid"),
+        )
     }
 
     fn daily(prompt: &str) -> (CronKind, String) {
