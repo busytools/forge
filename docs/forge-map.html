@@ -2247,6 +2247,38 @@ this recomputes every render - hoist it into the snapshot instead
   </div>
 </div>
 
+<div class="surface" id="account-picker">
+  <div class="surface-head">
+    <h4>Account picker (<code>/account</code>)</h4>
+    <div class="when">visible: when <code>/account</code> runs AND the active session is idle (<code>runtime_session_state == Idle</code>). Mid-turn it is a no-op with a red system notice ("Finish or cancel the current turn before switching accounts."). A transient centered overlay drawn over whatever view is active.</div>
+  </div>
+  <div class="surface-body">
+    <p>Switch the live session to a different account for its project and keep the SAME conversation. The overlay lists only the project's allowed accounts (its <code>[[orgs]].accounts</code> pin, resolved via <code>Workspace::project_accounts_snapshot</code>), each row showing the current marker <code>●</code>, the account name, the <code>5h</code> + <code>7d</code> window utilization coloured by proximity to the cap, a reset ETA shown <strong>only</strong> while that account is at its cap, and a trailing <code>usable</code> / <code>rate limited</code> tag. Picking a row re-spawns the session under that account's <code>config_dir</code> and <code>claude --resume</code>s the same <code>session_id</code> - the account config dirs share <code>~/.claude/projects</code> via symlink, so nothing is copied; a <code>SessionReplaced</code> resets then re-seeds the chat and refreshes the account label. Picking the current account (or a rate-limited one) is allowed - the current one is a no-op close; a rate-limited one is shown red so it isn't picked by accident.</p>
+
+    <div class="term">
+      <pre class="indent">
+       <span class="accent">┌──────────────────────────────────────────────────────────────┐</span>
+       <span class="accent">│</span> <span class="accent-bold">Switch account · forge</span>                            <span class="dim">3 accounts</span> <span class="accent">│</span>
+       <span class="accent">│</span>                                                              <span class="accent">│</span>
+       <span class="accent">│</span> <span class="accent">●</span> <span class="accent-bold">Gateway</span>   5h <span class="error">100%</span>  7d <span class="warning">63%</span>  <span class="warning">⟳ resets 1h 42m</span>    <span class="error">rate limited</span> <span class="accent">│</span>
+       <span class="accent">│</span>   Gateway1  5h <span class="success">34%</span>  7d <span class="success">22%</span>                            <span class="success">usable</span> <span class="accent">│</span>
+       <span class="accent">│</span>   Personal  5h <span class="success">8%</span>   7d <span class="success">5%</span>                             <span class="success">usable</span> <span class="accent">│</span>
+       <span class="accent">│</span>                                                              <span class="accent">│</span>
+       <span class="accent">│</span> <span class="dim">↑↓ move   enter switch   esc cancel   ● current</span>              <span class="accent">│</span>
+       <span class="accent">└──────────────────────────────────────────────────────────────┘</span></pre>
+    </div>
+
+    <dl>
+      <dt>keys</dt><dd><kbd>↑</kbd> <kbd>↓</kbd> move the highlight (clamped, no wrap) · <kbd>Enter</kbd> switch the session to the highlighted account (a no-op close when it's already the current one) · <kbd>Esc</kbd> close. The overlay is modal - it captures every key while open, over chat and launchpad alike. Keyboard-only for v1.</dd>
+      <dt>data source</dt><dd><code>Workspace::project_accounts_snapshot(allowed, current)</code> returns owned <code>AccountRow</code>s (name, config_dir, is_current, usable, 5h/7d utilization, reset ETA) so the picker holds a snapshot, not the <code>AccountStateMap</code> lock. Reuses the same rate-limit machinery the launchpad account panel renders: <code>AccountStateMap::{is_account_usable, usage, config_dir}</code> + the binding 5h / 7d window utilization. Reset ETA (<code>binding_reset_at</code>) is populated only for windows currently at their cap.</dd>
+      <dt>switch</dt><dd><kbd>Enter</kbd> dispatches <code>Command::SwitchAccount { key, account_display_name, launch_settings }</code>. The workspace handler (<code>spawn::handle_switch_account</code>) releases the current subprocess, then re-spawns + resumes the same <code>session_id</code> under the picked account's <code>config_dir</code> via the forced-account path of <code>get_agent_handle_with_spawn_key</code>. The re-spawn seeds <code>connected_once = true</code> so its first Connected emits <code>SessionReplaced</code>; a supersession-safe task cleanup keeps the stale predecessor from wiping the re-spawned session. Live workers and in-flight peer asks are not blocked (workers run under their own accounts; peer asks to the switched session expire on reconnect and are re-askable).</dd>
+      <dt>code</dt><dd><code>crates/forge-tui/src/app/account_picker.rs</code> (state + key handling: open / nav / commit / close) · <code>crates/forge-tui/src/ui/account_picker.rs::render</code> (centered overlay) · <code>/account</code> handler at <code>crates/forge-tui/src/app/slash/executors.rs::handle_account_submit</code> (idle-gate + snapshot) · <code>forge_workspace::Workspace::project_accounts_snapshot</code> + <code>AccountRow</code> · <code>forge_workspace::protocol::Command::SwitchAccount</code> + <code>spawn::handle_switch_account</code>.</dd>
+      <dt>color</dt><dd>border: <span class="accent">RUST_ORANGE</span> · title (<code>Switch account · &lt;project&gt;</code>): <span class="accent">RUST_ORANGE</span> bold · account count: <code>DIM</code> · current marker (<code>●</code>): <span class="accent">RUST_ORANGE</span> · highlighted account name: <span class="accent">RUST_ORANGE</span> bold · other names: default fg bold · <code>5h</code> / <code>7d</code> labels: <code>DIM</code> · window percentages by proximity to cap: <span class="success">green</span> under ~70, <span class="warning">yellow</span> under 100, <span class="error">red</span> at the cap · reset ETA (<code>⟳ resets …</code>): <span class="warning">yellow</span> · <code>usable</code> tag: <span class="success">green</span> · <code>rate limited</code> tag: <span class="error">red</span> · footer hints: <code>DIM</code>.</dd>
+      <dt>scope</dt><dd>Fully transient - the open/highlight state doesn't survive a session restart. v1 is manual only (auto-switch on rate-limit is deferred). Only the project's allowed accounts are listed; no account management / editing <code>forge.toml</code> from the picker.</dd>
+    </dl>
+  </div>
+</div>
+
 <!-- ============================================================== -->
 <h2 class="section-title" id="errors">Error states</h2>
 

@@ -667,7 +667,7 @@ fn backoff_delay(consecutive_failures: u32) -> std::time::Duration {
     Duration::from_secs(seconds).min(CAP)
 }
 
-fn five_hour_util(snapshot: &UsageSnapshot) -> f64 {
+pub(crate) fn five_hour_util(snapshot: &UsageSnapshot) -> f64 {
     snapshot.five_hour.as_ref().map_or(0.0, |w| w.utilization)
 }
 
@@ -675,13 +675,32 @@ fn five_hour_util(snapshot: &UsageSnapshot) -> f64 {
 /// (`seven_day`, `seven_day_opus`, `seven_day_sonnet`). Whichever
 /// is most-used is the binding constraint for "is this account
 /// 7-day rate-limited."
-fn seven_day_util(snapshot: &UsageSnapshot) -> f64 {
+pub(crate) fn seven_day_util(snapshot: &UsageSnapshot) -> f64 {
     let windows = [
         snapshot.seven_day.as_ref().map(|w| w.utilization),
         snapshot.seven_day_opus.as_ref().map(|w| w.utilization),
         snapshot.seven_day_sonnet.as_ref().map(|w| w.utilization),
     ];
     windows.into_iter().flatten().fold(0.0_f64, f64::max)
+}
+
+/// When a rate-limited account unlocks: the latest `resets_at` among
+/// windows currently at-or-over the cap (using the same
+/// `is_currently_limited` predicate `is_rate_limited` walks). `None`
+/// when no window is currently capped, so the `/account` picker shows
+/// a reset ETA only on rate-limited rows.
+pub(crate) fn binding_reset_at(snapshot: &UsageSnapshot) -> Option<std::time::SystemTime> {
+    [
+        snapshot.five_hour.as_ref(),
+        snapshot.seven_day.as_ref(),
+        snapshot.seven_day_opus.as_ref(),
+        snapshot.seven_day_sonnet.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    .filter(|w| w.is_currently_limited())
+    .filter_map(|w| w.resets_at)
+    .max()
 }
 
 #[cfg(test)]

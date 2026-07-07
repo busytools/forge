@@ -110,6 +110,30 @@ impl ProjectView {
     }
 }
 
+/// One account row for the `/account` picker: a project-allowed
+/// account plus its live rate-limit state, snapshotted so the TUI
+/// renders without locking `AccountStateMap`. Produced by
+/// [`crate::Workspace::project_accounts_snapshot`] in allow-list order.
+#[derive(Clone, Debug)]
+pub struct AccountRow {
+    /// forge.toml `[[accounts]]` display name.
+    pub display_name: String,
+    /// On-disk config dir seeding `CLAUDE_CONFIG_DIR` for this account.
+    pub config_dir: PathBuf,
+    /// `true` when this is the session's active account.
+    pub is_current: bool,
+    /// `true` when the account is pickable now (tier-0, not bailed).
+    /// `false` renders the red `rate limited` tag.
+    pub usable: bool,
+    /// 5-hour window utilization (0.0 when no probe has landed yet).
+    pub five_hour_util: f64,
+    /// Binding 7-day utilization: max across the three 7-day windows.
+    pub seven_day_util: f64,
+    /// When the account unlocks - `Some` only while it is at its cap,
+    /// so the picker shows a reset ETA on rate-limited rows only.
+    pub resets_at: Option<SystemTime>,
+}
+
 /// One session under a project.
 #[derive(Clone, Debug)]
 pub struct SessionView {

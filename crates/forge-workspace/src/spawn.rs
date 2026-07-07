@@ -116,6 +116,7 @@ pub(crate) fn handle_spawn_project(
         SessionTarget::Named(project_name.to_owned()),
         launch_settings,
         Some(synth_key.clone()),
+        None,
     ) {
         Ok(_handle) => {
             tracing::info!(
@@ -610,6 +611,7 @@ pub(crate) fn handle_spawn_session(
         SessionTarget::Session(session_key),
         launch_settings,
         Some(synth_key.clone()),
+        None,
     ) {
         Ok(_handle) => {
             tracing::info!(
@@ -639,6 +641,107 @@ pub(crate) fn handle_spawn_session(
     }
 }
 
+/// Switch the live session `key` to `account_display_name`: tear down
+/// its current `claude` subprocess and re-spawn + resume the SAME
+/// `session_id` under the picked account's `config_dir`. The account
+/// config dirs share `~/.claude/projects` via symlink, so
+/// `claude --resume` finds the same conversation - nothing is copied.
+/// The forced-account re-spawn seeds `connected_once = true`, so its
+/// first `Connected` emits `SessionReplaced`: the chat resets, then the
+/// `--resume` backfill re-seeds the same conversation and the new
+/// account's `ForgeAccountIdentity` refreshes the label. Refuses with
+/// a notice (and no teardown) when a turn is in flight - the
+/// authoritative backstop for the TUI idle-gate; a no-op when the
+/// account name is unknown.
+pub(crate) fn handle_switch_account(
+    workspace: &Arc<Workspace>,
+    key: SessionKey,
+    account_display_name: &str,
+    launch_settings: SessionLaunchSettings,
+) {
+    let Some(forced_account) = workspace.resolve_account_for_switch(account_display_name) else {
+        tracing::warn!(
+            target: "forge_workspace::spawn",
+            key = %key.as_str(),
+            account = %account_display_name,
+            "switch_account: unknown account; ignoring",
+        );
+        return;
+    };
+
+    // Authoritative idle backstop: refuse the switch while a turn is in
+    // flight, independent of the TUI idle-gate. A delivered peer / cron
+    // / gotify prompt can start a turn between picker-open and Enter, and
+    // tearing that turn down would silently drop pending interactions and
+    // strand inflight peer asks. `turn_pending` is the synchronous
+    // marker (a Prompt is routed but its `Running` echo hasn't landed);
+    // `runtime_state` is the wire-confirmed liveness. OR them so the
+    // window between routing and the echo is covered. Surface a notice;
+    // do NOT tear down.
+    let turn_in_flight = workspace.domain_session_for(&key).is_some_and(|domain| {
+        let guard = domain.lock();
+        guard.turn_pending
+            || matches!(
+                guard.runtime_state,
+                Some(
+                    forge_primitives::RuntimeSessionState::Running
+                        | forge_primitives::RuntimeSessionState::RequiresAction
+                )
+            )
+    });
+    if turn_in_flight {
+        try_emit(
+            workspace,
+            "switch_account::busy",
+            SessionUpdate::SlashCommandError {
+                key,
+                message: "Finish or cancel the current turn before switching accounts.".to_owned(),
+            },
+        );
+        return;
+    }
+
+    // Tear down the current account's subprocess so the re-spawn does
+    // not hit the pool fast-path and return the existing handle. The
+    // old SessionTask exits on its now-closed command channel; its
+    // supersession-guarded cleanup no-ops against the new entry.
+    workspace.release_session(&key);
+
+    match workspace.get_agent_handle_with_spawn_key(
+        SessionTarget::Session(key.clone()),
+        launch_settings,
+        None,
+        Some(forced_account),
+    ) {
+        Ok(_handle) => {
+            tracing::info!(
+                target: "forge_workspace::spawn",
+                key = %key.as_str(),
+                account = %account_display_name,
+                "account switch re-spawn started",
+            );
+        }
+        Err(err) => {
+            tracing::error!(
+                target: "forge_workspace::spawn",
+                key = %key.as_str(),
+                account = %account_display_name,
+                error = %err,
+                "switch_account: re-spawn failed",
+            );
+            try_emit(
+                workspace,
+                "switch_account::ConnectionFailed",
+                SessionUpdate::ConnectionFailed {
+                    key,
+                    message: format!("account switch failed: {err}"),
+                    fatal: false,
+                },
+            );
+        }
+    }
+}
+
 /// Startup spawn. Resolves the default project (or the named one
 /// passed on argv) and spawns under the `__conn_pending__` synthetic
 /// key. Failure before the first Connected emits
@@ -660,6 +763,7 @@ pub(crate) fn handle_start_default(
         target,
         launch_settings,
         Some(synth_key.clone()),
+        None,
     ) {
         Ok(_handle) => {
             tracing::info!(
@@ -853,7 +957,8 @@ pub(crate) fn handle_spawn_worker(
             synth_key: synth_key.clone(),
         },
     };
-    match workspace.get_agent_handle_with_spawn_key(target, settings, Some(synth_key.clone())) {
+    match workspace.get_agent_handle_with_spawn_key(target, settings, Some(synth_key.clone()), None)
+    {
         Ok(_handle) => {
             tracing::info!(
                 target: "forge_workspace::spawn",

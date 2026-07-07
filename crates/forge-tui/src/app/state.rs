@@ -357,6 +357,8 @@ pub struct App {
     pub spinner_epoch: Instant,
     /// Open `/spinner` picker overlay state; `None` when closed.
     pub spinner_picker: Option<crate::app::spinner_picker::SpinnerPickerState>,
+    /// Open `/account` picker overlay state; `None` when closed.
+    pub account_picker: Option<crate::app::account_picker::AccountPickerState>,
     /// Session-level preference for collapsing non-Execute tool call bodies.
     /// Toggled by Ctrl+X and applied at render/layout time.
     pub tools_collapsed: bool,
@@ -2999,6 +3001,7 @@ impl App {
             spinner_style: forge_workspace::SpinnerStyle::default(),
             spinner_epoch: Instant::now(),
             spinner_picker: None,
+            account_picker: None,
             tools_collapsed: true,
             #[cfg(any(test, feature = "testing"))]
             last_invalidation_level: std::cell::Cell::new(None),

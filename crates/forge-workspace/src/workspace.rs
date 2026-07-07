@@ -845,7 +845,7 @@ impl Workspace {
         target: SessionTarget,
         settings: SessionLaunchSettings,
     ) -> Result<Arc<AgentHandle>> {
-        self.get_agent_handle_with_spawn_key(target, settings, None)
+        self.get_agent_handle_with_spawn_key(target, settings, None, None)
     }
 
     /// Like [`Self::get_agent_handle`] but threads a synthetic
@@ -855,12 +855,22 @@ impl Workspace {
     /// emit before the matching `Connected` so TUI re-keys its
     /// `UiSession` map atomically. `None` for re-entrant callers (the
     /// pooled handle path) where no key migration is needed.
-    pub fn get_agent_handle_with_spawn_key(
+    ///
+    /// `forced_account` pins the spawn to a specific `(AccountKey,
+    /// config_dir)` instead of running the assignment-plan /
+    /// round-robin picker. Only the `/account` switch supplies it (via
+    /// `handle_switch_account`); a forced account always re-spawns a
+    /// live session, so the new `SessionTask` seeds `connected_once =
+    /// true` and its first `Connected` emits `SessionReplaced` (the
+    /// agent IS being replaced). Every other caller passes `None`.
+    pub(crate) fn get_agent_handle_with_spawn_key(
         self: &Arc<Self>,
         target: SessionTarget,
         mut settings: SessionLaunchSettings,
         spawn_key: Option<SessionKey>,
+        forced_account: Option<(AccountKey, PathBuf)>,
     ) -> Result<Arc<AgentHandle>> {
+        let is_account_switch = forced_account.is_some();
         let session_key = self.resolve_target(&target)?;
 
         // Fast path: cache hit. When `spawn_key` was provided AND a
@@ -901,12 +911,13 @@ impl Workspace {
         //    fires), or the target couldn't be resolved to a known
         //    project. Preserves the pre-#246 behaviour for cold-
         //    boot and unforeseen paths.
-        let (account_key, account_dir) =
+        let (account_key, account_dir) = forced_account.unwrap_or_else(|| {
             self.plan_assignment(&target, spawn_key.as_ref()).unwrap_or_else(|| {
                 let project_account_pin = self.project_accounts_for(&target);
                 let accounts = self.accounts.lock();
                 accounts.pick_for_project(&project_account_pin)
-            });
+            })
+        });
 
         // Slow path: spawn fresh Agent bound to the picked account's
         // config_dir. The Agent stores it as a typed field; every
@@ -1137,7 +1148,10 @@ impl Workspace {
                 domain,
                 update_tx: self.update_tx.clone(),
                 spawn_key,
-                connected_once: false,
+                // An account switch replaces a live session's agent, so
+                // the new task's first Connected must emit SessionReplaced
+                // (reset chat, then the --resume backfill re-seeds it).
+                connected_once: is_account_switch,
                 workspace: Arc::downgrade(self),
             };
             let span = tracing::info_span!(
@@ -1909,6 +1923,69 @@ impl Workspace {
         self.accounts.lock().usage_error(&AccountKey(display_name.to_owned()))
     }
 
+    /// Resolve an account `display_name` to its `(AccountKey,
+    /// config_dir)` for the `/account` switch re-spawn. `None` when the
+    /// name isn't a configured account (defensive - the picker only
+    /// offers known accounts).
+    pub(crate) fn resolve_account_for_switch(
+        &self,
+        display_name: &str,
+    ) -> Option<(AccountKey, PathBuf)> {
+        let accounts = self.accounts.lock();
+        let key = AccountKey(display_name.to_owned());
+        let config_dir = accounts.config_dir(&key)?.clone();
+        Some((key, config_dir))
+    }
+
+    /// Snapshot the accounts a project may switch to, in allow-list
+    /// order, each carrying its live rate-limit state for the
+    /// `/account` picker. `allowed_accounts` is the project's
+    /// forge.toml pin; empty falls back to every configured account
+    /// (matching `pick_for_project`'s resolution). `current_account`
+    /// is the session's active account display name, used to mark the
+    /// current row. Returns owned [`crate::AccountRow`]s so the TUI
+    /// holds a snapshot rather than the `AccountStateMap` lock.
+    pub fn project_accounts_snapshot(
+        &self,
+        allowed_accounts: &[String],
+        current_account: Option<&str>,
+    ) -> Vec<crate::AccountRow> {
+        let accounts = self.accounts.lock();
+        // Resolve the allow-list to concrete account names, falling
+        // back to every configured account when the project pins none.
+        let names: Vec<String> = if allowed_accounts.is_empty() {
+            accounts.ordered_keys.iter().map(|k| k.0.clone()).collect()
+        } else {
+            allowed_accounts.to_vec()
+        };
+        names
+            .into_iter()
+            .filter_map(|name| {
+                let key = AccountKey(name.clone());
+                let config_dir = accounts.config_dir(&key)?.clone();
+                let usable = accounts.is_account_usable(&key);
+                let is_current = current_account == Some(name.as_str());
+                let (five_hour_util, seven_day_util, resets_at) =
+                    accounts.usage(&key).map_or((0.0, 0.0, None), |snapshot| {
+                        (
+                            account::five_hour_util(snapshot),
+                            account::seven_day_util(snapshot),
+                            account::binding_reset_at(snapshot),
+                        )
+                    });
+                Some(crate::AccountRow {
+                    display_name: name,
+                    config_dir,
+                    is_current,
+                    usable,
+                    five_hour_util,
+                    seven_day_util,
+                    resets_at,
+                })
+            })
+            .collect()
+    }
+
     /// Resolves a `SessionTarget` to the `SessionKey` used to look up
     /// the pool. For project-rooted targets (`Default` / `Named`) with
     /// no on-disk session for the project, returns a project-keyed
@@ -2216,6 +2293,14 @@ impl Workspace {
             let key = key.clone();
             let senders = self.command_senders.lock();
             if let Some(sender) = senders.get(&key) {
+                // Stamp turn_pending only on the routed path (set + route
+                // together) so the /account backstop can't race a Prompt
+                // whose wire-lagged `Running` echo hasn't landed yet.
+                if matches!(cmd, Command::Prompt { .. })
+                    && let Some(domain) = self.domain_session_for(&key)
+                {
+                    domain.lock().turn_pending = true;
+                }
                 return sender.send(cmd).map_err(|_| DispatchError::SessionClosed(key));
             }
             drop(senders);
@@ -2374,6 +2459,15 @@ impl Workspace {
                         team_role.as_deref(),
                         notification,
                     );
+                }
+                Command::SwitchAccount { key, account_display_name, launch_settings } => {
+                    let span = tracing::info_span!(
+                        "switch_account",
+                        key = %key.as_str(),
+                        account = %account_display_name,
+                    );
+                    let _enter = span.enter();
+                    spawn::handle_switch_account(self, key, &account_display_name, launch_settings);
                 }
                 other => {
                     tracing::warn!(
@@ -2807,6 +2901,31 @@ impl Workspace {
     /// the lead-row close gesture.
     pub(crate) fn release_session(&self, session_key: &SessionKey) {
         let removed = self.pool.lock().remove(session_key);
+        drop(removed);
+        let _ = self.command_senders.lock().remove(session_key);
+        let _ = self.domain_handles.lock().remove(session_key);
+    }
+
+    /// Supersession-safe release: drop `session_key`'s pool entry,
+    /// command sender, and domain handle ONLY when the pooled agent is
+    /// still `handle` (by `Arc` identity). A SessionTask whose session
+    /// was re-spawned under the same key (an `/account` switch) is a
+    /// stale predecessor - when it exits and runs this cleanup, the
+    /// pool already holds the successor's handle, so the guard no-ops
+    /// and the live re-spawned session is left intact. Gating all three
+    /// maps on the one identity check keeps a superseded task from
+    /// half-cleaning its successor.
+    pub(crate) fn release_session_if_current(
+        &self,
+        session_key: &SessionKey,
+        handle: &Arc<AgentHandle>,
+    ) {
+        let mut pool = self.pool.lock();
+        if !pool.get(session_key).is_some_and(|pooled| Arc::ptr_eq(&pooled.handle, handle)) {
+            return;
+        }
+        let removed = pool.remove(session_key);
+        drop(pool);
         drop(removed);
         let _ = self.command_senders.lock().remove(session_key);
         let _ = self.domain_handles.lock().remove(session_key);
@@ -4847,6 +4966,159 @@ mod tests {
     use std::fs;
     use tempfile::tempdir;
 
+    /// Build a usage snapshot with 5h + shared-7d windows sharing one
+    /// `resets_at`. Enough for the `/account` picker snapshot tests.
+    #[cfg(test)]
+    fn account_usage_snapshot(
+        five_hour: f64,
+        seven_day: f64,
+        resets_at: Option<std::time::SystemTime>,
+    ) -> forge_primitives::usage::UsageSnapshot {
+        use forge_primitives::usage::{UsageSnapshot, UsageSourceKind, UsageWindow};
+        UsageSnapshot {
+            source: UsageSourceKind::Oauth,
+            fetched_at: std::time::SystemTime::UNIX_EPOCH,
+            five_hour: Some(UsageWindow {
+                utilization: five_hour,
+                resets_at,
+                reset_description: None,
+            }),
+            seven_day: Some(UsageWindow {
+                utilization: seven_day,
+                resets_at,
+                reset_description: None,
+            }),
+            seven_day_opus: None,
+            seven_day_sonnet: None,
+            extra_usage: None,
+        }
+    }
+
+    /// `project_accounts_snapshot` returns one row per allow-list entry
+    /// in order, each carrying the account's config_dir, is_current
+    /// marker, usable flag, 5h/7d utilization, and a reset ETA only
+    /// while the account is at its cap.
+    #[test]
+    fn project_accounts_snapshot_reports_allowlist_order_and_state() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let future = std::time::SystemTime::now() + std::time::Duration::from_secs(3600);
+        {
+            let mut map = AccountStateMap::new(&[
+                crate::config::LoadedAccount {
+                    display_name: "A".to_owned(),
+                    config_dir: PathBuf::from("/cfg/A"),
+                    proxy: true,
+                },
+                crate::config::LoadedAccount {
+                    display_name: "B".to_owned(),
+                    config_dir: PathBuf::from("/cfg/B"),
+                    proxy: true,
+                },
+            ]);
+            // A: 5h saturated (100%, future reset) -> rate limited; 7d 63%.
+            map.set_usage(
+                &AccountKey("A".to_owned()),
+                account_usage_snapshot(100.0, 63.0, Some(future)),
+            );
+            // B: usable (34% / 22%).
+            map.set_usage(
+                &AccountKey("B".to_owned()),
+                account_usage_snapshot(34.0, 22.0, Some(future)),
+            );
+            *ws.accounts.lock() = map;
+        }
+
+        let rows = ws.project_accounts_snapshot(&["A".to_owned(), "B".to_owned()], Some("A"));
+
+        assert_eq!(rows.len(), 2, "one row per allow-list entry");
+        assert_eq!(rows[0].display_name, "A", "allow-list order preserved");
+        assert_eq!(rows[1].display_name, "B");
+
+        // A: current + saturated -> not usable, carries a reset ETA.
+        assert!(rows[0].is_current, "A is the session's active account");
+        assert!(!rows[0].usable, "A saturated on 5h -> rate limited");
+        assert!((rows[0].five_hour_util - 100.0).abs() < f64::EPSILON);
+        assert!((rows[0].seven_day_util - 63.0).abs() < f64::EPSILON);
+        assert_eq!(rows[0].resets_at, Some(future), "capped account shows when it unlocks");
+        assert_eq!(rows[0].config_dir, PathBuf::from("/cfg/A"));
+
+        // B: not current + usable -> no reset ETA.
+        assert!(!rows[1].is_current);
+        assert!(rows[1].usable, "B under cap on both windows");
+        assert!((rows[1].five_hour_util - 34.0).abs() < f64::EPSILON);
+        assert!(rows[1].resets_at.is_none(), "usable account has no reset ETA");
+    }
+
+    /// An empty allow-list (project pins no accounts) falls back to
+    /// every configured account in definition order; a `None`
+    /// current-account marks no row.
+    #[test]
+    fn project_accounts_snapshot_empty_allowlist_falls_back_to_all_accounts() {
+        let (ws, _rx) = Workspace::testing_stub();
+        {
+            let mut map = AccountStateMap::new(&[
+                crate::config::LoadedAccount {
+                    display_name: "One".to_owned(),
+                    config_dir: PathBuf::from("/c/One"),
+                    proxy: true,
+                },
+                crate::config::LoadedAccount {
+                    display_name: "Two".to_owned(),
+                    config_dir: PathBuf::from("/c/Two"),
+                    proxy: true,
+                },
+            ]);
+            map.set_usage(&AccountKey("One".to_owned()), account_usage_snapshot(10.0, 10.0, None));
+            map.set_usage(&AccountKey("Two".to_owned()), account_usage_snapshot(10.0, 10.0, None));
+            *ws.accounts.lock() = map;
+        }
+
+        let rows = ws.project_accounts_snapshot(&[], None);
+        let names: Vec<&str> = rows.iter().map(|r| r.display_name.as_str()).collect();
+        assert_eq!(names, vec!["One", "Two"], "empty pin lists all accounts in order");
+        assert!(rows.iter().all(|r| r.usable), "both under cap -> usable");
+        assert!(rows.iter().all(|r| !r.is_current), "no current account when None passed");
+    }
+
+    /// The supersession guard that keeps an `/account` switch's
+    /// re-spawn intact: a stale predecessor task exiting must NOT wipe
+    /// the successor's pool entry, command sender, or domain handle -
+    /// all three are gated together on `Arc` identity. The current
+    /// owner's own exit still releases all three.
+    #[test]
+    fn release_session_if_current_is_supersession_safe() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let key = SessionKey::from_str_for_test("sup-key");
+
+        let (ha, _rxa) = Workspace::testing_stub_handle();
+        let arc_a = Arc::new(ha);
+        let (hb, _rxb) = Workspace::testing_stub_handle();
+        let arc_b = Arc::new(hb);
+
+        // The successor (account B) owns all three registrations.
+        let (tx, _cmd_rx) = mpsc::unbounded_channel::<Command>();
+        ws.pool.lock().insert(
+            key.clone(),
+            PooledAgent { handle: Arc::clone(&arc_b), account: AccountKey("B".to_owned()) },
+        );
+        ws.command_senders.lock().insert(key.clone(), tx);
+        ws.register_domain_session(key.clone(), Some(Arc::clone(&arc_b)));
+
+        // The superseded predecessor (account A) exits and runs its
+        // cleanup. Its handle no longer matches the pooled one, so the
+        // guard no-ops across every map and B's live session survives.
+        ws.release_session_if_current(&key, &arc_a);
+        assert!(ws.pool.lock().contains_key(&key), "pool entry for B survives A's exit");
+        assert!(ws.command_senders.lock().contains_key(&key), "command sender for B survives");
+        assert!(ws.domain_handles.lock().contains_key(&key), "domain handle for B survives");
+
+        // The current owner's own exit DOES release all three maps.
+        ws.release_session_if_current(&key, &arc_b);
+        assert!(!ws.pool.lock().contains_key(&key), "current owner removes the pool entry");
+        assert!(!ws.command_senders.lock().contains_key(&key), "command sender removed");
+        assert!(!ws.domain_handles.lock().contains_key(&key), "domain handle removed");
+    }
+
     #[test]
     fn force_new_gate_overrides_present_lead() {
         let lead = SessionKey::from_session_id("lead-uuid");
@@ -6178,16 +6450,19 @@ config_dir = "~/.claude-profile3"
         let command_rx = install_fake_session_task(&workspace, &key);
         assert!(workspace.pool.lock().contains_key(&key), "precondition: session pooled");
 
-        // Build a SessionTask whose event channel is already dead (the
-        // testing-stub handle hands a receiver with no live sender), so
-        // `run()` takes the "agent event channel closed" exit path
+        // In production the SessionTask holds the SAME `Arc<AgentHandle>`
+        // that sits in the pool, so the exit-cleanup identity guard
+        // (`release_session_if_current`) recognises this task as the
+        // current owner. Reuse the pooled handle here rather than a
+        // fresh one; its testing-stub event channel is already closed,
+        // so `run()` takes the "agent event channel closed" exit path
         // immediately - exactly the post-cron-turn subprocess exit.
-        let (task_handle, _task_commands_rx) = Workspace::testing_stub_handle();
-        let (update_tx, _task_update_rx) = mpsc::unbounded_channel::<SessionUpdate>();
         let domain = workspace.domain_session_for(&key).expect("domain registered");
+        let pooled_handle = domain.lock().conn.clone().expect("pooled handle on domain");
+        let (update_tx, _task_update_rx) = mpsc::unbounded_channel::<SessionUpdate>();
         let task = crate::session_task::SessionTask {
             key: key.clone(),
-            handle: Arc::new(task_handle),
+            handle: pooled_handle,
             command_rx,
             domain,
             update_tx,
