@@ -140,3 +140,66 @@ async fn switch_account_refused_while_a_turn_is_in_flight() {
     }
     assert!(saw_notice, "a busy switch surfaces the idle notice");
 }
+
+#[tokio::test]
+async fn switch_account_refused_when_a_prompt_is_routed_before_the_wire_echo() {
+    // The wire-lag window the runtime_state mirror alone misses: a Prompt
+    // is committed (routed) but the CLI hasn't echoed
+    // session_state_changed=Running yet, so runtime_state is still
+    // unmirrored. Only the synchronous turn_pending marker catches it -
+    // the switch must refuse on turn_pending alone, without teardown.
+    let dir = tempdir().expect("tempdir");
+    let workspace = three_account_workspace(dir.path()).await;
+    let mut updates = workspace.subscribe().expect("subscribe");
+
+    let key = SessionKey::from_str_for_test("switch-prompt-race");
+    workspace
+        .get_agent_handle(SessionTarget::Session(key.clone()), SessionLaunchSettings::default())
+        .expect("initial spawn");
+    assert_eq!(workspace.config_dir_for(&key), Some(PathBuf::from("/tmp/forge-switch-a")));
+
+    // Route a Prompt: turn_pending is stamped synchronously, before any
+    // Running echo could be mirrored.
+    workspace
+        .dispatch(Command::Prompt {
+            key: key.clone(),
+            text: "hi".to_owned(),
+            attachments: Vec::new(),
+        })
+        .expect("dispatch prompt");
+    {
+        let domain = workspace.domain_session_for(&key).expect("domain");
+        let guard = domain.lock();
+        assert!(guard.turn_pending, "routing a Prompt stamps turn_pending synchronously");
+        assert!(
+            guard.runtime_state.is_none(),
+            "runtime_state is still unmirrored - only turn_pending covers this window",
+        );
+    }
+
+    workspace
+        .dispatch(Command::SwitchAccount {
+            key: key.clone(),
+            account_display_name: "Cacct".to_owned(),
+            launch_settings: SessionLaunchSettings::default(),
+        })
+        .expect("dispatch switch");
+
+    // Refused on turn_pending alone: still on account A, still live.
+    assert_eq!(
+        workspace.config_dir_for(&key),
+        Some(PathBuf::from("/tmp/forge-switch-a")),
+        "the just-committed turn is NOT torn down",
+    );
+    assert!(workspace.has_agent_for(&key), "the session keeps its live agent");
+
+    let mut saw_notice = false;
+    while let Ok(update) = updates.try_recv() {
+        if let SessionUpdate::SlashCommandError { message, .. } = update
+            && message.contains("Finish or cancel")
+        {
+            saw_notice = true;
+        }
+    }
+    assert!(saw_notice, "the racy switch surfaces the idle notice");
+}

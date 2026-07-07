@@ -473,11 +473,15 @@ impl SessionTask {
                 // Clear current_inbound_hop on turn boundary so the
                 // next user-initiated turn starts the outgoing peer
                 // chain at hop=1 instead of inheriting a stale
-                // forwarded-peer hop from the prior turn.
+                // forwarded-peer hop from the prior turn. Clear the
+                // turn-commit marker on the same boundary so the
+                // `/account` backstop stops refusing once the turn ends.
                 // `Message::Result` is the SDK's signal that the
                 // assistant turn has fully completed.
                 if matches!(msg, forge_primitives::Message::Result { .. }) {
-                    self.domain.lock().current_inbound_hop = None;
+                    let mut guard = self.domain.lock();
+                    guard.current_inbound_hop = None;
+                    guard.turn_pending = false;
                 }
                 self.emit(SessionUpdate::ChatAppended { session_id, msg });
             }
@@ -1176,10 +1180,12 @@ fn warn_no_session(key: &SessionKey, command: &'static str) {
 pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEvent) {
     // Always overwrite so /new / /login / /logout don't leave the
     // mirror stale on the second-Connected emission. A fresh identity
-    // has no turn in flight yet, so clear the runtime mirror too.
+    // has no turn in flight yet, so clear the runtime mirror + the
+    // turn-commit marker too.
     if let AgentEvent::Connected { session_id, .. } = event {
         domain.session_id = Some(SessionId::new(session_id.clone()));
         domain.runtime_state = None;
+        domain.turn_pending = false;
     }
     // Mirror runtime liveness from `session_state_changed` so the
     // account-switch backstop (`handle_switch_account`) sees an

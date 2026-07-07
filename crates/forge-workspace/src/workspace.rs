@@ -2291,6 +2291,18 @@ impl Workspace {
         }
         if let Some(key) = cmd.key() {
             let key = key.clone();
+            // Synchronous turn-commit marker: stamp `turn_pending` the
+            // moment a Prompt is routed - before the CLI echoes
+            // `session_state_changed` - so the `/account` backstop can't
+            // race a just-delivered peer / cron / gotify prompt whose
+            // `Running` state hasn't been mirrored yet. Cleared on the
+            // turn boundary / next Connected. Locks the domain and
+            // releases it before touching `command_senders`.
+            if matches!(cmd, Command::Prompt { .. })
+                && let Some(domain) = self.domain_session_for(&key)
+            {
+                domain.lock().turn_pending = true;
+            }
             let senders = self.command_senders.lock();
             if let Some(sender) = senders.get(&key) {
                 return sender.send(cmd).map_err(|_| DispatchError::SessionClosed(key));

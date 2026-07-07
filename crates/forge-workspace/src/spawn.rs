@@ -673,15 +673,21 @@ pub(crate) fn handle_switch_account(
     // flight, independent of the TUI idle-gate. A delivered peer / cron
     // / gotify prompt can start a turn between picker-open and Enter, and
     // tearing that turn down would silently drop pending interactions and
-    // strand inflight peer asks. Surface a notice; do NOT tear down.
+    // strand inflight peer asks. `turn_pending` is the synchronous
+    // marker (a Prompt is routed but its `Running` echo hasn't landed);
+    // `runtime_state` is the wire-confirmed liveness. OR them so the
+    // window between routing and the echo is covered. Surface a notice;
+    // do NOT tear down.
     let turn_in_flight = workspace.domain_session_for(&key).is_some_and(|domain| {
-        matches!(
-            domain.lock().runtime_state,
-            Some(
-                forge_primitives::RuntimeSessionState::Running
-                    | forge_primitives::RuntimeSessionState::RequiresAction
+        let guard = domain.lock();
+        guard.turn_pending
+            || matches!(
+                guard.runtime_state,
+                Some(
+                    forge_primitives::RuntimeSessionState::Running
+                        | forge_primitives::RuntimeSessionState::RequiresAction
+                )
             )
-        )
     });
     if turn_in_flight {
         try_emit(

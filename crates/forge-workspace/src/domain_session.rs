@@ -85,6 +85,14 @@ pub struct DomainSession {
     /// idle-gate alone can race a just-delivered peer / cron / gotify
     /// prompt). `None` until the first state message.
     pub runtime_state: Option<RuntimeSessionState>,
+    /// Synchronous turn-commit marker. Set the moment a `Command::Prompt`
+    /// is routed to this session (before the CLI echoes
+    /// `session_state_changed`), cleared on the turn boundary
+    /// (`Message::Result`) and on the next `Connected`. `runtime_state`
+    /// alone is wire-lagged - a just-routed prompt hasn't produced a
+    /// `Running` echo yet - so the `/account` backstop ORs this in to
+    /// avoid tearing down a turn that is committed but not yet mirrored.
+    pub turn_pending: bool,
 }
 
 impl DomainSession {
@@ -104,6 +112,7 @@ impl DomainSession {
             current_inbound_hop: None,
             spawned_force_new: false,
             runtime_state: None,
+            turn_pending: false,
         }
     }
 }
