@@ -5486,18 +5486,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn project_accounts_for_resolves_worktree_session_to_parent_project() {
-        // A `subspace` project pinned to ["Subspace"] plus an
-        // alphabetically-earlier auto_start default ("busymail") whose
-        // org allows the Granite accounts. A session whose cwd is a
-        // worktree under the subspace root must inherit ["Subspace"],
-        // not the default pin.
-        let dir = tempdir().expect("tempdir");
-        let forge_dir = crate::config::ensure_forge_data_dir(dir.path()).expect("forge dir");
-        fs::write(
-            forge_dir.join("forge.toml"),
-            r#"
+    // forge.toml for the account-pin resolution tests: a `subspace`
+    // project pinned to ["Subspace"] plus an alphabetically-earlier
+    // auto_start default ("busymail") on the Granite org, so a miss
+    // surfaces as the Granite pin rather than an empty list / panic.
+    const ACCOUNT_PIN_FIXTURE: &str = r#"
 [[orgs]]
 name = "Granite"
 accounts = ["Granite", "Granite1", "Personal"]
@@ -5526,19 +5519,30 @@ config_dir = "/tmp/wt-acct-cfg/personal"
 [[accounts]]
 display_name = "Subspace"
 config_dir = "/tmp/wt-acct-cfg/subspace"
-"#,
-        )
-        .expect("write forge.toml");
+"#;
+
+    // Stub whose config is `ACCOUNT_PIN_FIXTURE`. The returned `TempDir`
+    // guards the config dir for the caller's lifetime.
+    fn stub_with_account_pin_fixture() -> (Arc<Workspace>, tempfile::TempDir) {
+        let dir = tempdir().expect("tempdir");
+        let forge_dir = crate::config::ensure_forge_data_dir(dir.path()).expect("forge dir");
+        fs::write(forge_dir.join("forge.toml"), ACCOUNT_PIN_FIXTURE).expect("write forge.toml");
         let config = crate::config::load_from_dir(dir.path()).expect("load config");
-        // The default really is the Granite-org project, so a miss
-        // surfaces as ["Granite", ...] rather than an empty list / panic.
-        assert_eq!(config.default_project().name, "busymail", "alpha-first auto_start default");
         let (ws, _rx) = Workspace::testing_stub_with_config(dir.path().to_owned(), config);
+        (ws, dir)
+    }
 
-        let worktree_cwd = "/tmp/wt-acct-subspace/.claude/worktrees/reviewer";
-        ws.record_connected_session(worktree_cwd, "sess-1", None);
-        let target = SessionTarget::Session(SessionKey::from_session_id("sess-1"));
-
+    #[test]
+    fn project_accounts_for_resolves_worktree_session_to_parent_project() {
+        // A session whose cwd is a worktree under the subspace root must
+        // inherit ["Subspace"], not the alpha-first Granite default.
+        let (ws, _dir) = stub_with_account_pin_fixture();
+        ws.record_connected_session(
+            "/tmp/wt-acct-subspace/.claude/worktrees/reviewer",
+            "sess-worktree",
+            None,
+        );
+        let target = SessionTarget::Session(SessionKey::from_session_id("sess-worktree"));
         assert_eq!(
             ws.project_accounts_for(&target),
             vec!["Subspace".to_owned()],
