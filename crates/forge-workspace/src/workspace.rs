@@ -350,6 +350,13 @@ pub fn resolve_lead_session(sessions: &[SDKSessionInfo]) -> Option<&SDKSessionIn
 /// the app-support dir can't resolve or the DB can't open - forge then
 /// runs without durable Gotify subscriptions or dynamic workers this
 /// session (hard rule #15: no cwd fallback).
+///
+/// TEST INVARIANT: `app_support_dir` is not test-redirectable, so a
+/// `Workspace::new`-based test opens the user's REAL machine db. No such
+/// test may create a cron or ship a cron.toml fixture - either writes the
+/// real store or its seed marker. Cron tests use `testing_stub` +
+/// `install_db_for_test` (a tempdir db). A redirectable `open_db` is a
+/// tracked follow-up.
 fn open_db() -> Option<crate::store::Db> {
     let dir = match forge_sdk::app_support_dir() {
         Ok(dir) => dir,
@@ -2947,6 +2954,11 @@ impl Workspace {
     /// machine-local store. Every cron-list mutation routes through here -
     /// `cron__create` / `cron__delete`, the scheduler's fire-advance, and
     /// boot catch-up - so the in-memory set and the store never diverge.
+    ///
+    /// TEST INVARIANT: this writes `db`, which for a `Workspace::new`-based
+    /// test is the user's REAL machine db (`open_db` isn't test-
+    /// redirectable), so no such test may create a cron. Cron tests install
+    /// a tempdir db via `install_db_for_test`.
     pub(crate) fn with_crons_mut<R>(
         &self,
         f: impl FnOnce(&mut Vec<forge_primitives::CronEntry>) -> R,
