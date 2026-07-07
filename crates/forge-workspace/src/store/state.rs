@@ -353,6 +353,31 @@ mod tests {
         );
     }
 
+    #[test]
+    fn account_usage_writes_leave_the_spinner_untouched() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("db.redb");
+        {
+            let db = Db::open(&path).expect("open db");
+            set_spinner(&db, Some(SpinnerStyle::Ember)).expect("set spinner");
+            // A full usage-cache cycle. Two tables mean this never rewrites
+            // the spinner row - the whole reason the lock could go.
+            replace_account_usage(&db, &usage_map(&[("Granite", 42.0)])).expect("write usage");
+            replace_account_usage(&db, &usage_map(&[("Subspace", 10.0)])).expect("churn usage");
+            assert_eq!(
+                spinner(&db).expect("read"),
+                Some(SpinnerStyle::Ember),
+                "usage churn leaves the spinner row untouched",
+            );
+        }
+        let db = Db::open(&path).expect("reopen db");
+        assert_eq!(
+            spinner(&db).expect("read after reopen"),
+            Some(SpinnerStyle::Ember),
+            "the spinner survives usage churn across a restart",
+        );
+    }
+
     /// Build a machine-local state.toml fixture with the given fields.
     fn write_state_toml(
         config_dir: &Path,
