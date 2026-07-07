@@ -103,10 +103,11 @@ impl SessionTask {
         // not-running and re-spawns cleanly, instead of dispatching a
         // `Command::Prompt` to the now-closed channel (which fails with
         // `SessionClosed` and is silently dropped, quietly stopping
-        // durable crons for the project). Idempotent: a no-op when the
-        // workspace already released us (the command-channel-closed exit).
+        // durable crons for the project). Guarded on handle identity so
+        // a superseded task (its session re-spawned under the same key by
+        // an `/account` switch) doesn't wipe its successor's live entries.
         if let Some(workspace) = self.workspace.upgrade() {
-            workspace.release_session(&self.key);
+            workspace.release_session_if_current(&self.key, &self.handle);
         }
     }
 
@@ -1137,7 +1138,8 @@ pub(crate) fn execute_command_via_handle(
         | Command::DespawnWorker { .. }
         | Command::DeliverWorkerPrompt { .. }
         | Command::DeliverWorkerPromptToLead { .. }
-        | Command::DeliverGotifyMessage { .. }) => {
+        | Command::DeliverGotifyMessage { .. }
+        | Command::SwitchAccount { .. }) => {
             tracing::warn!(
                 target: "forge_workspace::session_task",
                 key = %key.as_str(),
@@ -1626,6 +1628,84 @@ mod tests {
             domain.lock().pending_cron_prompts.is_empty(),
             "pending_cron_prompts is drained after first-Connected",
         );
+    }
+
+    /// The account-switch re-spawn seeds `connected_once = true`, so
+    /// the new task's first Connected emits `SessionReplaced` (not a
+    /// fresh Connected) carrying the resumed history. The TUI reducer
+    /// resets the chat then re-seeds it from that history, so the same
+    /// conversation stays visible across the switch.
+    #[tokio::test]
+    async fn connected_once_seed_emits_session_replaced_with_resumed_history() {
+        use forge_primitives::Message;
+
+        let (workspace, mut update_rx) = crate::Workspace::testing_stub();
+        let session_key = SessionKey::from_session_id("switch-visible-uuid");
+        let domain =
+            Arc::new(parking_lot::Mutex::new(DomainSession::new(session_key.clone(), None)));
+
+        let (handle, _agent_cmd_rx) = Agent::testing_stub();
+        let (_cmd_tx, command_rx) =
+            tokio::sync::mpsc::unbounded_channel::<crate::protocol::Command>();
+        let update_tx = workspace.update_sender();
+        let mut task = SessionTask {
+            key: session_key.clone(),
+            handle: Arc::new(handle),
+            command_rx,
+            domain: Arc::clone(&domain),
+            update_tx,
+            spawn_key: None,
+            // The seed a forced-account re-spawn installs.
+            connected_once: true,
+            workspace: Arc::downgrade(&workspace),
+        };
+
+        // A one-message resumed history (the --resume backfill).
+        let history = vec![Message::System {
+            subtype: "info".to_owned(),
+            session_id: Some(session_key.as_str().to_owned()),
+            data: serde_json::json!({ "body": "earlier turn" }),
+        }];
+
+        task.translate_event(AgentEvent::Connected {
+            session_id: session_key.as_str().to_owned(),
+            cwd: "/tmp/switch".to_owned(),
+            current_model: forge_primitives::CurrentModel {
+                resolved_id: "claude".to_owned(),
+                display_name_short: "claude".to_owned(),
+                display_name_long: "claude".to_owned(),
+                requested_id: None,
+                catalog_id: None,
+                supports_effort: false,
+                supported_effort_levels: Vec::new(),
+                supports_fast_mode: None,
+                supports_auto_mode: None,
+                supports_adaptive_thinking: None,
+                is_authoritative: true,
+            },
+            available_models: Vec::new(),
+            mode: None,
+            history_updates: Some(history),
+        });
+
+        let mut replaced_history_len = None;
+        let mut saw_plain_connected = false;
+        while let Ok(u) = update_rx.try_recv() {
+            match u {
+                SessionUpdate::SessionReplaced { key, history, .. } => {
+                    assert_eq!(key, session_key, "SessionReplaced targets the switched session");
+                    replaced_history_len = Some(history.len());
+                }
+                SessionUpdate::Connected { .. } => saw_plain_connected = true,
+                _ => {}
+            }
+        }
+        assert_eq!(
+            replaced_history_len,
+            Some(1),
+            "connected_once=true emits SessionReplaced carrying the resumed conversation",
+        );
+        assert!(!saw_plain_connected, "an account switch must not emit a fresh Connected");
     }
 
     /// Common harness for the `execute_command_via_handle` tests

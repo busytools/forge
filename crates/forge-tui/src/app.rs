@@ -1,3 +1,4 @@
+pub(crate) mod account_picker;
 pub(crate) mod active_bucket_scope;
 mod cache_policy;
 pub(crate) mod cli_version;

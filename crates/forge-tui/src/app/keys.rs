@@ -240,6 +240,11 @@ pub(super) fn dispatch_key_by_focus(app: &mut App, key: KeyEvent) -> bool {
         return crate::app::spinner_picker::handle_key(app, key);
     }
 
+    // The `/account` picker overlay is modal too.
+    if app.account_picker.is_some() {
+        return crate::app::account_picker::handle_key(app, key);
+    }
+
     // Launchpad has its own keymap and intentionally swallows every
     // other key (including Ctrl+B / Ctrl+E and printable input) so
     // nothing leaks into the chat input or pane toggles while the

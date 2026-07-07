@@ -32,6 +32,7 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
         }
     }
     match parsed.name {
+        "/account" => handle_account_submit(app, &parsed.args),
         "/compact" => handle_compact_submit(app, &parsed.args),
         "/diff" => handle_diff_submit(app, &parsed.args),
         "/effort" => handle_effort_submit(app, &parsed.args),
@@ -45,6 +46,46 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
         "/spinner" => handle_spinner_submit(app, &parsed.args),
         _ => handle_unknown_submit(app, parsed.name),
     }
+}
+
+/// `/account` - open the account picker to switch the active session
+/// to a different account for its project. Available only when the
+/// session is idle (no in-flight turn); mid-turn it is a no-op with a
+/// short notice. The picker lists the project's allowed accounts plus
+/// their live rate-limit state; picking one re-spawns the session
+/// under that account and resumes the same conversation.
+fn handle_account_submit(app: &mut App, args: &[&str]) -> bool {
+    use crate::agent::model::RuntimeSessionState;
+
+    if !args.is_empty() {
+        push_system_message(app, "Usage: /account");
+        return true;
+    }
+    if app.runtime_session_state() != Some(RuntimeSessionState::Idle) {
+        push_system_message(app, "Finish or cancel the current turn before switching accounts.");
+        return true;
+    }
+    let Some(project_name) = app.active_project_name() else {
+        push_system_message(app, "No active project to switch accounts for.");
+        return true;
+    };
+    let Some(workspace) = app.workspace.clone() else {
+        return true;
+    };
+    let allowed = workspace
+        .list_projects()
+        .into_iter()
+        .find(|view| view.name == project_name)
+        .map(|view| view.accounts)
+        .unwrap_or_default();
+    let current = app.active_account_display_name();
+    let rows = workspace.project_accounts_snapshot(&allowed, current.as_deref());
+    if rows.is_empty() {
+        push_system_message(app, "No accounts configured for this project.");
+        return true;
+    }
+    crate::app::account_picker::open(app, rows);
+    true
 }
 
 /// `/diff [target]` - open the full-screen diff overlay.

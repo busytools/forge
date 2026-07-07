@@ -189,6 +189,63 @@ mod tests {
     }
 
     #[test]
+    fn account_command_blocked_while_running_emits_idle_notice() {
+        use crate::agent::model::RuntimeSessionState;
+        let mut app = App::test_default();
+        app.set_runtime_session_state(Some(RuntimeSessionState::Running));
+
+        let consumed = try_handle_submit(&mut app, "/account");
+
+        assert!(consumed, "/account is handled locally");
+        assert!(app.account_picker.is_none(), "no picker opens while a turn is in flight");
+        let last = app.messages().last().expect("a system notice");
+        assert!(matches!(last.role, MessageRole::System(_)));
+        let text: String = last
+            .blocks
+            .iter()
+            .filter_map(|b| match b {
+                MessageBlock::Text(t) => Some(t.markdown.full_text()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            text.contains("Finish or cancel"),
+            "the notice names the idle requirement; got: {text}",
+        );
+    }
+
+    #[test]
+    fn account_command_passes_idle_gate_when_idle() {
+        use crate::agent::model::RuntimeSessionState;
+        let mut app = App::test_default();
+        app.set_runtime_session_state(Some(RuntimeSessionState::Idle));
+
+        let consumed = try_handle_submit(&mut app, "/account");
+
+        assert!(consumed);
+        // With no project/accounts wired into the test App the picker
+        // can't populate, but the mid-turn notice is NOT what an idle
+        // session hits - proving the gate distinguishes Idle from Running.
+        let text: String = app
+            .messages()
+            .last()
+            .map(|m| {
+                m.blocks
+                    .iter()
+                    .filter_map(|b| match b {
+                        MessageBlock::Text(t) => Some(t.markdown.full_text()),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert!(
+            !text.contains("Finish or cancel"),
+            "an idle session does not hit the mid-turn gate; got: {text}",
+        );
+    }
+
+    #[test]
     fn advertised_command_is_forwarded() {
         let mut app = App::test_default();
         app.try_active_bucket_mut().unwrap().available_commands =
