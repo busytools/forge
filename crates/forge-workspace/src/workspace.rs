@@ -6669,11 +6669,8 @@ mod tests {
     #[test]
     fn fire_due_crons_removes_a_cron_whose_project_is_gone() {
         use forge_primitives::cron::{CronEntry, CronId, CronKind};
-        // Unique config dir (still no projects seeded): push_cron below
-        // persists to disk, so avoid the no-arg stub's shared /tmp path,
-        // which would collide with other stub tests under parallelism.
-        let dir = tempdir().expect("tempdir");
-        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        // No db installed, so push_cron stays in memory - no config dir needed.
+        let (ws, _rx) = Workspace::testing_stub();
         let now = std::time::SystemTime::now();
 
         ws.push_cron(CronEntry {
