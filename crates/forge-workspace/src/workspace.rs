@@ -5566,6 +5566,21 @@ config_dir = "/tmp/wt-acct-cfg/subspace"
     }
 
     #[test]
+    fn project_accounts_for_falls_back_to_default_for_unknown_cwd() {
+        // A cwd under no configured project degrades to the default
+        // project's pin (the alpha-first Granite auto_start default) so
+        // the picker always has a non-empty allow-list.
+        let (ws, _dir) = stub_with_account_pin_fixture();
+        ws.record_connected_session("/tmp/unrelated-elsewhere", "sess-unknown", None);
+        let target = SessionTarget::Session(SessionKey::from_session_id("sess-unknown"));
+        assert_eq!(
+            ws.project_accounts_for(&target),
+            vec!["Granite".to_owned(), "Granite1".to_owned(), "Personal".to_owned()],
+            "an unknown cwd falls back to the default project's accounts",
+        );
+    }
+
+    #[test]
     fn durable_gotify_subscription_persists_ephemeral_stays_in_memory() {
         use forge_primitives::GotifySubscription;
 
