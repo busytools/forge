@@ -3052,6 +3052,57 @@ impl Workspace {
         removed
     }
 
+    /// Remove the worker `label`'s Gotify subscriptions in `project_key`
+    /// from both the active set and the redb store, scoped to
+    /// `(project name, team_role == Some(label))`. Backs
+    /// `spawn::teardown_worker` so a despawned durable dynamic worker can't
+    /// orphan a persisted sub. Subscriptions are project-scoped by NAME, so
+    /// the key is resolved to a name via the same view lookup
+    /// `resolve_identity` uses when subscribing.
+    pub(crate) fn remove_gotify_subscriptions_for_worker(
+        &self,
+        project_key: &ProjectKey,
+        label: &str,
+    ) {
+        let Some(project_name) =
+            self.list_projects().into_iter().find(|v| v.key == *project_key).map(|v| v.name)
+        else {
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                project = %project_key.as_str(),
+                label = %label,
+                "could not resolve a project name at worker teardown; its Gotify subs may be stranded",
+            );
+            return;
+        };
+        let removed_ids: Vec<uuid::Uuid> = {
+            let mut subs = self.gotify_subs.lock();
+            let mut removed = Vec::new();
+            subs.retain(|s| {
+                let owned = s.project == project_name && s.team_role.as_deref() == Some(label);
+                if owned {
+                    removed.push(s.id);
+                }
+                !owned
+            });
+            removed
+        };
+        if removed_ids.is_empty() {
+            return;
+        }
+        if let Some(db) = self.db.lock().as_ref() {
+            for id in removed_ids {
+                if let Err(error) = crate::store::gotify::remove(db, id) {
+                    tracing::warn!(
+                        target: "forge_workspace::workspace",
+                        %error,
+                        "removing a persisted Gotify subscription failed",
+                    );
+                }
+            }
+        }
+    }
+
     /// The active subscriptions for `project`. Backs `gotify__list` and
     /// the Inspector GOTIFY snapshot, which scopes by the active tab's
     /// stamped project name (mirroring [`Self::crons_for_project`]).
@@ -5348,6 +5399,107 @@ mod tests {
             .expect("list")
         };
         assert!(rows.is_empty(), "despawn deletes the persisted dynamic-worker row");
+    }
+
+    /// `remove_gotify_subscriptions_for_worker` drops only the target
+    /// worker's subs (matched by project name + label) from both the
+    /// in-memory set and redb; the lead's sub and a sibling worker's sub
+    /// survive, proving the removal is scoped, not a blanket project wipe.
+    #[test]
+    fn remove_gotify_subscriptions_for_worker_is_scoped_to_project_and_label() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let dir = tempdir().expect("tempdir");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        ws.seed_test_project_with_static_workers("forge", "/tmp/gotify-durability", &[]);
+        let view_key = ws
+            .list_projects()
+            .into_iter()
+            .find(|v| v.name == "forge")
+            .map(|v| v.key)
+            .expect("seeded project view");
+
+        let mut scratch_sub = gotify_sub("forge", &[], None);
+        scratch_sub.team_role = Some("scratch".to_owned());
+        let lead_sub = gotify_sub("forge", &[], None);
+        let mut sibling_sub = gotify_sub("forge", &[], None);
+        sibling_sub.team_role = Some("other".to_owned());
+        ws.add_gotify_subscription(scratch_sub.clone(), true);
+        ws.add_gotify_subscription(lead_sub.clone(), true);
+        ws.add_gotify_subscription(sibling_sub.clone(), true);
+
+        ws.remove_gotify_subscriptions_for_worker(&view_key, "scratch");
+
+        let in_mem = ws.gotify_subscriptions_for_project("forge");
+        assert!(
+            in_mem.iter().all(|s| s.id != scratch_sub.id),
+            "the scratch worker's sub is gone from memory",
+        );
+        assert!(
+            in_mem.iter().any(|s| s.id == lead_sub.id)
+                && in_mem.iter().any(|s| s.id == sibling_sub.id),
+            "the lead sub and the sibling worker's sub survive in memory",
+        );
+
+        let persisted = {
+            let guard = ws.db.lock();
+            crate::store::gotify::list(guard.as_ref().expect("db installed")).expect("list")
+        };
+        assert!(
+            persisted.iter().all(|s| s.id != scratch_sub.id),
+            "the scratch worker's sub is gone from redb",
+        );
+        assert!(
+            persisted.iter().any(|s| s.id == lead_sub.id)
+                && persisted.iter().any(|s| s.id == sibling_sub.id),
+            "the survivors are still persisted in redb",
+        );
+    }
+
+    /// `teardown_worker` (the shared Projects-pane close + workers__despawn
+    /// routine) drops the worker's durable Gotify subs alongside its
+    /// dynamic-worker row; the lead's sub survives.
+    #[tokio::test]
+    async fn teardown_worker_drops_the_workers_durable_gotify_subs() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let dir = tempdir().expect("tempdir");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        ws.seed_test_project_with_static_workers("forge", "/tmp/gotify-durability", &[]);
+        let view_key = ws
+            .list_projects()
+            .into_iter()
+            .find(|v| v.name == "forge")
+            .map(|v| v.key)
+            .expect("seeded project view");
+        ws.insert_live_worker(&view_key, live_worker_entry("scratch", "worker-1"));
+
+        let mut scratch_sub = gotify_sub("forge", &[], None);
+        scratch_sub.team_role = Some("scratch".to_owned());
+        let lead_sub = gotify_sub("forge", &[], None);
+        ws.add_gotify_subscription(scratch_sub.clone(), true);
+        ws.add_gotify_subscription(lead_sub.clone(), true);
+
+        crate::spawn::teardown_worker(&ws, &view_key, "scratch");
+
+        let in_mem = ws.gotify_subscriptions_for_project("forge");
+        assert!(
+            in_mem.iter().all(|s| s.id != scratch_sub.id),
+            "teardown removed the worker's sub from memory",
+        );
+        assert!(in_mem.iter().any(|s| s.id == lead_sub.id), "the lead sub survives teardown");
+
+        let persisted = {
+            let guard = ws.db.lock();
+            crate::store::gotify::list(guard.as_ref().expect("db installed")).expect("list")
+        };
+        assert!(
+            persisted.iter().all(|s| s.id != scratch_sub.id),
+            "teardown removed the worker's sub from redb",
+        );
+        assert!(persisted.iter().any(|s| s.id == lead_sub.id), "the lead sub is still persisted");
     }
 
     /// #3: persisting reports failure (rather than swallowing it) when
