@@ -94,6 +94,7 @@ impl CronFacade for ProdCronFacade {
             created_at: now,
             last_fire: None,
             next_fire,
+            team_role: cx.worker_label,
         };
         ws.push_cron(entry.clone());
         Ok(entry)
@@ -102,13 +103,18 @@ impl CronFacade for ProdCronFacade {
     fn list_crons(&self, caller: &SessionKey) -> Vec<CronEntry> {
         let Some(ws) = self.workspace.upgrade() else { return Vec::new() };
         let Some(cx) = caller_context(&ws, caller) else { return Vec::new() };
+        // Symmetric: every caller sees only its own crons - a lead
+        // (`worker_label == None`) the lead crons, a worker its own.
         ws.crons_for_project(&cx.project_name)
+            .into_iter()
+            .filter(|c| c.team_role == cx.worker_label)
+            .collect()
     }
 
     fn delete_cron(&self, caller: &SessionKey, id: &CronId) -> Result<bool, CronDeleteError> {
         let ws = self.workspace.upgrade().ok_or(CronDeleteError::UnknownCallerProject)?;
         let cx = caller_context(&ws, caller).ok_or(CronDeleteError::UnknownCallerProject)?;
-        Ok(ws.remove_cron(&cx.project_name, id))
+        Ok(ws.remove_cron_owned_by(&cx.project_name, id, cx.worker_label.as_deref()))
     }
 }
 
@@ -155,6 +161,7 @@ impl CronFacade for MockCronFacade {
             created_at: SystemTime::UNIX_EPOCH,
             last_fire: None,
             next_fire: SystemTime::UNIX_EPOCH,
+            team_role: None,
         })
     }
 
@@ -165,5 +172,86 @@ impl CronFacade for MockCronFacade {
     fn delete_cron(&self, caller: &SessionKey, id: &CronId) -> Result<bool, CronDeleteError> {
         self.delete_calls.lock().push((caller.clone(), id.clone()));
         self.delete_result.lock().clone().unwrap_or(Ok(false))
+    }
+}
+
+/// Owner-scoping tests over a real `Workspace` (the mock above can't
+/// exercise `caller_context`). A project with a lead session and a live
+/// worker drives create/list/delete through `ProdCronFacade`.
+#[cfg(test)]
+mod prod_facade_tests {
+    use super::*;
+    use crate::WorkerEntry;
+    use forge_primitives::WorkerLiveness;
+
+    fn worker_entry(label: &str, session_id: &str) -> WorkerEntry {
+        WorkerEntry {
+            label: label.to_owned(),
+            charter: "review".to_owned(),
+            session_key: SessionKey::from_session_id(session_id),
+            status: WorkerLiveness::Running,
+            spawned_at: SystemTime::UNIX_EPOCH,
+            spawned_by_session_id: "lead-uuid".to_owned(),
+            needs_tag: false,
+            is_git_repo_at_spawn: false,
+            diagnostic: None,
+            kick: None,
+        }
+    }
+
+    fn fixture() -> (Arc<Workspace>, Arc<dyn CronFacade>, SessionKey, SessionKey) {
+        let (ws, _rx) = Workspace::testing_stub();
+        ws.seed_test_project_with_static_workers("myproj", "/tmp/b2-myproj", &[]);
+        let key =
+            ws.list_projects().into_iter().find(|v| v.name == "myproj").expect("seeded view").key;
+        ws.record_connected_session("/tmp/b2-myproj", "lead-uuid", None);
+        ws.insert_live_worker(&key, worker_entry("reviewer", "worker-uuid"));
+        let facade = ProdCronFacade::from_arc(&ws);
+        (
+            ws,
+            facade,
+            SessionKey::from_session_id("lead-uuid"),
+            SessionKey::from_session_id("worker-uuid"),
+        )
+    }
+
+    fn daily(prompt: &str) -> (CronKind, String) {
+        (CronKind::Recurring("0 9 * * *".to_owned()), prompt.to_owned())
+    }
+
+    #[test]
+    fn create_stamps_owner_and_list_delete_are_owner_scoped() {
+        let (_ws, facade, lead, worker) = fixture();
+
+        let (lk, lp) = daily("lead-standup");
+        let lead_cron = facade.create_cron(&lead, lk, lp).expect("lead create");
+        assert_eq!(lead_cron.team_role, None, "a lead cron is owner-less");
+        let (wk, wp) = daily("worker-standup");
+        let worker_cron = facade.create_cron(&worker, wk, wp).expect("worker create");
+        assert_eq!(
+            worker_cron.team_role.as_deref(),
+            Some("reviewer"),
+            "a worker cron is stamped with its label",
+        );
+
+        let worker_list = facade.list_crons(&worker);
+        assert_eq!(worker_list.len(), 1, "the worker sees only its own cron");
+        assert_eq!(worker_list[0].id, worker_cron.id);
+        let lead_list = facade.list_crons(&lead);
+        assert_eq!(lead_list.len(), 1, "the lead sees only lead crons");
+        assert_eq!(lead_list[0].id, lead_cron.id);
+
+        assert!(
+            !facade.delete_cron(&worker, &lead_cron.id).expect("delete"),
+            "a worker cannot delete a lead's cron",
+        );
+        assert!(
+            !facade.delete_cron(&lead, &worker_cron.id).expect("delete"),
+            "a lead cannot delete a worker's cron",
+        );
+        assert!(
+            facade.delete_cron(&worker, &worker_cron.id).expect("delete"),
+            "a worker deletes its own cron",
+        );
     }
 }

@@ -82,6 +82,11 @@ pub struct CronEntry {
     /// Absolute instant of the next scheduled fire. For `Once` this
     /// equals the kind's instant.
     pub next_fire: SystemTime,
+    /// Owner: `None` for a lead cron (also every seeded / legacy entry),
+    /// `Some(label)` for a worker's. Routes the fire to its owner and
+    /// scopes `cron__list` / `cron__delete` to that owner.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team_role: Option<String>,
 }
 
 #[cfg(test)]
@@ -111,6 +116,7 @@ mod tests {
             created_at: epoch(1_700_000_000),
             last_fire: None,
             next_fire: epoch(1_700_032_400),
+            team_role: None,
         };
         let json = serde_json::to_string(&entry).expect("serialize");
         let back: CronEntry = serde_json::from_str(&json).expect("deserialize");
@@ -127,6 +133,7 @@ mod tests {
             created_at: epoch(1_700_000_000),
             last_fire: Some(epoch(1_700_050_000)),
             next_fire: epoch(1_700_100_000),
+            team_role: None,
         };
         let json = serde_json::to_string(&entry).expect("serialize");
         let back: CronEntry = serde_json::from_str(&json).expect("deserialize");

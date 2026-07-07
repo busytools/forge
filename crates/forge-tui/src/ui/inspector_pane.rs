@@ -2207,6 +2207,7 @@ mod tests {
             created_at: created,
             last_fire: None,
             next_fire: next,
+            team_role: None,
         };
         let entry = forge_cron_to_schedule_entry(&cron);
         assert_eq!(entry.label, "0 9 * * *", "recurring cron shows its expression");
@@ -2231,6 +2232,7 @@ mod tests {
             created_at: SystemTime::UNIX_EPOCH,
             last_fire: None,
             next_fire: at,
+            team_role: None,
         };
         let entry = forge_cron_to_schedule_entry(&cron);
         assert_eq!(entry.label, "once", "run-once cron labels as `once`");
@@ -2270,6 +2272,7 @@ mod tests {
             created_at: SystemTime::UNIX_EPOCH,
             last_fire: None,
             next_fire: SystemTime::now() + Duration::from_secs(3600),
+            team_role: None,
         }];
 
         let mut lines = Vec::new();
@@ -2296,6 +2299,7 @@ mod tests {
             created_at: SystemTime::UNIX_EPOCH,
             last_fire: None,
             next_fire: SystemTime::now() + Duration::from_secs(3600),
+            team_role: None,
         }];
         assert!(app.schedules().is_empty(), "precondition: no cloud wakeups");
 

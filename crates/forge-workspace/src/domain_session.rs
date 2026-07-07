@@ -46,19 +46,10 @@ pub struct DomainSession {
     /// drains atomically on `AgentEvent::Connected` and re-dispatches
     /// each as a regular `Command::Prompt`. Empty in steady state.
     pub pending_peer_prompts: Vec<WrappedPrompt>,
-    /// Plain cron prompts targeted at this session that arrived while it
-    /// was still spawning (pre-Connected). A due cron whose project
-    /// session is asleep pushes its prompt here and dispatches
-    /// `Command::SpawnProject`; `SessionTask` drains on
-    /// `AgentEvent::Connected` and re-dispatches each as a regular
-    /// `Command::Prompt` (a plain user turn, not a peer envelope). Empty
-    /// in steady state.
-    pub pending_cron_prompts: Vec<String>,
     /// Gotify notifications targeted at this session that arrived while
-    /// it was still spawning (pre-Connected). Same drain path as
-    /// [`Self::pending_cron_prompts`], but typed - `SessionTask` emits a
-    /// chat echo and re-dispatches each as a plain user turn on
-    /// `AgentEvent::Connected`. Empty in steady state.
+    /// it was still spawning (pre-Connected). `SessionTask` drains on
+    /// `AgentEvent::Connected`, emits a chat echo, and re-dispatches each
+    /// as a plain user turn. Empty in steady state.
     pub pending_gotify_prompts: Vec<GotifyNotification>,
     /// Hop count of the most-recent peer wrapper the LLM is currently
     /// processing. Stamped by `Workspace::deliver_peer_prompt` with
@@ -102,7 +93,6 @@ impl DomainSession {
             conn,
             pending_interactions: HashMap::new(),
             pending_peer_prompts: Vec::new(),
-            pending_cron_prompts: Vec::new(),
             pending_gotify_prompts: Vec::new(),
             current_inbound_hop: None,
             spawned_force_new: false,
@@ -119,7 +109,6 @@ impl std::fmt::Debug for DomainSession {
             .field("session_id", &self.session_id)
             .field("pending_interactions_count", &self.pending_interactions.len())
             .field("pending_peer_prompts_count", &self.pending_peer_prompts.len())
-            .field("pending_cron_prompts_count", &self.pending_cron_prompts.len())
             .field("pending_gotify_prompts_count", &self.pending_gotify_prompts.len())
             .field("current_inbound_hop", &self.current_inbound_hop)
             .finish_non_exhaustive()

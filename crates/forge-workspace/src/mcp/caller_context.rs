@@ -32,6 +32,9 @@ pub(crate) struct CallerContext {
     pub lead_session_view: Option<SessionView>,
     /// True when `caller` itself IS the project's lead session.
     pub is_lead: bool,
+    /// The caller's worker label when it is a live worker, else `None`
+    /// (a lead or other session). Stamps + scopes a caller's crons.
+    pub worker_label: Option<String>,
 }
 
 /// Resolve a caller's project context. Walks [`Workspace::list_projects`]
@@ -60,7 +63,8 @@ fn caller_context_in_view(
     caller: &SessionKey,
 ) -> Option<CallerContext> {
     let live = ws.list_live_workers(&view.key);
-    let is_live_worker = live.iter().any(|w| w.session_key == *caller);
+    let worker_label = live.iter().find(|w| w.session_key == *caller).map(|w| w.label.clone());
+    let is_live_worker = worker_label.is_some();
     // Lead = first catalog session that isn't a live worker. Mirrors
     // peers/facade.rs::lead_session_view and workers/facade.rs::caller_project.
     let lead_session_view =
@@ -80,6 +84,7 @@ fn caller_context_in_view(
         project_path: view.path.clone(),
         lead_session_view,
         is_lead,
+        worker_label,
     })
 }
 
@@ -135,6 +140,7 @@ mod tests {
         assert_eq!(cx.project_org, "me");
         assert_eq!(cx.project_key.as_str(), "myproj");
         assert!(!cx.is_lead, "worker is not the lead");
+        assert_eq!(cx.worker_label.as_deref(), Some("reviewer"), "a live worker carries its label");
         assert_eq!(
             cx.lead_session_view.as_ref().map(|v| v.session.clone()),
             Some(lead.session),
@@ -148,6 +154,7 @@ mod tests {
         let cx = caller_context_in_view(&ws, &view, &lead.session)
             .expect("lead caller resolves to its project");
         assert!(cx.is_lead, "lead caller flagged as lead");
+        assert_eq!(cx.worker_label, None, "a lead has no worker label");
         assert_eq!(cx.lead_session_view.as_ref().map(|v| v.session.clone()), Some(lead.session),);
     }
 
