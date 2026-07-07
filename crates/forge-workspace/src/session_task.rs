@@ -1184,14 +1184,14 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
     // Mirror runtime liveness from `session_state_changed` so the
     // account-switch backstop (`handle_switch_account`) sees an
     // in-flight turn authoritatively, independent of the TUI gate.
+    // Reuse the canonical decoder parser rather than re-inlining it.
     if let AgentEvent::SdkMessage {
         msg: forge_primitives::Message::System { subtype, data, .. },
         ..
     } = event
         && subtype == "session_state_changed"
-        && let Some(state) = data.get("state").and_then(|v| {
-            serde_json::from_value::<forge_primitives::RuntimeSessionState>(v.clone()).ok()
-        })
+        && let Some(state) =
+            forge_agent::translate::state_parsing::parse_runtime_session_state(data.get("state"))
     {
         domain.runtime_state = Some(state);
     }
