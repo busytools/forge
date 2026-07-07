@@ -1724,6 +1724,68 @@ mod tests {
         assert!(!saw_plain_connected, "an account switch must not emit a fresh Connected");
     }
 
+    /// A forced-account switch tears the live session down BEFORE
+    /// re-spawning, so if the re-spawned agent fails to connect the
+    /// session is momentarily agent-less. That failure must be
+    /// recoverable (`ConnectionFailed { fatal: false }`), and the task's
+    /// exit must leave no lingering pooled agent under the key. (The
+    /// synchronous `get_agent_handle` Err arm is defensive/near-
+    /// unreachable - `Agent::spawn` is infallible - so this covers the
+    /// realistic async failure path instead.)
+    #[tokio::test]
+    async fn switch_respawn_connection_failure_is_nonfatal_and_releases_the_session() {
+        let (workspace, mut update_rx) = crate::Workspace::testing_stub();
+        let key = SessionKey::from_session_id("switch-fail-uuid");
+
+        let (handle, _agent_cmds) = Agent::testing_stub();
+        let arc = Arc::new(handle);
+        // Register the re-spawned session under `key` with `arc` pooled -
+        // the SAME Arc the task holds, so the exit cleanup recognises it.
+        workspace.pool.lock().insert(
+            key.clone(),
+            crate::workspace::PooledAgent {
+                handle: Arc::clone(&arc),
+                account: crate::account::AccountKey("test".to_owned()),
+            },
+        );
+        let domain = workspace.register_domain_session(key.clone(), Some(Arc::clone(&arc)));
+        let (_cmd_tx, command_rx) =
+            tokio::sync::mpsc::unbounded_channel::<crate::protocol::Command>();
+
+        let mut task = SessionTask {
+            key: key.clone(),
+            handle: arc,
+            command_rx,
+            domain,
+            update_tx: workspace.update_sender(),
+            spawn_key: None,
+            connected_once: true, // a forced-account switch re-spawn
+            workspace: Arc::downgrade(&workspace),
+        };
+
+        // The re-spawned agent fails to connect.
+        task.translate_event(AgentEvent::ConnectionFailed { message: "spawn failed".to_owned() });
+
+        let mut saw_nonfatal = false;
+        while let Ok(update) = update_rx.try_recv() {
+            if let SessionUpdate::ConnectionFailed { key: failed_key, fatal, .. } = update {
+                assert!(!fatal, "a failed switch re-spawn is recoverable, not fatal");
+                assert_eq!(failed_key, key);
+                saw_nonfatal = true;
+            }
+        }
+        assert!(saw_nonfatal, "the failed re-spawn emits ConnectionFailed with fatal=false");
+
+        // The task then exits (dead event stream) and releases the
+        // session - no lingering agent under the key.
+        assert!(workspace.pool.lock().contains_key(&key), "precondition: pooled before exit");
+        task.run().await;
+        assert!(
+            !workspace.pool.lock().contains_key(&key),
+            "a failed re-spawn leaves no lingering pooled agent",
+        );
+    }
+
     /// Common harness for the `execute_command_via_handle` tests
     /// below: build a fresh stub handle + drain channel, return both.
     fn stub_handle_with_rx()
