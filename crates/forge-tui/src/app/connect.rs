@@ -532,38 +532,6 @@ mod tests {
         assert_eq!(app.spinner_style, forge_workspace::SpinnerStyle::Ember);
     }
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn create_app_spinner_override_wins_over_forge_toml_default() {
-        let config_dir = tempfile::tempdir().expect("tempdir");
-        let project_dir = tempfile::tempdir().expect("project tempdir");
-        let project_path_str = project_dir.path().to_string_lossy().replace('\\', "/");
-        std::fs::write(
-            forge_dir(config_dir.path()).join("forge.toml"),
-            format!(
-                "[[orgs]]\nname = \"Default\"\naccounts = [\"Subspace\"]\n\n[[orgs.projects]]\nname = \"forge-test\"\npath = \"{project_path_str}\"\nauto_start = true\n\n[[accounts]]\ndisplay_name = \"Subspace\"\nconfig_dir = \"~/.claude-subspace\"\n\n[ui]\nspinner = \"star\"\n"
-            ),
-        )
-        .expect("write forge.toml");
-        // The persisted state override must win over the forge.toml [ui]
-        // default. Seeded via the synced pre-move path since the live
-        // state file is machine-local (not injectable at Workspace::new).
-        std::fs::write(
-            forge_dir(config_dir.path()).join("state.toml"),
-            "version = 1\nspinner = \"ember\"\n",
-        )
-        .expect("write state.toml");
-        let workspace =
-            forge_workspace::Workspace::new(config_dir.path().to_owned()).await.expect("workspace");
-        let cli = cli_with(None);
-        let local = tokio::task::LocalSet::new();
-        let app = local.run_until(async { super::create_app(&cli, Arc::new(workspace)) }).await;
-        assert_eq!(
-            app.spinner_style,
-            forge_workspace::SpinnerStyle::Ember,
-            "state.toml override must win over the forge.toml [ui] default",
-        );
-    }
-
     #[test]
     fn startup_launch_settings_default_force_new_false() {
         // The boundary: only the boot dispatch stamps force_new. The
