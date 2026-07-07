@@ -6,24 +6,12 @@
 //! synced across the user's Macs.
 
 use anyhow::Context;
-use forge_primitives::cron::{CronEntry, CronId};
+use forge_primitives::cron::CronEntry;
 use redb::{ReadableTable, TableDefinition};
 
 use super::Db;
 
 const CRONS: TableDefinition<&str, &[u8]> = TableDefinition::new("crons");
-
-/// Persist a cron, replacing any prior record with the same id.
-pub fn insert(db: &Db, cron: &CronEntry) -> anyhow::Result<()> {
-    let value = serde_json::to_vec(cron).context("serialize cron")?;
-    let txn = db.database().begin_write()?;
-    {
-        let mut table = txn.open_table(CRONS)?;
-        table.insert(cron.id.as_str(), value.as_slice())?;
-    }
-    txn.commit()?;
-    Ok(())
-}
 
 /// Every persisted cron.
 pub fn list(db: &Db) -> anyhow::Result<Vec<CronEntry>> {
@@ -51,17 +39,6 @@ pub fn list(db: &Db) -> anyhow::Result<Vec<CronEntry>> {
         }
     }
     Ok(out)
-}
-
-/// Delete a cron by id. Returns whether a record existed.
-pub fn remove(db: &Db, id: &CronId) -> anyhow::Result<bool> {
-    let txn = db.database().begin_write()?;
-    let existed = {
-        let mut table = txn.open_table(CRONS)?;
-        table.remove(id.as_str())?.is_some()
-    };
-    txn.commit()?;
-    Ok(existed)
 }
 
 /// Overwrite the table with `crons`: clear every existing row, insert the
@@ -152,7 +129,7 @@ fn mark_seeded(txn: &redb::WriteTransaction) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use forge_primitives::cron::CronKind;
+    use forge_primitives::cron::{CronId, CronKind};
     use std::time::{Duration, SystemTime};
     use tempfile::tempdir;
 
@@ -174,31 +151,11 @@ mod tests {
     }
 
     #[test]
-    fn cron_store_round_trip() {
-        let dir = tempdir().expect("tempdir");
-        let db = Db::open(&dir.path().join("db.redb")).expect("open db");
-
-        let c1 = cron("c1");
-        let c2 = cron("c2");
-        insert(&db, &c1).expect("insert c1");
-        insert(&db, &c2).expect("insert c2");
-
-        let all = list(&db).expect("list");
-        assert_eq!(all.len(), 2);
-        assert!(all.iter().any(|c| c.id == c1.id) && all.iter().any(|c| c.id == c2.id));
-
-        assert!(remove(&db, &c1.id).expect("remove"), "an existing id removes to true");
-        assert!(!remove(&db, &c1.id).expect("remove again"), "an absent id removes to false");
-        assert_eq!(list(&db).expect("list").len(), 1);
-    }
-
-    #[test]
     fn replace_all_clears_then_inserts() {
         let dir = tempdir().expect("tempdir");
         let db = Db::open(&dir.path().join("db.redb")).expect("open db");
 
-        insert(&db, &cron("old-1")).expect("insert old-1");
-        insert(&db, &cron("old-2")).expect("insert old-2");
+        replace_all(&db, &[cron("old-1"), cron("old-2")]).expect("seed old");
 
         // A fresh set that overlaps on one id and drops the other.
         replace_all(&db, &[cron("old-1"), cron("new-3")]).expect("replace");
@@ -219,7 +176,7 @@ mod tests {
         let entry = cron("persist-me");
         {
             let db = Db::open(&path).expect("open db");
-            insert(&db, &entry).expect("insert");
+            replace_all(&db, std::slice::from_ref(&entry)).expect("write");
         }
         let db = Db::open(&path).expect("reopen db");
         let restored = list(&db).expect("list after reopen");
@@ -232,7 +189,7 @@ mod tests {
         let db = Db::open(&dir.path().join("db.redb")).expect("open db");
 
         let good = cron("good");
-        insert(&db, &good).expect("insert good");
+        replace_all(&db, std::slice::from_ref(&good)).expect("write good");
 
         // A blob that isn't a valid cron must not poison the load.
         let txn = db.database().begin_write().expect("begin");
