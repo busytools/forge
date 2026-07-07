@@ -3,14 +3,17 @@
 //! Holds only what workspace itself needs: routing metadata
 //! (`AgentHandle` slot, claude-issued `session_id`) and the
 //! pending-interaction mailbox. Operational state TUI renders
-//! (lifecycle, cwd, turn state, account info) lives on
-//! `forge_tui::app::session::UiSession`, never duplicated here.
+//! (lifecycle, cwd, account info) lives on
+//! `forge_tui::app::session::UiSession`, not duplicated here - the
+//! lone exception is [`DomainSession::runtime_state`], the one turn
+//! signal the workspace needs authoritatively for the `/account`
+//! switch backstop.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use forge_agent::AgentHandle;
-use forge_primitives::SessionId;
+use forge_primitives::{RuntimeSessionState, SessionId};
 
 use crate::SessionKey;
 use crate::mcp::gotify::types::GotifyNotification;
@@ -74,6 +77,17 @@ pub struct DomainSession {
     /// up fresh alongside their fresh lead. `false` for every non-boot
     /// spawn.
     pub spawned_force_new: bool,
+    /// Latest runtime liveness mirrored from the session's
+    /// `session_state_changed` wire messages. Operational turn state
+    /// otherwise lives on the TUI's `UiSession`; this one signal is
+    /// duplicated here so `handle_switch_account` can authoritatively
+    /// refuse an `/account` switch while a turn is in flight (the TUI
+    /// idle-gate alone can race a just-delivered peer / cron / gotify
+    /// prompt). `None` until the first state message.
+    pub runtime_state: Option<RuntimeSessionState>,
+    /// Turn committed at `Command::Prompt` routing, ahead of the
+    /// wire-lagged `runtime_state`; the `/account` backstop ORs it in.
+    pub turn_pending: bool,
 }
 
 impl DomainSession {
@@ -92,6 +106,8 @@ impl DomainSession {
             pending_gotify_prompts: Vec::new(),
             current_inbound_hop: None,
             spawned_force_new: false,
+            runtime_state: None,
+            turn_pending: false,
         }
     }
 }

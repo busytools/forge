@@ -1,3 +1,4 @@
+pub(crate) mod account_picker;
 mod autocomplete;
 pub(crate) mod chat;
 mod chat_view;
@@ -46,6 +47,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     if app.spinner_picker.is_some() {
         let area = frame.area();
         spinner_picker::render(frame, area, app);
+    }
+    if app.account_picker.is_some() {
+        let area = frame.area();
+        account_picker::render(frame, area, app);
     }
 }
 

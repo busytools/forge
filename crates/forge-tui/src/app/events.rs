@@ -286,6 +286,18 @@ pub(super) fn handle_runtime_session_state_update(
     state: model::RuntimeSessionState,
 ) {
     app.set_runtime_session_state(Some(state));
+    // A turn just started under an open `/account` picker: close it -
+    // you can't switch accounts mid-turn (the commit-recheck and the
+    // workspace backstop also guard this; closing proactively is
+    // clearer than letting Enter bounce off the notice).
+    if app.account_picker.is_some()
+        && matches!(
+            state,
+            model::RuntimeSessionState::Running | model::RuntimeSessionState::RequiresAction
+        )
+    {
+        crate::app::account_picker::close(app);
+    }
     match state {
         model::RuntimeSessionState::Running => {
             if matches!(app.status, AppStatus::Ready | AppStatus::Thinking | AppStatus::Running)
@@ -2325,6 +2337,42 @@ mod tests {
             panic!("expected user text block");
         };
         assert_eq!(user_text.text, "first user line");
+    }
+
+    /// An `/account` switch re-spawns the session and emits
+    /// `SessionReplaced` carrying the resumed history (the agent is
+    /// replaced, the conversation is not). The reducer must re-seed that
+    /// history so the same conversation stays visible, not vanish behind
+    /// the reset.
+    #[test]
+    fn account_switch_session_replaced_keeps_the_conversation_visible() {
+        let mut app = make_test_app();
+        let history = vec![
+            user_text_message("what changed in the diff?"),
+            assistant_text_message("the switch re-spawns under the new account"),
+        ];
+
+        apply_session_update(
+            &mut app,
+            SessionUpdate::SessionReplaced {
+                key: forge_workspace::SessionKey::from_session_id("switch-visible".to_owned()),
+                session_id: forge_primitives::SessionId::new("switch-visible"),
+                cwd: "/proj".into(),
+                current_model: test_current_model_primitives("model"),
+                available_models: Vec::new(),
+                mode: None,
+                history,
+            },
+        );
+
+        assert!(
+            app.messages().iter().any(|m| matches!(m.role, MessageRole::User)),
+            "the resumed user turn stays visible after a switch",
+        );
+        assert!(
+            app.messages().iter().any(|m| matches!(m.role, MessageRole::Assistant)),
+            "the resumed assistant turn stays visible after a switch",
+        );
     }
 
     #[test]

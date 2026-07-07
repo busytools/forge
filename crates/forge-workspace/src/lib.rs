@@ -83,7 +83,7 @@ pub use error::WorkspaceError;
 pub use protocol::{Command, DispatchError, PendingInteractionSlot, SessionUpdate, TurnErrorClass};
 pub use target::{ProjectKey, SessionKey, SessionTarget};
 pub use ui::{SpinnerStyle, UiSettings};
-pub use views::{ProjectView, SessionView};
+pub use views::{AccountRow, ProjectView, SessionView};
 pub use workspace::{SessionChipInfo, SessionChipState, Workspace, resolve_lead_session};
 
 // MCP (peers / workers) public surface. The `mcp` module itself is
@@ -157,6 +157,7 @@ pub mod userdata {
     pub use forge_agent::userdata::*;
 }
 pub use forge_primitives::permission::PermissionMode;
+pub use forge_primitives::runtime::RuntimeSessionState;
 
 // Test-only re-exports. The smoke-test suite at
 // `crates/forge-tui/tests/forge_sdk_smoke.rs` needs `Agent::spawn`
