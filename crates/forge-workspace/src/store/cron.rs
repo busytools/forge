@@ -323,4 +323,45 @@ mod tests {
         let after = std::fs::read(&toml_path).expect("read toml after");
         assert_eq!(before, after, "the synced cron.toml is never modified by the seed");
     }
+
+    #[test]
+    fn seed_with_present_but_empty_toml_leaves_marker_unset_then_seeds_later() {
+        let dir = tempdir().expect("tempdir");
+        crate::config::ensure_forge_data_dir(dir.path()).expect("forge/ dir");
+        let db = Db::open(&dir.path().join("db.redb")).expect("open db");
+
+        // A present cron.toml that holds zero crons (a real file, not a
+        // missing one) is nothing to migrate, so it leaves the marker unset.
+        crate::cron_store::store_crons(dir.path(), &[]);
+        assert!(seed_crons_from_toml_once(&db, dir.path()).is_empty());
+        assert!(!seeded(&db).expect("seeded"), "a present-but-empty cron.toml leaves it unmarked");
+
+        // A non-empty cron.toml syncs in later; the still-unmarked machine
+        // migrates it.
+        crate::cron_store::store_crons(dir.path(), &[cron("later")]);
+        let after = seed_crons_from_toml_once(&db, dir.path());
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].id, CronId::from("later"), "a later non-empty toml still seeds");
+    }
+
+    #[test]
+    fn a_field_absent_team_role_deserializes_to_none() {
+        // A record an old forge wrote (before team_role existed) has no
+        // team_role key at all. The migration relies on it defaulting to a
+        // lead cron; the round-trip tests only prove None -> no-key -> None,
+        // so pin the field-absent -> None direction against a hand-authored
+        // blob that never carried the key.
+        let blob = serde_json::json!({
+            "id": "legacy",
+            "project_name": "forge",
+            "kind": { "Recurring": "0 9 * * *" },
+            "prompt": "p",
+            "created_at": { "secs_since_epoch": 0, "nanos_since_epoch": 0 },
+            "next_fire": { "secs_since_epoch": 0, "nanos_since_epoch": 0 },
+        });
+        let entry: CronEntry =
+            serde_json::from_value(blob).expect("a field-absent record deserializes");
+        assert_eq!(entry.id, CronId::from("legacy"));
+        assert_eq!(entry.team_role, None, "a field-absent team_role is a lead cron");
+    }
 }

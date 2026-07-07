@@ -1569,6 +1569,44 @@ mod tests {
         );
     }
 
+    fn connected_event(session_id: &str, cwd: &str) -> AgentEvent {
+        AgentEvent::Connected {
+            session_id: session_id.to_owned(),
+            cwd: cwd.to_owned(),
+            current_model: forge_primitives::CurrentModel {
+                resolved_id: "claude".to_owned(),
+                display_name_short: "claude".to_owned(),
+                display_name_long: "claude".to_owned(),
+                requested_id: None,
+                catalog_id: None,
+                supports_effort: false,
+                supported_effort_levels: Vec::new(),
+                supports_fast_mode: None,
+                supports_auto_mode: None,
+                supports_adaptive_thinking: None,
+                is_authoritative: true,
+            },
+            available_models: Vec::new(),
+            mode: None,
+            history_updates: None,
+        }
+    }
+
+    fn cron_worker_entry(label: &str, session_id: &str) -> crate::mcp::workers::types::WorkerEntry {
+        crate::mcp::workers::types::WorkerEntry {
+            label: label.to_owned(),
+            charter: "c".to_owned(),
+            session_key: SessionKey::from_session_id(session_id),
+            status: forge_primitives::WorkerLiveness::Running,
+            spawned_at: std::time::SystemTime::UNIX_EPOCH,
+            spawned_by_session_id: "lead-uuid".to_owned(),
+            needs_tag: false,
+            is_git_repo_at_spawn: false,
+            diagnostic: None,
+            kick: None,
+        }
+    }
+
     /// First-Connected drains the session owner's buffered cron prompts:
     /// each dispatches a plain `Command::Prompt` AND echoes a
     /// `CronPromptAppended` so an asleep-fired cron shows its block once the
@@ -1602,26 +1640,7 @@ mod tests {
         };
 
         workspace.enable_test_dispatch_intercept();
-        task.translate_event(AgentEvent::Connected {
-            session_id: session_key.as_str().to_owned(),
-            cwd: "/tmp/cron-drain".to_owned(),
-            current_model: forge_primitives::CurrentModel {
-                resolved_id: "claude".to_owned(),
-                display_name_short: "claude".to_owned(),
-                display_name_long: "claude".to_owned(),
-                requested_id: None,
-                catalog_id: None,
-                supports_effort: false,
-                supported_effort_levels: Vec::new(),
-                supports_fast_mode: None,
-                supports_auto_mode: None,
-                supports_adaptive_thinking: None,
-                is_authoritative: true,
-            },
-            available_models: Vec::new(),
-            mode: None,
-            history_updates: None,
-        });
+        task.translate_event(connected_event(session_key.as_str(), "/tmp/cron-drain"));
 
         // The buffered cron prompt is dispatched as a plain user turn.
         let buffered = workspace.drain_test_dispatch_buffer();
@@ -1649,6 +1668,58 @@ mod tests {
             workspace.take_pending_crons_for_session(&session_key, "/tmp/cron-drain").is_empty(),
             "the owner's cron bucket is drained after first-Connected",
         );
+    }
+
+    /// A worker session drains only its OWN `(project, label)` cron bucket
+    /// on first Connect - the lead's bucket stays buffered - and a missed
+    /// entry's `[missed cron] ` marker survives the buffer -> drain into the
+    /// dispatched prompt (the asleep/drain missed path, distinct from the
+    /// live-fire path).
+    #[tokio::test]
+    async fn worker_first_connected_drains_its_own_bucket_with_missed_marker() {
+        let (workspace, _rx) = crate::Workspace::testing_stub();
+        workspace.seed_test_project_with_static_workers("wdp", "/tmp/wdp", &[]);
+        let key = workspace.list_projects().into_iter().find(|v| v.name == "wdp").expect("view").key;
+        workspace.insert_live_worker(&key, cron_worker_entry("reviewer", "worker-drain-uuid"));
+
+        // A missed cron for the worker + an on-time lead cron for the project.
+        workspace.buffer_cron_for_owner("wdp", Some("reviewer"), "worker work".to_owned(), true);
+        workspace.buffer_cron_for_owner("wdp", None, "lead work".to_owned(), false);
+
+        let session_key = SessionKey::from_session_id("worker-drain-uuid");
+        let domain =
+            Arc::new(parking_lot::Mutex::new(DomainSession::new(session_key.clone(), None)));
+        let (handle, _agent_cmd_rx) = Agent::testing_stub();
+        let (_cmd_tx, command_rx) =
+            tokio::sync::mpsc::unbounded_channel::<crate::protocol::Command>();
+        let update_tx = workspace.update_sender();
+        let mut task = SessionTask {
+            key: session_key.clone(),
+            handle: Arc::new(handle),
+            command_rx,
+            domain: Arc::clone(&domain),
+            update_tx,
+            spawn_key: None,
+            connected_once: false,
+            workspace: Arc::downgrade(&workspace),
+        };
+
+        workspace.enable_test_dispatch_intercept();
+        task.translate_event(connected_event("worker-drain-uuid", "/tmp/wdp"));
+
+        let dispatched = workspace.drain_test_dispatch_buffer();
+        assert!(
+            dispatched.iter().any(|c| matches!(
+                c, crate::protocol::Command::Prompt { key, text, .. }
+                    if key == &session_key && text == "[missed cron] worker work"
+            )),
+            "the worker drains its own missed cron with the marker applied",
+        );
+        // The lead's bucket is untouched by the worker's drain.
+        let lead_key = SessionKey::from_session_id("lead-uuid");
+        let lead_bucket = workspace.take_pending_crons_for_session(&lead_key, "/tmp/wdp");
+        assert_eq!(lead_bucket.len(), 1, "the lead's cron stays buffered");
+        assert_eq!(lead_bucket[0].text, "lead work");
     }
 
     /// The account-switch re-spawn seeds `connected_once = true`, so
