@@ -298,37 +298,37 @@ pub(crate) enum CronFireOutcome {
     DispatchFailed,
 }
 
-/// Deliver a due cron's prompt into its project's session as a plain
-/// user turn AND echo it into the target's chat as a cron block. If the
-/// project's lead is running, echo + dispatch a `Command::Prompt` straight
-/// to it; otherwise buffer the prompt on the synthetic spawn-key's
-/// DomainSession and dispatch `Command::SpawnProject`; `SessionTask`
-/// drains + echoes it on Connected via `drain_pending_cron_prompts`. The
-/// chat echo carries the raw prompt; the display-only `[Cron]` wrapper is
-/// added TUI-side, so the subprocess still receives the bare prompt.
+/// Text delivered for a cron fire: the raw prompt, prefixed with a plain
+/// marker when the fire is overdue so the owner can tell a catch-up from
+/// an on-time fire.
+pub(crate) fn missed_cron_text(prompt: &str, missed: bool) -> String {
+    if missed { format!("[missed cron] {prompt}") } else { prompt.to_owned() }
+}
+
+/// Deliver a due cron's prompt into its OWNER's session as a plain user
+/// turn AND echo it as a cron block. `team_role` `None` routes to the
+/// project lead, `Some(label)` to that worker. A live owner gets a
+/// `Command::Prompt`; an asleep-but-existing owner is woken by dispatching
+/// `Command::SpawnProject` (which resumes the lead and, through the lead's
+/// team-spawn, the worker), the prompt buffered by `(project, team_role)`
+/// and drained on the owner's connect. An owner that no longer exists (a
+/// gone project, or a worker label that is neither static nor a durable
+/// dynamic row) yields `TargetGone`.
 pub(crate) fn deliver_cron_prompt(
     workspace: &Arc<Workspace>,
     project_name: &str,
-    text: String,
+    team_role: Option<&str>,
+    prompt: String,
+    missed: bool,
 ) -> CronFireOutcome {
-    // The project's running lead: the first open session that isn't a
-    // live worker (workers land in `view.sessions` too; `live_workers`
-    // is the authoritative worker registry to subtract - same rule as
-    // the peer path).
-    let running_lead =
-        workspace.list_projects().into_iter().find(|v| v.name == project_name).and_then(|v| {
-            let live_worker_keys: std::collections::HashSet<_> =
-                workspace.list_live_workers(&v.key).into_iter().map(|w| w.session_key).collect();
-            v.sessions
-                .into_iter()
-                .find(|s| s.is_open && !live_worker_keys.contains(&s.session))
-                .map(|s| s.session)
-        });
+    let Some(view) = workspace.list_projects().into_iter().find(|v| v.name == project_name) else {
+        return CronFireOutcome::TargetGone;
+    };
 
-    if let Some(target_key) = running_lead {
-        // Echo the cron block BEFORE the LLM-side dispatch so it renders
-        // in order regardless of which event the TUI reducer drains first
-        // (mirrors deliver_gotify_message).
+    if let Some(target_key) = live_cron_owner(workspace, &view, team_role) {
+        // Echo the cron block BEFORE the LLM-side dispatch so it renders in
+        // order regardless of which event the TUI reducer drains first.
+        let text = missed_cron_text(&prompt, missed);
         push_cron_prompt_into_chat(workspace, &target_key, &text);
         return match workspace.dispatch(Command::Prompt {
             key: target_key,
@@ -341,30 +341,21 @@ pub(crate) fn deliver_cron_prompt(
                     target: "forge_workspace::spawn",
                     project = %project_name,
                     error = ?err,
-                    "cron fire dispatch to running project failed"
+                    "cron fire dispatch to live owner failed",
                 );
                 CronFireOutcome::DispatchFailed
             }
         };
     }
 
-    // Asleep: buffer the prompt on the synthetic spawn key and spawn the
-    // project session (only if it's a real forge.toml project).
-    if workspace.find_project_view_by_name(project_name).is_none() {
+    // Asleep: the owner must still exist to be woken.
+    if !cron_owner_exists(workspace, &view, team_role) {
         return CronFireOutcome::TargetGone;
     }
-
-    let synth_key = SessionKey::from_session_id(format!("__spawn_{project_name}__"));
-    {
-        let mut handles = workspace.domain_handles.lock();
-        let domain = handles
-            .entry(synth_key.clone())
-            .or_insert_with(|| Arc::new(Mutex::new(DomainSession::new(synth_key.clone(), None))))
-            .clone();
-        drop(handles);
-        domain.lock().pending_cron_prompts.push(text);
-    }
-
+    // Buffer by owner, then wake via resume: SpawnProject resumes the lead
+    // and, through the lead's team-spawn, the worker; each drains its own
+    // bucket on connect.
+    workspace.buffer_cron_for_owner(project_name, team_role, prompt, missed);
     match workspace.dispatch(Command::SpawnProject {
         project_name: project_name.to_owned(),
         launch_settings: SessionLaunchSettings::default(),
@@ -375,9 +366,49 @@ pub(crate) fn deliver_cron_prompt(
                 target: "forge_workspace::spawn",
                 project = %project_name,
                 error = ?err,
-                "cron fire SpawnProject dispatch failed"
+                "cron fire SpawnProject dispatch failed",
             );
             CronFireOutcome::DispatchFailed
+        }
+    }
+}
+
+/// The live session that owns a cron in `view`: for a lead cron the
+/// running lead (the first open session that is not a live worker); for a
+/// worker cron the live worker with that label. `None` when the owner is
+/// asleep.
+fn live_cron_owner(
+    workspace: &Arc<Workspace>,
+    view: &crate::views::ProjectView,
+    team_role: Option<&str>,
+) -> Option<SessionKey> {
+    let live = workspace.list_live_workers(&view.key);
+    match team_role {
+        Some(label) => live.into_iter().find(|w| w.label == label).map(|w| w.session_key),
+        None => {
+            let live_keys: std::collections::HashSet<_> =
+                live.into_iter().map(|w| w.session_key).collect();
+            view.sessions
+                .iter()
+                .find(|s| s.is_open && !live_keys.contains(&s.session))
+                .map(|s| s.session.clone())
+        }
+    }
+}
+
+/// Whether a cron's owner still exists to be woken: the lead exists
+/// whenever its project does; a worker exists while its label is in
+/// `static_workers` or in the `dynamic_workers` table.
+fn cron_owner_exists(
+    workspace: &Arc<Workspace>,
+    view: &crate::views::ProjectView,
+    team_role: Option<&str>,
+) -> bool {
+    match team_role {
+        None => true,
+        Some(label) => {
+            view.static_workers.iter().any(|w| w == label)
+                || workspace.dynamic_workers_for_project(&view.key).iter().any(|w| w.label == label)
         }
     }
 }

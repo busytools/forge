@@ -39,6 +39,14 @@ const USAGE_POLL_INTERVAL: Duration = Duration::from_secs(60);
 /// granularity matches the cron-expression resolution.
 const CRON_TICK_INTERVAL: Duration = Duration::from_secs(60);
 
+/// A cron prompt buffered for an asleep owner: the raw prompt plus whether
+/// this fire is overdue (delivered with a missed marker on drain).
+#[derive(Debug, Clone)]
+pub(crate) struct PendingCron {
+    pub text: String,
+    pub missed: bool,
+}
+
 /// Max attempts for `tag_session_with_retry` to find the worker's
 /// `<session_id>.jsonl` and append the tag row. claude CLI writes the
 /// file lazily on the first user turn - workers with an `initial_prompt`
@@ -246,6 +254,12 @@ pub struct Workspace {
     /// The single-instance guard makes this the only process touching the
     /// file, so this mutex alone serialises writes.
     crons: Mutex<Vec<forge_primitives::CronEntry>>,
+    /// Cron prompts buffered for an asleep owner, keyed by
+    /// `(project_name, team_role)` (`None` = lead). A due cron whose owner
+    /// is asleep pushes here and dispatches `Command::SpawnProject`; the
+    /// owner's session drains its own bucket on first `Connected`. One
+    /// mechanism for lead and worker owners alike.
+    pending_cron_by_owner: Mutex<HashMap<(String, Option<String>), Vec<PendingCron>>>,
     /// Active Gotify subscriptions (`mcp__forge__gotify`). The set the
     /// stream matches each inbound message against. Durable ones (lead /
     /// team-worker) are also persisted to `db` and reloaded here
@@ -677,6 +691,7 @@ impl Workspace {
             proxy: Some(proxy),
             _single_instance_lock: single_instance_lock,
             crons: Mutex::new(crons),
+            pending_cron_by_owner: Mutex::new(HashMap::new()),
             gotify_subs: Mutex::new(gotify_subs),
             db: Mutex::new(db),
             gotify_connected: Mutex::new(false),
@@ -1170,12 +1185,13 @@ impl Workspace {
 
     /// When `get_agent_handle_with_spawn_key` hits the pool fast-path
     /// for a session that's already running, drain any
-    /// `pending_peer_prompts` AND `pending_cron_prompts` buffered at the
-    /// synthetic `spawn_key` (e.g. `__spawn_<project>__`) into the live
-    /// session via `Command::Prompt`. Without this, peer asks / cron fires
-    /// aimed at a running-but-pre-spawn-dispatched target strand at the
-    /// synth key forever - the regular Connected-time drain only fires
-    /// when a fresh SessionTask boots.
+    /// `pending_peer_prompts` buffered at the synthetic `spawn_key` (e.g.
+    /// `__spawn_<project>__`) into the live session via `Command::Prompt`.
+    /// Without this, peer asks aimed at a running-but-pre-spawn-dispatched
+    /// target strand at the synth key forever - the regular Connected-time
+    /// drain only fires when a fresh SessionTask boots. Cron prompts use
+    /// the owner-keyed buffer, not the synth key, so they are not drained
+    /// here.
     fn drain_spawn_key_buffer_into(
         self: &Arc<Self>,
         session_key: &SessionKey,
@@ -1187,15 +1203,11 @@ impl Workspace {
         }
         let buffered_domain = self.domain_handles.lock().remove(spawn_key);
         let Some(buffered_domain) = buffered_domain else { return };
-        let (pending, cron_pending, incoming_hop) = {
+        let (pending, incoming_hop) = {
             let mut guard = buffered_domain.lock();
-            (
-                std::mem::take(&mut guard.pending_peer_prompts),
-                std::mem::take(&mut guard.pending_cron_prompts),
-                guard.current_inbound_hop,
-            )
+            (std::mem::take(&mut guard.pending_peer_prompts), guard.current_inbound_hop)
         };
-        if pending.is_empty() && cron_pending.is_empty() && incoming_hop.is_none() {
+        if pending.is_empty() && incoming_hop.is_none() {
             return;
         }
         // Stamp the inbound hop on the live session, taking max
@@ -1238,33 +1250,15 @@ impl Workspace {
                 );
             }
         }
-        // Same for plain cron prompts buffered at the synth key - a cron
-        // that fired while its project was mid-spawn (a placeholder
-        // already at session_key, Case 1) lands its prompt here. Plain
-        // user turns, no peer-envelope echo.
-        for text in cron_pending {
-            if let Err(err) = self.dispatch(crate::protocol::Command::Prompt {
-                key: session_key.clone(),
-                text,
-                attachments: Vec::new(),
-            }) {
-                tracing::warn!(
-                    target: "forge_workspace::workspace",
-                    key = %session_key.as_str(),
-                    error = ?err,
-                    "drain_spawn_key_buffer_into: cron dispatch failed; prompt dropped",
-                );
-            }
-        }
     }
 
-    /// Merge a synthetic spawn-key DomainSession's buffered state into an
-    /// existing placeholder (Case 1 in `get_agent_handle_with_spawn_key`:
-    /// a peer ask or cron fire arrived while a pre-Connect placeholder
-    /// already sat at `session_key`). BOTH pending prompt buffers move -
-    /// missing the cron buffer here would evaporate a cron that fired
-    /// mid-spawn - and the inbound hop takes the max so concurrent asks
-    /// don't undershoot.
+    /// Merge a synthetic spawn-key DomainSession's buffered peer prompts
+    /// into an existing placeholder (Case 1 in
+    /// `get_agent_handle_with_spawn_key`: a peer ask arrived while a
+    /// pre-Connect placeholder already sat at `session_key`). The inbound
+    /// hop takes the max so concurrent asks don't undershoot. Cron prompts
+    /// live in the owner-keyed buffer, not on the synth key, so they need
+    /// no merge here.
     fn merge_spawn_buffer_into_placeholder(
         placeholder: &Mutex<DomainSession>,
         buffered: &Mutex<DomainSession>,
@@ -1272,7 +1266,6 @@ impl Workspace {
         let mut placeholder = placeholder.lock();
         let mut src = buffered.lock();
         placeholder.pending_peer_prompts.append(&mut src.pending_peer_prompts);
-        placeholder.pending_cron_prompts.append(&mut src.pending_cron_prompts);
         if let Some(hop) = src.current_inbound_hop {
             let current = placeholder.current_inbound_hop.unwrap_or(0);
             placeholder.current_inbound_hop = Some(current.max(hop));
@@ -3064,6 +3057,47 @@ impl Workspace {
         self.crons.lock().clone()
     }
 
+    /// Buffer a cron prompt for an asleep owner, keyed by
+    /// `(project, team_role)`; drained on the owner's first `Connected`.
+    pub(crate) fn buffer_cron_for_owner(
+        &self,
+        project: &str,
+        team_role: Option<&str>,
+        text: String,
+        missed: bool,
+    ) {
+        self.pending_cron_by_owner
+            .lock()
+            .entry((project.to_owned(), team_role.map(str::to_owned)))
+            .or_default()
+            .push(PendingCron { text, missed });
+    }
+
+    /// Take (and clear) the cron prompts buffered for the connecting
+    /// session's owner - `(project of cwd, the session's worker label, or
+    /// None for a lead)`. Empty when nothing was buffered or the cwd is
+    /// under no project.
+    pub(crate) fn take_pending_crons_for_session(
+        &self,
+        session_key: &SessionKey,
+        cwd: &str,
+    ) -> Vec<PendingCron> {
+        let Some(project) = self.project_name_for_path(cwd) else { return Vec::new() };
+        let team_role = self.worker_label_for_session(session_key);
+        self.pending_cron_by_owner.lock().remove(&(project, team_role)).unwrap_or_default()
+    }
+
+    /// The worker label owning `session_key` across all projects, or `None`
+    /// when it is not a live worker (a lead or other session).
+    pub(crate) fn worker_label_for_session(&self, session_key: &SessionKey) -> Option<String> {
+        self.live_workers
+            .lock()
+            .values()
+            .flatten()
+            .find(|w| w.session_key == *session_key)
+            .map(|w| w.label.clone())
+    }
+
     /// Register a Gotify subscription in the active set. Durable ones
     /// (lead / team-worker) also persist to the redb store; ephemeral
     /// ad-hoc-worker ones stay in memory only and drop on restart.
@@ -3397,19 +3431,30 @@ impl Workspace {
         let due = crate::mcp::cron::schedule::due_crons(&snapshot, now);
         for id in &due {
             let Some(cron) = snapshot.iter().find(|c| &c.id == id) else { continue };
-            match crate::spawn::deliver_cron_prompt(self, &cron.project_name, cron.prompt.clone()) {
+            // Overdue by more than two ticks: forge or the owner was down
+            // through the scheduled minute. Two ticks (not one) absorbs the
+            // scheduler's Skip-behaviour jitter so a same-window fire under
+            // load is never mislabelled missed.
+            let missed = now > cron.next_fire + CRON_TICK_INTERVAL * 2;
+            match crate::spawn::deliver_cron_prompt(
+                self,
+                &cron.project_name,
+                cron.team_role.as_deref(),
+                cron.prompt.clone(),
+                missed,
+            ) {
                 // Delivered (or spawn kicked off): advance a recurring to
                 // its next slot, remove a fired run-once.
                 CronFireOutcome::Delivered => self.advance_or_remove_cron(id, now),
-                // Project gone from forge.toml: remove the cron rather than
-                // advance a dead entry forever (a run-once would otherwise
-                // be silently consumed).
+                // Owner gone (project removed from forge.toml, or a worker
+                // label that is no longer static or a durable dynamic row):
+                // remove the cron rather than advance a dead entry forever.
                 CronFireOutcome::TargetGone => {
                     tracing::warn!(
                         target: "forge_workspace::workspace",
                         project = %cron.project_name,
                         cron_id = %id,
-                        "cron target gone from forge.toml; removing the cron",
+                        "cron owner gone; removing the cron",
                     );
                     self.remove_cron(&cron.project_name, id);
                 }
@@ -4747,6 +4792,7 @@ impl Workspace {
             proxy: None,
             _single_instance_lock: None,
             crons: Mutex::new(Vec::new()),
+            pending_cron_by_owner: Mutex::new(HashMap::new()),
             gotify_subs: Mutex::new(Vec::new()),
             db: Mutex::new(None),
             gotify_connected: Mutex::new(false),
@@ -6197,17 +6243,14 @@ mod tests {
             .count();
         assert_eq!(spawns, 1, "one spawn for the single due cron");
 
-        // The due cron's prompt is buffered on the synthetic spawn key for
+        // The due cron's prompt is buffered for its owner (the lead) for
         // delivery once the session reaches Connected.
-        let synth = SessionKey::from_session_id("__spawn_forge__");
-        let buffered = ws
-            .domain_handles
+        let buffered: Vec<String> = ws
+            .pending_cron_by_owner
             .lock()
-            .get(&synth)
-            .expect("synth domain present")
-            .lock()
-            .pending_cron_prompts
-            .clone();
+            .get(&("forge".to_owned(), None))
+            .map(|v| v.iter().map(|p| p.text.clone()).collect())
+            .unwrap_or_default();
         assert_eq!(buffered, vec!["morning".to_owned()], "the due cron's prompt was buffered");
 
         // The due cron advanced past now; the future cron is untouched.
@@ -6317,27 +6360,6 @@ mod tests {
         assert_eq!(refires, 0, "advanced crons are not due again; no double-fire");
     }
 
-    #[test]
-    fn merge_spawn_buffer_carries_the_cron_prompt_into_the_placeholder() {
-        // Case 1 in get_agent_handle_with_spawn_key: a cron fires while its
-        // project is mid-spawn (a pre-Connect placeholder already sits at
-        // session_key). The synth buffer must merge into the placeholder,
-        // not evaporate.
-        let placeholder = Mutex::new(DomainSession::new(SessionKey::from_session_id("real"), None));
-        let buffered =
-            Mutex::new(DomainSession::new(SessionKey::from_session_id("__spawn_forge__"), None));
-        buffered.lock().pending_cron_prompts.push("morning reminder".to_owned());
-
-        Workspace::merge_spawn_buffer_into_placeholder(&placeholder, &buffered);
-
-        assert_eq!(
-            placeholder.lock().pending_cron_prompts,
-            vec!["morning reminder".to_owned()],
-            "the cron prompt survives the placeholder merge",
-        );
-        assert!(buffered.lock().pending_cron_prompts.is_empty(), "moved out of the synth buffer");
-    }
-
     /// A cron fired into a running lead delivers the raw prompt as a plain
     /// user turn AND echoes a `CronPromptAppended` so the chat shows a cron
     /// block (mirrors the gotify running-target echo). Reproduce-first: the
@@ -6364,7 +6386,8 @@ mod tests {
         );
 
         ws.enable_test_dispatch_intercept();
-        let outcome = crate::spawn::deliver_cron_prompt(&ws, "cronlead", "morning".to_owned());
+        let outcome =
+            crate::spawn::deliver_cron_prompt(&ws, "cronlead", None, "morning".to_owned(), false);
         assert!(matches!(outcome, crate::spawn::CronFireOutcome::Delivered));
 
         // The running lead receives the raw cron prompt as a plain user turn.
@@ -6388,35 +6411,197 @@ mod tests {
     }
 
     #[test]
-    fn drain_spawn_key_buffer_delivers_a_buffered_cron_prompt() {
-        // Pool fast-path: the target is already running when a cron's
-        // SpawnProject arrives, so drain_spawn_key_buffer_into must
-        // re-dispatch the synth-key cron prompt into the live session.
+    fn deliver_worker_cron_to_a_live_worker_prompts_the_worker() {
         let (ws, _rx) = Workspace::testing_stub();
-        let session_key = SessionKey::from_session_id("live-session");
-        let synth_key = SessionKey::from_session_id("__spawn_forge__");
-
-        ws.domain_handles.lock().insert(
-            session_key.clone(),
-            Arc::new(Mutex::new(DomainSession::new(session_key.clone(), None))),
-        );
-        let synth = Arc::new(Mutex::new(DomainSession::new(synth_key.clone(), None)));
-        synth.lock().pending_cron_prompts.push("reminder".to_owned());
-        ws.domain_handles.lock().insert(synth_key.clone(), synth);
+        ws.seed_test_project_with_static_workers("proj", "/tmp/wc-live", &["reviewer".to_owned()]);
+        let key = ws.list_projects().into_iter().find(|v| v.name == "proj").expect("view").key;
+        ws.insert_live_worker(&key, live_worker_entry("reviewer", "worker-uuid"));
+        let worker_key = SessionKey::from_session_id("worker-uuid");
 
         ws.enable_test_dispatch_intercept();
-        ws.drain_spawn_key_buffer_into(&session_key, Some(&synth_key));
-        let dispatched = ws.drain_test_dispatch_buffer();
-
-        assert!(
-            dispatched.iter().any(|c| matches!(c,
-                crate::protocol::Command::Prompt { key, text, .. }
-                    if key == &session_key && text == "reminder")),
-            "the buffered cron prompt is dispatched into the live session, not dropped",
+        let outcome = crate::spawn::deliver_cron_prompt(
+            &ws,
+            "proj",
+            Some("reviewer"),
+            "review the diff".to_owned(),
+            false,
         );
+        assert!(matches!(outcome, crate::spawn::CronFireOutcome::Delivered));
+        let dispatched = ws.drain_test_dispatch_buffer();
         assert!(
-            !ws.domain_handles.lock().contains_key(&synth_key),
-            "synth domain drained + removed"
+            dispatched.iter().any(|c| matches!(
+                c, Command::Prompt { key, text, .. }
+                    if key == &worker_key && text == "review the diff"
+            )),
+            "a live worker's cron fires straight into the worker",
+        );
+    }
+
+    #[test]
+    fn deliver_asleep_static_worker_cron_buffers_and_wakes_the_project() {
+        let (ws, _rx) = Workspace::testing_stub();
+        // "reviewer" is a static worker, so the owner exists even while asleep.
+        ws.seed_test_project_with_static_workers("proj", "/tmp/wc-static", &["reviewer".to_owned()]);
+
+        ws.enable_test_dispatch_intercept();
+        let outcome = crate::spawn::deliver_cron_prompt(
+            &ws,
+            "proj",
+            Some("reviewer"),
+            "nightly".to_owned(),
+            false,
+        );
+        assert!(matches!(outcome, crate::spawn::CronFireOutcome::Delivered));
+        let dispatched = ws.drain_test_dispatch_buffer();
+        assert!(
+            dispatched.iter().any(|c| matches!(
+                c, Command::SpawnProject { project_name, .. } if project_name == "proj"
+            )),
+            "an asleep worker cron wakes the whole project via SpawnProject",
+        );
+        let buffered: Vec<String> = ws
+            .pending_cron_by_owner
+            .lock()
+            .get(&("proj".to_owned(), Some("reviewer".to_owned())))
+            .map(|v| v.iter().map(|p| p.text.clone()).collect())
+            .unwrap_or_default();
+        assert_eq!(buffered, vec!["nightly".to_owned()], "buffered for the worker owner");
+    }
+
+    #[tokio::test]
+    async fn deliver_asleep_dynamic_worker_cron_buffers_and_wakes_the_project() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let dir = tempdir().expect("tempdir");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        ws.seed_test_project_with_static_workers("proj", "/tmp/wc-dyn", &[]);
+        let key = ws.list_projects().into_iter().find(|v| v.name == "proj").expect("view").key;
+        // "scratch" exists only via its dynamic_workers row.
+        let _ = ws.persist_dynamic_worker(&dynamic_worker_row(key.as_str(), "scratch"));
+
+        ws.enable_test_dispatch_intercept();
+        let outcome = crate::spawn::deliver_cron_prompt(
+            &ws,
+            "proj",
+            Some("scratch"),
+            "hourly".to_owned(),
+            false,
+        );
+        assert!(matches!(outcome, crate::spawn::CronFireOutcome::Delivered));
+        let dispatched = ws.drain_test_dispatch_buffer();
+        assert!(
+            dispatched.iter().any(|c| matches!(
+                c, Command::SpawnProject { project_name, .. } if project_name == "proj"
+            )),
+            "an asleep dynamic worker cron wakes the project too",
+        );
+        let count = ws
+            .pending_cron_by_owner
+            .lock()
+            .get(&("proj".to_owned(), Some("scratch".to_owned())))
+            .map_or(0, Vec::len);
+        assert_eq!(count, 1, "buffered for the dynamic worker owner");
+    }
+
+    #[test]
+    fn deliver_worker_cron_with_owner_gone_is_target_gone() {
+        let (ws, _rx) = Workspace::testing_stub();
+        // No static roster, no dynamic row: "ghost" resolves to nothing.
+        ws.seed_test_project_with_static_workers("proj", "/tmp/wc-gone", &[]);
+        let outcome =
+            crate::spawn::deliver_cron_prompt(&ws, "proj", Some("ghost"), "x".to_owned(), false);
+        assert!(
+            matches!(outcome, crate::spawn::CronFireOutcome::TargetGone),
+            "a worker label that is neither live, static, nor a durable dynamic row is gone",
+        );
+    }
+
+    #[test]
+    fn deliver_cron_marks_an_overdue_fire_as_missed() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project_with_static_workers("proj", "/tmp/wc-missed", &[]);
+        let cwd = project_expanded_path(&ws, "proj");
+        ws.record_connected_session(&cwd, "lead-uuid", None);
+        let lead_key = SessionKey::from_session_id("lead-uuid");
+        let (handle, _agent_rx) = Workspace::testing_stub_handle();
+        ws.pool.lock().insert(
+            lead_key.clone(),
+            PooledAgent {
+                handle: Arc::new(handle),
+                #[cfg(test)]
+                account: AccountKey("test".to_owned()),
+            },
+        );
+
+        ws.enable_test_dispatch_intercept();
+        crate::spawn::deliver_cron_prompt(&ws, "proj", None, "standup".to_owned(), true);
+        crate::spawn::deliver_cron_prompt(&ws, "proj", None, "standup".to_owned(), false);
+        let dispatched = ws.drain_test_dispatch_buffer();
+        let texts: Vec<String> = dispatched
+            .iter()
+            .filter_map(|c| match c {
+                Command::Prompt { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            texts.contains(&"[missed cron] standup".to_owned()),
+            "an overdue fire is delivered with the missed marker",
+        );
+        assert!(texts.contains(&"standup".to_owned()), "an on-time fire has no marker");
+    }
+
+    #[test]
+    fn fire_due_crons_missed_threshold_is_two_ticks() {
+        use forge_primitives::cron::{CronEntry, CronId, CronKind};
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project_with_static_workers("proj", "/tmp/wc-thresh", &[]);
+        let cwd = project_expanded_path(&ws, "proj");
+        ws.record_connected_session(&cwd, "lead-uuid", None);
+        let lead_key = SessionKey::from_session_id("lead-uuid");
+        let (handle, _agent_rx) = Workspace::testing_stub_handle();
+        ws.pool.lock().insert(
+            lead_key.clone(),
+            PooledAgent {
+                handle: Arc::new(handle),
+                #[cfg(test)]
+                account: AccountKey("test".to_owned()),
+            },
+        );
+
+        let now = std::time::SystemTime::now();
+        let cron = |id: &str, prompt: &str, next_fire| CronEntry {
+            id: CronId::from(id),
+            project_name: "proj".to_owned(),
+            kind: CronKind::Recurring("*/5 * * * *".to_owned()),
+            prompt: prompt.to_owned(),
+            created_at: std::time::SystemTime::UNIX_EPOCH,
+            last_fire: None,
+            next_fire,
+            team_role: None,
+        };
+        // Due one tick ago: within the jitter window, on-time. Due three
+        // ticks ago: a genuine catch-up, missed.
+        ws.push_cron(cron("recent", "recent", now - std::time::Duration::from_secs(60)));
+        ws.push_cron(cron("stale", "stale", now - std::time::Duration::from_secs(180)));
+
+        ws.enable_test_dispatch_intercept();
+        ws.fire_due_crons(now);
+        let texts: Vec<String> = ws
+            .drain_test_dispatch_buffer()
+            .iter()
+            .filter_map(|c| match c {
+                Command::Prompt { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(texts.contains(&"recent".to_owned()), "a one-tick-late fire is on-time");
+        assert!(
+            texts.contains(&"[missed cron] stale".to_owned()),
+            "a three-tick-late fire is marked missed",
         );
     }
 

@@ -285,11 +285,10 @@ impl SessionTask {
                     // the existing prompt-delivery path handles it
                     // uniformly with user-typed prompts.
                     self.drain_pending_peer_prompts();
-                    // Same for cron prompts buffered while the project was
-                    // asleep (spawn::deliver_cron_prompt on a due cron whose
-                    // session wasn't open): each echoes a cron block then
-                    // re-dispatches.
-                    self.drain_pending_cron_prompts();
+                    // Same for cron prompts buffered for this session's owner
+                    // while it was asleep: each echoes a cron block then
+                    // re-dispatches (missed-marked when overdue).
+                    self.drain_pending_cron_prompts(&cwd_for_tag);
                     // Same for Gotify notification envelopes buffered while
                     // the project was asleep.
                     self.drain_pending_gotify_prompts();
@@ -711,24 +710,16 @@ impl SessionTask {
         }
     }
 
-    /// Drain `DomainSession.pending_cron_prompts` after the session's
-    /// first `Connected` event - the cron prompts buffered while the
-    /// project was asleep (a due cron whose session wasn't open spawned
-    /// it). Each is echoed into chat as a cron block and re-dispatched as
-    /// a plain `Command::Prompt` against `self.key`, so an asleep-fired
-    /// cron shows its block once the session connects (mirrors
-    /// [`Self::drain_pending_gotify_prompts`]). No-op when the buffer is
-    /// empty.
-    fn drain_pending_cron_prompts(&self) {
-        let pending: Vec<String> = std::mem::take(&mut self.domain.lock().pending_cron_prompts);
-        if pending.is_empty() {
-            return;
-        }
+    /// Drain the cron prompts buffered for this session's owner after its
+    /// first `Connected` - the `(project, team_role)` bucket a due cron
+    /// filled while the owner was asleep. Each is echoed as a cron block
+    /// (missed-marked when overdue) and re-dispatched as a plain
+    /// `Command::Prompt`: the lead drains its `None` bucket, a worker its
+    /// own label. No-op when the bucket is empty.
+    fn drain_pending_cron_prompts(&self, cwd: &str) {
         let Some(workspace) = self.workspace.upgrade() else { return };
-        for text in pending {
-            // Echo the cron block, then re-dispatch the raw prompt as a
-            // plain user turn (mirrors the running-lead path in
-            // spawn::deliver_cron_prompt).
+        for cron in workspace.take_pending_crons_for_session(&self.key, cwd) {
+            let text = crate::spawn::missed_cron_text(&cron.text, cron.missed);
             crate::spawn::push_cron_prompt_into_chat(&workspace, &self.key, &text);
             if let Err(err) = workspace.dispatch(crate::protocol::Command::Prompt {
                 key: self.key.clone(),
@@ -739,7 +730,7 @@ impl SessionTask {
                     target: "forge_workspace::session_task",
                     key = %self.key.as_str(),
                     error = ?err,
-                    "drain_pending_cron_prompts: dispatch failed; prompt dropped"
+                    "drain_pending_cron_prompts: dispatch failed; prompt dropped",
                 );
             }
         }
@@ -1578,19 +1569,22 @@ mod tests {
         );
     }
 
-    /// First-Connected drains `DomainSession.pending_cron_prompts`: each
-    /// buffered prompt dispatches a plain `Command::Prompt` AND echoes a
+    /// First-Connected drains the session owner's buffered cron prompts:
+    /// each dispatches a plain `Command::Prompt` AND echoes a
     /// `CronPromptAppended` so an asleep-fired cron shows its block once the
     /// session connects (mirrors the gotify drain echo). Reproduce-first:
     /// the echo is absent until the drain calls `push_cron_prompt_into_chat`.
     #[tokio::test]
     async fn first_connected_drains_pending_cron_prompts_and_echoes_block() {
         let (workspace, mut update_rx) = crate::Workspace::testing_stub();
+        // The session's cwd resolves to this project so the owner drain keys
+        // on (project, None) - a lead session with no live-worker label.
+        workspace.seed_test_project_with_static_workers("cron-drain", "/tmp/cron-drain", &[]);
+        workspace.buffer_cron_for_owner("cron-drain", None, "morning reminder".to_owned(), false);
 
         let session_key = SessionKey::from_session_id("cron-drain-uuid");
         let domain =
             Arc::new(parking_lot::Mutex::new(DomainSession::new(session_key.clone(), None)));
-        domain.lock().pending_cron_prompts.push("morning reminder".to_owned());
 
         let (handle, _agent_cmd_rx) = Agent::testing_stub();
         let (_cmd_tx, command_rx) =
@@ -1652,8 +1646,8 @@ mod tests {
         assert!(echoed, "an asleep-fired cron echoes a CronPromptAppended on drain");
 
         assert!(
-            domain.lock().pending_cron_prompts.is_empty(),
-            "pending_cron_prompts is drained after first-Connected",
+            workspace.take_pending_crons_for_session(&session_key, "/tmp/cron-drain").is_empty(),
+            "the owner's cron bucket is drained after first-Connected",
         );
     }
 
