@@ -348,9 +348,13 @@ pub(crate) fn deliver_cron_prompt(
         };
     }
 
-    // Asleep: the owner must still exist to be woken.
-    if !cron_owner_exists(workspace, &view, team_role) {
-        return CronFireOutcome::TargetGone;
+    // Asleep: only wake an owner we can confirm still exists. A conclusive
+    // absence removes the cron; an owner check that could not read leaves it
+    // for the next tick rather than deleting a real owner's cron on a hiccup.
+    match cron_owner_exists(workspace, &view, team_role) {
+        CronOwnerCheck::Exists => {}
+        CronOwnerCheck::Absent => return CronFireOutcome::TargetGone,
+        CronOwnerCheck::Unknown => return CronFireOutcome::DispatchFailed,
     }
     // Buffer by owner, then wake via resume: SpawnProject resumes the lead
     // and, through the lead's team-spawn, the worker; each drains its own
@@ -393,20 +397,37 @@ fn live_cron_owner(
         .map(|s| s.session.clone())
 }
 
-/// Whether a cron's owner still exists to be woken: the lead exists
+/// Outcome of checking whether a cron's owner still exists to be woken.
+enum CronOwnerCheck {
+    /// The owner exists (the lead, or a static / durable dynamic worker).
+    Exists,
+    /// Conclusively gone: the read succeeded and the label is in neither
+    /// `static_workers` nor the `dynamic_workers` table.
+    Absent,
+    /// The durable-worker lookup could not read, so absence is unconfirmed.
+    Unknown,
+}
+
+/// Whether a cron's owner still exists to be woken. The lead exists
 /// whenever its project does; a worker exists while its label is in
-/// `static_workers` or in the `dynamic_workers` table.
+/// `static_workers` or the `dynamic_workers` table. A durable-worker read
+/// failure yields [`CronOwnerCheck::Unknown`] so the fire router leaves the
+/// cron rather than deleting a real owner's cron on a transient hiccup.
 fn cron_owner_exists(
     workspace: &Arc<Workspace>,
     view: &crate::views::ProjectView,
     team_role: Option<&str>,
-) -> bool {
-    match team_role {
-        None => true,
-        Some(label) => {
-            view.static_workers.iter().any(|w| w == label)
-                || workspace.dynamic_workers_for_project(&view.key).iter().any(|w| w.label == label)
-        }
+) -> CronOwnerCheck {
+    let Some(label) = team_role else {
+        return CronOwnerCheck::Exists;
+    };
+    if view.static_workers.iter().any(|w| w == label) {
+        return CronOwnerCheck::Exists;
+    }
+    match workspace.dynamic_worker_exists(&view.key, label) {
+        Ok(true) => CronOwnerCheck::Exists,
+        Ok(false) => CronOwnerCheck::Absent,
+        Err(_) => CronOwnerCheck::Unknown,
     }
 }
 

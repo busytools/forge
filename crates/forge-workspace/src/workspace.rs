@@ -3280,6 +3280,24 @@ impl Workspace {
         )
     }
 
+    /// Whether `label` has a persisted dynamic-worker row in `project_key`.
+    /// Distinct from [`Self::dynamic_workers_for_project`], which swallows a
+    /// read failure as empty: this surfaces the error (and treats a missing
+    /// store as one) so a caller can tell "conclusively absent" from "could
+    /// not read" - the cron fire router must not delete a cron on a hiccup.
+    pub(crate) fn dynamic_worker_exists(
+        &self,
+        project_key: &ProjectKey,
+        label: &str,
+    ) -> anyhow::Result<bool> {
+        let guard = self.db.lock();
+        let Some(db) = guard.as_ref() else {
+            anyhow::bail!("the dynamic-worker store is unavailable this session");
+        };
+        let rows = crate::store::dynamic_workers::list_for_project(db, project_key.as_str())?;
+        Ok(rows.iter().any(|w| w.label == label))
+    }
+
     /// Install a redb store into a test workspace so the durable-vs-
     /// ephemeral persistence path is exercisable without `Workspace::new`.
     #[cfg(any(test, feature = "test-helpers"))]
@@ -6523,15 +6541,40 @@ mod tests {
     }
 
     #[test]
-    fn deliver_worker_cron_with_owner_gone_is_target_gone() {
+    fn deliver_worker_cron_with_owner_conclusively_gone_is_target_gone() {
         let (ws, _rx) = Workspace::testing_stub();
-        // No static roster, no dynamic row: "ghost" resolves to nothing.
+        let dir = tempdir().expect("tempdir");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        // Db open + empty dynamic_workers + no static roster: "ghost" is
+        // conclusively absent, so its cron is removed.
         ws.seed_test_project_with_static_workers("proj", "/tmp/wc-gone", &[]);
         let outcome =
             crate::spawn::deliver_cron_prompt(&ws, "proj", Some("ghost"), "x".to_owned(), false);
         assert!(
             matches!(outcome, crate::spawn::CronFireOutcome::TargetGone),
-            "a worker label that is neither live, static, nor a durable dynamic row is gone",
+            "a label conclusively absent from static + dynamic is gone",
+        );
+    }
+
+    #[test]
+    fn deliver_worker_cron_leaves_it_when_the_owner_check_cannot_read() {
+        // No db installed, so the durable-worker lookup fails: absence can't
+        // be confirmed, so the cron must be left (retried next tick), not
+        // deleted as owner-gone.
+        let (ws, _rx) = Workspace::testing_stub();
+        ws.seed_test_project_with_static_workers("proj", "/tmp/wc-unknown", &[]);
+        let outcome = crate::spawn::deliver_cron_prompt(
+            &ws,
+            "proj",
+            Some("scratch"),
+            "x".to_owned(),
+            false,
+        );
+        assert!(
+            matches!(outcome, crate::spawn::CronFireOutcome::DispatchFailed),
+            "a failed owner check leaves the cron for the next tick, not TargetGone",
         );
     }
 
