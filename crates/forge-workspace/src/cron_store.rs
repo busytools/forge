@@ -1,14 +1,9 @@
-//! Durable forge-cron persistence: `<config_dir>/forge/cron.toml`.
+//! One-time migration reader for the legacy `<config_dir>/forge/cron.toml`.
 //!
-//! The `Workspace` holds the cron list in memory (`Mutex<Vec<CronEntry>>`)
-//! as the working source of truth; this module loads it at boot
-//! ([`load_crons`]) and persists it after each mutation ([`store_crons`])
-//! via an atomic tmp-file + rename, mirroring [`crate::account_cache`].
-//!
-//! No file lock lives here: the single-instance boot guard
-//! ([`crate::single_instance`]) guarantees one forge process per config
-//! dir, and the workspace's `crons` mutex serialises writes within that
-//! process, so `store_crons` is always called under that lock.
+//! Crons now live in the machine-local store ([`crate::store::cron`]);
+//! this module only reads the synced `cron.toml` once to seed that store
+//! ([`load_crons`]). The whole module is removed in the cron-redb
+//! follow-up, once every machine has migrated.
 //!
 //! Failures are non-fatal: a missing file loads empty, a corrupt file
 //! loads empty + warns.
@@ -100,10 +95,10 @@ pub(crate) fn load_crons(config_dir: &Path) -> Vec<CronEntry> {
     parsed.crons
 }
 
-/// Persist the current cron list to cron.toml via tmp-file +
-/// atomic rename: a crash between write and rename leaves the previous
-/// document intact rather than a partial file. Called under the
-/// workspace's `crons` mutex. Failures are non-fatal and logged at warn.
+/// Write a `cron.toml` fixture for the seed-migration tests. Production no
+/// longer writes TOML (the machine-local store is the writer); this stays
+/// only to build the legacy file [`load_crons`] reads.
+#[cfg(test)]
 pub(crate) fn store_crons(config_dir: &Path, crons: &[CronEntry]) {
     let doc = ForgeCronDoc { version: CRON_SCHEMA_VERSION, crons: crons.to_vec() };
     let path = cron_path(config_dir);
@@ -222,17 +217,6 @@ mod tests {
     }
 
     #[test]
-    fn store_crons_does_not_write_legacy_top_level() {
-        let dir = tmp();
-        store_crons(dir.path(), &[recurring("r-1")]);
-        assert!(cron_path(dir.path()).exists(), "cron written under forge/");
-        assert!(
-            !dir.path().join("forge-cron.toml").exists(),
-            "store never creates the legacy top-level file",
-        );
-    }
-
-    #[test]
     fn round_trip_recurring_and_once() {
         let dir = tmp();
         let crons = vec![recurring("r-1"), once("o-1")];
@@ -280,29 +264,5 @@ mod tests {
         let dir = tmp();
         std::fs::write(cron_path(dir.path()), "version = 9999\n").expect("write");
         assert!(load_crons(dir.path()).is_empty());
-    }
-
-    #[test]
-    fn store_uses_atomic_rename_and_leaves_no_tmp_file() {
-        let dir = tmp();
-        store_crons(dir.path(), &[recurring("r-1")]);
-
-        let canonical = cron_path(dir.path());
-        assert!(canonical.exists(), "canonical cron file present");
-        assert!(
-            !canonical.with_extension("toml.tmp").exists(),
-            "tmp suffix file cleaned up after atomic rename",
-        );
-    }
-
-    #[test]
-    fn store_overwrites_existing_file() {
-        let dir = tmp();
-        store_crons(dir.path(), &[recurring("r-1")]);
-        store_crons(dir.path(), &[once("o-1")]);
-
-        let loaded = load_crons(dir.path());
-        assert_eq!(loaded.len(), 1);
-        assert_eq!(loaded[0].id, CronId::from("o-1"), "the second write replaced the first");
     }
 }

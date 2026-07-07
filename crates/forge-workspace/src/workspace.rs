@@ -568,16 +568,20 @@ impl Workspace {
             );
         }
 
-        // Load durable forge crons into the in-memory working set. Boot
-        // catch-up for entries that came due while forge was down runs
-        // after construction, once the dispatch machinery is live.
-        let crons = crate::cron_store::load_crons(&config_dir);
-
-        // Open the machine-local redb store and load durable Gotify
-        // subscriptions. A failure to resolve the app-support dir or open
-        // the DB degrades to no-subscriptions this run (non-fatal, like
-        // the state cache) - no cwd fallback (hard rule #15).
+        // Open the machine-local redb store: durable crons + Gotify
+        // subscriptions both live in it. A failure to resolve the app-
+        // support dir or open the DB degrades to no durable state this run
+        // (non-fatal, like the state cache) - no cwd fallback (hard rule #15).
         let db = open_db();
+
+        // Load durable forge crons into the in-memory working set, seeding
+        // once from the synced cron.toml on this machine's first run. Boot
+        // catch-up for entries that came due while forge was down runs after
+        // construction, once the dispatch machinery is live.
+        let crons = match &db {
+            Some(db) => crate::store::cron::seed_crons_from_toml_once(db, &config_dir),
+            None => Vec::new(),
+        };
         let gotify_subs = match &db {
             Some(db) => crate::store::gotify::list(db).unwrap_or_else(|error| {
                 tracing::warn!(
@@ -2943,17 +2947,25 @@ impl Workspace {
         self.live_workers.lock().get(project_key).cloned().unwrap_or_default()
     }
 
-    /// Lock the durable cron list, apply `f`, and persist to
-    /// `cron.toml`. Every cron-list mutation routes through here -
+    /// Lock the durable cron list, apply `f`, and persist to the
+    /// machine-local store. Every cron-list mutation routes through here -
     /// `cron__create` / `cron__delete`, the scheduler's fire-advance, and
-    /// boot catch-up - so the in-memory set and the file never diverge.
+    /// boot catch-up - so the in-memory set and the store never diverge.
     pub(crate) fn with_crons_mut<R>(
         &self,
         f: impl FnOnce(&mut Vec<forge_primitives::CronEntry>) -> R,
     ) -> R {
         let mut crons = self.crons.lock();
         let result = f(&mut crons);
-        crate::cron_store::store_crons(&self.config_dir, &crons);
+        if let Some(db) = self.db.lock().as_ref()
+            && let Err(error) = crate::store::cron::replace_all(db, &crons)
+        {
+            tracing::error!(
+                target: "forge_workspace::workspace",
+                %error,
+                "persisting crons to the store failed; a scheduled cron may be lost on restart",
+            );
+        }
         result
     }
 
@@ -5196,6 +5208,10 @@ mod tests {
         use forge_primitives::cron::{CronEntry, CronId, CronKind};
         let dir = tempdir().expect("tempdir");
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        let db = crate::store::Db::open(&dir.path().join("db.redb")).expect("open db");
+        ws.install_db_for_test(db);
+        let persisted =
+            || crate::store::cron::list(ws.db.lock().as_ref().expect("db installed")).expect("list");
 
         let entry = CronEntry {
             id: CronId::from("c1"),
@@ -5210,11 +5226,7 @@ mod tests {
         ws.push_cron(entry.clone());
         assert_eq!(ws.crons_for_project("forge"), vec![entry.clone()], "listed for its project");
         assert!(ws.crons_for_project("other").is_empty(), "scoped by project name");
-        assert_eq!(
-            crate::cron_store::load_crons(dir.path()),
-            vec![entry.clone()],
-            "push persisted to cron.toml",
-        );
+        assert_eq!(persisted(), vec![entry.clone()], "push persisted to the store");
 
         // A different project cannot delete another project's cron.
         assert!(!ws.remove_cron("other", &entry.id), "delete is scoped to the owning project");
@@ -5222,7 +5234,7 @@ mod tests {
 
         assert!(ws.remove_cron("forge", &entry.id), "the owning project removes it");
         assert!(ws.crons_for_project("forge").is_empty());
-        assert!(crate::cron_store::load_crons(dir.path()).is_empty(), "removal persisted");
+        assert!(persisted().is_empty(), "removal persisted");
 
         assert!(!ws.remove_cron("forge", &CronId::from("c1")), "removing a gone id reports false");
     }
@@ -6046,53 +6058,54 @@ mod tests {
         assert_eq!(later.next_fire, far_future, "the not-yet-due cron is untouched");
     }
 
-    #[tokio::test]
-    async fn boot_catch_up_fires_overdue_once_advances_persists_and_does_not_refire() {
+    #[test]
+    fn boot_catch_up_fires_overdue_once_advances_persists_and_does_not_refire() {
         use forge_primitives::cron::{CronEntry, CronId, CronKind};
-        let dir = make_workspace_dir();
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        let db = crate::store::Db::open(&dir.path().join("db.redb")).expect("open db");
+        ws.install_db_for_test(db);
+        ws.seed_test_project_with_static_workers("forge", "/tmp/forge-catchup", &[]);
+
         let now = std::time::SystemTime::now();
         let past = std::time::SystemTime::UNIX_EPOCH;
         let far_future = now + std::time::Duration::from_secs(86_400);
 
-        // Seed cron.toml (Workspace::new loads it) with an overdue
-        // recurring + overdue run-once + a not-yet-due one, all for the
-        // "forge" project make_workspace_dir wrote.
-        crate::cron_store::store_crons(
-            dir.path(),
-            &[
-                CronEntry {
-                    id: CronId::from("rec"),
-                    project_name: "forge".to_owned(),
-                    kind: CronKind::Recurring("*/5 * * * *".to_owned()),
-                    prompt: "morning".to_owned(),
-                    created_at: past,
-                    last_fire: None,
-                    next_fire: past,
-                },
-                CronEntry {
-                    id: CronId::from("once"),
-                    project_name: "forge".to_owned(),
-                    kind: CronKind::Once(past),
-                    prompt: "deploy".to_owned(),
-                    created_at: past,
-                    last_fire: None,
-                    next_fire: past,
-                },
-                CronEntry {
-                    id: CronId::from("future"),
-                    project_name: "forge".to_owned(),
-                    kind: CronKind::Recurring("*/5 * * * *".to_owned()),
-                    prompt: "later".to_owned(),
-                    created_at: past,
-                    last_fire: None,
-                    next_fire: far_future,
-                },
-            ],
-        );
-
-        let ws =
-            Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new loads cron.toml"));
-        assert_eq!(ws.crons_for_project("forge").len(), 3, "boot loaded all three crons");
+        // An overdue recurring + overdue run-once + a not-yet-due one, all
+        // for the seeded "forge" project. Boot catch-up is the single
+        // fire_due_crons call main.rs makes at startup.
+        for entry in [
+            CronEntry {
+                id: CronId::from("rec"),
+                project_name: "forge".to_owned(),
+                kind: CronKind::Recurring("*/5 * * * *".to_owned()),
+                prompt: "morning".to_owned(),
+                created_at: past,
+                last_fire: None,
+                next_fire: past,
+            },
+            CronEntry {
+                id: CronId::from("once"),
+                project_name: "forge".to_owned(),
+                kind: CronKind::Once(past),
+                prompt: "deploy".to_owned(),
+                created_at: past,
+                last_fire: None,
+                next_fire: past,
+            },
+            CronEntry {
+                id: CronId::from("future"),
+                project_name: "forge".to_owned(),
+                kind: CronKind::Recurring("*/5 * * * *".to_owned()),
+                prompt: "later".to_owned(),
+                created_at: past,
+                last_fire: None,
+                next_fire: far_future,
+            },
+        ] {
+            ws.push_cron(entry);
+        }
+        assert_eq!(ws.crons_for_project("forge").len(), 3, "all three crons loaded");
 
         // Boot catch-up: the one call main.rs makes at startup.
         ws.enable_test_dispatch_intercept();
@@ -6117,8 +6130,9 @@ mod tests {
         let fut = crons.iter().find(|c| c.id == CronId::from("future")).expect("future present");
         assert_eq!(fut.next_fire, far_future, "the future cron is untouched");
 
-        // The advance persisted to disk - this is what stops a double-fire.
-        let persisted = crate::cron_store::load_crons(dir.path());
+        // The advance persisted to the store - this is what stops a double-fire.
+        let persisted =
+            crate::store::cron::list(ws.db.lock().as_ref().expect("db installed")).expect("list");
         assert!(persisted.iter().all(|c| c.id != CronId::from("once")), "removal persisted");
         assert!(
             persisted

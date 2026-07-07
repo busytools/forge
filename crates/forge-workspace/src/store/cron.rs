@@ -85,6 +85,61 @@ pub fn replace_all(db: &Db, crons: &[CronEntry]) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// One-time seed marker. A dedicated single-purpose table so the whole
+/// migration path is excised in one place in the cron-redb follow-up.
+const CRON_MIGRATION: TableDefinition<&str, &[u8]> = TableDefinition::new("cron_migration");
+
+/// Load crons from the machine-local store, seeding once from the synced
+/// `cron.toml`. A machine-local marker (not table emptiness) gates the
+/// seed, so deleting every cron does not re-seed from a stale toml on the
+/// next boot. The marker is set only after actually migrating a non-empty
+/// cron.toml - an empty file has nothing to protect from a re-seed, and
+/// marking it would strand a cron.toml that syncs in later. Removed
+/// wholesale in the cron-redb follow-up.
+pub fn seed_crons_from_toml_once(db: &Db, config_dir: &std::path::Path) -> Vec<CronEntry> {
+    if !seeded(db).unwrap_or(false) {
+        let existing = crate::cron_store::load_crons(config_dir);
+        if !existing.is_empty() {
+            if let Err(error) = replace_all(db, &existing) {
+                tracing::error!(
+                    target: "forge_workspace::store::cron",
+                    %error,
+                    "seeding crons from cron.toml into the store failed",
+                );
+            } else if let Err(error) = mark_seeded(db) {
+                tracing::error!(
+                    target: "forge_workspace::store::cron",
+                    %error,
+                    "marking the cron store as seeded failed; it may re-seed next boot",
+                );
+            }
+        }
+    }
+    list(db).unwrap_or_default()
+}
+
+/// Whether the one-time cron.toml seed has already run on this machine.
+fn seeded(db: &Db) -> anyhow::Result<bool> {
+    let txn = db.database().begin_read()?;
+    let table = match txn.open_table(CRON_MIGRATION) {
+        Ok(t) => t,
+        Err(redb::TableError::TableDoesNotExist(_)) => return Ok(false),
+        Err(e) => return Err(e.into()),
+    };
+    Ok(table.get("seeded")?.is_some())
+}
+
+/// Record that the seed has run so later boots never re-read cron.toml.
+fn mark_seeded(db: &Db) -> anyhow::Result<()> {
+    let txn = db.database().begin_write()?;
+    {
+        let mut table = txn.open_table(CRON_MIGRATION)?;
+        table.insert("seeded", [1u8].as_slice())?;
+    }
+    txn.commit()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -180,5 +235,85 @@ mod tests {
         let all = list(&db).expect("list tolerates the corrupt blob");
         assert_eq!(all.len(), 1, "the good record survives a corrupt sibling");
         assert_eq!(all[0].id, good.id);
+    }
+
+    #[test]
+    fn seed_marker_prevents_reseed_after_deletion() {
+        let dir = tempdir().expect("tempdir");
+        crate::config::ensure_forge_data_dir(dir.path()).expect("forge/ dir");
+        let db = Db::open(&dir.path().join("db.redb")).expect("open db");
+
+        // A synced cron.toml with two crons; the first run seeds them.
+        crate::cron_store::store_crons(dir.path(), &[cron("c1"), cron("c2")]);
+        assert_eq!(seed_crons_from_toml_once(&db, dir.path()).len(), 2, "first run seeds both");
+
+        // The user deletes every cron; the store is now legitimately empty.
+        replace_all(&db, &[]).expect("clear");
+
+        // A second run must NOT re-seed from the still-present cron.toml. A
+        // table-emptiness guard would wrongly re-read it; the marker guards.
+        let after = seed_crons_from_toml_once(&db, dir.path());
+        assert!(after.is_empty(), "the marker prevents re-seeding deleted crons from a stale toml");
+    }
+
+    #[test]
+    fn seed_from_toml_sets_the_marker_and_returns_the_crons() {
+        let dir = tempdir().expect("tempdir");
+        crate::config::ensure_forge_data_dir(dir.path()).expect("forge/ dir");
+        let db = Db::open(&dir.path().join("db.redb")).expect("open db");
+
+        crate::cron_store::store_crons(dir.path(), &[cron("c1"), cron("c2")]);
+        assert!(!seeded(&db).expect("seeded query"), "unseeded before the first run");
+
+        let loaded = seed_crons_from_toml_once(&db, dir.path());
+        assert_eq!(loaded.len(), 2, "both crons seed into the store");
+        assert!(seeded(&db).expect("seeded query"), "the marker is set after seeding");
+    }
+
+    #[test]
+    fn seed_ignores_later_toml_growth() {
+        let dir = tempdir().expect("tempdir");
+        crate::config::ensure_forge_data_dir(dir.path()).expect("forge/ dir");
+        let db = Db::open(&dir.path().join("db.redb")).expect("open db");
+
+        crate::cron_store::store_crons(dir.path(), &[cron("c1"), cron("c2")]);
+        assert_eq!(seed_crons_from_toml_once(&db, dir.path()).len(), 2);
+
+        // A third cron appears in cron.toml (synced from another Mac); the
+        // set marker means the next run ignores it.
+        crate::cron_store::store_crons(dir.path(), &[cron("c1"), cron("c2"), cron("c3")]);
+        let after = seed_crons_from_toml_once(&db, dir.path());
+        assert_eq!(after.len(), 2, "a post-seed cron.toml edit does not re-seed");
+        assert!(!after.iter().any(|c| c.id == CronId::from("c3")));
+    }
+
+    #[test]
+    fn seed_with_no_toml_is_empty_and_leaves_marker_unset() {
+        let dir = tempdir().expect("tempdir");
+        crate::config::ensure_forge_data_dir(dir.path()).expect("forge/ dir");
+        let db = Db::open(&dir.path().join("db.redb")).expect("open db");
+
+        let loaded = seed_crons_from_toml_once(&db, dir.path());
+        assert!(loaded.is_empty(), "a missing cron.toml seeds nothing, no panic");
+        assert!(
+            !seeded(&db).expect("seeded query"),
+            "an empty cron.toml leaves the marker unset so a later synced file can still seed",
+        );
+    }
+
+    #[test]
+    fn seed_leaves_cron_toml_byte_unchanged() {
+        let dir = tempdir().expect("tempdir");
+        crate::config::ensure_forge_data_dir(dir.path()).expect("forge/ dir");
+        let db = Db::open(&dir.path().join("db.redb")).expect("open db");
+
+        crate::cron_store::store_crons(dir.path(), &[cron("c1"), cron("c2")]);
+        let toml_path = crate::config::forge_data_dir(dir.path()).join("cron.toml");
+        let before = std::fs::read(&toml_path).expect("read toml before");
+
+        seed_crons_from_toml_once(&db, dir.path());
+
+        let after = std::fs::read(&toml_path).expect("read toml after");
+        assert_eq!(before, after, "the synced cron.toml is never modified by the seed");
     }
 }
