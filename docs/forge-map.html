@@ -1546,10 +1546,10 @@ chat continues here...
 <div class="surface" id="cron-block">
   <div class="surface-head">
     <h4>Cron chat block - fired scheduled prompts</h4>
-    <div class="when">visible: every durable cron that fires into a session (the project lead, or the session spawned to receive it), echoed as a cron block at the tail, ahead of the response it triggers</div>
+    <div class="when">visible: every durable cron that fires into its owner (the project lead or a worker, woken if asleep), echoed as a cron block at the tail, ahead of the response it triggers</div>
   </div>
   <div class="surface-body">
-    <p>A due cron is delivered as a user turn (the session's LLM receives the raw prompt) and echoed into the chat so the user sees what fired instead of the agent bursting into a response from nowhere. It reads as an internal scheduled event, not typed input: a <span class="accent">Cron</span> source label (not <span class="accent">Forge</span>), the ◴ cron glyph (<span class="accent bold">&#x25F4;</span>, the same glyph the <a href="#inspector-pane">SCHEDULES</a> section uses, not <span class="accent">&#x25B6;</span>), and the fired prompt under the standard tree connectors (<code>&#x2502;&nbsp;&nbsp;</code> continuation, <code>&#x2514;&#x2500;</code> last).</p>
+    <p>A due cron is delivered as a user turn (the session's LLM receives the raw prompt) and echoed into the chat so the user sees what fired instead of the agent bursting into a response from nowhere. It reads as an internal scheduled event, not typed input: a <span class="accent">Cron</span> source label (not <span class="accent">Forge</span>), the ◴ cron glyph (<span class="accent bold">&#x25F4;</span>, the same glyph the <a href="#inspector-pane">SCHEDULES</a> section uses, not <span class="accent">&#x25B6;</span>), and the fired prompt under the standard tree connectors (<code>&#x2502;&nbsp;&nbsp;</code> continuation, <code>&#x2514;&#x2500;</code> last). An overdue fire (forge or the owner was down through the scheduled minute) prefixes the prompt with a plain <code>[missed cron]</code> marker so a catch-up reads apart from an on-time fire.</p>
     <div class="term">
       <pre class="indent">
    <span class="accent bold">Cron</span>
@@ -1641,17 +1641,17 @@ chat continues here...
         <tr>
           <td><code>cron__create</code></td>
           <td><code>schedule: Option&lt;string&gt;</code> (5-field cron) · <code>run_once_at: Option&lt;string&gt;</code> (RFC3339) · <code>prompt: string</code></td>
-          <td>Register a durable cron for the caller's project (ANY-caller, like <code>workers__list</code>). Exactly one of <code>schedule</code> / <code>run_once_at</code>. Validates + computes <code>next_fire</code> in the host's LOCAL timezone, persists to <code>forge/cron.toml</code>, returns the cron id. On schedule the prompt fires into the project's session (spawning it if asleep); durable across restarts (catch-up-once on boot). See the <a href="#inspector-schedules">SCHEDULES section</a>.</td>
+          <td>Register a durable cron for the caller's project (ANY-caller, like <code>workers__list</code>). Exactly one of <code>schedule</code> / <code>run_once_at</code>. Validates + computes <code>next_fire</code> in the host's LOCAL timezone, stamps the caller as owner (<code>team_role</code>: the lead, or a worker's label), persists to the machine-local store, returns the cron id. On schedule the prompt fires into its owner, waking the project (lead + team together) when asleep; durable across restarts (catch-up-once on boot, marked missed when overdue). See the <a href="#inspector-schedules">SCHEDULES section</a>.</td>
         </tr>
         <tr>
           <td><code>cron__list</code></td>
           <td>-</td>
-          <td>Returns the caller-project's crons (<code>{id, project, schedule, prompt, next_fire}</code>). Any-caller.</td>
+          <td>Returns the caller's own crons (a lead sees lead crons, a worker its own) as <code>{id, project, schedule, prompt, next_fire}</code>. Any-caller.</td>
         </tr>
         <tr>
           <td><code>cron__delete</code></td>
           <td><code>id: string</code></td>
-          <td>Delete a cron by id within the caller's project. Any-caller.</td>
+          <td>Delete a cron by id, scoped to the caller's own crons (a caller manages only what it created). Any-caller.</td>
         </tr>
       </tbody>
     </table>
