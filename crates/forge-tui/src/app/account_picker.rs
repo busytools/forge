@@ -105,11 +105,18 @@ fn commit(app: &mut App) {
     let account = selected.display_name.clone();
     close(app);
 
-    // Re-check idle at commit time: a delivered peer / cron / gotify
-    // prompt may have started a turn while the picker was open. The
-    // workspace has an authoritative backstop too, but bailing here
+    // Re-check at commit time: a delivered peer / cron / gotify prompt
+    // may have started a turn while the picker was open. Block only a
+    // known in-flight turn (`None` / `Some(Idle)` allow, matching the
+    // open-gate); the workspace backstop is authoritative. Bailing here
     // avoids the round-trip and surfaces the same notice.
-    if app.runtime_session_state() != Some(crate::agent::model::RuntimeSessionState::Idle) {
+    if matches!(
+        app.runtime_session_state(),
+        Some(
+            crate::agent::model::RuntimeSessionState::Running
+                | crate::agent::model::RuntimeSessionState::RequiresAction
+        )
+    ) {
         super::slash::push_system_message(
             app,
             "Finish or cancel the current turn before switching accounts.",

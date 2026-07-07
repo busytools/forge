@@ -61,7 +61,14 @@ fn handle_account_submit(app: &mut App, args: &[&str]) -> bool {
         push_system_message(app, "Usage: /account");
         return true;
     }
-    if app.runtime_session_state() != Some(RuntimeSessionState::Idle) {
+    // Block only a known in-flight turn. `None` (freshly connected, no
+    // state message yet) and `Some(Idle)` both allow - the workspace
+    // backstop is the authoritative guard, so a false-refuse here on a
+    // genuinely-idle session would just be a misleading notice.
+    if matches!(
+        app.runtime_session_state(),
+        Some(RuntimeSessionState::Running | RuntimeSessionState::RequiresAction)
+    ) {
         push_system_message(app, "Finish or cancel the current turn before switching accounts.");
         return true;
     }

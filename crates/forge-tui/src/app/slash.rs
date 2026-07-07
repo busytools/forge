@@ -246,6 +246,37 @@ mod tests {
     }
 
     #[test]
+    fn account_command_allows_when_runtime_state_unknown() {
+        // A freshly-connected session has no state message yet (None).
+        // The open-gate must NOT false-refuse it - only a known Running /
+        // RequiresAction turn is blocked (the workspace backstop is
+        // authoritative).
+        let mut app = App::test_default();
+        app.set_runtime_session_state(None);
+
+        let consumed = try_handle_submit(&mut app, "/account");
+
+        assert!(consumed);
+        let text: String = app
+            .messages()
+            .last()
+            .map(|m| {
+                m.blocks
+                    .iter()
+                    .filter_map(|b| match b {
+                        MessageBlock::Text(t) => Some(t.markdown.full_text()),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert!(
+            !text.contains("Finish or cancel"),
+            "a None (freshly-connected) session is not turn-blocked; got: {text}",
+        );
+    }
+
+    #[test]
     fn advertised_command_is_forwarded() {
         let mut app = App::test_default();
         app.try_active_bucket_mut().unwrap().available_commands =

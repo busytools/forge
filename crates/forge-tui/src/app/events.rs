@@ -290,7 +290,12 @@ pub(super) fn handle_runtime_session_state_update(
     // you can't switch accounts mid-turn (the commit-recheck and the
     // workspace backstop also guard this; closing proactively is
     // clearer than letting Enter bounce off the notice).
-    if app.account_picker.is_some() && state != model::RuntimeSessionState::Idle {
+    if app.account_picker.is_some()
+        && matches!(
+            state,
+            model::RuntimeSessionState::Running | model::RuntimeSessionState::RequiresAction
+        )
+    {
         crate::app::account_picker::close(app);
     }
     match state {
