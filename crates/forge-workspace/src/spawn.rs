@@ -1033,8 +1033,17 @@ pub(crate) fn teardown_worker(
     // row). Cancel and the lead-close cascade go through other paths and
     // deliberately leave the row intact.
     workspace.delete_dynamic_worker(project_key, label);
-    // The worker's durable Gotify subs are dropped with its durable row.
-    workspace.remove_gotify_subscriptions_for_worker(project_key, label);
+    // A static worker re-spawns from forge.toml, so only a dynamic worker's
+    // close clears its durable state (crons + Gotify subs).
+    let is_dynamic = workspace
+        .list_projects()
+        .into_iter()
+        .find(|v| v.key == *project_key)
+        .is_none_or(|v| !v.static_workers.iter().any(|w| w == label));
+    if is_dynamic {
+        workspace.remove_gotify_subscriptions_for_worker(project_key, label);
+        workspace.delete_crons_for_worker(project_key, label);
+    }
     let status = entry.to_status();
     let is_git_repo_at_spawn = entry.is_git_repo_at_spawn;
     // MUST call the non-cascading `release_session` primitive (NOT

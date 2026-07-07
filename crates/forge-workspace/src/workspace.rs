@@ -3005,6 +3005,30 @@ impl Workspace {
         })
     }
 
+    /// Remove worker `label`'s crons in `project_key` from the in-memory
+    /// set and the store, scoped to `(project name, team_role == Some(label))`.
+    /// Backs `spawn::teardown_worker` so a despawned dynamic worker's crons
+    /// go with its durable row. The key resolves to a name via the same view
+    /// lookup `remove_gotify_subscriptions_for_worker` uses.
+    pub(crate) fn delete_crons_for_worker(&self, project_key: &ProjectKey, label: &str) {
+        let Some(project_name) =
+            self.list_projects().into_iter().find(|v| v.key == *project_key).map(|v| v.name)
+        else {
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                project = %project_key.as_str(),
+                label = %label,
+                "could not resolve a project name at worker teardown; its crons may be stranded",
+            );
+            return;
+        };
+        self.with_crons_mut(|crons| {
+            crons.retain(|c| {
+                !(c.project_name == project_name && c.team_role.as_deref() == Some(label))
+            });
+        });
+    }
+
     /// The crons registered for `project_name`. Backs `cron__list` and
     /// the Inspector SCHEDULES snapshot, which scopes by the active tab's
     /// stamped project name.
@@ -5538,6 +5562,117 @@ mod tests {
             "teardown removed the worker's sub from redb",
         );
         assert!(persisted.iter().any(|s| s.id == lead_sub.id), "the lead sub is still persisted");
+    }
+
+    fn worker_cron(id: &str, project: &str, team_role: Option<&str>) -> forge_primitives::CronEntry {
+        forge_primitives::CronEntry {
+            id: forge_primitives::CronId::from(id),
+            project_name: project.to_owned(),
+            kind: forge_primitives::CronKind::Recurring("0 9 * * *".to_owned()),
+            prompt: "p".to_owned(),
+            created_at: std::time::SystemTime::UNIX_EPOCH,
+            last_fire: None,
+            next_fire: std::time::SystemTime::UNIX_EPOCH,
+            team_role: team_role.map(str::to_owned),
+        }
+    }
+
+    #[tokio::test]
+    async fn teardown_dynamic_worker_drops_its_crons_and_subs_keeps_others() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let dir = tempdir().expect("tempdir");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        // Empty static_workers -> "scratch" is a dynamic worker.
+        ws.seed_test_project_with_static_workers("forge", "/tmp/cron-teardown-dyn", &[]);
+        let view_key = ws
+            .list_projects()
+            .into_iter()
+            .find(|v| v.name == "forge")
+            .map(|v| v.key)
+            .expect("seeded project view");
+        ws.insert_live_worker(&view_key, live_worker_entry("scratch", "worker-1"));
+
+        let scratch_cron = worker_cron("scratch-cron", "forge", Some("scratch"));
+        let lead_cron = worker_cron("lead-cron", "forge", None);
+        let sibling_cron = worker_cron("sibling-cron", "forge", Some("reviewer"));
+        ws.push_cron(scratch_cron.clone());
+        ws.push_cron(lead_cron.clone());
+        ws.push_cron(sibling_cron.clone());
+        let mut scratch_sub = gotify_sub("forge", &[], None);
+        scratch_sub.team_role = Some("scratch".to_owned());
+        let lead_sub = gotify_sub("forge", &[], None);
+        ws.add_gotify_subscription(scratch_sub.clone(), true);
+        ws.add_gotify_subscription(lead_sub.clone(), true);
+
+        crate::spawn::teardown_worker(&ws, &view_key, "scratch");
+
+        let crons = ws.crons_for_project("forge");
+        assert!(crons.iter().all(|c| c.id != scratch_cron.id), "the dynamic worker's cron is dropped");
+        assert!(crons.iter().any(|c| c.id == lead_cron.id), "the lead cron survives");
+        assert!(crons.iter().any(|c| c.id == sibling_cron.id), "a sibling worker's cron survives");
+        let persisted_crons = {
+            let guard = ws.db.lock();
+            crate::store::cron::list(guard.as_ref().expect("db installed")).expect("list")
+        };
+        assert!(
+            persisted_crons.iter().all(|c| c.id != scratch_cron.id),
+            "the cron is dropped from the store too",
+        );
+        assert!(persisted_crons.iter().any(|c| c.id == lead_cron.id), "the lead cron is still stored");
+
+        let subs = ws.gotify_subscriptions_for_project("forge");
+        assert!(subs.iter().all(|s| s.id != scratch_sub.id), "the dynamic worker's sub is dropped");
+        assert!(subs.iter().any(|s| s.id == lead_sub.id), "the lead sub survives");
+    }
+
+    #[tokio::test]
+    async fn teardown_static_worker_keeps_its_crons_and_subs() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let dir = tempdir().expect("tempdir");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        // "reviewer" IS a static worker -> it re-spawns, so a close keeps
+        // its durable state.
+        ws.seed_test_project_with_static_workers(
+            "forge",
+            "/tmp/cron-teardown-static",
+            &["reviewer".to_owned()],
+        );
+        let view_key = ws
+            .list_projects()
+            .into_iter()
+            .find(|v| v.name == "forge")
+            .map(|v| v.key)
+            .expect("seeded project view");
+        ws.insert_live_worker(&view_key, live_worker_entry("reviewer", "worker-1"));
+
+        let reviewer_cron = worker_cron("reviewer-cron", "forge", Some("reviewer"));
+        ws.push_cron(reviewer_cron.clone());
+        let mut reviewer_sub = gotify_sub("forge", &[], None);
+        reviewer_sub.team_role = Some("reviewer".to_owned());
+        ws.add_gotify_subscription(reviewer_sub.clone(), true);
+
+        crate::spawn::teardown_worker(&ws, &view_key, "reviewer");
+
+        assert!(
+            ws.crons_for_project("forge").iter().any(|c| c.id == reviewer_cron.id),
+            "a static worker keeps its cron on close",
+        );
+        assert!(
+            ws.gotify_subscriptions_for_project("forge").iter().any(|s| s.id == reviewer_sub.id),
+            "a static worker keeps its sub on close",
+        );
+        let persisted_crons = {
+            let guard = ws.db.lock();
+            crate::store::cron::list(guard.as_ref().expect("db installed")).expect("list")
+        };
+        assert!(
+            persisted_crons.iter().any(|c| c.id == reviewer_cron.id),
+            "the static worker's cron stays in the store",
+        );
     }
 
     /// The seam the bug lived in: `resolve_identity` gathers the caller's
