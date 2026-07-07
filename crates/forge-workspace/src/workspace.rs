@@ -2974,13 +2974,33 @@ impl Workspace {
         self.with_crons_mut(|crons| crons.push(entry));
     }
 
-    /// Remove the cron `id` if it belongs to `project_name`, persist, and
-    /// report whether an entry was removed. Backs `cron__delete`, scoped
-    /// so a caller only deletes its own project's crons.
+    /// Remove the cron `id` in `project_name` regardless of owner, persist,
+    /// and report whether an entry was removed. Backs the fire-router's
+    /// owner-gone removal; the owner-scoped `cron__delete` uses
+    /// [`Self::remove_cron_owned_by`].
     pub(crate) fn remove_cron(&self, project_name: &str, id: &forge_primitives::CronId) -> bool {
         self.with_crons_mut(|crons| {
             let before = crons.len();
             crons.retain(|c| !(c.id == *id && c.project_name == project_name));
+            crons.len() != before
+        })
+    }
+
+    /// Remove the cron `id` in `project_name` only when its owner matches
+    /// `owner` (`None` = a lead cron, `Some(label)` = that worker's),
+    /// persist, and report whether an entry was removed. Backs the
+    /// owner-scoped `cron__delete` so a caller deletes only its own crons.
+    pub(crate) fn remove_cron_owned_by(
+        &self,
+        project_name: &str,
+        id: &forge_primitives::CronId,
+        owner: Option<&str>,
+    ) -> bool {
+        self.with_crons_mut(|crons| {
+            let before = crons.len();
+            crons.retain(|c| {
+                !(c.id == *id && c.project_name == project_name && c.team_role.as_deref() == owner)
+            });
             crons.len() != before
         })
     }
@@ -5221,6 +5241,7 @@ mod tests {
             created_at: std::time::SystemTime::UNIX_EPOCH,
             last_fire: None,
             next_fire: std::time::SystemTime::UNIX_EPOCH,
+            team_role: None,
         };
 
         ws.push_cron(entry.clone());
@@ -5966,6 +5987,7 @@ mod tests {
             created_at: fired,
             last_fire: None,
             next_fire: std::time::SystemTime::UNIX_EPOCH,
+            team_role: None,
         });
         ws.advance_or_remove_cron(&CronId::from("r"), fired);
         let after = ws.crons_for_project("forge");
@@ -5981,6 +6003,7 @@ mod tests {
             created_at: fired,
             last_fire: None,
             next_fire: std::time::SystemTime::UNIX_EPOCH,
+            team_role: None,
         });
         ws.advance_or_remove_cron(&CronId::from("o"), fired);
         assert!(
@@ -6011,6 +6034,7 @@ mod tests {
             created_at: past,
             last_fire: None,
             next_fire: past,
+            team_role: None,
         });
         ws.push_cron(CronEntry {
             id: CronId::from("later"),
@@ -6020,6 +6044,7 @@ mod tests {
             created_at: past,
             last_fire: None,
             next_fire: far_future,
+            team_role: None,
         });
 
         ws.enable_test_dispatch_intercept();
@@ -6083,6 +6108,7 @@ mod tests {
                 created_at: past,
                 last_fire: None,
                 next_fire: past,
+                team_role: None,
             },
             CronEntry {
                 id: CronId::from("once"),
@@ -6092,6 +6118,7 @@ mod tests {
                 created_at: past,
                 last_fire: None,
                 next_fire: past,
+                team_role: None,
             },
             CronEntry {
                 id: CronId::from("future"),
@@ -6101,6 +6128,7 @@ mod tests {
                 created_at: past,
                 last_fire: None,
                 next_fire: far_future,
+                team_role: None,
             },
         ] {
             ws.push_cron(entry);
@@ -6275,6 +6303,7 @@ mod tests {
             created_at: std::time::SystemTime::UNIX_EPOCH,
             last_fire: None,
             next_fire: std::time::SystemTime::UNIX_EPOCH, // overdue -> due now
+            team_role: None,
         });
 
         ws.enable_test_dispatch_intercept();
@@ -6307,6 +6336,7 @@ mod tests {
             created_at: std::time::SystemTime::UNIX_EPOCH,
             last_fire: None,
             next_fire: std::time::SystemTime::UNIX_EPOCH,
+            team_role: None,
         });
         ws.advance_or_remove_cron(&CronId::from("impossible"), std::time::SystemTime::now());
         assert!(

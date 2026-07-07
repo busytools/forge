@@ -164,6 +164,7 @@ mod tests {
             created_at: epoch(1_700_000_000),
             last_fire: None,
             next_fire: epoch(1_700_032_400),
+            team_role: None,
         }
     }
 
@@ -176,6 +177,7 @@ mod tests {
             created_at: epoch(1_700_000_000),
             last_fire: Some(epoch(1_700_050_000)),
             next_fire: epoch(1_700_100_000),
+            team_role: None,
         }
     }
 
@@ -243,6 +245,7 @@ mod tests {
             created_at: epoch(1_700_000_000),
             last_fire: Some(epoch(1_700_050_000)),
             next_fire: epoch(1_700_032_400),
+            team_role: None,
         };
         store_crons(dir.path(), std::slice::from_ref(&entry));
         assert_eq!(

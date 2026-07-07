@@ -3778,6 +3778,7 @@ mod tests {
             created_at: std::time::SystemTime::UNIX_EPOCH,
             last_fire: None,
             next_fire: std::time::SystemTime::UNIX_EPOCH,
+            team_role: None,
         };
         ws.seed_test_cron(cron.clone());
 
@@ -3819,6 +3820,7 @@ mod tests {
             created_at: std::time::SystemTime::UNIX_EPOCH,
             last_fire: None,
             next_fire: std::time::SystemTime::UNIX_EPOCH,
+            team_role: None,
         };
         ws.seed_test_cron(cron.clone());
 
@@ -3861,6 +3863,7 @@ mod tests {
             created_at: std::time::SystemTime::UNIX_EPOCH,
             last_fire: None,
             next_fire: std::time::SystemTime::UNIX_EPOCH,
+            team_role: None,
         };
         ws.seed_test_cron(cron.clone());
 
@@ -3901,6 +3904,7 @@ mod tests {
             created_at: std::time::SystemTime::UNIX_EPOCH,
             last_fire: None,
             next_fire: std::time::SystemTime::UNIX_EPOCH,
+            team_role: None,
         };
         ws.seed_test_cron(cron.clone());
 
@@ -3949,6 +3953,7 @@ mod tests {
             created_at: std::time::SystemTime::UNIX_EPOCH,
             last_fire: None,
             next_fire: std::time::SystemTime::UNIX_EPOCH,
+            team_role: None,
         };
 
         for key_str in ["11111111-2222-3333-4444-555555555555", "worker-uuid", "__spawn_cronproj__"]
@@ -3993,6 +3998,7 @@ mod tests {
             created_at: std::time::SystemTime::UNIX_EPOCH,
             last_fire: None,
             next_fire: std::time::SystemTime::UNIX_EPOCH,
+            team_role: None,
         };
         ws.seed_test_cron(cron.clone());
 
