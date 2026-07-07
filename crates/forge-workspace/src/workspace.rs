@@ -1467,6 +1467,10 @@ impl Workspace {
             SessionTarget::Session(key) => {
                 let cwd = self.session_cwd_for(key)?;
                 let cwd_path = std::path::PathBuf::from(&cwd);
+                // A worktree cwd misses this exact match and yields None,
+                // degrading account selection to the worktree-aware
+                // project_accounts_for fallback. Routing resumed worktree
+                // workers through the plan here is a separate follow-up.
                 self.config
                     .projects
                     .iter()
@@ -2019,9 +2023,10 @@ impl Workspace {
     /// `[[orgs]].accounts = [...]` list inherited from the project's
     /// org in `forge.toml`). Project-rooted targets read directly off
     /// the matching `LoadedProject`; session-id targets walk the
-    /// catalog for the session's original cwd and match against
-    /// `LoadedProject.path` so a resumed session inherits the
-    /// originating project's pin.
+    /// catalog for the session's original cwd and resolve it to the
+    /// owning project by longest-ancestor-prefix so a resumed session
+    /// (including one in a worktree subdir) inherits the originating
+    /// project's pin.
     ///
     /// Config-load guarantees every `LoadedProject.accounts` is
     /// non-empty. The session-id branch can still miss (catalog has
@@ -2038,15 +2043,19 @@ impl Workspace {
             ),
             SessionTarget::Session(key) => {
                 let matched = self.session_cwd_for(key).and_then(|cwd| {
-                    let cwd_path = std::path::PathBuf::from(&cwd);
-                    self.config
-                        .projects
-                        .iter()
-                        .find(|p| p.path == cwd_path)
+                    // A worktree cwd is a subdir of its project root, so
+                    // resolve by ancestor-prefix (project_name_for_path)
+                    // instead of exact equality before reading the pin.
+                    self.project_name_for_path(&cwd)
+                        .and_then(|name| self.find_project_by_name(&name).ok())
                         .map(|p| p.accounts.clone())
                 });
                 matched.unwrap_or_else(|| self.config.default_project().accounts.clone())
             }
+            // A fresh worker spawn's project_key is always the parent
+            // project's (the worktree is created post-spawn via
+            // --worktree; resume takes the Session branch), so this exact
+            // key match resolves correctly.
             SessionTarget::FreshInProject { project_key, .. } => self
                 .config
                 .projects
@@ -4800,6 +4809,20 @@ impl Workspace {
     pub fn testing_stub_with_config_dir(
         config_dir: PathBuf,
     ) -> (Arc<Self>, mpsc::UnboundedReceiver<SessionUpdate>) {
+        Self::testing_stub_with_config(config_dir, LoadedConfig::empty_for_test())
+    }
+
+    /// Like `testing_stub_with_config_dir` but injects a caller-built
+    /// `LoadedConfig` so tests can drive the project-resolution paths
+    /// (`project_accounts_for` / `default_project`) that read
+    /// `self.config.projects`, which the `test_extra_projects` overlay
+    /// does not populate. Build the config via
+    /// `crate::config::load_from_dir` on a tempdir `forge.toml` fixture;
+    /// `db` stays `None`, so nothing touches the real machine store.
+    pub(crate) fn testing_stub_with_config(
+        config_dir: PathBuf,
+        config: LoadedConfig,
+    ) -> (Arc<Self>, mpsc::UnboundedReceiver<SessionUpdate>) {
         // Mirror the boot-time `ensure_forge_data_dir`: stub-based tests
         // that exercise the cron / state stores expect `forge/` present.
         let _ = crate::config::ensure_forge_data_dir(&config_dir);
@@ -4807,7 +4830,7 @@ impl Workspace {
         let (kick_dispatcher_tx, kick_dispatcher_rx) = mpsc::unbounded_channel::<KickRequest>();
         let workspace = Self {
             config_dir,
-            config: LoadedConfig::empty_for_test(),
+            config,
             catalog: Mutex::new(HashMap::new()),
             pool: Mutex::new(HashMap::new()),
             accounts: Mutex::new(AccountStateMap::empty_for_test()),
@@ -5460,6 +5483,100 @@ mod tests {
             ws.project_name_for_path(&absent_worktree.to_string_lossy()).as_deref(),
             Some("symproj"),
             "an absent worktree subdir under a symlinked-ancestor root resolves to its parent",
+        );
+    }
+
+    // forge.toml for the account-pin resolution tests: a `subspace`
+    // project pinned to ["Subspace"] plus an alphabetically-earlier
+    // auto_start default ("busymail") on the Granite org, so a miss
+    // surfaces as the Granite pin rather than an empty list / panic.
+    const ACCOUNT_PIN_FIXTURE: &str = r#"
+[[orgs]]
+name = "Granite"
+accounts = ["Granite", "Granite1", "Personal"]
+[[orgs.projects]]
+name = "busymail"
+path = "/tmp/wt-acct-busymail"
+auto_start = true
+
+[[orgs]]
+name = "Subspace"
+accounts = ["Subspace"]
+[[orgs.projects]]
+name = "subspace"
+path = "/tmp/wt-acct-subspace"
+auto_start = true
+
+[[accounts]]
+display_name = "Granite"
+config_dir = "/tmp/wt-acct-cfg/granite"
+[[accounts]]
+display_name = "Granite1"
+config_dir = "/tmp/wt-acct-cfg/granite1"
+[[accounts]]
+display_name = "Personal"
+config_dir = "/tmp/wt-acct-cfg/personal"
+[[accounts]]
+display_name = "Subspace"
+config_dir = "/tmp/wt-acct-cfg/subspace"
+"#;
+
+    // Stub whose config is `ACCOUNT_PIN_FIXTURE`. The returned `TempDir`
+    // guards the config dir for the caller's lifetime.
+    fn stub_with_account_pin_fixture() -> (Arc<Workspace>, tempfile::TempDir) {
+        let dir = tempdir().expect("tempdir");
+        let forge_dir = crate::config::ensure_forge_data_dir(dir.path()).expect("forge dir");
+        fs::write(forge_dir.join("forge.toml"), ACCOUNT_PIN_FIXTURE).expect("write forge.toml");
+        let config = crate::config::load_from_dir(dir.path()).expect("load config");
+        let (ws, _rx) = Workspace::testing_stub_with_config(dir.path().to_owned(), config);
+        (ws, dir)
+    }
+
+    #[test]
+    fn project_accounts_for_resolves_worktree_session_to_parent_project() {
+        // A session whose cwd is a worktree under the subspace root must
+        // inherit ["Subspace"], not the alpha-first Granite default.
+        let (ws, _dir) = stub_with_account_pin_fixture();
+        ws.record_connected_session(
+            "/tmp/wt-acct-subspace/.claude/worktrees/reviewer",
+            "sess-worktree",
+            None,
+        );
+        let target = SessionTarget::Session(SessionKey::from_session_id("sess-worktree"));
+        assert_eq!(
+            ws.project_accounts_for(&target),
+            vec!["Subspace".to_owned()],
+            "a worktree session inherits its parent project's account pin, not the default's",
+        );
+    }
+
+    #[test]
+    fn project_accounts_for_resolves_project_root_session_to_its_own_pin() {
+        // The common non-worktree path the fix also rewrote: a session
+        // rooted exactly at a project resolves to that project's own pin,
+        // not the default.
+        let (ws, _dir) = stub_with_account_pin_fixture();
+        ws.record_connected_session("/tmp/wt-acct-subspace", "sess-root", None);
+        let target = SessionTarget::Session(SessionKey::from_session_id("sess-root"));
+        assert_eq!(
+            ws.project_accounts_for(&target),
+            vec!["Subspace".to_owned()],
+            "a project-root session resolves to its own pin",
+        );
+    }
+
+    #[test]
+    fn project_accounts_for_falls_back_to_default_for_unknown_cwd() {
+        // A cwd under no configured project degrades to the default
+        // project's pin (the alpha-first Granite auto_start default) so
+        // the picker always has a non-empty allow-list.
+        let (ws, _dir) = stub_with_account_pin_fixture();
+        ws.record_connected_session("/tmp/unrelated-elsewhere", "sess-unknown", None);
+        let target = SessionTarget::Session(SessionKey::from_session_id("sess-unknown"));
+        assert_eq!(
+            ws.project_accounts_for(&target),
+            vec!["Granite".to_owned(), "Granite1".to_owned(), "Personal".to_owned()],
+            "an unknown cwd falls back to the default project's accounts",
         );
     }
 
