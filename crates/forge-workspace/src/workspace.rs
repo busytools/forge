@@ -5551,6 +5551,21 @@ config_dir = "/tmp/wt-acct-cfg/subspace"
     }
 
     #[test]
+    fn project_accounts_for_resolves_project_root_session_to_its_own_pin() {
+        // The common non-worktree path the fix also rewrote: a session
+        // rooted exactly at a project resolves to that project's own pin,
+        // not the default.
+        let (ws, _dir) = stub_with_account_pin_fixture();
+        ws.record_connected_session("/tmp/wt-acct-subspace", "sess-root", None);
+        let target = SessionTarget::Session(SessionKey::from_session_id("sess-root"));
+        assert_eq!(
+            ws.project_accounts_for(&target),
+            vec!["Subspace".to_owned()],
+            "a project-root session resolves to its own pin",
+        );
+    }
+
+    #[test]
     fn durable_gotify_subscription_persists_ephemeral_stays_in_memory() {
         use forge_primitives::GotifySubscription;
 
