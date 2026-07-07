@@ -3093,10 +3093,15 @@ impl Workspace {
         if let Some(db) = self.db.lock().as_ref() {
             for id in removed_ids {
                 if let Err(error) = crate::store::gotify::remove(db, id) {
-                    tracing::warn!(
+                    // Same zombie-durable-state class as a stranded
+                    // dynamic-worker row: match its error! severity.
+                    tracing::error!(
                         target: "forge_workspace::workspace",
                         %error,
-                        "removing a persisted Gotify subscription failed",
+                        id = %id,
+                        project = %project_name,
+                        label = %label,
+                        "deleting a persisted Gotify subscription failed; it reloads into the active set on restart and a future same-label worker inherits it",
                     );
                 }
             }
