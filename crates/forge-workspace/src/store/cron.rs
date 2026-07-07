@@ -64,9 +64,13 @@ pub fn remove(db: &Db, id: &CronId) -> anyhow::Result<bool> {
     Ok(existed)
 }
 
-/// Overwrite the table with `crons`: clear every existing row then insert
-/// the full set in one write txn, so the store mirrors the in-memory list
-/// exactly. Backs the workspace's persist-after-mutation path.
+/// Overwrite the table with `crons`: clear every existing row, insert the
+/// full set, and - when the set is non-empty - set the one-time seed
+/// marker, all in ONE write txn so the crons and the marker land
+/// atomically. A delete-to-empty rewrites only the data and never unmarks,
+/// so once a machine holds any crons (seeded or natively created) the seed
+/// never re-reads cron.toml. Backs both the boot seed and every workspace
+/// persist-after-mutation.
 pub fn replace_all(db: &Db, crons: &[CronEntry]) -> anyhow::Result<()> {
     let txn = db.database().begin_write()?;
     {
@@ -81,6 +85,9 @@ pub fn replace_all(db: &Db, crons: &[CronEntry]) -> anyhow::Result<()> {
             table.insert(cron.id.as_str(), value.as_slice())?;
         }
     }
+    if !crons.is_empty() {
+        mark_seeded(&txn)?;
+    }
     txn.commit()?;
     Ok(())
 }
@@ -91,28 +98,24 @@ const CRON_MIGRATION: TableDefinition<&str, &[u8]> = TableDefinition::new("cron_
 
 /// Load crons from the machine-local store, seeding once from the synced
 /// `cron.toml`. A machine-local marker (not table emptiness) gates the
-/// seed, so deleting every cron does not re-seed from a stale toml on the
-/// next boot. The marker is set only after actually migrating a non-empty
-/// cron.toml - an empty file has nothing to protect from a re-seed, and
-/// marking it would strand a cron.toml that syncs in later. Removed
-/// wholesale in the cron-redb follow-up.
+/// seed: [`replace_all`] sets it atomically the first time the store gains
+/// a non-empty set (from this seed OR a native creation), and a
+/// delete-to-empty never clears it, so once a machine has any crons the
+/// seed never re-reads cron.toml. An empty/absent cron.toml seeds nothing
+/// and leaves the marker unset, so a cron.toml that syncs in later can
+/// still migrate a cron-less machine. Removed wholesale in the cron-redb
+/// follow-up.
 pub fn seed_crons_from_toml_once(db: &Db, config_dir: &std::path::Path) -> Vec<CronEntry> {
     if !seeded(db).unwrap_or(false) {
         let existing = crate::cron_store::load_crons(config_dir);
-        if !existing.is_empty() {
-            if let Err(error) = replace_all(db, &existing) {
-                tracing::error!(
-                    target: "forge_workspace::store::cron",
-                    %error,
-                    "seeding crons from cron.toml into the store failed",
-                );
-            } else if let Err(error) = mark_seeded(db) {
-                tracing::error!(
-                    target: "forge_workspace::store::cron",
-                    %error,
-                    "marking the cron store as seeded failed; it may re-seed next boot",
-                );
-            }
+        if !existing.is_empty()
+            && let Err(error) = replace_all(db, &existing)
+        {
+            tracing::error!(
+                target: "forge_workspace::store::cron",
+                %error,
+                "seeding crons from cron.toml into the store failed",
+            );
         }
     }
     list(db).unwrap_or_default()
@@ -129,14 +132,13 @@ fn seeded(db: &Db) -> anyhow::Result<bool> {
     Ok(table.get("seeded")?.is_some())
 }
 
-/// Record that the seed has run so later boots never re-read cron.toml.
-fn mark_seeded(db: &Db) -> anyhow::Result<()> {
-    let txn = db.database().begin_write()?;
-    {
-        let mut table = txn.open_table(CRON_MIGRATION)?;
-        table.insert("seeded", [1u8].as_slice())?;
-    }
-    txn.commit()?;
+/// Set the one-time seed marker within `txn`. Called by [`replace_all`]
+/// whenever the store gains a non-empty set, so a native cron creation
+/// marks the machine just as the boot seed does. Shares the caller's txn
+/// so the data and the marker commit atomically.
+fn mark_seeded(txn: &redb::WriteTransaction) -> anyhow::Result<()> {
+    let mut table = txn.open_table(CRON_MIGRATION)?;
+    table.insert("seeded", [1u8].as_slice())?;
     Ok(())
 }
 
@@ -255,6 +257,46 @@ mod tests {
         // table-emptiness guard would wrongly re-read it; the marker guards.
         let after = seed_crons_from_toml_once(&db, dir.path());
         assert!(after.is_empty(), "the marker prevents re-seeding deleted crons from a stale toml");
+    }
+
+    #[test]
+    fn replace_all_marks_on_non_empty_and_never_unmarks() {
+        let dir = tempdir().expect("tempdir");
+        let db = Db::open(&dir.path().join("db.redb")).expect("open db");
+
+        assert!(!seeded(&db).expect("seeded"), "a fresh store is unmarked");
+        replace_all(&db, &[]).expect("empty write");
+        assert!(!seeded(&db).expect("seeded"), "an empty write leaves the store unmarked");
+        replace_all(&db, &[cron("a")]).expect("non-empty write");
+        assert!(seeded(&db).expect("seeded"), "the first non-empty write marks the store");
+        replace_all(&db, &[]).expect("delete to empty");
+        assert!(seeded(&db).expect("seeded"), "a delete-to-empty must never unmark");
+    }
+
+    #[test]
+    fn a_native_cron_survives_a_later_synced_toml() {
+        let dir = tempdir().expect("tempdir");
+        crate::config::ensure_forge_data_dir(dir.path()).expect("forge/ dir");
+        let db = Db::open(&dir.path().join("db.redb")).expect("open db");
+
+        // Empty first boot: nothing to seed, the store stays unmarked.
+        assert!(seed_crons_from_toml_once(&db, dir.path()).is_empty());
+
+        // A cron created natively writes the store (not cron.toml) and, being
+        // the first non-empty set, marks the machine.
+        replace_all(&db, &[cron("native")]).expect("native create");
+
+        // A non-empty cron.toml then syncs in from an un-migrated Mac.
+        crate::cron_store::store_crons(dir.path(), &[cron("from-toml")]);
+
+        // The next boot must not re-seed and clobber the native cron.
+        let after = seed_crons_from_toml_once(&db, dir.path());
+        assert_eq!(after.len(), 1);
+        assert_eq!(
+            after[0].id,
+            CronId::from("native"),
+            "the native cron survives; the later-synced toml is ignored",
+        );
     }
 
     #[test]
