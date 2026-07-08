@@ -63,7 +63,6 @@ fn normalize_tool_kind(name: &str) -> forge_primitives::ToolKind {
         "Move" => ToolKind::Move,
         "Glob" | "Grep" => ToolKind::Search,
         "WebFetch" => ToolKind::Fetch,
-        "TodoWrite" => ToolKind::Other,
         "ExitPlanMode" => ToolKind::SwitchMode,
         // "Task" / "Agent" fall through to the "think" default.
         _ => ToolKind::Think,

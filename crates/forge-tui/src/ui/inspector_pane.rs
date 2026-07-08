@@ -1883,7 +1883,7 @@ fn truncate_or_pass(s: &str, max_chars: usize) -> String {
 ///
 /// Glyphs mirror the TASKS convention but use a kind-distinct
 /// palette for the headline so scanning the section visually
-/// separates "what's running" from "what's queued in TodoWrite":
+/// separates "what's running" from "what's queued in the Task* family":
 ///
 /// - `▸` RUST_ORANGE  - `BashBackgrounded` / `Monitor` while in-flight
 /// - `\u{23F0}` (`⏰`) DIM - `Cron` (scheduled, not currently firing)
