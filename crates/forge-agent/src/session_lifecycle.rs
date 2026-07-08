@@ -28,6 +28,7 @@ enum ModelFamily {
     Opus,
     Sonnet,
     Haiku,
+    Fable,
     Unknown,
 }
 
@@ -68,6 +69,7 @@ fn normalize_model_key(id: &str) -> NormalizedModelKey {
         "opus" => ModelFamily::Opus,
         "sonnet" => ModelFamily::Sonnet,
         "haiku" => ModelFamily::Haiku,
+        "fable" => ModelFamily::Fable,
         _ => ModelFamily::Unknown,
     };
 
@@ -105,6 +107,7 @@ fn family_label(family: ModelFamily) -> Option<&'static str> {
         ModelFamily::Opus => Some("Opus"),
         ModelFamily::Sonnet => Some("Sonnet"),
         ModelFamily::Haiku => Some("Haiku"),
+        ModelFamily::Fable => Some("Fable"),
         ModelFamily::Unknown => None,
     }
 }
@@ -349,6 +352,12 @@ mod tests {
         assert_eq!(humanize_model_id("claude-sonnet-4-6"), "Sonnet 4.6");
         assert_eq!(humanize_model_id("claude-opus-4-7"), "Opus 4.7");
         assert_eq!(humanize_model_id("claude-haiku-4-5"), "Haiku 4.5");
+    }
+
+    #[test]
+    fn humanize_fable_family() {
+        assert_eq!(humanize_model_id("claude-fable-5"), "Fable 5");
+        assert_eq!(humanize_model_id("claude-fable-5[1m]"), "Fable 5 [1M]");
     }
 
     #[test]
