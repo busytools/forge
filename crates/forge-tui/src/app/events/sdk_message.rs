@@ -1404,6 +1404,21 @@ fn handle_background_tasks_changed(app: &mut App, msg: Message) {
 fn handle_commands_changed(app: &mut App, msg: Message) {
     let Message::CommandsChanged { commands, .. } = msg else { return };
     let parsed = available_commands_from_json(&commands);
+    // Drift guard (Hard Rule #16): a non-empty payload that parses to
+    // nothing means the CLI's command-entry shape changed under us.
+    // Applying it would silently wipe the `/` dropdown + `/help`, so
+    // skip and leave the prior list intact. A legitimately empty
+    // `commands: []` (plugin uninstall) still falls through to clear.
+    if parsed.is_empty() && !commands.is_empty() {
+        tracing::warn!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "commands_changed_parse_empty",
+            message = "commands_changed carried entries but none parsed; likely wire drift, keeping prior list",
+            outcome = "skipped",
+            entry_count = commands.len(),
+        );
+        return;
+    }
     let model_update = crate::app::connect::type_converters::map_available_commands_update(parsed);
     super::apply_available_commands_update(app, model_update);
 }
@@ -2767,5 +2782,28 @@ mod commands_changed_tests {
         assert_eq!(from_objects[0].name, "x");
         assert_eq!(from_objects[0].description, "d");
         assert_eq!(from_objects[0].input_hint.as_deref(), Some("<a>"));
+    }
+
+    #[test]
+    fn non_empty_but_unparseable_payload_keeps_prior_list() {
+        // Drift guard (Hard Rule #16): a payload that carries entries
+        // but parses to nothing signals the CLI's entry shape changed;
+        // applying it would wipe the dropdown + /help. Keep the prior
+        // list instead.
+        let mut app = App::test_default();
+        *app.available_commands_mut() = vec![AvailableCommand::new("keep", "")];
+        handle_sdk_message(&mut app, commands_event(vec![json!({"no_name": "x"}), json!(7)]));
+        let names: Vec<&str> = app.available_commands().iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, vec!["keep"], "drift guard keeps the prior list intact");
+    }
+
+    #[test]
+    fn legit_empty_payload_clears_the_list() {
+        // A genuinely empty `commands: []` (e.g. plugin uninstall) is
+        // an intended clear, distinct from the drift case above.
+        let mut app = App::test_default();
+        *app.available_commands_mut() = vec![AvailableCommand::new("gone", "")];
+        handle_sdk_message(&mut app, commands_event(Vec::new()));
+        assert!(app.available_commands().is_empty(), "empty commands_changed clears the list");
     }
 }
