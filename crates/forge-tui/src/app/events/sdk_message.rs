@@ -50,10 +50,18 @@ pub(super) fn handle_sdk_message(app: &mut App, msg: Message) {
         //   fresh captures, all zero), so the prior banner chip +
         //   per-message stamp + per-session cache were dead code and
         //   got deleted.
+        // - 2.1.204 system events (`background_tasks_changed`,
+        //   `commands_changed`, `hook_started`, `hook_response`): typed
+        //   for wire-conformance; no UI surface yet (the background-agents,
+        //   command-palette, and hook-activity views are separate features).
         Message::StreamEvent { .. }
         | Message::Error { .. }
         | Message::Unknown { .. }
-        | Message::TurnDuration { .. } => {}
+        | Message::TurnDuration { .. }
+        | Message::BackgroundTasksChanged { .. }
+        | Message::CommandsChanged { .. }
+        | Message::HookStarted { .. }
+        | Message::HookResponse { .. } => {}
         // #273: typed wrappers around the CLI 2.1.156 system events.
         Message::ThinkingTokens { estimated_tokens, .. } => {
             handle_thinking_tokens(app, estimated_tokens);
