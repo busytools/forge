@@ -68,17 +68,9 @@ impl ForgeState {
     }
 }
 
-/// Read the persisted forge state from the store, seeding once from the
-/// legacy `state.toml`. Each read degrades to its empty default with a
-/// warn rather than failing the boot.
-pub(crate) fn load(db: &crate::store::Db, config_dir: &Path) -> ForgeState {
-    if let Err(error) = crate::store::state::seed_state_from_toml_once(db, config_dir) {
-        tracing::warn!(
-            target: "forge_workspace::account_cache",
-            %error,
-            "seeding state from state.toml into the store failed",
-        );
-    }
+/// Read the persisted forge state from the store. Each read degrades to
+/// its empty default with a warn rather than failing the boot.
+pub(crate) fn load(db: &crate::store::Db) -> ForgeState {
     ForgeState {
         version: CACHE_SCHEMA_VERSION,
         spinner: crate::store::state::spinner(db).unwrap_or_else(|error| {
@@ -294,14 +286,12 @@ mod tests {
     fn store_and_load_round_trip_through_redb() {
         let cfg = cfg();
         let db = crate::store::Db::open(&cfg.path().join("db.redb")).expect("open db");
-        // The config-dir tempdir is unique, so the load-time seed finds no
-        // legacy state.toml under the real app-support dir and no-ops.
         store_spinner(&db, Some(crate::ui::SpinnerStyle::Ember));
         let mut entries = std::collections::BTreeMap::new();
         entries.insert("Granite".to_owned(), fixture_entry());
         store(&db, &entries);
 
-        let loaded = load(&db, cfg.path());
+        let loaded = load(&db);
         assert_eq!(loaded.spinner, Some(crate::ui::SpinnerStyle::Ember), "the spinner reloads");
         assert!(loaded.account_usage.contains_key("Granite"), "the usage cache reloads");
     }
@@ -312,6 +302,6 @@ mod tests {
         let db = crate::store::Db::open(&cfg.path().join("db.redb")).expect("open db");
         store_spinner(&db, Some(crate::ui::SpinnerStyle::Ember));
         store_spinner(&db, None);
-        assert_eq!(load(&db, cfg.path()).spinner, None, "None clears the persisted override");
+        assert_eq!(load(&db).spinner, None, "None clears the persisted override");
     }
 }
