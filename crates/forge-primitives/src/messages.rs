@@ -1828,6 +1828,73 @@ mod tests_message_extras {
     }
 
     #[test]
+    fn background_tasks_changed_encode_round_trips() {
+        let msg = Message::BackgroundTasksChanged {
+            tasks: vec![
+                json!({"task_id": "t1", "task_type": "local_workflow", "description": "d"}),
+            ],
+            uuid: "bg-uuid".to_owned(),
+            session_id: "sess-bg".to_owned(),
+        };
+        let encoded = serde_json::to_value(&msg).expect("encode");
+        assert_eq!(encoded["type"], "system");
+        assert_eq!(encoded["subtype"], "background_tasks_changed");
+        let decoded: Message = serde_json::from_value(encoded).expect("decode");
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn commands_changed_encode_round_trips() {
+        let msg = Message::CommandsChanged {
+            commands: vec![json!({"name": "audit", "description": "sweep"})],
+            uuid: "cmd-uuid".to_owned(),
+            session_id: "sess-cmd".to_owned(),
+        };
+        let encoded = serde_json::to_value(&msg).expect("encode");
+        assert_eq!(encoded["type"], "system");
+        assert_eq!(encoded["subtype"], "commands_changed");
+        let decoded: Message = serde_json::from_value(encoded).expect("decode");
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn hook_started_encode_round_trips() {
+        let msg = Message::HookStarted {
+            hook_id: "h1".to_owned(),
+            hook_name: "SessionStart:startup".to_owned(),
+            hook_event: "SessionStart".to_owned(),
+            uuid: "hs-uuid".to_owned(),
+            session_id: "sess-hs".to_owned(),
+        };
+        let encoded = serde_json::to_value(&msg).expect("encode");
+        assert_eq!(encoded["type"], "system");
+        assert_eq!(encoded["subtype"], "hook_started");
+        let decoded: Message = serde_json::from_value(encoded).expect("decode");
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn hook_response_encode_round_trips() {
+        let msg = Message::HookResponse {
+            hook_id: "h1".to_owned(),
+            hook_name: "SessionStart:startup".to_owned(),
+            hook_event: "SessionStart".to_owned(),
+            outcome: "success".to_owned(),
+            exit_code: 0,
+            output: "body".to_owned(),
+            stdout: "body".to_owned(),
+            stderr: String::new(),
+            uuid: "hr-uuid".to_owned(),
+            session_id: "sess-hr".to_owned(),
+        };
+        let encoded = serde_json::to_value(&msg).expect("encode");
+        assert_eq!(encoded["type"], "system");
+        assert_eq!(encoded["subtype"], "hook_response");
+        let decoded: Message = serde_json::from_value(encoded).expect("decode");
+        assert_eq!(decoded, msg);
+    }
+
+    #[test]
     fn stop_hook_summary_decodes_from_wire_shape() {
         // Wire shape (verbatim from `baselines/sdk/2.1.156/...`):
         // rich object with `hookCount` + `hookInfos` array + optional
