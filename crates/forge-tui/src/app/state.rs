@@ -22,14 +22,14 @@ pub use tool_call_info::{
     is_monitor_tool_name,
 };
 pub use types::{
-    AppStatus, ExtraUsage, HelpView, HistoryRetentionPolicy, HistoryRetentionStats, LoginHint,
-    McpState, MessageUsage, ModeInfo, ModeState, MonitorEntry, MonitorStatus, PasteSessionState,
-    PendingCommandAck, PhaseEntry, PhaseStatus, RecentSessionInfo, RenderCacheBudget,
-    SUBAGENT_TAIL_CAP, ScheduleEntry, ScheduleKind, ScrollbarDragState, SelectionKind,
-    SelectionPoint, SelectionState, SessionTurnState, SessionUsageState, StopHookEntry,
-    StopHookSummaryState, SubagentChildEntry, SubagentEntry, TodoItem, TodoStatus, ToolCallScope,
-    UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState, UsageWindow, WorkflowEntry,
-    WorkflowStatus,
+    AppStatus, BackgroundTask, ExtraUsage, HelpView, HistoryRetentionPolicy, HistoryRetentionStats,
+    LoginHint, McpState, MessageUsage, ModeInfo, ModeState, MonitorEntry, MonitorStatus,
+    PasteSessionState, PendingCommandAck, PhaseEntry, PhaseStatus, RecentSessionInfo,
+    RenderCacheBudget, SUBAGENT_TAIL_CAP, ScheduleEntry, ScheduleKind, ScrollbarDragState,
+    SelectionKind, SelectionPoint, SelectionState, SessionTurnState, SessionUsageState,
+    StopHookEntry, StopHookSummaryState, SubagentChildEntry, SubagentEntry, TodoItem, TodoStatus,
+    ToolCallScope, UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState, UsageWindow,
+    WorkflowEntry, WorkflowStatus,
 };
 pub use viewport::{
     ChatViewport, LayoutInvalidation, LayoutInvalidation as InvalidationLevel,
@@ -1780,6 +1780,20 @@ impl App {
     /// MONITORS list. Auto-creates the pre-Connect bucket if missing.
     pub(crate) fn monitors_mut(&mut self) -> &mut Vec<crate::app::state::types::MonitorEntry> {
         &mut self.active_bucket_mut().monitors
+    }
+
+    /// Active session's CLI background-task snapshot (Inspector
+    /// BACKGROUND section reads this).
+    pub fn background_tasks(&self) -> &[crate::app::state::types::BackgroundTask] {
+        self.active_session().map_or(&[], |s| s.background_tasks.as_slice())
+    }
+
+    /// Mutable accessor for the active session's background-task
+    /// snapshot. Auto-creates the pre-Connect bucket if missing.
+    pub(crate) fn background_tasks_mut(
+        &mut self,
+    ) -> &mut Vec<crate::app::state::types::BackgroundTask> {
+        &mut self.active_bucket_mut().background_tasks
     }
 
     /// Active session's SCHEDULES entries (Inspector SCHEDULES

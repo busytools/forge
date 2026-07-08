@@ -40,6 +40,7 @@ pub(super) fn handle_sdk_message(app: &mut App, msg: Message) {
         Message::TaskNotification { .. } => handle_task_notification(app, msg),
         Message::RateLimitEvent { .. } => handle_rate_limit_event(app, msg),
         Message::Result { .. } => handle_result(app, msg),
+        Message::BackgroundTasksChanged { .. } => handle_background_tasks_changed(app, msg),
         // No-op arms:
         // - `StreamEvent` (partial-message streaming) + `Error` /
         //   `Unknown` (transport / forward-compat) - re-add a handler
@@ -50,15 +51,14 @@ pub(super) fn handle_sdk_message(app: &mut App, msg: Message) {
         //   fresh captures, all zero), so the prior banner chip +
         //   per-message stamp + per-session cache were dead code and
         //   got deleted.
-        // - 2.1.204 system events (`background_tasks_changed`,
-        //   `commands_changed`, `hook_started`, `hook_response`): typed
-        //   for wire-conformance; no UI surface yet (the background-agents,
-        //   command-palette, and hook-activity views are separate features).
+        // - 2.1.204 `commands_changed` / `hook_started` /
+        //   `hook_response`: typed for wire-conformance; no UI surface
+        //   yet (command-list refresh and hook-activity are separate
+        //   features).
         Message::StreamEvent { .. }
         | Message::Error { .. }
         | Message::Unknown { .. }
         | Message::TurnDuration { .. }
-        | Message::BackgroundTasksChanged { .. }
         | Message::CommandsChanged { .. }
         | Message::HookStarted { .. }
         | Message::HookResponse { .. } => {}
@@ -1351,6 +1351,29 @@ fn apply_tool_summary_update(app: &mut App, tool_use_id: &str, summary: &str) {
     apply_tool_call_update(app, tool_use_id, fields);
 }
 
+/// Replace the active session's background-task snapshot from a
+/// `background_tasks_changed` event. The event carries the CLI's full
+/// registry every change, so this overwrites wholesale; an empty
+/// `tasks` array clears the list and the Inspector BACKGROUND section
+/// auto-hides. Entries missing `task_id` / `task_type` / `description`
+/// (or not objects) are skipped rather than panicked.
+fn handle_background_tasks_changed(app: &mut App, msg: Message) {
+    use crate::app::state::types::BackgroundTask;
+    let Message::BackgroundTasksChanged { tasks, .. } = msg else { return };
+    let parsed: Vec<BackgroundTask> = tasks
+        .iter()
+        .filter_map(|task| {
+            let obj = task.as_object()?;
+            Some(BackgroundTask {
+                task_id: obj.get("task_id")?.as_str()?.to_owned(),
+                task_type: obj.get("task_type")?.as_str()?.to_owned(),
+                description: obj.get("description")?.as_str()?.to_owned(),
+            })
+        })
+        .collect();
+    *app.background_tasks_mut() = parsed;
+}
+
 fn handle_rate_limit_event(app: &mut App, msg: Message) {
     let Message::RateLimitEvent { rate_limit_info, .. } = msg else { return };
     let value = serde_json::to_value(&rate_limit_info).unwrap_or(Value::Null);
@@ -2568,5 +2591,85 @@ mod inbound_message_surfacing_tests {
             Some(2),
             "pointer on the surviving tail placeholder",
         );
+    }
+}
+
+#[cfg(test)]
+mod background_tasks_changed_tests {
+    //! `background_tasks_changed` carries the CLI's authoritative
+    //! snapshot of every backgrounded task. Each event REPLACES the
+    //! session's list wholesale; an empty `tasks` array clears it so
+    //! the Inspector BACKGROUND section auto-hides.
+    use super::handle_sdk_message;
+    use crate::app::App;
+    use forge_primitives::Message;
+    use serde_json::json;
+
+    fn background_event(tasks: Vec<serde_json::Value>) -> Message {
+        Message::BackgroundTasksChanged { tasks, uuid: String::new(), session_id: String::new() }
+    }
+
+    #[test]
+    fn snapshot_populates_then_empty_snapshot_clears() {
+        let mut app = App::test_default();
+        handle_sdk_message(
+            &mut app,
+            background_event(vec![json!({
+                "task_id": "b3cjfmhsq",
+                "task_type": "local_bash",
+                "description": "Print marker after 1s in background",
+            })]),
+        );
+        let tasks = app.background_tasks();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].task_id, "b3cjfmhsq");
+        assert_eq!(tasks[0].task_type, "local_bash");
+        assert_eq!(tasks[0].description, "Print marker after 1s in background");
+
+        // Full-snapshot semantics: an empty array replaces the list
+        // with nothing.
+        handle_sdk_message(&mut app, background_event(Vec::new()));
+        assert!(app.background_tasks().is_empty());
+    }
+
+    #[test]
+    fn later_snapshot_replaces_rather_than_appends() {
+        let mut app = App::test_default();
+        handle_sdk_message(
+            &mut app,
+            background_event(vec![json!({
+                "task_id": "first",
+                "task_type": "local_bash",
+                "description": "one",
+            })]),
+        );
+        handle_sdk_message(
+            &mut app,
+            background_event(vec![json!({
+                "task_id": "second",
+                "task_type": "agent",
+                "description": "two",
+            })]),
+        );
+        let tasks = app.background_tasks();
+        assert_eq!(tasks.len(), 1, "each event replaces the whole list");
+        assert_eq!(tasks[0].task_id, "second");
+        assert_eq!(tasks[0].task_type, "agent");
+    }
+
+    #[test]
+    fn malformed_entries_are_skipped_not_panicked() {
+        let mut app = App::test_default();
+        handle_sdk_message(
+            &mut app,
+            background_event(vec![
+                json!({"task_id": "ok", "task_type": "local_bash", "description": "good"}),
+                json!({"task_type": "local_bash"}),
+                json!("not-an-object"),
+            ]),
+        );
+        let tasks = app.background_tasks();
+        assert_eq!(tasks.len(), 1, "malformed entries dropped, valid one kept");
+        assert_eq!(tasks[0].task_id, "ok");
     }
 }
