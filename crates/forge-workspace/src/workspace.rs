@@ -686,10 +686,9 @@ impl Workspace {
         // live probe for 30 s+; without seed data every account ties at
         // tier 0 (unknown-fresh) during that window. The 60 s background
         // poller refreshes these snapshots - the cache is purely "last
-        // known value" seed. On this machine's first run the store seeds
-        // once from the legacy state.toml.
+        // known value" seed.
         let state = match &db {
-            Some(db) => crate::account_cache::load(db, &config_dir),
+            Some(db) => crate::account_cache::load(db),
             None => crate::account_cache::ForgeState::empty(),
         };
         accounts.seed_from_cache(&state.account_usage);
@@ -5396,7 +5395,7 @@ mod tests {
         let db = guard.as_ref().expect("db installed");
         crate::store::state::set_spinner(db, Some(crate::ui::SpinnerStyle::Ember)).expect("set");
         assert_eq!(
-            crate::account_cache::load(db, &ws.config_dir).spinner,
+            crate::account_cache::load(db).spinner,
             Some(crate::ui::SpinnerStyle::Ember),
             "load returns the persisted redb override, which the boot fold wins with",
         );
