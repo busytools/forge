@@ -39,7 +39,8 @@ config_dir = "~/.claude-stargate"
     )
     .expect("write forge.toml");
 
-    let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("workspace"));
+    let workspace =
+        Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("workspace"));
     let workspace = Arc::new(workspace);
 
     // Simulate the App holding an Rc clone, then being dropped when

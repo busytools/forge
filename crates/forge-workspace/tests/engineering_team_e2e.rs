@@ -74,7 +74,7 @@ async fn config_load_through_team_dispatch() {
         // Boot a real Workspace from the on-disk forge.toml - this
         // drives the full parse path through `LoadedProject::static_workers`.
         let workspace =
-            Arc::new(Workspace::new(tmp.path().to_owned()).await.expect("workspace boot"));
+            Arc::new(Workspace::new_for_test(tmp.path().to_owned()).await.expect("workspace boot"));
 
         // Verify the project loaded and carries the static_workers list
         // in the public `ProjectView` as string labels (post #220 the

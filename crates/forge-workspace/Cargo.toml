@@ -50,6 +50,10 @@ chrono = { workspace = true }
 redb = { workspace = true }
 
 [dev-dependencies]
+# Self-dep enables this crate's `testing` + `test-helpers` features for
+# its own `tests/*.rs` so a scoped `cargo test -p forge-workspace` (no
+# --all-features) resolves `new_for_test` and the other gated helpers.
+forge-workspace = { path = ".", features = ["testing", "test-helpers"] }
 forge-agent = { workspace = true, features = ["testing"] }
 # `test-helpers` exposes `SessionKey::from_str_for_test` cross-crate;
 # without this dev-dep override the workspace's own lib tests fail to
