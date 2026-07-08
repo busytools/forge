@@ -495,6 +495,15 @@ pub(crate) fn parse_permission_mode(mode: &str) -> anyhow::Result<PermissionMode
 // Permission / question round-trip
 // ----------------------------------------------------------------------------
 
+/// Default-off toggle for the CLI's `excludeDynamicSections` initialize
+/// signal (the 2.1.204 `--exclude-dynamic-system-prompt-sections`
+/// equivalent) that relocates cwd/env/memory-paths/git-status out of the
+/// system prompt into the first user message for prompt-cache reuse.
+/// Off maps to `None`, so the `initialize` body omits the key and the
+/// wire stays byte-identical to today; flip to `true` to enable after
+/// measuring.
+const EXCLUDE_DYNAMIC_SECTIONS: bool = false;
+
 fn build_options_with_callback(
     cwd: &str,
     resume: Option<&str>,
@@ -613,7 +622,7 @@ fn build_options_with_callback(
         );
         b = b.system_prompt(forge_sdk::SystemPromptKind::Preset {
             append: Some(append),
-            exclude_dynamic_sections: None,
+            exclude_dynamic_sections: EXCLUDE_DYNAMIC_SECTIONS.then_some(true),
         });
     }
     if !cwd.is_empty() {
@@ -1296,6 +1305,16 @@ mod tests {
         assert!(bare.contains("in-process forge MCP"));
         assert!(bare.contains("cron__create"), "cron scheduling is always present");
         assert!(!bare.contains("CATALOG"));
+    }
+
+    #[test]
+    fn exclude_dynamic_sections_defaults_off() {
+        // Default-off maps to None so the forge spawn's Preset omits the
+        // `excludeDynamicSections` initialize key (wire byte-identical to
+        // today). Enabling is a deliberate const flip that must update
+        // this assertion too.
+        let field = super::EXCLUDE_DYNAMIC_SECTIONS.then_some(true);
+        assert_eq!(field, None);
     }
 
     #[test]
