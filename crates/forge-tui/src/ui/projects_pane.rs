@@ -1152,7 +1152,6 @@ fn label_span(text: &'static str, width: usize) -> Span<'static> {
 /// Build the panel's lines. Layout is fixed at `ACCOUNT_PANEL_HEIGHT`
 /// rows; missing data renders as a dim placeholder so the shape
 /// doesn't shift between sessions.
-#[allow(clippy::too_many_lines)]
 fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(ACCOUNT_PANEL_HEIGHT as usize);
 
