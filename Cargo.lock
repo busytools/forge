@@ -1272,6 +1272,7 @@ dependencies = [
  "forge-agent",
  "forge-primitives",
  "forge-sdk",
+ "forge-workspace",
  "parking_lot",
  "redb",
  "rustix",

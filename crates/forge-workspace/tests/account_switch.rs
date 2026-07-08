@@ -50,7 +50,7 @@ config_dir = "/tmp/forge-switch-c"
 "#,
     )
     .expect("write forge.toml");
-    Arc::new(Workspace::new(dir.to_owned()).await.expect("new"))
+    Arc::new(Workspace::new_for_test(dir.to_owned()).await.expect("new"))
 }
 
 #[tokio::test]

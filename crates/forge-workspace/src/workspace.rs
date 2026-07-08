@@ -1,7 +1,7 @@
 //! The orchestrator.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -345,40 +345,22 @@ pub fn resolve_lead_session(sessions: &[SDKSessionInfo]) -> Option<&SDKSessionIn
         .or_else(|| latest_with(|s| s.tag.is_none()))
 }
 
-/// Open the machine-local redb store at `<app-support>/db.redb`,
+/// Open the machine-local redb store at `<app_support>/db.redb`,
 /// creating the app-support dir first. Returns `None` (with a warn) when
-/// the app-support dir can't resolve or the DB can't open - forge then
-/// runs without durable Gotify subscriptions or dynamic workers this
-/// session (hard rule #15: no cwd fallback).
-///
-/// TEST INVARIANT: `app_support_dir` is not test-redirectable, so a
-/// `Workspace::new`-based test opens the user's REAL machine db. No such
-/// test may create a cron or ship a cron.toml fixture - either writes the
-/// real store or its seed marker. Cron tests use `testing_stub` +
-/// `install_db_for_test` (a tempdir db). A redirectable `open_db` is a
-/// tracked follow-up.
-fn open_db() -> Option<crate::store::Db> {
-    let dir = match forge_sdk::app_support_dir() {
-        Ok(dir) => dir,
-        Err(error) => {
-            tracing::warn!(
-                target: "forge_workspace::workspace",
-                %error,
-                "app-support dir unresolved; Gotify subscriptions will not persist",
-            );
-            return None;
-        }
-    };
-    if let Err(error) = std::fs::create_dir_all(&dir) {
+/// the dir can't be created or the DB can't open - forge then runs
+/// without durable Gotify subscriptions or dynamic workers this session
+/// (hard rule #15: no cwd fallback).
+fn open_db(app_support: &Path) -> Option<crate::store::Db> {
+    if let Err(error) = std::fs::create_dir_all(app_support) {
         tracing::warn!(
             target: "forge_workspace::workspace",
             %error,
-            path = %dir.display(),
+            path = %app_support.display(),
             "creating the app-support dir failed; Gotify subscriptions will not persist",
         );
         return None;
     }
-    match crate::store::Db::open(&dir.join("db.redb")) {
+    match crate::store::Db::open(&app_support.join("db.redb")) {
         Ok(db) => Some(db),
         Err(error) => {
             tracing::warn!(
@@ -554,6 +536,25 @@ impl Workspace {
     /// `[[orgs.projects]]` entries, unknown account references). No
     /// Agents are spawned on success.
     pub async fn new(config_dir: PathBuf) -> Result<Self, WorkspaceError> {
+        Self::new_impl(config_dir, None).await
+    }
+
+    /// Like [`Workspace::new`] but opens the redb store under a tempdir
+    /// inside `config_dir` rather than the real machine `app_support_dir`,
+    /// so tests never touch the user's durable store (#392).
+    #[cfg(any(test, feature = "testing"))]
+    pub async fn new_for_test(config_dir: PathBuf) -> Result<Self, WorkspaceError> {
+        let app_support = config_dir.join("app-support");
+        Self::new_impl(config_dir, Some(app_support)).await
+    }
+
+    /// Shared constructor body. `app_support` supplies the redb base dir;
+    /// `None` resolves the real machine `app_support_dir` and degrades to
+    /// no durable store on failure (hard rule #15: no cwd fallback).
+    async fn new_impl(
+        config_dir: PathBuf,
+        app_support: Option<PathBuf>,
+    ) -> Result<Self, WorkspaceError> {
         let mut config = load_from_dir(&config_dir)?;
 
         // Create forge's own config subfolder before anything writes into
@@ -596,7 +597,20 @@ impl Workspace {
         // subscriptions both live in it. A failure to resolve the app-
         // support dir or open the DB degrades to no durable state this run
         // (non-fatal, like the state cache) - no cwd fallback (hard rule #15).
-        let db = open_db();
+        let db = match app_support {
+            Some(dir) => open_db(&dir),
+            None => match forge_sdk::app_support_dir() {
+                Ok(dir) => open_db(&dir),
+                Err(error) => {
+                    tracing::warn!(
+                        target: "forge_workspace::workspace",
+                        %error,
+                        "app-support dir unresolved; Gotify subscriptions will not persist",
+                    );
+                    None
+                }
+            },
+        };
 
         // Load durable forge crons into the in-memory working set. Boot
         // catch-up for entries that came due while forge was down runs after
@@ -2966,11 +2980,6 @@ impl Workspace {
     /// machine-local store. Every cron-list mutation routes through here -
     /// `cron__create` / `cron__delete`, the scheduler's fire-advance, and
     /// boot catch-up - so the in-memory set and the store never diverge.
-    ///
-    /// TEST INVARIANT: this writes `db`, which for a `Workspace::new`-based
-    /// test is the user's REAL machine db (`open_db` isn't test-
-    /// redirectable), so no such test may create a cron. Cron tests install
-    /// a tempdir db via `install_db_for_test`.
     pub(crate) fn with_crons_mut<R>(
         &self,
         f: impl FnOnce(&mut Vec<forge_primitives::CronEntry>) -> R,
@@ -6915,9 +6924,21 @@ config_dir = "~/.claude-subspace"
     }
 
     #[tokio::test]
+    async fn new_for_test_opens_redb_under_the_tempdir() {
+        let dir = make_workspace_dir();
+        let _workspace =
+            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+        // The test constructor redirects redb into the config dir's own
+        // tempdir, so no test ever opens the real machine store (#392).
+        let redirected = dir.path().join("app-support").join("db.redb");
+        assert!(redirected.exists(), "new_for_test opens redb under the tempdir app-support base");
+    }
+
+    #[tokio::test]
     async fn get_agent_handle_default_is_idempotent() {
         let dir = make_workspace_dir();
-        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        let workspace =
+            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
         let settings = SessionLaunchSettings::default();
 
         let handle1 =
@@ -6931,7 +6952,8 @@ config_dir = "~/.claude-subspace"
     #[tokio::test]
     async fn distinct_targets_pool_distinct_entries() {
         let dir = make_workspace_dir();
-        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        let workspace =
+            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
         let settings = SessionLaunchSettings::default();
 
         let _ =
@@ -6950,7 +6972,8 @@ config_dir = "~/.claude-subspace"
     #[tokio::test]
     async fn shutdown_drains_pool() {
         let dir = make_workspace_dir();
-        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        let workspace =
+            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
         let handle = workspace
             .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
             .expect("default");
@@ -7001,7 +7024,8 @@ config_dir = "~/.claude-subspace"
         )
         .expect("write forge.toml");
 
-        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        let workspace =
+            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
         let _ = workspace
             .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
             .expect("default");
@@ -7036,7 +7060,8 @@ config_dir = "~/.claude-subspace"
         )
         .expect("write forge.toml");
 
-        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        let workspace =
+            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
         let result = workspace.get_agent_handle(
             SessionTarget::Named("nonexistent".to_owned()),
             SessionLaunchSettings::default(),
@@ -7079,7 +7104,8 @@ config_dir = "~/.claude-granite"
     #[tokio::test]
     async fn pool_records_picked_account() {
         let dir = make_workspace_dir_with_two_accounts();
-        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        let workspace =
+            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
         let _ = workspace
             .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
             .expect("default");
@@ -7099,7 +7125,8 @@ config_dir = "~/.claude-granite"
         // so even cold-cache spawns spread load rather than always
         // hammering the first account.
         let dir = make_workspace_dir_with_two_accounts();
-        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        let workspace =
+            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
 
         let _ = workspace
             .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
@@ -7157,7 +7184,8 @@ config_dir = "~/.claude-personal"
         )
         .expect("write forge.toml");
 
-        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        let workspace =
+            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
         let _ = workspace
             .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
             .expect("default spawn");
@@ -7610,7 +7638,8 @@ config_dir = "~/.claude-subspace"
     async fn expire_inflight_ask_failed_removes_entry_and_is_idempotent() {
         use crate::mcp::peers::types::{CorrelationId, InflightAsk, PeerFailureReason};
         let dir = forge_toml_with_two_projects();
-        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        let workspace =
+            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
 
         let caller = SessionKey::from_str_for_test("caller-1");
         let id = CorrelationId::new_ask();
@@ -7645,7 +7674,8 @@ config_dir = "~/.claude-subspace"
     async fn expire_inflight_ask_failed_dispatches_failure_notice() {
         use crate::mcp::peers::types::{CorrelationId, InflightAsk, PeerFailureReason};
         let dir = forge_toml_with_two_projects();
-        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        let workspace =
+            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
         let mut rx = workspace.subscribe().expect("subscribe");
 
         let caller = SessionKey::from_str_for_test("caller-notice");
@@ -7681,7 +7711,8 @@ config_dir = "~/.claude-subspace"
     async fn expire_inflight_ask_failed_clears_target_incoming() {
         use crate::mcp::peers::types::{CorrelationId, InflightAsk, PeerFailureReason};
         let dir = forge_toml_with_two_projects();
-        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        let workspace =
+            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
 
         let caller = SessionKey::from_str_for_test("asker");
         let target = SessionKey::from_str_for_test("replier");
@@ -7755,7 +7786,8 @@ config_dir = "~/.claude-subspace"
     async fn dispatch_command_deliver_peer_prompt_routes_cleanly() {
         use crate::mcp::peers::types::{CorrelationId, WrappedKind, WrappedPrompt};
         let dir = forge_toml_with_two_projects();
-        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        let workspace =
+            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
 
         let caller = SessionKey::from_str_for_test("caller-dispatch");
         let wrapped = WrappedPrompt {
@@ -7787,7 +7819,8 @@ config_dir = "~/.claude-subspace"
     /// workspace would early-return.
     async fn peer_mcp_workspace_fixture() -> (Arc<Workspace>, tempfile::TempDir) {
         let dir = forge_toml_with_two_projects();
-        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        let workspace =
+            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
         (workspace, dir)
     }
 
@@ -8097,7 +8130,8 @@ config_dir = "~/.claude-subspace"
     #[tokio::test]
     async fn release_session_on_lead_cascades_workers() {
         let dir = make_workspace_dir();
-        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        let workspace =
+            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
         let mut rx = workspace.subscribe().expect("subscribe");
 
         // Seed the catalog with a lead session at the project key so
@@ -8143,7 +8177,8 @@ config_dir = "~/.claude-subspace"
     #[tokio::test]
     async fn release_session_on_non_lead_does_not_cascade() {
         let dir = make_workspace_dir();
-        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        let workspace =
+            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
 
         let project_key = workspace.list_projects().into_iter().next().expect("forge").key;
         workspace.insert_live_worker(&project_key, fake_entry("r1", "worker-1"));
@@ -8167,7 +8202,8 @@ config_dir = "~/.claude-subspace"
     #[tokio::test]
     async fn release_session_cascades_when_worker_sits_at_catalog_head() {
         let dir = make_workspace_dir();
-        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        let workspace =
+            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
 
         let project = workspace.list_projects().into_iter().next().expect("forge project");
         let project_key = project.key.clone();
@@ -10118,7 +10154,8 @@ config_dir = "~/.claude-beta"
         // account (Alpha), not whatever HashMap iteration would surface
         // - reverting `ordered_keys` to `by_key` makes this flaky.
         let dir = make_workspace_dir_246_two_accounts();
-        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        let workspace =
+            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
         {
             let mut accounts = workspace.account_states().lock();
             for name in ["Alpha", "Beta"] {
@@ -10152,7 +10189,8 @@ config_dir = "~/.claude-beta"
     #[tokio::test]
     async fn recompute_plan_if_ready_noop_while_loading() {
         let dir = make_workspace_dir_246();
-        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        let workspace =
+            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
         // Fresh workspace: account starts in `Loading`. all_loaded
         // returns false; recompute must not populate the plan.
         workspace.recompute_plan_if_ready();
@@ -10163,7 +10201,8 @@ config_dir = "~/.claude-beta"
     #[tokio::test]
     async fn recompute_plan_if_ready_populates_plan_when_all_ready() {
         let dir = make_workspace_dir_246();
-        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        let workspace =
+            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
         // Transition the lone account to Ready by injecting a snapshot.
         {
             let mut accounts = workspace.account_states().lock();
@@ -10195,7 +10234,8 @@ config_dir = "~/.claude-beta"
     #[tokio::test]
     async fn recompute_plan_if_ready_uses_frozen_overlay_on_recompute() {
         let dir = make_workspace_dir_246();
-        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        let workspace =
+            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
         {
             let mut accounts = workspace.account_states().lock();
             let snapshot = forge_primitives::usage::UsageSnapshot {
@@ -10244,7 +10284,8 @@ config_dir = "~/.claude-beta"
         // Before the plan is populated, the helper must be a no-op
         // (doesn't panic; doesn't side-effect through to lookups).
         let dir = make_workspace_dir_246();
-        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        let workspace =
+            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
         let project_key =
             ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
                 workspace.config.projects[0].path.to_string_lossy().as_ref(),
@@ -10256,7 +10297,8 @@ config_dir = "~/.claude-beta"
     #[tokio::test]
     async fn extend_plan_for_adhoc_worker_extends_when_plan_populated() {
         let dir = make_workspace_dir_246();
-        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        let workspace =
+            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
         {
             let mut accounts = workspace.account_states().lock();
             let snapshot = forge_primitives::usage::UsageSnapshot {
@@ -10314,7 +10356,8 @@ config_dir = "~/.claude-beta"
         // the saturated account it landed on so the spawn path can
         // surface the rate-limited state.
         let dir = make_workspace_dir_246();
-        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        let workspace =
+            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
         workspace
             .account_states()
             .lock()
@@ -10340,7 +10383,8 @@ config_dir = "~/.claude-beta"
         // must walk off the now-saturated slot onto the still-usable
         // Alpha and return None (a usable assignment, nothing to surface).
         let dir = make_workspace_dir_246_two_accounts();
-        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        let workspace =
+            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
         {
             let mut accounts = workspace.account_states().lock();
             accounts.set_usage(&AccountKey("Alpha".to_owned()), usage_at(10.0));
@@ -10375,7 +10419,8 @@ config_dir = "~/.claude-beta"
         // re-check must NOT re-home the pin, but extend_plan still
         // surfaces the now-unusable state by returning the account.
         let dir = make_workspace_dir_246_two_accounts();
-        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        let workspace =
+            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
         {
             let mut accounts = workspace.account_states().lock();
             accounts.set_usage(&AccountKey("Alpha".to_owned()), usage_at(10.0));
@@ -10424,7 +10469,8 @@ config_dir = "~/.claude-beta"
     #[tokio::test]
     async fn session_chip_for_returns_none_when_plan_unpopulated() {
         let dir = make_workspace_dir_246();
-        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        let workspace =
+            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
         let project_key =
             ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
                 workspace.config.projects[0].path.to_string_lossy().as_ref(),
@@ -10435,7 +10481,8 @@ config_dir = "~/.claude-beta"
     #[tokio::test]
     async fn session_chip_for_normal_branch_for_ready_account() {
         let dir = make_workspace_dir_246();
-        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        let workspace =
+            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
         {
             let mut accounts = workspace.account_states().lock();
             let snapshot = forge_primitives::usage::UsageSnapshot {
@@ -10469,7 +10516,8 @@ config_dir = "~/.claude-beta"
     #[tokio::test]
     async fn session_chip_for_at_cap_branch() {
         let dir = make_workspace_dir_246();
-        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        let workspace =
+            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
         {
             let mut accounts = workspace.account_states().lock();
             let snapshot = forge_primitives::usage::UsageSnapshot {
@@ -10504,7 +10552,8 @@ config_dir = "~/.claude-beta"
         // A weekly (7-day) cap alone, 5h window clear, must still flag
         // the chip AtCap - saturation is any-window, not 5h-only.
         let dir = make_workspace_dir_246();
-        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        let workspace =
+            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
         {
             let mut accounts = workspace.account_states().lock();
             let snapshot = forge_primitives::usage::UsageSnapshot {
@@ -10536,7 +10585,8 @@ config_dir = "~/.claude-beta"
     #[tokio::test]
     async fn session_chip_for_bailed_branch() {
         let dir = make_workspace_dir_246();
-        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        let workspace =
+            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
         // Plan needs SOMETHING in it for session_chip_for to look up.
         // Snapshot first then transition to Bailed (preserves plan
         // assignment, just changes loading state).

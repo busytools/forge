@@ -1418,7 +1418,8 @@ config_dir = "~/.claude-subspace"
     async fn spawn_project_unknown_project_emits_no_update() {
         let dir = tempdir().expect("tempdir");
         write_forge_toml(dir.path());
-        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        let workspace =
+            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
         let mut rx = workspace.subscribe().expect("subscribe");
 
         handle_spawn_project(&workspace, "no-such-project", SessionLaunchSettings::default());
@@ -1435,7 +1436,8 @@ config_dir = "~/.claude-subspace"
     async fn spawn_project_known_project_emits_spawning_with_synth_key() {
         let dir = tempdir().expect("tempdir");
         write_forge_toml(dir.path());
-        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        let workspace =
+            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
         let mut rx = workspace.subscribe().expect("subscribe");
 
         handle_spawn_project(&workspace, "forge", SessionLaunchSettings::default());
@@ -1462,7 +1464,8 @@ config_dir = "~/.claude-subspace"
     async fn start_default_failure_is_fatal() {
         let dir = tempdir().expect("tempdir");
         write_forge_toml(dir.path());
-        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        let workspace =
+            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
         let mut rx = workspace.subscribe().expect("subscribe");
 
         // Drive a failure by passing a project name that doesn't
@@ -1501,7 +1504,8 @@ config_dir = "~/.claude-subspace"
     async fn spawn_session_unknown_session_emits_no_fatal() {
         let dir = tempdir().expect("tempdir");
         write_forge_toml(dir.path());
-        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        let workspace =
+            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
         let mut rx = workspace.subscribe().expect("subscribe");
 
         handle_spawn_session(&workspace, "no-such-session-id", SessionLaunchSettings::default());
@@ -1541,7 +1545,8 @@ config_dir = "~/.claude-subspace"
     async fn handle_deliver_peer_prompt_unknown_target_is_no_op() {
         let dir = tempdir().expect("tempdir");
         write_forge_toml(dir.path());
-        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        let workspace =
+            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
         let mut rx = workspace.subscribe().expect("subscribe");
 
         let caller = SessionKey::from_str_for_test("caller-1");
@@ -1589,7 +1594,8 @@ config_dir = "~/.claude-subspace"
 "#,
         )
         .expect("write forge.toml");
-        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        let workspace =
+            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
         let caller = SessionKey::from_str_for_test("caller-sleep");
         let w = fixture_wrapped();
 
@@ -1650,7 +1656,8 @@ config_dir = "~/.claude-subspace"
 "#,
         )
         .expect("write forge.toml");
-        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        let workspace =
+            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
         let mut rx = workspace.subscribe().expect("subscribe");
 
         let caller = SessionKey::from_str_for_test("caller-tell");
@@ -1901,8 +1908,9 @@ config_dir = "~/.claude-subspace"
         )
         .expect("write forge.toml");
 
-        let workspace =
-            Arc::new(Workspace::new(config.path().to_owned()).await.expect("workspace new"));
+        let workspace = Arc::new(
+            Workspace::new_for_test(config.path().to_owned()).await.expect("workspace new"),
+        );
         let view = workspace.list_projects().into_iter().next().expect("one project");
         let project_key = view.key.clone();
         let project_path = view.path.clone();
@@ -2053,7 +2061,8 @@ config_dir = "~/.claude-subspace"
             ),
         )
         .expect("write forge.toml");
-        let workspace = Arc::new(Workspace::new(toml_dir.path().to_owned()).await.expect("new"));
+        let workspace =
+            Arc::new(Workspace::new_for_test(toml_dir.path().to_owned()).await.expect("new"));
 
         // Resolve the project's key + path from list_projects (matches
         // what the spawn handler will look up).

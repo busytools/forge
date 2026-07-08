@@ -55,7 +55,7 @@ config_dir = "/tmp/forge-test-granite"
     )
     .expect("write forge.toml");
 
-    let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+    let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
 
     let h1 = workspace
         .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
@@ -105,7 +105,7 @@ config_dir = "/tmp/forge-test-display-granite"
     )
     .expect("write forge.toml");
 
-    let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+    let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
 
     // Cold cache → both spawns pick Subspace (first in pin). The
     // important assertion here is that the bridge actually carries
