@@ -1,7 +1,7 @@
 //! The orchestrator.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -345,11 +345,11 @@ pub fn resolve_lead_session(sessions: &[SDKSessionInfo]) -> Option<&SDKSessionIn
         .or_else(|| latest_with(|s| s.tag.is_none()))
 }
 
-/// Open the machine-local redb store at `<app-support>/db.redb`,
+/// Open the machine-local redb store at `<app_support>/db.redb`,
 /// creating the app-support dir first. Returns `None` (with a warn) when
-/// the app-support dir can't resolve or the DB can't open - forge then
-/// runs without durable Gotify subscriptions or dynamic workers this
-/// session (hard rule #15: no cwd fallback).
+/// the dir can't be created or the DB can't open - forge then runs
+/// without durable Gotify subscriptions or dynamic workers this session
+/// (hard rule #15: no cwd fallback).
 ///
 /// TEST INVARIANT: `app_support_dir` is not test-redirectable, so a
 /// `Workspace::new`-based test opens the user's REAL machine db. No such
@@ -357,28 +357,17 @@ pub fn resolve_lead_session(sessions: &[SDKSessionInfo]) -> Option<&SDKSessionIn
 /// real store or its seed marker. Cron tests use `testing_stub` +
 /// `install_db_for_test` (a tempdir db). A redirectable `open_db` is a
 /// tracked follow-up.
-fn open_db() -> Option<crate::store::Db> {
-    let dir = match forge_sdk::app_support_dir() {
-        Ok(dir) => dir,
-        Err(error) => {
-            tracing::warn!(
-                target: "forge_workspace::workspace",
-                %error,
-                "app-support dir unresolved; Gotify subscriptions will not persist",
-            );
-            return None;
-        }
-    };
-    if let Err(error) = std::fs::create_dir_all(&dir) {
+fn open_db(app_support: &Path) -> Option<crate::store::Db> {
+    if let Err(error) = std::fs::create_dir_all(app_support) {
         tracing::warn!(
             target: "forge_workspace::workspace",
             %error,
-            path = %dir.display(),
+            path = %app_support.display(),
             "creating the app-support dir failed; Gotify subscriptions will not persist",
         );
         return None;
     }
-    match crate::store::Db::open(&dir.join("db.redb")) {
+    match crate::store::Db::open(&app_support.join("db.redb")) {
         Ok(db) => Some(db),
         Err(error) => {
             tracing::warn!(
@@ -554,6 +543,25 @@ impl Workspace {
     /// `[[orgs.projects]]` entries, unknown account references). No
     /// Agents are spawned on success.
     pub async fn new(config_dir: PathBuf) -> Result<Self, WorkspaceError> {
+        Self::new_impl(config_dir, None).await
+    }
+
+    /// Like [`Workspace::new`] but opens the redb store under a tempdir
+    /// inside `config_dir` rather than the real machine `app_support_dir`,
+    /// so tests never touch the user's durable store (#392).
+    #[cfg(any(test, feature = "testing"))]
+    pub async fn new_for_test(config_dir: PathBuf) -> Result<Self, WorkspaceError> {
+        let app_support = config_dir.join("app-support");
+        Self::new_impl(config_dir, Some(app_support)).await
+    }
+
+    /// Shared constructor body. `app_support` supplies the redb base dir;
+    /// `None` resolves the real machine `app_support_dir` and degrades to
+    /// no durable store on failure (hard rule #15: no cwd fallback).
+    async fn new_impl(
+        config_dir: PathBuf,
+        app_support: Option<PathBuf>,
+    ) -> Result<Self, WorkspaceError> {
         let mut config = load_from_dir(&config_dir)?;
 
         // Create forge's own config subfolder before anything writes into
@@ -596,7 +604,20 @@ impl Workspace {
         // subscriptions both live in it. A failure to resolve the app-
         // support dir or open the DB degrades to no durable state this run
         // (non-fatal, like the state cache) - no cwd fallback (hard rule #15).
-        let db = open_db();
+        let db = match app_support {
+            Some(dir) => open_db(&dir),
+            None => match forge_sdk::app_support_dir() {
+                Ok(dir) => open_db(&dir),
+                Err(error) => {
+                    tracing::warn!(
+                        target: "forge_workspace::workspace",
+                        %error,
+                        "app-support dir unresolved; Gotify subscriptions will not persist",
+                    );
+                    None
+                }
+            },
+        };
 
         // Load durable forge crons into the in-memory working set. Boot
         // catch-up for entries that came due while forge was down runs after
@@ -6912,6 +6933,17 @@ config_dir = "~/.claude-subspace"
         )
         .expect("write forge.toml");
         dir
+    }
+
+    #[tokio::test]
+    async fn new_for_test_opens_redb_under_the_tempdir() {
+        let dir = make_workspace_dir();
+        let _workspace =
+            Arc::new(Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+        // The test constructor redirects redb into the config dir's own
+        // tempdir, so no test ever opens the real machine store (#392).
+        let redirected = dir.path().join("app-support").join("db.redb");
+        assert!(redirected.exists(), "new_for_test opens redb under the tempdir app-support base");
     }
 
     #[tokio::test]
