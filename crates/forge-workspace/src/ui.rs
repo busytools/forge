@@ -34,18 +34,6 @@ where
     Ok(SpinnerStyle::from_key(&key).unwrap_or_default())
 }
 
-/// Lenient deserialize for an optional persisted spinner key (the legacy
-/// `state.toml` spinner field, read by the one-time redb seed): an
-/// unknown/removed key maps to `None` so the resolve order falls through
-/// to the config default rather than failing the whole state load.
-pub fn deserialize_lenient_opt<'de, D>(deserializer: D) -> Result<Option<SpinnerStyle>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let opt = Option::<String>::deserialize(deserializer)?;
-    Ok(opt.and_then(|key| SpinnerStyle::from_key(&key)))
-}
-
 /// Resolve the effective spinner: a persisted `/spinner` override wins
 /// over the forge.toml `[ui] spinner` default. The single precedence
 /// point, so a boot-time edit can't silently drop the user's pick.
