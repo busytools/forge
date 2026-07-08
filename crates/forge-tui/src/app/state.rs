@@ -967,7 +967,7 @@ impl App {
     /// Test-only entry point: production flows register handles via
     /// `Workspace::get_agent_handle`.
     #[cfg(any(test, feature = "testing"))]
-    #[allow(clippy::expect_used, clippy::missing_panics_doc)]
+    #[allow(clippy::expect_used)]
     pub fn install_testing_stub(
         &mut self,
     ) -> tokio::sync::mpsc::UnboundedReceiver<forge_primitives::AgentCommand> {
