@@ -1392,6 +1392,20 @@ fn handle_background_tasks_changed(app: &mut App, msg: Message) {
             })
         })
         .collect();
+    // Drift breadcrumb (Hard Rule #16): if the CLI renamed a field
+    // every entry fails the parse and the section silently never
+    // appears. An empty snapshot is a legitimate state (section
+    // auto-hides), so this only logs - the replace still applies.
+    if tasks.len() != parsed.len() {
+        tracing::debug!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "background_tasks_parse_dropped",
+            message = "background_tasks_changed dropped unparseable entries; possible wire drift",
+            outcome = "partial",
+            dropped = tasks.len() - parsed.len(),
+            entry_count = tasks.len(),
+        );
+    }
     *app.background_tasks_mut() = parsed;
 }
 
