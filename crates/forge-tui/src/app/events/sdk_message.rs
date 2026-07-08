@@ -889,6 +889,9 @@ fn available_commands_from_json(arr: &[Value]) -> Vec<forge_primitives::Availabl
     arr.iter()
         .filter_map(|entry| {
             if let Some(name) = entry.as_str() {
+                if name.is_empty() {
+                    return None;
+                }
                 return Some(forge_primitives::AvailableCommand {
                     name: name.to_owned(),
                     description: String::new(),
@@ -896,7 +899,7 @@ fn available_commands_from_json(arr: &[Value]) -> Vec<forge_primitives::Availabl
                 });
             }
             let obj = entry.as_object()?;
-            let name = obj.get("name")?.as_str()?.to_owned();
+            let name = obj.get("name")?.as_str().filter(|s| !s.is_empty())?.to_owned();
             let description =
                 obj.get("description").and_then(Value::as_str).unwrap_or_default().to_owned();
             let input_hint = obj
@@ -2796,6 +2799,15 @@ mod commands_changed_tests {
         assert_eq!(from_objects[0].name, "x");
         assert_eq!(from_objects[0].description, "d");
         assert_eq!(from_objects[0].input_hint.as_deref(), Some("<a>"));
+        // Empty names are degenerate (a blank, un-selectable dropdown
+        // row) - skipped in both the string and object shapes.
+        let empties = available_commands_from_json(&[
+            json!(""),
+            json!({"name": "", "description": "blank"}),
+            json!({"name": "real"}),
+        ]);
+        assert_eq!(empties.len(), 1, "empty-name entries skipped in both shapes");
+        assert_eq!(empties[0].name, "real");
     }
 
     #[test]
