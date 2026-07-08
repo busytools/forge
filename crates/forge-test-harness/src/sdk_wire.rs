@@ -330,7 +330,7 @@ where
                 // (a) `drive` already drained the `Result` inside its
                 //     closure - common for scenarios that issue
                 //     follow-up control_requests after consuming the
-                //     turn (e.g. `context_usage`, `rewind_files`).
+                //     turn (e.g. `context_usage`).
                 // (b) The CLI is genuinely hung. The harness can't
                 //     distinguish the two without a signal from
                 //     `drive`. Log loudly so a real hang surfaces in

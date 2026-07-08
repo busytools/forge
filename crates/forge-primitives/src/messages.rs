@@ -33,10 +33,8 @@ pub enum Message {
         /// turns. `AssistantMessage.error`
         ///
         error: Option<AssistantMessageError>,
-        /// Stable identifier for this assistant turn, used for file
-        /// checkpointing (`enable_file_checkpointing=true`) and as the
-        /// target of `forge_sdk::Client::rewind_files`.
-        /// the CLI `AssistantMessage.uuid`.
+        /// Stable identifier for this assistant turn - the CLI
+        /// `AssistantMessage.uuid`.
         uuid: Option<String>,
     },
 
@@ -48,11 +46,9 @@ pub enum Message {
         session_id: String,
         /// Parent tool-use id when this is a sub-agent turn.
         parent_tool_use_id: Option<String>,
-        /// Stable identifier for this user turn - the `user_message_id`
-        /// `forge_sdk::Client::rewind_files` takes.
-        /// the CLI `UserMessage.uuid`. `None` unless the
-        /// CLI is configured to emit them
-        /// (`extra_args={"replay-user-messages": None}`).
+        /// Stable identifier for this user turn - the CLI
+        /// `UserMessage.uuid`. `None` unless the CLI is configured to
+        /// emit them (`extra_args={"replay-user-messages": None}`).
         uuid: Option<String>,
         /// Raw tool-result payload the CLI attaches when this user turn
         /// reports a tool's output. The CLI `UserMessage.tool_use_result`;
