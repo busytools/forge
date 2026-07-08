@@ -41,6 +41,7 @@ pub(super) fn handle_sdk_message(app: &mut App, msg: Message) {
         Message::RateLimitEvent { .. } => handle_rate_limit_event(app, msg),
         Message::Result { .. } => handle_result(app, msg),
         Message::BackgroundTasksChanged { .. } => handle_background_tasks_changed(app, msg),
+        Message::CommandsChanged { .. } => handle_commands_changed(app, msg),
         // No-op arms:
         // - `StreamEvent` (partial-message streaming) + `Error` /
         //   `Unknown` (transport / forward-compat) - re-add a handler
@@ -51,15 +52,13 @@ pub(super) fn handle_sdk_message(app: &mut App, msg: Message) {
         //   fresh captures, all zero), so the prior banner chip +
         //   per-message stamp + per-session cache were dead code and
         //   got deleted.
-        // - 2.1.204 `commands_changed` / `hook_started` /
-        //   `hook_response`: typed for wire-conformance; no UI surface
-        //   yet (command-list refresh and hook-activity are separate
-        //   features).
+        // - 2.1.204 `hook_started` / `hook_response`: typed for
+        //   wire-conformance; no UI surface yet (hook-activity is a
+        //   separate feature).
         Message::StreamEvent { .. }
         | Message::Error { .. }
         | Message::Unknown { .. }
         | Message::TurnDuration { .. }
-        | Message::CommandsChanged { .. }
         | Message::HookStarted { .. }
         | Message::HookResponse { .. } => {}
         // #273: typed wrappers around the CLI 2.1.156 system events.
@@ -880,19 +879,41 @@ fn apply_compaction_boundary(app: &mut App, data: &Value) {
     );
 }
 
+/// Parse a `slash_commands` / `commands` array into `AvailableCommand`s.
+/// Entries are either bare name strings (the `system/init`
+/// `slash_commands` shape) or `{name, description, argumentHint}`
+/// objects (the `commands_changed` shape); both flow through here so
+/// init and the live refresh share one boundary. Non-string / nameless
+/// entries are skipped; an empty `argumentHint` collapses to `None`.
+fn available_commands_from_json(arr: &[Value]) -> Vec<forge_primitives::AvailableCommand> {
+    arr.iter()
+        .filter_map(|entry| {
+            if let Some(name) = entry.as_str() {
+                return Some(forge_primitives::AvailableCommand {
+                    name: name.to_owned(),
+                    description: String::new(),
+                    input_hint: None,
+                });
+            }
+            let obj = entry.as_object()?;
+            let name = obj.get("name")?.as_str()?.to_owned();
+            let description =
+                obj.get("description").and_then(Value::as_str).unwrap_or_default().to_owned();
+            let input_hint = obj
+                .get("argumentHint")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned);
+            Some(forge_primitives::AvailableCommand { name, description, input_hint })
+        })
+        .collect()
+}
+
 /// Build `AvailableCommandsUpdate` from System(init).slash_commands.
 fn apply_available_commands_from_init(app: &mut App, data: &Value) {
     let Some(record) = data.as_object() else { return };
     let Some(arr) = record.get("slash_commands").and_then(Value::as_array) else { return };
-    let commands: Vec<forge_primitives::AvailableCommand> = arr
-        .iter()
-        .filter_map(|v| v.as_str())
-        .map(|name| forge_primitives::AvailableCommand {
-            name: name.to_owned(),
-            description: String::new(),
-            input_hint: None,
-        })
-        .collect();
+    let commands = available_commands_from_json(arr);
     if commands.is_empty() {
         return;
     }
@@ -1372,6 +1393,19 @@ fn handle_background_tasks_changed(app: &mut App, msg: Message) {
         })
         .collect();
     *app.background_tasks_mut() = parsed;
+}
+
+/// Refresh the active session's slash-command list from a
+/// `commands_changed` event (emitted after a plugin/command reload).
+/// Parses via the shared boundary and applies through
+/// `apply_available_commands_update`, so the `/` dropdown, `/help`,
+/// and autocomplete all pick up the fresh list instead of the stale
+/// init-time seed.
+fn handle_commands_changed(app: &mut App, msg: Message) {
+    let Message::CommandsChanged { commands, .. } = msg else { return };
+    let parsed = available_commands_from_json(&commands);
+    let model_update = crate::app::connect::type_converters::map_available_commands_update(parsed);
+    super::apply_available_commands_update(app, model_update);
 }
 
 fn handle_rate_limit_event(app: &mut App, msg: Message) {
@@ -2671,5 +2705,67 @@ mod background_tasks_changed_tests {
         let tasks = app.background_tasks();
         assert_eq!(tasks.len(), 1, "malformed entries dropped, valid one kept");
         assert_eq!(tasks[0].task_id, "ok");
+    }
+}
+
+#[cfg(test)]
+mod commands_changed_tests {
+    //! `commands_changed` carries the fresh slash-command list after a
+    //! plugin/command reload. It must REPLACE the session's
+    //! `available_commands` (feeding the `/` dropdown + `/help`), not
+    //! append to it.
+    use super::handle_sdk_message;
+    use crate::app::App;
+    use forge_primitives::{AvailableCommand, Message};
+    use serde_json::json;
+
+    fn commands_event(commands: Vec<serde_json::Value>) -> Message {
+        Message::CommandsChanged { commands, uuid: String::new(), session_id: String::new() }
+    }
+
+    #[test]
+    fn refresh_replaces_the_command_list() {
+        let mut app = App::test_default();
+        *app.available_commands_mut() = vec![AvailableCommand::new("stale", "")];
+
+        handle_sdk_message(
+            &mut app,
+            commands_event(vec![
+                json!({"name": "granite-upgrade", "description": "upgrade flow", "argumentHint": ""}),
+                json!({"name": "greptile", "description": "code search", "argumentHint": "<query>"}),
+            ]),
+        );
+
+        let names: Vec<&str> = app.available_commands().iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, vec!["granite-upgrade", "greptile"], "list replaced, not appended");
+        // argumentHint parses into input_hint; an empty hint drops to None.
+        let greptile =
+            app.available_commands().iter().find(|c| c.name == "greptile").expect("greptile");
+        assert_eq!(greptile.input_hint.as_deref(), Some("<query>"));
+        let granite =
+            app.available_commands().iter().find(|c| c.name == "granite-upgrade").expect("granite");
+        assert_eq!(granite.input_hint, None, "empty argumentHint collapses to None");
+    }
+
+    #[test]
+    fn helper_handles_both_string_and_object_shapes() {
+        use super::available_commands_from_json;
+        // init `slash_commands` shape: bare name strings -> name-only
+        // commands (the pre-refactor init behaviour).
+        let from_strings = available_commands_from_json(&[json!("audit"), json!("resume")]);
+        assert_eq!(from_strings.len(), 2);
+        assert_eq!(from_strings[0].name, "audit");
+        assert_eq!(from_strings[0].description, "");
+        assert_eq!(from_strings[0].input_hint, None);
+        // commands_changed shape: objects; nameless / scalar entries drop.
+        let from_objects = available_commands_from_json(&[
+            json!({"name": "x", "description": "d", "argumentHint": "<a>"}),
+            json!({"description": "no name"}),
+            json!(42),
+        ]);
+        assert_eq!(from_objects.len(), 1, "nameless / scalar entries skipped");
+        assert_eq!(from_objects[0].name, "x");
+        assert_eq!(from_objects[0].description, "d");
+        assert_eq!(from_objects[0].input_hint.as_deref(), Some("<a>"));
     }
 }

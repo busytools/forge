@@ -1743,6 +1743,7 @@ chat continues here...
     <dl>
       <dt>code</dt><dd><code>crates/forge-tui/src/ui/autocomplete.rs</code> · positioning via <code>choose_dropdown_x</code> / <code>choose_dropdown_y</code> (renders above OR below the input depending on space)</dd>
       <dt>three triggers</dt><dd><code>/</code> = slash · <code>@</code> = file mention (paths from <code>FileIndex</code>) · <code>&amp;</code> = subagent invocation</dd>
+      <dt>command source</dt><dd>The slash list (also feeding <code>/help</code>) is seeded once at connect from <code>system/init</code> <code>slash_commands</code>, then <strong>live-refreshed</strong> on every <code>commands_changed</code> event (emitted after a plugin/command reload) - the fresh list replaces the seed wholesale, so a newly added command shows immediately without a restart. Both paths parse through <code>available_commands_from_json</code> into <code>UiSession.available_commands</code>.</dd>
       <dt>known issues</dt><dd><a href="https://github.com/busytools/forge/issues/46">#46</a> - pre-init gap (CLI emits init only post-first-turn; fallback list needed)  ·  <a href="https://github.com/busytools/forge/issues/47">#47</a> - slash commands render as full expanded prompt text on session resume</dd>
     </dl>
   </div>
