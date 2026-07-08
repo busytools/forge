@@ -54,19 +54,17 @@ automatically on exit/crash; the `WorkspaceError::AlreadyRunning` hard-fail
 mirrors the proxy one. Genuinely separate profiles / config dirs still
 coexist. No daemon, no cross-process shared state.
 
-forge keeps `forge.toml` + `cron.toml` under a `<config_dir>/forge/`
-subfolder, away from claude's own config-dir files; `Workspace::new`
-creates it at boot and hard-fails if it can't. Runtime state is the
-exception: both the single-instance lock and `state.toml` (the
-account-usage cache + `/spinner` override) live machine-local under
-forge's app-support dir, keyed by the config dir - `state.toml` churns
-once a minute and the lock's inode must stay put, so neither can sit in
-the Syncthing-synced config dir. `forge.toml` (read-only for forge) and
-any pre-existing top-level `forge-cron.toml` are still read from the
-config-dir root as a non-destructive rollout fallback, and the pre-move
-synced `forge/state.toml` is read once as a machine-local migration
-seed; everything new is written under `forge/` (config) or app-support
-(runtime state).
+forge keeps `forge.toml` under a `<config_dir>/forge/` subfolder, away
+from claude's own config-dir files; `Workspace::new` creates the
+subfolder at boot and hard-fails if it can't. `forge.toml` is the only
+file forge reads for config - read-only for forge, hand-authored, and
+safe to sync across Macs. All runtime state - durable crons, Gotify
+subscriptions, dynamic workers, the `/spinner` override, and the
+account-usage cache - lives in one machine-local redb DB (`db.redb`)
+under forge's app-support dir, alongside the single-instance lock. None
+of it sits in the Syncthing-synced config dir: the DB churns (the usage
+cache rewrites roughly once a minute), redb's binary file can't be
+Syncthing-merged, and the lock's inode must stay put.
 
 ## Crate placement guide (where does my new code go?)
 
