@@ -1455,6 +1455,88 @@ mod tests {
         assert!(rate_limit_hit_from_message(&api_retry(529, "server_error")).is_none());
     }
 
+    async fn workspace_with_account_config_dir(
+        config_dir: &str,
+    ) -> (tempfile::TempDir, Arc<crate::Workspace>) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let forge = dir.path().join("forge");
+        std::fs::create_dir_all(&forge).expect("forge dir");
+        std::fs::write(
+            forge.join("forge.toml"),
+            format!(
+                "[[orgs]]\nname = \"Default\"\naccounts = [\"Acct\"]\n\n\
+                 [[orgs.projects]]\nname = \"forge\"\npath = \"~/Projects/forge\"\n\n\
+                 [[accounts]]\ndisplay_name = \"Acct\"\nconfig_dir = \"{config_dir}\"\n"
+            ),
+        )
+        .expect("write forge.toml");
+        let workspace =
+            Arc::new(crate::Workspace::new_for_test(dir.path().to_owned()).await.expect("new"));
+        (dir, workspace)
+    }
+
+    /// Build a `SessionTask` bound to `workspace` with a testing-stub
+    /// handle (its `config_dir` is the `TESTING_STUB_CONFIG_DIR`
+    /// `/tmp/forge-testing-stub`). Only `note_rate_limit_from_message`
+    /// is exercised, so the command/update channels stay idle.
+    fn session_task_for(workspace: &Arc<crate::Workspace>) -> SessionTask {
+        let (handle, _cmds) = Agent::testing_stub();
+        let handle = Arc::new(handle);
+        let (_cmd_tx, command_rx) = mpsc::unbounded_channel();
+        let (update_tx, _update_rx) = mpsc::unbounded_channel();
+        let key = SessionKey::from_str_for_test("rl-test");
+        let domain = Arc::new(Mutex::new(DomainSession::new(key.clone(), Some(handle.clone()))));
+        SessionTask {
+            key,
+            handle,
+            command_rx,
+            domain,
+            update_tx,
+            spawn_key: None,
+            connected_once: false,
+            workspace: Arc::downgrade(workspace),
+        }
+    }
+
+    /// End-to-end glue: a 429 on a session whose `config_dir` IS a
+    /// tracked account rotates that account via
+    /// `note_rate_limit_from_message` (upgrade + handle.config_dir() +
+    /// the account-map lock).
+    #[tokio::test]
+    async fn note_rate_limit_rotates_the_sessions_own_account() {
+        use crate::account::AccountKey;
+        let (_dir, workspace) = workspace_with_account_config_dir("/tmp/forge-testing-stub").await;
+        let key = AccountKey("Acct".to_owned());
+        assert!(workspace.account_states().lock().is_account_usable(&key), "usable before the 429");
+
+        let task = session_task_for(&workspace);
+        task.note_rate_limit_from_message(&api_retry(429, "rate_limit"));
+
+        assert!(
+            !workspace.account_states().lock().is_account_usable(&key),
+            "a 429 on the session rotates its own account off",
+        );
+    }
+
+    /// The config_dir-match seam (the #394-class risk): a 429 whose
+    /// session `config_dir` maps to no tracked account must NOT rotate
+    /// an unrelated account - it hits the warn path instead.
+    #[tokio::test]
+    async fn note_rate_limit_leaves_untracked_config_dir_accounts_alone() {
+        use crate::account::AccountKey;
+        let (_dir, workspace) = workspace_with_account_config_dir("/tmp/forge-test-rl-other").await;
+        let key = AccountKey("Acct".to_owned());
+        assert!(workspace.account_states().lock().is_account_usable(&key));
+
+        let task = session_task_for(&workspace);
+        task.note_rate_limit_from_message(&api_retry(429, "rate_limit"));
+
+        assert!(
+            workspace.account_states().lock().is_account_usable(&key),
+            "a 429 whose config_dir maps to no tracked account must not rotate an unrelated one",
+        );
+    }
+
     /// `apply_event_to_domain` on `AgentEvent::Connected` stamps (or
     /// overwrites) `session_id` so subsequent `AgentHandle` calls
     /// route to the live identity. See
