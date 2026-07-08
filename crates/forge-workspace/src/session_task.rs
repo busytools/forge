@@ -554,6 +554,13 @@ impl SessionTask {
                 config_dir = %config_dir.display(),
                 "marked session account rate-limited from a live 429; next assignment rotates off it",
             );
+        } else {
+            tracing::warn!(
+                target: "forge_workspace::session_task",
+                key = %self.key.as_str(),
+                config_dir = %config_dir.display(),
+                "live 429 detected but the session config_dir maps to no tracked account; cannot rotate",
+            );
         }
     }
 
