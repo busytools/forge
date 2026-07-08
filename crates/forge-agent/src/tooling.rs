@@ -407,6 +407,17 @@ fn bash_background_message(record: &Map<String, Value>) -> String {
     format!("Command is running in background with ID: {task_id}.")
 }
 
+/// True when a `tool_result` carries a background sentinel - the same
+/// fields Bash keys on (`backgroundTaskId` / `assistantAutoBackgrounded`
+/// / `backgroundedByUser`).
+fn result_indicates_background(raw_result: Option<&Value>, raw_content: Option<&Value>) -> bool {
+    result_record_candidates(raw_result, raw_content).iter().any(|c| {
+        c.get("backgroundTaskId").and_then(Value::as_str).is_some_and(|s| !s.is_empty())
+            || c.get("assistantAutoBackgrounded").and_then(Value::as_bool) == Some(true)
+            || c.get("backgroundedByUser").and_then(Value::as_bool) == Some(true)
+    })
+}
+
 fn build_bash_display_output(record: &Map<String, Value>) -> String {
     let mut segments = Vec::new();
     if let Some(s) = record.get("stdout").and_then(Value::as_str)
@@ -762,11 +773,15 @@ pub fn build_tool_result_fields(
         return fields;
     }
 
-    // Agent: title from agentType.
+    // Agent: title from agentType, and never stamp Completed on a
+    // background sentinel while the subagent runs (mirrors Bash).
     if !is_error && tool_name == "Agent" {
         let agent_title = agent_title_from_agent_output(raw_result, raw_content);
         if !agent_title.is_empty() {
             fields.title = Some(agent_title);
+        }
+        if result_indicates_background(raw_result, raw_content) {
+            fields.status = None;
         }
     }
 
@@ -1248,6 +1263,27 @@ mod tests {
         );
         let meta = f.output_metadata.expect("meta");
         assert_eq!(meta.bash.unwrap().assistant_auto_backgrounded, Some(true));
+    }
+
+    #[test]
+    fn build_fields_agent_background_does_not_stamp_completed() {
+        // A subagent the CLI backgrounds returns an immediate sentinel
+        // tool_result carrying `backgroundTaskId` while it keeps
+        // running. The card must not be stamped Completed mid-run;
+        // liveness is tracked separately (alive_task_ids).
+        let base = make_base("Agent", &json!({"subagent_type": "Explore"}));
+        let raw_result = json!({"backgroundTaskId": "bg-agent-1"});
+        let f = build_tool_result_fields(
+            false,
+            Some(&json!("Running in background with ID: bg-agent-1")),
+            Some(&base),
+            Some(&raw_result),
+        );
+        assert!(
+            f.status.is_none(),
+            "backgrounded Agent tool_result must not stamp a terminal status; got {:?}",
+            f.status,
+        );
     }
 
     #[test]

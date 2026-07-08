@@ -2217,19 +2217,31 @@ impl App {
             }
         }
 
-        // Auto-clear: if every root is terminal the section disappears.
-        // Empty `roots` already gates the section via `is_empty`; this
-        // additional check mirrors the WORKFLOWS all-terminal drain.
-        if !roots.is_empty()
-            && roots.iter().all(|r| {
-                matches!(
-                    r.status,
-                    crate::agent::model::ToolCallStatus::Completed
-                        | crate::agent::model::ToolCallStatus::Failed
-                        | crate::agent::model::ToolCallStatus::Killed
+        // Liveness: a subagent the CLI backgrounds gets an immediate
+        // sentinel tool_result that flips its root card terminal while
+        // the task keeps running, so `status` alone is unreliable - the
+        // same failure the PROCESSES section handles. Trust
+        // `alive_task_ids` (populated by `task_started`, drained only by
+        // a terminal `task_updated`), mapped back to tool_use_ids.
+        let alive_tool_use_ids: std::collections::HashSet<String> = self.with_turn_state(|ts| {
+            ts.task_tool_use_ids
+                .iter()
+                .filter(|(task_id, _)| ts.alive_task_ids.contains(*task_id))
+                .map(|(_, tool_use_id)| tool_use_id.clone())
+                .collect()
+        });
+        let root_is_active = |root: &&crate::app::ToolCallInfo| {
+            alive_tool_use_ids.contains(root.id.as_str())
+                || matches!(
+                    root.status,
+                    crate::agent::model::ToolCallStatus::InProgress
+                        | crate::agent::model::ToolCallStatus::Pending
                 )
-            })
-        {
+        };
+        // Auto-clear: the section disappears only once no root is still
+        // active (every root both terminal-status AND drained from the
+        // alive set). Empty `roots` already gates via `is_empty`.
+        if !roots.is_empty() && !roots.iter().any(root_is_active) {
             return Vec::new();
         }
 
@@ -7230,5 +7242,38 @@ mod tests {
     fn subagents_view_empty_when_no_subagent_dispatch() {
         let app = App::test_default();
         assert!(app.subagents_view().is_empty());
+    }
+
+    /// Regression: a subagent the CLI backgrounds gets an immediate
+    /// sentinel tool_result that flips its root card to terminal while
+    /// the subagent keeps running. Liveness is tracked by
+    /// `alive_task_ids` (populated by `task_started`, drained only by a
+    /// terminal `task_updated`), so the section must stay visible for
+    /// the task's true lifetime even though the card status reads
+    /// terminal - mirroring the PROCESSES section.
+    #[test]
+    fn subagents_view_keeps_backgrounded_root_alive_via_task_ids() {
+        let mut app = App::test_default();
+        let root = make_subagent_root_tc(
+            "tu-root-bg",
+            "Explore",
+            "long-running background scan",
+            model::ToolCallStatus::Completed,
+        );
+        push_subagent_session(&mut app, root, Vec::new());
+        // task_started mapped the task_id to the root and marked it
+        // alive; no terminal task_updated has drained it yet.
+        let _: () = app.with_turn_state_mut(|ts| {
+            ts.task_tool_use_ids.insert("task-bg".to_owned(), "tu-root-bg".to_owned());
+            ts.alive_task_ids.insert("task-bg".to_owned());
+        });
+
+        let view = app.subagents_view();
+        assert_eq!(
+            view.len(),
+            1,
+            "a backgrounded-but-alive subagent stays in the SUBAGENTS view; got {view:?}",
+        );
+        assert_eq!(view[0].tool_use_id, "tu-root-bg");
     }
 }
