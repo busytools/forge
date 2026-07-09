@@ -261,8 +261,7 @@ fn build_attention_lines(
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(shown.len() + 4);
     lines.push(attention_header_line(width, total));
     // Blank between header and first row, matching the TASKS / SUBAGENTS
-    // section rhythm (the framing is what gives the band breathing room,
-    // so rows stay compact single lines).
+    // section rhythm.
     lines.push(Line::default());
     for entry in shown {
         lines.push(attention_row_line(width, entry, now));
@@ -1787,7 +1786,7 @@ fn append_subagents_section(lines: &mut Vec<Line<'static>>, app: &App, width: u1
 
 /// Render one SUBAGENTS entry: header (status_icon + `◇` + label,
 /// plus a `· N tools` trailing summary on terminal roots) and, for
-/// in-progress roots, an indented tail of the last 3-4 hidden child
+/// a running root, an indented tail of the last 3-4 hidden child
 /// tool calls. Each tail row reuses `theme::tool_name_label` so the
 /// kind glyph + label match the standard chat tool row.
 fn append_subagent_row(
@@ -1847,14 +1846,9 @@ fn append_subagent_row(
     }
     lines.push(Line::from(header_spans));
 
-    if !in_progress {
-        return;
-    }
-
-    // Tail rows: 6-space indent + kind glyph + space + kind label +
-    // double-space + title. Layout mirrors a standard chat tool-call
-    // row's icon column but nested deeper to read as a child of the
-    // root header above.
+    // Tail gated on `entry.tail` alone - the derive fills it only for a
+    // running root, so render never recomputes a status predicate. 6-space
+    // indent nests each row under the header like a chat tool-call row.
     let tail_indent = "      "; // 6 spaces - 2 pane pad + 4 for the nest.
     let fixed_chrome = tail_indent.chars().count()
         + 1   // kind glyph cell
@@ -3522,6 +3516,71 @@ mod tests {
         assert!(
             joined.contains("12 tools"),
             "terminal root must render the `· N tools` summary; got:\n{joined}",
+        );
+    }
+
+    #[test]
+    fn append_subagent_row_tail_gated_on_field_not_status() {
+        // Contract guard for the derive/render decoupling: the derive owns
+        // "is this root running", the render just draws the tail it's
+        // handed. A terminal-status entry carrying a tail is not a state the
+        // derive produces - it exists here only to prove the render keys the
+        // tail on `entry.tail`, so a re-introduced status-based early-return
+        // (which would drop this tail) fails loudly.
+        use crate::agent::model::ToolCallStatus;
+        use crate::app::{SubagentChildEntry, SubagentEntry};
+
+        let entry = SubagentEntry {
+            tool_use_id: "tu-root".to_owned(),
+            label: "Explore".to_owned(),
+            status: ToolCallStatus::Completed,
+            tail: vec![SubagentChildEntry {
+                sdk_tool_name: "Read".to_owned(),
+                title: "probe.rs".to_owned(),
+                status: ToolCallStatus::Completed,
+            }],
+            total_count: 5,
+        };
+        let mut lines = Vec::new();
+        append_subagent_row(&mut lines, &entry, 60, '\u{2022}');
+        let joined = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert!(
+            joined.contains("probe.rs"),
+            "render must draw the derived tail regardless of terminal status; got:\n{joined}",
+        );
+        // Companion: the summary path is status-gated (terminal -> `· N
+        // tools`), independent of the field-gated tail above.
+        assert!(
+            joined.contains("5 tools"),
+            "terminal status still drives the `· N tools` summary; got:\n{joined}",
+        );
+    }
+
+    #[test]
+    fn append_subagent_row_pending_renders_queued_header_only() {
+        // Pending render contract: a queued root shows the `○` glyph, no
+        // `· N tools` summary, and no tail rows - the one render branch the
+        // section cluster otherwise never exercises. Guards a future
+        // narrowing of the summary's `in_progress` predicate that would
+        // leak a spurious `· 0 tools` onto a queued root.
+        use crate::agent::model::ToolCallStatus;
+        use crate::app::SubagentEntry;
+
+        let entry = SubagentEntry {
+            tool_use_id: "tu-root".to_owned(),
+            label: "Explore".to_owned(),
+            status: ToolCallStatus::Pending,
+            tail: Vec::new(),
+            total_count: 0,
+        };
+        let mut lines = Vec::new();
+        append_subagent_row(&mut lines, &entry, 60, '\u{2022}');
+        assert_eq!(lines.len(), 1, "queued root renders a single header line; got {lines:?}");
+        let joined = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert!(joined.contains('\u{25cb}'), "queued root shows the ○ glyph; got:\n{joined}");
+        assert!(
+            !joined.contains("tools"),
+            "queued root shows no `· N tools` summary; got:\n{joined}",
         );
     }
 
