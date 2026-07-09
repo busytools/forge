@@ -2353,19 +2353,19 @@ impl App {
             .map(|root| {
                 let children = children_by_parent.remove(root.id.as_str()).unwrap_or_default();
                 let total_count = children.len();
-                // Liveness (not raw status) drives the row: a backgrounded
-                // root's sentinel tool_result flips `root.status` terminal
-                // while the task runs on (still in `alive_task_ids`), so an
-                // active root must render running - InProgress status
-                // (spinner, no `· N tools` summary) with its live tail. Only
-                // a truly terminal, drained root shows ✓/✗ + the summary.
-                let active = root_is_active(&root);
-                let status = if active {
+                // Promote a backgrounded root (its sentinel result flipped
+                // `root.status` terminal while it stays in `alive_task_ids`,
+                // per the note above) to running so it keeps the spinner +
+                // live tail; a not-yet-started `Pending` root keeps its
+                // queued status rather than being forced to the spinner.
+                let running = root_is_active(&root)
+                    && root.status != crate::agent::model::ToolCallStatus::Pending;
+                let status = if running {
                     crate::agent::model::ToolCallStatus::InProgress
                 } else {
                     root.status
                 };
-                let tail = if active {
+                let tail = if running {
                     let tail_start = children.len().saturating_sub(cap);
                     children[tail_start..]
                         .iter()
@@ -7528,10 +7528,18 @@ mod tests {
             "long-running background scan",
             model::ToolCallStatus::Completed,
         );
-        let children = vec![
-            make_subagent_child_tc("tu-bg-c1", "Grep", "Grep needs_input"),
-            make_subagent_child_tc("tu-bg-c2", "Read", "Read state.rs"),
-        ];
+        // More children than the cap so this also exercises the tail cap
+        // on the alive-via-task_ids path (the existing cap test drives an
+        // InProgress-status root instead).
+        let child_count = SUBAGENT_TAIL_CAP + 2;
+        let mut children = Vec::new();
+        for i in 1..=child_count {
+            children.push(make_subagent_child_tc(
+                &format!("tu-bg-c{i}"),
+                "Read",
+                &format!("bg-file-{i}.rs"),
+            ));
+        }
         push_subagent_session(&mut app, root, children);
         let _: () = app.with_turn_state_mut(|ts| {
             ts.task_tool_use_ids.insert("task-bg2".to_owned(), "tu-root-bg2".to_owned());
@@ -7547,10 +7555,41 @@ mod tests {
             view[0].status,
         );
         assert_eq!(
+            view[0].total_count, child_count,
+            "total_count counts every child; got {}",
+            view[0].total_count,
+        );
+        assert_eq!(
             view[0].tail.len(),
-            2,
-            "alive backgrounded root must keep its live tool tail; got {:?}",
+            SUBAGENT_TAIL_CAP,
+            "alive backgrounded root keeps its live tail, capped at SUBAGENT_TAIL_CAP; got {:?}",
             view[0].tail,
+        );
+    }
+
+    /// A freshly-dispatched root sits at `Pending` (queued `○`) until the
+    /// CLI reports progress. The liveness promotion is only for a
+    /// backgrounded root whose sentinel flipped it terminal - it must NOT
+    /// fire for a not-yet-started `Pending` root just because that root
+    /// counts as active for the section gate.
+    #[test]
+    fn subagents_view_pending_root_stays_pending() {
+        let mut app = App::test_default();
+        let root = make_subagent_root_tc(
+            "tu-root-pending",
+            "Explore",
+            "queued scan",
+            model::ToolCallStatus::Pending,
+        );
+        push_subagent_session(&mut app, root, Vec::new());
+
+        let view = app.subagents_view();
+        assert_eq!(view.len(), 1, "a pending root still shows in the section; got {view:?}");
+        assert_eq!(
+            view[0].status,
+            model::ToolCallStatus::Pending,
+            "a not-yet-started root stays Pending (queued), not forced to the running spinner; got {:?}",
+            view[0].status,
         );
     }
 }
