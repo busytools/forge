@@ -794,6 +794,7 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
                     | PaneHitTarget::OverlayClose { .. }
                     | PaneHitTarget::CloseSession { .. }
                     | PaneHitTarget::InspectorGitOpenDiff { .. }
+                    | PaneHitTarget::InspectorAttentionRow { .. }
                     | PaneHitTarget::CopySessionId { .. }
                     | PaneHitTarget::CloseWorker { .. }
             ) && t.contains(mouse.column, mouse.row)
@@ -832,6 +833,11 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
             }
             PaneHitTarget::InspectorGitOpenDiff { .. } => {
                 crate::app::diff_overlay::open_default(app);
+                app.needs_redraw = true;
+                return true;
+            }
+            PaneHitTarget::InspectorAttentionRow { session_key, .. } => {
+                app.switch_active_session(session_key);
                 app.needs_redraw = true;
                 return true;
             }
@@ -890,6 +896,7 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
             | PaneHitTarget::OverlayClose { .. }
             | PaneHitTarget::CloseSession { .. }
             | PaneHitTarget::InspectorGitOpenDiff { .. }
+            | PaneHitTarget::InspectorAttentionRow { .. }
             | PaneHitTarget::CopySessionId { .. }
             | PaneHitTarget::CloseWorker { .. } => true,
         };
@@ -930,6 +937,7 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
         | PaneHitTarget::OverlayClose { .. }
         | PaneHitTarget::CloseSession { .. }
         | PaneHitTarget::InspectorGitOpenDiff { .. }
+        | PaneHitTarget::InspectorAttentionRow { .. }
         | PaneHitTarget::CopySessionId { .. }
         | PaneHitTarget::CloseWorker { .. } => true,
     }

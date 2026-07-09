@@ -183,34 +183,57 @@ fn render_attention_band(frame: &mut Frame, area: Rect, app: &mut App) -> Rect {
     if area.height == 0 || area.width == 0 {
         return area;
     }
-    let lines = build_attention_band(app, area.width);
-    if lines.is_empty() {
+    let entries = app.needs_input_sessions();
+    if entries.is_empty() {
         return area;
     }
+    let now = std::time::SystemTime::now();
+    let lines = build_attention_lines(&entries, area.width, now);
     let band_height = u16::try_from(lines.len()).unwrap_or(u16::MAX).min(area.height);
     let band_area = Rect { x: area.x, y: area.y, width: area.width, height: band_height };
     frame.render_widget(Paragraph::new(lines), band_area);
+
+    // Stamp a click-to-jump target per visible row. The header is at
+    // band_area.y (row 0); session row i sits at band_area.y + 1 + i.
+    // Rows clipped by a short pane are skipped so a click can't
+    // resolve to an off-screen row.
+    let band_bottom = band_area.y.saturating_add(band_height);
+    let x_end = area.x.saturating_add(area.width);
+    for (i, entry) in entries.iter().enumerate() {
+        let offset = u16::try_from(i.saturating_add(1)).unwrap_or(u16::MAX);
+        let row_y = band_area.y.saturating_add(offset);
+        if row_y >= band_bottom {
+            break;
+        }
+        app.pane_hit_targets.push(PaneHitTarget::InspectorAttentionRow {
+            session_key: entry.session_key.clone(),
+            y: row_y,
+            height: 1,
+            x_start: area.x,
+            x_end,
+        });
+    }
+
     Rect {
         x: area.x,
-        y: area.y.saturating_add(band_height),
+        y: band_bottom,
         width: area.width,
         height: area.height.saturating_sub(band_height),
     }
 }
 
-/// Build the pinned NEEDS INPUT band's lines: the `△ NEEDS INPUT`
-/// header + count, one row per waiting background session (stalest
-/// first), then a DIM `─` rule bracketing the band off from the
-/// scrolling body. Empty `Vec` when nothing is waiting.
-fn build_attention_band(app: &App, width: u16) -> Vec<Line<'static>> {
-    let entries = app.needs_input_sessions();
-    if entries.is_empty() {
-        return Vec::new();
-    }
-    let now = std::time::SystemTime::now();
+/// Build the pinned NEEDS INPUT band's lines from `entries` (already
+/// sorted stalest-first): the `△ NEEDS INPUT` header + count, one row
+/// per session, then a DIM `─` rule bracketing the band off from the
+/// scrolling body.
+fn build_attention_lines(
+    entries: &[AttentionEntry],
+    width: u16,
+    now: std::time::SystemTime,
+) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(entries.len() + 2);
     lines.push(attention_header_line(width, entries.len()));
-    for entry in &entries {
+    for entry in entries {
         lines.push(attention_row_line(width, entry, now));
     }
     push_section_rule(&mut lines, width);
@@ -3844,6 +3867,16 @@ mod tests {
             .join("\n")
     }
 
+    /// The band's lines for the current app state, or an empty `Vec`
+    /// when nothing is waiting (the render path's no-band case).
+    fn build_attention_band(app: &App, width: u16) -> Vec<Line<'static>> {
+        let entries = app.needs_input_sessions();
+        if entries.is_empty() {
+            return Vec::new();
+        }
+        build_attention_lines(&entries, width, std::time::SystemTime::now())
+    }
+
     #[test]
     fn attention_band_absent_when_no_session_waits() {
         let app = App::test_default();
@@ -3888,10 +3921,10 @@ mod tests {
             "question \u{00B7} 20s"
         );
 
-        let bare =
+        let no_tool =
             AttentionEntry { kind: AttentionKind::Permission { tool: String::new() }, ..perm };
         assert_eq!(
-            attention_detail(&bare, base + Duration::from_secs(20)),
+            attention_detail(&no_tool, base + Duration::from_secs(20)),
             "permission \u{00B7} 20s"
         );
     }
@@ -3947,5 +3980,50 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn attention_row_stamps_clickable_jump_target() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut app = app_with_waiting_session("granite-backend");
+        let bg = forge_workspace::SessionKey::from_session_id("granite-backend");
+        assert_ne!(
+            app.active_session_key.as_ref(),
+            Some(&bg),
+            "precondition: the waiting session is a background session",
+        );
+
+        let area = Rect { x: 0, y: 2, width: 40, height: 20 };
+        let mut term = Terminal::new(TestBackend::new(40, 24)).expect("terminal");
+        term.draw(|f| {
+            render_attention_band(f, area, &mut app);
+        })
+        .expect("draw");
+
+        let (key, y, x_start) = app
+            .pane_hit_targets
+            .iter()
+            .find_map(|t| match t {
+                PaneHitTarget::InspectorAttentionRow { session_key, y, x_start, .. } => {
+                    Some((session_key.clone(), *y, *x_start))
+                }
+                _ => None,
+            })
+            .expect("an attention-row hit target is stamped");
+        assert_eq!(key, bg, "target carries the waiting session's key");
+        assert!(y > area.y, "the row sits below the band header");
+
+        // A click on the row resolves to this x+y-bounded target.
+        let hit = app.pane_hit_targets.iter().find(|t| t.contains(x_start, y));
+        assert!(
+            matches!(hit, Some(PaneHitTarget::InspectorAttentionRow { .. })),
+            "a click on the row hits the attention target",
+        );
+
+        // Switching (what the click handler does) makes it the active session.
+        app.switch_active_session(key);
+        assert_eq!(app.active_session_key.as_ref(), Some(&bg), "the click jumps to the session");
     }
 }
