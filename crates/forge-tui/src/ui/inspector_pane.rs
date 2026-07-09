@@ -409,6 +409,18 @@ fn append_body(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
         append_gotify_section(lines, app, width);
     }
 
+    // BACKGROUND sits directly above PROCESSES: the CLI's
+    // authoritative background-task registry (full snapshot from
+    // `background_tasks_changed`), auto-hidden when empty. PROCESSES
+    // stays the heuristic OS-tree lens; a backgrounded bash can appear
+    // in both.
+    if !app.background_tasks().is_empty() {
+        lines.push(Line::default());
+        push_section_rule(lines, width);
+        lines.push(Line::default());
+        append_background_section(lines, app, width);
+    }
+
     let processes = collect_active_processes(app);
     if !processes.is_empty() {
         lines.push(Line::default());
@@ -1865,6 +1877,49 @@ fn truncate_or_pass(s: &str, max_chars: usize) -> String {
     out
 }
 
+/// Append the BACKGROUND section: the CLI's authoritative
+/// background-task snapshot, one row per task. Each row is the active
+/// orange spinner glyph + the task description + a right-justified dim
+/// `· <task_type>` tag naming the kind (`local_bash`, `agent`, ...).
+/// The caller gates on `app.background_tasks().is_empty()`; the
+/// snapshot empties out when the last task finishes, so the section
+/// disappears.
+fn append_background_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
+    let tasks = app.background_tasks();
+    if tasks.is_empty() {
+        return;
+    }
+
+    lines.push(Line::from(Span::styled(
+        " BACKGROUND".to_owned(),
+        Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::default());
+
+    let inner_width = usize::from(width);
+    let glyph = app.active_spinner_glyph();
+    for task in tasks {
+        let trailing_chrome = 3 /* " · " */ + task.task_type.chars().count();
+        let chrome = usize::from(PANE_PAD)
+            + 1   // spinner glyph
+            + 1   // space after glyph
+            + trailing_chrome
+            + usize::from(PANE_PAD); // right gutter
+        let budget = row_text_budget(inner_width, chrome);
+        let label = truncate_or_pass(&task.description, budget);
+        let pad = budget.saturating_sub(label.chars().count());
+        lines.push(Line::from(vec![
+            Span::raw(" ".repeat(usize::from(PANE_PAD))),
+            Span::styled(glyph.to_string(), Style::default().fg(theme::RUST_ORANGE)),
+            Span::raw(" ".to_owned()),
+            Span::styled(label, Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(" ".repeat(pad)),
+            Span::styled(" \u{00B7} ".to_owned(), Style::default().fg(theme::DIM)),
+            Span::styled(task.task_type.clone(), Style::default().fg(theme::DIM)),
+        ]));
+    }
+}
+
 /// Wrap `s` onto multiple lines so that each piece fits within
 /// `max_chars` columns. Breaks on whitespace where possible; falls
 /// back to hard-cut on long single tokens. Returns an empty `Vec`
@@ -1883,7 +1938,7 @@ fn truncate_or_pass(s: &str, max_chars: usize) -> String {
 ///
 /// Glyphs mirror the TASKS convention but use a kind-distinct
 /// palette for the headline so scanning the section visually
-/// separates "what's running" from "what's queued in TodoWrite":
+/// separates "what's running" from "what's queued in the Task* family":
 ///
 /// - `▸` RUST_ORANGE  - `BashBackgrounded` / `Monitor` while in-flight
 /// - `\u{23F0}` (`⏰`) DIM - `Cron` (scheduled, not currently firing)
@@ -2311,6 +2366,60 @@ mod tests {
             "durable crons render SCHEDULES even with no cloud wakeups: {text}"
         );
         assert!(text.contains("0 9 * * *"), "the cron row is present: {text}");
+    }
+
+    #[test]
+    fn background_section_renders_rows_and_hides_when_empty() {
+        use crate::app::BackgroundTask;
+        let mut app = App::test_default();
+
+        // Empty snapshot: the section function produces nothing.
+        let mut lines = Vec::new();
+        append_background_section(&mut lines, &app, 40);
+        assert!(lines.is_empty(), "empty snapshot renders no lines");
+
+        *app.background_tasks_mut() = vec![
+            BackgroundTask {
+                task_id: "b3cjfmhsq".to_owned(),
+                task_type: "local_bash".to_owned(),
+                description: "Print marker after 1s".to_owned(),
+            },
+            BackgroundTask {
+                task_id: "a7".to_owned(),
+                task_type: "agent".to_owned(),
+                description: "Audit the migration history".to_owned(),
+            },
+        ];
+        let mut lines = Vec::new();
+        append_background_section(&mut lines, &app, 40);
+        let text = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert!(text.contains("BACKGROUND"), "section header renders: {text}");
+        assert!(text.contains("Print marker after 1s"), "first task description: {text}");
+        assert!(text.contains("local_bash"), "first task type tag: {text}");
+        assert!(text.contains("Audit the migration history"), "second task description: {text}");
+        assert!(text.contains("\u{00B7} agent"), "second task type tag: {text}");
+    }
+
+    #[test]
+    fn append_body_gates_background_section_on_non_empty_snapshot() {
+        use crate::app::BackgroundTask;
+        let mut app = App::test_default();
+
+        let mut lines = Vec::new();
+        append_body(&mut lines, &app, 60);
+        let text = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert!(!text.contains("BACKGROUND"), "section absent with empty snapshot: {text}");
+
+        *app.background_tasks_mut() = vec![BackgroundTask {
+            task_id: "b1".to_owned(),
+            task_type: "local_bash".to_owned(),
+            description: "Run the integration suite".to_owned(),
+        }];
+        let mut lines = Vec::new();
+        append_body(&mut lines, &app, 60);
+        let text = lines.iter().map(line_text).collect::<Vec<_>>().join("\n");
+        assert!(text.contains("BACKGROUND"), "section present with a task: {text}");
+        assert!(text.contains("Run the integration suite"), "task row renders: {text}");
     }
 
     #[test]

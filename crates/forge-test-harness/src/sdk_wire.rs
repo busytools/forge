@@ -94,7 +94,7 @@ pub fn attach_recording(builder: OptionsBuilder) -> (OptionsBuilder, Arc<Mutex<T
 ///
 /// When we run the `just upgrade-cli` ritual, this constant bumps along
 /// with the baselines under `baselines/<version>/`.
-pub const PINNED_CLI_VERSION: &str = "2.1.156";
+pub const PINNED_CLI_VERSION: &str = "2.1.204";
 
 /// Directory holding the committed trace baselines for the pinned CLI
 /// version. Resolves to
@@ -330,7 +330,7 @@ where
                 // (a) `drive` already drained the `Result` inside its
                 //     closure - common for scenarios that issue
                 //     follow-up control_requests after consuming the
-                //     turn (e.g. `context_usage`, `rewind_files`).
+                //     turn (e.g. `context_usage`).
                 // (b) The CLI is genuinely hung. The harness can't
                 //     distinguish the two without a signal from
                 //     `drive`. Log loudly so a real hang surfaces in

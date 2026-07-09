@@ -1,5 +1,5 @@
 // =====
-// TESTS: 10
+// TESTS: 11
 // =====
 //
 // Tool call lifecycle integration tests.
@@ -473,4 +473,66 @@ async fn subagent_root_via_real_wire_surfaces_in_subagents_view() {
         tool_call_block(&app, "toolu_root").hidden,
     );
     assert!(tool_call_block(&app, "toolu_child").hidden, "SubagentChild stays hidden as before");
+}
+
+/// Drain-to-hidden: a backgrounded SubagentRoot stays visible while its
+/// task_id is in `alive_task_ids`, then the section clears once the
+/// terminal `task_updated` drains it. Guards against a regression that
+/// stopped draining `alive_task_ids` for subagents, which would leave a
+/// completed subagent stuck-visible. Mirrors the MONITORS
+/// `two_monitors_completing_in_order_clears_section` contract, driven
+/// over the real wire path.
+#[tokio::test]
+async fn subagent_section_clears_when_terminal_task_updated_drains_alive_task() {
+    let mut app = test_app();
+
+    send_msg(
+        &mut app,
+        assistant_message(vec![tool_use_block(
+            "toolu_root",
+            "Agent",
+            serde_json::json!({
+                "subagent_type": "Explore",
+                "description": "long-running background scan",
+                "prompt": "long-running background scan",
+            }),
+        )]),
+    );
+    // task_started maps the task_id to the root and marks it alive.
+    send_msg(
+        &mut app,
+        forge_primitives::Message::TaskStarted {
+            task_id: "task-root".to_owned(),
+            description: "long-running background scan".to_owned(),
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+            tool_use_id: Some("toolu_root".to_owned()),
+            task_type: Some("Explore".to_owned()),
+        },
+    );
+    assert_eq!(
+        app.subagents_view().len(),
+        1,
+        "backgrounded subagent is visible while its task is alive; got {:?}",
+        app.subagents_view(),
+    );
+
+    // Terminal task_updated drains alive_task_ids and flips the card.
+    send_msg(
+        &mut app,
+        forge_primitives::Message::TaskUpdated {
+            task_id: "task-root".to_owned(),
+            patch: forge_primitives::messages::TaskUpdatePatch {
+                status: Some("completed".to_owned()),
+                end_time: None,
+            },
+            uuid: String::new(),
+            session_id: "test-session".to_owned(),
+        },
+    );
+    assert!(
+        app.subagents_view().is_empty(),
+        "section clears once the terminal task_updated drains the alive task; got {:?}",
+        app.subagents_view(),
+    );
 }

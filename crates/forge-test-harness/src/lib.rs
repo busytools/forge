@@ -11,3 +11,5 @@
 #![allow(clippy::panic, clippy::expect_used, clippy::unwrap_used)]
 
 pub mod sdk_wire;
+
+pub use sdk_wire::PINNED_CLI_VERSION;

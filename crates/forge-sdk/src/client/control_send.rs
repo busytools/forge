@@ -1,7 +1,7 @@
 //! Outbound `control_request` typed wrappers - the user-facing
 //! commands (`interrupt`, `set_permission_mode`, `set_model`,
-//! `rewind_files`, `mcp_reconnect`, `mcp_toggle`, `stop_task`,
-//! `mcp_status`, `get_context_usage`) plus the `_raw` escape hatches
+//! `mcp_reconnect`, `mcp_toggle`, `stop_task`, `mcp_status`,
+//! `get_context_usage`) plus the `_raw` escape hatches
 //! for `mcp_status` and `get_context_usage`.
 //!
 //! All methods take `&self` and route through

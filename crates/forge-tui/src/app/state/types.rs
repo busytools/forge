@@ -131,6 +131,17 @@ impl MonitorEntry {
     }
 }
 
+/// One entry in the Inspector BACKGROUND section, parsed from a
+/// `background_tasks_changed` event's task snapshot. `task_type`
+/// names the kind (`local_bash`, `agent`, ...) and renders as a dim
+/// trailing tag.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackgroundTask {
+    pub task_id: String,
+    pub task_type: String,
+    pub description: String,
+}
+
 /// Kind of a schedule entry in the Inspector SCHEDULES section.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScheduleKind {

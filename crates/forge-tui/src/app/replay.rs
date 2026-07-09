@@ -3,7 +3,8 @@
 //! Eliminates the "passed tests, failed live" bug class that produced the
 //! #275 / #276 / #277 cluster (every PR passed hand-built unit tests then
 //! shipped a render regression discovered in live use). The harness
-//! decodes a real captured `forge-test-harness/baselines/sdk/2.1.156/<name>.jsonl`,
+//! decodes a real captured
+//! `forge-test-harness/baselines/sdk/<PINNED_CLI_VERSION>/<name>.jsonl`,
 //! drives the App reducer through the production `apply_session_update`
 //! path, and exposes both per-session state for assertions and rendered
 //! Buffer output for `insta::assert_snapshot!()` checks.
@@ -43,8 +44,8 @@
 //!
 //! ## Scoping
 //!
-//! - Baselines under `forge-test-harness/baselines/sdk/2.1.156/` were
-//!   captured against a LIVE CLI session; any `task_notification.output_file`
+//! - Baselines under `forge-test-harness/baselines/sdk/<PINNED_CLI_VERSION>/`
+//!   were captured against a LIVE CLI session; any `task_notification.output_file`
 //!   path inside them points to a `/private/tmp/claude-*/...` location
 //!   that is gone at replay time. The harness replays the wire frames
 //!   verbatim; tests that need the watched file's CONTENT live in
@@ -67,8 +68,6 @@ use crate::agent::model;
 use crate::app::session::UiSession;
 use crate::app::{App, apply_session_update};
 
-const BASELINE_DIR_FROM_TUI_CRATE: &str = "../forge-test-harness/baselines/sdk/2.1.156/";
-
 /// Replay-derived state. Holds the App after all baseline lines were
 /// driven through the reducer, plus render helpers that snap the
 /// Inspector or chat block into a `TestBackend` buffer.
@@ -84,14 +83,6 @@ impl ReplayHarness {
         let key =
             self.app.active_session_key.as_ref().expect("replay must populate active_session_key");
         self.app.sessions.get(key).expect("active_session_key must resolve to a populated bucket")
-    }
-
-    /// Mutable handle on the replayed [`App`]. Lets tests drive
-    /// production-state mutators (e.g. `replace_monitor_output_tail_by_task_id`)
-    /// post-replay to exercise paths the captured baseline doesn't
-    /// naturally trigger.
-    pub(crate) fn app_mut(&mut self) -> &mut App {
-        &mut self.app
     }
 
     /// Construct a `ReplayHarness` around a hand-built [`App`] for
@@ -235,7 +226,10 @@ pub(crate) fn replay_baseline(name: &str) -> ReplayHarness {
 
 fn baseline_path(name: &str) -> PathBuf {
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    path.push(BASELINE_DIR_FROM_TUI_CRATE);
+    path.push(format!(
+        "../forge-test-harness/baselines/sdk/{}",
+        forge_test_harness::PINNED_CLI_VERSION
+    ));
     path.push(format!("{name}.jsonl"));
     path
 }
@@ -259,112 +253,51 @@ mod tests {
         );
     }
 
-    /// Wire-driven monitor lifecycle end-state. Backfills the #277 bug
-    /// cluster (3a: status transition didn't fire; 5: race between
-    /// task_updated terminal and the all-completed-clear).
+    /// Wire-driven monitor drain: the 2.1.204 capture carries a
+    /// `system/task_notification` for the monitor, so the whole
+    /// lifecycle runs end to end through real captured frames.
     ///
     /// Baseline timeline:
-    /// - line 19 `assistant` envelope with `tool_use=Monitor` -> the
-    ///   reducer creates a `MonitorEntry`, status=Running.
-    /// - line 20 `system/task_started` -> `task_id` is stamped onto the
-    ///   entry.
-    /// - line 22 `system/task_updated` with `patch.status="completed"`
-    ///   -> the entry's status flips to `Completed`.
+    /// - L19 `assistant` `tool_use=Monitor` -> the reducer creates a
+    ///   `MonitorEntry` (Running) plus the matching chat `ToolCall`.
+    /// - L21 `system/task_started` -> stamps `task_id` onto the entry.
+    /// - L24 `system/task_updated` `patch.status="completed"` -> the
+    ///   entry flips to `Completed` (the clear is NOT fired here).
+    /// - L25 `system/task_notification` -> `handle_task_notification`
+    ///   stamps the tail then calls `clear_monitors_if_all_terminal`,
+    ///   draining the now-terminal entry from the Inspector.
     ///
-    /// The baseline does NOT carry a `system/task_notification`. Per the
-    /// #277 Bug 5 fix, `set_monitor_status_by_task_id` deferred the
-    /// all-completed-clear trigger to `handle_task_notification` so
-    /// the `task_updated terminal -> task_notification with output_file`
-    /// wire ordering can stamp the tail before the entry drains. So
-    /// the correct post-replay end-state for THIS baseline is: 1
-    /// entry, status=Completed, NOT drained. A regression of Bug 5
-    /// (re-firing the clear inside `set_monitor_status_by_task_id`)
-    /// would show 0 entries here.
-    ///
-    /// `output_tail` CONTENT coverage stays in `app::monitor_output`'s
-    /// live-`write_tmp` unit tests (the baseline's captured temp path
-    /// is dead at replay time).
+    /// Correct end-state: the Monitor `ToolCall` survives in the chat
+    /// and the Inspector MONITORS list is empty. The #277 Bug 5
+    /// deferral (the status setter must NOT self-clear, so the
+    /// notification can stamp the tail before the drain) is locked at
+    /// the unit level by the `state::tests` unit tests
+    /// (`set_monitor_status_no_longer_clears_implicitly` and
+    /// `explicit_clear_drains_when_all_terminal`); this test locks the
+    /// wire-driven drain reaching the same end-state.
     #[test]
-    fn replay_monitor_persistent_stream_lands_entry_terminal_not_drained() {
-        use crate::app::state::types::MonitorStatus;
+    fn replay_monitor_persistent_stream_task_notification_drains_completed_monitor() {
+        use crate::app::MessageBlock;
 
         let harness = replay_baseline("monitor_persistent_stream");
         let session = harness.default_session();
-        assert_eq!(
-            session.monitors.len(),
-            1,
-            "Bug 5: the all-completed-clear must NOT fire inside \
-             set_monitor_status_by_task_id - that trigger is deferred to \
-             handle_task_notification. Drift here would re-introduce the \
-             pre-#278 race."
-        );
-        assert_eq!(
-            session.monitors[0].status,
-            MonitorStatus::Completed,
-            "Bug 3a: task_updated terminal must flip the entry's status",
-        );
-        assert_eq!(
-            session.monitors[0].task_id.as_deref(),
-            Some("b2q3xiq4o"),
-            "task_started must stamp the wire task_id onto the entry",
-        );
-    }
 
-    /// Monitor's matching `ToolCallInfo` carries the last-5 lines of
-    /// the watched command's output once `replace_monitor_output_tail_by_task_id`
-    /// fires (the production path the chat live block reads from).
-    /// The `monitor_persistent_stream` baseline doesn't include a
-    /// `system/task_notification` event with an `output_file`, so the
-    /// stamping path isn't naturally exercised - drive it manually
-    /// against the replayed Monitor's `task_id` to confirm the
-    /// end-to-end indexing + stamping wiring (matches the production
-    /// flow that fires when the wire delivers a notification).
-    #[test]
-    fn replay_monitor_persistent_stream_stamps_chat_tail() {
-        use crate::app::MessageBlock;
-
-        let mut harness = replay_baseline("monitor_persistent_stream");
-        // Pluck the Monitor's task_id from the replayed session state.
-        let task_id = harness
-            .default_session()
-            .monitors
-            .iter()
-            .find_map(|m| m.task_id.clone())
-            .expect("baseline replays a Monitor with a stamped task_id");
-
-        // Simulate the production task_notification path stamping new
-        // output lines onto the matching MonitorEntry + its
-        // ToolCallInfo. 8 lines in -> last 5 expected on the chat
-        // surface; the unit tests in `state::tests` cover the
-        // truncation arithmetic, this asserts the replay-built
-        // session state + tool_call_index actually resolve to a
-        // mutable ToolCallInfo.
-        let lines: Vec<String> = (1..=8).map(|i| format!("line {i}")).collect();
-        harness.app_mut().replace_monitor_output_tail_by_task_id(&task_id, &lines);
-
-        let session = harness.default_session();
-        let tail: Vec<String> = session
+        let monitor_created = session
             .messages
             .iter()
             .flat_map(|m| m.blocks.iter())
-            .find_map(|block| match block {
-                MessageBlock::ToolCall(tc) if tc.sdk_tool_name == "Monitor" => {
-                    Some(tc.monitor_output_tail.clone())
-                }
-                _ => None,
-            })
-            .expect("baseline's Monitor tool_use produces a matching ToolCall MessageBlock");
-        assert_eq!(
-            tail,
-            vec![
-                "line 4".to_owned(),
-                "line 5".to_owned(),
-                "line 6".to_owned(),
-                "line 7".to_owned(),
-                "line 8".to_owned(),
-            ],
-            "ToolCallInfo.monitor_output_tail holds the last-5 lines after the production \
-             stamp path runs - the in-chat live block reads from here",
+            .any(|b| matches!(b, MessageBlock::ToolCall(tc) if tc.sdk_tool_name == "Monitor"));
+        assert!(
+            monitor_created,
+            "the L19 Monitor tool_use must produce a chat ToolCall - without it the \
+             empty MONITORS assertion below would pass vacuously",
+        );
+        assert!(
+            session.monitors.is_empty(),
+            "the L25 task_notification drives handle_task_notification -> \
+             clear_monitors_if_all_terminal, draining the completed monitor from the \
+             Inspector; got {} entry/entries",
+            session.monitors.len(),
         );
     }
 
@@ -399,7 +332,7 @@ mod tests {
     /// it onto the latest Assistant ChatMessage so the
     /// `Forge - N.Ns` chip in `role_label_line` re-renders. This test
     /// drives a real captured baseline (Result event with
-    /// `duration_ms = 12768`) through the production reducer and
+    /// `duration_ms = 14308`) through the production reducer and
     /// asserts the stamp lands.
     #[test]
     fn replay_permission_suggestions_edit_stamps_turn_duration() {
@@ -415,7 +348,7 @@ mod tests {
             .expect("baseline produces at least one assistant message");
         assert_eq!(
             latest.turn_duration_ms,
-            Some(12_768),
+            Some(14_308),
             "Result.duration_ms must stamp onto the latest assistant; got {:?}",
             latest.turn_duration_ms,
         );
