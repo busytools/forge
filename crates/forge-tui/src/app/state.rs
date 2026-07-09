@@ -2353,18 +2353,19 @@ impl App {
             .map(|root| {
                 let children = children_by_parent.remove(root.id.as_str()).unwrap_or_default();
                 let total_count = children.len();
-                // Terminal roots show the trailing `· N tools` summary
-                // instead of the live tail (per the render path), so
-                // honour that contract by emptying the field in the
-                // derive too - `tail` then literally means "the live
-                // tail to render". `total_count` survives because the
-                // summary reads from it.
-                let in_progress = matches!(
-                    root.status,
+                // Liveness (not raw status) drives the row: a backgrounded
+                // root's sentinel tool_result flips `root.status` terminal
+                // while the task runs on (still in `alive_task_ids`), so an
+                // active root must render running - InProgress status
+                // (spinner, no `· N tools` summary) with its live tail. Only
+                // a truly terminal, drained root shows ✓/✗ + the summary.
+                let active = root_is_active(&root);
+                let status = if active {
                     crate::agent::model::ToolCallStatus::InProgress
-                        | crate::agent::model::ToolCallStatus::Pending
-                );
-                let tail = if in_progress {
+                } else {
+                    root.status
+                };
+                let tail = if active {
                     let tail_start = children.len().saturating_sub(cap);
                     children[tail_start..]
                         .iter()
@@ -2380,7 +2381,7 @@ impl App {
                 crate::app::state::types::SubagentEntry {
                     tool_use_id: root.id.clone(),
                     label: subagent_label_from_root(root),
-                    status: root.status,
+                    status,
                     tail,
                     total_count,
                 }
@@ -7510,5 +7511,46 @@ mod tests {
             "a backgrounded-but-alive subagent stays in the SUBAGENTS view; got {view:?}",
         );
         assert_eq!(view[0].tool_use_id, "tu-root-bg");
+    }
+
+    /// Companion to the keeps-alive test: a backgrounded root whose
+    /// sentinel status reads terminal but that is still in
+    /// `alive_task_ids` must render as *running* - InProgress status
+    /// (spinner, no `· N tools` summary) AND its live tool tail
+    /// preserved. Deriving the row from `root.status` alone painted a
+    /// ✓ and dropped the tail even though the task kept working.
+    #[test]
+    fn subagents_view_backgrounded_alive_root_shows_running_with_tail() {
+        let mut app = App::test_default();
+        let root = make_subagent_root_tc(
+            "tu-root-bg2",
+            "Explore",
+            "long-running background scan",
+            model::ToolCallStatus::Completed,
+        );
+        let children = vec![
+            make_subagent_child_tc("tu-bg-c1", "Grep", "Grep needs_input"),
+            make_subagent_child_tc("tu-bg-c2", "Read", "Read state.rs"),
+        ];
+        push_subagent_session(&mut app, root, children);
+        let _: () = app.with_turn_state_mut(|ts| {
+            ts.task_tool_use_ids.insert("task-bg2".to_owned(), "tu-root-bg2".to_owned());
+            ts.alive_task_ids.insert("task-bg2".to_owned());
+        });
+
+        let view = app.subagents_view();
+        assert_eq!(view.len(), 1, "alive backgrounded root stays; got {view:?}");
+        assert_eq!(
+            view[0].status,
+            model::ToolCallStatus::InProgress,
+            "alive backgrounded root must render running, not its sentinel-terminal status; got {:?}",
+            view[0].status,
+        );
+        assert_eq!(
+            view[0].tail.len(),
+            2,
+            "alive backgrounded root must keep its live tool tail; got {:?}",
+            view[0].tail,
+        );
     }
 }
