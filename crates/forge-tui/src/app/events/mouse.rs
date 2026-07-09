@@ -794,6 +794,7 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
                     | PaneHitTarget::OverlayClose { .. }
                     | PaneHitTarget::CloseSession { .. }
                     | PaneHitTarget::InspectorGitOpenDiff { .. }
+                    | PaneHitTarget::InspectorAttentionRow { .. }
                     | PaneHitTarget::CopySessionId { .. }
                     | PaneHitTarget::CloseWorker { .. }
             ) && t.contains(mouse.column, mouse.row)
@@ -832,6 +833,16 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
             }
             PaneHitTarget::InspectorGitOpenDiff { .. } => {
                 crate::app::diff_overlay::open_default(app);
+                app.needs_redraw = true;
+                return true;
+            }
+            PaneHitTarget::InspectorAttentionRow { session_key, .. } => {
+                app.switch_active_session(session_key);
+                // Dismiss the Narrow-tier overlay so the click lands the
+                // user on the chat where the prompt is, matching the
+                // projects-overlay row-click. No-op at Wide/Medium.
+                app.projects_pane_overlay_open = false;
+                app.inspector_pane_overlay_open = false;
                 app.needs_redraw = true;
                 return true;
             }
@@ -890,6 +901,7 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
             | PaneHitTarget::OverlayClose { .. }
             | PaneHitTarget::CloseSession { .. }
             | PaneHitTarget::InspectorGitOpenDiff { .. }
+            | PaneHitTarget::InspectorAttentionRow { .. }
             | PaneHitTarget::CopySessionId { .. }
             | PaneHitTarget::CloseWorker { .. } => true,
         };
@@ -930,6 +942,7 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
         | PaneHitTarget::OverlayClose { .. }
         | PaneHitTarget::CloseSession { .. }
         | PaneHitTarget::InspectorGitOpenDiff { .. }
+        | PaneHitTarget::InspectorAttentionRow { .. }
         | PaneHitTarget::CopySessionId { .. }
         | PaneHitTarget::CloseWorker { .. } => true,
     }
