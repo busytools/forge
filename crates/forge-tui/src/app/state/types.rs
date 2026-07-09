@@ -194,6 +194,33 @@ impl ScheduleEntry {
     }
 }
 
+/// What a needs-input session is blocked on, for the Inspector
+/// NEEDS INPUT band. Derived from the front `PromptState.source`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AttentionKind {
+    /// A `can_use_tool` permission request; `tool` is the tool title.
+    Permission { tool: String },
+    /// An `AskUserQuestion` request.
+    Question,
+}
+
+/// One background session waiting on the user, rendered as a row in
+/// the Inspector NEEDS INPUT band. Built by
+/// [`crate::app::App::needs_input_sessions`], sorted stalest-first.
+#[derive(Debug, Clone)]
+pub struct AttentionEntry {
+    /// Session to switch to when the row is clicked.
+    pub session_key: forge_workspace::SessionKey,
+    /// Project name (white bold in the row).
+    pub name: String,
+    /// Worker role in parens (dim), when the session is a worker.
+    pub role: Option<String>,
+    pub kind: AttentionKind,
+    /// When the front prompt entered the queue; the row's wait-age is
+    /// `now - enqueued_at`, and the band sorts oldest-first.
+    pub enqueued_at: std::time::SystemTime,
+}
+
 /// Lifecycle status of a Workflow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkflowStatus {

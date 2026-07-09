@@ -22,14 +22,14 @@ pub use tool_call_info::{
     is_monitor_tool_name,
 };
 pub use types::{
-    AppStatus, BackgroundTask, ExtraUsage, HelpView, HistoryRetentionPolicy, HistoryRetentionStats,
-    LoginHint, McpState, MessageUsage, ModeInfo, ModeState, MonitorEntry, MonitorStatus,
-    PasteSessionState, PendingCommandAck, PhaseEntry, PhaseStatus, RecentSessionInfo,
-    RenderCacheBudget, SUBAGENT_TAIL_CAP, ScheduleEntry, ScheduleKind, ScrollbarDragState,
-    SelectionKind, SelectionPoint, SelectionState, SessionTurnState, SessionUsageState,
-    StopHookEntry, StopHookSummaryState, SubagentChildEntry, SubagentEntry, TodoItem, TodoStatus,
-    ToolCallScope, UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState, UsageWindow,
-    WorkflowEntry, WorkflowStatus,
+    AppStatus, AttentionEntry, AttentionKind, BackgroundTask, ExtraUsage, HelpView,
+    HistoryRetentionPolicy, HistoryRetentionStats, LoginHint, McpState, MessageUsage, ModeInfo,
+    ModeState, MonitorEntry, MonitorStatus, PasteSessionState, PendingCommandAck, PhaseEntry,
+    PhaseStatus, RecentSessionInfo, RenderCacheBudget, SUBAGENT_TAIL_CAP, ScheduleEntry,
+    ScheduleKind, ScrollbarDragState, SelectionKind, SelectionPoint, SelectionState,
+    SessionTurnState, SessionUsageState, StopHookEntry, StopHookSummaryState, SubagentChildEntry,
+    SubagentEntry, TodoItem, TodoStatus, ToolCallScope, UsageSnapshot, UsageSourceKind,
+    UsageSourceMode, UsageState, UsageWindow, WorkflowEntry, WorkflowStatus,
 };
 pub use viewport::{
     ChatViewport, LayoutInvalidation, LayoutInvalidation as InvalidationLevel,
@@ -1616,6 +1616,70 @@ impl App {
         }
         let cwd = self.active_session().map(|s| s.cwd_raw.clone())?;
         self.workspace.as_ref().and_then(|ws| ws.project_name_for_path(&cwd))
+    }
+
+    /// Background sessions (everything but the active one) with a
+    /// prompt pending at the head of their queue, as [`AttentionEntry`]
+    /// rows sorted stalest-first (oldest enqueue on top, session id as
+    /// the tiebreaker). Mirrors the Projects-pane yellow-triangle
+    /// predicate (`!active && prompt_queue non-empty`) so the two
+    /// surfaces never disagree. Empty when nothing is waiting - the
+    /// Inspector NEEDS INPUT band hides on empty.
+    pub fn needs_input_sessions(&self) -> Vec<AttentionEntry> {
+        let active = self.active_session_key.as_ref();
+        let projects = self.workspace.as_ref().map(|ws| ws.list_projects()).unwrap_or_default();
+        // One (project, role) row per live worker so the per-session
+        // lookup is a map hit, not a nested per-project scan.
+        let mut worker_index: HashMap<forge_workspace::SessionKey, (String, String)> =
+            HashMap::new();
+        if let Some(ws) = self.workspace.as_ref() {
+            for project in &projects {
+                for worker in ws.list_live_workers(&project.key) {
+                    worker_index.insert(
+                        worker.session_key.clone(),
+                        (project.name.clone(), worker.label.clone()),
+                    );
+                }
+            }
+        }
+        let project_refs: Vec<&forge_workspace::ProjectView> = projects.iter().collect();
+
+        let mut entries: Vec<AttentionEntry> = Vec::new();
+        for (key, session) in &self.sessions {
+            if active == Some(key) {
+                continue;
+            }
+            let Some(prompt) = session.prompt_queue.front() else { continue };
+            let kind = match &prompt.source {
+                crate::app::prompt::PromptSource::Permission { tool_name, .. } => {
+                    AttentionKind::Permission { tool: tool_name.clone() }
+                }
+                crate::app::prompt::PromptSource::Question { .. } => AttentionKind::Question,
+            };
+            let (name, role) = if let Some((project_name, label)) = worker_index.get(key) {
+                (project_name.clone(), Some(label.clone()))
+            } else {
+                let name =
+                    crate::ui::projects_pane::resolve_active_project_view(key, &project_refs)
+                        .map(|view| view.name.clone())
+                        .or_else(|| session.project.clone())
+                        .unwrap_or_else(|| key.as_str().to_owned());
+                (name, None)
+            };
+            entries.push(AttentionEntry {
+                session_key: key.clone(),
+                name,
+                role,
+                kind,
+                enqueued_at: prompt.enqueued_at,
+            });
+        }
+        entries.sort_by(|a, b| {
+            a.enqueued_at
+                .cmp(&b.enqueued_at)
+                .then_with(|| a.session_key.as_str().cmp(b.session_key.as_str()))
+        });
+        entries
     }
 
     /// Active session's files-accessed counter.
@@ -4002,6 +4066,77 @@ mod tests {
                 "active key {key_str} resolves the project's crons via the stamped name",
             );
         }
+    }
+
+    // ── needs_input_sessions (Inspector NEEDS INPUT band) ──────────
+
+    /// Seed a background session carrying one pending permission prompt
+    /// enqueued `secs` after the UNIX epoch; stamps a project name so
+    /// the row resolves without a workspace catalog. Returns its key.
+    fn seed_needs_input_session(app: &mut App, id: &str, secs: u64) -> forge_workspace::SessionKey {
+        let key = forge_workspace::SessionKey::from_session_id(id);
+        let mut session = crate::app::session::UiSession::new(key.clone());
+        session.project = Some(format!("proj-{id}"));
+        let mut prompt = crate::app::prompt::PromptState::from_permission(
+            format!("tc-{id}"),
+            crate::app::prompt::tests::make_permission_request(),
+        );
+        prompt.enqueued_at =
+            std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(secs);
+        session.prompt_queue.push_back(prompt);
+        app.sessions.insert(key.clone(), session);
+        key
+    }
+
+    #[test]
+    fn needs_input_sessions_empty_when_no_prompts() {
+        let app = App::test_default();
+        assert!(app.needs_input_sessions().is_empty(), "no pending prompts -> no rows");
+    }
+
+    #[test]
+    fn needs_input_sessions_includes_background_and_excludes_active() {
+        let mut app = App::test_default();
+        seed_needs_input_session(&mut app, "bg", 100);
+        let active = seed_needs_input_session(&mut app, "active", 50);
+        app.active_session_key = Some(active);
+
+        let entries = app.needs_input_sessions();
+        let keys: Vec<&str> = entries.iter().map(|e| e.session_key.as_str()).collect();
+        assert_eq!(keys, vec!["bg"], "the active session is excluded even with a pending prompt");
+        assert!(matches!(entries[0].kind, crate::app::AttentionKind::Permission { .. }));
+    }
+
+    #[test]
+    fn needs_input_sessions_sorted_stalest_first() {
+        let mut app = App::test_default();
+        // Insert newest-first to prove the sort reorders by enqueue age,
+        // not by insertion order.
+        seed_needs_input_session(&mut app, "newest", 300);
+        seed_needs_input_session(&mut app, "oldest", 100);
+        seed_needs_input_session(&mut app, "middle", 200);
+        let entries = app.needs_input_sessions();
+        let order: Vec<&str> = entries.iter().map(|e| e.session_key.as_str()).collect();
+        assert_eq!(order, vec!["oldest", "middle", "newest"], "stalest (oldest enqueue) on top");
+    }
+
+    #[test]
+    fn needs_input_sessions_reports_question_kind() {
+        let mut app = App::test_default();
+        let key = forge_workspace::SessionKey::from_session_id("q");
+        let mut session = crate::app::session::UiSession::new(key.clone());
+        let mut prompt = crate::app::prompt::PromptState::from_question(
+            "tc-q".to_owned(),
+            crate::app::prompt::tests::make_question_request(false),
+        );
+        prompt.enqueued_at = std::time::SystemTime::UNIX_EPOCH;
+        session.prompt_queue.push_back(prompt);
+        app.sessions.insert(key, session);
+        let entries = app.needs_input_sessions();
+        assert!(
+            entries.iter().any(|e| matches!(e.kind, crate::app::AttentionKind::Question)),
+            "a session with an AskUserQuestion prompt reports the Question kind",
+        );
     }
 
     /// A worker spawned into a git worktree carries the worktree path
