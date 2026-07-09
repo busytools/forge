@@ -2265,8 +2265,8 @@ impl App {
     /// per `Task` / `Agent` dispatch (a visible root) plus a tail of
     /// the last `SUBAGENT_TAIL_CAP` `SubagentChild` tool calls under
     /// each root, identified via `parent_tool_use_id` on the
-    /// scope-registered map. Returns an empty Vec when every root in
-    /// the view is at a terminal status - mirrors
+    /// scope-registered map. Returns an empty Vec when every root is
+    /// terminal AND drained from `alive_task_ids` - mirrors
     /// `clear_workflows_if_all_terminal` so the section auto-clears.
     /// Pure derive over `UiSession` state; no mutation, no new wire
     /// surface.
@@ -2353,11 +2353,8 @@ impl App {
             .map(|root| {
                 let children = children_by_parent.remove(root.id.as_str()).unwrap_or_default();
                 let total_count = children.len();
-                // Promote a backgrounded root (its sentinel result flipped
-                // `root.status` terminal while it stays in `alive_task_ids`,
-                // per the note above) to running so it keeps the spinner +
-                // live tail; a not-yet-started `Pending` root keeps its
-                // queued status rather than being forced to the spinner.
+                // Alive-but-terminal roots (backgrounded) render running; a
+                // still-`Pending` root stays queued rather than spinning.
                 let running = root_is_active(&root)
                     && root.status != crate::agent::model::ToolCallStatus::Pending;
                 let status = if running {
